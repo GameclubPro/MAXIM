@@ -54,6 +54,8 @@ import { VkSyncService } from './vk-sync.service';
 import { SafetyDeskAdminGuard } from './safety-desk-admin.guard';
 import { SafetyDeskController } from './safety-desk.controller';
 import { SafetyDeskService } from './safety-desk.service';
+import { SupportRequestsController } from './support-requests.controller';
+import { SupportRequestsService } from './support-requests.service';
 
 @Module({
   imports: [
@@ -78,6 +80,7 @@ import { SafetyDeskService } from './safety-desk.service';
     AdminGiveawayController,
     AdminManualModerationController,
     SafetyDeskController,
+    SupportRequestsController,
   ],
   providers: [
     AdminService,
@@ -113,6 +116,7 @@ import { SafetyDeskService } from './safety-desk.service';
     VkParsingService,
     SafetyDeskAdminGuard,
     SafetyDeskService,
+    SupportRequestsService,
     ...(roleRunsAction(getAppRole()) ? [VkParsingRunnerService] : []),
     ...(roleRunsAction(getAppRole()) ? [VkParsingSyncProcessor] : []),
     ...(roleRunsAction(getAppRole()) ? [VkParsingPublishProcessor] : []),
@@ -142,6 +146,7 @@ import { SafetyDeskService } from './safety-desk.service';
     VkParsingMediaCacheService,
     VkParsingPostImportRepository,
     VkParsingService,
+    SupportRequestsService,
   ],
 })
 export class AdminModule {}

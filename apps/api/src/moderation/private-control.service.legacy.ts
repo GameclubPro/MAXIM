@@ -23,6 +23,7 @@ import {
   type ManagedEntityType,
   type MaxUpdate,
   type SendBroadcastResult,
+  type SupportRequestAttachment,
   type UpdateManagedGiveawayRequest,
   DEFAULT_BROADCAST_BUTTON_TEXT,
 } from '@maxim/contracts';
@@ -32,6 +33,7 @@ import { AdminSettingsService } from '../admin/admin-settings.service';
 import { ManualModerationService } from '../admin/manual-moderation.service';
 import { ManagedBroadcastService } from '../admin/managed-broadcast.service';
 import { ManagedGiveawayService } from '../admin/managed-giveaway.service';
+import { SupportRequestsService } from '../admin/support-requests.service';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
 import {
   containsSupportedMarkdownSyntax,
@@ -141,7 +143,9 @@ import {
 import {
   buildPrivateDownloadedFileName,
   buildPrivateSuggestionImageDraftsFromImages,
+  buildPrivateSuggestionMediaDraftFromImage,
   buildPrivateSuggestionMediaDraftFromVideo,
+  collectPrivateMessageAttachments,
   downloadPrivateImageSourceAttachment,
   extractPrivateFirstFileAttachment,
   extractPrivateFirstImageSourceAttachment,
@@ -246,6 +250,7 @@ export class PrivateControlService {
     @Optional() private readonly maxBotLinkService?: MaxBotLinkService,
     @Optional() private readonly managedBroadcastService?: ManagedBroadcastService,
     @Optional() private readonly adminDialogLinkService?: AdminDialogLinkService,
+    @Optional() private readonly supportRequestsService?: SupportRequestsService,
   ) {
     this.appBaseUrl = this.normalizeAppBaseUrl(configService?.get<string>('APP_BASE_URL'));
     this.botDeepLinkId = this.normalizeBotDeepLinkId(configService?.get<string>('MAX_BOT_ID'));
@@ -283,8 +288,10 @@ export class PrivateControlService {
       DEFAULT_PRIVATE_DIALOG_SEND_TIMEOUT_MS,
     );
     this.privateControlMediaUploader = {
-      uploadImage: (data, fileName, mimeType) => this.maxClient.uploadImage(data, fileName, mimeType),
-      uploadVideo: (data, fileName, mimeType) => this.maxClient.uploadVideo(data, fileName, mimeType),
+      uploadImage: (data, fileName, mimeType) =>
+        this.maxClient.uploadImage(data, fileName, mimeType),
+      uploadVideo: (data, fileName, mimeType) =>
+        this.maxClient.uploadVideo(data, fileName, mimeType),
     };
     this.sessionStore = new PrivateControlSessionStore({
       redisCounter,
@@ -1104,6 +1111,138 @@ export class PrivateControlService {
     await this.sendImmediate(context.chatId, lines.join('\n'));
   }
 
+  private async startSupportRequestFlow(
+    context: PrivateContext,
+    session: PrivateSession,
+  ): Promise<void> {
+    session.uiMode = 'modern';
+    session.pendingInput = { kind: 'support_request' };
+    session.pendingMassAction = null;
+
+    const view = this.renderSupportRequestPrompt();
+    await this.respond(context, session, view, {
+      callbackId: context.callbackId,
+      notification: 'Жду описание проблемы',
+    });
+  }
+
+  private async captureSupportRequest(
+    context: PrivateContext,
+    session: PrivateSession,
+    rawText: string,
+  ): Promise<void> {
+    if (!this.supportRequestsService) {
+      throw new BadRequestException('Сейчас обращение не удалось принять. Попробуйте позже.');
+    }
+
+    const attachments = await this.buildSupportRequestAttachments(context.update);
+    const text = rawText.trim();
+    if (!text && attachments.length === 0) {
+      throw new BadRequestException('Пришлите текст проблемы или фото.');
+    }
+
+    await this.supportRequestsService.createRequest({
+      botId: this.maxBotLinkService?.getContextOrDefaultBotId() ?? this.botDeepLinkId,
+      privateChatId: context.chatId,
+      userId: context.actor.userId,
+      userName: context.actor.displayName ?? context.actor.username ?? null,
+      messageId: context.update.message?.messageId ?? null,
+      text,
+      attachments,
+    });
+
+    session.pendingInput = null;
+    const view = this.renderSupportRequestSubmittedView();
+    await this.respond(context, session, view, {
+      callbackId: null,
+      notification: null,
+    });
+  }
+
+  private renderSupportRequestPrompt(): PrivateView {
+    return {
+      text: [
+        this.markdownTitle('Сообщить о проблеме'),
+        '',
+        'Опишите проблему одним сообщением. Можно приложить фото.',
+        'Для отмены напишите «отмена».',
+      ].join('\n'),
+      options: {
+        buttons: [[this.callbackButton('Отмена', this.cb('input_cancel'))]],
+      },
+    };
+  }
+
+  private renderSupportRequestSubmittedView(): PrivateView {
+    return {
+      text: [
+        this.markdownTitle('Обращение передано'),
+        '',
+        'Спасибо. Посмотрю и вернусь с ответом при необходимости.',
+      ].join('\n'),
+      options: {
+        buttons: this.buildFooterButtons(),
+      },
+    };
+  }
+
+  private async buildSupportRequestAttachments(
+    update: MaxUpdate,
+  ): Promise<SupportRequestAttachment[]> {
+    const imageSources = extractPrivateImageSourceAttachments(update).slice(0, 5);
+    const attachments: SupportRequestAttachment[] = [];
+
+    for (const imageSource of imageSources) {
+      const source = imageSource.attachment;
+      let payload: Record<string, unknown> | null = null;
+      try {
+        const draft = await buildPrivateSuggestionMediaDraftFromImage(
+          imageSource,
+          this.privateControlMediaUploader,
+          'support-request',
+        );
+        payload = draft.payload;
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to upload support request image',
+        );
+      }
+
+      attachments.push({
+        type: 'image',
+        fileName: 'fileName' in source ? source.fileName : null,
+        mimeType: source.mimeType,
+        url: source.url,
+        payload,
+      });
+    }
+
+    if (attachments.length > 0) {
+      return attachments;
+    }
+
+    for (const rawAttachment of collectPrivateMessageAttachments(update).slice(0, 5)) {
+      const rawType =
+        typeof rawAttachment.type === 'string' ? rawAttachment.type.trim().toLowerCase() : '';
+      if (rawType === 'image' || rawType === 'file') {
+        continue;
+      }
+
+      attachments.push({
+        type: rawType === 'video' ? 'video' : 'unknown',
+        fileName: this.readString(rawAttachment.file_name ?? rawAttachment.fileName) ?? null,
+        mimeType: null,
+        url: null,
+        payload: null,
+      });
+    }
+
+    return attachments;
+  }
+
   private extractDirectIncomingText(update: MaxUpdate): string {
     const messageNode = extractIncomingMessageNode(update);
     if (!messageNode) {
@@ -1352,22 +1491,17 @@ export class PrivateControlService {
             ].join('\n'),
           };
 
-    await this.respond(
-      context,
-      session,
-      view,
-      {
-        callbackId: context.callbackId,
-        notification:
-          result.status === 'already_reviewed'
-            ? result.reviewStatus === 'published'
-              ? 'Уже опубликовано'
-              : 'Уже отменено'
-            : result.reviewStatus === 'published'
-              ? 'Пост опубликован'
-              : 'Предложка отменена',
-      },
-    );
+    await this.respond(context, session, view, {
+      callbackId: context.callbackId,
+      notification:
+        result.status === 'already_reviewed'
+          ? result.reviewStatus === 'published'
+            ? 'Уже опубликовано'
+            : 'Уже отменено'
+          : result.reviewStatus === 'published'
+            ? 'Пост опубликован'
+            : 'Предложка отменена',
+    });
   }
 
   private async processCallback(context: PrivateContext): Promise<void> {
@@ -1464,6 +1598,11 @@ export class PrivateControlService {
 
     if (callback.action === 'suggestion_review_cancel') {
       await this.processChannelSuggestionReviewCallback(context, session, 'cancel', callback.args);
+      return;
+    }
+
+    if (callback.action === 'support_report') {
+      await this.startSupportRequestFlow(context, session);
       return;
     }
 
@@ -3444,6 +3583,11 @@ export class PrivateControlService {
     }
 
     switch (pendingInput.kind) {
+      case 'support_request': {
+        await this.captureSupportRequest(context, session, rawText);
+        return;
+      }
+
       case 'search_settings': {
         this.assertSelectedEntityType(session, 'chat');
         const query = rawText.trim();
@@ -5354,10 +5498,7 @@ export class PrivateControlService {
   }
 
   private isRequiredSubscriptionCurrentlyActive(
-    settings: Pick<
-      ChatSettings,
-      'requiredSubscriptionEnabled' | 'requiredSubscriptionChannelIds'
-    >,
+    settings: Pick<ChatSettings, 'requiredSubscriptionEnabled' | 'requiredSubscriptionChannelIds'>,
   ): boolean {
     if (!settings.requiredSubscriptionEnabled) {
       return false;
@@ -7363,6 +7504,11 @@ export class PrivateControlService {
           title: `Длительность мута для ${input.targetUserId}`,
           description: 'Введите длительность в часах (от 1 до 336).',
         };
+      case 'support_request':
+        return {
+          title: 'Сообщить о проблеме',
+          description: 'Опишите проблему одним сообщением. Можно приложить фото.',
+        };
     }
   }
 
@@ -8053,11 +8199,7 @@ export class PrivateControlService {
       displayName,
       userId,
     });
-    await this.sendImmediate(
-      privateChatId,
-      message.text,
-      message.options,
-    );
+    await this.sendImmediate(privateChatId, message.text, message.options);
   }
 
   private async resolveProfileMentionDisplayName(
@@ -8328,6 +8470,7 @@ export class PrivateControlService {
   private buildFooterButtons(config?: {
     includeMiniapp?: boolean;
     includeSupport?: boolean;
+    includeProblemReport?: boolean;
     supportText?: string;
     miniappText?: string;
     miniappRoute?: string | null;
@@ -8336,6 +8479,7 @@ export class PrivateControlService {
     const row: MaxMessageButton[] = [];
     const includeMiniapp = config?.includeMiniapp !== false;
     const includeSupport = config?.includeSupport !== false;
+    const includeProblemReport = config?.includeProblemReport === true;
     const miniappRoute = config?.miniappRoute?.trim() || '/';
     const miniappUrl = config?.miniappUrl ?? this.resolveMiniappUrl();
     const miniappText = config?.miniappText?.trim() || '📱 Приложение';
@@ -8353,7 +8497,12 @@ export class PrivateControlService {
       });
     }
 
-    return row.length > 0 ? [row] : [];
+    const rows: MaxMessageButton[][] = row.length > 0 ? [row] : [];
+    if (includeProblemReport) {
+      rows.push([this.callbackButton('Сообщить о проблеме', this.cb('support_report'))]);
+    }
+
+    return rows;
   }
 
   private buildMiniappLaunchButton(
@@ -8605,7 +8754,7 @@ export class PrivateControlService {
       profile,
       appBaseUrl: this.appBaseUrl,
       notice,
-      footerButtons: this.buildFooterButtons(),
+      footerButtons: this.buildFooterButtons({ includeProblemReport: true }),
     });
   }
 
@@ -8615,6 +8764,7 @@ export class PrivateControlService {
       profile,
       appBaseUrl: this.appBaseUrl,
       footerButtons: this.buildFooterButtons({
+        includeProblemReport: true,
         supportText: '🆘 Техпомощь',
       }),
     });
@@ -8814,10 +8964,7 @@ export class PrivateControlService {
     entityType: ManagedEntityType;
     giveawayId: string | null;
   }): string {
-    return buildPrivateGiveawayHandoffStartPayload(
-      params,
-      this.getCurrentBotToken(),
-    );
+    return buildPrivateGiveawayHandoffStartPayload(params, this.getCurrentBotToken());
   }
 
   private buildProfileMentionStartPayload(params: {
@@ -8826,28 +8973,19 @@ export class PrivateControlService {
     userId: string;
     displayName: string;
   }): string {
-    return buildPrivateProfileMentionStartPayload(
-      params,
-      this.getCurrentBotToken(),
-    );
+    return buildPrivateProfileMentionStartPayload(params, this.getCurrentBotToken());
   }
 
   private parseGiveawayHandoffStartPayload(
     startPayload: string | null,
   ): { chatId: string; entityType: ManagedEntityType; giveawayId: string | null } | null {
-    return parsePrivateGiveawayHandoffStartPayload(
-      startPayload,
-      this.maxBotTokenValidationSecrets,
-    );
+    return parsePrivateGiveawayHandoffStartPayload(startPayload, this.maxBotTokenValidationSecrets);
   }
 
   private parseProfileMentionStartPayload(
     startPayload: string | null,
   ): { chatId: string; entityType: ManagedEntityType; userId: string; displayName: string } | null {
-    return parsePrivateProfileMentionStartPayload(
-      startPayload,
-      this.maxBotTokenValidationSecrets,
-    );
+    return parsePrivateProfileMentionStartPayload(startPayload, this.maxBotTokenValidationSecrets);
   }
 
   private resolveBotContactId(): string | null {

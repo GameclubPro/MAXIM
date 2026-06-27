@@ -1271,6 +1271,27 @@ model AuditLog {
   @@map("audit_logs")
 }
 
+model SupportRequest {
+  id             String    @id @default(cuid())
+  botId          String?   @map("bot_id")
+  privateChatId  String    @map("private_chat_id")
+  userId         String    @map("user_id")
+  userName       String?   @map("user_name")
+  messageId      String?   @map("message_id")
+  text           String    @default("")
+  attachments    Json      @default("[]")
+  status         String    @default("NEW")
+  source         String    @default("PRIVATE_BOT")
+  closedAt       DateTime? @map("closed_at")
+  closedByUserId String?   @map("closed_by_user_id")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@index([status, createdAt(sort: Desc)], map: "support_requests_status_created_at_idx")
+  @@index([userId, createdAt(sort: Desc)], map: "support_requests_user_created_at_idx")
+  @@map("support_requests")
+}
+
 model ManagedBroadcast {
   id               String                 @id @default(cuid())
   sourceChatId     String                 @map("source_chat_id")

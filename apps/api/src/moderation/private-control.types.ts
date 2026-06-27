@@ -27,14 +27,7 @@ export type PrivateSectionKey =
 
 export type ChannelSectionKey = 'post_suggestions' | 'comments';
 
-export type SettingFieldType =
-  | 'boolean'
-  | 'number'
-  | 'text'
-  | 'url'
-  | 'enum'
-  | 'time'
-  | 'timezone';
+export type SettingFieldType = 'boolean' | 'number' | 'text' | 'url' | 'enum' | 'time' | 'timezone';
 
 export type SettingFieldConfig = {
   key: keyof ChatSettings;
@@ -86,7 +79,8 @@ export type PendingInput =
   | { kind: 'giveaway_claim_hours' }
   | { kind: 'giveaway_photo' }
   | { kind: 'giveaway_prize'; index: number }
-  | { kind: 'manual_mute_duration'; targetUserId: string };
+  | { kind: 'manual_mute_duration'; targetUserId: string }
+  | { kind: 'support_request' };
 
 export type PendingMassAction =
   | {
@@ -140,9 +134,7 @@ export type PrivateSuggestionVideoDraft = {
   payload: Record<string, unknown>;
 };
 
-export type PrivateSuggestionMediaDraft =
-  | PrivateSuggestionImageDraft
-  | PrivateSuggestionVideoDraft;
+export type PrivateSuggestionMediaDraft = PrivateSuggestionImageDraft | PrivateSuggestionVideoDraft;
 
 export type PrivateSuggestionDraft = {
   chatId: string;

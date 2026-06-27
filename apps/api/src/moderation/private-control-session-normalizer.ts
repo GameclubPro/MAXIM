@@ -119,8 +119,7 @@ export function normalizePrivateControlSession(
     selectedChatId,
     selectedEntityType: parsedSelectedEntityType ?? (selectedChatId ? 'chat' : null),
     managedGiveawayId: nonEmptyTrimmedString(row.managedGiveawayId),
-    entityTab:
-      parsePrivateControlEntityType(row.entityTab) ?? parsedSelectedEntityType ?? 'chat',
+    entityTab: parsePrivateControlEntityType(row.entityTab) ?? parsedSelectedEntityType ?? 'chat',
     uiMode: parsePrivateControlUiMode(row.uiMode),
     screen: parsePrivateControlScreen(row.screen),
     homeTab: parsePrivateControlHomeTab(row.homeTab),
@@ -273,6 +272,7 @@ export function normalizePrivateControlPendingInput(raw: unknown): PendingInput 
     'giveaway_end_at',
     'giveaway_claim_hours',
     'giveaway_photo',
+    'support_request',
   ];
 
   if (allowedKinds.includes(kind as PendingInput['kind'])) {

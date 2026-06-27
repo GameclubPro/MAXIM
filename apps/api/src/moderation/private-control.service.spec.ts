@@ -558,6 +558,7 @@ function createHarness(
     rules?: ChatRules;
     maxBotLinkService?: Record<string, unknown>;
     adminDialogLinkService?: Record<string, unknown>;
+    supportRequestsService?: Record<string, unknown>;
   } = {},
 ) {
   const chats = [
@@ -856,12 +857,14 @@ function createHarness(
         claimHours: payload.claimHours,
         startsAt: payload.startsAt,
         endsAt: payload.endsAt,
-        prizes: payload.prizes.map((prize: { position: number; title: string; displayTitle?: string }) => ({
-          id: `prize-${prize.position}`,
-          position: prize.position,
-          title: prize.title,
-          displayTitle: prize.displayTitle ?? prize.title,
-        })),
+        prizes: payload.prizes.map(
+          (prize: { position: number; title: string; displayTitle?: string }) => ({
+            id: `prize-${prize.position}`,
+            position: prize.position,
+            title: prize.title,
+            displayTitle: prize.displayTitle ?? prize.title,
+          }),
+        ),
         status: 'DRAFT',
         publicationMessageId: null,
         publicationUrl: null,
@@ -891,12 +894,14 @@ function createHarness(
           startsAt: payload.startsAt,
           endsAt: payload.endsAt,
           hasImage: payload.imageEnabled,
-          prizes: payload.prizes.map((prize: { position: number; title: string; displayTitle?: string }) => ({
-            id: `prize-${prize.position}`,
-            position: prize.position,
-            title: prize.title,
-            displayTitle: prize.displayTitle ?? prize.title,
-          })),
+          prizes: payload.prizes.map(
+            (prize: { position: number; title: string; displayTitle?: string }) => ({
+              id: `prize-${prize.position}`,
+              position: prize.position,
+              title: prize.title,
+              displayTitle: prize.displayTitle ?? prize.title,
+            }),
+          ),
           status: 'DRAFT',
           updatedAt: new Date().toISOString(),
         });
@@ -979,6 +984,10 @@ function createHarness(
       redisStrings.set(key, value);
     }),
   };
+  const supportRequestsService = {
+    createRequest: jest.fn().mockResolvedValue({ id: 'support-request-1' }),
+    ...(overrides.supportRequestsService ?? {}),
+  };
 
   const service = new PrivateControlService(
     maxClient as never,
@@ -1007,6 +1016,7 @@ function createHarness(
     overrides.maxBotLinkService as never,
     overrides.managedBroadcastService as never,
     adminDialogLinkService as never,
+    supportRequestsService as never,
   );
 
   return {
@@ -1017,6 +1027,7 @@ function createHarness(
     adminSettingsService,
     adminDialogLinkService,
     managedGiveawayService,
+    supportRequestsService,
     redisCounter,
     chats,
     channels,
@@ -1148,8 +1159,43 @@ describe('PrivateControlService', () => {
       getLastButtons(maxClient)
         .flat()
         .map((button) => String((button as { text?: string }).text ?? '')),
-    ).toEqual(['📱 Приложение', '🆘 Поддержка']);
+    ).toEqual(['📱 Приложение', '🆘 Поддержка', 'Сообщить о проблеме']);
     expect(adminService.listManagedEntities).not.toHaveBeenCalled();
+  });
+
+  it('accepts a problem report from the greeting button and saves it for the admin desk', async () => {
+    const { service, maxClient, supportRequestsService } = createHarness();
+    const fetchMock = mockImageFetch();
+
+    try {
+      await service.handleUpdate(createPrivateCallbackUpdate('pc2|support_report'));
+
+      expect(getLastEditedText(maxClient)).toContain('Сообщить о проблеме');
+      expect(getLastEditedText(maxClient)).toContain('Опишите проблему одним сообщением');
+
+      await service.handleUpdate(
+        createPrivatePhotoUpdate({ text: 'Не открывается экран настроек' }),
+      );
+
+      expect(supportRequestsService.createRequest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          privateChatId: '152517912',
+          userId: 'user-1',
+          userName: 'Тестовый пользователь',
+          text: 'Не открывается экран настроек',
+          attachments: [
+            expect.objectContaining({
+              type: 'image',
+              url: 'https://example.test/broadcast-photo-1.jpg',
+              payload: { token: 'upload-token-1' },
+            }),
+          ],
+        }),
+      );
+      expect(getLastSentText(maxClient)).toContain('Обращение передано');
+    } finally {
+      fetchMock.restore();
+    }
   });
 
   it('renders the launcher home with female persona copy for the active bot', async () => {
@@ -1207,7 +1253,7 @@ describe('PrivateControlService', () => {
       getLastButtons(maxClient)
         .flat()
         .map((button) => String((button as { text?: string }).text ?? '')),
-    ).toEqual(['📱 Приложение', '🆘 Техпомощь']);
+    ).toEqual(['📱 Приложение', '🆘 Техпомощь', 'Сообщить о проблеме']);
 
     await service.handleBotStarted(createBotStartedPrivateUpdate(''));
 
@@ -1317,7 +1363,7 @@ describe('PrivateControlService', () => {
 
     expect(getLastUiText(maxClient)).toContain('**Майор Максимов**');
     const buttons = getLastButtons(maxClient).flat();
-    expect(buttons).toHaveLength(2);
+    expect(buttons).toHaveLength(3);
     expect(buttons[0]).toEqual(
       expect.objectContaining({
         text: '📱 Приложение',
@@ -1383,7 +1429,7 @@ describe('PrivateControlService', () => {
     const buttonTexts = getLastEditedButtons(maxClient)
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
-    expect(buttonTexts).toEqual(['📱 Приложение', '🆘 Поддержка']);
+    expect(buttonTexts).toEqual(['📱 Приложение', '🆘 Поддержка', 'Сообщить о проблеме']);
   });
 
   it('does not expose sticker-from-photo action in the private bot navigation', async () => {

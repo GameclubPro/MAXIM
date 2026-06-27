@@ -882,7 +882,9 @@ export const chatSettingsSchema = z
       ),
       adminRulesCommandName: adminCommandNameSchema.default(ADMIN_RULES_COMMAND_NAME_DEFAULT),
       adminSilenceCommandName: adminCommandNameSchema.default(ADMIN_SILENCE_COMMAND_NAME_DEFAULT),
-      adminOpenChatCommandName: adminCommandNameSchema.default(ADMIN_OPEN_CHAT_COMMAND_NAME_DEFAULT),
+      adminOpenChatCommandName: adminCommandNameSchema.default(
+        ADMIN_OPEN_CHAT_COMMAND_NAME_DEFAULT,
+      ),
       adminMuteCommandAliases: adminCommandAliasesTextSchema.default(
         ADMIN_MUTE_COMMAND_ALIASES_DEFAULT,
       ),
@@ -3057,12 +3059,7 @@ export const retryVkParsingPostResultSchema = z.object({
 });
 export type RetryVkParsingPostResult = z.infer<typeof retryVkParsingPostResultSchema>;
 
-export const safetyDeskReviewStatusSchema = z.enum([
-  'REVIEW',
-  'APPROVED',
-  'REJECTED',
-  'BLOCKED',
-]);
+export const safetyDeskReviewStatusSchema = z.enum(['REVIEW', 'APPROVED', 'REJECTED', 'BLOCKED']);
 export type SafetyDeskReviewStatus = z.infer<typeof safetyDeskReviewStatusSchema>;
 
 export const safetyDeskRiskLevelSchema = z.enum(['LOW', 'MEDIUM', 'HIGH', 'BLOCKED']);
@@ -3138,6 +3135,54 @@ export const safetyDeskDecisionResponseSchema = z.object({
   message: z.string(),
 });
 export type SafetyDeskDecisionResponse = z.infer<typeof safetyDeskDecisionResponseSchema>;
+
+export const supportRequestStatusSchema = z.enum(['NEW', 'CLOSED']);
+export type SupportRequestStatus = z.infer<typeof supportRequestStatusSchema>;
+
+export const supportRequestAttachmentSchema = z.object({
+  type: z.enum(['image', 'file', 'video', 'unknown']),
+  fileName: z.string().nullable().default(null),
+  mimeType: z.string().nullable().default(null),
+  url: z.string().url().nullable().default(null),
+  payload: z.record(z.string(), z.unknown()).nullable().default(null),
+});
+export type SupportRequestAttachment = z.infer<typeof supportRequestAttachmentSchema>;
+
+export const supportRequestItemSchema = z.object({
+  id: z.string(),
+  status: supportRequestStatusSchema,
+  botId: z.string().nullable().default(null),
+  privateChatId: z.string(),
+  userId: z.string(),
+  userName: z.string().nullable().default(null),
+  messageId: z.string().nullable().default(null),
+  text: z.string(),
+  attachments: z.array(supportRequestAttachmentSchema).default([]),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  closedAt: z.string().datetime().nullable().default(null),
+});
+export type SupportRequestItem = z.infer<typeof supportRequestItemSchema>;
+
+export const supportRequestSummarySchema = z.object({
+  new: z.number().int().min(0).default(0),
+  closed: z.number().int().min(0).default(0),
+});
+export type SupportRequestSummary = z.infer<typeof supportRequestSummarySchema>;
+
+export const supportRequestQueueResponseSchema = z.object({
+  generatedAt: z.string().datetime(),
+  items: z.array(supportRequestItemSchema).default([]),
+  summary: supportRequestSummarySchema,
+});
+export type SupportRequestQueueResponse = z.infer<typeof supportRequestQueueResponseSchema>;
+
+export const supportRequestDecisionResponseSchema = z.object({
+  item: supportRequestItemSchema.nullable().default(null),
+  queue: supportRequestQueueResponseSchema,
+  message: z.string(),
+});
+export type SupportRequestDecisionResponse = z.infer<typeof supportRequestDecisionResponseSchema>;
 
 export const chatSettingsScreenResponseSchema = z.object({
   settings: chatSettingsSchema,

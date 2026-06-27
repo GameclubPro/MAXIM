@@ -120,7 +120,7 @@ button:disabled {
 
 .desk-topbar {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) auto auto;
+  grid-template-columns: minmax(220px, 1fr) auto auto auto;
   align-items: center;
   gap: 14px;
   padding: 10px 16px;
@@ -154,9 +154,34 @@ button:disabled {
 .badge-row,
 .review-actions,
 .attachment-preview,
-.audit-head {
+.audit-head,
+.view-switch {
   display: flex;
   align-items: center;
+}
+
+.view-switch {
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: #eef1f5;
+}
+
+.view-switch button {
+  height: 32px;
+  border: 0;
+  border-radius: 7px;
+  padding: 0 10px;
+  background: transparent;
+  color: #667085;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.view-switch button.is-active {
+  background: #ffffff;
+  color: #111827;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.12);
 }
 
 .desk-metrics {
@@ -422,12 +447,14 @@ button:disabled {
 }
 
 .status-badge.is-review,
+.status-badge.is-new,
 .risk-badge.is-medium {
   background: #fff7ed;
   color: #9a3412;
 }
 
 .status-badge.is-approved,
+.status-badge.is-closed,
 .risk-badge.is-low {
   background: #ecfdf3;
   color: #166534;
@@ -446,6 +473,11 @@ button:disabled {
   display: grid;
   grid-template-rows: minmax(0, 1fr) minmax(96px, 118px);
   gap: 12px;
+}
+
+.support-detail-column {
+  min-height: 0;
+  display: grid;
 }
 
 .review-card {
@@ -625,6 +657,44 @@ button:disabled {
   color: #ffffff;
   font-size: 11px;
   font-weight: 900;
+}
+
+.media-tile--file {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  padding: 12px;
+  color: #374151;
+  text-align: center;
+  text-decoration: none;
+}
+
+.media-tile--file strong {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #111827;
+  font-size: 13px;
+}
+
+.media-tile--file span {
+  position: static;
+  width: auto;
+  min-width: 0;
+  min-height: 0;
+  display: block;
+  overflow: hidden;
+  border-radius: 0;
+  background: transparent;
+  color: #4b5563;
+  font-size: 12px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .attachment-preview {
@@ -824,7 +894,7 @@ button:disabled {
 
 @media (max-width: 1180px) {
   .desk-topbar {
-    grid-template-columns: minmax(180px, 1fr) auto;
+    grid-template-columns: minmax(180px, 1fr) auto auto;
   }
 
   .desk-metrics {
@@ -857,7 +927,8 @@ button:disabled {
   }
 
   .queue-panel,
-  .detail-column {
+  .detail-column,
+  .support-detail-column {
     min-height: 420px;
   }
 
@@ -879,7 +950,8 @@ button:disabled {
   .desk-metrics,
   .topbar__actions,
   .queue-toolbar,
-  .review-actions {
+  .review-actions,
+  .view-switch {
     flex-wrap: wrap;
   }
 
@@ -894,7 +966,8 @@ button:disabled {
 
   .segmented,
   .search-field,
-  .review-actions > button {
+  .review-actions > button,
+  .view-switch > button {
     flex: 1 1 auto;
   }
 
