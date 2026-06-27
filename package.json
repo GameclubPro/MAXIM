@@ -10,7 +10,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspace @maxim/contracts && npm run build --workspace @maxim/api && npm run build --workspace @maxim/miniapp",
+    "build": "npm run build --workspace @maxim/contracts && npm run build --workspace @maxim/api && npm run build --workspace @maxim/miniapp && npm run build --workspace @maxim/admin",
     "build:docker": "docker build -f apps/api/Dockerfile -t maxim-api-ci . && docker build -f apps/miniapp/Dockerfile -t maxim-miniapp-ci .",
     "check": "npm run lint && npm run check:refactor-guards && npm run typecheck && npm run test && npm run build",
     "check:api": "npm run typecheck:api && npm run test:api",
@@ -18,7 +18,8 @@
     "check:miniapp-css": "npm run check:css --workspace @maxim/miniapp",
     "check:refactor-guards": "node scripts/check-refactor-guards.mjs",
     "dev": "npm run dev:api",
-    "dev:all": "concurrently --kill-others-on-fail -n api,miniapp -c blue,magenta \"npm run dev --workspace @maxim/api\" \"npm run dev --workspace @maxim/miniapp\"",
+    "dev:all": "concurrently --kill-others-on-fail -n api,miniapp,admin -c blue,magenta,cyan \"npm run dev --workspace @maxim/api\" \"npm run dev --workspace @maxim/miniapp\" \"npm run dev --workspace @maxim/admin\"",
+    "dev:admin": "npm run dev --workspace @maxim/admin",
     "dev:api": "npm run dev --workspace @maxim/api",
     "dev:miniapp": "npm run dev --workspace @maxim/miniapp",
     "emulator:miniapp": "node scripts/open-miniapp-emulator.mjs",
@@ -28,7 +29,8 @@
     "lint": "eslint .",
     "loadtest:webhook": "node infra/scripts/loadtest-webhook-burst.mjs",
     "screenshots:miniapp": "node scripts/capture-miniapp-preview.mjs",
-    "typecheck": "npm run typecheck --workspace @maxim/contracts && npm run typecheck --workspace @maxim/api && npm run typecheck --workspace @maxim/miniapp",
+    "typecheck": "npm run typecheck --workspace @maxim/contracts && npm run typecheck --workspace @maxim/api && npm run typecheck --workspace @maxim/miniapp && npm run typecheck --workspace @maxim/admin",
+    "typecheck:admin": "npm run typecheck --workspace @maxim/admin",
     "typecheck:api": "npm run typecheck --workspace @maxim/api",
     "typecheck:contracts": "npm run typecheck --workspace @maxim/contracts",
     "typecheck:miniapp": "npm run typecheck --workspace @maxim/miniapp",

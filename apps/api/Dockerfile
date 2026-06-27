@@ -2,7 +2,9 @@ FROM node:24-alpine AS base
 WORKDIR /app
 
 COPY package.json package-lock.json ./
+COPY apps/admin/package.json apps/admin/package.json
 COPY apps/api/package.json apps/api/package.json
+COPY apps/miniapp/package.json apps/miniapp/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
 RUN npm ci
 

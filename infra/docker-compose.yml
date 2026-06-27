@@ -430,5 +430,17 @@ services:
     ports:
       - '127.0.0.1:3003:3000'
 
+  admin-static:
+    build:
+      context: ..
+      dockerfile: apps/admin/Dockerfile
+      args:
+        ADMIN_BASE_PATH: /
+        VITE_PUBLIC_BASE_PATH: /
+        VITE_ADMIN_ACCESS_CODE: ${ADMIN_ACCESS_CODE:-change-me}
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:3004:3000'
+
 volumes:
   postgres_data:
