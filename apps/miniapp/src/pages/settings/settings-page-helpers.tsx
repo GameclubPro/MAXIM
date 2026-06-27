@@ -33,7 +33,10 @@ import type { PublishedRulesButtonToggleProps } from '../../components/published
 import { HOME_ENTITY_FAVORITE_ICONS } from '../../components/ui/compact-icons';
 import { formatBroadcastButtonsStatus } from '../../lib/broadcast-link-buttons';
 import { buildBroadcastAudiencePresentation } from '../../lib/broadcast-audience-presentation';
-import { sortAndUniqueBroadcastSlots } from '../../lib/broadcast-schedule';
+import {
+  formatBroadcastCycleSummary,
+  sortAndUniqueBroadcastSlots,
+} from '../../lib/broadcast-schedule';
 import type { SendBroadcastPayload } from '../../lib/api/shared-types';
 import { cn } from '../../lib/cn';
 import type { SettingsWorkspaceState } from '../../lib/settings-workspace-state';
@@ -1267,6 +1270,18 @@ export function formatBroadcastPayloadScheduleLabel(payload: SendBroadcastPayloa
     }
 
     return formatRussianCountLabel(slots.length, 'слот', 'слота', 'слотов');
+  }
+
+  if (payload.cycleEnabled) {
+    return `Повтор · ${formatBroadcastCycleSummary(
+      {
+        startMode: payload.sendAt ? 'later' : 'now',
+        startAt: payload.sendAt ?? new Date().toISOString(),
+        everyHours: payload.cycleEveryHours,
+        count: payload.cycleCount,
+      },
+      Date.now(),
+    )}`;
   }
 
   if (payload.sendAt) {

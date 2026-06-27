@@ -1,5 +1,4 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
-import type { ChatSettings } from '../prisma/prisma-client';
 import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,

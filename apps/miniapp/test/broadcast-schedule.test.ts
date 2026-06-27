@@ -5,7 +5,9 @@ import {
   findBroadcastSlotConflicts,
   formatBroadcastCycleIntervalLabel,
   getBroadcastCycleValidationError,
+  hasBroadcastHandoffDraft,
   normalizeBroadcastCycleDraft,
+  resolveBroadcastHandoffSchedule,
   resolveBroadcastCycleLastSendAt,
   resolveBroadcastCycleSendAt,
   sortAndUniqueBroadcastSlots,
@@ -60,6 +62,58 @@ test('resolves cycle sendAt only for delayed starts', () => {
       count: 3,
     }),
     '2026-05-06T11:00:00.000Z',
+  );
+});
+
+test('detects and restores cycle broadcast handoff schedules', () => {
+  const state = {
+    buttons: [],
+    scheduledSlots: [],
+    targetMode: 'current',
+    targetChatIds: [],
+    sendAt: '2026-05-06T12:00:00.000Z',
+    cycleEnabled: true,
+    cycleEveryHours: 6,
+    cycleCount: 4,
+    hasContent: false,
+  };
+
+  assert.equal(hasBroadcastHandoffDraft(state), true);
+  assert.deepEqual(resolveBroadcastHandoffSchedule(state, NOW_MS), {
+    timingMode: 'cycle',
+    scheduledSlots: [],
+    cycle: {
+      startMode: 'later',
+      startAt: '2026-05-06T12:00:00.000Z',
+      everyHours: 6,
+      count: 4,
+    },
+  });
+});
+
+test('restores non-cycle handoff sendAt as a scheduled single slot', () => {
+  assert.deepEqual(
+    resolveBroadcastHandoffSchedule(
+      {
+        buttons: [],
+        scheduledSlots: [],
+        sendAt: '2026-05-06T12:00:00.000Z',
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+      },
+      NOW_MS,
+    ),
+    {
+      timingMode: 'scheduled',
+      scheduledSlots: ['2026-05-06T12:00:00.000Z'],
+      cycle: {
+        startMode: 'later',
+        startAt: '2026-05-06T12:00:00.000Z',
+        everyHours: 1,
+        count: 2,
+      },
+    },
   );
 });
 

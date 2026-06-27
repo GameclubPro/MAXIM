@@ -13,10 +13,8 @@ import {
   ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT,
   ADMIN_BAN_COMMAND_NAME_DEFAULT,
   ADMIN_MUTE_COMMAND_NAME_DEFAULT,
-  ADMIN_OPEN_CHAT_COMMAND_NAME_DEFAULT,
   ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT,
   ADMIN_RULES_COMMAND_NAME_DEFAULT,
-  ADMIN_SILENCE_COMMAND_NAME_DEFAULT,
   DEFAULT_BROADCAST_BUTTON_TEXT,
   INVITATION_ACCESS_REQUIRED_COUNT_MAX,
   INVITATION_ACCESS_REQUIRED_COUNT_MIN,
@@ -321,10 +319,9 @@ import {
   type PrivateControlCommand,
   type ActiveBotSpeechProfile,
 } from './moderation.service.support';
-import {
-  NIGHT_MODE_TRANSITION_PROCESS_CONTINUE,
-  type NightModeTransitionJob,
-  type NightModeTransitionProcessResult,
+import type {
+  NightModeTransitionJob,
+  NightModeTransitionProcessResult,
 } from './night-mode-transition.queue';
 import type { NightModeTransitionSnapshot } from './night-mode-transition-time.util';
 import {

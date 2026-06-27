@@ -2,9 +2,30 @@ import { z } from 'zod';
 import type { BroadcastScheduleMode, BroadcastTargetMode } from './core.js';
 
 export function normalizeBroadcastScheduledSlots(values: string[]): string[] {
-  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean))).sort((a, b) =>
-    a.localeCompare(b),
-  );
+  const slotsByInstant = new Map<number, string>();
+  const rawSlots = new Set<string>();
+
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    const parsed = new Date(trimmed);
+    if (!Number.isFinite(parsed.getTime())) {
+      rawSlots.add(trimmed);
+      continue;
+    }
+
+    slotsByInstant.set(parsed.getTime(), parsed.toISOString());
+  }
+
+  return [
+    ...Array.from(slotsByInstant.entries())
+      .sort(([left], [right]) => left - right)
+      .map(([, value]) => value),
+    ...Array.from(rawSlots).sort((a, b) => a.localeCompare(b)),
+  ];
 }
 
 export function normalizeBroadcastTargetChatIds(values: string[]): string[] {

@@ -134,7 +134,9 @@ import {
   findBroadcastSlotConflicts,
   formatBroadcastCycleSummary,
   getBroadcastCycleValidationError,
+  hasBroadcastHandoffDraft,
   normalizeBroadcastCycleDraft,
+  resolveBroadcastHandoffSchedule,
   resolveBroadcastCycleSendAt,
   resolveBroadcastScheduleTimezone,
   sortAndUniqueBroadcastSlots,
@@ -993,12 +995,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    const hasHandoffDraft =
-      broadcastHandoffStateQuery.data.buttons.length > 0 ||
-      broadcastHandoffStateQuery.data.scheduledSlots.length > 0 ||
-      broadcastHandoffStateQuery.data.targetMode !== 'current' ||
-      broadcastHandoffStateQuery.data.targetChatIds.length > 0;
-    if (!hasHandoffDraft) {
+    if (!hasBroadcastHandoffDraft(broadcastHandoffStateQuery.data, { includeTargets: true })) {
       return;
     }
 
@@ -1030,12 +1027,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     );
     setMailingAudienceError('');
     setMailingButtons(broadcastHandoffStateQuery.data.buttons);
-    setMailingTimingMode(
-      broadcastHandoffStateQuery.data.scheduledSlots.length > 0 ? 'scheduled' : 'now',
-    );
-    setMailingScheduledSlots(
-      sortAndUniqueBroadcastSlots(broadcastHandoffStateQuery.data.scheduledSlots),
-    );
+    const handoffSchedule = resolveBroadcastHandoffSchedule(broadcastHandoffStateQuery.data);
+    setMailingTimingMode(handoffSchedule.timingMode);
+    setMailingCycleDraft(handoffSchedule.cycle);
+    setMailingScheduledSlots(handoffSchedule.scheduledSlots);
     setMailingScheduleTimezone(
       broadcastHandoffStateQuery.data.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
     );
@@ -3289,7 +3284,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     const hasConflictingSlots =
       payload.scheduleMode === 'calendar' &&
-      findBroadcastSlotConflicts(payload.scheduledSlots, mailingOccupiedSlots).length > 0;
+      findBroadcastSlotConflicts(payload.scheduledSlots, mailingConflictOccupiedSlots).length > 0;
     if (hasConflictingSlots) {
       setPendingMailingSlotConflict({ broadcastId, payload });
       return;
@@ -4501,10 +4496,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingOccupiedSlots = managedBroadcasts
     .filter((broadcast) => broadcast.id !== editingManagedBroadcast?.id)
     .flatMap((broadcast) => broadcast.scheduledSlots);
+  const mailingConflictOccupiedSlots =
+    mailingCalendarQuery.data?.slots && mailingCalendarQuery.data.slots.length > 0
+      ? sortAndUniqueBroadcastSlots(
+          mailingCalendarQuery.data.slots
+            .filter((slot) => slot.hasTargetOverlap)
+            .map((slot) => slot.scheduledAt),
+        )
+      : mailingOccupiedSlots;
   const pendingMailingConflictSlots = pendingMailingSlotConflict
     ? findBroadcastSlotConflicts(
         pendingMailingSlotConflict.payload.scheduledSlots,
-        mailingOccupiedSlots,
+        mailingConflictOccupiedSlots,
       )
     : [];
   const pendingMailingConflictPreviewSlot =

@@ -88,7 +88,9 @@ import {
   findBroadcastSlotConflicts,
   formatBroadcastCycleSummary,
   getBroadcastCycleValidationError,
+  hasBroadcastHandoffDraft,
   normalizeBroadcastCycleDraft,
+  resolveBroadcastHandoffSchedule,
   resolveBroadcastCycleSendAt,
   resolveBroadcastScheduleTimezone,
   sortAndUniqueBroadcastSlots,
@@ -485,6 +487,18 @@ function formatBroadcastPayloadScheduleLabel(payload: SendBroadcastPayload): str
     }
 
     return formatChannelCountLabel(slots.length, 'слот', 'слота', 'слотов');
+  }
+
+  if (payload.cycleEnabled) {
+    return `Повтор · ${formatBroadcastCycleSummary(
+      {
+        startMode: payload.sendAt ? 'later' : 'now',
+        startAt: payload.sendAt ?? new Date().toISOString(),
+        everyHours: payload.cycleEveryHours,
+        count: payload.cycleCount,
+      },
+      Date.now(),
+    )}`;
   }
 
   if (payload.sendAt) {
@@ -1096,10 +1110,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    const hasHandoffDraft =
-      broadcastHandoffStateQuery.data.buttons.length > 0 ||
-      broadcastHandoffStateQuery.data.scheduledSlots.length > 0;
-    if (!hasHandoffDraft) {
+    if (!hasBroadcastHandoffDraft(broadcastHandoffStateQuery.data)) {
       return;
     }
 
@@ -1112,12 +1123,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setEditingManagedBroadcast(null);
     setDuplicatedManagedBroadcast(null);
     setBroadcastButtons(broadcastHandoffStateQuery.data.buttons);
-    setBroadcastTimingMode(
-      broadcastHandoffStateQuery.data.scheduledSlots.length > 0 ? 'scheduled' : 'now',
-    );
-    setBroadcastScheduledSlots(
-      sortAndUniqueBroadcastSlots(broadcastHandoffStateQuery.data.scheduledSlots),
-    );
+    const handoffSchedule = resolveBroadcastHandoffSchedule(broadcastHandoffStateQuery.data);
+    setBroadcastTimingMode(handoffSchedule.timingMode);
+    setBroadcastCycleDraft(handoffSchedule.cycle);
+    setBroadcastScheduledSlots(handoffSchedule.scheduledSlots);
     setBroadcastScheduleTimezone(
       broadcastHandoffStateQuery.data.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
     );
@@ -1883,10 +1892,18 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const broadcastOccupiedSlots = managedBroadcasts
     .filter((broadcast) => broadcast.id !== editingManagedBroadcast?.id)
     .flatMap((broadcast) => broadcast.scheduledSlots);
+  const broadcastConflictOccupiedSlots =
+    broadcastCalendarQuery.data?.slots && broadcastCalendarQuery.data.slots.length > 0
+      ? sortAndUniqueBroadcastSlots(
+          broadcastCalendarQuery.data.slots
+            .filter((slot) => slot.hasTargetOverlap)
+            .map((slot) => slot.scheduledAt),
+        )
+      : broadcastOccupiedSlots;
   const pendingBroadcastConflictSlots = pendingBroadcastSlotConflict
     ? findBroadcastSlotConflicts(
         pendingBroadcastSlotConflict.payload.scheduledSlots,
-        broadcastOccupiedSlots,
+        broadcastConflictOccupiedSlots,
       )
     : [];
   const pendingBroadcastConflictPreviewSlot =
@@ -2451,7 +2468,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
     const hasConflictingSlots =
       payload.scheduleMode === 'calendar' &&
-      findBroadcastSlotConflicts(payload.scheduledSlots, broadcastOccupiedSlots).length > 0;
+      findBroadcastSlotConflicts(payload.scheduledSlots, broadcastConflictOccupiedSlots).length > 0;
     if (hasConflictingSlots) {
       setPendingBroadcastSlotConflict({ broadcastId, payload });
       return;

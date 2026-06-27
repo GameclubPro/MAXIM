@@ -684,6 +684,12 @@ export function BroadcastSchedulePlanner({
   }
 
   function openScheduleSummary() {
+    if (timingMode === 'cycle') {
+      selectTimingMode('cycle');
+      maxImpact('soft');
+      return;
+    }
+
     const dayKey = scheduledDayKeys[0] ?? activeDayKey ?? getBroadcastScheduleDayKey(anchorNow);
     openScheduledDay(dayKey);
   }

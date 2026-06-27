@@ -17,6 +17,18 @@ export type BroadcastCycleDraft = {
   count: number;
 };
 
+export type BroadcastScheduleHandoffState = {
+  targetMode?: string;
+  targetChatIds?: string[];
+  buttons?: unknown[];
+  scheduledSlots?: string[];
+  sendAt?: string | null;
+  cycleEnabled?: boolean;
+  cycleEveryHours?: number;
+  cycleCount?: number;
+  hasContent?: boolean;
+};
+
 function pad(value: number): string {
   return String(value).padStart(2, '0');
 }
@@ -97,6 +109,71 @@ export function normalizeBroadcastCycleDraft(
 
 export function resolveBroadcastCycleSendAt(cycle: BroadcastCycleDraft): string | null {
   return cycle.startMode === 'later' ? cycle.startAt : null;
+}
+
+export function hasBroadcastHandoffDraft(
+  state: BroadcastScheduleHandoffState,
+  options?: { includeTargets?: boolean },
+): boolean {
+  return Boolean(
+    state.hasContent ||
+      (state.buttons?.length ?? 0) > 0 ||
+      (state.scheduledSlots?.length ?? 0) > 0 ||
+      state.sendAt ||
+      state.cycleEnabled ||
+      (options?.includeTargets &&
+        (state.targetMode !== 'current' || (state.targetChatIds?.length ?? 0) > 0)),
+  );
+}
+
+export function resolveBroadcastHandoffSchedule(
+  state: BroadcastScheduleHandoffState,
+  nowMs = Date.now(),
+): {
+  timingMode: BroadcastTimingMode;
+  scheduledSlots: string[];
+  cycle: BroadcastCycleDraft;
+} {
+  const scheduledSlots = sortAndUniqueBroadcastSlots(state.scheduledSlots ?? []);
+  const cycle = normalizeBroadcastCycleDraft(
+    {
+      startMode: state.sendAt ? 'later' : 'now',
+      startAt: state.sendAt ?? createDefaultBroadcastCycleDraft(nowMs).startAt,
+      everyHours: state.cycleEveryHours,
+      count: state.cycleCount,
+    },
+    nowMs,
+  );
+
+  if (state.cycleEnabled) {
+    return {
+      timingMode: 'cycle',
+      scheduledSlots,
+      cycle,
+    };
+  }
+
+  if (scheduledSlots.length > 0) {
+    return {
+      timingMode: 'scheduled',
+      scheduledSlots,
+      cycle,
+    };
+  }
+
+  if (state.sendAt) {
+    return {
+      timingMode: 'scheduled',
+      scheduledSlots: sortAndUniqueBroadcastSlots([state.sendAt]),
+      cycle,
+    };
+  }
+
+  return {
+    timingMode: 'now',
+    scheduledSlots,
+    cycle,
+  };
 }
 
 export function formatBroadcastCycleIntervalLabel(hours: number): string {

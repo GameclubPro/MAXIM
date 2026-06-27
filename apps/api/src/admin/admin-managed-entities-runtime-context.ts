@@ -3,7 +3,6 @@ import type {
   ChatSummary,
   ManagedEntitiesRefreshState,
   ManagedEntitiesResponseDiff,
-  ManagedEntityHeader,
   ManagedEntityType,
 } from '@maxim/contracts';
 
@@ -13,7 +12,6 @@ import type { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import type { MaxClientService } from '../max/max-client.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import type {
-  AdminReadBypassOptions,
   AssertChatAdminOptions,
   ManagedEntitiesListOptions,
   ManagedEntitiesListResult,

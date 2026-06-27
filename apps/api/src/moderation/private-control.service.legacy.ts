@@ -8,7 +8,6 @@ import {
   managedGiveawayHandoffRequestSchema,
   profileMentionHandoffRequestSchema,
   stepDeleteBotMessagesDelayMinutes,
-  type BroadcastTextFormat,
   type BroadcastHandoffState,
   type BroadcastHandoffResponse,
   type BroadcastScheduleMode,
@@ -79,7 +78,6 @@ import {
   DEFERRED_PRIVATE_CALLBACK_NOTIFICATION,
   ENTITY_CALLBACK_ACTIONS,
   GIVEAWAY_HANDOFF_DEDUP_WINDOW_MS,
-  GIVEAWAY_HANDOFF_START_PAYLOAD,
   LAUNCHER_INTRO_MARKER_TTL_SEC,
   LEGACY_CALLBACK_PREFIX,
   MAX_CALLBACK_PREFIX,
@@ -180,7 +178,6 @@ import {
 import {
   clearPendingPrivateProfileMentionHandoff,
   clearPrivateHandoffDelivery,
-  markPrivateHandoffDelivered,
   readPendingPrivateProfileMentionDisplayName,
   rememberPendingPrivateProfileMentionHandoff,
   wasPrivateHandoffRecentlyDelivered,

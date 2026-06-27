@@ -27,6 +27,14 @@ export function resolveManagedBroadcastSendRetryDelayMs(
     return BROADCAST_THROTTLE_RETRY_DELAYS_MS[attempt - 1] ?? null;
   }
 
+  return null;
+}
+
+export function resolveManagedBroadcastUploadRetryDelayMs(error: unknown, attempt: number): number | null {
+  if (isMaxApiThrottleError(error)) {
+    return BROADCAST_THROTTLE_RETRY_DELAYS_MS[attempt - 1] ?? null;
+  }
+
   if (isMaxApiTimeoutError(error)) {
     return BROADCAST_TIMEOUT_RETRY_DELAYS_MS[attempt - 1] ?? null;
   }

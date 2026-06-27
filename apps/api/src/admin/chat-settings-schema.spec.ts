@@ -292,6 +292,53 @@ describe('broadcast request schema normalization', () => {
     }
   });
 
+  it('canonicalizes calendar slots and preserves handoff conflict replacement flag', () => {
+    const sendPayload = sendBroadcastRequestSchema.parse({
+      text: 'Анонс',
+      scheduleMode: 'calendar',
+      scheduleTimezone: 'Europe/Moscow',
+      scheduledSlots: [
+        '2026-03-03T12:00:00.000Z',
+        '2026-03-03T12:00:00Z',
+        '2026-03-03T13:00:00.000Z',
+      ],
+    });
+    const handoffPayload = broadcastHandoffRequestSchema.parse({
+      scheduleMode: 'calendar',
+      scheduleTimezone: 'Europe/Moscow',
+      scheduledSlots: [
+        '2026-03-03T12:00:00Z',
+        '2026-03-03T12:00:00.000Z',
+      ],
+      replaceConflictingSlots: true,
+    });
+
+    expect(sendPayload.scheduledSlots).toEqual([
+      '2026-03-03T12:00:00.000Z',
+      '2026-03-03T13:00:00.000Z',
+    ]);
+    expect(handoffPayload.scheduledSlots).toEqual(['2026-03-03T12:00:00.000Z']);
+    expect(handoffPayload.replaceConflictingSlots).toBe(true);
+  });
+
+  it('rejects invalid broadcast schedule timezones', () => {
+    for (const schema of [sendBroadcastRequestSchema, broadcastHandoffRequestSchema]) {
+      const result = schema.safeParse({
+        text: 'Анонс',
+        scheduleMode: 'calendar',
+        scheduleTimezone: 'Mars/Olympus',
+        scheduledSlots: ['2026-03-03T12:00:00.000Z'],
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues.map((issue) => issue.path.join('.'))).toContain(
+          'scheduleTimezone',
+        );
+      }
+    }
+  });
+
   it('uses shared validation for selected audience and calendar slots', () => {
     for (const schema of [sendBroadcastRequestSchema, broadcastHandoffRequestSchema]) {
       const result = schema.safeParse({

@@ -608,6 +608,14 @@ function isValidIanaTimeZone(value: string): boolean {
   }
 }
 
+const broadcastScheduleTimezoneSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .default('Europe/Moscow')
+  .refine(isValidIanaTimeZone, 'Некорректный часовой пояс.');
+
 const AUTO_MUTE_DURATION_FIELD_KEYS = [
   'duplicateMuteDurationHours',
   'linkMuteDurationHours',
@@ -2271,7 +2279,7 @@ export const sendBroadcastRequestSchema = z
     mediaMimeType: z.string().trim().max(128).default(''),
     mediaFileName: z.string().trim().max(128).default(''),
     scheduleMode: broadcastScheduleModeSchema.default('legacy'),
-    scheduleTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
+    scheduleTimezone: broadcastScheduleTimezoneSchema,
     scheduledSlots: z.array(z.string().datetime()).max(MAX_BROADCAST_CALENDAR_SLOTS).default([]),
     replaceConflictingSlots: z.boolean().default(false),
     sendAt: z.string().datetime().nullable().default(null),
@@ -2409,8 +2417,9 @@ export const broadcastHandoffRequestSchema = z
     buttonUrl: botButtonUrlSchema,
     buttonText: botButtonTextSchema,
     scheduleMode: broadcastScheduleModeSchema.default('legacy'),
-    scheduleTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
+    scheduleTimezone: broadcastScheduleTimezoneSchema,
     scheduledSlots: z.array(z.string().datetime()).max(MAX_BROADCAST_CALENDAR_SLOTS).default([]),
+    replaceConflictingSlots: z.boolean().default(false),
     sendAt: z.string().datetime().nullable().default(null),
     cycleEnabled: z.boolean().default(false),
     cycleEveryHours: z
@@ -2466,8 +2475,9 @@ export const broadcastHandoffStateSchema = z.object({
   buttonUrl: botButtonUrlSchema,
   buttonText: botButtonTextSchema,
   scheduleMode: broadcastScheduleModeSchema.default('legacy'),
-  scheduleTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
+  scheduleTimezone: broadcastScheduleTimezoneSchema,
   scheduledSlots: z.array(z.string().datetime()).default([]),
+  replaceConflictingSlots: z.boolean().default(false),
   sendAt: z.string().datetime().nullable().default(null),
   cycleEnabled: z.boolean(),
   cycleEveryHours: z.number().int().min(1),
@@ -2497,7 +2507,7 @@ export const sendBroadcastResultSchema = z.object({
   sentChatOverflowCount: z.number().int().min(0).default(0),
   failedChatOverflowCount: z.number().int().min(0).default(0),
   scheduleMode: broadcastScheduleModeSchema.default('legacy'),
-  scheduleTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
+  scheduleTimezone: broadcastScheduleTimezoneSchema,
   scheduledSlots: z.array(z.string().datetime()).default([]),
   sendAt: z.string().datetime().nullable(),
   nextSendAt: z.string().datetime().nullable().default(null),
@@ -2554,7 +2564,7 @@ export const managedBroadcastSummarySchema = z.object({
   buttons: z.array(broadcastLinkButtonSchema).max(MAX_BROADCAST_LINK_BUTTONS).default([]),
   buttonEnabled: z.boolean(),
   scheduleMode: broadcastScheduleModeSchema.default('legacy'),
-  scheduleTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
+  scheduleTimezone: broadcastScheduleTimezoneSchema,
   scheduledSlots: z.array(z.string().datetime()).default([]),
   nextSendAt: z.string().datetime().nullable(),
   cycleEnabled: z.boolean(),
@@ -2599,7 +2609,7 @@ export const managedBroadcastDetailsSchema = z.object({
   mediaMimeType: z.string().default(''),
   mediaFileName: z.string().default(''),
   scheduleMode: broadcastScheduleModeSchema.default('legacy'),
-  scheduleTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
+  scheduleTimezone: broadcastScheduleTimezoneSchema,
   scheduledSlots: z.array(z.string().datetime()).default([]),
   nextSendAt: z.string().datetime().nullable(),
   cycleEnabled: z.boolean(),
