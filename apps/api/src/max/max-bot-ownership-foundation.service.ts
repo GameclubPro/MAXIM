@@ -113,7 +113,16 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
     }, this.repairIntervalMs);
     this.timer.unref?.();
 
-    await this.sync('startup');
+    setTimeout(() => {
+      void this.sync('startup').catch((error: unknown) => {
+        this.logger.error(
+          {
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to run startup bot ownership foundation sync',
+        );
+      });
+    }, 1_000).unref?.();
   }
 
   async onModuleDestroy(): Promise<void> {

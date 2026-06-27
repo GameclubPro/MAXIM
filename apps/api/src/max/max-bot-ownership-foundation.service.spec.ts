@@ -238,6 +238,13 @@ function createConfigMock() {
   };
 }
 
+async function runDeferredStartupSync() {
+  await jest.advanceTimersByTimeAsync(1_000);
+  for (let index = 0; index < 20; index += 1) {
+    await Promise.resolve();
+  }
+}
+
 describe('MaxBotOwnershipFoundationService', () => {
   const originalAppRole = process.env.APP_ROLE;
 
@@ -362,6 +369,9 @@ describe('MaxBotOwnershipFoundationService', () => {
     );
 
     await service.onModuleInit();
+    expect(prisma.chat.update).not.toHaveBeenCalled();
+
+    await runDeferredStartupSync();
     const snapshot = await service.getSnapshot(0);
 
     expect(prisma.chat.update).toHaveBeenCalledWith(
@@ -478,6 +488,7 @@ describe('MaxBotOwnershipFoundationService', () => {
     );
 
     await service.onModuleInit();
+    await runDeferredStartupSync();
     const snapshot = await service.getSnapshot(0);
 
     expect(snapshot.anomalies).toMatchObject({
@@ -552,6 +563,7 @@ describe('MaxBotOwnershipFoundationService', () => {
     );
 
     await service.onModuleInit();
+    await runDeferredStartupSync();
     const snapshot = await service.getSnapshot(0);
 
     expect(snapshot.entities.total).toMatchObject({
@@ -634,6 +646,7 @@ describe('MaxBotOwnershipFoundationService', () => {
     );
 
     await service.onModuleInit();
+    await runDeferredStartupSync();
 
     expect(prisma.chat.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -727,6 +740,7 @@ describe('MaxBotOwnershipFoundationService', () => {
     );
 
     await service.onModuleInit();
+    await runDeferredStartupSync();
 
     expect(prisma.chat.update).not.toHaveBeenCalledWith(
       expect.objectContaining({

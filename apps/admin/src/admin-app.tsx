@@ -41,6 +41,7 @@ type ModerationItem = {
   text: string;
   domains: string[];
   photoUrls: string[];
+  linkUrls: string[];
   originalUrl: string | null;
   reasons: string[];
   checks: Array<{ label: string; state: 'passed' | 'warning' | 'blocked' }>;
@@ -578,15 +579,35 @@ function PublicationPreview({ item }: { item: ModerationItem }) {
           <span />
           <strong>{item.entity}</strong>
         </div>
-        {item.photoUrls[0] && (
-          <img className="message-preview__image" src={item.photoUrls[0]} alt="" loading="lazy" />
-        )}
         <p>{item.text || 'Текст отсутствует, проверь вложения и ссылку источника.'}</p>
       </article>
 
-      {(item.photoUrls.length > 0 || item.originalUrl) && (
+      {item.photoUrls.length > 0 && (
+        <div className="media-grid" aria-label="Фото публикации">
+          {item.photoUrls.map((photoUrl, index) => (
+            <a
+              className="media-tile"
+              href={photoUrl}
+              key={`${photoUrl}-${index}`}
+              target="_blank"
+              rel="noreferrer"
+              aria-label={`Открыть фото ${index + 1}`}
+            >
+              <img src={photoUrl} alt="" loading="lazy" />
+              <span>{index + 1}</span>
+            </a>
+          ))}
+        </div>
+      )}
+
+      {(item.photoUrls.length > 0 || item.originalUrl || item.linkUrls.length > 0) && (
         <div className="attachment-preview">
           {item.photoUrls.length > 0 && <span>Фото: {item.photoUrls.length}</span>}
+          {item.linkUrls.map((linkUrl) => (
+            <a href={linkUrl} key={linkUrl} target="_blank" rel="noreferrer">
+              {formatLinkLabel(linkUrl)}
+            </a>
+          ))}
           {item.originalUrl && (
             <a href={item.originalUrl} target="_blank" rel="noreferrer">
               Открыть источник
@@ -714,6 +735,7 @@ function mapQueueItem(item: SafetyDeskQueueItem): ModerationItem {
     text: item.text,
     domains: item.domains,
     photoUrls: item.photoUrls,
+    linkUrls: item.linkUrls,
     originalUrl: item.originalUrl,
     reasons: item.reasons,
     checks: item.checks.map((check) => ({
@@ -768,6 +790,15 @@ function formatDateTime(date: Date): string {
 
 function formatTime(date: Date): string {
   return date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatLinkLabel(linkUrl: string): string {
+  try {
+    const parsed = new URL(linkUrl);
+    return parsed.hostname || linkUrl;
+  } catch {
+    return linkUrl;
+  }
 }
 
 function auditActionLabel(action: string): string {
