@@ -302,7 +302,8 @@ button:disabled {
 
 .queue-panel,
 .review-card,
-.policy-card {
+.policy-card,
+.empty-card {
   border: 1px solid rgba(23, 32, 28, 0.1);
   border-radius: 8px;
   background: #ffffff;
@@ -487,16 +488,105 @@ button:disabled {
   font-weight: 800;
 }
 
-.content-preview {
+.publication-preview {
+  display: grid;
+  gap: 14px;
   padding: 16px;
-  border: 1px solid rgba(23, 32, 28, 0.1);
+  border: 1px solid rgba(21, 122, 98, 0.22);
   border-radius: 8px;
-  background: #fbfcfa;
+  background: #f7fbf7;
 }
 
-.content-preview p {
+.publication-preview__head,
+.publication-preview__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.publication-preview__head h3 {
+  margin: 4px 0 0;
+  font-size: 20px;
+}
+
+.publication-targets {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.info-cell {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.info-cell span {
+  color: #65736c;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.info-cell strong {
+  overflow-wrap: anywhere;
+  color: #17201c;
+  font-size: 13px;
+}
+
+.message-preview {
+  overflow: hidden;
   margin: 0;
+  border: 1px solid rgba(23, 32, 28, 0.12);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.message-preview__chrome {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 12px;
+  border-bottom: 1px solid rgba(23, 32, 28, 0.08);
+  background: #eef2ee;
+}
+
+.message-preview__chrome span {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: #157a62;
+}
+
+.message-preview__chrome strong {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-preview p {
+  margin: 0;
+  padding: 18px;
+  color: #17201c;
+  font-size: 17px;
   line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.publication-preview__foot {
+  color: #65736c;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.publication-preview__foot strong {
+  color: #157a62;
 }
 
 .detail-block {
@@ -564,6 +654,78 @@ button:disabled {
   padding-bottom: 24px;
 }
 
+.audit-section,
+.empty-card {
+  display: grid;
+  gap: 14px;
+}
+
+.empty-card {
+  padding: 20px;
+}
+
+.empty-card h2,
+.empty-card p {
+  margin: 0;
+}
+
+.empty-card p {
+  color: #65736c;
+}
+
+.notice-bar {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  border: 1px solid rgba(21, 122, 98, 0.18);
+  border-radius: 8px;
+  padding: 0 14px;
+  background: #eaf6ef;
+  color: #0b5d4a;
+  font-weight: 850;
+}
+
+.audit-list {
+  display: grid;
+  border: 1px solid rgba(23, 32, 28, 0.1);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.audit-row {
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: 72px 160px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px;
+  border-bottom: 1px solid rgba(23, 32, 28, 0.08);
+}
+
+.audit-row:last-child {
+  border-bottom: 0;
+}
+
+.audit-row span {
+  color: #65736c;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.audit-row strong {
+  color: #17201c;
+}
+
+.audit-row em {
+  min-width: 0;
+  overflow: hidden;
+  color: #394841;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .section-heading h2 {
   margin-top: 4px;
   font-size: 24px;
@@ -601,7 +763,8 @@ button:disabled {
   }
 
   .metrics,
-  .policy-grid {
+  .policy-grid,
+  .publication-targets {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -618,7 +781,9 @@ button:disabled {
 
   .topbar,
   .queue-toolbar,
-  .review-actions {
+  .review-actions,
+  .publication-preview__head,
+  .publication-preview__foot {
     align-items: stretch;
     flex-direction: column;
   }
@@ -635,8 +800,15 @@ button:disabled {
   }
 
   .metrics,
-  .policy-grid {
+  .policy-grid,
+  .publication-targets {
     grid-template-columns: 1fr;
+  }
+
+  .audit-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+    padding: 12px 14px;
   }
 
   .queue-item {

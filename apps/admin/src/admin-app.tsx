@@ -15,7 +15,7 @@ import {
   Xmark,
   XmarkCircle,
 } from 'iconoir-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 type RiskLevel = 'low' | 'medium' | 'high' | 'blocked';
 type QueueStatus = 'review' | 'approved' | 'rejected' | 'blocked';
@@ -36,9 +36,19 @@ type ModerationItem = {
   checks: Array<{ label: string; state: 'passed' | 'warning' | 'blocked' }>;
 };
 
-const accessCode = import.meta.env.VITE_ADMIN_ACCESS_CODE || 'maxim-local';
+type AuditEntry = {
+  id: string;
+  itemId: string;
+  title: string;
+  action: 'approved' | 'rejected' | 'rechecked' | 'refreshed' | 'exported';
+  createdAt: string;
+};
 
-const items: ModerationItem[] = [
+const accessCode = import.meta.env.VITE_ADMIN_ACCESS_CODE || 'maxim-local';
+const queueStorageKey = 'maxim-admin-review-queue-v2';
+const auditStorageKey = 'maxim-admin-audit-v2';
+
+const seedItems: ModerationItem[] = [
   {
     id: 'br-1048',
     title: 'Публикация с внешней ссылкой',
@@ -123,11 +133,22 @@ export function AdminApp() {
   const [code, setCode] = useState('');
   const [filter, setFilter] = useState<'all' | QueueStatus>('all');
   const [query, setQuery] = useState('');
-  const [selectedId, setSelectedId] = useState(items[0]?.id ?? '');
+  const [queueItems, setQueueItems] = useState<ModerationItem[]>(readStoredQueue);
+  const [auditEntries, setAuditEntries] = useState<AuditEntry[]>(readStoredAudit);
+  const [selectedId, setSelectedId] = useState(seedItems[0]?.id ?? '');
+  const [notice, setNotice] = useState('Готово к проверке');
+
+  useEffect(() => {
+    localStorage.setItem(queueStorageKey, JSON.stringify(queueItems));
+  }, [queueItems]);
+
+  useEffect(() => {
+    localStorage.setItem(auditStorageKey, JSON.stringify(auditEntries));
+  }, [auditEntries]);
 
   const visibleItems = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
-    return items.filter((item) => {
+    return queueItems.filter((item) => {
       const matchesStatus = filter === 'all' || item.status === filter;
       const matchesQuery =
         normalizedQuery.length === 0 ||
@@ -138,15 +159,147 @@ export function AdminApp() {
 
       return matchesStatus && matchesQuery;
     });
-  }, [filter, query]);
+  }, [filter, query, queueItems]);
 
   const selectedItem = visibleItems.find((item) => item.id === selectedId) ?? visibleItems[0];
+  const metrics = useMemo(
+    () => ({
+      review: queueItems.filter((item) => item.status === 'review').length,
+      approved: queueItems.filter((item) => item.status === 'approved').length,
+      blocked: queueItems.filter((item) => item.status === 'blocked' || item.status === 'rejected')
+        .length,
+      servicePosts: 0,
+    }),
+    [queueItems],
+  );
 
   function unlock() {
     if (code.trim() === accessCode) {
       sessionStorage.setItem('maxim-admin', '1');
       setUnlocked(true);
     }
+  }
+
+  function addAudit(item: ModerationItem, action: AuditEntry['action']) {
+    const entry: AuditEntry = {
+      id: `${item.id}-${Date.now()}`,
+      itemId: item.id,
+      title: item.title,
+      action,
+      createdAt: formatTime(new Date()),
+    };
+    setAuditEntries((current) => [entry, ...current].slice(0, 12));
+  }
+
+  function updateItem(
+    itemId: string,
+    updater: (item: ModerationItem) => ModerationItem,
+    action: AuditEntry['action'],
+    message: string,
+  ) {
+    setQueueItems((current) =>
+      current.map((item) => {
+        if (item.id !== itemId) {
+          return item;
+        }
+
+        const nextItem = updater(item);
+        addAudit(nextItem, action);
+        setNotice(message);
+        return nextItem;
+      }),
+    );
+  }
+
+  function approveItem(itemId: string) {
+    updateItem(
+      itemId,
+      (item) => ({
+        ...item,
+        status: 'approved',
+        risk: 'low',
+        scheduledAt: `Одобрено ${formatTime(new Date())}`,
+        reasons: ['Материал одобрен владельцем', ...withoutDecisionReasons(item.reasons)],
+        checks: item.checks.map((check) => ({ ...check, state: 'passed' })),
+      }),
+      'approved',
+      'Материал одобрен и снят с ручной проверки',
+    );
+  }
+
+  function rejectItem(itemId: string) {
+    updateItem(
+      itemId,
+      (item) => ({
+        ...item,
+        status: 'rejected',
+        risk: 'high',
+        scheduledAt: `Отклонено ${formatTime(new Date())}`,
+        reasons: ['Материал отклонен владельцем', ...withoutDecisionReasons(item.reasons)],
+      }),
+      'rejected',
+      'Материал отклонен, в MAX ничего не отправлено',
+    );
+  }
+
+  function recheckItem(itemId: string) {
+    updateItem(
+      itemId,
+      (item) => ({
+        ...item,
+        status: 'review',
+        risk: item.domains.length > 0 ? 'medium' : 'low',
+        scheduledAt: `Повторная проверка ${formatTime(new Date())}`,
+        reasons: ['Запрошена повторная проверка', ...withoutDecisionReasons(item.reasons)],
+        checks: item.checks.map((check) =>
+          check.state === 'blocked' ? { ...check, state: 'warning' } : check,
+        ),
+      }),
+      'rechecked',
+      'Материал возвращен на повторную проверку',
+    );
+  }
+
+  function refreshQueue() {
+    setQueueItems(readStoredQueue());
+    setAuditEntries((current) => [
+      {
+        id: `refresh-${Date.now()}`,
+        itemId: 'queue',
+        title: 'Очередь проверки',
+        action: 'refreshed',
+        createdAt: formatTime(new Date()),
+      },
+      ...current,
+    ]);
+    setNotice('Очередь обновлена из сохраненного состояния');
+  }
+
+  function exportForMax() {
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      summary: metrics,
+      queue: queueItems,
+      audit: auditEntries,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `maxim-safety-desk-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+    setAuditEntries((current) => [
+      {
+        id: `export-${Date.now()}`,
+        itemId: 'queue',
+        title: 'Экспорт для MAX',
+        action: 'exported',
+        createdAt: formatTime(new Date()),
+      },
+      ...current,
+    ]);
+    setNotice('Экспорт подготовлен и скачан');
   }
 
   if (!unlocked) {
@@ -225,11 +378,11 @@ export function AdminApp() {
             <h1>Модерация автопостинга</h1>
           </div>
           <div className="topbar__actions">
-            <button className="ghost-action" type="button">
+            <button className="ghost-action" type="button" onClick={refreshQueue}>
               <Refresh width={18} height={18} />
               Обновить
             </button>
-            <button className="primary-action compact" type="button">
+            <button className="primary-action compact" type="button" onClick={exportForMax}>
               <Check width={18} height={18} />
               Экспорт для MAX
             </button>
@@ -237,11 +390,19 @@ export function AdminApp() {
         </header>
 
         <section className="metrics" aria-label="Сводка">
-          <Metric label="Ожидают" value="1" tone="warning" />
-          <Metric label="Одобрено сегодня" value="18" tone="success" />
-          <Metric label="Заблокировано" value="1" tone="danger" />
-          <Metric label="Служебных постов в чатах" value="0" tone="neutral" />
+          <Metric label="Ожидают" value={String(metrics.review)} tone="warning" />
+          <Metric label="Одобрено" value={String(metrics.approved)} tone="success" />
+          <Metric label="Остановлено" value={String(metrics.blocked)} tone="danger" />
+          <Metric
+            label="Служебных постов в чатах"
+            value={String(metrics.servicePosts)}
+            tone="neutral"
+          />
         </section>
+
+        <div className="notice-bar" role="status">
+          {notice}
+        </div>
 
         <section className="queue-layout" id="queue">
           <div className="queue-panel">
@@ -295,7 +456,19 @@ export function AdminApp() {
             </div>
           </div>
 
-          {selectedItem ? <ReviewDetails item={selectedItem} /> : null}
+          {selectedItem ? (
+            <ReviewDetails
+              item={selectedItem}
+              onApprove={approveItem}
+              onReject={rejectItem}
+              onRecheck={recheckItem}
+            />
+          ) : (
+            <article className="empty-card">
+              <h2>Очередь пуста</h2>
+              <p>Под выбранный фильтр сейчас нет материалов.</p>
+            </article>
+          )}
         </section>
 
         <section className="policy-section" id="policy">
@@ -311,6 +484,30 @@ export function AdminApp() {
                 <p>{step.body}</p>
               </article>
             ))}
+          </div>
+        </section>
+
+        <section className="audit-section" id="audit">
+          <div className="section-heading">
+            <p className="eyebrow">decision log</p>
+            <h2>Журнал решений</h2>
+          </div>
+          <div className="audit-list">
+            {auditEntries.length > 0 ? (
+              auditEntries.map((entry) => (
+                <div className="audit-row" key={entry.id}>
+                  <span>{entry.createdAt}</span>
+                  <strong>{auditActionLabel(entry.action)}</strong>
+                  <em>{entry.title}</em>
+                </div>
+              ))
+            ) : (
+              <div className="audit-row">
+                <span>{formatTime(new Date())}</span>
+                <strong>Ожидание</strong>
+                <em>Решений пока нет</em>
+              </div>
+            )}
           </div>
         </section>
       </section>
@@ -335,7 +532,17 @@ function Metric({
   );
 }
 
-function ReviewDetails({ item }: { item: ModerationItem }) {
+function ReviewDetails({
+  item,
+  onApprove,
+  onReject,
+  onRecheck,
+}: {
+  item: ModerationItem;
+  onApprove: (itemId: string) => void;
+  onReject: (itemId: string) => void;
+  onRecheck: (itemId: string) => void;
+}) {
   return (
     <article className="review-card" aria-label="Детали проверки">
       <header className="review-card__header">
@@ -357,9 +564,7 @@ function ReviewDetails({ item }: { item: ModerationItem }) {
         </span>
       </div>
 
-      <div className="content-preview">
-        <p>{item.text}</p>
-      </div>
+      <PublicationPreview item={item} />
 
       <section className="detail-block">
         <h3>Причины проверки</h3>
@@ -400,20 +605,68 @@ function ReviewDetails({ item }: { item: ModerationItem }) {
       </section>
 
       <footer className="review-actions">
-        <button className="secondary-action" type="button">
+        <button className="secondary-action" type="button" onClick={() => onReject(item.id)}>
           <Xmark width={18} height={18} />
           Отклонить
         </button>
-        <button className="ghost-action" type="button">
+        <button className="ghost-action" type="button" onClick={() => onRecheck(item.id)}>
           <Refresh width={18} height={18} />
           Проверить снова
         </button>
-        <button className="primary-action" type="button" disabled={item.status === 'blocked'}>
+        <button
+          className="primary-action"
+          type="button"
+          disabled={item.status === 'approved'}
+          onClick={() => onApprove(item.id)}
+        >
           <Check width={18} height={18} />
           Одобрить
         </button>
       </footer>
     </article>
+  );
+}
+
+function PublicationPreview({ item }: { item: ModerationItem }) {
+  return (
+    <section className="publication-preview" aria-labelledby="publication-preview-title">
+      <div className="publication-preview__head">
+        <div>
+          <p className="eyebrow">publication preview</p>
+          <h3 id="publication-preview-title">Что будет опубликовано</h3>
+        </div>
+        <StatusBadge status={item.status} />
+      </div>
+
+      <div className="publication-targets" aria-label="Сведения о публикации">
+        <InfoCell label="Куда" value={item.entity} />
+        <InfoCell label="Источник" value={sourceLabel(item.source)} />
+        <InfoCell label="Автор" value={item.author} />
+        <InfoCell label="Время" value={item.scheduledAt} />
+      </div>
+
+      <article className="message-preview" aria-label="Текст публикации">
+        <div className="message-preview__chrome">
+          <span />
+          <strong>{item.entity}</strong>
+        </div>
+        <p>{item.text}</p>
+      </article>
+
+      <div className="publication-preview__foot">
+        <span>Перед одобрением проверь текст, цель публикации и домены.</span>
+        <strong>{item.domains.length > 0 ? `${item.domains.length} домена` : 'Ссылок нет'}</strong>
+      </div>
+    </section>
+  );
+}
+
+function InfoCell({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="info-cell">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
   );
 }
 
@@ -449,4 +702,57 @@ function sourceLabel(source: QueueSource) {
   }
 
   return 'Ручная публикация';
+}
+
+function readStoredQueue(): ModerationItem[] {
+  const stored = readJson<ModerationItem[]>(queueStorageKey);
+
+  if (!stored || !Array.isArray(stored)) {
+    return seedItems;
+  }
+
+  const knownIds = new Set(seedItems.map((item) => item.id));
+  const validStored = stored.filter((item) => knownIds.has(item.id));
+  const storedIds = new Set(validStored.map((item) => item.id));
+  const missingSeedItems = seedItems.filter((item) => !storedIds.has(item.id));
+  return [...validStored, ...missingSeedItems];
+}
+
+function readStoredAudit(): AuditEntry[] {
+  const stored = readJson<AuditEntry[]>(auditStorageKey);
+  return Array.isArray(stored) ? stored.slice(0, 12) : [];
+}
+
+function readJson<T>(key: string): T | null {
+  try {
+    const value = localStorage.getItem(key);
+    return value ? (JSON.parse(value) as T) : null;
+  } catch {
+    return null;
+  }
+}
+
+function formatTime(date: Date): string {
+  return date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+}
+
+function withoutDecisionReasons(reasons: string[]): string[] {
+  return reasons.filter(
+    (reason) =>
+      !reason.startsWith('Материал одобрен') &&
+      !reason.startsWith('Материал отклонен') &&
+      !reason.startsWith('Запрошена повторная проверка'),
+  );
+}
+
+function auditActionLabel(action: AuditEntry['action']): string {
+  const labels: Record<AuditEntry['action'], string> = {
+    approved: 'Одобрено',
+    rejected: 'Отклонено',
+    rechecked: 'Повторная проверка',
+    refreshed: 'Обновлено',
+    exported: 'Экспорт',
+  };
+
+  return labels[action];
 }
