@@ -16840,7 +16840,7 @@ describe('ModerationService', () => {
       });
     });
 
-    it('surfaces terminal required subscription lookup issues in the membership result', async () => {
+    it('excludes terminal required subscription lookup issues from missing targets', async () => {
       const prisma = createPrismaForRequiredSubscription();
       const membershipLookupService = {
         getMembership: jest.fn().mockResolvedValue(null),
@@ -16885,7 +16885,7 @@ describe('ModerationService', () => {
           }
         ).resolveRequiredSubscriptionMembership('chat-1', 'user-1', ['channel-1']),
       ).resolves.toEqual({
-        missingChannelIds: ['channel-1'],
+        missingChannelIds: [],
         unresolvedChannelIds: ['channel-1'],
         terminalChannelIds: ['channel-1'],
       });
@@ -18754,7 +18754,7 @@ describe('ModerationService', () => {
       expect(prisma.globalSpammer.upsert).not.toHaveBeenCalled();
     });
 
-    it('annotates unresolved required channels when terminal MAX membership errors persist', async () => {
+    it('fails open for terminal required subscription membership errors', async () => {
       const prisma = createPrismaForRequiredSubscription({
         requiredSubscriptionEnabled: true,
         requiredSubscriptionChannelIds: ['channel-1'],
@@ -18798,45 +18798,11 @@ describe('ModerationService', () => {
       await service.handleUpdate(createUpdate());
 
       expect(maxClient.hasChatMember).toHaveBeenCalledTimes(2);
-      expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
-      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
-      expect(prisma.violation.create).toHaveBeenCalledTimes(1);
-      expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
-      expect(prisma.moderationEvent.create.mock.calls).toEqual(
-        expect.arrayContaining([
-          [
-            expect.objectContaining({
-              data: expect.objectContaining({
-                ruleCode: 'REQUIRED_SUBSCRIPTION_DELETE',
-                metadata: expect.objectContaining({
-                  channelIds: ['channel-1'],
-                  requiredChannelIds: ['channel-1'],
-                  missingChannelIds: ['channel-1'],
-                  unresolvedChannelIds: ['channel-1'],
-                  terminalChannelIds: [],
-                  requiredSubscriptionConservativeEnforcement: true,
-                }),
-              }),
-            }),
-          ],
-          [
-            expect.objectContaining({
-              data: expect.objectContaining({
-                ruleCode: 'REQUIRED_SUBSCRIPTION',
-                metadata: expect.objectContaining({
-                  channelIds: ['channel-1'],
-                  requiredChannelIds: ['channel-1'],
-                  missingChannelIds: ['channel-1'],
-                  unresolvedChannelIds: ['channel-1'],
-                  terminalChannelIds: [],
-                  requiredSubscriptionConservativeEnforcement: true,
-                }),
-              }),
-            }),
-          ],
-        ]),
-      );
-      expect(ruleEngine.detect).not.toHaveBeenCalled();
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
+      expect(prisma.violation.create).not.toHaveBeenCalled();
+      expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+      expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
     });
 
     it('enforces required subscription when the system is under pressure', async () => {

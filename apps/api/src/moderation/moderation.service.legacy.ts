@@ -362,6 +362,12 @@ type ManualModerationCommandBridge = Pick<
 type RequiredSubscriptionMembershipResolution = {
   membership: boolean | null;
   fresh: boolean;
+  terminal: boolean;
+};
+
+type RequiredSubscriptionMembershipLookupResult = {
+  membership: boolean | null;
+  terminal: boolean;
 };
 
 type RequiredSubscriptionMembershipResult = {
@@ -385,7 +391,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   >();
   private readonly requiredSubscriptionMembershipInFlight = new Map<
     string,
-    Promise<boolean | null>
+    Promise<RequiredSubscriptionMembershipLookupResult>
   >();
   private readonly requiredSubscriptionMembershipBackoffUntilMs = new Map<string, number>();
   private readonly requiredSubscriptionUnresolvedLogAtMs = new Map<string, number>();
@@ -8872,6 +8878,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const membershipsByChannelId = new Map(
       membershipChecks.map((item) => [item.channelId, item.resolution.membership] as const),
     );
+    const terminalChannelIds = new Set(
+      membershipChecks
+        .filter((item) => item.resolution.terminal)
+        .map((item) => item.channelId),
+    );
     const unconfirmedChannelIds = membershipChecks
       .filter((item) => item.resolution.membership !== true && !item.resolution.fresh)
       .map((item) => item.channelId);
@@ -8881,38 +8892,67 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         this.requiredSubscriptionLookupConcurrency,
         async (channelId) => ({
           channelId,
-          membership: await this.getRequiredSubscriptionMembership(channelId, userId, {
+          resolution: await this.getRequiredSubscriptionMembershipResolution(channelId, userId, {
             forceFresh: true,
             allowStaleOnError: false,
           }),
         }),
       );
       for (const retriedCheck of retriedChecks) {
-        membershipsByChannelId.set(retriedCheck.channelId, retriedCheck.membership);
+        membershipsByChannelId.set(retriedCheck.channelId, retriedCheck.resolution.membership);
+        if (retriedCheck.resolution.terminal) {
+          terminalChannelIds.add(retriedCheck.channelId);
+        } else {
+          terminalChannelIds.delete(retriedCheck.channelId);
+        }
       }
     }
 
     const unresolvedChannelIds = requiredChannelIds.filter(
       (channelId) => membershipsByChannelId.get(channelId) === null,
     );
-    const terminalChannelIds = this.resolveRequiredSubscriptionTerminalChannelIds(
+    for (const channelId of this.resolveRequiredSubscriptionTerminalChannelIds(
       unresolvedChannelIds,
+    )) {
+      terminalChannelIds.add(channelId);
+    }
+    const unresolvedNonTerminalChannelIds = unresolvedChannelIds.filter(
+      (channelId) => !terminalChannelIds.has(channelId),
     );
-    if (unresolvedChannelIds.length > 0) {
+    if (unresolvedNonTerminalChannelIds.length > 0) {
       this.logRequiredSubscriptionUnresolved({
         chatId,
         userId,
-        unresolvedChannelIds,
-        terminalChannelIds,
+        unresolvedChannelIds: unresolvedNonTerminalChannelIds,
+        terminalChannelIds: [...terminalChannelIds],
         checkedChannelCount: requiredChannelIds.length,
+        enforcement: 'conservative',
+      });
+    }
+    const unresolvedTerminalChannelIds = unresolvedChannelIds.filter((channelId) =>
+      terminalChannelIds.has(channelId),
+    );
+    if (unresolvedTerminalChannelIds.length > 0) {
+      this.logRequiredSubscriptionUnresolved({
+        chatId,
+        userId,
+        unresolvedChannelIds: unresolvedTerminalChannelIds,
+        terminalChannelIds: [...terminalChannelIds],
+        checkedChannelCount: requiredChannelIds.length,
+        enforcement: 'fail_open',
       });
     }
 
     const missingChannelIds = requiredChannelIds.filter(
-      (channelId) => membershipsByChannelId.get(channelId) !== true,
+      (channelId) =>
+        membershipsByChannelId.get(channelId) !== true && !terminalChannelIds.has(channelId),
     );
 
-    return { missingChannelIds, unresolvedChannelIds, terminalChannelIds };
+    return {
+      missingChannelIds,
+      unresolvedChannelIds,
+      terminalChannelIds: [...terminalChannelIds],
+    };
   }
 
   private resolveRequiredSubscriptionTerminalChannelIds(
@@ -8964,6 +9004,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     unresolvedChannelIds: string[];
     terminalChannelIds: string[];
     checkedChannelCount: number;
+    enforcement: 'conservative' | 'fail_open';
   }): void {
     const cacheKey = [
       params.chatId,
@@ -8985,7 +9026,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         terminalChannelIds: params.terminalChannelIds,
         checkedChannelCount: params.checkedChannelCount,
       },
-      'Required subscription checks remained unresolved after strict retry; enforcing conservatively',
+      params.enforcement === 'conservative'
+        ? 'Required subscription checks remained unresolved after strict retry; enforcing conservatively'
+        : 'Required subscription checks hit terminal target access errors after strict retry; failing open',
     );
   }
 
@@ -9031,6 +9074,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return {
         membership,
         fresh: options.forceFresh === true && membership !== null,
+        terminal:
+          membership === null &&
+          this.isRequiredSubscriptionTerminalLookupIssue(channelId),
       };
     }
 
@@ -9039,19 +9085,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const now = Date.now();
     const memoryCached = this.requiredSubscriptionMembershipCache.get(cacheKey);
     if (options.forceFresh) {
-      const membership = await this.performRequiredSubscriptionMembershipLookup(channelId, userId, {
+      const lookup = await this.performRequiredSubscriptionMembershipLookup(channelId, userId, {
         allowStaleOnError,
         cachedMembership: memoryCached?.isMember ?? null,
       });
       return {
-        membership,
-        fresh: membership !== null,
+        membership: lookup.membership,
+        fresh: lookup.membership !== null,
+        terminal: lookup.terminal,
       };
     }
     if (memoryCached && memoryCached.expiresAt > now) {
       return {
         membership: memoryCached.isMember,
         fresh: memoryCached.fresh,
+        terminal: false,
       };
     }
 
@@ -9065,6 +9113,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return {
         membership: true,
         fresh: false,
+        terminal: false,
       };
     }
     if (cached === '0') {
@@ -9076,6 +9125,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return {
         membership: false,
         fresh: false,
+        terminal: false,
       };
     }
 
@@ -9084,15 +9134,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return {
         membership: allowStaleOnError ? (memoryCached?.isMember ?? null) : null,
         fresh: false,
+        terminal: false,
       };
     }
 
     const inFlight = this.requiredSubscriptionMembershipInFlight.get(cacheKey);
     if (inFlight) {
-      const membership = await inFlight;
+      const lookup = await inFlight;
       return {
-        membership,
-        fresh: membership !== null,
+        membership: lookup.membership,
+        fresh: lookup.membership !== null,
+        terminal: lookup.terminal,
       };
     }
 
@@ -9113,7 +9165,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         });
         this.requiredSubscriptionMembershipBackoffUntilMs.delete(cacheKey);
         await this.redisCounter?.setStringWithTtl(cacheKey, isMember ? '1' : '0', ttlSec);
-        return isMember;
+        return {
+          membership: isMember,
+          terminal: false,
+        };
       } catch (error: unknown) {
         const transient = this.isTransientMaxApiLookupError(error);
         if (transient) {
@@ -9133,7 +9188,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           },
           'Failed to resolve required subscription membership',
         );
-        return allowStaleOnError ? (memoryCached?.isMember ?? null) : null;
+        return {
+          membership: allowStaleOnError ? (memoryCached?.isMember ?? null) : null,
+          terminal: !transient && this.isTerminalRequiredSubscriptionLookupError(error),
+        };
       }
     })();
     const trackedLookupPromise = lookupPromise.finally(() => {
@@ -9143,10 +9201,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
 
     this.requiredSubscriptionMembershipInFlight.set(cacheKey, trackedLookupPromise);
-    const membership = await trackedLookupPromise;
+    const lookup = await trackedLookupPromise;
     return {
-      membership,
-      fresh: membership !== null,
+      membership: lookup.membership,
+      fresh: lookup.membership !== null,
+      terminal: lookup.terminal,
     };
   }
 
@@ -9157,11 +9216,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       allowStaleOnError?: boolean;
       cachedMembership?: boolean | null;
     } = {},
-  ): Promise<boolean | null> {
+  ): Promise<RequiredSubscriptionMembershipLookupResult> {
     const normalizedChannelId = channelId.trim();
     const normalizedUserId = userId.trim();
     if (!normalizedChannelId || !normalizedUserId) {
-      return null;
+      return { membership: null, terminal: false };
     }
 
     const cacheKey = this.buildRequiredSubscriptionMembershipCacheKey(
@@ -9204,7 +9263,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
       this.requiredSubscriptionMembershipBackoffUntilMs.delete(cacheKey);
       await this.redisCounter?.setStringWithTtl(cacheKey, isMember ? '1' : '0', ttlSec);
-      return isMember;
+      return {
+        membership: isMember,
+        terminal: false,
+      };
     } catch (error: unknown) {
       const transient = this.isTransientMaxApiLookupError(error);
       if (transient) {
@@ -9224,8 +9286,44 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
         'Failed to resolve required subscription membership',
       );
-      return options.allowStaleOnError === true ? cachedMembership : null;
+      return {
+        membership: options.allowStaleOnError === true ? cachedMembership : null,
+        terminal: !transient && this.isTerminalRequiredSubscriptionLookupError(error),
+      };
     }
+  }
+
+  private isRequiredSubscriptionTerminalLookupIssue(channelId: string): boolean {
+    if (!this.membershipLookupService) {
+      return false;
+    }
+
+    const lookupService = this.membershipLookupService as Partial<
+      Pick<MaxMembershipLookupService, 'getLookupIssue'>
+    >;
+    if (typeof lookupService.getLookupIssue !== 'function') {
+      return false;
+    }
+
+    return (
+      lookupService.getLookupIssue(channelId, 'moderation_required_subscription')?.kind ===
+      'terminal'
+    );
+  }
+
+  private isTerminalRequiredSubscriptionLookupError(error: unknown): boolean {
+    const status = this.extractStatusCode(error);
+    if (status === 403 || status === 404) {
+      return true;
+    }
+
+    const code = this.extractMaxErrorCode(error);
+    if (code === 'chat.denied' || code === 'chat.not.found') {
+      return true;
+    }
+
+    const message = this.extractMaxErrorMessage(error);
+    return message.includes('bot is not a chat member') || message.includes('chat not found');
   }
 
   private async resolveRequiredSubscriptionChannels(
