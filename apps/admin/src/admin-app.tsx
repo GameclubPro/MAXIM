@@ -1,16 +1,11 @@
 import {
-  Calendar,
   Check,
   CheckCircle,
   Clock,
-  Eye,
-  Filter,
+  Download,
   Lock,
-  NavArrowRight,
   Refresh,
   Search,
-  SettingsProfiles,
-  ShieldCheck,
   WarningTriangle,
   Xmark,
   XmarkCircle,
@@ -71,25 +66,6 @@ const emptyMetrics: Metrics = {
   stopped: 0,
   servicePosts: 0,
 };
-
-const policySteps = [
-  {
-    title: 'Тихая предварительная проверка',
-    body: 'Контент проверяется на сервере до отправки в MAX. Если риск низкий, публикация проходит без дополнительного шага для администратора.',
-  },
-  {
-    title: 'Очередь только для ответственных',
-    body: 'Спорные материалы остаются в закрытой панели. В чатах не появляются служебные сообщения, отметки проверки или уведомления о задержке.',
-  },
-  {
-    title: 'Точный журнал решений',
-    body: 'Для каждой проверки фиксируются автор, цель, домены, вердикт, версия политики и хэш контента. Это можно показать поддержке MAX.',
-  },
-  {
-    title: 'Без принудительного добавления',
-    body: 'Бот публикует только в управляемые чаты и каналы, куда его добавил администратор. Пользователей он не приглашает и не добавляет.',
-  },
-];
 
 export function AdminApp() {
   const [unlocked, setUnlocked] = useState(() => sessionStorage.getItem('maxim-admin') === '1');
@@ -219,12 +195,7 @@ export function AdminApp() {
           <div className="auth-panel__mark">
             <Lock width={24} height={24} />
           </div>
-          <p className="eyebrow">MAXIM Safety Desk</p>
-          <h1 id="auth-title">Закрытая проверка автопостинга</h1>
-          <p className="auth-panel__copy">
-            Панель предназначена для владельца проекта и команды модерации. Проверка проходит до
-            публикации, поэтому обычные пользователи не видят служебных статусов.
-          </p>
+          <h1 id="auth-title">Safety Desk</h1>
           <label className="auth-field">
             <span>Код доступа</span>
             <input
@@ -241,8 +212,8 @@ export function AdminApp() {
             />
           </label>
           <button className="primary-action" type="button" onClick={unlock}>
-            <ShieldCheck width={18} height={18} />
-            Открыть панель
+            <Check width={18} height={18} />
+            Войти
           </button>
         </section>
       </main>
@@ -250,128 +221,89 @@ export function AdminApp() {
   }
 
   return (
-    <main className="admin-shell">
-      <aside className="sidebar" aria-label="Навигация">
-        <div className="brand">
-          <div className="brand__mark">
-            <ShieldCheck width={24} height={24} />
-          </div>
-          <div>
-            <strong>Safety Desk</strong>
-            <span>закрытая панель</span>
-          </div>
+    <main className="desk-shell">
+      <header className="desk-topbar">
+        <div className="desk-title">
+          <strong>Safety Desk</strong>
+          <span>{loading ? 'Обновляю...' : notice}</span>
         </div>
-        <nav className="nav-list">
-          <a className="nav-list__item is-active" href="#queue">
-            <Filter width={18} height={18} />
-            Очередь проверки
-          </a>
-          <a className="nav-list__item" href="#policy">
-            <SettingsProfiles width={18} height={18} />
-            Политика
-          </a>
-          <a className="nav-list__item" href="#audit">
-            <Clock width={18} height={18} />
-            Журнал
-          </a>
-        </nav>
-        <div className="sidebar__note">
-          <b>Правило UX</b>
-          <span>Если материал задержан, в MAX ничего не публикуется до решения.</span>
+        <div className="desk-metrics" aria-label="Сводка">
+          <Metric label="К проверке" value={String(metrics.review)} tone="warning" />
+          <Metric label="Ок" value={String(metrics.approved)} tone="success" />
+          <Metric label="Стоп" value={String(metrics.stopped)} tone="danger" />
+          <Metric label="Сервис" value={String(metrics.servicePosts)} tone="neutral" />
         </div>
-      </aside>
-
-      <section className="workspace">
-        <header className="topbar">
-          <div>
-            <p className="eyebrow">pre-publication safety</p>
-            <h1>Модерация автопостинга</h1>
-          </div>
-          <div className="topbar__actions">
-            <button
-              className="ghost-action"
-              type="button"
-              disabled={loading}
-              onClick={() => void refreshQueue()}
-            >
-              <Refresh width={18} height={18} />
-              Обновить
-            </button>
-            <button className="primary-action compact" type="button" onClick={exportForMax}>
-              <Check width={18} height={18} />
-              Экспорт для MAX
-            </button>
-          </div>
-        </header>
-
-        <section className="metrics" aria-label="Сводка">
-          <Metric label="Ожидают" value={String(metrics.review)} tone="warning" />
-          <Metric label="Одобрено" value={String(metrics.approved)} tone="success" />
-          <Metric label="Остановлено" value={String(metrics.stopped)} tone="danger" />
-          <Metric
-            label="Служебных постов в чатах"
-            value={String(metrics.servicePosts)}
-            tone="neutral"
-          />
-        </section>
-
-        <div className="notice-bar" role="status">
-          {loading ? 'Обновляю данные...' : notice}
+        <div className="topbar__actions">
+          <button
+            className="ghost-action icon-action"
+            type="button"
+            disabled={loading}
+            onClick={() => void refreshQueue()}
+            title="Обновить"
+            aria-label="Обновить"
+          >
+            <Refresh width={18} height={18} />
+          </button>
+          <button className="ghost-action" type="button" onClick={exportForMax}>
+            <Download width={18} height={18} />
+            Экспорт
+          </button>
         </div>
+      </header>
 
-        <section className="queue-layout" id="queue">
-          <div className="queue-panel">
-            <div className="queue-toolbar">
-              <label className="search-field">
-                <Search width={17} height={17} />
-                <input
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  placeholder="Поиск по тексту, домену, чату"
-                />
-              </label>
-              <div className="segmented" aria-label="Фильтр статуса">
-                {[
-                  ['all', 'Все'],
-                  ['review', 'Проверка'],
-                  ['approved', 'Одобрено'],
-                  ['rejected', 'Отклонено'],
-                  ['blocked', 'Блок'],
-                ].map(([value, label]) => (
-                  <button
-                    key={value}
-                    className={filter === value ? 'is-active' : ''}
-                    type="button"
-                    onClick={() => setFilter(value as 'all' | QueueStatus)}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="queue-list">
-              {visibleItems.map((item) => (
+      <section className="desk-grid">
+        <section className="queue-panel" id="queue" aria-label="Очередь">
+          <div className="queue-toolbar">
+            <label className="search-field">
+              <Search width={17} height={17} />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Поиск"
+              />
+            </label>
+            <div className="segmented" aria-label="Фильтр статуса">
+              {[
+                ['all', 'Все'],
+                ['review', 'Новые'],
+                ['approved', 'Ок'],
+                ['rejected', 'Стоп'],
+                ['blocked', 'Блок'],
+              ].map(([value, label]) => (
                 <button
-                  key={item.id}
-                  className={`queue-item ${selectedItem?.id === item.id ? 'is-selected' : ''}`}
+                  key={value}
+                  className={filter === value ? 'is-active' : ''}
                   type="button"
-                  onClick={() => setSelectedId(item.id)}
+                  onClick={() => setFilter(value as 'all' | QueueStatus)}
                 >
-                  <span className={`risk-dot is-${item.risk}`} />
-                  <span className="queue-item__body">
-                    <span className="queue-item__title">{item.title}</span>
-                    <span className="queue-item__meta">
-                      {sourceLabel(item.source)} · {item.entity}
-                    </span>
-                  </span>
-                  <StatusBadge status={item.status} />
-                  <NavArrowRight width={18} height={18} />
+                  {label}
                 </button>
               ))}
             </div>
           </div>
 
+          <div className="queue-list">
+            {visibleItems.map((item) => (
+              <button
+                key={item.id}
+                className={`queue-item ${selectedItem?.id === item.id ? 'is-selected' : ''}`}
+                type="button"
+                onClick={() => setSelectedId(item.id)}
+              >
+                <span className={`risk-dot is-${item.risk}`} />
+                <span className="queue-item__body">
+                  <span className="queue-item__title">{item.title}</span>
+                  <span className="queue-item__meta">
+                    {item.entity} · {sourceLabel(item.source)}
+                  </span>
+                </span>
+                <StatusBadge status={item.status} />
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <section className="detail-column" aria-label="Публикация">
           {selectedItem ? (
             <ReviewDetails
               item={selectedItem}
@@ -382,50 +314,34 @@ export function AdminApp() {
             />
           ) : (
             <article className="empty-card">
-              <h2>Очередь пуста</h2>
-              <p>Под выбранный фильтр сейчас нет материалов.</p>
+              <h2>Пусто</h2>
+              <p>Под выбранный фильтр ничего нет.</p>
             </article>
           )}
-        </section>
 
-        <section className="policy-section" id="policy">
-          <div className="section-heading">
-            <p className="eyebrow">MAX compliance plan</p>
-            <h2>План без давления на пользователей</h2>
-          </div>
-          <div className="policy-grid">
-            {policySteps.map((step) => (
-              <article className="policy-card" key={step.title}>
-                <CheckCircle width={20} height={20} />
-                <h3>{step.title}</h3>
-                <p>{step.body}</p>
-              </article>
-            ))}
-          </div>
-        </section>
-
-        <section className="audit-section" id="audit">
-          <div className="section-heading">
-            <p className="eyebrow">decision log</p>
-            <h2>Журнал решений</h2>
-          </div>
-          <div className="audit-list">
-            {auditEntries.length > 0 ? (
-              auditEntries.map((entry) => (
-                <div className="audit-row" key={entry.id}>
-                  <span>{entry.createdAt}</span>
-                  <strong>{auditActionLabel(entry.action)}</strong>
-                  <em>{entry.title}</em>
+          <section className="audit-section" id="audit">
+            <div className="audit-head">
+              <Clock width={16} height={16} />
+              <strong>Журнал</strong>
+            </div>
+            <div className="audit-list">
+              {auditEntries.length > 0 ? (
+                auditEntries.slice(0, 6).map((entry) => (
+                  <div className="audit-row" key={entry.id}>
+                    <span>{entry.createdAt}</span>
+                    <strong>{auditActionLabel(entry.action)}</strong>
+                    <em>{entry.title}</em>
+                  </div>
+                ))
+              ) : (
+                <div className="audit-row">
+                  <span>{formatTime(new Date())}</span>
+                  <strong>Нет действий</strong>
+                  <em />
                 </div>
-              ))
-            ) : (
-              <div className="audit-row">
-                <span>{formatTime(new Date())}</span>
-                <strong>Ожидание</strong>
-                <em>Решений пока нет</em>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          </section>
         </section>
       </section>
     </main>
@@ -465,65 +381,70 @@ function ReviewDetails({
   return (
     <article className="review-card" aria-label="Детали проверки">
       <header className="review-card__header">
-        <div>
-          <StatusBadge status={item.status} />
+        <div className="review-card__title">
+          <div className="badge-row">
+            <StatusBadge status={item.status} />
+            <RiskBadge risk={item.risk} />
+          </div>
           <h2>{item.title}</h2>
         </div>
-        <RiskBadge risk={item.risk} />
       </header>
 
       <div className="review-meta">
-        <span>
-          <Calendar width={16} height={16} />
-          {item.scheduledAt}
-        </span>
-        <span>
-          <Eye width={16} height={16} />
-          {item.entity}
-        </span>
+        <InfoCell label="Куда" value={item.entity} />
+        <InfoCell label="Источник" value={sourceLabel(item.source)} />
+        <InfoCell label="Автор" value={item.author} />
+        <InfoCell label="Время" value={item.scheduledAt} />
       </div>
 
       <PublicationPreview item={item} />
 
-      <section className="detail-block">
-        <h3>Причины проверки</h3>
-        <div className="reason-list">
-          {item.reasons.map((reason) => (
-            <span key={reason}>{reason}</span>
-          ))}
-        </div>
-      </section>
+      <div className="review-inspector">
+        <section className="detail-block">
+          <h3>Триггеры</h3>
+          <div className="reason-list">
+            {item.reasons.length > 0 ? (
+              item.reasons.map((reason) => <span key={reason}>{reason}</span>)
+            ) : (
+              <span>Нет</span>
+            )}
+          </div>
+        </section>
 
-      <section className="detail-block">
-        <h3>Проверки</h3>
-        <div className="check-list">
-          {item.checks.map((check) => (
-            <div className={`check-row is-${check.state}`} key={check.label}>
-              {check.state === 'blocked' ? (
-                <XmarkCircle width={18} height={18} />
-              ) : check.state === 'warning' ? (
-                <WarningTriangle width={18} height={18} />
-              ) : (
-                <CheckCircle width={18} height={18} />
-              )}
-              <span>{check.label}</span>
-            </div>
-          ))}
-        </div>
-      </section>
+        <section className="detail-block">
+          <h3>Проверки</h3>
+          <div className="check-list">
+            {item.checks.map((check) => (
+              <div className={`check-row is-${check.state}`} key={check.label}>
+                {check.state === 'blocked' ? (
+                  <XmarkCircle width={16} height={16} />
+                ) : check.state === 'warning' ? (
+                  <WarningTriangle width={16} height={16} />
+                ) : (
+                  <CheckCircle width={16} height={16} />
+                )}
+                <span>{check.label}</span>
+              </div>
+            ))}
+          </div>
+        </section>
 
-      <section className="detail-block">
-        <h3>Домены</h3>
-        <div className="domain-list">
-          {item.domains.length > 0 ? (
-            item.domains.map((domain) => <span key={domain}>{domain}</span>)
-          ) : (
-            <span>Нет внешних ссылок</span>
-          )}
-        </div>
-      </section>
+        <section className="detail-block">
+          <h3>Домены</h3>
+          <div className="domain-list">
+            {item.domains.length > 0 ? (
+              item.domains.map((domain) => <span key={domain}>{domain}</span>)
+            ) : (
+              <span>Нет</span>
+            )}
+          </div>
+        </section>
+      </div>
 
       <footer className="review-actions">
+        <div className="action-status" aria-live="polite">
+          {busy ? 'Выполняю действие...' : 'Готово'}
+        </div>
         <button
           className="secondary-action"
           type="button"
@@ -559,27 +480,14 @@ function ReviewDetails({
 function PublicationPreview({ item }: { item: ModerationItem }) {
   return (
     <section className="publication-preview" aria-labelledby="publication-preview-title">
-      <div className="publication-preview__head">
-        <div>
-          <p className="eyebrow">publication preview</p>
-          <h3 id="publication-preview-title">Что будет опубликовано</h3>
-        </div>
-        <StatusBadge status={item.status} />
-      </div>
-
-      <div className="publication-targets" aria-label="Сведения о публикации">
-        <InfoCell label="Куда" value={item.entity} />
-        <InfoCell label="Источник" value={sourceLabel(item.source)} />
-        <InfoCell label="Автор" value={item.author} />
-        <InfoCell label="Время" value={item.scheduledAt} />
-      </div>
+      <h3 id="publication-preview-title">Публикация</h3>
 
       <article className="message-preview" aria-label="Текст публикации">
         <div className="message-preview__chrome">
           <span />
           <strong>{item.entity}</strong>
         </div>
-        <p>{item.text || 'Текст отсутствует, проверь вложения и ссылку источника.'}</p>
+        <p>{item.text || 'Текст отсутствует.'}</p>
       </article>
 
       {item.photoUrls.length > 0 && (
@@ -615,11 +523,6 @@ function PublicationPreview({ item }: { item: ModerationItem }) {
           )}
         </div>
       )}
-
-      <div className="publication-preview__foot">
-        <span>Перед одобрением проверь текст, цель публикации и домены.</span>
-        <strong>{item.domains.length > 0 ? `${item.domains.length} домена` : 'Ссылок нет'}</strong>
-      </div>
     </section>
   );
 }
@@ -679,15 +582,18 @@ async function postDecision(
   itemId: string,
   action: 'approve' | 'reject' | 'recheck',
 ): Promise<SafetyDeskDecisionResponse> {
-  const response = await fetch(`${safetyDeskApiBase}/items/${encodeURIComponent(itemId)}/${action}`, {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
+  const response = await fetch(
+    `${safetyDeskApiBase}/items/${encodeURIComponent(itemId)}/${action}`,
+    {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({}),
     },
-    body: JSON.stringify({}),
-  });
+  );
   return safetyDeskDecisionResponseSchema.parse(await readJsonResponse(response));
 }
 
