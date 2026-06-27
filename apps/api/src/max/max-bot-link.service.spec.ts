@@ -39,6 +39,7 @@ function createServiceFixture() {
           return null;
         }
         return {
+          entityType: chat.entityType ?? null,
           primaryBotId: chat.primaryBotId,
           botId: chat.botId,
           botMemberships: memberships
@@ -953,6 +954,76 @@ describe('MaxBotLinkService', () => {
         fallbackToPrimary: false,
       }),
     ).resolves.toBe('id613002203036_4_bot');
+  });
+
+  it('treats MAX write permission as delete-capable for chat moderation', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-write-delete', {
+      id: 'chat-write-delete',
+      title: 'Moderated chat',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+      entityType: 'CHAT',
+    });
+    fixture.memberships.push({
+      chatId: 'chat-write-delete',
+      botId: 'id613002203036_bot',
+      role: ChatBotMembershipRole.PRIMARY,
+      status: ChatBotMembershipStatus.ACTIVE,
+      permissionsSnapshot: {
+        checkedAt: '2026-04-06T21:00:00.000Z',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['read_all_messages', 'write'],
+      },
+      createdAt: new Date('2026-04-06T21:00:00.000Z'),
+      updatedAt: new Date('2026-04-06T21:00:00.000Z'),
+      lastSeenAt: new Date('2026-04-06T21:00:00.000Z'),
+      lastWebhookAt: new Date('2026-04-06T21:00:00.000Z'),
+    });
+
+    await expect(
+      fixture.service.resolveBotIdForModerationAction({
+        chatId: 'chat-write-delete',
+        action: 'delete_message',
+        fallbackToPrimary: false,
+      }),
+    ).resolves.toBe('id613002203036_bot');
+  });
+
+  it('does not treat MAX write permission as post-delete permission for channels', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('channel-write-only', {
+      id: 'channel-write-only',
+      title: 'Moderated channel',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+      entityType: 'CHANNEL',
+    });
+    fixture.memberships.push({
+      chatId: 'channel-write-only',
+      botId: 'id613002203036_bot',
+      role: ChatBotMembershipRole.PRIMARY,
+      status: ChatBotMembershipStatus.ACTIVE,
+      permissionsSnapshot: {
+        checkedAt: '2026-04-06T21:00:00.000Z',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+      },
+      createdAt: new Date('2026-04-06T21:00:00.000Z'),
+      updatedAt: new Date('2026-04-06T21:00:00.000Z'),
+      lastSeenAt: new Date('2026-04-06T21:00:00.000Z'),
+      lastWebhookAt: new Date('2026-04-06T21:00:00.000Z'),
+    });
+
+    await expect(
+      fixture.service.resolveBotIdForModerationAction({
+        chatId: 'channel-write-only',
+        action: 'delete_message',
+        fallbackToPrimary: false,
+      }),
+    ).resolves.toBeNull();
   });
 
   it('does not treat non-empty admin permissions as delete-capable without a delete alias', async () => {

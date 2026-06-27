@@ -37,6 +37,10 @@ const DELETE_MESSAGE_PERMISSION_ALIASES = new Set([
   'can_post_edit_delete_message',
   'can_post_edit_delete_messages',
 ]);
+const CHAT_DELETE_MESSAGE_PERMISSION_ALIASES = new Set([
+  ...DELETE_MESSAGE_PERMISSION_ALIASES,
+  'write',
+]);
 const MODERATE_MEMBER_PERMISSION_ALIASES = new Set([
   'add_remove_members',
   'can_add_remove_members',
@@ -1595,7 +1599,7 @@ export class MaxBotLinkService {
     }
 
     return snapshot.permissions.some((permission) =>
-      this.isModerationActionPermission(permission, action),
+      this.isModerationActionPermission(permission, action, _entityType),
     );
   }
 
@@ -1618,7 +1622,7 @@ export class MaxBotLinkService {
     }
 
     return !snapshot.permissions.some((permission) =>
-      this.isModerationActionPermission(permission, action),
+      this.isModerationActionPermission(permission, action, _entityType),
     );
   }
 
@@ -1643,15 +1647,22 @@ export class MaxBotLinkService {
   private isModerationActionPermission(
     permission: string,
     action: ModerationActionPermission,
+    entityType?: ChatEntityType | null,
   ): boolean {
     const normalized = normalizePermissionName(permission);
     if (!normalized) {
       return false;
     }
 
-    return action === 'delete_message'
-      ? DELETE_MESSAGE_PERMISSION_ALIASES.has(normalized)
-      : MODERATE_MEMBER_PERMISSION_ALIASES.has(normalized);
+    if (action === 'delete_message') {
+      const aliases =
+        entityType === ChatEntityType.CHAT
+          ? CHAT_DELETE_MESSAGE_PERMISSION_ALIASES
+          : DELETE_MESSAGE_PERMISSION_ALIASES;
+      return aliases.has(normalized);
+    }
+
+    return MODERATE_MEMBER_PERMISSION_ALIASES.has(normalized);
   }
 
   private async promoteActiveChatBotMembership(

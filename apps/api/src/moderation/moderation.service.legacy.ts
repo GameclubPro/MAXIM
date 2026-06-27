@@ -195,6 +195,7 @@ import {
 import {
   CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES,
   PRIVATE_DIALOG_TERMINAL_FAILURE_METRIC_STATUSES,
+  CHAT_DELETE_MESSAGE_PERMISSION_ALIASES,
   DEFAULT_MUTE_DURATION_HOURS,
   MAX_ACTIVE_MUTE_DURATION_HOURS,
   DELETE_MESSAGE_PERMISSION_ALIASES,
@@ -10908,7 +10909,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     action: 'delete_message' | 'moderate_member',
   ): Promise<Set<string>> {
-    const botIds = await this.loadModerationActionSnapshotRefreshBotIds(chatId);
+    const { botIds, entityType } = await this.loadModerationActionSnapshotRefreshState(chatId);
     const confirmedBotIds = new Set<string>();
     if (botIds.length === 0) {
       return confirmedBotIds;
@@ -10926,16 +10927,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           if (
             this.hasModerationActionAccess(access, action, {
               requireExplicitPermission: true,
+              entityType,
             })
           ) {
             confirmedBotIds.add(botId);
           }
-          await this.persistModerationActionBotAccessSnapshot(chatId, botId, access, { action });
+          await this.persistModerationActionBotAccessSnapshot(chatId, botId, access, {
+            action,
+            entityType,
+          });
         } catch (error: unknown) {
           if (this.isTerminalModerationActionPermissionError(error)) {
             await this.persistModerationActionBotAccessSnapshot(chatId, botId, null, {
               action,
               error,
+              entityType,
             });
             await this.recordModerationActionProblemChat({
               chatId,
@@ -10960,15 +10966,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return confirmedBotIds;
   }
 
-  private async loadModerationActionSnapshotRefreshBotIds(chatId: string): Promise<string[]> {
+  private async loadModerationActionSnapshotRefreshState(chatId: string): Promise<{
+    botIds: string[];
+    entityType: ChatEntityType | null;
+  }> {
     if (typeof this.prisma.chat?.findUnique !== 'function') {
-      return [];
+      return { botIds: [], entityType: null };
     }
 
     try {
       const chat = await this.prisma.chat.findUnique({
         where: { id: chatId },
         select: {
+          entityType: true,
           primaryBotId: true,
           botId: true,
           botMemberships: {
@@ -11009,7 +11019,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
         candidateBotIds.push(normalizedBotId);
       }
-      return candidateBotIds;
+      return {
+        botIds: candidateBotIds,
+        entityType: chat?.entityType ?? null,
+      };
     } catch (error: unknown) {
       this.logger.debug(
         {
@@ -11018,7 +11031,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
         'Failed to load bot memberships for moderation action snapshot refresh',
       );
-      return [];
+      return { botIds: [], entityType: null };
     }
   }
 
@@ -11029,6 +11042,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     issue?: {
       action?: 'delete_message' | 'moderate_member';
       error?: unknown;
+      entityType?: ChatEntityType | null;
     },
   ): Promise<void> {
     if (typeof this.prisma.chatBotMembership?.updateMany !== 'function') {
@@ -11061,7 +11075,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private hasModerationActionAccess(
     access: Pick<MaxChatMemberAccess, 'isAdmin' | 'isOwner' | 'permissions'> | null,
     action: 'delete_message' | 'moderate_member',
-    options?: { requireExplicitPermission?: boolean },
+    options?: { requireExplicitPermission?: boolean; entityType?: ChatEntityType | null },
   ): boolean {
     if (!access) {
       return false;
@@ -11074,7 +11088,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const permissions = this.normalizeModerationActionPermissions(access.permissions);
     if (permissions.length > 0) {
       return permissions.some((permission) =>
-        this.isModerationActionPermission(permission, action),
+        this.isModerationActionPermission(permission, action, options?.entityType ?? null),
       );
     }
 
@@ -11115,10 +11129,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private isModerationActionPermission(
     permission: string,
     action: 'delete_message' | 'moderate_member',
+    entityType?: ChatEntityType | null,
   ): boolean {
-    return action === 'delete_message'
-      ? DELETE_MESSAGE_PERMISSION_ALIASES.has(permission)
-      : MODERATE_MEMBER_PERMISSION_ALIASES.has(permission);
+    if (action === 'delete_message') {
+      const aliases =
+        entityType === ChatEntityType.CHAT
+          ? CHAT_DELETE_MESSAGE_PERMISSION_ALIASES
+          : DELETE_MESSAGE_PERMISSION_ALIASES;
+      return aliases.has(permission);
+    }
+
+    return MODERATE_MEMBER_PERMISSION_ALIASES.has(permission);
   }
 
   private buildModerationActionBotBackoffKey(
@@ -11265,6 +11286,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     issue?: {
       action?: 'delete_message' | 'moderate_member';
       error?: unknown;
+      entityType?: ChatEntityType | null;
     },
   ): Prisma.InputJsonValue {
     const statusCode = issue?.error ? this.extractStatusCode(issue.error) : null;
@@ -11275,6 +11297,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       Boolean(access && issue?.action) &&
       !this.hasModerationActionAccess(access, issue?.action ?? 'delete_message', {
         requireExplicitPermission: true,
+        entityType: issue?.entityType ?? null,
       });
 
     return {

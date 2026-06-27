@@ -16469,6 +16469,78 @@ describe('ModerationService', () => {
         expect(operation).toHaveBeenCalledWith('id613002203036_4_bot');
       });
 
+      it('treats MAX write permission as enough for refreshed chat delete access', async () => {
+        const prisma = {
+          chat: {
+            findUnique: jest.fn().mockResolvedValue({
+              entityType: ChatEntityType.CHAT,
+              botMemberships: [{ botId: 'id613002203036_4_bot', status: 'ACTIVE' }],
+            }),
+          },
+          chatBotMembership: {
+            updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          },
+        };
+        const maxClient = {
+          getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+            userId: '613002203036_4',
+            isAdmin: true,
+            isOwner: false,
+            permissions: ['write'],
+          }),
+        };
+        const maxBotLinkService = {
+          resolveBotIdsForModerationAction: jest
+            .fn()
+            .mockResolvedValueOnce([])
+            .mockResolvedValueOnce(['id613002203036_4_bot']),
+          getResolvedBotSync: jest.fn((botId?: string | null) => ({
+            id: botId ?? 'id613002203036_bot',
+          })),
+        };
+        const operation = jest.fn().mockResolvedValue(undefined);
+        const service = new ModerationService(
+          prisma as never,
+          {} as never,
+          {} as never,
+          maxClient as never,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          maxBotLinkService as never,
+        );
+
+        await expect(
+          (service as any).executeModerationActionWithFallback({
+            chatId: 'chat-1',
+            action: 'delete_message',
+            messageId: 'message-1',
+            operation,
+          }),
+        ).resolves.toBe(true);
+
+        expect(prisma.chatBotMembership.updateMany).toHaveBeenCalledWith({
+          where: {
+            chatId: 'chat-1',
+            botId: 'id613002203036_4_bot',
+          },
+          data: expect.objectContaining({
+            lastSeenAt: expect.any(Date),
+            permissionsSnapshot: expect.objectContaining({
+              isAdmin: true,
+              isOwner: false,
+              permissions: ['write'],
+              health: 'ok',
+            }),
+          }),
+        });
+        expect(operation).toHaveBeenCalledWith('id613002203036_4_bot');
+      });
+
       it('keeps stale moderation action backoff out of the hot path and schedules a recheck', async () => {
         const prisma = {
           chat: {

@@ -19,6 +19,14 @@ describe('url-text util', () => {
     ).toEqual(['https://max.ru/channel/news', 'https://docs.max.ru/start']);
   });
 
+  it('extracts bare urls before trailing punctuation', () => {
+    expect(extractUrlsFromText('ссылки bad.com, test.org. max.ru!')).toEqual([
+      'bad.com',
+      'test.org',
+      'max.ru',
+    ]);
+  });
+
   it('extracts separate urls from markdown-style links', () => {
     expect(extractUrlsFromText('жми [https://safe.example](https://casino.example/path).')).toEqual([
       'https://safe.example',

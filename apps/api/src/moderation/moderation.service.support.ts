@@ -237,6 +237,10 @@ export const DELETE_MESSAGE_PERMISSION_ALIASES = new Set([
   'can_post_edit_delete_message',
   'can_post_edit_delete_messages',
 ]);
+export const CHAT_DELETE_MESSAGE_PERMISSION_ALIASES = new Set([
+  ...DELETE_MESSAGE_PERMISSION_ALIASES,
+  'write',
+]);
 export const MODERATE_MEMBER_PERMISSION_ALIASES = new Set([
   'add_remove_members',
   'can_add_remove_members',

@@ -56,7 +56,8 @@ function endsAtUrlDelimiter(value: string, index: number): boolean {
     return true;
   }
 
-  return URL_DELIMITER_PATTERN.test(value[index] ?? '');
+  const nextChar = value[index] ?? '';
+  return URL_DELIMITER_PATTERN.test(nextChar) || TRAILING_URL_PUNCTUATION_PATTERN.test(nextChar);
 }
 
 function isLikelyNumberedListItem(value: string): boolean {
@@ -86,7 +87,7 @@ function collectUrlMatches(value: string): UrlMatch[] {
   );
 
   return [...schemeMatches, ...bareMatches]
-    .filter((candidate) => endsAtUrlDelimiter(value, candidate.end))
+    .filter((candidate) => endsAtUrlDelimiter(value, candidate.start + candidate.text.length))
     .sort((left, right) => left.start - right.start || right.end - left.end);
 }
 
