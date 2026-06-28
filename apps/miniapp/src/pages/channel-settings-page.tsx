@@ -40,10 +40,6 @@ import {
   type BroadcastHistoryFilter,
   type BroadcastWorkspaceView,
 } from '../components/broadcast-studio-workspace';
-import {
-  BroadcastStudioHeader,
-  type BroadcastStudioSignal,
-} from '../components/broadcast-studio-header';
 import { ManagedBroadcastHistoryCard } from '../components/managed-broadcast-history-card';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
@@ -1938,7 +1934,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const broadcastVisibleButtons = [...normalizedBroadcastButtons, ...broadcastSystemButtons];
   const broadcastHasVisibleButtons = broadcastVisibleButtons.length > 0;
   const broadcastVisibleButtonStatus = formatBroadcastButtonsStatus(broadcastVisibleButtons);
-  const broadcastVisibleButtonPreview = formatBroadcastButtonsPreview(broadcastVisibleButtons);
   const broadcastOccupiedSlots = managedBroadcasts
     .filter((broadcast) => broadcast.id !== editingManagedBroadcast?.id)
     .flatMap((broadcast) => broadcast.scheduledSlots);
@@ -2011,8 +2006,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       : broadcastImageEnabled
         ? 'Фото'
         : null;
-  const broadcastMediaSignalLabel =
-    broadcastImageLabel ?? (editingBroadcastHasVideo ? 'Видео' : null);
   const broadcastHasDirectContent = Boolean(
     normalizedBroadcastText || broadcastImageEnabled || editingBroadcastHasVideo,
   );
@@ -2096,7 +2089,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         return;
       }
 
-	      if (label === 'Время') {
+      if (label === 'Время') {
         if (broadcastTimingMode === 'cycle') {
           setBroadcastCycleError(broadcastCycleValidationError ?? 'Проверьте цикл публикаций.');
           return;
@@ -2150,32 +2143,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             : broadcastHasPublishableContent
               ? 'Контент'
               : 'Пусто';
-  const broadcastContentSignalValue = broadcastContentReady
-    ? normalizedBroadcastText && broadcastMediaSignalLabel
-      ? 'Текст+медиа'
-      : normalizedBroadcastText
-        ? 'Текст'
-        : (broadcastMediaSignalLabel ?? 'Готов')
-    : broadcastImagesPreparing
-      ? 'Фото...'
-      : broadcastHasDirectContent
-        ? 'Проверка'
-        : 'Пусто';
-  const broadcastTimingSignalValue =
-    broadcastTimingMode === 'now'
-      ? 'Сейчас'
-      : broadcastTimingMode === 'cycle'
-        ? broadcastCycleValidationError
-          ? 'Цикл?'
-          : `Цикл ${broadcastNormalizedCycle.count}`
-        : broadcastPlannerState.futureSlotCount > 0
-          ? formatChannelCompactCountLabel(broadcastPlannerState.futureSlotCount, 'отпр.')
-          : 'Без времени';
-  const broadcastButtonsSignalValue = !broadcastButtonDraftValid
-    ? 'Ошибка'
-    : broadcastHasVisibleButtons
-      ? broadcastVisibleButtonPreview
-      : 'Без кнопок';
   const broadcastResetActionLabel = editingManagedBroadcast
     ? 'Сбросить изменения'
     : 'Очистить автопостинг';
@@ -2213,41 +2180,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const activeBroadcastWorkspaceView = showBroadcastWorkspaceTabs
     ? broadcastWorkspaceView
     : 'compose';
-  const broadcastStudioSignals: BroadcastStudioSignal[] = [
-    {
-      label: 'Контент',
-      value: broadcastContentSignalValue,
-      tone: broadcastContentReady ? 'ready' : broadcastHasDirectContent ? 'warning' : 'pending',
-      icon: 'content',
-      onClick: () => setBroadcastWorkspaceView('compose'),
-    },
-    {
-      label: 'Время',
-      value: broadcastTimingSignalValue,
-      tone: broadcastScheduleReady ? 'ready' : 'pending',
-      icon: 'time',
-      onClick: () => setBroadcastWorkspaceView('compose'),
-    },
-    {
-      label: 'Кнопки',
-      value: broadcastButtonsSignalValue,
-      tone: broadcastButtonDraftValid
-        ? broadcastHasVisibleButtons
-          ? 'ready'
-          : 'neutral'
-        : 'danger',
-      icon: 'button',
-      onClick: () => {
-        setBroadcastWorkspaceView('compose');
-        setBroadcastButtonsSheetOpen(true);
-      },
-    },
-  ];
-  const broadcastStudioReadyCount = [
-    broadcastContentReady,
-    broadcastScheduleReady,
-    broadcastButtonDraftValid,
-  ].filter(Boolean).length;
   const broadcastDrilldownFooter = (
     <BroadcastPublishBar
       title={broadcastFooterTitle}
@@ -3121,22 +3053,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
               <div className="settings-section__collapse-inner">
                 <div className="channel-broadcast-studio broadcast-studio-screen broadcast-studio-screen--channel">
                   <div className="broadcast-studio-screen__chrome">
-                    <BroadcastStudioHeader
-                      title={
-                        editingManagedBroadcast
-                          ? 'Редактирование'
-                          : duplicatedManagedBroadcast
-                            ? 'Копия автопостинга'
-                            : 'Автопостинг'
-                      }
-                      subtitle={broadcastFooterTitle}
-                      readyCount={broadcastStudioReadyCount}
-                      totalCount={3}
-                      signals={broadcastStudioSignals}
-                      busy={isBroadcastBusy}
-                      editing={Boolean(editingManagedBroadcast)}
-                    />
-
                     <BroadcastWorkspaceChrome
                       showTabs={showBroadcastWorkspaceTabs}
                       value={activeBroadcastWorkspaceView}

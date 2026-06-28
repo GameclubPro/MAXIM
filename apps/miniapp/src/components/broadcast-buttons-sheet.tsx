@@ -2,10 +2,7 @@ import type { BroadcastLinkButton } from '@maxim/contracts';
 import { Link as IconoirLink, Xmark as IconoirXmark } from 'iconoir-react';
 import { useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import {
-  BroadcastLinkButtonsEditor,
-  type BroadcastLinkButtonPreset,
-} from './broadcast-link-buttons-editor';
+import { BroadcastLinkButtonsEditor } from './broadcast-link-buttons-editor';
 import type { ApiTransport } from '../lib/api/transport';
 import {
   formatBroadcastButtonsPreview,
@@ -24,7 +21,6 @@ type BroadcastButtonsSheetProps = {
   disabled?: boolean;
   revealNextStepSignal?: number;
   contextEntityType?: 'chat' | 'channel';
-  presets?: BroadcastLinkButtonPreset[];
   closeAriaLabel?: string;
   urlPlaceholder?: string;
   textPlaceholder?: string;
@@ -50,7 +46,6 @@ export function BroadcastButtonsSheet({
   disabled = false,
   revealNextStepSignal = 0,
   contextEntityType = 'chat',
-  presets = [],
   closeAriaLabel = 'Закрыть кнопки',
   urlPlaceholder = 'https://max.ru/channel/...',
   textPlaceholder = 'Открыть',
@@ -151,7 +146,6 @@ export function BroadcastButtonsSheet({
               revealNextStepSignal={revealNextStepSignal}
               compact
               className="broadcast-link-editor--sheet"
-              presets={presets}
               title=""
               subtitle=""
               onChange={onChange}

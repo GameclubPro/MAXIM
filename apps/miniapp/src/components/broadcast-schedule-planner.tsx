@@ -10,11 +10,9 @@ import {
   type BroadcastScheduleAgendaEntry,
 } from '../lib/broadcast-planner-agenda';
 import {
-  BROADCAST_DAY_PRESETS,
   BROADCAST_PLANNER_NOW_REFRESH_MS,
   BROADCAST_PLANNER_SLOT_GROUPS,
   addDays,
-  buildBroadcastPresetDayKeys,
   buildSlotsByDay,
   buildFreeWindowsForDay,
   endOfMonth,
@@ -32,13 +30,11 @@ import {
   getMonthKeys,
   getSelectedDaySlots,
   getSelectedMinutesForDay,
-  getSuggestedMinutes,
   normalizeBroadcastPlannerTimeMinutes,
   parseBroadcastPlannerTimeLabel,
   snapMinutesToStep,
   sortDayKeys,
   startOfDay,
-  type BroadcastDayPreset,
   type BroadcastFreeWindow,
 } from '../lib/broadcast-planner-time';
 import {
@@ -55,7 +51,7 @@ import {
 } from '../lib/broadcast-schedule-recipe';
 import {
   BROADCAST_CYCLE_MAX_HOURS,
-  BROADCAST_CYCLE_INTERVAL_PRESETS,
+  BROADCAST_CYCLE_INTERVAL_OPTIONS,
   BROADCAST_SCHEDULE_MAX_DAYS,
   buildBroadcastScheduleSlotIso,
   clampBroadcastCycleCount,
@@ -194,7 +190,6 @@ export function BroadcastSchedulePlanner({
   const [agendaDayKey, setAgendaDayKey] = useState<string | null>(null);
   const [applyToAllPickedDays, setApplyToAllPickedDays] = useState(false);
   const [isConfirmed, setIsConfirmed] = useState(false);
-  const [showFullTimeGrid, setShowFullTimeGrid] = useState(false);
   const [calendarExpanded, setCalendarExpanded] = useState(() => calendarOnly);
   const [customTimeValue, setCustomTimeValue] = useState('');
   const [hasBlockingIssue, setHasBlockingIssue] = useState(false);
@@ -319,14 +314,6 @@ export function BroadcastSchedulePlanner({
     cycle ?? createDefaultBroadcastCycleDraft(liveNowMs),
     liveNowMs,
   );
-  const dayPresetOptions = useMemo(
-    () =>
-      BROADCAST_DAY_PRESETS.map((preset) => ({
-        preset,
-        dayKeys: buildBroadcastPresetDayKeys(preset, { nowMs: liveNowMs }),
-      })),
-    [liveNowMs],
-  );
   const agendaEntries =
     calendarSlots.length > 0
       ? buildAgendaEntriesFromCalendarSlots(
@@ -390,20 +377,6 @@ export function BroadcastSchedulePlanner({
       (slot) => !selectedInstantSet.has(getBroadcastSlotInstantKey(slot)),
     ),
   );
-  const activeDayFreeWindowStartSet = new Set(
-    activeDayFreeWindows.map((window) => snapMinutesToStep(window.startMinutes)),
-  );
-  const suggestedMinutes =
-    sheetMode === 'time'
-      ? Array.from(
-          new Set([
-            ...activeDayFreeWindows.map((window) => snapMinutesToStep(window.startMinutes)),
-            ...getSuggestedMinutes(activeDayKey, minimumTime),
-          ]),
-        )
-          .filter((minutes) => minutes >= 0 && minutes < 24 * 60)
-          .slice(0, 4)
-      : [];
   const hasAnyAvailableTimeSlot =
     sheetMode === 'time' && targetDayKeys.every((dayKey) => hasAvailableTimeSlotForDay(dayKey));
   const nextAvailableDayKey =
@@ -505,15 +478,6 @@ export function BroadcastSchedulePlanner({
         : currentScheduleRecipe,
     );
   }, [currentScheduleRecipe, hasBlockingIssue]);
-
-  useEffect(() => {
-    if (sheetMode !== 'time') {
-      setShowFullTimeGrid(false);
-      return;
-    }
-
-    setShowFullTimeGrid(false);
-  }, [activeDayKey, applyToAllPickedDays, sheetMode, suggestedMinutes.length]);
 
   useEffect(() => {
     if (timingMode === 'scheduled') {
@@ -705,16 +669,6 @@ export function BroadcastSchedulePlanner({
     const nextMinutes = [...recipeDraft.minutes];
     nextMinutes[index] = normalizeBroadcastPlannerTimeMinutes(parsedMinutes);
     patchRecipeDraft({ minutes: nextMinutes });
-  }
-
-  function applyPresetRecipe(preset: BroadcastDayPreset) {
-    const nextRecipe: BroadcastScheduleRecipeDraft = {
-      ...recipeDraft,
-      dayCount: preset.count,
-      weekdayMode: preset.weekdayMode,
-    };
-    applyRecipeDraft(nextRecipe);
-    maxSelectionChanged();
   }
 
   function activateScheduledMode() {
@@ -1042,11 +996,6 @@ export function BroadcastSchedulePlanner({
     toggleSlot(normalizeBroadcastPlannerTimeMinutes(parsedMinutes));
   }
 
-  function revealFullTimeGrid() {
-    setShowFullTimeGrid(true);
-    maxImpact('soft');
-  }
-
   const monthCells = getMonthCells(visibleMonthKey);
   const scheduleReady =
     timingMode === 'now' ||
@@ -1167,27 +1116,10 @@ export function BroadcastSchedulePlanner({
 
           {showRecipe ? (
             <div className="broadcast-planner__recipe" aria-label="Серия отправок">
-              <div className="broadcast-planner__quick-row" aria-label="Быстрый выбор дней">
-                {dayPresetOptions.map(({ preset, dayKeys }) => (
-                  <button
-                    key={preset.id}
-                    type="button"
-                    className={cn(
-                      'broadcast-planner__quick-chip',
-                      recipeDraft.dayCount === preset.count &&
-                        recipeDraft.weekdayMode === preset.weekdayMode &&
-                        recipePlan.isComplete &&
-                        'is-active',
-                    )}
-                    onClick={() => applyPresetRecipe(preset)}
-                    disabled={disabled || dayKeys.length === 0}
-                  >
-                    {preset.label}
-                  </button>
-                ))}
+              <div className="broadcast-planner__recipe-actions is-top">
                 <button
                   type="button"
-                  className="broadcast-planner__quick-chip"
+                  className="broadcast-planner__recipe-calendar"
                   onClick={clearCalendarSchedule}
                   disabled={disabled || (normalizedValue.length === 0 && pickedDayKeys.length === 0)}
                 >
@@ -1582,13 +1514,13 @@ export function BroadcastSchedulePlanner({
 
                 <div className="broadcast-planner__cycle-field">
                   <span>Каждые</span>
-                  <div className="broadcast-planner__cycle-presets">
-                    {BROADCAST_CYCLE_INTERVAL_PRESETS.map((hours) => (
+                  <div className="broadcast-planner__cycle-intervals">
+                    {BROADCAST_CYCLE_INTERVAL_OPTIONS.map((hours) => (
                       <button
                         key={hours}
                         type="button"
                         className={cn(
-                          'broadcast-planner__cycle-preset',
+                          'broadcast-planner__cycle-interval',
                           normalizedCycle.everyHours === hours && 'is-active',
                         )}
                         onClick={() =>
@@ -1998,48 +1930,7 @@ export function BroadcastSchedulePlanner({
 
                   {sheetMode === 'time' ? (
                     <>
-                      {suggestedMinutes.length > 0 ? (
-                        <div
-                          className="broadcast-planner__suggested-row"
-                          aria-label="Быстрые времена"
-                        >
-                          {suggestedMinutes.map((minutes) => {
-                            const chipState = getMinuteChipState(minutes);
-                            return (
-                              <button
-                                key={`suggested-${minutes}`}
-                                type="button"
-                                className={cn(
-                                  'broadcast-planner__suggested-chip',
-                                  activeDayFreeWindowStartSet.has(minutes) && 'is-free',
-                                  chipState.isSelected && 'is-selected',
-                                  chipState.isMixed && 'is-mixed',
-                                  chipState.hasBusy && 'is-busy',
-                                  chipState.hasPastRestriction && 'is-disabled',
-                                )}
-                                aria-label={
-                                  chipState.hasBusy
-                                    ? `${formatMinuteLabel(minutes)}, занято`
-                                    : formatMinuteLabel(minutes)
-                                }
-                                onClick={() => toggleSlot(minutes)}
-                                disabled={
-                                  disabled || chipState.hasPastRestriction || chipState.hasBusy
-                                }
-                              >
-                                {formatMinuteLabel(minutes)}
-                                {chipState.hasBusy ? (
-                                  <span className="broadcast-planner__info-mark" aria-hidden>
-                                    Занято
-                                  </span>
-                                ) : null}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      ) : null}
-
-                      {suggestedMinutes.length === 0 && !hasAnyAvailableTimeSlot ? (
+                      {!hasAnyAvailableTimeSlot ? (
                         <div className="broadcast-planner__time-empty" role="status">
                           <strong>Нет доступного времени</strong>
                           {nextAvailableDayKey ? (
@@ -2089,63 +1980,48 @@ export function BroadcastSchedulePlanner({
                         />
                       </div>
 
-                      {suggestedMinutes.length > 0 && !showFullTimeGrid ? (
-                        <button
-                          type="button"
-                          className="broadcast-planner__expand-grid"
-                          onClick={revealFullTimeGrid}
-                          disabled={disabled}
-                        >
-                          Показать весь день
-                        </button>
-                      ) : null}
+                      {SLOT_GROUPS.map((group) => (
+                        <div key={group.label} className="broadcast-planner__time-group">
+                          <div className="broadcast-planner__time-group-head">
+                            <strong>{group.label}</strong>
+                          </div>
+                          <div className="broadcast-planner__time-grid">
+                            {getMinutesList(group).map((minutes) => {
+                              const chipState = getMinuteChipState(minutes);
 
-                      {showFullTimeGrid
-                        ? SLOT_GROUPS.map((group) => (
-                            <div key={group.label} className="broadcast-planner__time-group">
-                              <div className="broadcast-planner__time-group-head">
-                                <strong>{group.label}</strong>
-                              </div>
-                              <div className="broadcast-planner__time-grid">
-                                {getMinutesList(group).map((minutes) => {
-                                  const chipState = getMinuteChipState(minutes);
-
-                                  return (
-                                    <button
-                                      key={`${group.label}-${minutes}`}
-                                      type="button"
-                                      className={cn(
-                                        'broadcast-planner__time-chip',
-                                        chipState.isSelected && 'is-selected',
-                                        chipState.isMixed && 'is-mixed',
-                                        chipState.hasBusy && 'is-busy',
-                                        chipState.hasPastRestriction && 'is-disabled',
-                                      )}
-                                      aria-label={
-                                        chipState.hasBusy
-                                          ? `${formatMinuteLabel(minutes)}, занято`
-                                          : formatMinuteLabel(minutes)
-                                      }
-                                      onClick={() => toggleSlot(minutes)}
-                                      disabled={
-                                        disabled ||
-                                        chipState.hasPastRestriction ||
-                                        chipState.hasBusy
-                                      }
-                                    >
-                                      <strong>{formatMinuteLabel(minutes)}</strong>
-                                      {chipState.hasBusy ? (
-                                        <span className="broadcast-planner__info-mark" aria-hidden>
-                                          Занято
-                                        </span>
-                                      ) : null}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          ))
-                        : null}
+                              return (
+                                <button
+                                  key={`${group.label}-${minutes}`}
+                                  type="button"
+                                  className={cn(
+                                    'broadcast-planner__time-chip',
+                                    chipState.isSelected && 'is-selected',
+                                    chipState.isMixed && 'is-mixed',
+                                    chipState.hasBusy && 'is-busy',
+                                    chipState.hasPastRestriction && 'is-disabled',
+                                  )}
+                                  aria-label={
+                                    chipState.hasBusy
+                                      ? `${formatMinuteLabel(minutes)}, занято`
+                                      : formatMinuteLabel(minutes)
+                                  }
+                                  onClick={() => toggleSlot(minutes)}
+                                  disabled={
+                                    disabled || chipState.hasPastRestriction || chipState.hasBusy
+                                  }
+                                >
+                                  <strong>{formatMinuteLabel(minutes)}</strong>
+                                  {chipState.hasBusy ? (
+                                    <span className="broadcast-planner__info-mark" aria-hidden>
+                                      Занято
+                                    </span>
+                                  ) : null}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))}
 
                       <div className="broadcast-planner__sheet-footer">
                         <button

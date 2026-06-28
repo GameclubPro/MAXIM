@@ -52,31 +52,6 @@
   line-height: 1;
 }
 
-.broadcast-link-editor__presets {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.broadcast-link-editor__preset {
-  min-width: 0;
-  min-height: 32px;
-  border: 1px solid rgba(62, 96, 127, 0.14);
-  border-radius: 9px;
-  background: rgba(255, 255, 255, 0.94);
-  color: var(--text-primary);
-  padding: 0 10px;
-  font-size: 0.72rem;
-  font-weight: 800;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.broadcast-link-editor__preset:disabled {
-  opacity: 0.5;
-}
-
 .broadcast-link-editor__preview {
   display: grid;
   gap: 8px;

@@ -652,14 +652,7 @@ body.settings-drilldown-open .toast__close {
   gap: 4px;
 }
 
-.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-templates {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 4px;
-}
-
-.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-slot,
-.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-template {
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-slot {
   min-width: 0;
   min-height: 32px;
   border: 1px solid rgba(11, 127, 198, 0.16);
@@ -677,36 +670,7 @@ body.settings-drilldown-open .toast__close {
   box-shadow: none;
 }
 
-.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-template {
-  display: grid;
-  place-items: center;
-  gap: 2px;
-  border-color: rgba(21, 152, 106, 0.16);
-  background: #edf8f2;
-  color: #13795a;
-  line-height: 1;
-}
-
-.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-template strong,
-.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-template small {
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-template strong {
-  font-size: 0.58rem;
-}
-
-.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-template small {
-  font-size: 0.49rem;
-  opacity: 0.72;
-}
-
-.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-slot:disabled,
-.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-template:disabled {
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-slot:disabled {
   opacity: 0.58;
 }
 
@@ -1028,16 +992,6 @@ body.settings-drilldown-open .toast__close {
   display: none;
 }
 
-.broadcast-buttons-sheet .broadcast-link-editor__presets {
-  gap: 5px;
-}
-
-.broadcast-buttons-sheet .broadcast-link-editor__preset {
-  min-height: 32px;
-  border-radius: 9px;
-  font-size: 0.68rem;
-}
-
 .broadcast-buttons-sheet .broadcast-link-editor__card {
   gap: 6px;
   border-radius: 9px;
@@ -1074,33 +1028,9 @@ body.settings-drilldown-open .toast__close {
   font-size: 0.8rem;
 }
 
-.broadcast-planner__suggested-row,
 .broadcast-planner__time-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 7px;
-}
-
-.broadcast-planner__suggested-row {
-  display: flex;
-  flex-wrap: wrap;
-  min-width: 0;
-  max-width: 100%;
-  overflow: visible;
-}
-
-.broadcast-planner__suggested-chip {
-  flex: 1 1 calc(50% - 4px);
-  min-width: 94px;
-  min-height: 44px;
-  border-style: solid;
-  border-radius: 13px;
-  background: #f6f9fb;
-  font-size: 0.9rem;
-  box-shadow: none;
-}
-
-.broadcast-planner__suggested-chip.is-selected {
-  background: #dff2ff;
 }
 
 .broadcast-planner__time-empty {
@@ -1119,8 +1049,7 @@ body.settings-drilldown-open .toast__close {
   line-height: 1;
 }
 
-.broadcast-planner__time-empty button,
-.broadcast-planner__expand-grid {
+.broadcast-planner__time-empty button {
   min-height: 34px;
   border: 0;
   border-radius: 999px;
@@ -1130,10 +1059,6 @@ body.settings-drilldown-open .toast__close {
   font: inherit;
   font-size: 0.74rem;
   font-weight: 900;
-}
-
-.broadcast-planner__expand-grid {
-  border-radius: 11px;
 }
 
 .broadcast-planner__time-group {
@@ -1261,8 +1186,7 @@ body.settings-drilldown-open .toast__close {
     padding: 4px;
   }
 
-  .settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-slot,
-  .settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-template {
+  .settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-slot {
     min-height: 30px;
   }
 
@@ -1419,6 +1343,7 @@ body.settings-drilldown-open .toast__close {
 .settings-drilldown__panel--broadcast-screen .broadcast-compose-flow--screen {
   gap: 5px;
   padding-top: 5px;
+  padding-bottom: calc(var(--broadcast-polish-footer-space) + 16px);
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-message-card {
@@ -1735,7 +1660,6 @@ body.settings-drilldown-open .toast__close {
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-planner__intent-chip.has-info,
-.settings-drilldown__panel--broadcast-screen .broadcast-planner__suggested-chip,
 .settings-drilldown__panel--broadcast-screen .broadcast-planner__time-chip {
   position: relative;
 }
@@ -1765,9 +1689,6 @@ body.settings-drilldown-open .toast__close {
   color: #086fae;
 }
 
-.settings-drilldown__panel--broadcast-screen
-  .broadcast-planner__suggested-chip.is-busy
-  .broadcast-planner__info-mark,
 .settings-drilldown__panel--broadcast-screen
   .broadcast-planner__time-chip.is-busy
   .broadcast-planner__info-mark {
@@ -1994,7 +1915,6 @@ body.settings-drilldown-open .toast__close {
   line-height: 1.12;
 }
 
-.settings-drilldown__panel--broadcast-screen .broadcast-planner__expand-grid,
 .settings-drilldown__panel--broadcast-screen .broadcast-planner__review-link {
   font-size: 12px;
 }

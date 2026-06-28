@@ -4653,7 +4653,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingVisibleButtons = [...normalizedMailingButtons, ...mailingSystemButtons];
   const mailingHasVisibleButtons = mailingVisibleButtons.length > 0;
   const mailingVisibleButtonStatus = formatBroadcastButtonsStatus(mailingVisibleButtons);
-  const mailingVisibleButtonPreview = formatBroadcastButtonsPreview(mailingVisibleButtons);
   const mailingVideoSource = editingManagedBroadcast ?? duplicatedManagedBroadcast;
   const editingMailingHasVideo =
     !mailingVideoCleared &&
@@ -4661,7 +4660,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     Boolean(mailingVideoSource.mediaPayload);
   const mailingImageLabel =
     mailingImages.length > 1 ? `${mailingImages.length} фото` : mailingImageEnabled ? 'Фото' : null;
-  const mailingMediaSignalLabel = mailingImageLabel ?? (editingMailingHasVideo ? 'Видео' : null);
   const mailingHasDirectContent = Boolean(
     normalizedMailingText || mailingImageEnabled || editingMailingHasVideo,
   );
@@ -4718,32 +4716,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingButtonDraftValid = !hasBroadcastLinkButtonErrors(
     validateBroadcastLinkButtons(normalizedMailingButtons),
   );
-  const mailingContentSignalValue = mailingContentReady
-    ? normalizedMailingText && mailingMediaSignalLabel
-      ? 'Текст+медиа'
-      : normalizedMailingText
-        ? 'Текст'
-        : (mailingMediaSignalLabel ?? 'Готов')
-    : mailingImagesPreparing
-      ? 'Фото...'
-      : mailingHasDirectContent
-        ? 'Проверка'
-        : 'Пусто';
-  const mailingTimingSignalValue =
-    mailingTimingMode === 'now'
-      ? 'Сейчас'
-      : mailingTimingMode === 'cycle'
-        ? mailingCycleValidationError
-          ? 'Цикл?'
-          : `Цикл ${mailingNormalizedCycle.count}`
-        : mailingPlannerState.futureSlotCount > 0
-          ? formatCompactCountLabel(mailingPlannerState.futureSlotCount, 'отпр.')
-          : 'Без времени';
-  const mailingButtonsSignalValue = !mailingButtonDraftValid
-    ? 'Ошибка'
-    : mailingHasVisibleButtons
-      ? mailingVisibleButtonPreview
-      : 'Без кнопок';
   const mailingPlannerPending = mailingPlannerState.isDaySheetOpen;
   const mailingAudienceReady =
     mailingTargetMode !== 'selected' || mailingAudiencePayload.targetChatIds.length > 0;
@@ -4783,22 +4755,22 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     onClick: () => {
       setMailingWorkspaceView('compose');
 
-	      if (label === 'Текст') {
-	        setMailingTextError('Добавьте текст, фото или видео.');
-	        return;
-	      }
+      if (label === 'Текст') {
+        setMailingTextError('Добавьте текст, фото или видео.');
+        return;
+      }
 
       if (label === 'Фото') {
         setMailingImageError(mailingImagesPreparing ? 'Фото ещё готовится.' : 'Фото не готово.');
         return;
       }
 
-	      if (label === 'Адресат') {
-	        setMailingAudienceError('Выберите хотя бы один чат.');
-	        return;
-	      }
+      if (label === 'Адресат') {
+        setMailingAudienceError('Выберите хотя бы один чат.');
+        return;
+      }
 
-	      if (label === 'Время') {
+      if (label === 'Время') {
         if (mailingTimingMode === 'cycle') {
           setMailingCycleError(mailingCycleValidationError ?? 'Проверьте цикл публикаций.');
           return;
@@ -4827,45 +4799,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingResetActionLabel = editingManagedBroadcast
     ? 'Сбросить изменения'
     : 'Очистить автопостинг';
-  const mailingStudioSignals: BroadcastStudioSignal[] = [
-    {
-      label: 'Контент',
-      value: mailingContentSignalValue,
-      tone: mailingContentReady ? 'ready' : mailingHasDirectContent ? 'warning' : 'pending',
-      icon: 'content',
-      onClick: () => setMailingWorkspaceView('compose'),
-    },
-    {
-      label: 'Кому',
-      value: mailingHeaderTargetPresentation.compactLabel,
-      tone: mailingAudienceReady ? 'ready' : 'pending',
-      icon: 'audience',
-      onClick: () => setMailingWorkspaceView('compose'),
-    },
-    {
-      label: 'Время',
-      value: mailingTimingSignalValue,
-      tone: mailingScheduleReady ? 'ready' : 'pending',
-      icon: 'time',
-      onClick: () => setMailingWorkspaceView('compose'),
-    },
-    {
-      label: 'Кнопки',
-      value: mailingButtonsSignalValue,
-      tone: mailingButtonDraftValid ? (mailingHasVisibleButtons ? 'ready' : 'neutral') : 'danger',
-      icon: 'button',
-      onClick: () => {
-        setMailingWorkspaceView('compose');
-        setMailingButtonsSheetOpen(true);
-      },
-    },
-  ];
-  const mailingStudioReadyCount = [
-    mailingContentReady,
-    mailingAudienceReady,
-    mailingScheduleReady,
-    mailingButtonDraftValid,
-  ].filter(Boolean).length;
   const mailingFooterScheduleLabel =
     mailingTimingMode === 'now'
       ? 'Сейчас'
@@ -10025,22 +9958,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     <div className="settings-section__collapse-inner settings-mailing">
                       <div className="broadcast-studio-shell broadcast-studio-screen broadcast-studio-screen--chat">
                         <div className="broadcast-studio-screen__chrome">
-                          <BroadcastStudioHeader
-                            title={
-                              editingManagedBroadcast
-                                ? 'Редактирование'
-                                : duplicatedManagedBroadcast
-                                  ? 'Копия автопостинга'
-                                  : 'Автопостинг'
-                            }
-                            subtitle={mailingFooterTitle}
-                            readyCount={mailingStudioReadyCount}
-                            totalCount={4}
-                            signals={mailingStudioSignals}
-                            busy={isMailingBusy}
-                            editing={Boolean(editingManagedBroadcast)}
-                          />
-
                           <BroadcastWorkspaceChrome
                             showTabs={showMailingWorkspaceTabs}
                             value={mailingWorkspaceView}

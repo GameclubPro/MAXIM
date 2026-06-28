@@ -5,7 +5,7 @@ export const BROADCAST_CYCLE_MAX_HOURS = BROADCAST_SCHEDULE_MAX_DAYS * 24;
 export const BROADCAST_CYCLE_MIN_COUNT = 2;
 export const BROADCAST_CYCLE_MAX_COUNT = 100;
 export const BROADCAST_CYCLE_MAX_WINDOW_DAYS = 31;
-export const BROADCAST_CYCLE_INTERVAL_PRESETS = [1, 2, 6, 12, 24, 48, 72, 168] as const;
+export const BROADCAST_CYCLE_INTERVAL_OPTIONS = [1, 2, 6, 12, 24, 48, 72, 168] as const;
 
 export type BroadcastTimingMode = 'now' | 'scheduled' | 'cycle';
 export type BroadcastCycleStartMode = 'now' | 'later';
