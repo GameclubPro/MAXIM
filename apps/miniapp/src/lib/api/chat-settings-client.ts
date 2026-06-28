@@ -22,6 +22,7 @@ import {
   scheduleDomainRemovalRequestSchema,
   sendBroadcastRequestSchema,
   sendBroadcastResultSchema,
+  sendBroadcastTestResultSchema,
   updateManagedEntityPartnerAssistRequestSchema,
   updateManagedEntityPrimaryBotRequestSchema,
   updateChatRulesRequestSchema,
@@ -43,6 +44,7 @@ import {
   type PublishChatRulesResult,
   type ResolveRequiredSubscriptionChannelResponse,
   type SendBroadcastResult,
+  type SendBroadcastTestResult,
 } from '@maxim/contracts';
 import type {
   BroadcastHandoffPayload,
@@ -441,7 +443,7 @@ export async function sendBroadcastTest(
   api: ApiTransport,
   chatId: string,
   payload: SendBroadcastPayload,
-): Promise<void> {
+): Promise<SendBroadcastTestResult> {
   const requestBody = sendBroadcastRequestSchema.parse({
     ...payload,
     targetMode: 'current',
@@ -454,8 +456,9 @@ export async function sendBroadcastTest(
     cycleEveryHours: 1,
     cycleCount: 1,
   });
-  await api.request(`/chats/${chatId}/broadcast/test`, {
+  const response = await api.request(`/chats/${chatId}/broadcast/test`, {
     method: 'POST',
     body: JSON.stringify(requestBody),
   });
+  return sendBroadcastTestResultSchema.parse(response);
 }

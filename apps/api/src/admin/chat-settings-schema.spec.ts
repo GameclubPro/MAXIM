@@ -321,6 +321,119 @@ describe('broadcast request schema normalization', () => {
     expect(handoffPayload.replaceConflictingSlots).toBe(true);
   });
 
+  it('clears inactive schedule fields for every broadcast schedule mode', () => {
+    const legacyPayload = sendBroadcastRequestSchema.parse({
+      text: 'Анонс',
+      scheduleMode: 'legacy',
+      scheduledSlots: ['2026-03-03T12:00:00.000Z'],
+      replaceConflictingSlots: true,
+      sendAt: '2026-03-03T11:00:00.000Z',
+      cycleEnabled: false,
+      cycleEveryHours: 4,
+      cycleCount: 5,
+    });
+    const calendarPayload = sendBroadcastRequestSchema.parse({
+      text: 'Анонс',
+      scheduleMode: 'calendar',
+      scheduledSlots: ['2026-03-03T12:00:00.000Z'],
+      replaceConflictingSlots: true,
+      sendAt: '2026-03-03T11:00:00.000Z',
+      cycleEnabled: true,
+      cycleEveryHours: 4,
+      cycleCount: 5,
+    });
+    const cyclePayload = sendBroadcastRequestSchema.parse({
+      text: 'Анонс',
+      scheduleMode: 'legacy',
+      scheduledSlots: ['2026-03-03T12:00:00.000Z'],
+      replaceConflictingSlots: true,
+      sendAt: '2026-03-03T11:00:00.000Z',
+      cycleEnabled: true,
+      cycleEveryHours: 4,
+      cycleCount: 5,
+    });
+
+    expect(legacyPayload).toEqual(
+      expect.objectContaining({
+        sendAt: '2026-03-03T11:00:00.000Z',
+        scheduledSlots: [],
+        replaceConflictingSlots: false,
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+      }),
+    );
+    expect(calendarPayload).toEqual(
+      expect.objectContaining({
+        sendAt: null,
+        scheduledSlots: ['2026-03-03T12:00:00.000Z'],
+        replaceConflictingSlots: true,
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+      }),
+    );
+    expect(cyclePayload).toEqual(
+      expect.objectContaining({
+        sendAt: '2026-03-03T11:00:00.000Z',
+        scheduledSlots: [],
+        replaceConflictingSlots: false,
+        cycleEnabled: true,
+        cycleEveryHours: 4,
+        cycleCount: 5,
+      }),
+    );
+  });
+
+  it('infers calendar mode from legacy payloads that contain scheduled slots', () => {
+    const sendPayload = sendBroadcastRequestSchema.parse({
+      text: 'Анонс',
+      scheduledSlots: ['2026-03-03T12:00:00.000Z'],
+      sendAt: '2026-03-03T11:00:00.000Z',
+      cycleEnabled: true,
+      cycleEveryHours: 4,
+      cycleCount: 5,
+    });
+    const explicitLegacyPayload = sendBroadcastRequestSchema.parse({
+      text: 'Анонс',
+      scheduleMode: 'legacy',
+      scheduledSlots: ['2026-03-03T12:00:00.000Z'],
+      sendAt: '2026-03-03T11:00:00.000Z',
+    });
+
+    expect(sendPayload).toEqual(
+      expect.objectContaining({
+        scheduleMode: 'calendar',
+        sendAt: null,
+        scheduledSlots: ['2026-03-03T12:00:00.000Z'],
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+      }),
+    );
+    expect(explicitLegacyPayload).toEqual(
+      expect.objectContaining({
+        scheduleMode: 'legacy',
+        sendAt: '2026-03-03T11:00:00.000Z',
+        scheduledSlots: [],
+      }),
+    );
+  });
+
+  it('rejects cycles outside the shared 31-day schedule window', () => {
+    const result = sendBroadcastRequestSchema.safeParse({
+      text: 'Анонс',
+      cycleEnabled: true,
+      cycleEveryHours: 24,
+      cycleCount: 33,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.map((issue) => issue.path.join('.'))).toContain('cycleCount');
+    }
+  });
+
   it('rejects invalid broadcast schedule timezones', () => {
     for (const schema of [sendBroadcastRequestSchema, broadcastHandoffRequestSchema]) {
       const result = schema.safeParse({

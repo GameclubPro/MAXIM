@@ -21,6 +21,7 @@ import {
   publishVkParsingPostResultSchema,
   sendBroadcastRequestSchema,
   updateVkParsingSettingsRequestSchema,
+  sendBroadcastTestResultSchema,
   vkParsingCapabilitySchema,
   vkParsingFeedSchema,
   vkParsingRefreshResultSchema,
@@ -37,6 +38,7 @@ import {
   type PublishVkParsingPostResult,
   type PublishChannelEngagementRequest,
   type PublishChannelEngagementResult,
+  type SendBroadcastTestResult,
   type UpdateVkParsingSettingsRequest,
   type VkParsingCapability,
   type VkParsingFeed,
@@ -197,7 +199,7 @@ export async function sendChannelBroadcastTest(
   api: ApiTransport,
   chatId: string,
   payload: SendBroadcastPayload,
-): Promise<void> {
+): Promise<SendBroadcastTestResult> {
   const requestBody = sendBroadcastRequestSchema.parse({
     ...payload,
     targetMode: 'current',
@@ -210,10 +212,11 @@ export async function sendChannelBroadcastTest(
     cycleEveryHours: 1,
     cycleCount: 1,
   });
-  await api.request(`/channels/${chatId}/broadcast/test`, {
+  const response = await api.request(`/channels/${chatId}/broadcast/test`, {
     method: 'POST',
     body: JSON.stringify(requestBody),
   });
+  return sendBroadcastTestResultSchema.parse(response);
 }
 
 export async function getChannelManagedBroadcasts(

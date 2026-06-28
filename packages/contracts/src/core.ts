@@ -104,6 +104,7 @@ export const MAX_BROADCAST_LINK_BUTTONS_PER_ROW = 3;
 export const MAX_BROADCAST_IMAGES = 10;
 export const MAX_BROADCAST_IMAGE_BASE64_LENGTH = 8_000_000;
 export const MAX_BROADCAST_IMAGES_TOTAL_BASE64 = 24_000_000;
+const BROADCAST_CYCLE_MAX_WINDOW_HOURS = 31 * 24;
 export const VK_PARSING_MAX_PHOTOS = 10;
 export const VK_PARSING_MAX_LINKS = 20;
 export const VK_PARSING_MAX_PUBLISH_TEXT_LENGTH = 4_000;
@@ -2278,7 +2279,7 @@ export const sendBroadcastRequestSchema = z
     mediaPayload: z.record(z.string(), z.unknown()).nullable().default(null),
     mediaMimeType: z.string().trim().max(128).default(''),
     mediaFileName: z.string().trim().max(128).default(''),
-    scheduleMode: broadcastScheduleModeSchema.default('legacy'),
+    scheduleMode: broadcastScheduleModeSchema.optional(),
     scheduleTimezone: broadcastScheduleTimezoneSchema,
     scheduledSlots: z.array(z.string().datetime()).max(MAX_BROADCAST_CALENDAR_SLOTS).default([]),
     replaceConflictingSlots: z.boolean().default(false),
@@ -2288,9 +2289,9 @@ export const sendBroadcastRequestSchema = z
       .number()
       .int()
       .min(1)
-      .max(14 * 24)
+      .max(BROADCAST_CYCLE_MAX_WINDOW_HOURS)
       .optional(),
-    cycleEveryDays: z.number().int().min(1).max(14).optional(),
+    cycleEveryDays: z.number().int().min(1).max(31).optional(),
     cycleCount: z.number().int().min(1).max(100).default(1),
   })
   .superRefine((value, ctx) => {
@@ -2401,7 +2402,12 @@ export const sendBroadcastRequestSchema = z
       mediaPayload: hasVideoPayload ? value.mediaPayload : hasImageGallery ? { images } : null,
       mediaMimeType: hasVideoPayload ? value.mediaMimeType.trim() : '',
       mediaFileName: hasVideoPayload ? value.mediaFileName.trim() : '',
+      scheduleMode: scheduleState.scheduledSlots.length > 0 ? 'calendar' : 'legacy',
+      replaceConflictingSlots: scheduleState.replaceConflictingSlots,
+      sendAt: scheduleState.sendAt,
+      cycleEnabled: scheduleState.cycleEnabled,
       cycleEveryHours: scheduleState.cycleEveryHours,
+      cycleCount: scheduleState.cycleCount,
       scheduledSlots: scheduleState.scheduledSlots,
     };
   });
@@ -2416,7 +2422,7 @@ export const broadcastHandoffRequestSchema = z
     buttonEnabled: z.boolean().default(false),
     buttonUrl: botButtonUrlSchema,
     buttonText: botButtonTextSchema,
-    scheduleMode: broadcastScheduleModeSchema.default('legacy'),
+    scheduleMode: broadcastScheduleModeSchema.optional(),
     scheduleTimezone: broadcastScheduleTimezoneSchema,
     scheduledSlots: z.array(z.string().datetime()).max(MAX_BROADCAST_CALENDAR_SLOTS).default([]),
     replaceConflictingSlots: z.boolean().default(false),
@@ -2426,9 +2432,9 @@ export const broadcastHandoffRequestSchema = z
       .number()
       .int()
       .min(1)
-      .max(14 * 24)
+      .max(BROADCAST_CYCLE_MAX_WINDOW_HOURS)
       .optional(),
-    cycleEveryDays: z.number().int().min(1).max(14).optional(),
+    cycleEveryDays: z.number().int().min(1).max(31).optional(),
     cycleCount: z.number().int().min(1).max(100).default(1),
   })
   .superRefine((value, ctx) => {
@@ -2450,7 +2456,12 @@ export const broadcastHandoffRequestSchema = z
       buttonEnabled: buttonState.buttonEnabled,
       buttonUrl: buttonState.buttonUrl,
       buttonText: buttonState.buttonText,
+      scheduleMode: scheduleState.scheduledSlots.length > 0 ? 'calendar' : 'legacy',
+      replaceConflictingSlots: scheduleState.replaceConflictingSlots,
+      sendAt: scheduleState.sendAt,
+      cycleEnabled: scheduleState.cycleEnabled,
       cycleEveryHours: scheduleState.cycleEveryHours,
+      cycleCount: scheduleState.cycleCount,
       scheduledSlots: scheduleState.scheduledSlots,
     };
   });
@@ -2469,9 +2480,9 @@ export type ProfileMentionHandoffRequest = z.infer<typeof profileMentionHandoffR
 export const broadcastHandoffStateSchema = z.object({
   targetMode: broadcastTargetModeSchema.default('current'),
   targetChatIds: z.array(z.string().trim().min(1)).default([]),
-  applyToAllChats: z.boolean(),
+  applyToAllChats: z.boolean().default(false),
   buttons: z.array(broadcastLinkButtonSchema).max(MAX_BROADCAST_LINK_BUTTONS).default([]),
-  buttonEnabled: z.boolean(),
+  buttonEnabled: z.boolean().default(false),
   buttonUrl: botButtonUrlSchema,
   buttonText: botButtonTextSchema,
   scheduleMode: broadcastScheduleModeSchema.default('legacy'),
@@ -2479,9 +2490,9 @@ export const broadcastHandoffStateSchema = z.object({
   scheduledSlots: z.array(z.string().datetime()).default([]),
   replaceConflictingSlots: z.boolean().default(false),
   sendAt: z.string().datetime().nullable().default(null),
-  cycleEnabled: z.boolean(),
-  cycleEveryHours: z.number().int().min(1),
-  cycleCount: z.number().int().min(1),
+  cycleEnabled: z.boolean().default(false),
+  cycleEveryHours: z.number().int().min(1).default(1),
+  cycleCount: z.number().int().min(1).default(1),
   hasContent: z.boolean().default(false),
 });
 export type BroadcastHandoffState = z.infer<typeof broadcastHandoffStateSchema>;

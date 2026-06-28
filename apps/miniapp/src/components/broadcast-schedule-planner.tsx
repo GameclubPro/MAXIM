@@ -33,6 +33,7 @@ import {
   type BroadcastFreeWindow,
 } from '../lib/broadcast-planner-time';
 import {
+  BROADCAST_CYCLE_MAX_HOURS,
   BROADCAST_CYCLE_INTERVAL_PRESETS,
   BROADCAST_SCHEDULE_MAX_DAYS,
   buildBroadcastScheduleSlotIso,
@@ -479,13 +480,14 @@ export function BroadcastSchedulePlanner({
     const selectedCountForTargets = targetDayKeys.filter((dayKey) =>
       isSlotSelectedForDay(dayKey, minutes),
     ).length;
-    const busyTargetCount = targetDayKeys.filter((dayKey) => isSlotBusy(dayKey, minutes)).length;
     const pastRestrictionCount = targetDayKeys.filter(
       (dayKey) => isSlotInPast(dayKey, minutes) && !isSlotSelectedForDay(dayKey, minutes),
     ).length;
     const isSelected = selectedCountForTargets === targetDayKeys.length;
     const isMixed = selectedCountForTargets > 0 && selectedCountForTargets < targetDayKeys.length;
-    const hasBusy = busyTargetCount > 0 && !isSelected && !isMixed;
+    const hasBusy = targetDayKeys.some(
+      (dayKey) => isSlotBusy(dayKey, minutes) && !isSlotSelectedForDay(dayKey, minutes),
+    );
     const hasPastRestriction = pastRestrictionCount > 0 && !isSelected && !isMixed;
 
     return {
@@ -704,6 +706,13 @@ export function BroadcastSchedulePlanner({
       (dayKey) => isSlotInPast(dayKey, minutes) && !isSlotSelectedForDay(dayKey, minutes),
     );
     if (hasPastRestriction) {
+      return;
+    }
+
+    const hasBusyRestriction = targetDayKeys.some(
+      (dayKey) => isSlotBusy(dayKey, minutes) && !isSlotSelectedForDay(dayKey, minutes),
+    );
+    if (hasBusyRestriction) {
       return;
     }
 
@@ -1135,7 +1144,7 @@ export function BroadcastSchedulePlanner({
                     <input
                       type="number"
                       min={1}
-                      max={14 * 24}
+                      max={BROADCAST_CYCLE_MAX_HOURS}
                       value={normalizedCycle.everyHours}
                       onChange={(event) =>
                         onCycleChange?.(

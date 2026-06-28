@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import type { BroadcastScheduleMode, BroadcastTargetMode } from './core.js';
 
+const BROADCAST_CYCLE_MAX_WINDOW_HOURS = 31 * 24;
+
 export function normalizeBroadcastScheduledSlots(values: string[]): string[] {
   const slotsByInstant = new Map<number, string>();
   const rawSlots = new Set<string>();
@@ -97,8 +99,9 @@ export function buildBroadcastAudienceState(value: {
 
 export function addBroadcastScheduleIssues(
   value: {
-    scheduleMode: BroadcastScheduleMode;
+    scheduleMode?: BroadcastScheduleMode;
     scheduledSlots: string[];
+    sendAt?: string | null;
     cycleEnabled: boolean;
     cycleEveryHours?: number;
     cycleEveryDays?: number;
@@ -106,8 +109,11 @@ export function addBroadcastScheduleIssues(
   },
   ctx: z.RefinementCtx,
 ): void {
-  if (value.scheduleMode === 'calendar') {
-    if (normalizeBroadcastScheduledSlots(value.scheduledSlots).length === 0) {
+  const normalizedSlots = normalizeBroadcastScheduledSlots(value.scheduledSlots);
+  const scheduleMode =
+    value.scheduleMode ?? (normalizedSlots.length > 0 ? 'calendar' : 'legacy');
+  if (scheduleMode === 'calendar') {
+    if (normalizedSlots.length === 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['scheduledSlots'],
@@ -131,19 +137,73 @@ export function addBroadcastScheduleIssues(
       path: ['cycleEveryHours'],
       message: 'Укажите интервал циклического автопостинга.',
     });
+    return;
+  }
+
+  if (value.cycleEnabled) {
+    const cycleEveryHours = value.cycleEveryHours ?? (value.cycleEveryDays ?? 1) * 24;
+    const firstSendAtMs = value.sendAt ? new Date(value.sendAt).getTime() : Date.now();
+    const cycleWindowHours =
+      (Number.isFinite(firstSendAtMs) ? Math.max(0, firstSendAtMs - Date.now()) / 3_600_000 : 0) +
+      (value.cycleCount - 1) * cycleEveryHours;
+    if (cycleWindowHours > BROADCAST_CYCLE_MAX_WINDOW_HOURS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['cycleCount'],
+        message: 'Цикл должен уложиться в 31 день.',
+      });
+    }
   }
 }
 
 export function buildBroadcastScheduleState(value: {
+  scheduleMode?: BroadcastScheduleMode;
   scheduledSlots: string[];
+  replaceConflictingSlots?: boolean;
+  sendAt?: string | null;
+  cycleEnabled: boolean;
   cycleEveryHours?: number;
   cycleEveryDays?: number;
+  cycleCount: number;
 }): {
   cycleEveryHours: number;
+  cycleCount: number;
+  sendAt: string | null;
   scheduledSlots: string[];
+  cycleEnabled: boolean;
+  replaceConflictingSlots: boolean;
 } {
+  const scheduledSlots = normalizeBroadcastScheduledSlots(value.scheduledSlots);
+  const scheduleMode =
+    value.scheduleMode ?? (scheduledSlots.length > 0 ? 'calendar' : 'legacy');
+  if (scheduleMode === 'calendar') {
+    return {
+      cycleEveryHours: 1,
+      cycleCount: Math.max(1, scheduledSlots.length),
+      sendAt: null,
+      scheduledSlots,
+      cycleEnabled: false,
+      replaceConflictingSlots: value.replaceConflictingSlots === true,
+    };
+  }
+
+  if (!value.cycleEnabled) {
+    return {
+      cycleEveryHours: 1,
+      cycleCount: 1,
+      sendAt: value.sendAt ?? null,
+      scheduledSlots: [],
+      cycleEnabled: false,
+      replaceConflictingSlots: false,
+    };
+  }
+
   return {
     cycleEveryHours: value.cycleEveryHours ?? (value.cycleEveryDays ?? 1) * 24,
-    scheduledSlots: normalizeBroadcastScheduledSlots(value.scheduledSlots),
+    cycleCount: value.cycleCount,
+    sendAt: value.sendAt ?? null,
+    scheduledSlots: [],
+    cycleEnabled: true,
+    replaceConflictingSlots: false,
   };
 }

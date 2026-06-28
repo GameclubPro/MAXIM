@@ -37,8 +37,9 @@ const STARTUP_JS_BUDGET_GZIP = 113 * 1024 + HASH_ROUTER_STARTUP_JS_ALLOWANCE_GZI
 // plus 10-photo broadcast gallery preparation and preview
 // plus rich paste parity for headings and code blocks in broadcast/suggestion previews
 // plus target-aware broadcast calendar availability and named audience previews
+// plus schema-level calendar/cycle compatibility guards for legacy broadcast drafts
 // add a small amount of legitimate lazy-loaded logic.
-const SETTINGS_JS_BUDGET_GZIP = 108 * 1024 + 20 * 1024;
+const SETTINGS_JS_BUDGET_GZIP = 108 * 1024 + 21 * 1024;
 // Startup CSS was effectively at the ceiling already, so widen it modestly instead of
 // forcing cosmetic regressions into the home surface and shared mobile shell.
 const STARTUP_CSS_BUDGET_GZIP = 42 * 1024;
