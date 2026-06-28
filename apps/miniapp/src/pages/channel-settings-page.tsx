@@ -1525,7 +1525,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     onError: (error) => {
       const description = normalizeApiError(error);
       if (description.includes('BROADCAST_TARGET_SLOT_CONFLICT')) {
-        setBroadcastScheduleError('У получателя уже есть автопостинг на это время.');
+        setBroadcastScheduleError('Занято у получателя.');
         void queryClient.invalidateQueries({ queryKey: queryKeys.channelSettingsScreen(chatId) });
         void queryClient.invalidateQueries({
           queryKey: queryKeys.channelManagedBroadcastCalendar(chatId),
@@ -1534,7 +1534,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         description.includes('выбранное время') ||
         description.includes('BROADCAST_SLOT_CONFLICT')
       ) {
-        setBroadcastScheduleError('Календарь обновился. Выберите свободный слот.');
+        setBroadcastScheduleError('Занято.');
         void queryClient.invalidateQueries({ queryKey: queryKeys.channelSettingsScreen(chatId) });
         void queryClient.invalidateQueries({
           queryKey: queryKeys.channelManagedBroadcastCalendar(chatId),
@@ -1617,7 +1617,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     onError: (error) => {
       const description = normalizeApiError(error);
       if (description.includes('BROADCAST_TARGET_SLOT_CONFLICT')) {
-        setBroadcastScheduleError('У получателя уже есть автопостинг на это время.');
+        setBroadcastScheduleError('Занято у получателя.');
         void queryClient.invalidateQueries({ queryKey: queryKeys.channelSettingsScreen(chatId) });
         void queryClient.invalidateQueries({
           queryKey: queryKeys.channelManagedBroadcastCalendar(chatId),
@@ -1626,7 +1626,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         description.includes('выбранное время') ||
         description.includes('BROADCAST_SLOT_CONFLICT')
       ) {
-        setBroadcastScheduleError('Календарь обновился. Выберите свободный слот.');
+        setBroadcastScheduleError('Занято.');
         void queryClient.invalidateQueries({ queryKey: queryKeys.channelSettingsScreen(chatId) });
         void queryClient.invalidateQueries({
           queryKey: queryKeys.channelManagedBroadcastCalendar(chatId),
@@ -2523,7 +2523,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
   function handleCloseBroadcastSlotConflict() {
     setPendingBroadcastSlotConflict(null);
-    setBroadcastScheduleError('Выберите свободное время.');
+    setBroadcastScheduleError('Занято.');
   }
 
   function confirmBroadcastSlotReplacement() {
@@ -2605,10 +2605,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     }
 
     if (broadcastTimingMode === 'scheduled' && scheduledSlots.length === 0) {
-      setBroadcastScheduleError('Добавьте хотя бы один слот публикации.');
+      setBroadcastScheduleError('Добавьте слот.');
       hasError = true;
     } else if (broadcastTimingMode === 'scheduled' && broadcastPlannerState.futureSlotCount === 0) {
-      setBroadcastScheduleError('Добавьте хотя бы один будущий слот публикации.');
+      setBroadcastScheduleError('Есть прошедшие слоты.');
       hasError = true;
     } else if (broadcastTimingMode === 'cycle' && cycleError) {
       setBroadcastCycleError(cycleError);

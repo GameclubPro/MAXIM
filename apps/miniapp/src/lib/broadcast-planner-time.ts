@@ -32,6 +32,15 @@ export type BroadcastSmartScheduleTemplate = {
   slots: string[];
 };
 
+export type BroadcastDayPresetId = 'five-days' | 'workdays' | 'seven-days';
+
+export type BroadcastDayPreset = {
+  id: BroadcastDayPresetId;
+  label: string;
+  count: number;
+  weekdayMode: 'any' | 'workdays';
+};
+
 type BroadcastScheduleTemplateBlueprint = {
   id: string;
   label: string;
@@ -48,6 +57,17 @@ type BroadcastSmartScheduleOptions = {
   limit?: number;
 };
 
+type BroadcastDayPresetOptions = {
+  nowMs: number;
+  maxDays?: number;
+};
+
+type BroadcastDailySlotsOptions = {
+  dayKeys: readonly string[];
+  minutes: readonly number[];
+  minimumTimeMs?: number;
+};
+
 export const BROADCAST_PLANNER_SLOT_GROUPS: BroadcastPlannerSlotGroup[] = [
   { label: 'Ночь', start: 0, end: 6 * 60 },
   { label: 'Утро', start: 6 * 60, end: 12 * 60 },
@@ -56,6 +76,11 @@ export const BROADCAST_PLANNER_SLOT_GROUPS: BroadcastPlannerSlotGroup[] = [
 ];
 
 export const BROADCAST_PLANNER_NOW_REFRESH_MS = 30_000;
+export const BROADCAST_DAY_PRESETS: BroadcastDayPreset[] = [
+  { id: 'five-days', label: '5 дней', count: 5, weekdayMode: 'any' },
+  { id: 'workdays', label: 'Будни', count: 5, weekdayMode: 'workdays' },
+  { id: 'seven-days', label: '7 дней', count: 7, weekdayMode: 'any' },
+];
 
 const FREE_WINDOW_START_MINUTES = 8 * 60;
 const FREE_WINDOW_END_MINUTES = 22 * 60;
@@ -173,8 +198,28 @@ export function formatMinuteLabel(minutes: number): string {
   return `${String(hours).padStart(2, '0')}:${String(rest).padStart(2, '0')}`;
 }
 
+export function parseBroadcastPlannerTimeLabel(value: string): number | null {
+  const match = /^([01]\d|2[0-3]):([0-5]\d)$/u.exec(value.trim());
+  if (!match) {
+    return null;
+  }
+
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
 export function snapMinutesToStep(minutes: number): number {
   return Math.ceil(minutes / BROADCAST_SCHEDULE_STEP_MINUTES) * BROADCAST_SCHEDULE_STEP_MINUTES;
+}
+
+export function normalizeBroadcastPlannerTimeMinutes(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  const lastSlot = 24 * 60 - BROADCAST_SCHEDULE_STEP_MINUTES;
+  const snapped =
+    Math.round(value / BROADCAST_SCHEDULE_STEP_MINUTES) * BROADCAST_SCHEDULE_STEP_MINUTES;
+  return Math.min(lastSlot, Math.max(0, snapped));
 }
 
 export function getSelectedDaySlots(dayKey: string, slots: string[]): string[] {
@@ -275,6 +320,99 @@ function shouldUseTemplateDay(
 
   const weekDay = new Date(`${dayKey}T12:00:00`).getDay();
   return weekDay !== 0 && weekDay !== 6;
+}
+
+function shouldUsePresetDay(dayKey: string, preset: BroadcastDayPreset): boolean {
+  if (preset.weekdayMode === 'any') {
+    return true;
+  }
+
+  const weekDay = new Date(`${dayKey}T12:00:00`).getDay();
+  return weekDay !== 0 && weekDay !== 6;
+}
+
+export function buildBroadcastPresetDayKeys(
+  preset: BroadcastDayPreset,
+  { nowMs, maxDays = BROADCAST_SCHEDULE_MAX_DAYS }: BroadcastDayPresetOptions,
+): string[] {
+  const windowEnd = getScheduleWindowEnd(nowMs, maxDays);
+  const dayKeys: string[] = [];
+
+  for (let dayOffset = 0; dayOffset < maxDays && dayKeys.length < preset.count; dayOffset += 1) {
+    const dayKey = getBroadcastScheduleDayKey(addDays(new Date(nowMs), dayOffset));
+    if (startOfDay(new Date(`${dayKey}T12:00:00`)).getTime() > windowEnd.getTime()) {
+      break;
+    }
+
+    if (!shouldUsePresetDay(dayKey, preset)) {
+      continue;
+    }
+
+    dayKeys.push(dayKey);
+  }
+
+  return dayKeys;
+}
+
+export function buildBroadcastDailyScheduleSlots({
+  dayKeys,
+  minutes,
+  minimumTimeMs,
+}: BroadcastDailySlotsOptions): string[] {
+  const normalizedDayKeys = sortDayKeys([...dayKeys]);
+  const normalizedMinutes = Array.from(
+    new Set(minutes.map(normalizeBroadcastPlannerTimeMinutes)),
+  ).sort((left, right) => left - right);
+
+  return sortAndUniqueBroadcastSlots(
+    normalizedDayKeys.flatMap((dayKey) =>
+      normalizedMinutes
+        .map((minute) => buildBroadcastScheduleSlotIso(dayKey, minute))
+        .filter((slot) => minimumTimeMs === undefined || new Date(slot).getTime() >= minimumTimeMs),
+    ),
+  );
+}
+
+export function filterBroadcastSlotsByDayKeys(
+  slots: readonly string[],
+  dayKeys: readonly string[],
+): string[] {
+  const dayKeySet = new Set(dayKeys);
+  return sortAndUniqueBroadcastSlots(
+    slots.filter((slot) => dayKeySet.has(getBroadcastScheduleDayKey(slot))),
+  );
+}
+
+export function getSelectedMinutesForDay(dayKey: string, slots: readonly string[]): number[] {
+  return getSelectedDaySlots(dayKey, [...slots])
+    .map((slot) => getSlotMinutes(slot))
+    .filter((value): value is number => value !== null)
+    .map(normalizeBroadcastPlannerTimeMinutes)
+    .sort((left, right) => left - right);
+}
+
+export function getCommonSelectedMinutesForDays(
+  dayKeys: readonly string[],
+  slots: readonly string[],
+): number[] {
+  const normalizedDayKeys = sortDayKeys([...dayKeys]);
+  if (normalizedDayKeys.length === 0) {
+    return [];
+  }
+
+  const [firstDayKey, ...restDayKeys] = normalizedDayKeys;
+  const common = new Set(getSelectedMinutesForDay(firstDayKey, slots));
+
+  for (const dayKey of restDayKeys) {
+    const dayMinutes = new Set(getSelectedMinutesForDay(dayKey, slots));
+    for (const minute of Array.from(common)) {
+      if (!dayMinutes.has(minute)) {
+        common.delete(minute);
+      }
+    }
+  }
+
+  return Array.from(common).sort((left, right) => left - right);
 }
 
 export function buildBroadcastQuickScheduleSlots({

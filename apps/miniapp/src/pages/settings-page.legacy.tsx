@@ -3041,14 +3041,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       setMailingAudienceError('Обновите выбор чатов.');
     }
     if (message.includes('BROADCAST_TARGET_SLOT_CONFLICT')) {
-      setMailingScheduleError('У получателя уже есть автопостинг на это время.');
+      setMailingScheduleError('Занято у получателя.');
       void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
       void queryClient.invalidateQueries({ queryKey: ['managed-broadcast-calendar', chatId] });
     } else if (
       message.toLowerCase().includes('выбранное время') ||
       message.includes('BROADCAST_SLOT_CONFLICT')
     ) {
-      setMailingScheduleError('Календарь обновился. Выберите свободный слот.');
+      setMailingScheduleError('Занято.');
       void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
       void queryClient.invalidateQueries({ queryKey: ['managed-broadcast-calendar', chatId] });
     }
@@ -3299,7 +3299,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   function handleCloseMailingSlotConflict() {
     setPendingMailingSlotConflict(null);
-    setMailingScheduleError('Выберите свободное время.');
+    setMailingScheduleError('Занято.');
   }
 
   function confirmMailingSlotReplacement() {
@@ -3405,10 +3405,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     if (mailingTimingMode === 'scheduled' && scheduledSlots.length === 0) {
-      setMailingScheduleError('Добавьте хотя бы один слот публикации.');
+      setMailingScheduleError('Добавьте слот.');
       hasError = true;
     } else if (mailingTimingMode === 'scheduled' && mailingPlannerState.futureSlotCount === 0) {
-      setMailingScheduleError('Добавьте хотя бы один будущий слот публикации.');
+      setMailingScheduleError('Есть прошедшие слоты.');
       hasError = true;
     } else if (mailingTimingMode === 'cycle' && cycleError) {
       setMailingCycleError(cycleError);

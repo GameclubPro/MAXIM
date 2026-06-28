@@ -6,13 +6,20 @@ import {
   buildAgendaEntriesFromCalendarSlots,
 } from '../src/lib/broadcast-planner-agenda';
 import {
+  BROADCAST_DAY_PRESETS,
+  buildBroadcastDailyScheduleSlots,
+  buildBroadcastPresetDayKeys,
   buildBroadcastQuickScheduleSlots,
   buildFreeWindowsForDay,
   buildBroadcastSmartScheduleTemplates,
   buildSlotsByDay,
+  filterBroadcastSlotsByDayKeys,
   formatCountLabel,
+  getCommonSelectedMinutesForDays,
   getMonthCells,
   getMonthKeys,
+  normalizeBroadcastPlannerTimeMinutes,
+  parseBroadcastPlannerTimeLabel,
   snapMinutesToStep,
 } from '../src/lib/broadcast-planner-time';
 import {
@@ -158,6 +165,78 @@ test('builds smart schedule templates without busy slots', () => {
   assert.equal(
     workdays?.slots.some((slot) => [0, 6].includes(new Date(slot).getDay())),
     false,
+  );
+});
+
+test('builds a five-day two-times daily calendar schedule', () => {
+  const nowMs = new Date(2026, 4, 6, 10, 0, 0, 0).getTime();
+  const minimumTimeMs = nowMs + 30_000;
+  const preset = BROADCAST_DAY_PRESETS.find((item) => item.id === 'five-days');
+
+  assert.ok(preset);
+  const dayKeys = buildBroadcastPresetDayKeys(preset, { nowMs });
+  const slots = buildBroadcastDailyScheduleSlots({
+    dayKeys,
+    minutes: [9 * 60, 18 * 60],
+  });
+
+  assert.equal(dayKeys.length, 5);
+  assert.equal(slots.length, 10);
+  assert.deepEqual([...buildSlotsByDay(slots).keys()], dayKeys);
+  assert.deepEqual(getCommonSelectedMinutesForDays(dayKeys, slots), [9 * 60, 18 * 60]);
+
+  const futureSlots = buildBroadcastDailyScheduleSlots({
+    dayKeys,
+    minutes: [9 * 60, 18 * 60],
+    minimumTimeMs,
+  });
+
+  assert.equal(futureSlots.length, 9);
+  assert.equal(
+    futureSlots.every((slot) => new Date(slot).getTime() >= minimumTimeMs),
+    true,
+  );
+  assert.deepEqual(getCommonSelectedMinutesForDays(dayKeys.slice(1), futureSlots), [
+    9 * 60,
+    18 * 60,
+  ]);
+});
+
+test('filters preset slots to the newly selected days', () => {
+  const nowMs = new Date(2026, 4, 6, 10, 0, 0, 0).getTime();
+  const fiveDayPreset = BROADCAST_DAY_PRESETS.find((item) => item.id === 'five-days');
+  const sevenDayPreset = BROADCAST_DAY_PRESETS.find((item) => item.id === 'seven-days');
+
+  assert.ok(fiveDayPreset);
+  assert.ok(sevenDayPreset);
+
+  const fiveDayKeys = buildBroadcastPresetDayKeys(fiveDayPreset, { nowMs });
+  const sevenDayKeys = buildBroadcastPresetDayKeys(sevenDayPreset, { nowMs });
+  const sevenDaySlots = buildBroadcastDailyScheduleSlots({
+    dayKeys: sevenDayKeys,
+    minutes: [9 * 60, 18 * 60],
+  });
+  const filteredSlots = filterBroadcastSlotsByDayKeys(sevenDaySlots, fiveDayKeys);
+
+  assert.equal(sevenDaySlots.length, 14);
+  assert.equal(filteredSlots.length, 10);
+  assert.deepEqual([...buildSlotsByDay(filteredSlots).keys()], fiveDayKeys);
+});
+
+test('builds weekday preset days and snaps custom times to calendar step', () => {
+  const nowMs = new Date(2026, 4, 8, 10, 0, 0, 0).getTime();
+  const preset = BROADCAST_DAY_PRESETS.find((item) => item.id === 'workdays');
+  const parsedMinutes = parseBroadcastPlannerTimeLabel('09:10');
+
+  assert.ok(preset);
+  assert.equal(parsedMinutes, 9 * 60 + 10);
+  assert.equal(normalizeBroadcastPlannerTimeMinutes(parsedMinutes ?? 0), 9 * 60);
+
+  const dayKeys = buildBroadcastPresetDayKeys(preset, { nowMs });
+  assert.equal(dayKeys.length, 5);
+  assert.deepEqual(
+    dayKeys.map((dayKey) => new Date(`${dayKey}T12:00:00`).getDay()),
+    [5, 1, 2, 3, 4],
   );
 });
 

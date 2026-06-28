@@ -23,23 +23,27 @@ type TimeFieldProps = {
   clearLabel?: string;
   placeholder?: string;
   variant?: 'default' | 'embedded' | 'compact';
+  minuteStep?: number;
   onChange: (nextValue: string) => void;
 };
 
 const HOURS = Array.from({ length: 24 }, (_, index) => index);
-const MINUTES = Array.from({ length: 60 }, (_, index) => index);
 const TIME_VALUE_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+function buildMinuteOptions(step: number): number[] {
+  const safeStep = Number.isFinite(step) ? Math.max(1, Math.min(60, Math.trunc(step))) : 1;
+  const values: number[] = [];
+
+  for (let minute = 0; minute < 60; minute += safeStep) {
+    values.push(minute);
+  }
+
+  return values;
+}
 
 function TimeFieldClockIcon({ size = 20 }: { size?: number }) {
   return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden
-      focusable="false"
-    >
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
       <circle cx="12" cy="12" r="8.2" stroke="currentColor" strokeWidth="1.9" />
       <path
         d="M12 7.6v4.8l3.2 2"
@@ -95,6 +99,7 @@ export function TimeField({
   clearLabel = 'Очистить',
   placeholder = 'Не задано',
   variant = 'default',
+  minuteStep = 1,
   onChange,
 }: TimeFieldProps) {
   const reactId = useId();
@@ -111,6 +116,7 @@ export function TimeField({
   const displayValue = isEmpty ? placeholder : resolveTimeLabel(value);
   const portalTarget = open ? resolveTimeFieldPortalTarget() : null;
 
+  const minuteOptions = useMemo(() => buildMinuteOptions(minuteStep), [minuteStep]);
   const selectedValue = useMemo(() => formatTime(draft), [draft]);
   const sheetValueLabel = isEmpty && !draftTouched ? placeholder : selectedValue;
 
@@ -172,10 +178,7 @@ export function TimeField({
     setDraftPart(part, nextValue, true);
   };
 
-  const handleOptionKeyDown = (
-    event: ReactKeyboardEvent<HTMLButtonElement>,
-    part: TimePartKey,
-  ) => {
+  const handleOptionKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, part: TimePartKey) => {
     if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
       event.preventDefault();
       shiftDraftPart(part, 1);
@@ -372,7 +375,7 @@ export function TimeField({
                 <div className="time-field-sheet__column">
                   <span className="time-field-sheet__column-label">Минуты</span>
                   <div className="time-field-sheet__options" role="listbox" aria-label="Минуты">
-                    {MINUTES.map((minute) => {
+                    {minuteOptions.map((minute) => {
                       const active = minute === draft.minute;
 
                       return (

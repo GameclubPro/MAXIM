@@ -2,6 +2,7 @@ import type { ManagedBroadcastCalendarSlot, ManagedBroadcastSummary } from '@max
 import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { MaxMarkdownPreview } from './max-markdown-preview';
+import { TimeField } from './ui/time-field';
 import { cn } from '../lib/cn';
 import {
   buildAgendaEntries,
@@ -9,9 +10,11 @@ import {
   type BroadcastScheduleAgendaEntry,
 } from '../lib/broadcast-planner-agenda';
 import {
+  BROADCAST_DAY_PRESETS,
   BROADCAST_PLANNER_NOW_REFRESH_MS,
   BROADCAST_PLANNER_SLOT_GROUPS,
   addDays,
+  buildBroadcastPresetDayKeys,
   buildFreeWindowsForDay,
   endOfMonth,
   formatAgendaTime,
@@ -21,12 +24,17 @@ import {
   formatDaySummary,
   formatMinuteLabel,
   formatMonthKey,
+  filterBroadcastSlotsByDayKeys,
+  getCommonSelectedMinutesForDays,
   getMinutesList,
   getMonthCells,
   getMonthKey,
   getMonthKeys,
   getSelectedDaySlots,
+  getSelectedMinutesForDay,
   getSuggestedMinutes,
+  normalizeBroadcastPlannerTimeMinutes,
+  parseBroadcastPlannerTimeLabel,
   snapMinutesToStep,
   sortDayKeys,
   startOfDay,
@@ -115,6 +123,10 @@ function areSelectionStatesEqual(
   );
 }
 
+function areStringArraysEqual(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
 const SLOT_GROUPS = BROADCAST_PLANNER_SLOT_GROUPS;
 const PLANNER_NOW_REFRESH_MS = BROADCAST_PLANNER_NOW_REFRESH_MS;
 
@@ -169,7 +181,9 @@ export function BroadcastSchedulePlanner({
   const [isConfirmed, setIsConfirmed] = useState(false);
   const [showFullTimeGrid, setShowFullTimeGrid] = useState(false);
   const [calendarExpanded, setCalendarExpanded] = useState(() => calendarOnly);
+  const [customTimeValue, setCustomTimeValue] = useState('');
   const lastSelectionStateRef = useRef<BroadcastSchedulePlannerSelectionState | null>(null);
+  const sheetPanelRef = useRef<HTMLElement | null>(null);
 
   const windowStart = startOfDay(liveNow);
   const windowEnd = endOfMonth(addDays(liveNow, BROADCAST_SCHEDULE_MAX_DAYS - 1));
@@ -194,14 +208,28 @@ export function BroadcastSchedulePlanner({
   const selectedInstantSet = new Set(normalizedValue.map(getBroadcastSlotInstantKey));
   const pickedDaySet = new Set(pickedDayKeys);
   const minimumTime = liveNowMs + 30_000;
+  const futureSlots = normalizedValue.filter((slot) => new Date(slot).getTime() >= minimumTime);
   const activeDaySlots = getSelectedDaySlots(activeDayKey, normalizedValue);
   const pickedDayLabel = formatCountLabel(pickedDayKeys.length, 'день', 'дня', 'дней');
   const pickedDaySummary = formatDaySummary(pickedDayKeys);
   const targetDayKeys =
     applyToAllPickedDays && pickedDayKeys.length > 1 ? pickedDayKeys : [activeDayKey];
+  const selectedTargetMinutes =
+    applyToAllPickedDays && pickedDayKeys.length > 1
+      ? getCommonSelectedMinutesForDays(targetDayKeys, normalizedValue)
+      : getSelectedMinutesForDay(activeDayKey, normalizedValue);
+  const selectedTargetMinuteLabels = selectedTargetMinutes.map(formatMinuteLabel);
   const normalizedCycle = normalizeBroadcastCycleDraft(
     cycle ?? createDefaultBroadcastCycleDraft(liveNowMs),
     liveNowMs,
+  );
+  const dayPresetOptions = useMemo(
+    () =>
+      BROADCAST_DAY_PRESETS.map((preset) => ({
+        preset,
+        dayKeys: buildBroadcastPresetDayKeys(preset, { nowMs: liveNowMs }),
+      })),
+    [liveNowMs],
   );
   const agendaEntries =
     calendarSlots.length > 0
@@ -247,10 +275,8 @@ export function BroadcastSchedulePlanner({
     },
     { enabled: isDaySheetOpen, priority: 640 },
   );
-  const pastSlotCount = normalizedValue.filter(
-    (slot) => new Date(slot).getTime() < minimumTime,
-  ).length;
-  const futureSlotCount = normalizedValue.length - pastSlotCount;
+  const pastSlotCount = normalizedValue.length - futureSlots.length;
+  const futureSlotCount = futureSlots.length;
   const scheduleStatusLabel =
     timingMode === 'now'
       ? 'Сейчас'
@@ -393,6 +419,85 @@ export function BroadcastSchedulePlanner({
   }, [normalizedValue.length, timingMode]);
 
   useEffect(() => {
+    if (!isDaySheetOpen) {
+      return undefined;
+    }
+
+    const previousActiveElement =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const { body, documentElement } = document;
+    const previousBodyOverflow = body.style.overflow;
+    const previousDocumentOverflow = documentElement.style.overflow;
+    const focusableSelector =
+      'button:not(:disabled):not([tabindex="-1"]), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (document.querySelector('.time-field-sheet')) {
+        return;
+      }
+
+      if (event.key === 'Escape') {
+        closeDaySheet();
+        return;
+      }
+
+      if (event.key !== 'Tab') {
+        return;
+      }
+
+      const panel = sheetPanelRef.current;
+      if (!panel) {
+        return;
+      }
+
+      const focusableItems = Array.from(
+        panel.querySelectorAll<HTMLElement>(focusableSelector),
+      ).filter((item) => !item.hasAttribute('disabled') && item.getClientRects().length > 0);
+
+      if (focusableItems.length === 0) {
+        event.preventDefault();
+        panel.focus();
+        return;
+      }
+
+      const firstItem = focusableItems[0];
+      const lastItem = focusableItems[focusableItems.length - 1];
+      const activeElement = document.activeElement;
+
+      if (activeElement && !panel.contains(activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? lastItem : firstItem)?.focus();
+      } else if (!event.shiftKey && activeElement === panel) {
+        event.preventDefault();
+        firstItem?.focus();
+      } else if (event.shiftKey && (activeElement === firstItem || activeElement === panel)) {
+        event.preventDefault();
+        lastItem?.focus();
+      } else if (!event.shiftKey && activeElement === lastItem) {
+        event.preventDefault();
+        firstItem?.focus();
+      }
+    };
+
+    body.style.overflow = 'hidden';
+    documentElement.style.overflow = 'hidden';
+    window.addEventListener('keydown', handleKeyDown);
+
+    const frame = window.requestAnimationFrame(() => {
+      sheetPanelRef.current?.focus();
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      body.style.overflow = previousBodyOverflow;
+      documentElement.style.overflow = previousDocumentOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+      window.requestAnimationFrame(() => {
+        previousActiveElement?.focus();
+      });
+    };
+  }, [isDaySheetOpen]);
+
+  useEffect(() => {
     if (calendarOnly) {
       setCalendarExpanded(true);
     }
@@ -465,7 +570,11 @@ export function BroadcastSchedulePlanner({
     setApplyToAllPickedDays(false);
 
     if (nextMode === 'scheduled') {
-      setCalendarExpanded(false);
+      setCalendarExpanded(true);
+      if (scheduledDayKeys.length > 0) {
+        setPickedDayKeys(scheduledDayKeys);
+        setActiveDayKey(scheduledDayKeys[0] ?? activeDayKey);
+      }
       return;
     }
 
@@ -590,6 +699,26 @@ export function BroadcastSchedulePlanner({
     maxImpact('medium');
   }
 
+  function applyDayPreset(dayKeys: string[]) {
+    if (disabled || dayKeys.length === 0) {
+      return;
+    }
+
+    activateScheduledMode();
+    setIsConfirmed(false);
+    setCalendarExpanded(true);
+    setPickedDayKeys(dayKeys);
+    setActiveDayKey(dayKeys[0] ?? activeDayKey);
+    setApplyToAllPickedDays(dayKeys.length > 1);
+    setSheetMode(null);
+    setAgendaDayKey(null);
+    if (normalizedValue.length > 0) {
+      onChange(filterBroadcastSlotsByDayKeys(normalizedValue, dayKeys));
+    }
+    onOpenDay?.(dayKeys[0] ?? activeDayKey);
+    maxSelectionChanged();
+  }
+
   function finishPickedSelection() {
     setPickedDayKeys([]);
     setApplyToAllPickedDays(false);
@@ -607,6 +736,18 @@ export function BroadcastSchedulePlanner({
 
   function clearPickedSelection() {
     finishPickedSelection();
+    maxImpact('soft');
+  }
+
+  function clearCalendarSchedule() {
+    setPickedDayKeys([]);
+    setApplyToAllPickedDays(false);
+    setSheetMode(null);
+    setAgendaDayKey(null);
+    setIsConfirmed(false);
+    if (normalizedValue.length > 0) {
+      onChange([]);
+    }
     maxImpact('soft');
   }
 
@@ -691,8 +832,13 @@ export function BroadcastSchedulePlanner({
       return;
     }
 
-    const dayKey = scheduledDayKeys[0] ?? activeDayKey ?? liveTodayKey;
-    openScheduledDay(dayKey);
+    activateScheduledMode();
+    setCalendarExpanded(true);
+    if (scheduledDayKeys.length > 0 && pickedDayKeys.length === 0) {
+      setPickedDayKeys(scheduledDayKeys);
+      setActiveDayKey(scheduledDayKeys[0] ?? activeDayKey);
+    }
+    maxImpact('soft');
   }
 
   function toggleSlot(minutes: number) {
@@ -725,6 +871,16 @@ export function BroadcastSchedulePlanner({
     maxImpact(shouldAdd ? 'light' : 'soft');
   }
 
+  function addCustomTime(value: string) {
+    const parsedMinutes = parseBroadcastPlannerTimeLabel(value);
+    if (parsedMinutes === null) {
+      return;
+    }
+
+    setCustomTimeValue('');
+    toggleSlot(normalizeBroadcastPlannerTimeMinutes(parsedMinutes));
+  }
+
   function revealFullTimeGrid() {
     setShowFullTimeGrid(true);
     maxImpact('soft');
@@ -738,7 +894,7 @@ export function BroadcastSchedulePlanner({
   const cycleStartInputValue = formatLocalDateTimeInputValue(normalizedCycle.startAt);
   const cycleStartMinValue = formatLocalDateTimeInputValue(new Date(liveNowMs + 30_000));
   const compactScheduleModeLabel =
-    timingMode === 'now' ? 'Сейчас' : timingMode === 'cycle' ? 'Повтор' : 'Расписание';
+    timingMode === 'now' ? 'Сейчас' : timingMode === 'cycle' ? 'Интервал' : 'Даты';
   const compactScheduleMeta =
     timingMode === 'now'
       ? 'сразу'
@@ -751,6 +907,15 @@ export function BroadcastSchedulePlanner({
             ].join(' · ')
           : 'Без слотов';
   const compactScheduleSummary = `${compactScheduleModeLabel} · ${compactScheduleMeta}`;
+  const compactSlotPreview =
+    timingMode === 'scheduled' && futureSlots.length > 0
+      ? [
+          ...futureSlots.slice(0, 3).map((slot) => formatBroadcastScheduleSlot(slot)),
+          futureSlots.length > 3 ? `+${futureSlots.length - 3}` : null,
+        ]
+          .filter(Boolean)
+          .join(' · ')
+      : '';
   const compactScheduleAction =
     timingMode === 'scheduled'
       ? futureSlotCount > 0
@@ -800,7 +965,7 @@ export function BroadcastSchedulePlanner({
                     disabled={disabled}
                     aria-pressed={timingMode === 'scheduled'}
                   >
-                    <strong>Расписание</strong>
+                    <strong>Даты</strong>
                     <small>{futureSlotCount > 0 ? scheduleStatusLabel : 'слоты'}</small>
                   </button>
                   <button
@@ -813,13 +978,10 @@ export function BroadcastSchedulePlanner({
                     onClick={() => selectTimingMode('cycle')}
                     disabled={disabled}
                     aria-pressed={timingMode === 'cycle'}
-                    aria-label="Повторять автопостинг с выбранным интервалом"
-                    title="Повторяет этот автопостинг с выбранным интервалом."
+                    aria-label="Интервал автопостинга"
+                    title="Интервал автопостинга"
                   >
-                    <strong>Повторять</strong>
-                    <span className="broadcast-planner__info-mark" aria-hidden>
-                      i
-                    </span>
+                    <strong>Интервал</strong>
                     <small>{formatBroadcastCycleIntervalLabel(normalizedCycle.everyHours)}</small>
                   </button>
                 </div>
@@ -834,6 +996,7 @@ export function BroadcastSchedulePlanner({
                   <span className="broadcast-planner__compact-copy">
                     <small>Когда</small>
                     <strong>{compactScheduleSummary}</strong>
+                    {compactSlotPreview ? <span>{compactSlotPreview}</span> : null}
                   </span>
                   <span className="broadcast-planner__compact-action">{compactScheduleAction}</span>
                 </button>
@@ -843,6 +1006,35 @@ export function BroadcastSchedulePlanner({
 
           {showCalendar ? (
             <>
+              {!calendarOnly ? (
+                <div className="broadcast-planner__quick-row" aria-label="Быстрый выбор дней">
+                  {dayPresetOptions.map(({ preset, dayKeys }) => (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      className={cn(
+                        'broadcast-planner__quick-chip',
+                        areStringArraysEqual(pickedDayKeys, dayKeys) && 'is-active',
+                      )}
+                      onClick={() => applyDayPreset(dayKeys)}
+                      disabled={disabled || dayKeys.length === 0}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    className="broadcast-planner__quick-chip"
+                    onClick={clearCalendarSchedule}
+                    disabled={
+                      disabled || (normalizedValue.length === 0 && pickedDayKeys.length === 0)
+                    }
+                  >
+                    Очистить
+                  </button>
+                </div>
+              ) : null}
+
               {calendarOnly ? (
                 <div
                   className={cn(
@@ -1254,10 +1446,12 @@ export function BroadcastSchedulePlanner({
               />
 
               <section
+                ref={sheetPanelRef}
                 className="broadcast-planner-sheet__panel"
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="broadcast-planner-sheet-title"
+                tabIndex={-1}
               >
                 <div className="broadcast-planner-sheet__grabber" aria-hidden />
 
@@ -1581,18 +1775,35 @@ export function BroadcastSchedulePlanner({
                         </div>
                       ) : null}
 
-                      {!applyToAllPickedDays && activeDaySlots.length > 0 ? (
+                      {selectedTargetMinuteLabels.length > 0 ? (
                         <div
                           className="broadcast-planner__selected-strip"
-                          aria-label="Выбранные слоты дня"
+                          aria-label="Выбранное время"
                         >
-                          {activeDaySlots.map((slot) => (
-                            <span key={slot} className="broadcast-planner__selected-chip">
-                              {formatBroadcastScheduleSlot(slot).split(', ').pop()}
+                          {selectedTargetMinuteLabels.map((label) => (
+                            <span key={label} className="broadcast-planner__selected-chip">
+                              {label}
                             </span>
                           ))}
                         </div>
                       ) : null}
+
+                      <div className="broadcast-planner__custom-time">
+                        <TimeField
+                          label="+ время"
+                          value={customTimeValue}
+                          placeholder="+ время"
+                          allowEmpty
+                          clearLabel="Очистить"
+                          variant="compact"
+                          minuteStep={30}
+                          disabled={disabled}
+                          onChange={(nextValue) => {
+                            setCustomTimeValue(nextValue);
+                            addCustomTime(nextValue);
+                          }}
+                        />
+                      </div>
 
                       {suggestedMinutes.length > 0 && !showFullTimeGrid ? (
                         <button
@@ -1671,6 +1882,7 @@ export function BroadcastSchedulePlanner({
                           disabled={disabled}
                         >
                           Готово
+                          {pickedSlotsCount > 0 ? <small>{pickedSlotsCount}</small> : null}
                         </button>
                       </div>
                     </>

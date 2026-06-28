@@ -534,7 +534,9 @@ const scenarios = [
     path: '/channel/preview-channel/stats',
     beforeShot: async (page) => {
       await page
-        .locator('.channel-insights__chart-controls .channel-insights__range .segmented-control__item')
+        .locator(
+          '.channel-insights__chart-controls .channel-insights__range .segmented-control__item',
+        )
         .filter({ hasText: /24ч/u })
         .click();
       await page.locator('.channel-stats-graph--continuous').first().waitFor({ state: 'visible' });
@@ -799,6 +801,7 @@ async function openBroadcastPlannerTimeSheet(page) {
 
   const dockButton = page.getByRole('button', { name: /^Время$/u }).first();
   const addTimeButton = page.getByRole('button', { name: /^Добавить время$/u }).first();
+  const sheetPanel = page.locator('.broadcast-planner-sheet__panel').first();
   const planner = page.locator('.broadcast-planner').first();
   if ((await planner.count()) > 0) {
     await planner.scrollIntoViewIfNeeded();
@@ -809,12 +812,19 @@ async function openBroadcastPlannerTimeSheet(page) {
   if ((await compactSummary.count()) > 0) {
     await compactSummary.click();
     await page.waitForTimeout(350);
-    return;
+    await selectBroadcastPlannerDefaultDays(page);
+    if ((await dockButton.count()) > 0) {
+      await dockButton.click();
+      await sheetPanel.waitFor({ state: 'visible', timeout: 10_000 });
+      await selectBroadcastPlannerDefaultTimes(page);
+      return;
+    }
   }
 
   if ((await dockButton.count()) > 0) {
     await dockButton.click();
-    await page.waitForTimeout(350);
+    await sheetPanel.waitFor({ state: 'visible', timeout: 10_000 });
+    await selectBroadcastPlannerDefaultTimes(page);
     return;
   }
 
@@ -833,12 +843,14 @@ async function openBroadcastPlannerTimeSheet(page) {
     await page.waitForTimeout(250);
     if ((await dockButton.count()) > 0) {
       await dockButton.click();
-      await page.waitForTimeout(350);
+      await sheetPanel.waitFor({ state: 'visible', timeout: 10_000 });
+      await selectBroadcastPlannerDefaultTimes(page);
       return;
     }
     if ((await addTimeButton.count()) > 0) {
       await addTimeButton.click();
-      await page.waitForTimeout(350);
+      await sheetPanel.waitFor({ state: 'visible', timeout: 10_000 });
+      await selectBroadcastPlannerDefaultTimes(page);
       return;
     }
   }
@@ -846,7 +858,8 @@ async function openBroadcastPlannerTimeSheet(page) {
   const scheduleCard = page.locator('.broadcast-planner__schedule-card').first();
   if ((await scheduleCard.count()) > 0) {
     await scheduleCard.click();
-    await page.waitForTimeout(350);
+    await sheetPanel.waitFor({ state: 'visible', timeout: 10_000 });
+    await selectBroadcastPlannerDefaultTimes(page);
     return;
   }
 
@@ -856,17 +869,78 @@ async function openBroadcastPlannerTimeSheet(page) {
     await page.waitForTimeout(250);
     if ((await addTimeButton.count()) > 0) {
       await addTimeButton.click();
-      await page.waitForTimeout(350);
+      await sheetPanel.waitFor({ state: 'visible', timeout: 10_000 });
+      await selectBroadcastPlannerDefaultTimes(page);
       return;
     }
     if ((await dockButton.count()) > 0) {
       await dockButton.click();
-      await page.waitForTimeout(350);
+      await sheetPanel.waitFor({ state: 'visible', timeout: 10_000 });
+      await selectBroadcastPlannerDefaultTimes(page);
       return;
     }
   }
 
   throw new Error('Broadcast planner time sheet trigger was not found.');
+}
+
+async function selectBroadcastPlannerDefaultDays(page) {
+  const clearButton = page
+    .locator('.broadcast-planner__quick-chip')
+    .filter({ hasText: /^Очистить$/u })
+    .first();
+  if ((await clearButton.count()) > 0 && (await clearButton.isEnabled())) {
+    await clearButton.click();
+    await page.waitForTimeout(150);
+  }
+
+  const fiveDayPreset = page
+    .locator('.broadcast-planner__quick-chip')
+    .filter({ hasText: /^5 дней$/u })
+    .first();
+  if ((await fiveDayPreset.count()) > 0 && (await fiveDayPreset.isEnabled())) {
+    await fiveDayPreset.click();
+    await page.waitForTimeout(250);
+    return;
+  }
+
+  const firstDay = page.locator('.broadcast-planner__day:not([disabled])').first();
+  if ((await firstDay.count()) > 0) {
+    await firstDay.click();
+    await page.waitForTimeout(250);
+  }
+}
+
+async function selectBroadcastPlannerDefaultTimes(page) {
+  for (let index = 0; index < 2; index += 1) {
+    const suggestedChip = page
+      .locator(
+        '.broadcast-planner__suggested-chip:not(.is-selected):not(.is-mixed):not(.is-disabled):not(.is-busy)',
+      )
+      .first();
+
+    if ((await suggestedChip.count()) > 0 && (await suggestedChip.isEnabled())) {
+      await suggestedChip.click();
+      await page.waitForTimeout(120);
+      continue;
+    }
+
+    const expandButton = page.getByRole('button', { name: /^Показать весь день$/u }).first();
+    if ((await expandButton.count()) > 0 && (await expandButton.isEnabled())) {
+      await expandButton.click();
+      await page.waitForTimeout(120);
+    }
+
+    const timeChip = page
+      .locator(
+        '.broadcast-planner__time-chip:not(.is-selected):not(.is-mixed):not(.is-disabled):not(.is-busy)',
+      )
+      .first();
+    if ((await timeChip.count()) > 0 && (await timeChip.isEnabled())) {
+      await timeChip.click();
+      await page.waitForTimeout(120);
+    }
+  }
 }
 
 function buildPreviewUrl(baseUrl, routePath, queryDevice, scenarioSearchParams = {}, options = {}) {
