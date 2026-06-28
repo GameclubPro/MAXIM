@@ -20840,7 +20840,7 @@ describe('AdminService.updateChannelSettings', () => {
       },
     );
 
-    expect(result.autoPostButtonsMode).toBe('BOTH');
+    expect(result.autoPostButtonsMode).toBe('OFF');
     expect(prisma.chat.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         update: expect.objectContaining({
@@ -20848,7 +20848,7 @@ describe('AdminService.updateChannelSettings', () => {
           channelSettings: expect.objectContaining({
             upsert: expect.objectContaining({
               update: expect.objectContaining({
-                autoPostButtonsMode: 'BOTH',
+                autoPostButtonsMode: 'OFF',
               }),
             }),
           }),
@@ -26674,7 +26674,6 @@ describe('AdminService.sendChannelBroadcast', () => {
       expect.objectContaining({
         buttons: [
           [expect.objectContaining({ text: '💬 Комментарии · 0' })],
-          [expect.objectContaining({ text: 'Предложить пост' })],
         ],
       }),
       expect.objectContaining({
@@ -26692,10 +26691,9 @@ describe('AdminService.sendChannelBroadcast', () => {
           messageId: 'mid-channel-comments-1',
           threadId: expect.any(String),
           includeCommentsButton: true,
-          includeSuggestButton: true,
+          includeSuggestButton: false,
           autoPostButtonsMode: 'COMMENTS',
           suggestionEntryMode: 'MINIAPP',
-          suggestButtonText: 'Предложить пост',
           source: 'managed_broadcast',
           managedBroadcastSource: 'miniapp',
           text: 'Пост с обсуждением',
@@ -27202,7 +27200,7 @@ describe('AdminService.sendChannelBroadcast', () => {
     });
     prisma.channelSettings.upsert.mockResolvedValue({
       chatId: 'channel-1',
-      autoPostButtonsMode: 'OFF',
+      autoPostButtonsMode: 'COMMENTS',
       postSuggestionsEnabled: false,
       postSuggestionsButtonText: '📰 Предложить пост',
       commentsEnabled: true,
@@ -27347,8 +27345,9 @@ describe('AdminService.sendChannelBroadcast', () => {
     });
     prisma.channelSettings.upsert.mockResolvedValue({
       chatId: 'channel-1',
-      autoPostButtonsMode: 'OFF',
+      autoPostButtonsMode: 'SUGGEST',
       postSuggestionsEnabled: true,
+      postSuggestionsEntryMode: 'BOT',
       postSuggestionsButtonText: '📰 Предложить пост',
       commentsEnabled: false,
       engagementPublishedMessageId: null,
@@ -27360,6 +27359,10 @@ describe('AdminService.sendChannelBroadcast', () => {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       uploadImage: jest.fn().mockResolvedValue({ token: 'upload-token-channel-1' }),
       sendMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({
+        messageId: 'mid-channel-system-suggest-1',
+        url: 'https://max.ru/chats/channel-1/message/mid-channel-system-suggest-1',
+      }),
     };
     const chatContextCache = {
       invalidate: jest.fn(),
@@ -27398,12 +27401,12 @@ describe('AdminService.sendChannelBroadcast', () => {
       },
     );
 
-    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
-    const [, messageText, options, dispatch] = maxClient.sendMessage.mock.calls[0];
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    const [, messageText, options, dispatch] = maxClient.sendMessageImmediateWithId.mock.calls[0];
     expect(messageText).toBe('<strong>Новый выпуск</strong> уже в канале.');
     expect(dispatch).toEqual(
       expect.objectContaining({
-        immediate: true,
         trafficClass: 'interactive',
         actionHealthLane: 'interactive',
         sourceTag: 'managed_broadcast',
@@ -27417,6 +27420,102 @@ describe('AdminService.sendChannelBroadcast', () => {
       'start',
     );
     expect(suggestStartParam).toMatch(/^cds-/u);
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'channel-1',
+        actorUserId: 'admin-1',
+        action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
+        payload: expect.objectContaining({
+          messageId: 'mid-channel-system-suggest-1',
+          threadId: expect.any(String),
+          includeCommentsButton: false,
+          includeSuggestButton: true,
+          autoPostButtonsMode: 'SUGGEST',
+          suggestionEntryMode: 'BOT',
+          suggestButtonText: '📰 Предложить пост',
+          source: 'managed_broadcast',
+          managedBroadcastSource: 'miniapp',
+          publishedUrl: 'https://max.ru/chats/channel-1/message/mid-channel-system-suggest-1',
+        }),
+      }),
+    });
+  });
+
+  it('does not publish channel broadcast system buttons when auto-post buttons mode is off', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+      createdAt: new Date('2026-03-01T00:00:00.000Z'),
+    });
+    prisma.channelSettings.upsert.mockResolvedValue({
+      chatId: 'channel-1',
+      autoPostButtonsMode: 'OFF',
+      postSuggestionsEnabled: true,
+      postSuggestionsButtonText: '📰 Предложить пост',
+      commentsEnabled: true,
+      engagementPublishedMessageId: null,
+      engagementPublishedThreadId: null,
+      engagementPublishedAt: null,
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessageImmediateWithId: jest.fn(),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await service.sendChannelBroadcast(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: '**Новый выпуск** уже в канале.',
+        textFormat: 'markdown',
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: '',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+      },
+    );
+
+    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    const [, , options] = maxClient.sendMessage.mock.calls[0];
+    expect(options).toEqual({
+      textFormat: 'html',
+    });
+    expect(prisma.auditLog.create).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
+        }),
+      }),
+    );
   });
 
   it('treats past slots from today as already sent for calendar broadcast scheduling', async () => {
@@ -32125,6 +32224,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
     prisma.channelSettings.findUnique.mockResolvedValue(
       channelSettingsSchema.parse({
+        autoPostButtonsMode: 'BOTH',
         commentsEnabled: true,
         postSuggestionsEnabled: true,
         postSuggestionsButtonText: '📰 Предложить пост',
@@ -32365,6 +32465,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
     prisma.channelSettings.findUnique.mockResolvedValue(
       channelSettingsSchema.parse({
+        autoPostButtonsMode: 'BOTH',
         commentsEnabled: true,
         postSuggestionsEnabled: true,
         postSuggestionsButtonText: '📰 Предложить пост',
@@ -32494,6 +32595,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
     prisma.channelSettings.findUnique.mockResolvedValue(
       channelSettingsSchema.parse({
+        autoPostButtonsMode: 'BOTH',
         commentsEnabled: true,
         postSuggestionsEnabled: true,
         postSuggestionsButtonText: 'Предложить пост',
@@ -32641,6 +32743,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
     prisma.channelSettings.findUnique.mockResolvedValue(
       channelSettingsSchema.parse({
+        autoPostButtonsMode: 'BOTH',
         commentsEnabled: true,
         postSuggestionsEnabled: true,
         postSuggestionsButtonText: 'Предложить пост',
@@ -32783,6 +32886,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
     prisma.channelSettings.findUnique.mockResolvedValue(
       channelSettingsSchema.parse({
+        autoPostButtonsMode: 'BOTH',
         commentsEnabled: true,
         postSuggestionsEnabled: true,
         postSuggestionsButtonText: 'Предложить пост',

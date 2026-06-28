@@ -999,13 +999,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    const signature = JSON.stringify(broadcastHandoffStateQuery.data);
-    if (appliedBroadcastHandoffSignatureRef.current === signature) {
-      return;
-    }
+	    const signature = JSON.stringify(broadcastHandoffStateQuery.data);
+	    if (appliedBroadcastHandoffSignatureRef.current === signature) {
+	      return;
+	    }
 
-    appliedBroadcastHandoffSignatureRef.current = signature;
-    setEditingManagedBroadcast(null);
+	    appliedBroadcastHandoffSignatureRef.current = signature;
+	    broadcastDraftRestoreEpochRef.current += 1;
+	    setEditingManagedBroadcast(null);
     setDuplicatedManagedBroadcast(null);
     const handoffTargetChatIds = normalizeBroadcastAudienceTargetChatIds(
       broadcastHandoffStateQuery.data.targetChatIds,
@@ -3039,10 +3040,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     ) {
       setMailingAudienceError('Обновите выбор чатов.');
     }
-    if (
+    if (message.includes('BROADCAST_TARGET_SLOT_CONFLICT')) {
+      setMailingScheduleError('У получателя уже есть автопостинг на это время.');
+      void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
+      void queryClient.invalidateQueries({ queryKey: ['managed-broadcast-calendar', chatId] });
+    } else if (
       message.toLowerCase().includes('выбранное время') ||
-      message.includes('BROADCAST_SLOT_CONFLICT') ||
-      message.includes('BROADCAST_TARGET_SLOT_CONFLICT')
+      message.includes('BROADCAST_SLOT_CONFLICT')
     ) {
       setMailingScheduleError('Календарь обновился. Выберите свободный слот.');
       void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
@@ -4665,12 +4669,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       : null;
   const mailingTimingSummary =
     mailingTimingMode === 'now'
-      ? 'сразу'
+      ? 'Сейчас'
       : mailingTimingMode === 'cycle'
         ? formatBroadcastCycleSummary(mailingNormalizedCycle, mailingNowMs)
         : mailingScheduledSlots.length > 0
           ? mailingSlotsLabel
-          : 'без слотов';
+          : 'Без слотов';
   const mailingSelectionSummary = [
     mailingPlannerState.selectedDayCount > 0
       ? formatRussianCountLabel(mailingPlannerState.selectedDayCount, 'день', 'дня', 'дней')
@@ -4691,7 +4695,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       : mailingTimingMode === 'scheduled'
         ? mailingScheduledSlots.length > 0
           ? mailingSlotsLabel
-          : 'Календ'
+          : 'План'
         : mailingHasPublishableContent
           ? 'Готов'
           : 'Черновик';
@@ -4750,12 +4754,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     (mailingTimingMode === 'cycle' && !mailingCycleValidationError) ||
     mailingCalendarScheduleReady;
   const mailingTestReady = mailingContentReady && mailingButtonDraftValid;
-  const mailingSendDisabled = isMailingBusy;
+  const mailingSendDisabled =
+    isMailingBusy ||
+    !mailingContentReady ||
+    !mailingAudienceReady ||
+    !mailingScheduleReady ||
+    !mailingHasFutureSlots ||
+    !mailingButtonDraftValid;
   const mailingPublishIssueLabels = [
-    !mailingHasPublishableContent ? 'Нет сообщения' : null,
+    !mailingHasPublishableContent ? 'Текст' : null,
     mailingHasPublishableContent && !mailingMediaReady ? 'Фото' : null,
-    !mailingAudienceReady ? 'Нет адресата' : null,
-    !mailingScheduleReady || !mailingHasFutureSlots ? 'Нет времени' : null,
+    !mailingAudienceReady ? 'Адресат' : null,
+    !mailingScheduleReady || !mailingHasFutureSlots ? 'Время' : null,
     !mailingButtonDraftValid ? 'Кнопки' : null,
   ].filter((item): item is string => Boolean(item));
   const mailingPublishIssueActions = mailingPublishIssueLabels.map((label) => ({
@@ -4763,22 +4773,22 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     onClick: () => {
       setMailingWorkspaceView('compose');
 
-      if (label === 'Нет сообщения') {
-        setMailingTextError('Добавьте текст, фото или видео.');
-        return;
-      }
+	      if (label === 'Текст') {
+	        setMailingTextError('Добавьте текст, фото или видео.');
+	        return;
+	      }
 
       if (label === 'Фото') {
         setMailingImageError(mailingImagesPreparing ? 'Фото ещё готовится.' : 'Фото не готово.');
         return;
       }
 
-      if (label === 'Нет адресата') {
-        setMailingAudienceError('Выберите хотя бы один чат.');
-        return;
-      }
+	      if (label === 'Адресат') {
+	        setMailingAudienceError('Выберите хотя бы один чат.');
+	        return;
+	      }
 
-      if (label === 'Нет времени') {
+	      if (label === 'Время') {
         if (mailingTimingMode === 'cycle') {
           setMailingCycleError(mailingCycleValidationError ?? 'Проверьте цикл публикаций.');
           return;
@@ -4844,7 +4854,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : mailingPublishIssueLabels.length > 0 && !isMailingBusy
       ? mailingPublishIssueLabels.join(' · ')
       : mailingTimingMode === 'now'
-        ? 'Сразу'
+        ? 'Сейчас'
         : mailingTimingMode === 'cycle'
           ? formatBroadcastCycleSummary(mailingNormalizedCycle, mailingNowMs)
           : mailingSelectionSummary || 'Автопостинг';
@@ -11066,8 +11076,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       <ActionConfirmSheet
         id="mailing-slot-conflict"
         open={pendingMailingSlotConflict !== null}
-        title="Заменить слот?"
-        summary="На это время уже есть автопостинг."
+        title="Слот занят"
+        summary="Можно заменить только слот этого чата."
         previewTitle={
           pendingMailingConflictPreviewSlot
             ? formatCompactBroadcastDateTime(
@@ -11084,7 +11094,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 'занятых слота',
                 'занятых слотов',
               )
-            : 'Текущий автопостинг на это время будет заменён.'
+            : 'Слот будет заменён, если получатели свободны.'
         }
         confirmLabel="Заменить"
         cancelLabel="Другое время"

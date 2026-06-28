@@ -95,11 +95,19 @@ export function chunkBroadcastLinkButtons<T>(buttons: T[]): T[][] {
   return rows;
 }
 
-export function buildBroadcastPreviewButtonRows<T>(customButtons: T[], systemButtons: T[]): T[][] {
-  return [...chunkBroadcastLinkButtons(customButtons), ...systemButtons.map((button) => [button])];
+export function buildBroadcastPreviewButtonRows<TCustom, TSystem>(
+  customButtons: TCustom[],
+  systemButtons: TSystem[],
+): Array<Array<TCustom | TSystem>> {
+  return [
+    ...chunkBroadcastLinkButtons<TCustom | TSystem>(customButtons),
+    ...systemButtons.map((button) => [button]),
+  ];
 }
 
-export function formatBroadcastButtonsStatus(buttons: BroadcastLinkButton[]): string {
+type BroadcastButtonPreviewLabel = Pick<BroadcastLinkButton, 'text'>;
+
+export function formatBroadcastButtonsStatus(buttons: BroadcastButtonPreviewLabel[]): string {
   const count = buttons.length;
   if (count === 0) {
     return 'Нет';
@@ -121,7 +129,7 @@ export function formatBroadcastButtonsStatus(buttons: BroadcastLinkButton[]): st
   return `${count} ${noun}`;
 }
 
-export function formatBroadcastButtonsPreview(buttons: BroadcastLinkButton[]): string {
+export function formatBroadcastButtonsPreview(buttons: BroadcastButtonPreviewLabel[]): string {
   const labels = buttons.map((button) => button.text.trim()).filter((label) => label.length > 0);
 
   if (labels.length === 0) {

@@ -10,6 +10,7 @@ import {
   buildBroadcastPreviewButtonRows,
   formatBroadcastButtonsPreview,
 } from '../lib/broadcast-link-buttons';
+import type { BroadcastSystemButtonPreview } from '../lib/broadcast-system-buttons';
 import { openFileInputPicker, resolveFileInputActivationMode } from '../lib/file-input-picker';
 
 type BroadcastContentComposerImage = {
@@ -27,6 +28,12 @@ type PreparingImagesState = {
 const BROADCAST_IMAGES_MAX = 10;
 const BROADCAST_IMAGES_TOTAL_BASE64_MAX = 24_000_000;
 
+function isBroadcastSystemButtonPreview(
+  button: BroadcastLinkButton | BroadcastSystemButtonPreview,
+): button is BroadcastSystemButtonPreview {
+  return 'kind' in button;
+}
+
 type BroadcastContentComposerProps = {
   className?: string;
   text: string;
@@ -35,7 +42,7 @@ type BroadcastContentComposerProps = {
   images?: BroadcastImage[];
   maxImages?: number;
   buttons?: BroadcastLinkButton[];
-  systemButtons?: BroadcastLinkButton[];
+  systemButtons?: BroadcastSystemButtonPreview[];
   buttonsStatusLabel?: string;
   buttonsActive?: boolean;
   buttonsError?: boolean;
@@ -364,17 +371,23 @@ export function BroadcastContentComposer({
                         key={`preview-row-${rowIndex}`}
                         className="broadcast-message-card__button-row"
                       >
-                        {row.map((button, buttonIndex) => (
-                          <span
-                            key={`${rowIndex}-${buttonIndex}-${button.text}-${button.url}`}
-                            className={cn(
-                              'broadcast-message-card__button',
-                              previewSystemButtons.includes(button) && 'is-system',
-                            )}
-                          >
-                            {button.text.trim()}
-                          </span>
-                        ))}
+                        {row.map((button, buttonIndex) => {
+                          const isSystemButton = isBroadcastSystemButtonPreview(button);
+
+                          return (
+                            <span
+                              key={`${rowIndex}-${buttonIndex}-${button.text}-${
+                                isSystemButton ? button.kind : button.url
+                              }`}
+                              className={cn(
+                                'broadcast-message-card__button',
+                                isSystemButton && 'is-system',
+                              )}
+                            >
+                              {button.text.trim()}
+                            </span>
+                          );
+                        })}
                       </div>
                     ))}
                   </div>

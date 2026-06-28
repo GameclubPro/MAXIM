@@ -26,17 +26,27 @@ export function normalizeChannelAutoPostButtonsMode(
     'autoPostButtonsMode' | 'commentsEnabled' | 'postSuggestionsEnabled'
   >,
 ): ChannelSettings['autoPostButtonsMode'] {
-  const includeComments = settings.commentsEnabled;
-  const includeSuggest = settings.postSuggestionsEnabled;
+  const commentsAvailable = settings.commentsEnabled;
+  const suggestAvailable = settings.postSuggestionsEnabled;
+  const mode = settings.autoPostButtonsMode;
 
-  if (includeComments && includeSuggest) {
-    return 'BOTH';
+  if (!commentsAvailable && !suggestAvailable) {
+    return 'OFF';
   }
-  if (includeComments) {
-    return 'COMMENTS';
+  if (mode === 'OFF') {
+    return 'OFF';
   }
-  if (includeSuggest) {
-    return 'SUGGEST';
+  if (mode === 'COMMENTS') {
+    return commentsAvailable ? 'COMMENTS' : suggestAvailable ? 'SUGGEST' : 'OFF';
+  }
+  if (mode === 'SUGGEST') {
+    return suggestAvailable ? 'SUGGEST' : commentsAvailable ? 'COMMENTS' : 'OFF';
+  }
+  if (mode === 'BOTH') {
+    if (commentsAvailable && suggestAvailable) {
+      return 'BOTH';
+    }
+    return commentsAvailable ? 'COMMENTS' : suggestAvailable ? 'SUGGEST' : 'OFF';
   }
   return 'OFF';
 }

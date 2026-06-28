@@ -3352,7 +3352,7 @@ export class AdminManagedBroadcastRuntime {
     occurrenceIndex?: number;
   }): Promise<void> {
     const { chatId, actorUserId, messageId, reference } = params;
-    if (!messageId || !reference?.includeCommentsButton) {
+    if (!messageId || (!reference?.includeCommentsButton && !reference?.includeSuggestButton)) {
       return;
     }
     const postPreviewText =

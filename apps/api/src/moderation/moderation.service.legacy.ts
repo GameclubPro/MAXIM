@@ -39,6 +39,7 @@ import {
   Prisma,
   SanctionAction,
   WebhookStatus,
+  type ChannelAutoPostAttachStatus,
   type ChannelSettings as PersistedChannelSettings,
   type ChatSettings,
 } from '../prisma/prisma-client';
@@ -372,6 +373,25 @@ type RequiredSubscriptionMembershipResult = {
   unresolvedChannelIds: string[];
   terminalChannelIds: string[];
 };
+
+type ChannelAutoPostAttachOutcome = 'attached' | 'skipped' | 'noop' | 'in_progress';
+
+type ChannelAutoPostAttachClaim =
+  | {
+      status: 'claimed';
+      lockToken: string;
+    }
+  | {
+      status: 'done' | 'in_progress';
+    };
+
+const CHANNEL_AUTO_POST_ATTACH_STATUS = {
+  IN_PROGRESS: 'IN_PROGRESS',
+  SUCCEEDED: 'SUCCEEDED',
+  SKIPPED: 'SKIPPED',
+} as const satisfies Record<string, ChannelAutoPostAttachStatus>;
+
+const CHANNEL_AUTO_POST_ATTACH_LOCK_TTL_MS = 2 * 60_000;
 
 @Injectable()
 export class ModerationService implements OnModuleInit, OnModuleDestroy {
@@ -12240,11 +12260,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    this.markChannelAutoPostWebhookSeen(
-      chatId,
-      messageId,
-      this.resolveChannelAutoPostEventTimestampMs(update),
-    );
+    const eventTimestampMs = this.resolveChannelAutoPostEventTimestampMs(update);
 
     if (senderId) {
       const mode = await this.resolveSystemModeSnapshot();
@@ -12259,6 +12275,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
       );
       if (!senderAdminCheck.isAdmin) {
+        this.markChannelAutoPostWebhookSeen(chatId, messageId, eventTimestampMs);
         return;
       }
     }
@@ -12270,7 +12287,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       typeof text === 'string' ? text : null,
     );
 
-    await this.tryAutoAttachChannelMessageButtons({
+    const outcome = await this.tryAutoAttachChannelMessageButtons({
       chatId,
       messageId,
       text: messageText.text,
@@ -12280,6 +12297,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       source: 'webhook',
       senderId,
     });
+    if (outcome !== 'in_progress') {
+      this.markChannelAutoPostWebhookSeen(chatId, messageId, eventTimestampMs);
+    }
   }
 
   private async processChannelAutoPostButtons(): Promise<void> {
@@ -12311,11 +12331,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               autoPostButtonsMode: {
                 in: ['COMMENTS', 'BOTH'],
               },
-            },
-            {
               commentsEnabled: true,
             },
             {
+              autoPostButtonsMode: {
+                in: ['SUGGEST', 'BOTH'],
+              },
               postSuggestionsEnabled: true,
             },
           ],
@@ -12521,7 +12542,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         break;
       }
 
-      await this.tryAutoAttachChannelMessageButtons({
+      const outcome = await this.tryAutoAttachChannelMessageButtons({
         chatId,
         messageId: normalized.messageId,
         text: normalized.text,
@@ -12532,6 +12553,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         senderId: null,
       });
       autoAttachAttempts += 1;
+      if (outcome === 'in_progress') {
+        break;
+      }
       scanState = this.advanceChannelAutoPostScanState(scanState, normalized);
       this.channelAutoPostScanState.set(chatId, scanState);
     }
@@ -12942,12 +12966,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string;
     messageId: string;
     text: string | null;
-    textFormat: MaxSendMessageOptions['textFormat'] | null;
+    textFormat?: MaxSendMessageOptions['textFormat'] | null;
     linkType: string | null;
     managedChannel: ManagedChannelContext;
     source: 'webhook' | 'poll';
     senderId: string | null;
-  }): Promise<void> {
+  }): Promise<ChannelAutoPostAttachOutcome> {
     const { chatId, messageId, text, textFormat, linkType, managedChannel, source, senderId } =
       params;
     const autoAttachBotId = await this.resolveAutoAttachBotId(chatId, source);
@@ -12966,26 +12990,24 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       managedChannel.channelSettings,
     );
     if (!includeCommentsButton && !includeSuggestButton) {
-      return;
+      return 'noop';
     }
 
-    const alreadyAttached = await this.prisma.auditLog.findFirst({
-      where: {
-        chatId,
-        action: {
-          in: [CHANNEL_DIALOG_AUTO_ATTACH_ACTION, CHANNEL_DIALOG_AUTO_ATTACH_SKIP_ACTION],
-        },
-        payload: {
-          path: ['messageId'],
-          equals: messageId,
-        },
-      },
-      select: {
-        id: true,
-      },
+    const claim = await this.claimChannelAutoPostAttachMarker({
+      chatId,
+      messageId,
+      source,
+      botId: autoAttachBotId,
+      linkType,
     });
-    if (alreadyAttached) {
-      return;
+    if (claim.status === 'done') {
+      return 'skipped';
+    }
+    if (claim.status === 'in_progress') {
+      return 'in_progress';
+    }
+    if (claim.status !== 'claimed') {
+      return 'skipped';
     }
 
     const threadId = randomUUID();
@@ -12998,7 +13020,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       autoAttachBotId,
     );
     if (buttons.length === 0) {
-      return;
+      await this.completeChannelAutoPostAttachMarker({
+        chatId,
+        messageId,
+        lockToken: claim.lockToken,
+        status: CHANNEL_AUTO_POST_ATTACH_STATUS.SKIPPED,
+        source,
+        botId: autoAttachBotId,
+        linkType,
+        deliveryMode: null,
+        lastError: 'No channel auto-post buttons to attach.',
+        lastStatusCode: null,
+      });
+      return 'noop';
     }
 
     let deliveryMode: 'edit_message' | 'reply_message' | 'replace_with_bot_message' =
@@ -13078,7 +13112,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           error,
         }))
       ) {
-        return;
+        await this.completeChannelAutoPostAttachMarker({
+          chatId,
+          messageId,
+          lockToken: claim.lockToken,
+          status: CHANNEL_AUTO_POST_ATTACH_STATUS.SKIPPED,
+          source,
+          botId: autoAttachBotId,
+          linkType,
+          deliveryMode: linkType === 'forward' ? 'replace_with_bot_message' : 'edit_message',
+          lastError: this.extractErrorSummary(error),
+          lastStatusCode: status,
+        });
+        return 'skipped';
       }
       if (status && status < 500 && status !== 429) {
         this.logger.warn(
@@ -13104,7 +13150,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             status,
             error,
           });
-          return;
+          await this.completeChannelAutoPostAttachMarker({
+            chatId,
+            messageId,
+            lockToken: claim.lockToken,
+            status: CHANNEL_AUTO_POST_ATTACH_STATUS.SKIPPED,
+            source,
+            botId: autoAttachBotId,
+            linkType,
+            deliveryMode: 'edit_message',
+            lastError: this.extractErrorSummary(error),
+            lastStatusCode: status,
+          });
+          return 'skipped';
         }
 
         await this.recordChannelAutoPostTerminalSkip({
@@ -13118,10 +13176,31 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           status,
           error,
         });
-        return;
-      } else {
-        throw error;
+        await this.completeChannelAutoPostAttachMarker({
+          chatId,
+          messageId,
+          lockToken: claim.lockToken,
+          status: CHANNEL_AUTO_POST_ATTACH_STATUS.SKIPPED,
+          source,
+          botId: autoAttachBotId,
+          linkType,
+          deliveryMode: 'replace_with_bot_message',
+          lastError: this.extractErrorSummary(error),
+          lastStatusCode: status,
+        });
+        return 'skipped';
       }
+      await this.releaseChannelAutoPostAttachMarker({
+        chatId,
+        messageId,
+        lockToken: claim.lockToken,
+        source,
+        botId: autoAttachBotId,
+        linkType,
+        lastError: this.extractErrorSummary(error),
+        lastStatusCode: status,
+      });
+      throw error;
     }
 
     await this.prisma.auditLog.create({
@@ -13150,6 +13229,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
       },
     });
+    await this.completeChannelAutoPostAttachMarker({
+      chatId,
+      messageId,
+      lockToken: claim.lockToken,
+      status: CHANNEL_AUTO_POST_ATTACH_STATUS.SUCCEEDED,
+      source,
+      botId: autoAttachBotId,
+      linkType,
+      deliveryMode,
+      replacementMessageId,
+      publishedUrl,
+      lastError: null,
+      lastStatusCode: null,
+    });
+    return 'attached';
   }
 
   private buildMaxMessageFallbackUrl(chatId: string, messageId: string | null): string | null {
@@ -13162,6 +13256,232 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return `https://max.ru/chats/${encodeURIComponent(normalizedChatId)}/message/${encodeURIComponent(
       normalizedMessageId,
     )}`;
+  }
+
+  private getChannelAutoPostAttachMarkerDelegate(): {
+    findUnique?: (args: unknown) => Promise<{
+      status: ChannelAutoPostAttachStatus;
+      lockedAt: Date | null;
+    } | null>;
+    create?: (args: unknown) => Promise<unknown>;
+    update?: (args: unknown) => Promise<unknown>;
+    updateMany?: (args: unknown) => Promise<{ count: number }>;
+  } | null {
+    return (
+      (this.prisma as unknown as {
+        channelAutoPostAttachMarker?: {
+          findUnique?: (args: unknown) => Promise<{
+            status: ChannelAutoPostAttachStatus;
+            lockedAt: Date | null;
+          } | null>;
+          create?: (args: unknown) => Promise<unknown>;
+          update?: (args: unknown) => Promise<unknown>;
+          updateMany?: (args: unknown) => Promise<{ count: number }>;
+        };
+      }).channelAutoPostAttachMarker ?? null
+    );
+  }
+
+  private async claimChannelAutoPostAttachMarker(params: {
+    chatId: string;
+    messageId: string;
+    source: 'webhook' | 'poll';
+    botId: string | null;
+    linkType: string | null;
+  }): Promise<ChannelAutoPostAttachClaim> {
+    if (await this.hasCompletedChannelAutoPostAttachMarker(params.chatId, params.messageId)) {
+      return { status: 'done' };
+    }
+
+    const delegate = this.getChannelAutoPostAttachMarkerDelegate();
+    const lockToken = randomUUID();
+    const now = new Date();
+    if (!delegate?.findUnique || !delegate.create || !delegate.updateMany) {
+      return { status: 'claimed', lockToken };
+    }
+
+    const existing = await delegate.findUnique({
+      where: {
+        chatId_messageId: {
+          chatId: params.chatId,
+          messageId: params.messageId,
+        },
+      },
+      select: {
+        status: true,
+        lockedAt: true,
+      },
+    });
+
+    if (
+      existing?.status === CHANNEL_AUTO_POST_ATTACH_STATUS.SUCCEEDED ||
+      existing?.status === CHANNEL_AUTO_POST_ATTACH_STATUS.SKIPPED
+    ) {
+      return { status: 'done' };
+    }
+
+    if (!existing) {
+      try {
+        await delegate.create({
+          data: {
+            chatId: params.chatId,
+            messageId: params.messageId,
+            status: CHANNEL_AUTO_POST_ATTACH_STATUS.IN_PROGRESS,
+            lockToken,
+            lockedAt: now,
+            source: params.source,
+            botId: params.botId,
+            linkType: params.linkType,
+          },
+        });
+        return { status: 'claimed', lockToken };
+      } catch (error: unknown) {
+        if (!this.isPrismaKnownError(error, 'P2002')) {
+          throw error;
+        }
+      }
+    }
+
+    const staleLockedBefore = new Date(Date.now() - CHANNEL_AUTO_POST_ATTACH_LOCK_TTL_MS);
+    const claimed = await delegate.updateMany({
+      where: {
+        chatId: params.chatId,
+        messageId: params.messageId,
+        status: CHANNEL_AUTO_POST_ATTACH_STATUS.IN_PROGRESS,
+        OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockedBefore } }],
+      },
+      data: {
+        lockToken,
+        lockedAt: now,
+        source: params.source,
+        botId: params.botId,
+        linkType: params.linkType,
+      },
+    });
+
+    return claimed.count > 0 ? { status: 'claimed', lockToken } : { status: 'in_progress' };
+  }
+
+  private async hasCompletedChannelAutoPostAttachMarker(
+    chatId: string,
+    messageId: string,
+  ): Promise<boolean> {
+    const delegate = this.getChannelAutoPostAttachMarkerDelegate();
+    if (delegate?.findUnique) {
+      const marker = await delegate.findUnique({
+        where: {
+          chatId_messageId: {
+            chatId,
+            messageId,
+          },
+        },
+        select: {
+          status: true,
+          lockedAt: true,
+        },
+      });
+      if (
+        marker?.status === CHANNEL_AUTO_POST_ATTACH_STATUS.SUCCEEDED ||
+        marker?.status === CHANNEL_AUTO_POST_ATTACH_STATUS.SKIPPED
+      ) {
+        return true;
+      }
+    }
+
+    const alreadyAttached = await this.prisma.auditLog.findFirst({
+      where: {
+        chatId,
+        action: {
+          in: [CHANNEL_DIALOG_AUTO_ATTACH_ACTION, CHANNEL_DIALOG_AUTO_ATTACH_SKIP_ACTION],
+        },
+        payload: {
+          path: ['messageId'],
+          equals: messageId,
+        },
+      },
+      select: {
+        id: true,
+      },
+    });
+    return Boolean(alreadyAttached);
+  }
+
+  private async completeChannelAutoPostAttachMarker(params: {
+    chatId: string;
+    messageId: string;
+    lockToken: string;
+    status:
+      | typeof CHANNEL_AUTO_POST_ATTACH_STATUS.SUCCEEDED
+      | typeof CHANNEL_AUTO_POST_ATTACH_STATUS.SKIPPED;
+    source: 'webhook' | 'poll';
+    botId: string | null;
+    linkType: string | null;
+    deliveryMode: string | null;
+    replacementMessageId?: string | null;
+    publishedUrl?: string | null;
+    lastError: string | null;
+    lastStatusCode: number | null;
+  }): Promise<void> {
+    const delegate = this.getChannelAutoPostAttachMarkerDelegate();
+    if (!delegate?.updateMany) {
+      return;
+    }
+
+    await delegate.updateMany({
+      where: {
+        chatId: params.chatId,
+        messageId: params.messageId,
+        lockToken: params.lockToken,
+        status: CHANNEL_AUTO_POST_ATTACH_STATUS.IN_PROGRESS,
+      },
+      data: {
+        status: params.status,
+        lockToken: null,
+        lockedAt: null,
+        source: params.source,
+        botId: params.botId,
+        linkType: params.linkType,
+        deliveryMode: params.deliveryMode,
+        replacementMessageId: params.replacementMessageId ?? null,
+        publishedUrl: params.publishedUrl ?? null,
+        lastError: params.lastError,
+        lastStatusCode: params.lastStatusCode,
+      },
+    });
+  }
+
+  private async releaseChannelAutoPostAttachMarker(params: {
+    chatId: string;
+    messageId: string;
+    lockToken: string;
+    source: 'webhook' | 'poll';
+    botId: string | null;
+    linkType: string | null;
+    lastError: string | null;
+    lastStatusCode: number | null;
+  }): Promise<void> {
+    const delegate = this.getChannelAutoPostAttachMarkerDelegate();
+    if (!delegate?.updateMany) {
+      return;
+    }
+
+    await delegate.updateMany({
+      where: {
+        chatId: params.chatId,
+        messageId: params.messageId,
+        lockToken: params.lockToken,
+        status: CHANNEL_AUTO_POST_ATTACH_STATUS.IN_PROGRESS,
+      },
+      data: {
+        lockToken: null,
+        lockedAt: null,
+        source: params.source,
+        botId: params.botId,
+        linkType: params.linkType,
+        lastError: params.lastError,
+        lastStatusCode: params.lastStatusCode,
+      },
+    });
   }
 
   private async recordChannelAutoPostTerminalSkip(params: {
@@ -13323,9 +13643,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       'autoPostButtonsMode' | 'postSuggestionsEnabled' | 'commentsEnabled'
     >,
   ) {
+    const mode = settings.autoPostButtonsMode ?? 'OFF';
+    const includeComments = (mode === 'COMMENTS' || mode === 'BOTH') && settings.commentsEnabled;
+    const includeSuggest =
+      (mode === 'SUGGEST' || mode === 'BOTH') && settings.postSuggestionsEnabled;
+
     return {
-      includeCommentsButton: settings.commentsEnabled,
-      includeSuggestButton: settings.postSuggestionsEnabled,
+      includeCommentsButton: includeComments,
+      includeSuggestButton: includeSuggest,
     };
   }
 
@@ -14222,6 +14547,24 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private extractStatusCode(error: unknown): number | null {
     const maybeStatus = (error as { response?: { status?: number } })?.response?.status;
     return typeof maybeStatus === 'number' ? maybeStatus : null;
+  }
+
+  private extractErrorSummary(error: unknown): string {
+    const message =
+      error instanceof Error && error.message.trim().length > 0
+        ? error.message.trim()
+        : typeof (error as { message?: unknown } | null)?.message === 'string'
+          ? ((error as { message: string }).message.trim() || 'Unknown error')
+          : String(error ?? 'Unknown error');
+    return message.slice(0, 500);
+  }
+
+  private isPrismaKnownError(error: unknown, code: string): boolean {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      return error.code === code;
+    }
+
+    return (error as { code?: string } | null)?.code === code;
   }
 
   private extractMaxErrorCode(error: unknown): string | null {

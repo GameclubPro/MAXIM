@@ -749,7 +749,7 @@ export function BroadcastSchedulePlanner({
               formatCountLabel(futureSlotCount, 'слот', 'слота', 'слотов'),
               formatCountLabel(selectedDayCount, 'день', 'дня', 'дней'),
             ].join(' · ')
-          : 'без слотов';
+          : 'Без слотов';
   const compactScheduleSummary = `${compactScheduleModeLabel} · ${compactScheduleMeta}`;
   const compactScheduleAction =
     timingMode === 'scheduled'

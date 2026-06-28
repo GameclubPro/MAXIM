@@ -8101,9 +8101,13 @@ export class AdminService implements OnModuleDestroy {
     botId?: string | null,
   ): Promise<ChannelPublicationEngagementContext> {
     const settings = await this.getPublicChannelSettings(chatId);
-    const includeCommentsButton = settings.commentsEnabled;
-    const includeSuggestButton = settings.postSuggestionsEnabled;
     const autoPostButtonsMode = normalizeChannelAutoPostButtonsMode(settings);
+    const includeCommentsButton =
+      (autoPostButtonsMode === 'COMMENTS' || autoPostButtonsMode === 'BOTH') &&
+      settings.commentsEnabled;
+    const includeSuggestButton =
+      (autoPostButtonsMode === 'SUGGEST' || autoPostButtonsMode === 'BOTH') &&
+      settings.postSuggestionsEnabled;
 
     if (!includeCommentsButton && !includeSuggestButton) {
       return {
@@ -8324,8 +8328,13 @@ export class AdminService implements OnModuleDestroy {
       },
     });
     const threadId = randomUUID();
-    const includeCommentsButton = channelSettings.commentsEnabled;
-    const includeSuggestButton = channelSettings.postSuggestionsEnabled;
+    const autoPostButtonsMode = normalizeChannelAutoPostButtonsMode(channelSettings);
+    const includeCommentsButton =
+      (autoPostButtonsMode === 'COMMENTS' || autoPostButtonsMode === 'BOTH') &&
+      channelSettings.commentsEnabled;
+    const includeSuggestButton =
+      (autoPostButtonsMode === 'SUGGEST' || autoPostButtonsMode === 'BOTH') &&
+      channelSettings.postSuggestionsEnabled;
     const suggestButtonText =
       channelSettings.postSuggestionsButtonText.trim() || '📰 Предложить пост';
 
@@ -8356,14 +8365,14 @@ export class AdminService implements OnModuleDestroy {
 
     return {
       buttons: rows,
-      commentDialogReference: includeCommentsButton
+      commentDialogReference: includeCommentsButton || includeSuggestButton
         ? {
             entityType: 'channel',
             threadId,
             includeCommentsButton,
             includeSuggestButton,
             suggestButtonText: includeSuggestButton ? suggestButtonText : null,
-            autoPostButtonsMode: channelSettings.autoPostButtonsMode,
+            autoPostButtonsMode,
             suggestionEntryMode: channelSettings.postSuggestionsEntryMode,
             botId: botId ?? null,
           }
@@ -15780,9 +15789,13 @@ export class AdminService implements OnModuleDestroy {
     suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'];
   }> {
     const settings = await this.getPublicChannelSettings(chatId);
-    const includeCommentsButton = settings.commentsEnabled;
-    const includeSuggestButton = settings.postSuggestionsEnabled;
     const autoPostButtonsMode = normalizeChannelAutoPostButtonsMode(settings);
+    const includeCommentsButton =
+      (autoPostButtonsMode === 'COMMENTS' || autoPostButtonsMode === 'BOTH') &&
+      settings.commentsEnabled;
+    const includeSuggestButton =
+      (autoPostButtonsMode === 'SUGGEST' || autoPostButtonsMode === 'BOTH') &&
+      settings.postSuggestionsEnabled;
 
     if (!includeCommentsButton && !includeSuggestButton) {
       return {

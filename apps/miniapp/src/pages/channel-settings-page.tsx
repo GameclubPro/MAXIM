@@ -304,10 +304,28 @@ function buildAutoPostButtonsMode(
 }
 
 function sanitizeAutoPostButtonsMode(
-  _mode: ChannelAutoPostButtonsMode,
+  mode: ChannelAutoPostButtonsMode,
   commentsEnabled: boolean,
   suggestEnabled: boolean,
 ): ChannelAutoPostButtonsMode {
+  if (!commentsEnabled && !suggestEnabled) {
+    return 'OFF';
+  }
+  if (mode === 'OFF') {
+    return 'OFF';
+  }
+  if (mode === 'COMMENTS') {
+    return commentsEnabled ? 'COMMENTS' : suggestEnabled ? 'SUGGEST' : 'OFF';
+  }
+  if (mode === 'SUGGEST') {
+    return suggestEnabled ? 'SUGGEST' : commentsEnabled ? 'COMMENTS' : 'OFF';
+  }
+  if (mode === 'BOTH') {
+    if (commentsEnabled && suggestEnabled) {
+      return 'BOTH';
+    }
+    return commentsEnabled ? 'COMMENTS' : suggestEnabled ? 'SUGGEST' : 'OFF';
+  }
   return buildAutoPostButtonsMode(commentsEnabled, suggestEnabled);
 }
 
@@ -505,7 +523,7 @@ function formatBroadcastPayloadScheduleLabel(payload: SendBroadcastPayload): str
     return formatCompactManagedBroadcastDateTime(payload.sendAt, payload.scheduleTimezone);
   }
 
-  return 'Сразу';
+  return 'Сейчас';
 }
 
 function formatBroadcastCountdownValue(remainingMs: number): string {
@@ -942,6 +960,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     useState<BroadcastHistoryFilter>('future');
   const [broadcastNowMs, setBroadcastNowMs] = useState(() => Date.now());
   const appliedBroadcastHandoffSignatureRef = useRef<string | null>(null);
+  const broadcastDraftRestoreEpochRef = useRef(0);
   const searchParams = new URLSearchParams(location.search);
   const focusSection = searchParams.get('focus');
   const handoffRequested = searchParams.get('handoff') === '1';
@@ -1120,6 +1139,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     }
 
     appliedBroadcastHandoffSignatureRef.current = signature;
+    broadcastDraftRestoreEpochRef.current += 1;
     setEditingManagedBroadcast(null);
     setDuplicatedManagedBroadcast(null);
     setBroadcastButtons(broadcastHandoffStateQuery.data.buttons);
@@ -1164,9 +1184,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastWorkspaceView('compose');
     setPendingBroadcastPublishReview(null);
     resetBroadcastPlanner();
+    const restoreEpoch = ++broadcastDraftRestoreEpochRef.current;
     let cancelled = false;
     const applySavedBroadcastDraft = (savedBroadcastDraft: BroadcastComposerDraft) => {
-      if (cancelled) {
+      if (cancelled || restoreEpoch !== broadcastDraftRestoreEpochRef.current) {
         return;
       }
       setBroadcastText(savedBroadcastDraft.text);
@@ -1503,10 +1524,15 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     },
     onError: (error) => {
       const description = normalizeApiError(error);
-      if (
+      if (description.includes('BROADCAST_TARGET_SLOT_CONFLICT')) {
+        setBroadcastScheduleError('У получателя уже есть автопостинг на это время.');
+        void queryClient.invalidateQueries({ queryKey: queryKeys.channelSettingsScreen(chatId) });
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.channelManagedBroadcastCalendar(chatId),
+        });
+      } else if (
         description.includes('выбранное время') ||
-        description.includes('BROADCAST_SLOT_CONFLICT') ||
-        description.includes('BROADCAST_TARGET_SLOT_CONFLICT')
+        description.includes('BROADCAST_SLOT_CONFLICT')
       ) {
         setBroadcastScheduleError('Календарь обновился. Выберите свободный слот.');
         void queryClient.invalidateQueries({ queryKey: queryKeys.channelSettingsScreen(chatId) });
@@ -1590,10 +1616,15 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     },
     onError: (error) => {
       const description = normalizeApiError(error);
-      if (
+      if (description.includes('BROADCAST_TARGET_SLOT_CONFLICT')) {
+        setBroadcastScheduleError('У получателя уже есть автопостинг на это время.');
+        void queryClient.invalidateQueries({ queryKey: queryKeys.channelSettingsScreen(chatId) });
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.channelManagedBroadcastCalendar(chatId),
+        });
+      } else if (
         description.includes('выбранное время') ||
-        description.includes('BROADCAST_SLOT_CONFLICT') ||
-        description.includes('BROADCAST_TARGET_SLOT_CONFLICT')
+        description.includes('BROADCAST_SLOT_CONFLICT')
       ) {
         setBroadcastScheduleError('Календарь обновился. Выберите свободный слот.');
         void queryClient.invalidateQueries({ queryKey: queryKeys.channelSettingsScreen(chatId) });
@@ -1883,7 +1914,15 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     commentsEnabled: draft.commentsEnabled,
     postSuggestionsEnabled: draft.postSuggestionsEnabled,
     postSuggestionsButtonText: draft.postSuggestionsButtonText,
+    autoPostButtonsMode: draft.autoPostButtonsMode,
   });
+  const broadcastSystemButtonOptions = [
+    { value: 'OFF', label: 'Нет' },
+    draft.commentsEnabled ? { value: 'COMMENTS', label: 'Комментарии' } : null,
+    draft.postSuggestionsEnabled ? { value: 'SUGGEST', label: 'Предложка' } : null,
+    draft.commentsEnabled && draft.postSuggestionsEnabled ? { value: 'BOTH', label: 'Обе' } : null,
+  ].filter((item): item is { value: ChannelAutoPostButtonsMode; label: string } => item !== null);
+  const showBroadcastSystemButtonMode = broadcastSystemButtonOptions.length > 1;
   const broadcastHasButton = normalizedBroadcastButtons.length > 0;
   const broadcastVisibleButtons = [...normalizedBroadcastButtons, ...broadcastSystemButtons];
   const broadcastHasVisibleButtons = broadcastVisibleButtons.length > 0;
@@ -2010,11 +2049,16 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     (broadcastTimingMode === 'cycle' && !broadcastCycleValidationError) ||
     broadcastCalendarScheduleReady;
   const broadcastTestReady = broadcastContentReady && broadcastButtonDraftValid;
-  const broadcastSendDisabled = isBroadcastBusy;
+  const broadcastSendDisabled =
+    isBroadcastBusy ||
+    !broadcastContentReady ||
+    !broadcastScheduleReady ||
+    !broadcastHasFutureSlots ||
+    !broadcastButtonDraftValid;
   const broadcastPublishIssueLabels = [
-    !broadcastHasPublishableContent ? 'Нет сообщения' : null,
+    !broadcastHasPublishableContent ? 'Текст' : null,
     broadcastHasPublishableContent && !broadcastMediaReady ? 'Фото' : null,
-    !broadcastScheduleReady || !broadcastHasFutureSlots ? 'Нет времени' : null,
+    !broadcastScheduleReady || !broadcastHasFutureSlots ? 'Время' : null,
     !broadcastButtonDraftValid ? 'Кнопки' : null,
   ].filter((item): item is string => Boolean(item));
   const broadcastPublishIssueActions = broadcastPublishIssueLabels.map((label) => ({
@@ -2022,7 +2066,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     onClick: () => {
       setBroadcastWorkspaceView('compose');
 
-      if (label === 'Нет сообщения') {
+      if (label === 'Текст') {
         setBroadcastTextError('Добавьте текст, фото или видео.');
         return;
       }
@@ -2034,7 +2078,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         return;
       }
 
-      if (label === 'Нет времени') {
+	      if (label === 'Время') {
         if (broadcastTimingMode === 'cycle') {
           setBroadcastCycleError(broadcastCycleValidationError ?? 'Проверьте цикл публикаций.');
           return;
@@ -2122,7 +2166,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     : broadcastPublishIssueLabels.length > 0 && !isBroadcastBusy
       ? broadcastPublishIssueLabels.join(' · ')
       : broadcastTimingMode === 'now'
-        ? 'Сразу'
+        ? 'Сейчас'
         : broadcastTimingMode === 'cycle'
           ? formatBroadcastCycleSummary(broadcastNormalizedCycle, broadcastNowMs)
           : broadcastSelectionSummary || 'Автопостинг';
@@ -3155,6 +3199,18 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                               onOpenButtons={() => setBroadcastButtonsSheetOpen(true)}
                             />
                           </Suspense>
+                          {showBroadcastSystemButtonMode ? (
+                            <div className="channel-settings-mode-card channel-settings-mode-card--broadcast-buttons">
+                              <span className="channel-settings-mode-card__label">Кнопки</span>
+                              <SegmentedControl<ChannelAutoPostButtonsMode>
+                                value={draft.autoPostButtonsMode}
+                                options={broadcastSystemButtonOptions}
+                                onChange={(value) => patchDraft('autoPostButtonsMode', value)}
+                                ariaLabel="Системные кнопки автопостинга"
+                                className="channel-settings-mode-card__control"
+                              />
+                            </div>
+                          ) : null}
                         </div>
                       </div>
 
@@ -3525,8 +3581,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       <ActionConfirmSheet
         id="channel-broadcast-slot-conflict"
         open={pendingBroadcastSlotConflict !== null}
-        title="Заменить слот?"
-        summary="На это время уже есть автопостинг."
+        title="Слот занят"
+        summary="Можно заменить только слот этого канала."
         previewTitle={
           pendingBroadcastConflictPreviewSlot
             ? formatCompactManagedBroadcastDateTime(
@@ -3543,7 +3599,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                 'занятых слота',
                 'занятых слотов',
               )
-            : 'Текущий автопостинг на это время будет заменён.'
+            : 'Слот будет заменён, если получатели свободны.'
         }
         confirmLabel="Заменить"
         cancelLabel="Другое время"

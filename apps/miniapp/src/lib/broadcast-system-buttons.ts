@@ -1,9 +1,14 @@
-import type { BroadcastLinkButton } from '@maxim/contracts';
+import type { ChannelAutoPostButtonsMode } from '@maxim/contracts';
+
+export type BroadcastSystemButtonPreview = {
+  kind: 'comments' | 'suggest';
+  text: string;
+};
 
 export function buildChatBroadcastSystemButtons(options: {
   commentsEnabled?: boolean;
   commentsChatBroadcastsEnabled?: boolean;
-}): BroadcastLinkButton[] {
+}): BroadcastSystemButtonPreview[] {
   if (!options.commentsEnabled || !options.commentsChatBroadcastsEnabled) {
     return [];
   }
@@ -11,7 +16,7 @@ export function buildChatBroadcastSystemButtons(options: {
   return [
     {
       text: '💬 Комментарии',
-      url: '#comments',
+      kind: 'comments',
     },
   ];
 }
@@ -20,20 +25,24 @@ export function buildChannelBroadcastSystemButtons(options: {
   commentsEnabled?: boolean;
   postSuggestionsEnabled?: boolean;
   postSuggestionsButtonText?: string | null;
-}): BroadcastLinkButton[] {
-  const buttons: BroadcastLinkButton[] = [];
+  autoPostButtonsMode?: ChannelAutoPostButtonsMode | null;
+}): BroadcastSystemButtonPreview[] {
+  const buttons: BroadcastSystemButtonPreview[] = [];
+  const mode = options.autoPostButtonsMode ?? 'BOTH';
+  const includeComments = mode === 'COMMENTS' || mode === 'BOTH';
+  const includeSuggest = mode === 'SUGGEST' || mode === 'BOTH';
 
-  if (options.commentsEnabled) {
+  if (options.commentsEnabled && includeComments) {
     buttons.push({
       text: '💬 Комментарии',
-      url: '#comments',
+      kind: 'comments',
     });
   }
 
-  if (options.postSuggestionsEnabled) {
+  if (options.postSuggestionsEnabled && includeSuggest) {
     buttons.push({
       text: options.postSuggestionsButtonText?.trim() || '📰 Предложить пост',
-      url: '#suggest',
+      kind: 'suggest',
     });
   }
 

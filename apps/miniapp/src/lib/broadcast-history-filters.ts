@@ -27,10 +27,16 @@ function isActiveBroadcast(broadcast: ManagedBroadcastSummary): boolean {
 }
 
 function isErrorBroadcast(broadcast: ManagedBroadcastSummary): boolean {
+  const blockedFailures =
+    broadcast.blockedChats > 0 ||
+    broadcast.failureBreakdown.permanentTarget > 0 ||
+    broadcast.failureBreakdown.quarantined > 0;
+
   return (
     broadcast.status === 'FAILED' ||
     broadcast.status === 'PARTIAL' ||
     broadcast.failedChats > 0 ||
+    blockedFailures ||
     Boolean(broadcast.lastError) ||
     broadcast.canRetry
   );
@@ -39,16 +45,16 @@ function isErrorBroadcast(broadcast: ManagedBroadcastSummary): boolean {
 function resolveManagedBroadcastHistoryFilter(
   broadcast: ManagedBroadcastSummary,
 ): BroadcastHistoryFilter | null {
+  if (broadcast.status === 'CANCELED') {
+    return 'canceled';
+  }
+
   if (isErrorBroadcast(broadcast)) {
     return 'error';
   }
 
   if (broadcast.status === 'COMPLETED') {
     return 'sent';
-  }
-
-  if (broadcast.status === 'CANCELED') {
-    return 'canceled';
   }
 
   if (isFutureBroadcast(broadcast)) {

@@ -347,7 +347,7 @@ describe('ModerationService channel auto post buttons', () => {
           title: 'Ищу модель | Ростов',
           entityType: 'CHANNEL',
           channelSettings: {
-            autoPostButtonsMode: 'OFF',
+            autoPostButtonsMode: 'SUGGEST',
             postSuggestionsEnabled: false,
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: false,
@@ -421,7 +421,7 @@ describe('ModerationService channel auto post buttons', () => {
           title: 'Ищу модель | Ростов',
           entityType: 'CHANNEL',
           channelSettings: {
-            autoPostButtonsMode: 'OFF',
+            autoPostButtonsMode: 'SUGGEST',
             postSuggestionsEnabled: true,
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: false,
@@ -658,7 +658,7 @@ describe('ModerationService channel auto post buttons', () => {
     );
   });
 
-  it('auto-attaches comments even when a legacy channel record still stores suggestion-only mode', async () => {
+  it('auto-attaches comments and suggestions when channel mode includes both buttons', async () => {
     const prisma = {
       chat: {
         findUnique: jest.fn().mockResolvedValue({
@@ -666,7 +666,7 @@ describe('ModerationService channel auto post buttons', () => {
           title: 'Ищу модель | Ростов',
           entityType: 'CHANNEL',
           channelSettings: {
-            autoPostButtonsMode: 'SUGGEST',
+            autoPostButtonsMode: 'BOTH',
             postSuggestionsEnabled: true,
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: true,
@@ -975,7 +975,7 @@ describe('ModerationService channel auto post buttons', () => {
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
-  it('auto-attaches the comments button when comments are enabled and the mode is off', async () => {
+  it('auto-attaches the comments button when comments are enabled and the mode includes comments', async () => {
     const prisma = {
       chat: {
         findUnique: jest.fn().mockResolvedValue({
@@ -983,7 +983,7 @@ describe('ModerationService channel auto post buttons', () => {
           title: 'Ищу модель | Ростов',
           entityType: 'CHANNEL',
           channelSettings: {
-            autoPostButtonsMode: 'OFF',
+            autoPostButtonsMode: 'COMMENTS',
             postSuggestionsEnabled: false,
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: true,
@@ -1035,7 +1035,7 @@ describe('ModerationService channel auto post buttons', () => {
     );
   });
 
-  it('auto-attaches the suggestion button when suggestions are enabled even if the legacy mode is off', async () => {
+  it('auto-attaches the suggestion button when suggestions are enabled and the mode includes suggestions', async () => {
     const prisma = {
       chat: {
         findUnique: jest.fn().mockResolvedValue({
@@ -1043,7 +1043,7 @@ describe('ModerationService channel auto post buttons', () => {
           title: 'Ищу модель | Ростов',
           entityType: 'CHANNEL',
           channelSettings: {
-            autoPostButtonsMode: 'OFF',
+            autoPostButtonsMode: 'SUGGEST',
             postSuggestionsEnabled: true,
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: false,
@@ -1185,11 +1185,12 @@ describe('ModerationService channel auto post buttons', () => {
             autoPostButtonsMode: {
               in: ['COMMENTS', 'BOTH'],
             },
-          },
-          {
             commentsEnabled: true,
           },
           {
+            autoPostButtonsMode: {
+              in: ['SUGGEST', 'BOTH'],
+            },
             postSuggestionsEnabled: true,
           },
         ],
@@ -1515,7 +1516,7 @@ describe('ModerationService channel auto post buttons', () => {
         findMany: jest.fn().mockResolvedValue([
           {
             chatId: 'channel-1',
-            autoPostButtonsMode: 'OFF',
+            autoPostButtonsMode: 'SUGGEST',
             postSuggestionsEnabled: true,
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: false,
@@ -1605,7 +1606,7 @@ describe('ModerationService channel auto post buttons', () => {
         findMany: jest.fn().mockResolvedValue([
           {
             chatId: 'channel-1',
-            autoPostButtonsMode: 'OFF',
+            autoPostButtonsMode: 'SUGGEST',
             postSuggestionsEnabled: true,
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: false,
@@ -2296,6 +2297,378 @@ describe('ModerationService channel auto post buttons', () => {
         actionHealthLane: 'background',
         sourceTag: 'channel_auto_post',
       },
+    );
+  });
+
+  it('does not attach channel auto-post buttons when the explicit mode is off', async () => {
+    const prisma = {
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+    };
+    const maxClient = {
+      editMessageInlineKeyboard: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
+    );
+
+    await (service as any).tryAutoAttachChannelMessageButtons({
+      chatId: 'channel-1',
+      messageId: 'mid-mode-off-1',
+      text: 'Пост',
+      linkType: null,
+      managedChannel: {
+        channelSettings: {
+          autoPostButtonsMode: 'OFF',
+          commentsEnabled: true,
+          postSuggestionsEnabled: true,
+          postSuggestionsButtonText: '📰 Предложить пост',
+        },
+        adminUserIds: ['admin-1'],
+      },
+      source: 'poll',
+      senderId: null,
+    });
+
+    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('keeps transient auto-attach failures retryable and does not advance the scan cursor', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-30T03:00:00.000Z'));
+
+    const transientError = Object.assign(new Error('MAX throttle'), {
+      response: {
+        status: 429,
+      },
+    });
+    const markerRows = new Map<string, any>();
+    const prisma = {
+      channelSettings: {
+        findMany: jest
+          .fn()
+          .mockResolvedValueOnce([{ chatId: 'channel-1' }])
+          .mockResolvedValueOnce([
+            {
+              chatId: 'channel-1',
+              autoPostButtonsMode: 'COMMENTS',
+              commentsEnabled: true,
+              postSuggestionsEnabled: false,
+              postSuggestionsButtonText: '',
+              updatedAt: new Date('2026-03-06T15:00:00.000Z'),
+              chat: {
+                admins: [{ userId: 'admin-1' }],
+              },
+            },
+          ]),
+      },
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+      channelAutoPostAttachMarker: {
+        findUnique: jest.fn(({ where }: any) => {
+          const key = `${where.chatId_messageId.chatId}:${where.chatId_messageId.messageId}`;
+          return Promise.resolve(markerRows.get(key) ?? null);
+        }),
+        create: jest.fn(({ data }: any) => {
+          markerRows.set(`${data.chatId}:${data.messageId}`, { ...data });
+          return Promise.resolve(data);
+        }),
+        updateMany: jest.fn(({ where, data }: any) => {
+          const key = `${where.chatId}:${where.messageId}`;
+          const row = markerRows.get(key);
+          if (!row || row.lockToken !== where.lockToken) {
+            return Promise.resolve({ count: 0 });
+          }
+          markerRows.set(key, { ...row, ...data });
+          return Promise.resolve({ count: 1 });
+        }),
+      },
+    };
+    const maxClient = {
+      listMessages: jest.fn().mockResolvedValue([
+        {
+          timestamp: 1772810100000,
+          sender: { user_id: 'admin-1' },
+          body: {
+            mid: 'mid-retry-1',
+            text: 'Пост',
+            attachments: [],
+          },
+        },
+      ]),
+      editMessageInlineKeyboard: jest.fn().mockRejectedValue(transientError),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock({
+        CHANNEL_AUTO_POST_SCAN_INTERVAL_MS: 30_000,
+        CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS: 30_000,
+      }) as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
+    );
+    jest.spyOn((service as any).logger, 'warn').mockImplementation(() => {});
+
+    await (service as any).processChannelAutoPostButtons();
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
+    expect((service as any).channelAutoPostScanState.get('channel-1').latestMessageIdsAtTimestamp).toEqual(
+      [],
+    );
+    expect(markerRows.get('channel-1:mid-retry-1')).toEqual(
+      expect.objectContaining({
+        status: 'IN_PROGRESS',
+        lockToken: null,
+        lockedAt: null,
+        lastStatusCode: 429,
+      }),
+    );
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('uses the durable auto-attach marker to avoid concurrent duplicate side effects', async () => {
+    const prisma = {
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      channelAutoPostAttachMarker: {
+        findUnique: jest.fn().mockResolvedValue({
+          status: 'IN_PROGRESS',
+          lockedAt: new Date(),
+        }),
+        create: jest.fn(),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+    };
+    const maxClient = {
+      editMessageInlineKeyboard: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
+    );
+
+    const result = await (service as any).tryAutoAttachChannelMessageButtons({
+      chatId: 'channel-1',
+      messageId: 'mid-in-progress-1',
+      text: 'Пост',
+      linkType: null,
+      managedChannel: {
+        channelSettings: {
+          autoPostButtonsMode: 'COMMENTS',
+          commentsEnabled: true,
+          postSuggestionsEnabled: false,
+          postSuggestionsButtonText: '',
+        },
+        adminUserIds: ['admin-1'],
+      },
+      source: 'poll',
+      senderId: null,
+    });
+
+    expect(result).toBe('in_progress');
+    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('stops the poll scan at an in-progress auto-attach marker', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-30T03:00:00.000Z'));
+
+    const prisma = {
+      channelSettings: {
+        findMany: jest
+          .fn()
+          .mockResolvedValueOnce([{ chatId: 'channel-1' }])
+          .mockResolvedValueOnce([
+            {
+              chatId: 'channel-1',
+              autoPostButtonsMode: 'COMMENTS',
+              commentsEnabled: true,
+              postSuggestionsEnabled: false,
+              postSuggestionsButtonText: '',
+              updatedAt: new Date('2026-03-06T15:00:00.000Z'),
+              chat: {
+                admins: [{ userId: 'admin-1' }],
+              },
+            },
+          ]),
+      },
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      channelAutoPostAttachMarker: {
+        findUnique: jest.fn(({ where }: any) => {
+          const messageId = where.chatId_messageId.messageId;
+          return Promise.resolve(
+            messageId === 'mid-locked-1'
+              ? {
+                  status: 'IN_PROGRESS',
+                  lockedAt: new Date('2026-03-30T02:59:30.000Z'),
+                }
+              : null,
+          );
+        }),
+        create: jest.fn(),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+    };
+    const maxClient = {
+      listMessages: jest.fn().mockResolvedValue([
+        {
+          timestamp: 1772810100000,
+          sender: { user_id: 'admin-1' },
+          body: {
+            mid: 'mid-locked-1',
+            text: 'Занятый пост',
+            attachments: [],
+          },
+        },
+        {
+          timestamp: 1772810160000,
+          sender: { user_id: 'admin-1' },
+          body: {
+            mid: 'mid-next-1',
+            text: 'Следующий пост',
+            attachments: [],
+          },
+        },
+      ]),
+      editMessageInlineKeyboard: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock({
+        CHANNEL_AUTO_POST_SCAN_INTERVAL_MS: 30_000,
+      }) as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
+    );
+
+    await (service as any).processChannelAutoPostButtons();
+
+    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+    expect(prisma.channelAutoPostAttachMarker.findUnique).toHaveBeenCalledTimes(2);
+    expect(prisma.channelAutoPostAttachMarker.findUnique).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: {
+          chatId_messageId: {
+            chatId: 'channel-1',
+            messageId: 'mid-locked-1',
+          },
+        },
+      }),
+    );
+    expect((service as any).channelAutoPostScanState.get('channel-1').latestMessageIdsAtTimestamp).toEqual(
+      [],
+    );
+  });
+
+  it('keeps the durable marker retryable when audit persistence fails after delivery', async () => {
+    const markerRows = new Map<string, any>();
+    const prisma = {
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockRejectedValue(new Error('audit unavailable')),
+      },
+      channelAutoPostAttachMarker: {
+        findUnique: jest.fn(({ where }: any) => {
+          const key = `${where.chatId_messageId.chatId}:${where.chatId_messageId.messageId}`;
+          return Promise.resolve(markerRows.get(key) ?? null);
+        }),
+        create: jest.fn(({ data }: any) => {
+          markerRows.set(`${data.chatId}:${data.messageId}`, { ...data });
+          return Promise.resolve(data);
+        }),
+        updateMany: jest.fn(({ where, data }: any) => {
+          const key = `${where.chatId}:${where.messageId}`;
+          const row = markerRows.get(key);
+          if (!row || row.lockToken !== where.lockToken) {
+            return Promise.resolve({ count: 0 });
+          }
+          markerRows.set(key, { ...row, ...data });
+          return Promise.resolve({ count: 1 });
+        }),
+      },
+    };
+    const maxClient = {
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
+    );
+
+    await expect(
+      (service as any).tryAutoAttachChannelMessageButtons({
+        chatId: 'channel-1',
+        messageId: 'mid-audit-failure-1',
+        text: 'Пост',
+        linkType: null,
+        managedChannel: {
+          channelSettings: {
+            autoPostButtonsMode: 'COMMENTS',
+            commentsEnabled: true,
+            postSuggestionsEnabled: false,
+            postSuggestionsButtonText: '',
+          },
+          adminUserIds: ['admin-1'],
+        },
+        source: 'poll',
+        senderId: null,
+      }),
+    ).rejects.toThrow('audit unavailable');
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
+    expect(markerRows.get('channel-1:mid-audit-failure-1')).toEqual(
+      expect.objectContaining({
+        status: 'IN_PROGRESS',
+        lockToken: expect.any(String),
+        lockedAt: expect.any(Date),
+      }),
     );
   });
 });

@@ -72,3 +72,55 @@ test('counts partial broadcasts only in the error history bucket', () => {
   assert.deepEqual(filterManagedBroadcastsByHistoryFilter([partial], 'error'), [partial]);
   assert.deepEqual(filterManagedBroadcastsByHistoryFilter([partial], 'future'), []);
 });
+
+test('counts active broadcasts with blocked targets in the error history bucket', () => {
+  const blocked = createBroadcastSummary({
+    id: 'blocked-target',
+    status: 'ACTIVE',
+    nextSendAt: '2026-03-03T12:00:00.000Z',
+    blockedChats: 1,
+    failureBreakdown: {
+      transient: 0,
+      permanentTarget: 1,
+      quarantined: 0,
+      unknown: 0,
+    },
+  });
+  const counts = countManagedBroadcastHistoryFilters([blocked]);
+
+  assert.deepEqual(counts, {
+    future: 0,
+    active: 0,
+    error: 1,
+    sent: 0,
+    canceled: 0,
+  });
+  assert.deepEqual(filterManagedBroadcastsByHistoryFilter([blocked], 'error'), [blocked]);
+  assert.deepEqual(filterManagedBroadcastsByHistoryFilter([blocked], 'future'), []);
+});
+
+test('keeps canceled broadcasts with blocked targets in the canceled history bucket', () => {
+  const canceled = createBroadcastSummary({
+    id: 'canceled-with-blocked-targets',
+    status: 'CANCELED',
+    pendingChats: 0,
+    blockedChats: 1,
+    failureBreakdown: {
+      transient: 0,
+      permanentTarget: 0,
+      quarantined: 0,
+      unknown: 0,
+    },
+  });
+  const counts = countManagedBroadcastHistoryFilters([canceled]);
+
+  assert.deepEqual(counts, {
+    future: 0,
+    active: 0,
+    error: 0,
+    sent: 0,
+    canceled: 1,
+  });
+  assert.deepEqual(filterManagedBroadcastsByHistoryFilter([canceled], 'canceled'), [canceled]);
+  assert.deepEqual(filterManagedBroadcastsByHistoryFilter([canceled], 'error'), []);
+});

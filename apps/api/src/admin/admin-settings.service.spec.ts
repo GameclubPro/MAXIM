@@ -743,7 +743,7 @@ describe('AdminSettingsService chat rules', () => {
       postSuggestionsEnabled: true,
     });
 
-    expect(result.autoPostButtonsMode).toBe('BOTH');
+    expect(result.autoPostButtonsMode).toBe('OFF');
     expect(legacyAdminService.assertManagedEntityAdminAccess).toHaveBeenCalledWith(
       'channel-1',
       'admin-1',
@@ -761,7 +761,7 @@ describe('AdminSettingsService chat rules', () => {
           primaryBotId: 'bot-1',
           channelSettings: {
             create: expect.objectContaining({
-              autoPostButtonsMode: 'BOTH',
+              autoPostButtonsMode: 'OFF',
               commentsEnabled: true,
               postSuggestionsEnabled: true,
             }),
@@ -773,12 +773,12 @@ describe('AdminSettingsService chat rules', () => {
           channelSettings: {
             upsert: {
               update: expect.objectContaining({
-                autoPostButtonsMode: 'BOTH',
+                autoPostButtonsMode: 'OFF',
                 commentsEnabled: true,
                 postSuggestionsEnabled: true,
               }),
               create: expect.objectContaining({
-                autoPostButtonsMode: 'BOTH',
+                autoPostButtonsMode: 'OFF',
                 commentsEnabled: true,
                 postSuggestionsEnabled: true,
               }),
@@ -793,7 +793,7 @@ describe('AdminSettingsService chat rules', () => {
         actorUserId: 'admin-1',
         action: 'UPDATE_CHANNEL_SETTINGS',
         payload: expect.objectContaining({
-          autoPostButtonsMode: 'BOTH',
+          autoPostButtonsMode: 'OFF',
           commentsEnabled: true,
           postSuggestionsEnabled: true,
           source: 'miniapp',
