@@ -1,11 +1,11 @@
 ALTER TABLE "managed_broadcasts"
-  ADD COLUMN "lock_token" TEXT;
+  ADD COLUMN IF NOT EXISTS "lock_token" TEXT;
 
 ALTER TABLE "managed_broadcast_deliveries"
-  ADD COLUMN "lock_token" TEXT,
-  ADD COLUMN "legacy_sent_without_remote_id" BOOLEAN NOT NULL DEFAULT FALSE;
+  ADD COLUMN IF NOT EXISTS "lock_token" TEXT,
+  ADD COLUMN IF NOT EXISTS "legacy_sent_without_remote_id" BOOLEAN NOT NULL DEFAULT FALSE;
 
-CREATE TABLE "managed_broadcast_calendar_reservations" (
+CREATE TABLE IF NOT EXISTS "managed_broadcast_calendar_reservations" (
   "id" TEXT NOT NULL,
   "broadcast_id" TEXT NOT NULL,
   "source_chat_id" TEXT NOT NULL,
@@ -18,20 +18,29 @@ CREATE TABLE "managed_broadcast_calendar_reservations" (
   CONSTRAINT "managed_broadcast_calendar_reservations_pkey" PRIMARY KEY ("id")
 );
 
-CREATE UNIQUE INDEX "managed_broadcast_calendar_reservations_target_slot_key"
+CREATE UNIQUE INDEX IF NOT EXISTS "managed_broadcast_calendar_reservations_target_slot_key"
 ON "managed_broadcast_calendar_reservations"("entity_type", "target_chat_id", "scheduled_at");
 
-CREATE INDEX "managed_broadcast_calendar_res_broadcast_occ_idx"
+CREATE INDEX IF NOT EXISTS "managed_broadcast_calendar_res_broadcast_occ_idx"
 ON "managed_broadcast_calendar_reservations"("broadcast_id", "occurrence_index");
 
-CREATE INDEX "managed_broadcast_calendar_res_source_slot_idx"
+CREATE INDEX IF NOT EXISTS "managed_broadcast_calendar_res_source_slot_idx"
 ON "managed_broadcast_calendar_reservations"("source_chat_id", "entity_type", "scheduled_at");
 
-ALTER TABLE "managed_broadcast_calendar_reservations"
-ADD CONSTRAINT "managed_broadcast_calendar_reservations_broadcast_id_fkey"
-FOREIGN KEY ("broadcast_id") REFERENCES "managed_broadcasts"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'managed_broadcast_calendar_reservations_broadcast_id_fkey'
+  ) THEN
+    ALTER TABLE "managed_broadcast_calendar_reservations"
+    ADD CONSTRAINT "managed_broadcast_calendar_reservations_broadcast_id_fkey"
+    FOREIGN KEY ("broadcast_id") REFERENCES "managed_broadcasts"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+END $$;
 
-CREATE TABLE "managed_broadcast_idempotency_records" (
+CREATE TABLE IF NOT EXISTS "managed_broadcast_idempotency_records" (
   "id" TEXT NOT NULL,
   "request_id" TEXT NOT NULL,
   "request_hash" TEXT NOT NULL,
@@ -47,15 +56,24 @@ CREATE TABLE "managed_broadcast_idempotency_records" (
   CONSTRAINT "managed_broadcast_idempotency_records_pkey" PRIMARY KEY ("id")
 );
 
-CREATE UNIQUE INDEX "managed_broadcast_idempotency_scope_key"
+CREATE UNIQUE INDEX IF NOT EXISTS "managed_broadcast_idempotency_scope_key"
 ON "managed_broadcast_idempotency_records"("source_chat_id", "entity_type", "actor_user_id", "request_id");
 
-CREATE INDEX "managed_broadcast_idempotency_created_at_idx"
+CREATE INDEX IF NOT EXISTS "managed_broadcast_idempotency_created_at_idx"
 ON "managed_broadcast_idempotency_records"("created_at");
 
-ALTER TABLE "managed_broadcast_idempotency_records"
-ADD CONSTRAINT "managed_broadcast_idempotency_records_broadcast_id_fkey"
-FOREIGN KEY ("broadcast_id") REFERENCES "managed_broadcasts"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'managed_broadcast_idempotency_records_broadcast_id_fkey'
+  ) THEN
+    ALTER TABLE "managed_broadcast_idempotency_records"
+    ADD CONSTRAINT "managed_broadcast_idempotency_records_broadcast_id_fkey"
+    FOREIGN KEY ("broadcast_id") REFERENCES "managed_broadcasts"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
+END $$;
 
 INSERT INTO "managed_broadcast_calendar_reservations" (
   "id",
@@ -83,8 +101,13 @@ WHERE occurrence.status IN ('ACTIVE', 'PARTIAL', 'FAILED')
   AND broadcast.status IN ('ACTIVE', 'PARTIAL', 'FAILED')
 ON CONFLICT ("entity_type", "target_chat_id", "scheduled_at") DO NOTHING;
 
+ALTER TABLE "managed_broadcast_deliveries"
+  DROP CONSTRAINT IF EXISTS "managed_broadcast_deliveries_sent_state_check";
+
 UPDATE "managed_broadcast_deliveries"
-SET "legacy_sent_without_remote_id" = TRUE
+SET
+  "sent_at" = COALESCE("sent_at", "updated_at", "created_at", CURRENT_TIMESTAMP),
+  "legacy_sent_without_remote_id" = TRUE
 WHERE "status" = 'SENT'
   AND "remote_message_id" IS NULL;
 
@@ -99,9 +122,6 @@ WHERE "cycle_count" < 1
    OR "sent_count" > "cycle_count";
 
 ALTER TABLE "managed_broadcast_deliveries"
-  DROP CONSTRAINT IF EXISTS "managed_broadcast_deliveries_sent_state_check";
-
-ALTER TABLE "managed_broadcast_deliveries"
   ADD CONSTRAINT "managed_broadcast_deliveries_sent_state_check"
   CHECK (
     "status" <> 'SENT'
@@ -113,6 +133,9 @@ ALTER TABLE "managed_broadcast_deliveries"
       )
     )
   ) NOT VALID;
+
+ALTER TABLE "managed_broadcasts"
+  DROP CONSTRAINT IF EXISTS "managed_broadcasts_schedule_numbers_check";
 
 ALTER TABLE "managed_broadcasts"
   ADD CONSTRAINT "managed_broadcasts_schedule_numbers_check"
