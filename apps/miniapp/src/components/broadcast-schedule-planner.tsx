@@ -15,6 +15,7 @@ import {
   BROADCAST_PLANNER_SLOT_GROUPS,
   addDays,
   buildBroadcastPresetDayKeys,
+  buildSlotsByDay,
   buildFreeWindowsForDay,
   endOfMonth,
   formatAgendaTime,
@@ -24,7 +25,6 @@ import {
   formatDaySummary,
   formatMinuteLabel,
   formatMonthKey,
-  filterBroadcastSlotsByDayKeys,
   getCommonSelectedMinutesForDays,
   getMinutesList,
   getMonthCells,
@@ -38,8 +38,21 @@ import {
   snapMinutesToStep,
   sortDayKeys,
   startOfDay,
+  type BroadcastDayPreset,
   type BroadcastFreeWindow,
 } from '../lib/broadcast-planner-time';
+import {
+  BROADCAST_RECIPE_MAX_DAYS,
+  BROADCAST_RECIPE_MAX_POSTS_PER_DAY,
+  BROADCAST_RECIPE_MIN_DAYS,
+  BROADCAST_RECIPE_MIN_POSTS_PER_DAY,
+  areBroadcastScheduleRecipeDraftsEqual,
+  buildBroadcastScheduleRecipePlan,
+  createDefaultBroadcastScheduleRecipeDraft,
+  normalizeBroadcastScheduleRecipeDraft,
+  normalizeBroadcastScheduleRecipeMinutes,
+  type BroadcastScheduleRecipeDraft,
+} from '../lib/broadcast-schedule-recipe';
 import {
   BROADCAST_CYCLE_MAX_HOURS,
   BROADCAST_CYCLE_INTERVAL_PRESETS,
@@ -104,6 +117,7 @@ export type BroadcastSchedulePlannerSelectionState = {
   futureSlotCount: number;
   isDaySheetOpen: boolean;
   isConfirmed: boolean;
+  hasBlockingIssue: boolean;
 };
 
 type BroadcastScheduleSheetMode = 'time' | 'agenda';
@@ -119,7 +133,8 @@ function areSelectionStatesEqual(
     left.slotCount === right.slotCount &&
     left.futureSlotCount === right.futureSlotCount &&
     left.isDaySheetOpen === right.isDaySheetOpen &&
-    left.isConfirmed === right.isConfirmed
+    left.isConfirmed === right.isConfirmed &&
+    left.hasBlockingIssue === right.hasBlockingIssue
   );
 }
 
@@ -182,6 +197,10 @@ export function BroadcastSchedulePlanner({
   const [showFullTimeGrid, setShowFullTimeGrid] = useState(false);
   const [calendarExpanded, setCalendarExpanded] = useState(() => calendarOnly);
   const [customTimeValue, setCustomTimeValue] = useState('');
+  const [hasBlockingIssue, setHasBlockingIssue] = useState(false);
+  const [recipeDraft, setRecipeDraft] = useState<BroadcastScheduleRecipeDraft>(() =>
+    createDefaultBroadcastScheduleRecipeDraft(),
+  );
   const lastSelectionStateRef = useRef<BroadcastSchedulePlannerSelectionState | null>(null);
   const sheetPanelRef = useRef<HTMLElement | null>(null);
 
@@ -190,8 +209,11 @@ export function BroadcastSchedulePlanner({
   const monthKeys = getMonthKeys(windowStart, windowEnd);
   const visibleMonthKey = monthKeys.includes(currentMonthKey) ? currentMonthKey : monthKeys[0];
   const selectedDayCount = countBroadcastScheduleDays(normalizedValue);
+  const availabilityCalendarSlots = calendarSlots.filter(
+    (slot) => !excludeBroadcastId || slot.broadcastId !== excludeBroadcastId,
+  );
   const calendarBusySlots = sortAndUniqueBroadcastSlots(
-    calendarSlots
+    availabilityCalendarSlots
       .filter((slot) => !targetAwareAvailability || slot.hasTargetOverlap)
       .map((slot) => slot.scheduledAt),
   );
@@ -219,6 +241,80 @@ export function BroadcastSchedulePlanner({
       ? getCommonSelectedMinutesForDays(targetDayKeys, normalizedValue)
       : getSelectedMinutesForDay(activeDayKey, normalizedValue);
   const selectedTargetMinuteLabels = selectedTargetMinutes.map(formatMinuteLabel);
+  const slotsByDay = useMemo(() => buildSlotsByDay(normalizedValue), [normalizedValue]);
+  const recipeOccupiedSlots = occupiedSlotList.filter(
+    (slot) => !selectedInstantSet.has(getBroadcastSlotInstantKey(slot)),
+  );
+  const recipePlan = buildBroadcastScheduleRecipePlan(recipeDraft, {
+    nowMs: liveNowMs,
+    minimumTimeMs: minimumTime,
+    occupiedSlots: recipeOccupiedSlots,
+  });
+  const recipeDayKeys = recipePlan.dayKeys;
+  const recipeSlotCount = recipePlan.slots.length;
+  const recipeTimeLabels = recipeDraft.minutes.map(formatMinuteLabel);
+  const recipeApplied =
+    recipePlan.isComplete && areStringArraysEqual(normalizedValue, recipePlan.slots);
+  const recipeSummary = `${formatCountLabel(
+    recipeDraft.dayCount,
+    'день',
+    'дня',
+    'дней',
+  )} × ${recipeDraft.postsPerDay}`;
+  const recipeIssueLabel =
+    recipePlan.issue === 'duplicate-time'
+      ? 'Время повторяется'
+      : recipePlan.skippedBusyDayCount > 0
+        ? 'Занято'
+        : recipePlan.skippedPastDayCount > 0
+          ? 'Начнем позже'
+          : 'Нет времени';
+  const currentScheduleRecipe = useMemo<BroadcastScheduleRecipeDraft | null>(() => {
+    if (normalizedValue.length === 0 || selectedDayCount === 0) {
+      return null;
+    }
+
+    const dayEntries = Array.from(slotsByDay.entries());
+    const firstEntry = dayEntries[0];
+    if (!firstEntry) {
+      return null;
+    }
+
+    const firstMinutes = getSelectedMinutesForDay(firstEntry[0], firstEntry[1]);
+    if (firstMinutes.length === 0) {
+      return null;
+    }
+
+    const hasSameTimes = dayEntries.every(([dayKey, slots]) =>
+      areStringArraysEqual(
+        getSelectedMinutesForDay(dayKey, slots).map(String),
+        firstMinutes.map(String),
+      ),
+    );
+    if (!hasSameTimes) {
+      return null;
+    }
+
+    const firstDayMs = new Date(`${dayEntries[0]?.[0] ?? ''}T12:00:00`).getTime();
+    const lastDayMs = new Date(`${dayEntries[dayEntries.length - 1]?.[0] ?? ''}T12:00:00`).getTime();
+    const calendarSpanDays =
+      Number.isFinite(firstDayMs) && Number.isFinite(lastDayMs)
+        ? Math.round((lastDayMs - firstDayMs) / (24 * 60 * 60_000)) + 1
+        : dayEntries.length;
+    const isWorkdaysOnly =
+      calendarSpanDays > dayEntries.length &&
+      dayEntries.every(([dayKey]) => {
+        const weekDay = new Date(`${dayKey}T12:00:00`).getDay();
+        return weekDay !== 0 && weekDay !== 6;
+      });
+
+    return {
+      dayCount: dayEntries.length,
+      postsPerDay: firstMinutes.length,
+      weekdayMode: isWorkdaysOnly ? 'workdays' : 'any',
+      minutes: normalizeBroadcastScheduleRecipeMinutes(firstMinutes, firstMinutes.length),
+    };
+  }, [normalizedValue.length, selectedDayCount, slotsByDay]);
   const normalizedCycle = normalizeBroadcastCycleDraft(
     cycle ?? createDefaultBroadcastCycleDraft(liveNowMs),
     liveNowMs,
@@ -253,7 +349,7 @@ export function BroadcastSchedulePlanner({
   );
   const agendaFreeWindowSlots =
     agendaDayKey && calendarSlots.length > 0
-      ? calendarSlots
+      ? availabilityCalendarSlots
           .filter(
             (slot) =>
               getBroadcastScheduleDayKey(slot.scheduledAt) === agendaDayKey &&
@@ -281,9 +377,9 @@ export function BroadcastSchedulePlanner({
     timingMode === 'now'
       ? 'Сейчас'
       : timingMode === 'cycle'
-        ? 'Цикл'
+        ? 'Повтор'
         : futureSlotCount > 0
-          ? formatCountLabel(futureSlotCount, 'слот', 'слота', 'слотов')
+          ? formatCountLabel(futureSlotCount, 'отправка', 'отправки', 'отправок')
           : 'Не выбрано';
   const pickedSlotsCount = pickedDayKeys.reduce(
     (count, dayKey) => count + getSelectedDaySlots(dayKey, normalizedValue).length,
@@ -316,6 +412,7 @@ export function BroadcastSchedulePlanner({
     targetContextLabel?.trim() || currentTargetLabel.trim() || 'Текущий чат';
   const normalizedTargetContextMeta = targetContextMeta?.trim() ?? '';
   const showCalendar = calendarOnly || (timingMode === 'scheduled' && calendarExpanded);
+  const showRecipe = !calendarOnly && timingMode === 'scheduled';
   const emitSelectionStateChange = useEffectEvent(
     (nextState: BroadcastSchedulePlannerSelectionState) => {
       onSelectionStateChange?.(nextState);
@@ -387,6 +484,7 @@ export function BroadcastSchedulePlanner({
     setAgendaDayKey(null);
     setApplyToAllPickedDays(false);
     setIsConfirmed(false);
+    setHasBlockingIssue(false);
     setCalendarExpanded(calendarOnly);
   }, [resetKey]);
 
@@ -395,6 +493,18 @@ export function BroadcastSchedulePlanner({
       setIsConfirmed(false);
     }
   }, [normalizedValue.length]);
+
+  useEffect(() => {
+    if (!currentScheduleRecipe || hasBlockingIssue) {
+      return;
+    }
+
+    setRecipeDraft((current) =>
+      areBroadcastScheduleRecipeDraftsEqual(current, currentScheduleRecipe)
+        ? current
+        : currentScheduleRecipe,
+    );
+  }, [currentScheduleRecipe, hasBlockingIssue]);
 
   useEffect(() => {
     if (sheetMode !== 'time') {
@@ -415,6 +525,7 @@ export function BroadcastSchedulePlanner({
     setAgendaDayKey(null);
     setApplyToAllPickedDays(false);
     setIsConfirmed(timingMode === 'now' || timingMode === 'cycle');
+    setHasBlockingIssue(false);
     setCalendarExpanded(false);
   }, [normalizedValue.length, timingMode]);
 
@@ -511,6 +622,7 @@ export function BroadcastSchedulePlanner({
       futureSlotCount,
       isDaySheetOpen,
       isConfirmed,
+      hasBlockingIssue,
     };
 
     if (areSelectionStatesEqual(lastSelectionStateRef.current, nextState)) {
@@ -522,6 +634,7 @@ export function BroadcastSchedulePlanner({
   }, [
     emitSelectionStateChange,
     futureSlotCount,
+    hasBlockingIssue,
     isConfirmed,
     isDaySheetOpen,
     normalizedValue.length,
@@ -546,6 +659,64 @@ export function BroadcastSchedulePlanner({
     onChange(sortAndUniqueBroadcastSlots(nextSlots));
   }
 
+  function applyRecipeDraft(nextRecipe: BroadcastScheduleRecipeDraft) {
+    const normalizedRecipe = normalizeBroadcastScheduleRecipeDraft(nextRecipe);
+    const nextPlan = buildBroadcastScheduleRecipePlan(normalizedRecipe, {
+      nowMs: liveNowMs,
+      minimumTimeMs: minimumTime,
+      occupiedSlots: recipeOccupiedSlots,
+    });
+    const nextSlots = nextPlan.slots;
+
+    activateScheduledMode();
+    setRecipeDraft(normalizedRecipe);
+    if (!nextPlan.isComplete) {
+      setIsConfirmed(false);
+      setHasBlockingIssue(true);
+      return;
+    }
+
+    setPickedDayKeys(nextPlan.dayKeys);
+    setActiveDayKey((current) => {
+      const nextDayKey = getBroadcastScheduleDayKey(nextSlots[0] ?? '');
+      return nextDayKey && nextDayKey !== 'NaN-NaN-NaN' ? nextDayKey : current;
+    });
+    setApplyToAllPickedDays(true);
+    setIsConfirmed(nextPlan.isComplete);
+    setHasBlockingIssue(false);
+    onChange(nextSlots);
+  }
+
+  function patchRecipeDraft(patch: Partial<BroadcastScheduleRecipeDraft>) {
+    const nextRecipe = {
+      ...recipeDraft,
+      ...patch,
+    };
+    applyRecipeDraft(nextRecipe);
+    maxSelectionChanged();
+  }
+
+  function setRecipeTime(index: number, value: string) {
+    const parsedMinutes = parseBroadcastPlannerTimeLabel(value);
+    if (parsedMinutes === null) {
+      return;
+    }
+
+    const nextMinutes = [...recipeDraft.minutes];
+    nextMinutes[index] = normalizeBroadcastPlannerTimeMinutes(parsedMinutes);
+    patchRecipeDraft({ minutes: nextMinutes });
+  }
+
+  function applyPresetRecipe(preset: BroadcastDayPreset) {
+    const nextRecipe: BroadcastScheduleRecipeDraft = {
+      ...recipeDraft,
+      dayCount: preset.count,
+      weekdayMode: preset.weekdayMode,
+    };
+    applyRecipeDraft(nextRecipe);
+    maxSelectionChanged();
+  }
+
   function activateScheduledMode() {
     if (timingMode !== 'scheduled') {
       onTimingModeChange?.('scheduled');
@@ -568,9 +739,10 @@ export function BroadcastSchedulePlanner({
     setSheetMode(null);
     setAgendaDayKey(null);
     setApplyToAllPickedDays(false);
+    setHasBlockingIssue(false);
 
     if (nextMode === 'scheduled') {
-      setCalendarExpanded(true);
+      setCalendarExpanded(normalizedValue.length > 0);
       if (scheduledDayKeys.length > 0) {
         setPickedDayKeys(scheduledDayKeys);
         setActiveDayKey(scheduledDayKeys[0] ?? activeDayKey);
@@ -665,6 +837,7 @@ export function BroadcastSchedulePlanner({
 
     activateScheduledMode();
     setIsConfirmed(false);
+    setHasBlockingIssue(false);
     setPickedDayKeys((current) => {
       const exists = current.includes(dayKey);
       const next = exists
@@ -690,6 +863,7 @@ export function BroadcastSchedulePlanner({
 
     activateScheduledMode();
     setIsConfirmed(false);
+    setHasBlockingIssue(false);
     if (!pickedDayKeys.includes(activeDayKey)) {
       setActiveDayKey(pickedDayKeys[0] ?? activeDayKey);
     }
@@ -699,32 +873,13 @@ export function BroadcastSchedulePlanner({
     maxImpact('medium');
   }
 
-  function applyDayPreset(dayKeys: string[]) {
-    if (disabled || dayKeys.length === 0) {
-      return;
-    }
-
-    activateScheduledMode();
-    setIsConfirmed(false);
-    setCalendarExpanded(true);
-    setPickedDayKeys(dayKeys);
-    setActiveDayKey(dayKeys[0] ?? activeDayKey);
-    setApplyToAllPickedDays(dayKeys.length > 1);
-    setSheetMode(null);
-    setAgendaDayKey(null);
-    if (normalizedValue.length > 0) {
-      onChange(filterBroadcastSlotsByDayKeys(normalizedValue, dayKeys));
-    }
-    onOpenDay?.(dayKeys[0] ?? activeDayKey);
-    maxSelectionChanged();
-  }
-
   function finishPickedSelection() {
     setPickedDayKeys([]);
     setApplyToAllPickedDays(false);
     setSheetMode(null);
     setAgendaDayKey(null);
     setIsConfirmed(normalizedValue.length > 0);
+    setHasBlockingIssue(false);
   }
 
   function closeDaySheet() {
@@ -745,6 +900,7 @@ export function BroadcastSchedulePlanner({
     setSheetMode(null);
     setAgendaDayKey(null);
     setIsConfirmed(false);
+    setHasBlockingIssue(false);
     if (normalizedValue.length > 0) {
       onChange([]);
     }
@@ -753,6 +909,7 @@ export function BroadcastSchedulePlanner({
 
   function clearTargetDays() {
     setIsConfirmed(false);
+    setHasBlockingIssue(false);
     replaceSlotsForDays(targetDayKeys, () => []);
     maxImpact('soft');
   }
@@ -764,6 +921,7 @@ export function BroadcastSchedulePlanner({
 
     activateScheduledMode();
     setIsConfirmed(false);
+    setHasBlockingIssue(false);
     setPickedDayKeys([agendaDayKey]);
     setActiveDayKey(agendaDayKey);
     setApplyToAllPickedDays(false);
@@ -778,6 +936,7 @@ export function BroadcastSchedulePlanner({
 
     activateScheduledMode();
     setIsConfirmed(false);
+    setHasBlockingIssue(false);
     setPickedDayKeys([agendaDayKey]);
     setActiveDayKey(agendaDayKey);
     setApplyToAllPickedDays(false);
@@ -821,6 +980,7 @@ export function BroadcastSchedulePlanner({
     setAgendaDayKey(null);
     setSheetMode('time');
     setIsConfirmed(false);
+    setHasBlockingIssue(false);
     onOpenDay?.(dayKey);
     maxImpact('medium');
   }
@@ -833,7 +993,7 @@ export function BroadcastSchedulePlanner({
     }
 
     activateScheduledMode();
-    setCalendarExpanded(true);
+    setCalendarExpanded((current) => !current);
     if (scheduledDayKeys.length > 0 && pickedDayKeys.length === 0) {
       setPickedDayKeys(scheduledDayKeys);
       setActiveDayKey(scheduledDayKeys[0] ?? activeDayKey);
@@ -847,6 +1007,7 @@ export function BroadcastSchedulePlanner({
     }
 
     activateScheduledMode();
+    setHasBlockingIssue(false);
     const hasPastRestriction = targetDayKeys.some(
       (dayKey) => isSlotInPast(dayKey, minutes) && !isSlotSelectedForDay(dayKey, minutes),
     );
@@ -890,11 +1051,11 @@ export function BroadcastSchedulePlanner({
   const scheduleReady =
     timingMode === 'now' ||
     timingMode === 'cycle' ||
-    (timingMode === 'scheduled' && futureSlotCount > 0);
+    (timingMode === 'scheduled' && futureSlotCount > 0 && !hasBlockingIssue);
   const cycleStartInputValue = formatLocalDateTimeInputValue(normalizedCycle.startAt);
   const cycleStartMinValue = formatLocalDateTimeInputValue(new Date(liveNowMs + 30_000));
   const compactScheduleModeLabel =
-    timingMode === 'now' ? 'Сейчас' : timingMode === 'cycle' ? 'Интервал' : 'Даты';
+    timingMode === 'now' ? 'Сейчас' : timingMode === 'cycle' ? 'Повтор' : 'Позже';
   const compactScheduleMeta =
     timingMode === 'now'
       ? 'сразу'
@@ -902,10 +1063,10 @@ export function BroadcastSchedulePlanner({
         ? formatBroadcastCycleSummary(normalizedCycle, liveNowMs)
         : futureSlotCount > 0
           ? [
-              formatCountLabel(futureSlotCount, 'слот', 'слота', 'слотов'),
+              formatCountLabel(futureSlotCount, 'отправка', 'отправки', 'отправок'),
               formatCountLabel(selectedDayCount, 'день', 'дня', 'дней'),
             ].join(' · ')
-          : 'Без слотов';
+          : 'Без времени';
   const compactScheduleSummary = `${compactScheduleModeLabel} · ${compactScheduleMeta}`;
   const compactSlotPreview =
     timingMode === 'scheduled' && futureSlots.length > 0
@@ -920,7 +1081,7 @@ export function BroadcastSchedulePlanner({
     timingMode === 'scheduled'
       ? futureSlotCount > 0
         ? 'Изменить'
-        : 'Выбрать время'
+        : 'Выбрать даты'
       : 'Настроить время';
 
   return (
@@ -965,8 +1126,8 @@ export function BroadcastSchedulePlanner({
                     disabled={disabled}
                     aria-pressed={timingMode === 'scheduled'}
                   >
-                    <strong>Даты</strong>
-                    <small>{futureSlotCount > 0 ? scheduleStatusLabel : 'слоты'}</small>
+                    <strong>Позже</strong>
+                    <small>{futureSlotCount > 0 ? scheduleStatusLabel : 'даты'}</small>
                   </button>
                   <button
                     type="button"
@@ -978,10 +1139,10 @@ export function BroadcastSchedulePlanner({
                     onClick={() => selectTimingMode('cycle')}
                     disabled={disabled}
                     aria-pressed={timingMode === 'cycle'}
-                    aria-label="Интервал автопостинга"
-                    title="Интервал автопостинга"
+                    aria-label="Повтор автопостинга"
+                    title="Повтор автопостинга"
                   >
-                    <strong>Интервал</strong>
+                    <strong>Повтор</strong>
                     <small>{formatBroadcastCycleIntervalLabel(normalizedCycle.everyHours)}</small>
                   </button>
                 </div>
@@ -1004,37 +1165,145 @@ export function BroadcastSchedulePlanner({
             </>
           ) : null}
 
+          {showRecipe ? (
+            <div className="broadcast-planner__recipe" aria-label="Серия отправок">
+              <div className="broadcast-planner__quick-row" aria-label="Быстрый выбор дней">
+                {dayPresetOptions.map(({ preset, dayKeys }) => (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    className={cn(
+                      'broadcast-planner__quick-chip',
+                      recipeDraft.dayCount === preset.count &&
+                        recipeDraft.weekdayMode === preset.weekdayMode &&
+                        recipePlan.isComplete &&
+                        'is-active',
+                    )}
+                    onClick={() => applyPresetRecipe(preset)}
+                    disabled={disabled || dayKeys.length === 0}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className="broadcast-planner__quick-chip"
+                  onClick={clearCalendarSchedule}
+                  disabled={disabled || (normalizedValue.length === 0 && pickedDayKeys.length === 0)}
+                >
+                  Очистить
+                </button>
+              </div>
+
+              <div className="broadcast-planner__recipe-grid">
+                <div className="broadcast-planner__recipe-stepper">
+                  <span>Дней</span>
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => patchRecipeDraft({ dayCount: recipeDraft.dayCount - 1 })}
+                      disabled={disabled || recipeDraft.dayCount <= BROADCAST_RECIPE_MIN_DAYS}
+                      aria-label="Меньше дней"
+                    >
+                      −
+                    </button>
+                    <strong>{recipeDraft.dayCount}</strong>
+                    <button
+                      type="button"
+                      onClick={() => patchRecipeDraft({ dayCount: recipeDraft.dayCount + 1 })}
+                      disabled={disabled || recipeDraft.dayCount >= BROADCAST_RECIPE_MAX_DAYS}
+                      aria-label="Больше дней"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+
+                <div className="broadcast-planner__recipe-stepper">
+                  <span>Постов/день</span>
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        patchRecipeDraft({ postsPerDay: recipeDraft.postsPerDay - 1 })
+                      }
+                      disabled={
+                        disabled || recipeDraft.postsPerDay <= BROADCAST_RECIPE_MIN_POSTS_PER_DAY
+                      }
+                      aria-label="Меньше постов в день"
+                    >
+                      −
+                    </button>
+                    <strong>{recipeDraft.postsPerDay}</strong>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        patchRecipeDraft({ postsPerDay: recipeDraft.postsPerDay + 1 })
+                      }
+                      disabled={
+                        disabled || recipeDraft.postsPerDay >= BROADCAST_RECIPE_MAX_POSTS_PER_DAY
+                      }
+                      aria-label="Больше постов в день"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="broadcast-planner__recipe-times" aria-label="Время публикаций">
+                {recipeDraft.minutes.map((minutes, index) => (
+                  <TimeField
+                    key={`recipe-time-${index}`}
+                    label={`${index + 1}`}
+                    value={formatMinuteLabel(minutes)}
+                    variant="compact"
+                    minuteStep={30}
+                    disabled={disabled}
+                    onChange={(nextValue) => setRecipeTime(index, nextValue)}
+                  />
+                ))}
+              </div>
+
+              <div className="broadcast-planner__recipe-actions">
+                <button
+                  type="button"
+                  className={cn(
+                    'broadcast-planner__recipe-summary',
+                    recipeApplied && 'is-ready',
+                    recipePlan.issue && 'has-issue',
+                  )}
+                  onClick={() => applyRecipeDraft(recipeDraft)}
+                  disabled={disabled || !recipePlan.isComplete}
+                >
+                  <strong>{recipeSummary}</strong>
+                  <span>
+                    {recipePlan.isComplete
+                      ? `${formatCountLabel(recipeSlotCount, 'отправка', 'отправки', 'отправок')} · ${recipeTimeLabels.join(', ')}`
+                      : recipeIssueLabel}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className={cn(
+                    'broadcast-planner__recipe-calendar',
+                    calendarExpanded && 'is-active',
+                  )}
+                  onClick={() => {
+                    setCalendarExpanded((current) => !current);
+                    maxSelectionChanged();
+                  }}
+                  disabled={disabled}
+                  aria-expanded={calendarExpanded}
+                >
+                  Даты
+                </button>
+              </div>
+            </div>
+          ) : null}
+
           {showCalendar ? (
             <>
-              {!calendarOnly ? (
-                <div className="broadcast-planner__quick-row" aria-label="Быстрый выбор дней">
-                  {dayPresetOptions.map(({ preset, dayKeys }) => (
-                    <button
-                      key={preset.id}
-                      type="button"
-                      className={cn(
-                        'broadcast-planner__quick-chip',
-                        areStringArraysEqual(pickedDayKeys, dayKeys) && 'is-active',
-                      )}
-                      onClick={() => applyDayPreset(dayKeys)}
-                      disabled={disabled || dayKeys.length === 0}
-                    >
-                      {preset.label}
-                    </button>
-                  ))}
-                  <button
-                    type="button"
-                    className="broadcast-planner__quick-chip"
-                    onClick={clearCalendarSchedule}
-                    disabled={
-                      disabled || (normalizedValue.length === 0 && pickedDayKeys.length === 0)
-                    }
-                  >
-                    Очистить
-                  </button>
-                </div>
-              ) : null}
-
               {calendarOnly ? (
                 <div
                   className={cn(
@@ -1121,7 +1390,12 @@ export function BroadcastSchedulePlanner({
 
                   if (daySlots.length > 0) {
                     dayAriaLabelParts.push(
-                      `${formatCountLabel(daySlots.length, 'слот', 'слота', 'слотов')} настроено`,
+                      `${formatCountLabel(
+                        daySlots.length,
+                        'отправка',
+                        'отправки',
+                        'отправок',
+                      )} настроено`,
                     );
                   } else if (isPicked) {
                     dayAriaLabelParts.push('выбран для настройки');
@@ -1307,7 +1581,7 @@ export function BroadcastSchedulePlanner({
                 </div>
 
                 <div className="broadcast-planner__cycle-field">
-                  <span>Интервал</span>
+                  <span>Каждые</span>
                   <div className="broadcast-planner__cycle-presets">
                     {BROADCAST_CYCLE_INTERVAL_PRESETS.map((hours) => (
                       <button
@@ -1346,7 +1620,7 @@ export function BroadcastSchedulePlanner({
                         )
                       }
                       disabled={disabled}
-                      aria-label="Интервал в часах"
+                      aria-label="Период повтора в часах"
                     />
                     <small>ч</small>
                   </label>
@@ -1403,7 +1677,12 @@ export function BroadcastSchedulePlanner({
                 <strong>{pickedDaySummary}</strong>
                 <small>
                   {pickedSlotsCount > 0
-                    ? `${formatCountLabel(pickedSlotsCount, 'слот', 'слота', 'слотов')} · ${pickedDayLabel}`
+                    ? `${formatCountLabel(
+                        pickedSlotsCount,
+                        'отправка',
+                        'отправки',
+                        'отправок',
+                      )} · ${pickedDayLabel}`
                     : pickedDayLabel}
                 </small>
               </div>
@@ -1474,15 +1753,20 @@ export function BroadcastSchedulePlanner({
                                 'автопостинг',
                                 'автопостинга',
                                 'автопостингов',
-                              )} · ${formatCountLabel(agendaSlotCount, 'слот', 'слота', 'слотов')}`
+                              )} · ${formatCountLabel(
+                                agendaSlotCount,
+                                'отправка',
+                                'отправки',
+                                'отправок',
+                              )}`
                             : applyToAllPickedDays && pickedDayKeys.length > 1
                               ? `${pickedDayLabel} · общее время`
                               : activeDaySlots.length > 0
                                 ? `${formatCountLabel(
                                     activeDaySlots.length,
-                                    'слот',
-                                    'слота',
-                                    'слотов',
+                                    'отправка',
+                                    'отправки',
+                                    'отправок',
                                   )} выбрано`
                                 : 'Время'}
                       </small>
@@ -1682,7 +1966,7 @@ export function BroadcastSchedulePlanner({
                             }}
                           >
                             <strong>{formatDayChipLabel(dayKey)}</strong>
-                            <small>{`${getSelectedDaySlots(dayKey, normalizedValue).length} сл.`}</small>
+                            <small>{getSelectedDaySlots(dayKey, normalizedValue).length}</small>
                           </button>
                         ))}
                       </div>
@@ -1746,7 +2030,7 @@ export function BroadcastSchedulePlanner({
                                 {formatMinuteLabel(minutes)}
                                 {chipState.hasBusy ? (
                                   <span className="broadcast-planner__info-mark" aria-hidden>
-                                    i
+                                    Занято
                                   </span>
                                 ) : null}
                               </button>
@@ -1852,7 +2136,7 @@ export function BroadcastSchedulePlanner({
                                       <strong>{formatMinuteLabel(minutes)}</strong>
                                       {chipState.hasBusy ? (
                                         <span className="broadcast-planner__info-mark" aria-hidden>
-                                          i
+                                          Занято
                                         </span>
                                       ) : null}
                                     </button>

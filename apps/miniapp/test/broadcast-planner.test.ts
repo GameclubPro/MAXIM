@@ -26,6 +26,10 @@ import {
   buildBroadcastScheduleSlotIso,
   getBroadcastScheduleDayKey,
 } from '../src/lib/broadcast-schedule';
+import {
+  buildBroadcastScheduleRecipePlan,
+  createDefaultBroadcastScheduleRecipeDraft,
+} from '../src/lib/broadcast-schedule-recipe';
 
 function createManagedBroadcast(
   overrides: Partial<ManagedBroadcastSummary> = {},
@@ -200,6 +204,86 @@ test('builds a five-day two-times daily calendar schedule', () => {
     9 * 60,
     18 * 60,
   ]);
+});
+
+test('builds a complete five-day two-times recipe plan', () => {
+  const nowMs = new Date(2026, 4, 6, 8, 0, 0, 0).getTime();
+  const plan = buildBroadcastScheduleRecipePlan(createDefaultBroadcastScheduleRecipeDraft(), {
+    nowMs,
+    minimumTimeMs: nowMs + 30_000,
+  });
+
+  assert.equal(plan.isComplete, true);
+  assert.equal(plan.issue, null);
+  assert.equal(plan.dayKeys.length, 5);
+  assert.equal(plan.slots.length, 10);
+  assert.equal(plan.requestedSlotCount, 10);
+  assert.deepEqual(getCommonSelectedMinutesForDays(plan.dayKeys, plan.slots), [
+    10 * 60,
+    18 * 60,
+  ]);
+});
+
+test('keeps recipe plans complete by skipping past and occupied days', () => {
+  const nowMs = new Date(2026, 4, 6, 10, 30, 0, 0).getTime();
+  const occupiedSlot = buildBroadcastScheduleSlotIso('2026-05-07', 18 * 60);
+  const plan = buildBroadcastScheduleRecipePlan(createDefaultBroadcastScheduleRecipeDraft(), {
+    nowMs,
+    minimumTimeMs: nowMs + 30_000,
+    occupiedSlots: [occupiedSlot],
+  });
+
+  assert.equal(plan.isComplete, true);
+  assert.equal(plan.skippedPastDayCount, 1);
+  assert.equal(plan.skippedBusyDayCount, 1);
+  assert.equal(plan.dayKeys.includes('2026-05-06'), false);
+  assert.equal(plan.dayKeys.includes('2026-05-07'), false);
+  assert.equal(plan.slots.length, 10);
+  assert.equal(
+    plan.slots.some((slot) => slot === occupiedSlot),
+    false,
+  );
+});
+
+test('marks recipe plans incomplete when the 31-day window cannot fit requested sends', () => {
+  const nowMs = new Date(2026, 4, 6, 8, 0, 0, 0).getTime();
+  const occupiedSlots = Array.from({ length: 31 }, (_, index) =>
+    buildBroadcastScheduleSlotIso(
+      getBroadcastScheduleDayKey(new Date(2026, 4, 6 + index, 12)),
+      10 * 60,
+    ),
+  );
+  const plan = buildBroadcastScheduleRecipePlan(createDefaultBroadcastScheduleRecipeDraft(), {
+    nowMs,
+    minimumTimeMs: nowMs + 30_000,
+    occupiedSlots,
+  });
+
+  assert.equal(plan.isComplete, false);
+  assert.equal(plan.issue, 'not-enough-time');
+  assert.equal(plan.slots.length, 0);
+  assert.equal(plan.requestedSlotCount, 10);
+});
+
+test('rejects duplicate recipe times instead of silently changing the plan', () => {
+  const nowMs = new Date(2026, 4, 6, 8, 0, 0, 0).getTime();
+  const plan = buildBroadcastScheduleRecipePlan(
+    {
+      dayCount: 5,
+      postsPerDay: 2,
+      weekdayMode: 'any',
+      minutes: [10 * 60, 10 * 60],
+    },
+    {
+      nowMs,
+      minimumTimeMs: nowMs + 30_000,
+    },
+  );
+
+  assert.equal(plan.isComplete, false);
+  assert.equal(plan.issue, 'duplicate-time');
+  assert.deepEqual(plan.duplicateMinuteLabels, ['10:00']);
+  assert.deepEqual(plan.slots, []);
 });
 
 test('filters preset slots to the newly selected days', () => {

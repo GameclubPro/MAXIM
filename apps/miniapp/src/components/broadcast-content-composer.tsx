@@ -91,6 +91,7 @@ export function BroadcastContentComposer({
 }: BroadcastContentComposerProps) {
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const richTextEditorRef = useRef<MaxRichTextEditorHandle | null>(null);
+  const [formatToolsOpen, setFormatToolsOpen] = useState(false);
   const [preparingImages, setPreparingImages] = useState<PreparingImagesState>({
     done: 0,
     total: 0,
@@ -136,6 +137,7 @@ export function BroadcastContentComposer({
   const remainingLength = maxLength - text.length;
   const isNearTextLimit =
     remainingLength >= 0 && remainingLength <= Math.min(120, maxLength * 0.08);
+  const showTextCounter = text.length > 0 && (isNearTextLimit || remainingLength < 0);
   const isPreparingImage = pendingImageSlots > 0;
   const isBusy = disabled || isPreparingImage;
   const useNativeTapFileInput =
@@ -252,42 +254,20 @@ export function BroadcastContentComposer({
         )}
       >
         <div className="broadcast-content-composer__editor broadcast-content-composer__editor--rich">
-          <div className="broadcast-content-composer__editor-head">
-            <span
-              className={cn(
-                'broadcast-content-composer__counter',
-                text.length === 0 && 'is-empty',
-                isNearTextLimit && 'is-warning',
-                remainingLength < 0 && 'is-limit',
-              )}
-              aria-live="polite"
-            >
-              {text.length}/{maxLength}
-            </span>
-          </div>
-
-          <div className="broadcast-content-composer__modifier-row" aria-label="Модификаторы">
-            {MAX_MARKDOWN_TOOL_DEFINITIONS.map((tool) => (
-              <button
-                key={tool.id}
-                type="button"
+          {showTextCounter ? (
+            <div className="broadcast-content-composer__editor-head">
+              <span
                 className={cn(
-                  'broadcast-content-composer__modifier',
-                  tool.id === 'italic' && 'is-italic',
-                  tool.id === 'code' && 'is-code',
+                  'broadcast-content-composer__counter',
+                  isNearTextLimit && 'is-warning',
+                  remainingLength < 0 && 'is-limit',
                 )}
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                }}
-                onClick={() => applyTextModifier(tool.id)}
-                disabled={isBusy}
-                title={tool.title}
-                aria-label={tool.title}
+                aria-live="polite"
               >
-                {tool.id === 'link' ? <IconoirLink aria-hidden focusable="false" /> : tool.label}
-              </button>
-            ))}
-          </div>
+                {text.length}/{maxLength}
+              </span>
+            </div>
+          ) : null}
 
           <div
             className={cn(
@@ -401,6 +381,21 @@ export function BroadcastContentComposer({
 
           <div className="broadcast-content-composer__bar">
             <div className="broadcast-content-composer__media-actions">
+              <button
+                type="button"
+                className={cn(
+                  'broadcast-content-composer__tool',
+                  'broadcast-content-composer__tool--format',
+                  formatToolsOpen && 'is-active',
+                )}
+                onClick={() => setFormatToolsOpen((current) => !current)}
+                disabled={isBusy}
+                aria-expanded={formatToolsOpen}
+                aria-label="Форматирование"
+                title="Форматирование"
+              >
+                A
+              </button>
               {useNativeTapFileInput ? (
                 <label
                   className={cn(
@@ -498,6 +493,31 @@ export function BroadcastContentComposer({
               ) : null}
             </span>
           </div>
+
+          {formatToolsOpen ? (
+            <div className="broadcast-content-composer__modifier-row" aria-label="Форматирование">
+              {MAX_MARKDOWN_TOOL_DEFINITIONS.map((tool) => (
+                <button
+                  key={tool.id}
+                  type="button"
+                  className={cn(
+                    'broadcast-content-composer__modifier',
+                    tool.id === 'italic' && 'is-italic',
+                    tool.id === 'code' && 'is-code',
+                  )}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                  }}
+                  onClick={() => applyTextModifier(tool.id)}
+                  disabled={isBusy}
+                  title={tool.title}
+                  aria-label={tool.title}
+                >
+                  {tool.id === 'link' ? <IconoirLink aria-hidden focusable="false" /> : tool.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
       </div>
 

@@ -1847,6 +1847,7 @@ export const EMPTY_BROADCAST_PLANNER_STATE: BroadcastSchedulePlannerSelectionSta
   futureSlotCount: 0,
   isDaySheetOpen: false,
   isConfirmed: false,
+  hasBlockingIssue: false,
 };
 
 export function areBroadcastPlannerStatesEqual(
@@ -1859,6 +1860,7 @@ export function areBroadcastPlannerStatesEqual(
     left.slotCount === right.slotCount &&
     left.futureSlotCount === right.futureSlotCount &&
     left.isDaySheetOpen === right.isDaySheetOpen &&
-    left.isConfirmed === right.isConfirmed
+    left.isConfirmed === right.isConfirmed &&
+    left.hasBlockingIssue === right.hasBlockingIssue
   );
 }

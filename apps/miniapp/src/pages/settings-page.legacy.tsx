@@ -369,6 +369,10 @@ const LazySettingsAdminCommandsSection = lazy(() =>
   })),
 );
 
+function formatCompactCountLabel(count: number, label: string): string {
+  return `${Math.max(0, Math.trunc(count))} ${label}`;
+}
+
 export function SettingsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
   const location = useLocation();
@@ -3214,11 +3218,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       sendAt: isCycleSchedule ? resolveBroadcastCycleSendAt(cycleDraft) : null,
       cycleEnabled: isCycleSchedule,
       cycleEveryHours: isCycleSchedule ? cycleDraft.everyHours : 1,
-      cycleCount: isCycleSchedule
-        ? cycleDraft.count
-        : isCalendarSchedule
-          ? Math.max(scheduledSlots.length, 1)
-          : 1,
+      cycleCount: isCycleSchedule ? cycleDraft.count : 1,
     };
   }
 
@@ -3405,10 +3405,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     if (mailingTimingMode === 'scheduled' && scheduledSlots.length === 0) {
-      setMailingScheduleError('Добавьте слот.');
+      setMailingScheduleError('Добавьте время.');
+      hasError = true;
+    } else if (mailingTimingMode === 'scheduled' && mailingPlannerState.hasBlockingIssue) {
+      setMailingScheduleError('Проверьте время.');
       hasError = true;
     } else if (mailingTimingMode === 'scheduled' && mailingPlannerState.futureSlotCount === 0) {
-      setMailingScheduleError('Есть прошедшие слоты.');
+      setMailingScheduleError('Есть прошедшее время.');
       hasError = true;
     } else if (mailingTimingMode === 'cycle' && cycleError) {
       setMailingCycleError(cycleError);
@@ -4502,7 +4505,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mailingCalendarQuery.data?.slots && mailingCalendarQuery.data.slots.length > 0
       ? sortAndUniqueBroadcastSlots(
           mailingCalendarQuery.data.slots
-            .filter((slot) => slot.hasTargetOverlap)
+            .filter(
+              (slot) =>
+                slot.hasTargetOverlap &&
+                (!editingManagedBroadcast || slot.broadcastId !== editingManagedBroadcast.id),
+            )
             .map((slot) => slot.scheduledAt),
         )
       : mailingOccupiedSlots;
@@ -4636,9 +4643,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingHeaderTargetLabel = mailingHeaderTargetPresentation.label;
   const mailingSlotsLabel = formatRussianCountLabel(
     mailingScheduledSlots.length,
-    'слот',
-    'слота',
-    'слотов',
+    'отправка',
+    'отправки',
+    'отправок',
   );
   const normalizedMailingText = mailingText.trim();
   const normalizedMailingButtons = trimBroadcastLinkButtons(mailingButtons);
@@ -4674,13 +4681,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         ? formatBroadcastCycleSummary(mailingNormalizedCycle, mailingNowMs)
         : mailingScheduledSlots.length > 0
           ? mailingSlotsLabel
-          : 'Без слотов';
+          : 'Без времени';
   const mailingSelectionSummary = [
     mailingPlannerState.selectedDayCount > 0
       ? formatRussianCountLabel(mailingPlannerState.selectedDayCount, 'день', 'дня', 'дней')
       : null,
     mailingPlannerState.futureSlotCount > 0
-      ? formatRussianCountLabel(mailingPlannerState.futureSlotCount, 'слот', 'слота', 'слотов')
+      ? formatCompactCountLabel(mailingPlannerState.futureSlotCount, 'отпр.')
       : null,
   ]
     .filter(Boolean)
@@ -4730,8 +4737,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           ? 'Цикл?'
           : `Цикл ${mailingNormalizedCycle.count}`
         : mailingPlannerState.futureSlotCount > 0
-          ? `${mailingPlannerState.futureSlotCount} сл.`
-          : 'Без слотов';
+          ? formatCompactCountLabel(mailingPlannerState.futureSlotCount, 'отпр.')
+          : 'Без времени';
   const mailingButtonsSignalValue = !mailingButtonDraftValid
     ? 'Ошибка'
     : mailingHasVisibleButtons
@@ -4743,12 +4750,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingHasFutureSlots =
     mailingTimingMode === 'now' ||
     (mailingTimingMode === 'cycle' && !mailingCycleValidationError) ||
-    (mailingTimingMode === 'scheduled' && mailingPlannerState.futureSlotCount > 0);
+    (mailingTimingMode === 'scheduled' &&
+      mailingPlannerState.futureSlotCount > 0 &&
+      !mailingPlannerState.hasBlockingIssue);
   const mailingCalendarScheduleReady =
     mailingTimingMode === 'scheduled' &&
     mailingScheduledSlots.length > 0 &&
     mailingPlannerState.futureSlotCount > 0 &&
-    !mailingPlannerPending;
+    !mailingPlannerPending &&
+    !mailingPlannerState.hasBlockingIssue;
   const mailingScheduleReady =
     mailingTimingMode === 'now' ||
     (mailingTimingMode === 'cycle' && !mailingCycleValidationError) ||
@@ -4826,6 +4836,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       onClick: () => setMailingWorkspaceView('compose'),
     },
     {
+      label: 'Кому',
+      value: mailingHeaderTargetPresentation.compactLabel,
+      tone: mailingAudienceReady ? 'ready' : 'pending',
+      icon: 'audience',
+      onClick: () => setMailingWorkspaceView('compose'),
+    },
+    {
       label: 'Время',
       value: mailingTimingSignalValue,
       tone: mailingScheduleReady ? 'ready' : 'pending',
@@ -4849,17 +4866,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mailingScheduleReady,
     mailingButtonDraftValid,
   ].filter(Boolean).length;
-  const mailingFooterTitle = editingManagedBroadcast
-    ? 'Сохранить автопостинг'
-    : mailingPublishIssueLabels.length > 0 && !isMailingBusy
-      ? mailingPublishIssueLabels.join(' · ')
-      : mailingTimingMode === 'now'
-        ? 'Сейчас'
-        : mailingTimingMode === 'cycle'
-          ? formatBroadcastCycleSummary(mailingNormalizedCycle, mailingNowMs)
-          : mailingSelectionSummary || 'Автопостинг';
-  const mailingFooterMeta = [
+  const mailingFooterScheduleLabel =
+    mailingTimingMode === 'now'
+      ? 'Сейчас'
+      : mailingTimingMode === 'cycle'
+        ? formatBroadcastCycleSummary(mailingNormalizedCycle, mailingNowMs)
+        : mailingSelectionSummary || mailingSlotsLabel;
+  const mailingFooterTitle = [
     mailingHeaderTargetLabel,
+    mailingFooterScheduleLabel,
+    editingManagedBroadcast ? 'Правка' : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  const mailingFooterMeta = [
     mailingImageLabel,
     editingMailingHasVideo ? 'Видео' : null,
     mailingHasVisibleButtons ? mailingVisibleButtonStatus : null,
@@ -11076,25 +11096,25 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       <ActionConfirmSheet
         id="mailing-slot-conflict"
         open={pendingMailingSlotConflict !== null}
-        title="Слот занят"
-        summary="Можно заменить только слот этого чата."
+        title="Время занято"
+        summary="Можно заменить только эту отправку."
         previewTitle={
           pendingMailingConflictPreviewSlot
             ? formatCompactBroadcastDateTime(
                 pendingMailingConflictPreviewSlot,
                 pendingMailingSlotConflict?.payload.scheduleTimezone,
               )
-            : 'Занятый слот'
+            : 'Занято'
         }
         previewMeta={
           pendingMailingConflictSlots.length > 1
             ? formatRussianCountLabel(
                 pendingMailingConflictSlots.length,
-                'занятый слот',
-                'занятых слота',
-                'занятых слотов',
+                'занятая отправка',
+                'занятые отправки',
+                'занятых отправок',
               )
-            : 'Слот будет заменён, если получатели свободны.'
+            : 'Заменим, если получатели свободны.'
         }
         confirmLabel="Заменить"
         cancelLabel="Другое время"
@@ -11124,7 +11144,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   managedBroadcastDeleteTarget.nextSendAt,
                   managedBroadcastDeleteTarget.scheduleTimezone,
                 )}`
-              : 'Будущие слоты будут сняты.'
+              : 'Будущие отправки будут сняты.'
             : undefined
         }
         confirmLabel="Удалить"

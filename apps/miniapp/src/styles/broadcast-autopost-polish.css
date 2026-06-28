@@ -913,12 +913,6 @@ body.settings-drilldown-open .toast__close {
   grid-template-columns: minmax(46px, auto) minmax(70px, 0.54fr) minmax(128px, 1fr);
 }
 
-.settings-drilldown__panel--broadcast-screen
-  .broadcast-publish-bar:not(.has-issues)
-  .broadcast-publish-bar__copy {
-  display: none;
-}
-
 .settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__copy {
   min-width: 0;
   grid-column: auto;
@@ -1750,14 +1744,15 @@ body.settings-drilldown-open .toast__close {
   position: absolute;
   top: 3px;
   right: 4px;
-  width: 10px;
+  min-width: 28px;
   height: 10px;
+  padding: 0 3px;
   display: inline-grid;
   place-items: center;
   border-radius: 999px;
   background: rgba(16, 34, 51, 0.1);
   color: #5d7181;
-  font-size: 7px;
+  font-size: 6px;
   font-weight: 950;
   line-height: 1;
   pointer-events: none;
@@ -2004,6 +1999,90 @@ body.settings-drilldown-open .toast__close {
   font-size: 12px;
 }
 
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar,
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar.has-issues {
+  grid-template-columns: minmax(0, 1fr) 34px minmax(104px, auto);
+  gap: 6px;
+}
+
+.settings-drilldown__panel--broadcast-screen
+  .broadcast-publish-bar:not(.has-issues)
+  .broadcast-publish-bar__copy,
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__copy.has-issues strong {
+  display: grid;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__copy {
+  gap: 3px;
+  overflow: hidden;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__copy strong {
+  max-width: 100%;
+  font-size: 10px;
+  line-height: 1.1;
+}
+
+.settings-drilldown__panel--broadcast-screen
+  .broadcast-publish-bar:not(.has-issues)
+  .broadcast-publish-bar__copy
+  small {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--broadcast-polish-muted);
+  font-size: 9px;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__issues {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__issue {
+  max-width: 72px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__recipe {
+  gap: 6px;
+  border-radius: 12px;
+  padding: 6px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__recipe-grid {
+  gap: 6px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__recipe-stepper {
+  border-radius: 10px;
+  padding: 6px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__recipe-stepper > div {
+  grid-template-columns: 28px minmax(0, 1fr) 28px;
+  gap: 4px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__recipe-stepper button {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__recipe-times {
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+  gap: 6px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__recipe-summary {
+  min-height: 36px;
+  border-radius: 10px;
+  padding: 6px 8px;
+}
+
 @media (max-width: 430px), (max-height: 720px) {
   .settings-drilldown__panel--broadcast-screen .broadcast-message-card {
     min-height: clamp(112px, 19dvh, 168px);
@@ -2017,6 +2096,11 @@ body.settings-drilldown-open .toast__close {
 
   .settings-drilldown__panel--broadcast-screen .broadcast-planner__compact-action {
     min-width: 76px;
+  }
+
+  .settings-drilldown__panel--broadcast-screen .broadcast-publish-bar,
+  .settings-drilldown__panel--broadcast-screen .broadcast-publish-bar.has-issues {
+    grid-template-columns: minmax(0, 1fr) 32px minmax(98px, auto);
   }
 }
 }

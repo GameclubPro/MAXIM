@@ -222,6 +222,7 @@ const EMPTY_BROADCAST_PLANNER_STATE: BroadcastSchedulePlannerSelectionState = {
   futureSlotCount: 0,
   isDaySheetOpen: false,
   isConfirmed: false,
+  hasBlockingIssue: false,
 };
 
 function areBroadcastPlannerStatesEqual(
@@ -234,7 +235,8 @@ function areBroadcastPlannerStatesEqual(
     left.slotCount === right.slotCount &&
     left.futureSlotCount === right.futureSlotCount &&
     left.isDaySheetOpen === right.isDaySheetOpen &&
-    left.isConfirmed === right.isConfirmed
+    left.isConfirmed === right.isConfirmed &&
+    left.hasBlockingIssue === right.hasBlockingIssue
   );
 }
 
@@ -430,6 +432,10 @@ function formatChannelCountLabel(
   return `${safeCount} ${plural}`;
 }
 
+function formatChannelCompactCountLabel(count: number, label: string): string {
+  return `${Math.max(0, Math.trunc(count))} ${label}`;
+}
+
 function formatManagedBroadcastDateTime(value: string | null, timeZone?: string | null): string {
   return formatDateTimeInTimeZone(
     value,
@@ -455,7 +461,7 @@ function formatChannelBroadcastResultDescription(result: SendBroadcastResult): s
       ? `${result.failedChatPreviews[0]?.title}${result.failedChatOverflowCount > 0 ? ` +${result.failedChatOverflowCount}` : ''}`
       : '';
   if (result.sentChats === 0 && result.nextSendAt) {
-    return `Первый слот: ${formatManagedBroadcastDateTime(
+    return `Первая отправка: ${formatManagedBroadcastDateTime(
       result.nextSendAt,
       result.scheduleTimezone,
     )}.`;
@@ -469,7 +475,7 @@ function formatChannelBroadcastResultDescription(result: SendBroadcastResult): s
   }
 
   if (result.nextSendAt && result.scheduledOccurrences > 0) {
-    return `Следующий слот: ${formatManagedBroadcastDateTime(
+    return `Следующая отправка: ${formatManagedBroadcastDateTime(
       result.nextSendAt,
       result.scheduleTimezone,
     )}.`;
@@ -504,7 +510,7 @@ function formatBroadcastPayloadScheduleLabel(payload: SendBroadcastPayload): str
       return formatCompactManagedBroadcastDateTime(slots[0], payload.scheduleTimezone);
     }
 
-    return formatChannelCountLabel(slots.length, 'слот', 'слота', 'слотов');
+    return formatChannelCountLabel(slots.length, 'отправка', 'отправки', 'отправок');
   }
 
   if (payload.cycleEnabled) {
@@ -675,7 +681,12 @@ function buildManagedBroadcastFactChips(broadcast: ManagedBroadcastListItem): st
   }).label;
   const scheduleLabel =
     broadcast.scheduleMode === 'calendar'
-      ? formatChannelCountLabel(broadcast.scheduledSlots.length, 'слот', 'слота', 'слотов')
+      ? formatChannelCountLabel(
+          broadcast.scheduledSlots.length,
+          'отправка',
+          'отправки',
+          'отправок',
+        )
       : broadcast.cycleEnabled
         ? `Цикл ${broadcast.sentCount}/${broadcast.cycleCount}`
         : '1 отправка';
@@ -1766,7 +1777,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
               broadcast.nextSendAt,
               broadcast.scheduleTimezone,
             )}.`
-          : 'Измените слоты и сохраните.',
+          : 'Измените время и сохраните.',
       });
     },
     onError: (error) => {
@@ -1935,7 +1946,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     broadcastCalendarQuery.data?.slots && broadcastCalendarQuery.data.slots.length > 0
       ? sortAndUniqueBroadcastSlots(
           broadcastCalendarQuery.data.slots
-            .filter((slot) => slot.hasTargetOverlap)
+            .filter(
+              (slot) =>
+                slot.hasTargetOverlap &&
+                (!editingManagedBroadcast || slot.broadcastId !== editingManagedBroadcast.id),
+            )
             .map((slot) => slot.scheduledAt),
         )
       : broadcastOccupiedSlots;
@@ -1980,9 +1995,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     retryManagedBroadcastMutation.isPending;
   const broadcastSlotsLabel = formatChannelCountLabel(
     broadcastScheduledSlots.length,
-    'слот',
-    'слота',
-    'слотов',
+    'отправка',
+    'отправки',
+    'отправок',
   );
   const normalizedBroadcastText = broadcastText.trim();
   const broadcastVideoSource = editingManagedBroadcast ?? duplicatedManagedBroadcast;
@@ -2023,13 +2038,13 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         ? formatBroadcastCycleSummary(broadcastNormalizedCycle, broadcastNowMs)
         : broadcastScheduledSlots.length > 0
           ? broadcastSlotsLabel
-          : 'Без слотов';
+          : 'Без времени';
   const broadcastSelectionSummary = [
     broadcastPlannerState.selectedDayCount > 0
       ? formatChannelCountLabel(broadcastPlannerState.selectedDayCount, 'день', 'дня', 'дней')
       : null,
     broadcastPlannerState.futureSlotCount > 0
-      ? formatChannelCountLabel(broadcastPlannerState.futureSlotCount, 'слот', 'слота', 'слотов')
+      ? formatChannelCompactCountLabel(broadcastPlannerState.futureSlotCount, 'отпр.')
       : null,
   ]
     .filter(Boolean)
@@ -2038,12 +2053,15 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const broadcastHasFutureSlots =
     broadcastTimingMode === 'now' ||
     (broadcastTimingMode === 'cycle' && !broadcastCycleValidationError) ||
-    (broadcastTimingMode === 'scheduled' && broadcastPlannerState.futureSlotCount > 0);
+    (broadcastTimingMode === 'scheduled' &&
+      broadcastPlannerState.futureSlotCount > 0 &&
+      !broadcastPlannerState.hasBlockingIssue);
   const broadcastCalendarScheduleReady =
     broadcastTimingMode === 'scheduled' &&
     broadcastScheduledSlots.length > 0 &&
     broadcastPlannerState.futureSlotCount > 0 &&
-    !broadcastPlannerPending;
+    !broadcastPlannerPending &&
+    !broadcastPlannerState.hasBlockingIssue;
   const broadcastScheduleReady =
     broadcastTimingMode === 'now' ||
     (broadcastTimingMode === 'cycle' && !broadcastCycleValidationError) ||
@@ -2151,8 +2169,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           ? 'Цикл?'
           : `Цикл ${broadcastNormalizedCycle.count}`
         : broadcastPlannerState.futureSlotCount > 0
-          ? `${broadcastPlannerState.futureSlotCount} сл.`
-          : 'Без слотов';
+          ? formatChannelCompactCountLabel(broadcastPlannerState.futureSlotCount, 'отпр.')
+          : 'Без времени';
   const broadcastButtonsSignalValue = !broadcastButtonDraftValid
     ? 'Ошибка'
     : broadcastHasVisibleButtons
@@ -2161,15 +2179,19 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const broadcastResetActionLabel = editingManagedBroadcast
     ? 'Сбросить изменения'
     : 'Очистить автопостинг';
-  const broadcastFooterTitle = editingManagedBroadcast
-    ? 'Сохранить автопостинг'
-    : broadcastPublishIssueLabels.length > 0 && !isBroadcastBusy
-      ? broadcastPublishIssueLabels.join(' · ')
-      : broadcastTimingMode === 'now'
-        ? 'Сейчас'
-        : broadcastTimingMode === 'cycle'
-          ? formatBroadcastCycleSummary(broadcastNormalizedCycle, broadcastNowMs)
-          : broadcastSelectionSummary || 'Автопостинг';
+  const broadcastFooterScheduleLabel =
+    broadcastTimingMode === 'now'
+      ? 'Сейчас'
+      : broadcastTimingMode === 'cycle'
+        ? formatBroadcastCycleSummary(broadcastNormalizedCycle, broadcastNowMs)
+        : broadcastSelectionSummary || broadcastSlotsLabel;
+  const broadcastFooterTitle = [
+    broadcastTargetContextLabel,
+    broadcastFooterScheduleLabel,
+    editingManagedBroadcast ? 'Правка' : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
   const broadcastFooterMeta = [
     broadcastImageLabel,
     editingBroadcastHasVideo ? 'Видео' : null,
@@ -2438,11 +2460,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       sendAt: isCycleSchedule ? resolveBroadcastCycleSendAt(cycleDraft) : null,
       cycleEnabled: isCycleSchedule,
       cycleEveryHours: isCycleSchedule ? cycleDraft.everyHours : 1,
-      cycleCount: isCycleSchedule
-        ? cycleDraft.count
-        : isCalendarSchedule
-          ? Math.max(scheduledSlots.length, 1)
-          : 1,
+      cycleCount: isCycleSchedule ? cycleDraft.count : 1,
     };
   }
 
@@ -2605,10 +2623,13 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     }
 
     if (broadcastTimingMode === 'scheduled' && scheduledSlots.length === 0) {
-      setBroadcastScheduleError('Добавьте слот.');
+      setBroadcastScheduleError('Добавьте время.');
+      hasError = true;
+    } else if (broadcastTimingMode === 'scheduled' && broadcastPlannerState.hasBlockingIssue) {
+      setBroadcastScheduleError('Проверьте время.');
       hasError = true;
     } else if (broadcastTimingMode === 'scheduled' && broadcastPlannerState.futureSlotCount === 0) {
-      setBroadcastScheduleError('Есть прошедшие слоты.');
+      setBroadcastScheduleError('Есть прошедшее время.');
       hasError = true;
     } else if (broadcastTimingMode === 'cycle' && cycleError) {
       setBroadcastCycleError(cycleError);
@@ -3372,14 +3393,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                                     {formatCompactManagedBroadcastDateTime(
                                       editingManagedBroadcast.nextSendAt,
                                       editingManagedBroadcast.scheduleTimezone,
-                                    ) || 'По слотам'}
+                                    ) || 'По времени'}
                                   </strong>
                                   <span>
                                     {formatChannelCountLabel(
                                       broadcastScheduledSlots.length,
-                                      'слот',
-                                      'слота',
-                                      'слотов',
+                                      'отправка',
+                                      'отправки',
+                                      'отправок',
                                     )}
                                   </span>
                                 </span>
@@ -3391,9 +3412,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                                 'Текущий канал',
                                 formatChannelCountLabel(
                                   broadcastScheduledSlots.length,
-                                  'слот',
-                                  'слота',
-                                  'слотов',
+                                  'отправка',
+                                  'отправки',
+                                  'отправок',
                                 ),
                                 broadcastHasVisibleButtons ? broadcastVisibleButtonStatus : null,
                                 editingManagedBroadcast.imageEnabled ? 'Фото' : null,
@@ -3581,25 +3602,25 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       <ActionConfirmSheet
         id="channel-broadcast-slot-conflict"
         open={pendingBroadcastSlotConflict !== null}
-        title="Слот занят"
-        summary="Можно заменить только слот этого канала."
+        title="Время занято"
+        summary="Можно заменить только эту отправку."
         previewTitle={
           pendingBroadcastConflictPreviewSlot
             ? formatCompactManagedBroadcastDateTime(
                 pendingBroadcastConflictPreviewSlot,
                 pendingBroadcastSlotConflict?.payload.scheduleTimezone,
               )
-            : 'Занятый слот'
+            : 'Занято'
         }
         previewMeta={
           pendingBroadcastConflictSlots.length > 1
             ? formatChannelCountLabel(
                 pendingBroadcastConflictSlots.length,
-                'занятый слот',
-                'занятых слота',
-                'занятых слотов',
+                'занятая отправка',
+                'занятые отправки',
+                'занятых отправок',
               )
-            : 'Слот будет заменён, если получатели свободны.'
+            : 'Заменим, если получатели свободны.'
         }
         confirmLabel="Заменить"
         cancelLabel="Другое время"
@@ -3629,7 +3650,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                   managedBroadcastDeleteTarget.nextSendAt,
                   managedBroadcastDeleteTarget.scheduleTimezone,
                 )}`
-              : 'Будущие слоты будут сняты.'
+              : 'Будущие отправки будут сняты.'
             : undefined
         }
         confirmLabel="Удалить"
