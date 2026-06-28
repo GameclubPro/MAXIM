@@ -1702,7 +1702,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const shouldDeleteByCommercialPolicy =
         topViolation.ruleCode !== 'COMMERCIAL_AD' ||
         (commercialActionable &&
-          (commercialActionBand === 'DELETE' || commercialActionBand === 'DELETE_AND_ESCALATE'));
+          (commercialActionBand === 'WARN' ||
+            commercialActionBand === 'DELETE' ||
+            commercialActionBand === 'DELETE_AND_ESCALATE'));
       const shouldDeleteViolationMessage = canDeleteMessage && shouldDeleteByCommercialPolicy;
       let messageDeleted = false;
 

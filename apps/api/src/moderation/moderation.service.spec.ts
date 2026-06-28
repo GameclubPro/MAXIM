@@ -12462,7 +12462,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('records first-step WARN commercial detections without deleting the message', async () => {
+  it('deletes first-step WARN commercial detections before sending explanation', async () => {
     const maxClient = {
       deleteMessage: jest.fn(),
       sendMessage: jest.fn(),
@@ -12530,7 +12530,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     expect(prisma.violation.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         chatId: 'chat-1',
@@ -12543,8 +12543,16 @@ describe('ModerationService', () => {
       'chat-1',
       majorExplanation('Алексей', 'снято с линии', 'коммерческая реклама в этом чате запрещена'),
     );
-    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
-    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
+      data: expect.objectContaining({
+        ruleCode: 'COMMERCIAL_AD_DELETE',
+        action: SanctionAction.DELETE_MESSAGE,
+        metadata: expect.objectContaining({
+          actionBand: 'WARN',
+        }),
+      }),
+    });
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
         ruleCode: 'COMMERCIAL_AD',
         action: SanctionAction.NONE,
