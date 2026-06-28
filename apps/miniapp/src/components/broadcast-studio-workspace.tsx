@@ -1,19 +1,20 @@
-import type { ManagedBroadcastSummary } from '@maxim/contracts';
+import type {
+  BroadcastHistoryCounts,
+  BroadcastHistoryFilter,
+} from '../lib/broadcast-history-filters';
 import { SegmentedControl } from './ui/segmented-control';
 import { ResetIcon } from './ui/reset-icon';
 
+export {
+  countManagedBroadcastHistoryFilters,
+  filterManagedBroadcastsByHistoryFilter,
+} from '../lib/broadcast-history-filters';
+export type {
+  BroadcastHistoryCounts,
+  BroadcastHistoryFilter,
+} from '../lib/broadcast-history-filters';
+
 export type BroadcastWorkspaceView = 'compose' | 'calendar' | 'history';
-export type BroadcastHistoryFilter = 'future' | 'active' | 'error' | 'sent' | 'canceled';
-
-export type BroadcastHistoryCounts = Record<BroadcastHistoryFilter, number>;
-
-const EMPTY_HISTORY_COUNTS: BroadcastHistoryCounts = {
-  future: 0,
-  active: 0,
-  error: 0,
-  sent: 0,
-  canceled: 0,
-};
 
 type BroadcastWorkspaceTabsProps = {
   value: BroadcastWorkspaceView;
@@ -39,86 +40,6 @@ type BroadcastWorkspaceChromeProps = {
   onChange: (value: BroadcastWorkspaceView) => void;
   onReset: () => void;
 };
-
-function isFutureBroadcast(broadcast: ManagedBroadcastSummary): boolean {
-  return (
-    (broadcast.status === 'ACTIVE' || broadcast.status === 'PARTIAL') &&
-    Boolean(broadcast.nextSendAt)
-  );
-}
-
-function isActiveBroadcast(broadcast: ManagedBroadcastSummary): boolean {
-  return (
-    (broadcast.status === 'ACTIVE' || broadcast.status === 'PARTIAL') &&
-    !isFutureBroadcast(broadcast)
-  );
-}
-
-function isErrorBroadcast(broadcast: ManagedBroadcastSummary): boolean {
-  return (
-    broadcast.status === 'FAILED' ||
-    broadcast.status === 'PARTIAL' ||
-    broadcast.failedChats > 0 ||
-    Boolean(broadcast.lastError) ||
-    broadcast.canRetry
-  );
-}
-
-export function filterManagedBroadcastsByHistoryFilter<T extends ManagedBroadcastSummary>(
-  broadcasts: T[],
-  filter: BroadcastHistoryFilter,
-): T[] {
-  return broadcasts.filter((broadcast) => {
-    if (filter === 'future') {
-      return isFutureBroadcast(broadcast);
-    }
-
-    if (filter === 'active') {
-      return isActiveBroadcast(broadcast);
-    }
-
-    if (filter === 'error') {
-      return isErrorBroadcast(broadcast);
-    }
-
-    if (filter === 'sent') {
-      return broadcast.status === 'COMPLETED';
-    }
-
-    return broadcast.status === 'CANCELED';
-  });
-}
-
-export function countManagedBroadcastHistoryFilters(
-  broadcasts: ManagedBroadcastSummary[],
-): BroadcastHistoryCounts {
-  return broadcasts.reduce<BroadcastHistoryCounts>(
-    (counts, broadcast) => {
-      if (isFutureBroadcast(broadcast)) {
-        counts.future += 1;
-      }
-
-      if (isActiveBroadcast(broadcast)) {
-        counts.active += 1;
-      }
-
-      if (isErrorBroadcast(broadcast)) {
-        counts.error += 1;
-      }
-
-      if (broadcast.status === 'COMPLETED') {
-        counts.sent += 1;
-      }
-
-      if (broadcast.status === 'CANCELED') {
-        counts.canceled += 1;
-      }
-
-      return counts;
-    },
-    { ...EMPTY_HISTORY_COUNTS },
-  );
-}
 
 export function BroadcastWorkspaceTabs({
   value,

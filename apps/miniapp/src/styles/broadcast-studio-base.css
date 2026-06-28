@@ -496,6 +496,8 @@
   line-height: 1;
 }
 
+.broadcast-content-composer__tool--native-file { position: relative; overflow: hidden; }
+
 .broadcast-content-composer__tool.is-active {
   border-color: rgba(11, 132, 255, 0.22);
   background: rgba(236, 245, 255, 0.94);
@@ -506,7 +508,8 @@
   transform: translateY(1px);
 }
 
-.broadcast-content-composer__tool:disabled {
+.broadcast-content-composer__tool:disabled,
+.broadcast-content-composer__tool.is-disabled {
   cursor: default;
   opacity: 0.6;
 }
@@ -518,6 +521,8 @@
   opacity: 0;
   pointer-events: none;
 }
+
+.broadcast-content-composer__file-input--native { inset: 0; width: auto; height: auto; pointer-events: auto; cursor: pointer; }
 
 .broadcast-content-composer__counter {
   font-size: 0.72rem;
@@ -1129,5 +1134,4 @@
   display: grid;
   gap: 12px;
 }
-
 }

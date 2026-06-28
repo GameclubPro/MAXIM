@@ -10,7 +10,7 @@ import {
   buildBroadcastPreviewButtonRows,
   formatBroadcastButtonsPreview,
 } from '../lib/broadcast-link-buttons';
-import { openFileInputPicker } from '../lib/file-input-picker';
+import { openFileInputPicker, resolveFileInputActivationMode } from '../lib/file-input-picker';
 
 type BroadcastContentComposerImage = {
   enabled: boolean;
@@ -131,6 +131,10 @@ export function BroadcastContentComposer({
     remainingLength >= 0 && remainingLength <= Math.min(120, maxLength * 0.08);
   const isPreparingImage = pendingImageSlots > 0;
   const isBusy = disabled || isPreparingImage;
+  const useNativeTapFileInput =
+    resolveFileInputActivationMode(
+      typeof document === 'undefined' ? undefined : document.documentElement.dataset.maxPlatform,
+    ) === 'native-tap';
 
   function emitImages(nextImages: BroadcastImage[]) {
     const normalizedImages = nextImages
@@ -384,29 +388,57 @@ export function BroadcastContentComposer({
 
           <div className="broadcast-content-composer__bar">
             <div className="broadcast-content-composer__media-actions">
-              <button
-                type="button"
-                className={cn(
-                  'broadcast-content-composer__tool',
-                  imagePreviewItems.length > 0 && 'is-active',
-                )}
-                onClick={() => openFileInputPicker(imageInputRef.current)}
-                disabled={isBusy || imagePreviewItems.length >= maxImageCount}
-                aria-label={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
-                title={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
-              >
-                <IconoirCamera aria-hidden focusable="false" />
-              </button>
-              <input
-                ref={imageInputRef}
-                className="broadcast-content-composer__file-input"
-                type="file"
-                accept="image/*"
-                multiple={maxImageCount > 1}
-                disabled={isBusy}
-                onChange={(event) => void handleImageFiles(event.currentTarget.files)}
-                tabIndex={-1}
-              />
+              {useNativeTapFileInput ? (
+                <label
+                  className={cn(
+                    'broadcast-content-composer__tool',
+                    'broadcast-content-composer__tool--native-file',
+                    imagePreviewItems.length > 0 && 'is-active',
+                    (isBusy || imagePreviewItems.length >= maxImageCount) && 'is-disabled',
+                  )}
+                  aria-label={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
+                  title={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
+                  aria-disabled={isBusy || imagePreviewItems.length >= maxImageCount}
+                >
+                  <IconoirCamera aria-hidden focusable="false" />
+                  <input
+                    ref={imageInputRef}
+                    className="broadcast-content-composer__file-input broadcast-content-composer__file-input--native"
+                    type="file"
+                    accept="image/*"
+                    multiple={maxImageCount > 1}
+                    disabled={isBusy || imagePreviewItems.length >= maxImageCount}
+                    onChange={(event) => void handleImageFiles(event.currentTarget.files)}
+                    tabIndex={-1}
+                  />
+                </label>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className={cn(
+                      'broadcast-content-composer__tool',
+                      imagePreviewItems.length > 0 && 'is-active',
+                    )}
+                    onClick={() => openFileInputPicker(imageInputRef.current)}
+                    disabled={isBusy || imagePreviewItems.length >= maxImageCount}
+                    aria-label={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
+                    title={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
+                  >
+                    <IconoirCamera aria-hidden focusable="false" />
+                  </button>
+                  <input
+                    ref={imageInputRef}
+                    className="broadcast-content-composer__file-input"
+                    type="file"
+                    accept="image/*"
+                    multiple={maxImageCount > 1}
+                    disabled={isBusy}
+                    onChange={(event) => void handleImageFiles(event.currentTarget.files)}
+                    tabIndex={-1}
+                  />
+                </>
+              )}
               {onOpenButtons ? (
                 <button
                   type="button"

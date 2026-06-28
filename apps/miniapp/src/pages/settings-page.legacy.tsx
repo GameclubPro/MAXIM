@@ -3365,7 +3365,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       }
     } else {
       if (!hasDirectContent) {
-        setMailingTextError('Добавьте текст или фото.');
+        setMailingTextError('Добавьте текст, фото или видео.');
         hasError = true;
       } else if (normalizedText.length > MAX_BROADCAST_TEXT_LENGTH) {
         setMailingTextError(`Максимум ${MAX_BROADCAST_TEXT_LENGTH} символов.`);
@@ -3463,7 +3463,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     let hasError = false;
 
     if (!normalizedText && !mailingImageEnabled && !keepVideoMedia) {
-      setMailingTextError('Добавьте текст или фото.');
+      setMailingTextError('Добавьте текст, фото или видео.');
       hasError = true;
     } else if (normalizedText.length > MAX_BROADCAST_TEXT_LENGTH) {
       setMailingTextError(`Максимум ${MAX_BROADCAST_TEXT_LENGTH} символов.`);
@@ -4544,7 +4544,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         }).previews,
         targetChats:
           pendingMailingReviewPayload.targetMode === 'all'
-            ? mailingCalendarTargetChatIds.length
+            ? mailingAudienceChoices.length
             : pendingMailingReviewPayload.targetChatIds.length,
         currentLabel: 'Текущий чат',
         currentTitle: chatTitle,
@@ -4764,7 +4764,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       setMailingWorkspaceView('compose');
 
       if (label === 'Нет сообщения') {
-        setMailingTextError('Добавьте текст или фото.');
+        setMailingTextError('Добавьте текст, фото или видео.');
         return;
       }
 

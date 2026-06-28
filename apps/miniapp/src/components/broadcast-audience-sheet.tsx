@@ -283,6 +283,8 @@ export function BroadcastAudienceSheet({
                   className="broadcast-audience-sheet__quick-pill"
                   disabled={disabled || loading || refreshing}
                   onClick={onRefresh}
+                  aria-label="Обновить список"
+                  title="Обновить список"
                 >
                   {refreshing ? '...' : '↻'}
                 </button>

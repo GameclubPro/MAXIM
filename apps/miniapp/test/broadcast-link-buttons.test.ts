@@ -34,6 +34,31 @@ test('defaults blank broadcast button text while preserving url validation', () 
   assert.equal(hasBroadcastLinkButtonErrors(validateBroadcastLinkButtons(buttons)), false);
 });
 
+test('uses contract-level URL validation for broadcast link buttons', () => {
+  const errors = validateBroadcastLinkButtons([
+    {
+      text: 'Связь',
+      url: 'https://max.ru/bot?start=pmh-user-1',
+    },
+  ]);
+
+  assert.equal(hasBroadcastLinkButtonErrors(errors), true);
+  assert.equal(errors[0]?.url, 'Укажите корректную ссылку (http/https).');
+});
+
+test('keeps text validation separate from broadcast button URL errors', () => {
+  const errors = validateBroadcastLinkButtons([
+    {
+      text: 'Очень длинное название кнопки больше лимита',
+      url: 'https://example.com/post',
+    },
+  ]);
+
+  assert.equal(hasBroadcastLinkButtonErrors(errors), true);
+  assert.equal(errors[0]?.url, undefined);
+  assert.equal(errors[0]?.text, 'Введите название кнопки до 32 символов.');
+});
+
 test('builds legacy fields with default text for a pasted link-only button', () => {
   const state = buildBroadcastLinkButtonLegacyFields([
     {

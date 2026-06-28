@@ -1,4 +1,5 @@
 import {
+  broadcastLinkButtonSchema,
   DEFAULT_BROADCAST_BUTTON_TEXT,
   MAX_BROADCAST_LINK_BUTTONS,
   MAX_BROADCAST_LINK_BUTTONS_PER_ROW,
@@ -46,12 +47,19 @@ export function validateBroadcastLinkButtons(
 ): BroadcastLinkButtonFieldErrors[] {
   return trimBroadcastLinkButtons(buttons).map((button) => {
     const errors: BroadcastLinkButtonFieldErrors = {};
+    const parsed = broadcastLinkButtonSchema.safeParse(button);
 
-    if (!isValidBroadcastLinkUrl(button.url)) {
+    if (
+      !parsed.success &&
+      parsed.error.issues.some((issue) => issue.path[0] === 'url' || issue.path.length === 0)
+    ) {
       errors.url = 'Укажите корректную ссылку (http/https).';
     }
 
-    if (!button.text || button.text.length > 32) {
+    if (
+      !parsed.success &&
+      parsed.error.issues.some((issue) => issue.path[0] === 'text' || issue.path.length === 0)
+    ) {
       errors.text = 'Введите название кнопки до 32 символов.';
     }
 
@@ -114,9 +122,7 @@ export function formatBroadcastButtonsStatus(buttons: BroadcastLinkButton[]): st
 }
 
 export function formatBroadcastButtonsPreview(buttons: BroadcastLinkButton[]): string {
-  const labels = buttons
-    .map((button) => button.text.trim())
-    .filter((label) => label.length > 0);
+  const labels = buttons.map((button) => button.text.trim()).filter((label) => label.length > 0);
 
   if (labels.length === 0) {
     return formatBroadcastButtonsStatus(buttons);
@@ -134,12 +140,3 @@ export {
   MAX_BROADCAST_LINK_BUTTONS,
   MAX_BROADCAST_LINK_BUTTONS_PER_ROW,
 };
-
-function isValidBroadcastLinkUrl(value: string): boolean {
-  try {
-    const parsed = new URL(value);
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
-  } catch {
-    return false;
-  }
-}

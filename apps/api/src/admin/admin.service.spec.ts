@@ -687,20 +687,26 @@ function wireManagedBroadcastDeliveryStore(prisma: ReturnType<typeof createPrism
         }
 
         deliveries.push({
-          id: `delivery-${deliveries.length + 1}`,
+          id: typeof row.id === 'string' ? row.id : `delivery-${deliveries.length + 1}`,
           broadcastId: String(row.broadcastId),
           occurrenceIndex: Number(row.occurrenceIndex),
           targetChatId: String(row.targetChatId),
           status: String(row.status ?? 'PENDING'),
-          attemptCount: 0,
-          remoteMessageId: null,
-          legacySentWithoutRemoteId: false,
-          lastError: null,
-          sentAt: null,
-          lockedAt: null,
-          lockToken: null,
-          createdAt: new Date('2026-03-01T00:00:00.000Z'),
-          updatedAt: new Date('2026-03-01T00:00:00.000Z'),
+          attemptCount: Number(row.attemptCount ?? 0),
+          remoteMessageId: typeof row.remoteMessageId === 'string' ? row.remoteMessageId : null,
+          legacySentWithoutRemoteId: Boolean(row.legacySentWithoutRemoteId),
+          lastError: typeof row.lastError === 'string' ? row.lastError : null,
+          sentAt: row.sentAt instanceof Date ? row.sentAt : null,
+          lockedAt: row.lockedAt instanceof Date ? row.lockedAt : null,
+          lockToken: typeof row.lockToken === 'string' ? row.lockToken : null,
+          createdAt:
+            row.createdAt instanceof Date
+              ? row.createdAt
+              : new Date('2026-03-01T00:00:00.000Z'),
+          updatedAt:
+            row.updatedAt instanceof Date
+              ? row.updatedAt
+              : new Date('2026-03-01T00:00:00.000Z'),
         });
         count += 1;
       }
@@ -22905,12 +22911,14 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await (service as any).processManagedBroadcastOccurrence(
+    const processPromise = (service as any).processManagedBroadcastOccurrence(
       'broadcast-1',
       'scheduled',
       new Date('2026-03-03T09:59:00.000Z'),
       ['ACTIVE', 'PARTIAL', 'FAILED'],
     );
+    await jest.runAllTimersAsync();
+    const result = await processPromise;
 
     expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
     expect(deliveries[0]).toEqual(
@@ -23014,12 +23022,14 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await (service as any).processManagedBroadcastOccurrence(
+    const processPromise = (service as any).processManagedBroadcastOccurrence(
       'broadcast-1',
       'scheduled',
       new Date('2026-03-03T09:59:00.000Z'),
       ['ACTIVE', 'PARTIAL', 'FAILED'],
     );
+    await jest.runAllTimersAsync();
+    const result = await processPromise;
 
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
@@ -23917,7 +23927,7 @@ describe('AdminService.sendBroadcast', () => {
     expect(result.targetChatIds).toEqual(['chat-2']);
   });
 
-  it('stops future managed broadcast deliveries after a fatal image processing error', async () => {
+  it('stops future managed broadcast deliveries after an invalid image processing error', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:10:00.000Z'));
 
     const prisma = createPrismaMock();
@@ -23939,7 +23949,7 @@ describe('AdminService.sendBroadcast', () => {
         imageEnabled: true,
         imageBase64:
           'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO5lmN4AAAAASUVORK5CYII=',
-        imageMimeType: 'image/png',
+        imageMimeType: 'application/octet-stream',
         imageFileName: 'bad.png',
         scheduleMode: 'legacy',
         scheduleTimezone: 'Europe/Moscow',
@@ -23975,14 +23985,9 @@ describe('AdminService.sendBroadcast', () => {
         },
       ],
     });
-
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      uploadImage: jest
-        .fn()
-        .mockRejectedValue(
-          new BadRequestException('Не удалось загрузить фото. Попробуйте другое изображение.'),
-        ),
+      uploadImage: jest.fn(),
       sendMessageImmediateWithId: jest.fn(),
     };
     const chatContextCache = {
@@ -24016,17 +24021,17 @@ describe('AdminService.sendBroadcast', () => {
         expect.objectContaining({
           occurrenceIndex: 1,
           status: 'FAILED',
-          lastError: 'Не удалось загрузить фото. Попробуйте другое изображение.',
+          lastError: 'Поддерживаются только изображения.',
         }),
         expect.objectContaining({
           occurrenceIndex: 2,
           status: 'CANCELED',
-          lastError: 'Не удалось загрузить фото. Попробуйте другое изображение.',
+          lastError: 'Поддерживаются только изображения.',
         }),
         expect.objectContaining({
           occurrenceIndex: 3,
           status: 'CANCELED',
-          lastError: 'Не удалось загрузить фото. Попробуйте другое изображение.',
+          lastError: 'Поддерживаются только изображения.',
         }),
       ]),
     );
@@ -24036,12 +24041,12 @@ describe('AdminService.sendBroadcast', () => {
       expect.objectContaining({
         status: 'FAILED',
         nextSendAt: null,
-        lastError: 'Не удалось загрузить фото. Попробуйте другое изображение.',
+        lastError: 'Поддерживаются только изображения.',
       }),
     );
   });
 
-  it('stops future managed broadcast deliveries when automatic recovery sees a fatal image failure', async () => {
+  it('keeps future managed broadcast deliveries retryable after exhausted transient image upload failures', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:10:00.000Z'));
 
     const prisma = createPrismaMock();
@@ -24101,9 +24106,18 @@ describe('AdminService.sendBroadcast', () => {
         },
       ],
     });
+    expect(deliveries[0]).toEqual(
+      expect.objectContaining({
+        attemptCount: 1,
+        lastError: 'Не удалось загрузить фото. Попробуйте другое изображение.',
+      }),
+    );
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      uploadImage: jest.fn().mockRejectedValue({
+        response: { status: 429, data: { message: 'rate limit exceeded' } },
+      }),
       sendMessageImmediateWithId: jest.fn(),
     };
     const chatContextCache = {
@@ -24117,19 +24131,21 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await (service as any).processManagedBroadcastOccurrence(
+    const processPromise = (service as any).processManagedBroadcastOccurrence(
       'broadcast-1',
       'scheduled',
       new Date('2026-03-03T09:59:00.000Z'),
       ['ACTIVE', 'PARTIAL', 'FAILED'],
     );
+    await jest.runAllTimersAsync();
+    const result = await processPromise;
 
     expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
     expect(result).toEqual(
       expect.objectContaining({
         status: 'FAILED',
         canRetry: true,
-        nextSendAt: null,
+        nextSendAt: new Date('2026-03-03T10:00:00.000Z'),
         failedChatIds: ['chat-1'],
       }),
     );
@@ -24138,17 +24154,18 @@ describe('AdminService.sendBroadcast', () => {
         expect.objectContaining({
           occurrenceIndex: 1,
           status: 'FAILED',
-          lastError: 'Не удалось загрузить фото. Попробуйте другое изображение.',
+          attemptCount: 2,
+          lastError: 'Не удалось загрузить фото: rate limit exceeded',
         }),
         expect.objectContaining({
           occurrenceIndex: 2,
-          status: 'CANCELED',
-          lastError: 'Не удалось загрузить фото. Попробуйте другое изображение.',
+          status: 'PENDING',
+          lastError: null,
         }),
         expect.objectContaining({
           occurrenceIndex: 3,
-          status: 'CANCELED',
-          lastError: 'Не удалось загрузить фото. Попробуйте другое изображение.',
+          status: 'PENDING',
+          lastError: null,
         }),
       ]),
     );
@@ -24157,8 +24174,156 @@ describe('AdminService.sendBroadcast', () => {
     ).resolves.toEqual(
       expect.objectContaining({
         status: 'FAILED',
+        nextSendAt: new Date('2026-03-03T10:00:00.000Z'),
+        lastError: 'Не удалось загрузить фото: rate limit exceeded',
+      }),
+    );
+  });
+
+  it('finalizes a managed broadcast when fallback sent persistence succeeds after state sync failure', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const deliveries = wireManagedBroadcastDeliveryStore(prisma);
+    await prisma.managedBroadcast.create({
+      data: {
+        id: 'broadcast-1',
+        sourceChatId: 'chat-1',
+        entityType: 'CHAT',
+        actorUserId: 'admin-1',
+        text: 'Напоминание',
+        textFormat: 'plain',
+        applyToAllChats: false,
+        targetChatIds: ['chat-1'],
+        buttons: [],
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        scheduleMode: 'legacy',
+        scheduleTimezone: 'Europe/Moscow',
+        nextSendAt: new Date('2026-03-03T10:00:00.000Z'),
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+        sentCount: 0,
+        status: 'ACTIVE',
+        lastError: null,
+        lockedAt: null,
+      },
+    });
+    await prisma.managedBroadcastDelivery.createMany({
+      data: [
+        {
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 1,
+          targetChatId: 'chat-1',
+          status: 'PENDING',
+        },
+      ],
+    });
+
+    let failFirstSentUpdate = true;
+    prisma.managedBroadcastDelivery.updateMany.mockImplementation(
+      async ({
+        where,
+        data,
+      }: {
+        where?: Record<string, unknown>;
+        data: Record<string, unknown>;
+      }) => {
+        if (failFirstSentUpdate && data.status === 'SENT' && where?.id === deliveries[0]?.id) {
+          failFirstSentUpdate = false;
+          throw new Error('db sync failed');
+        }
+
+        let count = 0;
+        for (const delivery of deliveries) {
+          if (typeof where?.id === 'string' && delivery.id !== where.id) {
+            continue;
+          }
+          if (typeof where?.status === 'string' && delivery.status !== where.status) {
+            continue;
+          }
+          if (typeof where?.lockToken === 'string' && delivery.lockToken !== where.lockToken) {
+            continue;
+          }
+
+          count += 1;
+          if (typeof data.status === 'string') {
+            delivery.status = data.status;
+          }
+          if ('lockedAt' in data) {
+            delivery.lockedAt = (data.lockedAt as Date | null) ?? null;
+          }
+          if ('lockToken' in data) {
+            delivery.lockToken = (data.lockToken as string | null) ?? null;
+          }
+          if ('lastError' in data) {
+            delivery.lastError = (data.lastError as string | null) ?? null;
+          }
+          if ('remoteMessageId' in data) {
+            delivery.remoteMessageId = (data.remoteMessageId as string | null) ?? null;
+          }
+          if ('sentAt' in data) {
+            delivery.sentAt = (data.sentAt as Date | null) ?? null;
+          }
+          if ('legacySentWithoutRemoteId' in data) {
+            delivery.legacySentWithoutRemoteId = Boolean(data.legacySentWithoutRemoteId);
+          }
+          if (
+            data.attemptCount &&
+            typeof data.attemptCount === 'object' &&
+            'increment' in data.attemptCount
+          ) {
+            delivery.attemptCount += Number((data.attemptCount as { increment: number }).increment);
+          }
+        }
+        return { count };
+      },
+    );
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({
+        messageId: 'mid-chat-1',
+        url: null,
+      }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await (service as any).processManagedBroadcastOccurrence(
+      'broadcast-1',
+      'scheduled',
+      new Date('2026-03-03T09:55:00.000Z'),
+      ['ACTIVE'],
+    );
+
+    expect(result.status).toBe('COMPLETED');
+    expect(result.sentChatIds).toEqual(['chat-1']);
+    expect(result.failedChatIds).toEqual([]);
+    expect(deliveries[0]).toEqual(
+      expect.objectContaining({
+        status: 'SENT',
+        remoteMessageId: 'mid-chat-1',
+        lastError: null,
+      }),
+    );
+    await expect(
+      prisma.managedBroadcast.findUnique({ where: { id: 'broadcast-1' } }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: 'COMPLETED',
         nextSendAt: null,
-        lastError: 'Не удалось загрузить фото. Попробуйте другое изображение.',
+        lastError: null,
       }),
     );
   });
@@ -25160,8 +25325,100 @@ describe('AdminService.sendBroadcast', () => {
       },
     );
 
+    expect(prisma.$transaction).toHaveBeenCalledTimes(2);
     expect(prisma.managedBroadcastOccurrence.createMany).toHaveBeenCalledTimes(2);
     expect(result.scheduledSlots).toEqual(['2026-03-03T12:00:00.000Z']);
+  });
+
+  it('releases stale idempotency claims before accepting a repeated managed broadcast request', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:10:00.000Z'));
+
+    const prisma = createPrismaMock();
+    wireManagedBroadcastDeliveryStore(prisma);
+    prisma.managedBroadcastIdempotencyRecord.create.mockImplementationOnce(
+      async ({ data }: { data: Record<string, unknown> }) => {
+        prisma.managedBroadcastIdempotencyRecord.findUnique.mockResolvedValueOnce({
+          id: 'broadcast-idempotency-1',
+          requestId: 'repeat123',
+          requestHash: data.requestHash,
+          sourceChatId: 'chat-1',
+          entityType: 'CHAT',
+          actorUserId: 'admin-1',
+          source: 'miniapp',
+          broadcastId: null,
+          result: null,
+          createdAt: new Date('2026-03-03T10:00:00.000Z'),
+          updatedAt: new Date('2026-03-03T10:00:00.000Z'),
+        });
+        throw { code: 'P2002' };
+      },
+    );
+    prisma.managedBroadcastIdempotencyRecord.create.mockImplementationOnce(
+      async ({ data }: { data: Record<string, unknown> }) => ({
+        id: 'broadcast-idempotency-2',
+        ...data,
+        broadcastId: null,
+        result: null,
+        createdAt: new Date('2026-03-03T10:10:00.000Z'),
+        updatedAt: new Date('2026-03-03T10:10:00.000Z'),
+      }),
+    );
+    prisma.managedBroadcastIdempotencyRecord.deleteMany.mockResolvedValueOnce({ count: 1 });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({
+        messageId: 'mid-chat-1',
+        url: null,
+      }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.sendBroadcast(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        requestId: 'repeat123',
+        text: 'Напоминание',
+        textFormat: 'plain',
+        targetMode: 'current',
+        targetChatIds: ['chat-1'],
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+      },
+    );
+
+    expect(result.sentChats).toBe(1);
+    expect(prisma.managedBroadcastIdempotencyRecord.deleteMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: 'broadcast-idempotency-1',
+          broadcastId: null,
+          updatedAt: { lte: new Date('2026-03-03T10:05:00.000Z') },
+        }),
+      }),
+    );
+    expect(prisma.managedBroadcastIdempotencyRecord.create).toHaveBeenCalledTimes(2);
   });
 
   it('adds the system comments button for chat broadcasts when the broadcast toggle is enabled', async () => {
@@ -27301,7 +27558,10 @@ describe('AdminService.sendChannelBroadcast', () => {
     wireManagedBroadcastDeliveryStore(prisma);
     const service = new AdminService(
       prisma as never,
-      { getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']), sendMessage: jest.fn() } as never,
+      {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+        sendMessage: jest.fn(),
+      } as never,
       { invalidate: jest.fn() } as never,
       createConfigMock() as never,
     );
@@ -27352,7 +27612,10 @@ describe('AdminService.sendChannelBroadcast', () => {
     const buildService = () =>
       new AdminService(
         createPrismaMock() as never,
-        { getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']), sendMessage: jest.fn() } as never,
+        {
+          getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+          sendMessage: jest.fn(),
+        } as never,
         { invalidate: jest.fn() } as never,
         createConfigMock() as never,
       );
@@ -31518,10 +31781,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       ),
       getDefaultBot: jest.fn().mockReturnValue({ id: 'id613002203036_bot' }),
       getEntryBot: jest.fn().mockReturnValue({ id: 'id613002203036_bot' }),
-      getOperationalBots: jest.fn().mockReturnValue([
-        { id: 'id613002203036_bot' },
-        { id: 'id613002203036_4_bot' },
-      ]),
+      getOperationalBots: jest
+        .fn()
+        .mockReturnValue([{ id: 'id613002203036_bot' }, { id: 'id613002203036_4_bot' }]),
     };
 
     const service = new AdminService(

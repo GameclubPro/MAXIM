@@ -126,10 +126,6 @@ export function BroadcastStudioHeader({
   const readyLabel =
     normalizedReadyCount === safeTotal ? 'Готово' : `${normalizedReadyCount}/${safeTotal}`;
   const visibleSignals = signals.filter((signal) => signal.label !== 'История');
-  const readyTone: BroadcastStudioSignalTone =
-    normalizedReadyCount === safeTotal ? 'ready' : normalizedReadyCount > 0 ? 'warning' : 'pending';
-  const readySignalLabel = `${readyLabel}: ${subtitle}`;
-
   return (
     <section
       className={cn('broadcast-studio-command', busy && 'is-busy', editing && 'is-editing')}
@@ -196,16 +192,6 @@ export function BroadcastStudioHeader({
             </span>
           );
         })}
-        <span
-          className={cn('broadcast-studio-command__signal', `is-${readyTone}`, 'is-ready-total')}
-          aria-label={readySignalLabel}
-          title={readySignalLabel}
-        >
-          <span className="broadcast-studio-command__signal-copy">
-            <span className="broadcast-studio-command__signal-label">Готово</span>
-            <strong>{readyLabel}</strong>
-          </span>
-        </span>
       </div>
     </section>
   );

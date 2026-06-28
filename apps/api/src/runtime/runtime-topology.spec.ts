@@ -51,6 +51,14 @@ describe('runtime-topology', () => {
     });
   });
 
+  it('marks the action role as a background task runner for managed automation', () => {
+    expect(RUNTIME_SERVICE_PROFILES['api-action']).toMatchObject({
+      appRole: 'action',
+      queueProfile: 'max-action-dispatch',
+      backgroundTasksEnabled: true,
+    });
+  });
+
   it('infers legacy production services from role/env when the service name is absent', () => {
     expect(resolveRuntimeServiceProfile({ APP_ROLE: 'ingress' })).toMatchObject({
       source: 'role-inference',

@@ -2023,7 +2023,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       setBroadcastWorkspaceView('compose');
 
       if (label === 'Нет сообщения') {
-        setBroadcastTextError('Добавьте текст или фото.');
+        setBroadcastTextError('Добавьте текст, фото или видео.');
         return;
       }
 
@@ -2533,7 +2533,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         setBroadcastTextError('');
       }
     } else if (!hasDirectContent) {
-      setBroadcastTextError('Добавьте текст или фото.');
+      setBroadcastTextError('Добавьте текст, фото или видео.');
       hasError = true;
     } else if (normalizedBroadcastText.length > MAX_BROADCAST_TEXT_LENGTH) {
       setBroadcastTextError(`Максимум ${MAX_BROADCAST_TEXT_LENGTH} символов.`);
@@ -2619,7 +2619,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     let hasError = false;
 
     if (!normalizedBroadcastText && !broadcastImageEnabled && !keepVideoMedia) {
-      setBroadcastTextError('Добавьте текст или фото.');
+      setBroadcastTextError('Добавьте текст, фото или видео.');
       hasError = true;
     } else if (normalizedBroadcastText.length > MAX_BROADCAST_TEXT_LENGTH) {
       setBroadcastTextError(`Максимум ${MAX_BROADCAST_TEXT_LENGTH} символов.`);

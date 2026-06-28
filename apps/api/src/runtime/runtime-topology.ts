@@ -344,7 +344,7 @@ export const RUNTIME_SERVICE_PROFILES = Object.freeze({
     dynamicLeasesMode: 'off',
     dynamicLeasesWorkerGroup: null,
     canaryShardIds: [],
-    backgroundTasksEnabled: false,
+    backgroundTasksEnabled: true,
   },
 } as const satisfies Record<RuntimeServiceName, RuntimeServiceProfile>);
 

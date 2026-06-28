@@ -192,6 +192,46 @@ describe('MiniappMutationTunnelController', () => {
     expect(reply.status).toHaveBeenCalledWith(200);
   });
 
+  it.each([
+    ['POST', '/chats/chat-1/broadcast/handoff'],
+    ['DELETE', '/chats/chat-1/broadcast/handoff'],
+    ['PUT', '/chats/chat-1/broadcasts/broadcast-1'],
+    ['DELETE', '/channels/channel-1/broadcasts/broadcast-1'],
+    ['POST', '/channels/channel-1/broadcasts/broadcast-1/retry'],
+  ])('allows managed broadcast %s %s through the mutation tunnel', async (method, path) => {
+    const controller = new MiniappMutationTunnelController();
+    const reply = createReply();
+
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      }),
+    ) as typeof fetch;
+
+    await controller.tunnel(
+      {
+        method,
+        path,
+        contentType: 'application/json',
+      },
+      'InitData auth_date=1&hash=test',
+      reply as never,
+    );
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      `http://127.0.0.1:3001/api/v1${path}`,
+      expect.objectContaining({
+        method,
+        headers: expect.objectContaining({
+          Authorization: 'InitData auth_date=1&hash=test',
+          'X-Miniapp-Mutation-Tunnel': '1',
+        }),
+      }),
+    );
+    expect(reply.status).toHaveBeenCalledWith(200);
+  });
+
   it('accepts gzip-compressed tunnel bodies', async () => {
     const controller = new MiniappMutationTunnelController();
     const reply = createReply();
