@@ -1323,12 +1323,15 @@ model ManagedBroadcast {
   status           ManagedBroadcastStatus @default(ACTIVE)
   lastError        String?                @map("last_error")
   lockedAt         DateTime?              @map("locked_at")
+  lockToken        String?                @map("lock_token")
   createdAt        DateTime               @default(now()) @map("created_at")
   updatedAt        DateTime               @updatedAt @map("updated_at")
 
   chat        Chat                         @relation(fields: [sourceChatId], references: [id], onDelete: Cascade)
   deliveries  ManagedBroadcastDelivery[]
   occurrences ManagedBroadcastOccurrence[]
+  calendarReservations ManagedBroadcastCalendarReservation[]
+  idempotencyRecords ManagedBroadcastIdempotencyRecord[]
 
   @@index([sourceChatId, status, nextSendAt], map: "managed_broadcasts_source_chat_id_status_next_send_at_idx")
   @@index([status, nextSendAt], map: "managed_broadcasts_status_next_send_at_idx")
@@ -1362,9 +1365,11 @@ model ManagedBroadcastDelivery {
   status          ManagedBroadcastDeliveryStatus @default(PENDING)
   attemptCount    Int                            @default(0) @map("attempt_count")
   remoteMessageId String?                        @map("remote_message_id")
+  legacySentWithoutRemoteId Boolean              @default(false) @map("legacy_sent_without_remote_id")
   lastError       String?                        @map("last_error")
   sentAt          DateTime?                      @map("sent_at")
   lockedAt        DateTime?                      @map("locked_at")
+  lockToken       String?                        @map("lock_token")
   createdAt       DateTime                       @default(now()) @map("created_at")
   updatedAt       DateTime                       @updatedAt @map("updated_at")
 
@@ -1374,6 +1379,44 @@ model ManagedBroadcastDelivery {
   @@index([broadcastId, occurrenceIndex, status], map: "managed_broadcast_deliveries_broadcast_occurrence_status_idx")
   @@index([status, lockedAt], map: "managed_broadcast_deliveries_status_locked_at_idx")
   @@map("managed_broadcast_deliveries")
+}
+
+model ManagedBroadcastCalendarReservation {
+  id              String         @id @default(cuid())
+  broadcastId     String         @map("broadcast_id")
+  sourceChatId    String         @map("source_chat_id")
+  entityType      ChatEntityType @default(CHAT) @map("entity_type")
+  occurrenceIndex Int            @map("occurrence_index")
+  targetChatId    String         @map("target_chat_id")
+  scheduledAt     DateTime       @map("scheduled_at")
+  createdAt       DateTime       @default(now()) @map("created_at")
+
+  broadcast ManagedBroadcast @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
+
+  @@unique([entityType, targetChatId, scheduledAt], map: "managed_broadcast_calendar_reservations_target_slot_key")
+  @@index([broadcastId, occurrenceIndex], map: "managed_broadcast_calendar_res_broadcast_occ_idx")
+  @@index([sourceChatId, entityType, scheduledAt], map: "managed_broadcast_calendar_res_source_slot_idx")
+  @@map("managed_broadcast_calendar_reservations")
+}
+
+model ManagedBroadcastIdempotencyRecord {
+  id          String         @id @default(cuid())
+  requestId   String         @map("request_id")
+  requestHash String         @map("request_hash")
+  sourceChatId String        @map("source_chat_id")
+  entityType  ChatEntityType @default(CHAT) @map("entity_type")
+  actorUserId String         @map("actor_user_id")
+  source      String
+  broadcastId String?        @map("broadcast_id")
+  result      Json?
+  createdAt   DateTime       @default(now()) @map("created_at")
+  updatedAt   DateTime       @updatedAt @map("updated_at")
+
+  broadcast ManagedBroadcast? @relation(fields: [broadcastId], references: [id], onDelete: SetNull)
+
+  @@unique([sourceChatId, entityType, actorUserId, requestId], map: "managed_broadcast_idempotency_scope_key")
+  @@index([createdAt], map: "managed_broadcast_idempotency_created_at_idx")
+  @@map("managed_broadcast_idempotency_records")
 }
 
 model VkParsingSource {

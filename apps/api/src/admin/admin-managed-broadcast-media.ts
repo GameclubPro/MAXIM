@@ -75,9 +75,13 @@ export function isManagedBroadcastSlotConflictError(error: unknown): boolean {
 
   return (
     targetValue.includes('managed_broadcast_occurrences_slot_key') ||
+    targetValue.includes('managed_broadcast_calendar_reservations_target_slot_key') ||
     targetValue.includes('source_chat_id') ||
+    targetValue.includes('target_chat_id') ||
     targetValue.includes('sourcechatid') ||
-    message.includes('managed_broadcast_occurrences_slot_key')
+    targetValue.includes('targetchatid') ||
+    message.includes('managed_broadcast_occurrences_slot_key') ||
+    message.includes('managed_broadcast_calendar_reservations_target_slot_key')
   );
 }
 

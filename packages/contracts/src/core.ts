@@ -2174,6 +2174,33 @@ export const broadcastScheduleModeSchema = z.enum(['legacy', 'calendar']);
 export type BroadcastScheduleMode = z.infer<typeof broadcastScheduleModeSchema>;
 
 const MAX_BROADCAST_CALENDAR_SLOTS = 186;
+const BROADCAST_ISO_DATE_TIME_WITH_OFFSET_RE =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u;
+
+const broadcastDateTimeSchema = z.preprocess((value) => {
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  if (typeof value !== 'string') {
+    return value;
+  }
+  const trimmed = value.trim();
+  if (!BROADCAST_ISO_DATE_TIME_WITH_OFFSET_RE.test(trimmed)) {
+    return trimmed;
+  }
+  const parsed = new Date(trimmed);
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : trimmed;
+}, z.string().datetime());
+
+function inferBroadcastScheduleMode(value: {
+  scheduleMode?: BroadcastScheduleMode;
+  scheduledSlots?: string[];
+}): BroadcastScheduleMode {
+  if (value.scheduleMode) {
+    return value.scheduleMode;
+  }
+  return (value.scheduledSlots?.length ?? 0) > 0 ? 'calendar' : 'legacy';
+}
 
 function normalizeBroadcastLinkButtons(values: BroadcastLinkButton[]): BroadcastLinkButton[] {
   return values.map((value) => ({
@@ -2258,6 +2285,11 @@ function buildBroadcastButtonState(value: {
 
 export const sendBroadcastRequestSchema = z
   .object({
+    requestId: z
+      .string()
+      .trim()
+      .regex(/^[A-Za-z0-9_-]{8,128}$/u)
+      .optional(),
     text: z
       .string()
       .max(2_000, 'Текст автопостинга слишком длинный. Максимум 2000 символов.')
@@ -2281,9 +2313,9 @@ export const sendBroadcastRequestSchema = z
     mediaFileName: z.string().trim().max(128).default(''),
     scheduleMode: broadcastScheduleModeSchema.optional(),
     scheduleTimezone: broadcastScheduleTimezoneSchema,
-    scheduledSlots: z.array(z.string().datetime()).max(MAX_BROADCAST_CALENDAR_SLOTS).default([]),
+    scheduledSlots: z.array(broadcastDateTimeSchema).max(MAX_BROADCAST_CALENDAR_SLOTS).default([]),
     replaceConflictingSlots: z.boolean().default(false),
-    sendAt: z.string().datetime().nullable().default(null),
+    sendAt: broadcastDateTimeSchema.nullable().default(null),
     cycleEnabled: z.boolean().default(false),
     cycleEveryHours: z
       .number()
@@ -2386,6 +2418,7 @@ export const sendBroadcastRequestSchema = z
 
     return {
       ...value,
+      ...(value.requestId?.trim() ? { requestId: value.requestId.trim() } : {}),
       targetMode: audienceState.targetMode,
       targetChatIds: audienceState.targetChatIds,
       applyToAllChats: audienceState.applyToAllChats,
@@ -2424,9 +2457,9 @@ export const broadcastHandoffRequestSchema = z
     buttonText: botButtonTextSchema,
     scheduleMode: broadcastScheduleModeSchema.optional(),
     scheduleTimezone: broadcastScheduleTimezoneSchema,
-    scheduledSlots: z.array(z.string().datetime()).max(MAX_BROADCAST_CALENDAR_SLOTS).default([]),
+    scheduledSlots: z.array(broadcastDateTimeSchema).max(MAX_BROADCAST_CALENDAR_SLOTS).default([]),
     replaceConflictingSlots: z.boolean().default(false),
-    sendAt: z.string().datetime().nullable().default(null),
+    sendAt: broadcastDateTimeSchema.nullable().default(null),
     cycleEnabled: z.boolean().default(false),
     cycleEveryHours: z
       .number()
@@ -2486,15 +2519,18 @@ export const broadcastHandoffStateSchema = z.object({
   buttonUrl: botButtonUrlSchema,
   buttonText: botButtonTextSchema,
   scheduleMode: broadcastScheduleModeSchema.default('legacy'),
-  scheduleTimezone: broadcastScheduleTimezoneSchema,
-  scheduledSlots: z.array(z.string().datetime()).default([]),
+  scheduleTimezone: broadcastScheduleTimezoneSchema.default('Europe/Moscow'),
+  scheduledSlots: z.array(broadcastDateTimeSchema).default([]),
   replaceConflictingSlots: z.boolean().default(false),
-  sendAt: z.string().datetime().nullable().default(null),
+  sendAt: broadcastDateTimeSchema.nullable().default(null),
   cycleEnabled: z.boolean().default(false),
   cycleEveryHours: z.number().int().min(1).default(1),
   cycleCount: z.number().int().min(1).default(1),
   hasContent: z.boolean().default(false),
-});
+}).transform((value) => ({
+  ...value,
+  scheduleMode: inferBroadcastScheduleMode(value),
+}));
 export type BroadcastHandoffState = z.infer<typeof broadcastHandoffStateSchema>;
 
 export const managedBroadcastTargetPreviewSchema = z.object({
@@ -2518,17 +2554,20 @@ export const sendBroadcastResultSchema = z.object({
   sentChatOverflowCount: z.number().int().min(0).default(0),
   failedChatOverflowCount: z.number().int().min(0).default(0),
   scheduleMode: broadcastScheduleModeSchema.default('legacy'),
-  scheduleTimezone: broadcastScheduleTimezoneSchema,
-  scheduledSlots: z.array(z.string().datetime()).default([]),
-  sendAt: z.string().datetime().nullable(),
-  nextSendAt: z.string().datetime().nullable().default(null),
-  cycleEnabled: z.boolean(),
-  cycleEveryHours: z.number().int().min(1),
+  scheduleTimezone: broadcastScheduleTimezoneSchema.default('Europe/Moscow'),
+  scheduledSlots: z.array(broadcastDateTimeSchema).default([]),
+  sendAt: broadcastDateTimeSchema.nullable().default(null),
+  nextSendAt: broadcastDateTimeSchema.nullable().default(null),
+  cycleEnabled: z.boolean().default(false),
+  cycleEveryHours: z.number().int().min(1).default(1),
   cycleEveryDays: z.number().int().min(1).optional(),
-  cycleCount: z.number().int().min(1),
+  cycleCount: z.number().int().min(1).default(1),
   scheduleId: z.string().nullable().default(null),
   scheduledOccurrences: z.number().int().min(0).default(0),
-});
+}).transform((value) => ({
+  ...value,
+  scheduleMode: inferBroadcastScheduleMode(value),
+}));
 export type SendBroadcastResult = z.infer<typeof sendBroadcastResultSchema>;
 
 export const sendBroadcastTestResultSchema = z.object({
@@ -2576,8 +2615,8 @@ export const managedBroadcastSummarySchema = z.object({
   buttonEnabled: z.boolean(),
   scheduleMode: broadcastScheduleModeSchema.default('legacy'),
   scheduleTimezone: broadcastScheduleTimezoneSchema,
-  scheduledSlots: z.array(z.string().datetime()).default([]),
-  nextSendAt: z.string().datetime().nullable(),
+  scheduledSlots: z.array(broadcastDateTimeSchema).default([]),
+  nextSendAt: broadcastDateTimeSchema.nullable(),
   cycleEnabled: z.boolean(),
   cycleEveryHours: z.number().int().min(1),
   cycleCount: z.number().int().min(1),
@@ -2593,7 +2632,10 @@ export const managedBroadcastSummarySchema = z.object({
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   lastError: z.string().nullable(),
-});
+}).transform((value) => ({
+  ...value,
+  scheduleMode: inferBroadcastScheduleMode(value),
+}));
 export type ManagedBroadcastSummary = z.infer<typeof managedBroadcastSummarySchema>;
 
 export const managedBroadcastDetailsSchema = z.object({
@@ -2621,8 +2663,8 @@ export const managedBroadcastDetailsSchema = z.object({
   mediaFileName: z.string().default(''),
   scheduleMode: broadcastScheduleModeSchema.default('legacy'),
   scheduleTimezone: broadcastScheduleTimezoneSchema,
-  scheduledSlots: z.array(z.string().datetime()).default([]),
-  nextSendAt: z.string().datetime().nullable(),
+  scheduledSlots: z.array(broadcastDateTimeSchema).default([]),
+  nextSendAt: broadcastDateTimeSchema.nullable(),
   cycleEnabled: z.boolean(),
   cycleEveryHours: z.number().int().min(1),
   cycleCount: z.number().int().min(1),
@@ -2638,13 +2680,16 @@ export const managedBroadcastDetailsSchema = z.object({
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   lastError: z.string().nullable(),
-});
+}).transform((value) => ({
+  ...value,
+  scheduleMode: inferBroadcastScheduleMode(value),
+}));
 export type ManagedBroadcastDetails = z.infer<typeof managedBroadcastDetailsSchema>;
 
 export const managedBroadcastCalendarSlotSchema = z.object({
   broadcastId: z.string(),
   sourceChatId: z.string(),
-  scheduledAt: z.string().datetime(),
+  scheduledAt: broadcastDateTimeSchema,
   status: managedBroadcastStatusSchema,
   textPreview: z.string(),
   targetMode: broadcastTargetModeSchema.default('current'),
@@ -2662,8 +2707,8 @@ export type ManagedBroadcastCalendarSlot = z.infer<typeof managedBroadcastCalend
 export const managedBroadcastCalendarResponseSchema = z.object({
   sourceChatId: z.string(),
   entityType: managedEntityTypeSchema,
-  from: z.string().datetime(),
-  to: z.string().datetime(),
+  from: broadcastDateTimeSchema,
+  to: broadcastDateTimeSchema,
   targetChatIds: z.array(z.string()).default([]),
   slots: z.array(managedBroadcastCalendarSlotSchema).default([]),
 });

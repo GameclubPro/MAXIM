@@ -4401,23 +4401,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingCalendarTargetChatIds = useMemo(
     () =>
       mailingAudiencePayload.targetMode === 'all'
-        ? mailingAudienceChoices.map((chat) => chat.id)
+        ? []
         : mailingAudiencePayload.targetChatIds,
-    [
-      mailingAudienceChoices,
-      mailingAudiencePayload.targetChatIds,
-      mailingAudiencePayload.targetMode,
-    ],
+    [mailingAudiencePayload.targetChatIds, mailingAudiencePayload.targetMode],
   );
   const mailingCalendarQuery = useQuery({
     queryKey: [
       'managed-broadcast-calendar',
       chatId,
+      mailingAudiencePayload.targetMode,
       mailingCalendarTargetChatIds.join(':'),
       editingManagedBroadcast?.id ?? null,
     ],
     queryFn: () =>
       getManagedBroadcastCalendar(api, chatId ?? '', {
+        targetMode: mailingAudiencePayload.targetMode,
         targetChatIds: mailingCalendarTargetChatIds,
       }),
     enabled: Boolean(chatId) && expandedSections.mailing,

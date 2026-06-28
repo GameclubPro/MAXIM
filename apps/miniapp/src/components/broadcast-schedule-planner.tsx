@@ -147,19 +147,21 @@ export function BroadcastSchedulePlanner({
   onCycleChange,
   viewMode = 'compose',
 }: BroadcastSchedulePlannerProps) {
-  const [anchorNow] = useState(() => new Date());
   const [liveNowMs, setLiveNowMs] = useState(() => Date.now());
+  const liveNow = useMemo(() => new Date(liveNowMs), [liveNowMs]);
+  const liveTodayKey = getBroadcastScheduleDayKey(liveNow);
+  const liveMonthKey = getMonthKey(liveNow);
   const normalizedValue = useMemo(() => sortAndUniqueBroadcastSlots(value), [value]);
   const calendarOnly = viewMode === 'calendar';
   const scheduledDayKeys = useMemo(
     () => sortDayKeys(normalizedValue.map((slot) => getBroadcastScheduleDayKey(slot))),
     [normalizedValue],
   );
-  const initialDayKey = scheduledDayKeys[0] ?? getBroadcastScheduleDayKey(anchorNow);
+  const initialDayKey = scheduledDayKeys[0] ?? liveTodayKey;
   const [activeDayKey, setActiveDayKey] = useState(initialDayKey);
   const [pickedDayKeys, setPickedDayKeys] = useState<string[]>([]);
   const [currentMonthKey, setCurrentMonthKey] = useState(() =>
-    getMonthKey(new Date(normalizedValue[0] ?? anchorNow)),
+    normalizedValue[0] ? getMonthKey(new Date(normalizedValue[0])) : liveMonthKey,
   );
   const [sheetMode, setSheetMode] = useState<BroadcastScheduleSheetMode | null>(null);
   const [agendaDayKey, setAgendaDayKey] = useState<string | null>(null);
@@ -169,8 +171,8 @@ export function BroadcastSchedulePlanner({
   const [calendarExpanded, setCalendarExpanded] = useState(() => calendarOnly);
   const lastSelectionStateRef = useRef<BroadcastSchedulePlannerSelectionState | null>(null);
 
-  const windowStart = startOfDay(anchorNow);
-  const windowEnd = endOfMonth(addDays(anchorNow, BROADCAST_SCHEDULE_MAX_DAYS - 1));
+  const windowStart = startOfDay(liveNow);
+  const windowEnd = endOfMonth(addDays(liveNow, BROADCAST_SCHEDULE_MAX_DAYS - 1));
   const monthKeys = getMonthKeys(windowStart, windowEnd);
   const visibleMonthKey = monthKeys.includes(currentMonthKey) ? currentMonthKey : monthKeys[0];
   const selectedDayCount = countBroadcastScheduleDays(normalizedValue);
@@ -192,7 +194,6 @@ export function BroadcastSchedulePlanner({
   const selectedInstantSet = new Set(normalizedValue.map(getBroadcastSlotInstantKey));
   const pickedDaySet = new Set(pickedDayKeys);
   const minimumTime = liveNowMs + 30_000;
-  const liveTodayKey = getBroadcastScheduleDayKey(new Date(liveNowMs));
   const activeDaySlots = getSelectedDaySlots(activeDayKey, normalizedValue);
   const pickedDayLabel = formatCountLabel(pickedDayKeys.length, 'день', 'дня', 'дней');
   const pickedDaySummary = formatDaySummary(pickedDayKeys);
@@ -314,17 +315,15 @@ export function BroadcastSchedulePlanner({
     }
 
     if (scheduledDayKeys.length === 0) {
-      const todayKey = getBroadcastScheduleDayKey(anchorNow);
-      setActiveDayKey((current) => (current === todayKey ? current : todayKey));
-      const anchorMonthKey = getMonthKey(anchorNow);
-      setCurrentMonthKey((current) => (current === anchorMonthKey ? current : anchorMonthKey));
+      setActiveDayKey((current) => (current === liveTodayKey ? current : liveTodayKey));
+      setCurrentMonthKey((current) => (current === liveMonthKey ? current : liveMonthKey));
       return;
     }
 
     if (!scheduledDayKeys.includes(activeDayKey)) {
       setActiveDayKey(scheduledDayKeys[0] ?? activeDayKey);
     }
-  }, [activeDayKey, anchorNow, pickedDayKeys, scheduledDayKeys]);
+  }, [activeDayKey, liveMonthKey, liveTodayKey, pickedDayKeys, scheduledDayKeys]);
 
   useEffect(() => {
     if (pickedDayKeys.length === 0) {
@@ -357,7 +356,7 @@ export function BroadcastSchedulePlanner({
 
   useEffect(() => {
     setPickedDayKeys(scheduledDayKeys);
-    setActiveDayKey(scheduledDayKeys[0] ?? getBroadcastScheduleDayKey(anchorNow));
+    setActiveDayKey(scheduledDayKeys[0] ?? liveTodayKey);
     setSheetMode(null);
     setAgendaDayKey(null);
     setApplyToAllPickedDays(false);
@@ -692,7 +691,7 @@ export function BroadcastSchedulePlanner({
       return;
     }
 
-    const dayKey = scheduledDayKeys[0] ?? activeDayKey ?? getBroadcastScheduleDayKey(anchorNow);
+    const dayKey = scheduledDayKeys[0] ?? activeDayKey ?? liveTodayKey;
     openScheduledDay(dayKey);
   }
 

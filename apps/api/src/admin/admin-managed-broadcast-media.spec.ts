@@ -40,6 +40,12 @@ describe('admin managed broadcast media helpers', () => {
       }),
     ).toBe(true);
     expect(
+      isManagedBroadcastSlotConflictError({
+        code: 'P2002',
+        meta: { target: 'managed_broadcast_calendar_reservations_target_slot_key' },
+      }),
+    ).toBe(true);
+    expect(
       isManagedBroadcastSlotConflictError({ code: 'P2002', meta: { target: ['other'] } }),
     ).toBe(false);
   });

@@ -149,6 +149,7 @@ function createPrismaMock() {
     status: 'ACTIVE',
     lastError: null,
     lockedAt: null,
+    lockToken: null,
     createdAt: new Date('2026-03-01T00:00:00.000Z'),
     updatedAt: new Date('2026-03-01T00:00:00.000Z'),
   };
@@ -226,6 +227,15 @@ function createPrismaMock() {
         if (notValue instanceof Date && lockedAt?.getTime() === notValue.getTime()) {
           return false;
         }
+      }
+    }
+    if ('lockToken' in where) {
+      const lockToken = typeof state.lockToken === 'string' ? state.lockToken : null;
+      if (where.lockToken === null && lockToken !== null) {
+        return false;
+      }
+      if (typeof where.lockToken === 'string' && lockToken !== where.lockToken) {
+        return false;
       }
     }
     if (Array.isArray(where.OR) && !where.OR.some((item) => matchesManagedBroadcastWhere(item))) {
@@ -392,6 +402,28 @@ function createPrismaMock() {
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
+    managedBroadcastCalendarReservation: {
+      findMany: jest.fn().mockResolvedValue([]),
+      createMany: jest.fn().mockResolvedValue({ count: 0 }),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
+    managedBroadcastIdempotencyRecord: {
+      create: jest.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) => ({
+        id: 'broadcast-idempotency-1',
+        ...data,
+        broadcastId: null,
+        result: null,
+        createdAt: new Date('2026-03-01T00:00:00.000Z'),
+        updatedAt: new Date('2026-03-01T00:00:00.000Z'),
+      })),
+      findUnique: jest.fn().mockResolvedValue(null),
+      update: jest.fn().mockImplementation(async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => ({
+        id: where.id,
+        ...data,
+        updatedAt: new Date('2026-03-01T00:00:00.000Z'),
+      })),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
     channelAudienceSnapshot: {
       findFirst: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),
@@ -465,9 +497,11 @@ type ManagedBroadcastDeliveryRow = {
   status: string;
   attemptCount: number;
   remoteMessageId: string | null;
+  legacySentWithoutRemoteId: boolean;
   lastError: string | null;
   sentAt: Date | null;
   lockedAt: Date | null;
+  lockToken: string | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -599,6 +633,14 @@ function wireManagedBroadcastDeliveryStore(prisma: ReturnType<typeof createPrism
     ) {
       return false;
     }
+    if ('lockToken' in where) {
+      if (where.lockToken === null && delivery.lockToken !== null) {
+        return false;
+      }
+      if (typeof where.lockToken === 'string' && delivery.lockToken !== where.lockToken) {
+        return false;
+      }
+    }
     if ('remoteMessageId' in where) {
       if (where.remoteMessageId === null && delivery.remoteMessageId !== null) {
         return false;
@@ -652,9 +694,11 @@ function wireManagedBroadcastDeliveryStore(prisma: ReturnType<typeof createPrism
           status: String(row.status ?? 'PENDING'),
           attemptCount: 0,
           remoteMessageId: null,
+          legacySentWithoutRemoteId: false,
           lastError: null,
           sentAt: null,
           lockedAt: null,
+          lockToken: null,
           createdAt: new Date('2026-03-01T00:00:00.000Z'),
           updatedAt: new Date('2026-03-01T00:00:00.000Z'),
         });
@@ -683,11 +727,17 @@ function wireManagedBroadcastDeliveryStore(prisma: ReturnType<typeof createPrism
       if ('lockedAt' in data) {
         delivery.lockedAt = (data.lockedAt as Date | null) ?? null;
       }
+      if ('lockToken' in data) {
+        delivery.lockToken = (data.lockToken as string | null) ?? null;
+      }
       if ('lastError' in data) {
         delivery.lastError = (data.lastError as string | null) ?? null;
       }
       if ('remoteMessageId' in data) {
         delivery.remoteMessageId = (data.remoteMessageId as string | null) ?? null;
+      }
+      if ('legacySentWithoutRemoteId' in data) {
+        delivery.legacySentWithoutRemoteId = Boolean(data.legacySentWithoutRemoteId);
       }
       if ('sentAt' in data) {
         delivery.sentAt = (data.sentAt as Date | null) ?? null;
@@ -710,11 +760,17 @@ function wireManagedBroadcastDeliveryStore(prisma: ReturnType<typeof createPrism
         if ('lockedAt' in data) {
           delivery.lockedAt = (data.lockedAt as Date | null) ?? null;
         }
+        if ('lockToken' in data) {
+          delivery.lockToken = (data.lockToken as string | null) ?? null;
+        }
         if ('lastError' in data) {
           delivery.lastError = (data.lastError as string | null) ?? null;
         }
         if ('remoteMessageId' in data) {
           delivery.remoteMessageId = (data.remoteMessageId as string | null) ?? null;
+        }
+        if ('legacySentWithoutRemoteId' in data) {
+          delivery.legacySentWithoutRemoteId = Boolean(data.legacySentWithoutRemoteId);
         }
         if ('sentAt' in data) {
           delivery.sentAt = (data.sentAt as Date | null) ?? null;
@@ -22302,25 +22358,13 @@ describe('AdminService.sendBroadcast', () => {
     const prisma = createPrismaMock();
     wireManagedBroadcastDeliveryStore(prisma);
     const slot = new Date('2026-03-03T12:00:00.000Z');
-    prisma.managedBroadcastOccurrence.findMany.mockImplementation(
-      async ({ where }: { where?: Record<string, unknown> } = {}) => {
-        if (typeof where?.sourceChatId === 'string') {
-          return [];
-        }
-
-        return [
-          {
-            broadcastId: 'broadcast-target-conflict',
-            scheduledAt: slot,
-            broadcast: {
-              sourceChatId: 'chat-other',
-              targetChatIds: ['chat-2'],
-              status: 'ACTIVE',
-            },
-          },
-        ];
+    prisma.managedBroadcastCalendarReservation.findMany.mockResolvedValue([
+      {
+        broadcastId: 'broadcast-target-conflict',
+        scheduledAt: slot,
+        targetChatId: 'chat-2',
       },
-    );
+    ]);
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       sendMessage: jest.fn(),
@@ -22390,54 +22434,55 @@ describe('AdminService.sendBroadcast', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
 
     const prisma = createPrismaMock();
-    prisma.managedBroadcastOccurrence.findMany.mockResolvedValue([
-      {
-        broadcastId: 'broadcast-overlap',
-        sourceChatId: 'chat-1',
-        entityType: 'CHAT',
-        occurrenceIndex: 1,
-        scheduledAt: new Date('2026-03-03T12:00:00.000Z'),
-        status: 'ACTIVE',
-        broadcast: {
-          id: 'broadcast-overlap',
-          sourceChatId: 'chat-1',
-          entityType: 'CHAT',
-          text: 'Пост в выбранный чат',
-          mediaType: null,
-          mediaPayload: null,
-          imageEnabled: false,
-          imageBase64: '',
-          imageMimeType: '',
-          imageFileName: '',
-          targetChatIds: ['chat-2', 'chat-3'],
-          applyToAllChats: false,
-          status: 'ACTIVE',
+    prisma.managedBroadcastCalendarReservation.findMany.mockImplementation(async ({ where }) => {
+      const targetFilter = (where as { targetChatId?: { in?: string[] } } | undefined)
+        ?.targetChatId;
+      const targetIds = Array.isArray(targetFilter?.in) ? targetFilter.in : [];
+      return [
+        {
+          broadcastId: 'broadcast-overlap',
+          occurrenceIndex: 1,
+          scheduledAt: new Date('2026-03-03T12:00:00.000Z'),
+          targetChatId: 'chat-2',
+          broadcast: {
+            id: 'broadcast-overlap',
+            sourceChatId: 'chat-1',
+            entityType: 'CHAT',
+            text: 'Пост в выбранный чат',
+            mediaType: null,
+            mediaPayload: null,
+            imageEnabled: false,
+            imageBase64: '',
+            imageMimeType: '',
+            imageFileName: '',
+            targetChatIds: ['chat-2', 'chat-3'],
+            applyToAllChats: false,
+            status: 'ACTIVE',
+          },
         },
-      },
-      {
-        broadcastId: 'broadcast-other',
-        sourceChatId: 'chat-1',
-        entityType: 'CHAT',
-        occurrenceIndex: 1,
-        scheduledAt: new Date('2026-03-03T13:00:00.000Z'),
-        status: 'ACTIVE',
-        broadcast: {
-          id: 'broadcast-other',
-          sourceChatId: 'chat-1',
-          entityType: 'CHAT',
-          text: 'Пост в другой чат',
-          mediaType: null,
-          mediaPayload: null,
-          imageEnabled: false,
-          imageBase64: '',
-          imageMimeType: '',
-          imageFileName: '',
-          targetChatIds: ['chat-3'],
-          applyToAllChats: false,
-          status: 'ACTIVE',
+        {
+          broadcastId: 'broadcast-other',
+          occurrenceIndex: 1,
+          scheduledAt: new Date('2026-03-03T13:00:00.000Z'),
+          targetChatId: 'chat-3',
+          broadcast: {
+            id: 'broadcast-other',
+            sourceChatId: 'chat-1',
+            entityType: 'CHAT',
+            text: 'Пост в другой чат',
+            mediaType: null,
+            mediaPayload: null,
+            imageEnabled: false,
+            imageBase64: '',
+            imageMimeType: '',
+            imageFileName: '',
+            targetChatIds: ['chat-3'],
+            applyToAllChats: false,
+            status: 'ACTIVE',
+          },
         },
-      },
-    ]);
+      ].filter((row) => targetIds.length === 0 || targetIds.includes(row.targetChatId));
+    });
     prisma.chat.findMany.mockResolvedValue([
       { id: 'chat-2', title: 'Чат 2', entityType: 'CHAT' },
       { id: 'chat-3', title: 'Чат 3', entityType: 'CHAT' },
@@ -23859,9 +23904,9 @@ describe('AdminService.sendBroadcast', () => {
       },
     );
 
-    expect(prisma.managedBroadcast.update).toHaveBeenCalledWith(
+    expect(prisma.managedBroadcast.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'broadcast-1' },
+        where: expect.objectContaining({ id: 'broadcast-1' }),
         data: expect.objectContaining({
           applyToAllChats: false,
           targetChatIds: ['chat-2'],

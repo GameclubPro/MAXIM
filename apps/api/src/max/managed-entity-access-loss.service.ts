@@ -362,7 +362,7 @@ export class ManagedEntityAccessLossService {
       ManagedBroadcastDeliveryStatus.FAILED,
     ];
 
-    const [broadcasts, deliveries, occurrences] = await Promise.all([
+    const [broadcasts, deliveries, , occurrences] = await Promise.all([
       this.prisma.managedBroadcast.updateMany({
         where: {
           sourceChatId: params.chatId,
@@ -372,6 +372,7 @@ export class ManagedEntityAccessLossService {
           status: ManagedBroadcastStatus.CANCELED,
           nextSendAt: null,
           lockedAt: null,
+          lockToken: null,
           lastError,
         },
       }),
@@ -383,9 +384,17 @@ export class ManagedEntityAccessLossService {
         data: {
           status: ManagedBroadcastDeliveryStatus.CANCELED,
           lockedAt: null,
+          lockToken: null,
           lastError,
         },
       }),
+      typeof this.prisma.managedBroadcastCalendarReservation?.deleteMany === 'function'
+        ? this.prisma.managedBroadcastCalendarReservation.deleteMany({
+            where: {
+              OR: [{ sourceChatId: params.chatId }, { targetChatId: params.chatId }],
+            },
+          })
+        : Promise.resolve(null),
       typeof this.prisma.managedBroadcastOccurrence?.updateMany === 'function'
         ? this.prisma.managedBroadcastOccurrence.updateMany({
             where: {

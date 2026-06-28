@@ -321,6 +321,22 @@ describe('broadcast request schema normalization', () => {
     expect(handoffPayload.replaceConflictingSlots).toBe(true);
   });
 
+  it('accepts ISO datetimes with offsets and rejects ambiguous dates', () => {
+    const offsetPayload = sendBroadcastRequestSchema.parse({
+      text: 'Анонс',
+      scheduleMode: 'calendar',
+      scheduledSlots: ['2026-03-03T15:00:00+03:00'],
+    });
+
+    expect(offsetPayload.scheduledSlots).toEqual(['2026-03-03T12:00:00.000Z']);
+    expect(
+      sendBroadcastRequestSchema.safeParse({
+        text: 'Анонс',
+        sendAt: '2026-03-03',
+      }).success,
+    ).toBe(false);
+  });
+
   it('clears inactive schedule fields for every broadcast schedule mode', () => {
     const legacyPayload = sendBroadcastRequestSchema.parse({
       text: 'Анонс',

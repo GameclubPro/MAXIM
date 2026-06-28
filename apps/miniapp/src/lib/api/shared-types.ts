@@ -11,6 +11,7 @@ import type {
 } from '@maxim/contracts';
 
 export type SendBroadcastPayload = {
+  requestId?: string;
   text: string;
   textFormat: BroadcastTextFormat;
   targetMode: BroadcastTargetMode;

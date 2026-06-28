@@ -300,6 +300,8 @@ export type PreparedManagedBroadcastRequest = {
   payload: SendBroadcastRequest;
   targetChatIds: string[];
   normalizedSourceText: string;
+  idempotencyKey: string | null;
+  idempotencyHash: string | null;
 };
 
 export type ManagedBroadcastResolvedMedia = {

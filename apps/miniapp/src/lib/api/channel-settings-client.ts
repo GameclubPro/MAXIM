@@ -47,6 +47,14 @@ import {
 import type { BroadcastHandoffPayload, SendBroadcastPayload } from './shared-types';
 import type { ApiTransport } from './transport';
 
+function createBroadcastRequestId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID().replace(/-/gu, '');
+  }
+
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 14)}`;
+}
+
 export async function getChannelHeader(
   api: ApiTransport,
   chatId: string,
@@ -187,7 +195,10 @@ export async function sendChannelBroadcast(
   chatId: string,
   payload: SendBroadcastPayload,
 ) {
-  const requestBody = sendBroadcastRequestSchema.parse(payload);
+  const requestBody = sendBroadcastRequestSchema.parse({
+    ...payload,
+    requestId: payload.requestId ?? createBroadcastRequestId(),
+  });
   const response = await api.request(`/channels/${chatId}/broadcast`, {
     method: 'POST',
     body: JSON.stringify(requestBody),
@@ -234,7 +245,12 @@ export async function getChannelManagedBroadcasts(
 export async function getChannelManagedBroadcastCalendar(
   api: ApiTransport,
   chatId: string,
-  params: { from?: string; to?: string; targetChatIds?: readonly string[] } = {},
+  params: {
+    from?: string;
+    to?: string;
+    targetMode?: 'current' | 'selected' | 'all';
+    targetChatIds?: readonly string[];
+  } = {},
 ): Promise<ManagedBroadcastCalendarResponse> {
   const search = new URLSearchParams();
   if (params.from) {
@@ -242,6 +258,9 @@ export async function getChannelManagedBroadcastCalendar(
   }
   if (params.to) {
     search.set('to', params.to);
+  }
+  if (params.targetMode) {
+    search.set('targetMode', params.targetMode);
   }
   if (params.targetChatIds && params.targetChatIds.length > 0) {
     search.set('targetChatIds', params.targetChatIds.join(','));

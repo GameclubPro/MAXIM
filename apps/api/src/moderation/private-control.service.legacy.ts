@@ -14,7 +14,6 @@ import {
   type ChannelSettings,
   type ChatSettings,
   type ChatSettingsScreenResponse,
-  type LogsDashboardRange,
   type ManagedGiveawayDetails,
   type ManagedGiveawayWinner,
   MAX_CHANNEL_DIALOG_SUGGEST_IMAGES,
@@ -108,23 +107,18 @@ import type {
   PendingInput,
   PendingMassAction,
   PrivateBroadcastDraft,
-  PrivateBroadcastView,
   PrivateContext,
-  PrivateHomeTab,
   PrivateScreen,
   PrivateSectionKey,
   PrivateSectionView,
   PrivateSession,
   PrivateSuggestionDraft,
-  PrivateUiMode,
   PrivateView,
   SettingFieldConfig,
   SettingFieldType,
 } from './private-control.types';
 import {
   createDefaultPrivateControlSession,
-  normalizePrivateControlPendingInput,
-  normalizePrivateControlPendingMassAction,
   normalizePrivateControlSession,
   parsePrivateControlBroadcastView,
   parsePrivateControlChannelSection,
@@ -134,8 +128,6 @@ import {
   parsePrivateControlScreen,
   parsePrivateControlSection,
   parsePrivateControlSectionView,
-  parsePrivateControlSettingFieldType,
-  parsePrivateControlUiMode,
   toPrivateControlPositiveInt,
 } from './private-control-session-normalizer';
 import {
@@ -175,6 +167,15 @@ import {
   renderPrivateLauncherIntroView,
   renderPrivateMiniappMovedView,
 } from './private-control-launcher-renderer';
+import {
+  asPrivateControlRecord,
+  formatPrivateControlAllowlistEntryLabel,
+  formatPrivateControlDateTimeLabel,
+  formatPrivateControlIsoDate,
+  limitPrivateControlMessageText,
+  paginatePrivateControlItems,
+  readPrivateControlString,
+} from './private-control-formatting.util';
 import {
   clearPendingPrivateProfileMentionHandoff,
   clearPrivateHandoffDelivery,
@@ -268,19 +269,19 @@ export class PrivateControlService {
     this.maxBotTokenValidationSecrets =
       this.maxBotLinkService?.getValidationTokens() ??
       (configuredBotTokens.length > 0 ? configuredBotTokens : [this.maxBotToken]);
-    this.privateCallbackInlineBudgetMs = this.toPositiveInt(
+    this.privateCallbackInlineBudgetMs = toPrivateControlPositiveInt(
       configService?.get('PRIVATE_CALLBACK_INLINE_BUDGET_MS'),
       DEFAULT_PRIVATE_CALLBACK_INLINE_BUDGET_MS,
     );
-    this.privateCallbackAckTimeoutMs = this.toPositiveInt(
+    this.privateCallbackAckTimeoutMs = toPrivateControlPositiveInt(
       configService?.get('PRIVATE_CALLBACK_ACK_TIMEOUT_MS'),
       DEFAULT_PRIVATE_CALLBACK_ACK_TIMEOUT_MS,
     );
-    this.privateCallbackEditTimeoutMs = this.toPositiveInt(
+    this.privateCallbackEditTimeoutMs = toPrivateControlPositiveInt(
       configService?.get('PRIVATE_CALLBACK_EDIT_TIMEOUT_MS'),
       DEFAULT_PRIVATE_CALLBACK_EDIT_TIMEOUT_MS,
     );
-    this.privateDialogSendTimeoutMs = this.toPositiveInt(
+    this.privateDialogSendTimeoutMs = toPrivateControlPositiveInt(
       configService?.get('PRIVATE_DIALOG_SEND_TIMEOUT_MS'),
       DEFAULT_PRIVATE_DIALOG_SEND_TIMEOUT_MS,
     );
@@ -760,7 +761,7 @@ export class PrivateControlService {
     await this.saveSession(params.userId, session);
 
     const view = await this.renderChannelSuggestionIntroView(params.chatId, params.token);
-    const text = this.limitMessageText(view.text);
+    const text = limitPrivateControlMessageText(view.text);
     const compactOptions = this.compactButtonLayout(view.options);
     const inferredTextFormat =
       compactOptions?.textFormat ?? (this.shouldUseMarkdown(text) ? 'markdown' : undefined);
@@ -871,7 +872,7 @@ export class PrivateControlService {
         normalizedTargetUserId,
       ]);
       const profile = profiles.get(normalizedTargetUserId);
-      const displayName = this.readString(profile?.displayName);
+      const displayName = readPrivateControlString(profile?.displayName);
       if (displayName) {
         resolvedDisplayName = displayName;
       }
@@ -1159,7 +1160,7 @@ export class PrivateControlService {
   private renderSupportRequestPrompt(): PrivateView {
     return {
       text: [
-        this.markdownTitle('Сообщить о проблеме'),
+        privateMarkdownTitle('Сообщить о проблеме'),
         '',
         'Опишите проблему одним сообщением. Можно приложить фото.',
         'Для отмены напишите «отмена».',
@@ -1173,7 +1174,7 @@ export class PrivateControlService {
   private renderSupportRequestSubmittedView(): PrivateView {
     return {
       text: [
-        this.markdownTitle('Обращение передано'),
+        privateMarkdownTitle('Обращение передано'),
         '',
         'Спасибо. Посмотрю и вернусь с ответом при необходимости.',
       ].join('\n'),
@@ -1230,7 +1231,7 @@ export class PrivateControlService {
 
       attachments.push({
         type: rawType === 'video' ? 'video' : 'unknown',
-        fileName: this.readString(rawAttachment.file_name ?? rawAttachment.fileName) ?? null,
+        fileName: readPrivateControlString(rawAttachment.file_name ?? rawAttachment.fileName) ?? null,
         mimeType: null,
         url: null,
         payload: null,
@@ -1246,10 +1247,10 @@ export class PrivateControlService {
       return '';
     }
 
-    const body = this.asRecord(messageNode.body);
-    const content = this.asRecord(messageNode.content);
-    const payload = this.asRecord(messageNode.payload);
-    const nestedMessage = this.asRecord(messageNode.message);
+    const body = asPrivateControlRecord(messageNode.body);
+    const content = asPrivateControlRecord(messageNode.content);
+    const payload = asPrivateControlRecord(messageNode.payload);
+    const nestedMessage = asPrivateControlRecord(messageNode.message);
     const candidates = [
       messageNode.text,
       messageNode.caption,
@@ -1267,7 +1268,7 @@ export class PrivateControlService {
     ];
 
     for (const candidate of candidates) {
-      const value = this.readString(candidate);
+      const value = readPrivateControlString(candidate);
       if (value) {
         return value;
       }
@@ -1422,7 +1423,7 @@ export class PrivateControlService {
 
     const view: PrivateView = {
       text: [
-        this.markdownTitle('✍️ Добавьте контент'),
+        privateMarkdownTitle('✍️ Добавьте контент'),
         '',
         '⬇️ Пришлите следующим сообщением текст, фото, видео или подпись к медиа.',
         'Можно отправить несколько сообщений подряд: бот будет обновлять пример публикации после каждого нового текста.',
@@ -1459,7 +1460,7 @@ export class PrivateControlService {
       result.reviewStatus === 'published'
         ? {
             text: [
-              this.markdownTitle('✅ Предложка опубликована'),
+              privateMarkdownTitle('✅ Предложка опубликована'),
               '',
               ...(publishedUrl ? [`Пост: [Открыть пост](${publishedUrl})`, ''] : []),
               'Карточки в личке админов обновлены.',
@@ -1482,7 +1483,7 @@ export class PrivateControlService {
           }
         : {
             text: [
-              this.markdownTitle('✖️ Предложка отклонена'),
+              privateMarkdownTitle('✖️ Предложка отклонена'),
               '',
               'Карточки в личке админов обновлены.',
             ].join('\n'),
@@ -1790,7 +1791,7 @@ export class PrivateControlService {
       }
 
       case 'chat_page': {
-        session.chatPage = this.toPositiveInt(callback.args[0], 1);
+        session.chatPage = toPrivateControlPositiveInt(callback.args[0], 1);
         session.screen = 'home';
         const view = this.renderLauncherHomeView('Выбирайте чат и канал в приложении.');
         await this.respond(context, session, view, {
@@ -2428,7 +2429,7 @@ export class PrivateControlService {
       case 'domains_page': {
         this.assertChatSelected(session);
         session.screen = 'domains';
-        session.domainPage = this.toPositiveInt(callback.args[0], 1);
+        session.domainPage = toPrivateControlPositiveInt(callback.args[0], 1);
         const view = await this.renderDomainsScreen(context, session);
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
@@ -2450,7 +2451,7 @@ export class PrivateControlService {
 
       case 'domain_remove': {
         this.assertChatSelected(session);
-        const index = this.toPositiveInt(callback.args[0], 1) - 1;
+        const index = toPrivateControlPositiveInt(callback.args[0], 1) - 1;
         const domains = await this.adminService.getDomainAllowlistDetails(
           session.selectedChatId!,
           context.actor,
@@ -2469,14 +2470,14 @@ export class PrivateControlService {
         const view = await this.renderDomainsScreen(context, session);
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
-          notification: `Удалено: ${this.formatAllowlistEntryLabel(domains[index])}`,
+          notification: `Удалено: ${formatPrivateControlAllowlistEntryLabel(domains[index])}`,
         });
         return;
       }
 
       case 'domain_schedule_prompt': {
         this.assertChatSelected(session);
-        const index = this.toPositiveInt(callback.args[0], 1) - 1;
+        const index = toPrivateControlPositiveInt(callback.args[0], 1) - 1;
         const domains = await this.adminService.getDomainAllowlistDetails(
           session.selectedChatId!,
           context.actor,
@@ -2488,7 +2489,7 @@ export class PrivateControlService {
         session.pendingInput = {
           kind: 'schedule_domain',
           domain: domains[index].normalizedValue,
-          domainLabel: this.formatAllowlistEntryLabel(domains[index]),
+          domainLabel: formatPrivateControlAllowlistEntryLabel(domains[index]),
         };
 
         const view = this.renderInputPrompt(session.pendingInput);
@@ -3229,7 +3230,7 @@ export class PrivateControlService {
       case 'events_page': {
         this.assertChatSelected(session);
         session.screen = 'events';
-        session.eventsPage = this.toPositiveInt(callback.args[0], 1);
+        session.eventsPage = toPrivateControlPositiveInt(callback.args[0], 1);
         const view = await this.renderEventsScreen(context, session);
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
@@ -3252,7 +3253,7 @@ export class PrivateControlService {
 
       case 'logs_range': {
         this.assertChatSelected(session);
-        const range = this.parseLogsRange(callback.args[0]);
+        const range = parsePrivateControlLogsRange(callback.args[0]);
         session.screen = 'logs';
         session.logsRange = range;
         const view = await this.renderLogsScreen(context, session);
@@ -3280,7 +3281,7 @@ export class PrivateControlService {
       case 'manual_users_page': {
         this.assertChatSelected(session);
         session.screen = 'manual_users';
-        session.manualPage = this.toPositiveInt(callback.args[0], 1);
+        session.manualPage = toPrivateControlPositiveInt(callback.args[0], 1);
         const view = await this.renderManualUsersScreen(context, session);
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
@@ -5039,7 +5040,7 @@ export class PrivateControlService {
       context.actor,
     );
     const lines: string[] = [
-      this.markdownTitle(CHANNEL_SECTION_LABELS[section]),
+      privateMarkdownTitle(CHANNEL_SECTION_LABELS[section]),
       '',
       ...this.buildChannelSectionSummary(section, settings),
     ];
@@ -5081,9 +5082,9 @@ export class PrivateControlService {
       session.selectedChatId,
     );
     const lines: string[] = [
-      this.markdownTitle('Разделы настроек'),
+      privateMarkdownTitle('Разделы настроек'),
       '',
-      `Чат: ${this.escapeMarkdown(chatTitle)}`,
+      `Чат: ${escapePrivateMarkdown(chatTitle)}`,
       'Выберите раздел.',
     ];
 
@@ -5116,7 +5117,7 @@ export class PrivateControlService {
 
     const settings = await this.adminService.getSettings(session.selectedChatId, context.actor);
     const lines: string[] = [
-      this.markdownTitle(SECTION_LABELS[section]),
+      privateMarkdownTitle(SECTION_LABELS[section]),
       '',
       `Режим: ${session.sectionView === 'basic' ? 'Основное' : 'Ещё параметры'}`,
       '',
@@ -5173,7 +5174,7 @@ export class PrivateControlService {
       session.selectedChatId,
       context.actor,
     );
-    const pageInfo = this.paginate(domains, session.domainPage, PAGE_SIZE_DOMAINS);
+    const pageInfo = paginatePrivateControlItems(domains, session.domainPage, PAGE_SIZE_DOMAINS);
     session.domainPage = pageInfo.page;
 
     const lines: string[] = ['Разрешённые ссылки и домены', ''];
@@ -5187,9 +5188,9 @@ export class PrivateControlService {
         ...pageInfo.items.map((entry, index) => {
           const idx = pageInfo.start + index + 1;
           const schedule = entry.removeAfterAt
-            ? `удалить: ${this.formatIsoDate(entry.removeAfterAt)}`
+            ? `удалить: ${formatPrivateControlIsoDate(entry.removeAfterAt)}`
             : 'без автоудаления';
-          return `${idx}. ${this.formatAllowlistEntryLabel(entry)} (${schedule})`;
+          return `${idx}. ${formatPrivateControlAllowlistEntryLabel(entry)} (${schedule})`;
         }),
       );
     }
@@ -5206,7 +5207,7 @@ export class PrivateControlService {
       const globalIndex = pageInfo.start + index + 1;
       rows.push([
         this.callbackButton(
-          `❌ ${this.compactText(this.formatAllowlistEntryLabel(entry), 20)}`,
+          `❌ ${compactPrivateText(formatPrivateControlAllowlistEntryLabel(entry), 20)}`,
           this.cb('domain_remove', String(globalIndex)),
         ),
         this.callbackButton(
@@ -5267,15 +5268,15 @@ export class PrivateControlService {
           : null;
 
     const lines: string[] = [
-      this.markdownTitle('Правила'),
+      privateMarkdownTitle('Правила'),
       '',
-      `Чат: ${this.escapeMarkdown(chatTitle)}`,
+      `Чат: ${escapePrivateMarkdown(chatTitle)}`,
       '',
       hasText ? rules.text : '_Текст правила пока не задан._',
     ];
 
     if (waitingHint) {
-      lines.push('', this.escapeMarkdown(waitingHint));
+      lines.push('', escapePrivateMarkdown(waitingHint));
     }
 
     if (hasImage) {
@@ -5283,11 +5284,11 @@ export class PrivateControlService {
     }
 
     if (rules.publishedAt) {
-      lines.push('', `Опубликовано: ${this.formatIsoDate(rules.publishedAt)}`);
+      lines.push('', `Опубликовано: ${formatPrivateControlIsoDate(rules.publishedAt)}`);
     }
 
     if (notice) {
-      lines.push('', `Статус: ${this.escapeMarkdown(notice)}`);
+      lines.push('', `Статус: ${escapePrivateMarkdown(notice)}`);
     }
 
     const rows: MaxMessageButton[][] = [
@@ -5787,9 +5788,9 @@ export class PrivateControlService {
     );
     const rows: MaxMessageButton[][] = [];
     const lines: string[] = [
-      this.markdownTitle('Розыгрыш'),
+      privateMarkdownTitle('Розыгрыш'),
       '',
-      `${entityLabel}: ${this.escapeMarkdown(entityTitle)}`,
+      `${entityLabel}: ${escapePrivateMarkdown(entityTitle)}`,
     ];
 
     if (!giveaway) {
@@ -5797,7 +5798,7 @@ export class PrivateControlService {
       rows.push([this.callbackButton('Создать черновик', this.cb('giveaway_create'), 'positive')]);
     } else {
       lines.push(
-        `Название: ${this.escapeMarkdown(giveaway.title)}`,
+        `Название: ${escapePrivateMarkdown(giveaway.title)}`,
         '',
         'Контент публикации:',
         giveaway.description.trim() || 'не задан',
@@ -5806,7 +5807,7 @@ export class PrivateControlService {
           : []),
         '',
         `Мест: ${giveaway.prizes.length}`,
-        ...(giveaway.endsAt ? [`Финиш: ${this.formatDateTimeLabel(giveaway.endsAt)}`] : []),
+        ...(giveaway.endsAt ? [`Финиш: ${formatPrivateControlDateTimeLabel(giveaway.endsAt)}`] : []),
         ...(giveaway.status === 'ACTIVE' ||
         giveaway.status === 'SCHEDULED' ||
         giveaway.status === 'COMPLETED'
@@ -5857,7 +5858,7 @@ export class PrivateControlService {
     }
 
     if (notice) {
-      lines.push('', `Результат: ${this.escapeMarkdown(notice)}`);
+      lines.push('', `Результат: ${escapePrivateMarkdown(notice)}`);
     }
 
     return {
@@ -5943,7 +5944,7 @@ export class PrivateControlService {
     promptText: string | null;
     notice: string | null;
   }): { text: string; textFormat: MaxSendMessageOptions['textFormat'] } {
-    const lines: string[] = [this.markdownTitle('Автопостинг')];
+    const lines: string[] = [privateMarkdownTitle('Автопостинг')];
 
     if (payload.entityLead) {
       lines.push('', payload.entityLead);
@@ -5952,18 +5953,18 @@ export class PrivateControlService {
     if (payload.contentText || payload.hasImage || payload.hasVideo) {
       lines.push(
         '',
-        this.markdownTitle('Контент'),
+        privateMarkdownTitle('Контент'),
         '',
         payload.contentText ?? (payload.hasVideo ? 'Видео без текста.' : 'Фото без текста.'),
       );
     }
 
     if (payload.notice) {
-      lines.push('', `Статус: ${this.escapeMarkdown(payload.notice)}`);
+      lines.push('', `Статус: ${escapePrivateMarkdown(payload.notice)}`);
     }
 
     if (payload.promptText) {
-      lines.push('', `Дальше: ${this.escapeMarkdown(payload.promptText)}`);
+      lines.push('', `Дальше: ${escapePrivateMarkdown(payload.promptText)}`);
     }
 
     return {
@@ -6031,14 +6032,14 @@ export class PrivateControlService {
       if (lines.length > 0) {
         lines.push('');
       }
-      lines.push(this.escapeMarkdown(payload.promptText));
+      lines.push(escapePrivateMarkdown(payload.promptText));
     }
 
     if (payload.notice) {
       if (lines.length > 0) {
         lines.push('');
       }
-      lines.push(this.escapeMarkdown(payload.notice));
+      lines.push(escapePrivateMarkdown(payload.notice));
     }
 
     return {
@@ -6132,13 +6133,13 @@ export class PrivateControlService {
     );
 
     return markdown
-      ? `${entityLabel}: ${this.escapeMarkdown(entityTitle)}`
+      ? `${entityLabel}: ${escapePrivateMarkdown(entityTitle)}`
       : `${entityLabel}: ${entityTitle}`;
   }
 
   private buildBroadcastCompletionNotice(result: SendBroadcastResult): string {
     if (result.sentChats === 0 && result.nextSendAt) {
-      return `Будет опубликовано: ${this.formatDateTimeLabel(
+      return `Будет опубликовано: ${formatPrivateControlDateTimeLabel(
         result.nextSendAt,
         result.scheduleTimezone,
       )}.`;
@@ -6149,7 +6150,7 @@ export class PrivateControlService {
     }
 
     if (result.nextSendAt && result.scheduledOccurrences > 0) {
-      return `Опубликовано. Следующий слот: ${this.formatDateTimeLabel(
+      return `Опубликовано. Следующий слот: ${formatPrivateControlDateTimeLabel(
         result.nextSendAt,
         result.scheduleTimezone,
       )}.`;
@@ -6160,14 +6161,14 @@ export class PrivateControlService {
 
   private buildBroadcastSuccessMessage(result: SendBroadcastResult): string {
     if (result.sentChats === 0 && result.nextSendAt) {
-      return `✅ Всё успешно. Автопостинг запланирован на ${this.formatDateTimeLabel(
+      return `✅ Всё успешно. Автопостинг запланирован на ${formatPrivateControlDateTimeLabel(
         result.nextSendAt,
         result.scheduleTimezone,
       )}.`;
     }
 
     if (result.nextSendAt && result.scheduledOccurrences > 0) {
-      return `✅ Всё успешно. Первый слот отправлен, следующий: ${this.formatDateTimeLabel(
+      return `✅ Всё успешно. Первый слот отправлен, следующий: ${formatPrivateControlDateTimeLabel(
         result.nextSendAt,
         result.scheduleTimezone,
       )}.`;
@@ -6193,13 +6194,13 @@ export class PrivateControlService {
             ? 'Ожидает подтверждения'
             : 'Победитель зафиксирован';
     const lines = [
-      this.markdownTitle('Розыгрыш'),
+      privateMarkdownTitle('Розыгрыш'),
       '',
-      this.escapeMarkdown(giveaway.title),
-      `${winner.prizePosition}. ${this.escapeMarkdown(winner.prizeDisplayTitle)}`,
+      escapePrivateMarkdown(giveaway.title),
+      `${winner.prizePosition}. ${escapePrivateMarkdown(winner.prizeDisplayTitle)}`,
       `Статус: ${statusLabel}`,
-      `Победитель: ${this.escapeMarkdown(winner.displayName ?? winner.userId)}`,
-      ...(notice ? ['', `Статус: ${this.escapeMarkdown(notice)}`] : []),
+      `Победитель: ${escapePrivateMarkdown(winner.displayName ?? winner.userId)}`,
+      ...(notice ? ['', `Статус: ${escapePrivateMarkdown(notice)}`] : []),
     ];
 
     const rows: MaxMessageButton[][] = [];
@@ -6243,7 +6244,7 @@ export class PrivateControlService {
   private renderUnavailableGiveawayClaimView(): PrivateView {
     return {
       text: [
-        this.markdownTitle('Розыгрыш'),
+        privateMarkdownTitle('Розыгрыш'),
         '',
         'Итоги уже зафиксированы. Подтверждение победителя больше не требуется.',
       ].join('\n'),
@@ -6276,7 +6277,7 @@ export class PrivateControlService {
       lines.push(
         ...events.map((event, index) => {
           const lineIndex = (session.eventsPage - 1) * PAGE_SIZE_EVENTS + index + 1;
-          return `${lineIndex}. [${event.action}] ${event.ruleCode} • user ${event.userId} • ${this.formatIsoDate(event.createdAt)}`;
+          return `${lineIndex}. [${event.action}] ${event.ruleCode} • user ${event.userId} • ${formatPrivateControlIsoDate(event.createdAt)}`;
         }),
       );
     }
@@ -6400,7 +6401,7 @@ export class PrivateControlService {
           arr.findIndex((candidate) => candidate.userId === item.userId) === index,
       );
 
-    const pageInfo = this.paginate(users, session.manualPage, PAGE_SIZE_MANUAL_USERS);
+    const pageInfo = paginatePrivateControlItems(users, session.manualPage, PAGE_SIZE_MANUAL_USERS);
     session.manualPage = pageInfo.page;
 
     const lines: string[] = [
@@ -6421,7 +6422,7 @@ export class PrivateControlService {
 
     const rows: MaxMessageButton[][] = pageInfo.items.map((entry) => [
       this.callbackButton(
-        `${this.compactText(entry.userDisplayName ?? entry.userId, 20)} (${this.compactText(entry.userId, 10)})`,
+        `${compactPrivateText(entry.userDisplayName ?? entry.userId, 20)} (${compactPrivateText(entry.userId, 10)})`,
         this.cb('manual_select_user', entry.userId),
       ),
     ]);
@@ -6488,7 +6489,7 @@ export class PrivateControlService {
 
   private renderSearchResultsScreen(query: string): PrivateView {
     const matches = this.findSettingMatches(query);
-    const lines: string[] = [`Результаты поиска: «${this.compactText(query, 60)}»`, ''];
+    const lines: string[] = [`Результаты поиска: «${compactPrivateText(query, 60)}»`, ''];
 
     if (matches.length === 0) {
       lines.push('Ничего не нашёл. Попробуйте другое слово.');
@@ -6500,7 +6501,7 @@ export class PrivateControlService {
 
     const rows: MaxMessageButton[][] = matches.map((item) => [
       this.callbackButton(
-        `${item.sectionLabel} • ${this.compactText(item.label, 26)}`,
+        `${item.sectionLabel} • ${compactPrivateText(item.label, 26)}`,
         this.cb('search_jump', item.section, String(item.key)),
       ),
     ]);
@@ -6701,7 +6702,7 @@ export class PrivateControlService {
       if (field.type === 'enum') {
         rows.push([
           this.callbackButton(
-            `🎚 ${field.label}: ${this.compactText(this.formatSettingValue(currentValue, field.type), 20)}`,
+            `🎚 ${field.label}: ${compactPrivateText(this.formatSettingValue(currentValue, field.type), 20)}`,
             this.cb('noop'),
           ),
         ]);
@@ -6729,7 +6730,7 @@ export class PrivateControlService {
             this.cb('step_number', section, String(field.key), String(-step)),
           ),
           this.callbackButton(
-            `${field.label}: ${this.compactText(this.formatNumberPreset(field, numericValue), 12)}`,
+            `${field.label}: ${compactPrivateText(this.formatNumberPreset(field, numericValue), 12)}`,
             this.cb('noop'),
           ),
           this.callbackButton(
@@ -6765,7 +6766,7 @@ export class PrivateControlService {
 
       rows.push([
         this.callbackButton(
-          `✏️ ${field.label}: ${this.compactText(this.formatSettingValue(currentValue, field.type), 20)}`,
+          `✏️ ${field.label}: ${compactPrivateText(this.formatSettingValue(currentValue, field.type), 20)}`,
           this.cb('set_input', section, String(field.key)),
         ),
       ]);
@@ -6812,7 +6813,7 @@ export class PrivateControlService {
 
       rows.push([
         this.callbackButton(
-          `✏️ ${field.label}: ${this.compactText(this.formatSettingValue(settings[field.key], field.type), 18)}`,
+          `✏️ ${field.label}: ${compactPrivateText(this.formatSettingValue(settings[field.key], field.type), 18)}`,
           this.cb('set_channel_input', section, String(field.key)),
         ),
       ]);
@@ -6898,24 +6899,24 @@ export class PrivateControlService {
 
     try {
       const row = JSON.parse(raw) as Record<string, unknown>;
-      session.screen = this.parseScreen(row.screen);
+      session.screen = parsePrivateControlScreen(row.screen);
       session.section = typeof row.section === 'string' ? this.parseSection(row.section) : null;
       session.channelSection =
         typeof row.channelSection === 'string'
           ? this.parseChannelSection(row.channelSection)
           : null;
-      session.sectionView = this.parseSectionView(row.sectionView);
-      session.homeTab = this.parseHomeTab(row.homeTab);
-      session.selectedEntityType = this.parseEntityType(row.selectedEntityType);
+      session.sectionView = parsePrivateControlSectionView(row.sectionView);
+      session.homeTab = parsePrivateControlHomeTab(row.homeTab);
+      session.selectedEntityType = parsePrivateControlEntityType(row.selectedEntityType);
       session.managedGiveawayId =
         typeof row.managedGiveawayId === 'string' && row.managedGiveawayId.trim().length > 0
           ? row.managedGiveawayId.trim()
           : null;
-      session.entityTab = this.parseEntityType(row.entityTab) ?? session.entityTab;
-      session.domainPage = this.toPositiveInt(row.domainPage, 1);
-      session.eventsPage = this.toPositiveInt(row.eventsPage, 1);
-      session.manualPage = this.toPositiveInt(row.manualPage, 1);
-      session.logsRange = this.parseLogsRange(
+      session.entityTab = parsePrivateControlEntityType(row.entityTab) ?? session.entityTab;
+      session.domainPage = toPrivateControlPositiveInt(row.domainPage, 1);
+      session.eventsPage = toPrivateControlPositiveInt(row.eventsPage, 1);
+      session.manualPage = toPrivateControlPositiveInt(row.manualPage, 1);
+      session.logsRange = parsePrivateControlLogsRange(
         typeof row.logsRange === 'string' ? row.logsRange : undefined,
       );
       session.manualTargetUserId =
@@ -6926,7 +6927,7 @@ export class PrivateControlService {
         typeof row.searchQuery === 'string' && row.searchQuery.trim().length > 0
           ? row.searchQuery.trim()
           : null;
-      session.broadcastView = this.parseBroadcastView(row.broadcastView);
+      session.broadcastView = parsePrivateControlBroadcastView(row.broadcastView);
       return true;
     } catch {
       return false;
@@ -6938,9 +6939,9 @@ export class PrivateControlService {
 
     return {
       text: [
-        this.markdownTitle(`Введите: ${prompt.title}`),
+        privateMarkdownTitle(`Введите: ${prompt.title}`),
         '',
-        this.escapeMarkdown(prompt.description),
+        escapePrivateMarkdown(prompt.description),
       ].join('\n'),
       options: {
         buttons: [
@@ -6959,7 +6960,7 @@ export class PrivateControlService {
 
     return {
       text: [
-        this.markdownTitle('📰 Предложка'),
+        privateMarkdownTitle('📰 Предложка'),
         '',
         requirementsText,
         '',
@@ -6977,7 +6978,7 @@ export class PrivateControlService {
   ): Promise<PrivateView> {
     return {
       text: [
-        this.markdownTitle('✅ Материал отправлен'),
+        privateMarkdownTitle('✅ Материал отправлен'),
         '',
         'Бот передал материал редакторам канала на проверку.',
         'Если всё подойдёт, пост опубликуют в канале без лишних шагов.',
@@ -6996,7 +6997,7 @@ export class PrivateControlService {
   ): Promise<PrivateView> {
     return {
       text: [
-        this.markdownTitle('⏳ Материал принят'),
+        privateMarkdownTitle('⏳ Материал принят'),
         '',
         'Материал принят и поставлен в очередь доставки редакторам канала.',
         'Обычно он появляется у редакторов чуть позже без вашего участия.',
@@ -7015,7 +7016,7 @@ export class PrivateControlService {
   ): Promise<PrivateView> {
     return {
       text: [
-        this.markdownTitle('⚠️ Материал сохранён'),
+        privateMarkdownTitle('⚠️ Материал сохранён'),
         '',
         'Черновик сохранён, но бот не подтвердил доставку редакторам канала.',
         'Лучше отправить предложку ещё раз или проверить, что редакторы открывали личные сообщения бота.',
@@ -7031,7 +7032,7 @@ export class PrivateControlService {
   private renderChannelSuggestionCancelledView(): PrivateView {
     return {
       text: [
-        this.markdownTitle('✖️ Предложка закрыта'),
+        privateMarkdownTitle('✖️ Предложка закрыта'),
         '',
         'Если захотите отправить материал позже, снова нажмите кнопку под постом.',
       ].join('\n'),
@@ -7041,7 +7042,7 @@ export class PrivateControlService {
   private renderChannelSuggestionPreviewFallbackView(): PrivateView {
     return {
       text: [
-        this.markdownTitle('🗂 Черновик предложки'),
+        privateMarkdownTitle('🗂 Черновик предложки'),
         '',
         'Не удалось собрать превью публикации, но черновик сохранён.',
         'Можно отправить ещё текст или медиа, отправить материал админам или вернуться в канал.',
@@ -7201,7 +7202,7 @@ export class PrivateControlService {
     await this.saveSession(context.actor.userId, session);
     await this.sendImmediate(
       context.chatId,
-      this.limitMessageText(fallbackView.text),
+      limitPrivateControlMessageText(fallbackView.text),
       this.withDebugContext(
         {
           buttons,
@@ -7309,7 +7310,7 @@ export class PrivateControlService {
     const text =
       pendingMassAction.kind === 'apply_section'
         ? [
-            this.markdownTitle('Подтвердите применение для всех чатов'),
+            privateMarkdownTitle('Подтвердите применение для всех чатов'),
             '',
             `Раздел: ${SECTION_LABELS[pendingMassAction.section]}`,
             `Количество чатов: ${pendingMassAction.targetChats}`,
@@ -7317,7 +7318,7 @@ export class PrivateControlService {
             'Применить эти настройки во всех доступных чатах?',
           ].join('\n')
         : [
-            this.markdownTitle('Подтвердите массовый автопостинг'),
+            privateMarkdownTitle('Подтвердите массовый автопостинг'),
             '',
             `Количество чатов: ${pendingMassAction.targetChats}`,
             '',
@@ -7753,7 +7754,7 @@ export class PrivateControlService {
     }
 
     if (typeof value === 'string') {
-      return value.trim() ? this.compactText(value, 64) : '—';
+      return value.trim() ? compactPrivateText(value, 64) : '—';
     }
 
     return String(value);
@@ -7784,10 +7785,6 @@ export class PrivateControlService {
 
   private parseChannelSection(value: string | undefined): ChannelSectionKey | null {
     return parsePrivateControlChannelSection(value);
-  }
-
-  private parseLogsRange(value: string | undefined): LogsDashboardRange {
-    return parsePrivateControlLogsRange(value);
   }
 
   private findFieldConfig(
@@ -7915,7 +7912,7 @@ export class PrivateControlService {
   ): Promise<void> {
     await this.saveSession(context.actor.userId, session);
 
-    const text = this.limitMessageText(view.text);
+    const text = limitPrivateControlMessageText(view.text);
     const compactOptions = this.compactButtonLayout(view.options);
     const inferredTextFormat =
       compactOptions?.textFormat ?? (this.shouldUseMarkdown(text) ? 'markdown' : undefined);
@@ -8211,7 +8208,7 @@ export class PrivateControlService {
 
     try {
       const profiles = await this.maxClient.getChatMemberProfiles(sourceChatId, [userId]);
-      const resolvedDisplayName = this.readString(profiles.get(userId)?.displayName);
+      const resolvedDisplayName = readPrivateControlString(profiles.get(userId)?.displayName);
       return resolvedDisplayName || fallback;
     } catch (error: unknown) {
       this.logger.warn(
@@ -8259,7 +8256,7 @@ export class PrivateControlService {
     const compactSingleButton = options.button
       ? {
           ...options.button,
-          text: this.compactText(options.button.text, BUTTON_TEXT_MAX_SINGLE_COLUMN),
+          text: compactPrivateText(options.button.text, BUTTON_TEXT_MAX_SINGLE_COLUMN),
         }
       : undefined;
 
@@ -8268,7 +8265,7 @@ export class PrivateControlService {
         row.length >= 2 ? BUTTON_TEXT_MAX_TWO_COLUMNS : BUTTON_TEXT_MAX_SINGLE_COLUMN;
       return row.map((button) => ({
         ...button,
-        text: this.compactText(button.text, maxLength),
+        text: compactPrivateText(button.text, maxLength),
       }));
     });
 
@@ -8458,7 +8455,7 @@ export class PrivateControlService {
   ): MaxMessageButton {
     return {
       type: 'callback',
-      text: this.compactText(text, 48),
+      text: compactPrivateText(text, 48),
       payload,
       intent,
     };
@@ -9058,20 +9055,20 @@ export class PrivateControlService {
   }
 
   private extractBotStartedStartPayload(update: MaxUpdate): string | null {
-    const raw = this.asRecord(update.raw);
+    const raw = asPrivateControlRecord(update.raw);
     if (!raw) {
       return null;
     }
 
-    const data = this.asRecord(raw.data);
-    const event = this.asRecord(raw.event);
+    const data = asPrivateControlRecord(raw.data);
+    const event = asPrivateControlRecord(raw.event);
     const candidates = [
       raw,
-      this.asRecord(raw.bot_started),
+      asPrivateControlRecord(raw.bot_started),
       data,
-      data ? this.asRecord(data.bot_started) : null,
+      data ? asPrivateControlRecord(data.bot_started) : null,
       event,
-      event ? this.asRecord(event.bot_started) : null,
+      event ? asPrivateControlRecord(event.bot_started) : null,
     ];
 
     for (const candidate of candidates) {
@@ -9143,7 +9140,7 @@ export class PrivateControlService {
       };
     }
 
-    const user = this.asRecord(callback.user);
+    const user = asPrivateControlRecord(callback.user);
     if (!user) {
       return {
         userId: null,
@@ -9152,7 +9149,7 @@ export class PrivateControlService {
     }
 
     const userId = this.normalizeUserId(user.user_id ?? user.userId ?? user.id);
-    const displayName = this.readString(
+    const displayName = readPrivateControlString(
       user.display_name ??
         user.displayName ??
         user.name ??
@@ -9168,10 +9165,10 @@ export class PrivateControlService {
       };
     }
 
-    const firstName = this.readString(
+    const firstName = readPrivateControlString(
       user.first_name ?? user.firstName ?? user.given_name ?? user.givenName,
     );
-    const lastName = this.readString(
+    const lastName = readPrivateControlString(
       user.last_name ?? user.lastName ?? user.family_name ?? user.familyName,
     );
 
@@ -9184,20 +9181,20 @@ export class PrivateControlService {
   }
 
   private extractCallbackNode(update: MaxUpdate): Record<string, unknown> | null {
-    const raw = this.asRecord(update.raw);
+    const raw = asPrivateControlRecord(update.raw);
     if (!raw) {
       return null;
     }
 
-    const data = this.asRecord(raw.data);
-    const event = this.asRecord(raw.event);
+    const data = asPrivateControlRecord(raw.data);
+    const event = asPrivateControlRecord(raw.event);
     const candidates = [
-      this.asRecord(raw.callback),
-      this.asRecord(raw.message_callback),
-      data ? this.asRecord(data.callback) : null,
-      data ? this.asRecord(data.message_callback) : null,
-      event ? this.asRecord(event.callback) : null,
-      event ? this.asRecord(event.message_callback) : null,
+      asPrivateControlRecord(raw.callback),
+      asPrivateControlRecord(raw.message_callback),
+      data ? asPrivateControlRecord(data.callback) : null,
+      data ? asPrivateControlRecord(data.message_callback) : null,
+      event ? asPrivateControlRecord(event.callback) : null,
+      event ? asPrivateControlRecord(event.message_callback) : null,
     ];
 
     for (const candidate of candidates) {
@@ -9205,7 +9202,7 @@ export class PrivateControlService {
         continue;
       }
 
-      const nested = this.asRecord(candidate.callback);
+      const nested = asPrivateControlRecord(candidate.callback);
       if (nested) {
         return nested;
       }
@@ -9495,42 +9492,6 @@ export class PrivateControlService {
     });
   }
 
-  private normalizePendingInput(raw: unknown): PendingInput | null {
-    return normalizePrivateControlPendingInput(raw);
-  }
-
-  private parseSettingFieldType(value: string | undefined): SettingFieldType | null {
-    return parsePrivateControlSettingFieldType(value);
-  }
-
-  private normalizePendingMassAction(raw: unknown): PendingMassAction | null {
-    return normalizePrivateControlPendingMassAction(raw);
-  }
-
-  private parseScreen(value: unknown): PrivateScreen {
-    return parsePrivateControlScreen(value);
-  }
-
-  private parseEntityType(value: unknown): ManagedEntityType | null {
-    return parsePrivateControlEntityType(value);
-  }
-
-  private parseUiMode(_value: unknown): PrivateUiMode {
-    return parsePrivateControlUiMode(_value);
-  }
-
-  private parseHomeTab(value: unknown): PrivateHomeTab {
-    return parsePrivateControlHomeTab(value);
-  }
-
-  private parseSectionView(value: unknown): PrivateSectionView {
-    return parsePrivateControlSectionView(value);
-  }
-
-  private parseBroadcastView(value: unknown): PrivateBroadcastView {
-    return parsePrivateControlBroadcastView(value);
-  }
-
   private sessionKey(userId: string): string {
     return this.sessionStore.sessionKey(userId);
   }
@@ -9569,140 +9530,4 @@ export class PrivateControlService {
     return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
   }
 
-  private toPositiveInt(value: unknown, fallback: number): number {
-    return toPrivateControlPositiveInt(value, fallback);
-  }
-
-  private paginate<T>(items: T[], rawPage: number, pageSize: number) {
-    const pages = Math.max(1, Math.ceil(items.length / pageSize));
-    const page = Math.max(1, Math.min(pages, rawPage));
-    const start = (page - 1) * pageSize;
-    const end = Math.min(start + pageSize, items.length);
-
-    return {
-      items: items.slice(start, end),
-      page,
-      pages,
-      start,
-      end,
-    };
-  }
-
-  private limitMessageText(text: string): string {
-    const trimmed = text.trim();
-    if (!trimmed) {
-      return ' ';
-    }
-
-    if (trimmed.length <= 4000) {
-      return trimmed;
-    }
-
-    const hardLimit = 3990;
-    const chunk = trimmed.slice(0, hardLimit);
-    const newlineIndex = chunk.lastIndexOf('\n');
-    if (newlineIndex > 120) {
-      return `${chunk.slice(0, newlineIndex).trimEnd()}\n...`;
-    }
-
-    return `${chunk.trimEnd()}...`;
-  }
-
-  private formatAllowlistEntryLabel(entry: {
-    domain: string;
-    matchType: 'EXACT' | 'DOMAIN';
-  }): string {
-    return entry.matchType === 'DOMAIN' ? `${entry.domain} [домен]` : `${entry.domain} [ссылка]`;
-  }
-
-  private compactText(value: string, maxLength: number): string {
-    return compactPrivateText(value, maxLength);
-  }
-
-  private markdownTitle(title: string): string {
-    return privateMarkdownTitle(title);
-  }
-
-  private escapeMarkdown(value: string): string {
-    return escapePrivateMarkdown(value);
-  }
-
-  private formatIsoDate(iso: string, timeZone?: string | null): string {
-    const date = new Date(iso);
-    if (Number.isNaN(date.getTime())) {
-      return iso;
-    }
-
-    const formatterOptions: Intl.DateTimeFormatOptions = {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-      ...(timeZone?.trim() ? { timeZone: timeZone.trim() } : {}),
-    };
-
-    try {
-      return new Intl.DateTimeFormat('ru-RU', formatterOptions).format(date);
-    } catch {
-      return new Intl.DateTimeFormat('ru-RU', {
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-      }).format(date);
-    }
-  }
-
-  private formatDateTimeLabel(iso: string | null, timeZone?: string | null): string {
-    if (!iso) {
-      return 'не задано';
-    }
-
-    return this.formatIsoDate(iso, timeZone);
-  }
-
-  private asRecord(value: unknown): Record<string, unknown> | null {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return null;
-    }
-
-    return value as Record<string, unknown>;
-  }
-
-  private readLowerString(value: unknown): string | null {
-    if (typeof value !== 'string') {
-      return null;
-    }
-
-    const normalized = value.trim().toLowerCase();
-    return normalized.length > 0 ? normalized : null;
-  }
-
-  private readString(value: unknown): string | null {
-    if (typeof value !== 'string') {
-      return null;
-    }
-
-    const normalized = value.trim();
-    return normalized.length > 0 ? normalized : null;
-  }
-
-  private readOptionalInteger(value: unknown): number | null {
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      return Math.trunc(value);
-    }
-
-    if (typeof value === 'string' && value.trim()) {
-      const parsed = Number.parseInt(value, 10);
-      if (Number.isFinite(parsed)) {
-        return parsed;
-      }
-    }
-
-    return null;
-  }
 }
