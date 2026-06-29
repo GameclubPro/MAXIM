@@ -241,6 +241,7 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
           retryingPostId={state.retryingPostId}
           draftText={state.draftText}
           selectedPhotoUrls={state.selectedPhotoUrls}
+          selectedVideoUrls={state.selectedVideoUrls}
           selectedLinkUrls={state.selectedLinkUrls}
           onStartEditing={state.startEditing}
           onCancelEditing={state.cancelEditing}
@@ -248,6 +249,7 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
           onRetryPost={state.retryPost}
           onDraftTextChange={state.setDraftText}
           onTogglePhoto={state.togglePhoto}
+          onToggleVideo={state.toggleVideo}
           onToggleLink={state.toggleLink}
         />
 

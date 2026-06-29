@@ -1,4 +1,4 @@
-import { VK_PARSING_MAX_LINKS, VK_PARSING_MAX_PHOTOS } from '@maxim/contracts';
+import { VK_PARSING_MAX_LINKS, VK_PARSING_MAX_PHOTOS, VK_PARSING_MAX_VIDEOS } from '@maxim/contracts';
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { Prisma } from '../prisma/prisma-client';
@@ -26,6 +26,7 @@ export type VkParsingNormalizedPostForImport = {
   text: string;
   url: string;
   photoUrls: string[];
+  videoUrls: string[];
   linkUrls: string[];
   attachments: unknown[];
   attachmentTypes: string[];
@@ -211,6 +212,7 @@ export class VkParsingPostImportRepository {
         ${post.text},
         ${post.url},
         ${this.toJsonbSql(post.photoUrls.slice(0, VK_PARSING_MAX_PHOTOS))},
+        ${this.toJsonbSql(post.videoUrls.slice(0, VK_PARSING_MAX_VIDEOS))},
         ${this.toJsonbSql(post.linkUrls.slice(0, VK_PARSING_MAX_LINKS))},
         ${this.toJsonbSql(post.attachments)},
         ${this.toJsonbSql(post.attachmentTypes)},
@@ -238,6 +240,7 @@ export class VkParsingPostImportRepository {
         "text",
         "url",
         "photo_urls",
+        "video_urls",
         "link_urls",
         "attachments",
         "attachment_types",
@@ -260,6 +263,7 @@ export class VkParsingPostImportRepository {
         "text" = EXCLUDED."text",
         "url" = EXCLUDED."url",
         "photo_urls" = EXCLUDED."photo_urls",
+        "video_urls" = EXCLUDED."video_urls",
         "link_urls" = EXCLUDED."link_urls",
         "attachments" = EXCLUDED."attachments",
         "attachment_types" = EXCLUDED."attachment_types",

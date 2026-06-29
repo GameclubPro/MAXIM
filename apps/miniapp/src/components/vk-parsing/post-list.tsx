@@ -9,6 +9,7 @@ type PostListProps = {
   retryingPostId: string | null;
   draftText: string;
   selectedPhotoUrls: string[];
+  selectedVideoUrls: string[];
   selectedLinkUrls: string[];
   onStartEditing: (post: VkParsingPost) => void;
   onCancelEditing: () => void;
@@ -16,6 +17,7 @@ type PostListProps = {
   onRetryPost: (postId: string) => void;
   onDraftTextChange: (value: string) => void;
   onTogglePhoto: (url: string) => void;
+  onToggleVideo: (url: string) => void;
   onToggleLink: (url: string) => void;
 };
 
@@ -27,6 +29,7 @@ export function PostList({
   retryingPostId,
   draftText,
   selectedPhotoUrls,
+  selectedVideoUrls,
   selectedLinkUrls,
   onStartEditing,
   onCancelEditing,
@@ -34,6 +37,7 @@ export function PostList({
   onRetryPost,
   onDraftTextChange,
   onTogglePhoto,
+  onToggleVideo,
   onToggleLink,
 }: PostListProps) {
   if (posts.length === 0) {
@@ -52,6 +56,7 @@ export function PostList({
           isRetrying={retryingPostId === post.id}
           draftText={draftText}
           selectedPhotoUrls={selectedPhotoUrls}
+          selectedVideoUrls={selectedVideoUrls}
           selectedLinkUrls={selectedLinkUrls}
           onStartEditing={onStartEditing}
           onCancelEditing={onCancelEditing}
@@ -59,6 +64,7 @@ export function PostList({
           onRetryPost={onRetryPost}
           onDraftTextChange={onDraftTextChange}
           onTogglePhoto={onTogglePhoto}
+          onToggleVideo={onToggleVideo}
           onToggleLink={onToggleLink}
         />
       ))}

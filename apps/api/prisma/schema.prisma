@@ -1619,6 +1619,7 @@ model VkParsingPost {
   text                      String    @default("")
   url                       String
   photoUrls                 Json      @default("[]") @map("photo_urls")
+  videoUrls                 Json      @default("[]") @map("video_urls")
   linkUrls                  Json      @default("[]") @map("link_urls")
   attachments               Json      @default("[]")
   attachmentTypes           Json      @default("[]") @map("attachment_types")

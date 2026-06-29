@@ -350,6 +350,7 @@ export class VkParsingFeedService {
       text: post.text,
       url: post.url,
       photoUrls: this.readStringArray(post.photoUrls),
+      videoUrls: this.readStringArray(post.videoUrls),
       linkUrls: this.readStringArray(post.linkUrls),
       attachmentTypes: this.readStringArray(post.attachmentTypes),
       unsupportedAttachments: this.readUnsupportedAttachments(post.unsupportedAttachments),

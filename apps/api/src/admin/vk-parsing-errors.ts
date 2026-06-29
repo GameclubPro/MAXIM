@@ -127,7 +127,9 @@ export function classifyVkParsingPublishError(error: unknown): VkParsingErrorCla
   }
   if (
     normalized.includes('фото') ||
+    normalized.includes('видео') ||
     normalized.includes('image') ||
+    normalized.includes('video') ||
     normalized.includes('attachment') ||
     normalized.includes('vk вернул')
   ) {

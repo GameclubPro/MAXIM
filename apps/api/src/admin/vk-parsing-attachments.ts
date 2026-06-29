@@ -15,15 +15,25 @@ export type VkParsingPhotoMediaIdentity = {
   candidateUrls: string[];
 };
 
+export type VkParsingVideoMediaIdentity = {
+  url: string;
+  mediaIdentity: string;
+  candidateUrls: string[];
+  title: string | null;
+  durationSec: number | null;
+};
+
 export type VkParsingAttachmentRegistryResult = {
   attachmentTypes: string[];
   photoUrls: string[];
+  videoUrls: string[];
   linkUrls: string[];
   unsupportedAttachments: VkParsingUnsupportedAttachmentSummary[];
   hasUnsupportedAttachments: boolean;
   advertisingMarkers: string[];
   isAdvertising: boolean;
   photoMedia: VkParsingPhotoMediaIdentity[];
+  videoMedia: VkParsingVideoMediaIdentity[];
   copyHistoryText: string[];
 };
 
@@ -81,6 +91,7 @@ export function parseVkWallPostAttachments(params: {
   return {
     attachmentTypes: [...accumulator.attachmentTypes],
     photoUrls: [...accumulator.photoUrls.keys()].slice(0, params.maxPhotos),
+    videoUrls: [...accumulator.videoUrls.keys()],
     linkUrls: [...accumulator.linkUrls].slice(0, params.maxLinks),
     unsupportedAttachments: [...accumulator.unsupportedByKey.values()],
     hasUnsupportedAttachments: accumulator.unsupportedByKey.size > 0,
@@ -90,6 +101,13 @@ export function parseVkWallPostAttachments(params: {
       url,
       mediaIdentity,
       candidateUrls: accumulator.photoCandidateUrlsByIdentity.get(mediaIdentity) ?? [url],
+    })),
+    videoMedia: [...accumulator.videoUrls.entries()].map(([url, video]) => ({
+      url,
+      mediaIdentity: video.mediaIdentity,
+      candidateUrls: video.candidateUrls,
+      title: video.title,
+      durationSec: video.durationSec,
     })),
     copyHistoryText: accumulator.copyHistoryText,
   };
@@ -126,6 +144,15 @@ function createAttachmentAccumulator(maxPhotos: number, maxLinks: number) {
     attachmentTypes: new Set<string>(),
     photoUrls: new Map<string, string>(),
     photoCandidateUrlsByIdentity: new Map<string, string[]>(),
+    videoUrls: new Map<
+      string,
+      {
+        mediaIdentity: string;
+        candidateUrls: string[];
+        title: string | null;
+        durationSec: number | null;
+      }
+    >(),
     linkUrls: new Set<string>(),
     unsupportedByKey: new Map<string, VkParsingUnsupportedAttachmentSummary>(),
     copyHistoryText: [] as string[],
@@ -148,6 +175,10 @@ function collectAttachments(params: {
 
     if (type === 'photo') {
       collectPhotoAttachment(attachment, params.accumulator);
+      continue;
+    }
+    if (type === 'video') {
+      collectVideoAttachment(attachment, params.accumulator);
       continue;
     }
     if (type === 'link') {
@@ -225,6 +256,72 @@ function collectPhotoAttachment(
   );
 }
 
+function collectVideoAttachment(
+  attachment: Record<string, unknown>,
+  accumulator: ReturnType<typeof createAttachmentAccumulator>,
+): void {
+  const video = asRecord(attachment.video);
+  const candidates = collectVideoCandidateUrls(video);
+  const best = candidates[0];
+  if (!video || !best) {
+    collectUnsupportedAttachment(
+      'video',
+      attachment,
+      accumulator,
+      'Нет прямого HTTPS-файла видео',
+    );
+    return;
+  }
+
+  if (accumulator.videoUrls.size >= 1 && !accumulator.videoUrls.has(best.url)) {
+    collectUnsupportedAttachment(
+      'video',
+      attachment,
+      accumulator,
+      'Поддерживается только одно видео в VK-посте',
+    );
+    return;
+  }
+
+  const mediaIdentity = resolveVideoMediaIdentity(video, best.url);
+  accumulator.videoUrls.set(best.url, {
+    mediaIdentity,
+    candidateUrls: uniqueStrings(candidates.map((candidate) => candidate.url)),
+    title: readString(video.title) || null,
+    durationSec: readNumber(video.duration),
+  });
+}
+
+function collectVideoCandidateUrls(video: Record<string, unknown> | null): Array<{
+  url: string;
+  rank: number;
+}> {
+  const files = asRecord(video?.files);
+  if (!files) {
+    return [];
+  }
+
+  return Object.entries(files)
+    .map(([key, value]) => ({
+      url: normalizeHttpsUrl(readString(value)),
+      rank: resolveVkVideoFileRank(key),
+    }))
+    .filter(
+      (candidate): candidate is { url: string; rank: number } =>
+        Boolean(candidate.url) && candidate.rank > 0,
+    )
+    .sort((left, right) => right.rank - left.rank);
+}
+
+function resolveVkVideoFileRank(key: string): number {
+  const normalized = key.trim().toLowerCase();
+  const match = normalized.match(/^mp4_(\d+)$/u);
+  if (match) {
+    return Number(match[1]);
+  }
+  return -1;
+}
+
 function collectLinkAttachment(
   attachment: Record<string, unknown>,
   accumulator: ReturnType<typeof createAttachmentAccumulator>,
@@ -278,6 +375,17 @@ function resolvePhotoMediaIdentity(photo: Record<string, unknown> | null, url: s
   }
 
   return `vk-photo-url:${createHash('sha256').update(url).digest('hex').slice(0, 24)}`;
+}
+
+function resolveVideoMediaIdentity(video: Record<string, unknown>, url: string): string {
+  const ownerId = readNumber(video.owner_id);
+  const id = readNumber(video.id);
+  const accessKey = readString(video.access_key);
+  if (typeof ownerId === 'number' && typeof id === 'number') {
+    return ['vk-video', ownerId, id, accessKey].filter((part) => String(part).length > 0).join(':');
+  }
+
+  return `vk-video-url:${createHash('sha256').update(url).digest('hex').slice(0, 24)}`;
 }
 
 function extractAttachmentText(attachments: Array<Record<string, unknown>>): string[] {
@@ -350,6 +458,11 @@ function normalizeHttpUrl(value: string): string {
   } catch {
     return '';
   }
+}
+
+function normalizeHttpsUrl(value: string): string {
+  const url = normalizeHttpUrl(value);
+  return url.startsWith('https://') ? url : '';
 }
 
 function uniqueStrings(values: string[]): string[] {

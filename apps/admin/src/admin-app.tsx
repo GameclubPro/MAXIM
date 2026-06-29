@@ -4,6 +4,7 @@ import {
   Clock,
   Download,
   Lock,
+  Play as PlayIcon,
   Refresh,
   Search,
   WarningTriangle,
@@ -44,6 +45,7 @@ type ModerationItem = {
   text: string;
   domains: string[];
   photoUrls: string[];
+  videoUrls: string[];
   linkUrls: string[];
   originalUrl: string | null;
   reasons: string[];
@@ -913,9 +915,31 @@ function PublicationPreview({ item }: { item: ModerationItem }) {
         </div>
       )}
 
-      {(item.photoUrls.length > 0 || item.originalUrl || item.linkUrls.length > 0) && (
+      {item.videoUrls.length > 0 && (
+        <div className="media-grid" aria-label="Видео публикации">
+          {item.videoUrls.map((videoUrl, index) => (
+            <a
+              className="media-tile media-tile--video"
+              href={videoUrl}
+              key={`${videoUrl}-${index}`}
+              target="_blank"
+              rel="noreferrer"
+              aria-label={`Открыть видео ${index + 1}`}
+            >
+              <PlayIcon />
+              <span>{index + 1}</span>
+            </a>
+          ))}
+        </div>
+      )}
+
+      {(item.photoUrls.length > 0 ||
+        item.videoUrls.length > 0 ||
+        item.originalUrl ||
+        item.linkUrls.length > 0) && (
         <div className="attachment-preview">
           {item.photoUrls.length > 0 && <span>Фото: {item.photoUrls.length}</span>}
+          {item.videoUrls.length > 0 && <span>Видео: {item.videoUrls.length}</span>}
           {item.linkUrls.map((linkUrl) => (
             <a href={linkUrl} key={linkUrl} target="_blank" rel="noreferrer">
               {formatLinkLabel(linkUrl)}
@@ -1125,6 +1149,7 @@ function mapQueueItem(item: SafetyDeskQueueItem): ModerationItem {
     text: item.text,
     domains: item.domains,
     photoUrls: item.photoUrls,
+    videoUrls: item.videoUrls,
     linkUrls: item.linkUrls,
     originalUrl: item.originalUrl,
     reasons: item.reasons,

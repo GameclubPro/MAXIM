@@ -209,6 +209,7 @@ export class SafetyDeskService {
         OR: [
           { text: { not: '' } },
           { photoUrls: { not: [] } },
+          { videoUrls: { not: [] } },
           { linkUrls: { not: [] } },
         ],
         source: {
@@ -270,12 +271,13 @@ export class SafetyDeskService {
 
   private mapReviewPost(post: ReviewPostRow): SafetyDeskQueueItem {
     const photoUrls = this.readStringArray(post.photoUrls);
+    const videoUrls = this.readStringArray(post.videoUrls);
     const linkUrls = this.readStringArray(post.linkUrls);
-    const prepared = this.preparePublishPayload(post, photoUrls, linkUrls);
+    const prepared = this.preparePublishPayload(post, photoUrls, videoUrls, linkUrls);
     const domains = this.extractDomains([post.url, ...linkUrls]);
-    const risk = this.resolveRisk(post, prepared, domains, photoUrls);
-    const reasons = this.buildReasons(post, prepared, domains, photoUrls);
-    const checks = this.buildChecks(post, prepared, domains);
+    const risk = this.resolveRisk(post, prepared, domains, photoUrls, videoUrls);
+    const reasons = this.buildReasons(post, prepared, domains, photoUrls, videoUrls);
+    const checks = this.buildChecks(post, prepared, domains, photoUrls, videoUrls);
     const status =
       risk === 'BLOCKED' || checks.some((check) => check.state === 'BLOCKED')
         ? 'BLOCKED'
@@ -295,6 +297,7 @@ export class SafetyDeskService {
       text: post.text,
       domains,
       photoUrls,
+      videoUrls,
       linkUrls,
       originalUrl: post.url || null,
       scheduledAt: post.publishScheduledAt ? post.publishScheduledAt.toISOString() : null,
@@ -310,6 +313,7 @@ export class SafetyDeskService {
     prepared: PreparedVkPublishPayload | null,
     domains: string[],
     photoUrls: string[],
+    videoUrls: string[],
   ): string[] {
     const reasons = ['Источник настроен на ручную проверку перед публикацией'];
 
@@ -321,14 +325,14 @@ export class SafetyDeskService {
     if (domains.length > 0) {
       reasons.push('Найдены внешние ссылки');
     }
-    if (photoUrls.length > 0) {
-      reasons.push(`Медиа вложения: ${photoUrls.length}`);
+    if (photoUrls.length > 0 || videoUrls.length > 0) {
+      reasons.push(`Медиа вложения: ${photoUrls.length + videoUrls.length}`);
     }
     if (post.hasUnsupportedAttachments) {
       reasons.push('Есть вложения, которые нельзя безопасно перенести автоматически');
     }
     if (!prepared) {
-      reasons.push('После правил публикации не осталось текста, фото или ссылок');
+      reasons.push('После правил публикации не осталось текста, фото, видео или ссылок');
     }
     if (post.isAdvertising || this.readStringArray(post.advertisingMarkers).length > 0) {
       reasons.push('Найдены коммерческие маркеры, нужна ручная оценка');
@@ -344,6 +348,8 @@ export class SafetyDeskService {
     post: ReviewPostRow,
     prepared: PreparedVkPublishPayload | null,
     domains: string[],
+    photoUrls: string[],
+    videoUrls: string[],
   ): SafetyDeskQueueItem['checks'] {
     return [
       {
@@ -366,9 +372,16 @@ export class SafetyDeskService {
       },
       {
         label: prepared
-          ? 'Есть поддерживаемый текст, фото или ссылка'
-          : 'После правил публикации не осталось текста, фото или ссылок',
+          ? 'Есть поддерживаемый текст, фото, видео или ссылка'
+          : 'После правил публикации не осталось текста, фото, видео или ссылок',
         state: prepared ? 'PASSED' : 'BLOCKED',
+      },
+      {
+        label:
+          photoUrls.length > 0 && videoUrls.length > 0
+            ? 'В одном VK-посте нельзя безопасно смешать фото и видео'
+            : 'Формат медиа пригоден для публикации',
+        state: photoUrls.length > 0 && videoUrls.length > 0 ? 'BLOCKED' : 'PASSED',
       },
       {
         label: post.hasUnsupportedAttachments
@@ -407,6 +420,7 @@ export class SafetyDeskService {
     prepared: PreparedVkPublishPayload | null,
     domains: string[],
     photoUrls: string[],
+    videoUrls: string[],
   ): SafetyDeskRiskLevel {
     if (!prepared || post.status === VK_POST_STATUS_FAILED || post.lastError) {
       return 'BLOCKED';
@@ -417,7 +431,7 @@ export class SafetyDeskService {
     if (post.isAdvertising || this.readStringArray(post.advertisingMarkers).length > 0) {
       return 'HIGH';
     }
-    if (domains.length > 0 || photoUrls.length > 0) {
+    if (domains.length > 0 || photoUrls.length > 0 || videoUrls.length > 0) {
       return 'MEDIUM';
     }
     return 'LOW';
@@ -482,6 +496,7 @@ export class SafetyDeskService {
     reason: string | null,
   ): Promise<void> {
     const photoUrls = this.readStringArray(post.photoUrls);
+    const videoUrls = this.readStringArray(post.videoUrls);
     const linkUrls = this.readStringArray(post.linkUrls);
     const result = await this.vkPublishService.publishPost(
       post.chatId,
@@ -490,6 +505,7 @@ export class SafetyDeskService {
       {
         text: post.text,
         photoUrls,
+        videoUrls,
         linkUrls,
       },
     );
@@ -508,6 +524,7 @@ export class SafetyDeskService {
       this.preparePublishPayload(
         post,
         this.readStringArray(post.photoUrls),
+        this.readStringArray(post.videoUrls),
         this.readStringArray(post.linkUrls),
       ),
     );
@@ -516,6 +533,7 @@ export class SafetyDeskService {
   private preparePublishPayload(
     post: ReviewPostRow,
     photoUrls: string[],
+    videoUrls: string[],
     linkUrls: string[],
   ): PreparedVkPublishPayload | null {
     const settings = this.resolveVkParsingSettings(post);
@@ -523,6 +541,7 @@ export class SafetyDeskService {
       {
         text: post.text,
         photoUrls,
+        videoUrls,
         linkUrls,
         attachments: this.readRecords(post.attachments),
         raw: this.asRecord(post.raw) ?? {},
@@ -539,6 +558,7 @@ export class SafetyDeskService {
       {
         text: post.text,
         photoUrls,
+        videoUrls,
         linkUrls,
       },
       settings,
@@ -546,6 +566,7 @@ export class SafetyDeskService {
     if (
       prepared.text.trim().length === 0 &&
       prepared.photoUrls.length === 0 &&
+      prepared.videoUrls.length === 0 &&
       prepared.linkUrls.length === 0
     ) {
       return null;

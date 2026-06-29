@@ -27,6 +27,7 @@ describe('vk-parsing-content', () => {
       {
         text: 'Смотрите https://example.com/a\nи vk.ru/public',
         photoUrls: ['https://sun.example/photo.jpg'],
+        videoUrls: [],
         linkUrls: ['https://example.com/a'],
       },
       { stripLinksEnabled: true },
@@ -35,6 +36,7 @@ describe('vk-parsing-content', () => {
     expect(prepared).toEqual({
       text: 'Смотрите\nи',
       photoUrls: ['https://sun.example/photo.jpg'],
+      videoUrls: [],
       linkUrls: [],
     });
     expect(stripVkParsingLinksFromText('текст www.example.com  хвост')).toBe('текст хвост');
@@ -46,6 +48,7 @@ describe('vk-parsing-content', () => {
         {
           text: 'https://example.com/only-link',
           photoUrls: [],
+          videoUrls: [],
           linkUrls: ['https://example.com/only-link'],
           attachments: [],
           raw: {},
@@ -61,6 +64,7 @@ describe('vk-parsing-content', () => {
         {
           text: 'обычный текст',
           photoUrls: [],
+          videoUrls: [],
           linkUrls: [],
           attachments: [],
           raw: {},
@@ -75,6 +79,7 @@ describe('vk-parsing-content', () => {
         {
           text: 'обычный текст',
           photoUrls: [],
+          videoUrls: [],
           linkUrls: [],
           attachments: [],
           raw: { marked_as_ads: 1 },
@@ -90,7 +95,7 @@ describe('vk-parsing-content', () => {
       'Пост пропущен: после удаления ссылок не осталось содержимого.',
     );
     expect(describeVkParsingSkipReason('NO_SUPPORTED_CONTENT')).toBe(
-      'Пост пропущен: в VK-записи нет поддерживаемого текста, фото или ссылок.',
+      'Пост пропущен: в VK-записи нет поддерживаемого текста, фото, видео или ссылок.',
     );
   });
 
@@ -98,6 +103,7 @@ describe('vk-parsing-content', () => {
     const left = computeVkParsingPostContentHash({
       text: '  Пост  ',
       photoUrls: ['https://sun.example/a.jpg'],
+      videoUrls: [],
       linkUrls: ['https://example.com/a'],
       attachmentTypes: ['photo'],
       advertisingMarkers: ['erid:abc'],
@@ -105,6 +111,7 @@ describe('vk-parsing-content', () => {
     const right = computeVkParsingPostContentHash({
       text: 'Пост',
       photoUrls: ['https://sun.example/a.jpg'],
+      videoUrls: [],
       linkUrls: ['https://example.com/a'],
       attachmentTypes: ['photo'],
       advertisingMarkers: ['erid:abc'],
@@ -112,6 +119,7 @@ describe('vk-parsing-content', () => {
     const changed = computeVkParsingPostContentHash({
       text: 'Пост',
       photoUrls: ['https://sun.example/b.jpg'],
+      videoUrls: [],
       linkUrls: ['https://example.com/a'],
       attachmentTypes: ['photo'],
       advertisingMarkers: ['erid:abc'],

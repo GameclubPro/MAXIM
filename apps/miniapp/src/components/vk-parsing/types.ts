@@ -4,6 +4,7 @@ export type PublishPayload = {
   postId: string;
   text: string;
   photoUrls: string[];
+  videoUrls: string[];
   linkUrls: string[];
 };
 

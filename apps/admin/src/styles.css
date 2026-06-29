@@ -643,6 +643,22 @@ button:disabled {
   object-fit: cover;
 }
 
+.media-tile--video {
+  display: grid;
+  place-items: center;
+  color: #ffffff;
+  text-decoration: none;
+  background:
+    linear-gradient(135deg, rgba(17, 24, 39, 0.88), rgba(31, 41, 55, 0.7)),
+    #374151;
+}
+
+.media-tile--video svg {
+  width: 38px;
+  height: 38px;
+  filter: drop-shadow(0 8px 18px rgba(17, 24, 39, 0.28));
+}
+
 .media-tile span {
   position: absolute;
   top: 7px;

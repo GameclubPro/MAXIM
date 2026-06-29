@@ -9,6 +9,7 @@ export type VkParsingSkipReason = 'AD' | 'EMPTY_AFTER_LINK_FILTER' | 'NO_SUPPORT
 export type PreparedVkPublishPayload = {
   text: string;
   photoUrls: string[];
+  videoUrls: string[];
   linkUrls: string[];
 };
 
@@ -20,6 +21,7 @@ export type VkParsingContentSettings = {
 export type VkParsingPostSkipCandidate = {
   text: string;
   photoUrls: string[];
+  videoUrls?: string[];
   linkUrls: string[];
   attachments: Array<Record<string, unknown>>;
   raw: Record<string, unknown>;
@@ -30,6 +32,7 @@ export type VkParsingPostSkipCandidate = {
 export type VkParsingPostContentHashInput = {
   text: string;
   photoUrls: string[];
+  videoUrls?: string[];
   linkUrls: string[];
   attachmentTypes?: string[];
   unsupportedAttachments?: VkParsingUnsupportedAttachmentSummary[];
@@ -63,6 +66,7 @@ export function prepareVkParsingPublishPayload(
   return {
     text: composeVkParsingPublishText(text, linkUrls),
     photoUrls: payload.photoUrls,
+    videoUrls: payload.videoUrls,
     linkUrls,
   };
 }
@@ -89,6 +93,7 @@ export function resolveVkParsingPostSkipReason(
   if (
     settings.stripLinksEnabled &&
     post.photoUrls.length === 0 &&
+    (post.videoUrls?.length ?? 0) === 0 &&
     stripVkParsingLinksFromText(post.text).length === 0 &&
     (post.linkUrls.length > 0 || hasVkParsingInlineLinks(post.text))
   ) {
@@ -125,7 +130,7 @@ export function describeVkParsingSkipReason(reason: VkParsingSkipReason): string
     return 'Пост пропущен фильтром рекламы.';
   }
   if (reason === VK_POST_SKIP_REASON_NO_SUPPORTED_CONTENT) {
-    return 'Пост пропущен: в VK-записи нет поддерживаемого текста, фото или ссылок.';
+    return 'Пост пропущен: в VK-записи нет поддерживаемого текста, фото, видео или ссылок.';
   }
 
   return 'Пост пропущен: после удаления ссылок не осталось содержимого.';
@@ -137,6 +142,7 @@ export function computeVkParsingPostContentHash(params: VkParsingPostContentHash
       JSON.stringify({
         text: params.text.trim(),
         photoUrls: params.photoUrls,
+        videoUrls: params.videoUrls ?? [],
         linkUrls: params.linkUrls,
         attachmentTypes: params.attachmentTypes ?? [],
         unsupportedAttachments: params.unsupportedAttachments ?? [],

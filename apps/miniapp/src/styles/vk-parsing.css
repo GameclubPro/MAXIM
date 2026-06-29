@@ -1280,6 +1280,46 @@
   max-height: 260px;
 }
 
+.vk-parsing-post-card__video {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--vk-line);
+  border-radius: var(--vk-radius);
+  color: var(--vk-ink);
+  background: linear-gradient(135deg, rgba(10, 124, 255, 0.1), rgba(22, 128, 96, 0.1));
+  text-decoration: none;
+}
+
+.vk-parsing-post-card__video span {
+  width: 42px;
+  height: 42px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  background: var(--vk-accent);
+}
+
+.vk-parsing-post-card__video svg {
+  width: 20px;
+  height: 20px;
+}
+
+.vk-parsing-post-card__video strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--vk-ink);
+  font-size: 13px;
+  font-weight: 820;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .vk-parsing-post-card__photo em {
   position: absolute;
   inset: 0;
@@ -1385,6 +1425,11 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.vk-parsing-editor__videos {
+  display: grid;
+  gap: 5px;
+}
+
 .vk-parsing-photo-choice {
   border: 2px solid transparent;
   padding: 2px;
@@ -1411,6 +1456,48 @@
   border-radius: 999px;
   color: #fff;
   background: rgba(23, 32, 51, 0.68);
+}
+
+.vk-parsing-video-choice {
+  min-width: 0;
+  min-height: 42px;
+  border: 1px solid var(--vk-line);
+  border-radius: var(--vk-radius);
+  padding: 8px 10px;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  color: #253047;
+  background: rgba(78, 98, 122, 0.07);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 760;
+  text-align: left;
+  cursor: pointer;
+}
+
+.vk-parsing-video-choice.is-selected {
+  border-color: var(--vk-accent);
+  color: var(--vk-accent-dark);
+  background: var(--vk-accent-soft);
+}
+
+.vk-parsing-video-choice:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
+.vk-parsing-video-choice svg {
+  width: 18px;
+  height: 18px;
+}
+
+.vk-parsing-video-choice span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .vk-parsing-link-choice {

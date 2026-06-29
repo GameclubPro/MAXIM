@@ -9,6 +9,7 @@ import {
   parseVkWallPostAttachments,
   type VkParsingPhotoMediaIdentity,
   type VkParsingUnsupportedAttachmentSummary,
+  type VkParsingVideoMediaIdentity,
 } from './vk-parsing-attachments';
 import { computeVkParsingPostContentHash } from './vk-parsing-content';
 import {
@@ -41,6 +42,7 @@ type NormalizedVkPost = {
   text: string;
   url: string;
   photoUrls: string[];
+  videoUrls: string[];
   linkUrls: string[];
   attachments: Array<Record<string, unknown>>;
   attachmentTypes: string[];
@@ -49,6 +51,7 @@ type NormalizedVkPost = {
   isAdvertising: boolean;
   advertisingMarkers: string[];
   photoMedia: VkParsingPhotoMediaIdentity[];
+  videoMedia: VkParsingVideoMediaIdentity[];
   copyHistoryText: string[];
   raw: Record<string, unknown>;
   contentHash: string;
@@ -582,10 +585,13 @@ export class VkSyncService {
       maxPhotos: VK_PARSING_MAX_PHOTOS,
       maxLinks: VK_PARSING_MAX_LINKS,
     });
-    const { photoUrls, linkUrls } = parsedAttachments;
+    const { videoUrls, linkUrls } = parsedAttachments;
+    const photoUrls = videoUrls.length > 0 ? [] : parsedAttachments.photoUrls;
+    const photoMedia = videoUrls.length > 0 ? [] : parsedAttachments.photoMedia;
     if (
       !text.trim() &&
       photoUrls.length === 0 &&
+      videoUrls.length === 0 &&
       linkUrls.length === 0 &&
       !parsedAttachments.hasUnsupportedAttachments
     ) {
@@ -605,6 +611,7 @@ export class VkSyncService {
       text,
       url: `https://vk.ru/wall${vkOwnerId}_${vkPostId}`,
       photoUrls,
+      videoUrls,
       linkUrls,
       attachments,
       attachmentTypes: parsedAttachments.attachmentTypes,
@@ -612,12 +619,14 @@ export class VkSyncService {
       hasUnsupportedAttachments: parsedAttachments.hasUnsupportedAttachments,
       isAdvertising: parsedAttachments.isAdvertising,
       advertisingMarkers: parsedAttachments.advertisingMarkers,
-      photoMedia: parsedAttachments.photoMedia,
+      photoMedia,
+      videoMedia: parsedAttachments.videoMedia,
       copyHistoryText: parsedAttachments.copyHistoryText,
       raw: post,
       contentHash: computeVkParsingPostContentHash({
         text,
         photoUrls,
+        videoUrls,
         linkUrls,
         attachmentTypes: parsedAttachments.attachmentTypes,
         unsupportedAttachments: parsedAttachments.unsupportedAttachments,

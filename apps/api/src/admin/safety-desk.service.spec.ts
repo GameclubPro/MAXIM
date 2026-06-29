@@ -13,6 +13,7 @@ function createReviewPost(overrides: Record<string, unknown> = {}) {
     text: 'Проверяем публикацию\nhttps://example.com/post',
     url: 'https://vk.ru/wall-36819802_101',
     photoUrls: ['https://cdn.example.com/photo.jpg'],
+    videoUrls: [],
     linkUrls: ['https://example.com/post'],
     attachments: [],
     attachmentTypes: ['photo'],
@@ -103,6 +104,7 @@ describe('SafetyDeskService', () => {
       text: expect.stringContaining('Проверяем публикацию'),
       domains: ['example.com'],
       photoUrls: ['https://cdn.example.com/photo.jpg'],
+      videoUrls: [],
       status: 'REVIEW',
     });
     expect(queue.items[0]?.checks.map((check) => check.label)).toContain(
@@ -122,6 +124,7 @@ describe('SafetyDeskService', () => {
           'https://dev.max.ru/docs',
         ],
         photoUrls: [],
+        videoUrls: [],
       }),
     ]);
 
@@ -203,6 +206,7 @@ describe('SafetyDeskService', () => {
       {
         text: post.text,
         photoUrls: ['https://cdn.example.com/photo.jpg'],
+        videoUrls: [],
         linkUrls: ['https://example.com/post'],
       },
     );
@@ -216,6 +220,39 @@ describe('SafetyDeskService', () => {
       }),
     );
     expect(result.message).toContain('опубликован');
+  });
+
+  it('keeps VK video review posts visible and passes videoUrls to publish', async () => {
+    const { prisma, service, vkPublishService } = createFixture();
+    const post = createReviewPost({
+      text: 'Видео на проверку',
+      photoUrls: [],
+      videoUrls: ['https://vkvd.example/video-720.mp4'],
+      linkUrls: [],
+      attachmentTypes: ['video'],
+    });
+    prisma.vkParsingPost.findMany.mockResolvedValue([post]);
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+
+    const queue = await service.getQueue();
+    await service.approveItem('post-1', 'maxim', {});
+
+    expect(queue.items[0]).toMatchObject({
+      id: 'post-1',
+      videoUrls: ['https://vkvd.example/video-720.mp4'],
+      status: 'REVIEW',
+    });
+    expect(vkPublishService.publishPost).toHaveBeenCalledWith(
+      'channel-1',
+      'post-1',
+      'safety-desk-owner',
+      {
+        text: 'Видео на проверку',
+        photoUrls: [],
+        videoUrls: ['https://vkvd.example/video-720.mp4'],
+        linkUrls: [],
+      },
+    );
   });
 
   it('does not approve a blocked review item', async () => {

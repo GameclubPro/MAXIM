@@ -106,8 +106,7 @@ export const MAX_BROADCAST_IMAGES = 10;
 export const MAX_BROADCAST_IMAGE_BASE64_LENGTH = 8_000_000;
 export const MAX_BROADCAST_IMAGES_TOTAL_BASE64 = 24_000_000;
 const BROADCAST_CYCLE_MAX_WINDOW_HOURS = 31 * 24;
-export const VK_PARSING_MAX_PHOTOS = 10;
-export const VK_PARSING_MAX_LINKS = 20;
+export const VK_PARSING_MAX_PHOTOS = 10, VK_PARSING_MAX_VIDEOS = 1, VK_PARSING_MAX_LINKS = 20;
 export const VK_PARSING_MAX_PUBLISH_TEXT_LENGTH = 4_000;
 export const BOT_SPEECH_MEDIA_IMAGE_BASE64_MAX_LENGTH = MAX_BROADCAST_IMAGE_BASE64_LENGTH;
 const duplicateWindowSecSchema = z.number().int().min(3_600).max(604_800);
@@ -2999,6 +2998,7 @@ export const vkParsingPostSchema = z.object({
   text: z.string(),
   url: z.string().url(),
   photoUrls: z.array(z.string().url()).max(VK_PARSING_MAX_PHOTOS).default([]),
+  videoUrls: z.array(z.string().url()).max(VK_PARSING_MAX_VIDEOS).default([]),
   linkUrls: z.array(z.string().url()).max(VK_PARSING_MAX_LINKS).default([]),
   attachmentTypes: z.array(z.string()).default([]),
   unsupportedAttachments: z.array(vkParsingUnsupportedAttachmentSchema).default([]),
@@ -3191,18 +3191,27 @@ export const publishVkParsingPostRequestSchema = z
   .object({
     text: z.string().max(VK_PARSING_MAX_PUBLISH_TEXT_LENGTH).default(''),
     photoUrls: z.array(z.string().url()).max(VK_PARSING_MAX_PHOTOS).default([]),
+    videoUrls: z.array(z.string().url()).max(VK_PARSING_MAX_VIDEOS).default([]),
     linkUrls: z.array(z.string().url()).max(VK_PARSING_MAX_LINKS).default([]),
   })
   .superRefine((value, ctx) => {
     if (
       value.text.trim().length === 0 &&
       value.photoUrls.length === 0 &&
+      value.videoUrls.length === 0 &&
       value.linkUrls.length === 0
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['text'],
-        message: 'Добавьте текст, фото или ссылку.',
+        message: 'Добавьте текст, фото, видео или ссылку.',
+      });
+    }
+    if (value.photoUrls.length > 0 && value.videoUrls.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['videoUrls'],
+        message: 'В одном VK-посте можно опубликовать либо фото, либо видео.',
       });
     }
   });
@@ -3290,6 +3299,7 @@ export const safetyDeskQueueItemSchema = z.object({
   text: z.string(),
   domains: z.array(z.string()).default([]),
   photoUrls: z.array(z.string().url()).default([]),
+  videoUrls: z.array(z.string().url()).max(VK_PARSING_MAX_VIDEOS).default([]),
   linkUrls: z.array(z.string().url()).default([]),
   originalUrl: z.string().url().nullable().default(null),
   scheduledAt: z.string().datetime().nullable().default(null),

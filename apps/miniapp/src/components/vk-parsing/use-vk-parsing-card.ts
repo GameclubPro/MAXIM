@@ -54,6 +54,7 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
   const [editingPostId, setEditingPostId] = useState<string | null>(null);
   const [draftText, setDraftText] = useState('');
   const [selectedPhotoUrls, setSelectedPhotoUrls] = useState<string[]>([]);
+  const [selectedVideoUrls, setSelectedVideoUrls] = useState<string[]>([]);
   const [selectedLinkUrls, setSelectedLinkUrls] = useState<string[]>([]);
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<VkParsingPostFilterStatus>('ALL');
@@ -265,6 +266,7 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
       publishVkParsingPost(api, entityType, chatId, payload.postId, {
         text: payload.text,
         photoUrls: payload.photoUrls,
+        videoUrls: payload.videoUrls,
         linkUrls: payload.linkUrls,
       }),
     onSuccess: () => {
@@ -288,6 +290,7 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
       updateVkParsingReviewDraft(api, entityType, chatId, payload.postId, {
         text: payload.text,
         photoUrls: payload.photoUrls,
+        videoUrls: payload.videoUrls,
         linkUrls: payload.linkUrls,
       }),
     onSuccess: (nextFeed) => {
@@ -449,9 +452,11 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
   }, [editingPost, editingPostId]);
 
   function startEditing(post: VkParsingPost) {
+    const initialVideoUrls = post.videoUrls.slice(0, 1);
     setEditingPostId(post.id);
     setDraftText(post.text);
-    setSelectedPhotoUrls(post.photoUrls);
+    setSelectedPhotoUrls(initialVideoUrls.length > 0 ? [] : post.photoUrls);
+    setSelectedVideoUrls(initialVideoUrls);
     setSelectedLinkUrls(settings.stripLinksEnabled ? [] : post.linkUrls);
   }
 
@@ -474,6 +479,7 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
       postId: editingPost.id,
       text: draftText,
       photoUrls: selectedPhotoUrls,
+      videoUrls: selectedVideoUrls,
       linkUrls: selectedLinkUrls,
     };
 
@@ -576,6 +582,7 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     editingPostId,
     draftText,
     selectedPhotoUrls,
+    selectedVideoUrls,
     selectedLinkUrls,
     publishingPostId: publishMutation.isPending
       ? (publishMutation.variables?.postId ?? null)
@@ -636,7 +643,14 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     cancelEditing: () => setEditingPostId(null),
     publishEditingPost,
     retryPost: (postId: string) => retryMutation.mutate(postId),
-    togglePhoto: (url: string) => setSelectedPhotoUrls((current) => toggleValue(current, url)),
+    togglePhoto: (url: string) => {
+      setSelectedVideoUrls([]);
+      setSelectedPhotoUrls((current) => toggleValue(current, url));
+    },
+    toggleVideo: (url: string) => {
+      setSelectedPhotoUrls([]);
+      setSelectedVideoUrls((current) => (current.includes(url) ? [] : [url]));
+    },
     toggleLink: (url: string) => setSelectedLinkUrls((current) => toggleValue(current, url)),
   };
 }

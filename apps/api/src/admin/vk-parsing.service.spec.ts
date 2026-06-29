@@ -185,6 +185,7 @@ describe('VkParsingService', () => {
     };
     const maxClient = {
       uploadImage: jest.fn(),
+      uploadVideo: jest.fn(),
       sendMessageImmediateWithResolvedLink: jest.fn(),
     };
     const maxBotLinkService = {
@@ -367,6 +368,7 @@ describe('VkParsingService', () => {
       text: 'Продам авто',
       url: 'https://vk.ru/wall-36819802_101',
       photoUrls: [],
+      videoUrls: [],
       linkUrls: [],
       attachments: [],
       attachmentTypes: [],
@@ -778,9 +780,10 @@ describe('VkParsingService', () => {
     );
   });
 
-  it('imports text, photos and links from a public VK community without videos', async () => {
+  it('imports text, direct VK videos and links from a public VK community', async () => {
     const { service, prisma, syncQueue } = createFixture();
     const source = createSource();
+    const videoUrl = 'https://vkvd.example/video-720.mp4';
     const wallPayload = {
       response: {
         groups: [{ id: 36819802, screen_name: 'avto_prodaja_rb', name: 'Авторынок Уфа' }],
@@ -806,7 +809,17 @@ describe('VkParsingService', () => {
               },
               {
                 type: 'video',
-                video: { title: 'ignored' },
+                video: {
+                  id: 42,
+                  owner_id: -36819802,
+                  title: 'Видеообзор',
+                  files: {
+                    external: 'https://vk.com/video_ext.php?oid=-36819802&id=42',
+                    hls: 'https://vkvd.example/video.m3u8',
+                    mp4_360: 'https://vkvd.example/video-360.mp4',
+                    mp4_720: videoUrl,
+                  },
+                },
               },
             ],
           },
@@ -842,8 +855,10 @@ describe('VkParsingService', () => {
     expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
     const rawValues = readExecuteRawValues(prisma);
     expect(rawValues).toContain('Продам авто');
-    expect(rawValues).toContain(JSON.stringify(['https://sun1.example/large.jpg']));
+    expect(rawValues).toContain(JSON.stringify([]));
+    expect(rawValues).toContain(JSON.stringify([videoUrl]));
     expect(rawValues).toContain(JSON.stringify(['https://example.com/car']));
+    expect(rawValues).not.toContain(JSON.stringify(['https://vk.com/video_ext.php?oid=-36819802&id=42']));
   });
 
   it('ignores wall posts whose owner does not match the source owner', async () => {
@@ -2336,6 +2351,119 @@ describe('VkParsingService', () => {
       'channel-1',
       'Текст с фото',
       expect.objectContaining({ imagePayload: { token: 'cached-token' } }),
+      {
+        botId: 'bot-1',
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+      },
+    );
+  });
+
+  it('uploads a direct VK video and publishes it as a MAX video attachment', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const source = createSource();
+    const videoUrl = 'https://vkvd.example/video-720.mp4';
+    const post = createPostRow({
+      source,
+      text: 'Видео из VK',
+      videoUrls: [videoUrl],
+      attachmentTypes: ['video'],
+      attachments: [
+        {
+          type: 'video',
+          video: {
+            id: 42,
+            owner_id: -36819802,
+            access_key: 'video-key',
+            title: 'Видеообзор',
+            duration: 12,
+            files: {
+              mp4_360: 'https://vkvd.example/video-360.mp4',
+              mp4_720: videoUrl,
+            },
+          },
+        },
+      ],
+      raw: {
+        attachments: [
+          {
+            type: 'video',
+            video: {
+              id: 42,
+              owner_id: -36819802,
+              access_key: 'video-key',
+              files: {
+                mp4_360: 'https://vkvd.example/video-360.mp4',
+                mp4_720: videoUrl,
+              },
+            },
+          },
+        ],
+      },
+    });
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      id: 'settings-1',
+      chatId: 'channel-1',
+      autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date('2026-05-25T09:00:00.000Z'),
+      stripLinksEnabled: false,
+      skipAdsEnabled: false,
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+    });
+    prisma.vkParsingPost.update.mockResolvedValue({
+      ...post,
+      status: 'PUBLISHED',
+      publishedMessageId: 'mid-1',
+      publishedUrl: 'https://max.ru/channels/channel-1/message/mid-1',
+      publishedAtMax: new Date('2026-05-25T10:05:00.000Z'),
+      autoPublishedAt: new Date('2026-05-25T10:05:00.000Z'),
+    });
+    maxClient.uploadVideo.mockResolvedValue({ token: 'video-token' });
+    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+      messageId: 'mid-1',
+      url: 'https://max.ru/channels/channel-1/message/mid-1',
+    });
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'video/mp4', 'content-length': '4' }),
+        body: { cancel: async () => undefined },
+      } satisfies MockFetchResponse)
+      .mockResolvedValueOnce({
+        ok: true,
+        headers: new Headers({ 'content-type': 'video/mp4', 'content-length': '4' }),
+        arrayBuffer: async () => new Uint8Array([1, 2, 3, 4]).buffer,
+      } satisfies MockFetchResponse) as unknown as typeof fetch;
+
+    await service.processPublishPostJob({
+      postId: 'post-1',
+      chatId: 'channel-1',
+      reason: 'autopublish',
+      idempotencyKey: 'publish-key-1',
+    });
+
+    expect(maxClient.uploadVideo).toHaveBeenCalledWith(
+      Buffer.from([1, 2, 3, 4]),
+      'video-720.mp4',
+      'video/mp4',
+      {
+        botId: 'bot-1',
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+        timeoutMs: 120_000,
+      },
+    );
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'channel-1',
+      'Видео из VK',
+      expect.objectContaining({
+        attachments: [{ type: 'video', payload: { token: 'video-token' } }],
+      }),
       {
         botId: 'bot-1',
         trafficClass: 'background',

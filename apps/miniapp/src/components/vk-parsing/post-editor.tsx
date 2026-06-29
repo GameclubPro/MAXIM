@@ -6,6 +6,7 @@ type PostEditorProps = {
   post: VkParsingPost;
   draftText: string;
   selectedPhotoUrls: string[];
+  selectedVideoUrls: string[];
   selectedLinkUrls: string[];
   stripLinksEnabled: boolean;
   isPublishing: boolean;
@@ -13,6 +14,7 @@ type PostEditorProps = {
   pendingLabel?: string;
   onDraftTextChange: (value: string) => void;
   onTogglePhoto: (url: string) => void;
+  onToggleVideo: (url: string) => void;
   onToggleLink: (url: string) => void;
   onCancel: () => void;
   onPublish: () => void;
@@ -22,6 +24,7 @@ export function PostEditor({
   post,
   draftText,
   selectedPhotoUrls,
+  selectedVideoUrls,
   selectedLinkUrls,
   stripLinksEnabled,
   isPublishing,
@@ -29,6 +32,7 @@ export function PostEditor({
   pendingLabel = 'Публикуем...',
   onDraftTextChange,
   onTogglePhoto,
+  onToggleVideo,
   onToggleLink,
   onCancel,
   onPublish,
@@ -48,12 +52,15 @@ export function PostEditor({
 
       <PostMediaPicker
         photoUrls={post.photoUrls}
+        videoUrls={post.videoUrls}
         linkUrls={post.linkUrls}
         selectedPhotoUrls={selectedPhotoUrls}
+        selectedVideoUrls={selectedVideoUrls}
         selectedLinkUrls={selectedLinkUrls}
         stripLinksEnabled={stripLinksEnabled}
         disabled={isPublishing}
         onTogglePhoto={onTogglePhoto}
+        onToggleVideo={onToggleVideo}
         onToggleLink={onToggleLink}
       />
 

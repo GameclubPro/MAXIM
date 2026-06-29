@@ -4,6 +4,7 @@ import {
   EditPencil,
   Link as IconoirLink,
   OpenNewWindow,
+  Play,
   RefreshCircle,
   ShieldCheck,
   WarningCircle,
@@ -28,6 +29,7 @@ type PostCardProps = {
   isRetrying: boolean;
   draftText: string;
   selectedPhotoUrls: string[];
+  selectedVideoUrls: string[];
   selectedLinkUrls: string[];
   onStartEditing: (post: VkParsingPost) => void;
   onCancelEditing: () => void;
@@ -35,6 +37,7 @@ type PostCardProps = {
   onRetryPost: (postId: string) => void;
   onDraftTextChange: (value: string) => void;
   onTogglePhoto: (url: string) => void;
+  onToggleVideo: (url: string) => void;
   onToggleLink: (url: string) => void;
 };
 
@@ -63,6 +66,7 @@ export function PostCard({
   isRetrying,
   draftText,
   selectedPhotoUrls,
+  selectedVideoUrls,
   selectedLinkUrls,
   onStartEditing,
   onCancelEditing,
@@ -70,6 +74,7 @@ export function PostCard({
   onRetryPost,
   onDraftTextChange,
   onTogglePhoto,
+  onToggleVideo,
   onToggleLink,
 }: PostCardProps) {
   const dateLabel = formatVkPostDate(post.vkPublishedAt);
@@ -77,6 +82,7 @@ export function PostCard({
   const publishState = formatVkPublishState(post);
   const postIssue = formatVkPostIssue(post);
   const photoCount = post.photoUrls.length;
+  const videoCount = post.videoUrls.length;
   const linkCount = post.linkUrls.length;
   const unsupportedSummary = formatUnsupportedAttachmentSummary(post);
   const visiblePhotoUrls = post.photoUrls.slice(0, 4);
@@ -148,11 +154,13 @@ export function PostCard({
           post={post}
           draftText={draftText}
           selectedPhotoUrls={selectedPhotoUrls}
+          selectedVideoUrls={selectedVideoUrls}
           selectedLinkUrls={selectedLinkUrls}
           stripLinksEnabled={settings.stripLinksEnabled}
           isPublishing={isPublishing}
           onDraftTextChange={onDraftTextChange}
           onTogglePhoto={onTogglePhoto}
+          onToggleVideo={onToggleVideo}
           onToggleLink={onToggleLink}
           onCancel={onCancelEditing}
           onPublish={onPublishEditingPost}
@@ -165,7 +173,13 @@ export function PostCard({
             value={post.text}
             className="vk-parsing-post-card__text max-markdown-preview--clamp-3"
             normalizeWhitespace
-            fallback={post.photoUrls.length > 0 ? 'Фото без текста' : 'Без текста'}
+            fallback={
+              post.photoUrls.length > 0
+                ? 'Фото без текста'
+                : videoCount > 0
+                  ? 'Видео без текста'
+                  : 'Без текста'
+            }
           />
 
           {post.photoUrls.length > 0 ? (
@@ -187,6 +201,22 @@ export function PostCard({
             </div>
           ) : null}
 
+          {videoCount > 0 ? (
+            <a
+              className="vk-parsing-post-card__video"
+              href={post.videoUrls[0]}
+              target="_blank"
+              rel="noreferrer"
+              aria-label="Открыть видео VK"
+              title="Открыть видео VK"
+            >
+              <span>
+                <Play aria-hidden />
+              </span>
+              <strong>Видео</strong>
+            </a>
+          ) : null}
+
           {isReviewMode ? (
             <div className="vk-parsing-review-state" role="status">
               <span className="vk-parsing-review-state__icon">
@@ -200,6 +230,12 @@ export function PostCard({
                 <span>
                   <Camera aria-hidden />
                   {photoCount}
+                </span>
+              ) : null}
+              {videoCount > 0 ? (
+                <span>
+                  <Play aria-hidden />
+                  {videoCount}
                 </span>
               ) : null}
               {linkCount > 0 ? (

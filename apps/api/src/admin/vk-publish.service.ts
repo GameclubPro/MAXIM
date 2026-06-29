@@ -98,6 +98,17 @@ type VkParsingPhotoPublishMedia = {
   candidateUrls: string[];
 };
 
+type VkParsingVideoPublishMedia = {
+  mediaIdentity: string | null;
+  candidateUrls: string[];
+};
+
+type VkParsingDownloadedMedia = {
+  buffer: Buffer;
+  fileName: string;
+  mimeType: string;
+};
+
 const VK_POST_STATUS_NEW = 'NEW';
 const VK_POST_STATUS_PUBLISHED = 'PUBLISHED';
 const VK_POST_STATUS_FAILED = 'FAILED';
@@ -111,6 +122,10 @@ const SAFETY_DESK_ACTOR_USER_ID = 'safety-desk-owner';
 const VK_PARSING_SYSTEM_ACTOR_USER_ID = 'vk-parsing-autopost';
 const VK_PARSING_SCHEDULE_STEP_MS = 15 * 60_000;
 const VK_PARSING_MAX_SCHEDULE_LOOKAHEAD_STEPS = (8 * 24 * 60) / 15;
+const VK_VIDEO_MAX_BYTES = 250 * 1024 * 1024;
+const VK_VIDEO_FETCH_TIMEOUT_MS = 60_000;
+const VK_VIDEO_UPLOAD_TIMEOUT_MS = 120_000;
+const VK_SUPPORTED_VIDEO_MIME_TYPES = new Set(['video/mp4', 'video/quicktime', 'video/webm']);
 
 @Injectable()
 export class VkPublishService {
@@ -118,6 +133,7 @@ export class VkPublishService {
   private readonly queueBatchSize: number;
   private readonly publishLeaseTtlMs: number;
   private readonly mediaConcurrency: number;
+  private readonly videoFailedPreflightTtlMs: number;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -141,6 +157,10 @@ export class VkPublishService {
       configService.get<number>('VK_PARSING_LEASE_TTL_MS') ??
       120_000;
     this.mediaConcurrency = configService.get<number>('VK_PARSING_MEDIA_CONCURRENCY') ?? 3;
+    this.videoFailedPreflightTtlMs = Math.min(
+      configService.get<number>('VK_PARSING_MEDIA_PREFLIGHT_TTL_MS') ?? 86_400_000,
+      configService.get<number>('VK_PARSING_MEDIA_FAILED_PREFLIGHT_TTL_MS') ?? 120_000,
+    );
   }
 
   async recoverStalePublishJobs(): Promise<number> {
@@ -212,14 +232,17 @@ export class VkPublishService {
     this.assertReviewSourceOwnerAction(post, actorUserId);
 
     const storedPhotoUrls = this.readStringArray(post.photoUrls);
+    const storedVideoUrls = this.readStringArray(post.videoUrls);
     const storedLinkUrls = this.readStringArray(post.linkUrls);
     const photoUrls = this.assertSelectedUrls(parsed.data.photoUrls, storedPhotoUrls, 'фото');
+    const videoUrls = this.assertSelectedUrls(parsed.data.videoUrls, storedVideoUrls, 'видео');
     const linkUrls = this.assertSelectedUrls(parsed.data.linkUrls, storedLinkUrls, 'ссылку');
     const settings = await this.getSettingsForChat(chatId);
     const prepared = prepareVkParsingPublishPayload(
       {
         text: parsed.data.text,
         photoUrls,
+        videoUrls,
         linkUrls,
       },
       settings,
@@ -228,6 +251,7 @@ export class VkPublishService {
       {
         text: post.text,
         photoUrls: storedPhotoUrls,
+        videoUrls: storedVideoUrls,
         linkUrls: storedLinkUrls,
         attachments: this.readAttachments(post.attachments),
         raw: this.asRecord(post.raw) ?? {},
@@ -728,6 +752,7 @@ export class VkPublishService {
     },
   ): Promise<PublishVkParsingPostResult> {
     const storedPhotoUrls = this.readStringArray(post.photoUrls);
+    const storedVideoUrls = this.readStringArray(post.videoUrls);
     const storedLinkUrls = this.readStringArray(post.linkUrls);
     const botId = await this.maxBotLinkService.resolveBotId({ chatId: post.chatId });
     const entityType = await this.accessService.resolvePublicationEntityType(post.chatId);
@@ -762,25 +787,39 @@ export class VkPublishService {
         raw: post.raw,
         text: post.text,
       });
-      const imagePayloads = await this.downloadAndUploadImages(
-        payload.photoUrls,
-        requestOptions,
-        {
-          allowPartialFailures: params.auto,
-          canPublishWithoutPhotos: payload.text.trim().length > 0 || payload.linkUrls.length > 0,
-        },
-        photoMediaByUrl,
-      );
-
-      if (imagePayloads.length === 1) {
-        options.imagePayload = imagePayloads[0];
-      } else if (imagePayloads.length > 1) {
-        options.attachments = imagePayloads.map(
-          (payload): MaxAttachmentPayload => ({
-            type: 'image',
-            payload,
-          }),
+      if (payload.videoUrls.length > 0) {
+        const videoMediaByUrl = this.resolveVideoMediaIdentityMap({
+          attachments: post.attachments,
+          raw: post.raw,
+          text: post.text,
+        });
+        const videoPayload = await this.downloadAndUploadVideo(
+          payload.videoUrls[0]!,
+          requestOptions,
+          videoMediaByUrl.get(payload.videoUrls[0]!) ?? null,
         );
+        options.attachments = [{ type: 'video', payload: videoPayload }];
+      } else {
+        const imagePayloads = await this.downloadAndUploadImages(
+          payload.photoUrls,
+          requestOptions,
+          {
+            allowPartialFailures: params.auto,
+            canPublishWithoutPhotos: payload.text.trim().length > 0 || payload.linkUrls.length > 0,
+          },
+          photoMediaByUrl,
+        );
+
+        if (imagePayloads.length === 1) {
+          options.imagePayload = imagePayloads[0];
+        } else if (imagePayloads.length > 1) {
+          options.attachments = imagePayloads.map(
+            (payload): MaxAttachmentPayload => ({
+              type: 'image',
+              payload,
+            }),
+          );
+        }
       }
 
       const result = await this.sendMessageWithAttachmentRetry(
@@ -809,6 +848,7 @@ export class VkPublishService {
             computeVkParsingPostContentHash({
               text: post.text,
               photoUrls: storedPhotoUrls,
+              videoUrls: storedVideoUrls,
               linkUrls: storedLinkUrls,
             }),
           publishedMessageId: result.messageId,
@@ -1391,16 +1431,41 @@ export class VkPublishService {
     );
   }
 
+  private resolveVideoMediaIdentityMap(post: {
+    attachments: Prisma.JsonValue | unknown;
+    raw: Prisma.JsonValue | unknown;
+    text: string;
+  }): Map<string, VkParsingVideoPublishMedia> {
+    const parsed = parseVkWallPostAttachments({
+      attachments: this.readAttachments(post.attachments),
+      rawPost: this.asRecord(post.raw) ?? {},
+      text: post.text,
+      maxPhotos: VK_PARSING_MAX_PHOTOS,
+      maxLinks: VK_PARSING_MAX_LINKS,
+    });
+    return new Map(
+      parsed.videoMedia.map(({ url, mediaIdentity, candidateUrls }) => [
+        url,
+        {
+          mediaIdentity,
+          candidateUrls,
+        },
+      ]),
+    );
+  }
+
   private async autoPublishPost(
     post: VkParsingPostWithSource,
     settings: VkParsingSettingsLike,
   ): Promise<void> {
     const photoUrls = this.readStringArray(post.photoUrls);
+    const videoUrls = this.readStringArray(post.videoUrls);
     const linkUrls = this.readStringArray(post.linkUrls);
     const skipReason = resolveVkParsingPostSkipReason(
       {
         text: post.text,
         photoUrls,
+        videoUrls,
         linkUrls,
         attachments: this.readAttachments(post.attachments),
         raw: this.asRecord(post.raw) ?? {},
@@ -1418,6 +1483,7 @@ export class VkPublishService {
       {
         text: post.text,
         photoUrls,
+        videoUrls,
         linkUrls,
       },
       settings,
@@ -1655,6 +1721,74 @@ export class VkPublishService {
     throw lastError instanceof Error ? lastError : new BadRequestException('Фото недоступно.');
   }
 
+  private async downloadAndUploadVideo(
+    videoUrl: string,
+    requestOptions: {
+      botId?: string;
+      trafficClass: MaxApiTrafficClass;
+      sourceTag: string;
+    },
+    media: VkParsingVideoPublishMedia | null,
+  ): Promise<Record<string, unknown>> {
+    const mediaIdentity = media?.mediaIdentity ?? null;
+    const candidateUrls = this.resolveVideoCandidateUrls(videoUrl, media?.candidateUrls ?? []);
+    let lastError: unknown = null;
+
+    for (const candidateUrl of candidateUrls) {
+      try {
+        const cache = await this.assertVideoReadyForPublish(candidateUrl, mediaIdentity);
+        const cachedPayload = this.readUploadPayload(cache);
+        if (cachedPayload) {
+          return cachedPayload;
+        }
+
+        const video = await this.downloadVideo(candidateUrl);
+        const payload = await this.maxClient.uploadVideo(
+          video.buffer,
+          video.fileName,
+          video.mimeType,
+          {
+            ...requestOptions,
+            timeoutMs: VK_VIDEO_UPLOAD_TIMEOUT_MS,
+          },
+        );
+        await this.mediaCache.writeMediaCache(
+          candidateUrl,
+          {
+            status: VK_MEDIA_STATUS_READY,
+            mimeType: video.mimeType,
+            contentLength: video.buffer.length,
+            lastError: null,
+            maxUploadPayload: payload,
+            maxUploadToken: this.readUploadToken(payload),
+            maxUploadedAt: new Date(),
+          },
+          mediaIdentity,
+        );
+
+        return payload;
+      } catch (error) {
+        lastError = error;
+        if (!this.shouldTryNextVideoCandidate(error)) {
+          throw error;
+        }
+        await this.rememberVideoCandidateFailure(candidateUrl, mediaIdentity, error);
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new BadRequestException('Видео недоступно.');
+  }
+
+  private resolveVideoCandidateUrls(primaryUrl: string, candidateUrls: string[]): string[] {
+    return [
+      ...new Set([primaryUrl, ...candidateUrls].map((url) => url.trim()).filter(Boolean)),
+    ];
+  }
+
+  private shouldTryNextVideoCandidate(error: unknown): boolean {
+    return this.isSkippableVideoPublishFailure(this.formatError(error));
+  }
+
   private resolvePhotoCandidateUrls(primaryUrl: string, candidateUrls: string[]): string[] {
     return [
       ...new Set([primaryUrl, ...candidateUrls].map((url) => url.trim()).filter(Boolean)),
@@ -1680,6 +1814,136 @@ export class VkPublishService {
     return cache;
   }
 
+  private async assertVideoReadyForPublish(
+    videoUrl: string,
+    mediaIdentity: string | null = null,
+  ): Promise<VkParsingMediaCacheRow> {
+    const cache = await this.preflightVideoUrl(videoUrl, mediaIdentity);
+    if (this.readUploadPayload(cache)) {
+      return cache;
+    }
+    if (cache.status === VK_MEDIA_STATUS_FAILED) {
+      throw new BadRequestException(cache.lastError || 'Видео VK недоступно.');
+    }
+    return cache;
+  }
+
+  private async preflightVideoUrl(
+    videoUrl: string,
+    mediaIdentity: string | null,
+  ): Promise<VkParsingMediaCacheRow> {
+    const cached = await this.mediaCache.findMediaCache(videoUrl, mediaIdentity);
+    if (cached?.status === VK_MEDIA_STATUS_READY && this.readUploadPayload(cached)) {
+      return cached;
+    }
+    if (cached?.status === VK_MEDIA_STATUS_FAILED && this.canReuseFailedVideoPreflightCache(cached)) {
+      return cached;
+    }
+
+    let parsed: URL;
+    try {
+      parsed = new URL(videoUrl);
+      if (parsed.protocol !== 'https:') {
+        return this.mediaCache.writeMediaCache(
+          videoUrl,
+          {
+            status: VK_MEDIA_STATUS_FAILED,
+            lastError: 'Видео VK должно быть доступно по HTTPS.',
+          },
+          mediaIdentity,
+        );
+      }
+    } catch {
+      return this.mediaCache.writeMediaCache(
+        videoUrl,
+        {
+          status: VK_MEDIA_STATUS_FAILED,
+          lastError: 'Некорректная ссылка на видео VK.',
+        },
+        mediaIdentity,
+      );
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), VK_VIDEO_FETCH_TIMEOUT_MS);
+    try {
+      const response = await fetch(parsed, { method: 'HEAD', signal: controller.signal });
+      await response.body?.cancel().catch(() => undefined);
+      if (!response.ok) {
+        return this.mediaCache.writeMediaCache(
+          videoUrl,
+          {
+            status: VK_MEDIA_STATUS_FAILED,
+            lastError: `VK вернул статус ${response.status} для видео.`,
+          },
+          mediaIdentity,
+        );
+      }
+
+      const headers = response.headers ?? new Headers();
+      const contentLength = this.readStrictContentLength(headers);
+      if (contentLength === null) {
+        return this.mediaCache.writeMediaCache(
+          videoUrl,
+          {
+            status: VK_MEDIA_STATUS_FAILED,
+            lastError: 'VK не сообщил размер видео.',
+          },
+          mediaIdentity,
+        );
+      }
+      if (contentLength > VK_VIDEO_MAX_BYTES) {
+        return this.mediaCache.writeMediaCache(
+          videoUrl,
+          {
+            status: VK_MEDIA_STATUS_FAILED,
+            contentLength,
+            lastError: 'Видео из VK слишком большое. Максимум 250 МБ.',
+          },
+          mediaIdentity,
+        );
+      }
+
+      const mimeType = this.normalizeVideoMimeType(headers.get('content-type'));
+      if (!mimeType) {
+        return this.mediaCache.writeMediaCache(
+          videoUrl,
+          {
+            status: VK_MEDIA_STATUS_FAILED,
+            contentLength,
+            lastError: 'VK вернул не видео.',
+          },
+          mediaIdentity,
+        );
+      }
+
+      return this.mediaCache.writeMediaCache(
+        videoUrl,
+        {
+          status: VK_MEDIA_STATUS_READY,
+          mimeType,
+          contentLength,
+          lastError: null,
+        },
+        mediaIdentity,
+      );
+    } catch (error) {
+      return this.mediaCache.writeMediaCache(
+        videoUrl,
+        {
+          status: VK_MEDIA_STATUS_FAILED,
+          lastError:
+            error instanceof Error && error.name === 'AbortError'
+              ? 'VK не ответил на проверку видео вовремя.'
+              : formatVkParsingError(error),
+        },
+        mediaIdentity,
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   private async rememberPhotoCandidateFailure(
     imageUrl: string,
     mediaIdentity: string | null,
@@ -1702,6 +1966,28 @@ export class VkPublishService {
     }
   }
 
+  private async rememberVideoCandidateFailure(
+    videoUrl: string,
+    mediaIdentity: string | null,
+    error: unknown,
+  ): Promise<void> {
+    try {
+      await this.mediaCache.writeMediaCache(
+        videoUrl,
+        {
+          status: VK_MEDIA_STATUS_FAILED,
+          lastError: this.formatError(error),
+        },
+        mediaIdentity,
+      );
+    } catch (cacheError) {
+      this.logger.warn(
+        { err: cacheError, videoUrl, mediaIdentity },
+        'Failed to record stale VK video candidate',
+      );
+    }
+  }
+
   private readUploadPayload(cache: VkParsingMediaCacheRow): Record<string, unknown> | null {
     const payload = this.asRecord(cache.maxUploadPayload);
     if (!payload || Object.keys(payload).length === 0) {
@@ -1719,7 +2005,7 @@ export class VkPublishService {
   private async downloadImage(
     imageUrl: string,
     index: number,
-  ): Promise<{ buffer: Buffer; fileName: string; mimeType: string }> {
+  ): Promise<VkParsingDownloadedMedia> {
     const parsed = new URL(imageUrl);
     if (parsed.protocol !== 'https:') {
       throw new BadRequestException('Фото VK должно быть доступно по HTTPS.');
@@ -1759,6 +2045,55 @@ export class VkPublishService {
     }
   }
 
+  private async downloadVideo(videoUrl: string): Promise<VkParsingDownloadedMedia> {
+    const parsed = new URL(videoUrl);
+    if (parsed.protocol !== 'https:') {
+      throw new BadRequestException('Видео VK должно быть доступно по HTTPS.');
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), VK_VIDEO_FETCH_TIMEOUT_MS);
+    try {
+      const response = await fetch(parsed, { signal: controller.signal });
+      if (!response.ok) {
+        throw new BadRequestException('Не удалось скачать видео из VK.');
+      }
+
+      const headers = response.headers ?? new Headers();
+      const contentLength = this.readStrictContentLength(headers);
+      if (contentLength === null) {
+        throw new BadRequestException('VK не сообщил размер видео.');
+      }
+      if (contentLength > VK_VIDEO_MAX_BYTES) {
+        throw new BadRequestException('Видео из VK слишком большое. Максимум 250 МБ.');
+      }
+
+      const mimeType = this.normalizeVideoMimeType(headers.get('content-type'));
+      if (!mimeType) {
+        throw new BadRequestException('VK вернул не видео.');
+      }
+
+      const buffer = Buffer.from(await response.arrayBuffer());
+      if (buffer.length === 0) {
+        throw new BadRequestException('Видео из VK оказалось пустым.');
+      }
+      if (buffer.length !== contentLength) {
+        throw new BadRequestException('Размер скачанного видео VK не совпал с Content-Length.');
+      }
+      if (buffer.length > VK_VIDEO_MAX_BYTES) {
+        throw new BadRequestException('Видео из VK слишком большое. Максимум 250 МБ.');
+      }
+
+      return {
+        buffer,
+        fileName: this.resolveVideoFileName(parsed, mimeType),
+        mimeType,
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   private resolveImageFileName(url: URL, index: number): string {
     const rawName = decodeURIComponent(url.pathname.split('/').filter(Boolean).at(-1) ?? '');
     const safeName = rawName.replace(/[^A-Za-z0-9._-]/gu, '').slice(0, 120);
@@ -1769,11 +2104,46 @@ export class VkPublishService {
     return `vk-photo-${index + 1}.jpg`;
   }
 
+  private resolveVideoFileName(url: URL, mimeType: string): string {
+    const rawName = decodeURIComponent(url.pathname.split('/').filter(Boolean).at(-1) ?? '');
+    const safeName = rawName.replace(/[^A-Za-z0-9._-]/gu, '').slice(0, 120);
+    if (safeName && /\.[A-Za-z0-9]{2,6}$/u.test(safeName)) {
+      return safeName;
+    }
+
+    return mimeType === 'video/webm' ? 'vk-video.webm' : 'vk-video.mp4';
+  }
+
+  private normalizeVideoMimeType(value: string | null): string | null {
+    const mimeType = (value ?? '').split(';')[0]!.trim().toLowerCase();
+    return VK_SUPPORTED_VIDEO_MIME_TYPES.has(mimeType) ? mimeType : null;
+  }
+
+  private readStrictContentLength(headers: Headers): number | null {
+    const rawContentLength = headers.get('content-length')?.trim();
+    if (!rawContentLength || !/^\d+$/u.test(rawContentLength)) {
+      return null;
+    }
+    const contentLength = Number(rawContentLength);
+    return Number.isFinite(contentLength) && contentLength > 0 ? contentLength : null;
+  }
+
+  private canReuseFailedVideoPreflightCache(cache: VkParsingMediaCacheRow): boolean {
+    if (!cache.lastCheckedAt) {
+      return false;
+    }
+    const ageMs = Date.now() - cache.lastCheckedAt.getTime();
+    return ageMs >= 0 && ageMs < this.videoFailedPreflightTtlMs;
+  }
+
   private assertPreparedPublishPayload(payload: PreparedVkPublishPayload): void {
     if (this.isEmptyPublishPayload(payload)) {
       throw new BadRequestException(
-        'После фильтрации в посте не осталось текста, фото или ссылок.',
+        'После фильтрации в посте не осталось текста, фото, видео или ссылок.',
       );
+    }
+    if (payload.photoUrls.length > 0 && payload.videoUrls.length > 0) {
+      throw new BadRequestException('В одном VK-посте можно опубликовать либо фото, либо видео.');
     }
     if (payload.text.length > VK_PARSING_MAX_PUBLISH_TEXT_LENGTH) {
       throw new BadRequestException(
@@ -1786,6 +2156,7 @@ export class VkPublishService {
     return (
       payload.text.trim().length === 0 &&
       payload.photoUrls.length === 0 &&
+      payload.videoUrls.length === 0 &&
       payload.linkUrls.length === 0
     );
   }
@@ -1810,6 +2181,32 @@ export class VkPublishService {
       normalized.includes('некорректная ссылка на фото vk') ||
       normalized.includes('фото из vk слишком большое') ||
       normalized.includes('vk вернул не изображение') ||
+      normalized.includes('vk не ответил')
+    );
+  }
+
+  private isSkippableVideoPublishFailure(message: string): boolean {
+    const normalized = message.toLowerCase();
+    if (
+      normalized.includes('rate limit exceeded') ||
+      normalized.includes('circuit breaker') ||
+      normalized.includes('max api')
+    ) {
+      return false;
+    }
+
+    return (
+      normalized.includes('vk вернул статус') ||
+      normalized.includes('не удалось скачать видео') ||
+      normalized.includes('fetch failed') ||
+      normalized.includes('terminated') ||
+      normalized.includes('operation was aborted') ||
+      normalized.includes('видео vk должно быть доступно по https') ||
+      normalized.includes('некорректная ссылка на видео vk') ||
+      normalized.includes('видео из vk слишком большое') ||
+      normalized.includes('размер скачанного видео vk не совпал') ||
+      normalized.includes('vk вернул не видео') ||
+      normalized.includes('vk не сообщил размер видео') ||
       normalized.includes('vk не ответил')
     );
   }
