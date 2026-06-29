@@ -297,7 +297,7 @@ export type ParsedFileAttachment = {
 };
 
 export type ParsedVideoSourceAttachment = ParsedFileAttachment & {
-  url: string;
+  url: string | null;
   mimeType: string;
 };
 

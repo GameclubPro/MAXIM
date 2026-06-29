@@ -337,6 +337,7 @@ function createPrivateVideoUpdate(text = ''): MaxUpdate {
               type: 'video',
               payload: {
                 url: 'https://example.test/channel-suggestion-video.mp4',
+                token: 'incoming-video-token',
                 video_id: 'video-1',
                 file_name: 'channel-suggestion-video.mp4',
                 mime_type: 'video/mp4',
@@ -3223,11 +3224,7 @@ describe('PrivateControlService', () => {
       });
     }
 
-    expect(maxClient.uploadVideo).toHaveBeenCalledWith(
-      expect.any(Buffer),
-      'channel-suggestion-video.mp4',
-      'video/mp4',
-    );
+    expect(maxClient.uploadVideo).not.toHaveBeenCalled();
     expect(adminService.createChannelSuggestionFromBot).toHaveBeenCalledWith(
       channels[0].id,
       expect.objectContaining({ userId: 'user-1' }),
@@ -3235,7 +3232,7 @@ describe('PrivateControlService', () => {
         token: 'cdt-suggest-token-3',
         text: '',
         mediaType: 'video',
-        mediaPayload: { token: 'upload-video-token-1' },
+        mediaPayload: { token: 'incoming-video-token' },
         mediaMimeType: 'video/mp4',
         mediaFileName: 'channel-suggestion-video.mp4',
       }),
@@ -3246,7 +3243,7 @@ describe('PrivateControlService', () => {
         attachments: expect.arrayContaining([
           expect.objectContaining({
             type: 'video',
-            payload: { token: 'upload-video-token-1' },
+            payload: { token: 'incoming-video-token' },
           }),
           expect.objectContaining({
             type: 'inline_keyboard',
@@ -3719,11 +3716,7 @@ describe('PrivateControlService', () => {
       await service.handleUpdate(createPrivateVideoUpdate());
       await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
 
-      expect(maxClient.uploadVideo).toHaveBeenCalledWith(
-        expect.any(Buffer),
-        'channel-suggestion-video.mp4',
-        'video/mp4',
-      );
+      expect(maxClient.uploadVideo).not.toHaveBeenCalled();
       expect(adminService.sendBroadcast).toHaveBeenCalledWith(
         chats[0].id,
         expect.objectContaining({ userId: 'user-1' }),
@@ -3731,7 +3724,7 @@ describe('PrivateControlService', () => {
           text: 'Текст перед видео',
           imageEnabled: false,
           mediaType: 'video',
-          mediaPayload: { token: 'upload-video-token-1' },
+          mediaPayload: { token: 'incoming-video-token' },
           mediaMimeType: 'video/mp4',
           mediaFileName: 'channel-suggestion-video.mp4',
         }),

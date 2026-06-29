@@ -4,6 +4,7 @@ import {
   buildPrivateDownloadedFileName,
   buildPrivateSuggestionImageDraftsFromImages,
   buildPrivateSuggestionMediaDraftFromVideo,
+  downloadPrivateVideoSourceAttachment,
   downloadPrivateImageSourceAttachment,
   extractPrivateFirstFileAttachment,
   extractPrivateFirstImageSourceAttachment,
@@ -158,7 +159,7 @@ describe('private control media attachments', () => {
       }),
     );
     expect(hasPrivateVideoAttachment(videoUpdate)).toBe(true);
-    expect(hasPrivateVideoAttachment(fileUpdate)).toBe(false);
+    expect(hasPrivateVideoAttachment(fileUpdate)).toBe(true);
   });
 
   it('normalizes mime types and downloaded file names', () => {
@@ -304,6 +305,80 @@ describe('private control media attachments', () => {
     } finally {
       videoFetch.restore();
     }
+  });
+
+  it('reuses incoming MAX video tokens without downloading or uploading', async () => {
+    const videoSource = extractPrivateFirstVideoSourceAttachment(
+      createAttachmentUpdate([
+        {
+          type: 'video',
+          payload: {
+            token: 'incoming-video-token',
+            video_id: 'video-2',
+            file_name: 'incoming-video.mp4',
+            mime_type: 'video/mp4',
+          },
+        },
+      ]),
+    );
+    const originalFetch = global.fetch;
+    const fetchMock = jest.fn();
+    Object.defineProperty(global, 'fetch', {
+      configurable: true,
+      writable: true,
+      value: fetchMock,
+    });
+    const uploader = {
+      uploadImage: jest.fn(),
+      uploadVideo: jest.fn(),
+    };
+
+    try {
+      expect(videoSource).toEqual(
+        expect.objectContaining({
+          url: null,
+          token: 'incoming-video-token',
+          fileId: 'video-2',
+          fileName: 'incoming-video.mp4',
+          mimeType: 'video/mp4',
+        }),
+      );
+      await expect(
+        buildPrivateSuggestionMediaDraftFromVideo(videoSource!, uploader, 'channel-suggestion'),
+      ).resolves.toEqual({
+        kind: 'video',
+        mimeType: 'video/mp4',
+        fileName: 'incoming-video.mp4',
+        payload: { token: 'incoming-video-token' },
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(uploader.uploadVideo).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(global, 'fetch', {
+        configurable: true,
+        writable: true,
+        value: originalFetch,
+      });
+    }
+  });
+
+  it('rejects oversized fallback video downloads before reading the body', async () => {
+    const videoSource = extractPrivateFirstVideoSourceAttachment(
+      createAttachmentUpdate([
+        {
+          type: 'file',
+          filename: 'huge.mp4',
+          payload: {
+            url: 'https://example.test/huge.mp4',
+            size: 251 * 1024 * 1024,
+          },
+        },
+      ]),
+    );
+
+    await expect(downloadPrivateVideoSourceAttachment(videoSource!)).rejects.toThrow(
+      'Видео слишком большое. Максимальный размер — 250 МБ.',
+    );
   });
 
   it('rejects downloads when a video source cannot be resolved', async () => {

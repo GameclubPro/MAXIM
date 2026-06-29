@@ -12,6 +12,9 @@ import type {
   PrivateSuggestionVideoDraft,
 } from './private-control.types';
 
+const PRIVATE_VIDEO_DOWNLOAD_MAX_BYTES = 250 * 1024 * 1024;
+const PRIVATE_VIDEO_DOWNLOAD_TIMEOUT_MS = 10_000;
+
 export type PrivateControlMediaAttachmentUploader = {
   uploadImage(data: Buffer, fileName: string, mimeType: string): Promise<Record<string, unknown>>;
   uploadVideo(data: Buffer, fileName: string, mimeType: string): Promise<Record<string, unknown>>;
@@ -111,30 +114,33 @@ export function extractPrivateFirstVideoSourceAttachment(
 
     if (type === 'video' && payload) {
       const url = readString(payload.url);
-      const mimeType = resolvePrivateVideoMimeType(
-        readLowerString(payload.mime_type ?? payload.mimeType),
-        readString(payload.file_name ?? payload.fileName ?? row.file_name ?? row.fileName),
-        url,
-      );
-      if (!url || !mimeType) {
+      const token = readString(payload.token);
+      const fileName =
+        readString(
+          payload.file_name ??
+            payload.fileName ??
+            row.file_name ??
+            row.fileName ??
+            row.filename ??
+            row.name,
+        ) ?? null;
+      const mimeType =
+        resolvePrivateVideoMimeType(
+          readLowerString(payload.mime_type ?? payload.mimeType),
+          fileName,
+          url,
+        ) ?? (token ? 'video/mp4' : null);
+      if ((!url && !token) || !mimeType) {
         continue;
       }
 
       return {
         url,
-        token: readString(payload.token) ?? null,
+        token: token ?? null,
         fileId:
           readString(payload.video_id ?? payload.videoId ?? payload.file_id ?? payload.fileId) ??
           null,
-        fileName:
-          readString(
-            payload.file_name ??
-              payload.fileName ??
-              row.file_name ??
-              row.fileName ??
-              row.filename ??
-              row.name,
-          ) ?? null,
+        fileName,
         size: readOptionalInteger(payload.size ?? row.size),
         mimeType,
         mediaType: readLowerString(payload.media_type ?? payload.mediaType),
@@ -167,8 +173,23 @@ export function hasPrivateVideoAttachment(update: MaxUpdate): boolean {
     const type = readLowerString(row.type);
     const payload = asRecord(row.payload);
     const mimeType = readLowerString(payload?.mime_type ?? payload?.mimeType);
+    const fileName = readString(
+      payload?.file_name ??
+        payload?.fileName ??
+        row.file_name ??
+        row.fileName ??
+        row.filename ??
+        row.name,
+    );
+    const url = readString(payload?.url);
+    const mediaType = readLowerString(payload?.media_type ?? payload?.mediaType);
 
-    if (type === 'video' || mimeType?.startsWith('video/')) {
+    if (
+      type === 'video' ||
+      mediaType === 'video' ||
+      mimeType?.startsWith('video/') ||
+      Boolean(resolvePrivateVideoMimeType(mimeType, fileName, url))
+    ) {
       return true;
     }
   }
@@ -191,10 +212,21 @@ export async function downloadPrivateVideoSourceAttachment(
   videoSourceAttachment: ParsedVideoSourceAttachment,
   filePrefix = 'channel-suggestion',
 ): Promise<DownloadedBinaryAsset> {
+  if (!videoSourceAttachment.url) {
+    throw new BadRequestException('Не удалось получить ссылку на видео из сообщения.');
+  }
+
+  if (
+    typeof videoSourceAttachment.size === 'number' &&
+    videoSourceAttachment.size > PRIVATE_VIDEO_DOWNLOAD_MAX_BYTES
+  ) {
+    throw new BadRequestException('Видео слишком большое. Максимальный размер — 250 МБ.');
+  }
+
   const controller = new AbortController();
   const timeout = setTimeout(() => {
     controller.abort();
-  }, 10_000);
+  }, PRIVATE_VIDEO_DOWNLOAD_TIMEOUT_MS);
 
   try {
     const response = await fetch(videoSourceAttachment.url, {
@@ -204,6 +236,11 @@ export async function downloadPrivateVideoSourceAttachment(
 
     if (!response.ok) {
       throw new BadRequestException(`Не удалось загрузить видео (${response.status}).`);
+    }
+
+    const contentLength = parseContentLength(response.headers.get('content-length'));
+    if (contentLength !== null && contentLength > PRIVATE_VIDEO_DOWNLOAD_MAX_BYTES) {
+      throw new BadRequestException('Видео слишком большое. Максимальный размер — 250 МБ.');
     }
 
     const mimeTypeHeader = response.headers.get('content-type') ?? '';
@@ -222,6 +259,9 @@ export async function downloadPrivateVideoSourceAttachment(
     const buffer = Buffer.from(arrayBuffer);
     if (buffer.length === 0) {
       throw new BadRequestException('Видео оказалось пустым.');
+    }
+    if (buffer.length > PRIVATE_VIDEO_DOWNLOAD_MAX_BYTES) {
+      throw new BadRequestException('Видео слишком большое. Максимальный размер — 250 МБ.');
     }
 
     const fileName = buildPrivateDownloadedFileName(
@@ -288,6 +328,21 @@ export async function buildPrivateSuggestionMediaDraftFromVideo(
   uploader: PrivateControlMediaAttachmentUploader,
   filePrefix = 'channel-suggestion',
 ): Promise<PrivateSuggestionVideoDraft> {
+  if (videoSourceAttachment.token) {
+    return {
+      kind: 'video',
+      mimeType: videoSourceAttachment.mimeType,
+      fileName: buildPrivateDownloadedFileName(
+        filePrefix,
+        videoSourceAttachment.fileName ??
+          (videoSourceAttachment.url ? fileNameFromUrl(videoSourceAttachment.url) : null),
+        videoSourceAttachment.fileId,
+        videoSourceAttachment.mimeType,
+      ),
+      payload: { token: videoSourceAttachment.token },
+    };
+  }
+
   const downloaded = await downloadPrivateVideoSourceAttachment(videoSourceAttachment, filePrefix);
   const payload = await uploader.uploadVideo(
     downloaded.buffer,
@@ -685,6 +740,15 @@ function readString(value: unknown): string | null {
 
   const normalized = value.trim();
   return normalized.length > 0 ? normalized : null;
+}
+
+function parseContentLength(value: string | null): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = Number.parseInt(value.trim(), 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function readOptionalInteger(value: unknown): number | null {
