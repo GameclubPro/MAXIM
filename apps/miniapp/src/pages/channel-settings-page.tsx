@@ -638,12 +638,12 @@ function resolveManagedBroadcastCardTitle(broadcast: ManagedBroadcastListItem): 
     return 'Нужно повторить отправку';
   }
   if (broadcast.status === 'COMPLETED') {
-    return 'Автопостинг завершён';
+    return 'Публикация завершена';
   }
   if (broadcast.status === 'CANCELED') {
-    return 'Автопостинг остановлен';
+    return 'Публикация остановлена';
   }
-  return broadcast.nextSendAt ? 'Следующая отправка' : 'Активный автопостинг';
+  return broadcast.nextSendAt ? 'Следующая отправка' : 'Публикация в работе';
 }
 
 function resolveManagedBroadcastMetric(
@@ -1566,7 +1566,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       void queryClient.invalidateQueries({ queryKey: queryKeys.channelBroadcastHandoff(chatId) });
       pushToast({
         tone: result.failedChats > 0 ? 'info' : 'success',
-        title: result.failedChats > 0 ? 'Часть публикаций с ошибкой' : 'Автопостинг готов',
+        title: result.failedChats > 0 ? 'Часть публикаций с ошибкой' : 'Публикация запланирована',
         description: formatChannelBroadcastResultDescription(result),
       });
       maxNotify(result.failedChats > 0 ? 'warning' : 'success');
@@ -2356,20 +2356,29 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   ]
     .filter(Boolean)
     .join(' · ');
+  const broadcastDraftFallback = editingBroadcastHasVideo
+    ? 'Видео без текста'
+    : broadcastImageEnabled
+      ? 'Фото без текста'
+      : 'Добавьте текст, фото или видео';
   const broadcastPrimaryActionLabel = editingManagedBroadcast
     ? 'Сохранить'
     : editingManagedAutopostRule
       ? 'Сохранить'
     : broadcastTimingMode === 'now'
       ? 'Опубликовать'
-      : 'Запустить';
+      : broadcastTimingMode === 'scheduled'
+        ? 'Запланировать публикацию'
+        : 'Запустить';
   const broadcastFooterPrimaryActionLabel = editingManagedBroadcast
     ? 'Сохранить'
     : editingManagedAutopostRule
       ? 'Сохранить'
     : broadcastTimingMode === 'now'
       ? 'Опубликовать'
-      : 'Запустить';
+      : broadcastTimingMode === 'scheduled'
+        ? 'Запланировать публикацию'
+        : 'Запустить';
   const showBroadcastWorkspaceTabs =
     !editingManagedBroadcast && !duplicatedManagedBroadcast && !editingManagedAutopostRule;
   const activeBroadcastWorkspaceView = showBroadcastWorkspaceTabs
@@ -2394,7 +2403,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         showBroadcastAutopostAction && !editingManagedAutopostRule
           ? createManagedAutopostRuleMutation.isPending
             ? 'Сохраняем...'
-            : 'В автопосты'
+            : 'Сохранить как автопост'
           : undefined
       }
       secondaryDisabled={broadcastAutopostDisabled}
@@ -3553,6 +3562,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                           {showBroadcastDraftCard ? (
                             <BroadcastDraftCard
                               preview={normalizedBroadcastText}
+                              fallback={broadcastDraftFallback}
                               facts={broadcastDraftFacts}
                               disabled={isBroadcastBusy}
                               onOpen={() => setBroadcastWorkspaceView('compose')}
@@ -3563,7 +3573,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                           {orderedManagedAutopostRules.length === 0 &&
                           !showBroadcastDraftCard &&
                           !managedAutopostRulesQuery.isLoading ? (
-                            <div className="managed-broadcasts-list__empty">Пусто</div>
+                            <div className="managed-broadcasts-list__empty">
+                              Автопостов пока нет. Соберите сообщение и сохраните автопост.
+                            </div>
                           ) : null}
 
                           <Suspense fallback={<SkeletonCard lines={2} />}>
@@ -3623,6 +3635,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                           {showBroadcastDraftCard ? (
                             <BroadcastDraftCard
                               preview={normalizedBroadcastText}
+                              fallback={broadcastDraftFallback}
                               facts={broadcastDraftFacts}
                               disabled={isBroadcastBusy}
                               onOpen={() => setBroadcastWorkspaceView('compose')}
@@ -3633,7 +3646,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                           {filteredBroadcasts.length === 0 &&
                           !showBroadcastDraftCard &&
                           !settingsScreenQuery.isLoading ? (
-                            <div className="managed-broadcasts-list__empty">Пусто</div>
+                            <div className="managed-broadcasts-list__empty">История пока пустая.</div>
                           ) : null}
 
                           <Suspense fallback={<SkeletonCard lines={2} />}>
@@ -3826,7 +3839,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       <ActionConfirmSheet
         id="channel-managed-broadcast-delete"
         open={managedBroadcastDeleteTarget !== null}
-        title="Удалить автопостинг?"
+        title="Удалить публикацию?"
         previewTitle={
           managedBroadcastDeleteTarget ? (
             <MaxMarkdownPreview

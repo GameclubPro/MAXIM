@@ -306,6 +306,16 @@ function readBroadcastMediaPayloadImages(value: unknown): BroadcastImage[] {
     .slice(0, MAX_BROADCAST_IMAGES);
 }
 
+function normalizeBroadcastVideoPayload(value: unknown): Record<string, unknown> | null {
+  if (!isRecordPayload(value) || typeof value.token !== 'string') {
+    return null;
+  }
+  const token = value.token.trim();
+  if (!token) return null;
+
+  return { ...value, token };
+}
+
 function normalizeBroadcastImages(value: {
   images?: BroadcastImage[];
   imageBase64?: string;
@@ -2333,9 +2343,7 @@ export const sendBroadcastRequestSchema = z
     const images = normalizeBroadcastImages(value);
     const hasImages = images.length > 0;
     const hasVideoPayload =
-      value.mediaType === 'video' &&
-      value.mediaPayload !== null &&
-      Object.keys(value.mediaPayload).length > 0;
+      value.mediaType === 'video' && normalizeBroadcastVideoPayload(value.mediaPayload) !== null;
     const hasImagePayload =
       value.mediaType === 'image' &&
       value.mediaPayload !== null &&
@@ -2410,10 +2418,9 @@ export const sendBroadcastRequestSchema = z
     const buttonState = buildBroadcastButtonState(value);
     const scheduleState = buildBroadcastScheduleState(value);
     const images = normalizeBroadcastImages(value);
-    const hasVideoPayload =
-      value.mediaType === 'video' &&
-      value.mediaPayload !== null &&
-      Object.keys(value.mediaPayload).length > 0;
+    const videoPayload =
+      value.mediaType === 'video' ? normalizeBroadcastVideoPayload(value.mediaPayload) : null;
+    const hasVideoPayload = videoPayload !== null;
     const hasImageGallery = !hasVideoPayload && images.length > 1;
     const firstImage = !hasVideoPayload ? images[0] : undefined;
 
@@ -2433,7 +2440,7 @@ export const sendBroadcastRequestSchema = z
       imageFileName: firstImage?.fileName ?? '',
       images: hasVideoPayload ? [] : images,
       mediaType: hasVideoPayload ? 'video' : hasImageGallery ? 'image' : null,
-      mediaPayload: hasVideoPayload ? value.mediaPayload : hasImageGallery ? { images } : null,
+      mediaPayload: hasVideoPayload ? videoPayload : hasImageGallery ? { images } : null,
       mediaMimeType: hasVideoPayload ? value.mediaMimeType.trim() : '',
       mediaFileName: hasVideoPayload ? value.mediaFileName.trim() : '',
       scheduleMode: scheduleState.scheduledSlots.length > 0 ? 'calendar' : 'legacy',

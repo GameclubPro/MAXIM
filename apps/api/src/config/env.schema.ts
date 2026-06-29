@@ -63,7 +63,7 @@ const envSchema = z.object({
   MAX_WEBHOOK_HEADER_SECRET: z.string().min(8),
   MAX_WEBHOOK_HEADER_SECRET_PREVIOUS: z.string().min(8).optional(),
   MAX_BOTS_JSON: z.string().optional(),
-  MAX_API_BASE_URL: z.string().url().default('https://platform-api.max.ru'),
+  MAX_API_BASE_URL: z.string().url().default('https://platform-api2.max.ru'),
   MAX_JOIN_DENY_CHAT_IDS: z.string().optional(),
 
   DATABASE_URL: z.string().min(10),

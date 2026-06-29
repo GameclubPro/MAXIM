@@ -497,25 +497,33 @@ export class ManagedAutopostService {
         return;
       }
 
+      const hasMissedFailedSlot = await this.hasMissedFailedMaterialization(
+        row.id,
+        row.revision,
+        payload,
+      );
       const nextMaterializeAt = await this.resolveNextMaterializeAtForRule(
         row.id,
         row.revision,
         payload,
       );
       const nextSendAt = this.resolveNextSendAt(payload);
-      const nextStatus = nextSendAt
-        ? ManagedAutopostRuleStatus.ACTIVE
-        : ManagedAutopostRuleStatus.COMPLETED;
+      const nextStatus = hasMissedFailedSlot
+        ? ManagedAutopostRuleStatus.ERROR
+        : nextSendAt
+          ? ManagedAutopostRuleStatus.ACTIVE
+          : ManagedAutopostRuleStatus.COMPLETED;
       await this.prisma.managedAutopostRule.updateMany({
         where: { id: ruleId, revision: row.revision, lockToken },
         data: {
           status: nextStatus,
-          nextMaterializeAt:
-            nextStatus === ManagedAutopostRuleStatus.ACTIVE
-              ? (nextMaterializeAt ?? this.resolveCompletionCheckAt(nextSendAt))
-              : null,
+          nextMaterializeAt: this.isMaterializableStatus(nextStatus)
+            ? (nextMaterializeAt ?? this.resolveCompletionCheckAt(nextSendAt))
+            : null,
           lastMaterializedAt: createdCount > 0 ? new Date() : undefined,
-          lastError: null,
+          lastError: hasMissedFailedSlot
+            ? 'Не удалось создать отправку автопоста: время уже прошло.'
+            : null,
           lockedAt: null,
           lockToken: null,
         },
@@ -720,9 +728,9 @@ export class ManagedAutopostService {
       where: {
         ruleId,
         status: ManagedAutopostMaterializationStatus.CREATED,
-        scheduledAt: { gt: new Date(Date.now() + AUTOSCHEDULE_MIN_DELAY_MS) },
         broadcastId: { not: null },
         broadcast: {
+          nextSendAt: { not: null },
           status: {
             in: [
               ManagedBroadcastStatus.ACTIVE,
@@ -897,6 +905,34 @@ export class ManagedAutopostService {
           slot.getTime() <= horizonMs,
       )
       .sort((left, right) => left.getTime() - right.getTime());
+  }
+
+  private async hasMissedFailedMaterialization(
+    ruleId: string,
+    revision: number,
+    payload: ManagedAutopostPayload,
+  ): Promise<boolean> {
+    const payloadSlotKeys = new Set(
+      payload.scheduledSlots
+        .map((value) => new Date(value))
+        .filter((slot) => Number.isFinite(slot.getTime()))
+        .map((slot) => slot.toISOString()),
+    );
+    if (payloadSlotKeys.size === 0) {
+      return false;
+    }
+
+    const failedRows = await this.prisma.managedAutopostMaterialization.findMany({
+      where: {
+        ruleId,
+        revision,
+        status: ManagedAutopostMaterializationStatus.FAILED,
+        scheduledAt: { lt: new Date(Date.now() + AUTOSCHEDULE_MIN_DELAY_MS) },
+      },
+      select: { scheduledAt: true },
+    });
+
+    return failedRows.some((row) => payloadSlotKeys.has(row.scheduledAt.toISOString()));
   }
 
   private resolveNextMaterializeAt(payload: ManagedAutopostPayload): Date | null {

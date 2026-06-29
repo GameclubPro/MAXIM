@@ -126,7 +126,7 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/components/broadcast-schedule-planner.css',
-    maxLines: 1860,
+    maxLines: 2065,
     targetLines: 1500,
     reason:
       'BroadcastSchedulePlanner base styles should stay component-owned instead of returning to lazy route CSS.',

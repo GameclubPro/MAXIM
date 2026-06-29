@@ -1372,12 +1372,12 @@ export function resolveManagedBroadcastCardTitle(broadcast: ManagedBroadcastList
     return 'Нужно повторить отправку';
   }
   if (broadcast.status === 'COMPLETED') {
-    return 'Автопостинг завершён';
+    return 'Публикация завершена';
   }
   if (broadcast.status === 'CANCELED') {
-    return 'Автопостинг остановлен';
+    return 'Публикация остановлена';
   }
-  return broadcast.nextSendAt ? 'Следующая отправка' : 'Активный автопостинг';
+  return broadcast.nextSendAt ? 'Следующая отправка' : 'Публикация в работе';
 }
 
 export function resolveManagedBroadcastScopeLabel(broadcast: ManagedBroadcastListItem): string {

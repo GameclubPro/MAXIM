@@ -294,7 +294,7 @@ export function BroadcastAudienceControls({
                 }}
                 disabled={disabled}
               >
-                Отправить во все
+                Выбрать все
               </button>
             </span>
           </div>

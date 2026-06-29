@@ -1590,7 +1590,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       void queryClient.invalidateQueries({ queryKey: ['broadcast-handoff-state', chatId] });
       pushToast({
         tone: result.failedChats > 0 ? 'info' : 'success',
-        title: result.failedChats > 0 ? 'Часть чатов с ошибкой' : 'Автопостинг готов',
+        title: result.failedChats > 0 ? 'Часть чатов с ошибкой' : 'Публикация запланирована',
         description: formatMiniappBroadcastResultDescription(result),
       });
       maxNotify(result.failedChats > 0 ? 'warning' : 'success');
@@ -5035,14 +5035,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       ? 'Сохранить'
     : mailingTimingMode === 'now'
       ? 'Опубликовать'
-      : 'Запустить';
+      : mailingTimingMode === 'scheduled'
+        ? 'Запланировать публикацию'
+        : 'Запустить';
   const mailingFooterPrimaryActionLabel = editingManagedBroadcast
     ? 'Сохранить'
     : editingManagedAutopostRule
       ? 'Сохранить'
     : mailingTimingMode === 'now'
       ? 'Опубликовать'
-      : 'Запустить';
+      : mailingTimingMode === 'scheduled'
+        ? 'Запланировать публикацию'
+        : 'Запустить';
   const showMailingWorkspaceTabs =
     !editingManagedBroadcast && !duplicatedManagedBroadcast && !editingManagedAutopostRule;
   const showMailingDraftCard = showMailingWorkspaceTabs && showMailingResetAction;
@@ -5089,7 +5093,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         showMailingAutopostAction && !editingManagedAutopostRule
           ? createManagedAutopostRuleMutation.isPending
             ? 'Сохраняем...'
-            : 'В автопосты'
+            : 'Сохранить как автопост'
           : undefined
       }
       secondaryDisabled={mailingAutopostDisabled}
@@ -10487,6 +10491,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 {showMailingDraftCard ? (
                                   <BroadcastDraftCard
                                     preview={normalizedMailingText}
+                                    fallback={editingMailingHasVideo ? 'Видео без текста' : mailingImageEnabled ? 'Фото без текста' : undefined}
                                     facts={mailingDraftFacts}
                                     disabled={isMailingBusy}
                                     onOpen={() => setMailingWorkspaceView('compose')}
@@ -10497,7 +10502,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 {orderedManagedAutopostRules.length === 0 &&
                                 !showMailingDraftCard &&
                                 !managedAutopostRulesQuery.isLoading ? (
-                                  <div className="managed-broadcasts-list__empty">Пусто</div>
+                                  <div className="managed-broadcasts-list__empty">Автопостов пока нет. Соберите сообщение и сохраните автопост.</div>
                                 ) : null}
 
                                 <Suspense fallback={<SkeletonCard lines={2} />}>
@@ -10557,6 +10562,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 {showMailingDraftCard ? (
                                   <BroadcastDraftCard
                                     preview={normalizedMailingText}
+                                    fallback={editingMailingHasVideo ? 'Видео без текста' : mailingImageEnabled ? 'Фото без текста' : undefined}
                                     facts={mailingDraftFacts}
                                     disabled={isMailingBusy}
                                     onOpen={() => setMailingWorkspaceView('compose')}
@@ -10567,7 +10573,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 {filteredManagedBroadcasts.length === 0 &&
                                 !showMailingDraftCard &&
                                 !managedBroadcastsQuery.isLoading ? (
-                                  <div className="managed-broadcasts-list__empty">Пусто</div>
+                                  <div className="managed-broadcasts-list__empty">История пока пустая.</div>
                                 ) : null}
 
                                 <Suspense fallback={<SkeletonCard lines={2} />}>
@@ -11397,7 +11403,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       <ActionConfirmSheet
         id="managed-broadcast-delete"
         open={managedBroadcastDeleteTarget !== null}
-        title="Удалить автопостинг?"
+        title="Удалить публикацию?"
         previewTitle={
           managedBroadcastDeleteTarget ? (
             <MaxMarkdownPreview

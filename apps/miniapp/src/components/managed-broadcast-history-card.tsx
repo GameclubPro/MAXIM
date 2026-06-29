@@ -73,14 +73,18 @@ export function ManagedBroadcastHistoryCard({
               className={cn('managed-broadcast-card__badge', `is-${tone}`)}
               title={badge}
               aria-label={badge}
-            />
+            >
+              {badge}
+            </span>
             <strong>{title}</strong>
           </span>
           <MaxMarkdownPreview
             value={broadcast.textPreview}
             className="managed-broadcast-card__preview max-markdown-preview--clamp-2"
             normalizeWhitespace
-            fallback={broadcast.hasImage ? 'Фото без текста' : null}
+            fallback={
+              broadcast.hasVideo ? 'Видео без текста' : broadcast.hasImage ? 'Фото без текста' : null
+            }
           />
         </span>
         <span className="managed-broadcast-card__aside">

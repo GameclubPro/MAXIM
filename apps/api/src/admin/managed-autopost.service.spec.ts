@@ -298,4 +298,167 @@ describe('ManagedAutopostService', () => {
       }),
     );
   });
+
+  it('cancels already materialized broadcasts even when the next slot is imminent', async () => {
+    const existing = {
+      id: 'rule-1',
+      sourceChatId: 'chat-1',
+      entityType: ChatEntityType.CHAT,
+      actorUserId: 'admin-1',
+      title: '',
+      payload: payload(),
+      status: ManagedAutopostRuleStatus.ACTIVE,
+      revision: 1,
+      nextMaterializeAt: new Date(),
+      lastMaterializedAt: null,
+      lastError: null,
+      lockedAt: null,
+      lockToken: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const { service, prisma, managedBroadcastService } = createService();
+    prisma.managedAutopostRule.findFirst.mockResolvedValue(existing);
+    prisma.managedAutopostRule.updateMany.mockResolvedValue({ count: 1 });
+    prisma.managedAutopostRule.findUnique.mockResolvedValue({
+      ...existing,
+      status: ManagedAutopostRuleStatus.DISABLED,
+      _count: { materializations: 1 },
+    });
+    prisma.managedAutopostMaterialization.findMany.mockResolvedValue([
+      {
+        id: 'materialization-1',
+        broadcastId: 'broadcast-1',
+        scheduledAt: new Date(Date.now() + 10_000),
+        broadcast: { sourceChatId: 'chat-1' },
+      },
+    ]);
+    prisma.managedAutopostMaterialization.update.mockResolvedValue({});
+
+    await service.deleteChatAutopostRule('chat-1', 'rule-1', user);
+
+    expect(prisma.managedAutopostMaterialization.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          broadcast: expect.objectContaining({
+            nextSendAt: { not: null },
+          }),
+        }),
+      }),
+    );
+    expect(managedBroadcastService.cancelManagedBroadcast).toHaveBeenCalledWith(
+      'chat-1',
+      'broadcast-1',
+      user,
+    );
+    expect(prisma.managedAutopostMaterialization.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'materialization-1' },
+        data: { status: ManagedAutopostMaterializationStatus.CANCELED },
+      }),
+    );
+  });
+
+  it('cancels overdue materialized broadcasts when deleting a rule', async () => {
+    const existing = {
+      id: 'rule-1',
+      sourceChatId: 'chat-1',
+      entityType: ChatEntityType.CHAT,
+      actorUserId: 'admin-1',
+      title: '',
+      payload: payload(),
+      status: ManagedAutopostRuleStatus.ACTIVE,
+      revision: 1,
+      nextMaterializeAt: new Date(),
+      lastMaterializedAt: null,
+      lastError: null,
+      lockedAt: null,
+      lockToken: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const { service, prisma, managedBroadcastService } = createService();
+    prisma.managedAutopostRule.findFirst.mockResolvedValue(existing);
+    prisma.managedAutopostRule.updateMany.mockResolvedValue({ count: 1 });
+    prisma.managedAutopostRule.findUnique.mockResolvedValue({
+      ...existing,
+      status: ManagedAutopostRuleStatus.DISABLED,
+      _count: { materializations: 1 },
+    });
+    prisma.managedAutopostMaterialization.findMany.mockResolvedValue([
+      {
+        id: 'materialization-1',
+        broadcastId: 'broadcast-1',
+        scheduledAt: new Date(Date.now() - 60_000),
+        broadcast: {
+          sourceChatId: 'chat-1',
+          nextSendAt: new Date(Date.now() - 30_000),
+        },
+      },
+    ]);
+    prisma.managedAutopostMaterialization.update.mockResolvedValue({});
+
+    await service.deleteChatAutopostRule('chat-1', 'rule-1', user);
+
+    expect(managedBroadcastService.cancelManagedBroadcast).toHaveBeenCalledWith(
+      'chat-1',
+      'broadcast-1',
+      user,
+    );
+    expect(prisma.managedAutopostMaterialization.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'materialization-1' },
+        data: { status: ManagedAutopostMaterializationStatus.CANCELED },
+      }),
+    );
+  });
+
+  it('keeps a rule in error when a failed materialization slot is already missed', async () => {
+    const missedSlot = new Date(Date.now() - 60_000);
+    const rule = {
+      id: 'rule-1',
+      sourceChatId: 'chat-1',
+      entityType: ChatEntityType.CHAT,
+      actorUserId: 'admin-1',
+      status: ManagedAutopostRuleStatus.ERROR,
+      revision: 3,
+      payload: payload({ scheduledSlots: [missedSlot.toISOString()] }),
+    };
+    const { service, prisma, managedBroadcastService } = createService();
+    prisma.managedAutopostRule.updateMany.mockResolvedValue({ count: 1 });
+    prisma.managedAutopostRule.findUnique
+      .mockResolvedValueOnce(rule)
+      .mockResolvedValueOnce({ status: ManagedAutopostRuleStatus.ERROR });
+    prisma.managedAutopostMaterialization.findMany
+      .mockResolvedValueOnce([{ scheduledAt: missedSlot }])
+      .mockResolvedValueOnce([]);
+
+    await (
+      service as unknown as {
+        materializeRule: (
+          ruleId: string,
+          reason: 'scheduled',
+          staleLockBefore: Date,
+        ) => Promise<void>;
+      }
+    ).materializeRule('rule-1', 'scheduled', new Date(Date.now() - 60_000));
+
+    expect(managedBroadcastService.sendBroadcast).not.toHaveBeenCalled();
+    expect(prisma.managedAutopostRule.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: 'rule-1',
+          revision: 3,
+          lockToken: expect.any(String),
+        }),
+        data: expect.objectContaining({
+          status: ManagedAutopostRuleStatus.ERROR,
+          nextMaterializeAt: null,
+          lastError: 'Не удалось создать отправку автопоста: время уже прошло.',
+          lockedAt: null,
+          lockToken: null,
+        }),
+      }),
+    );
+  });
 });

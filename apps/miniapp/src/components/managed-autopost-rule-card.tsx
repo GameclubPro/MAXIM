@@ -41,7 +41,7 @@ function resolveRuleBadge(status: ManagedAutopostRuleSummary['status']) {
     return 'Ошибка';
   }
   if (status === 'COMPLETED') {
-    return 'Готово';
+    return 'Завершён';
   }
   return 'Активен';
 }
@@ -129,6 +129,8 @@ export function ManagedAutopostRuleCard({
             className="managed-broadcast-card__quick-action"
             onClick={onPause}
             disabled={isBusy}
+            aria-label="Поставить автопост на паузу"
+            title="Пауза"
           >
             <IconoirPause aria-hidden focusable="false" />
             <span>Пауза</span>
@@ -141,9 +143,11 @@ export function ManagedAutopostRuleCard({
             className="managed-broadcast-card__quick-action"
             onClick={onResume}
             disabled={isBusy}
+            aria-label="Возобновить автопост"
+            title="Возобновить"
           >
             <IconoirPlay aria-hidden focusable="false" />
-            <span>Запустить</span>
+            <span>Возобновить</span>
           </button>
         ) : null}
 

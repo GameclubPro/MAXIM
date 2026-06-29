@@ -47,10 +47,15 @@ export function buildManagedAutopostRuleFacts(
   rule: ManagedAutopostRuleSummary,
   currentLabel: string,
 ): string[] {
+  const scopeLabel =
+    rule.targetMode === 'all'
+      ? 'Все чаты'
+      : rule.targetChats > 1
+        ? formatRussianCountLabel(rule.targetChats, 'чат', 'чата', 'чатов')
+        : currentLabel;
+
   return [
-    rule.targetChats > 1
-      ? formatRussianCountLabel(rule.targetChats, 'чат', 'чата', 'чатов')
-      : currentLabel,
+    scopeLabel,
     formatRussianCountLabel(rule.scheduledSlots.length, 'слот', 'слота', 'слотов'),
     rule.buttons.length > 0 ? formatBroadcastButtonsStatus(rule.buttons) : null,
     rule.hasVideo

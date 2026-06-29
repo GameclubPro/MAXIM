@@ -40,9 +40,16 @@ export function BroadcastPublishBar({
   onPrimary,
 }: BroadcastPublishBarProps) {
   const showIssues = issues.length > 0 && !busy;
+  const showSecondary = Boolean(secondaryLabel && onSecondary);
 
   return (
-    <div className={cn('broadcast-publish-bar', showIssues && 'has-issues')}>
+    <div
+      className={cn(
+        'broadcast-publish-bar',
+        showIssues && 'has-issues',
+        showSecondary && 'has-secondary',
+      )}
+    >
       <div className={cn('broadcast-publish-bar__copy', showIssues && 'has-issues')}>
         <strong>{title}</strong>
         {meta ? <small>{meta}</small> : null}
@@ -74,10 +81,10 @@ export function BroadcastPublishBar({
         <span>{testLabel}</span>
       </button>
 
-      {secondaryLabel && onSecondary ? (
+      {showSecondary ? (
         <button
           type="button"
-          className="button button--ghost broadcast-publish-bar__test broadcast-publish-bar__secondary"
+          className="button button--ghost broadcast-publish-bar__secondary"
           onClick={onSecondary}
           disabled={secondaryDisabled}
           aria-label={secondaryLabel}
@@ -90,9 +97,11 @@ export function BroadcastPublishBar({
 
       <button
         type="button"
-        className="button button--accent broadcast-publish-bar__button"
+        className="button button--accent broadcast-publish-bar__button broadcast-publish-bar__primary"
         onClick={onPrimary}
         disabled={primaryDisabled}
+        aria-label={primaryLabel}
+        title={primaryLabel}
       >
         <SendGlyph aria-hidden focusable="false" />
         <span>{primaryLabel}</span>

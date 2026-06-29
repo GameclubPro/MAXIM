@@ -2,6 +2,7 @@ import type {
   BroadcastHistoryCounts,
   BroadcastHistoryFilter,
 } from '../lib/broadcast-history-filters';
+import { useEffect, useRef } from 'react';
 import { cn } from '../lib/cn';
 import { MaxMarkdownPreview } from './max-markdown-preview';
 import { SegmentedControl } from './ui/segmented-control';
@@ -48,6 +49,7 @@ type BroadcastWorkspaceChromeProps = {
 
 type BroadcastDraftCardProps = {
   preview: string;
+  fallback?: string;
   facts: string[];
   disabled?: boolean;
   onOpen: () => void;
@@ -61,23 +63,33 @@ export function BroadcastWorkspaceTabs({
   disabled = false,
   onChange,
 }: BroadcastWorkspaceTabsProps) {
+  const tabListRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    tabListRef.current
+      ?.querySelector<HTMLElement>('[aria-selected="true"]')
+      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [value]);
+
   return (
-    <SegmentedControl<BroadcastWorkspaceView>
-      className="broadcast-studio-shell__tabs"
-      value={value}
-      onChange={(nextValue) => {
-        if (!disabled) {
-          onChange(nextValue);
-        }
-      }}
-      ariaLabel="Раздел автопостинга"
-      options={[
-        { value: 'compose', label: 'Создать' },
-        { value: 'calendar', label: 'План' },
-        { value: 'autoposts', label: 'Автопосты', count: autopostCount },
-        { value: 'history', label: 'История', count: historyCount },
-      ]}
-    />
+    <div className="broadcast-studio-shell__tabs-scroll" ref={tabListRef}>
+      <SegmentedControl<BroadcastWorkspaceView>
+        className="broadcast-studio-shell__tabs"
+        value={value}
+        onChange={(nextValue) => {
+          if (!disabled) {
+            onChange(nextValue);
+          }
+        }}
+        ariaLabel="Раздел автопостинга"
+        options={[
+          { value: 'compose', label: 'Создать' },
+          { value: 'calendar', label: 'План' },
+          { value: 'autoposts', label: 'Автопосты', count: autopostCount },
+          { value: 'history', label: 'История', count: historyCount },
+        ]}
+      />
+    </div>
   );
 }
 
@@ -151,6 +163,7 @@ export function BroadcastHistoryFilterTabs({
 
 export function BroadcastDraftCard({
   preview,
+  fallback = 'Добавьте текст, фото или видео',
   facts,
   disabled = false,
   onOpen,
@@ -170,7 +183,7 @@ export function BroadcastDraftCard({
           <span className="managed-broadcast-card__main">
             <span className="managed-broadcast-card__headline">
               <span className={cn('managed-broadcast-card__badge', 'is-warning')}>Черновик</span>
-              <strong>Автопост не запущен</strong>
+              <strong>Черновик не сохранён</strong>
             </span>
             {normalizedPreview ? (
               <MaxMarkdownPreview
@@ -179,7 +192,7 @@ export function BroadcastDraftCard({
                 normalizeWhitespace
               />
             ) : (
-              <span className="managed-broadcast-card__preview">Пусто</span>
+              <span className="managed-broadcast-card__preview">{fallback}</span>
             )}
           </span>
           <span className="managed-broadcast-card__aside">

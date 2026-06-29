@@ -468,6 +468,28 @@ describe('broadcast request schema normalization', () => {
     }
   });
 
+  it('requires a MAX attachment token for video payloads', () => {
+    expect(
+      sendBroadcastRequestSchema.safeParse({
+        text: '',
+        mediaType: 'video',
+        mediaPayload: { foo: 'bar' },
+      }).success,
+    ).toBe(false);
+
+    const result = sendBroadcastRequestSchema.parse({
+      text: '',
+      mediaType: 'video',
+      mediaPayload: { token: ' video-token-1 ' },
+      mediaMimeType: 'video/mp4',
+      mediaFileName: 'clip.mp4',
+    });
+
+    expect(result.mediaType).toBe('video');
+    expect(result.mediaPayload).toEqual({ token: 'video-token-1' });
+    expect(result.images).toEqual([]);
+  });
+
   it('uses shared validation for selected audience and calendar slots', () => {
     for (const schema of [sendBroadcastRequestSchema, broadcastHandoffRequestSchema]) {
       const result = schema.safeParse({

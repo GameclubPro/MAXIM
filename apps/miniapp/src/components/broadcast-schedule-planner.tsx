@@ -32,7 +32,6 @@ import {
   getSelectedMinutesForDay,
   normalizeBroadcastPlannerTimeMinutes,
   parseBroadcastPlannerTimeLabel,
-  snapMinutesToStep,
   sortDayKeys,
   startOfDay,
   type BroadcastFreeWindow,
@@ -249,7 +248,6 @@ export function BroadcastSchedulePlanner({
     minimumTimeMs: minimumTime,
     occupiedSlots: recipeOccupiedSlots,
   });
-  const recipeDayKeys = recipePlan.dayKeys;
   const recipeSlotCount = recipePlan.slots.length;
   const recipeTimeLabels = recipeDraft.minutes.map(formatMinuteLabel);
   const recipeApplied =
@@ -368,7 +366,6 @@ export function BroadcastSchedulePlanner({
     },
     { enabled: isDaySheetOpen, priority: 640 },
   );
-  const pastSlotCount = normalizedValue.length - futureSlots.length;
   const futureSlotCount = futureSlots.length;
   const scheduleStatusLabel =
     timingMode === 'now'
@@ -381,11 +378,6 @@ export function BroadcastSchedulePlanner({
   const pickedSlotsCount = pickedDayKeys.reduce(
     (count, dayKey) => count + getSelectedDaySlots(dayKey, normalizedValue).length,
     0,
-  );
-  const activeDayFreeWindows = buildFreeWindowsForDay(
-    (occupiedSlotsByDay.get(activeDayKey) ?? []).filter(
-      (slot) => !selectedInstantSet.has(getBroadcastSlotInstantKey(slot)),
-    ),
   );
   const hasAnyAvailableTimeSlot =
     sheetMode === 'time' && targetDayKeys.every((dayKey) => hasAvailableTimeSlotForDay(dayKey));
@@ -1865,7 +1857,8 @@ export function BroadcastSchedulePlanner({
                                       className="broadcast-planner__day-agenda-delete"
                                       onClick={() => handleAgendaDelete(entry.id)}
                                       disabled={disabled || isDeleting || isEditing}
-                                      aria-label="Удалить автопостинг"
+                                      aria-label="Удалить публикацию"
+                                      title="Удалить публикацию"
                                     >
                                       {isDeleting ? '...' : '×'}
                                     </button>

@@ -424,6 +424,10 @@ function createPrismaMock() {
       })),
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
+    managedAutopostMaterialization: {
+      findMany: jest.fn().mockResolvedValue([]),
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
     channelAudienceSnapshot: {
       findFirst: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),

@@ -14,6 +14,12 @@ function createValidEnv(overrides: Record<string, unknown> = {}) {
 }
 
 describe('validateEnv boolean parsing', () => {
+  it('defaults MAX API calls to the current platform host', () => {
+    const env = validateEnv(createValidEnv());
+
+    expect(env.MAX_API_BASE_URL).toBe('https://platform-api2.max.ru');
+  });
+
   it('parses string false values as false', () => {
     const env = validateEnv(
       createValidEnv({

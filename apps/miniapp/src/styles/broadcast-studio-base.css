@@ -274,7 +274,8 @@
   gap: 10px;
 }
 
-.broadcast-studio-shell__topbar .broadcast-studio-shell__tabs {
+.broadcast-studio-shell__topbar .broadcast-studio-shell__tabs,
+.broadcast-studio-shell__topbar .broadcast-studio-shell__tabs-scroll {
   flex: 1 1 auto;
   min-width: 0;
 }

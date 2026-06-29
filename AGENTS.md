@@ -170,7 +170,7 @@
   4. `https://github.com/max-messenger`
 - MAX API calls must send the bot token in `Authorization: <token>`. Do not use token query parameters.
 - Production event delivery must use Webhook. Long Polling is for development/testing only and cannot be active with a webhook subscription.
-- Keep `platform-api.max.ru` traffic within the documented 30 rps global limit. Prefer existing queues, source tags, route priorities, and per-role env limits over ad hoc direct calls in hot paths.
+- Keep `platform-api2.max.ru` MAX API traffic within the documented 30 rps global limit. Prefer existing queues, source tags, route priorities, and per-role env limits over ad hoc direct calls in hot paths.
 - MAX admin permission snapshots are entity-type sensitive: `write` is delete-capable for messages in group chats, while channel post deletion is `delete`/legacy `delete_message`; do not treat `write` as channel post-delete permission.
 - Managed broadcast/autoposting MAX calls should use `MAX_API_SOURCE_TAGS.MANAGED_BROADCAST`; user-triggered sends/tests use `interactive`, while scheduled/startup delivery runs use `background`. Scheduled/startup runners should honor `BackgroundRuntimeGovernorService` pause/slow decisions, and media uploads should stay on the same lane/source tag as the send.
 - Managed broadcast send timeouts are ambiguous because MAX may have accepted the message before the client timed out. Do not auto-retry send timeouts without a stored `remoteMessageId`; uploads may retry transport timeouts, but message sends should wait for manual review/retry.
