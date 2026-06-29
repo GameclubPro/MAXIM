@@ -874,9 +874,6 @@ async function openBroadcastPlannerTimeSheet(page) {
   if ((await compactSummary.count()) > 0) {
     await compactSummary.click();
     await page.waitForTimeout(350);
-    await openBroadcastPlannerTimeGrid(page);
-    await selectBroadcastPlannerDefaultTimes(page);
-    return;
   }
 
   await openBroadcastPlannerTimeGrid(page);
@@ -924,22 +921,6 @@ async function openBroadcastPlannerTimeGrid(page) {
     await page.waitForTimeout(250);
   }
 
-  const selectedDayButton = page
-    .locator('.broadcast-planner__day.is-selected:not(.is-outside)')
-    .first();
-  if ((await selectedDayButton.count()) > 0) {
-    await selectedDayButton.click();
-    await page.waitForTimeout(250);
-    if ((await timeChip.count()) > 0 && (await timeChip.isVisible())) {
-      return;
-    }
-    if ((await addButton.count()) > 0 && (await addButton.isEnabled())) {
-      await addButton.click();
-      await timeChip.waitFor({ state: 'visible', timeout: 10_000 });
-      return;
-    }
-  }
-
   const scheduleCard = page.locator('.broadcast-planner__schedule-card').first();
   if ((await scheduleCard.count()) > 0) {
     await scheduleCard.click();
@@ -957,6 +938,29 @@ async function openBroadcastPlannerTimeGrid(page) {
     await clickBroadcastPlannerDockTime(page, dockButton, sheetPanel);
     await timeChip.waitFor({ state: 'visible', timeout: 10_000 });
     return;
+  }
+
+  const selectedDayButton = page
+    .locator(
+      '.broadcast-planner__day.is-selected:not(.is-picked):not(.is-outside), .broadcast-planner__day:not([disabled]):not(.is-picked):not(.is-outside):not(.is-busy)',
+    )
+    .first();
+  if ((await selectedDayButton.count()) > 0) {
+    await selectedDayButton.click();
+    await page.waitForTimeout(250);
+    if ((await timeChip.count()) > 0 && (await timeChip.isVisible())) {
+      return;
+    }
+    if ((await addButton.count()) > 0 && (await addButton.isEnabled())) {
+      await addButton.click();
+      await timeChip.waitFor({ state: 'visible', timeout: 10_000 });
+      return;
+    }
+    if ((await dockButton.count()) > 0) {
+      await clickBroadcastPlannerDockTime(page, dockButton, sheetPanel);
+      await timeChip.waitFor({ state: 'visible', timeout: 10_000 });
+      return;
+    }
   }
 
   throw new Error('Broadcast planner time sheet trigger was not found.');
@@ -1096,7 +1100,11 @@ async function clickBroadcastPlannerDockTime(page, dockButton, sheetPanel) {
     );
   }
 
-  await page.mouse.click(clickPoint.x, clickPoint.y);
+  if (screenshotTarget === 'native') {
+    await page.touchscreen.tap(clickPoint.x, clickPoint.y);
+  } else {
+    await page.mouse.click(clickPoint.x, clickPoint.y);
+  }
   await sheetPanel.waitFor({ state: 'visible', timeout: 10_000 });
 }
 

@@ -457,10 +457,6 @@ function formatChannelCountLabel(
   return `${safeCount} ${plural}`;
 }
 
-function formatChannelCompactCountLabel(count: number, label: string): string {
-  return `${Math.max(0, Math.trunc(count))} ${label}`;
-}
-
 function formatManagedBroadcastDateTime(value: string | null, timeZone?: string | null): string {
   return formatDateTimeInTimeZone(
     value,
@@ -2215,7 +2211,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       ? formatChannelCountLabel(broadcastPlannerState.selectedDayCount, 'день', 'дня', 'дней')
       : null,
     broadcastPlannerState.futureSlotCount > 0
-      ? formatChannelCompactCountLabel(broadcastPlannerState.futureSlotCount, 'отпр.')
+      ? formatChannelCountLabel(
+          broadcastPlannerState.futureSlotCount,
+          'отправка',
+          'отправки',
+          'отправок',
+        )
       : null,
   ]
     .filter(Boolean)

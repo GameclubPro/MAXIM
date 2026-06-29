@@ -137,7 +137,6 @@ import {
 } from '../lib/broadcast-link-buttons';
 import {
   buildManagedAutopostRuleFacts,
-  formatCompactCountLabel,
   normalizeManagedAutopostPayload,
   sortManagedAutopostRules,
 } from '../lib/managed-autopost-ui';
@@ -4920,7 +4919,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       ? formatRussianCountLabel(mailingPlannerState.selectedDayCount, 'день', 'дня', 'дней')
       : null,
     mailingPlannerState.futureSlotCount > 0
-      ? formatCompactCountLabel(mailingPlannerState.futureSlotCount, 'отпр.')
+      ? formatRussianCountLabel(
+          mailingPlannerState.futureSlotCount,
+          'отправка',
+          'отправки',
+          'отправок',
+        )
       : null,
   ]
     .filter(Boolean)

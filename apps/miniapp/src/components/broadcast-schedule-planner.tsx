@@ -1,5 +1,5 @@
 import type { ManagedBroadcastCalendarSlot, ManagedBroadcastSummary } from '@maxim/contracts';
-import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
+import { useEffect, useEffectEvent, useMemo, useRef, useState, type PointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { MaxMarkdownPreview } from './max-markdown-preview';
 import { TimeField } from './ui/time-field';
@@ -829,6 +829,15 @@ export function BroadcastSchedulePlanner({
     maxImpact('medium');
   }
 
+  function handleDockTimePointerUp(event: PointerEvent<HTMLButtonElement>) {
+    if (event.pointerType === 'mouse') {
+      return;
+    }
+
+    event.preventDefault();
+    openTimeStep();
+  }
+
   function finishPickedSelection() {
     setPickedDayKeys([]);
     setApplyToAllPickedDays(false);
@@ -1633,6 +1642,7 @@ export function BroadcastSchedulePlanner({
                 <button
                   type="button"
                   className="broadcast-planner__dock-primary"
+                  onPointerUp={handleDockTimePointerUp}
                   onClick={openTimeStep}
                   disabled={disabled || pickedDayKeys.length === 0}
                 >

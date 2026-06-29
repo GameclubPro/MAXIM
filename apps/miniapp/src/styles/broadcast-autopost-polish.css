@@ -47,6 +47,7 @@ body.settings-drilldown-open .toast__close {
   --broadcast-polish-accent-strong: #0873b8;
   --broadcast-polish-green: #15986a;
   --broadcast-polish-footer-space: 58px;
+  --broadcast-polish-effective-footer-space: var(--broadcast-polish-footer-space);
 }
 
 .settings-drilldown__panel--broadcast-screen .settings-drilldown__header {
@@ -99,11 +100,12 @@ body.settings-drilldown-open .toast__close {
 
 .settings-drilldown__panel--broadcast-screen .settings-drilldown__body {
   background: var(--broadcast-polish-page);
-  scroll-padding-bottom: calc(var(--broadcast-polish-footer-space) + 22px);
+  scroll-padding-top: 86px;
+  scroll-padding-bottom: calc(var(--broadcast-polish-effective-footer-space) + 22px);
 }
 
 .settings-drilldown__panel--broadcast-screen .settings-section__collapse-inner {
-  padding: 0 0 calc(var(--broadcast-polish-footer-space) + 8px);
+  padding: 0 0 calc(var(--broadcast-polish-effective-footer-space) + 8px);
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-studio-screen__chrome {
@@ -916,12 +918,12 @@ body.settings-drilldown-open .toast__close {
 
 .settings-drilldown__panel--broadcast-screen
   .settings-drilldown__footer:has(.broadcast-publish-bar.has-secondary) {
-  min-height: 96px;
+  min-height: 118px;
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-publish-bar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(34px, 0.34fr) minmax(128px, 1fr);
+  grid-template-columns: 42px minmax(0, 1fr);
   align-items: center;
   gap: 6px;
   border: 0;
@@ -932,16 +934,16 @@ body.settings-drilldown-open .toast__close {
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-publish-bar.has-secondary {
-  grid-template-columns: minmax(0, 1fr) minmax(34px, 0.34fr) minmax(128px, 1fr);
+  grid-template-columns: 42px minmax(0, 1fr);
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-publish-bar.has-issues {
-  grid-template-columns: minmax(46px, auto) minmax(34px, 0.34fr) minmax(128px, 1fr);
+  grid-template-columns: 42px minmax(0, 1fr);
 }
 
 .settings-drilldown__panel--broadcast-screen
   .broadcast-publish-bar.has-secondary.has-issues {
-  grid-template-columns: minmax(46px, auto) minmax(46px, 0.36fr) minmax(118px, 1fr);
+  grid-template-columns: 42px minmax(0, 1fr);
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-publish-bar.has-secondary
@@ -961,10 +963,14 @@ body.settings-drilldown-open .toast__close {
 
 .settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__copy {
   min-width: 0;
-  grid-column: 1;
+  grid-column: 1 / -1;
   grid-row: 1;
   order: 1;
-  gap: 4px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 8px;
+  padding-inline: 1px;
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__copy strong {
@@ -978,14 +984,25 @@ body.settings-drilldown-open .toast__close {
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__copy small {
-  display: none;
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--broadcast-polish-muted);
+  font-size: 0.6rem;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__copy.has-issues strong {
-  display: none;
+  display: block;
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__issues {
+  grid-column: 2;
+  grid-row: 1;
+  max-width: 150px;
+  min-width: 0;
   display: flex;
   flex-wrap: nowrap;
   gap: 4px;
@@ -999,10 +1016,10 @@ body.settings-drilldown-open .toast__close {
 
 .settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__issue {
   flex: 0 0 auto;
-  min-height: 28px;
-  max-width: 82px;
+  min-height: 24px;
+  max-width: 70px;
   border-radius: 999px;
-  padding: 0 9px;
+  padding: 0 8px;
   overflow: hidden;
   font-size: 0.58rem;
   line-height: 1;
@@ -1025,8 +1042,8 @@ body.settings-drilldown-open .toast__close {
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__test {
-  grid-column: 2;
-  grid-row: 1;
+  grid-column: 1;
+  grid-row: 2;
   color: #5d6872;
 }
 
@@ -1039,35 +1056,43 @@ body.settings-drilldown-open .toast__close {
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__primary {
-  grid-column: 3;
-  grid-row: 1;
+  grid-column: 2;
+  grid-row: 2;
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-publish-bar.has-issues
   .broadcast-publish-bar__copy {
+  grid-column: 1 / -1;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar.has-issues
+  .broadcast-publish-bar__test {
   grid-column: 1;
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-publish-bar.has-issues
-  .broadcast-publish-bar__test {
-  grid-column: 2;
-}
-
-.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar.has-issues
   .broadcast-publish-bar__primary {
-  grid-column: 3;
-}
-
-.settings-drilldown__panel--broadcast-screen
-  .broadcast-publish-bar.has-secondary.has-issues
-  .broadcast-publish-bar__test {
   grid-column: 2;
 }
 
 .settings-drilldown__panel--broadcast-screen
   .broadcast-publish-bar.has-secondary.has-issues
+  .broadcast-publish-bar__test {
+  grid-column: 1;
+}
+
+.settings-drilldown__panel--broadcast-screen
+  .broadcast-publish-bar.has-secondary.has-issues
   .broadcast-publish-bar__primary {
-  grid-column: 3;
+  grid-column: 2;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__button:disabled,
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__primary:disabled {
+  border-color: rgba(126, 149, 169, 0.2);
+  background: #e9f0f5;
+  color: #738495;
+  opacity: 1;
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__test::before,
@@ -1488,7 +1513,7 @@ body.settings-drilldown-open .toast__close {
 .settings-drilldown__panel--broadcast-screen .broadcast-compose-flow--screen {
   gap: 5px;
   padding-top: 5px;
-  padding-bottom: calc(var(--broadcast-polish-footer-space) + 16px);
+  padding-bottom: calc(var(--broadcast-polish-effective-footer-space) + 16px);
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-message-card {
@@ -2211,5 +2236,124 @@ body.settings-drilldown-open .toast__close {
     min-height: 28px;
     font-size: 0.62rem;
   }
+}
+
+.settings-drilldown__panel--broadcast-screen .settings-drilldown__footer {
+  min-height: 70px;
+}
+
+.settings-drilldown__panel--broadcast-screen
+  .settings-drilldown__footer:has(.broadcast-publish-bar.has-secondary) {
+  min-height: 118px;
+}
+
+.settings-drilldown__panel--broadcast-screen:has(.broadcast-publish-bar) {
+  --broadcast-polish-effective-footer-space: 86px;
+}
+
+.settings-drilldown__panel--broadcast-screen:has(.broadcast-publish-bar.has-secondary) {
+  --broadcast-polish-effective-footer-space: 138px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__dock {
+  bottom: calc(var(--broadcast-polish-effective-footer-space) + 10px);
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner,
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__compact-summary,
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__calendar-card {
+  scroll-margin-top: 86px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar,
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar.has-issues,
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar.has-secondary,
+.settings-drilldown__panel--broadcast-screen
+  .broadcast-publish-bar.has-secondary.has-issues {
+  grid-template-columns: 42px minmax(0, 1fr);
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__copy,
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar.has-issues
+  .broadcast-publish-bar__copy {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 3px 8px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__copy strong,
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__copy.has-issues strong {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__copy small {
+  grid-column: 1 / -1;
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--broadcast-polish-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__issues {
+  grid-column: 2;
+  grid-row: 1;
+  max-width: min(152px, 40vw);
+  min-width: 0;
+  justify-self: end;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__issue {
+  max-width: 72px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__test,
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar.has-issues
+  .broadcast-publish-bar__test,
+.settings-drilldown__panel--broadcast-screen
+  .broadcast-publish-bar.has-secondary.has-issues
+  .broadcast-publish-bar__test {
+  grid-column: 1;
+  grid-row: 2;
+  width: 42px;
+  padding-inline: 0;
+  justify-content: center;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__primary,
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar.has-issues
+  .broadcast-publish-bar__primary,
+.settings-drilldown__panel--broadcast-screen
+  .broadcast-publish-bar.has-secondary.has-issues
+  .broadcast-publish-bar__primary {
+  grid-column: 2;
+  grid-row: 2;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__secondary,
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar.has-secondary
+  .broadcast-publish-bar__secondary,
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar.has-secondary.has-issues
+  .broadcast-publish-bar__secondary {
+  grid-column: 1 / -1;
+  grid-row: 3;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__button:disabled,
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__primary:disabled {
+  border-color: rgba(126, 149, 169, 0.2);
+  background: #e9f0f5;
+  color: #738495;
+  opacity: 1;
 }
 }
