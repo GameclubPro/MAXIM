@@ -172,7 +172,9 @@ export function BroadcastDraftCard({
   const normalizedPreview = preview.trim();
 
   return (
-    <div className={cn('managed-broadcast-card', 'is-warning', 'is-editable')}>
+    <div
+      className={cn('managed-broadcast-card', 'broadcast-draft-card', 'is-warning', 'is-editable')}
+    >
       <button
         type="button"
         className="managed-broadcast-card__surface"
@@ -182,8 +184,7 @@ export function BroadcastDraftCard({
         <div className="managed-broadcast-card__top">
           <span className="managed-broadcast-card__main">
             <span className="managed-broadcast-card__headline">
-              <span className={cn('managed-broadcast-card__badge', 'is-warning')}>Черновик</span>
-              <strong>Черновик не сохранён</strong>
+              <strong>Черновик</strong>
             </span>
             {normalizedPreview ? (
               <MaxMarkdownPreview
@@ -197,9 +198,8 @@ export function BroadcastDraftCard({
           </span>
           <span className="managed-broadcast-card__aside">
             <span className={cn('managed-broadcast-card__metric', 'is-warning')}>
-              <small>Статус</small>
-              <strong>Черновик</strong>
-              <span>Не запущен</span>
+              <small>Состояние</small>
+              <strong>Не сохранён</strong>
             </span>
           </span>
         </div>
@@ -219,11 +219,13 @@ export function BroadcastDraftCard({
         </button>
         <button
           type="button"
-          className="button button--ghost"
+          className="managed-broadcast-card__quick-action"
           onClick={onReset}
           disabled={disabled}
+          aria-label="Очистить черновик"
+          title="Очистить"
         >
-          Очистить
+          <ResetIcon />
         </button>
       </div>
     </div>

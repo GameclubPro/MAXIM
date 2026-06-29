@@ -10491,7 +10491,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             </div>
 
                             <div className="broadcast-stage-card__body">
-                              <div className="managed-broadcasts-list">
+                              <div className="managed-broadcasts-list managed-broadcasts-list--autoposts">
                                 {showMailingDraftCard ? (
                                   <BroadcastDraftCard
                                     preview={normalizedMailingText}
@@ -10506,7 +10506,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 {orderedManagedAutopostRules.length === 0 &&
                                 !showMailingDraftCard &&
                                 !managedAutopostRulesQuery.isLoading ? (
-                                  <div className="managed-broadcasts-list__empty">Автопостов пока нет. Соберите сообщение и сохраните автопост.</div>
+                                  <div className="managed-broadcasts-list__empty">Автопостов пока нет.</div>
                                 ) : null}
 
                                 <Suspense fallback={<SkeletonCard lines={2} />}>

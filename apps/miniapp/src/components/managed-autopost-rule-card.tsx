@@ -78,7 +78,14 @@ export function ManagedAutopostRuleCard({
   const canResume = rule.status === 'PAUSED' || rule.status === 'ERROR';
 
   return (
-    <div className={cn('managed-broadcast-card', `is-${tone}`, 'is-editable')}>
+    <div
+      className={cn(
+        'managed-broadcast-card',
+        'managed-autopost-rule-card',
+        `is-${tone}`,
+        'is-editable',
+      )}
+    >
       <button
         type="button"
         className="managed-broadcast-card__surface"
@@ -95,14 +102,15 @@ export function ManagedAutopostRuleCard({
               value={rule.textPreview}
               className="managed-broadcast-card__preview max-markdown-preview--clamp-2"
               normalizeWhitespace
-              fallback={rule.hasImage ? 'Фото без текста' : rule.hasVideo ? 'Видео без текста' : null}
+              fallback={
+                rule.hasImage ? 'Фото без текста' : rule.hasVideo ? 'Видео без текста' : null
+              }
             />
           </span>
           <span className="managed-broadcast-card__aside">
             <span className={cn('managed-broadcast-card__metric', `is-${tone}`)}>
-              <small>{hasNextLabel ? 'Следующий' : 'Статус'}</small>
+              <small>{hasNextLabel ? 'Следующий' : 'Состояние'}</small>
               <strong>{hasNextLabel ? nextLabel : badge}</strong>
-              {hasNextLabel ? <span>{badge}</span> : null}
             </span>
           </span>
         </div>
