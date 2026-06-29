@@ -67,6 +67,7 @@ import {
 } from '../components/broadcast-studio-header';
 import { ManagedBroadcastHistoryCard } from '../components/managed-broadcast-history-card';
 import {
+  BroadcastDraftCard,
   BroadcastHistoryFilterTabs,
   BroadcastWorkspaceChrome,
   countManagedBroadcastHistoryFilters,
@@ -572,16 +573,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         : focusSection === 'rules'
           ? { rules: true }
           : focusSection === 'comments'
-          ? { comments: true }
-          : focusSection === 'stopWords'
-            ? { stopWords: true }
-            : focusSection === 'giveaway'
-              ? { giveaway: true }
-              : focusSection === 'vkParsing'
-                ? { vkParsing: true }
-                : focusSection === 'requiredSubscription'
-                  ? { requiredSubscription: true }
-                  : { mailing: true }),
+            ? { comments: true }
+            : focusSection === 'stopWords'
+              ? { stopWords: true }
+              : focusSection === 'giveaway'
+                ? { giveaway: true }
+                : focusSection === 'vkParsing'
+                  ? { vkParsing: true }
+                  : focusSection === 'requiredSubscription'
+                    ? { requiredSubscription: true }
+                    : { mailing: true }),
     });
   }, [focusSection]);
 
@@ -981,7 +982,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     setDraft(
       normalizeDuplicateFlowSettings(
-        normalizeLegacyChatCommentScope(normalizeRequiredSubscriptionDraftSettings(settingsQuery.data)),
+        normalizeLegacyChatCommentScope(
+          normalizeRequiredSubscriptionDraftSettings(settingsQuery.data),
+        ),
       ),
     );
     setFieldErrors({});
@@ -1003,14 +1006,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-	    const signature = JSON.stringify(broadcastHandoffStateQuery.data);
-	    if (appliedBroadcastHandoffSignatureRef.current === signature) {
-	      return;
-	    }
+    const signature = JSON.stringify(broadcastHandoffStateQuery.data);
+    if (appliedBroadcastHandoffSignatureRef.current === signature) {
+      return;
+    }
 
-	    appliedBroadcastHandoffSignatureRef.current = signature;
-	    broadcastDraftRestoreEpochRef.current += 1;
-	    setEditingManagedBroadcast(null);
+    appliedBroadcastHandoffSignatureRef.current = signature;
+    broadcastDraftRestoreEpochRef.current += 1;
+    setEditingManagedBroadcast(null);
     setDuplicatedManagedBroadcast(null);
     const handoffTargetChatIds = normalizeBroadcastAudienceTargetChatIds(
       broadcastHandoffStateQuery.data.targetChatIds,
@@ -4406,10 +4409,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     [chatId, mailingTargetChatIds, mailingTargetMode],
   );
   const mailingCalendarTargetChatIds = useMemo(
-    () =>
-      mailingAudiencePayload.targetMode === 'all'
-        ? []
-        : mailingAudiencePayload.targetChatIds,
+    () => (mailingAudiencePayload.targetMode === 'all' ? [] : mailingAudiencePayload.targetChatIds),
     [mailingAudiencePayload.targetChatIds, mailingAudiencePayload.targetMode],
   );
   const mailingCalendarQuery = useQuery({
@@ -4789,13 +4789,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     ? 'Сохранить'
     : mailingTimingMode === 'now'
       ? 'Опубликовать'
-      : 'Запланировать';
+      : 'Запустить';
   const mailingFooterPrimaryActionLabel = editingManagedBroadcast
     ? 'Сохранить'
     : mailingTimingMode === 'now'
       ? 'Опубликовать'
-      : 'Запланировать';
+      : 'Запустить';
   const showMailingWorkspaceTabs = !editingManagedBroadcast && !duplicatedManagedBroadcast;
+  const showMailingDraftCard = showMailingWorkspaceTabs && showMailingResetAction;
   const mailingResetActionLabel = editingManagedBroadcast
     ? 'Сбросить изменения'
     : 'Очистить автопостинг';
@@ -4819,6 +4820,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   ]
     .filter(Boolean)
     .join(' · ');
+  const mailingDraftFacts = [
+    mailingHeaderTargetLabel,
+    mailingFooterScheduleLabel,
+    mailingFooterMeta,
+  ].filter((item): item is string => Boolean(item));
   const mailingDrilldownFooter = (
     <BroadcastPublishBar
       title={mailingFooterTitle}
@@ -4886,7 +4892,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     const draftSettings =
-      section === 'requiredSubscription' ? normalizeRequiredSubscriptionDraftSettings(draft) : draft;
+      section === 'requiredSubscription'
+        ? normalizeRequiredSubscriptionDraftSettings(draft)
+        : draft;
     const savedSettings =
       section === 'requiredSubscription'
         ? normalizeRequiredSubscriptionDraftSettings(settingsQuery.data)
@@ -4916,7 +4924,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         ? normalizeRequiredSubscriptionDraftSettings(settingsQuery.data)
         : settingsQuery.data;
     const draftSettings =
-      section === 'requiredSubscription' ? normalizeRequiredSubscriptionDraftSettings(draft) : draft;
+      section === 'requiredSubscription'
+        ? normalizeRequiredSubscriptionDraftSettings(draft)
+        : draft;
 
     return validateDraft(mergeSectionSettings(baseSettings, draftSettings, section));
   }
@@ -5600,9 +5610,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                                         }}
                                                       />
                                                     </label>
-                                                    <div
-                                                      className="field allowlist-item__schedule-field"
-                                                    >
+                                                    <div className="field allowlist-item__schedule-field">
                                                       <Suspense fallback={null}>
                                                         <LazySettingsTimeFields
                                                           kind="schedule"
@@ -10213,7 +10221,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               />
 
                               <div className="managed-broadcasts-list">
+                                {showMailingDraftCard ? (
+                                  <BroadcastDraftCard
+                                    preview={normalizedMailingText}
+                                    facts={mailingDraftFacts}
+                                    disabled={isMailingBusy}
+                                    onOpen={() => setMailingWorkspaceView('compose')}
+                                    onReset={handleClearMailingComposer}
+                                  />
+                                ) : null}
+
                                 {filteredManagedBroadcasts.length === 0 &&
+                                !showMailingDraftCard &&
                                 !managedBroadcastsQuery.isLoading ? (
                                   <div className="managed-broadcasts-list__empty">Пусто</div>
                                 ) : null}
@@ -10428,18 +10447,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     expandedSections.requiredSubscription && 'is-open',
                   )}
                 >
-	                  {expandedSections.requiredSubscription ? (
-	                    <div className="settings-section__collapse-inner managed-giveaway required-subscription__workspace">
-	                      <div className="managed-giveaway__section required-subscription__board">
-	                        <div className="managed-giveaway__title-row">
-	                          <div className="managed-giveaway__section-copy">
-	                            <strong>Источники подписки</strong>
-	                            <small>
-	                              {requiredSubscriptionSelectedCount}/
-	                              {REQUIRED_SUBSCRIPTION_MAX_CHANNELS}
-	                            </small>
-	                          </div>
-	                        </div>
+                  {expandedSections.requiredSubscription ? (
+                    <div className="settings-section__collapse-inner managed-giveaway required-subscription__workspace">
+                      <div className="managed-giveaway__section required-subscription__board">
+                        <div className="managed-giveaway__title-row">
+                          <div className="managed-giveaway__section-copy">
+                            <strong>Источники подписки</strong>
+                            <small>
+                              {requiredSubscriptionSelectedCount}/
+                              {REQUIRED_SUBSCRIPTION_MAX_CHANNELS}
+                            </small>
+                          </div>
+                        </div>
 
                         <label className="field settings-text-field required-subscription__button-label">
                           <span>Название кнопки</span>
@@ -10462,16 +10481,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             )}
                           >
                             Есть недоступные ссылки. Исправьте или удалите их.
-	                          </p>
-	                        ) : null}
+                          </p>
+                        ) : null}
 
-	                        {requiredSubscriptionSelectedCount === 0 ? (
-	                          <div className="required-subscription__selection-empty">
-	                            <strong>Источники пока не выбраны</strong>
-	                          </div>
-	                        ) : null}
+                        {requiredSubscriptionSelectedCount === 0 ? (
+                          <div className="required-subscription__selection-empty">
+                            <strong>Источники пока не выбраны</strong>
+                          </div>
+                        ) : null}
 
-	                        {selectedRequiredSubscriptionChannels.length > 0 ? (
+                        {selectedRequiredSubscriptionChannels.length > 0 ? (
                           <div className="required-subscription__selection-list">
                             {selectedRequiredSubscriptionChannels.map((channel) => {
                               const linkPreview = formatRequiredSubscriptionLinkPreview(
@@ -10600,9 +10619,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                         {unavailableManagedRequiredSubscriptionChannels.length > 0 ? (
                           <>
-                            <small className="field__hint">
-                              Недоступные элементы
-                            </small>
+                            <small className="field__hint">Недоступные элементы</small>
                             <div className="managed-giveaway__prize-editor-list">
                               {unavailableManagedRequiredSubscriptionChannels.map(
                                 (channel, index) => (
@@ -10687,13 +10704,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         </div>
                       </div>
 
-	                      <div
-	                        className="settings-subsection-divider"
-	                        role="separator"
-	                        aria-label="Действия бота для обязательной подписки"
-	                      >
-	                        <span>Действия</span>
-	                      </div>
+                      <div
+                        className="settings-subsection-divider"
+                        role="separator"
+                        aria-label="Действия бота для обязательной подписки"
+                      >
+                        <span>Действия</span>
+                      </div>
 
                       <div className="settings-native-toggle">
                         <div className="settings-native-toggle__row">

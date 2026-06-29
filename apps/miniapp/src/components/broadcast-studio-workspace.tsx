@@ -2,8 +2,11 @@ import type {
   BroadcastHistoryCounts,
   BroadcastHistoryFilter,
 } from '../lib/broadcast-history-filters';
+import { cn } from '../lib/cn';
+import { MaxMarkdownPreview } from './max-markdown-preview';
 import { SegmentedControl } from './ui/segmented-control';
 import { ResetIcon } from './ui/reset-icon';
+import './managed-broadcast-history-card.css';
 
 export {
   countManagedBroadcastHistoryFilters,
@@ -41,6 +44,14 @@ type BroadcastWorkspaceChromeProps = {
   onReset: () => void;
 };
 
+type BroadcastDraftCardProps = {
+  preview: string;
+  facts: string[];
+  disabled?: boolean;
+  onOpen: () => void;
+  onReset: () => void;
+};
+
 export function BroadcastWorkspaceTabs({
   value,
   historyCount,
@@ -58,7 +69,7 @@ export function BroadcastWorkspaceTabs({
       }}
       ariaLabel="Раздел автопостинга"
       options={[
-        { value: 'compose', label: 'Пост' },
+        { value: 'compose', label: 'Автопост' },
         { value: 'calendar', label: 'План' },
         { value: 'history', label: 'История', count: historyCount },
       ]}
@@ -122,12 +133,80 @@ export function BroadcastHistoryFilterTabs({
       onChange={onChange}
       ariaLabel="История автопостинга"
       options={[
-        { value: 'future', label: 'План', count: counts.future },
-        { value: 'active', label: 'Идут', count: counts.active },
+        { value: 'future', label: 'Запланировано', count: counts.future },
+        { value: 'active', label: 'В работе', count: counts.active },
         { value: 'error', label: 'Ошибки', count: counts.error },
-        { value: 'sent', label: 'Готово', count: counts.sent },
+        { value: 'sent', label: 'Опубликовано', count: counts.sent },
         { value: 'canceled', label: 'Стоп', count: counts.canceled },
       ]}
     />
+  );
+}
+
+export function BroadcastDraftCard({
+  preview,
+  facts,
+  disabled = false,
+  onOpen,
+  onReset,
+}: BroadcastDraftCardProps) {
+  const normalizedPreview = preview.trim();
+
+  return (
+    <div className={cn('managed-broadcast-card', 'is-warning', 'is-editable')}>
+      <button
+        type="button"
+        className="managed-broadcast-card__surface"
+        onClick={onOpen}
+        disabled={disabled}
+      >
+        <div className="managed-broadcast-card__top">
+          <span className="managed-broadcast-card__main">
+            <span className="managed-broadcast-card__headline">
+              <span className={cn('managed-broadcast-card__badge', 'is-warning')}>Черновик</span>
+              <strong>Автопост не запущен</strong>
+            </span>
+            {normalizedPreview ? (
+              <MaxMarkdownPreview
+                value={normalizedPreview}
+                className="managed-broadcast-card__preview max-markdown-preview--clamp-2"
+                normalizeWhitespace
+              />
+            ) : (
+              <span className="managed-broadcast-card__preview">Пусто</span>
+            )}
+          </span>
+          <span className="managed-broadcast-card__aside">
+            <span className={cn('managed-broadcast-card__metric', 'is-warning')}>
+              <small>Статус</small>
+              <strong>Черновик</strong>
+              <span>Не запущен</span>
+            </span>
+          </span>
+        </div>
+
+        {facts.length > 0 ? (
+          <div className="managed-broadcast-card__facts">
+            {facts.map((fact) => (
+              <span key={`broadcast-draft-${fact}`}>{fact}</span>
+            ))}
+          </div>
+        ) : null}
+      </button>
+
+      <div className="managed-broadcast-card__actions">
+        <button type="button" className="button button--ghost" onClick={onOpen} disabled={disabled}>
+          Открыть
+        </button>
+        <button
+          type="button"
+          className="button button--ghost"
+          onClick={onReset}
+          disabled={disabled}
+        >
+          Очистить
+        </button>
+      </div>
+    </div>
   );
 }

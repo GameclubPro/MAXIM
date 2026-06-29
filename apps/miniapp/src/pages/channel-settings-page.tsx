@@ -33,6 +33,7 @@ import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import type { BroadcastSchedulePlannerSelectionState } from '../components/broadcast-schedule-planner';
 import { BroadcastPublishBar } from '../components/broadcast-publish-bar';
 import {
+  BroadcastDraftCard,
   BroadcastHistoryFilterTabs,
   BroadcastWorkspaceChrome,
   countManagedBroadcastHistoryFilters,
@@ -677,12 +678,7 @@ function buildManagedBroadcastFactChips(broadcast: ManagedBroadcastListItem): st
   }).label;
   const scheduleLabel =
     broadcast.scheduleMode === 'calendar'
-      ? formatChannelCountLabel(
-          broadcast.scheduledSlots.length,
-          'отправка',
-          'отправки',
-          'отправок',
-        )
+      ? formatChannelCountLabel(broadcast.scheduledSlots.length, 'отправка', 'отправки', 'отправок')
       : broadcast.cycleEnabled
         ? `Цикл ${broadcast.sentCount}/${broadcast.cycleCount}`
         : '1 отправка';
@@ -1024,11 +1020,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         ? { comments: true }
         : focusSection === 'postSuggestions'
           ? { postSuggestions: true }
-        : focusSection === 'vkParsing'
-          ? { vkParsing: true }
-          : focusSection === 'giveaway'
-            ? { giveaway: true }
-            : { broadcast: true }),
+          : focusSection === 'vkParsing'
+            ? { vkParsing: true }
+            : focusSection === 'giveaway'
+              ? { giveaway: true }
+              : { broadcast: true }),
     }));
   }, [focusSection]);
 
@@ -2170,16 +2166,22 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     ? 'Сохранить'
     : broadcastTimingMode === 'now'
       ? 'Опубликовать'
-      : 'Запланировать';
+      : 'Запустить';
   const broadcastFooterPrimaryActionLabel = editingManagedBroadcast
     ? 'Сохранить'
     : broadcastTimingMode === 'now'
       ? 'Опубликовать'
-      : 'Запланировать';
+      : 'Запустить';
   const showBroadcastWorkspaceTabs = !editingManagedBroadcast && !duplicatedManagedBroadcast;
   const activeBroadcastWorkspaceView = showBroadcastWorkspaceTabs
     ? broadcastWorkspaceView
     : 'compose';
+  const showBroadcastDraftCard = showBroadcastWorkspaceTabs && showBroadcastResetAction;
+  const broadcastDraftFacts = [
+    broadcastTargetContextLabel,
+    broadcastFooterScheduleLabel,
+    broadcastFooterMeta,
+  ].filter((item): item is string => Boolean(item));
   const broadcastDrilldownFooter = (
     <BroadcastPublishBar
       title={broadcastFooterTitle}
@@ -3356,7 +3358,17 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                           </div>
                         ) : (
                           <div className="managed-broadcasts-list">
-                            {filteredBroadcasts.length === 0 ? (
+                            {showBroadcastDraftCard ? (
+                              <BroadcastDraftCard
+                                preview={normalizedBroadcastText}
+                                facts={broadcastDraftFacts}
+                                disabled={isBroadcastBusy}
+                                onOpen={() => setBroadcastWorkspaceView('compose')}
+                                onReset={handleClearBroadcastComposer}
+                              />
+                            ) : null}
+
+                            {filteredBroadcasts.length === 0 && !showBroadcastDraftCard ? (
                               <div className="managed-broadcasts-list__empty">Пусто</div>
                             ) : null}
 

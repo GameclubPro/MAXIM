@@ -376,6 +376,17 @@ const scenarios = [
     },
   },
   {
+    name: 'chat-settings-broadcast-history',
+    path: '/chat/preview-chat/settings',
+    searchParams: {
+      focus: 'broadcast',
+      handoff: '1',
+    },
+    beforeShot: async (page) => {
+      await openBroadcastHistoryTab(page);
+    },
+  },
+  {
     name: 'chat-settings-broadcast-recipe',
     path: '/chat/preview-chat/settings',
     searchParams: {
@@ -491,6 +502,17 @@ const scenarios = [
     },
   },
   {
+    name: 'channel-settings-broadcast-history',
+    path: '/channel/preview-channel/settings',
+    searchParams: {
+      focus: 'broadcast',
+      handoff: '1',
+    },
+    beforeShot: async (page) => {
+      await openBroadcastHistoryTab(page);
+    },
+  },
+  {
     name: 'channel-settings-broadcast-recipe',
     path: '/channel/preview-channel/settings',
     searchParams: {
@@ -564,10 +586,7 @@ const scenarios = [
         .locator('.broadcast-link-editor input[type="url"]')
         .first()
         .fill('https://max.ru/preview-channel');
-      await page
-        .locator('.broadcast-link-editor input[type="text"]')
-        .first()
-        .fill('Открыть канал');
+      await page.locator('.broadcast-link-editor input[type="text"]').first().fill('Открыть канал');
       await page.waitForTimeout(350);
     },
   },
@@ -955,6 +974,21 @@ async function openBroadcastPlanTab(page) {
   await page.waitForTimeout(500);
 }
 
+async function openBroadcastHistoryTab(page) {
+  await page.waitForTimeout(900);
+  const historyTab = page
+    .locator('.broadcast-studio-shell__tabs [role="tab"]')
+    .filter({ hasText: /^История/u })
+    .first();
+  await historyTab.waitFor({ state: 'visible', timeout: 10_000 });
+  await historyTab.click();
+  await page
+    .locator('.broadcast-history-filters, .managed-broadcasts-list')
+    .first()
+    .waitFor({ state: 'visible', timeout: 10_000 });
+  await page.waitForTimeout(500);
+}
+
 async function applyBroadcastFiveByTwoRecipe(page) {
   await page.waitForTimeout(1000);
   const recipe = page.locator('.broadcast-planner__recipe').first();
@@ -1155,7 +1189,9 @@ async function selectBroadcastPlannerDefaultDays(page) {
     .filter({ hasText: /^Даты$/u })
     .first();
   if ((await dateToggle.count()) > 0) {
-    const isExpanded = await dateToggle.evaluate((node) => node.getAttribute('aria-expanded') === 'true');
+    const isExpanded = await dateToggle.evaluate(
+      (node) => node.getAttribute('aria-expanded') === 'true',
+    );
     if (!isExpanded) {
       await dateToggle.click();
       await page.waitForTimeout(200);
