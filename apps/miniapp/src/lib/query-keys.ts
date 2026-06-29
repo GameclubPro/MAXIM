@@ -51,6 +51,8 @@ export const queryKeys = {
     ['settings-header-bot-load', botIdsSignature] as const,
   chatManagedBroadcastCalendar: (chatId: string | null | undefined, ...scope: readonly unknown[]) =>
     ['managed-broadcast-calendar', chatId, ...scope] as const,
+  chatManagedAutopostRules: (chatId: string | null | undefined) =>
+    ['managed-autopost-rules', chatId] as const,
 
   channelSettingsScreen: (chatId: string | null | undefined) =>
     ['channel-settings-screen', chatId] as const,
@@ -60,6 +62,8 @@ export const queryKeys = {
     chatId: string | null | undefined,
     ...scope: readonly unknown[]
   ) => ['channel-managed-broadcast-calendar', chatId, ...scope] as const,
+  channelManagedAutopostRules: (chatId: string | null | undefined) =>
+    ['channel-managed-autopost-rules', chatId] as const,
   vkParsing: (
     entityType: string,
     chatId: string | null | undefined,

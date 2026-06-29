@@ -102,6 +102,22 @@ const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
       `^/(chats|channels)/${ENTITY_ID_SEGMENT}/broadcasts/${ENTITY_ID_SEGMENT}/retry$`,
     ),
   },
+  {
+    method: 'POST',
+    pattern: new RegExp(`^/(chats|channels)/${ENTITY_ID_SEGMENT}/autopost-rules$`),
+  },
+  {
+    method: 'PUT',
+    pattern: new RegExp(
+      `^/(chats|channels)/${ENTITY_ID_SEGMENT}/autopost-rules/${ENTITY_ID_SEGMENT}$`,
+    ),
+  },
+  {
+    method: 'DELETE',
+    pattern: new RegExp(
+      `^/(chats|channels)/${ENTITY_ID_SEGMENT}/autopost-rules/${ENTITY_ID_SEGMENT}$`,
+    ),
+  },
 
   { method: 'POST', pattern: new RegExp(`^/(chats|channels)/${ENTITY_ID_SEGMENT}/giveaways$`) },
   {

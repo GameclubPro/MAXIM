@@ -17,10 +17,11 @@ export type {
   BroadcastHistoryFilter,
 } from '../lib/broadcast-history-filters';
 
-export type BroadcastWorkspaceView = 'compose' | 'calendar' | 'history';
+export type BroadcastWorkspaceView = 'compose' | 'calendar' | 'autoposts' | 'history';
 
 type BroadcastWorkspaceTabsProps = {
   value: BroadcastWorkspaceView;
+  autopostCount: number;
   historyCount: number;
   disabled?: boolean;
   onChange: (value: BroadcastWorkspaceView) => void;
@@ -35,6 +36,7 @@ type BroadcastHistoryFilterTabsProps = {
 type BroadcastWorkspaceChromeProps = {
   showTabs: boolean;
   value: BroadcastWorkspaceView;
+  autopostCount: number;
   historyCount: number;
   disabled?: boolean;
   showReset: boolean;
@@ -54,6 +56,7 @@ type BroadcastDraftCardProps = {
 
 export function BroadcastWorkspaceTabs({
   value,
+  autopostCount,
   historyCount,
   disabled = false,
   onChange,
@@ -69,8 +72,9 @@ export function BroadcastWorkspaceTabs({
       }}
       ariaLabel="Раздел автопостинга"
       options={[
-        { value: 'compose', label: 'Автопост' },
+        { value: 'compose', label: 'Создать' },
         { value: 'calendar', label: 'План' },
+        { value: 'autoposts', label: 'Автопосты', count: autopostCount },
         { value: 'history', label: 'История', count: historyCount },
       ]}
     />
@@ -80,6 +84,7 @@ export function BroadcastWorkspaceTabs({
 export function BroadcastWorkspaceChrome({
   showTabs,
   value,
+  autopostCount,
   historyCount,
   disabled = false,
   showReset,
@@ -99,6 +104,7 @@ export function BroadcastWorkspaceChrome({
       {showTabs ? (
         <BroadcastWorkspaceTabs
           value={value}
+          autopostCount={autopostCount}
           historyCount={historyCount}
           disabled={disabled}
           onChange={onChange}

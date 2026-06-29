@@ -203,7 +203,12 @@ export type ManagedEntityAccessEdgeClient = {
   updateMany?: (args: unknown) => Promise<unknown>;
 };
 
-export type AdminActionSource = 'miniapp' | 'private_bot' | 'private_command' | 'group_command';
+export type AdminActionSource =
+  | 'miniapp'
+  | 'private_bot'
+  | 'private_command'
+  | 'group_command'
+  | 'autopost_rule';
 export type ManualModerationFanoutSource = Extract<
   AdminActionSource,
   'miniapp' | 'group_command' | 'private_command'

@@ -97,11 +97,15 @@ export function buildAgendaEntries(
   managedBroadcasts: ManagedBroadcastSummary[],
   currentTargetLabel: string,
   excludeBroadcastId: string | null | undefined,
+  excludeAutopostRuleId: string | null | undefined = null,
 ): BroadcastScheduleAgendaEntry[] {
   const entries: BroadcastScheduleAgendaEntry[] = [];
 
   for (const broadcast of managedBroadcasts) {
     if (excludeBroadcastId && broadcast.id === excludeBroadcastId) {
+      continue;
+    }
+    if (excludeAutopostRuleId && broadcast.autopostRuleId === excludeAutopostRuleId) {
       continue;
     }
 
@@ -144,10 +148,14 @@ export function buildAgendaEntriesFromCalendarSlots(
   sourceChatId: string | null | undefined,
   currentTargetLabel: string,
   excludeBroadcastId: string | null | undefined,
+  excludeAutopostRuleId: string | null | undefined = null,
 ): BroadcastScheduleAgendaEntry[] {
   const grouped = new Map<string, ManagedBroadcastCalendarSlot[]>();
   for (const slot of calendarSlots) {
     if (excludeBroadcastId && slot.broadcastId === excludeBroadcastId) {
+      continue;
+    }
+    if (excludeAutopostRuleId && slot.autopostRuleId === excludeAutopostRuleId) {
       continue;
     }
     const key = `${slot.broadcastId}:${getBroadcastScheduleDayKey(slot.scheduledAt)}`;

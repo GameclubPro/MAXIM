@@ -491,6 +491,22 @@ export class ManagedEntitiesService {
     return this.getManagedEntityBotExecutionPlan(chatId, user, 'channel', options);
   }
 
+  assertChatAdminAccess(chatId: string, user: AuthUser): Promise<void> {
+    return this.assertManagedEntityAdminAccess(chatId, user, 'chat');
+  }
+
+  assertChannelAdminAccess(chatId: string, user: AuthUser): Promise<void> {
+    return this.assertManagedEntityAdminAccess(chatId, user, 'channel');
+  }
+
+  assertChatReadAccess(chatId: string, user: AuthUser): Promise<void> {
+    return this.legacyAdminService.assertManagedEntityReadAccess(chatId, user.userId, 'chat');
+  }
+
+  assertChannelReadAccess(chatId: string, user: AuthUser): Promise<void> {
+    return this.legacyAdminService.assertManagedEntityReadAccess(chatId, user.userId, 'channel');
+  }
+
   updateChatPrimaryBot(
     chatId: string,
     user: AuthUser,

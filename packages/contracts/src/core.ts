@@ -16,6 +16,7 @@ import {
   addBroadcastScheduleIssues,
   buildBroadcastAudienceState,
   buildBroadcastScheduleState,
+  normalizeBroadcastScheduledSlots,
 } from './broadcast-request-utils.js';
 import { membershipActivityPageSchema } from './membership-activity.js';
 import {
@@ -2599,6 +2600,7 @@ export type ManagedBroadcastFailureBreakdown = z.infer<
 
 export const managedBroadcastSummarySchema = z.object({
   id: z.string(),
+  autopostRuleId: z.string().nullable().default(null),
   status: managedBroadcastStatusSchema,
   textPreview: z.string(),
   textLength: z.number().int().min(0),
@@ -2640,6 +2642,7 @@ export type ManagedBroadcastSummary = z.infer<typeof managedBroadcastSummarySche
 
 export const managedBroadcastDetailsSchema = z.object({
   id: z.string(),
+  autopostRuleId: z.string().nullable().default(null),
   status: managedBroadcastStatusSchema,
   text: z.string(),
   textFormat: broadcastTextFormatSchema,
@@ -2688,6 +2691,7 @@ export type ManagedBroadcastDetails = z.infer<typeof managedBroadcastDetailsSche
 
 export const managedBroadcastCalendarSlotSchema = z.object({
   broadcastId: z.string(),
+  autopostRuleId: z.string().nullable().default(null),
   sourceChatId: z.string(),
   scheduledAt: broadcastDateTimeSchema,
   status: managedBroadcastStatusSchema,
@@ -2715,6 +2719,131 @@ export const managedBroadcastCalendarResponseSchema = z.object({
 export type ManagedBroadcastCalendarResponse = z.infer<
   typeof managedBroadcastCalendarResponseSchema
 >;
+
+export const managedAutopostRuleStatusSchema = z.enum([
+  'ACTIVE',
+  'PAUSED',
+  'COMPLETED',
+  'ERROR',
+  'DISABLED',
+]);
+export type ManagedAutopostRuleStatus = z.infer<typeof managedAutopostRuleStatusSchema>;
+
+export const managedAutopostRuleUpdateStatusSchema = z.enum(['ACTIVE', 'PAUSED']);
+export type ManagedAutopostRuleUpdateStatus = z.infer<
+  typeof managedAutopostRuleUpdateStatusSchema
+>;
+
+export const managedAutopostPayloadSchema = sendBroadcastRequestSchema
+  .superRefine((value, ctx) => {
+    if (value.scheduleMode !== 'calendar') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['scheduleMode'],
+        message: 'Выберите расписание.',
+      });
+    }
+    if (value.scheduledSlots.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['scheduledSlots'],
+        message: 'Добавьте время.',
+      });
+    }
+    if (value.cycleEnabled || value.sendAt) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['cycleEnabled'],
+        message: 'Для автопоста используйте расписание.',
+      });
+    }
+  })
+  .transform((value) => ({
+    text: value.text,
+    textFormat: value.textFormat,
+    targetMode: value.targetMode,
+    targetChatIds: value.targetChatIds,
+    applyToAllChats: value.applyToAllChats,
+    buttons: value.buttons,
+    buttonEnabled: value.buttonEnabled,
+    buttonUrl: value.buttonUrl,
+    buttonText: value.buttonText,
+    imageEnabled: value.imageEnabled,
+    imageBase64: value.imageBase64,
+    imageMimeType: value.imageMimeType,
+    imageFileName: value.imageFileName,
+    images: value.images,
+    mediaType: value.mediaType,
+    mediaPayload: value.mediaPayload,
+    mediaMimeType: value.mediaMimeType,
+    mediaFileName: value.mediaFileName,
+    scheduleMode: 'calendar' as const,
+    scheduleTimezone: value.scheduleTimezone,
+    sendAt: null,
+    cycleEnabled: false,
+    cycleEveryHours: 1,
+    cycleCount: 1,
+    scheduledSlots: normalizeBroadcastScheduledSlots(value.scheduledSlots),
+  }));
+export type ManagedAutopostPayload = z.infer<typeof managedAutopostPayloadSchema>;
+
+export const createManagedAutopostRuleRequestSchema = z.object({
+  title: z.string().trim().max(120).default(''),
+  payload: managedAutopostPayloadSchema,
+});
+export type CreateManagedAutopostRuleRequest = z.infer<
+  typeof createManagedAutopostRuleRequestSchema
+>;
+
+export const updateManagedAutopostRuleRequestSchema = z
+  .object({
+    title: z.string().trim().max(120).optional(),
+    status: managedAutopostRuleUpdateStatusSchema.optional(),
+    payload: managedAutopostPayloadSchema.optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.title === undefined && value.status === undefined && value.payload === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Нет изменений.',
+      });
+    }
+  });
+export type UpdateManagedAutopostRuleRequest = z.infer<
+  typeof updateManagedAutopostRuleRequestSchema
+>;
+
+export const managedAutopostRuleSummarySchema = z.object({
+  id: z.string(),
+  sourceChatId: z.string(),
+  entityType: managedEntityTypeSchema,
+  status: managedAutopostRuleStatusSchema,
+  title: z.string(),
+  textPreview: z.string(),
+  textLength: z.number().int().min(0),
+  targetMode: broadcastTargetModeSchema.default('current'),
+  applyToAllChats: z.boolean(),
+  targetChatIds: z.array(z.string()).default([]),
+  targetChats: z.number().int().min(1),
+  hasImage: z.boolean(),
+  imageCount: z.number().int().min(0).default(0),
+  hasVideo: z.boolean().default(false),
+  buttons: z.array(broadcastLinkButtonSchema).max(MAX_BROADCAST_LINK_BUTTONS).default([]),
+  scheduleTimezone: broadcastScheduleTimezoneSchema,
+  scheduledSlots: z.array(broadcastDateTimeSchema).default([]),
+  nextSendAt: broadcastDateTimeSchema.nullable(),
+  materializedCount: z.number().int().min(0),
+  revision: z.number().int().min(1),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  lastError: z.string().nullable(),
+});
+export type ManagedAutopostRuleSummary = z.infer<typeof managedAutopostRuleSummarySchema>;
+
+export const managedAutopostRuleDetailsSchema = managedAutopostRuleSummarySchema.extend({
+  payload: managedAutopostPayloadSchema,
+});
+export type ManagedAutopostRuleDetails = z.infer<typeof managedAutopostRuleDetailsSchema>;
 
 export const vkParsingSourceStatusSchema = z.enum(['ACTIVE', 'DISABLED']);
 export type VkParsingSourceStatus = z.infer<typeof vkParsingSourceStatusSchema>;

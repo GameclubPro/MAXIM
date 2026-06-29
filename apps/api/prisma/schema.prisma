@@ -178,6 +178,21 @@ enum ManagedBroadcastDeliveryStatus {
   CANCELED
 }
 
+enum ManagedAutopostRuleStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  ERROR
+  DISABLED
+}
+
+enum ManagedAutopostMaterializationStatus {
+  PENDING
+  CREATED
+  FAILED
+  CANCELED
+}
+
 enum ManagedEntityFavoriteType {
   IMPORTANT
   WATCH
@@ -216,6 +231,7 @@ model Chat {
   channelPosts                    ChannelPost[]
   channelStatsSyncState           ChannelStatsSyncState?
   managedBroadcasts               ManagedBroadcast[]
+  managedAutopostRules            ManagedAutopostRule[]
   managedGiveaways                ManagedGiveaway[]
   vkParsingSettings               VkParsingSettings?
   vkParsingSources                VkParsingSource[]
@@ -1365,10 +1381,59 @@ model ManagedBroadcast {
   occurrences ManagedBroadcastOccurrence[]
   calendarReservations ManagedBroadcastCalendarReservation[]
   idempotencyRecords ManagedBroadcastIdempotencyRecord[]
+  autopostMaterializations ManagedAutopostMaterialization[]
 
   @@index([sourceChatId, status, nextSendAt], map: "managed_broadcasts_source_chat_id_status_next_send_at_idx")
   @@index([status, nextSendAt], map: "managed_broadcasts_status_next_send_at_idx")
   @@map("managed_broadcasts")
+}
+
+model ManagedAutopostRule {
+  id                String                     @id @default(cuid())
+  sourceChatId      String                     @map("source_chat_id")
+  entityType        ChatEntityType             @default(CHAT) @map("entity_type")
+  actorUserId       String                     @map("actor_user_id")
+  status            ManagedAutopostRuleStatus  @default(ACTIVE)
+  title             String                     @default("")
+  payload           Json
+  revision          Int                        @default(1)
+  nextMaterializeAt DateTime?                  @map("next_materialize_at")
+  lastMaterializedAt DateTime?                 @map("last_materialized_at")
+  lastError         String?                    @map("last_error")
+  lockedAt          DateTime?                  @map("locked_at")
+  lockToken         String?                    @map("lock_token")
+  createdAt         DateTime                   @default(now()) @map("created_at")
+  updatedAt         DateTime                   @updatedAt @map("updated_at")
+
+  chat             Chat                             @relation(fields: [sourceChatId], references: [id], onDelete: Cascade)
+  materializations ManagedAutopostMaterialization[]
+
+  @@index([sourceChatId, entityType, status, updatedAt(sort: Desc)], map: "managed_autopost_rules_source_status_updated_idx")
+  @@index([status, nextMaterializeAt], map: "managed_autopost_rules_status_next_materialize_idx")
+  @@map("managed_autopost_rules")
+}
+
+model ManagedAutopostMaterialization {
+  id          String                                @id @default(cuid())
+  ruleId      String                                @map("rule_id")
+  broadcastId String?                               @map("broadcast_id")
+  revision    Int
+  attempt     Int                                   @default(1)
+  requestId   String                                @map("request_id")
+  scheduledAt DateTime                              @map("scheduled_at")
+  status      ManagedAutopostMaterializationStatus  @default(PENDING)
+  lastError   String?                               @map("last_error")
+  createdAt   DateTime                              @default(now()) @map("created_at")
+  updatedAt   DateTime                              @updatedAt @map("updated_at")
+
+  rule      ManagedAutopostRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  broadcast ManagedBroadcast?   @relation(fields: [broadcastId], references: [id], onDelete: SetNull)
+
+  @@index([ruleId, scheduledAt, revision], map: "managed_autopost_materializations_rule_slot_revision_idx")
+  @@unique([requestId], map: "managed_autopost_materializations_request_id_key")
+  @@index([broadcastId], map: "managed_autopost_materializations_broadcast_id_idx")
+  @@index([status, scheduledAt], map: "managed_autopost_materializations_status_slot_idx")
+  @@map("managed_autopost_materializations")
 }
 
 model ManagedBroadcastOccurrence {

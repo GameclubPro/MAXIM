@@ -95,6 +95,7 @@ type BroadcastSchedulePlannerProps = {
   targetContextMeta?: string;
   calendarRefreshing?: boolean;
   excludeBroadcastId?: string | null;
+  excludeAutopostRuleId?: string | null;
   onEditBroadcast?: (broadcastId: string) => void;
   onDeleteBroadcast?: (broadcastId: string) => void;
   pendingEditBroadcastId?: string | null;
@@ -160,6 +161,7 @@ export function BroadcastSchedulePlanner({
   targetContextMeta,
   calendarRefreshing = false,
   excludeBroadcastId = null,
+  excludeAutopostRuleId = null,
   onEditBroadcast,
   onDeleteBroadcast,
   pendingEditBroadcastId = null,
@@ -205,7 +207,9 @@ export function BroadcastSchedulePlanner({
   const visibleMonthKey = monthKeys.includes(currentMonthKey) ? currentMonthKey : monthKeys[0];
   const selectedDayCount = countBroadcastScheduleDays(normalizedValue);
   const availabilityCalendarSlots = calendarSlots.filter(
-    (slot) => !excludeBroadcastId || slot.broadcastId !== excludeBroadcastId,
+    (slot) =>
+      (!excludeBroadcastId || slot.broadcastId !== excludeBroadcastId) &&
+      (!excludeAutopostRuleId || slot.autopostRuleId !== excludeAutopostRuleId),
   );
   const calendarBusySlots = sortAndUniqueBroadcastSlots(
     availabilityCalendarSlots
@@ -321,8 +325,14 @@ export function BroadcastSchedulePlanner({
           sourceChatId,
           currentTargetLabel,
           excludeBroadcastId,
+          excludeAutopostRuleId,
         )
-      : buildAgendaEntries(managedBroadcasts, currentTargetLabel, excludeBroadcastId);
+      : buildAgendaEntries(
+          managedBroadcasts,
+          currentTargetLabel,
+          excludeBroadcastId,
+          excludeAutopostRuleId,
+        );
   const agendaEntriesByDay = new Map<string, BroadcastScheduleAgendaEntry[]>();
   for (const entry of agendaEntries) {
     const current = agendaEntriesByDay.get(entry.dayKey) ?? [];

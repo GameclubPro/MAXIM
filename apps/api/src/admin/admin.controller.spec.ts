@@ -1,4 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
+import { AdminAutopostController } from './admin-autopost.controller';
 import { AdminBroadcastController } from './admin-broadcast.controller';
 import { AdminDialogController } from './admin-dialog.controller';
 import { AdminManualModerationController } from './admin-manual-moderation.controller';
@@ -88,6 +89,30 @@ describe('admin domain controllers', () => {
     await controller.sendBroadcast('chat-1', user as never, body);
 
     expect(managedBroadcastService.sendBroadcast).toHaveBeenCalledWith('chat-1', user, body);
+  });
+
+  it('routes autopost rule endpoints through the managed autopost domain service', async () => {
+    const managedAutopostService = {
+      createChatAutopostRule: jest.fn().mockResolvedValue({ id: 'rule-1' }),
+      updateChannelAutopostRule: jest.fn().mockResolvedValue({ id: 'rule-2' }),
+    };
+    const controller = new AdminAutopostController(managedAutopostService as never);
+    const body = { payload: { text: 'Новости', scheduledSlots: [] } };
+
+    await controller.createChatAutopostRule('chat-1', user as never, body);
+    await controller.updateChannelAutopostRule('channel-1', 'rule-2', user as never, body);
+
+    expect(managedAutopostService.createChatAutopostRule).toHaveBeenCalledWith(
+      'chat-1',
+      user,
+      body,
+    );
+    expect(managedAutopostService.updateChannelAutopostRule).toHaveBeenCalledWith(
+      'channel-1',
+      'rule-2',
+      user,
+      body,
+    );
   });
 
   it('routes managed entity reads through the managed entities domain service', async () => {

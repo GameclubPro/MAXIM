@@ -9,6 +9,10 @@ import {
   managedBroadcastCalendarResponseSchema,
   managedBroadcastDetailsSchema,
   managedBroadcastSummarySchema,
+  createManagedAutopostRuleRequestSchema,
+  managedAutopostRuleDetailsSchema,
+  managedAutopostRuleSummarySchema,
+  updateManagedAutopostRuleRequestSchema,
   managedEntityHeaderSchema,
   promoteManagedEntityStandbyRequestSchema,
   publishChannelEngagementRequestSchema,
@@ -32,6 +36,9 @@ import {
   type ManagedBroadcastCalendarResponse,
   type ManagedBroadcastDetails,
   type ManagedBroadcastSummary,
+  type CreateManagedAutopostRuleRequest,
+  type ManagedAutopostRuleDetails,
+  type ManagedAutopostRuleSummary,
   type ManagedEntityBotExecutionPlan,
   type ManagedEntityHeader,
   type PublishVkParsingPostRequest,
@@ -39,6 +46,7 @@ import {
   type PublishChannelEngagementRequest,
   type PublishChannelEngagementResult,
   type SendBroadcastTestResult,
+  type UpdateManagedAutopostRuleRequest,
   type UpdateVkParsingSettingsRequest,
   type VkParsingCapability,
   type VkParsingFeed,
@@ -315,6 +323,65 @@ export async function retryChannelManagedBroadcast(
     method: 'POST',
   });
   return managedBroadcastDetailsSchema.parse(response);
+}
+
+export async function getChannelManagedAutopostRules(
+  api: ApiTransport,
+  chatId: string,
+): Promise<ManagedAutopostRuleSummary[]> {
+  const response = await api.request(`/channels/${chatId}/autopost-rules`);
+  if (!Array.isArray(response)) {
+    throw new Error('Invalid channel managed autopost rules response');
+  }
+
+  return response.map((item: unknown) => managedAutopostRuleSummarySchema.parse(item));
+}
+
+export async function getChannelManagedAutopostRule(
+  api: ApiTransport,
+  chatId: string,
+  ruleId: string,
+): Promise<ManagedAutopostRuleDetails> {
+  const response = await api.request(`/channels/${chatId}/autopost-rules/${ruleId}`);
+  return managedAutopostRuleDetailsSchema.parse(response);
+}
+
+export async function createChannelManagedAutopostRule(
+  api: ApiTransport,
+  chatId: string,
+  payload: CreateManagedAutopostRuleRequest,
+): Promise<ManagedAutopostRuleDetails> {
+  const requestBody = createManagedAutopostRuleRequestSchema.parse(payload);
+  const response = await api.request(`/channels/${chatId}/autopost-rules`, {
+    method: 'POST',
+    body: JSON.stringify(requestBody),
+  });
+  return managedAutopostRuleDetailsSchema.parse(response);
+}
+
+export async function updateChannelManagedAutopostRule(
+  api: ApiTransport,
+  chatId: string,
+  ruleId: string,
+  payload: UpdateManagedAutopostRuleRequest,
+): Promise<ManagedAutopostRuleDetails> {
+  const requestBody = updateManagedAutopostRuleRequestSchema.parse(payload);
+  const response = await api.request(`/channels/${chatId}/autopost-rules/${ruleId}`, {
+    method: 'PUT',
+    body: JSON.stringify(requestBody),
+  });
+  return managedAutopostRuleDetailsSchema.parse(response);
+}
+
+export async function deleteChannelManagedAutopostRule(
+  api: ApiTransport,
+  chatId: string,
+  ruleId: string,
+): Promise<ManagedAutopostRuleDetails> {
+  const response = await api.request(`/channels/${chatId}/autopost-rules/${ruleId}`, {
+    method: 'DELETE',
+  });
+  return managedAutopostRuleDetailsSchema.parse(response);
 }
 
 export async function getChannelVkParsing(

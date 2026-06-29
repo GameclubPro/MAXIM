@@ -1049,6 +1049,8 @@ export class AdminManagedBroadcastRuntime {
       this.getManagedBroadcastUpcomingSlotsMap(rows),
       this.getManagedBroadcastTargetPreviewBundles(rows),
     ]);
+    const autopostRuleIdsByBroadcastId =
+      await this.loadManagedAutopostRuleIdsByBroadcastId(rows.map((row) => row.id));
 
     return rows.map((row) =>
       managedBroadcastSummarySchema.parse(
@@ -1057,6 +1059,7 @@ export class AdminManagedBroadcastRuntime {
           snapshots.get(row.id),
           upcomingSlotsMap.get(row.id) ?? [],
           targetPreviewBundles.get(row.id),
+          autopostRuleIdsByBroadcastId.get(row.id) ?? null,
         ),
       ),
     );
@@ -1210,6 +1213,9 @@ export class AdminManagedBroadcastRuntime {
       allTargetChatIds,
       entityType,
     );
+    const autopostRuleIdsByBroadcastId = await this.loadManagedAutopostRuleIdsByBroadcastId(
+      broadcastRows.map((row) => row.id),
+    );
 
     return managedBroadcastCalendarResponseSchema.parse({
       sourceChatId,
@@ -1240,6 +1246,7 @@ export class AdminManagedBroadcastRuntime {
 
         return {
           broadcastId: row.id,
+          autopostRuleId: autopostRuleIdsByBroadcastId.get(row.id) ?? null,
           sourceChatId: row.sourceChatId,
           scheduledAt: occurrence.scheduledAt.toISOString(),
           status: row.status,
@@ -1292,8 +1299,9 @@ export class AdminManagedBroadcastRuntime {
       this.getManagedBroadcastUpcomingSlots(row),
       this.getManagedBroadcastTargetPreviewBundle(targetChatIds, entityType),
     ]);
+    const autopostRuleId = await this.resolveManagedAutopostRuleIdForBroadcast(row.id);
     return managedBroadcastDetailsSchema.parse(
-      this.mapManagedBroadcastDetails(row, snapshot, upcomingSlots, targetPreviewBundle),
+      this.mapManagedBroadcastDetails(row, snapshot, upcomingSlots, targetPreviewBundle, autopostRuleId),
     );
   }
 
@@ -3675,9 +3683,11 @@ export class AdminManagedBroadcastRuntime {
   }
 
   private resolveManagedBroadcastSourceMaxApiOptions(
-    _source: AdminActionSource,
+    source: AdminActionSource,
   ): ManagedBroadcastMaxApiOptions {
-    return this.buildManagedBroadcastMaxApiOptions('interactive');
+    return this.buildManagedBroadcastMaxApiOptions(
+      source === 'autopost_rule' ? 'background' : 'interactive',
+    );
   }
 
   private resolveManagedBroadcastProcessingMaxApiOptions(
@@ -5900,11 +5910,46 @@ export class AdminManagedBroadcastRuntime {
     };
   }
 
+  private async loadManagedAutopostRuleIdsByBroadcastId(
+    broadcastIds: readonly string[],
+  ): Promise<Map<string, string>> {
+    const uniqueBroadcastIds = Array.from(new Set(broadcastIds.filter(Boolean)));
+    if (uniqueBroadcastIds.length === 0) {
+      return new Map();
+    }
+
+    const rows = await this.prisma.managedAutopostMaterialization.findMany({
+      where: {
+        broadcastId: { in: uniqueBroadcastIds },
+      },
+      select: {
+        broadcastId: true,
+        ruleId: true,
+      },
+    });
+    return new Map(
+      rows
+        .filter((row): row is { broadcastId: string; ruleId: string } => Boolean(row.broadcastId))
+        .map((row) => [row.broadcastId, row.ruleId]),
+    );
+  }
+
+  private async resolveManagedAutopostRuleIdForBroadcast(
+    broadcastId: string,
+  ): Promise<string | null> {
+    const row = await this.prisma.managedAutopostMaterialization.findFirst({
+      where: { broadcastId },
+      select: { ruleId: true },
+    });
+    return row?.ruleId ?? null;
+  }
+
   private mapManagedBroadcastSummary(
     row: PersistedManagedBroadcast,
     snapshot?: ManagedBroadcastDeliverySnapshot,
     upcomingSlots: Date[] = [],
     targetPreviewBundle?: ManagedBroadcastTargetPreviewBundle,
+    autopostRuleId: string | null = null,
   ): ManagedBroadcastSummary {
     const { targetMode, targetChatIds } = this.resolveManagedBroadcastTargetsFromRow(row);
     const normalizedText = row.text.replace(/\s+/gu, ' ').trim();
@@ -5927,6 +5972,7 @@ export class AdminManagedBroadcastRuntime {
 
     return {
       id: row.id,
+      autopostRuleId,
       status: row.status,
       textPreview: normalizedText
         ? normalizedText.slice(0, 160)
@@ -5974,6 +6020,7 @@ export class AdminManagedBroadcastRuntime {
     snapshot?: ManagedBroadcastDeliverySnapshot,
     upcomingSlots: Date[] = [],
     targetPreviewBundle?: ManagedBroadcastTargetPreviewBundle,
+    autopostRuleId: string | null = null,
   ): ManagedBroadcastDetails {
     const { targetMode, targetChatIds } = this.resolveManagedBroadcastTargetsFromRow(row);
     const resolvedSnapshot = snapshot ?? this.createManagedBroadcastDeliverySnapshot(row, []);
@@ -5996,6 +6043,7 @@ export class AdminManagedBroadcastRuntime {
 
     return {
       id: row.id,
+      autopostRuleId,
       status: row.status,
       text: row.text,
       textFormat: this.normalizeBroadcastTextFormat(row.textFormat),

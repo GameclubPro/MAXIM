@@ -18,6 +18,8 @@ import {
 import {
   type BroadcastLinkButton,
   type BroadcastTargetMode,
+  type ManagedAutopostRuleDetails,
+  type ManagedAutopostRuleSummary,
   type ManagedBroadcastDetails,
 } from '@maxim/contracts/broadcast';
 import { type ChatSummary, type ManagedEntityHeader } from '@maxim/contracts/managed-entities';
@@ -65,7 +67,6 @@ import {
   BroadcastStudioHeader,
   type BroadcastStudioSignal,
 } from '../components/broadcast-studio-header';
-import { ManagedBroadcastHistoryCard } from '../components/managed-broadcast-history-card';
 import {
   BroadcastDraftCard,
   BroadcastHistoryFilterTabs,
@@ -91,8 +92,12 @@ import {
   applySettingsSectionToAll,
   cancelManagedBroadcast,
   clearBroadcastHandoffState,
+  createManagedAutopostRule,
+  deleteManagedAutopostRule,
   getBroadcastComposerClientResetState,
   getBroadcastHandoffState,
+  getManagedAutopostRule,
+  getManagedAutopostRules,
   getManagedBroadcast,
   getManagedBroadcastCalendar,
   getSettingsScreen,
@@ -106,6 +111,7 @@ import {
   scheduleDomainRemoval,
   sendBroadcast,
   sendBroadcastTest,
+  updateManagedAutopostRule,
   updateManagedBroadcast,
   updateRules,
   updateSettings,
@@ -129,6 +135,12 @@ import {
   validateBroadcastLinkButtons,
   type BroadcastLinkButtonFieldErrors,
 } from '../lib/broadcast-link-buttons';
+import {
+  buildManagedAutopostRuleFacts,
+  formatCompactCountLabel,
+  normalizeManagedAutopostPayload,
+  sortManagedAutopostRules,
+} from '../lib/managed-autopost-ui';
 import { useKeyboardOpen } from '../lib/use-keyboard-open';
 import {
   createDefaultBroadcastCycleDraft,
@@ -353,6 +365,16 @@ import {
 const LazyVkParsingCard = lazy(() =>
   import('../components/vk-parsing-card').then((module) => ({ default: module.VkParsingCard })),
 );
+const LazyManagedAutopostRuleCard = lazy(() =>
+  import('../components/managed-autopost-rule-card').then((module) => ({
+    default: module.ManagedAutopostRuleCard,
+  })),
+);
+const LazyManagedBroadcastHistoryCard = lazy(() =>
+  import('../components/managed-broadcast-history-card').then((module) => ({
+    default: module.ManagedBroadcastHistoryCard,
+  })),
+);
 const LazySettingsTimeFields = lazy(() => import('./settings/night-mode-time-fields'));
 const LazyRequiredSubscriptionSourcePicker = lazy(() =>
   import('../components/required-subscription-source-picker').then((module) => ({
@@ -369,10 +391,6 @@ const LazySettingsAdminCommandsSection = lazy(() =>
     default: module.SettingsAdminCommandsSection,
   })),
 );
-
-function formatCompactCountLabel(count: number, label: string): string {
-  return `${Math.max(0, Math.trunc(count))} ${label}`;
-}
 
 export function SettingsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
@@ -470,8 +488,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     useState<ManagedBroadcastDetails | null>(null);
   const [duplicatedManagedBroadcast, setDuplicatedManagedBroadcast] =
     useState<ManagedBroadcastDetails | null>(null);
+  const [editingManagedAutopostRule, setEditingManagedAutopostRule] =
+    useState<ManagedAutopostRuleDetails | null>(null);
   const [managedBroadcastDeleteTarget, setManagedBroadcastDeleteTarget] =
     useState<ManagedBroadcastListItem | null>(null);
+  const [managedAutopostRuleDeleteTarget, setManagedAutopostRuleDeleteTarget] =
+    useState<ManagedAutopostRuleSummary | null>(null);
   const [pendingMailingSlotConflict, setPendingMailingSlotConflict] = useState<{
     broadcastId: string | null;
     payload: SendBroadcastPayload;
@@ -632,6 +654,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     resetMailingPlanner();
     setEditingManagedBroadcast(null);
     setDuplicatedManagedBroadcast(null);
+    setEditingManagedAutopostRule(null);
     setMailingWorkspaceView('compose');
     const restoreEpoch = ++broadcastDraftRestoreEpochRef.current;
     let cancelled = false;
@@ -1015,6 +1038,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     broadcastDraftRestoreEpochRef.current += 1;
     setEditingManagedBroadcast(null);
     setDuplicatedManagedBroadcast(null);
+    setEditingManagedAutopostRule(null);
     const handoffTargetChatIds = normalizeBroadcastAudienceTargetChatIds(
       broadcastHandoffStateQuery.data.targetChatIds,
     );
@@ -1051,7 +1075,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }, [broadcastHandoffStateQuery.data, chatId, handoffRequested]);
 
   useEffect(() => {
-    if (!chatId || editingManagedBroadcast) {
+    if (!chatId || editingManagedBroadcast || editingManagedAutopostRule) {
       return;
     }
 
@@ -1076,6 +1100,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }, [
     chatId,
     editingManagedBroadcast,
+    editingManagedAutopostRule,
     mailingButtons,
     mailingCycleDraft,
     mailingImageBase64,
@@ -1620,6 +1645,133 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     },
   });
 
+  const invalidateChatAutopostData = () => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.chatManagedAutopostRules(chatId) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.chatSettingsScreen(chatId) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.chatManagedBroadcastCalendar(chatId) });
+  };
+
+  const createManagedAutopostRuleMutation = useMutation({
+    mutationFn: (payload: SendBroadcastPayload) =>
+      createManagedAutopostRule(api, chatId ?? '', {
+        title: '',
+        payload: normalizeManagedAutopostPayload(payload),
+      }),
+    onSuccess: () => {
+      resetMailingComposer();
+      invalidateChatAutopostData();
+      setMailingWorkspaceView('autoposts');
+      pushToast({ tone: 'success', title: 'Автопост создан' });
+      maxNotify('success');
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось создать автопост',
+        description: formatApiError(error),
+      });
+      maxNotify('error');
+    },
+  });
+
+  const updateManagedAutopostRuleMutation = useMutation({
+    mutationFn: ({
+      ruleId,
+      payload,
+      status,
+    }: {
+      ruleId: string;
+      payload?: SendBroadcastPayload;
+      status?: 'ACTIVE' | 'PAUSED';
+    }) =>
+      updateManagedAutopostRule(api, chatId ?? '', ruleId, {
+        ...(payload
+          ? {
+              payload: normalizeManagedAutopostPayload(payload),
+            }
+          : {}),
+        ...(status ? { status } : {}),
+      }),
+    onSuccess: (rule) => {
+      invalidateChatAutopostData();
+      const savedEditingRule = editingManagedAutopostRule?.id === rule.id;
+      if (savedEditingRule) {
+        resetMailingComposer();
+        setMailingWorkspaceView('autoposts');
+      }
+      pushToast({
+        tone: rule.status === 'PAUSED' ? 'info' : 'success',
+        title: savedEditingRule
+          ? 'Автопост сохранён'
+          : rule.status === 'PAUSED'
+            ? 'Пауза'
+            : 'Автопост запущен',
+      });
+      maxNotify(rule.status === 'PAUSED' ? 'warning' : 'success');
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось обновить автопост',
+        description: formatApiError(error),
+      });
+      maxNotify('error');
+    },
+  });
+
+  const deleteManagedAutopostRuleMutation = useMutation({
+    mutationFn: (ruleId: string) => deleteManagedAutopostRule(api, chatId ?? '', ruleId),
+    onSuccess: () => {
+      invalidateChatAutopostData();
+      if (deleteManagedAutopostRuleMutation.variables === editingManagedAutopostRule?.id) {
+        resetMailingComposer();
+      }
+      setManagedAutopostRuleDeleteTarget(null);
+      pushToast({ tone: 'info', title: 'Автопост удалён' });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось удалить автопост',
+        description: formatApiError(error),
+      });
+      maxNotify('error');
+    },
+  });
+
+  const openManagedAutopostRuleMutation = useMutation({
+    mutationFn: (ruleId: string) => getManagedAutopostRule(api, chatId ?? '', ruleId),
+    onSuccess: (rule) => {
+      const payload = rule.payload;
+      setEditingManagedBroadcast(null);
+      setDuplicatedManagedBroadcast(null);
+      setEditingManagedAutopostRule(rule);
+      setMailingText(payload.text);
+      setMailingButtons(payload.buttons);
+      applyMailingImages(resolveBroadcastImagesFromLegacyFields(payload));
+      setMailingVideoCleared(false);
+      setMailingTargetMode(payload.targetMode);
+      setMailingTargetChatIds(normalizeBroadcastAudienceTargetChatIds(payload.targetChatIds));
+      setMailingLastScopedTargetMode(
+        payload.targetMode === 'selected' ? 'selected' : 'current',
+      );
+      setMailingTimingMode('scheduled');
+      setMailingScheduledSlots(sortAndUniqueBroadcastSlots(payload.scheduledSlots));
+      setMailingScheduleTimezone(payload.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone());
+      setMailingScheduleError('');
+      setMailingCycleError('');
+      resetMailingPlanner();
+      setMailingWorkspaceView('compose');
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось открыть автопост',
+        description: formatApiError(error),
+      });
+    },
+  });
+
   const updateRulesAttachMutation = useMutation({
     mutationFn: (enabled: boolean) => {
       const base = settingsQuery.data ?? draft;
@@ -1762,6 +1914,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mode: 'edit' | 'duplicate',
   ) {
     const targetChatIds = normalizeBroadcastAudienceTargetChatIds(broadcast.targetChatIds);
+    setEditingManagedAutopostRule(null);
     setEditingManagedBroadcast(mode === 'edit' ? broadcast : null);
     setDuplicatedManagedBroadcast(
       mode === 'duplicate' && broadcast.mediaType === 'video' && broadcast.mediaPayload
@@ -2907,6 +3060,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   function resetMailingComposer() {
     setEditingManagedBroadcast(null);
     setDuplicatedManagedBroadcast(null);
+    setEditingManagedAutopostRule(null);
     setMailingTargetMode('current');
     setMailingTargetChatIds(chatId ? [chatId] : []);
     setMailingLastScopedTargetMode('current');
@@ -2968,7 +3122,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function handleClearMailingComposer() {
-    if (editingManagedBroadcast || duplicatedManagedBroadcast) {
+    if (editingManagedBroadcast || duplicatedManagedBroadcast || editingManagedAutopostRule) {
       handleCancelMailingEdit();
       return;
     }
@@ -3118,6 +3272,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     cancelManagedBroadcastMutation.mutate(managedBroadcastDeleteTarget.id);
   }
 
+  function handleDeleteManagedAutopostRule(rule: ManagedAutopostRuleSummary) {
+    setManagedAutopostRuleDeleteTarget(rule);
+  }
+
+  function confirmDeleteManagedAutopostRule() {
+    if (!managedAutopostRuleDeleteTarget || !chatId || deleteManagedAutopostRuleMutation.isPending) {
+      return;
+    }
+
+    deleteManagedAutopostRuleMutation.mutate(managedAutopostRuleDeleteTarget.id);
+  }
+
   function handleMailingButtonsEnabledChange(enabled: boolean) {
     if (enabled) {
       if (mailingButtons.length === 0) {
@@ -3227,7 +3393,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   function buildMailingTestPayload(): SendBroadcastPayload {
     const buttonState = buildBroadcastLinkButtonLegacyFields(normalizedMailingButtons);
-    const videoSource = editingManagedBroadcast ?? duplicatedManagedBroadcast;
+    const videoSource = mailingVideoSource;
     const keepVideoMedia =
       !mailingVideoCleared &&
       !mailingImageEnabled &&
@@ -3319,6 +3485,53 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     });
   }
 
+  function handleSaveChatAutopostRule() {
+    if (!chatId || mailingAutopostDisabled) {
+      return;
+    }
+
+    const audiencePayload = resolveBroadcastAudiencePayload({
+      targetMode: mailingTargetMode,
+      targetChatIds: mailingTargetChatIds,
+      currentChatId: chatId,
+    });
+    const keepVideoMedia = editingMailingHasVideo;
+    const nextPayload: SendBroadcastPayload = {
+      text: normalizedMailingText,
+      textFormat: 'markdown',
+      ...buildMailingPublishBasePayload(),
+      targetMode: audiencePayload.targetMode,
+      targetChatIds: audiencePayload.targetChatIds,
+      applyToAllChats: audiencePayload.applyToAllChats,
+      replaceConflictingSlots: false,
+      imageEnabled: mailingImageEnabled,
+      imageBase64: mailingImageEnabled ? mailingImageBase64 : '',
+      imageMimeType: mailingImageEnabled ? mailingImageMimeType : '',
+      imageFileName: mailingImageEnabled ? mailingImageFileName : '',
+      images: mailingImageEnabled ? mailingImages : [],
+      mediaType: keepVideoMedia ? 'video' : null,
+      mediaPayload: keepVideoMedia ? (mailingVideoSource?.mediaPayload ?? null) : null,
+      mediaMimeType: keepVideoMedia ? (mailingVideoSource?.mediaMimeType ?? '') : '',
+      mediaFileName: keepVideoMedia ? (mailingVideoSource?.mediaFileName ?? '') : '',
+      scheduleMode: 'calendar',
+      scheduledSlots: sortAndUniqueBroadcastSlots(mailingScheduledSlots),
+      sendAt: null,
+      cycleEnabled: false,
+      cycleEveryHours: 1,
+      cycleCount: 1,
+    };
+
+    if (editingManagedAutopostRule) {
+      updateManagedAutopostRuleMutation.mutate({
+        ruleId: editingManagedAutopostRule.id,
+        payload: nextPayload,
+      });
+      return;
+    }
+
+    createManagedAutopostRuleMutation.mutate(nextPayload);
+  }
+
   function handleSendBroadcast() {
     if (!chatId) {
       return;
@@ -3338,7 +3551,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     });
 
     let hasError = false;
-    const videoSource = editingManagedBroadcast ?? duplicatedManagedBroadcast;
+    const videoSource = mailingVideoSource;
     const keepVideoMedia =
       !mailingVideoCleared &&
       !mailingImageEnabled &&
@@ -3463,7 +3676,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     const normalizedText = mailingText.trim();
-    const videoSource = editingManagedBroadcast ?? duplicatedManagedBroadcast;
+    const videoSource = mailingVideoSource;
     const keepVideoMedia =
       !mailingVideoCleared &&
       !mailingImageEnabled &&
@@ -4450,6 +4663,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const managedChatsRoute = buildManagedEntitiesRoute('chat');
   const refetchSettings = () => void settingsQuery.refetch();
   const managedBroadcasts = managedBroadcastsQuery.data ?? [];
+  const managedAutopostRulesQuery = useQuery({
+    queryKey: queryKeys.chatManagedAutopostRules(chatId),
+    queryFn: () => getManagedAutopostRules(api, chatId ?? ''),
+    enabled: Boolean(chatId) && expandedSections.mailing,
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
+  });
+  const orderedManagedAutopostRules = useMemo(
+    () => sortManagedAutopostRules(managedAutopostRulesQuery.data ?? []),
+    [managedAutopostRulesQuery.data],
+  );
   const orderedManagedBroadcasts = useMemo(() => {
     const priority = (item: ManagedBroadcastListItem): number => {
       if (item.status === 'FAILED') {
@@ -4499,7 +4723,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     [mailingHistoryFilter, orderedManagedBroadcasts],
   );
   const mailingOccupiedSlots = managedBroadcasts
-    .filter((broadcast) => broadcast.id !== editingManagedBroadcast?.id)
+    .filter(
+      (broadcast) =>
+        broadcast.id !== editingManagedBroadcast?.id &&
+        broadcast.autopostRuleId !== editingManagedAutopostRule?.id,
+    )
     .flatMap((broadcast) => broadcast.scheduledSlots);
   const mailingConflictOccupiedSlots =
     mailingCalendarQuery.data?.slots && mailingCalendarQuery.data.slots.length > 0
@@ -4508,7 +4736,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             .filter(
               (slot) =>
                 slot.hasTargetOverlap &&
-                (!editingManagedBroadcast || slot.broadcastId !== editingManagedBroadcast.id),
+                (!editingManagedBroadcast || slot.broadcastId !== editingManagedBroadcast.id) &&
+                (!editingManagedAutopostRule ||
+                  slot.autopostRuleId !== editingManagedAutopostRule.id),
             )
             .map((slot) => slot.scheduledAt),
         )
@@ -4594,6 +4824,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     sendBroadcastMutation.isPending ||
     sendBroadcastTestMutation.isPending ||
     clearBroadcastHandoffMutation.isPending ||
+    createManagedAutopostRuleMutation.isPending ||
+    updateManagedAutopostRuleMutation.isPending ||
+    deleteManagedAutopostRuleMutation.isPending ||
+    openManagedAutopostRuleMutation.isPending ||
     isOpeningManagedBroadcastEditor ||
     duplicateManagedBroadcastMutation.isPending ||
     isUpdatingManagedBroadcast ||
@@ -4653,7 +4887,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingVisibleButtons = [...normalizedMailingButtons, ...mailingSystemButtons];
   const mailingHasVisibleButtons = mailingVisibleButtons.length > 0;
   const mailingVisibleButtonStatus = formatBroadcastButtonsStatus(mailingVisibleButtons);
-  const mailingVideoSource = editingManagedBroadcast ?? duplicatedManagedBroadcast;
+  const mailingVideoSource =
+    editingManagedBroadcast ?? duplicatedManagedBroadcast ?? editingManagedAutopostRule?.payload;
   const editingMailingHasVideo =
     !mailingVideoCleared &&
     mailingVideoSource?.mediaType === 'video' &&
@@ -4693,7 +4928,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingHeaderSummary = [mailingHeaderTargetLabel, mailingTimingSummary]
     .filter(Boolean)
     .join(' · ');
-  const mailingCardStatus = editingManagedBroadcast
+  const mailingCardStatus = editingManagedBroadcast || editingManagedAutopostRule
     ? 'Правка'
     : mailingTimingMode === 'cycle'
       ? 'Цикл'
@@ -4743,6 +4978,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     !mailingScheduleReady ||
     !mailingHasFutureSlots ||
     !mailingButtonDraftValid;
+  const showMailingAutopostAction =
+    !editingManagedBroadcast && !duplicatedManagedBroadcast && mailingTimingMode === 'scheduled';
+  const mailingAutopostDisabled =
+    isMailingBusy ||
+    !showMailingAutopostAction ||
+    !mailingContentReady ||
+    !mailingAudienceReady ||
+    !mailingCalendarScheduleReady ||
+    !mailingButtonDraftValid;
   const mailingPublishIssueLabels = [
     !mailingHasPublishableContent ? 'Текст' : null,
     mailingHasPublishableContent && !mailingMediaReady ? 'Фото' : null,
@@ -4787,18 +5031,25 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }));
   const mailingPrimaryActionLabel = editingManagedBroadcast
     ? 'Сохранить'
+    : editingManagedAutopostRule
+      ? 'Сохранить'
     : mailingTimingMode === 'now'
       ? 'Опубликовать'
       : 'Запустить';
   const mailingFooterPrimaryActionLabel = editingManagedBroadcast
     ? 'Сохранить'
+    : editingManagedAutopostRule
+      ? 'Сохранить'
     : mailingTimingMode === 'now'
       ? 'Опубликовать'
       : 'Запустить';
-  const showMailingWorkspaceTabs = !editingManagedBroadcast && !duplicatedManagedBroadcast;
+  const showMailingWorkspaceTabs =
+    !editingManagedBroadcast && !duplicatedManagedBroadcast && !editingManagedAutopostRule;
   const showMailingDraftCard = showMailingWorkspaceTabs && showMailingResetAction;
   const mailingResetActionLabel = editingManagedBroadcast
     ? 'Сбросить изменения'
+    : editingManagedAutopostRule
+      ? 'Сбросить изменения'
     : 'Очистить автопостинг';
   const mailingFooterScheduleLabel =
     mailingTimingMode === 'now'
@@ -4809,7 +5060,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingFooterTitle = [
     mailingHeaderTargetLabel,
     mailingFooterScheduleLabel,
-    editingManagedBroadcast ? 'Правка' : null,
+    editingManagedBroadcast || editingManagedAutopostRule ? 'Правка' : null,
   ]
     .filter(Boolean)
     .join(' · ');
@@ -4834,8 +5085,23 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       testLabel={sendBroadcastTestMutation.isPending ? 'Тест...' : 'Тест'}
       testAriaLabel={sendBroadcastTestMutation.isPending ? 'Отправляем тест' : 'Отправить тест'}
       testDisabled={isMailingBusy || !mailingTestReady}
+      secondaryLabel={
+        showMailingAutopostAction && !editingManagedAutopostRule
+          ? createManagedAutopostRuleMutation.isPending
+            ? 'Сохраняем...'
+            : 'В автопосты'
+          : undefined
+      }
+      secondaryDisabled={mailingAutopostDisabled}
+      onSecondary={
+        showMailingAutopostAction && !editingManagedAutopostRule
+          ? handleSaveChatAutopostRule
+          : undefined
+      }
       primaryLabel={
-        isUpdatingManagedBroadcast
+        updateManagedAutopostRuleMutation.isPending && editingManagedAutopostRule
+          ? 'Сохраняем...'
+          : isUpdatingManagedBroadcast
           ? 'Сохраняем...'
           : sendBroadcastMutation.isPending
             ? mailingTimingMode === 'now'
@@ -4845,9 +5111,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               ? 'Открываем...'
               : mailingFooterPrimaryActionLabel
       }
-      primaryDisabled={mailingSendDisabled}
+      primaryDisabled={editingManagedAutopostRule ? mailingAutopostDisabled : mailingSendDisabled}
       onTest={handleSendBroadcastTest}
-      onPrimary={handleSendBroadcast}
+      onPrimary={editingManagedAutopostRule ? handleSaveChatAutopostRule : handleSendBroadcast}
     />
   );
 
@@ -9969,6 +10235,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           <BroadcastWorkspaceChrome
                             showTabs={showMailingWorkspaceTabs}
                             value={mailingWorkspaceView}
+                            autopostCount={orderedManagedAutopostRules.length}
                             historyCount={orderedManagedBroadcasts.length}
                             disabled={isMailingBusy}
                             showReset={showMailingResetAction}
@@ -10112,6 +10379,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     }
                                     calendarRefreshing={mailingCalendarQuery.isFetching}
                                     excludeBroadcastId={editingManagedBroadcast?.id ?? null}
+                                    excludeAutopostRuleId={editingManagedAutopostRule?.id ?? null}
                                     onEditBroadcast={handleEditManagedBroadcastById}
                                     onDeleteBroadcast={handleDeleteManagedBroadcastById}
                                     pendingEditBroadcastId={
@@ -10174,6 +10442,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   targetContextLabel={mailingHeaderTargetPresentation.compactLabel}
                                   calendarRefreshing={mailingCalendarQuery.isFetching}
                                   excludeBroadcastId={editingManagedBroadcast?.id ?? null}
+                                  excludeAutopostRuleId={editingManagedAutopostRule?.id ?? null}
                                   onEditBroadcast={handleEditManagedBroadcastById}
                                   onDeleteBroadcast={handleDeleteManagedBroadcastById}
                                   pendingEditBroadcastId={
@@ -10196,6 +10465,70 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   }}
                                 />
                               </Suspense>
+                            </div>
+                          </div>
+                        ) : mailingWorkspaceView === 'autoposts' ? (
+                          <div className="broadcast-stage-card broadcast-stage-card--feed">
+                            <div className="broadcast-stage-card__head">
+                              <div className="broadcast-stage-card__title-wrap">
+                                <strong>Автопосты</strong>
+                                <small>
+                                  {managedAutopostRulesQuery.isLoading
+                                    ? 'Загрузка'
+                                    : orderedManagedAutopostRules.length > 0
+                                      ? `${orderedManagedAutopostRules.length} шт.`
+                                      : 'Пусто'}
+                                </small>
+                              </div>
+                            </div>
+
+                            <div className="broadcast-stage-card__body">
+                              <div className="managed-broadcasts-list">
+                                {showMailingDraftCard ? (
+                                  <BroadcastDraftCard
+                                    preview={normalizedMailingText}
+                                    facts={mailingDraftFacts}
+                                    disabled={isMailingBusy}
+                                    onOpen={() => setMailingWorkspaceView('compose')}
+                                    onReset={handleClearMailingComposer}
+                                  />
+                                ) : null}
+
+                                {orderedManagedAutopostRules.length === 0 &&
+                                !showMailingDraftCard &&
+                                !managedAutopostRulesQuery.isLoading ? (
+                                  <div className="managed-broadcasts-list__empty">Пусто</div>
+                                ) : null}
+
+                                <Suspense fallback={<SkeletonCard lines={2} />}>
+                                  {orderedManagedAutopostRules.map((rule) => (
+                                    <LazyManagedAutopostRuleCard
+                                      key={rule.id}
+                                      rule={rule}
+                                      nextLabel={formatCompactBroadcastDateTime(
+                                        rule.nextSendAt,
+                                        rule.scheduleTimezone,
+                                      )}
+                                      facts={buildManagedAutopostRuleFacts(rule, 'Текущий чат')}
+                                      isBusy={isMailingBusy}
+                                      onOpen={() => openManagedAutopostRuleMutation.mutate(rule.id)}
+                                      onPause={() =>
+                                        updateManagedAutopostRuleMutation.mutate({
+                                          ruleId: rule.id,
+                                          status: 'PAUSED',
+                                        })
+                                      }
+                                      onResume={() =>
+                                        updateManagedAutopostRuleMutation.mutate({
+                                          ruleId: rule.id,
+                                          status: 'ACTIVE',
+                                        })
+                                      }
+                                      onDelete={() => handleDeleteManagedAutopostRule(rule)}
+                                    />
+                                  ))}
+                                </Suspense>
+                              </div>
                             </div>
                           </div>
                         ) : (
@@ -10237,60 +10570,64 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   <div className="managed-broadcasts-list__empty">Пусто</div>
                                 ) : null}
 
-                                {filteredManagedBroadcasts.map((broadcast) => {
-                                  const cardTone = resolveManagedBroadcastCardTone(broadcast);
-                                  const cardMetric = resolveManagedBroadcastMetric(
-                                    broadcast,
-                                    mailingNowMs,
-                                  );
-                                  const cardFacts = buildManagedBroadcastFactChips(broadcast);
-                                  const canEditBroadcastSchedule =
-                                    broadcast.scheduleMode === 'calendar' &&
-                                    broadcast.status !== 'COMPLETED' &&
-                                    broadcast.status !== 'CANCELED';
-                                  const canCancelBroadcast =
-                                    broadcast.status !== 'COMPLETED' &&
-                                    broadcast.status !== 'CANCELED';
-                                  const isDeletingBroadcast =
-                                    cancelManagedBroadcastMutation.isPending &&
-                                    cancelManagedBroadcastMutation.variables === broadcast.id;
-                                  const isOpeningBroadcastEditor =
-                                    openManagedBroadcastEditorMutation.isPending &&
-                                    openManagedBroadcastEditorMutation.variables === broadcast.id;
-                                  const isDuplicatingBroadcast =
-                                    duplicateManagedBroadcastMutation.isPending &&
-                                    duplicateManagedBroadcastMutation.variables === broadcast.id;
-                                  const isRetryingBroadcast =
-                                    retryManagedBroadcastMutation.isPending &&
-                                    retryManagedBroadcastMutation.variables === broadcast.id;
-                                  const cardBadge = isOpeningBroadcastEditor
-                                    ? 'Открываем'
-                                    : resolveManagedBroadcastCardBadge(broadcast);
+                                <Suspense fallback={<SkeletonCard lines={2} />}>
+                                  {filteredManagedBroadcasts.map((broadcast) => {
+                                    const cardTone = resolveManagedBroadcastCardTone(broadcast);
+                                    const cardMetric = resolveManagedBroadcastMetric(
+                                      broadcast,
+                                      mailingNowMs,
+                                    );
+                                    const cardFacts = buildManagedBroadcastFactChips(broadcast);
+                                    const canEditBroadcastSchedule =
+                                      broadcast.scheduleMode === 'calendar' &&
+                                      broadcast.status !== 'COMPLETED' &&
+                                      broadcast.status !== 'CANCELED';
+                                    const canCancelBroadcast =
+                                      broadcast.status !== 'COMPLETED' &&
+                                      broadcast.status !== 'CANCELED';
+                                    const isDeletingBroadcast =
+                                      cancelManagedBroadcastMutation.isPending &&
+                                      cancelManagedBroadcastMutation.variables === broadcast.id;
+                                    const isOpeningBroadcastEditor =
+                                      openManagedBroadcastEditorMutation.isPending &&
+                                      openManagedBroadcastEditorMutation.variables === broadcast.id;
+                                    const isDuplicatingBroadcast =
+                                      duplicateManagedBroadcastMutation.isPending &&
+                                      duplicateManagedBroadcastMutation.variables === broadcast.id;
+                                    const isRetryingBroadcast =
+                                      retryManagedBroadcastMutation.isPending &&
+                                      retryManagedBroadcastMutation.variables === broadcast.id;
+                                    const cardBadge = isOpeningBroadcastEditor
+                                      ? 'Открываем'
+                                      : resolveManagedBroadcastCardBadge(broadcast);
 
-                                  return (
-                                    <ManagedBroadcastHistoryCard
-                                      key={broadcast.id}
-                                      broadcast={broadcast}
-                                      tone={cardTone}
-                                      badge={cardBadge}
-                                      title={resolveManagedBroadcastCardTitle(broadcast)}
-                                      metric={cardMetric}
-                                      facts={cardFacts}
-                                      canEdit={canEditBroadcastSchedule}
-                                      canCancel={canCancelBroadcast}
-                                      isBusy={isMailingBusy}
-                                      isDeleting={isDeletingBroadcast}
-                                      isDuplicating={isDuplicatingBroadcast}
-                                      isRetrying={isRetryingBroadcast}
-                                      onEdit={() => handleEditManagedBroadcast(broadcast)}
-                                      onDuplicate={() => handleDuplicateManagedBroadcast(broadcast)}
-                                      onRetry={() =>
-                                        retryManagedBroadcastMutation.mutate(broadcast.id)
-                                      }
-                                      onDelete={() => handleDeleteManagedBroadcast(broadcast)}
-                                    />
-                                  );
-                                })}
+                                    return (
+                                      <LazyManagedBroadcastHistoryCard
+                                        key={broadcast.id}
+                                        broadcast={broadcast}
+                                        tone={cardTone}
+                                        badge={cardBadge}
+                                        title={resolveManagedBroadcastCardTitle(broadcast)}
+                                        metric={cardMetric}
+                                        facts={cardFacts}
+                                        canEdit={canEditBroadcastSchedule}
+                                        canCancel={canCancelBroadcast}
+                                        isBusy={isMailingBusy}
+                                        isDeleting={isDeletingBroadcast}
+                                        isDuplicating={isDuplicatingBroadcast}
+                                        isRetrying={isRetryingBroadcast}
+                                        onEdit={() => handleEditManagedBroadcast(broadcast)}
+                                        onDuplicate={() =>
+                                          handleDuplicateManagedBroadcast(broadcast)
+                                        }
+                                        onRetry={() =>
+                                          retryManagedBroadcastMutation.mutate(broadcast.id)
+                                        }
+                                        onDelete={() => handleDeleteManagedBroadcast(broadcast)}
+                                      />
+                                    );
+                                  })}
+                                </Suspense>
                               </div>
                             </div>
                           </div>
@@ -11087,6 +11424,42 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         isBusy={cancelManagedBroadcastMutation.isPending}
         onClose={() => setManagedBroadcastDeleteTarget(null)}
         onConfirm={confirmDeleteManagedBroadcast}
+      />
+
+      <ActionConfirmSheet
+        id="managed-autopost-rule-delete"
+        open={managedAutopostRuleDeleteTarget !== null}
+        title="Удалить автопост?"
+        previewTitle={
+          managedAutopostRuleDeleteTarget ? (
+            <MaxMarkdownPreview
+              value={managedAutopostRuleDeleteTarget.textPreview}
+              className="action-confirm-sheet__preview-markdown max-markdown-preview--clamp-2"
+              normalizeWhitespace
+              fallback={
+                managedAutopostRuleDeleteTarget.hasVideo
+                  ? 'Видео без текста'
+                  : managedAutopostRuleDeleteTarget.hasImage
+                    ? 'Фото без текста'
+                    : 'Пусто'
+              }
+            />
+          ) : undefined
+        }
+        previewMeta={
+          managedAutopostRuleDeleteTarget?.nextSendAt
+            ? `Следующий · ${formatCompactBroadcastDateTime(
+                managedAutopostRuleDeleteTarget.nextSendAt,
+                managedAutopostRuleDeleteTarget.scheduleTimezone,
+              )}`
+            : undefined
+        }
+        confirmLabel="Удалить"
+        confirmBusyLabel="Удаляем..."
+        tone="danger"
+        isBusy={deleteManagedAutopostRuleMutation.isPending}
+        onClose={() => setManagedAutopostRuleDeleteTarget(null)}
+        onConfirm={confirmDeleteManagedAutopostRule}
       />
     </div>
   );

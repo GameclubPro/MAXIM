@@ -14,6 +14,10 @@ import {
   managedBroadcastDetailsSchema,
   managedBroadcastCalendarResponseSchema,
   managedBroadcastSummarySchema,
+  createManagedAutopostRuleRequestSchema,
+  managedAutopostRuleDetailsSchema,
+  managedAutopostRuleSummarySchema,
+  updateManagedAutopostRuleRequestSchema,
   managedEntityHeaderSchema,
   publishChatRulesResultSchema,
   promoteManagedEntityStandbyRequestSchema,
@@ -38,6 +42,10 @@ import {
   type ManagedBroadcastCalendarResponse,
   type ManagedBroadcastDetails,
   type ManagedBroadcastSummary,
+  type CreateManagedAutopostRuleRequest,
+  type ManagedAutopostRuleDetails,
+  type ManagedAutopostRuleSummary,
+  type UpdateManagedAutopostRuleRequest,
   type ManagedEntityBotExecutionPlan,
   type ManagedEntityAccessRecheckResponse,
   type ManagedEntityHeader,
@@ -394,6 +402,65 @@ export async function retryManagedBroadcast(
     method: 'POST',
   });
   return managedBroadcastDetailsSchema.parse(response);
+}
+
+export async function getManagedAutopostRules(
+  api: ApiTransport,
+  chatId: string,
+): Promise<ManagedAutopostRuleSummary[]> {
+  const response = await api.request(`/chats/${chatId}/autopost-rules`);
+  if (!Array.isArray(response)) {
+    throw new Error('Invalid managed autopost rules response');
+  }
+
+  return response.map((item: unknown) => managedAutopostRuleSummarySchema.parse(item));
+}
+
+export async function getManagedAutopostRule(
+  api: ApiTransport,
+  chatId: string,
+  ruleId: string,
+): Promise<ManagedAutopostRuleDetails> {
+  const response = await api.request(`/chats/${chatId}/autopost-rules/${ruleId}`);
+  return managedAutopostRuleDetailsSchema.parse(response);
+}
+
+export async function createManagedAutopostRule(
+  api: ApiTransport,
+  chatId: string,
+  payload: CreateManagedAutopostRuleRequest,
+): Promise<ManagedAutopostRuleDetails> {
+  const requestBody = createManagedAutopostRuleRequestSchema.parse(payload);
+  const response = await api.request(`/chats/${chatId}/autopost-rules`, {
+    method: 'POST',
+    body: JSON.stringify(requestBody),
+  });
+  return managedAutopostRuleDetailsSchema.parse(response);
+}
+
+export async function updateManagedAutopostRule(
+  api: ApiTransport,
+  chatId: string,
+  ruleId: string,
+  payload: UpdateManagedAutopostRuleRequest,
+): Promise<ManagedAutopostRuleDetails> {
+  const requestBody = updateManagedAutopostRuleRequestSchema.parse(payload);
+  const response = await api.request(`/chats/${chatId}/autopost-rules/${ruleId}`, {
+    method: 'PUT',
+    body: JSON.stringify(requestBody),
+  });
+  return managedAutopostRuleDetailsSchema.parse(response);
+}
+
+export async function deleteManagedAutopostRule(
+  api: ApiTransport,
+  chatId: string,
+  ruleId: string,
+): Promise<ManagedAutopostRuleDetails> {
+  const response = await api.request(`/chats/${chatId}/autopost-rules/${ruleId}`, {
+    method: 'DELETE',
+  });
+  return managedAutopostRuleDetailsSchema.parse(response);
 }
 
 export async function getDomainAllowlistDetails(

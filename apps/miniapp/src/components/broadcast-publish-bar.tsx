@@ -1,5 +1,5 @@
-import { SendDiagonal, TestTube } from 'iconoir-react';
 import { cn } from '../lib/cn';
+import { BookmarkGlyph, SendGlyph, TestGlyph } from './ui/compact-icons';
 
 export type BroadcastPublishIssueAction = {
   label: string;
@@ -14,6 +14,9 @@ type BroadcastPublishBarProps = {
   testLabel: string;
   testAriaLabel: string;
   testDisabled: boolean;
+  secondaryLabel?: string;
+  secondaryDisabled?: boolean;
+  onSecondary?: () => void;
   primaryLabel: string;
   primaryDisabled: boolean;
   onTest: () => void;
@@ -28,6 +31,9 @@ export function BroadcastPublishBar({
   testLabel,
   testAriaLabel,
   testDisabled,
+  secondaryLabel,
+  secondaryDisabled = false,
+  onSecondary,
   primaryLabel,
   primaryDisabled,
   onTest,
@@ -64,9 +70,23 @@ export function BroadcastPublishBar({
         aria-label={testAriaLabel}
         title={testAriaLabel}
       >
-        <TestTube aria-hidden focusable="false" />
+        <TestGlyph aria-hidden focusable="false" />
         <span>{testLabel}</span>
       </button>
+
+      {secondaryLabel && onSecondary ? (
+        <button
+          type="button"
+          className="button button--ghost broadcast-publish-bar__test broadcast-publish-bar__secondary"
+          onClick={onSecondary}
+          disabled={secondaryDisabled}
+          aria-label={secondaryLabel}
+          title={secondaryLabel}
+        >
+          <BookmarkGlyph aria-hidden focusable="false" />
+          <span>{secondaryLabel}</span>
+        </button>
+      ) : null}
 
       <button
         type="button"
@@ -74,7 +94,7 @@ export function BroadcastPublishBar({
         onClick={onPrimary}
         disabled={primaryDisabled}
       >
-        <SendDiagonal aria-hidden focusable="false" />
+        <SendGlyph aria-hidden focusable="false" />
         <span>{primaryLabel}</span>
       </button>
     </div>

@@ -17,6 +17,7 @@ import { ADMIN_SUGGESTION_DELIVERY_QUEUE } from './admin-suggestion-delivery.que
 import { AdminSuperBanProcessor } from './admin-super-ban.processor';
 import { ADMIN_SUPER_BAN_QUEUE } from './admin-super-ban.queue';
 import { AdminManagedBroadcastRuntime } from './admin-managed-broadcast-runtime';
+import { AdminAutopostController } from './admin-autopost.controller';
 import { AdminBroadcastController } from './admin-broadcast.controller';
 import { AdminDialogController } from './admin-dialog.controller';
 import { AdminGiveawayController } from './admin-giveaway.controller';
@@ -30,6 +31,8 @@ import { ChannelDialogService } from './channel-dialog.service';
 import { ManualModerationService } from './manual-moderation.service';
 import { ManagedBroadcastRunnerService } from './managed-broadcast-runner.service';
 import { ManagedBroadcastService } from './managed-broadcast.service';
+import { ManagedAutopostRunnerService } from './managed-autopost-runner.service';
+import { ManagedAutopostService } from './managed-autopost.service';
 import { ManagedEntityCandidateSyncService } from './managed-entity-candidate-sync.service';
 import { ManagedEntitiesDiscoveryService } from './managed-entities-discovery.service';
 import { ManagedEntitiesService } from './managed-entities.service';
@@ -74,6 +77,7 @@ import { SupportRequestsService } from './support-requests.service';
   controllers: [
     AdminManagedEntitiesController,
     AdminSettingsController,
+    AdminAutopostController,
     AdminBroadcastController,
     AdminVkParsingController,
     AdminDialogController,
@@ -97,6 +101,8 @@ import { SupportRequestsService } from './support-requests.service';
         adminService.getManagedBroadcastRuntimeForBroadcastService(),
       inject: [AdminService],
     },
+    ManagedAutopostService,
+    ManagedAutopostRunnerService,
     ManagedBroadcastService,
     ManagedEntityCandidateSyncService,
     ManagedEntitiesService,
@@ -131,6 +137,7 @@ import { SupportRequestsService } from './support-requests.service';
     AdminSettingsService,
     ChannelDialogService,
     ManualModerationService,
+    ManagedAutopostService,
     ManagedBroadcastService,
     ManagedEntityCandidateSyncService,
     ManagedEntitiesService,
