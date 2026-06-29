@@ -115,6 +115,7 @@ export function extractPrivateFirstVideoSourceAttachment(
     if (type === 'video' && payload) {
       const url = readString(payload.url);
       const token = readString(payload.token);
+      const mediaType = readLowerString(payload.media_type ?? payload.mediaType ?? row.media_type);
       const fileName =
         readString(
           payload.file_name ??
@@ -129,7 +130,7 @@ export function extractPrivateFirstVideoSourceAttachment(
           readLowerString(payload.mime_type ?? payload.mimeType),
           fileName,
           url,
-        ) ?? (token ? 'video/mp4' : null);
+        ) ?? (token || mediaType === 'video' ? 'video/mp4' : null);
       if ((!url && !token) || !mimeType) {
         continue;
       }
@@ -143,24 +144,25 @@ export function extractPrivateFirstVideoSourceAttachment(
         fileName,
         size: readOptionalInteger(payload.size ?? row.size),
         mimeType,
-        mediaType: readLowerString(payload.media_type ?? payload.mediaType),
+        mediaType,
         payloadKeys: Object.keys(payload).sort(),
       };
     }
 
     const parsed = parsePrivateFileAttachment(row);
-    if (!parsed?.url) {
+    if (!parsed || (!parsed.url && !parsed.token)) {
       continue;
     }
 
-    const mimeType = resolvePrivateVideoMimeType(parsed.mimeType, parsed.fileName, parsed.url);
+    const mimeType =
+      resolvePrivateVideoMimeType(parsed.mimeType, parsed.fileName, parsed.url) ??
+      (parsed.mediaType === 'video' ? 'video/mp4' : null);
     if (!mimeType) {
       continue;
     }
 
     return {
       ...parsed,
-      url: parsed.url,
       mimeType,
     };
   }
@@ -182,7 +184,7 @@ export function hasPrivateVideoAttachment(update: MaxUpdate): boolean {
         row.name,
     );
     const url = readString(payload?.url);
-    const mediaType = readLowerString(payload?.media_type ?? payload?.mediaType);
+    const mediaType = readLowerString(payload?.media_type ?? payload?.mediaType ?? row.media_type);
 
     if (
       type === 'video' ||

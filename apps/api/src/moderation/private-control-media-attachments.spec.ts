@@ -362,6 +362,75 @@ describe('private control media attachments', () => {
     }
   });
 
+  it('extracts media-type video file tokens without mime type or extension', async () => {
+    const videoSource = extractPrivateFirstVideoSourceAttachment(
+      createAttachmentUpdate([
+        {
+          type: 'file',
+          payload: {
+            token: 'incoming-file-video-token',
+            file_id: 'file-video-1',
+            file_name: 'upload',
+            media_type: 'video',
+          },
+        },
+      ]),
+    );
+    const originalFetch = global.fetch;
+    const fetchMock = jest.fn();
+    Object.defineProperty(global, 'fetch', {
+      configurable: true,
+      writable: true,
+      value: fetchMock,
+    });
+    const uploader = {
+      uploadImage: jest.fn(),
+      uploadVideo: jest.fn(),
+    };
+
+    try {
+      expect(
+        hasPrivateVideoAttachment(
+          createAttachmentUpdate([
+            {
+              type: 'file',
+              payload: {
+                token: 'incoming-file-video-token',
+                media_type: 'video',
+              },
+            },
+          ]),
+        ),
+      ).toBe(true);
+      expect(videoSource).toEqual(
+        expect.objectContaining({
+          url: null,
+          token: 'incoming-file-video-token',
+          fileId: 'file-video-1',
+          fileName: 'upload',
+          mimeType: 'video/mp4',
+          mediaType: 'video',
+        }),
+      );
+      await expect(
+        buildPrivateSuggestionMediaDraftFromVideo(videoSource!, uploader, 'channel-suggestion'),
+      ).resolves.toEqual({
+        kind: 'video',
+        mimeType: 'video/mp4',
+        fileName: 'upload',
+        payload: { token: 'incoming-file-video-token' },
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(uploader.uploadVideo).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(global, 'fetch', {
+        configurable: true,
+        writable: true,
+        value: originalFetch,
+      });
+    }
+  });
+
   it('rejects oversized fallback video downloads before reading the body', async () => {
     const videoSource = extractPrivateFirstVideoSourceAttachment(
       createAttachmentUpdate([
