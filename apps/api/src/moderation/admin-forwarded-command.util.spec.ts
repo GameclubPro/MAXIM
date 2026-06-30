@@ -177,6 +177,22 @@ describe('admin forwarded command util', () => {
     });
   });
 
+  it('does not accept extra punctuation after a configured command that already has punctuation', () => {
+    expect(parseAdminForwardedModerationCommand('бан!!')).toBeNull();
+    expect(
+      parseAdminForwardedModerationCommand('мера!!', { adminBanAllCommandName: 'мера!' }),
+    ).toBeNull();
+    expect(
+      parseAdminForwardedModerationCommand('точка..', { adminRulesCommandName: 'точка.' }),
+    ).toBeNull();
+    expect(
+      parseAdminForwardedModerationCommand('мера!', { adminBanAllCommandName: 'мера!' }),
+    ).toEqual({
+      action: 'BAN',
+      fanoutAllChats: true,
+    });
+  });
+
   it('parses private forwarded commands with private-only semantics', () => {
     expect(parsePrivateForwardedModerationCommand('БаН!')).toEqual({
       action: 'BAN',

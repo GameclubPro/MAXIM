@@ -96,6 +96,7 @@ export const ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT = 'мут 88';
 export const ADMIN_RULES_COMMAND_NAME_DEFAULT = 'правило';
 export const ADMIN_SILENCE_COMMAND_NAME_DEFAULT = 'тишина';
 export const ADMIN_OPEN_CHAT_COMMAND_NAME_DEFAULT = 'тишина выкл';
+const RESERVED_ADMIN_COMMAND_NAMES = new Set(['супер бан', 'супер-бан', 'super ban', 'super-ban']);
 export const MAX_MESSAGE_LENGTH_MIN = 50;
 export const MAX_MESSAGE_LENGTH_MAX = 1500;
 export const MAX_MESSAGE_LENGTH_DEFAULT = MAX_MESSAGE_LENGTH_MAX;
@@ -186,6 +187,17 @@ const adminCommandAliasesTextSchema = z
     );
     return aliases.join(', ');
   });
+function buildAdminCommandRuntimeVariants(commandName: string): string[] {
+  if (/[.!]$/u.test(commandName)) {
+    return [commandName];
+  }
+
+  return [commandName, `${commandName}!`, `${commandName}.`];
+}
+function isReservedAdminCommandName(commandName: string): boolean {
+  const normalized = commandName.replace(/[.!]$/u, '');
+  return RESERVED_ADMIN_COMMAND_NAMES.has(normalized);
+}
 const botSpeechMediaFieldKeySchema = z.enum(BOT_SPEECH_EDITABLE_FIELD_KEYS);
 const botSpeechMediaImageSchema = z
   .object({
@@ -973,6 +985,15 @@ export const chatSettingsSchema = z
       ['adminSilenceCommandName', value.adminSilenceCommandName],
       ['adminOpenChatCommandName', value.adminOpenChatCommandName],
     ] as const;
+    for (const [key, commandName] of adminCommandEntries) {
+      if (isReservedAdminCommandName(commandName.toLowerCase())) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: 'Эта команда зарезервирована ботом.',
+        });
+      }
+    }
     for (let index = 0; index < adminCommandEntries.length; index += 1) {
       const [key, commandName] = adminCommandEntries[index];
       for (const [, otherCommandName] of adminCommandEntries.slice(0, index)) {
@@ -981,6 +1002,30 @@ export const chatSettingsSchema = z
             code: z.ZodIssueCode.custom,
             path: [key],
             message: 'Такая команда уже используется в этом блоке.',
+          });
+          break;
+        }
+      }
+    }
+    const adminCommandRuntimeVariants = new Map<string, (typeof adminCommandEntries)[number][0]>();
+    for (const [key, commandName] of adminCommandEntries) {
+      const normalizedCommandName = commandName.toLowerCase();
+      for (const variant of buildAdminCommandRuntimeVariants(normalizedCommandName)) {
+        const existingKey = adminCommandRuntimeVariants.get(variant);
+        if (!existingKey) {
+          adminCommandRuntimeVariants.set(variant, key);
+          continue;
+        }
+
+        const allowedBanPair =
+          existingKey === 'adminBanCommandName' &&
+          key === 'adminBanAllCommandName' &&
+          normalizedCommandName === `${value.adminBanCommandName.toLowerCase()}!`;
+        if (!allowedBanPair) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [key],
+            message: 'Такая команда пересекается с другой командой с учетом ! или .',
           });
           break;
         }

@@ -484,11 +484,15 @@ export function dedupeForwardedRulesSources(sources: ForwardedRulesSource[]): Fo
 export const dedupePrivateForwardedRulesSources = dedupeForwardedRulesSources;
 
 function matchesAdminCommandName(normalizedText: string, commandName: string): boolean {
-  return (
-    normalizedText === commandName ||
-    normalizedText === `${commandName}!` ||
-    normalizedText === `${commandName}.`
-  );
+  if (normalizedText === commandName) {
+    return true;
+  }
+
+  if (/[.!]$/u.test(commandName)) {
+    return false;
+  }
+
+  return normalizedText === `${commandName}!` || normalizedText === `${commandName}.`;
 }
 
 function matchAdminCommandNameWithOptionalDuration(

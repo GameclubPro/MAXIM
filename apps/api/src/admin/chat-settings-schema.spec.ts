@@ -199,6 +199,32 @@ describe('chatSettingsSchema duplicate flow validation', () => {
     expect(result.success).toBe(false);
   });
 
+  it('allows local and all-chat ban commands to differ by an exclamation mark', () => {
+    const result = chatSettingsSchema.safeParse({
+      adminBanCommandName: 'мера',
+      adminBanAllCommandName: 'мера!',
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects hidden per-chat admin command conflicts with punctuation shortcuts', () => {
+    const result = chatSettingsSchema.safeParse({
+      adminMuteCommandName: 'мера',
+      adminRulesCommandName: 'мера!',
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects admin command names reserved by hardcoded bot commands', () => {
+    const result = chatSettingsSchema.safeParse({
+      adminBanCommandName: 'супер бан',
+    });
+
+    expect(result.success).toBe(false);
+  });
+
   it('rejects bot speech media with non-image mime type', () => {
     const result = chatSettingsSchema.safeParse({
       botSpeechMedia: {
