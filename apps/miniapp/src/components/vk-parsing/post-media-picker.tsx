@@ -1,5 +1,6 @@
-import { Camera, Link as IconoirLink, Play } from 'iconoir-react';
+import { Camera, Link as IconoirLink } from 'iconoir-react';
 import { cn } from '../../lib/cn';
+import { PostVideoChoice } from './post-video-preview';
 
 type PostMediaPickerProps = {
   photoUrls: string[];
@@ -58,19 +59,14 @@ export function PostMediaPicker({
           {videoUrls.map((url, index) => {
             const checked = selectedVideoUrls.includes(url);
             return (
-              <button
-                type="button"
+              <PostVideoChoice
                 key={url}
-                className={cn('vk-parsing-video-choice', checked && 'is-selected')}
-                aria-pressed={checked}
-                aria-label={`${checked ? 'Убрать' : 'Вернуть'} видео ${index + 1}`}
-                title={checked ? 'Убрать видео' : 'Вернуть видео'}
+                url={url}
+                index={index}
+                checked={checked}
                 disabled={disabled}
-                onClick={() => onToggleVideo(url)}
-              >
-                <Play aria-hidden />
-                <span>Видео {index + 1}</span>
-              </button>
+                onToggle={onToggleVideo}
+              />
             );
           })}
         </div>

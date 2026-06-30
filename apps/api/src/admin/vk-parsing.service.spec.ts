@@ -861,6 +861,80 @@ describe('VkParsingService', () => {
     expect(rawValues).not.toContain(JSON.stringify(['https://vk.com/video_ext.php?oid=-36819802&id=42']));
   });
 
+  it('hydrates VK video attachments through video.get when wall.get omits direct files', async () => {
+    const { service, prisma } = createFixture();
+    const source = createSource();
+    const videoUrl = 'https://vkvd.example/video-720.mp4';
+    prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    prisma.vkParsingPost.findMany.mockResolvedValue([]);
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(
+        createJsonFetchResponse({
+          response: {
+            items: [
+              {
+                owner_id: -36819802,
+                id: 103,
+                date: 1_779_708_000,
+                text: '',
+                attachments: [
+                  {
+                    type: 'video',
+                    video: {
+                      id: 42,
+                      owner_id: -36819802,
+                      access_key: 'video-key',
+                      title: 'Видеообзор',
+                      duration: 12,
+                    },
+                  },
+                ],
+              },
+            ],
+            groups: [],
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        createJsonFetchResponse({
+          response: {
+            count: 1,
+            items: [
+              {
+                id: 42,
+                owner_id: -36819802,
+                access_key: 'video-key',
+                title: 'Видеообзор',
+                duration: 12,
+                files: {
+                  external: 'https://vk.com/video_ext.php?oid=-36819802&id=42',
+                  hls: 'https://vkvd.example/video.m3u8',
+                  mp4_360: 'https://vkvd.example/video-360.mp4',
+                  mp4_720: videoUrl,
+                },
+              },
+            ],
+          },
+        }),
+      ) as unknown as typeof fetch;
+
+    await service.processSyncSourceJob('source-1', 'scheduled');
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining('/method/video.get?'),
+      expect.any(Object),
+    );
+    expect(decodeURIComponent(String((global.fetch as jest.Mock).mock.calls[1][0]))).toContain(
+      'videos=-36819802_42_video-key',
+    );
+    const rawValues = readExecuteRawValues(prisma);
+    expect(rawValues).toContain(JSON.stringify([videoUrl]));
+    expect(rawValues).toContain(JSON.stringify([]));
+    expect(rawValues).not.toContain('Нет прямого HTTPS-файла видео');
+  });
+
   it('ignores wall posts whose owner does not match the source owner', async () => {
     const { service, prisma } = createFixture();
     const source = createSource();

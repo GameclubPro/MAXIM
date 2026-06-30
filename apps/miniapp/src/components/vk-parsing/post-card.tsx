@@ -20,6 +20,7 @@ import {
   formatVkPublishState,
 } from './format';
 import { PostEditor } from './post-editor';
+import { PostVideoPreview } from './post-video-preview';
 
 type PostCardProps = {
   post: VkParsingPost;
@@ -85,6 +86,8 @@ export function PostCard({
   const videoCount = post.videoUrls.length;
   const linkCount = post.linkUrls.length;
   const unsupportedSummary = formatUnsupportedAttachmentSummary(post);
+  const unsupportedVideo =
+    videoCount === 0 ? post.unsupportedAttachments.find((item) => item.type === 'video') : null;
   const visiblePhotoUrls = post.photoUrls.slice(0, 4);
   const extraPhotoCount = Math.max(0, post.photoUrls.length - visiblePhotoUrls.length);
   const isReviewMode =
@@ -201,20 +204,16 @@ export function PostCard({
             </div>
           ) : null}
 
-          {videoCount > 0 ? (
-            <a
-              className="vk-parsing-post-card__video"
-              href={post.videoUrls[0]}
-              target="_blank"
-              rel="noreferrer"
-              aria-label="Открыть видео VK"
-              title="Открыть видео VK"
-            >
+          {videoCount > 0 ? <PostVideoPreview url={post.videoUrls[0]} /> : null}
+
+          {unsupportedVideo ? (
+            <div className="vk-parsing-post-card__unsupported-video" role="status">
               <span>
-                <Play aria-hidden />
+                <WarningCircle aria-hidden />
               </span>
-              <strong>Видео</strong>
-            </a>
+              <strong>Видео недоступно</strong>
+              <small>{unsupportedVideo.reason ?? 'VK не отдал прямой файл видео.'}</small>
+            </div>
           ) : null}
 
           {isReviewMode ? (

@@ -35,6 +35,12 @@ type VkWallGetResponse = {
   groups?: unknown[];
 };
 
+type VkVideoReference = {
+  ownerId: number;
+  videoId: number;
+  accessKey: string | null;
+};
+
 type NormalizedVkPost = {
   vkOwnerId: number;
   vkPostId: number;
@@ -288,7 +294,8 @@ export class VkSyncService {
       if (!(await this.recordSourceHeartbeat(source.id))) {
         return { posts: [], pages: offsets.length, offsets, leaseLost: true };
       }
-      const pagePosts = (wall.items ?? [])
+      const enrichedItems = await this.enrichPostsWithVideoFiles(wall.items ?? []);
+      const pagePosts = enrichedItems
         .map((item) => this.normalizePost(item))
         .filter(
           (post): post is NormalizedVkPost =>
@@ -703,6 +710,201 @@ export class VkSyncService {
     }
 
     return found;
+  }
+
+  private async enrichPostsWithVideoFiles(items: unknown[]): Promise<unknown[]> {
+    const videoRefs = this.collectVideoReferencesNeedingFiles(items);
+    if (videoRefs.length === 0) {
+      return items;
+    }
+
+    let videosByKey: Map<string, Record<string, unknown>>;
+    try {
+      videosByKey = await this.fetchVideoDetails(videoRefs);
+    } catch (error) {
+      this.logDedupedWarning(
+        'vk-video-details',
+        { reason: 'vk_video_details_failed', retryable: true, err: error },
+        'VK video details fetch failed',
+      );
+      return items;
+    }
+
+    if (videosByKey.size === 0) {
+      return items;
+    }
+
+    return items.map((item) => this.enrichPostWithVideoDetails(item, videosByKey));
+  }
+
+  private collectVideoReferencesNeedingFiles(items: unknown[]): VkVideoReference[] {
+    const refsByKey = new Map<string, VkVideoReference>();
+    for (const item of items) {
+      this.collectVideoReferencesFromPost(item, refsByKey);
+    }
+    return [...refsByKey.values()];
+  }
+
+  private collectVideoReferencesFromPost(
+    value: unknown,
+    refsByKey: Map<string, VkVideoReference>,
+  ): void {
+    const post = this.asRecord(value);
+    if (!post) {
+      return;
+    }
+
+    this.collectVideoReferencesFromAttachments(post.attachments, refsByKey);
+    const copyHistory = Array.isArray(post.copy_history) ? post.copy_history : [];
+    for (const copy of copyHistory) {
+      this.collectVideoReferencesFromPost(copy, refsByKey);
+    }
+  }
+
+  private collectVideoReferencesFromAttachments(
+    attachments: unknown,
+    refsByKey: Map<string, VkVideoReference>,
+  ): void {
+    for (const attachment of this.readAttachments(attachments)) {
+      if (this.readString(attachment.type).toLowerCase() !== 'video') {
+        continue;
+      }
+      const video = this.asRecord(attachment.video);
+      if (!video || this.hasSupportedVideoFile(video)) {
+        continue;
+      }
+
+      const ownerId = this.readNumber(video.owner_id);
+      const videoId = this.readNumber(video.id);
+      if (typeof ownerId !== 'number' || typeof videoId !== 'number') {
+        continue;
+      }
+
+      const accessKey = this.readString(video.access_key) || null;
+      const key = this.buildVideoReferenceKey({ ownerId, videoId, accessKey });
+      refsByKey.set(key, { ownerId, videoId, accessKey });
+    }
+  }
+
+  private async fetchVideoDetails(
+    refs: VkVideoReference[],
+  ): Promise<Map<string, Record<string, unknown>>> {
+    const videosByKey = new Map<string, Record<string, unknown>>();
+    const chunkSize = 100;
+    for (let index = 0; index < refs.length; index += chunkSize) {
+      const chunk = refs.slice(index, index + chunkSize);
+      const response = await this.vkApiClient.request('video.get', {
+        videos: chunk.map((ref) => this.formatVideoReference(ref)).join(','),
+        extended: '0',
+      });
+      const record = this.asRecord(response);
+      const items = Array.isArray(record?.items)
+        ? record.items
+        : Array.isArray(response)
+          ? response
+          : [];
+      for (const item of items) {
+        const video = this.asRecord(item);
+        if (!video || !this.hasSupportedVideoFile(video)) {
+          continue;
+        }
+        const ownerId = this.readNumber(video.owner_id);
+        const videoId = this.readNumber(video.id);
+        if (typeof ownerId !== 'number' || typeof videoId !== 'number') {
+          continue;
+        }
+        const accessKey = this.readString(video.access_key) || null;
+        videosByKey.set(this.buildVideoReferenceKey({ ownerId, videoId, accessKey }), video);
+        videosByKey.set(this.buildVideoReferenceKey({ ownerId, videoId, accessKey: null }), video);
+      }
+    }
+    return videosByKey;
+  }
+
+  private enrichPostWithVideoDetails(
+    value: unknown,
+    videosByKey: Map<string, Record<string, unknown>>,
+  ): unknown {
+    const post = this.asRecord(value);
+    if (!post) {
+      return value;
+    }
+
+    const enrichedPost: Record<string, unknown> = {
+      ...post,
+      attachments: this.enrichAttachmentsWithVideoDetails(post.attachments, videosByKey),
+    };
+    if (Array.isArray(post.copy_history)) {
+      enrichedPost.copy_history = post.copy_history.map((copy) =>
+        this.enrichPostWithVideoDetails(copy, videosByKey),
+      );
+    }
+    return enrichedPost;
+  }
+
+  private enrichAttachmentsWithVideoDetails(
+    attachments: unknown,
+    videosByKey: Map<string, Record<string, unknown>>,
+  ): unknown {
+    if (!Array.isArray(attachments)) {
+      return attachments;
+    }
+
+    return attachments.map((item) => {
+      const attachment = this.asRecord(item);
+      if (!attachment || this.readString(attachment.type).toLowerCase() !== 'video') {
+        return item;
+      }
+      const video = this.asRecord(attachment.video);
+      if (!video || this.hasSupportedVideoFile(video)) {
+        return item;
+      }
+
+      const ownerId = this.readNumber(video.owner_id);
+      const videoId = this.readNumber(video.id);
+      if (typeof ownerId !== 'number' || typeof videoId !== 'number') {
+        return item;
+      }
+      const accessKey = this.readString(video.access_key) || null;
+      const details =
+        videosByKey.get(this.buildVideoReferenceKey({ ownerId, videoId, accessKey })) ??
+        videosByKey.get(this.buildVideoReferenceKey({ ownerId, videoId, accessKey: null }));
+      if (!details) {
+        return item;
+      }
+
+      return {
+        ...attachment,
+        video: {
+          ...video,
+          ...details,
+        },
+      };
+    });
+  }
+
+  private hasSupportedVideoFile(video: Record<string, unknown>): boolean {
+    const files = this.asRecord(video.files);
+    if (!files) {
+      return false;
+    }
+
+    return Object.entries(files).some(([key, value]) => {
+      if (!/^mp4_\d+$/u.test(key.trim().toLowerCase())) {
+        return false;
+      }
+      const url = this.readString(value);
+      return /^https:\/\//iu.test(url);
+    });
+  }
+
+  private formatVideoReference(ref: VkVideoReference): string {
+    const base = `${ref.ownerId}_${ref.videoId}`;
+    return ref.accessKey ? `${base}_${ref.accessKey}` : base;
+  }
+
+  private buildVideoReferenceKey(ref: VkVideoReference): string {
+    return `${ref.ownerId}:${ref.videoId}:${ref.accessKey ?? ''}`;
   }
 
   private async preflightPostMediaSafely(
