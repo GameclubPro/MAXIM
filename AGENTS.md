@@ -98,6 +98,7 @@
 - For Android MAX WebView file pickers, use a real transparent `<input type="file">` overlay on the tapped control; hidden 1px inputs plus programmatic `click()`/`showPicker()` can fail to open the picker.
 - For time-only mini app inputs, use shared `TimeField` instead of native `<input type="time">`; Android MAX WebViews can hide native picker action buttons.
 - Chat and channel broadcast/autoposting compose screens share components but keep page-level footer/validation copy in `apps/miniapp/src/pages/settings-page.legacy.tsx` and `apps/miniapp/src/pages/channel-settings-page.tsx`; keep those labels synchronized.
+- Chat settings section apply targets must fail safe to the current chat. Keep `applySettingsTargetSchema`, mini app apply-target defaults, and preview transport defaults aligned on `current`; applying a section to all chats must require an explicit `mode: 'all'`.
 - Keep home-card statistics prefetch imports lazy. Static importing events/stats API clients into `chats-page.tsx` counts against the startup JS budget.
 - Keep mini app chat/channel statistics routes off heavy shared chunks: stats API clients should import `@maxim/contracts` types only, and stats pages should use focused route CSS instead of `lazy-pages.css`.
 - Keep `VkParsingCard` lazy-loaded from chat/channel settings pages; static importing it into those settings routes can push the settings JS chunk over budget.

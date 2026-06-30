@@ -34,7 +34,7 @@ export function SettingsSectionSaveFooter({
 }: SettingsSectionSaveFooterProps) {
   const isCurrentSectionSaving = isSavingSettings && savingSection === section;
   const isCurrentSectionApplying = isApplyingSectionToAll && applyingSection === section;
-  const emphasize = options?.emphasize ?? 'apply';
+  const emphasize = options?.emphasize ?? 'save';
   const saveButtonClassName =
     emphasize === 'save' ? 'button button--accent' : 'button button--ghost';
   const applyToAllButtonClassName =

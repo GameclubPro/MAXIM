@@ -614,6 +614,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }, [chatId]);
 
   useEffect(() => {
+    setApplyTargetSheet(null);
+    setApplyTargetPreview(null);
+    setApplyTargetPreviewError(null);
+    setApplyTargetPreviewLoading(false);
     setRulesDraft(null);
     setRulesTextError('');
     setRulesImageError('');

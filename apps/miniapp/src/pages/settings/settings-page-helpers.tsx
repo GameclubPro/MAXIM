@@ -5,7 +5,6 @@ import {
   MAX_MESSAGE_LENGTH_MAX,
   MAX_MESSAGE_LENGTH_MIN,
   type AllowlistMatchType,
-  type ApplySettingsTarget,
   type BotSpeechMediaImage,
   type ChatSettings,
   type ChatSettingsScreenResponse,
@@ -41,6 +40,7 @@ import type { SendBroadcastPayload } from '../../lib/api/shared-types';
 import { cn } from '../../lib/cn';
 import type { SettingsWorkspaceState } from '../../lib/settings-workspace-state';
 import type { ApplySectionKey } from '../settings-page-state';
+export { createDefaultApplySettingsTarget } from './settings-apply-target';
 
 export type FieldErrors = Partial<Record<keyof ChatSettings, string>>;
 export type { BotSpeechMediaFieldKey, BotSpeechMediaImage };
@@ -654,14 +654,6 @@ export const SECTION_LABELS: Record<ApplySectionKey, string> = {
   extra: 'Сервис',
 };
 export const APPLY_TARGET_FAVORITE_ICONS = HOME_ENTITY_FAVORITE_ICONS;
-
-export function createDefaultApplySettingsTarget(): ApplySettingsTarget {
-  return {
-    mode: 'all',
-    favoriteTypes: [],
-    chatIds: [],
-  };
-}
 
 export function resolveDuplicateSharedWindowSec(
   settings: Pick<

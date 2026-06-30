@@ -1502,7 +1502,7 @@ export type ApplySettingsTargetMode = z.infer<typeof applySettingsTargetModeSche
 
 export const applySettingsTargetSchema = z
   .object({
-    mode: applySettingsTargetModeSchema.default('all'),
+    mode: applySettingsTargetModeSchema.default('current'),
     favoriteTypes: z.array(managedEntityFavoriteTypeSchema).max(6).default([]),
     chatIds: z.array(z.string().trim().min(1)).max(500).default([]),
   })
@@ -1534,7 +1534,7 @@ export const applySectionToAllRequestSchema = z.object({
   section: applySettingsSectionSchema,
   target: applySettingsTargetSchema
     .optional()
-    .default({ mode: 'all', favoriteTypes: [], chatIds: [] }),
+    .default({ mode: 'current', favoriteTypes: [], chatIds: [] }),
 });
 export type ApplySectionToAllRequest = z.infer<typeof applySectionToAllRequestSchema>;
 
@@ -1543,7 +1543,7 @@ export const applySectionToAllResponseSchema = z.object({
   sourceChatId: z.string(),
   updatedChats: z.number().int().min(0),
   appliedChatIds: z.array(z.string()),
-  targetMode: applySettingsTargetModeSchema.optional().default('all'),
+  targetMode: applySettingsTargetModeSchema.optional().default('current'),
   favoriteTypes: z.array(managedEntityFavoriteTypeSchema).optional().default([]),
 });
 export type ApplySectionToAllResponse = z.infer<typeof applySectionToAllResponseSchema>;
@@ -1551,7 +1551,7 @@ export type ApplySectionToAllResponse = z.infer<typeof applySectionToAllResponse
 export const applySectionTargetPreviewRequestSchema = z.object({
   target: applySettingsTargetSchema
     .optional()
-    .default({ mode: 'all', favoriteTypes: [], chatIds: [] }),
+    .default({ mode: 'current', favoriteTypes: [], chatIds: [] }),
 });
 export type ApplySectionTargetPreviewRequest = z.infer<
   typeof applySectionTargetPreviewRequestSchema

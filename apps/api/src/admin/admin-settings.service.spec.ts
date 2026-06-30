@@ -1107,6 +1107,63 @@ describe('AdminSettingsService chat rules', () => {
     expect(nightModeTransitionScheduler.reconcileChats).not.toHaveBeenCalled();
   });
 
+  it('defaults section apply target to the current chat when target is omitted', async () => {
+    const { legacyAdminService, prisma, service } = createService({
+      applyTargetChats: [createChatSummary()],
+      persistedSettings: createPersistedChatSettings({
+        linkPolicy: 'BLOCKLIST_ONLY',
+        linkBotMessageEnabled: true,
+      }),
+    });
+
+    legacyAdminService.resolveSettingsApplyTargetChatsForSettings.mockImplementation(
+      async (_sourceChatId: string, _user: unknown, target: { mode: string }) =>
+        target.mode === 'current'
+          ? [createChatSummary()]
+          : [createChatSummary(), createChatSummary({ id: 'chat-2', title: 'Второй чат' })],
+    );
+
+    const result = await service.applySettingsSectionToAllChats('chat-1', user as never, {
+      section: 'links',
+    });
+
+    expect(result).toEqual({
+      section: 'links',
+      targetMode: 'current',
+      favoriteTypes: [],
+      sourceChatId: 'chat-1',
+      updatedChats: 1,
+      appliedChatIds: ['chat-1'],
+    });
+    expect(legacyAdminService.resolveSettingsApplyTargetChatsForSettings).toHaveBeenCalledWith(
+      'chat-1',
+      user,
+      { mode: 'current', favoriteTypes: [], chatIds: [] },
+    );
+    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'chat-1' },
+      }),
+    );
+    expect(prisma.chat.upsert).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'chat-2' },
+      }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        action: 'APPLY_SETTINGS_TO_ALL_CHATS',
+        payload: expect.objectContaining({
+          sourceChatId: 'chat-1',
+          targetChatId: 'chat-1',
+          targetMode: 'current',
+        }),
+      }),
+    });
+  });
+
   it('applies required subscription section without copying duration or expiry fields', async () => {
     const { legacyAdminService, prisma, service } = createService({
       applyTargetChats: [createChatSummary({ id: 'chat-2', title: 'Второй чат' })],

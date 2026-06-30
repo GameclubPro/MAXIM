@@ -4029,6 +4029,7 @@ describe('AdminService required subscription settings', () => {
 
     const result = await service.applySettingsSectionToAllChats('chat-1', actor, {
       section: 'requiredSubscription',
+      target: { mode: 'all', favoriteTypes: [], chatIds: [] },
     });
 
     expect(result.section).toBe('requiredSubscription');
@@ -4150,6 +4151,7 @@ describe('AdminService required subscription settings', () => {
 
     const result = await service.applySettingsSectionToAllChats('chat-1', actor, {
       section: 'night',
+      target: { mode: 'all', favoriteTypes: [], chatIds: [] },
     });
 
     expect(result.section).toBe('night');
@@ -17757,7 +17759,7 @@ describe('AdminService settings screen endpoints', () => {
         displayName: null,
         chatTitle: null,
       },
-      { section: 'links' },
+      { section: 'links', target: { mode: 'all', favoriteTypes: [], chatIds: [] } },
     );
 
     expect(applySpy).toHaveBeenCalledWith(
@@ -17786,7 +17788,7 @@ describe('AdminService settings screen endpoints', () => {
         displayName: null,
         chatTitle: null,
       },
-      { section: 'limits' },
+      { section: 'limits', target: { mode: 'all', favoriteTypes: [], chatIds: [] } },
     );
 
     expect(applySpy).toHaveBeenLastCalledWith(
@@ -17818,7 +17820,7 @@ describe('AdminService settings screen endpoints', () => {
         displayName: null,
         chatTitle: null,
       },
-      { section: 'stopWords' },
+      { section: 'stopWords', target: { mode: 'all', favoriteTypes: [], chatIds: [] } },
     );
 
     expect(applySpy).toHaveBeenLastCalledWith(
@@ -17884,7 +17886,7 @@ describe('AdminService settings screen endpoints', () => {
         displayName: null,
         chatTitle: null,
       },
-      { section: 'links' },
+      { section: 'links', target: { mode: 'all', favoriteTypes: [], chatIds: [] } },
     );
 
     expect(prisma.domainAllowlist.deleteMany).toHaveBeenCalledWith({

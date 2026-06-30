@@ -5033,7 +5033,7 @@ async function handleChatRequest(
 
   if (tail[0] === 'settings' && tail[1] === 'apply-section-to-all' && method === 'POST') {
     const payload = parseJsonBody(init) as { section?: string; target?: unknown } | null;
-    const target = applySettingsTargetSchema.parse(payload?.target ?? { mode: 'all' });
+    const target = applySettingsTargetSchema.parse(payload?.target ?? { mode: 'current' });
     const targetChats = resolvePreviewApplyTargetChats(state, chatId, target);
     return applySectionToAllResponseSchema.parse({
       section: payload?.section ?? 'links',
@@ -5047,7 +5047,7 @@ async function handleChatRequest(
 
   if (tail[0] === 'settings' && tail[1] === 'apply-section-preview' && method === 'POST') {
     const payload = parseJsonBody(init) as { target?: unknown } | null;
-    const target = applySettingsTargetSchema.parse(payload?.target ?? { mode: 'all' });
+    const target = applySettingsTargetSchema.parse(payload?.target ?? { mode: 'current' });
     const targetChats = resolvePreviewApplyTargetChats(state, chatId, target);
     return applySectionTargetPreviewResponseSchema.parse({
       sourceChatId: chatId,

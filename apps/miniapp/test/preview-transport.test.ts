@@ -97,6 +97,34 @@ test('preview settings include schema-complete managed broadcast summaries', asy
   });
 });
 
+test('preview apply section without target stays scoped to current chat', async () => {
+  const api = createPreviewApiTransport();
+
+  const preview = (await api.request('/chats/preview-chat/settings/apply-section-preview', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  })) as {
+    targetMode: string;
+    updatedChats: number;
+    appliedChatIds: string[];
+  };
+  const applied = (await api.request('/chats/preview-chat/settings/apply-section-to-all', {
+    method: 'POST',
+    body: JSON.stringify({ section: 'links' }),
+  })) as {
+    targetMode: string;
+    updatedChats: number;
+    appliedChatIds: string[];
+  };
+
+  assert.equal(preview.targetMode, 'current');
+  assert.equal(preview.updatedChats, 1);
+  assert.deepEqual(preview.appliedChatIds, ['preview-chat']);
+  assert.equal(applied.targetMode, 'current');
+  assert.equal(applied.updatedChats, 1);
+  assert.deepEqual(applied.appliedChatIds, ['preview-chat']);
+});
+
 test('preview channel stats marks empty view buckets with zero posts', async () => {
   const api = createPreviewApiTransport();
 
