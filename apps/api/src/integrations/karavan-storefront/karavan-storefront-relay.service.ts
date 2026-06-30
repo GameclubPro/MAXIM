@@ -12,6 +12,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import {
   MaxClientService,
   type MaxActionDispatchOptions,
+  type MaxAttachmentPayload,
 } from '../../max/max-client.service';
 import { RedisCounterService } from '../../moderation/redis-counter.service';
 
@@ -29,6 +30,11 @@ type RelayContext = {
 type VisibleMessageText = {
   text: string;
   markup: MaxTextMarkup[];
+};
+
+type RelayMessagePayload = {
+  text: VisibleMessageText;
+  imageAttachments: MaxAttachmentPayload[];
 };
 
 export type KaravanStorefrontRelayResult =
@@ -113,8 +119,8 @@ export class KaravanStorefrontRelayService {
       return 'noop';
     }
 
-    const visibleText = this.extractVisibleText(context);
-    if (!this.isRelayTrigger(visibleText.text)) {
+    const relayPayload = this.extractRelayMessagePayload(context);
+    if (!relayPayload) {
       return 'noop';
     }
 
@@ -135,10 +141,13 @@ export class KaravanStorefrontRelayService {
         this.renderRelayMessage({
           senderId: context.senderId,
           senderName: context.senderName,
-          text: visibleText,
+          text: relayPayload.text,
         }),
         {
           textFormat: 'html',
+          ...(relayPayload.imageAttachments.length > 0
+            ? { attachments: relayPayload.imageAttachments }
+            : {}),
           buttons: [[{ type: 'link', text: 'Открыть витрину', url: store.url }]],
           debugContext: {
             screen: 'karavan-storefront-relay',
@@ -214,10 +223,6 @@ export class KaravanStorefrontRelayService {
 
   private isPrivateDirectChat(chatId: string): boolean {
     return /^\d+$/u.test(chatId.trim());
-  }
-
-  private isRelayTrigger(text: string): boolean {
-    return text.trimStart().startsWith('$');
   }
 
   private async lookupStorefront(maxUserId: string): Promise<LookupStore | null> {
@@ -316,6 +321,78 @@ export class KaravanStorefrontRelayService {
     return escapeHtmlPreservingWhitespace(compacted);
   }
 
+  private extractRelayMessagePayload(context: RelayContext): RelayMessagePayload | null {
+    const visibleText = this.extractVisibleText(context);
+    const trigger = this.findRelayTrigger(visibleText.text);
+    if (!trigger) {
+      return null;
+    }
+
+    return {
+      text: this.removeRelayTrigger(visibleText, trigger),
+      imageAttachments: this.extractImageAttachments(context.raw),
+    };
+  }
+
+  private findRelayTrigger(text: string): { start: number; end: number } | null {
+    const match = /^\s*\$[ \t]*/u.exec(text);
+    if (!match) {
+      return null;
+    }
+
+    return {
+      start: 0,
+      end: match[0].length,
+    };
+  }
+
+  private removeRelayTrigger(
+    source: VisibleMessageText,
+    trigger: { start: number; end: number },
+  ): VisibleMessageText {
+    const text = `${source.text.slice(0, trigger.start)}${source.text.slice(trigger.end)}`;
+    return {
+      text,
+      markup: this.shiftMarkupAfterRemovedRange(source.markup, trigger),
+    };
+  }
+
+  private shiftMarkupAfterRemovedRange(
+    markup: MaxTextMarkup[],
+    removed: { start: number; end: number },
+  ): MaxTextMarkup[] {
+    const removedLength = removed.end - removed.start;
+
+    return markup
+      .map((item) => {
+        const start = item.from;
+        const end = item.from + item.length;
+
+        if (end <= removed.start) {
+          return item;
+        }
+
+        if (start >= removed.end) {
+          return {
+            ...item,
+            from: start - removedLength,
+          };
+        }
+
+        const nextStart = Math.min(start, removed.start);
+        const nextEnd = Math.max(nextStart, end - removedLength);
+        const nextLength = nextEnd - nextStart;
+        return nextLength > 0
+          ? {
+              ...item,
+              from: nextStart,
+              length: nextLength,
+            }
+          : null;
+      })
+      .filter((item): item is MaxTextMarkup => item !== null);
+  }
+
   private compactText(text: string): string {
     if (text.length <= MESSAGE_PREVIEW_LIMIT) {
       return text;
@@ -336,11 +413,33 @@ export class KaravanStorefrontRelayService {
 
   private extractRawTextSource(raw: unknown): VisibleMessageText | null {
     const rawRecord = this.asRecord(raw);
-    const message = this.asRecord(rawRecord?.message);
+    const message = this.extractRawMessageNode(rawRecord);
     const body = this.asRecord(message?.body);
+    const content = this.asRecord(message?.content);
+    const payload = this.asRecord(message?.payload);
+    const data = this.asRecord(message?.data);
+    const messageNode = this.asRecord(message?.message);
     const candidates = [
       body?.text,
+      body?.caption,
+      body?.plain,
       message?.text,
+      message?.caption,
+      message?.plain,
+      message?.message_text,
+      message?.messageText,
+      content?.text,
+      content?.caption,
+      content?.plain,
+      payload?.text,
+      payload?.caption,
+      payload?.plain,
+      data?.text,
+      data?.caption,
+      data?.plain,
+      messageNode?.text,
+      messageNode?.caption,
+      messageNode?.plain,
       rawRecord?.text,
     ];
 
@@ -385,6 +484,123 @@ export class KaravanStorefrontRelayService {
     }
 
     return [];
+  }
+
+  private extractImageAttachments(raw: unknown): MaxAttachmentPayload[] {
+    const rawRecord = this.asRecord(raw);
+    const message = this.extractRawMessageNode(rawRecord);
+    const body = this.asRecord(message?.body);
+    const content = this.asRecord(message?.content);
+    const payload = this.asRecord(message?.payload ?? rawRecord?.payload);
+    const data = this.asRecord(message?.data);
+    const messageNode = this.asRecord(message?.message);
+    const candidates = [
+      body?.attachments,
+      message?.attachments,
+      content?.attachments,
+      payload?.attachments,
+      data?.attachments,
+      messageNode?.attachments,
+      rawRecord?.attachments,
+    ];
+
+    const attachments: MaxAttachmentPayload[] = [];
+    for (const candidate of candidates) {
+      if (!Array.isArray(candidate)) {
+        continue;
+      }
+
+      for (const item of candidate) {
+        const attachment = this.normalizeImageAttachment(item);
+        if (attachment) {
+          attachments.push(attachment);
+        }
+      }
+    }
+
+    return this.dedupeImageAttachments(attachments);
+  }
+
+  private normalizeImageAttachment(value: unknown): MaxAttachmentPayload | null {
+    const row = this.asRecord(value);
+    if (!row) {
+      return null;
+    }
+
+    const type = this.readLowerString(row.type);
+    const mediaType = this.readLowerString(
+      row.media_type ??
+        row.mediaType ??
+        this.asRecord(row.payload)?.media_type ??
+        this.asRecord(row.payload)?.mediaType,
+    );
+    if (
+      type !== 'image' &&
+      type !== 'photo' &&
+      type !== 'picture' &&
+      mediaType !== 'image' &&
+      mediaType !== 'photo'
+    ) {
+      return null;
+    }
+
+    const payload = this.asRecord(row.payload);
+    if (!payload || Object.keys(payload).length === 0) {
+      return null;
+    }
+
+    return {
+      type: 'image',
+      payload,
+    };
+  }
+
+  private extractRawMessageNode(raw: Record<string, unknown> | null): Record<string, unknown> | null {
+    const direct = this.asRecord(raw?.message);
+    if (direct) {
+      return direct;
+    }
+
+    const updateType = typeof raw?.update_type === 'string' ? raw.update_type : null;
+    const type = typeof raw?.type === 'string' ? raw.type : null;
+    const envelopes = [
+      this.asRecord(raw?.data),
+      this.asRecord(raw?.event),
+      this.asRecord(raw?.message_created),
+      updateType ? this.asRecord(raw?.[updateType]) : null,
+      type ? this.asRecord(raw?.[type]) : null,
+    ];
+
+    for (const envelope of envelopes) {
+      const nested = this.asRecord(envelope?.message);
+      if (nested) {
+        return nested;
+      }
+
+      const nestedData = this.asRecord(envelope?.data);
+      const nestedDataMessage = this.asRecord(nestedData?.message);
+      if (nestedDataMessage) {
+        return nestedDataMessage;
+      }
+    }
+
+    return null;
+  }
+
+  private dedupeImageAttachments(attachments: MaxAttachmentPayload[]): MaxAttachmentPayload[] {
+    const seen = new Set<string>();
+    const deduped: MaxAttachmentPayload[] = [];
+
+    for (const attachment of attachments) {
+      const key = JSON.stringify(attachment.payload);
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      deduped.push(attachment);
+    }
+
+    return deduped;
   }
 
   private normalizeTextMarkup(value: unknown): MaxTextMarkup | null {

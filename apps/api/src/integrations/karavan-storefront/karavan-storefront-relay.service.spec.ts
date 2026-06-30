@@ -116,7 +116,7 @@ describe('KaravanStorefrontRelayService', () => {
       );
       expect(fixture.maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
         'chat-1',
-        '<a href="max://user/1001">Мария &amp; Ко</a>\n\n$ свежая клубника',
+        '<a href="max://user/1001">Мария &amp; Ко</a>\n\nсвежая клубника',
         expect.objectContaining({
           textFormat: 'html',
           buttons: [[expect.objectContaining({
@@ -238,26 +238,26 @@ describe('KaravanStorefrontRelayService', () => {
     }
   });
 
-  it('keeps incoming MAX text markup in the bot repost', async () => {
+  it('removes the relay marker and keeps incoming MAX text markup in the bot repost', async () => {
     const fixture = createService();
 
     try {
       await expect(
         fixture.service.handleMessageCreated({
           ...baseContext,
-          text: '$ акция только сегодня',
+          text: '$акция только сегодня',
           raw: {
             message: {
               body: {
-                text: '$ акция только сегодня',
+                text: '$акция только сегодня',
                 markup: [
                   {
-                    from: 2,
+                    from: 1,
                     length: 5,
                     type: 'strong',
                   },
                   {
-                    from: 15,
+                    from: 14,
                     length: 7,
                     type: 'link',
                     url: 'https://example.test/deal',
@@ -271,8 +271,136 @@ describe('KaravanStorefrontRelayService', () => {
 
       expect(fixture.maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
         'chat-1',
-        '<a href="max://user/1001">Мария &amp; Ко</a>\n\n$ <strong>акция</strong> только <a href="https://example.test/deal">сегодня</a>',
+        '<a href="max://user/1001">Мария &amp; Ко</a>\n\n<strong>акция</strong> только <a href="https://example.test/deal">сегодня</a>',
         expect.objectContaining({ textFormat: 'html' }),
+        expect.any(Object),
+      );
+    } finally {
+      fixture.restore();
+    }
+  });
+
+  it('removes the marker after leading whitespace and shifts overlapping markup safely', async () => {
+    const fixture = createService();
+
+    try {
+      await expect(
+        fixture.service.handleMessageCreated({
+          ...baseContext,
+          text: '  $   🔥 акция',
+          raw: {
+            message: {
+              body: {
+                text: '  $   🔥 акция',
+                markup: [
+                  {
+                    from: 2,
+                    length: 12,
+                    type: 'strong',
+                  },
+                ],
+              },
+            },
+          },
+        }),
+      ).resolves.toBe('handled');
+
+      expect(fixture.maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+        'chat-1',
+        '<a href="max://user/1001">Мария &amp; Ко</a>\n\n<strong>🔥 акция</strong>',
+        expect.objectContaining({ textFormat: 'html' }),
+        expect.any(Object),
+      );
+    } finally {
+      fixture.restore();
+    }
+  });
+
+  it('preserves paragraphs, user links, and image attachments in the bot repost', async () => {
+    const fixture = createService();
+
+    try {
+      await expect(
+        fixture.service.handleMessageCreated({
+          ...baseContext,
+          text: '$Первая строка\n\nВторая строка',
+          raw: {
+            message: {
+              body: {
+                text: '$Первая строка\n\nВторая строка',
+                markup: [
+                  {
+                    from: 16,
+                    length: 13,
+                    type: 'link',
+                    url: 'https://example.test/line',
+                  },
+                ],
+                attachments: [
+                  {
+                    type: 'image',
+                    payload: { token: 'image-token-1' },
+                  },
+                  {
+                    type: 'photo',
+                    payload: { token: 'legacy-photo-token' },
+                  },
+                ],
+              },
+            },
+          },
+        }),
+      ).resolves.toBe('handled');
+
+      expect(fixture.maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+        'chat-1',
+        '<a href="max://user/1001">Мария &amp; Ко</a>\n\nПервая строка\n\n<a href="https://example.test/line">Вторая строка</a>',
+        expect.objectContaining({
+          textFormat: 'html',
+          attachments: [
+            { type: 'image', payload: { token: 'image-token-1' } },
+            { type: 'image', payload: { token: 'legacy-photo-token' } },
+          ],
+        }),
+        expect.any(Object),
+      );
+    } finally {
+      fixture.restore();
+    }
+  });
+
+  it('reads text and image attachments from nested webhook envelopes', async () => {
+    const fixture = createService();
+
+    try {
+      await expect(
+        fixture.service.handleMessageCreated({
+          ...baseContext,
+          text: '$ fallback',
+          raw: {
+            data: {
+              message: {
+                body: {
+                  text: '$ nested photo',
+                  attachments: [
+                    {
+                      type: 'picture',
+                      payload: { token: 'nested-image-token' },
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        }),
+      ).resolves.toBe('handled');
+
+      expect(fixture.maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+        'chat-1',
+        '<a href="max://user/1001">Мария &amp; Ко</a>\n\nnested photo',
+        expect.objectContaining({
+          attachments: [{ type: 'image', payload: { token: 'nested-image-token' } }],
+        }),
         expect.any(Object),
       );
     } finally {
