@@ -935,6 +935,85 @@ describe('VkParsingService', () => {
     expect(rawValues).not.toContain('Нет прямого HTTPS-файла видео');
   });
 
+  it('keeps a VK post link for short videos when VK does not provide direct files', async () => {
+    const { service, prisma } = createFixture();
+    const source = createSource();
+    prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    prisma.vkParsingPost.findMany.mockResolvedValue([]);
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(
+        createJsonFetchResponse({
+          response: {
+            items: [
+              {
+                owner_id: -36819802,
+                id: 104,
+                date: 1_779_708_000,
+                text: '',
+                attachments: [
+                  {
+                    type: 'video',
+                    video: {
+                      id: 42,
+                      owner_id: -36819802,
+                      access_key: 'video-key',
+                      title: 'Clip from СПОРТ ИНСАЙДЕР',
+                      type: 'short_video',
+                      duration: 16,
+                    },
+                  },
+                ],
+              },
+            ],
+            groups: [],
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        createJsonFetchResponse({
+          response: {
+            count: 1,
+            items: [
+              {
+                id: 42,
+                owner_id: -36819802,
+                access_key: 'video-key',
+                title: 'Clip from СПОРТ ИНСАЙДЕР',
+                type: 'short_video',
+                duration: 16,
+                image: [{ url: 'https://iv.okcdn.ru/getVideoPreview?id=1', width: 720 }],
+                first_frame: [{ url: 'https://iv.okcdn.ru/getVideoPreview?id=1', width: 720 }],
+              },
+            ],
+          },
+        }),
+      ) as unknown as typeof fetch;
+
+    await service.processSyncSourceJob('source-1', 'scheduled');
+
+    const rawValues = readExecuteRawValues(prisma);
+    expect(rawValues).toContain(JSON.stringify([]));
+    expect(rawValues).toContain(JSON.stringify(['https://vk.ru/wall-36819802_104']));
+    const parsedJsonValues = rawValues
+      .filter((value): value is string => typeof value === 'string')
+      .map((value) => {
+        try {
+          return JSON.parse(value) as unknown;
+        } catch {
+          return null;
+        }
+      });
+    expect(parsedJsonValues).toContainEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'video',
+          reason: 'Нет прямого HTTPS-файла видео',
+        }),
+      ]),
+    );
+  });
+
   it('ignores wall posts whose owner does not match the source owner', async () => {
     const { service, prisma } = createFixture();
     const source = createSource();
@@ -2967,6 +3046,97 @@ describe('VkParsingService', () => {
           publishLockedAt: null,
           publishIdempotencyKey: null,
           publishReason: null,
+        }),
+      }),
+    );
+  });
+
+  it('autopublishes unsupported VK short videos as original post links when links are stripped', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const source = createSource();
+    const postUrl = 'https://vk.ru/wall-36819802_104';
+    const post = createPostRow({
+      source,
+      text: '',
+      photoUrls: [],
+      videoUrls: [],
+      linkUrls: [postUrl],
+      attachmentTypes: ['video'],
+      unsupportedAttachments: [
+        {
+          type: 'video',
+          label: 'Видео',
+          title: 'Clip from СПОРТ ИНСАЙДЕР',
+          count: 1,
+          reason: 'Нет прямого HTTPS-файла видео',
+        },
+      ],
+      hasUnsupportedAttachments: true,
+      url: postUrl,
+      attachments: [
+        {
+          type: 'video',
+          video: { title: 'Clip from СПОРТ ИНСАЙДЕР', type: 'short_video' },
+        },
+      ],
+      raw: {
+        attachments: [
+          {
+            type: 'video',
+            video: { title: 'Clip from СПОРТ ИНСАЙДЕР', type: 'short_video' },
+          },
+        ],
+      },
+    });
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      id: 'settings-1',
+      chatId: 'channel-1',
+      autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date('2026-05-25T09:00:00.000Z'),
+      stripLinksEnabled: true,
+      skipAdsEnabled: false,
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+    });
+    prisma.vkParsingPost.update.mockResolvedValue({
+      ...post,
+      status: 'PUBLISHED',
+      publishedMessageId: 'mid-1',
+      publishedUrl: 'https://max.ru/channels/channel-1/message/mid-1',
+      publishedAtMax: new Date('2026-05-25T10:05:00.000Z'),
+      autoPublishedAt: new Date('2026-05-25T10:05:00.000Z'),
+    });
+    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+      messageId: 'mid-1',
+      url: 'https://max.ru/channels/channel-1/message/mid-1',
+    });
+
+    await service.processPublishPostJob({
+      postId: 'post-1',
+      chatId: 'channel-1',
+      reason: 'autopublish',
+      idempotencyKey: 'publish-key-1',
+    });
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'channel-1',
+      postUrl,
+      expect.any(Object),
+      expect.objectContaining({
+        botId: 'bot-1',
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+      }),
+    );
+    expect(prisma.vkParsingPost.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'post-1' },
+        data: expect.objectContaining({
+          status: 'PUBLISHED',
+          autoPublishError: null,
+          lastError: null,
         }),
       }),
     );

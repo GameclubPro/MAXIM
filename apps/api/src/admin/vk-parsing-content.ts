@@ -13,6 +13,10 @@ export type PreparedVkPublishPayload = {
   linkUrls: string[];
 };
 
+export type PrepareVkParsingPublishPayloadOptions = {
+  preserveLinkUrls?: string[];
+};
+
 export type VkParsingContentSettings = {
   stripLinksEnabled: boolean;
   skipAdsEnabled: boolean;
@@ -27,6 +31,10 @@ export type VkParsingPostSkipCandidate = {
   raw: Record<string, unknown>;
   isAdvertising?: unknown;
   advertisingMarkers?: string[];
+};
+
+export type ResolveVkParsingPostSkipReasonOptions = {
+  preserveLinkUrls?: string[];
 };
 
 export type VkParsingPostContentHashInput = {
@@ -58,11 +66,15 @@ export function composeVkParsingPublishText(text: string, linkUrls: string[]): s
 export function prepareVkParsingPublishPayload(
   payload: PreparedVkPublishPayload,
   settings: Pick<VkParsingContentSettings, 'stripLinksEnabled'>,
+  options: PrepareVkParsingPublishPayloadOptions = {},
 ): PreparedVkPublishPayload {
+  const preservedLinks = new Set(options.preserveLinkUrls ?? []);
   const text = settings.stripLinksEnabled
     ? stripVkParsingLinksFromText(payload.text)
     : payload.text;
-  const linkUrls = settings.stripLinksEnabled ? [] : payload.linkUrls;
+  const linkUrls = settings.stripLinksEnabled
+    ? payload.linkUrls.filter((url) => preservedLinks.has(url))
+    : payload.linkUrls;
   return {
     text: composeVkParsingPublishText(text, linkUrls),
     photoUrls: payload.photoUrls,
@@ -85,17 +97,21 @@ export function stripVkParsingLinksFromText(text: string): string {
 export function resolveVkParsingPostSkipReason(
   post: VkParsingPostSkipCandidate,
   settings: VkParsingContentSettings,
+  options: ResolveVkParsingPostSkipReasonOptions = {},
 ): VkParsingSkipReason | null {
   if (settings.skipAdsEnabled && isVkParsingAdvertisingPost(post)) {
     return VK_POST_SKIP_REASON_AD;
   }
 
+  const preservedLinks = new Set(options.preserveLinkUrls ?? []);
+  const hasPreservedLink = post.linkUrls.some((url) => preservedLinks.has(url));
   if (
     settings.stripLinksEnabled &&
     post.photoUrls.length === 0 &&
     (post.videoUrls?.length ?? 0) === 0 &&
     stripVkParsingLinksFromText(post.text).length === 0 &&
-    (post.linkUrls.length > 0 || hasVkParsingInlineLinks(post.text))
+    (post.linkUrls.length > 0 || hasVkParsingInlineLinks(post.text)) &&
+    !hasPreservedLink
   ) {
     return VK_POST_SKIP_REASON_EMPTY_AFTER_LINK_FILTER;
   }

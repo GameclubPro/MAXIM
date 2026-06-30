@@ -42,6 +42,27 @@ describe('vk-parsing-content', () => {
     expect(stripVkParsingLinksFromText('текст www.example.com  хвост')).toBe('текст хвост');
   });
 
+  it('preserves explicit fallback links when link stripping is enabled', () => {
+    const preservedUrl = 'https://vk.ru/wall-36819802_104';
+    const prepared = prepareVkParsingPublishPayload(
+      {
+        text: '',
+        photoUrls: [],
+        videoUrls: [],
+        linkUrls: [preservedUrl, 'https://example.com/regular'],
+      },
+      { stripLinksEnabled: true },
+      { preserveLinkUrls: [preservedUrl] },
+    );
+
+    expect(prepared).toEqual({
+      text: preservedUrl,
+      photoUrls: [],
+      videoUrls: [],
+      linkUrls: [preservedUrl],
+    });
+  });
+
   it('returns empty-after-link-filter skip reason for link-only posts', () => {
     expect(
       resolveVkParsingPostSkipReason(
@@ -56,6 +77,25 @@ describe('vk-parsing-content', () => {
         { ...baseSettings, stripLinksEnabled: true },
       ),
     ).toBe('EMPTY_AFTER_LINK_FILTER');
+  });
+
+  it('does not skip a link-only fallback when the link is explicitly preserved', () => {
+    const preservedUrl = 'https://vk.ru/wall-36819802_104';
+
+    expect(
+      resolveVkParsingPostSkipReason(
+        {
+          text: '',
+          photoUrls: [],
+          videoUrls: [],
+          linkUrls: [preservedUrl],
+          attachments: [],
+          raw: {},
+        },
+        { ...baseSettings, stripLinksEnabled: true },
+        { preserveLinkUrls: [preservedUrl] },
+      ),
+    ).toBeNull();
   });
 
   it('returns ad skip reason from cached flags and VK raw markers', () => {

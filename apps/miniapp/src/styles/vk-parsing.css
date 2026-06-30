@@ -1468,6 +1468,13 @@
   background: rgba(203, 75, 92, 0.07);
 }
 
+.vk-parsing-post-card__unsupported-video.has-fallback-link {
+  grid-template-columns: 30px minmax(0, 1fr) 34px;
+  border-color: rgba(10, 124, 255, 0.2);
+  color: #195f9f;
+  background: rgba(10, 124, 255, 0.07);
+}
+
 .vk-parsing-post-card__unsupported-video span {
   width: 30px;
   height: 30px;
@@ -1476,6 +1483,10 @@
   place-items: center;
   color: #b54858;
   background: rgba(255, 255, 255, 0.72);
+}
+
+.vk-parsing-post-card__unsupported-video.has-fallback-link span {
+  color: var(--vk-accent-dark);
 }
 
 .vk-parsing-post-card__unsupported-video svg {
@@ -1501,6 +1512,23 @@
   color: #95606a;
   font-size: 11px;
   font-weight: 650;
+}
+
+.vk-parsing-post-card__unsupported-video.has-fallback-link small {
+  color: #486c91;
+}
+
+.vk-parsing-post-card__unsupported-video a {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(10, 124, 255, 0.18);
+  border-radius: var(--vk-radius);
+  display: inline-grid;
+  place-items: center;
+  color: var(--vk-accent-dark);
+  background: rgba(255, 255, 255, 0.72);
 }
 
 .vk-parsing-post-card__photo em {

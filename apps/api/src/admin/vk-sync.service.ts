@@ -592,9 +592,20 @@ export class VkSyncService {
       maxPhotos: VK_PARSING_MAX_PHOTOS,
       maxLinks: VK_PARSING_MAX_LINKS,
     });
-    const { videoUrls, linkUrls } = parsedAttachments;
+    const { videoUrls } = parsedAttachments;
     const photoUrls = videoUrls.length > 0 ? [] : parsedAttachments.photoUrls;
     const photoMedia = videoUrls.length > 0 ? [] : parsedAttachments.photoMedia;
+    const fallbackLinkUrls = this.resolveUnsupportedVideoFallbackLinks({
+      postUrl: `https://vk.ru/wall${vkOwnerId}_${vkPostId}`,
+      text,
+      parsedAttachments,
+      photoUrls,
+      videoUrls,
+    });
+    const linkUrls = this.uniqueStrings([...parsedAttachments.linkUrls, ...fallbackLinkUrls]).slice(
+      0,
+      VK_PARSING_MAX_LINKS,
+    );
     if (
       !text.trim() &&
       photoUrls.length === 0 &&
@@ -651,6 +662,34 @@ export class VkSyncService {
     return value
       .map((item) => this.asRecord(item))
       .filter((item): item is Record<string, unknown> => item !== null);
+  }
+
+  private resolveUnsupportedVideoFallbackLinks(params: {
+    postUrl: string;
+    text: string;
+    parsedAttachments: Pick<
+      ReturnType<typeof parseVkWallPostAttachments>,
+      'unsupportedAttachments' | 'hasUnsupportedAttachments' | 'linkUrls'
+    >;
+    photoUrls: string[];
+    videoUrls: string[];
+  }): string[] {
+    if (
+      params.text.trim() ||
+      params.photoUrls.length > 0 ||
+      params.videoUrls.length > 0 ||
+      params.parsedAttachments.linkUrls.length > 0
+    ) {
+      return [];
+    }
+    const unsupportedVideo = params.parsedAttachments.unsupportedAttachments.some(
+      (item) => item.type === 'video' || item.type === 'clip',
+    );
+    if (!unsupportedVideo) {
+      return [];
+    }
+
+    return [params.postUrl];
   }
 
   private async fetchWall(options: {
@@ -982,6 +1021,10 @@ export class VkSyncService {
       return Number.isFinite(parsed) ? parsed : null;
     }
     return null;
+  }
+
+  private uniqueStrings(values: string[]): string[] {
+    return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
   }
 
   private logDedupedWarning(key: string, context: Record<string, unknown>, message: string): void {

@@ -88,6 +88,8 @@ export function PostCard({
   const unsupportedSummary = formatUnsupportedAttachmentSummary(post);
   const unsupportedVideo =
     videoCount === 0 ? post.unsupportedAttachments.find((item) => item.type === 'video') : null;
+  const unsupportedVideoFallbackUrl =
+    unsupportedVideo && post.linkUrls.includes(post.url) ? post.url : null;
   const visiblePhotoUrls = post.photoUrls.slice(0, 4);
   const extraPhotoCount = Math.max(0, post.photoUrls.length - visiblePhotoUrls.length);
   const isReviewMode =
@@ -207,12 +209,39 @@ export function PostCard({
           {videoCount > 0 ? <PostVideoPreview url={post.videoUrls[0]} /> : null}
 
           {unsupportedVideo ? (
-            <div className="vk-parsing-post-card__unsupported-video" role="status">
+            <div
+              className={cn(
+                'vk-parsing-post-card__unsupported-video',
+                unsupportedVideoFallbackUrl && 'has-fallback-link',
+              )}
+              role="status"
+            >
               <span>
-                <WarningCircle aria-hidden />
+                {unsupportedVideoFallbackUrl ? (
+                  <IconoirLink aria-hidden />
+                ) : (
+                  <WarningCircle aria-hidden />
+                )}
               </span>
-              <strong>Видео недоступно</strong>
-              <small>{unsupportedVideo.reason ?? 'VK не отдал прямой файл видео.'}</small>
+              <strong>
+                {unsupportedVideoFallbackUrl ? 'VK-клип доступен ссылкой' : 'Видео недоступно'}
+              </strong>
+              <small>
+                {unsupportedVideoFallbackUrl
+                  ? 'VK API не отдает прямой MP4, пост опубликуется ссылкой на оригинал.'
+                  : (unsupportedVideo.reason ?? 'VK не отдал прямой файл видео.')}
+              </small>
+              {unsupportedVideoFallbackUrl ? (
+                <a
+                  href={unsupportedVideoFallbackUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label="Открыть VK-клип"
+                  title="Открыть VK-клип"
+                >
+                  <OpenNewWindow aria-hidden />
+                </a>
+              ) : null}
             </div>
           ) : null}
 

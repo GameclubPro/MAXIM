@@ -238,6 +238,7 @@ export class VkPublishService {
     const videoUrls = this.assertSelectedUrls(parsed.data.videoUrls, storedVideoUrls, 'видео');
     const linkUrls = this.assertSelectedUrls(parsed.data.linkUrls, storedLinkUrls, 'ссылку');
     const settings = await this.getSettingsForChat(chatId);
+    const preservedLinkUrls = this.resolveStripPreservedLinkUrls(post);
     const prepared = prepareVkParsingPublishPayload(
       {
         text: parsed.data.text,
@@ -246,6 +247,7 @@ export class VkPublishService {
         linkUrls,
       },
       settings,
+      { preserveLinkUrls: preservedLinkUrls },
     );
     const skipReason = resolveVkParsingPostSkipReason(
       {
@@ -259,6 +261,7 @@ export class VkPublishService {
         advertisingMarkers: this.readStringArray(post.advertisingMarkers),
       },
       settings,
+      { preserveLinkUrls: preservedLinkUrls },
     );
     if (skipReason) {
       await this.markPostSkipped(post.id, skipReason);
@@ -1461,6 +1464,7 @@ export class VkPublishService {
     const photoUrls = this.readStringArray(post.photoUrls);
     const videoUrls = this.readStringArray(post.videoUrls);
     const linkUrls = this.readStringArray(post.linkUrls);
+    const preservedLinkUrls = this.resolveStripPreservedLinkUrls(post);
     const skipReason = resolveVkParsingPostSkipReason(
       {
         text: post.text,
@@ -1473,6 +1477,7 @@ export class VkPublishService {
         advertisingMarkers: this.readStringArray(post.advertisingMarkers),
       },
       settings,
+      { preserveLinkUrls: preservedLinkUrls },
     );
     if (skipReason) {
       await this.markPostSkipped(post.id, skipReason);
@@ -1487,6 +1492,7 @@ export class VkPublishService {
         linkUrls,
       },
       settings,
+      { preserveLinkUrls: preservedLinkUrls },
     );
     if (this.isEmptyPublishPayload(prepared)) {
       await this.markPostSkipped(post.id, VK_POST_SKIP_REASON_NO_SUPPORTED_CONTENT);
@@ -2392,6 +2398,41 @@ export class VkPublishService {
     return value
       .map((item) => this.asRecord(item))
       .filter((item): item is Record<string, unknown> => item !== null);
+  }
+
+  private resolveStripPreservedLinkUrls(post: VkParsingPostWithSource): string[] {
+    const postUrl = this.readString(post.url);
+    if (!postUrl) {
+      return [];
+    }
+    const linkUrls = this.readStringArray(post.linkUrls);
+    if (!linkUrls.includes(postUrl)) {
+      return [];
+    }
+    if (
+      this.readStringArray(post.photoUrls).length > 0 ||
+      this.readStringArray(post.videoUrls).length > 0
+    ) {
+      return [];
+    }
+    const hasUnsupportedVideo = this.readUnsupportedAttachments(post.unsupportedAttachments).some(
+      (item) => item.type === 'video' || item.type === 'clip',
+    );
+    return hasUnsupportedVideo ? [postUrl] : [];
+  }
+
+  private readUnsupportedAttachments(
+    value: Prisma.JsonValue | unknown,
+  ): Array<{ type: string }> {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .map((item) => this.asRecord(item))
+      .filter((item): item is Record<string, unknown> => item !== null)
+      .map((item) => ({ type: this.readString(item.type).toLowerCase() }))
+      .filter((item) => item.type.length > 0);
   }
 
   private asRecord(value: unknown): Record<string, unknown> | null {

@@ -537,6 +537,7 @@ export class SafetyDeskService {
     linkUrls: string[],
   ): PreparedVkPublishPayload | null {
     const settings = this.resolveVkParsingSettings(post);
+    const preservedLinkUrls = this.resolveStripPreservedLinkUrls(post);
     const skipReason = resolveVkParsingPostSkipReason(
       {
         text: post.text,
@@ -549,6 +550,7 @@ export class SafetyDeskService {
         advertisingMarkers: this.readStringArray(post.advertisingMarkers),
       },
       settings,
+      { preserveLinkUrls: preservedLinkUrls },
     );
     if (skipReason) {
       return null;
@@ -562,6 +564,7 @@ export class SafetyDeskService {
         linkUrls,
       },
       settings,
+      { preserveLinkUrls: preservedLinkUrls },
     );
     if (
       prepared.text.trim().length === 0 &&
@@ -609,6 +612,29 @@ export class SafetyDeskService {
     return value
       .map((item) => this.asRecord(item))
       .filter((item): item is Record<string, unknown> => item !== null);
+  }
+
+  private resolveStripPreservedLinkUrls(post: ReviewPostRow): string[] {
+    const postUrl = this.readString(post.url);
+    if (!postUrl) {
+      return [];
+    }
+    const linkUrls = this.readStringArray(post.linkUrls);
+    if (!linkUrls.includes(postUrl)) {
+      return [];
+    }
+    if (
+      this.readStringArray(post.photoUrls).length > 0 ||
+      this.readStringArray(post.videoUrls).length > 0
+    ) {
+      return [];
+    }
+    const hasUnsupportedVideo = this.readRecords(post.unsupportedAttachments).some((item) => {
+      const type = this.readString(item.type).toLowerCase();
+      return type === 'video' || type === 'clip';
+    });
+
+    return hasUnsupportedVideo ? [postUrl] : [];
   }
 
   private async writeAuditLog(
