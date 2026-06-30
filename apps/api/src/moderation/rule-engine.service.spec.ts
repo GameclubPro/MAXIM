@@ -3345,17 +3345,36 @@ describe('RuleEngineService', () => {
     );
   });
 
-  it('ignores low-signal Russian words configured as stop words', async () => {
+  it.each(['по', 'как', 'это', 'где', 'есть', 'какой', 'какая', 'вашу'])(
+    'detects frequent Russian stop word "%s" when configured by an admin',
+    async (blockedWord) => {
+      const service = new RuleEngineService(new MockRedisCounterService() as never);
+      const result = await service.detect({
+        chatId: 'chat-1',
+        userId: 'u-1',
+        text: `Проверка: ${blockedWord} здесь.`,
+        settings: buildSettings({ messageLimitsBlockedWords: [blockedWord] }),
+        domainAllowlist: [],
+      });
+
+      expect(result.violations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            ruleCode: 'MESSAGE_BLOCKED_WORD',
+            metadata: expect.objectContaining({ blockedWord }),
+          }),
+        ]),
+      );
+    },
+  );
+
+  it('keeps short configured stop words on exact token boundaries', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
-      text:
-        'По этому поводу как раз есть вопрос: где это написано, какой адрес, ' +
-        'какая дата и вашу заявку уже приняли.',
-      settings: buildSettings({
-        messageLimitsBlockedWords: ['по', 'как', 'это', 'где', 'есть', 'какой', 'какая', 'вашу'],
-      }),
+      text: 'Такой материал и погодный вопрос не должны совпадать.',
+      settings: buildSettings({ messageLimitsBlockedWords: ['как', 'мат', 'где'] }),
       domainAllowlist: [],
     });
 
@@ -3363,12 +3382,12 @@ describe('RuleEngineService', () => {
   });
 
   it.each([
-    ['ставка', 'Какая ставка по условиям.'],
-    ['рассылка', 'Как есть рассылка по чатам.'],
-    ['таро', 'Где это таро по вечерам.'],
-    ['подработка', 'Где есть подработка по вечерам.'],
+    ['ставка', 'Обсуждаем ставки сегодня.'],
+    ['рассылка', 'Началась массовая рассылка.'],
+    ['таро', 'Записали расклад таро.'],
+    ['подработка', 'Нужна удаленная подработка вечером.'],
   ])(
-    'keeps meaningful blocked word "%s" active when low-signal words are ignored',
+    'keeps meaningful blocked word "%s" active alongside frequent words',
     async (blockedWord, text) => {
       const service = new RuleEngineService(new MockRedisCounterService() as never);
       const result = await service.detect({

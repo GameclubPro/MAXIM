@@ -89,32 +89,6 @@ const BLOCKED_WORD_CYRILLIC_MIN_ROOT_LENGTH = 4;
 const BLOCKED_WORD_LATIN_MIN_ROOT_LENGTH = 4;
 const BLOCKED_WORD_ARTICLE_CODE_PATTERN =
   /(?<![\p{L}\p{N}])(?:[A-Z0-9]{2,}(?:[-_/][A-Z0-9]{2,})+|[A-Z]{2,}\d[A-Z0-9_-]*|[A-Z0-9_-]*\d[A-Z]{2,}[A-Z0-9_-]*)(?![\p{L}\p{N}])/gu;
-const BLOCKED_WORD_LOW_SIGNAL_RUSSIAN_TOKENS = new Set([
-  'по',
-  'как',
-  'это',
-  'где',
-  'есть',
-  'какой',
-  'какая',
-  'какое',
-  'какие',
-  'какого',
-  'какому',
-  'каким',
-  'каких',
-  'какую',
-  'ваш',
-  'ваша',
-  'ваше',
-  'ваши',
-  'вашего',
-  'вашему',
-  'вашим',
-  'ваших',
-  'вашу',
-]);
-
 export class MessageLimitsBlockedWordDetector {
   private readonly blockedWordListCache = new Map<string, ResolvedBlockedWordIndex>();
   private readonly blockedWordPatternCache = new Map<string, RegExp>();
@@ -442,7 +416,7 @@ export class MessageLimitsBlockedWordDetector {
     }
 
     const normalized = normalizeMixedWriting(candidate);
-    return BLOCKED_WORD_LOW_SIGNAL_RUSSIAN_TOKENS.has(normalized) ? null : normalized;
+    return normalized;
   }
 
   private stripMessageLimitsBlockedWordIgnoredTokens(value: string): string {
