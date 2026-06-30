@@ -254,6 +254,97 @@ test('gives the primary API base a head start for idempotent requests', async ()
   ]);
 });
 
+test('does not let a hedged fallback 401 beat a successful primary idempotent request', async () => {
+  const calls: FetchCall[] = [];
+  const originalSetTimeout = globalThis.setTimeout;
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    const url = String(input);
+    if (url.startsWith('https://api-cdn.flex-craft.ru')) {
+      return createResponse({
+        ok: false,
+        status: 401,
+        text: JSON.stringify({ message: 'Invalid init data signature' }),
+      });
+    }
+
+    await new Promise((resolve) => originalSetTimeout(resolve, 25));
+    return createResponse({
+      ok: true,
+      status: 200,
+      text: JSON.stringify([{ id: 'chat-1' }]),
+    });
+  }) as typeof fetch;
+  globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) =>
+    originalSetTimeout(
+      handler,
+      Number(timeout) === 750 ? 5 : timeout,
+      ...args,
+    )) as typeof setTimeout;
+
+  try {
+    const api = createApiTransport('auth_date=1&hash=first', {
+      apiBases: ['https://major-maksimov.ru/api/v1', 'https://api-cdn.flex-craft.ru/api/v1'],
+    });
+
+    const result = await api.request('/chats');
+
+    assert.deepEqual(result, [{ id: 'chat-1' }]);
+    assert.deepEqual(calls.map((call) => String(call.input)), [
+      'https://major-maksimov.ru/api/v1/chats',
+      'https://api-cdn.flex-craft.ru/api/v1/chats',
+    ]);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
+
+test('keeps the primary HTTP failure when all idempotent API bases fail', async () => {
+  const calls: FetchCall[] = [];
+  const originalSetTimeout = globalThis.setTimeout;
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    const url = String(input);
+    if (url.startsWith('https://api-cdn.flex-craft.ru')) {
+      return createResponse({
+        ok: false,
+        status: 401,
+        text: JSON.stringify({ message: 'Invalid init data signature' }),
+      });
+    }
+
+    await new Promise((resolve) => originalSetTimeout(resolve, 25));
+    return createResponse({
+      ok: false,
+      status: 502,
+      text: '<html>Bad Gateway</html>',
+      contentType: 'text/html',
+    });
+  }) as typeof fetch;
+  globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) =>
+    originalSetTimeout(
+      handler,
+      Number(timeout) === 750 ? 5 : timeout,
+      ...args,
+    )) as typeof setTimeout;
+
+  try {
+    const api = createApiTransport('auth_date=1&hash=first', {
+      apiBases: ['https://major-maksimov.ru/api/v1', 'https://api-cdn.flex-craft.ru/api/v1'],
+    });
+
+    await assert.rejects(() => api.request('/chats'), /Сервис временно недоступен/u);
+    assert.deepEqual(calls.map((call) => String(call.input)), [
+      'https://major-maksimov.ru/api/v1/chats',
+      'https://api-cdn.flex-craft.ru/api/v1/chats',
+    ]);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
+
 test('uses the selected API base for follow-up mutation requests', async () => {
   const calls: FetchCall[] = [];
 

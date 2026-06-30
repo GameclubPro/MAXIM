@@ -14,6 +14,8 @@ type RetryableFetchAttemptResponse = {
   };
 };
 
+type FailedFetchAttemptResponse = RetryableFetchAttemptResponse;
+
 export async function fetchWithApiBaseFallback<T>(
   apiBases: readonly string[],
   init: RequestInit,
@@ -45,9 +47,10 @@ function fetchWithHedgedApiBaseFallback<T>(
 
   return new Promise<T>((resolve, reject) => {
     let nextIndex = 0;
-    let pendingCount = 0;
+    const pendingIndexes = new Set<number>();
     let settled = false;
     let lastError: unknown;
+    let failureCandidate: { index: number; value: T } | null = null;
     let hedgeTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
 
     const clearHedgeTimer = () => {
@@ -58,10 +61,53 @@ function fetchWithHedgedApiBaseFallback<T>(
     };
 
     const maybeReject = () => {
-      if (!settled && pendingCount === 0 && nextIndex >= apiBases.length) {
+      if (!settled && pendingIndexes.size === 0 && nextIndex >= apiBases.length) {
         settled = true;
         reject(lastError);
       }
+    };
+
+    const rememberFailure = (index: number, value: T) => {
+      if (!failureCandidate || index < failureCandidate.index) {
+        failureCandidate = { index, value };
+      }
+    };
+
+    const hasPendingEarlierAttempt = (index: number): boolean => {
+      for (const pendingIndex of pendingIndexes) {
+        if (pendingIndex < index) {
+          return true;
+        }
+      }
+
+      return false;
+    };
+
+    const settleWithFailureCandidate = () => {
+      if (settled || !failureCandidate) {
+        return;
+      }
+
+      settled = true;
+      clearHedgeTimer();
+      resolve(failureCandidate.value);
+    };
+
+    const maybeSettleStoredFailure = () => {
+      if (settled || pendingIndexes.size > 0) {
+        return;
+      }
+
+      if (nextIndex < apiBases.length) {
+        return;
+      }
+
+      if (failureCandidate) {
+        settleWithFailureCandidate();
+        return;
+      }
+
+      maybeReject();
     };
 
     const scheduleNextAttempt = () => {
@@ -81,28 +127,46 @@ function fetchWithHedgedApiBaseFallback<T>(
       }
 
       const apiBase = apiBases[nextIndex];
+      const attemptIndex = nextIndex;
       nextIndex += 1;
-      pendingCount += 1;
+      pendingIndexes.add(attemptIndex);
       void fetchFromBase(apiBase)
         .then((value) => {
+          pendingIndexes.delete(attemptIndex);
           if (settled) {
             return;
           }
 
-          if (isRetryableFallbackResponse(value) && nextIndex < apiBases.length) {
-            pendingCount -= 1;
-            lastError = new Error(`API base returned ${value.response.status}`);
+          if (!isFailedFallbackResponse(value)) {
+            settled = true;
             clearHedgeTimer();
-            startNextAttempt();
+            resolve(value);
             return;
           }
 
-          settled = true;
-          clearHedgeTimer();
-          resolve(value);
+          rememberFailure(attemptIndex, value);
+
+          if (isRetryableFallbackResponse(value)) {
+            lastError = new Error(`API base returned ${value.response.status}`);
+            if (nextIndex < apiBases.length) {
+              clearHedgeTimer();
+              startNextAttempt();
+              return;
+            }
+
+            maybeSettleStoredFailure();
+            return;
+          }
+
+          if (hasPendingEarlierAttempt(attemptIndex)) {
+            maybeSettleStoredFailure();
+            return;
+          }
+
+          settleWithFailureCandidate();
         })
         .catch((error: unknown) => {
-          pendingCount -= 1;
+          pendingIndexes.delete(attemptIndex);
           lastError = error;
           if (settled) {
             return;
@@ -114,6 +178,11 @@ function fetchWithHedgedApiBaseFallback<T>(
             return;
           }
 
+          if (failureCandidate) {
+            maybeSettleStoredFailure();
+            return;
+          }
+
           maybeReject();
         });
 
@@ -122,6 +191,11 @@ function fetchWithHedgedApiBaseFallback<T>(
 
     startNextAttempt();
   });
+}
+
+function isFailedFallbackResponse<T>(value: T): value is T & FailedFetchAttemptResponse {
+  const response = (value as FetchAttemptResponse | null | undefined)?.response;
+  return Boolean(response && !response.ok);
 }
 
 function isRetryableFallbackResponse<T>(value: T): value is T & RetryableFetchAttemptResponse {
