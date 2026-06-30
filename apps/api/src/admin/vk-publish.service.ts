@@ -1870,6 +1870,17 @@ export class VkPublishService {
       const response = await fetch(parsed, { method: 'HEAD', signal: controller.signal });
       await response.body?.cancel().catch(() => undefined);
       if (!response.ok) {
+        if (this.isSoftVideoPreflightStatus(response.status)) {
+          return this.mediaCache.writeMediaCache(
+            videoUrl,
+            {
+              status: VK_MEDIA_STATUS_READY,
+              contentLength: null,
+              lastError: null,
+            },
+            mediaIdentity,
+          );
+        }
         return this.mediaCache.writeMediaCache(
           videoUrl,
           {
@@ -1882,17 +1893,7 @@ export class VkPublishService {
 
       const headers = response.headers ?? new Headers();
       const contentLength = this.readStrictContentLength(headers);
-      if (contentLength === null) {
-        return this.mediaCache.writeMediaCache(
-          videoUrl,
-          {
-            status: VK_MEDIA_STATUS_FAILED,
-            lastError: 'VK не сообщил размер видео.',
-          },
-          mediaIdentity,
-        );
-      }
-      if (contentLength > VK_VIDEO_MAX_BYTES) {
+      if (contentLength !== null && contentLength > VK_VIDEO_MAX_BYTES) {
         return this.mediaCache.writeMediaCache(
           videoUrl,
           {
@@ -1905,7 +1906,7 @@ export class VkPublishService {
       }
 
       const mimeType = this.normalizeVideoMimeType(headers.get('content-type'));
-      if (!mimeType) {
+      if (!mimeType && this.hasExplicitUnsupportedVideoMimeType(headers.get('content-type'))) {
         return this.mediaCache.writeMediaCache(
           videoUrl,
           {
@@ -1921,7 +1922,7 @@ export class VkPublishService {
         videoUrl,
         {
           status: VK_MEDIA_STATUS_READY,
-          mimeType,
+          mimeType: mimeType || null,
           contentLength,
           lastError: null,
         },
@@ -2061,23 +2062,25 @@ export class VkPublishService {
 
       const headers = response.headers ?? new Headers();
       const contentLength = this.readStrictContentLength(headers);
-      if (contentLength === null) {
-        throw new BadRequestException('VK не сообщил размер видео.');
-      }
-      if (contentLength > VK_VIDEO_MAX_BYTES) {
+      if (contentLength !== null && contentLength > VK_VIDEO_MAX_BYTES) {
         throw new BadRequestException('Видео из VK слишком большое. Максимум 250 МБ.');
       }
 
-      const mimeType = this.normalizeVideoMimeType(headers.get('content-type'));
-      if (!mimeType) {
+      const contentType = headers.get('content-type');
+      const mimeType = this.normalizeVideoMimeType(contentType);
+      if (!mimeType && this.hasExplicitUnsupportedVideoMimeType(contentType)) {
+        throw new BadRequestException('VK вернул не видео.');
+      }
+      const resolvedMimeType = mimeType ?? this.resolveVideoMimeTypeFromUrl(parsed);
+      if (!resolvedMimeType) {
         throw new BadRequestException('VK вернул не видео.');
       }
 
-      const buffer = Buffer.from(await response.arrayBuffer());
+      const buffer = await this.readResponseBufferWithLimit(response, VK_VIDEO_MAX_BYTES);
       if (buffer.length === 0) {
         throw new BadRequestException('Видео из VK оказалось пустым.');
       }
-      if (buffer.length !== contentLength) {
+      if (contentLength !== null && buffer.length !== contentLength) {
         throw new BadRequestException('Размер скачанного видео VK не совпал с Content-Length.');
       }
       if (buffer.length > VK_VIDEO_MAX_BYTES) {
@@ -2086,8 +2089,8 @@ export class VkPublishService {
 
       return {
         buffer,
-        fileName: this.resolveVideoFileName(parsed, mimeType),
-        mimeType,
+        fileName: this.resolveVideoFileName(parsed, resolvedMimeType),
+        mimeType: resolvedMimeType,
       };
     } finally {
       clearTimeout(timeout);
@@ -2114,9 +2117,61 @@ export class VkPublishService {
     return mimeType === 'video/webm' ? 'vk-video.webm' : 'vk-video.mp4';
   }
 
+  private async readResponseBufferWithLimit(response: Response, maxBytes: number): Promise<Buffer> {
+    if (!response.body) {
+      const buffer = Buffer.from(await response.arrayBuffer());
+      if (buffer.length > maxBytes) {
+        throw new BadRequestException('Видео из VK слишком большое. Максимум 250 МБ.');
+      }
+      return buffer;
+    }
+
+    const reader = response.body.getReader();
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    try {
+      for (;;) {
+        const result = await reader.read();
+        if (result.done) {
+          break;
+        }
+        const chunk = Buffer.from(result.value);
+        totalBytes += chunk.length;
+        if (totalBytes > maxBytes) {
+          await reader.cancel().catch(() => undefined);
+          throw new BadRequestException('Видео из VK слишком большое. Максимум 250 МБ.');
+        }
+        chunks.push(chunk);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    return Buffer.concat(chunks, totalBytes);
+  }
+
+  private resolveVideoMimeTypeFromUrl(url: URL): string | null {
+    const path = url.pathname.toLowerCase();
+    if (path.endsWith('.webm')) {
+      return 'video/webm';
+    }
+    if (path.endsWith('.mov') || path.endsWith('.qt')) {
+      return 'video/quicktime';
+    }
+    if (path.endsWith('.mp4') || path.endsWith('.m4v')) {
+      return 'video/mp4';
+    }
+    return null;
+  }
+
   private normalizeVideoMimeType(value: string | null): string | null {
     const mimeType = (value ?? '').split(';')[0]!.trim().toLowerCase();
     return VK_SUPPORTED_VIDEO_MIME_TYPES.has(mimeType) ? mimeType : null;
+  }
+
+  private hasExplicitUnsupportedVideoMimeType(value: string | null): boolean {
+    const mimeType = (value ?? '').split(';')[0]!.trim().toLowerCase();
+    return Boolean(mimeType) && mimeType !== 'application/octet-stream' && !mimeType.startsWith('binary/');
   }
 
   private readStrictContentLength(headers: Headers): number | null {
@@ -2126,6 +2181,10 @@ export class VkPublishService {
     }
     const contentLength = Number(rawContentLength);
     return Number.isFinite(contentLength) && contentLength > 0 ? contentLength : null;
+  }
+
+  private isSoftVideoPreflightStatus(status: number): boolean {
+    return status === 403 || status === 405 || status === 501;
   }
 
   private canReuseFailedVideoPreflightCache(cache: VkParsingMediaCacheRow): boolean {

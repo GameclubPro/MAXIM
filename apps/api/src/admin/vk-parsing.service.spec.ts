@@ -2546,6 +2546,182 @@ describe('VkParsingService', () => {
     );
   });
 
+  it('publishes a VK video when HEAD is blocked and GET omits content-length', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const source = createSource();
+    const videoUrl = 'https://vkvd.example/video-720.mp4';
+    const post = createPostRow({
+      source,
+      text: 'Видео из VK',
+      videoUrls: [videoUrl],
+      attachmentTypes: ['video'],
+      attachments: [
+        {
+          type: 'video',
+          video: {
+            id: 42,
+            owner_id: -36819802,
+            access_key: 'video-key',
+            files: { mp4_720: videoUrl },
+          },
+        },
+      ],
+      raw: {
+        attachments: [
+          {
+            type: 'video',
+            video: {
+              id: 42,
+              owner_id: -36819802,
+              access_key: 'video-key',
+              files: { mp4_720: videoUrl },
+            },
+          },
+        ],
+      },
+    });
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      id: 'settings-1',
+      chatId: 'channel-1',
+      autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date('2026-05-25T09:00:00.000Z'),
+      stripLinksEnabled: false,
+      skipAdsEnabled: false,
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+    });
+    prisma.vkParsingPost.update.mockResolvedValue({
+      ...post,
+      status: 'PUBLISHED',
+      publishedMessageId: 'mid-1',
+      publishedUrl: 'https://max.ru/channels/channel-1/message/mid-1',
+      publishedAtMax: new Date('2026-05-25T10:05:00.000Z'),
+      autoPublishedAt: new Date('2026-05-25T10:05:00.000Z'),
+    });
+    maxClient.uploadVideo.mockResolvedValue({ token: 'video-token' });
+    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+      messageId: 'mid-1',
+      url: 'https://max.ru/channels/channel-1/message/mid-1',
+    });
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 405,
+        headers: new Headers(),
+        body: { cancel: async () => undefined },
+      } satisfies MockFetchResponse)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'video/mp4' }),
+        arrayBuffer: async () => new Uint8Array([1, 2, 3, 4]).buffer,
+      } satisfies MockFetchResponse) as unknown as typeof fetch;
+
+    await service.processPublishPostJob({
+      postId: 'post-1',
+      chatId: 'channel-1',
+      reason: 'autopublish',
+      idempotencyKey: 'publish-key-1',
+    });
+
+    expect(maxClient.uploadVideo).toHaveBeenCalledWith(
+      Buffer.from([1, 2, 3, 4]),
+      'video-720.mp4',
+      'video/mp4',
+      expect.objectContaining({
+        botId: 'bot-1',
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+      }),
+    );
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'channel-1',
+      'Видео из VK',
+      expect.objectContaining({
+        attachments: [{ type: 'video', payload: { token: 'video-token' } }],
+      }),
+      expect.objectContaining({
+        botId: 'bot-1',
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+      }),
+    );
+  });
+
+  it('rejects a VK video download with an explicit non-video content type', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const source = createSource();
+    const videoUrl = 'https://vkvd.example/video-720.mp4';
+    const post = createPostRow({
+      source,
+      text: 'Видео из VK',
+      videoUrls: [videoUrl],
+      attachmentTypes: ['video'],
+      attachments: [
+        {
+          type: 'video',
+          video: {
+            id: 42,
+            owner_id: -36819802,
+            access_key: 'video-key',
+            files: { mp4_720: videoUrl },
+          },
+        },
+      ],
+    });
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      id: 'settings-1',
+      chatId: 'channel-1',
+      autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date('2026-05-25T09:00:00.000Z'),
+      stripLinksEnabled: false,
+      skipAdsEnabled: false,
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+    });
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 405,
+        headers: new Headers(),
+        body: { cancel: async () => undefined },
+      } satisfies MockFetchResponse)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'text/html' }),
+        arrayBuffer: async () => new TextEncoder().encode('<html></html>').buffer,
+      } satisfies MockFetchResponse) as unknown as typeof fetch;
+
+    await expect(
+      service.processPublishPostJob({
+        postId: 'post-1',
+        chatId: 'channel-1',
+        reason: 'autopublish',
+        idempotencyKey: 'publish-key-1',
+      }),
+    ).rejects.toThrow('VK вернул не видео.');
+
+    expect(maxClient.uploadVideo).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(prisma.vkParsingPost.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'post-1' },
+        data: expect.objectContaining({
+          status: 'FAILED',
+          lastError: expect.stringContaining('VK вернул не видео.'),
+          autoPublishError: expect.stringContaining('VK вернул не видео.'),
+        }),
+      }),
+    );
+  });
+
   it('keeps MAX media upload rate limits as autopublish retry failures', async () => {
     const { service, prisma, maxClient } = createFixture();
     const source = createSource();
