@@ -3,7 +3,7 @@ import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { ChatContextModule } from '../chat-context/chat-context.module';
 import { MaxModule } from '../max/max.module';
-import { RedisCounterService } from '../moderation/redis-counter.service';
+import { RedisCounterModule } from '../moderation/redis-counter.module';
 import { GlobalSpammerIntelligenceService } from '../moderation/global-spammer-intelligence.service';
 import { NightModeTransitionModule } from '../moderation/night-mode-transition.module';
 import { getAppRole, roleRunsAction } from '../runtime/app-role';
@@ -73,6 +73,7 @@ import { SupportRequestsService } from './support-requests.service';
     ChatContextModule,
     SystemModule,
     NightModeTransitionModule,
+    RedisCounterModule,
   ],
   controllers: [
     AdminManagedEntitiesController,
@@ -93,7 +94,6 @@ import { SupportRequestsService } from './support-requests.service';
     ChannelDialogService,
     ChannelStatsCollectorService,
     ManualModerationService,
-    RedisCounterService,
     GlobalSpammerIntelligenceService,
     {
       provide: AdminManagedBroadcastRuntime,

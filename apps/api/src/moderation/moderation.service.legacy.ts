@@ -346,6 +346,7 @@ import {
   type BotSpeechResolvedMedia,
 } from './bot-speech-media.service';
 import { NightModeTransitionEventService } from './night-mode-transition-event.service';
+import { KaravanStorefrontRelayService } from '../integrations/karavan-storefront/karavan-storefront-relay.service';
 
 type ManualModerationCommandBridge = Pick<
   ManualModerationService,
@@ -528,6 +529,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     private readonly injectedBotSpeechMediaService?: BotSpeechMediaService,
     @Optional()
     private readonly injectedNightModeTransitionEventService?: NightModeTransitionEventService,
+    @Optional()
+    private readonly karavanStorefrontRelayService?: KaravanStorefrontRelayService,
   ) {
     this.maxBotToken = this.normalizeSecret(configService?.get<string>('MAX_BOT_TOKEN'));
     this.ownBotUserId = this.normalizeOwnBotUserId(configService?.get<string>('MAX_BOT_ID'));
@@ -1160,6 +1163,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
       );
       if (senderChatAdminCheck.isAdmin) {
+        if (
+          await this.tryHandleKaravanStorefrontRelay({
+            update,
+            updateType,
+            chatId,
+            messageId,
+            senderId,
+            senderName,
+            text,
+          })
+        ) {
+          return;
+        }
+
         this.markWebhookHotPathStage(hotPathProfile, 'admin-command');
         await this.handleChatAdminModerationBypass({
           update,
@@ -1188,6 +1205,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         }
 
         if (latestSenderChatAdminCheck.isAdmin) {
+          if (
+            await this.tryHandleKaravanStorefrontRelay({
+              update,
+              updateType,
+              chatId,
+              messageId,
+              senderId,
+              senderName,
+              text,
+            })
+          ) {
+            return false;
+          }
+
           this.markWebhookHotPathStage(hotPathProfile, 'admin-command');
           await this.handleChatAdminModerationBypass({
             update,
@@ -1534,6 +1565,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (violations.length === 0) {
+        if (
+          await this.tryHandleKaravanStorefrontRelay({
+            update,
+            updateType,
+            chatId,
+            messageId,
+            senderId,
+            senderName,
+            text,
+          })
+        ) {
+          return;
+        }
+
         if (messageId && this.shouldAutoAttachChatCommentsButton(settings, false)) {
           await this.tryAutoAttachChatMessageComments({
             chatId,
@@ -2810,6 +2855,33 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return SanctionAction.MUTE;
     }
     return SanctionAction.BAN;
+  }
+
+  private async tryHandleKaravanStorefrontRelay(params: {
+    update: MaxUpdate;
+    updateType: string | null;
+    chatId: string;
+    messageId?: string | null;
+    senderId: string;
+    senderName?: string | null;
+    text?: string | null;
+  }): Promise<boolean> {
+    if (!params.messageId || !this.karavanStorefrontRelayService) {
+      return false;
+    }
+
+    const result = await this.karavanStorefrontRelayService.handleMessageCreated({
+      updateType: params.updateType,
+      chatId: params.chatId,
+      messageId: params.messageId,
+      senderId: params.senderId,
+      senderName: params.senderName,
+      text: params.text,
+      raw: params.update.raw,
+      botId: params.update.botId ?? null,
+    });
+
+    return result === 'handled' || result === 'duplicate';
   }
 
   private buildLinkExplanation(

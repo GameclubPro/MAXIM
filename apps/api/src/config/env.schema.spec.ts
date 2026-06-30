@@ -72,4 +72,24 @@ describe('validateEnv boolean parsing', () => {
     expect(env.CHANNEL_STATS_STARTUP_SYNC_ENABLED).toBe(false);
     expect(env.BACKGROUND_GOVERNOR_SYSTEM_PRESSURE_ENABLED).toBe(false);
   });
+
+  it('requires Karavan integration settings when storefront relay is enabled', () => {
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          KARAVAN_STOREFRONT_RELAY_ENABLED: 'true',
+        }),
+      ),
+    ).toThrow(/KARAVAN_STOREFRONT_RELAY_ENABLED requires KARAVAN_API_BASE_URL, KARAVAN_INTEGRATION_TOKEN/u);
+
+    const env = validateEnv(
+      createValidEnv({
+        KARAVAN_STOREFRONT_RELAY_ENABLED: 'true',
+        KARAVAN_API_BASE_URL: 'https://api2.major-maksimov.ru/karavan/api',
+        KARAVAN_INTEGRATION_TOKEN: 'test-karavan-token-123',
+      }),
+    );
+
+    expect(env.KARAVAN_STOREFRONT_RELAY_ENABLED).toBe(true);
+  });
 });

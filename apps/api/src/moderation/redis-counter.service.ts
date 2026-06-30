@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { randomUUID } from 'node:crypto';
@@ -45,11 +45,15 @@ return {added, size}
 `;
 
 @Injectable()
-export class RedisCounterService {
+export class RedisCounterService implements OnModuleDestroy {
   private readonly redis: Redis;
 
   constructor(private readonly configService: ConfigService) {
     this.redis = new Redis(this.configService.getOrThrow<string>('REDIS_URL'));
+  }
+
+  async onModuleDestroy() {
+    await this.redis.quit();
   }
 
   async incrementWithTtl(key: string, ttlSeconds: number): Promise<number> {

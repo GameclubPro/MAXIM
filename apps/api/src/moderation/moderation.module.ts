@@ -20,6 +20,7 @@ import { NightModeTransitionProcessor } from './night-mode-transition.processor'
 import { GlobalSpammerDenormProcessor } from './global-spammer-denorm.processor';
 import { GLOBAL_SPAMMER_DENORM_QUEUE } from './global-spammer-denorm.queue';
 import { SystemModule } from '../system/system.module';
+import { KaravanStorefrontRelayModule } from '../integrations/karavan-storefront/karavan-storefront-relay.module';
 import {
   BackgroundWebhookProcessor,
   CriticalWebhookProcessor,
@@ -42,7 +43,7 @@ import { PrivateControlController } from './private-control.controller';
 import { PrivateControlService } from './private-control.service';
 import { ModerationAccessService } from './moderation-access.service';
 import { GlobalSpammerIntelligenceService } from './global-spammer-intelligence.service';
-import { RedisCounterService } from './redis-counter.service';
+import { RedisCounterModule } from './redis-counter.module';
 import { RuleEngineService } from './rule-engine.service';
 import { SanctionService } from './sanction.service';
 import { BotSpeechMediaService } from './bot-speech-media.service';
@@ -65,7 +66,6 @@ const moderationProviders = [
   PrivateControlService,
   GlobalSpammerIntelligenceService,
   GlobalSpammerArchiveRunnerService,
-  RedisCounterService,
   RuleEngineService,
   SanctionService,
   ...(dynamicDefaultWorkerGroup ? [DefaultWebhookLeaseManagerService] : []),
@@ -103,6 +103,8 @@ const moderationProviders = [
     ChatContextModule,
     AdminModule,
     NightModeTransitionModule,
+    RedisCounterModule,
+    KaravanStorefrontRelayModule,
   ],
   controllers: [PrivateControlController],
   providers: moderationProviders,

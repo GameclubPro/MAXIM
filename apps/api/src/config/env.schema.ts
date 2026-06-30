@@ -243,6 +243,12 @@ const envSchema = z.object({
     .positive()
     .default(120_000),
   VK_PARSING_MEDIA_CONCURRENCY: z.coerce.number().int().min(1).max(5).default(3),
+  KARAVAN_STOREFRONT_RELAY_ENABLED: envBoolean(false),
+  KARAVAN_API_BASE_URL: z.string().url().optional(),
+  KARAVAN_INTEGRATION_TOKEN: z.string().min(16).optional(),
+  KARAVAN_STOREFRONT_LOOKUP_TIMEOUT_MS: z.coerce.number().int().positive().default(1_000),
+  KARAVAN_STOREFRONT_CACHE_TTL_SEC: z.coerce.number().int().min(1).max(3600).default(120),
+  KARAVAN_STOREFRONT_RELAY_LOCK_TTL_SEC: z.coerce.number().int().min(60).max(86_400).default(3600),
   BACKGROUND_WORK_SOFT_PAUSE_QUEUE_LAG_SEC: z.coerce.number().int().positive().default(5),
   BACKGROUND_WORK_SOFT_PAUSE_WORKER_PRESSURE: z.coerce.number().int().positive().default(4),
   BACKGROUND_WORK_SOFT_PAUSE_WORKER_SHARE: z.coerce.number().min(0.5).max(1).default(0.75),
@@ -279,6 +285,19 @@ export function validateEnv(config: Record<string, unknown>): EnvSchema {
       .map((issue) => `${issue.path.join('.')}: ${issue.message}`)
       .join('; ');
     throw new Error(`Environment validation failed: ${details}`);
+  }
+
+  if (parsed.data.KARAVAN_STOREFRONT_RELAY_ENABLED) {
+    const missingKeys = [
+      parsed.data.KARAVAN_API_BASE_URL ? null : 'KARAVAN_API_BASE_URL',
+      parsed.data.KARAVAN_INTEGRATION_TOKEN ? null : 'KARAVAN_INTEGRATION_TOKEN',
+    ].filter((key): key is string => key !== null);
+
+    if (missingKeys.length > 0) {
+      throw new Error(
+        `Environment validation failed: KARAVAN_STOREFRONT_RELAY_ENABLED requires ${missingKeys.join(', ')}`,
+      );
+    }
   }
 
   if (parsed.data.NODE_ENV === 'production') {
