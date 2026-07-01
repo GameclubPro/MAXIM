@@ -362,7 +362,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
-  it('limits link and open_app rows to three buttons', async () => {
+  it('moves link and open_app action buttons to their own MAX rows', async () => {
     const service = createService();
 
     const normalized = (service as any).normalizeInlineKeyboardButtons({
@@ -380,7 +380,41 @@ describe('MaxClientService inline keyboard guardrails', () => {
       ],
     }) as Array<Array<Record<string, unknown>>> | null;
 
-    expect(normalized?.map((row) => row.length)).toEqual([3, 1]);
+    expect(normalized?.map((row) => row.length)).toEqual([1, 1, 1, 1]);
+
+    await service.onModuleDestroy();
+  });
+
+  it('keeps Karavan-style channel CTA buttons from sharing one clipped MAX row', async () => {
+    const service = createService();
+
+    const normalized = (service as any).normalizeInlineKeyboardButtons({
+      buttons: [
+        [
+          {
+            type: 'link' as const,
+            text: 'Зайти в Караван🐪',
+            url: 'https://example.com/karavan',
+          },
+          {
+            type: 'link' as const,
+            text: 'Открыть свою витрину 🏪',
+            url: 'https://example.com/storefront',
+          },
+          {
+            type: 'link' as const,
+            text: 'Тех поддержка ⚙️',
+            url: 'https://example.com/support',
+          },
+        ],
+      ],
+    }) as Array<Array<Record<string, unknown>>> | null;
+
+    expect(normalized?.map((row) => row.map((button) => button.text))).toEqual([
+      ['Зайти в Караван🐪'],
+      ['Открыть свою витрину 🏪'],
+      ['Тех поддержка ⚙️'],
+    ]);
 
     await service.onModuleDestroy();
   });

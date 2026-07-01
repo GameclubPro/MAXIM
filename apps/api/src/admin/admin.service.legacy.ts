@@ -8099,8 +8099,9 @@ export class AdminService implements OnModuleDestroy {
 
   private buildBroadcastLinkButtonRows(
     buttons: readonly BroadcastLinkButton[],
+    options?: { buttonsPerRow?: number },
   ): MaxMessageButton[][] {
-    return buildManagedBroadcastLinkButtonRows(buttons);
+    return buildManagedBroadcastLinkButtonRows(buttons, options);
   }
 
   async buildChannelPublicationEngagementContext(
@@ -8252,12 +8253,14 @@ export class AdminService implements OnModuleDestroy {
       botId: string | null;
     } | null;
   }> {
+    const customButtons = this.normalizeManagedBroadcastButtons(options.customButtons, {
+      buttonEnabled: options.includeCustomButton,
+      buttonUrl: options.customButtonUrl,
+      buttonText: options.customButtonText,
+    });
     const rows = this.buildBroadcastLinkButtonRows(
-      this.normalizeManagedBroadcastButtons(options.customButtons, {
-        buttonEnabled: options.includeCustomButton,
-        buttonUrl: options.customButtonUrl,
-        buttonText: options.customButtonText,
-      }),
+      customButtons,
+      entityType === 'channel' ? { buttonsPerRow: 1 } : undefined,
     );
 
     if (entityType === 'chat') {

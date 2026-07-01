@@ -25660,6 +25660,56 @@ describe('AdminService.sendBroadcast', () => {
     expect(buttons[2]?.[0]?.text).toBe('💬 Комментарии · 0');
   });
 
+  it('keeps custom channel broadcast link buttons on separate MAX rows', async () => {
+    const prisma = createPrismaMock();
+    prisma.channelSettings.upsert.mockResolvedValue({
+      chatId: 'channel-1',
+      autoPostButtonsMode: 'OFF',
+      postSuggestionsEnabled: false,
+      postSuggestionsEntryMode: 'FORM',
+      postSuggestionsButtonText: 'Предложить пост',
+      commentsEnabled: false,
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = createChatContextCacheMock();
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const buttons = await (
+      service as unknown as Pick<AdminServicePrivateAccess, 'resolveBroadcastButtons'>
+    ).resolveBroadcastButtons('channel-1', 'channel', {
+      includeCustomButton: false,
+      customButtonText: '',
+      customButtonUrl: '',
+      customButtons: [
+        { text: 'Зайти в Караван🐪', url: 'https://max.ru/karavan' },
+        { text: 'Открыть свою витрину 🏪', url: 'https://max.ru/storefront' },
+        { text: 'Тех поддержка ⚙️', url: 'https://max.ru/support' },
+      ],
+    });
+
+    expect(buttons).toEqual([
+      [{ type: 'link', text: 'Зайти в Караван🐪', url: 'https://max.ru/karavan' }],
+      [
+        {
+          type: 'link',
+          text: 'Открыть свою витрину 🏪',
+          url: 'https://max.ru/storefront',
+        },
+      ],
+      [{ type: 'link', text: 'Тех поддержка ⚙️', url: 'https://max.ru/support' }],
+    ]);
+  });
+
   it('stores and queries chat dialog messages inside the thread encoded in the button token', async () => {
     const prisma = createPrismaMock();
     prisma.chatSettings.upsert.mockResolvedValue({

@@ -1,10 +1,9 @@
 const MAX_INLINE_KEYBOARD_BUTTONS = 210;
 const MAX_INLINE_KEYBOARD_ROWS = 30;
 const MAX_INLINE_KEYBOARD_BUTTONS_PER_ROW = 7;
-const MAX_INLINE_KEYBOARD_NARROW_BUTTONS_PER_ROW = 3;
+const MAX_INLINE_KEYBOARD_ACTION_BUTTONS_PER_ROW = 1;
 const MAX_INLINE_KEYBOARD_ROW_TEXT_WEIGHT = 22;
-const MAX_INLINE_KEYBOARD_LONG_BUTTON_TEXT_WEIGHT = 14;
-const MAX_INLINE_KEYBOARD_NARROW_BUTTON_TYPES = new Set([
+const MAX_INLINE_KEYBOARD_FULL_WIDTH_BUTTON_TYPES = new Set([
   'link',
   'open_app',
   'request_contact',
@@ -258,15 +257,8 @@ function readLowerString(value: unknown): string | null {
 
 function resolveInlineKeyboardButtonRowLimit(button: Record<string, unknown>): number {
   const type = typeof button.type === 'string' ? button.type.trim().toLowerCase() : '';
-  if (
-    MAX_INLINE_KEYBOARD_NARROW_BUTTON_TYPES.has(type) &&
-    measureInlineKeyboardButtonTextWeight(button) >= MAX_INLINE_KEYBOARD_LONG_BUTTON_TEXT_WEIGHT
-  ) {
-    return 1;
-  }
-
-  return MAX_INLINE_KEYBOARD_NARROW_BUTTON_TYPES.has(type)
-    ? MAX_INLINE_KEYBOARD_NARROW_BUTTONS_PER_ROW
+  return MAX_INLINE_KEYBOARD_FULL_WIDTH_BUTTON_TYPES.has(type)
+    ? MAX_INLINE_KEYBOARD_ACTION_BUTTONS_PER_ROW
     : MAX_INLINE_KEYBOARD_BUTTONS_PER_ROW;
 }
 

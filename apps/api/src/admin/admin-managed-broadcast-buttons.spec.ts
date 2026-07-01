@@ -53,4 +53,23 @@ describe('admin managed broadcast button helpers', () => {
       [{ type: 'link', text: '4', url: 'https://example.com/4' }],
     ]);
   });
+
+  it('supports full-width rows for channel publication link buttons', () => {
+    expect(
+      buildManagedBroadcastLinkButtonRows(
+        [
+          { text: '1', url: 'https://example.com/1' },
+          { text: '2', url: 'https://example.com/2' },
+          { text: '3', url: 'https://example.com/3' },
+          { text: '4', url: 'https://example.com/4' },
+        ],
+        { buttonsPerRow: 1 },
+      ),
+    ).toEqual([
+      [{ type: 'link', text: '1', url: 'https://example.com/1' }],
+      [{ type: 'link', text: '2', url: 'https://example.com/2' }],
+      [{ type: 'link', text: '3', url: 'https://example.com/3' }],
+      [{ type: 'link', text: '4', url: 'https://example.com/4' }],
+    ]);
+  });
 });

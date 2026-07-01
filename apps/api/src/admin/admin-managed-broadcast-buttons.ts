@@ -20,6 +20,10 @@ export type ManagedBroadcastButtonState = {
   buttonText: string;
 };
 
+export type ManagedBroadcastLinkButtonRowsOptions = {
+  buttonsPerRow?: number;
+};
+
 export function normalizeManagedBroadcastButtons(
   rawButtons: unknown,
   legacy?: ManagedBroadcastLegacyButtonState,
@@ -91,12 +95,14 @@ export function buildManagedBroadcastButtonState(
 
 export function buildManagedBroadcastLinkButtonRows(
   buttons: readonly BroadcastLinkButton[],
+  options: ManagedBroadcastLinkButtonRowsOptions = {},
 ): MaxMessageButton[][] {
   const rows: MaxMessageButton[][] = [];
+  const buttonsPerRow = normalizeManagedBroadcastLinkButtonsPerRow(options.buttonsPerRow);
 
-  for (let index = 0; index < buttons.length; index += MAX_BROADCAST_LINK_BUTTONS_PER_ROW) {
+  for (let index = 0; index < buttons.length; index += buttonsPerRow) {
     rows.push(
-      buttons.slice(index, index + MAX_BROADCAST_LINK_BUTTONS_PER_ROW).map((button) => ({
+      buttons.slice(index, index + buttonsPerRow).map((button) => ({
         type: 'link',
         text: button.text,
         url: button.url,
@@ -105,4 +111,12 @@ export function buildManagedBroadcastLinkButtonRows(
   }
 
   return rows;
+}
+
+function normalizeManagedBroadcastLinkButtonsPerRow(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return MAX_BROADCAST_LINK_BUTTONS_PER_ROW;
+  }
+
+  return Math.max(1, Math.min(MAX_BROADCAST_LINK_BUTTONS_PER_ROW, Math.trunc(value)));
 }
