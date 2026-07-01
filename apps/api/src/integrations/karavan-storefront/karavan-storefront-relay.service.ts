@@ -52,6 +52,7 @@ const DEFAULT_CACHE_TTL_SEC = 120;
 const DEFAULT_RELAY_LOCK_TTL_SEC = 3_600;
 const RELAY_LOCK_PREFIX = 'karavan-storefront-relay:v1';
 const KARAVAN_STOREFRONT_RELAY_SOURCE_TAG = 'karavan_storefront_relay';
+const STOREFRONT_BUTTON_MESSAGE_TEXT = 'Витрина продавца';
 
 @Injectable()
 export class KaravanStorefrontRelayService {
@@ -116,6 +117,7 @@ export class KaravanStorefrontRelayService {
       const sent = await this.maxClient.sendCustomMessageImmediateWithResolvedLink(
         context.chatId,
         {
+          text: STOREFRONT_BUTTON_MESSAGE_TEXT,
           messageLink: {
             type: 'reply',
             mid: context.messageId!,
@@ -134,6 +136,9 @@ export class KaravanStorefrontRelayService {
 
       return 'handled';
     } catch (error) {
+      if (this.isNonRetriableSendError(error)) {
+        await this.redisCounter.releaseLock(lockKey, lockToken);
+      }
       this.logger.warn(
         {
           chatId: context.chatId,
@@ -378,6 +383,21 @@ export class KaravanStorefrontRelayService {
     }
 
     return parsed;
+  }
+
+  private isNonRetriableSendError(error: unknown): boolean {
+    const status = this.extractStatusCode(error);
+    return status !== null && status >= 400 && status < 500 && status !== 408 && status !== 429;
+  }
+
+  private extractStatusCode(error: unknown): number | null {
+    const row = this.asRecord(error);
+    const response = this.asRecord(row?.response);
+    const status = response?.status ?? row?.status ?? row?.statusCode;
+    const parsed =
+      typeof status === 'number' ? status : typeof status === 'string' ? Number(status) : NaN;
+
+    return Number.isInteger(parsed) ? parsed : null;
   }
 
   private formatError(error: unknown): string {

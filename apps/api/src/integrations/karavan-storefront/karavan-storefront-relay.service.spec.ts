@@ -21,6 +21,7 @@ function createService(options: {
   fetchResponse?: unknown;
   lockToken?: string | null;
   sendRejects?: boolean;
+  sendError?: unknown;
 } = {}) {
   const maxClient = {
     sendCustomMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
@@ -31,7 +32,7 @@ function createService(options: {
   };
   if (options.sendRejects) {
     maxClient.sendCustomMessageImmediateWithResolvedLink.mockRejectedValue(
-      new Error('send timeout'),
+      options.sendError ?? new Error('send timeout'),
     );
   }
 
@@ -117,6 +118,7 @@ describe('KaravanStorefrontRelayService', () => {
       expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
         'chat-1',
         {
+          text: 'Витрина продавца',
           messageLink: {
             type: 'reply',
             mid: 'mid-source-1',
@@ -222,6 +224,27 @@ describe('KaravanStorefrontRelayService', () => {
       await expect(fixture.service.handleMessageCreated(baseContext)).resolves.toBe('failed');
 
       expect(fixture.redisCounter.releaseLock).not.toHaveBeenCalled();
+      expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
+    } finally {
+      fixture.restore();
+    }
+  });
+
+  it('releases the idempotency claim when MAX rejects the payload with a final 4xx', async () => {
+    const error = Object.assign(new Error('bad request'), {
+      response: {
+        status: 400,
+      },
+    });
+    const fixture = createService({ sendRejects: true, sendError: error });
+
+    try {
+      await expect(fixture.service.handleMessageCreated(baseContext)).resolves.toBe('failed');
+
+      expect(fixture.redisCounter.releaseLock).toHaveBeenCalledWith(
+        'karavan-storefront-relay:v1:chat-1:mid-source-1',
+        'lock-1',
+      );
       expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
     } finally {
       fixture.restore();
