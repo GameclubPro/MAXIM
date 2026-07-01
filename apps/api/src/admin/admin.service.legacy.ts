@@ -7406,9 +7406,6 @@ export class AdminService implements OnModuleDestroy {
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
-    if (parsed.data.scope !== 'thread' && parsed.data.mode === 'replies') {
-      throw new BadRequestException('Ответы можно включить только для текущего обсуждения.');
-    }
 
     const threadId =
       params.entityType === 'channel'
@@ -14348,7 +14345,10 @@ export class AdminService implements OnModuleDestroy {
     const globallyScopedUserIds = candidateRows
       .filter(
         (candidate) =>
-          candidate.source === 'all_channels' && candidate.mode === PrismaDialogNotificationMode.ALL,
+          candidate.source === 'all_channels' &&
+          (candidate.mode === PrismaDialogNotificationMode.ALL ||
+            (candidate.mode === PrismaDialogNotificationMode.REPLIES &&
+              candidate.userId === normalizedReplyTargetUserId)),
       )
       .map((candidate) => candidate.userId);
     const globalUserIdsWithAccess = await this.filterDialogNotificationUsersByEntityAccess({

@@ -70,9 +70,9 @@ export default function ChannelDialogNotificationSheet({
     ...(canUseAllNotifications ? (['all'] as const) : []),
     'off',
   ];
-  const selectedScope = draftMode === 'replies' ? 'thread' : draftScope;
+  const selectedScope = draftScope;
   const scopeLabel =
-    selectedScope === 'all_channels' && draftMode === 'all' && availableTargetCount > 0
+    selectedScope === 'all_channels' && draftMode !== 'off' && availableTargetCount > 0
       ? `${availableTargetCount} ${entityType === 'channel' ? 'каналов' : 'чатов'}`
       : getNotificationScopeLabel(selectedScope, entityType);
 
@@ -113,27 +113,25 @@ export default function ChannelDialogNotificationSheet({
           ))}
         </div>
 
-        {draftMode !== 'replies' ? (
-          <div className="channel-dialog-notification-sheet__scopes" role="radiogroup">
-            {NOTIFICATION_SCOPE_OPTIONS.map((scope) => (
-              <button
-                key={scope}
-                type="button"
-                className={cn(
-                  'channel-dialog-notification-sheet__scope',
-                  draftScope === scope && 'is-active',
-                )}
-                role="radio"
-                aria-checked={draftScope === scope}
-                disabled={isPending}
-                onClick={() => onDraftScopeSelect(scope)}
-              >
-                <span>{getNotificationScopeLabel(scope, entityType)}</span>
-                <i aria-hidden />
-              </button>
-            ))}
-          </div>
-        ) : null}
+        <div className="channel-dialog-notification-sheet__scopes" role="radiogroup">
+          {NOTIFICATION_SCOPE_OPTIONS.map((scope) => (
+            <button
+              key={scope}
+              type="button"
+              className={cn(
+                'channel-dialog-notification-sheet__scope',
+                draftScope === scope && 'is-active',
+              )}
+              role="radio"
+              aria-checked={draftScope === scope}
+              disabled={isPending}
+              onClick={() => onDraftScopeSelect(scope)}
+            >
+              <span>{getNotificationScopeLabel(scope, entityType)}</span>
+              <i aria-hidden />
+            </button>
+          ))}
+        </div>
 
         <footer className="channel-dialog-notification-sheet__actions">
           <button

@@ -26074,6 +26074,94 @@ describe('AdminService.sendBroadcast', () => {
     );
   });
 
+  it('stores channel-wide reply-only dialog notifications', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatSettings.findUnique.mockResolvedValue(
+      chatSettingsSchema.parse({
+        commentsEnabled: true,
+        commentsAdminsEnabled: true,
+        commentsAllEnabled: true,
+        commentsChatBroadcastsEnabled: true,
+      }),
+    );
+    prisma.dialogNotificationPreference.findUnique.mockImplementation(async (args: any) =>
+      args?.where?.userId_entityType_scope_targetKey?.scope === 'CHANNEL'
+        ? {
+            mode: 'REPLIES',
+          }
+        : null,
+    );
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const commentsToken = (
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
+    ).buildEntityDialogToken(
+      'chat',
+      'chat-1',
+      'comments',
+      'chat-thread-channel-reply-notify',
+    ) as string;
+
+    const result = await service.updateChatDialogNotifications(
+      'chat-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'comments',
+      {
+        token: commentsToken,
+        mode: 'replies',
+        scope: 'channel',
+      },
+    );
+
+    expect(prisma.dialogNotificationPreference.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          userId_entityType_scope_targetKey: {
+            userId: 'user-1',
+            entityType: 'CHAT',
+            scope: 'CHANNEL',
+            targetKey: 'chat-1',
+          },
+        },
+        create: expect.objectContaining({
+          userId: 'user-1',
+          entityType: 'CHAT',
+          scope: 'CHANNEL',
+          targetKey: 'chat-1',
+          chatId: 'chat-1',
+          mode: 'REPLIES',
+        }),
+        update: {
+          chatId: 'chat-1',
+          mode: 'REPLIES',
+        },
+      }),
+    );
+    expect(prisma.dialogNotificationSubscription.upsert).not.toHaveBeenCalled();
+    expect(result.notificationSettings).toEqual(
+      expect.objectContaining({
+        mode: 'replies',
+        scope: 'channel',
+        channel: {
+          mode: 'replies',
+          explicit: true,
+        },
+      }),
+    );
+  });
+
   it('sends private notifications for comment replies and preserves explicit off subscriptions', async () => {
     const prisma = createPrismaMock();
     prisma.chatSettings.findUnique.mockResolvedValue(
@@ -26276,6 +26364,16 @@ describe('AdminService.sendBroadcast', () => {
       },
       createdAt: new Date('2026-03-06T08:05:00.000Z'),
     });
+    prisma.auditLog.findFirst.mockResolvedValue({
+      id: 'chat-comment-global-parent-1',
+      actorUserId: 'global-replies-user',
+      payload: {
+        type: 'comments',
+        threadId: 'chat-thread-global-notify',
+        text: 'Родительский комментарий',
+      },
+      createdAt: new Date('2026-03-06T08:00:00.000Z'),
+    });
     prisma.dialogNotificationSubscription.findMany.mockResolvedValue([
       {
         userId: 'global-user',
@@ -26320,6 +26418,14 @@ describe('AdminService.sendBroadcast', () => {
             userId: 'global-no-access-user',
             mode: 'ALL',
           },
+          {
+            userId: 'global-replies-user',
+            mode: 'REPLIES',
+          },
+          {
+            userId: 'global-replies-no-access-user',
+            mode: 'REPLIES',
+          },
         ];
       }
       return [];
@@ -26328,6 +26434,11 @@ describe('AdminService.sendBroadcast', () => {
       findMany: jest.fn().mockResolvedValue([
         {
           userId: 'global-user',
+          chatId: 'chat-1',
+          botId: '777000_bot',
+        },
+        {
+          userId: 'global-replies-user',
           chatId: 'chat-1',
           botId: '777000_bot',
         },
@@ -26371,12 +26482,13 @@ describe('AdminService.sendBroadcast', () => {
       {
         token: commentsToken,
         text: 'Глобальный комментарий',
+        replyToMessageId: 'chat-comment-global-parent-1',
       },
     );
     await flushAsyncTasks();
     await flushAsyncTasks();
 
-    expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledTimes(2);
+    expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledTimes(3);
     expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledWith(
       'channel-user',
       expect.stringContaining('Новый комментарий в обсуждении'),
@@ -26389,11 +26501,18 @@ describe('AdminService.sendBroadcast', () => {
       expect.any(Object),
       expect.any(Object),
     );
+    expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledWith(
+      'global-replies-user',
+      expect.stringContaining('Вам ответили в комментариях'),
+      expect.any(Object),
+      expect.any(Object),
+    );
     for (const blockedUserId of [
       'author-1',
       'thread-off-user',
       'channel-off-user',
       'global-no-access-user',
+      'global-replies-no-access-user',
     ]) {
       expect(maxClient.sendMessageImmediateToUser).not.toHaveBeenCalledWith(
         blockedUserId,

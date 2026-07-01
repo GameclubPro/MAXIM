@@ -3281,9 +3281,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
     maxImpact('soft');
     setNotificationDraftMode(mode);
-    if (mode === 'replies') {
-      setNotificationDraftScope('thread');
-    }
   };
 
   const handleNotificationSettingsApply = () => {
@@ -3291,7 +3288,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    const nextScope = notificationDraftMode === 'replies' ? 'thread' : notificationDraftScope;
+    const nextScope = notificationDraftScope;
     const currentScopeSettings = getNotificationSettingsForScope(notificationSettings, nextScope);
     if (
       nextScope === notificationScope &&
@@ -3453,8 +3450,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       attachments: draftAttachments,
     });
   };
-  const selectedDraftScope =
-    notificationDraftMode === 'replies' ? 'thread' : notificationDraftScope;
+  const selectedDraftScope = notificationDraftScope;
   const selectedDraftScopeSettings = getNotificationSettingsForScope(
     notificationSettings,
     selectedDraftScope,
