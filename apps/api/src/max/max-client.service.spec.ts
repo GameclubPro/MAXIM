@@ -385,6 +385,40 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('moves long link button labels to their own MAX rows', async () => {
+    const service = createService();
+
+    const normalized = (service as any).normalizeInlineKeyboardButtons({
+      buttons: [
+        [
+          {
+            type: 'link' as const,
+            text: 'Связь с администратором',
+            url: 'https://example.com/admin',
+          },
+          {
+            type: 'link' as const,
+            text: 'Открыть подробные правила',
+            url: 'https://example.com/rules',
+          },
+          {
+            type: 'link' as const,
+            text: 'Проверить обязательную подписку',
+            url: 'https://example.com/subscription',
+          },
+        ],
+      ],
+    }) as Array<Array<Record<string, unknown>>> | null;
+
+    expect(normalized?.map((row) => row.map((button) => button.text))).toEqual([
+      ['Связь с администратором'],
+      ['Открыть подробные правила'],
+      ['Проверить обязательную подписку'],
+    ]);
+
+    await service.onModuleDestroy();
+  });
+
   it('supports open_app button type for native miniapp opening', async () => {
     const service = createService();
 
@@ -1730,6 +1764,80 @@ describe('MaxClientService inline keyboard guardrails', () => {
             {
               type: 'image',
               payload: { token: 'upload-token-1' },
+            },
+          ],
+        },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('normalizes raw custom inline keyboard attachments before sending', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          data: {
+            mid: 'mid-custom-buttons-1',
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await service.sendCustomMessageImmediate('chat-1', {
+      text: 'Проверьте кнопки',
+      attachments: [
+        {
+          type: 'inline_keyboard',
+          payload: {
+            buttons: [
+              [
+                {
+                  type: '',
+                  text: 'Связь с администратором',
+                  url: 'https://example.com/admin',
+                },
+                {
+                  type: 'link',
+                  text: 'Проверить обязательную подписку',
+                  url: 'https://example.com/subscription',
+                },
+              ],
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api.max.ru/messages',
+        params: { chat_id: 'chat-1' },
+        data: {
+          text: 'Проверьте кнопки',
+          attachments: [
+            {
+              type: 'inline_keyboard',
+              payload: {
+                buttons: [
+                  [
+                    {
+                      type: 'link',
+                      text: 'Связь с администратором',
+                      url: 'https://example.com/admin',
+                    },
+                  ],
+                  [
+                    {
+                      type: 'link',
+                      text: 'Проверить обязательную подписку',
+                      url: 'https://example.com/subscription',
+                    },
+                  ],
+                ],
+              },
             },
           ],
         },

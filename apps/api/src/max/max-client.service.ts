@@ -12,6 +12,7 @@ import { ActionHealthService, type ActionHealthLane } from '../system/action-hea
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import { MaxBotContextService } from './max-bot-context.service';
 import { MaxBotRegistryService, type MaxBotDefinition } from './max-bot-registry.service';
+import { normalizeMaxInlineKeyboardButtons } from './max-inline-keyboard-layout';
 
 export type MaxBotChat = {
   chatId: string;
@@ -305,16 +306,6 @@ export const MAX_API_SOURCE_TAGS = {
 } as const;
 
 const MAX_ACTION_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
-const MAX_INLINE_KEYBOARD_BUTTONS = 210;
-const MAX_INLINE_KEYBOARD_ROWS = 30;
-const MAX_INLINE_KEYBOARD_BUTTONS_PER_ROW = 7;
-const MAX_INLINE_KEYBOARD_NARROW_BUTTONS_PER_ROW = 3;
-const MAX_INLINE_KEYBOARD_NARROW_BUTTON_TYPES = new Set([
-  'link',
-  'open_app',
-  'request_contact',
-  'request_geo_location',
-]);
 const DEFAULT_MAX_API_GLOBAL_RPS = 30;
 const DEFAULT_MAX_API_LIST_BOT_CHATS_CACHE_SEC = 15;
 const DEFAULT_MAX_API_CHAT_SNAPSHOT_CACHE_SEC = 10;
@@ -666,10 +657,9 @@ export class MaxClientService implements OnModuleDestroy {
     requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = {},
   ): Promise<Record<string, unknown>> {
     const attachments = Array.isArray(payload.attachments)
-      ? payload.attachments.filter(
-          (attachment): attachment is Record<string, unknown> =>
-            Boolean(attachment) && typeof attachment === 'object',
-        )
+      ? payload.attachments
+          .map((attachment) => this.normalizeCustomMessageAttachment(attachment))
+          .filter((attachment): attachment is Record<string, unknown> => attachment !== null)
       : [];
     const messageLink = this.buildMessageLinkData(payload.messageLink);
     const hasText = typeof payload.text === 'string';
@@ -695,6 +685,34 @@ export class MaxClientService implements OnModuleDestroy {
       },
       requestOptions,
     );
+  }
+
+  private normalizeCustomMessageAttachment(attachment: unknown): Record<string, unknown> | null {
+    if (!attachment || typeof attachment !== 'object' || Array.isArray(attachment)) {
+      return null;
+    }
+
+    const row = attachment as Record<string, unknown>;
+    if (this.readLowerString(row.type) !== 'inline_keyboard') {
+      return row;
+    }
+
+    const payload = this.asRecord(row.payload);
+    const buttons = Array.isArray(payload?.buttons)
+      ? normalizeMaxInlineKeyboardButtons(payload.buttons)
+      : null;
+    if (!payload || !buttons) {
+      return null;
+    }
+
+    return {
+      ...row,
+      type: 'inline_keyboard',
+      payload: {
+        ...payload,
+        buttons,
+      },
+    };
   }
 
   async sendCustomMessageImmediateWithResolvedLink(
@@ -4161,222 +4179,23 @@ export class MaxClientService implements OnModuleDestroy {
       return null;
     }
 
-    const rows: Array<Array<Record<string, unknown>>> = [];
-    const requestedButtons = sourceButtons.reduce(
-      (acc, row) => acc + (Array.isArray(row) ? row.length : 0),
-      0,
-    );
-    const requestedRows = sourceButtons.filter(
-      (row) => Array.isArray(row) && row.length > 0,
-    ).length;
-    let totalButtons = 0;
-    let truncated = false;
-    let rowBuffer: Array<Record<string, unknown>> = [];
-    let rowLimit = MAX_INLINE_KEYBOARD_BUTTONS_PER_ROW;
-
-    const flushRow = (): boolean => {
-      if (rowBuffer.length === 0) {
-        return true;
-      }
-
-      if (rows.length >= MAX_INLINE_KEYBOARD_ROWS) {
-        rowBuffer = [];
-        rowLimit = MAX_INLINE_KEYBOARD_BUTTONS_PER_ROW;
-        truncated = true;
-        return false;
-      }
-
-      rows.push(rowBuffer);
-      rowBuffer = [];
-      rowLimit = MAX_INLINE_KEYBOARD_BUTTONS_PER_ROW;
-      return true;
-    };
-
-    for (const row of sourceButtons) {
-      if (!Array.isArray(row) || row.length === 0) {
-        continue;
-      }
-
-      for (const button of row) {
-        if (totalButtons >= MAX_INLINE_KEYBOARD_BUTTONS) {
-          truncated = true;
-          break;
-        }
-
-        const normalizedButton = this.normalizeInlineKeyboardButton(button);
-        if (normalizedButton) {
-          const buttonRowLimit = this.resolveInlineKeyboardButtonRowLimit(normalizedButton);
-          const nextRowLimit =
-            rowBuffer.length === 0 ? buttonRowLimit : Math.min(rowLimit, buttonRowLimit);
-          if (rowBuffer.length > 0 && rowBuffer.length >= nextRowLimit && !flushRow()) {
-            break;
-          }
-          if (rows.length >= MAX_INLINE_KEYBOARD_ROWS && rowBuffer.length === 0) {
-            truncated = true;
-            break;
-          }
-
-          rowLimit = rowBuffer.length === 0 ? buttonRowLimit : Math.min(rowLimit, buttonRowLimit);
-          rowBuffer.push(normalizedButton);
-          totalButtons += 1;
-
-          if (rowBuffer.length >= rowLimit && !flushRow()) {
-            break;
-          }
-        }
-      }
-
-      flushRow();
-
-      if (truncated) {
-        break;
-      }
-    }
-
-    if (truncated || requestedButtons > totalButtons || requestedRows > MAX_INLINE_KEYBOARD_ROWS) {
-      this.logger.warn(
-        {
-          requestedButtons,
-          deliveredButtons: totalButtons,
-          limit: MAX_INLINE_KEYBOARD_BUTTONS,
-          requestedRows,
-          deliveredRows: rows.length,
-          rowLimit: MAX_INLINE_KEYBOARD_ROWS,
-          screen: options.debugContext?.screen ?? null,
-          action: options.debugContext?.action ?? null,
-        },
-        'Inline keyboard exceeds MAX limit; tail buttons were trimmed',
-      );
-    }
-
-    return rows.length > 0 ? rows : null;
-  }
-
-  private normalizeInlineKeyboardButton(button: MaxMessageButton): Record<string, unknown> | null {
-    const text = typeof button.text === 'string' ? button.text.trim() : '';
-    if (!text) {
-      return null;
-    }
-
-    const explicitType = this.readLowerString((button as { type?: unknown }).type);
-    const type = explicitType ?? ('url' in button ? 'link' : null);
-
-    switch (type) {
-      case 'link': {
-        const url = 'url' in button && typeof button.url === 'string' ? button.url.trim() : '';
-        if (!url) {
-          return null;
-        }
-        return {
-          type: 'link',
-          text,
-          url,
-        };
-      }
-      case 'callback': {
-        const payload =
-          'payload' in button && typeof button.payload === 'string' ? button.payload.trim() : '';
-        if (!payload) {
-          return null;
-        }
-
-        const intent =
-          'intent' in button && typeof button.intent === 'string'
-            ? this.readLowerString(button.intent)
-            : null;
-
-        return {
-          type: 'callback',
-          text,
-          payload,
-          ...(intent === 'default' || intent === 'positive' || intent === 'negative'
-            ? { intent }
-            : {}),
-        };
-      }
-      case 'open_app': {
-        const webApp =
-          'webApp' in button && typeof button.webApp === 'string' ? button.webApp.trim() : '';
-        const contactIdCandidate = 'contactId' in button ? button.contactId : null;
-        const contactId =
-          typeof contactIdCandidate === 'number'
-            ? String(contactIdCandidate)
-            : typeof contactIdCandidate === 'string'
-              ? contactIdCandidate.trim()
-              : '';
-
-        return {
-          type: 'open_app',
-          text,
-          ...(webApp ? { web_app: webApp } : {}),
-          ...(contactId ? { contact_id: contactId } : {}),
-        };
-      }
-      case 'request_contact':
-        return {
-          type: 'request_contact',
-          text,
-        };
-      case 'request_geo_location': {
-        const quick =
-          'quick' in button && typeof button.quick === 'boolean' ? button.quick : undefined;
-        return {
-          type: 'request_geo_location',
-          text,
-          ...(quick !== undefined ? { quick } : {}),
-        };
-      }
-      case 'clipboard': {
-        const payload =
-          'payload' in button && typeof button.payload === 'string' ? button.payload.trim() : '';
-        if (!payload) {
-          return null;
-        }
-
-        return {
-          type: 'clipboard',
-          text,
-          payload,
-        };
-      }
-      case 'chat': {
-        const chatTitle =
-          'chatTitle' in button && typeof button.chatTitle === 'string'
-            ? button.chatTitle.trim()
-            : '';
-        if (!chatTitle) {
-          return null;
-        }
-
-        const chatDescription =
-          'chatDescription' in button && typeof button.chatDescription === 'string'
-            ? button.chatDescription.trim()
-            : '';
-        const startPayload =
-          'startPayload' in button && typeof button.startPayload === 'string'
-            ? button.startPayload.trim()
-            : '';
-        const uuid = 'uuid' in button && typeof button.uuid === 'string' ? button.uuid.trim() : '';
-
-        return {
-          type: 'chat',
-          text,
-          chat_title: chatTitle,
-          ...(chatDescription ? { chat_description: chatDescription } : {}),
-          ...(startPayload ? { start_payload: startPayload } : {}),
-          ...(uuid ? { uuid } : {}),
-        };
-      }
-      default:
-        return null;
-    }
-  }
-
-  private resolveInlineKeyboardButtonRowLimit(button: Record<string, unknown>): number {
-    const type = typeof button.type === 'string' ? button.type.trim().toLowerCase() : '';
-    return MAX_INLINE_KEYBOARD_NARROW_BUTTON_TYPES.has(type)
-      ? MAX_INLINE_KEYBOARD_NARROW_BUTTONS_PER_ROW
-      : MAX_INLINE_KEYBOARD_BUTTONS_PER_ROW;
+    return normalizeMaxInlineKeyboardButtons(sourceButtons, {
+      onTrimmed: (details) => {
+        this.logger.warn(
+          {
+            requestedButtons: details.requestedButtons,
+            deliveredButtons: details.deliveredButtons,
+            limit: details.buttonLimit,
+            requestedRows: details.requestedRows,
+            deliveredRows: details.deliveredRows,
+            rowLimit: details.rowLimit,
+            screen: options.debugContext?.screen ?? null,
+            action: options.debugContext?.action ?? null,
+          },
+          'Inline keyboard exceeds MAX limit; tail buttons were trimmed',
+        );
+      },
+    });
   }
 
   private async executeReadRequest<T>(

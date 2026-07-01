@@ -2875,6 +2875,11 @@ describe('PrivateControlService', () => {
     expect(previewButtons).toContain('✏️ Исправить');
     expect(previewButtons).toContain('📨 Отправить');
     expect(previewButtons).toContain('↩️ Вернуться в канал');
+    expect(
+      getLastCustomMessageButtons(maxClient).map((row) =>
+        row.map((button) => String((button as { text?: string }).text ?? '')),
+      ),
+    ).toEqual([['✏️ Исправить'], ['📨 Отправить'], ['↩️ Вернуться в канал']]);
 
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|suggestion_send'));
 

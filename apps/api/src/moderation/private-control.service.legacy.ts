@@ -50,6 +50,7 @@ import {
   type MaxMessageButton,
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
+import { normalizeMaxInlineKeyboardButtons } from '../max/max-inline-keyboard-layout';
 import {
   extractIncomingFormattedText,
   extractIncomingFormattedTextPayload,
@@ -7235,7 +7236,7 @@ export class PrivateControlService {
       });
     }
 
-    const normalizedButtons = this.normalizeChannelSuggestionPreviewButtons(buttons);
+    const normalizedButtons = normalizeMaxInlineKeyboardButtons(buttons) ?? [];
     if (normalizedButtons.length > 0) {
       attachments.push({
         type: 'inline_keyboard',
@@ -7250,60 +7251,6 @@ export class PrivateControlService {
       ...(textPayload?.textFormat ? { textFormat: textPayload.textFormat } : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
     };
-  }
-
-  private normalizeChannelSuggestionPreviewButtons(
-    buttons: MaxMessageButton[][],
-  ): Array<Array<Record<string, unknown>>> {
-    return buttons
-      .map((row) =>
-        row
-          .map((button) => this.normalizeChannelSuggestionPreviewButton(button))
-          .filter((button): button is Record<string, unknown> => button !== null),
-      )
-      .filter((row) => row.length > 0);
-  }
-
-  private normalizeChannelSuggestionPreviewButton(
-    button: MaxMessageButton,
-  ): Record<string, unknown> | null {
-    const text = typeof button.text === 'string' ? button.text.trim() : '';
-    if (!text) {
-      return null;
-    }
-
-    const type =
-      ('type' in button && typeof button.type === 'string' ? button.type : null) ??
-      ('url' in button ? 'link' : null);
-    if (type === 'link') {
-      const url = 'url' in button && typeof button.url === 'string' ? button.url.trim() : '';
-      return url
-        ? {
-            type: 'link',
-            text,
-            url,
-          }
-        : null;
-    }
-
-    if (type === 'callback') {
-      const payload =
-        'payload' in button && typeof button.payload === 'string' ? button.payload.trim() : '';
-      if (!payload) {
-        return null;
-      }
-
-      const intent =
-        'intent' in button && typeof button.intent === 'string' ? button.intent.trim() : '';
-      return {
-        type: 'callback',
-        text,
-        payload,
-        ...(intent ? { intent } : {}),
-      };
-    }
-
-    return null;
   }
 
   private renderMassActionConfirmation(pendingMassAction: PendingMassAction): PrivateView {
