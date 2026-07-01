@@ -192,6 +192,7 @@ export type ManagedEntityAccessRoleValue = 'OWNER' | 'ADMIN' | 'MEMBER' | 'UNKNO
 export type ManagedEntityAccessStateValue = 'GRANTED' | 'USER_DENIED' | 'BOT_DENIED';
 export type ManagedEntityAccessEdgeRow = {
   chatId: string;
+  userId?: string;
   botId: string;
   state?: ManagedEntityAccessStateValue;
   checkedAt?: Date | null;

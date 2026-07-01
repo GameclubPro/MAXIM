@@ -300,18 +300,41 @@ export const channelDialogMessageSchema = /*#__PURE__*/ z.object({
 });
 export type ChannelDialogMessage = z.infer<typeof channelDialogMessageSchema>;
 
-export const channelDialogNotificationModeSchema = /*#__PURE__*/ z.enum([
-  'off',
-  'replies',
-  'all',
+export const channelDialogNotificationModeSchema = /*#__PURE__*/ z.enum(['off', 'replies', 'all']);
+export type ChannelDialogNotificationMode = z.infer<typeof channelDialogNotificationModeSchema>;
+
+export const channelDialogNotificationScopeSchema = /*#__PURE__*/ z.enum([
+  'thread',
+  'channel',
+  'all_channels',
 ]);
-export type ChannelDialogNotificationMode = z.infer<
-  typeof channelDialogNotificationModeSchema
+export type ChannelDialogNotificationScope = z.infer<typeof channelDialogNotificationScopeSchema>;
+
+export const channelDialogScopedNotificationSettingsSchema = /*#__PURE__*/ z.object({
+  mode: channelDialogNotificationModeSchema.default('off'),
+  explicit: z.boolean().default(false),
+});
+export type ChannelDialogScopedNotificationSettings = z.infer<
+  typeof channelDialogScopedNotificationSettingsSchema
 >;
 
 export const channelDialogNotificationSettingsSchema = /*#__PURE__*/ z.object({
   mode: channelDialogNotificationModeSchema.default('off'),
   canUseAll: z.boolean().default(true),
+  scope: channelDialogNotificationScopeSchema.default('thread'),
+  thread: channelDialogScopedNotificationSettingsSchema.default({
+    mode: 'off',
+    explicit: false,
+  }),
+  channel: channelDialogScopedNotificationSettingsSchema.default({
+    mode: 'off',
+    explicit: false,
+  }),
+  allChannels: channelDialogScopedNotificationSettingsSchema.default({
+    mode: 'off',
+    explicit: false,
+  }),
+  availableChannelCount: z.number().int().min(0).optional(),
 });
 export type ChannelDialogNotificationSettings = z.infer<
   typeof channelDialogNotificationSettingsSchema
@@ -325,6 +348,19 @@ export const channelDialogResponseSchema = /*#__PURE__*/ z.object({
   notificationSettings: channelDialogNotificationSettingsSchema.default({
     mode: 'off',
     canUseAll: true,
+    scope: 'thread',
+    thread: {
+      mode: 'off',
+      explicit: false,
+    },
+    channel: {
+      mode: 'off',
+      explicit: false,
+    },
+    allChannels: {
+      mode: 'off',
+      explicit: false,
+    },
   }),
 });
 export type ChannelDialogResponse = z.infer<typeof channelDialogResponseSchema>;
@@ -380,6 +416,7 @@ export type ToggleChannelDialogReactionResponse = z.infer<
 export const updateChannelDialogNotificationsRequestSchema = /*#__PURE__*/ z.object({
   token: z.string().trim().min(16).max(256),
   mode: channelDialogNotificationModeSchema,
+  scope: channelDialogNotificationScopeSchema.default('thread'),
 });
 export type UpdateChannelDialogNotificationsRequest = z.infer<
   typeof updateChannelDialogNotificationsRequestSchema

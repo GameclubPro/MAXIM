@@ -208,6 +208,11 @@ enum DialogNotificationMode {
   ALL
 }
 
+enum DialogNotificationScope {
+  CHANNEL
+  ALL_CHANNELS
+}
+
 model Chat {
   id           String          @id
   botId        String?         @map("bot_id")
@@ -241,6 +246,7 @@ model Chat {
   adminMembers                    ManagedEntityAdminMember[]
   favorites                       ManagedEntityFavorite[]
   dialogNotificationSubscriptions DialogNotificationSubscription[]
+  dialogNotificationPreferences   DialogNotificationPreference[]
   participantImmunities           ChatParticipantModerationImmunity[]
   invitationAccessProgress        ChatInvitationAccessProgress[]
   spammerObservations             SpammerObservation[]
@@ -692,6 +698,7 @@ model DialogNotificationSubscription {
   threadId   String                 @default("") @map("thread_id")
   userId     String                 @map("user_id")
   mode       DialogNotificationMode @default(REPLIES)
+  explicit   Boolean                @default(true)
   createdAt  DateTime               @default(now()) @map("created_at")
   updatedAt  DateTime               @updatedAt @map("updated_at")
 
@@ -701,6 +708,26 @@ model DialogNotificationSubscription {
   @@index([chatId, entityType, threadId, mode], map: "dialog_notification_subscriptions_thread_mode_idx")
   @@index([userId, updatedAt], map: "dialog_notification_subscriptions_user_updated_idx")
   @@map("dialog_notification_subscriptions")
+}
+
+model DialogNotificationPreference {
+  id         String                  @id @default(cuid())
+  userId     String                  @map("user_id")
+  entityType ChatEntityType          @default(CHAT) @map("entity_type")
+  scope      DialogNotificationScope
+  targetKey  String                  @default("") @map("target_key")
+  chatId     String?                 @map("chat_id")
+  mode       DialogNotificationMode  @default(OFF)
+  createdAt  DateTime                @default(now()) @map("created_at")
+  updatedAt  DateTime                @updatedAt @map("updated_at")
+
+  chat Chat? @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, entityType, scope, targetKey], map: "dialog_notification_preferences_user_scope_target_key")
+  @@index([entityType, scope, targetKey, mode], map: "dialog_notification_preferences_scope_target_mode_idx")
+  @@index([userId, updatedAt], map: "dialog_notification_preferences_user_updated_idx")
+  @@index([chatId, scope, mode], map: "dialog_notification_preferences_chat_scope_mode_idx")
+  @@map("dialog_notification_preferences")
 }
 
 model DomainAllowlist {

@@ -5,6 +5,7 @@ import {
   channelStatsQuerySchema,
   channelDialogResponseSchema,
   type ChannelDialogNotificationMode,
+  type ChannelDialogNotificationScope,
   type ChannelDialogNotificationSettings,
   channelDialogTypeSchema,
   channelSettingsSchema,
@@ -82,6 +83,7 @@ import {
   ChatBotMembershipStatus,
   ChatEntityType,
   DialogNotificationMode as PrismaDialogNotificationMode,
+  DialogNotificationScope as PrismaDialogNotificationScope,
   EventType,
   Operator,
   Prisma,
@@ -434,6 +436,19 @@ export type {
   AdminActionSource,
   ChannelPublicationEngagementContext,
 } from './admin.service.support';
+
+type DialogNotificationPreferenceRow = {
+  userId: string;
+  mode: PrismaDialogNotificationMode;
+  explicit?: boolean | null;
+  targetKey?: string | null;
+};
+
+type DialogNotificationRecipientCandidate = {
+  userId: string;
+  mode: PrismaDialogNotificationMode;
+  source: 'thread' | 'channel' | 'all_channels';
+};
 
 const DEVELOPER_SUPER_BAN_PRIVATE_DIALOG_ID_PREFIXES = [
   '0',
@@ -800,9 +815,7 @@ export class AdminService implements OnModuleDestroy {
         recentBotAdded: ChatSummary[];
       }>
     >();
-    const loadLightweightBootstrap = async (
-      options: { adminCheckLimit?: number } = {},
-    ) => {
+    const loadLightweightBootstrap = async (options: { adminCheckLimit?: number } = {}) => {
       const adminCheckLimit = Math.max(
         0,
         Math.trunc(options.adminCheckLimit ?? RECENT_BOT_ADDED_BOOTSTRAP_MAX_ADMIN_CHECKS),
@@ -2925,8 +2938,7 @@ export class AdminService implements OnModuleDestroy {
         botIds
           .map((botId) => this.normalizeRuntimeManagedEntityBotId(botId))
           .filter(
-            (botId): botId is string =>
-              Boolean(botId) && this.isManagedEntityRuntimeBotId(botId),
+            (botId): botId is string => Boolean(botId) && this.isManagedEntityRuntimeBotId(botId),
           ),
       ),
     );
@@ -3930,18 +3942,16 @@ export class AdminService implements OnModuleDestroy {
     }
 
     if (this.adminManagedEntitiesRefreshQueue) {
-      void this.scheduleManagedEntitiesBoundedRefresh(user, entityType).catch(
-        (error: unknown) => {
-          this.logger.warn(
-            {
-              entityType,
-              userId: user.userId,
-              err: error instanceof Error ? error.message : String(error),
-            },
-            'Failed to schedule managed entities background refresh after cached mass action lookup',
-          );
-        },
-      );
+      void this.scheduleManagedEntitiesBoundedRefresh(user, entityType).catch((error: unknown) => {
+        this.logger.warn(
+          {
+            entityType,
+            userId: user.userId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to schedule managed entities background refresh after cached mass action lookup',
+        );
+      });
     }
 
     return [...collected.values()];
@@ -4774,9 +4784,7 @@ export class AdminService implements OnModuleDestroy {
   private readManagedEntitiesAdminCheckCount(result: ManagedEntitiesListResult): number {
     const value = (result as ManagedEntitiesListResult & { adminCheckCount?: unknown })
       .adminCheckCount;
-    return typeof value === 'number' && Number.isFinite(value)
-      ? Math.max(0, Math.trunc(value))
-      : 0;
+    return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
   }
 
   private async runManagedEntitiesLocalDiscovery(
@@ -4836,9 +4844,9 @@ export class AdminService implements OnModuleDestroy {
         : 0;
     const candidateSlice = options.fullScan
       ? candidateChats.slice(fullScanStartIndex, fullScanEndIndex)
-      : candidateChats.filter(
-          (chat) => !cachedIds.has(chat.chatId) || prioritizedCandidateIds.has(chat.chatId),
-        ).slice(0, MANAGED_ENTITIES_FOREGROUND_CANDIDATE_CHECK_LIMIT);
+      : candidateChats
+          .filter((chat) => !cachedIds.has(chat.chatId) || prioritizedCandidateIds.has(chat.chatId))
+          .slice(0, MANAGED_ENTITIES_FOREGROUND_CANDIDATE_CHECK_LIMIT);
 
     try {
       const resolvedChats = await mapWithConcurrencyLimit(
@@ -5596,7 +5604,9 @@ export class AdminService implements OnModuleDestroy {
         entityType === 'all'
           ? localChats
           : localChats.filter((chat) => chat.entityType === entityType);
-      return candidateChats.filter((chat) => !isUnsupportedManagedChat(chat.chatId, chat.entityType));
+      return candidateChats.filter(
+        (chat) => !isUnsupportedManagedChat(chat.chatId, chat.entityType),
+      );
     }
 
     const discoveryBots = this.maxBotRegistry?.getDiscoveryBots() ?? [];
@@ -7396,6 +7406,9 @@ export class AdminService implements OnModuleDestroy {
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
+    if (parsed.data.scope !== 'thread' && parsed.data.mode === 'replies') {
+      throw new BadRequestException('Ответы можно включить только для текущего обсуждения.');
+    }
 
     const threadId =
       params.entityType === 'channel'
@@ -7415,6 +7428,7 @@ export class AdminService implements OnModuleDestroy {
       threadId,
       userId: params.userId,
       mode: parsed.data.mode,
+      scope: parsed.data.scope,
     });
 
     return updateChannelDialogNotificationsResponseSchema.parse({
@@ -7793,10 +7807,7 @@ export class AdminService implements OnModuleDestroy {
       observedBotIds?: readonly string[] | null;
     } = {},
   ): Promise<ManagedEntityHeader> {
-    return this.requiredSubscriptionRuntime.resolveRequiredSubscriptionChannelById(
-      chatId,
-      options,
-    );
+    return this.requiredSubscriptionRuntime.resolveRequiredSubscriptionChannelById(chatId, options);
   }
 
   private async assertBotCanInspectRequiredSubscriptionChannel(
@@ -8026,9 +8037,7 @@ export class AdminService implements OnModuleDestroy {
     return resolveManagedBroadcastSendRetryDelayMsValue(error, attempt, options);
   }
 
-  private hasRetriableMaxAttachment(
-    options: ManagedBroadcastRetriableAttachmentOptions,
-  ): boolean {
+  private hasRetriableMaxAttachment(options: ManagedBroadcastRetriableAttachmentOptions): boolean {
     return hasRetriableManagedBroadcastAttachment(options);
   }
 
@@ -8365,18 +8374,19 @@ export class AdminService implements OnModuleDestroy {
 
     return {
       buttons: rows,
-      commentDialogReference: includeCommentsButton || includeSuggestButton
-        ? {
-            entityType: 'channel',
-            threadId,
-            includeCommentsButton,
-            includeSuggestButton,
-            suggestButtonText: includeSuggestButton ? suggestButtonText : null,
-            autoPostButtonsMode,
-            suggestionEntryMode: channelSettings.postSuggestionsEntryMode,
-            botId: botId ?? null,
-          }
-        : null,
+      commentDialogReference:
+        includeCommentsButton || includeSuggestButton
+          ? {
+              entityType: 'channel',
+              threadId,
+              includeCommentsButton,
+              includeSuggestButton,
+              suggestButtonText: includeSuggestButton ? suggestButtonText : null,
+              autoPostButtonsMode,
+              suggestionEntryMode: channelSettings.postSuggestionsEntryMode,
+              botId: botId ?? null,
+            }
+          : null,
     };
   }
 
@@ -8689,27 +8699,27 @@ export class AdminService implements OnModuleDestroy {
         : new Date(Date.now() + muteDurationHours! * ONE_HOUR_MS);
       const { sourceMessageCleanup, crossChatMuteFanout } =
         shouldFanoutCommandMute || shouldFanoutMiniappMute
-        ? await this.resolveManualMuteCommandFollowUpSummaries({
-            sourceChatId: chatId,
-            targetUserId,
-            actor: user,
-            muteDurationHours,
-            muteExpiresAt,
-            mutePermanent,
-            source: source as ManualModerationFanoutSource,
-          })
-        : {
-            sourceMessageCleanup: this.summarizeManualModerationCleanup({
-              candidateMessageIds: [],
-              deletedMessageIds: [],
-              failedMessageIds: [],
-            }),
-            crossChatMuteFanout: this.summarizeManualMuteFanout({
-              mutedChatIds: [],
-              skippedChatIds: [],
-              failedChatIds: [],
-            }),
-          };
+          ? await this.resolveManualMuteCommandFollowUpSummaries({
+              sourceChatId: chatId,
+              targetUserId,
+              actor: user,
+              muteDurationHours,
+              muteExpiresAt,
+              mutePermanent,
+              source: source as ManualModerationFanoutSource,
+            })
+          : {
+              sourceMessageCleanup: this.summarizeManualModerationCleanup({
+                candidateMessageIds: [],
+                deletedMessageIds: [],
+                failedMessageIds: [],
+              }),
+              crossChatMuteFanout: this.summarizeManualMuteFanout({
+                mutedChatIds: [],
+                skippedChatIds: [],
+                failedChatIds: [],
+              }),
+            };
 
       await this.recordManualModerationAction({
         chatId,
@@ -9162,8 +9172,7 @@ export class AdminService implements OnModuleDestroy {
     });
 
     if (source === 'group_command' || source === 'private_command') {
-      const shouldFanoutBan =
-        options.fanoutAllChats === true || source === 'private_command';
+      const shouldFanoutBan = options.fanoutAllChats === true || source === 'private_command';
       if (shouldFanoutBan) {
         const followUp = await this.resolveManualBanFollowUpSummaries({
           sourceChatId: chatId,
@@ -9313,7 +9322,11 @@ export class AdminService implements OnModuleDestroy {
       },
     });
     await this.chatContextCache.invalidate(chatId);
-    await this.refreshManagedEntityBotAccessSnapshots(chatId, 'chat', 'manual chat silence command');
+    await this.refreshManagedEntityBotAccessSnapshots(
+      chatId,
+      'chat',
+      'manual chat silence command',
+    );
     this.scheduleDestructiveModerationAdminRosterWarmup(chatId, {
       nightModeEnabled: false,
       nightModeForceCloseEnabled: true,
@@ -10396,11 +10409,7 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const durationHours = Math.trunc(value);
-    if (
-      !Number.isInteger(durationHours) ||
-      durationHours < 1 ||
-      durationHours > 14 * 24
-    ) {
+    if (!Number.isInteger(durationHours) || durationHours < 1 || durationHours > 14 * 24) {
       throw new BadRequestException('Длительность тишины должна быть от 1 до 336 часов.');
     }
 
@@ -13748,6 +13757,19 @@ export class AdminService implements OnModuleDestroy {
     return {
       mode: 'off',
       canUseAll: true,
+      scope: 'thread',
+      thread: {
+        mode: 'off',
+        explicit: false,
+      },
+      channel: {
+        mode: 'off',
+        explicit: false,
+      },
+      allChannels: {
+        mode: 'off',
+        explicit: false,
+      },
     };
   }
 
@@ -13757,24 +13779,96 @@ export class AdminService implements OnModuleDestroy {
     threadId: string | null;
     userId: string;
   }): Promise<ChannelDialogNotificationSettings> {
-    const row = await this.prisma.dialogNotificationSubscription.findUnique({
-      where: {
-        entityType_chatId_threadId_userId: {
-          entityType: toPrismaEntityType(params.entityType),
-          chatId: params.chatId,
-          threadId: this.normalizeDialogNotificationThreadId(params.threadId),
+    const persistedEntityType = toPrismaEntityType(params.entityType);
+    const threadId = this.normalizeDialogNotificationThreadId(params.threadId);
+    const [threadRow, channelPreference, allChannelsPreference, availableChannelCount] =
+      await Promise.all([
+        this.prisma.dialogNotificationSubscription.findUnique({
+          where: {
+            entityType_chatId_threadId_userId: {
+              entityType: persistedEntityType,
+              chatId: params.chatId,
+              threadId,
+              userId: params.userId,
+            },
+          },
+          select: {
+            mode: true,
+            explicit: true,
+          },
+        }),
+        this.readDialogNotificationPreference({
+          entityType: params.entityType,
           userId: params.userId,
+          scope: 'channel',
+          chatId: params.chatId,
+        }),
+        this.readDialogNotificationPreference({
+          entityType: params.entityType,
+          userId: params.userId,
+          scope: 'all_channels',
+        }),
+        this.countUserGrantedManagedEntitiesForDialogNotifications({
+          entityType: params.entityType,
+          userId: params.userId,
+        }),
+      ]);
+
+    const thread = {
+      mode: threadRow ? this.fromPrismaDialogNotificationMode(threadRow.mode) : 'off',
+      explicit: Boolean(threadRow?.explicit),
+    };
+    const channel = {
+      mode: channelPreference
+        ? this.fromPrismaDialogNotificationMode(channelPreference.mode)
+        : 'off',
+      explicit: Boolean(channelPreference),
+    };
+    const allChannels = {
+      mode: allChannelsPreference
+        ? this.fromPrismaDialogNotificationMode(allChannelsPreference.mode)
+        : 'off',
+      explicit: Boolean(allChannelsPreference),
+    };
+
+    return {
+      mode: this.resolveEffectiveDialogNotificationMode({
+        thread,
+        channel,
+        allChannels,
+      }),
+      canUseAll: true,
+      scope: this.resolveActiveDialogNotificationScope({
+        thread,
+        channel,
+        allChannels,
+      }),
+      thread,
+      channel,
+      allChannels,
+      availableChannelCount,
+    };
+  }
+
+  private async readDialogNotificationPreference(params: {
+    entityType: ManagedEntityType;
+    userId: string;
+    scope: Exclude<ChannelDialogNotificationScope, 'thread'>;
+    chatId?: string | null;
+  }): Promise<{ mode: PrismaDialogNotificationMode } | null> {
+    return this.prisma.dialogNotificationPreference.findUnique({
+      where: {
+        userId_entityType_scope_targetKey: {
+          userId: params.userId,
+          entityType: toPrismaEntityType(params.entityType),
+          scope: this.toPrismaDialogNotificationScope(params.scope),
+          targetKey: this.resolveDialogNotificationPreferenceTargetKey(params.scope, params.chatId),
         },
       },
       select: {
         mode: true,
       },
     });
-
-    return {
-      mode: row ? this.fromPrismaDialogNotificationMode(row.mode) : 'off',
-      canUseAll: true,
-    };
   }
 
   private async upsertEntityDialogNotificationSubscription(params: {
@@ -13783,37 +13877,74 @@ export class AdminService implements OnModuleDestroy {
     threadId: string | null;
     userId: string;
     mode: ChannelDialogNotificationMode;
+    scope: ChannelDialogNotificationScope;
   }): Promise<ChannelDialogNotificationSettings> {
     const persistedMode = this.toPrismaDialogNotificationMode(params.mode);
 
-    const row = await this.prisma.dialogNotificationSubscription.upsert({
-      where: {
-        entityType_chatId_threadId_userId: {
+    if (params.scope === 'thread') {
+      await this.prisma.dialogNotificationSubscription.upsert({
+        where: {
+          entityType_chatId_threadId_userId: {
+            entityType: toPrismaEntityType(params.entityType),
+            chatId: params.chatId,
+            threadId: this.normalizeDialogNotificationThreadId(params.threadId),
+            userId: params.userId,
+          },
+        },
+        create: {
           entityType: toPrismaEntityType(params.entityType),
           chatId: params.chatId,
           threadId: this.normalizeDialogNotificationThreadId(params.threadId),
           userId: params.userId,
+          mode: persistedMode,
+          explicit: true,
         },
-      },
-      create: {
-        entityType: toPrismaEntityType(params.entityType),
-        chatId: params.chatId,
-        threadId: this.normalizeDialogNotificationThreadId(params.threadId),
-        userId: params.userId,
-        mode: persistedMode,
-      },
-      update: {
-        mode: persistedMode,
-      },
-      select: {
-        mode: true,
-      },
-    });
+        update: {
+          mode: persistedMode,
+          explicit: true,
+        },
+        select: {
+          mode: true,
+        },
+      });
+    } else {
+      const targetKey = this.resolveDialogNotificationPreferenceTargetKey(
+        params.scope,
+        params.chatId,
+      );
+      await this.prisma.dialogNotificationPreference.upsert({
+        where: {
+          userId_entityType_scope_targetKey: {
+            userId: params.userId,
+            entityType: toPrismaEntityType(params.entityType),
+            scope: this.toPrismaDialogNotificationScope(params.scope),
+            targetKey,
+          },
+        },
+        create: {
+          userId: params.userId,
+          entityType: toPrismaEntityType(params.entityType),
+          scope: this.toPrismaDialogNotificationScope(params.scope),
+          targetKey,
+          chatId: params.scope === 'channel' ? params.chatId : null,
+          mode: persistedMode,
+        },
+        update: {
+          chatId: params.scope === 'channel' ? params.chatId : null,
+          mode: persistedMode,
+        },
+        select: {
+          mode: true,
+        },
+      });
+    }
 
-    return {
-      mode: this.fromPrismaDialogNotificationMode(row.mode),
-      canUseAll: true,
-    };
+    return this.readEntityDialogNotificationSettings({
+      entityType: params.entityType,
+      chatId: params.chatId,
+      threadId: params.threadId,
+      userId: params.userId,
+    });
   }
 
   private async ensureEntityDialogReplySubscription(params: {
@@ -13838,6 +13969,7 @@ export class AdminService implements OnModuleDestroy {
           threadId: this.normalizeDialogNotificationThreadId(params.threadId),
           userId: params.userId,
           mode: PrismaDialogNotificationMode.REPLIES,
+          explicit: false,
         },
         update: {},
       });
@@ -13856,6 +13988,25 @@ export class AdminService implements OnModuleDestroy {
 
   private normalizeDialogNotificationThreadId(threadId: string | null | undefined): string {
     return this.readTrimmedString(threadId) ?? '';
+  }
+
+  private resolveDialogNotificationPreferenceTargetKey(
+    scope: Exclude<ChannelDialogNotificationScope, 'thread'>,
+    chatId?: string | null,
+  ): string {
+    if (scope === 'all_channels') {
+      return '*';
+    }
+
+    return this.readTrimmedString(chatId) ?? '';
+  }
+
+  private toPrismaDialogNotificationScope(
+    scope: Exclude<ChannelDialogNotificationScope, 'thread'>,
+  ): PrismaDialogNotificationScope {
+    return scope === 'all_channels'
+      ? PrismaDialogNotificationScope.ALL_CHANNELS
+      : PrismaDialogNotificationScope.CHANNEL;
   }
 
   private toPrismaDialogNotificationMode(
@@ -13881,6 +14032,242 @@ export class AdminService implements OnModuleDestroy {
     return 'replies';
   }
 
+  private resolveActiveDialogNotificationScope(params: {
+    thread: { mode: ChannelDialogNotificationMode; explicit: boolean };
+    channel: { mode: ChannelDialogNotificationMode; explicit: boolean };
+    allChannels: { mode: ChannelDialogNotificationMode; explicit: boolean };
+  }): ChannelDialogNotificationScope {
+    if (params.thread.explicit) {
+      return 'thread';
+    }
+    if (params.channel.explicit) {
+      return 'channel';
+    }
+    if (params.allChannels.explicit) {
+      return 'all_channels';
+    }
+    if (params.thread.mode !== 'off') {
+      return 'thread';
+    }
+    return 'thread';
+  }
+
+  private resolveEffectiveDialogNotificationMode(params: {
+    thread: { mode: ChannelDialogNotificationMode; explicit: boolean };
+    channel: { mode: ChannelDialogNotificationMode; explicit: boolean };
+    allChannels: { mode: ChannelDialogNotificationMode; explicit: boolean };
+  }): ChannelDialogNotificationMode {
+    if (params.thread.explicit) {
+      return params.thread.mode;
+    }
+    if (params.channel.explicit) {
+      return params.channel.mode;
+    }
+    if (params.allChannels.explicit) {
+      return params.allChannels.mode;
+    }
+    if (params.thread.mode !== 'off') {
+      return params.thread.mode;
+    }
+    return 'off';
+  }
+
+  private async countUserGrantedManagedEntitiesForDialogNotifications(params: {
+    entityType: ManagedEntityType;
+    userId: string;
+  }): Promise<number> {
+    const client = this.getManagedEntityAccessEdgeClient();
+    if (!client) {
+      return 0;
+    }
+
+    try {
+      const rows = await client.findMany({
+        where: {
+          userId: params.userId,
+          entityType: toPrismaEntityType(params.entityType),
+          state: 'GRANTED',
+          OR: [
+            { expiresAt: { gt: new Date() } },
+            {
+              expiresAt: null,
+              checkedAt: { gt: new Date(Date.now() - MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS) },
+            },
+          ],
+        },
+        select: {
+          chatId: true,
+          botId: true,
+        },
+      });
+      const activeMembershipKeys = await this.readActiveManagedEntityMembershipKeys(rows, {
+        userId: params.userId,
+        requestedItems: rows.length,
+        source: 'dialog_notification_available_entities',
+      });
+      return new Set(
+        rows
+          .filter((row) =>
+            activeMembershipKeys.has(this.buildManagedEntityRepairEdgeKey(row.chatId, row.botId)),
+          )
+          .map((row) => row.chatId),
+      ).size;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          entityType: params.entityType,
+          userId: params.userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to count dialog notification available entities',
+      );
+      return 0;
+    }
+  }
+
+  private buildDialogNotificationRecipientCandidates(params: {
+    subscriptions: DialogNotificationPreferenceRow[];
+    channelPreferences: DialogNotificationPreferenceRow[];
+    allChannelPreferences: DialogNotificationPreferenceRow[];
+  }): DialogNotificationRecipientCandidate[] {
+    const candidates = new Map<string, DialogNotificationRecipientCandidate>();
+    const apply = (
+      source: DialogNotificationRecipientCandidate['source'],
+      rows: DialogNotificationPreferenceRow[],
+    ) => {
+      for (const row of rows) {
+        const userId = this.readTrimmedString(row.userId);
+        if (!userId) {
+          continue;
+        }
+        candidates.set(userId, {
+          userId,
+          mode: row.mode,
+          source,
+        });
+      }
+    };
+
+    apply('all_channels', params.allChannelPreferences);
+    apply('channel', params.channelPreferences);
+    apply(
+      'thread',
+      params.subscriptions.filter((subscription) => subscription.explicit !== false),
+    );
+    return Array.from(candidates.values());
+  }
+
+  private resolveEffectiveDialogNotificationCandidateForUser(params: {
+    userId: string;
+    subscriptions: DialogNotificationPreferenceRow[];
+    channelPreferences: DialogNotificationPreferenceRow[];
+    allChannelPreferences: DialogNotificationPreferenceRow[];
+  }): DialogNotificationRecipientCandidate | null {
+    const userId = this.readTrimmedString(params.userId);
+    if (!userId) {
+      return null;
+    }
+
+    const explicitSubscriptions = params.subscriptions.filter(
+      (subscription) => subscription.explicit !== false,
+    );
+    const implicitSubscriptions = params.subscriptions.filter(
+      (subscription) => subscription.explicit === false,
+    );
+    const sources: Array<{
+      source: DialogNotificationRecipientCandidate['source'];
+      rows: DialogNotificationPreferenceRow[];
+    }> = [
+      { source: 'thread', rows: explicitSubscriptions },
+      { source: 'channel', rows: params.channelPreferences },
+      { source: 'all_channels', rows: params.allChannelPreferences },
+      { source: 'thread', rows: implicitSubscriptions },
+    ];
+
+    for (const { source, rows } of sources) {
+      const row = rows.find((item) => this.readTrimmedString(item.userId) === userId);
+      if (row) {
+        return {
+          userId,
+          mode: row.mode,
+          source,
+        };
+      }
+    }
+
+    return null;
+  }
+
+  private async filterDialogNotificationUsersByEntityAccess(params: {
+    entityType: ManagedEntityType;
+    chatId: string;
+    userIds: string[];
+  }): Promise<Set<string>> {
+    const normalizedUserIds = Array.from(
+      new Set(
+        params.userIds
+          .map((userId) => this.readTrimmedString(userId))
+          .filter((userId): userId is string => Boolean(userId)),
+      ),
+    );
+    if (normalizedUserIds.length === 0) {
+      return new Set();
+    }
+
+    const client = this.getManagedEntityAccessEdgeClient();
+    if (!client) {
+      return new Set();
+    }
+
+    try {
+      const rows = await client.findMany({
+        where: {
+          chatId: params.chatId,
+          entityType: toPrismaEntityType(params.entityType),
+          userId: {
+            in: normalizedUserIds,
+          },
+          state: 'GRANTED',
+          OR: [
+            { expiresAt: { gt: new Date() } },
+            {
+              expiresAt: null,
+              checkedAt: { gt: new Date(Date.now() - MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS) },
+            },
+          ],
+        },
+        select: {
+          chatId: true,
+          userId: true,
+          botId: true,
+        },
+      });
+      const activeMembershipKeys = await this.readActiveManagedEntityMembershipKeys(rows, {
+        userId: normalizedUserIds.join(','),
+        requestedItems: normalizedUserIds.length,
+        source: 'dialog_notification_delivery',
+      });
+      return new Set(
+        rows
+          .filter((row) =>
+            activeMembershipKeys.has(this.buildManagedEntityRepairEdgeKey(row.chatId, row.botId)),
+          )
+          .map((row) => this.readTrimmedString(row.userId))
+          .filter((userId): userId is string => Boolean(userId)),
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          entityType: params.entityType,
+          chatId: params.chatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to filter dialog notification recipients by access edge',
+      );
+      return new Set();
+    }
+  }
+
   private async deliverEntityDialogCommentNotifications(params: {
     entityType: ManagedEntityType;
     chatId: string;
@@ -13899,12 +14286,13 @@ export class AdminService implements OnModuleDestroy {
 
     const persistedEntityType = toPrismaEntityType(params.entityType);
     const threadId = this.normalizeDialogNotificationThreadId(params.threadId);
-    const [replyTargetUserId, subscriptions] = await Promise.all([
-      this.resolveCommentDialogReplyTargetUserId({
-        chatId: params.chatId,
-        threadId: params.threadId,
-        replyToMessageId: params.replyToMessageId,
-      }),
+    const replyTargetUserId = await this.resolveCommentDialogReplyTargetUserId({
+      chatId: params.chatId,
+      threadId: params.threadId,
+      replyToMessageId: params.replyToMessageId,
+    });
+    const normalizedReplyTargetUserId = this.readTrimmedString(replyTargetUserId);
+    const [subscriptions, channelPreferences, allChannelPreferences] = await Promise.all([
       this.prisma.dialogNotificationSubscription.findMany({
         where: {
           chatId: params.chatId,
@@ -13914,39 +14302,86 @@ export class AdminService implements OnModuleDestroy {
         select: {
           userId: true,
           mode: true,
+          explicit: true,
+        },
+      }),
+      this.prisma.dialogNotificationPreference.findMany({
+        where: {
+          entityType: persistedEntityType,
+          scope: PrismaDialogNotificationScope.CHANNEL,
+          targetKey: params.chatId,
+        },
+        select: {
+          userId: true,
+          mode: true,
+        },
+      }),
+      this.prisma.dialogNotificationPreference.findMany({
+        where: {
+          entityType: persistedEntityType,
+          scope: PrismaDialogNotificationScope.ALL_CHANNELS,
+          targetKey: '*',
+          ...(normalizedReplyTargetUserId
+            ? {
+                OR: [
+                  { mode: PrismaDialogNotificationMode.ALL },
+                  { userId: normalizedReplyTargetUserId },
+                ],
+              }
+            : {
+                mode: PrismaDialogNotificationMode.ALL,
+              }),
+        },
+        select: {
+          userId: true,
+          mode: true,
         },
       }),
     ]);
 
-    const subscriptionModes = new Map(
-      subscriptions
-        .map(
-          (subscription) =>
-            [this.readTrimmedString(subscription.userId), subscription.mode] as const,
-        )
-        .filter((entry): entry is readonly [string, PrismaDialogNotificationMode] =>
-          Boolean(entry[0]),
-        ),
-    );
     const recipients = new Map<string, CommentDialogNotificationKind>();
-    const normalizedReplyTargetUserId = this.readTrimmedString(replyTargetUserId);
+    const candidateRows = this.buildDialogNotificationRecipientCandidates({
+      subscriptions,
+      channelPreferences,
+      allChannelPreferences,
+    });
+    const globallyScopedUserIds = candidateRows
+      .filter(
+        (candidate) =>
+          candidate.source === 'all_channels' && candidate.mode === PrismaDialogNotificationMode.ALL,
+      )
+      .map((candidate) => candidate.userId);
+    const globalUserIdsWithAccess = await this.filterDialogNotificationUsersByEntityAccess({
+      entityType: params.entityType,
+      chatId: params.chatId,
+      userIds: globallyScopedUserIds,
+    });
     if (normalizedReplyTargetUserId && normalizedReplyTargetUserId !== authorUserId) {
-      const targetMode = subscriptionModes.get(normalizedReplyTargetUserId);
+      const targetCandidate = this.resolveEffectiveDialogNotificationCandidateForUser({
+        userId: normalizedReplyTargetUserId,
+        subscriptions,
+        channelPreferences,
+        allChannelPreferences,
+      });
       if (
-        targetMode === PrismaDialogNotificationMode.REPLIES ||
-        targetMode === PrismaDialogNotificationMode.ALL
+        targetCandidate &&
+        (targetCandidate.mode === PrismaDialogNotificationMode.REPLIES ||
+          targetCandidate.mode === PrismaDialogNotificationMode.ALL) &&
+        (targetCandidate.source !== 'all_channels' ||
+          globalUserIdsWithAccess.has(normalizedReplyTargetUserId))
       ) {
         recipients.set(normalizedReplyTargetUserId, 'reply');
       }
     }
 
-    for (const subscription of subscriptions) {
-      const userId = this.readTrimmedString(subscription.userId);
+    for (const candidate of candidateRows) {
+      const userId = this.readTrimmedString(candidate.userId);
       if (
         !userId ||
         userId === authorUserId ||
         recipients.has(userId) ||
-        subscription.mode !== PrismaDialogNotificationMode.ALL
+        candidate.mode !== PrismaDialogNotificationMode.ALL ||
+        (candidate.source === 'all_channels' && !globalUserIdsWithAccess.has(userId))
       ) {
         continue;
       }
@@ -15261,7 +15696,9 @@ export class AdminService implements OnModuleDestroy {
     await this.suggestionDeliveryRuntime.processChannelSuggestionDeliveryJob(auditLogId);
   }
 
-  private async processChannelSuggestionDeliveryJobWithinTimeout(auditLogId: string): Promise<void> {
+  private async processChannelSuggestionDeliveryJobWithinTimeout(
+    auditLogId: string,
+  ): Promise<void> {
     const normalizedAuditLogId = auditLogId.trim();
     if (!normalizedAuditLogId) {
       return;
@@ -17925,9 +18362,7 @@ export class AdminService implements OnModuleDestroy {
         return (
           rowChatId === chatId &&
           Boolean(botId) &&
-          activeMembershipKeys.has(
-            this.buildManagedEntityRepairEdgeKey(rowChatId, botId ?? ''),
-          )
+          activeMembershipKeys.has(this.buildManagedEntityRepairEdgeKey(rowChatId, botId ?? ''))
         );
       });
       if (!hasActiveGrantedEdge) {
@@ -18946,12 +19381,10 @@ export class AdminService implements OnModuleDestroy {
     const repairedChatIds = new Set<string>();
     const repairWrites: Array<{ chat: ChatSummary; botId: string }> = [];
     for (const { chat, botIds } of repairCandidates) {
-      const repairableBotIds = botIds.filter(
-        (botId) => {
-          const key = this.buildManagedEntityRepairEdgeKey(chat.id, botId);
-          return !deniedRepairKeys.has(key);
-        },
-      );
+      const repairableBotIds = botIds.filter((botId) => {
+        const key = this.buildManagedEntityRepairEdgeKey(chat.id, botId);
+        return !deniedRepairKeys.has(key);
+      });
       if (client?.upsert && repairableBotIds.length > 0) {
         repairedChatIds.add(chat.id);
         for (const botId of repairableBotIds) {

@@ -342,6 +342,16 @@ function createPrismaMock() {
           ...update,
         })),
     },
+    dialogNotificationPreference: {
+      findUnique: jest.fn().mockResolvedValue(null),
+      findMany: jest.fn().mockResolvedValue([]),
+      upsert: jest
+        .fn()
+        .mockImplementation(async ({ create, update }: { create: any; update: any }) => ({
+          ...create,
+          ...update,
+        })),
+    },
     managedBroadcast: {
       findMany: jest.fn().mockResolvedValue([]),
       findFirst: jest.fn().mockImplementation(async () => managedBroadcastState),
@@ -417,11 +427,15 @@ function createPrismaMock() {
         updatedAt: new Date('2026-03-01T00:00:00.000Z'),
       })),
       findUnique: jest.fn().mockResolvedValue(null),
-      update: jest.fn().mockImplementation(async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => ({
-        id: where.id,
-        ...data,
-        updatedAt: new Date('2026-03-01T00:00:00.000Z'),
-      })),
+      update: jest
+        .fn()
+        .mockImplementation(
+          async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => ({
+            id: where.id,
+            ...data,
+            updatedAt: new Date('2026-03-01T00:00:00.000Z'),
+          }),
+        ),
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     managedAutopostMaterialization: {
@@ -595,11 +609,7 @@ function wireManagedBroadcastDeliveryStore(prisma: ReturnType<typeof createPrism
         return false;
       }
     }
-    if (
-      'lockedAt' in where &&
-      where.lockedAt === null &&
-      delivery.lockedAt !== null
-    ) {
+    if ('lockedAt' in where && where.lockedAt === null && delivery.lockedAt !== null) {
       return false;
     }
     if (
@@ -616,11 +626,7 @@ function wireManagedBroadcastDeliveryStore(prisma: ReturnType<typeof createPrism
     ) {
       return false;
     }
-    if (
-      where.lockedAt &&
-      typeof where.lockedAt === 'object' &&
-      'not' in where.lockedAt
-    ) {
+    if (where.lockedAt && typeof where.lockedAt === 'object' && 'not' in where.lockedAt) {
       const notValue = (where.lockedAt as { not?: Date | null }).not;
       if (notValue === null && delivery.lockedAt === null) {
         return false;
@@ -704,13 +710,9 @@ function wireManagedBroadcastDeliveryStore(prisma: ReturnType<typeof createPrism
           lockedAt: row.lockedAt instanceof Date ? row.lockedAt : null,
           lockToken: typeof row.lockToken === 'string' ? row.lockToken : null,
           createdAt:
-            row.createdAt instanceof Date
-              ? row.createdAt
-              : new Date('2026-03-01T00:00:00.000Z'),
+            row.createdAt instanceof Date ? row.createdAt : new Date('2026-03-01T00:00:00.000Z'),
           updatedAt:
-            row.updatedAt instanceof Date
-              ? row.updatedAt
-              : new Date('2026-03-01T00:00:00.000Z'),
+            row.updatedAt instanceof Date ? row.updatedAt : new Date('2026-03-01T00:00:00.000Z'),
         });
         count += 1;
       }
@@ -16070,14 +16072,14 @@ describe('AdminService.listChats', () => {
     const discoverSpy = jest
       .spyOn(service as any, 'discoverManagedEntitiesFromLocalCatalog')
       .mockResolvedValue({
-      items: [],
-      refresh: {
-        complete: false,
-        cursor: 20,
-        backoffActive: false,
-        nextPollAfterMs: 1500,
-      },
-    });
+        items: [],
+        refresh: {
+          complete: false,
+          cursor: 20,
+          backoffActive: false,
+          nextPollAfterMs: 1500,
+        },
+      });
     const repairSpy = jest
       .spyOn(service as any, 'repairManagedEntitiesAllowlistAfterFullRefresh')
       .mockResolvedValue(undefined);
@@ -16478,14 +16480,14 @@ describe('AdminService.listChats', () => {
     const discoverSpy = jest
       .spyOn(service as any, 'discoverManagedEntitiesFromLocalCatalog')
       .mockResolvedValue({
-      items: [],
-      refresh: {
-        complete: false,
-        cursor: 20,
-        backoffActive: false,
-        nextPollAfterMs: 1500,
-      },
-    });
+        items: [],
+        refresh: {
+          complete: false,
+          cursor: 20,
+          backoffActive: false,
+          nextPollAfterMs: 1500,
+        },
+      });
 
     await expect(
       service.processManagedEntitiesRefreshJob({
@@ -18427,9 +18429,7 @@ describe('AdminService.getChannelStats', () => {
       },
     ]);
 
-    expect(result[0]?.previewUrl).toBe(
-      'https://i.oneme.ru/i?r=BTGBPUwtwgYUeoFhO7rESmr8VstQjUx',
-    );
+    expect(result[0]?.previewUrl).toBe('https://i.oneme.ru/i?r=BTGBPUwtwgYUeoFhO7rESmr8VstQjUx');
     expect(maxClient.getMessageSnapshot).toHaveBeenCalledWith(
       'channel-1',
       'mid-top-1',
@@ -25922,8 +25922,9 @@ describe('AdminService.sendBroadcast', () => {
         commentsChatBroadcastsEnabled: true,
       }),
     );
-    prisma.dialogNotificationSubscription.upsert.mockResolvedValue({
+    prisma.dialogNotificationSubscription.findUnique.mockResolvedValue({
       mode: 'ALL',
+      explicit: true,
     });
 
     const service = new AdminService(
@@ -25972,16 +25973,105 @@ describe('AdminService.sendBroadcast', () => {
         }),
         update: {
           mode: 'ALL',
+          explicit: true,
         },
       }),
     );
     expect(result).toEqual({
       ok: true,
-      notificationSettings: {
+      notificationSettings: expect.objectContaining({
         mode: 'all',
         canUseAll: true,
-      },
+        scope: 'thread',
+        thread: {
+          mode: 'all',
+          explicit: true,
+        },
+      }),
     });
+  });
+
+  it('stores channel-wide dialog notification mode outside the current thread', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatSettings.findUnique.mockResolvedValue(
+      chatSettingsSchema.parse({
+        commentsEnabled: true,
+        commentsAdminsEnabled: true,
+        commentsAllEnabled: true,
+        commentsChatBroadcastsEnabled: true,
+      }),
+    );
+    prisma.dialogNotificationPreference.findUnique.mockImplementation(async (args: any) =>
+      args?.where?.userId_entityType_scope_targetKey?.scope === 'CHANNEL'
+        ? {
+            mode: 'ALL',
+          }
+        : null,
+    );
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const commentsToken = (
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
+    ).buildEntityDialogToken('chat', 'chat-1', 'comments', 'chat-thread-channel-notify') as string;
+
+    const result = await service.updateChatDialogNotifications(
+      'chat-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'comments',
+      {
+        token: commentsToken,
+        mode: 'all',
+        scope: 'channel',
+      },
+    );
+
+    expect(prisma.dialogNotificationPreference.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          userId_entityType_scope_targetKey: {
+            userId: 'user-1',
+            entityType: 'CHAT',
+            scope: 'CHANNEL',
+            targetKey: 'chat-1',
+          },
+        },
+        create: expect.objectContaining({
+          userId: 'user-1',
+          entityType: 'CHAT',
+          scope: 'CHANNEL',
+          targetKey: 'chat-1',
+          chatId: 'chat-1',
+          mode: 'ALL',
+        }),
+        update: {
+          chatId: 'chat-1',
+          mode: 'ALL',
+        },
+      }),
+    );
+    expect(prisma.dialogNotificationSubscription.upsert).not.toHaveBeenCalled();
+    expect(result.notificationSettings).toEqual(
+      expect.objectContaining({
+        mode: 'all',
+        scope: 'channel',
+        channel: {
+          mode: 'all',
+          explicit: true,
+        },
+      }),
+    );
   });
 
   it('sends private notifications for comment replies and preserves explicit off subscriptions', async () => {
@@ -26020,18 +26110,22 @@ describe('AdminService.sendBroadcast', () => {
       {
         userId: 'user-1',
         mode: 'REPLIES',
+        explicit: true,
       },
       {
         userId: 'user-3',
         mode: 'ALL',
+        explicit: true,
       },
       {
         userId: 'user-4',
         mode: 'OFF',
+        explicit: true,
       },
       {
         userId: 'user-2',
         mode: 'ALL',
+        explicit: true,
       },
     ]);
     prisma.auditLog.findMany.mockImplementation(async (args: any) => {
@@ -26159,6 +26253,251 @@ describe('AdminService.sendBroadcast', () => {
       expect.anything(),
       expect.anything(),
     );
+  });
+
+  it('sends channel and all-channel comment notifications with narrow off overrides', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatSettings.findUnique.mockResolvedValue(
+      chatSettingsSchema.parse({
+        commentsEnabled: true,
+        commentsAdminsEnabled: true,
+        commentsAllEnabled: true,
+        commentsChatBroadcastsEnabled: true,
+      }),
+    );
+    prisma.auditLog.create.mockResolvedValue({
+      id: 'chat-comment-global-1',
+      actorUserId: 'author-1',
+      payload: {
+        type: 'comments',
+        threadId: 'chat-thread-global-notify',
+        text: 'Глобальный комментарий',
+        authorDisplayName: 'Автор',
+      },
+      createdAt: new Date('2026-03-06T08:05:00.000Z'),
+    });
+    prisma.dialogNotificationSubscription.findMany.mockResolvedValue([
+      {
+        userId: 'global-user',
+        mode: 'REPLIES',
+        explicit: false,
+      },
+      {
+        userId: 'thread-off-user',
+        mode: 'OFF',
+        explicit: true,
+      },
+    ]);
+    prisma.dialogNotificationPreference.findMany.mockImplementation(async (args: any) => {
+      const scope = args?.where?.scope;
+      if (scope === 'CHANNEL') {
+        return [
+          {
+            userId: 'channel-user',
+            mode: 'ALL',
+          },
+          {
+            userId: 'channel-off-user',
+            mode: 'OFF',
+          },
+          {
+            userId: 'thread-off-user',
+            mode: 'ALL',
+          },
+        ];
+      }
+      if (scope === 'ALL_CHANNELS') {
+        return [
+          {
+            userId: 'global-user',
+            mode: 'ALL',
+          },
+          {
+            userId: 'channel-off-user',
+            mode: 'ALL',
+          },
+          {
+            userId: 'global-no-access-user',
+            mode: 'ALL',
+          },
+        ];
+      }
+      return [];
+    });
+    (prisma as any).managedEntityAccessEdge = {
+      findMany: jest.fn().mockResolvedValue([
+        {
+          userId: 'global-user',
+          chatId: 'chat-1',
+          botId: '777000_bot',
+        },
+      ]),
+    };
+    (prisma as any).chatBotMembership = {
+      findMany: jest.fn().mockResolvedValue([
+        {
+          chatId: 'chat-1',
+          botId: '777000_bot',
+        },
+      ]),
+    };
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateToUser: jest.fn().mockResolvedValue({
+        messageId: 'private-notification-1',
+        url: null,
+      }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const commentsToken = (
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
+    ).buildEntityDialogToken('chat', 'chat-1', 'comments', 'chat-thread-global-notify') as string;
+
+    await service.createChatDialogMessage(
+      'chat-1',
+      {
+        userId: 'author-1',
+        username: 'author',
+        displayName: 'Автор',
+        chatTitle: null,
+      },
+      'comments',
+      {
+        token: commentsToken,
+        text: 'Глобальный комментарий',
+      },
+    );
+    await flushAsyncTasks();
+    await flushAsyncTasks();
+
+    expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledTimes(2);
+    expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledWith(
+      'channel-user',
+      expect.stringContaining('Новый комментарий в обсуждении'),
+      expect.any(Object),
+      expect.any(Object),
+    );
+    expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledWith(
+      'global-user',
+      expect.stringContaining('Новый комментарий в обсуждении'),
+      expect.any(Object),
+      expect.any(Object),
+    );
+    for (const blockedUserId of [
+      'author-1',
+      'thread-off-user',
+      'channel-off-user',
+      'global-no-access-user',
+    ]) {
+      expect(maxClient.sendMessageImmediateToUser).not.toHaveBeenCalledWith(
+        blockedUserId,
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+      );
+    }
+  });
+
+  it('lets global off override implicit reply auto-follow subscriptions', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatSettings.findUnique.mockResolvedValue(
+      chatSettingsSchema.parse({
+        commentsEnabled: true,
+        commentsAdminsEnabled: true,
+        commentsAllEnabled: true,
+        commentsChatBroadcastsEnabled: true,
+      }),
+    );
+    prisma.auditLog.findFirst.mockResolvedValue({
+      id: 'chat-comment-parent-global-off-1',
+      actorUserId: 'reply-target-user',
+      payload: {
+        type: 'comments',
+        threadId: 'chat-thread-global-off',
+        text: 'Родительский комментарий',
+      },
+      createdAt: new Date('2026-03-06T08:00:00.000Z'),
+    });
+    prisma.auditLog.create.mockResolvedValue({
+      id: 'chat-comment-global-off-reply-1',
+      actorUserId: 'reply-author',
+      payload: {
+        type: 'comments',
+        threadId: 'chat-thread-global-off',
+        text: 'Ответ',
+        authorDisplayName: 'Автор',
+      },
+      createdAt: new Date('2026-03-06T08:05:00.000Z'),
+    });
+    prisma.dialogNotificationSubscription.findMany.mockResolvedValue([
+      {
+        userId: 'reply-target-user',
+        mode: 'REPLIES',
+        explicit: false,
+      },
+    ]);
+    prisma.dialogNotificationPreference.findMany.mockImplementation(async (args: any) => {
+      if (args?.where?.scope !== 'ALL_CHANNELS') {
+        return [];
+      }
+      return [
+        {
+          userId: 'reply-target-user',
+          mode: 'OFF',
+        },
+      ];
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateToUser: jest.fn().mockResolvedValue({
+        messageId: 'private-notification-1',
+        url: null,
+      }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const commentsToken = (
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
+    ).buildEntityDialogToken('chat', 'chat-1', 'comments', 'chat-thread-global-off') as string;
+
+    await service.createChatDialogMessage(
+      'chat-1',
+      {
+        userId: 'reply-author',
+        username: 'author',
+        displayName: 'Автор',
+        chatTitle: null,
+      },
+      'comments',
+      {
+        token: commentsToken,
+        text: 'Ответ',
+        replyToMessageId: 'chat-comment-parent-global-off-1',
+      },
+    );
+    await flushAsyncTasks();
+    await flushAsyncTasks();
+
+    expect(prisma.dialogNotificationPreference.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          scope: 'ALL_CHANNELS',
+          OR: [{ mode: 'ALL' }, { userId: 'reply-target-user' }],
+        }),
+      }),
+    );
+    expect(maxClient.sendMessageImmediateToUser).not.toHaveBeenCalled();
   });
 
   it('uses fallback reply messages for comment notification post buttons', async () => {
@@ -26678,9 +27017,7 @@ describe('AdminService.sendChannelBroadcast', () => {
       'channel-1',
       'Пост с обсуждением',
       expect.objectContaining({
-        buttons: [
-          [expect.objectContaining({ text: '💬 Комментарии · 0' })],
-        ],
+        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0' })]],
       }),
       expect.objectContaining({
         trafficClass: 'interactive',

@@ -2,6 +2,8 @@ import type {
   ChannelDialogAttachment,
   ChannelDialogMessage,
   ChannelDialogNotificationMode,
+  ChannelDialogNotificationScope,
+  ChannelDialogNotificationSettings,
   ChannelDialogResponse,
   ChannelDialogType,
 } from '@maxim/contracts';
@@ -29,6 +31,8 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Fragment,
+  Suspense,
+  lazy,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -98,6 +102,10 @@ import '../styles/channel-dialog-comments.css';
 import '../styles/channel-dialog-image-viewer.css';
 import '../styles/channel-dialog-native-comments.css';
 import '../styles/channel-dialog-suggest.css';
+
+const LazyChannelDialogNotificationSheet = lazy(
+  () => import('../components/channel-dialog-notification-sheet'),
+);
 
 const COMMENT_REACTION_OPTIONS = [
   '👍',
@@ -222,14 +230,61 @@ function summarizeReplyText(value: string, maxLength = 96): string {
   return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
 }
 
-function getNotificationModeLabel(mode: ChannelDialogNotificationMode): string {
-  if (mode === 'off') {
-    return 'Выключены';
+function getNotificationSettingsForScope(
+  settings: ChannelDialogNotificationSettings,
+  scope: ChannelDialogNotificationScope,
+): { mode: ChannelDialogNotificationMode; explicit: boolean } {
+  if (scope === 'all_channels') {
+    return settings.allChannels;
   }
-  if (mode === 'all') {
-    return 'Все комментарии';
+  if (scope === 'channel') {
+    return settings.channel;
   }
-  return 'Ответы мне';
+  return settings.thread;
+}
+
+function applyOptimisticNotificationSettings(
+  current: ChannelDialogResponse,
+  fallbackSettings: ChannelDialogNotificationSettings,
+  payload: {
+    mode: ChannelDialogNotificationMode;
+    scope: ChannelDialogNotificationScope;
+  },
+): ChannelDialogResponse {
+  const currentSettings = current.notificationSettings ?? fallbackSettings;
+  const nextSettings: ChannelDialogNotificationSettings = {
+    ...currentSettings,
+    scope: payload.scope,
+    thread:
+      payload.scope === 'thread'
+        ? {
+            mode: payload.mode,
+            explicit: true,
+          }
+        : currentSettings.thread,
+    channel:
+      payload.scope === 'channel'
+        ? {
+            mode: payload.mode,
+            explicit: true,
+          }
+        : currentSettings.channel,
+    allChannels:
+      payload.scope === 'all_channels'
+        ? {
+            mode: payload.mode,
+            explicit: true,
+          }
+        : currentSettings.allChannels,
+  };
+  const activeScopedSettings = getNotificationSettingsForScope(nextSettings, payload.scope);
+  return {
+    ...current,
+    notificationSettings: {
+      ...nextSettings,
+      mode: activeScopedSettings.mode,
+    },
+  };
 }
 
 const COMMENT_IMAGE_FILE_NAME_RE = /\.(avif|bmp|gif|heic|heif|jpe?g|png|tiff?|webp)$/iu;
@@ -1354,6 +1409,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const [isReactionPickerExpanded, setIsReactionPickerExpanded] = useState(false);
   const [isComposeEmojiOpen, setIsComposeEmojiOpen] = useState(false);
   const [isNotificationSettingsOpen, setIsNotificationSettingsOpen] = useState(false);
+  const [notificationDraftMode, setNotificationDraftMode] =
+    useState<ChannelDialogNotificationMode>('off');
+  const [notificationDraftScope, setNotificationDraftScope] =
+    useState<ChannelDialogNotificationScope>('thread');
   const [activeComposeEmojiGroupId, setActiveComposeEmojiGroupId] =
     useState<CommentComposeEmojiGroupId>('frequent');
   const [isNearBottom, setIsNearBottom] = useState(true);
@@ -1503,10 +1562,25 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const notificationSettings = dialogQuery.data?.notificationSettings ?? {
     mode: 'off' as const,
     canUseAll: true,
+    scope: 'thread' as const,
+    thread: {
+      mode: 'off' as const,
+      explicit: false,
+    },
+    channel: {
+      mode: 'off' as const,
+      explicit: false,
+    },
+    allChannels: {
+      mode: 'off' as const,
+      explicit: false,
+    },
   };
   const notificationMode = notificationSettings.mode;
+  const notificationScope = notificationSettings.scope;
   const canUseAllNotifications =
     notificationSettings.canUseAll === true || notificationMode === 'all';
+  const notificationAvailableChannelCount = notificationSettings.availableChannelCount ?? 0;
   const messageIdSet = useMemo(() => new Set(messages.map((message) => message.id)), [messages]);
   const activeMessage = useMemo(
     () => messages.find((message) => message.id === activeMessageId) ?? null,
@@ -1791,6 +1865,14 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
   useNativeBackHandler(
     () => {
+      setIsNotificationSettingsOpen(false);
+      return true;
+    },
+    { enabled: isNotificationSettingsOpen, priority: 625 },
+  );
+
+  useNativeBackHandler(
+    () => {
       cancelEditing({ restoreDraft: true });
       return true;
     },
@@ -2041,17 +2123,21 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   }, [activeMessageId]);
 
   useEffect(() => {
+    if (!isNotificationSettingsOpen) {
+      return;
+    }
+
+    setNotificationDraftScope(notificationScope);
+    setNotificationDraftMode(
+      getNotificationSettingsForScope(notificationSettings, notificationScope).mode,
+    );
+  }, [isNotificationSettingsOpen, notificationScope, notificationSettings]);
+
+  useEffect(() => {
     if (!isNotificationSettingsOpen || typeof document === 'undefined') {
       return undefined;
     }
 
-    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
-      const target = event.target;
-      if (target instanceof Element && target.closest('.channel-dialog-notifications')) {
-        return;
-      }
-      setIsNotificationSettingsOpen(false);
-    };
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
@@ -2059,13 +2145,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       }
     };
 
-    document.addEventListener('mousedown', handlePointerDown);
-    document.addEventListener('touchstart', handlePointerDown, { passive: true });
     document.addEventListener('keydown', handleKeyDown);
 
     return () => {
-      document.removeEventListener('mousedown', handlePointerDown);
-      document.removeEventListener('touchstart', handlePointerDown);
       document.removeEventListener('keydown', handleKeyDown);
     };
   }, [isNotificationSettingsOpen]);
@@ -2845,30 +2927,29 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     },
   });
   const notificationMutation = useMutation({
-    mutationFn: (mode: ChannelDialogNotificationMode) =>
+    mutationFn: (payload: {
+      mode: ChannelDialogNotificationMode;
+      scope: ChannelDialogNotificationScope;
+    }) =>
       entityType === 'channel'
         ? updateChannelDialogNotifications(api, chatId, dialogType, {
             token,
-            mode,
+            mode: payload.mode,
+            scope: payload.scope,
           })
         : updateChatDialogNotifications(api, chatId, dialogType, {
             token,
-            mode,
+            mode: payload.mode,
+            scope: payload.scope,
           }),
-    onMutate: async (mode) => {
+    onMutate: async (payload) => {
       await queryClient.cancelQueries({ queryKey: dialogQueryKey });
       const previousDialog = queryClient.getQueryData<ChannelDialogResponse | undefined>(
         dialogQueryKey,
       );
       queryClient.setQueryData<ChannelDialogResponse | undefined>(dialogQueryKey, (current) =>
         current
-          ? {
-              ...current,
-              notificationSettings: {
-                ...(current.notificationSettings ?? notificationSettings),
-                mode,
-              },
-            }
+          ? applyOptimisticNotificationSettings(current, notificationSettings, payload)
           : current,
       );
       return { previousDialog };
@@ -2887,8 +2968,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         title: 'Готово',
         description:
           result.notificationSettings.mode === 'off'
-            ? 'Уведомления выключены.'
-            : 'Уведомления включены.',
+            ? 'Выключены'
+            : result.notificationSettings.scope === 'all_channels'
+              ? `Для ${result.notificationSettings.availableChannelCount ?? 0} каналов`
+              : 'Включены',
       });
     },
     onError: (error, _mode, context) => {
@@ -3191,22 +3274,46 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     }
   };
 
-  const handleNotificationModeSelect = (mode: ChannelDialogNotificationMode) => {
+  const handleNotificationDraftModeSelect = (mode: ChannelDialogNotificationMode) => {
     if (dialogType !== 'comments' || isNotificationPending) {
       return;
     }
 
-    if (mode === notificationMode) {
+    maxImpact('soft');
+    setNotificationDraftMode(mode);
+    if (mode === 'replies') {
+      setNotificationDraftScope('thread');
+    }
+  };
+
+  const handleNotificationSettingsApply = () => {
+    if (dialogType !== 'comments' || isNotificationPending) {
+      return;
+    }
+
+    const nextScope = notificationDraftMode === 'replies' ? 'thread' : notificationDraftScope;
+    const currentScopeSettings = getNotificationSettingsForScope(notificationSettings, nextScope);
+    if (
+      nextScope === notificationScope &&
+      notificationDraftMode === currentScopeSettings.mode &&
+      currentScopeSettings.explicit
+    ) {
       setIsNotificationSettingsOpen(false);
       return;
     }
 
     maxImpact('soft');
-    notificationMutation.mutate(mode, {
-      onSuccess: () => {
-        setIsNotificationSettingsOpen(false);
+    notificationMutation.mutate(
+      {
+        mode: notificationDraftMode,
+        scope: nextScope,
       },
-    });
+      {
+        onSuccess: () => {
+          setIsNotificationSettingsOpen(false);
+        },
+      },
+    );
   };
 
   const handleAuthorProfileActivate = (message: ChannelDialogMessage) => {
@@ -3346,15 +3453,19 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       attachments: draftAttachments,
     });
   };
-  const notificationOptions: ChannelDialogNotificationMode[] = [
-    'replies',
-    ...(canUseAllNotifications ? (['all'] as const) : []),
-    'off',
-  ];
+  const selectedDraftScope =
+    notificationDraftMode === 'replies' ? 'thread' : notificationDraftScope;
+  const selectedDraftScopeSettings = getNotificationSettingsForScope(
+    notificationSettings,
+    selectedDraftScope,
+  );
+  const notificationApplyDisabled =
+    isNotificationPending ||
+    (selectedDraftScope === notificationScope &&
+      notificationDraftMode === selectedDraftScopeSettings.mode &&
+      selectedDraftScopeSettings.explicit);
   const notificationToggleLabel =
-    notificationMode === 'off'
-      ? 'Уведомления выключены'
-      : `Уведомления: ${getNotificationModeLabel(notificationMode)}`;
+    notificationMode === 'off' ? 'Уведомления выключены' : 'Уведомления включены';
   const commentsScreenStyle =
     dialogType === 'comments' && commentsNotificationTopNudge > 0
       ? ({
@@ -3429,7 +3540,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         keyboardOverlap < 120 && (isNativeClient || isMobileViewport)
           ? Math.min(320, Math.max(180, Math.round(visualHeight * 0.42)))
           : 0;
-      const keyboardBottom = keyboardOverlap >= 120 ? window.innerHeight - keyboardOverlap : Infinity;
+      const keyboardBottom =
+        keyboardOverlap >= 120 ? window.innerHeight - keyboardOverlap : Infinity;
       const visibleTop = Math.max(viewportRect.top, visualTop);
       const visibleBottom = Math.min(
         viewportRect.bottom,
@@ -3686,31 +3798,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   <IconoirBell aria-hidden focusable="false" />
                 )}
               </button>
-
-              {isNotificationSettingsOpen ? (
-                <div className="channel-dialog-notifications__menu" role="menu">
-                  {notificationOptions.map((mode) => {
-                    const isSelected = notificationMode === mode;
-                    return (
-                      <button
-                        key={mode}
-                        type="button"
-                        className={cn(
-                          'channel-dialog-notifications__option',
-                          isSelected && 'is-selected',
-                        )}
-                        role="menuitemradio"
-                        aria-checked={isSelected}
-                        disabled={isNotificationPending}
-                        onClick={() => handleNotificationModeSelect(mode)}
-                      >
-                        <span>{getNotificationModeLabel(mode)}</span>
-                        <i aria-hidden />
-                      </button>
-                    );
-                  })}
-                </div>
-              ) : null}
             </div>
           </div>
         ) : null}
@@ -4812,6 +4899,28 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
             screenRef.current ?? document.body,
           )
         : null}
+
+      {dialogType === 'comments' && isNotificationSettingsOpen ? (
+        <Suspense fallback={null}>
+          <LazyChannelDialogNotificationSheet
+            portalTarget={screenRef.current ?? document.body}
+            entityType={entityType}
+            draftMode={notificationDraftMode}
+            draftScope={notificationDraftScope}
+            availableTargetCount={notificationAvailableChannelCount}
+            canUseAllNotifications={canUseAllNotifications}
+            isPending={isNotificationPending}
+            applyDisabled={notificationApplyDisabled}
+            onClose={() => setIsNotificationSettingsOpen(false)}
+            onDraftModeSelect={handleNotificationDraftModeSelect}
+            onDraftScopeSelect={(scope) => {
+              maxImpact('soft');
+              setNotificationDraftScope(scope);
+            }}
+            onApply={handleNotificationSettingsApply}
+          />
+        </Suspense>
+      ) : null}
     </div>
   );
 }

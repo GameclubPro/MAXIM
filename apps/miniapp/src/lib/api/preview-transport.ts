@@ -77,6 +77,7 @@ import {
   type ChatParticipantsPage,
   type ChannelDialogMessage,
   type ChannelDialogNotificationMode,
+  type ChannelDialogNotificationScope,
   type ChannelDialogResponse,
   type ChannelDialogType,
   type ChannelSettings,
@@ -166,6 +167,13 @@ type PreviewDialogBucket = {
   introText: string;
   messages: ChannelDialogMessage[];
   notificationMode?: ChannelDialogNotificationMode;
+  notificationScope?: ChannelDialogNotificationScope;
+  threadNotificationMode?: ChannelDialogNotificationMode;
+  threadNotificationExplicit?: boolean;
+  channelNotificationMode?: ChannelDialogNotificationMode;
+  channelNotificationExplicit?: boolean;
+  allChannelsNotificationMode?: ChannelDialogNotificationMode;
+  allChannelsNotificationExplicit?: boolean;
 };
 
 type PreviewDialogThreadBuckets = Partial<
@@ -2493,6 +2501,39 @@ function deletePreviewDialogMessage(bucket: PreviewDialogBucket, messageId: stri
   return bucket.messages.length < previousLength;
 }
 
+function buildPreviewNotificationSettings(bucket: PreviewDialogBucket) {
+  const threadMode = bucket.threadNotificationMode ?? bucket.notificationMode ?? 'off';
+  const channelMode = bucket.channelNotificationMode ?? 'off';
+  const allChannelsMode = bucket.allChannelsNotificationMode ?? 'off';
+  const threadExplicit =
+    bucket.threadNotificationExplicit ??
+    (bucket.threadNotificationMode !== undefined || bucket.notificationMode !== undefined);
+  const channelExplicit = bucket.channelNotificationExplicit ?? false;
+  const allChannelsExplicit = bucket.allChannelsNotificationExplicit ?? false;
+  const scope = bucket.notificationScope ?? 'thread';
+  const mode =
+    scope === 'all_channels' ? allChannelsMode : scope === 'channel' ? channelMode : threadMode;
+
+  return {
+    mode,
+    canUseAll: true,
+    scope,
+    thread: {
+      mode: threadMode,
+      explicit: threadExplicit,
+    },
+    channel: {
+      mode: channelMode,
+      explicit: channelExplicit,
+    },
+    allChannels: {
+      mode: allChannelsMode,
+      explicit: allChannelsExplicit,
+    },
+    availableChannelCount: 3,
+  } as const;
+}
+
 function buildPreviewDialogResponse(
   chatId: string,
   dialogType: ChannelDialogType,
@@ -2523,10 +2564,7 @@ function buildPreviewDialogResponse(
     messages: normalizedBucket.messages.map((message) =>
       decoratePreviewDialogMessageAccess(message, viewerUserId),
     ),
-    notificationSettings: {
-      mode: normalizedBucket.notificationMode ?? 'off',
-      canUseAll: true,
-    },
+    notificationSettings: buildPreviewNotificationSettings(normalizedBucket),
   });
 }
 
@@ -3708,7 +3746,9 @@ function buildChannelStats(
   const targetViews = range === '24h' ? 38_400 : range === '7d' ? 78_000 : 248_000;
   const viewsDistribution = distributeTotal(
     targetViews,
-    postDistribution.map((postCount, index) => (postCount > 0 ? viewWeights[index]! * postCount : 0)),
+    postDistribution.map((postCount, index) =>
+      postCount > 0 ? viewWeights[index]! * postCount : 0,
+    ),
   );
   const viewsSeries = Array.from({ length: points }, (_, index) => {
     const at = new Date(from.getTime() + stepMs * index);
@@ -4966,13 +5006,21 @@ async function handleChatRequest(
     if (tail[2] === 'notifications' && method === 'PUT') {
       const payload = updateChannelDialogNotificationsRequestSchema.parse(parseJsonBody(init));
       const bucket = getPreviewDialogBucket(state, 'chat', dialogType, payload.token);
-      bucket.notificationMode = payload.mode;
+      bucket.notificationScope = payload.scope;
+      if (payload.scope === 'all_channels') {
+        bucket.allChannelsNotificationMode = payload.mode;
+        bucket.allChannelsNotificationExplicit = true;
+      } else if (payload.scope === 'channel') {
+        bucket.channelNotificationMode = payload.mode;
+        bucket.channelNotificationExplicit = true;
+      } else {
+        bucket.threadNotificationMode = payload.mode;
+        bucket.threadNotificationExplicit = true;
+        bucket.notificationMode = payload.mode;
+      }
       return updateChannelDialogNotificationsResponseSchema.parse({
         ok: true,
-        notificationSettings: {
-          mode: payload.mode,
-          canUseAll: true,
-        },
+        notificationSettings: buildPreviewNotificationSettings(bucket),
       });
     }
 
@@ -5715,13 +5763,21 @@ async function handleChannelRequest(
     if (tail[2] === 'notifications' && method === 'PUT') {
       const payload = updateChannelDialogNotificationsRequestSchema.parse(parseJsonBody(init));
       const bucket = getPreviewDialogBucket(state, 'channel', dialogType, payload.token);
-      bucket.notificationMode = payload.mode;
+      bucket.notificationScope = payload.scope;
+      if (payload.scope === 'all_channels') {
+        bucket.allChannelsNotificationMode = payload.mode;
+        bucket.allChannelsNotificationExplicit = true;
+      } else if (payload.scope === 'channel') {
+        bucket.channelNotificationMode = payload.mode;
+        bucket.channelNotificationExplicit = true;
+      } else {
+        bucket.threadNotificationMode = payload.mode;
+        bucket.threadNotificationExplicit = true;
+        bucket.notificationMode = payload.mode;
+      }
       return updateChannelDialogNotificationsResponseSchema.parse({
         ok: true,
-        notificationSettings: {
-          mode: payload.mode,
-          canUseAll: true,
-        },
+        notificationSettings: buildPreviewNotificationSettings(bucket),
       });
     }
 

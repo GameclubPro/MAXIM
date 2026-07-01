@@ -6,6 +6,7 @@ import type {
   BroadcastTargetMode,
   BroadcastTextFormat,
   ChannelDialogNotificationMode,
+  ChannelDialogNotificationScope,
   ChatRules,
   UpdateManagedGiveawayRequest,
 } from '@maxim/contracts';
@@ -96,6 +97,7 @@ export type ToggleChannelDialogReactionPayload = {
 export type UpdateChannelDialogNotificationsPayload = {
   token: string;
   mode: ChannelDialogNotificationMode;
+  scope?: ChannelDialogNotificationScope;
 };
 
 export type UpdateChannelDialogMessagePayload = {
