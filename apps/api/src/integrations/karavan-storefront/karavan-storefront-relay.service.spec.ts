@@ -20,21 +20,19 @@ function createService(options: {
   config?: Record<string, unknown>;
   fetchResponse?: unknown;
   lockToken?: string | null;
-  deleteRejects?: boolean;
   sendRejects?: boolean;
 } = {}) {
   const maxClient = {
-    sendMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
-      messageId: 'mid-relay-copy',
-      url: 'https://max.ru/chats/chat-1/message/mid-relay-copy',
+    sendCustomMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
+      messageId: 'mid-storefront-button',
+      url: 'https://max.ru/chats/chat-1/message/mid-storefront-button',
     }),
     deleteMessage: jest.fn().mockResolvedValue(undefined),
   };
-  if (options.deleteRejects) {
-    maxClient.deleteMessage.mockRejectedValue(new Error('delete failed'));
-  }
   if (options.sendRejects) {
-    maxClient.sendMessageImmediateWithResolvedLink.mockRejectedValue(new Error('send timeout'));
+    maxClient.sendCustomMessageImmediateWithResolvedLink.mockRejectedValue(
+      new Error('send timeout'),
+    );
   }
 
   const prisma = {
@@ -43,7 +41,9 @@ function createService(options: {
     },
   };
   const redisCounter = {
-    acquireLock: jest.fn().mockResolvedValue(options.lockToken === undefined ? 'lock-1' : options.lockToken),
+    acquireLock: jest.fn().mockResolvedValue(
+      options.lockToken === undefined ? 'lock-1' : options.lockToken,
+    ),
     releaseLock: jest.fn().mockResolvedValue(undefined),
   };
   const fetchMock = jest.fn().mockResolvedValue({
@@ -88,11 +88,11 @@ const baseContext = {
   messageId: 'mid-source-1',
   senderId: '1001',
   senderName: 'Мария & Ко',
-  text: '$ свежая клубника',
+  text: 'свежая клубника',
   raw: {
     message: {
       body: {
-        text: '$ свежая клубника',
+        text: 'свежая клубника',
       },
     },
   },
@@ -100,7 +100,7 @@ const baseContext = {
 };
 
 describe('KaravanStorefrontRelayService', () => {
-  it('reposts dollar-prefixed seller messages with a MAX mention and storefront button', async () => {
+  it('adds a storefront reply button for seller messages without touching the original post', async () => {
     const fixture = createService();
 
     try {
@@ -114,37 +114,43 @@ describe('KaravanStorefrontRelayService', () => {
           },
         }),
       );
-      expect(fixture.maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
         'chat-1',
-        '<a href="max://user/1001">Мария &amp; Ко</a>\n\nсвежая клубника',
-        expect.objectContaining({
-          textFormat: 'html',
-          buttons: [[expect.objectContaining({
-            text: 'Открыть витрину',
-            url: 'https://max.ru/se13381675_1_bot?startapp=s_severnaya-lavka__r_seller-1',
-          })]],
-        }),
+        {
+          messageLink: {
+            type: 'reply',
+            mid: 'mid-source-1',
+          },
+          attachments: [
+            {
+              type: 'inline_keyboard',
+              payload: {
+                buttons: [
+                  [
+                    {
+                      type: 'link',
+                      text: 'Открыть витрину',
+                      url: 'https://max.ru/se13381675_1_bot?startapp=s_severnaya-lavka__r_seller-1',
+                    },
+                  ],
+                ],
+              },
+            },
+          ],
+        },
         expect.objectContaining({
           immediate: true,
           botId: '777000_bot',
           trafficClass: 'interactive',
         }),
       );
-      expect(fixture.maxClient.deleteMessage).toHaveBeenCalledWith(
-        'chat-1',
-        'mid-source-1',
-        expect.objectContaining({
-          immediate: true,
-          botId: '777000_bot',
-        }),
-      );
+      expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
       expect(fixture.prisma.auditLog.create).toHaveBeenCalledWith(expect.objectContaining({
         data: expect.objectContaining({
           action: 'KARAVAN_STOREFRONT_RELAY',
           payload: expect.objectContaining({
             sourceMessageId: 'mid-source-1',
-            replacementMessageId: 'mid-relay-copy',
-            originalDeleted: true,
+            companionMessageId: 'mid-storefront-button',
           }),
         }),
       }));
@@ -153,33 +159,57 @@ describe('KaravanStorefrontRelayService', () => {
     }
   });
 
-  it('does not repost when the message is already claimed', async () => {
-    const fixture = createService({ lockToken: null });
+  it('does not require a dollar marker anymore', async () => {
+    const fixture = createService();
 
     try {
-      await expect(fixture.service.handleMessageCreated(baseContext)).resolves.toBe('duplicate');
+      await expect(
+        fixture.service.handleMessageCreated({
+          ...baseContext,
+          text: 'обычное сообщение без маркера',
+          raw: {
+            message: {
+              body: {
+                text: 'обычное сообщение без маркера',
+              },
+            },
+          },
+        }),
+      ).resolves.toBe('handled');
 
-      expect(fixture.maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+      expect(fixture.fetchMock).toHaveBeenCalledTimes(1);
+      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+    } finally {
+      fixture.restore();
+    }
+  });
+
+  it('does not add a button when the sender has no public storefront', async () => {
+    const fixture = createService({
+      fetchResponse: {
+        exists: false,
+        store: null,
+      },
+    });
+
+    try {
+      await expect(fixture.service.handleMessageCreated(baseContext)).resolves.toBe('noop');
+
+      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
       expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
     } finally {
       fixture.restore();
     }
   });
 
-  it('fails open when deleting the original message fails', async () => {
-    const fixture = createService({ deleteRejects: true });
+  it('does not add duplicate buttons when the message is already claimed', async () => {
+    const fixture = createService({ lockToken: null });
 
     try {
-      await expect(fixture.service.handleMessageCreated(baseContext)).resolves.toBe('handled');
+      await expect(fixture.service.handleMessageCreated(baseContext)).resolves.toBe('duplicate');
 
-      expect(fixture.prisma.auditLog.create).toHaveBeenCalledWith(expect.objectContaining({
-        data: expect.objectContaining({
-          payload: expect.objectContaining({
-            originalDeleted: false,
-            deleteError: 'delete failed',
-          }),
-        }),
-      }));
+      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+      expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
     } finally {
       fixture.restore();
     }
@@ -209,200 +239,6 @@ describe('KaravanStorefrontRelayService', () => {
       await expect(fixture.service.handleMessageCreated(baseContext)).resolves.toBe('disabled');
 
       expect(fixture.fetchMock).not.toHaveBeenCalled();
-    } finally {
-      fixture.restore();
-    }
-  });
-
-  it('ignores non-trigger messages', async () => {
-    const fixture = createService();
-
-    try {
-      await expect(
-        fixture.service.handleMessageCreated({
-          ...baseContext,
-          text: 'обычное сообщение',
-          raw: {
-            message: {
-              body: {
-                text: 'обычное сообщение',
-              },
-            },
-          },
-        }),
-      ).resolves.toBe('noop');
-
-      expect(fixture.fetchMock).not.toHaveBeenCalled();
-    } finally {
-      fixture.restore();
-    }
-  });
-
-  it('removes the relay marker and keeps incoming MAX text markup in the bot repost', async () => {
-    const fixture = createService();
-
-    try {
-      await expect(
-        fixture.service.handleMessageCreated({
-          ...baseContext,
-          text: '$акция только сегодня',
-          raw: {
-            message: {
-              body: {
-                text: '$акция только сегодня',
-                markup: [
-                  {
-                    from: 1,
-                    length: 5,
-                    type: 'strong',
-                  },
-                  {
-                    from: 14,
-                    length: 7,
-                    type: 'link',
-                    url: 'https://example.test/deal',
-                  },
-                ],
-              },
-            },
-          },
-        }),
-      ).resolves.toBe('handled');
-
-      expect(fixture.maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
-        'chat-1',
-        '<a href="max://user/1001">Мария &amp; Ко</a>\n\n<strong>акция</strong> только <a href="https://example.test/deal">сегодня</a>',
-        expect.objectContaining({ textFormat: 'html' }),
-        expect.any(Object),
-      );
-    } finally {
-      fixture.restore();
-    }
-  });
-
-  it('removes the marker after leading whitespace and shifts overlapping markup safely', async () => {
-    const fixture = createService();
-
-    try {
-      await expect(
-        fixture.service.handleMessageCreated({
-          ...baseContext,
-          text: '  $   🔥 акция',
-          raw: {
-            message: {
-              body: {
-                text: '  $   🔥 акция',
-                markup: [
-                  {
-                    from: 2,
-                    length: 12,
-                    type: 'strong',
-                  },
-                ],
-              },
-            },
-          },
-        }),
-      ).resolves.toBe('handled');
-
-      expect(fixture.maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
-        'chat-1',
-        '<a href="max://user/1001">Мария &amp; Ко</a>\n\n<strong>🔥 акция</strong>',
-        expect.objectContaining({ textFormat: 'html' }),
-        expect.any(Object),
-      );
-    } finally {
-      fixture.restore();
-    }
-  });
-
-  it('preserves paragraphs, user links, and image attachments in the bot repost', async () => {
-    const fixture = createService();
-
-    try {
-      await expect(
-        fixture.service.handleMessageCreated({
-          ...baseContext,
-          text: '$Первая строка\n\nВторая строка',
-          raw: {
-            message: {
-              body: {
-                text: '$Первая строка\n\nВторая строка',
-                markup: [
-                  {
-                    from: 16,
-                    length: 13,
-                    type: 'link',
-                    url: 'https://example.test/line',
-                  },
-                ],
-                attachments: [
-                  {
-                    type: 'image',
-                    payload: { token: 'image-token-1' },
-                  },
-                  {
-                    type: 'photo',
-                    payload: { token: 'legacy-photo-token' },
-                  },
-                ],
-              },
-            },
-          },
-        }),
-      ).resolves.toBe('handled');
-
-      expect(fixture.maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
-        'chat-1',
-        '<a href="max://user/1001">Мария &amp; Ко</a>\n\nПервая строка\n\n<a href="https://example.test/line">Вторая строка</a>',
-        expect.objectContaining({
-          textFormat: 'html',
-          attachments: [
-            { type: 'image', payload: { token: 'image-token-1' } },
-            { type: 'image', payload: { token: 'legacy-photo-token' } },
-          ],
-        }),
-        expect.any(Object),
-      );
-    } finally {
-      fixture.restore();
-    }
-  });
-
-  it('reads text and image attachments from nested webhook envelopes', async () => {
-    const fixture = createService();
-
-    try {
-      await expect(
-        fixture.service.handleMessageCreated({
-          ...baseContext,
-          text: '$ fallback',
-          raw: {
-            data: {
-              message: {
-                body: {
-                  text: '$ nested photo',
-                  attachments: [
-                    {
-                      type: 'picture',
-                      payload: { token: 'nested-image-token' },
-                    },
-                  ],
-                },
-              },
-            },
-          },
-        }),
-      ).resolves.toBe('handled');
-
-      expect(fixture.maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
-        'chat-1',
-        '<a href="max://user/1001">Мария &amp; Ко</a>\n\nnested photo',
-        expect.objectContaining({
-          attachments: [{ type: 'image', payload: { token: 'nested-image-token' } }],
-        }),
-        expect.any(Object),
-      );
     } finally {
       fixture.restore();
     }
