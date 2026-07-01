@@ -266,7 +266,7 @@
 
 .channel-dialog-screen--comments .channel-dialog-message-list {
   gap: 9px;
-  min-height: auto;
+  min-height: min(420px, 58dvh);
   align-content: start;
   padding: 3px 0 12px;
   position: relative;
@@ -1426,9 +1426,28 @@ button.channel-dialog-message__avatar {
 }
 
 .channel-dialog-empty {
+  width: min(330px, calc(100% - 72px));
+  justify-self: center;
+  align-self: center;
+  display: grid;
+  gap: 6px;
+  padding: 18px 20px;
   text-align: center;
-  color: var(--text-muted);
-  font-weight: 600;
+  color: rgba(54, 77, 96, 0.68);
+  font-weight: 650;
+}
+
+.channel-dialog-empty strong {
+  color: rgba(34, 53, 70, 0.84);
+  font-size: 0.94rem;
+  font-weight: 820;
+  line-height: 1.2;
+}
+
+.channel-dialog-empty span {
+  color: rgba(70, 94, 113, 0.62);
+  font-size: 0.82rem;
+  line-height: 1.36;
 }
 
 .channel-dialog-skeleton__body {

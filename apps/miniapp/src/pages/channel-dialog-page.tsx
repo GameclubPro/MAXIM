@@ -4204,7 +4204,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                       );
                     })
                   ) : (
-                    <div className="channel-dialog-empty">Пока пусто</div>
+                    <div className="channel-dialog-empty">
+                      <strong>Здесь пока тихо</strong>
+                      <span>Напишите первый комментарий.</span>
+                    </div>
                   )}
                 </div>
               )
