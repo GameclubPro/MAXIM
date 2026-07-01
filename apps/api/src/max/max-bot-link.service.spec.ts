@@ -617,6 +617,72 @@ describe('MaxBotLinkService', () => {
     );
   });
 
+  it('does not use a stale stronger standby as the shared chat execution owner', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-stale-execution-owner', {
+      id: 'chat-stale-execution-owner',
+      title: 'Shared chat',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push(
+      {
+        chatId: 'chat-stale-execution-owner',
+        botId: 'id613002203036_bot',
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-05-09T10:04:00.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages'],
+        },
+        createdAt: new Date('2026-05-09T10:00:00.000Z'),
+        updatedAt: new Date('2026-05-09T10:00:00.000Z'),
+        lastSeenAt: new Date('2026-05-09T10:00:00.000Z'),
+        lastWebhookAt: new Date('2026-05-09T10:00:00.000Z'),
+      },
+      {
+        chatId: 'chat-stale-execution-owner',
+        botId: 'id613002203036_4_bot',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-05-07T10:00:00.000Z',
+          isAdmin: true,
+          isOwner: true,
+          permissions: ['delete_messages', 'add_remove_members'],
+        },
+        createdAt: new Date('2026-05-09T10:00:01.000Z'),
+        updatedAt: new Date('2026-05-09T10:00:01.000Z'),
+        lastSeenAt: new Date('2026-05-09T10:00:01.000Z'),
+        lastWebhookAt: new Date('2026-05-09T10:00:01.000Z'),
+      },
+    );
+
+    const ownerBinding = await fixture.service.getChatExecutionBinding({
+      chatId: 'chat-stale-execution-owner',
+      activeBotId: 'id613002203036_bot',
+    });
+    const staleStandbyBinding = await fixture.service.getChatExecutionBinding({
+      chatId: 'chat-stale-execution-owner',
+      activeBotId: 'id613002203036_4_bot',
+    });
+
+    expect(ownerBinding).toEqual(
+      expect.objectContaining({
+        primaryBotId: 'id613002203036_bot',
+        shouldHandleGroupUpdate: true,
+      }),
+    );
+    expect(staleStandbyBinding).toEqual(
+      expect.objectContaining({
+        primaryBotId: 'id613002203036_bot',
+        shouldHandleGroupUpdate: false,
+      }),
+    );
+  });
+
   it('persists stronger bot permissions as the chat primary during reconciliation', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('chat-reconcile-rights', {
@@ -891,6 +957,64 @@ describe('MaxBotLinkService', () => {
       primaryBotId: 'id613002203036_bot',
       botId: 'id613002203036_4_bot',
       candidateBotIds: ['id613002203036_4_bot'],
+      reason: 'alternate_confirmed',
+    });
+  });
+
+  it('uses the send-message route for write delivery instead of generic read fallback', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('channel-send-route-1', {
+      id: 'channel-send-route-1',
+      title: 'Writable channel',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push(
+      {
+        chatId: 'channel-send-route-1',
+        botId: 'id613002203036_bot',
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-03-30T10:00:00.000Z',
+          isAdmin: false,
+          isOwner: false,
+          permissions: [],
+        },
+        createdAt: new Date('2026-03-30T10:00:00.000Z'),
+        updatedAt: new Date('2026-03-30T10:00:00.000Z'),
+        lastSeenAt: new Date('2026-03-30T10:00:00.000Z'),
+        lastWebhookAt: new Date('2026-03-30T10:00:00.000Z'),
+      },
+      {
+        chatId: 'channel-send-route-1',
+        botId: 'id613002203036_4_bot',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-03-30T10:00:01.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['write'],
+        },
+        createdAt: new Date('2026-03-30T10:00:01.000Z'),
+        updatedAt: new Date('2026-03-30T10:00:01.000Z'),
+        lastSeenAt: new Date('2026-03-30T10:00:01.000Z'),
+        lastWebhookAt: new Date('2026-03-30T10:00:01.000Z'),
+      },
+    );
+
+    await expect(
+      fixture.service.resolveBotRoute({
+        purpose: 'send_message',
+        chatId: 'channel-send-route-1',
+      }),
+    ).resolves.toMatchObject({
+      purpose: 'send_message',
+      chatId: 'channel-send-route-1',
+      primaryBotId: 'id613002203036_bot',
+      botId: 'id613002203036_4_bot',
+      candidateBotIds: ['id613002203036_4_bot', 'id613002203036_bot'],
       reason: 'alternate_confirmed',
     });
   });

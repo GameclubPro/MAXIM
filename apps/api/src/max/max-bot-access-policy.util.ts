@@ -133,7 +133,9 @@ export function calculatePrimaryAccessScore(snapshot: MembershipAccessSnapshot |
     : snapshot.isAdmin
       ? PRIMARY_ADMIN_BASE_SCORE
       : 0;
-  return baseScore + calculatePrimaryPermissionScore(snapshot.permissions);
+  const permissionScore =
+    snapshot.isOwner || snapshot.isAdmin ? calculatePrimaryPermissionScore(snapshot.permissions) : 0;
+  return baseScore + permissionScore;
 }
 
 export function calculatePrimaryPermissionScore(permissions: readonly string[]): number {

@@ -77,6 +77,7 @@ export type ChatBotExecutionBinding = {
 export type MaxBotRoutePurpose =
   | 'default'
   | 'read'
+  | 'send_message'
   | 'member_access'
   | 'moderation_action'
   | 'capability';
@@ -97,6 +98,14 @@ export type MaxBotRouteReason =
 export type MaxBotRoute =
   | {
       purpose: 'default' | 'read' | 'member_access';
+      chatId: string | null;
+      primaryBotId: string | null;
+      botId: string | null;
+      candidateBotIds: string[];
+      reason: MaxBotRouteReason | null;
+    }
+  | {
+      purpose: 'send_message';
       chatId: string | null;
       primaryBotId: string | null;
       botId: string | null;
@@ -131,6 +140,11 @@ export type MaxBotRouteRequest =
   | {
       purpose: 'read' | 'member_access';
       chatId: string;
+    }
+  | {
+      purpose: 'send_message';
+      chatId: string;
+      fallbackToPrimary?: boolean;
     }
   | {
       purpose: 'moderation_action';
@@ -235,6 +249,8 @@ export class MaxBotLinkService {
         return this.resolveDefaultBotRoute(request);
       case 'read':
         return this.resolveReadBotRoute(request.chatId);
+      case 'send_message':
+        return this.resolveSendMessageBotRoute(request.chatId, request.fallbackToPrimary);
       case 'member_access':
         return this.resolveMemberAccessBotRoute(request.chatId);
       case 'moderation_action':
@@ -279,6 +295,18 @@ export class MaxBotLinkService {
     const route = await this.resolveBotRoute({
       purpose: 'read',
       chatId: params.chatId,
+    });
+    return route.botId;
+  }
+
+  async resolveBotIdForSend(params: {
+    chatId: string;
+    fallbackToPrimary?: boolean;
+  }): Promise<string | null> {
+    const route = await this.resolveBotRoute({
+      purpose: 'send_message',
+      chatId: params.chatId,
+      fallbackToPrimary: params.fallbackToPrimary,
     });
     return route.botId;
   }
@@ -613,6 +641,9 @@ export class MaxBotLinkService {
       resolvePreferredPrimaryBotId(
         this.resolveOperationalBotId(chat?.primaryBotId ?? chat?.botId ?? null),
         activeKnownMemberships,
+        {
+          requireFreshSnapshotForPromotion: true,
+        },
       ) ??
       this.resolveOperationalBotId(chat?.primaryBotId ?? chat?.botId ?? null) ??
       activeKnownMemberships.find((membership) => membership.role === ChatBotMembershipRole.PRIMARY)
@@ -1153,6 +1184,41 @@ export class MaxBotLinkService {
     });
   }
 
+  private async resolveSendMessageBotRoute(
+    chatId: string,
+    fallbackToPrimary?: boolean,
+  ): Promise<MaxBotRoute> {
+    const normalizedChatId = chatId.trim();
+    if (!normalizedChatId) {
+      return this.buildRoute({
+        purpose: 'send_message',
+        chatId: null,
+      });
+    }
+
+    const state = await this.loadChatRouteState(normalizedChatId);
+    if (!state) {
+      return this.buildRoute({
+        purpose: 'send_message',
+        chatId: normalizedChatId,
+      });
+    }
+
+    const candidateBotIds = this.buildSendMessageCandidateBotIdsFromState(
+      state,
+      fallbackToPrimary !== false,
+    );
+    const selectedBotId = candidateBotIds[0] ?? null;
+    return this.buildRoute({
+      purpose: 'send_message',
+      chatId: normalizedChatId,
+      primaryBotId: state.primaryBotId,
+      botId: selectedBotId,
+      candidateBotIds,
+      reason: selectedBotId ? this.resolveSendMessageRouteReason(state, selectedBotId) : null,
+    });
+  }
+
   private async resolveModerationActionBotRoute(
     chatId: string,
     action: ModerationActionPermission,
@@ -1423,6 +1489,97 @@ export class MaxBotLinkService {
     return candidateBotIds;
   }
 
+  private buildSendMessageCandidateBotIdsFromState(
+    state: ResolvedChatRouteState,
+    fallbackToPrimary = true,
+  ): string[] {
+    const candidateBotIds: string[] = [];
+    const pushCandidate = (botId: string | null | undefined) => {
+      const normalizedBotId = this.resolveOperationalBotId(botId);
+      if (!normalizedBotId || candidateBotIds.includes(normalizedBotId)) {
+        return;
+      }
+      candidateBotIds.push(normalizedBotId);
+    };
+
+    const primaryMembership =
+      state.primaryBotId !== null
+        ? (state.activeActionableMemberships.find(
+            (membership) => membership.botId === state.primaryBotId,
+          ) ?? null)
+        : null;
+    const primarySnapshot = normalizeMembershipAccessSnapshot(
+      primaryMembership?.permissionsSnapshot,
+    );
+    if (this.hasConfirmedSendMessageAccess(primarySnapshot)) {
+      pushCandidate(primaryMembership?.botId);
+    }
+
+    const confirmedAlternates = state.activeActionableMemberships
+      .map((membership, index) => ({
+        membership,
+        index,
+        snapshot: normalizeMembershipAccessSnapshot(membership.permissionsSnapshot),
+      }))
+      .filter(
+        (candidate) =>
+          candidate.membership.botId !== state.primaryBotId &&
+          this.hasConfirmedSendMessageAccess(candidate.snapshot),
+      )
+      .sort((left, right) => {
+        const leftScore = left.snapshot?.isOwner ? 2 : 1;
+        const rightScore = right.snapshot?.isOwner ? 2 : 1;
+        if (leftScore !== rightScore) {
+          return rightScore - leftScore;
+        }
+        return left.index - right.index;
+      });
+    for (const candidate of confirmedAlternates) {
+      pushCandidate(candidate.membership.botId);
+    }
+
+    if (
+      primaryMembership &&
+      !this.membershipExplicitlyLacksSendMessageAccess(primaryMembership.permissionsSnapshot)
+    ) {
+      pushCandidate(primaryMembership.botId);
+    }
+
+    for (const membership of state.activeActionableMemberships) {
+      if (
+        membership.botId === state.primaryBotId ||
+        this.membershipExplicitlyLacksSendMessageAccess(membership.permissionsSnapshot)
+      ) {
+        continue;
+      }
+      pushCandidate(membership.botId);
+    }
+
+    if (fallbackToPrimary !== false) {
+      pushCandidate(state.primaryBotId);
+      pushCandidate(state.activeActionableMemberships[0]?.botId ?? null);
+    }
+
+    return candidateBotIds;
+  }
+
+  private resolveSendMessageRouteReason(
+    state: ResolvedChatRouteState,
+    botId: string,
+  ): MaxBotRouteReason {
+    const membership =
+      state.activeActionableMemberships.find((item) => item.botId === botId) ?? null;
+    const hasConfirmedAccess = this.hasConfirmedSendMessageAccess(
+      normalizeMembershipAccessSnapshot(membership?.permissionsSnapshot),
+    );
+
+    if (botId === state.primaryBotId) {
+      return hasConfirmedAccess ? 'primary_confirmed' : 'primary_soft';
+    }
+
+    return hasConfirmedAccess ? 'alternate_confirmed' : 'alternate_soft';
+  }
+
   private resolveModerationActionRouteReason(
     state: ResolvedChatRouteState,
     botId: string,
@@ -1601,6 +1758,18 @@ export class MaxBotLinkService {
     return snapshot.permissions.some((permission) =>
       this.isModerationActionPermission(permission, action, _entityType),
     );
+  }
+
+  private hasConfirmedSendMessageAccess(snapshot: MembershipAccessSnapshot | null): boolean {
+    if (!snapshot) {
+      return false;
+    }
+    return snapshot.isOwner || snapshot.isAdmin;
+  }
+
+  private membershipExplicitlyLacksSendMessageAccess(value: unknown): boolean {
+    const snapshot = normalizeMembershipAccessSnapshot(value);
+    return Boolean(snapshot && !this.hasConfirmedSendMessageAccess(snapshot));
   }
 
   private membershipExplicitlyLacksModerationAction(

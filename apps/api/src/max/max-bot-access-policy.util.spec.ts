@@ -88,6 +88,92 @@ describe('max bot access policy', () => {
     ).toBe('standby-bot');
   });
 
+  it('does not let permission aliases override an explicit non-admin snapshot', () => {
+    expect(
+      resolvePreferredPrimaryBotId('primary-bot', [
+        {
+          botId: 'primary-bot',
+          role: ChatBotMembershipRole.PRIMARY,
+          status: ChatBotMembershipStatus.ACTIVE,
+          permissionsSnapshot: {
+            isAdmin: true,
+            isOwner: false,
+            permissions: [],
+          },
+        },
+        {
+          botId: 'standby-bot',
+          role: ChatBotMembershipRole.STANDBY,
+          status: ChatBotMembershipStatus.ACTIVE,
+          permissionsSnapshot: {
+            isAdmin: false,
+            isOwner: false,
+            permissions: ['delete_messages', 'add_remove_members'],
+          },
+        },
+      ]),
+    ).toBe('primary-bot');
+  });
+
+  it('uses deterministic tie-breakers when access scores are equal', () => {
+    const equalPrimarySnapshot = {
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['delete_messages'],
+    };
+
+    expect(
+      resolvePreferredPrimaryBotId('current-bot', [
+        {
+          botId: 'current-bot',
+          role: ChatBotMembershipRole.STANDBY,
+          status: ChatBotMembershipStatus.ACTIVE,
+          permissionsSnapshot: equalPrimarySnapshot,
+        },
+        {
+          botId: 'role-primary-bot',
+          role: ChatBotMembershipRole.PRIMARY,
+          status: ChatBotMembershipStatus.ACTIVE,
+          permissionsSnapshot: equalPrimarySnapshot,
+        },
+      ]),
+    ).toBe('current-bot');
+
+    expect(
+      resolvePreferredPrimaryBotId(null, [
+        {
+          botId: 'first-standby-bot',
+          role: ChatBotMembershipRole.STANDBY,
+          status: ChatBotMembershipStatus.ACTIVE,
+          permissionsSnapshot: equalPrimarySnapshot,
+        },
+        {
+          botId: 'role-primary-bot',
+          role: ChatBotMembershipRole.PRIMARY,
+          status: ChatBotMembershipStatus.ACTIVE,
+          permissionsSnapshot: equalPrimarySnapshot,
+        },
+      ]),
+    ).toBe('role-primary-bot');
+
+    expect(
+      resolvePreferredPrimaryBotId(null, [
+        {
+          botId: 'first-standby-bot',
+          role: ChatBotMembershipRole.STANDBY,
+          status: ChatBotMembershipStatus.ACTIVE,
+          permissionsSnapshot: equalPrimarySnapshot,
+        },
+        {
+          botId: 'second-standby-bot',
+          role: ChatBotMembershipRole.STANDBY,
+          status: ChatBotMembershipStatus.ACTIVE,
+          permissionsSnapshot: equalPrimarySnapshot,
+        },
+      ]),
+    ).toBe('first-standby-bot');
+  });
+
   it('does not promote a standby from a stale permissions snapshot when freshness is required', () => {
     const nowMs = Date.parse('2026-05-11T10:00:00.000Z');
 

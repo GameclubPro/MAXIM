@@ -51,6 +51,18 @@ function createFixture() {
       createdAt: new Date('2026-03-31T00:00:01.000Z'),
       updatedAt: new Date('2026-03-31T00:00:01.000Z'),
     },
+    {
+      chatId: 'chat-1',
+      botId: 'id613002203036_5_bot',
+      role: ChatBotMembershipRole.STANDBY,
+      status: ChatBotMembershipStatus.ACTIVE,
+      capabilities: [],
+      permissionsSnapshot: null,
+      lastSeenAt: new Date('2026-03-31T00:00:02.000Z'),
+      lastWebhookAt: new Date('2026-03-31T00:00:02.000Z'),
+      createdAt: new Date('2026-03-31T00:00:02.000Z'),
+      updatedAt: new Date('2026-03-31T00:00:02.000Z'),
+    },
   ];
 
   const prisma = {
@@ -144,10 +156,18 @@ function createFixture() {
 
   const maxClient = {
     getCurrentChatMemberAccess: jest.fn(async (_chatId: string, options?: { botId?: string }) => ({
-      userId: options?.botId === 'id613002203036_4_bot' ? '613002203036_4' : '613002203036',
+      userId:
+        options?.botId === 'id613002203036_5_bot'
+          ? '613002203036_5'
+          : options?.botId === 'id613002203036_4_bot'
+            ? '613002203036_4'
+            : '613002203036',
       isAdmin: true,
-      isOwner: false,
-      permissions: ['write', 'delete'],
+      isOwner: options?.botId === 'id613002203036_5_bot',
+      permissions:
+        options?.botId === 'id613002203036_5_bot'
+          ? ['write', 'delete', 'add_remove_members']
+          : ['write', 'delete'],
     })),
   };
 
@@ -171,6 +191,13 @@ function createFixture() {
       state: 'active',
       speechPersona: 'female',
       characterName: 'Майор Максимова',
+    },
+    {
+      id: 'id613002203036_5_bot',
+      label: 'Майор Максимов 5',
+      state: 'active',
+      speechPersona: 'male',
+      characterName: 'Майор Максимов 5',
     },
   ];
   const maxBotRegistry = {
@@ -233,6 +260,47 @@ describe('MaxBotExecutionPlannerService', () => {
     ).toBe(ChatBotMembershipRole.PRIMARY);
   });
 
+  it('rejects manual primary selection when the target bot no longer has admin access', async () => {
+    const fixture = createFixture();
+    fixture.maxClient.getCurrentChatMemberAccess.mockImplementation(
+      async (_chatId: string, options?: { botId?: string }) => ({
+        userId: options?.botId ?? 'unknown-bot',
+        isAdmin: options?.botId !== 'id613002203036_4_bot',
+        isOwner: false,
+        permissions: [] as string[],
+      }),
+    );
+
+    await expect(
+      fixture.service.setPrimaryBot({
+        chatId: 'chat-1',
+        entityType: 'chat',
+        botId: 'id613002203036_4_bot',
+      }),
+    ).rejects.toThrow('подтверждёнными admin/owner');
+
+    expect(fixture.chat.primaryBotId).toBe('id613002203036_bot');
+    expect(
+      fixture.memberships.find((membership) => membership.botId === 'id613002203036_4_bot')
+        ?.role,
+    ).toBe(ChatBotMembershipRole.STANDBY);
+  });
+
+  it('promotes the strongest eligible standby when no explicit target is requested', async () => {
+    const fixture = createFixture();
+
+    const plan = await fixture.service.promoteStandby({
+      chatId: 'chat-1',
+      entityType: 'chat',
+    });
+
+    expect(plan.primaryBotId).toBe('id613002203036_5_bot');
+    expect(fixture.chat.primaryBotId).toBe('id613002203036_5_bot');
+    expect(
+      fixture.memberships.find((membership) => membership.botId === 'id613002203036_5_bot')?.role,
+    ).toBe(ChatBotMembershipRole.PRIMARY);
+  });
+
   it('does not fall back to another standby bot when the requested promotion target is not eligible', async () => {
     const fixture = createFixture();
 
@@ -270,6 +338,12 @@ describe('MaxBotExecutionPlannerService', () => {
       throw new Error('standby membership fixture missing');
     }
     standbyMembership.capabilities = ['suggestion_delivery'];
+    const extraStandbyMembership = fixture.memberships.find(
+      (membership) => membership.botId === 'id613002203036_5_bot',
+    );
+    if (extraStandbyMembership) {
+      extraStandbyMembership.status = ChatBotMembershipStatus.REMOVED;
+    }
 
     const plan = await fixture.service.getManagedEntityExecutionPlan({
       chatId: 'chat-1',

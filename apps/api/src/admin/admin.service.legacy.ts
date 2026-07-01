@@ -17714,9 +17714,19 @@ export class AdminService implements OnModuleDestroy {
       return undefined;
     }
 
-    const resolvedBotId = await this.resolveBotAssignment(normalizedChatId);
-    if (resolvedBotId) {
-      return resolvedBotId;
+    const route = await this.resolveUnifiedBotRoute({
+      purpose: 'send_message',
+      chatId: normalizedChatId,
+    });
+    if (route?.botId) {
+      return route.botId;
+    }
+
+    const sendBotId = await this.maxBotLinkService?.resolveBotIdForSend?.({
+      chatId: normalizedChatId,
+    });
+    if (sendBotId) {
+      return sendBotId;
     }
 
     const persisted = await this.prisma.chat.findUnique({

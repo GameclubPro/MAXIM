@@ -21,6 +21,7 @@ import {
 import { MaxBotLinkService } from './max-bot-link.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
 import { canDiscoverChatsForBotState, canExecuteActionsForBotState } from './max-bot-state.util';
+import { resolvePreferredPrimaryBotId } from './max-bot-access-policy.util';
 
 type PersistedMembership = {
   botId: string;
@@ -104,6 +105,24 @@ export class MaxBotExecutionPlannerService {
     if (!targetMembership) {
       throw new BadRequestException('Бот ещё не состоит в этом чате как активный участник.');
     }
+    const targetSnapshot = await this.refreshBotAccessSnapshot(chatId, targetBot.id);
+    await this.prisma.chatBotMembership.update({
+      where: {
+        chatId_botId: {
+          chatId,
+          botId: targetBot.id,
+        },
+      },
+      data: {
+        permissionsSnapshot: targetSnapshot ?? Prisma.JsonNull,
+        ...this.toBotAccessStateUpdate(targetSnapshot, 'execution_planner_primary'),
+      },
+    });
+    if (!targetSnapshot.isAdmin && !targetSnapshot.isOwner) {
+      throw new BadRequestException(
+        'Owner-ботом можно назначить только бота с подтверждёнными admin/owner правами.',
+      );
+    }
 
     await this.persistPrimaryBotSelection({
       chatId,
@@ -120,8 +139,13 @@ export class MaxBotExecutionPlannerService {
     entityType: ManagedEntityType;
     botId?: string | null;
   }): Promise<ManagedEntityBotExecutionPlan> {
-    const state = await this.loadChatState(params.chatId);
+    const chatId = params.chatId.trim();
+    const initialState = await this.loadChatState(chatId);
     const requestedBotId = this.resolveRequestedBotId(params.botId);
+    if (!requestedBotId) {
+      await this.refreshEligibleStandbyPromotionSnapshots(chatId, initialState.memberships);
+    }
+    const state = requestedBotId ? initialState : await this.loadChatState(chatId);
     const candidateMembership = requestedBotId
       ? state.memberships.find(
           (membership) =>
@@ -129,14 +153,7 @@ export class MaxBotExecutionPlannerService {
             membership.status === ChatBotMembershipStatus.ACTIVE &&
             membership.role === ChatBotMembershipRole.STANDBY,
         )
-      : state.memberships.find(
-          (membership) =>
-            membership.status === ChatBotMembershipStatus.ACTIVE &&
-            membership.role === ChatBotMembershipRole.STANDBY &&
-            canExecuteActionsForBotState(
-              this.maxBotRegistry.getBotById(membership.botId)?.state ?? 'disabled',
-            ),
-        );
+      : this.resolvePreferredStandbyPromotionCandidate(state.memberships);
 
     if (!candidateMembership) {
       throw new BadRequestException(
@@ -147,7 +164,7 @@ export class MaxBotExecutionPlannerService {
     }
 
     return this.setPrimaryBot({
-      chatId: params.chatId,
+      chatId,
       entityType: params.entityType,
       botId: candidateMembership.botId,
     });
@@ -328,6 +345,62 @@ export class MaxBotExecutionPlannerService {
       warnings,
       assignedBots,
     };
+  }
+
+  private resolvePreferredStandbyPromotionCandidate(
+    memberships: readonly PersistedMembership[],
+  ): PersistedMembership | null {
+    const activeExecutableStandbyMemberships = memberships.filter(
+      (membership) =>
+        membership.status === ChatBotMembershipStatus.ACTIVE &&
+        membership.role === ChatBotMembershipRole.STANDBY &&
+        canExecuteActionsForBotState(
+          this.maxBotRegistry.getBotById(membership.botId)?.state ?? 'disabled',
+        ),
+    );
+    if (activeExecutableStandbyMemberships.length === 0) {
+      return null;
+    }
+
+    const preferredBotId = resolvePreferredPrimaryBotId(null, activeExecutableStandbyMemberships, {
+      requireFreshSnapshotForPromotion: true,
+    });
+    return (
+      activeExecutableStandbyMemberships.find((membership) => membership.botId === preferredBotId) ??
+      activeExecutableStandbyMemberships[0] ??
+      null
+    );
+  }
+
+  private async refreshEligibleStandbyPromotionSnapshots(
+    chatId: string,
+    memberships: readonly PersistedMembership[],
+  ): Promise<void> {
+    for (const membership of memberships) {
+      if (
+        membership.status !== ChatBotMembershipStatus.ACTIVE ||
+        membership.role !== ChatBotMembershipRole.STANDBY ||
+        !canExecuteActionsForBotState(
+          this.maxBotRegistry.getBotById(membership.botId)?.state ?? 'disabled',
+        )
+      ) {
+        continue;
+      }
+
+      const snapshot = await this.refreshBotAccessSnapshot(chatId, membership.botId);
+      await this.prisma.chatBotMembership.update({
+        where: {
+          chatId_botId: {
+            chatId,
+            botId: membership.botId,
+          },
+        },
+        data: {
+          permissionsSnapshot: snapshot ?? Prisma.JsonNull,
+          ...this.toBotAccessStateUpdate(snapshot, 'execution_planner_promote'),
+        },
+      });
+    }
   }
 
   private async loadChatState(chatId: string): Promise<{

@@ -190,6 +190,8 @@ describe('VkParsingService', () => {
     };
     const maxBotLinkService = {
       resolveBotId: jest.fn().mockResolvedValue('bot-1'),
+      resolveBotIdForSend: jest.fn().mockResolvedValue('bot-1'),
+      resolveBotIdForModerationAction: jest.fn().mockResolvedValue('bot-1'),
     };
     const vkRateLimitService = {
       reserveVkApiSlot: jest.fn().mockResolvedValue(undefined),
@@ -3738,7 +3740,7 @@ describe('VkParsingService', () => {
       },
     );
 
-    expect(maxBotLinkService.resolveBotId).toHaveBeenCalledWith({ chatId: 'channel-1' });
+    expect(maxBotLinkService.resolveBotIdForSend).toHaveBeenCalledWith({ chatId: 'channel-1' });
     expect(maxClient.uploadImage).toHaveBeenCalledWith(
       Buffer.from([1, 2, 3]),
       'large.jpg',

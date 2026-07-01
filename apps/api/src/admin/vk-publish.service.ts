@@ -501,7 +501,13 @@ export class VkPublishService {
           continue;
         }
         try {
-          const botId = await this.maxBotLinkService.resolveBotId({ chatId: post.chatId });
+          const botId = await this.maxBotLinkService.resolveBotIdForModerationAction({
+            chatId: post.chatId,
+            action: 'delete_message',
+          });
+          if (!botId) {
+            throw new Error('No bot with delete_message access is available for VK rollback');
+          }
           await this.maxClient.deleteMessage(post.chatId, post.publishedMessageId, {
             immediate: true,
             botId,
@@ -757,7 +763,10 @@ export class VkPublishService {
     const storedPhotoUrls = this.readStringArray(post.photoUrls);
     const storedVideoUrls = this.readStringArray(post.videoUrls);
     const storedLinkUrls = this.readStringArray(post.linkUrls);
-    const botId = await this.maxBotLinkService.resolveBotId({ chatId: post.chatId });
+    const botId = await this.maxBotLinkService.resolveBotIdForSend({ chatId: post.chatId });
+    if (!botId) {
+      throw new Error('No bot with send access is available for VK publish');
+    }
     const entityType = await this.accessService.resolvePublicationEntityType(post.chatId);
     const requestOptions = {
       botId,
