@@ -169,6 +169,7 @@ import {
   ADMIN_MANUAL_FANOUT_QUEUE,
   type AdminManualFanoutJob,
   type AdminManualBanFanoutJob,
+  type AdminManualBanSourceCleanupJob,
   type AdminManualGroupModerationCommandJob,
   type AdminManualMuteFanoutJob,
 } from './admin-manual-fanout.queue';
@@ -9180,11 +9181,14 @@ export class AdminService implements OnModuleDestroy {
         recentMessageCleanup = followUp.sourceMessageCleanup;
         crossChatFanout = followUp.crossChatFanout;
       } else {
-        recentMessageCleanup = this.summarizeManualModerationCleanup(
-          await this.runManualBanSourceCleanup(chatId, targetUserId, user.userId, {
-            botId: resolvedBotId,
-          }),
-        );
+        const queuedCleanup = await this.resolveManualBanSourceCleanupSummary({
+          sourceChatId: chatId,
+          targetUserId,
+          actor: user,
+          source,
+          botId: resolvedBotId,
+        });
+        recentMessageCleanup = queuedCleanup;
       }
     }
 
@@ -9942,6 +9946,14 @@ export class AdminService implements OnModuleDestroy {
       return;
     }
 
+    if (job.kind === 'manual_ban_source_cleanup') {
+      await this.runManualBanSourceCleanup(job.sourceChatId, job.targetUserId, job.actor.userId, {
+        logMessage: 'Failed to run deferred recent message cleanup after manual system ban',
+        botId: job.botId ?? undefined,
+      });
+      return;
+    }
+
     await this.runManualBanSourceCleanup(job.sourceChatId, job.targetUserId, job.actor.userId, {
       logMessage: 'Failed to run deferred recent message cleanup after manual system ban',
     });
@@ -10331,6 +10343,30 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
+  private async resolveManualBanSourceCleanupSummary(params: {
+    sourceChatId: string;
+    targetUserId: string;
+    actor: AuthUser;
+    source: ManualBanFollowUpSource;
+    botId?: string | null;
+  }) {
+    const queuedJob = this.buildManualBanSourceCleanupJob(params);
+    if (await this.enqueueManualModerationFanout(queuedJob)) {
+      return this.buildQueuedManualModerationCleanupSummary(queuedJob.jobId);
+    }
+
+    return this.summarizeManualModerationCleanup(
+      await this.runManualBanSourceCleanup(
+        params.sourceChatId,
+        params.targetUserId,
+        params.actor.userId,
+        {
+          botId: params.botId ?? undefined,
+        },
+      ),
+    );
+  }
+
   private async resolveManualBanFanoutSummary(params: {
     sourceChatId: string;
     targetUserId: string;
@@ -10447,6 +10483,35 @@ export class AdminService implements OnModuleDestroy {
         chatTitle: params.actor.chatTitle ?? null,
       },
       source: params.source,
+    };
+  }
+
+  private buildManualBanSourceCleanupJob(params: {
+    sourceChatId: string;
+    targetUserId: string;
+    actor: AuthUser;
+    source: ManualBanFollowUpSource;
+    botId?: string | null;
+  }): AdminManualBanSourceCleanupJob {
+    return {
+      kind: 'manual_ban_source_cleanup',
+      jobId: this.buildManualModerationFanoutJobId(
+        'manual_ban_source_cleanup',
+        params.sourceChatId,
+        params.targetUserId,
+        params.source,
+      ),
+      sourceChatId: params.sourceChatId,
+      targetUserId: params.targetUserId,
+      actor: {
+        userId: params.actor.userId,
+        username: params.actor.username ?? null,
+        displayName: params.actor.displayName ?? null,
+        chatId: params.actor.chatId ?? null,
+        chatTitle: params.actor.chatTitle ?? null,
+      },
+      source: params.source,
+      botId: params.botId ?? null,
     };
   }
 

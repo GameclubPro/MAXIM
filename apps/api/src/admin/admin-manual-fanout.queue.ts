@@ -43,6 +43,19 @@ export type AdminManualBanFanoutJob = QueueJobEnvelope<
   ManualFanoutQueueMetadata
 >;
 
+export type AdminManualBanSourceCleanupJob = QueueJobEnvelope<
+  {
+    kind: 'manual_ban_source_cleanup';
+    jobId: string;
+    sourceChatId: string;
+    targetUserId: string;
+    actor: AdminManualFanoutActor;
+    source: Extract<AdminActionSource, 'miniapp' | 'group_command' | 'private_command'>;
+    botId?: string | null;
+  },
+  ManualFanoutQueueMetadata
+>;
+
 export type AdminManualGroupModerationCommandJob = QueueJobEnvelope<
   {
     kind: 'manual_group_moderation_command';
@@ -67,4 +80,5 @@ export type AdminManualGroupModerationCommandJob = QueueJobEnvelope<
 export type AdminManualFanoutJob =
   | AdminManualMuteFanoutJob
   | AdminManualBanFanoutJob
+  | AdminManualBanSourceCleanupJob
   | AdminManualGroupModerationCommandJob;

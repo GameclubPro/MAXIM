@@ -7385,6 +7385,105 @@ describe('AdminService.applyManualSystemBan', () => {
     });
   });
 
+  it('queues local group command ban cleanup instead of blocking the command result', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw.mockResolvedValueOnce([{ message_id: 'mid-source-1' }]);
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['add_remove_members'],
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'user-3',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      banMember: jest.fn().mockResolvedValue(undefined),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const adminManualFanoutQueue = {
+      add: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      adminManualFanoutQueue as never,
+    );
+    jest.spyOn(service as any, 'resolveManualModerationActionBotAssignment').mockResolvedValue(
+      'bot-1',
+    );
+
+    const result = await service.applyManualSystemBan(
+      'chat-1',
+      'user-3',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      'group_command',
+      {
+        preferredBotId: 'bot-1',
+        targetDisplayNameHint: 'Нарушитель',
+        allowTargetDisplayNameRemoteLookup: false,
+      },
+    );
+
+    expect(adminManualFanoutQueue.add).toHaveBeenCalledWith(
+      'execute-admin-manual-fanout',
+      expect.objectContaining({
+        kind: 'manual_ban_source_cleanup',
+        sourceChatId: 'chat-1',
+        targetUserId: 'user-3',
+        source: 'group_command',
+        botId: 'bot-1',
+      }),
+      expect.objectContaining({
+        priority: 20,
+        attempts: 5,
+        removeOnComplete: true,
+        removeOnFail: false,
+      }),
+    );
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            recentMessageCleanup: expect.objectContaining({
+              mode: 'queued',
+              candidateCount: 0,
+              deletedCount: 0,
+            }),
+            crossChatFanout: expect.objectContaining({
+              removedChatsCount: 0,
+              deletedMessageCount: 0,
+            }),
+          }),
+        }),
+      }),
+    );
+    expect(result).toEqual(
+      expect.objectContaining({
+        ok: true,
+        action: 'BAN',
+        userId: 'user-3',
+        message: 'Пользователь забанен.',
+      }),
+    );
+  });
+
   it('falls back to removal-only system ban for closed chats without link', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
@@ -8843,6 +8942,49 @@ describe('AdminService.applyManualSystemBan', () => {
       immediate: true,
       botId: 'bot-2',
     });
+  });
+
+  it('processes queued local manual ban cleanup without running cross-chat fanout', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw.mockResolvedValueOnce([{ message_id: 'mid-source-1' }]);
+    const maxClient = {
+      getChatMemberAccess: jest.fn(),
+      cancelScheduledUnban: jest.fn(),
+      banMember: jest.fn(),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await service.processManualModerationFanoutJob({
+      kind: 'manual_ban_source_cleanup',
+      jobId: 'job-cleanup-1',
+      sourceChatId: 'chat-1',
+      targetUserId: 'user-3',
+      actor: {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatId: null,
+        chatTitle: null,
+      },
+      source: 'group_command',
+      botId: 'bot-1',
+    });
+
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-source-1', {
+      immediate: true,
+      botId: 'bot-1',
+    });
+    expect(maxClient.getChatMemberAccess).not.toHaveBeenCalled();
+    expect(maxClient.cancelScheduledUnban).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
   });
 
   it('still bans permanently when cancelling a stale scheduled unban fails', async () => {
