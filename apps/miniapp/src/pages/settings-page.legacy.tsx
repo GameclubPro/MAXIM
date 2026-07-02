@@ -4400,7 +4400,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
       <button
         type="button"
-        className="button button--accent broadcast-publish-bar__button"
+        className="button button--accent broadcast-publish-bar__button broadcast-publish-bar__primary"
         onClick={() => void handlePublishRules()}
         disabled={isRulesBusy || !rulesPublishReady}
       >
