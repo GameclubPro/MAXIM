@@ -102,6 +102,10 @@ export class KaravanStorefrontRelayService {
       return 'noop';
     }
 
+    if (!this.hasStorefrontRelayTrigger(context)) {
+      return 'noop';
+    }
+
     const store = await this.lookupStorefront(context.senderId);
     if (!store) {
       return 'noop';
@@ -169,8 +173,33 @@ export class KaravanStorefrontRelayService {
     return !this.isPrivateDirectChat(context.chatId);
   }
 
+  private hasStorefrontRelayTrigger(context: RelayContext): boolean {
+    return this.extractVisibleText(context)?.trimStart().startsWith('$') === true;
+  }
+
+  private extractVisibleText(context: RelayContext): string | null {
+    const raw = this.asRecord(context.raw);
+    const message = this.asRecord(raw?.message);
+    const body = this.asRecord(message?.body);
+
+    return (
+      this.readRawString(body?.text) ??
+      this.readRawString(message?.text) ??
+      this.readRawString(raw?.text) ??
+      this.readRawString(context.text)
+    );
+  }
+
   private isPrivateDirectChat(chatId: string): boolean {
     return /^\d+$/u.test(chatId.trim());
+  }
+
+  private readRawString(value: unknown): string | null {
+    if (typeof value !== 'string' && typeof value !== 'number') {
+      return null;
+    }
+
+    return String(value);
   }
 
   private async lookupStorefront(maxUserId: string): Promise<LookupStore | null> {

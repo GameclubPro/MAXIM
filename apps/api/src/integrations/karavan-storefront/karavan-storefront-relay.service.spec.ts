@@ -89,11 +89,11 @@ const baseContext = {
   messageId: 'mid-source-1',
   senderId: '1001',
   senderName: 'Мария & Ко',
-  text: 'свежая клубника',
+  text: '$ свежая клубника',
   raw: {
     message: {
       body: {
-        text: 'свежая клубника',
+        text: '$ свежая клубника',
       },
     },
   },
@@ -101,7 +101,7 @@ const baseContext = {
 };
 
 describe('KaravanStorefrontRelayService', () => {
-  it('adds a storefront reply button for seller messages without touching the original post', async () => {
+  it('adds a storefront reply button for dollar-prefixed seller messages without touching the original post', async () => {
     const fixture = createService();
 
     try {
@@ -161,7 +161,7 @@ describe('KaravanStorefrontRelayService', () => {
     }
   });
 
-  it('does not require a dollar marker anymore', async () => {
+  it('ignores messages without a dollar marker', async () => {
     const fixture = createService();
 
     try {
@@ -173,6 +173,31 @@ describe('KaravanStorefrontRelayService', () => {
             message: {
               body: {
                 text: 'обычное сообщение без маркера',
+              },
+            },
+          },
+        }),
+      ).resolves.toBe('noop');
+
+      expect(fixture.fetchMock).not.toHaveBeenCalled();
+      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    } finally {
+      fixture.restore();
+    }
+  });
+
+  it('accepts a dollar marker after leading whitespace in raw body text', async () => {
+    const fixture = createService();
+
+    try {
+      await expect(
+        fixture.service.handleMessageCreated({
+          ...baseContext,
+          text: null,
+          raw: {
+            message: {
+              body: {
+                text: '  $ клубника с доставкой',
               },
             },
           },
