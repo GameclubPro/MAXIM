@@ -75,6 +75,21 @@ describe('url-text util', () => {
     ).toEqual([]);
   });
 
+  it('does not treat plain file names as bare urls', () => {
+    const fileName = 'Протокол_проверки_права_по_заявлению___ЗЕП-226-004535580.pdf';
+
+    expect(extractUrlsFromText(fileName)).toEqual([]);
+    expect(stripUrlsFromText(fileName)).toBe(fileName);
+  });
+
+  it('keeps explicit links to files', () => {
+    expect(
+      extractUrlsFromText(
+        'документ https://example.com/files/report.pdf и зеркало example.com/files/report.pdf',
+      ),
+    ).toEqual(['https://example.com/files/report.pdf', 'example.com/files/report.pdf']);
+  });
+
   it('strips urls while keeping the rest of the message', () => {
     expect(stripUrlsFromText('смотри https://max.ru/join/abcDEF123 прямо сейчас')).toBe(
       'смотри прямо сейчас',

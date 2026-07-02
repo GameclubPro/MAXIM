@@ -3,6 +3,33 @@ const SCHEME_URL_PATTERN = /https?:\/\/[^\s<>"'`()[\]{}]+/giu;
 const BARE_URL_PATTERN =
   /(?<![@\p{L}\p{N}\p{Cf}])(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?\.)+(?:xn--[a-z0-9-]{2,59}|[a-z]{2,24}|рф)(?:[/?#][^\s<>"'`()[\]{}]+)?/giu;
 const TRAILING_URL_PUNCTUATION_PATTERN = /[)\]},.;!?:]+$/u;
+const COMMON_FILE_EXTENSION_TLDS = new Set([
+  'avi',
+  'csv',
+  'doc',
+  'docx',
+  'gif',
+  'jpeg',
+  'jpg',
+  'mkv',
+  'mp3',
+  'mp4',
+  'odp',
+  'ods',
+  'odt',
+  'ogg',
+  'pdf',
+  'png',
+  'ppt',
+  'pptx',
+  'rtf',
+  'txt',
+  'wav',
+  'webm',
+  'webp',
+  'xls',
+  'xlsx',
+]);
 
 type UrlMatch = {
   start: number;
@@ -76,6 +103,22 @@ function isLikelyNumberedListItem(value: string): boolean {
   return /^\d+$/u.test(parts[0]);
 }
 
+function isLikelyBareFileName(value: string): boolean {
+  const trimmed = value.trim();
+  if (
+    !trimmed ||
+    /^https?:\/\//iu.test(trimmed) ||
+    /^www\./iu.test(trimmed) ||
+    /[/?#]/u.test(trimmed)
+  ) {
+    return false;
+  }
+
+  const parts = trimmed.toLowerCase().split('.');
+  const extension = parts[parts.length - 1] ?? '';
+  return COMMON_FILE_EXTENSION_TLDS.has(extension);
+}
+
 function collectUrlMatches(value: string): UrlMatch[] {
   const schemeMatches = collectMatches(value, createSchemeUrlRegex());
   const bareMatches = collectMatches(value, createBareUrlRegex()).filter(
@@ -83,7 +126,8 @@ function collectUrlMatches(value: string): UrlMatch[] {
       !schemeMatches.some(
         (existing) => rangesOverlap(candidate, existing) && isContainedWithin(candidate, existing),
       ) &&
-      !isLikelyNumberedListItem(candidate.text),
+      !isLikelyNumberedListItem(candidate.text) &&
+      !isLikelyBareFileName(candidate.text),
   );
 
   return [...schemeMatches, ...bareMatches]
