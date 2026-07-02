@@ -3300,6 +3300,28 @@ describe('PrivateControlService', () => {
     ]);
   });
 
+  it('does not expose raw MAX transport errors from suggestion review callbacks', async () => {
+    const { service, maxClient } = createHarness({
+      adminService: {
+        reviewChannelSuggestionByAdmin: jest
+          .fn()
+          .mockRejectedValue(createMaxApiError(403, 'Request failed with status code 403')),
+      },
+    });
+
+    await service.handleUpdate(
+      createPrivateCallbackUpdate('pc2|suggestion_review_cancel|suggestion-42', {
+        userId: 'admin-1',
+        displayName: 'Главный редактор',
+      }),
+    );
+
+    expect(getLastSentText(maxClient)).toContain(
+      'Что-то пошло не так. Попробуйте ещё раз через несколько секунд.',
+    );
+    expect(getLastSentText(maxClient)).not.toContain('Request failed with status code 403');
+  });
+
   it('shows only channel discussion status on the handoff broadcast screen without footer links', async () => {
     const { service, maxClient, channels } = createHarness({
       channelSettings: {

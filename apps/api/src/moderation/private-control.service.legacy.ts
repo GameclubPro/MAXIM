@@ -9343,14 +9343,31 @@ export class PrivateControlService {
 
   private extractBadRequestDetails(error: unknown): string | null {
     if (error instanceof BadRequestException) {
-      return this.normalizeBadRequestResponse(error.getResponse());
-    }
-
-    if (error instanceof Error && error.message.trim().length > 0) {
-      return error.message.trim();
+      return this.normalizePrivateControlErrorMessage(
+        this.normalizeBadRequestResponse(error.getResponse()),
+      );
     }
 
     return null;
+  }
+
+  private normalizePrivateControlErrorMessage(message: string | null): string | null {
+    const normalized = message?.trim() ?? '';
+    if (!normalized || this.isTechnicalPrivateControlErrorMessage(normalized)) {
+      return null;
+    }
+
+    return normalized;
+  }
+
+  private isTechnicalPrivateControlErrorMessage(message: string): boolean {
+    const normalized = message.trim().toLowerCase();
+    return (
+      /^request failed with status code \d{3}$/u.test(normalized) ||
+      /^timeout of \d+ms exceeded$/u.test(normalized) ||
+      normalized.includes('axioserror') ||
+      normalized.includes('max api')
+    );
   }
 
   private normalizeBadRequestResponse(response: unknown): string | null {
