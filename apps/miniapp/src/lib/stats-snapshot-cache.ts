@@ -1,11 +1,11 @@
-import { hydrateMirroredItem, saveMirroredItem } from './native-storage';
+import { hydrateMirroredItem, readLocalMirrorItem, saveMirroredItem } from './native-storage';
 
 type StatsSnapshotEnvelope<T> = {
   savedAt: number;
   value: T;
 };
 
-const STATS_SNAPSHOT_VERSION = 'v5';
+const STATS_SNAPSHOT_VERSION = 'v6';
 const STATS_SNAPSHOT_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 function buildStatsSnapshotKey(scope: string, parts: readonly string[]): string {
@@ -40,6 +40,10 @@ export async function readStatsSnapshot<T>(
   parts: readonly string[],
 ): Promise<T | null> {
   return parseStatsSnapshot<T>(await hydrateMirroredItem(buildStatsSnapshotKey(scope, parts)));
+}
+
+export function readStatsSnapshotMirror<T>(scope: string, parts: readonly string[]): T | null {
+  return parseStatsSnapshot<T>(readLocalMirrorItem(buildStatsSnapshotKey(scope, parts)));
 }
 
 export function saveStatsSnapshot<T>(scope: string, parts: readonly string[], value: T): void {

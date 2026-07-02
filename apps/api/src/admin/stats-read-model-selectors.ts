@@ -178,7 +178,7 @@ export async function selectChannelStatsContentBucketRows(
         SELECT
           date_trunc(${bucketSql}, bucket_start)::TIMESTAMP(3) AS bucket_start,
           COALESCE(SUM(posts), 0) AS posts,
-          0::BIGINT AS views_delta,
+          COALESCE(SUM(views_total), 0) AS views_delta,
           COALESCE(SUM(reactions), 0) AS reactions
         FROM channel_stats_bucket_rollups
         WHERE chat_id = ${params.chatId}
@@ -198,7 +198,6 @@ export async function selectChannelStatsContentBucketRows(
     ? Prisma.sql`AND NOT (published_at >= ${completeFrom} AND published_at < ${completeTo})`
     : Prisma.empty;
 
-  // View series are built from channel_posts latest fields in the runtime; keep this selector light.
   return prisma.$queryRaw<ChannelStatsContentBucketRow[]>`
     WITH content_bucket_rows AS (
       ${rollupRowsSql}
@@ -208,7 +207,7 @@ export async function selectChannelStatsContentBucketRows(
       SELECT
         date_trunc(${bucketSql}, published_at)::TIMESTAMP(3) AS bucket_start,
         COUNT(*) AS posts,
-        0::BIGINT AS views_delta,
+        COALESCE(SUM(GREATEST(latest_views, 0)), 0) AS views_delta,
         COALESCE(SUM(GREATEST(latest_reactions_total, 0)), 0) AS reactions
       FROM channel_posts
       WHERE chat_id = ${params.chatId}

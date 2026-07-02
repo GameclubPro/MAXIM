@@ -46,6 +46,25 @@ import {
 } from './admin.service.support';
 import type { ChannelStatsCollectorService } from './channel-stats-collector.service';
 
+type ChannelStatsSecondaryRow = {
+  posts_with_buttons: unknown;
+  comments: unknown;
+  suggestions: unknown;
+  comment_authors: unknown;
+  suggestion_authors: unknown;
+  suggestions_delivered: unknown;
+  suggestions_failed: unknown;
+  last_bot_activity_at: Date | string | null;
+};
+
+type ChannelStatsViewWindowSummary = {
+  last24h: number | null;
+  last48h: number | null;
+  totalLast24h: number;
+  totalLast48h: number;
+  reactions24h: number;
+};
+
 export class AdminChannelStatsRuntime {
   constructor(private readonly context: AdminChannelStatsRuntimeContext) {}
 
@@ -133,6 +152,7 @@ export class AdminChannelStatsRuntime {
     const now = new Date();
     const from = this.resolveChannelStatsFrom(statsQuery.range, now);
     const bucket = this.resolveChannelStatsBucket(statsQuery.range);
+    const isOverviewMode = statsQuery.mode === 'overview';
     const previousFrom = new Date(from.getTime() - (now.getTime() - from.getTime()));
     const previousTo = new Date(Math.max(previousFrom.getTime(), from.getTime() - 1));
     const summaryAudienceFrom = new Date(now.getTime() - 17 * TWENTY_FOUR_HOURS_MS);
@@ -157,6 +177,7 @@ export class AdminChannelStatsRuntime {
       contentBucketRows,
       summaryAudienceSnapshots,
       summaryWindowRows,
+      summaryContentRows,
       todayMembershipRows,
       weekMembershipRows,
       sixteenDaysMembershipRows,
@@ -166,52 +187,43 @@ export class AdminChannelStatsRuntime {
         select: { id: true, title: true },
       }),
       this.chatContextCache.getManagedEntityHeader?.(chatId, 'channel') ?? Promise.resolve(null),
-      this.prisma.$queryRaw<
-        Array<{
-          posts_with_buttons: unknown;
-          comments: unknown;
-          suggestions: unknown;
-          comment_authors: unknown;
-          suggestion_authors: unknown;
-          suggestions_delivered: unknown;
-          suggestions_failed: unknown;
-          last_bot_activity_at: Date | string | null;
-        }>
-      >`
-        SELECT
-          COUNT(DISTINCT CASE
-            WHEN action IN (${Prisma.join(CHANNEL_STATS_POST_ACTIONS)})
-            THEN NULLIF(BTRIM(payload->>'threadId'), '')
-            ELSE NULL
-          END) AS posts_with_buttons,
-          COUNT(*) FILTER (WHERE action = ${CHANNEL_DIALOG_ACTION_COMMENT}) AS comments,
-          COUNT(*) FILTER (WHERE action = ${CHANNEL_DIALOG_ACTION_SUGGEST}) AS suggestions,
-          COUNT(DISTINCT CASE
-            WHEN action = ${CHANNEL_DIALOG_ACTION_COMMENT}
-            THEN actor_user_id
-            ELSE NULL
-          END) AS comment_authors,
-          COUNT(DISTINCT CASE
-            WHEN action = ${CHANNEL_DIALOG_ACTION_SUGGEST}
-            THEN actor_user_id
-            ELSE NULL
-          END) AS suggestion_authors,
-          COUNT(*) FILTER (
-            WHERE action = ${CHANNEL_DIALOG_ACTION_SUGGEST}
-              AND payload->>'delivered' = 'true'
-          ) AS suggestions_delivered,
-          COUNT(*) FILTER (
-            WHERE action = ${CHANNEL_DIALOG_ACTION_SUGGEST}
-              AND payload->>'delivered' = 'false'
-          ) AS suggestions_failed,
-          MAX(created_at) FILTER (
-            WHERE action IN (${Prisma.join(CHANNEL_STATS_ACTIVITY_ACTIONS)})
-          ) AS last_bot_activity_at
-        FROM audit_logs
-        WHERE chat_id = ${chatId}
-          AND created_at >= ${from}
-          AND created_at <= ${now}
-      `,
+      isOverviewMode
+        ? Promise.resolve([this.buildEmptyChannelStatsSecondaryRow()])
+        : this.prisma.$queryRaw<ChannelStatsSecondaryRow[]>`
+            SELECT
+              COUNT(DISTINCT CASE
+                WHEN action IN (${Prisma.join(CHANNEL_STATS_POST_ACTIONS)})
+                THEN NULLIF(BTRIM(payload->>'threadId'), '')
+                ELSE NULL
+              END) AS posts_with_buttons,
+              COUNT(*) FILTER (WHERE action = ${CHANNEL_DIALOG_ACTION_COMMENT}) AS comments,
+              COUNT(*) FILTER (WHERE action = ${CHANNEL_DIALOG_ACTION_SUGGEST}) AS suggestions,
+              COUNT(DISTINCT CASE
+                WHEN action = ${CHANNEL_DIALOG_ACTION_COMMENT}
+                THEN actor_user_id
+                ELSE NULL
+              END) AS comment_authors,
+              COUNT(DISTINCT CASE
+                WHEN action = ${CHANNEL_DIALOG_ACTION_SUGGEST}
+                THEN actor_user_id
+                ELSE NULL
+              END) AS suggestion_authors,
+              COUNT(*) FILTER (
+                WHERE action = ${CHANNEL_DIALOG_ACTION_SUGGEST}
+                  AND payload->>'delivered' = 'true'
+              ) AS suggestions_delivered,
+              COUNT(*) FILTER (
+                WHERE action = ${CHANNEL_DIALOG_ACTION_SUGGEST}
+                  AND payload->>'delivered' = 'false'
+              ) AS suggestions_failed,
+              MAX(created_at) FILTER (
+                WHERE action IN (${Prisma.join(CHANNEL_STATS_ACTIVITY_ACTIONS)})
+              ) AS last_bot_activity_at
+            FROM audit_logs
+            WHERE chat_id = ${chatId}
+              AND created_at >= ${from}
+              AND created_at <= ${now}
+          `,
       this.prisma.channelAudienceSnapshot.findFirst({
         where: { chatId },
         orderBy: { capturedAt: 'desc' },
@@ -247,42 +259,46 @@ export class AdminChannelStatsRuntime {
       this.prisma.channelStatsSyncState.findUnique({
         where: { chatId },
       }),
-      this.prisma.channelPost.findMany({
-        where: {
-          chatId,
-          publishedAt: { gte: from, lte: now },
-        },
-        orderBy: { publishedAt: 'asc' },
-        select: {
-          id: true,
-          messageId: true,
-          publishedAt: true,
-          url: true,
-          previewUrl: true,
-          latestViews: true,
-          latestReactions: true,
-          latestReactionsTotal: true,
-          latestSnapshotAt: true,
-        },
-      }),
-      this.prisma.channelPost.findMany({
-        where: {
-          chatId,
-          publishedAt: { gte: summaryViewsFrom, lte: now },
-        },
-        orderBy: { publishedAt: 'asc' },
-        select: {
-          id: true,
-          messageId: true,
-          publishedAt: true,
-          url: true,
-          previewUrl: true,
-          latestViews: true,
-          latestReactions: true,
-          latestReactionsTotal: true,
-          latestSnapshotAt: true,
-        },
-      }),
+      isOverviewMode
+        ? Promise.resolve<ChannelStatsPostRow[]>([])
+        : this.prisma.channelPost.findMany({
+            where: {
+              chatId,
+              publishedAt: { gte: from, lte: now },
+            },
+            orderBy: { publishedAt: 'asc' },
+            select: {
+              id: true,
+              messageId: true,
+              publishedAt: true,
+              url: true,
+              previewUrl: true,
+              latestViews: true,
+              latestReactions: true,
+              latestReactionsTotal: true,
+              latestSnapshotAt: true,
+            },
+          }),
+      isOverviewMode
+        ? Promise.resolve<ChannelStatsPostRow[]>([])
+        : this.prisma.channelPost.findMany({
+            where: {
+              chatId,
+              publishedAt: { gte: summaryViewsFrom, lte: now },
+            },
+            orderBy: { publishedAt: 'asc' },
+            select: {
+              id: true,
+              messageId: true,
+              publishedAt: true,
+              url: true,
+              previewUrl: true,
+              latestViews: true,
+              latestReactions: true,
+              latestReactionsTotal: true,
+              latestSnapshotAt: true,
+            },
+          }),
       this.prisma.channelPost.findFirst({
         where: { chatId },
         select: { id: true },
@@ -300,49 +316,59 @@ export class AdminChannelStatsRuntime {
           participantsCount: true,
         },
       }),
-      this.prisma.$queryRaw<ChannelStatsSummaryWindowRow[]>`
-        WITH window_snapshots AS (
-          SELECT
-            posts.id AS channel_post_id,
-            posts.published_at,
-            snapshots.captured_at,
-            snapshots.id AS snapshot_id,
-            snapshots.views,
-            snapshots.reactions_total
-          FROM channel_post_view_snapshots snapshots
-          JOIN channel_posts posts ON posts.id = snapshots.channel_post_id
-          WHERE posts.chat_id = ${chatId}
-            AND posts.published_at >= ${summaryViewsFrom}
-            AND snapshots.captured_at >= ${summaryViewsFrom}
-            AND snapshots.captured_at <= ${now}
-        ),
-        baseline_snapshots AS (
-          SELECT DISTINCT ON (snapshots.channel_post_id)
-            posts.id AS channel_post_id,
-            posts.published_at,
-            snapshots.captured_at,
-            snapshots.id AS snapshot_id,
-            snapshots.views,
-            snapshots.reactions_total
-          FROM channel_post_view_snapshots snapshots
-          JOIN channel_posts posts ON posts.id = snapshots.channel_post_id
-          WHERE posts.chat_id = ${chatId}
-            AND posts.published_at >= ${summaryViewsFrom}
-            AND snapshots.captured_at < ${summaryViewsFrom}
-            AND EXISTS (
-              SELECT 1
-              FROM window_snapshots current_window
-              WHERE current_window.channel_post_id = snapshots.channel_post_id
+      isOverviewMode
+        ? Promise.resolve<ChannelStatsSummaryWindowRow[]>([])
+        : this.prisma.$queryRaw<ChannelStatsSummaryWindowRow[]>`
+            WITH window_snapshots AS (
+              SELECT
+                posts.id AS channel_post_id,
+                posts.published_at,
+                snapshots.captured_at,
+                snapshots.id AS snapshot_id,
+                snapshots.views,
+                snapshots.reactions_total
+              FROM channel_post_view_snapshots snapshots
+              JOIN channel_posts posts ON posts.id = snapshots.channel_post_id
+              WHERE posts.chat_id = ${chatId}
+                AND posts.published_at >= ${summaryViewsFrom}
+                AND snapshots.captured_at >= ${summaryViewsFrom}
+                AND snapshots.captured_at <= ${now}
+            ),
+            baseline_snapshots AS (
+              SELECT DISTINCT ON (snapshots.channel_post_id)
+                posts.id AS channel_post_id,
+                posts.published_at,
+                snapshots.captured_at,
+                snapshots.id AS snapshot_id,
+                snapshots.views,
+                snapshots.reactions_total
+              FROM channel_post_view_snapshots snapshots
+              JOIN channel_posts posts ON posts.id = snapshots.channel_post_id
+              WHERE posts.chat_id = ${chatId}
+                AND posts.published_at >= ${summaryViewsFrom}
+                AND snapshots.captured_at < ${summaryViewsFrom}
+                AND EXISTS (
+                  SELECT 1
+                  FROM window_snapshots current_window
+                  WHERE current_window.channel_post_id = snapshots.channel_post_id
+                )
+              ORDER BY snapshots.channel_post_id, snapshots.captured_at DESC, snapshots.id DESC
             )
-          ORDER BY snapshots.channel_post_id, snapshots.captured_at DESC, snapshots.id DESC
-        )
-        SELECT *
-        FROM baseline_snapshots
-        UNION ALL
-        SELECT *
-        FROM window_snapshots
-        ORDER BY channel_post_id ASC, captured_at ASC, snapshot_id ASC
-      `,
+            SELECT *
+            FROM baseline_snapshots
+            UNION ALL
+            SELECT *
+            FROM window_snapshots
+            ORDER BY channel_post_id ASC, captured_at ASC, snapshot_id ASC
+          `,
+      isOverviewMode
+        ? selectChannelStatsContentBucketRows(this.prisma, {
+            chatId,
+            from: summaryViewsFrom,
+            to: now,
+            bucket: 'hour',
+          })
+        : Promise.resolve<ChannelStatsContentBucketRow[]>([]),
       selectChannelStatsMembershipBucketRows(this.prisma, {
         chatId,
         from: summaryTodayFrom,
@@ -433,13 +459,14 @@ export class AdminChannelStatsRuntime {
     const left = membershipSeries.reduce((total, item) => total + item.left, 0);
     const contentSeries = this.buildContentSeriesFromBucketRows(bucketStarts, contentBucketRows);
     const contentTotals = this.buildContentTotals(contentSeries);
-    const postViewMetrics = this.buildPostViewMetrics(periodPosts, [], from);
-    const periodViews = this.sumChannelPostMetricViews(postViewMetrics);
-    const viewsSeries = this.buildAverageViewsSeriesFromPostMetrics(
-      bucketStarts,
-      postViewMetrics,
-      bucket,
-    );
+    const postViewMetrics = isOverviewMode ? [] : this.buildPostViewMetrics(periodPosts, [], from);
+    const periodPostsCount = isOverviewMode ? contentTotals.posts : periodPosts.length;
+    const periodViews = isOverviewMode
+      ? contentTotals.viewsDelta
+      : this.sumChannelPostMetricViews(postViewMetrics);
+    const viewsSeries = isOverviewMode
+      ? this.buildAverageViewsSeriesFromContentSeries(contentSeries)
+      : this.buildAverageViewsSeriesFromPostMetrics(bucketStarts, postViewMetrics, bucket);
     const todayMembershipFlow = this.buildChannelStatsMembershipFlow(
       todayMembershipRows,
       hasMembershipCoverageFrom(summaryTodayFrom),
@@ -449,6 +476,9 @@ export class AdminChannelStatsRuntime {
       audienceSnapshots: summaryAudienceSnapshots,
       summaryPosts,
       summaryWindowRows,
+      viewWindows: isOverviewMode
+        ? this.buildChannelStatsViewWindowSummaryFromContentRows(summaryContentRows, now)
+        : undefined,
       summaryMembershipRows: sixteenDaysMembershipRows,
       summaryMembershipCoverageFrom: syncState?.membershipCoverageFrom ?? null,
       membershipDeltas: {
@@ -466,11 +496,10 @@ export class AdminChannelStatsRuntime {
       },
       now,
     });
-    const topReactions = this.buildTopReactions(periodPosts);
-    const topPosts = await this.hydrateTopPostPreviews(
-      chatId,
-      this.buildTopPosts(postViewMetrics),
-    );
+    const topReactions = isOverviewMode ? [] : this.buildTopReactions(periodPosts);
+    const topPosts = isOverviewMode
+      ? []
+      : await this.hydrateTopPostPreviews(chatId, this.buildTopPosts(postViewMetrics));
     const participantSeries = this.buildParticipantSeries(
       bucketStarts,
       bucket,
@@ -490,21 +519,18 @@ export class AdminChannelStatsRuntime {
           'channel',
         )
       : this.buildEmptyMembershipActivityPage();
-    const previousPeriod = await this.buildPreviousChannelStatsPeriodSnapshot(
-      chatId,
-      previousFrom,
-      previousTo,
-      bucket,
-    );
+    const previousPeriod = isOverviewMode
+      ? this.buildEmptyPreviousChannelStatsPeriodSnapshot()
+      : await this.buildPreviousChannelStatsPeriodSnapshot(chatId, previousFrom, previousTo, bucket);
     const previousTotals = previousPeriod.totals;
     const currentTotals: ChannelStatsPeriodTotals = {
       joined,
       left,
       net: joined - left,
-      posts: periodPosts.length,
+      posts: periodPostsCount,
       views: periodViews,
       averageViewsPerPost:
-        periodPosts.length > 0 ? Math.round(periodViews / periodPosts.length) : 0,
+        periodPostsCount > 0 ? Math.round(periodViews / periodPostsCount) : 0,
       reactions: contentTotals.reactions,
     };
     const comparison = this.buildChannelStatsComparison(
@@ -514,7 +540,7 @@ export class AdminChannelStatsRuntime {
         from: previousFrom,
         to: previousTo,
       },
-      previousPeriod.series,
+      isOverviewMode ? undefined : previousPeriod.series,
     );
     const signals = this.buildChannelStatsSignals({
       topPosts,
@@ -546,7 +572,7 @@ export class AdminChannelStatsRuntime {
           net: joined - left,
         },
         content: {
-          posts: periodPosts.length,
+          posts: periodPostsCount,
           views: periodViews,
           reactions: contentTotals.reactions,
           topReactions,
@@ -598,9 +624,10 @@ export class AdminChannelStatsRuntime {
   ): string {
     void userId;
     return [
-      'views-posts-v1',
       chatId,
+      'views-posts-v1',
       query.range,
+      `mode=${query.mode ?? 'full'}`,
       `activity=${query.includeActivityPreview ? 1 : 0}`,
     ].join(':');
   }
@@ -655,6 +682,38 @@ export class AdminChannelStatsRuntime {
       });
     this.channelStatsRefreshRuns.set(chatId, pending);
     return true;
+  }
+
+  buildEmptyPreviousChannelStatsPeriodSnapshot(): ChannelStatsPreviousPeriodSnapshot {
+    return {
+      totals: {
+        joined: 0,
+        left: 0,
+        net: 0,
+        posts: 0,
+        views: 0,
+        averageViewsPerPost: 0,
+        reactions: 0,
+      },
+      series: {
+        participants: [],
+        membership: [],
+        views: [],
+      },
+    };
+  }
+
+  buildEmptyChannelStatsSecondaryRow(): ChannelStatsSecondaryRow {
+    return {
+      posts_with_buttons: 0,
+      comments: 0,
+      suggestions: 0,
+      comment_authors: 0,
+      suggestion_authors: 0,
+      suggestions_delivered: 0,
+      suggestions_failed: 0,
+      last_bot_activity_at: null,
+    };
   }
 
   async buildPreviousChannelStatsPeriodSnapshot(
@@ -1083,6 +1142,7 @@ export class AdminChannelStatsRuntime {
     audienceSnapshots: Array<{ capturedAt: Date; participantsCount: number | null }>;
     summaryPosts?: ChannelStatsPostRow[];
     summaryWindowRows: ChannelStatsSummaryWindowRow[];
+    viewWindows?: ChannelStatsViewWindowSummary;
     summaryMembershipRows?: ChannelStatsMembershipBucketRow[];
     summaryMembershipCoverageFrom?: Date | null;
     membershipDeltas?: {
@@ -1119,11 +1179,13 @@ export class AdminChannelStatsRuntime {
       );
       return baseline === null ? null : currentParticipants - baseline;
     };
-    const viewWindows = this.buildChannelStatsViewWindowSummary(
-      params.summaryPosts ?? [],
-      params.summaryWindowRows,
-      params.now,
-    );
+    const viewWindows =
+      params.viewWindows ??
+      this.buildChannelStatsViewWindowSummary(
+        params.summaryPosts ?? [],
+        params.summaryWindowRows,
+        params.now,
+      );
     const er24 =
       viewWindows.totalLast24h > 0 && viewWindows.reactions24h > 0
         ? Math.round((viewWindows.reactions24h / viewWindows.totalLast24h) * 10_000) / 100
@@ -1322,17 +1384,52 @@ export class AdminChannelStatsRuntime {
     return flows;
   }
 
+  buildChannelStatsViewWindowSummaryFromContentRows(
+    rows: ChannelStatsContentBucketRow[],
+    now: Date,
+  ): ChannelStatsViewWindowSummary {
+    const last24hFrom = new Date(now.getTime() - TWENTY_FOUR_HOURS_MS);
+    const last48hFrom = new Date(now.getTime() - 2 * TWENTY_FOUR_HOURS_MS);
+    let totalLast24h = 0;
+    let totalLast48h = 0;
+    let last24hPostCount = 0;
+    let last48hPostCount = 0;
+    let reactions24h = 0;
+
+    for (const row of rows) {
+      const bucketStart = this.toDateOrNull(row.bucket_start);
+      if (!bucketStart) {
+        continue;
+      }
+
+      const posts = this.toSafeInteger(row.posts);
+      const views = this.toSafeInteger(row.views_delta);
+      const reactions = this.toSafeInteger(row.reactions);
+      if (bucketStart >= last48hFrom) {
+        totalLast48h += views;
+        last48hPostCount += posts;
+      }
+      if (bucketStart >= last24hFrom) {
+        totalLast24h += views;
+        last24hPostCount += posts;
+        reactions24h += reactions;
+      }
+    }
+
+    return {
+      last24h: last24hPostCount > 0 ? Math.round(totalLast24h / last24hPostCount) : null,
+      last48h: last48hPostCount > 0 ? Math.round(totalLast48h / last48hPostCount) : null,
+      totalLast24h,
+      totalLast48h,
+      reactions24h,
+    };
+  }
+
   buildChannelStatsViewWindowSummary(
     posts: ChannelStatsPostRow[],
     rows: ChannelStatsSummaryWindowRow[],
     now: Date,
-  ): {
-    last24h: number | null;
-    last48h: number | null;
-    totalLast24h: number;
-    totalLast48h: number;
-    reactions24h: number;
-  } {
+  ): ChannelStatsViewWindowSummary {
     const postsById = new Map(posts.map((post) => [post.id, post]));
     const postIds = new Set(postsById.keys());
     const rowsByPostId = new Map<
@@ -1538,6 +1635,16 @@ export class AdminChannelStatsRuntime {
       (total, metric) => total + Math.max(0, this.toSafeInteger(metric.post.latestViews)),
       0,
     );
+  }
+
+  buildAverageViewsSeriesFromContentSeries(
+    contentSeries: ChannelStatsContentBucketPoint[],
+  ): ChannelStatsViewsBucketPoint[] {
+    return contentSeries.map((item) => ({
+      at: item.at,
+      posts: item.posts,
+      views: item.posts > 0 ? Math.round(item.viewsDelta / item.posts) : 0,
+    }));
   }
 
   buildAverageViewsSeriesFromPostMetrics(

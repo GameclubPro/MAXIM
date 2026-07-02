@@ -14,7 +14,8 @@ export const queryKeys = {
     userId: string | null | undefined,
     ...scope: readonly unknown[]
   ) => ['global-spammer-user-diagnostics', chatId, userId, ...scope] as const,
-  channelStats: (chatId: string, range: string) => ['channel-stats', chatId, range] as const,
+  channelStats: (chatId: string, range: string, mode = 'overview') =>
+    ['channel-stats', chatId, range, mode] as const,
 
   entityDialog: (
     entityType: string,

@@ -967,6 +967,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             { signal },
             {
               includeActivityPreview: false,
+              mode: 'overview',
             },
           );
         },

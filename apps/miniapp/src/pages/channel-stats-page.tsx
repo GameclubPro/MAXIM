@@ -40,7 +40,11 @@ import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 import { openMaxBotLinkAndClose } from '../lib/max-bridge';
 import { queryKeys } from '../lib/query-keys';
-import { readStatsSnapshot, saveStatsSnapshot } from '../lib/stats-snapshot-cache';
+import {
+  readStatsSnapshot,
+  readStatsSnapshotMirror,
+  saveStatsSnapshot,
+} from '../lib/stats-snapshot-cache';
 import {
   isChannelStatsResponseForRange,
   resolveAudienceChartDisplayValue,
@@ -915,7 +919,7 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
 }
 
 function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
-  const chart = buildAudienceChart(stats);
+  const chart = useMemo(() => buildAudienceChart(stats), [stats]);
   const labels = chart.points;
   const [activeIndex, setActiveIndex] = useState(() =>
     resolveInitialAudienceChartIndex(chart.points),
@@ -1583,6 +1587,18 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     hideDistance: 44,
     revealDistance: 6,
   });
+  const initialStatsSnapshot = useMemo(() => {
+    if (!chatId || section !== 'overview') {
+      return null;
+    }
+
+    const snapshot = readStatsSnapshotMirror<ChannelStatsResponse>('channel', [
+      chatId,
+      range,
+      'overview',
+    ]);
+    return isChannelStatsResponseForRange(snapshot, chatId, range) ? snapshot : null;
+  }, [chatId, range, section]);
 
   const statsQuery = useQuery({
     queryKey: queryKeys.channelStats(chatId, range),
@@ -1594,10 +1610,13 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
         { signal },
         {
           includeActivityPreview: false,
+          mode: 'overview',
         },
       ),
     enabled: Boolean(chatId),
     staleTime: 30_000,
+    initialData: initialStatsSnapshot ?? undefined,
+    initialDataUpdatedAt: initialStatsSnapshot ? 0 : undefined,
     placeholderData: (previousData) => previousData,
     refetchInterval: (query) => (query.state.data?.meta.refreshQueued ? 5_000 : false),
     refetchOnWindowFocus: false,
@@ -1615,16 +1634,18 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     }
 
     let cancelled = false;
-    void readStatsSnapshot<ChannelStatsResponse>('channel', [chatId, range]).then((snapshot) => {
-      if (cancelled || !isChannelStatsResponseForRange(snapshot, chatId, range)) {
-        return;
-      }
+    void readStatsSnapshot<ChannelStatsResponse>('channel', [chatId, range, 'overview']).then(
+      (snapshot) => {
+        if (cancelled || !isChannelStatsResponseForRange(snapshot, chatId, range)) {
+          return;
+        }
 
-      const queryKey = queryKeys.channelStats(chatId, range);
-      if (!queryClient.getQueryData(queryKey)) {
-        queryClient.setQueryData(queryKey, snapshot);
-      }
-    });
+        const queryKey = queryKeys.channelStats(chatId, range);
+        if (!queryClient.getQueryData(queryKey)) {
+          queryClient.setQueryData(queryKey, snapshot);
+        }
+      },
+    );
 
     return () => {
       cancelled = true;
@@ -1636,7 +1657,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    saveStatsSnapshot('channel', [chatId, range], statsQuery.data);
+    saveStatsSnapshot('channel', [chatId, range, 'overview'], statsQuery.data);
   }, [chatId, range, statsQuery.data]);
 
   useEffect(() => {

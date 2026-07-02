@@ -18,11 +18,13 @@ describe('channel stats contract exports', () => {
     const result = channelStatsQuerySchema.parse({
       range: '30d',
       includeActivityPreview: 'false',
+      mode: 'overview',
     });
 
     expect(result).toEqual({
       range: '30d',
       includeActivityPreview: false,
+      mode: 'overview',
     });
   });
 

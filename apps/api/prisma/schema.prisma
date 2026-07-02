@@ -255,6 +255,7 @@ model Chat {
   @@index([botId], map: "chats_bot_id_idx")
   @@index([primaryBotId], map: "chats_primary_bot_id_idx")
   @@index([catalogKind, entityType], map: "chats_catalog_kind_entity_type_idx")
+  @@index([entityType, updatedAt(sort: Desc), id], map: "chats_entity_type_updated_id_idx")
   @@map("chats")
 }
 
@@ -598,6 +599,7 @@ model ChatAdminAllowlist {
   chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
 
   @@id([chatId, userId])
+  @@index([userId, chatId], map: "chat_admin_allowlist_user_chat_idx")
   @@map("chat_admin_allowlist")
 }
 
@@ -1283,6 +1285,7 @@ model ManagedEntityLocalActivity {
   @@id([userId, chatId])
   @@index([userId, entityType, lastEventAt(sort: Desc)], map: "managed_entity_local_act_user_type_event_idx")
   @@index([chatId, lastEventAt(sort: Desc)], map: "managed_entity_local_activities_chat_id_last_event_at_idx")
+  @@index([sourceEventType, lastEventAt(sort: Desc), chatId], map: "managed_entity_local_act_source_event_idx")
   @@map("managed_entity_local_activities")
 }
 
@@ -1318,6 +1321,7 @@ model AuditLog {
   chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
 
   @@index([chatId, createdAt])
+  @@index([chatId, action, createdAt], map: "audit_logs_chat_action_created_at_idx")
   @@map("audit_logs")
 }
 
@@ -1860,6 +1864,7 @@ model ChannelPost {
   @@unique([chatId, messageId])
   @@index([chatId, publishedAt(sort: Desc)])
   @@index([chatId, latestSnapshotAt(sort: Desc)])
+  @@index([chatId, latestViews(sort: Desc), publishedAt(sort: Desc)], map: "channel_posts_chat_latest_views_published_idx")
   @@map("channel_posts")
 }
 

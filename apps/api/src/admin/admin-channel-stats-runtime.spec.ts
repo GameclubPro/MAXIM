@@ -8,6 +8,7 @@ describe('AdminChannelStatsRuntime', () => {
       includeActivityPreview: false,
     });
 
+    expect(noActivityKey.startsWith('channel-1:')).toBe(true);
     expect(noActivityKey).toBe(
       runtime.buildChannelStatsResponseCacheKey('channel-1', 'admin-b', {
         range: '7d',

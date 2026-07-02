@@ -5,9 +5,13 @@ import { membershipActivityPageSchema } from './membership-activity.js';
 export const channelStatsRangeSchema = z.enum(['24h', '7d', '30d']);
 export type ChannelStatsRange = z.infer<typeof channelStatsRangeSchema>;
 
+export const channelStatsModeSchema = z.enum(['full', 'overview']);
+export type ChannelStatsMode = z.infer<typeof channelStatsModeSchema>;
+
 export const channelStatsQuerySchema = z.object({
   range: channelStatsRangeSchema.default('7d'),
   includeActivityPreview: booleanQueryFlagSchema.default(true),
+  mode: channelStatsModeSchema.optional(),
 });
 export type ChannelStatsQuery = z.infer<typeof channelStatsQuerySchema>;
 

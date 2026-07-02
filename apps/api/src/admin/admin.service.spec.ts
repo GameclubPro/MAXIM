@@ -18519,6 +18519,45 @@ describe('AdminService.getChannelStats', () => {
     jest.useRealTimers();
   });
 
+  it('invalidates cached channel stats entries for the refreshed channel only', () => {
+    const service = new AdminService(
+      createPrismaMock() as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const helpers = service as unknown as {
+      buildChannelStatsResponseCacheKey: (
+        chatId: string,
+        userId: string,
+        query: { range: '7d'; includeActivityPreview: boolean },
+      ) => string;
+      invalidateChannelStatsResponseCache: (chatId: string) => void;
+      channelStatsResponseCache: Map<string, { expiresAtMs: number; promise: Promise<unknown> }>;
+    };
+    const channelOneKey = helpers.buildChannelStatsResponseCacheKey('channel-1', 'admin-a', {
+      range: '7d',
+      includeActivityPreview: false,
+    });
+    const channelTwoKey = helpers.buildChannelStatsResponseCacheKey('channel-2', 'admin-a', {
+      range: '7d',
+      includeActivityPreview: false,
+    });
+    helpers.channelStatsResponseCache.set(channelOneKey, {
+      expiresAtMs: Date.now() + 30_000,
+      promise: Promise.resolve({}),
+    });
+    helpers.channelStatsResponseCache.set(channelTwoKey, {
+      expiresAtMs: Date.now() + 30_000,
+      promise: Promise.resolve({}),
+    });
+
+    helpers.invalidateChannelStatsResponseCache('channel-1');
+
+    expect(helpers.channelStatsResponseCache.has(channelOneKey)).toBe(false);
+    expect(helpers.channelStatsResponseCache.has(channelTwoKey)).toBe(true);
+  });
+
   it('hydrates missing previews for selected top posts from MAX message snapshots', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
@@ -19696,6 +19735,106 @@ describe('AdminService.getChannelStats', () => {
     });
 
     await flushAsyncTasks();
+  });
+
+  it('serves overview channel stats without unbounded post or snapshot scans', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          bucket_start: new Date('2026-03-07T00:00:00.000Z'),
+          joined_users: '5',
+          left_users: '2',
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          bucket_start: new Date('2026-03-07T00:00:00.000Z'),
+          posts: '3',
+          views_delta: '900',
+          reactions: '30',
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          bucket_start: new Date('2026-03-07T10:00:00.000Z'),
+          posts: '2',
+          views_delta: '640',
+          reactions: '18',
+        },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    prisma.channelAudienceSnapshot.findFirst
+      .mockResolvedValueOnce({
+        chatId: 'channel-1',
+        participantsCount: 1240,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/news',
+        lastEventAt: new Date('2026-03-07T11:55:00.000Z'),
+        capturedAt: new Date('2026-03-07T11:56:00.000Z'),
+      })
+      .mockResolvedValueOnce({
+        capturedAt: new Date('2026-03-01T08:00:00.000Z'),
+      })
+      .mockResolvedValueOnce({
+        participantsCount: 1237,
+      });
+    prisma.channelStatsSyncState.findUnique.mockResolvedValue({
+      id: 'sync-1',
+      chatId: 'channel-1',
+      viewsCoverageFrom: new Date('2026-03-01T08:00:00.000Z'),
+      membershipCoverageFrom: new Date('2026-03-01T08:00:00.000Z'),
+      lastAudienceSyncAt: new Date('2026-03-07T11:56:00.000Z'),
+      lastViewsSyncAt: new Date('2026-03-07T11:56:00.000Z'),
+      lastOpportunisticSyncAt: null,
+      createdAt: new Date('2026-03-01T08:00:00.000Z'),
+      updatedAt: new Date('2026-03-07T11:56:00.000Z'),
+    });
+    prisma.channelPost.findFirst.mockResolvedValue({ id: 'post-1' });
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+        getChatSnapshot: jest.fn(),
+      } as never,
+      { invalidate: jest.fn() } as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.getChannelStats(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { range: '7d', includeActivityPreview: false, mode: 'overview' },
+    );
+
+    expect(result.official.content).toMatchObject({
+      posts: 3,
+      views: 900,
+      reactions: 30,
+      topPosts: [],
+      topReactions: [],
+    });
+    expect(result.comparison.series).toBeUndefined();
+    expect(prisma.channelPost.findMany).not.toHaveBeenCalled();
+    const querySqlTexts = prisma.$queryRaw.mock.calls.map((call) => extractSqlText(call));
+    expect(querySqlTexts.join('\n')).not.toContain('audit_logs');
+    expect(querySqlTexts.join('\n')).not.toContain('channel_post_view_snapshots');
   });
 
   it.each([

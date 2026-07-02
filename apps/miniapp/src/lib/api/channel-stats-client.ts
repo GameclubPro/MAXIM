@@ -4,7 +4,11 @@ import type {
   MembershipActivityQuery,
   ProfileMentionHandoffRequest,
 } from '@maxim/contracts';
-import type { ChannelStatsRange, ChannelStatsResponse } from '@maxim/contracts/channel-stats';
+import type {
+  ChannelStatsMode,
+  ChannelStatsRange,
+  ChannelStatsResponse,
+} from '@maxim/contracts/channel-stats';
 import type { ApiTransport } from './transport';
 
 const channelStatsRanges = new Set<ChannelStatsRange>(['24h', '7d', '30d']);
@@ -56,6 +60,7 @@ export async function getChannelStats(
   request: Pick<RequestInit, 'signal'> = {},
   options: Partial<{
     includeActivityPreview: boolean;
+    mode: ChannelStatsMode;
   }> = {},
 ): Promise<ChannelStatsResponse> {
   const query = parseChannelStatsRange(range);
@@ -64,6 +69,9 @@ export async function getChannelStats(
   });
   if (options.includeActivityPreview === false) {
     params.set('includeActivityPreview', 'false');
+  }
+  if (options.mode) {
+    params.set('mode', options.mode);
   }
 
   const response = await api.request(`/channels/${chatId}/stats?${params.toString()}`, request);
