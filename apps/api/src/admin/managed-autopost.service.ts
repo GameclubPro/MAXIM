@@ -1,11 +1,19 @@
 import {
+  createManagedAutopostHubRuleRequestSchema,
   createManagedAutopostRuleRequestSchema,
+  listManagedAutopostHubRulesQuerySchema,
+  managedAutopostHubRuleDetailsSchema,
+  managedAutopostHubRuleSummarySchema,
   managedAutopostPayloadSchema,
   managedAutopostRuleDetailsSchema,
   managedAutopostRuleSummarySchema,
+  type ChatSummary,
+  type ManagedAutopostHubRuleDetails,
+  type ManagedAutopostHubRuleSummary,
   type ManagedAutopostPayload,
   type ManagedAutopostRuleDetails,
   type ManagedAutopostRuleSummary,
+  type ManagedBroadcastTargetPreview,
   type ManagedEntityType,
   type SendBroadcastRequest,
   updateManagedAutopostRuleRequestSchema,
@@ -52,6 +60,12 @@ type MaterializableRuleStatus =
 
 type ManagedAutopostRuleWithCount = PersistedManagedAutopostRule & {
   _count?: { materializations?: number };
+};
+
+type HubSourceBundle = {
+  chatPreviews: ManagedBroadcastTargetPreview[];
+  sourcePreviewsByKey: Map<string, ManagedBroadcastTargetPreview>;
+  sourceIdsByEntityType: Record<ManagedEntityType, string[]>;
 };
 
 @Injectable()
@@ -157,6 +171,114 @@ export class ManagedAutopostService {
     return this.disableRuleForEntity(sourceChatId, ruleId, user, 'channel');
   }
 
+  async listAutopostRules(
+    user: AuthUser,
+    query: unknown = {},
+  ): Promise<ManagedAutopostHubRuleSummary[]> {
+    const parsed = listManagedAutopostHubRulesQuerySchema.safeParse(query);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+    const request = parsed.data;
+    if (request.status === ManagedAutopostRuleStatus.DISABLED) {
+      return [];
+    }
+
+    const sources = await this.loadHubSourceBundle(user);
+    const requestedEntityTypes: ManagedEntityType[] =
+      request.entityType === 'chat'
+        ? ['chat']
+        : request.entityType === 'channel'
+          ? ['channel']
+          : ['chat', 'channel'];
+    const sourceClauses = requestedEntityTypes.flatMap((entityType) => {
+      const sourceIds = sources.sourceIdsByEntityType[entityType].filter(
+        (sourceId) => !request.sourceChatId || sourceId === request.sourceChatId,
+      );
+      if (sourceIds.length === 0) {
+        return [];
+      }
+
+      return [
+        {
+          entityType: mapManagedEntityTypeToChatEntityType(entityType),
+          sourceChatId: { in: sourceIds },
+        },
+      ];
+    });
+    if (sourceClauses.length === 0) {
+      return [];
+    }
+
+    const rows = await this.prisma.managedAutopostRule.findMany({
+      where: {
+        OR: sourceClauses,
+        status: request.status ?? { not: ManagedAutopostRuleStatus.DISABLED },
+      },
+      orderBy: [{ status: 'asc' }, { nextMaterializeAt: 'asc' }, { updatedAt: 'desc' }],
+      include: { _count: { select: { materializations: true } } },
+    });
+
+    return rows
+      .map((row) => this.mapHubRuleSummary(row, this.fromPrismaEntityType(row.entityType), sources))
+      .filter((rule): rule is ManagedAutopostHubRuleSummary => rule !== null);
+  }
+
+  async getAutopostRule(ruleId: string, user: AuthUser): Promise<ManagedAutopostHubRuleDetails> {
+    const context = await this.getHubRuleContext(ruleId);
+    await this.assertHubReadAccess(context.sourceChatId, context.entityType, user);
+    const details = await this.getRuleForEntity(context.sourceChatId, ruleId, context.entityType);
+    return this.mapHubRuleDetails(details, await this.loadHubSourceBundle(user));
+  }
+
+  async createAutopostRule(user: AuthUser, body: unknown): Promise<ManagedAutopostHubRuleDetails> {
+    const parsed = createManagedAutopostHubRuleRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+    const request = parsed.data;
+    await this.assertHubAdminAccess(request.sourceChatId, request.entityType, user);
+    const sources = await this.loadHubSourceBundle(user);
+    const details = await this.createRuleForEntity(
+      request.sourceChatId,
+      user,
+      { title: request.title, payload: request.payload },
+      request.entityType,
+    );
+    return this.mapHubRuleDetails(details, sources);
+  }
+
+  async updateAutopostRule(
+    ruleId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<ManagedAutopostHubRuleDetails> {
+    const context = await this.getHubRuleContext(ruleId);
+    await this.assertHubAdminAccess(context.sourceChatId, context.entityType, user);
+    const sources = await this.loadHubSourceBundle(user);
+    const details = await this.updateRuleForEntity(
+      context.sourceChatId,
+      ruleId,
+      user,
+      body,
+      context.entityType,
+    );
+    return this.mapHubRuleDetails(details, sources);
+  }
+
+  async deleteAutopostRule(ruleId: string, user: AuthUser): Promise<ManagedAutopostHubRuleDetails> {
+    const context = await this.getHubRuleContext(ruleId);
+    await this.assertHubAdminAccess(context.sourceChatId, context.entityType, user);
+    const sources = await this.loadHubSourceBundle(user);
+    const details = await this.disableRuleForEntity(
+      context.sourceChatId,
+      ruleId,
+      user,
+      context.entityType,
+    );
+    return this.mapHubRuleDetails(details, sources);
+  }
+
   async processDueAutopostRules(reason: MaterializeReason): Promise<void> {
     const decision = await this.resolveBackgroundDecision(reason);
     if (decision === 'pause') {
@@ -199,6 +321,80 @@ export class ManagedAutopostService {
     });
 
     return rows.map((row) => this.mapRuleSummary(row, entityType));
+  }
+
+  private async loadHubSourceBundle(user: AuthUser): Promise<HubSourceBundle> {
+    const [chatSources, channelSources] = await Promise.all([
+      this.managedEntitiesService.listChats(user, { fresh: false }),
+      this.managedEntitiesService.listChannels(user, { fresh: false }),
+    ]);
+    const chatPreviews = chatSources
+      .filter((source) => source.entityType === 'chat')
+      .map((source) => this.toTargetPreview(source, 'chat'));
+    const channelPreviews = channelSources
+      .filter((source) => source.entityType === 'channel')
+      .map((source) => this.toTargetPreview(source, 'channel'));
+    const sourcePreviewsByKey = new Map<string, ManagedBroadcastTargetPreview>();
+
+    for (const preview of [...chatPreviews, ...channelPreviews]) {
+      sourcePreviewsByKey.set(this.buildHubSourceKey(preview.entityType, preview.id), preview);
+    }
+
+    return {
+      chatPreviews,
+      sourcePreviewsByKey,
+      sourceIdsByEntityType: {
+        chat: chatPreviews.map((preview) => preview.id),
+        channel: channelPreviews.map((preview) => preview.id),
+      },
+    };
+  }
+
+  private async getHubRuleContext(
+    ruleId: string,
+  ): Promise<{ sourceChatId: string; entityType: ManagedEntityType }> {
+    const row = await this.prisma.managedAutopostRule.findFirst({
+      where: {
+        id: ruleId,
+        status: { not: ManagedAutopostRuleStatus.DISABLED },
+      },
+      select: {
+        sourceChatId: true,
+        entityType: true,
+      },
+    });
+    if (!row) {
+      throw new BadRequestException('Автопост не найден.');
+    }
+
+    return {
+      sourceChatId: row.sourceChatId,
+      entityType: this.fromPrismaEntityType(row.entityType),
+    };
+  }
+
+  private async assertHubReadAccess(
+    sourceChatId: string,
+    entityType: ManagedEntityType,
+    user: AuthUser,
+  ): Promise<void> {
+    if (entityType === 'channel') {
+      await this.managedEntitiesService.assertChannelReadAccess(sourceChatId, user);
+      return;
+    }
+    await this.managedEntitiesService.assertChatReadAccess(sourceChatId, user);
+  }
+
+  private async assertHubAdminAccess(
+    sourceChatId: string,
+    entityType: ManagedEntityType,
+    user: AuthUser,
+  ): Promise<void> {
+    if (entityType === 'channel') {
+      await this.managedEntitiesService.assertChannelAdminAccess(sourceChatId, user);
+      return;
+    }
+    await this.managedEntitiesService.assertChatAdminAccess(sourceChatId, user);
   }
 
   private async getRuleForEntity(
@@ -834,10 +1030,7 @@ export class ManagedAutopostService {
   }
 
   private assertRuleEditable(row: PersistedManagedAutopostRule): void {
-    if (
-      row.lockedAt &&
-      row.lockedAt.getTime() >= Date.now() - AUTOSCHEDULE_LOCK_STALE_MS
-    ) {
+    if (row.lockedAt && row.lockedAt.getTime() >= Date.now() - AUTOSCHEDULE_LOCK_STALE_MS) {
       throw new ServiceUnavailableException('Автопост обновляется. Повторите позже.');
     }
   }
@@ -965,9 +1158,7 @@ export class ManagedAutopostService {
     return this.resolveNextMaterializeAtFromSlots(
       payload.scheduledSlots.filter((slot) => {
         const parsed = new Date(slot);
-        return (
-          Number.isFinite(parsed.getTime()) && !materializedSlotKeys.has(parsed.toISOString())
-        );
+        return Number.isFinite(parsed.getTime()) && !materializedSlotKeys.has(parsed.toISOString());
       }),
     );
   }
@@ -983,8 +1174,7 @@ export class ManagedAutopostService {
       return null;
     }
 
-    const materializeAtMs =
-      nextSlot.getTime() - AUTOSCHEDULE_HORIZON_DAYS * 24 * 60 * 60_000;
+    const materializeAtMs = nextSlot.getTime() - AUTOSCHEDULE_HORIZON_DAYS * 24 * 60 * 60_000;
     return new Date(Math.max(now, materializeAtMs));
   }
 
@@ -1001,10 +1191,7 @@ export class ManagedAutopostService {
     scheduledAt: Date,
     attempt: number,
   ): string {
-    const slotKey = scheduledAt
-      .toISOString()
-      .replace(/[-:.]/gu, '')
-      .replace(/Z$/u, '');
+    const slotKey = scheduledAt.toISOString().replace(/[-:.]/gu, '').replace(/Z$/u, '');
     return `ap_${ruleId.replace(/[^A-Za-z0-9_-]/gu, '').slice(0, 40)}_${revision}_${slotKey}_${attempt}`.slice(
       0,
       128,
@@ -1058,6 +1245,152 @@ export class ManagedAutopostService {
     });
   }
 
+  private mapHubRuleSummary(
+    row: ManagedAutopostRuleWithCount,
+    entityType: ManagedEntityType,
+    sources: HubSourceBundle,
+  ): ManagedAutopostHubRuleSummary | null {
+    const summary = this.mapRuleSummary(row, entityType);
+    const sourcePreview = this.resolveHubSourcePreview(row.sourceChatId, entityType, sources);
+    if (!sourcePreview) {
+      return null;
+    }
+
+    const targetPreviewBundle = this.resolveHubTargetPreviewBundle(
+      summary.targetMode,
+      summary.targetChatIds,
+      sourcePreview,
+      entityType,
+      sources,
+    );
+
+    return managedAutopostHubRuleSummarySchema.parse({
+      ...summary,
+      targetChats: targetPreviewBundle.targetChats,
+      sourcePreview,
+      targetPreviews: targetPreviewBundle.previews,
+      targetOverflowCount: targetPreviewBundle.overflowCount,
+    });
+  }
+
+  private mapHubRuleDetails(
+    details: ManagedAutopostRuleDetails,
+    sources: HubSourceBundle,
+  ): ManagedAutopostHubRuleDetails {
+    const sourcePreview =
+      this.resolveHubSourcePreview(details.sourceChatId, details.entityType, sources) ??
+      this.buildFallbackTargetPreview(details.sourceChatId, details.entityType);
+    const targetPreviewBundle = this.resolveHubTargetPreviewBundle(
+      details.targetMode,
+      details.targetChatIds,
+      sourcePreview,
+      details.entityType,
+      sources,
+    );
+
+    return managedAutopostHubRuleDetailsSchema.parse({
+      ...details,
+      targetChats: targetPreviewBundle.targetChats,
+      sourcePreview,
+      targetPreviews: targetPreviewBundle.previews,
+      targetOverflowCount: targetPreviewBundle.overflowCount,
+    });
+  }
+
+  private resolveHubSourcePreview(
+    sourceChatId: string,
+    entityType: ManagedEntityType,
+    sources: HubSourceBundle,
+  ): ManagedBroadcastTargetPreview | null {
+    return (
+      sources.sourcePreviewsByKey.get(this.buildHubSourceKey(entityType, sourceChatId)) ?? null
+    );
+  }
+
+  private resolveHubTargetPreviewBundle(
+    targetMode: ManagedAutopostRuleSummary['targetMode'],
+    targetChatIds: string[],
+    sourcePreview: ManagedBroadcastTargetPreview,
+    entityType: ManagedEntityType,
+    sources: HubSourceBundle,
+  ): {
+    previews: ManagedBroadcastTargetPreview[];
+    overflowCount: number;
+    targetChats: number;
+  } {
+    if (entityType === 'channel' || targetMode === 'current') {
+      return {
+        previews: [sourcePreview],
+        overflowCount: 0,
+        targetChats: 1,
+      };
+    }
+
+    if (targetMode === 'all') {
+      const previews = sources.chatPreviews.slice(0, 3);
+      return {
+        previews,
+        overflowCount: Math.max(0, sources.chatPreviews.length - previews.length),
+        targetChats: Math.max(1, sources.chatPreviews.length),
+      };
+    }
+
+    const previewById = new Map(sources.chatPreviews.map((preview) => [preview.id, preview]));
+    const normalizedTargetIds = this.normalizeTargetPreviewIds(targetChatIds, sourcePreview.id);
+    const previews = normalizedTargetIds
+      .map(
+        (targetChatId) =>
+          previewById.get(targetChatId) ??
+          (targetChatId === sourcePreview.id
+            ? sourcePreview
+            : this.buildFallbackTargetPreview(targetChatId, 'chat')),
+      )
+      .slice(0, 3);
+
+    return {
+      previews,
+      overflowCount: Math.max(0, normalizedTargetIds.length - previews.length),
+      targetChats: Math.max(1, normalizedTargetIds.length),
+    };
+  }
+
+  private normalizeTargetPreviewIds(targetChatIds: string[], fallbackChatId: string): string[] {
+    const normalized = Array.from(
+      new Set(targetChatIds.map((chatId) => chatId.trim()).filter(Boolean)),
+    );
+    return normalized.length > 0 ? normalized : [fallbackChatId];
+  }
+
+  private toTargetPreview(
+    source: ChatSummary,
+    entityType: ManagedEntityType,
+  ): ManagedBroadcastTargetPreview {
+    return {
+      id: source.id,
+      title: source.title,
+      entityType,
+      link: source.link ?? null,
+      avatarUrl: source.avatarUrl ?? null,
+    };
+  }
+
+  private buildFallbackTargetPreview(
+    id: string,
+    entityType: ManagedEntityType,
+  ): ManagedBroadcastTargetPreview {
+    return {
+      id,
+      title: entityType === 'channel' ? `Канал ${id}` : `Чат ${id}`,
+      entityType,
+      link: null,
+      avatarUrl: null,
+    };
+  }
+
+  private buildHubSourceKey(entityType: ManagedEntityType, sourceChatId: string): string {
+    return `${entityType}:${sourceChatId}`;
+  }
+
   private resolveTextPreview(payload: ManagedAutopostPayload): string {
     const normalizedText = payload.text.replace(/\s+/gu, ' ').trim();
     if (normalizedText) {
@@ -1086,8 +1419,7 @@ export class ManagedAutopostService {
     status: ManagedAutopostRuleStatus,
   ): status is MaterializableRuleStatus {
     return (
-      status === ManagedAutopostRuleStatus.ACTIVE ||
-      status === ManagedAutopostRuleStatus.ERROR
+      status === ManagedAutopostRuleStatus.ACTIVE || status === ManagedAutopostRuleStatus.ERROR
     );
   }
 

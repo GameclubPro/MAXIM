@@ -130,6 +130,12 @@ function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
     };
   }
 
+  if (pathname === '/autoposts') {
+    return {
+      title: 'Автопосты',
+    };
+  }
+
   if (
     pathname.includes('/dialog/') &&
     (pathname.includes('/channel/') || pathname.includes('/chat/'))
@@ -298,11 +304,13 @@ export function Shell() {
   const isSettingsRoute = location.pathname.includes('/settings');
   const isEventsRoute = location.pathname.includes('/events');
   const isSystemRoute = location.pathname === '/system';
+  const isAutopostsRoute = location.pathname === '/autoposts';
   const isChannelStatsRoute =
     location.pathname.includes('/channel/') && location.pathname.includes('/stats');
   const hasTopbar =
     !isChatsRoute &&
     !isSystemRoute &&
+    !isAutopostsRoute &&
     !isSettingsRoute &&
     !isEventsRoute &&
     !isDialogRoute &&

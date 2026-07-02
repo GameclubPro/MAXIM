@@ -201,6 +201,9 @@ describe('MiniappMutationTunnelController', () => {
     ['POST', '/chats/chat-1/autopost-rules'],
     ['PUT', '/channels/channel-1/autopost-rules/rule-1'],
     ['DELETE', '/channels/channel-1/autopost-rules/rule-1'],
+    ['POST', '/autopost-rules'],
+    ['PUT', '/autopost-rules/rule-1'],
+    ['DELETE', '/autopost-rules/rule-1'],
   ])('allows managed broadcast %s %s through the mutation tunnel', async (method, path) => {
     const controller = new MiniappMutationTunnelController();
     const reply = createReply();

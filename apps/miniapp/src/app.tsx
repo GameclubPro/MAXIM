@@ -1,5 +1,13 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Suspense, useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react';
+import {
+  Suspense,
+  lazy,
+  useEffect,
+  useRef,
+  useState,
+  type ComponentType,
+  type ReactNode,
+} from 'react';
 import {
   BrowserRouter as Router,
   HashRouter,
@@ -37,6 +45,11 @@ import {
   LazySettingsPage,
   LazySystemPage,
 } from './pages/lazy-pages';
+
+const LazyAutopostsPage = lazy(async () => {
+  const module = await import('./pages/autoposts-page');
+  return { default: module.AutopostsPage };
+});
 
 const HASH_ROUTER_ENABLED =
   typeof __MAXIM_ROUTER_MODE__ === 'string' && __MAXIM_ROUTER_MODE__ === 'hash';
@@ -235,6 +248,7 @@ function AppRoutes({
         <Routes>
           <Route element={<Shell />}>
             <Route path="/" element={<LazyChatsPage api={apiClient} />} />
+            <Route path="/autoposts" element={<LazyAutopostsPage api={apiClient} />} />
             <Route path="/chat/:chatId/settings" element={<LazySettingsPage api={apiClient} />} />
             <Route
               path="/channel/:chatId/settings"

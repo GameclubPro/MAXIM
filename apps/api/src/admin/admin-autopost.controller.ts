@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Post, Put, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { InitDataGuard } from '../auth/init-data.guard';
 import { CurrentUser, type AuthUser } from '../common/decorators/current-user.decorator';
 import { ManagedAutopostService } from './managed-autopost.service';
@@ -7,6 +7,35 @@ import { ManagedAutopostService } from './managed-autopost.service';
 @UseGuards(InitDataGuard)
 export class AdminAutopostController {
   constructor(private readonly autopostService: ManagedAutopostService) {}
+
+  @Get('autopost-rules')
+  getAutopostRules(@CurrentUser() user: AuthUser, @Query() query: unknown) {
+    return this.autopostService.listAutopostRules(user, query);
+  }
+
+  @Post('autopost-rules')
+  createAutopostRule(@CurrentUser() user: AuthUser, @Body() body: unknown) {
+    return this.autopostService.createAutopostRule(user, body);
+  }
+
+  @Get('autopost-rules/:ruleId')
+  getAutopostRule(@Param('ruleId') ruleId: string, @CurrentUser() user: AuthUser) {
+    return this.autopostService.getAutopostRule(ruleId, user);
+  }
+
+  @Put('autopost-rules/:ruleId')
+  updateAutopostRule(
+    @Param('ruleId') ruleId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.autopostService.updateAutopostRule(ruleId, user, body);
+  }
+
+  @Delete('autopost-rules/:ruleId')
+  deleteAutopostRule(@Param('ruleId') ruleId: string, @CurrentUser() user: AuthUser) {
+    return this.autopostService.deleteAutopostRule(ruleId, user);
+  }
 
   @Get('channels/:chatId/autopost-rules')
   getChannelAutopostRules(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {

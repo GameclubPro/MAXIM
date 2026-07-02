@@ -107,7 +107,9 @@ export const MAX_BROADCAST_IMAGES = 10;
 export const MAX_BROADCAST_IMAGE_BASE64_LENGTH = 8_000_000;
 export const MAX_BROADCAST_IMAGES_TOTAL_BASE64 = 24_000_000;
 const BROADCAST_CYCLE_MAX_WINDOW_HOURS = 31 * 24;
-export const VK_PARSING_MAX_PHOTOS = 10, VK_PARSING_MAX_VIDEOS = 1, VK_PARSING_MAX_LINKS = 20;
+export const VK_PARSING_MAX_PHOTOS = 10,
+  VK_PARSING_MAX_VIDEOS = 1,
+  VK_PARSING_MAX_LINKS = 20;
 export const VK_PARSING_MAX_PUBLISH_TEXT_LENGTH = 4_000;
 export const BOT_SPEECH_MEDIA_IMAGE_BASE64_MAX_LENGTH = MAX_BROADCAST_IMAGE_BASE64_LENGTH;
 const duplicateWindowSecSchema = z.number().int().min(3_600).max(604_800);
@@ -2372,12 +2374,7 @@ export const sendBroadcastRequestSchema = z
     replaceConflictingSlots: z.boolean().default(false),
     sendAt: broadcastDateTimeSchema.nullable().default(null),
     cycleEnabled: z.boolean().default(false),
-    cycleEveryHours: z
-      .number()
-      .int()
-      .min(1)
-      .max(BROADCAST_CYCLE_MAX_WINDOW_HOURS)
-      .optional(),
+    cycleEveryHours: z.number().int().min(1).max(BROADCAST_CYCLE_MAX_WINDOW_HOURS).optional(),
     cycleEveryDays: z.number().int().min(1).max(31).optional(),
     cycleCount: z.number().int().min(1).max(100).default(1),
   })
@@ -2513,12 +2510,7 @@ export const broadcastHandoffRequestSchema = z
     replaceConflictingSlots: z.boolean().default(false),
     sendAt: broadcastDateTimeSchema.nullable().default(null),
     cycleEnabled: z.boolean().default(false),
-    cycleEveryHours: z
-      .number()
-      .int()
-      .min(1)
-      .max(BROADCAST_CYCLE_MAX_WINDOW_HOURS)
-      .optional(),
+    cycleEveryHours: z.number().int().min(1).max(BROADCAST_CYCLE_MAX_WINDOW_HOURS).optional(),
     cycleEveryDays: z.number().int().min(1).max(31).optional(),
     cycleCount: z.number().int().min(1).max(100).default(1),
   })
@@ -2562,27 +2554,29 @@ export const profileMentionHandoffRequestSchema = z.object({
 });
 export type ProfileMentionHandoffRequest = z.infer<typeof profileMentionHandoffRequestSchema>;
 
-export const broadcastHandoffStateSchema = z.object({
-  targetMode: broadcastTargetModeSchema.default('current'),
-  targetChatIds: z.array(z.string().trim().min(1)).default([]),
-  applyToAllChats: z.boolean().default(false),
-  buttons: z.array(broadcastLinkButtonSchema).max(MAX_BROADCAST_LINK_BUTTONS).default([]),
-  buttonEnabled: z.boolean().default(false),
-  buttonUrl: botButtonUrlSchema,
-  buttonText: botButtonTextSchema,
-  scheduleMode: broadcastScheduleModeSchema.default('legacy'),
-  scheduleTimezone: broadcastScheduleTimezoneSchema.default('Europe/Moscow'),
-  scheduledSlots: z.array(broadcastDateTimeSchema).default([]),
-  replaceConflictingSlots: z.boolean().default(false),
-  sendAt: broadcastDateTimeSchema.nullable().default(null),
-  cycleEnabled: z.boolean().default(false),
-  cycleEveryHours: z.number().int().min(1).default(1),
-  cycleCount: z.number().int().min(1).default(1),
-  hasContent: z.boolean().default(false),
-}).transform((value) => ({
-  ...value,
-  scheduleMode: inferBroadcastScheduleMode(value),
-}));
+export const broadcastHandoffStateSchema = z
+  .object({
+    targetMode: broadcastTargetModeSchema.default('current'),
+    targetChatIds: z.array(z.string().trim().min(1)).default([]),
+    applyToAllChats: z.boolean().default(false),
+    buttons: z.array(broadcastLinkButtonSchema).max(MAX_BROADCAST_LINK_BUTTONS).default([]),
+    buttonEnabled: z.boolean().default(false),
+    buttonUrl: botButtonUrlSchema,
+    buttonText: botButtonTextSchema,
+    scheduleMode: broadcastScheduleModeSchema.default('legacy'),
+    scheduleTimezone: broadcastScheduleTimezoneSchema.default('Europe/Moscow'),
+    scheduledSlots: z.array(broadcastDateTimeSchema).default([]),
+    replaceConflictingSlots: z.boolean().default(false),
+    sendAt: broadcastDateTimeSchema.nullable().default(null),
+    cycleEnabled: z.boolean().default(false),
+    cycleEveryHours: z.number().int().min(1).default(1),
+    cycleCount: z.number().int().min(1).default(1),
+    hasContent: z.boolean().default(false),
+  })
+  .transform((value) => ({
+    ...value,
+    scheduleMode: inferBroadcastScheduleMode(value),
+  }));
 export type BroadcastHandoffState = z.infer<typeof broadcastHandoffStateSchema>;
 
 export const managedBroadcastTargetPreviewSchema = z.object({
@@ -2594,32 +2588,34 @@ export const managedBroadcastTargetPreviewSchema = z.object({
 });
 export type ManagedBroadcastTargetPreview = z.infer<typeof managedBroadcastTargetPreviewSchema>;
 
-export const sendBroadcastResultSchema = z.object({
-  sourceChatId: z.string(),
-  targetChats: z.number().int().min(1),
-  sentChats: z.number().int().min(0),
-  failedChats: z.number().int().min(0),
-  sentChatIds: z.array(z.string()),
-  failedChatIds: z.array(z.string()),
-  sentChatPreviews: z.array(managedBroadcastTargetPreviewSchema).default([]),
-  failedChatPreviews: z.array(managedBroadcastTargetPreviewSchema).default([]),
-  sentChatOverflowCount: z.number().int().min(0).default(0),
-  failedChatOverflowCount: z.number().int().min(0).default(0),
-  scheduleMode: broadcastScheduleModeSchema.default('legacy'),
-  scheduleTimezone: broadcastScheduleTimezoneSchema.default('Europe/Moscow'),
-  scheduledSlots: z.array(broadcastDateTimeSchema).default([]),
-  sendAt: broadcastDateTimeSchema.nullable().default(null),
-  nextSendAt: broadcastDateTimeSchema.nullable().default(null),
-  cycleEnabled: z.boolean().default(false),
-  cycleEveryHours: z.number().int().min(1).default(1),
-  cycleEveryDays: z.number().int().min(1).optional(),
-  cycleCount: z.number().int().min(1).default(1),
-  scheduleId: z.string().nullable().default(null),
-  scheduledOccurrences: z.number().int().min(0).default(0),
-}).transform((value) => ({
-  ...value,
-  scheduleMode: inferBroadcastScheduleMode(value),
-}));
+export const sendBroadcastResultSchema = z
+  .object({
+    sourceChatId: z.string(),
+    targetChats: z.number().int().min(1),
+    sentChats: z.number().int().min(0),
+    failedChats: z.number().int().min(0),
+    sentChatIds: z.array(z.string()),
+    failedChatIds: z.array(z.string()),
+    sentChatPreviews: z.array(managedBroadcastTargetPreviewSchema).default([]),
+    failedChatPreviews: z.array(managedBroadcastTargetPreviewSchema).default([]),
+    sentChatOverflowCount: z.number().int().min(0).default(0),
+    failedChatOverflowCount: z.number().int().min(0).default(0),
+    scheduleMode: broadcastScheduleModeSchema.default('legacy'),
+    scheduleTimezone: broadcastScheduleTimezoneSchema.default('Europe/Moscow'),
+    scheduledSlots: z.array(broadcastDateTimeSchema).default([]),
+    sendAt: broadcastDateTimeSchema.nullable().default(null),
+    nextSendAt: broadcastDateTimeSchema.nullable().default(null),
+    cycleEnabled: z.boolean().default(false),
+    cycleEveryHours: z.number().int().min(1).default(1),
+    cycleEveryDays: z.number().int().min(1).optional(),
+    cycleCount: z.number().int().min(1).default(1),
+    scheduleId: z.string().nullable().default(null),
+    scheduledOccurrences: z.number().int().min(0).default(0),
+  })
+  .transform((value) => ({
+    ...value,
+    scheduleMode: inferBroadcastScheduleMode(value),
+  }));
 export type SendBroadcastResult = z.infer<typeof sendBroadcastResultSchema>;
 
 export const sendBroadcastTestResultSchema = z.object({
@@ -2649,95 +2645,99 @@ export type ManagedBroadcastFailureBreakdown = z.infer<
   typeof managedBroadcastFailureBreakdownSchema
 >;
 
-export const managedBroadcastSummarySchema = z.object({
-  id: z.string(),
-  autopostRuleId: z.string().nullable().default(null),
-  status: managedBroadcastStatusSchema,
-  textPreview: z.string(),
-  textLength: z.number().int().min(0),
-  targetMode: broadcastTargetModeSchema.default('current'),
-  applyToAllChats: z.boolean(),
-  targetChatIds: z.array(z.string()).default([]),
-  targetChats: z.number().int().min(1),
-  targetPreviews: z.array(managedBroadcastTargetPreviewSchema).default([]),
-  targetOverflowCount: z.number().int().min(0).default(0),
-  hasImage: z.boolean(),
-  imageCount: z.number().int().min(0).default(0),
-  hasVideo: z.boolean().default(false),
-  buttons: z.array(broadcastLinkButtonSchema).max(MAX_BROADCAST_LINK_BUTTONS).default([]),
-  buttonEnabled: z.boolean(),
-  scheduleMode: broadcastScheduleModeSchema.default('legacy'),
-  scheduleTimezone: broadcastScheduleTimezoneSchema,
-  scheduledSlots: z.array(broadcastDateTimeSchema).default([]),
-  nextSendAt: broadcastDateTimeSchema.nullable(),
-  cycleEnabled: z.boolean(),
-  cycleEveryHours: z.number().int().min(1),
-  cycleCount: z.number().int().min(1),
-  sentCount: z.number().int().min(0),
-  currentOccurrence: z.number().int().min(1),
-  deliveredChats: z.number().int().min(0),
-  failedChats: z.number().int().min(0),
-  pendingChats: z.number().int().min(0),
-  blockedChats: z.number().int().min(0),
-  failureBreakdown: managedBroadcastFailureBreakdownSchema,
-  canRetry: z.boolean(),
-  remainingCount: z.number().int().min(0),
-  createdAt: z.string().datetime(),
-  updatedAt: z.string().datetime(),
-  lastError: z.string().nullable(),
-}).transform((value) => ({
-  ...value,
-  scheduleMode: inferBroadcastScheduleMode(value),
-}));
+export const managedBroadcastSummarySchema = z
+  .object({
+    id: z.string(),
+    autopostRuleId: z.string().nullable().default(null),
+    status: managedBroadcastStatusSchema,
+    textPreview: z.string(),
+    textLength: z.number().int().min(0),
+    targetMode: broadcastTargetModeSchema.default('current'),
+    applyToAllChats: z.boolean(),
+    targetChatIds: z.array(z.string()).default([]),
+    targetChats: z.number().int().min(1),
+    targetPreviews: z.array(managedBroadcastTargetPreviewSchema).default([]),
+    targetOverflowCount: z.number().int().min(0).default(0),
+    hasImage: z.boolean(),
+    imageCount: z.number().int().min(0).default(0),
+    hasVideo: z.boolean().default(false),
+    buttons: z.array(broadcastLinkButtonSchema).max(MAX_BROADCAST_LINK_BUTTONS).default([]),
+    buttonEnabled: z.boolean(),
+    scheduleMode: broadcastScheduleModeSchema.default('legacy'),
+    scheduleTimezone: broadcastScheduleTimezoneSchema,
+    scheduledSlots: z.array(broadcastDateTimeSchema).default([]),
+    nextSendAt: broadcastDateTimeSchema.nullable(),
+    cycleEnabled: z.boolean(),
+    cycleEveryHours: z.number().int().min(1),
+    cycleCount: z.number().int().min(1),
+    sentCount: z.number().int().min(0),
+    currentOccurrence: z.number().int().min(1),
+    deliveredChats: z.number().int().min(0),
+    failedChats: z.number().int().min(0),
+    pendingChats: z.number().int().min(0),
+    blockedChats: z.number().int().min(0),
+    failureBreakdown: managedBroadcastFailureBreakdownSchema,
+    canRetry: z.boolean(),
+    remainingCount: z.number().int().min(0),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+    lastError: z.string().nullable(),
+  })
+  .transform((value) => ({
+    ...value,
+    scheduleMode: inferBroadcastScheduleMode(value),
+  }));
 export type ManagedBroadcastSummary = z.infer<typeof managedBroadcastSummarySchema>;
 
-export const managedBroadcastDetailsSchema = z.object({
-  id: z.string(),
-  autopostRuleId: z.string().nullable().default(null),
-  status: managedBroadcastStatusSchema,
-  text: z.string(),
-  textFormat: broadcastTextFormatSchema,
-  targetMode: broadcastTargetModeSchema.default('current'),
-  applyToAllChats: z.boolean(),
-  targetChatIds: z.array(z.string()),
-  targetPreviews: z.array(managedBroadcastTargetPreviewSchema).default([]),
-  targetOverflowCount: z.number().int().min(0).default(0),
-  buttons: z.array(broadcastLinkButtonSchema).max(MAX_BROADCAST_LINK_BUTTONS).default([]),
-  buttonEnabled: z.boolean(),
-  buttonUrl: botButtonUrlSchema,
-  buttonText: botButtonTextSchema,
-  imageEnabled: z.boolean(),
-  imageBase64: z.string(),
-  imageMimeType: z.string(),
-  imageFileName: z.string(),
-  images: z.array(broadcastImageSchema).max(MAX_BROADCAST_IMAGES).default([]),
-  mediaType: broadcastMediaTypeSchema.nullable().default(null),
-  mediaPayload: z.record(z.string(), z.unknown()).nullable().default(null),
-  mediaMimeType: z.string().default(''),
-  mediaFileName: z.string().default(''),
-  scheduleMode: broadcastScheduleModeSchema.default('legacy'),
-  scheduleTimezone: broadcastScheduleTimezoneSchema,
-  scheduledSlots: z.array(broadcastDateTimeSchema).default([]),
-  nextSendAt: broadcastDateTimeSchema.nullable(),
-  cycleEnabled: z.boolean(),
-  cycleEveryHours: z.number().int().min(1),
-  cycleCount: z.number().int().min(1),
-  sentCount: z.number().int().min(0),
-  currentOccurrence: z.number().int().min(1),
-  deliveredChats: z.number().int().min(0),
-  failedChats: z.number().int().min(0),
-  pendingChats: z.number().int().min(0),
-  blockedChats: z.number().int().min(0),
-  failureBreakdown: managedBroadcastFailureBreakdownSchema,
-  canRetry: z.boolean(),
-  remainingCount: z.number().int().min(0),
-  createdAt: z.string().datetime(),
-  updatedAt: z.string().datetime(),
-  lastError: z.string().nullable(),
-}).transform((value) => ({
-  ...value,
-  scheduleMode: inferBroadcastScheduleMode(value),
-}));
+export const managedBroadcastDetailsSchema = z
+  .object({
+    id: z.string(),
+    autopostRuleId: z.string().nullable().default(null),
+    status: managedBroadcastStatusSchema,
+    text: z.string(),
+    textFormat: broadcastTextFormatSchema,
+    targetMode: broadcastTargetModeSchema.default('current'),
+    applyToAllChats: z.boolean(),
+    targetChatIds: z.array(z.string()),
+    targetPreviews: z.array(managedBroadcastTargetPreviewSchema).default([]),
+    targetOverflowCount: z.number().int().min(0).default(0),
+    buttons: z.array(broadcastLinkButtonSchema).max(MAX_BROADCAST_LINK_BUTTONS).default([]),
+    buttonEnabled: z.boolean(),
+    buttonUrl: botButtonUrlSchema,
+    buttonText: botButtonTextSchema,
+    imageEnabled: z.boolean(),
+    imageBase64: z.string(),
+    imageMimeType: z.string(),
+    imageFileName: z.string(),
+    images: z.array(broadcastImageSchema).max(MAX_BROADCAST_IMAGES).default([]),
+    mediaType: broadcastMediaTypeSchema.nullable().default(null),
+    mediaPayload: z.record(z.string(), z.unknown()).nullable().default(null),
+    mediaMimeType: z.string().default(''),
+    mediaFileName: z.string().default(''),
+    scheduleMode: broadcastScheduleModeSchema.default('legacy'),
+    scheduleTimezone: broadcastScheduleTimezoneSchema,
+    scheduledSlots: z.array(broadcastDateTimeSchema).default([]),
+    nextSendAt: broadcastDateTimeSchema.nullable(),
+    cycleEnabled: z.boolean(),
+    cycleEveryHours: z.number().int().min(1),
+    cycleCount: z.number().int().min(1),
+    sentCount: z.number().int().min(0),
+    currentOccurrence: z.number().int().min(1),
+    deliveredChats: z.number().int().min(0),
+    failedChats: z.number().int().min(0),
+    pendingChats: z.number().int().min(0),
+    blockedChats: z.number().int().min(0),
+    failureBreakdown: managedBroadcastFailureBreakdownSchema,
+    canRetry: z.boolean(),
+    remainingCount: z.number().int().min(0),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+    lastError: z.string().nullable(),
+  })
+  .transform((value) => ({
+    ...value,
+    scheduleMode: inferBroadcastScheduleMode(value),
+  }));
 export type ManagedBroadcastDetails = z.infer<typeof managedBroadcastDetailsSchema>;
 
 export const managedBroadcastCalendarSlotSchema = z.object({
@@ -2781,9 +2781,7 @@ export const managedAutopostRuleStatusSchema = z.enum([
 export type ManagedAutopostRuleStatus = z.infer<typeof managedAutopostRuleStatusSchema>;
 
 export const managedAutopostRuleUpdateStatusSchema = z.enum(['ACTIVE', 'PAUSED']);
-export type ManagedAutopostRuleUpdateStatus = z.infer<
-  typeof managedAutopostRuleUpdateStatusSchema
->;
+export type ManagedAutopostRuleUpdateStatus = z.infer<typeof managedAutopostRuleUpdateStatusSchema>;
 
 export const managedAutopostPayloadSchema = sendBroadcastRequestSchema
   .superRefine((value, ctx) => {
@@ -2895,6 +2893,40 @@ export const managedAutopostRuleDetailsSchema = managedAutopostRuleSummarySchema
   payload: managedAutopostPayloadSchema,
 });
 export type ManagedAutopostRuleDetails = z.infer<typeof managedAutopostRuleDetailsSchema>;
+
+export const managedAutopostHubEntityTypeSchema = z.enum(['all', 'chat', 'channel']).default('all');
+export type ManagedAutopostHubEntityType = z.infer<typeof managedAutopostHubEntityTypeSchema>;
+
+export const listManagedAutopostHubRulesQuerySchema = z.object({
+  entityType: managedAutopostHubEntityTypeSchema.optional(),
+  status: managedAutopostRuleStatusSchema.optional(),
+  sourceChatId: z.string().trim().min(1).optional(),
+});
+export type ListManagedAutopostHubRulesQuery = z.infer<
+  typeof listManagedAutopostHubRulesQuerySchema
+>;
+
+export const createManagedAutopostHubRuleRequestSchema = z.object({
+  sourceChatId: z.string().trim().min(1),
+  entityType: managedEntityTypeSchema,
+  title: z.string().trim().max(120).default(''),
+  payload: managedAutopostPayloadSchema,
+});
+export type CreateManagedAutopostHubRuleRequest = z.infer<
+  typeof createManagedAutopostHubRuleRequestSchema
+>;
+
+export const managedAutopostHubRuleSummarySchema = managedAutopostRuleSummarySchema.extend({
+  sourcePreview: managedBroadcastTargetPreviewSchema,
+  targetPreviews: z.array(managedBroadcastTargetPreviewSchema).default([]),
+  targetOverflowCount: z.number().int().min(0).default(0),
+});
+export type ManagedAutopostHubRuleSummary = z.infer<typeof managedAutopostHubRuleSummarySchema>;
+
+export const managedAutopostHubRuleDetailsSchema = managedAutopostHubRuleSummarySchema.extend({
+  payload: managedAutopostPayloadSchema,
+});
+export type ManagedAutopostHubRuleDetails = z.infer<typeof managedAutopostHubRuleDetailsSchema>;
 
 export const vkParsingSourceStatusSchema = z.enum(['ACTIVE', 'DISABLED']);
 export type VkParsingSourceStatus = z.infer<typeof vkParsingSourceStatusSchema>;

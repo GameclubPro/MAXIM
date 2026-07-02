@@ -93,15 +93,31 @@ describe('admin domain controllers', () => {
 
   it('routes autopost rule endpoints through the managed autopost domain service', async () => {
     const managedAutopostService = {
+      listAutopostRules: jest.fn().mockResolvedValue([]),
+      getAutopostRule: jest.fn().mockResolvedValue({ id: 'rule-1' }),
+      createAutopostRule: jest.fn().mockResolvedValue({ id: 'rule-1' }),
+      updateAutopostRule: jest.fn().mockResolvedValue({ id: 'rule-1' }),
+      deleteAutopostRule: jest.fn().mockResolvedValue({ id: 'rule-1' }),
       createChatAutopostRule: jest.fn().mockResolvedValue({ id: 'rule-1' }),
       updateChannelAutopostRule: jest.fn().mockResolvedValue({ id: 'rule-2' }),
     };
     const controller = new AdminAutopostController(managedAutopostService as never);
+    const query = { entityType: 'chat' };
     const body = { payload: { text: 'Новости', scheduledSlots: [] } };
 
+    await controller.getAutopostRules(user as never, query);
+    await controller.getAutopostRule('rule-1', user as never);
+    await controller.createAutopostRule(user as never, body);
+    await controller.updateAutopostRule('rule-1', user as never, body);
+    await controller.deleteAutopostRule('rule-1', user as never);
     await controller.createChatAutopostRule('chat-1', user as never, body);
     await controller.updateChannelAutopostRule('channel-1', 'rule-2', user as never, body);
 
+    expect(managedAutopostService.listAutopostRules).toHaveBeenCalledWith(user, query);
+    expect(managedAutopostService.getAutopostRule).toHaveBeenCalledWith('rule-1', user);
+    expect(managedAutopostService.createAutopostRule).toHaveBeenCalledWith(user, body);
+    expect(managedAutopostService.updateAutopostRule).toHaveBeenCalledWith('rule-1', user, body);
+    expect(managedAutopostService.deleteAutopostRule).toHaveBeenCalledWith('rule-1', user);
     expect(managedAutopostService.createChatAutopostRule).toHaveBeenCalledWith(
       'chat-1',
       user,

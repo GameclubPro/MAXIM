@@ -18,6 +18,7 @@ import {
   chatRulesSchema,
   chatSettingsSchema,
   chatSettingsScreenResponseSchema,
+  createManagedAutopostHubRuleRequestSchema,
   createChannelDialogMessageRequestSchema,
   createChannelDialogMessageResponseSchema,
   deleteChannelDialogMessageRequestSchema,
@@ -29,6 +30,8 @@ import {
   globalSpammerReviewResultSchema,
   globalSpammerUserDiagnosticsSchema,
   logsDashboardResponseSchema,
+  managedAutopostHubRuleDetailsSchema,
+  managedAutopostPayloadSchema,
   managedBroadcastDetailsSchema,
   managedEntityFavoritesResponseSchema,
   managedEntityBotExecutionPlanSchema,
@@ -59,6 +62,7 @@ import {
   updateChannelDialogNotificationsResponseSchema,
   updateChannelDialogMessageRequestSchema,
   updateChannelDialogMessageResponseSchema,
+  updateManagedAutopostRuleRequestSchema,
   updateManagedEntityFavoritesRequestSchema,
   updateManagedEntityPartnerAssistRequestSchema,
   updateManagedEntityPrimaryBotRequestSchema,
@@ -93,6 +97,8 @@ import {
   type LogsDashboardRange,
   type LogsDashboardResponse,
   type ManagedBroadcastDetails,
+  type ManagedAutopostHubRuleDetails,
+  type ManagedAutopostPayload,
   type ManagedEntityBotExecutionPlan,
   type ManagedEntityType,
   type ManagedEntitiesListResponse,
@@ -146,6 +152,7 @@ type PreviewState = {
   chatDomains: DomainAllowlistEntry[];
   chatBroadcasts: ManagedBroadcastDetails[];
   channelBroadcasts: ManagedBroadcastDetails[];
+  autopostRules: ManagedAutopostHubRuleDetails[];
   chatGiveaways: ManagedGiveawayDetails[];
   chatParticipants: ChatParticipantItem[];
   chatActivity: MembershipActivityItem[];
@@ -3368,7 +3375,7 @@ function createInitialState(): PreviewState {
     },
   };
 
-  return {
+  const state: PreviewState = {
     me: {
       userId: 'preview-admin',
       username: 'designer',
@@ -3439,6 +3446,7 @@ function createInitialState(): PreviewState {
     chatRules,
     chatDomains,
     chatBroadcasts,
+    autopostRules: [],
     chatGiveaways,
     chatParticipants: createParticipantsItems('chat-roster', 48),
     chatActivity: createActivityItems(
@@ -3474,6 +3482,53 @@ function createInitialState(): PreviewState {
     chatPartnerAssistEnabled: false,
     channelPartnerAssistEnabled: false,
   };
+
+  state.autopostRules = [
+    buildPreviewAutopostRule(state, {
+      id: 'autopost-preview-soil',
+      sourceChatId: PREVIEW_CHAT_ID,
+      entityType: 'chat',
+      title: 'Грунты',
+      payload: managedAutopostPayloadSchema.parse({
+        text: 'Проверенные грунты из садового чата: лёгкий универсальный и смесь для рассады.',
+        textFormat: 'markdown',
+        targetMode: 'current',
+        targetChatIds: [PREVIEW_CHAT_ID],
+        applyToAllChats: false,
+        buttons: [],
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        scheduleTimezone: 'Europe/Moscow',
+        scheduledSlots: [addHours(now, 18).toISOString(), addDays(now, 2).toISOString()],
+      }),
+      createdAt: addDays(now, -3).toISOString(),
+      updatedAt: addHours(now, -3).toISOString(),
+    }),
+    buildPreviewAutopostRule(state, {
+      id: 'autopost-preview-products',
+      sourceChatId: PREVIEW_CHANNEL_ID,
+      entityType: 'channel',
+      title: 'Продукты',
+      payload: managedAutopostPayloadSchema.parse({
+        text: 'Продукты, которые беру домой сама: список на неделю и короткие заметки по качеству.',
+        textFormat: 'markdown',
+        targetMode: 'current',
+        targetChatIds: [PREVIEW_CHANNEL_ID],
+        applyToAllChats: false,
+        buttons: [{ text: 'Список', url: 'https://maxim.play-team.ru/products' }],
+        buttonEnabled: true,
+        buttonUrl: 'https://maxim.play-team.ru/products',
+        buttonText: 'Список',
+        scheduleTimezone: 'Europe/Moscow',
+        scheduledSlots: [addHours(now, 9).toISOString(), addDays(now, 1).toISOString()],
+      }),
+      createdAt: addDays(now, -4).toISOString(),
+      updatedAt: addHours(now, -2).toISOString(),
+    }),
+  ];
+
+  return state;
 }
 
 function buildChatSettingsScreen(state: PreviewState, chatId: string): ChatSettingsScreenResponse {
@@ -4060,6 +4115,143 @@ function findBroadcast(
   broadcastId: string,
 ): ManagedBroadcastDetails | null {
   return broadcasts.find((item) => item.id === broadcastId) ?? null;
+}
+
+function findAutopostRule(
+  rules: ManagedAutopostHubRuleDetails[],
+  ruleId: string,
+): ManagedAutopostHubRuleDetails | null {
+  return rules.find((item) => item.id === ruleId && item.status !== 'DISABLED') ?? null;
+}
+
+function resolvePreviewSource(
+  state: PreviewState,
+  entityType: ManagedEntityType,
+  sourceChatId: string,
+): ChatSummary | null {
+  const sources = entityType === 'channel' ? state.channels : state.chats;
+  return sources.find((item) => item.id === sourceChatId) ?? null;
+}
+
+function resolvePreviewAutopostTargetPreviews(
+  state: PreviewState,
+  entityType: ManagedEntityType,
+  sourceChatId: string,
+  payload: ManagedAutopostPayload,
+) {
+  const source = resolvePreviewSource(state, entityType, sourceChatId);
+  const sourcePreview = {
+    id: sourceChatId,
+    title: source?.title ?? (entityType === 'channel' ? PREVIEW_CHANNEL_TITLE : PREVIEW_CHAT_TITLE),
+    entityType,
+    link: source?.link ?? null,
+    avatarUrl: source?.avatarUrl ?? null,
+  };
+
+  if (entityType === 'channel' || payload.targetMode === 'current') {
+    return {
+      sourcePreview,
+      targetPreviews: [sourcePreview],
+      targetOverflowCount: 0,
+      targetChats: 1,
+    };
+  }
+
+  if (payload.targetMode === 'all') {
+    const previews = state.chats.slice(0, 3).map((chat) => ({
+      id: chat.id,
+      title: chat.title,
+      entityType: 'chat' as const,
+      link: chat.link ?? null,
+      avatarUrl: chat.avatarUrl ?? null,
+    }));
+    return {
+      sourcePreview,
+      targetPreviews: previews,
+      targetOverflowCount: Math.max(0, state.chats.length - previews.length),
+      targetChats: Math.max(1, state.chats.length),
+    };
+  }
+
+  const targetIds = payload.targetChatIds.length > 0 ? payload.targetChatIds : [sourceChatId];
+  const previews = targetIds.slice(0, 3).map((targetId) => {
+    const chat = state.chats.find((item) => item.id === targetId);
+    return {
+      id: targetId,
+      title: chat?.title ?? `Чат ${targetId}`,
+      entityType: 'chat' as const,
+      link: chat?.link ?? null,
+      avatarUrl: chat?.avatarUrl ?? null,
+    };
+  });
+  return {
+    sourcePreview,
+    targetPreviews: previews,
+    targetOverflowCount: Math.max(0, targetIds.length - previews.length),
+    targetChats: Math.max(1, targetIds.length),
+  };
+}
+
+function buildPreviewAutopostRule(
+  state: PreviewState,
+  input: {
+    id: string;
+    sourceChatId: string;
+    entityType: ManagedEntityType;
+    title: string;
+    payload: ManagedAutopostPayload;
+    status?: ManagedAutopostHubRuleDetails['status'];
+    revision?: number;
+    createdAt?: string;
+    updatedAt?: string;
+  },
+): ManagedAutopostHubRuleDetails {
+  const nowIso = new Date().toISOString();
+  const textPreview = input.payload.text.replace(/\s+/gu, ' ').trim().slice(0, 160);
+  const nextSendAt =
+    input.payload.scheduledSlots
+      .map((slot) => new Date(slot))
+      .filter((slot) => Number.isFinite(slot.getTime()) && slot.getTime() > Date.now())
+      .sort((left, right) => left.getTime() - right.getTime())[0]
+      ?.toISOString() ?? null;
+  const targetBundle = resolvePreviewAutopostTargetPreviews(
+    state,
+    input.entityType,
+    input.sourceChatId,
+    input.payload,
+  );
+
+  return managedAutopostHubRuleDetailsSchema.parse({
+    id: input.id,
+    sourceChatId: input.sourceChatId,
+    entityType: input.entityType,
+    status: input.status ?? 'ACTIVE',
+    title: input.title,
+    textPreview:
+      textPreview ||
+      (input.payload.images.length > 0 || input.payload.imageEnabled ? 'Фото без текста' : 'Пусто'),
+    textLength: input.payload.text.length,
+    targetMode: input.payload.targetMode,
+    applyToAllChats: input.payload.applyToAllChats,
+    targetChatIds: input.payload.targetChatIds,
+    targetChats: targetBundle.targetChats,
+    hasImage: input.payload.images.length > 0 || input.payload.imageEnabled,
+    imageCount: input.payload.images.length || (input.payload.imageEnabled ? 1 : 0),
+    hasVideo: input.payload.mediaType === 'video',
+    buttons: input.payload.buttons,
+    scheduleTimezone: input.payload.scheduleTimezone,
+    scheduledSlots: input.payload.scheduledSlots,
+    nextSendAt,
+    materializedCount: 0,
+    revision: input.revision ?? 1,
+    createdAt: input.createdAt ?? nowIso,
+    updatedAt: input.updatedAt ?? nowIso,
+    lastError: null,
+    sourcePreview: targetBundle.sourcePreview,
+    targetPreviews: targetBundle.targetPreviews,
+    targetOverflowCount: targetBundle.targetOverflowCount,
+    payload: input.payload,
+  });
 }
 
 function findGiveaway(
@@ -6100,6 +6292,98 @@ async function handleChannelRequest(
   throw new Error(`Preview transport does not implement ${method} ${url.pathname}`);
 }
 
+function handleAutopostRulesRequest(
+  state: PreviewState,
+  segments: string[],
+  url: URL,
+  method: string,
+  init: RequestInit,
+) {
+  if (segments.length === 1) {
+    if (method === 'GET') {
+      const entityType = url.searchParams.get('entityType');
+      const status = url.searchParams.get('status');
+      const sourceChatId = url.searchParams.get('sourceChatId');
+      return cloneJson(
+        state.autopostRules.filter((rule) => {
+          if (rule.status === 'DISABLED') {
+            return false;
+          }
+          if (
+            (entityType === 'chat' || entityType === 'channel') &&
+            rule.entityType !== entityType
+          ) {
+            return false;
+          }
+          if (status && rule.status !== status) {
+            return false;
+          }
+          if (sourceChatId && rule.sourceChatId !== sourceChatId) {
+            return false;
+          }
+          return true;
+        }),
+      );
+    }
+
+    if (method === 'POST') {
+      const payload = createManagedAutopostHubRuleRequestSchema.parse(parseJsonBody(init));
+      const created = buildPreviewAutopostRule(state, {
+        id: `autopost-preview-${Date.now()}`,
+        sourceChatId: payload.sourceChatId,
+        entityType: payload.entityType,
+        title: payload.title,
+        payload: payload.payload,
+      });
+      state.autopostRules = [created, ...state.autopostRules];
+      return cloneJson(created);
+    }
+  }
+
+  const ruleId = segments[1] ? decodeURIComponent(segments[1]) : '';
+  const existing = ruleId ? findAutopostRule(state.autopostRules, ruleId) : null;
+  if (!existing) {
+    throw new Error(`Preview autopost rule not found: ${ruleId}`);
+  }
+
+  if (segments.length === 2 && method === 'GET') {
+    return cloneJson(existing);
+  }
+
+  if (segments.length === 2 && method === 'PUT') {
+    const payload = updateManagedAutopostRuleRequestSchema.parse(parseJsonBody(init));
+    const updated = buildPreviewAutopostRule(state, {
+      id: existing.id,
+      sourceChatId: existing.sourceChatId,
+      entityType: existing.entityType,
+      title: payload.title ?? existing.title,
+      payload: payload.payload ?? existing.payload,
+      status: payload.status ?? existing.status,
+      revision: existing.revision + (payload.payload ? 1 : 0),
+      createdAt: existing.createdAt,
+      updatedAt: new Date().toISOString(),
+    });
+    state.autopostRules = state.autopostRules.map((rule) =>
+      rule.id === existing.id ? updated : rule,
+    );
+    return cloneJson(updated);
+  }
+
+  if (segments.length === 2 && method === 'DELETE') {
+    const disabled = managedAutopostHubRuleDetailsSchema.parse({
+      ...existing,
+      status: 'DISABLED',
+      updatedAt: new Date().toISOString(),
+    });
+    state.autopostRules = state.autopostRules.map((rule) =>
+      rule.id === existing.id ? disabled : rule,
+    );
+    return cloneJson(disabled);
+  }
+
+  throw new Error(`Preview transport does not implement ${method} ${url.pathname}`);
+}
+
 export function createPreviewApiTransport(): ApiTransport {
   const state = createInitialState();
 
@@ -6141,6 +6425,10 @@ export function createPreviewApiTransport(): ApiTransport {
       }
 
       const segments = url.pathname.split('/').filter(Boolean);
+      if (segments[0] === 'autopost-rules') {
+        return handleAutopostRulesRequest(state, segments, url, method, init);
+      }
+
       if (
         segments[0] === 'managed-entities' &&
         segments[1] &&

@@ -106,18 +106,21 @@ const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
     method: 'POST',
     pattern: new RegExp(`^/(chats|channels)/${ENTITY_ID_SEGMENT}/autopost-rules$`),
   },
+  { method: 'POST', pattern: /^\/autopost-rules$/u },
   {
     method: 'PUT',
     pattern: new RegExp(
       `^/(chats|channels)/${ENTITY_ID_SEGMENT}/autopost-rules/${ENTITY_ID_SEGMENT}$`,
     ),
   },
+  { method: 'PUT', pattern: new RegExp(`^/autopost-rules/${ENTITY_ID_SEGMENT}$`) },
   {
     method: 'DELETE',
     pattern: new RegExp(
       `^/(chats|channels)/${ENTITY_ID_SEGMENT}/autopost-rules/${ENTITY_ID_SEGMENT}$`,
     ),
   },
+  { method: 'DELETE', pattern: new RegExp(`^/autopost-rules/${ENTITY_ID_SEGMENT}$`) },
 
   { method: 'POST', pattern: new RegExp(`^/(chats|channels)/${ENTITY_ID_SEGMENT}/giveaways$`) },
   {
@@ -516,10 +519,7 @@ export class MiniappMutationTunnelController {
     return normalized;
   }
 
-  private decodeBody(
-    value: string | undefined,
-    gzipValue: string | undefined,
-  ): string | undefined {
+  private decodeBody(value: string | undefined, gzipValue: string | undefined): string | undefined {
     if (value && gzipValue) {
       throw new BadRequestException('Ambiguous tunnel body');
     }
@@ -620,7 +620,9 @@ export class MiniappMutationTunnelController {
   }
 
   private hashAuthorization(value: string | undefined): string {
-    return createHash('sha256').update(value ?? '').digest('hex');
+    return createHash('sha256')
+      .update(value ?? '')
+      .digest('hex');
   }
 
   private assertChunkedUploadMatches(

@@ -46,12 +46,14 @@ describe('ManagedAutopostService', () => {
     chatTitle: null,
   };
 
-  function createService(overrides: {
-    prisma?: Record<string, unknown>;
-    managedEntitiesService?: Record<string, unknown>;
-    managedBroadcastService?: Record<string, unknown>;
-    backgroundRuntimeGovernorService?: Record<string, unknown>;
-  } = {}) {
+  function createService(
+    overrides: {
+      prisma?: Record<string, unknown>;
+      managedEntitiesService?: Record<string, unknown>;
+      managedBroadcastService?: Record<string, unknown>;
+      backgroundRuntimeGovernorService?: Record<string, unknown>;
+    } = {},
+  ) {
     const prisma: Record<string, any> = {
       managedAutopostRule: {
         create: jest.fn(),
@@ -79,7 +81,26 @@ describe('ManagedAutopostService', () => {
       assertChannelAdminAccess: jest.fn().mockResolvedValue(undefined),
       assertChatReadAccess: jest.fn().mockResolvedValue(undefined),
       assertChannelReadAccess: jest.fn().mockResolvedValue(undefined),
-      listChats: jest.fn().mockResolvedValue([{ id: 'chat-1', entityType: 'chat' }]),
+      listChats: jest.fn().mockResolvedValue([
+        {
+          id: 'chat-1',
+          title: 'Садовый чат',
+          createdAt: new Date().toISOString(),
+          entityType: 'chat',
+          link: null,
+          avatarUrl: null,
+        },
+      ]),
+      listChannels: jest.fn().mockResolvedValue([
+        {
+          id: 'channel-1',
+          title: 'Канал',
+          createdAt: new Date().toISOString(),
+          entityType: 'channel',
+          link: null,
+          avatarUrl: null,
+        },
+      ]),
       ...overrides.managedEntitiesService,
     };
     const managedBroadcastService = {
@@ -102,11 +123,171 @@ describe('ManagedAutopostService', () => {
     return { service, prisma, managedEntitiesService, managedBroadcastService };
   }
 
+  const persistedRule = (overrides: Record<string, unknown> = {}) => ({
+    id: 'rule-1',
+    sourceChatId: 'chat-1',
+    entityType: ChatEntityType.CHAT,
+    actorUserId: 'admin-1',
+    title: '',
+    payload: payload(),
+    status: ManagedAutopostRuleStatus.ACTIVE,
+    revision: 1,
+    nextMaterializeAt: new Date(),
+    lastMaterializedAt: null,
+    lastError: null,
+    lockedAt: null,
+    lockToken: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    _count: { materializations: 0 },
+    ...overrides,
+  });
+
+  it('lists hub rules with source and target previews', async () => {
+    const chatRule = persistedRule({
+      id: 'rule-chat',
+      title: 'Грунты',
+      payload: payload({
+        targetMode: 'all',
+        targetChatIds: [],
+        applyToAllChats: true,
+      }),
+    });
+    const channelRule = persistedRule({
+      id: 'rule-channel',
+      sourceChatId: 'channel-1',
+      entityType: ChatEntityType.CHANNEL,
+      title: 'Продукты',
+    });
+    const { service, prisma, managedEntitiesService } = createService({
+      managedEntitiesService: {
+        listChats: jest.fn().mockResolvedValue([
+          {
+            id: 'chat-1',
+            title: 'Садовый чат',
+            createdAt: new Date().toISOString(),
+            entityType: 'chat',
+            link: null,
+            avatarUrl: null,
+          },
+          {
+            id: 'chat-2',
+            title: 'Клуб',
+            createdAt: new Date().toISOString(),
+            entityType: 'chat',
+            link: null,
+            avatarUrl: null,
+          },
+        ]),
+        listChannels: jest.fn().mockResolvedValue([
+          {
+            id: 'channel-1',
+            title: 'Витрина',
+            createdAt: new Date().toISOString(),
+            entityType: 'channel',
+            link: null,
+            avatarUrl: null,
+          },
+        ]),
+      },
+    });
+    prisma.managedAutopostRule.findMany.mockResolvedValue([chatRule, channelRule]);
+
+    const result = await service.listAutopostRules(user, { entityType: 'all' });
+
+    expect(managedEntitiesService.listChats).toHaveBeenCalledWith(user, { fresh: false });
+    expect(managedEntitiesService.listChannels).toHaveBeenCalledWith(user, { fresh: false });
+    expect(prisma.managedAutopostRule.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: [
+            {
+              entityType: ChatEntityType.CHAT,
+              sourceChatId: { in: ['chat-1', 'chat-2'] },
+            },
+            {
+              entityType: ChatEntityType.CHANNEL,
+              sourceChatId: { in: ['channel-1'] },
+            },
+          ],
+        }),
+      }),
+    );
+    expect(result).toHaveLength(2);
+    expect(result[0]).toEqual(
+      expect.objectContaining({
+        id: 'rule-chat',
+        sourcePreview: expect.objectContaining({ title: 'Садовый чат' }),
+        targetChats: 2,
+        targetPreviews: [
+          expect.objectContaining({ id: 'chat-1', title: 'Садовый чат' }),
+          expect.objectContaining({ id: 'chat-2', title: 'Клуб' }),
+        ],
+        targetOverflowCount: 0,
+      }),
+    );
+    expect(result[1]).toEqual(
+      expect.objectContaining({
+        id: 'rule-channel',
+        sourcePreview: expect.objectContaining({ title: 'Витрина', entityType: 'channel' }),
+        targetPreviews: [expect.objectContaining({ id: 'channel-1' })],
+      }),
+    );
+  });
+
+  it('creates a hub channel rule through the channel source', async () => {
+    const created = persistedRule({
+      sourceChatId: 'channel-1',
+      entityType: ChatEntityType.CHANNEL,
+      title: 'Продукты',
+      _count: { materializations: 0 },
+    });
+    const { service, prisma, managedEntitiesService } = createService();
+    prisma.managedAutopostRule.create.mockResolvedValue(created);
+    prisma.managedAutopostRule.findFirst.mockResolvedValue(created);
+
+    const result = await service.createAutopostRule(user, {
+      sourceChatId: 'channel-1',
+      entityType: 'channel',
+      title: 'Продукты',
+      payload: payload({ targetChatIds: ['channel-1'] }),
+    });
+
+    expect(managedEntitiesService.assertChannelAdminAccess).toHaveBeenCalledWith('channel-1', user);
+    expect(prisma.managedAutopostRule.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          sourceChatId: 'channel-1',
+          entityType: ChatEntityType.CHANNEL,
+          title: 'Продукты',
+        }),
+      }),
+    );
+    expect(result.sourcePreview).toEqual(expect.objectContaining({ id: 'channel-1' }));
+  });
+
   it('rejects channel autoposts with non-current targets before saving', async () => {
     const { service, prisma } = createService();
 
     await expect(
       service.createChannelAutopostRule('channel-1', user, {
+        payload: payload({
+          targetMode: 'selected',
+          targetChatIds: ['channel-1', 'channel-2'],
+        }),
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(prisma.managedAutopostRule.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects hub channel rules with non-current targets before saving', async () => {
+    const { service, prisma } = createService();
+
+    await expect(
+      service.createAutopostRule(user, {
+        sourceChatId: 'channel-1',
+        entityType: 'channel',
         payload: payload({
           targetMode: 'selected',
           targetChatIds: ['channel-1', 'channel-2'],

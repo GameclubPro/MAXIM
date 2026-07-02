@@ -16,7 +16,10 @@ const manifestPath = path.join(distDir, '.vite', 'manifest.json');
 // enough of that branch in the browser build that the measured startup cost is still paid.
 const HASH_ROUTER_STARTUP_JS_ALLOWANCE_GZIP =
   process.env.VITE_ROUTER_MODE?.trim() === 'hash' ? 512 : 0;
-const STARTUP_JS_BUDGET_GZIP = 113 * 1024 + HASH_ROUTER_STARTUP_JS_ALLOWANCE_GZIP;
+// The standalone autopost hub is a top-level lazy route; only route registration is paid at startup.
+const AUTOPOSTS_ROUTE_STARTUP_JS_ALLOWANCE_GZIP = 512;
+const STARTUP_JS_BUDGET_GZIP =
+  113 * 1024 + HASH_ROUTER_STARTUP_JS_ALLOWANCE_GZIP + AUTOPOSTS_ROUTE_STARTUP_JS_ALLOWANCE_GZIP;
 // Settings remains lazy-loaded, but richer giveaway, rules, and broadcast editors,
 // shared drilldown UI reuse, the compact required-subscription timer card,
 // the per-day broadcast agenda sheet, and the compact managed-broadcast
@@ -39,14 +42,20 @@ const STARTUP_JS_BUDGET_GZIP = 113 * 1024 + HASH_ROUTER_STARTUP_JS_ALLOWANCE_GZI
 // plus target-aware broadcast calendar availability and named audience previews
 // plus schema-level calendar/cycle compatibility guards for legacy broadcast drafts
 // add a small amount of legitimate lazy-loaded logic.
-const SETTINGS_JS_BUDGET_GZIP = 108 * 1024 + 21 * 1024;
+// The standalone autopost hub reuses settings broadcast/autopost chunks, changing Vite factoring.
+const AUTOPOSTS_SHARED_SETTINGS_JS_ALLOWANCE_GZIP = 1024;
+const SETTINGS_JS_BUDGET_GZIP =
+  108 * 1024 + 21 * 1024 + AUTOPOSTS_SHARED_SETTINGS_JS_ALLOWANCE_GZIP;
 // Startup CSS was effectively at the ceiling already, so widen it modestly instead of
 // forcing cosmetic regressions into the home surface and shared mobile shell.
 const STARTUP_CSS_BUDGET_GZIP = 42 * 1024;
 const SETTINGS_CSS_BUDGET_GZIP = 76 * 1024;
 const CHANNEL_SETTINGS_JS_BUDGET_GZIP = 104 * 1024;
 const CHANNEL_SETTINGS_CSS_BUDGET_GZIP = 76 * 1024;
-const CHANNEL_DIALOG_JS_BUDGET_GZIP = 82 * 1024;
+// Top-level autopost contracts add a few shared schema bytes to the contracts/zod chunk
+// that channel dialog already pays for.
+const AUTOPOSTS_SHARED_CHANNEL_DIALOG_JS_ALLOWANCE_GZIP = 512;
+const CHANNEL_DIALOG_JS_BUDGET_GZIP = 82 * 1024 + AUTOPOSTS_SHARED_CHANNEL_DIALOG_JS_ALLOWANCE_GZIP;
 const CHANNEL_DIALOG_CSS_BUDGET_GZIP = 22 * 1024;
 const CHANNEL_STATS_JS_BUDGET_GZIP = 26 * 1024;
 const GIVEAWAY_JS_BUDGET_GZIP = 58 * 1024;

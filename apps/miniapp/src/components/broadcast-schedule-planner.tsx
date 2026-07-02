@@ -100,6 +100,7 @@ type BroadcastSchedulePlannerProps = {
   pendingEditBroadcastId?: string | null;
   pendingDeleteBroadcastId?: string | null;
   timingMode?: BroadcastTimingMode;
+  availableTimingModes?: readonly BroadcastTimingMode[];
   cycle?: BroadcastCycleDraft;
   onTimingModeChange?: (mode: BroadcastTimingMode) => void;
   onCycleChange?: (cycle: BroadcastCycleDraft) => void;
@@ -166,6 +167,7 @@ export function BroadcastSchedulePlanner({
   pendingEditBroadcastId = null,
   pendingDeleteBroadcastId = null,
   timingMode = 'scheduled',
+  availableTimingModes = ['now', 'scheduled', 'cycle'],
   cycle,
   onTimingModeChange,
   onCycleChange,
@@ -293,7 +295,9 @@ export function BroadcastSchedulePlanner({
     }
 
     const firstDayMs = new Date(`${dayEntries[0]?.[0] ?? ''}T12:00:00`).getTime();
-    const lastDayMs = new Date(`${dayEntries[dayEntries.length - 1]?.[0] ?? ''}T12:00:00`).getTime();
+    const lastDayMs = new Date(
+      `${dayEntries[dayEntries.length - 1]?.[0] ?? ''}T12:00:00`,
+    ).getTime();
     const calendarSpanDays =
       Number.isFinite(firstDayMs) && Number.isFinite(lastDayMs)
         ? Math.round((lastDayMs - firstDayMs) / (24 * 60 * 60_000)) + 1
@@ -386,6 +390,8 @@ export function BroadcastSchedulePlanner({
   const normalizedTargetContextLabel =
     targetContextLabel?.trim() || currentTargetLabel.trim() || 'Текущий чат';
   const normalizedTargetContextMeta = targetContextMeta?.trim() ?? '';
+  const timingModeSet = new Set(availableTimingModes);
+  const showTimingModePicker = !calendarOnly && availableTimingModes.length > 1;
   const showCalendar = calendarOnly || (timingMode === 'scheduled' && calendarExpanded);
   const showRecipe = !calendarOnly && timingMode === 'scheduled';
   const emitSelectionStateChange = useEffectEvent(
@@ -1062,50 +1068,60 @@ export function BroadcastSchedulePlanner({
                   calendarRefreshing && 'is-refreshing',
                 )}
               >
-                <div className="broadcast-planner__intent-row" aria-label="Режим отправки">
-                  <button
-                    type="button"
-                    className={cn(
-                      'broadcast-planner__intent-chip',
-                      timingMode === 'now' && 'is-active',
-                    )}
-                    onClick={() => selectTimingMode('now')}
-                    disabled={disabled}
-                    aria-pressed={timingMode === 'now'}
-                  >
-                    <strong>Сейчас</strong>
-                    <small>сразу</small>
-                  </button>
-                  <button
-                    type="button"
-                    className={cn(
-                      'broadcast-planner__intent-chip',
-                      timingMode === 'scheduled' && 'is-active',
-                    )}
-                    onClick={() => selectTimingMode('scheduled')}
-                    disabled={disabled}
-                    aria-pressed={timingMode === 'scheduled'}
-                  >
-                    <strong>Позже</strong>
-                    <small>{futureSlotCount > 0 ? scheduleStatusLabel : 'даты'}</small>
-                  </button>
-                  <button
-                    type="button"
-                    className={cn(
-                      'broadcast-planner__intent-chip',
-                      'has-info',
-                      timingMode === 'cycle' && 'is-active',
-                    )}
-                    onClick={() => selectTimingMode('cycle')}
-                    disabled={disabled}
-                    aria-pressed={timingMode === 'cycle'}
-                    aria-label="Повтор автопостинга"
-                    title="Повтор автопостинга"
-                  >
-                    <strong>Повтор</strong>
-                    <small>{formatBroadcastCycleIntervalLabel(normalizedCycle.everyHours)}</small>
-                  </button>
-                </div>
+                {showTimingModePicker ? (
+                  <div className="broadcast-planner__intent-row" aria-label="Режим отправки">
+                    {timingModeSet.has('now') ? (
+                      <button
+                        type="button"
+                        className={cn(
+                          'broadcast-planner__intent-chip',
+                          timingMode === 'now' && 'is-active',
+                        )}
+                        onClick={() => selectTimingMode('now')}
+                        disabled={disabled}
+                        aria-pressed={timingMode === 'now'}
+                      >
+                        <strong>Сейчас</strong>
+                        <small>сразу</small>
+                      </button>
+                    ) : null}
+                    {timingModeSet.has('scheduled') ? (
+                      <button
+                        type="button"
+                        className={cn(
+                          'broadcast-planner__intent-chip',
+                          timingMode === 'scheduled' && 'is-active',
+                        )}
+                        onClick={() => selectTimingMode('scheduled')}
+                        disabled={disabled}
+                        aria-pressed={timingMode === 'scheduled'}
+                      >
+                        <strong>Позже</strong>
+                        <small>{futureSlotCount > 0 ? scheduleStatusLabel : 'даты'}</small>
+                      </button>
+                    ) : null}
+                    {timingModeSet.has('cycle') ? (
+                      <button
+                        type="button"
+                        className={cn(
+                          'broadcast-planner__intent-chip',
+                          'has-info',
+                          timingMode === 'cycle' && 'is-active',
+                        )}
+                        onClick={() => selectTimingMode('cycle')}
+                        disabled={disabled}
+                        aria-pressed={timingMode === 'cycle'}
+                        aria-label="Повтор автопостинга"
+                        title="Повтор автопостинга"
+                      >
+                        <strong>Повтор</strong>
+                        <small>
+                          {formatBroadcastCycleIntervalLabel(normalizedCycle.everyHours)}
+                        </small>
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
 
                 <button
                   type="button"
@@ -1132,7 +1148,9 @@ export function BroadcastSchedulePlanner({
                   type="button"
                   className="broadcast-planner__recipe-calendar"
                   onClick={clearCalendarSchedule}
-                  disabled={disabled || (normalizedValue.length === 0 && pickedDayKeys.length === 0)}
+                  disabled={
+                    disabled || (normalizedValue.length === 0 && pickedDayKeys.length === 0)
+                  }
                 >
                   Очистить
                 </button>
@@ -1167,9 +1185,7 @@ export function BroadcastSchedulePlanner({
                   <div>
                     <button
                       type="button"
-                      onClick={() =>
-                        patchRecipeDraft({ postsPerDay: recipeDraft.postsPerDay - 1 })
-                      }
+                      onClick={() => patchRecipeDraft({ postsPerDay: recipeDraft.postsPerDay - 1 })}
                       disabled={
                         disabled || recipeDraft.postsPerDay <= BROADCAST_RECIPE_MIN_POSTS_PER_DAY
                       }
@@ -1180,9 +1196,7 @@ export function BroadcastSchedulePlanner({
                     <strong>{recipeDraft.postsPerDay}</strong>
                     <button
                       type="button"
-                      onClick={() =>
-                        patchRecipeDraft({ postsPerDay: recipeDraft.postsPerDay + 1 })
-                      }
+                      onClick={() => patchRecipeDraft({ postsPerDay: recipeDraft.postsPerDay + 1 })}
                       disabled={
                         disabled || recipeDraft.postsPerDay >= BROADCAST_RECIPE_MAX_POSTS_PER_DAY
                       }
