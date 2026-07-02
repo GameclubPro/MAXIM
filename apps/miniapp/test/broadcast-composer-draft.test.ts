@@ -4,6 +4,7 @@ import {
   clearBroadcastComposerDraft,
   hasAppliedBroadcastComposerReset,
   isBroadcastComposerDraftEmpty,
+  loadBroadcastComposerDraft,
   markBroadcastComposerResetApplied,
   type BroadcastComposerDraft,
 } from '../src/lib/broadcast-composer-draft';
@@ -82,6 +83,100 @@ test('clears chat broadcast composer local draft and tracks reset acknowledgemen
 
     assert.equal(store.has(draftKey), false);
     assert.equal(hasAppliedBroadcastComposerReset('chat', entityId, resetAt), true);
+  } finally {
+    Object.defineProperty(globalThis, 'window', {
+      value: previousWindow,
+      configurable: true,
+    });
+  }
+});
+
+test('restores saved broadcast drafts with duplicated images only once', () => {
+  const store = new Map<string, string>();
+  const previousWindow = globalThis.window;
+  const localStorage = {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      store.set(key, value);
+    },
+    removeItem: (key: string) => {
+      store.delete(key);
+    },
+  };
+
+  Object.defineProperty(globalThis, 'window', {
+    value: { localStorage },
+    configurable: true,
+  });
+
+  try {
+    const entityId = '-71580425805146';
+    const draftKey = `maxim:broadcast-composer:chat:${entityId}`;
+    store.set(
+      draftKey,
+      JSON.stringify({
+        version: 1,
+        draft: createDraft({
+          images: [
+            { base64: 'photo-1', mimeType: 'image/jpeg', fileName: 'one.jpg' },
+            { base64: 'photo-1', mimeType: 'image/jpeg', fileName: 'copy.jpg' },
+          ],
+        }),
+      }),
+    );
+
+    const draft = loadBroadcastComposerDraft('chat', entityId);
+
+    assert.equal(draft?.images.length, 1);
+    assert.equal(draft?.imageBase64, 'photo-1');
+  } finally {
+    Object.defineProperty(globalThis, 'window', {
+      value: previousWindow,
+      configurable: true,
+    });
+  }
+});
+
+test('drops oversized saved draft images while preserving text content', () => {
+  const store = new Map<string, string>();
+  const previousWindow = globalThis.window;
+  const localStorage = {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      store.set(key, value);
+    },
+    removeItem: (key: string) => {
+      store.delete(key);
+    },
+  };
+
+  Object.defineProperty(globalThis, 'window', {
+    value: { localStorage },
+    configurable: true,
+  });
+
+  try {
+    const entityId = '-71580425805146';
+    const draftKey = `maxim:broadcast-composer:chat:${entityId}`;
+    store.set(
+      draftKey,
+      JSON.stringify({
+        version: 1,
+        draft: createDraft({
+          text: 'Текст без зависшей картинки',
+          images: [
+            { base64: 'a'.repeat(4_100_000), mimeType: 'image/jpeg', fileName: 'one.jpg' },
+            { base64: 'b'.repeat(4_100_000), mimeType: 'image/jpeg', fileName: 'two.jpg' },
+          ],
+        }),
+      }),
+    );
+
+    const draft = loadBroadcastComposerDraft('chat', entityId);
+
+    assert.equal(draft?.text, 'Текст без зависшей картинки');
+    assert.equal(draft?.images.length, 0);
+    assert.equal(draft?.imageEnabled, false);
   } finally {
     Object.defineProperty(globalThis, 'window', {
       value: previousWindow,

@@ -28,6 +28,7 @@ import botSpeechFriendlyImage from '../../../../../frendly.webp';
 import botSpeechIronicImage from '../../../../../joker.webp';
 import botSpeechPoliceImage from '../../../../../police.webp';
 import type { BroadcastSchedulePlannerSelectionState } from '../../components/broadcast-schedule-planner';
+import { normalizeComposerBroadcastImages } from '../../lib/broadcast-image-list-basic';
 import type { PublishedRulesButtonToggleProps } from '../../components/published-rules-button-toggle';
 import { HOME_ENTITY_FAVORITE_ICONS } from '../../components/ui/compact-icons';
 import { formatBroadcastButtonsStatus } from '../../lib/broadcast-link-buttons';
@@ -58,7 +59,7 @@ export type PendingBroadcastPublishReview = {
 };
 
 export function normalizeBroadcastImageList(images: BroadcastImage[]): BroadcastImage[] {
-  return images.filter((image) => image.base64.trim()).slice(0, 10);
+  return normalizeComposerBroadcastImages(images);
 }
 
 export function resolveBroadcastImagesFromLegacyFields(value: {

@@ -11,6 +11,10 @@ import {
   removeNativeStorageItem,
   writeNativeStorageItem,
 } from './native-storage';
+import {
+  getBroadcastImagesBase64Length,
+  normalizeComposerBroadcastImages,
+} from './broadcast-image-list-basic';
 
 export type BroadcastComposerDraftEntityType = 'chat' | 'channel';
 
@@ -33,6 +37,7 @@ export type BroadcastComposerDraft = {
 
 const STORAGE_VERSION = 1;
 const LOCAL_STORAGE_IMAGE_BASE64_LIMIT = 250_000;
+const RESTORABLE_IMAGE_BASE64_LIMIT = 8_000_000;
 const DRAFT_DB_NAME = 'maxim-broadcast-composer';
 const DRAFT_DB_VERSION = 1;
 const DRAFT_STORE_NAME = 'drafts';
@@ -115,8 +120,8 @@ function readImages(value: unknown): BroadcastImage[] {
     return [];
   }
 
-  return value
-    .map((item) => {
+  const images = value
+    .map((item): BroadcastImage | null => {
       if (!isObject(item)) {
         return null;
       }
@@ -132,12 +137,31 @@ function readImages(value: unknown): BroadcastImage[] {
         fileName: readString(item.fileName).trim(),
       };
     })
-    .filter((item): item is BroadcastImage => item !== null)
-    .slice(0, 10);
+    .filter((item): item is BroadcastImage => item !== null);
+
+  return normalizeComposerBroadcastImages(images);
+}
+
+function stripBroadcastComposerDraftImages(draft: BroadcastComposerDraft): BroadcastComposerDraft {
+  return {
+    ...draft,
+    imageEnabled: false,
+    imageBase64: '',
+    imageMimeType: '',
+    imageFileName: '',
+    images: [],
+  };
+}
+
+function normalizeRestorableImages(images: BroadcastImage[]): BroadcastImage[] {
+  const normalizedImages = normalizeComposerBroadcastImages(images);
+  return getBroadcastImagesBase64Length(normalizedImages) > RESTORABLE_IMAGE_BASE64_LIMIT
+    ? []
+    : normalizedImages;
 }
 
 function resolveDraftImages(draft: Record<string, unknown>): BroadcastImage[] {
-  const images = readImages(draft.images);
+  const images = normalizeRestorableImages(readImages(draft.images));
   if (images.length > 0) {
     return images;
   }
@@ -147,13 +171,13 @@ function resolveDraftImages(draft: Record<string, unknown>): BroadcastImage[] {
     return [];
   }
 
-  return [
+  return normalizeRestorableImages([
     {
       base64: imageBase64,
       mimeType: readString(draft.imageMimeType).trim(),
       fileName: readString(draft.imageFileName).trim(),
     },
-  ];
+  ]);
 }
 
 function parseBroadcastComposerDraftEnvelope(value: unknown): BroadcastComposerDraft | null {
@@ -180,6 +204,29 @@ function parseBroadcastComposerDraftEnvelope(value: unknown): BroadcastComposerD
     scheduleTimezone: readString(draft.scheduleTimezone),
     cycle: normalizeBroadcastCycleDraft(isObject(draft.cycle) ? draft.cycle : null),
   };
+}
+
+function normalizeBroadcastComposerDraft(draft: BroadcastComposerDraft): BroadcastComposerDraft {
+  const images = normalizeComposerBroadcastImages(draft.images);
+  const firstImage = images[0];
+  return {
+    ...draft,
+    imageEnabled: images.length > 0,
+    imageBase64: firstImage?.base64 ?? '',
+    imageMimeType: firstImage?.mimeType ?? '',
+    imageFileName: firstImage?.fileName ?? '',
+    images,
+  };
+}
+
+function prepareBroadcastComposerDraftForStorage(
+  draft: BroadcastComposerDraft,
+  imageBase64Limit: number,
+): BroadcastComposerDraft {
+  const normalizedDraft = normalizeBroadcastComposerDraft(draft);
+  return getBroadcastImagesBase64Length(normalizedDraft.images) > imageBase64Limit
+    ? stripBroadcastComposerDraftImages(normalizedDraft)
+    : normalizedDraft;
 }
 
 function openBroadcastDraftDb(): Promise<IDBDatabase | null> {
@@ -365,10 +412,6 @@ export function isBroadcastComposerDraftEmpty(draft: BroadcastComposerDraft): bo
   );
 }
 
-function getDraftImagesBase64Length(draft: BroadcastComposerDraft): number {
-  return draft.images.reduce((total, image) => total + image.base64.length, 0);
-}
-
 export function saveBroadcastComposerDraft(
   entityType: BroadcastComposerDraftEntityType,
   entityId: string,
@@ -385,23 +428,19 @@ export function saveBroadcastComposerDraft(
       return;
     }
 
+    const indexedDraft = prepareBroadcastComposerDraftForStorage(
+      draft,
+      RESTORABLE_IMAGE_BASE64_LIMIT,
+    );
+    const localDraft = prepareBroadcastComposerDraftForStorage(
+      draft,
+      LOCAL_STORAGE_IMAGE_BASE64_LIMIT,
+    );
     const envelope = {
       version: STORAGE_VERSION,
       savedAt: new Date().toISOString(),
-      draft,
+      draft: indexedDraft,
     };
-    const localDraft =
-      draft.images.length > 0 &&
-      getDraftImagesBase64Length(draft) > LOCAL_STORAGE_IMAGE_BASE64_LIMIT
-        ? {
-            ...draft,
-            imageEnabled: false,
-            imageBase64: '',
-            imageMimeType: '',
-            imageFileName: '',
-            images: [],
-          }
-        : draft;
     const localEnvelope = {
       ...envelope,
       draft: localDraft,

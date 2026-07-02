@@ -7,6 +7,13 @@ import { MaxRichTextEditor, type MaxRichTextEditorHandle } from './max-rich-text
 import { cn } from '../lib/cn';
 import { prepareBroadcastImage } from '../lib/broadcast-image';
 import {
+  appendComposerBroadcastImages,
+  BROADCAST_IMAGES_TOTAL_BASE64_MAX,
+  getBroadcastImagesBase64Length,
+  normalizeComposerBroadcastImages,
+  resolveBroadcastImageMaxCount,
+} from '../lib/broadcast-image-list';
+import {
   buildBroadcastPreviewButtonRows,
   formatBroadcastButtonsPreview,
 } from '../lib/broadcast-link-buttons';
@@ -24,9 +31,6 @@ type PreparingImagesState = {
   done: number;
   total: number;
 };
-
-const BROADCAST_IMAGES_MAX = 10;
-const BROADCAST_IMAGES_TOTAL_BASE64_MAX = 24_000_000;
 
 function isBroadcastSystemButtonPreview(
   button: BroadcastLinkButton | BroadcastSystemButtonPreview,
@@ -96,23 +100,22 @@ export function BroadcastContentComposer({
     done: 0,
     total: 0,
   });
-  const rawMaxImageCount = Math.trunc(
-    maxImages ?? (images || onImagesChange ? BROADCAST_IMAGES_MAX : 1),
+  const maxImageCount = resolveBroadcastImageMaxCount(
+    maxImages ?? (images || onImagesChange ? undefined : 1),
   );
-  const maxImageCount = Number.isFinite(rawMaxImageCount)
-    ? Math.max(1, Math.min(BROADCAST_IMAGES_MAX, rawMaxImageCount))
-    : BROADCAST_IMAGES_MAX;
-  const currentImages =
+  const currentImages = normalizeComposerBroadcastImages(
     images ??
-    (image?.enabled && image.base64 && image.mimeType
-      ? [
-          {
-            base64: image.base64,
-            mimeType: image.mimeType,
-            fileName: image.fileName,
-          },
-        ]
-      : []);
+      (image?.enabled && image.base64 && image.mimeType
+        ? [
+            {
+              base64: image.base64,
+              mimeType: image.mimeType,
+              fileName: image.fileName,
+            },
+          ]
+        : []),
+    maxImageCount,
+  );
   const imagePreviewItems = currentImages
     .filter((item) => item.base64 && item.mimeType)
     .slice(0, maxImageCount)
@@ -159,10 +162,6 @@ export function BroadcastContentComposer({
     });
   }
 
-  function getImagesBase64Length(nextImages: BroadcastImage[]) {
-    return nextImages.reduce((total, item) => total + item.base64.length, 0);
-  }
-
   function updatePreparingImages(nextState: PreparingImagesState) {
     setPreparingImages(nextState);
     onImagePreparationChange?.(nextState.total > nextState.done);
@@ -190,10 +189,11 @@ export function BroadcastContentComposer({
 
     updatePreparingImages({ done: 0, total: filesToPrepare.length });
     try {
-      let nextImages = currentImages.slice(0, maxImageCount);
+      const preparedImages: BroadcastImage[] = [];
+      let estimatedImages = currentImages.slice(0, maxImageCount);
       for (const [index, file] of filesToPrepare.entries()) {
         const remainingBase64Budget =
-          BROADCAST_IMAGES_TOTAL_BASE64_MAX - getImagesBase64Length(nextImages);
+          BROADCAST_IMAGES_TOTAL_BASE64_MAX - getBroadcastImagesBase64Length(estimatedImages);
         if (remainingBase64Budget <= 0) {
           throw new Error('Суммарный размер фото слишком большой.');
         }
@@ -201,21 +201,41 @@ export function BroadcastContentComposer({
         const remainingFileCount = Math.max(1, filesToPrepare.length - index);
         const maxBytes = Math.floor((remainingBase64Budget * 3) / (4 * remainingFileCount));
         const prepared = await prepareBroadcastImage(file, { maxBytes });
-        const candidateImages = [
-          ...nextImages,
-          {
-            base64: prepared.base64,
-            mimeType: prepared.mimeType,
-            fileName: prepared.fileName,
-          },
-        ];
-        if (getImagesBase64Length(candidateImages) > BROADCAST_IMAGES_TOTAL_BASE64_MAX) {
+        const preparedImage = {
+          base64: prepared.base64,
+          mimeType: prepared.mimeType,
+          fileName: prepared.fileName,
+        };
+        const appendPreview = appendComposerBroadcastImages(estimatedImages, [preparedImage], {
+          maxImageCount,
+          totalBase64Limit: BROADCAST_IMAGES_TOTAL_BASE64_MAX,
+        });
+        if (appendPreview.oversizedCount > 0) {
           throw new Error('Суммарный размер фото слишком большой.');
         }
+        preparedImages.push(preparedImage);
+        estimatedImages = appendPreview.images;
 
-        nextImages = candidateImages;
-        emitImages(nextImages);
         updatePreparingImages({ done: index + 1, total: filesToPrepare.length });
+      }
+
+      const result = appendComposerBroadcastImages(currentImages, preparedImages, {
+        maxImageCount,
+        totalBase64Limit: BROADCAST_IMAGES_TOTAL_BASE64_MAX,
+      });
+      if (result.addedCount > 0) {
+        emitImages(result.images);
+      }
+      if (result.duplicateCount > 0 && result.addedCount === 0) {
+        onError?.('Это фото уже добавлено.');
+      } else if (result.duplicateCount > 0) {
+        onError?.('Повторяющиеся фото пропущены.');
+      }
+      if (result.limitCount > 0) {
+        onError?.(`Можно добавить до ${maxImageCount} фото.`);
+      }
+      if (result.oversizedCount > 0) {
+        onError?.('Суммарный размер фото слишком большой.');
       }
     } catch (error) {
       onError?.(error instanceof Error ? error.message : 'Не удалось подготовить фото.');

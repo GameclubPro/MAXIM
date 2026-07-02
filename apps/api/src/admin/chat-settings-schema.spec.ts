@@ -516,6 +516,41 @@ describe('broadcast request schema normalization', () => {
     expect(result.images).toEqual([]);
   });
 
+  it('deduplicates repeated broadcast images before storing media payloads', () => {
+    const singleImage = {
+      base64: 'photo-1',
+      mimeType: ' image/jpeg ',
+      fileName: ' one.jpg ',
+    };
+    const singleResult = sendBroadcastRequestSchema.parse({
+      text: '',
+      images: [singleImage, { ...singleImage, fileName: 'copy.jpg' }],
+    });
+
+    expect(singleResult.imageEnabled).toBe(true);
+    expect(singleResult.images).toEqual([
+      { base64: 'photo-1', mimeType: 'image/jpeg', fileName: 'one.jpg' },
+    ]);
+    expect(singleResult.mediaType).toBeNull();
+    expect(singleResult.mediaPayload).toBeNull();
+
+    const galleryResult = sendBroadcastRequestSchema.parse({
+      text: '',
+      images: [
+        singleImage,
+        { base64: 'photo-2', mimeType: 'image/jpeg', fileName: 'two.jpg' },
+        { ...singleImage, fileName: 'copy.jpg' },
+      ],
+    });
+
+    expect(galleryResult.images).toEqual([
+      { base64: 'photo-1', mimeType: 'image/jpeg', fileName: 'one.jpg' },
+      { base64: 'photo-2', mimeType: 'image/jpeg', fileName: 'two.jpg' },
+    ]);
+    expect(galleryResult.mediaType).toBe('image');
+    expect(galleryResult.mediaPayload).toEqual({ images: galleryResult.images });
+  });
+
   it('uses shared validation for selected audience and calendar slots', () => {
     for (const schema of [sendBroadcastRequestSchema, broadcastHandoffRequestSchema]) {
       const result = schema.safeParse({

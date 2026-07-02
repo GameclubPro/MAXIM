@@ -111,6 +111,7 @@ import {
   saveBroadcastComposerDraft,
   type BroadcastComposerDraft,
 } from '../lib/broadcast-composer-draft';
+import { normalizeComposerBroadcastImages } from '../lib/broadcast-image-list-basic';
 import { buildChannelBroadcastSystemButtons } from '../lib/broadcast-system-buttons';
 import { buildBroadcastAudiencePresentation } from '../lib/broadcast-audience-presentation';
 import { cn } from '../lib/cn';
@@ -139,7 +140,7 @@ type PendingBroadcastPublishReview = {
 };
 
 function normalizeBroadcastImageList(images: BroadcastImage[]): BroadcastImage[] {
-  return images.filter((image) => image.base64.trim()).slice(0, 10);
+  return normalizeComposerBroadcastImages(images);
 }
 
 function resolveBroadcastImagesFromLegacyFields(value: {

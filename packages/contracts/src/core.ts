@@ -308,15 +308,40 @@ function readBroadcastImagePayload(value: unknown): BroadcastImage | null {
   };
 }
 
+function dedupeBroadcastImages(images: BroadcastImage[]): BroadcastImage[] {
+  const normalized: BroadcastImage[] = [];
+  const seenBase64 = new Set<string>();
+
+  for (const image of images) {
+    const base64 = image.base64.trim();
+    if (!base64 || seenBase64.has(base64)) {
+      continue;
+    }
+
+    normalized.push({
+      base64,
+      mimeType: image.mimeType.trim(),
+      fileName: image.fileName.trim(),
+    });
+    seenBase64.add(base64);
+    if (normalized.length >= MAX_BROADCAST_IMAGES) {
+      break;
+    }
+  }
+
+  return normalized;
+}
+
 function readBroadcastMediaPayloadImages(value: unknown): BroadcastImage[] {
   if (!isRecordPayload(value) || !Array.isArray(value.images)) {
     return [];
   }
 
-  return value.images
-    .map((item) => readBroadcastImagePayload(item))
-    .filter((image): image is BroadcastImage => image !== null)
-    .slice(0, MAX_BROADCAST_IMAGES);
+  return dedupeBroadcastImages(
+    value.images
+      .map((item) => readBroadcastImagePayload(item))
+      .filter((image): image is BroadcastImage => image !== null),
+  );
 }
 
 function normalizeBroadcastVideoPayload(value: unknown): Record<string, unknown> | null {
@@ -338,10 +363,10 @@ function normalizeBroadcastImages(value: {
   mediaPayload?: Record<string, unknown> | null;
 }): BroadcastImage[] {
   const explicitImages = Array.isArray(value.images)
-    ? value.images.filter((image) => image.base64.trim().length > 0)
+    ? dedupeBroadcastImages(value.images.filter((image) => image.base64.trim().length > 0))
     : [];
   if (explicitImages.length > 0) {
-    return explicitImages.slice(0, MAX_BROADCAST_IMAGES);
+    return explicitImages;
   }
 
   const payloadImages =
@@ -355,13 +380,13 @@ function normalizeBroadcastImages(value: {
     return [];
   }
 
-  return [
+  return dedupeBroadcastImages([
     {
       base64: imageBase64,
       mimeType: value.imageMimeType?.trim() ?? '',
       fileName: value.imageFileName?.trim() ?? '',
     },
-  ];
+  ]);
 }
 
 function getBroadcastImagesTotalBase64Length(images: BroadcastImage[]): number {
