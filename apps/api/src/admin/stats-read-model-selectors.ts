@@ -198,7 +198,7 @@ export async function selectChannelStatsContentBucketRows(
     ? Prisma.sql`AND NOT (published_at >= ${completeFrom} AND published_at < ${completeTo})`
     : Prisma.empty;
 
-  // View series are built from channel_post_view_snapshots in the runtime; keep this selector light.
+  // View series are built from channel_posts latest fields in the runtime; keep this selector light.
   return prisma.$queryRaw<ChannelStatsContentBucketRow[]>`
     WITH content_bucket_rows AS (
       ${rollupRowsSql}
