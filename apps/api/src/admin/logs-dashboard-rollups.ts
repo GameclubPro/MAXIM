@@ -106,34 +106,26 @@ export async function selectLogsDashboardModerationSummary(
           affectedUsers: 0,
         },
       ]);
-  const edgeExclusion = hasCompleteBuckets
-    ? Prisma.sql`AND NOT (created_at >= ${completeFrom} AND created_at < ${completeTo})`
-    : Prisma.empty;
+  const edgeRanges = resolveDashboardEdgeRanges(
+    from,
+    to,
+    completeFrom,
+    completeTo,
+    hasCompleteBuckets,
+  );
   const edgeRowsPromise = prisma.$queryRaw<Array<LogsDashboardModerationSummary>>`
+    WITH moderation_edge_rows AS (
+      ${buildModerationEdgeSummarySql(chatId, edgeRanges)}
+    )
     SELECT
-      COUNT(*) FILTER (WHERE action = 'WARN') AS "warn",
-      COUNT(*) FILTER (WHERE action = 'DELETE_MESSAGE') AS "deleteMessage",
-      COUNT(*) FILTER (WHERE action = 'MUTE') AS "mute",
-      COUNT(*) FILTER (WHERE action IN ('BAN', 'KICK')) AS "ban",
-      COUNT(*) FILTER (
-        WHERE action = 'NONE' AND rule_code = 'MANUAL_UNMUTE'
-      ) AS "unmute",
-      COUNT(*) FILTER (
-        WHERE action = 'NONE' AND rule_code = 'MANUAL_UNBAN'
-      ) AS "unban",
+      COALESCE(SUM("warn"), 0) AS "warn",
+      COALESCE(SUM("deleteMessage"), 0) AS "deleteMessage",
+      COALESCE(SUM("mute"), 0) AS "mute",
+      COALESCE(SUM("ban"), 0) AS "ban",
+      COALESCE(SUM("unmute"), 0) AS "unmute",
+      COALESCE(SUM("unban"), 0) AS "unban",
       0 AS "affectedUsers"
-    FROM moderation_events
-    WHERE chat_id = ${chatId}
-      AND created_at >= ${from}
-      AND created_at <= ${to}
-      ${edgeExclusion}
-      AND (
-        action IN ('WARN', 'DELETE_MESSAGE', 'MUTE', 'BAN', 'KICK')
-        OR (
-          action = 'NONE'
-          AND rule_code IN ('MANUAL_UNMUTE', 'MANUAL_UNBAN')
-        )
-      )
+    FROM moderation_edge_rows
   `;
   const rollupAffectedUsersSql = hasCompleteBuckets
     ? Prisma.sql`
@@ -150,20 +142,7 @@ export async function selectLogsDashboardModerationSummary(
 
       UNION
 
-      SELECT DISTINCT user_id
-      FROM moderation_events
-      WHERE chat_id = ${chatId}
-        AND created_at >= ${from}
-        AND created_at <= ${to}
-        ${edgeExclusion}
-        AND COALESCE(BTRIM(user_id), '') <> ''
-        AND (
-          action IN ('WARN', 'DELETE_MESSAGE', 'MUTE', 'BAN', 'KICK')
-          OR (
-            action = 'NONE'
-            AND rule_code IN ('MANUAL_UNMUTE', 'MANUAL_UNBAN')
-          )
-        )
+      ${buildModerationAffectedUserEdgeSql(chatId, edgeRanges)}
     )
     SELECT COUNT(DISTINCT user_id) AS affected_users
     FROM affected_user_ids
@@ -255,6 +234,88 @@ function buildMembershipEdgeSummarySql(
       `,
     ),
     ' UNION ALL ',
+  );
+}
+
+function buildModerationActionFilterSql(): Prisma.Sql {
+  return Prisma.sql`
+    AND (
+      action IN ('WARN', 'DELETE_MESSAGE', 'MUTE', 'BAN', 'KICK')
+      OR (
+        action = 'NONE'
+        AND rule_code IN ('MANUAL_UNMUTE', 'MANUAL_UNBAN')
+      )
+    )
+  `;
+}
+
+function buildModerationEdgeSummarySql(
+  chatId: string,
+  edgeRanges: Array<{ from: Date; to: Date }>,
+): Prisma.Sql {
+  if (edgeRanges.length === 0) {
+    return Prisma.sql`
+      SELECT
+        0::BIGINT AS "warn",
+        0::BIGINT AS "deleteMessage",
+        0::BIGINT AS "mute",
+        0::BIGINT AS "ban",
+        0::BIGINT AS "unmute",
+        0::BIGINT AS "unban",
+        0::BIGINT AS "affectedUsers"
+      WHERE FALSE
+    `;
+  }
+
+  return Prisma.join(
+    edgeRanges.map(
+      (range) => Prisma.sql`
+        SELECT
+          COUNT(*) FILTER (WHERE action = 'WARN') AS "warn",
+          COUNT(*) FILTER (WHERE action = 'DELETE_MESSAGE') AS "deleteMessage",
+          COUNT(*) FILTER (WHERE action = 'MUTE') AS "mute",
+          COUNT(*) FILTER (WHERE action IN ('BAN', 'KICK')) AS "ban",
+          COUNT(*) FILTER (
+            WHERE action = 'NONE' AND rule_code = 'MANUAL_UNMUTE'
+          ) AS "unmute",
+          COUNT(*) FILTER (
+            WHERE action = 'NONE' AND rule_code = 'MANUAL_UNBAN'
+          ) AS "unban",
+          0 AS "affectedUsers"
+        FROM moderation_events
+        WHERE chat_id = ${chatId}
+          AND created_at >= ${range.from}
+          AND created_at <= ${range.to}
+          ${buildModerationActionFilterSql()}
+      `,
+    ),
+    ' UNION ALL ',
+  );
+}
+
+function buildModerationAffectedUserEdgeSql(
+  chatId: string,
+  edgeRanges: Array<{ from: Date; to: Date }>,
+): Prisma.Sql {
+  if (edgeRanges.length === 0) {
+    return Prisma.sql`
+      SELECT NULL::TEXT AS user_id WHERE FALSE
+    `;
+  }
+
+  return Prisma.join(
+    edgeRanges.map(
+      (range) => Prisma.sql`
+        SELECT DISTINCT user_id
+        FROM moderation_events
+        WHERE chat_id = ${chatId}
+          AND created_at >= ${range.from}
+          AND created_at <= ${range.to}
+          AND COALESCE(BTRIM(user_id), '') <> ''
+          ${buildModerationActionFilterSql()}
+      `,
+    ),
+    ' UNION ',
   );
 }
 

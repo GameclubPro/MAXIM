@@ -20,7 +20,10 @@ import { buildActiveMuteStateKey } from '../moderation/moderation-state.util';
 import { buildCompactProfileMentionStartPayload } from '../max/max-deep-link.util';
 import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
 import { AdminService } from './admin.service';
-import { selectLogsDashboardMembershipSummary } from './logs-dashboard-rollups';
+import {
+  selectLogsDashboardMembershipSummary,
+  selectLogsDashboardModerationSummary,
+} from './logs-dashboard-rollups';
 
 type ManagedEntityType = 'chat' | 'channel';
 
@@ -4376,6 +4379,64 @@ describe('AdminService.getLogsDashboard', () => {
     expect(edgeSqlText).toContain('COUNT(*) FILTER (WHERE event_type =');
   });
 
+  it('keeps moderation edge ranges outside complete rollup buckets', async () => {
+    const prisma = {
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValueOnce([
+          {
+            warn: '3',
+            deleteMessage: '2',
+            mute: '1',
+            ban: '1',
+            unmute: '0',
+            unban: '0',
+            affectedUsers: 0,
+          },
+        ])
+        .mockResolvedValueOnce([
+          {
+            warn: '1',
+            deleteMessage: '1',
+            mute: '0',
+            ban: '0',
+            unmute: '1',
+            unban: '1',
+            affectedUsers: 0,
+          },
+        ])
+        .mockResolvedValueOnce([{ affected_users: '5' }]),
+    };
+
+    const summary = await selectLogsDashboardModerationSummary(
+      prisma as never,
+      'chat-1',
+      new Date('2026-03-01T12:15:30.000Z'),
+      new Date('2026-03-02T12:45:00.000Z'),
+    );
+
+    expect(summary).toEqual({
+      warn: 4,
+      deleteMessage: 3,
+      mute: 1,
+      ban: 1,
+      unmute: 1,
+      unban: 1,
+      affectedUsers: 5,
+    });
+    const edgeSqlText = extractSqlText(prisma.$queryRaw.mock.calls[1]);
+    expect(edgeSqlText).toContain('WITH moderation_edge_rows AS');
+    expect(edgeSqlText).toContain('FROM moderation_events');
+    expect(edgeSqlText).toContain('UNION ALL');
+    expect(edgeSqlText).not.toContain('AND NOT');
+
+    const affectedSqlText = extractSqlText(prisma.$queryRaw.mock.calls[2]);
+    expect(affectedSqlText).toContain('chat_moderation_affected_user_hours');
+    expect(affectedSqlText).toContain('FROM moderation_events');
+    expect(affectedSqlText).toContain('UNION');
+    expect(affectedSqlText).not.toContain('AND NOT');
+  });
+
   it('returns membership and violations summary for selected chat', async () => {
     const prisma = createPrismaMock();
     prisma.$queryRaw
@@ -4743,10 +4804,11 @@ describe('AdminService.getLogsDashboard', () => {
     expect(prisma.moderationEvent.findMany).not.toHaveBeenCalled();
     const moderationEdgeSqlText =
       prisma.$queryRaw.mock.calls
-        .map((call) => extractSqlText(call[0]))
-        .find((sqlText) => sqlText.includes('FROM moderation_events')) ?? '';
+        .map((call) => extractSqlText(call))
+        .find((sqlText) => sqlText.includes('WITH moderation_edge_rows AS')) ?? '';
+    expect(moderationEdgeSqlText).toContain('FROM moderation_events');
     expect(moderationEdgeSqlText).toContain('created_at >=');
-    expect(moderationEdgeSqlText).toContain('created_at <');
+    expect(moderationEdgeSqlText).not.toContain('AND NOT');
   });
 
   it('skips non-requested preview feeds to keep dashboard responses lighter', async () => {

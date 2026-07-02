@@ -1,4 +1,4 @@
-import type { MembershipActivityItem } from '@maxim/contracts';
+import type { MembershipActivityItem, MembershipActivityPage } from '@maxim/contracts';
 import type {
   ChannelStatsBucket,
   ChannelStatsRange,
@@ -38,6 +38,10 @@ import {
 import type { ApiTransport } from '../lib/api/transport';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
+import {
+  buildMembershipActivitySnapshotParts,
+  isMembershipActivityPage,
+} from '../lib/logs-dashboard-cache';
 import { openMaxBotLinkAndClose } from '../lib/max-bridge';
 import { queryKeys } from '../lib/query-keys';
 import {
@@ -1672,6 +1676,18 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     ]);
     return isChannelStatsResponseForRange(snapshot, chatId, range) ? snapshot : null;
   }, [chatId, range, section]);
+  const initialActivityPageSnapshot = useMemo(() => {
+    if (!chatId || section !== 'events') {
+      return null;
+    }
+
+    const snapshot = readStatsSnapshotMirror<MembershipActivityPage>(
+      'membership-activity-feed',
+      buildMembershipActivitySnapshotParts('channel', chatId, range, 'all'),
+    );
+    return isMembershipActivityPage(snapshot) ? snapshot : null;
+  }, [chatId, range, section]);
+  const shouldLoadOverviewStats = Boolean(chatId) && section === 'overview';
 
   const statsQuery = useQuery({
     queryKey: queryKeys.channelStats(chatId, range),
@@ -1686,7 +1702,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
           mode: 'overview',
         },
       ),
-    enabled: Boolean(chatId),
+    enabled: shouldLoadOverviewStats,
     staleTime: 30_000,
     initialData: initialStatsSnapshot ?? undefined,
     initialDataUpdatedAt: initialStatsSnapshot ? 0 : undefined,
@@ -1697,7 +1713,8 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
   const activityFeed = useMembershipActivityFeed({
     enabled: Boolean(chatId) && section === 'events',
     range,
-    initialPage: null,
+    initialPage: initialActivityPageSnapshot,
+    refetchInitialPage: Boolean(initialActivityPageSnapshot),
     loadPage: (query, request) => getChannelActivityFeed(api, chatId, query, request),
   });
 
@@ -1726,12 +1743,39 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
   }, [chatId, queryClient, range, section]);
 
   useEffect(() => {
-    if (!isChannelStatsResponseForRange(statsQuery.data, chatId, range)) {
+    if (section !== 'overview' || !isChannelStatsResponseForRange(statsQuery.data, chatId, range)) {
       return;
     }
 
     saveStatsSnapshot('channel', [chatId, range, 'overview'], statsQuery.data);
-  }, [chatId, range, statsQuery.data]);
+  }, [chatId, range, section, statsQuery.data]);
+
+  useEffect(() => {
+    if (!chatId || section !== 'events' || activityFeed.filter !== 'all') {
+      return;
+    }
+    if (activityFeed.items.length === 0 && !activityFeed.hasMore) {
+      return;
+    }
+
+    saveStatsSnapshot(
+      'membership-activity-feed',
+      buildMembershipActivitySnapshotParts('channel', chatId, range, 'all'),
+      {
+        items: activityFeed.items.slice(0, 50),
+        hasMore: activityFeed.hasMore,
+        nextCursor: activityFeed.nextCursor,
+      } satisfies MembershipActivityPage,
+    );
+  }, [
+    activityFeed.filter,
+    activityFeed.hasMore,
+    activityFeed.items,
+    activityFeed.nextCursor,
+    chatId,
+    range,
+    section,
+  ]);
 
   useEffect(() => {
     document.body.classList.add('channel-stats-page-open');

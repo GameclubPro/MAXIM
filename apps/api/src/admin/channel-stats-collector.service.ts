@@ -38,6 +38,7 @@ const CHANNEL_STATS_IGNORED_FAILURE_METRIC_STATUSES = [404] as const;
 const DEFAULT_CHANNEL_STATS_STARTUP_DELAY_MS = 30_000;
 const DEFAULT_CHANNEL_STATS_STARTUP_JITTER_MS = 15_000;
 const DEFAULT_CHANNEL_STATS_STARTUP_MAX_PAGES = 20;
+const DEFAULT_CHANNEL_STATS_ENDPOINT_MAX_PAGES = 8;
 type ChannelStatsSyncResult = {
   audienceSynced: boolean;
   viewsSynced: boolean;
@@ -63,6 +64,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
   private readonly startupSyncDelayMs: number;
   private readonly startupSyncJitterMs: number;
   private readonly startupSyncMaxPages: number;
+  private readonly endpointSyncMaxPages: number;
   private readonly syncIntervalMs: number;
   private timer: NodeJS.Timeout | null = null;
   private startupTimer: NodeJS.Timeout | null = null;
@@ -112,6 +114,13 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       configService.get<number>(
         'CHANNEL_STATS_STARTUP_MAX_PAGES',
         DEFAULT_CHANNEL_STATS_STARTUP_MAX_PAGES,
+      ),
+    );
+    this.endpointSyncMaxPages = Math.max(
+      1,
+      configService.get<number>(
+        'CHANNEL_STATS_ENDPOINT_MAX_PAGES',
+        DEFAULT_CHANNEL_STATS_ENDPOINT_MAX_PAGES,
       ),
     );
     this.syncIntervalMs = CHANNEL_STATS_SYNC_INTERVAL_MS;
@@ -179,10 +188,24 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       return;
     }
 
-    await this.syncChannel(chatId, {
+    const reason = options?.reason ?? 'opportunistic';
+    const isStatsEndpointRefresh = reason === 'stats_endpoint';
+    const shouldPauseStatsEndpointRefresh =
+      isStatsEndpointRefresh &&
+      ((await this.isBackgroundWorkPaused('scheduled')) ||
+        (await this.isBackgroundSyncBackoffActive()));
+    if (shouldPauseStatsEndpointRefresh) {
+      return;
+    }
+
+    const syncResult = await this.syncChannel(chatId, {
       reason: options?.reason ?? 'opportunistic',
       markOpportunistic: true,
+      ...(isStatsEndpointRefresh ? { maxPages: this.endpointSyncMaxPages } : {}),
     });
+    if (isStatsEndpointRefresh && syncResult.throttled) {
+      await this.activateBackgroundSyncBackoff();
+    }
   }
 
   async syncAllChannels(reason: 'startup' | 'scheduled') {
@@ -331,6 +354,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     options?: {
       reason?: string;
       markOpportunistic?: boolean;
+      maxPages?: number;
     },
   ): Promise<ChannelStatsSyncResult> {
     const result: ChannelStatsSyncResult = {
@@ -402,7 +426,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
               from: lookbackFrom,
               to: now,
               count: 100,
-              maxPages: this.resolveMessageSnapshotMaxPages(options?.reason),
+              maxPages: options?.maxPages ?? this.resolveMessageSnapshotMaxPages(options?.reason),
               trafficClass: 'background',
               ignoreFailureMetricStatuses: CHANNEL_STATS_IGNORED_FAILURE_METRIC_STATUSES,
               sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,

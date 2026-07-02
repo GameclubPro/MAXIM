@@ -6,6 +6,7 @@ import type {
   ManualModerationActionRequest,
   ManualModerationScope,
   ChatParticipantItem,
+  ChatParticipantsPage,
   GlobalSpammerReviewAction,
   GlobalSpammerReviewCandidate,
   GlobalSpammerUserDiagnostics,
@@ -60,7 +61,19 @@ import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 import { openMaxBotLinkAndClose } from '../lib/max-bridge';
 import { resolveModerationFeedReason } from '../lib/moderation-feed-reason';
 import { queryKeys } from '../lib/query-keys';
-import { readStatsSnapshot, saveStatsSnapshot } from '../lib/stats-snapshot-cache';
+import {
+  buildLogsDashboardSnapshotParts,
+  buildChatParticipantsSnapshotParts,
+  isLogsDashboardResponseForRange,
+  isChatParticipantsPage,
+  shouldPrefetchSecondaryEventsDashboard,
+  type EventsDashboardPrefetchNetwork,
+} from '../lib/logs-dashboard-cache';
+import {
+  readStatsSnapshot,
+  readStatsSnapshotMirror,
+  saveStatsSnapshot,
+} from '../lib/stats-snapshot-cache';
 import { useChatParticipantsFeed } from '../lib/use-chat-participants-feed';
 import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 import { useModerationFeed } from '../lib/use-moderation-feed';
@@ -1967,6 +1980,16 @@ async function measureDashboardRequest<T>(label: string, task: () => Promise<T>)
   }
 }
 
+function readEventsDashboardPrefetchNetwork(): EventsDashboardPrefetchNetwork | null {
+  if (typeof navigator === 'undefined') {
+    return null;
+  }
+
+  return (
+    (navigator as Navigator & { connection?: EventsDashboardPrefetchNetwork }).connection ?? null
+  );
+}
+
 export function EventsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
   const location = useLocation();
@@ -1994,11 +2017,38 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     deferredParticipantsSearch.trim(),
     PARTICIPANTS_SEARCH_DEBOUNCE_MS,
   );
+  const initialParticipantsPageSnapshot = useMemo(() => {
+    if (!chatId || section !== 'participants' || debouncedParticipantsSearch) {
+      return null;
+    }
+
+    const snapshot = readStatsSnapshotMirror<ChatParticipantsPage>(
+      'chat-participants-feed',
+      buildChatParticipantsSnapshotParts(chatId, range, ''),
+    );
+    return isChatParticipantsPage(snapshot) ? snapshot : null;
+  }, [chatId, debouncedParticipantsSearch, range, section]);
 
   const routeChatTitle = getRouteChatTitle(location.state);
   const routeChatAvatarUrl = getRouteChatAvatarUrl(location.state);
   const includeActivityPreview = section === 'activity';
   const includeModerationPreview = section === 'moderation';
+  const initialDashboardSnapshot = useMemo(() => {
+    if (!chatId || section === 'participants') {
+      return null;
+    }
+
+    const snapshot = readStatsSnapshotMirror<LogsDashboardResponse>(
+      'chat',
+      buildLogsDashboardSnapshotParts(
+        chatId,
+        range,
+        includeActivityPreview,
+        includeModerationPreview,
+      ),
+    );
+    return isLogsDashboardResponseForRange(snapshot, chatId, range) ? snapshot : null;
+  }, [chatId, includeActivityPreview, includeModerationPreview, range, section]);
 
   useEffect(() => {
     if (chatId) {
@@ -2050,6 +2100,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     },
     enabled: Boolean(chatId) && section !== 'participants',
     staleTime: 30_000,
+    initialData: initialDashboardSnapshot ?? undefined,
+    initialDataUpdatedAt: initialDashboardSnapshot ? 0 : undefined,
     placeholderData: (previousData) => previousData,
     refetchOnWindowFocus: false,
   });
@@ -2060,12 +2112,15 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     }
 
     let cancelled = false;
-    void readStatsSnapshot<LogsDashboardResponse>('chat', [
-      chatId,
-      range,
-      includeActivityPreview ? 'activity' : 'no-activity',
-      includeModerationPreview ? 'moderation' : 'no-moderation',
-    ]).then((snapshot) => {
+    void readStatsSnapshot<LogsDashboardResponse>(
+      'chat',
+      buildLogsDashboardSnapshotParts(
+        chatId,
+        range,
+        includeActivityPreview,
+        includeModerationPreview,
+      ),
+    ).then((snapshot) => {
       if (cancelled || !snapshot) {
         return;
       }
@@ -2093,18 +2148,28 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
     saveStatsSnapshot(
       'chat',
-      [
+      buildLogsDashboardSnapshotParts(
         chatId,
         range,
-        includeActivityPreview ? 'activity' : 'no-activity',
-        includeModerationPreview ? 'moderation' : 'no-moderation',
-      ],
+        includeActivityPreview,
+        includeModerationPreview,
+      ),
       dashboardQuery.data,
     );
   }, [chatId, dashboardQuery.data, includeActivityPreview, includeModerationPreview, range]);
 
   useEffect(() => {
     if (!chatId || section === 'participants' || !dashboardQuery.data) {
+      return undefined;
+    }
+
+    if (
+      !shouldPrefetchSecondaryEventsDashboard({
+        range,
+        participantsCount: dashboardQuery.data.chat.participantsCount,
+        network: readEventsDashboardPrefetchNetwork(),
+      })
+    ) {
       return undefined;
     }
 
@@ -2328,10 +2393,40 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     enabled: Boolean(chatId) && section === 'participants',
     range,
     search: debouncedParticipantsSearch,
-    initialPage: null,
+    initialPage: initialParticipantsPageSnapshot,
+    refetchInitialPage: Boolean(initialParticipantsPageSnapshot),
     loadPage: (query, request) => getChatParticipantsPage(api, chatId ?? '', query, request),
   });
   const fullParticipantsTotal = dashboard?.chat.participantsCount ?? participantsFeed.totalCount;
+
+  useEffect(() => {
+    if (!chatId || section !== 'participants' || debouncedParticipantsSearch) {
+      return;
+    }
+    if (participantsFeed.items.length === 0 && participantsFeed.totalCount === null) {
+      return;
+    }
+
+    saveStatsSnapshot(
+      'chat-participants-feed',
+      buildChatParticipantsSnapshotParts(chatId, range, ''),
+      {
+        items: participantsFeed.items.slice(0, 100),
+        totalCount: participantsFeed.totalCount,
+        hasMore: participantsFeed.hasMore,
+        nextCursor: participantsFeed.nextCursor,
+      } satisfies ChatParticipantsPage,
+    );
+  }, [
+    chatId,
+    debouncedParticipantsSearch,
+    participantsFeed.hasMore,
+    participantsFeed.items,
+    participantsFeed.nextCursor,
+    participantsFeed.totalCount,
+    range,
+    section,
+  ]);
 
   useEffect(() => {
     if (typeof fullParticipantsTotal === 'number') {

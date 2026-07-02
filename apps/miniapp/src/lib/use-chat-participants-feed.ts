@@ -9,6 +9,7 @@ type LoadChatParticipantsPage = (
 type UseChatParticipantsFeedOptions = {
   enabled?: boolean;
   initialPage?: ChatParticipantsPage | null;
+  refetchInitialPage?: boolean;
   loadPage: LoadChatParticipantsPage;
   range?: ChatParticipantsQuery['range'];
   limit?: number;
@@ -68,6 +69,7 @@ function mergeParticipants(
 export function useChatParticipantsFeed({
   enabled = true,
   initialPage = null,
+  refetchInitialPage = false,
   loadPage,
   range = '7d',
   limit = 100,
@@ -110,7 +112,9 @@ export function useChatParticipantsFeed({
       setFeed(toFeedState(initialPage));
       setError(null);
       setStatus('idle');
-      return;
+      if (!refetchInitialPage) {
+        return;
+      }
     }
 
     const requestId = requestIdRef.current;
@@ -159,7 +163,7 @@ export function useChatParticipantsFeed({
         activeControllerRef.current = null;
       }
     };
-  }, [enabled, initialPage, normalizedSearch, range, requestLimit]);
+  }, [enabled, initialPage, normalizedSearch, range, requestLimit, refetchInitialPage]);
 
   async function loadMore() {
     if (!enabled || status !== 'idle' || !feed.hasMore || !feed.nextCursor) {
@@ -218,7 +222,7 @@ export function useChatParticipantsFeed({
       return;
     }
 
-    if (initialPage && !normalizedSearch) {
+    if (initialPage && !normalizedSearch && !refetchInitialPage) {
       setFeed(toFeedState(initialPage));
       setError(null);
       setStatus('idle');

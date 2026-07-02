@@ -19,6 +19,7 @@ type UseMembershipActivityFeedOptions = {
   enabled?: boolean;
   range: MembershipActivityRange;
   initialPage?: MembershipActivityPage | null;
+  refetchInitialPage?: boolean;
   loadPage: LoadMembershipActivityPage;
   limit?: number;
 };
@@ -55,6 +56,7 @@ export function useMembershipActivityFeed({
   enabled = true,
   range,
   initialPage = null,
+  refetchInitialPage = false,
   loadPage,
   limit = 50,
 }: UseMembershipActivityFeedOptions) {
@@ -97,7 +99,7 @@ export function useMembershipActivityFeed({
     }
 
     if (filter === 'all') {
-      if (initialPage) {
+      if (initialPage && !refetchInitialPage) {
         return;
       }
     }
@@ -147,7 +149,7 @@ export function useMembershipActivityFeed({
         activeControllerRef.current = null;
       }
     };
-  }, [enabled, filter, limit, range]);
+  }, [enabled, filter, initialPage, limit, range, refetchInitialPage]);
 
   async function loadMore() {
     if (!enabled || status !== 'idle' || !feed.hasMore || !feed.nextCursor) {
@@ -205,7 +207,7 @@ export function useMembershipActivityFeed({
       return;
     }
 
-    if (filter === 'all' && initialPage) {
+    if (filter === 'all' && initialPage && !refetchInitialPage) {
       setFeed(toFeedState(initialPage));
       setError(null);
       return;
@@ -251,6 +253,7 @@ export function useMembershipActivityFeed({
     setFilter,
     items: feed.items,
     hasMore: feed.hasMore,
+    nextCursor: feed.nextCursor,
     error,
     isReloading: status === 'reloading',
     isLoadingMore: status === 'loadingMore',

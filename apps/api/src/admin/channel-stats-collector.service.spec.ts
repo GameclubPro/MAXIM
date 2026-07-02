@@ -43,6 +43,7 @@ function createConfigMock(
     startupDelayMs?: number;
     startupJitterMs?: number;
     startupMaxPages?: number;
+    endpointMaxPages?: number;
   } = {},
 ) {
   return {
@@ -64,6 +65,9 @@ function createConfigMock(
       }
       if (key === 'CHANNEL_STATS_STARTUP_MAX_PAGES') {
         return options.startupMaxPages ?? fallback;
+      }
+      if (key === 'CHANNEL_STATS_ENDPOINT_MAX_PAGES') {
+        return options.endpointMaxPages ?? fallback;
       }
       return fallback;
     }),
@@ -326,6 +330,101 @@ describe('ChannelStatsCollectorService', () => {
     await service.syncChannelIfStale('channel-1');
 
     expect(syncSpy).not.toHaveBeenCalled();
+    await service.onModuleDestroy();
+  });
+
+  it('uses a smaller MAX page budget for stats endpoint refreshes', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'channel-1',
+        title: 'Новости MAX',
+        participantsCount: 1240,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/news',
+        lastEventAt: '2026-03-07T11:55:00.000Z',
+        entityType: 'channel',
+      }),
+      listMessageSnapshots: jest.fn().mockResolvedValue([]),
+      ensureWebhookSubscription: jest.fn().mockResolvedValue({
+        url: 'https://maxim.play-team.ru/api/webhook/max/test/secret',
+        updateTypes: ['message_created', 'user_added', 'user_removed'],
+      }),
+    };
+
+    const service = new ChannelStatsCollectorService(
+      prisma as never,
+      maxClient as never,
+      createConfigMock({
+        endpointMaxPages: 5,
+      }) as never,
+    );
+
+    await service.syncChannelIfStale('channel-1', {
+      reason: 'stats_endpoint',
+    });
+
+    expect(maxClient.listMessageSnapshots).toHaveBeenCalledWith(
+      'channel-1',
+      expect.objectContaining({
+        count: 100,
+        maxPages: 5,
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('skips stats endpoint refreshes while background channel stats work is paused', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatSnapshot: jest.fn(),
+      listMessageSnapshots: jest.fn(),
+      ensureWebhookSubscription: jest.fn(),
+    };
+    const systemModeService = {
+      getEffectiveSnapshot: jest.fn().mockResolvedValue({
+        mode: 'degrade',
+        source: 'auto',
+        reason: 'queue lag 24.0s',
+        updatedAt: new Date().toISOString(),
+        manualMode: null,
+        queueLagSec: 24,
+        action: {
+          windowSec: 60,
+          total: 200,
+          success: 190,
+          failure: 10,
+          critical: 0,
+          errorRate: 0.05,
+          criticalRate: 0,
+        },
+      }),
+    };
+
+    const service = new ChannelStatsCollectorService(
+      prisma as never,
+      maxClient as never,
+      createConfigMock() as never,
+      systemModeService as never,
+    );
+
+    await service.syncChannelIfStale('channel-1', {
+      reason: 'stats_endpoint',
+    });
+
+    expect(systemModeService.getEffectiveSnapshot).toHaveBeenCalled();
+    expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
+    expect(maxClient.listMessageSnapshots).not.toHaveBeenCalled();
+    expect(maxClient.ensureWebhookSubscription).not.toHaveBeenCalled();
+
     await service.onModuleDestroy();
   });
 
