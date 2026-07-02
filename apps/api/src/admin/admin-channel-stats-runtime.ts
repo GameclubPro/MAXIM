@@ -372,25 +372,6 @@ export class AdminChannelStatsRuntime {
           syncState.membershipCoverageFrom.getTime() <= windowFrom.getTime(),
       );
 
-    const viewSnapshots =
-      periodPosts.length > 0
-        ? await this.prisma.channelPostViewSnapshot.findMany({
-            where: {
-              channelPostId: {
-                in: periodPosts.map((post: ChannelStatsPostRow) => post.id),
-              },
-              capturedAt: { gte: from, lte: now },
-            },
-            orderBy: [{ channelPostId: 'asc' }, { capturedAt: 'asc' }],
-            select: {
-              channelPostId: true,
-              views: true,
-              reactionsTotal: true,
-              capturedAt: true,
-            },
-          })
-        : [];
-
     const localTitle = chat?.title?.trim() || `Канал ${chatId}`;
     let maxSnapshotAvailable = latestAudienceSnapshot !== null;
     let title = localTitle;
@@ -452,7 +433,7 @@ export class AdminChannelStatsRuntime {
     const left = membershipSeries.reduce((total, item) => total + item.left, 0);
     const contentSeries = this.buildContentSeriesFromBucketRows(bucketStarts, contentBucketRows);
     const contentTotals = this.buildContentTotals(contentSeries);
-    const postViewMetrics = this.buildPostViewMetrics(periodPosts, viewSnapshots, from);
+    const postViewMetrics = this.buildPostViewMetrics(periodPosts, [], from);
     const periodViews = this.sumChannelPostMetricViews(postViewMetrics);
     const viewsSeries = this.buildAverageViewsSeriesFromPostMetrics(
       bucketStarts,
@@ -615,10 +596,10 @@ export class AdminChannelStatsRuntime {
     userId: string,
     query: ChannelStatsQuery,
   ): string {
+    void userId;
     return [
       'views-posts-v1',
       chatId,
-      userId,
       query.range,
       `activity=${query.includeActivityPreview ? 1 : 0}`,
     ].join(':');
@@ -732,28 +713,10 @@ export class AdminChannelStatsRuntime {
         }),
       ]);
 
-    const viewSnapshots =
-      periodPosts.length > 0
-        ? await this.prisma.channelPostViewSnapshot.findMany({
-            where: {
-              channelPostId: {
-                in: periodPosts.map((post: ChannelStatsPostRow) => post.id),
-              },
-              capturedAt: { gte: from, lte: to },
-            },
-            orderBy: [{ channelPostId: 'asc' }, { capturedAt: 'asc' }],
-            select: {
-              channelPostId: true,
-              views: true,
-              reactionsTotal: true,
-              capturedAt: true,
-            },
-          })
-        : [];
     const bucketStarts = this.buildChannelStatsBucketStarts(from, to, bucket);
     const contentSeries = this.buildContentSeriesFromBucketRows(bucketStarts, contentBucketRows);
     const contentTotals = this.buildContentTotals(contentSeries);
-    const postViewMetrics = this.buildPostViewMetrics(periodPosts, viewSnapshots, from);
+    const postViewMetrics = this.buildPostViewMetrics(periodPosts, [], from);
     const viewsSeries = this.buildAverageViewsSeriesFromPostMetrics(
       bucketStarts,
       postViewMetrics,

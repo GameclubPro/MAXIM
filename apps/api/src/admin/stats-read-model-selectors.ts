@@ -178,7 +178,7 @@ export async function selectChannelStatsContentBucketRows(
         SELECT
           date_trunc(${bucketSql}, bucket_start)::TIMESTAMP(3) AS bucket_start,
           COALESCE(SUM(posts), 0) AS posts,
-          COALESCE(SUM(views_delta), 0) AS views_delta,
+          0::BIGINT AS views_delta,
           COALESCE(SUM(reactions), 0) AS reactions
         FROM channel_stats_bucket_rollups
         WHERE chat_id = ${params.chatId}
@@ -197,13 +197,8 @@ export async function selectChannelStatsContentBucketRows(
   const postEdgeExclusionSql = hasCompleteBuckets
     ? Prisma.sql`AND NOT (published_at >= ${completeFrom} AND published_at < ${completeTo})`
     : Prisma.empty;
-  const viewEdgeExclusionSql = hasCompleteBuckets
-    ? Prisma.sql`AND NOT (snapshots.captured_at >= ${completeFrom} AND snapshots.captured_at < ${completeTo})`
-    : Prisma.empty;
-  const initialViewCorrectionWindowSql = hasCompleteBuckets
-    ? Prisma.sql`AND snapshots.captured_at >= ${completeFrom} AND snapshots.captured_at < ${completeTo}`
-    : Prisma.sql`AND FALSE`;
 
+  // View series are built from channel_post_view_snapshots in the runtime; keep this selector light.
   return prisma.$queryRaw<ChannelStatsContentBucketRow[]>`
     WITH content_bucket_rows AS (
       ${rollupRowsSql}
@@ -221,71 +216,6 @@ export async function selectChannelStatsContentBucketRows(
         AND published_at <= ${params.to}
         ${postEdgeExclusionSql}
       GROUP BY date_trunc(${bucketSql}, published_at)::TIMESTAMP(3)
-
-      UNION ALL
-
-      SELECT
-        date_trunc(${bucketSql}, snapshots.captured_at)::TIMESTAMP(3) AS bucket_start,
-        0::BIGINT AS posts,
-        COALESCE(
-          SUM(
-            GREATEST(
-              snapshots.views - COALESCE(
-                previous_snapshot.views,
-                CASE WHEN posts.published_at >= ${params.from} THEN 0 ELSE snapshots.views END
-              ),
-              0
-            )
-          ),
-          0
-        ) AS views_delta,
-        0::BIGINT AS reactions
-      FROM channel_post_view_snapshots snapshots
-      JOIN channel_posts posts ON posts.id = snapshots.channel_post_id
-      LEFT JOIN LATERAL (
-        SELECT previous.views
-        FROM channel_post_view_snapshots previous
-        WHERE previous.channel_post_id = snapshots.channel_post_id
-          AND (
-            previous.captured_at < snapshots.captured_at
-            OR (
-              previous.captured_at = snapshots.captured_at
-              AND previous.id < snapshots.id
-            )
-          )
-        ORDER BY previous.captured_at DESC, previous.id DESC
-        LIMIT 1
-      ) previous_snapshot ON TRUE
-      WHERE posts.chat_id = ${params.chatId}
-        AND snapshots.captured_at >= ${params.from}
-        AND snapshots.captured_at <= ${params.to}
-        ${viewEdgeExclusionSql}
-      GROUP BY date_trunc(${bucketSql}, snapshots.captured_at)::TIMESTAMP(3)
-
-      UNION ALL
-
-      -- First snapshots of period posts are period views, but the hourly rollup
-      -- stores only deltas after the first snapshot.
-      SELECT
-        date_trunc(${bucketSql}, snapshots.captured_at)::TIMESTAMP(3) AS bucket_start,
-        0::BIGINT AS posts,
-        COALESCE(SUM(GREATEST(snapshots.views, 0)), 0) AS views_delta,
-        0::BIGINT AS reactions
-      FROM channel_posts posts
-      JOIN LATERAL (
-        SELECT first_snapshot.captured_at, first_snapshot.views
-        FROM channel_post_view_snapshots first_snapshot
-        WHERE first_snapshot.channel_post_id = posts.id
-        ORDER BY first_snapshot.captured_at ASC, first_snapshot.id ASC
-        LIMIT 1
-      ) snapshots ON TRUE
-      WHERE posts.chat_id = ${params.chatId}
-        AND posts.published_at >= ${params.from}
-        AND posts.published_at <= ${params.to}
-        AND snapshots.captured_at >= ${params.from}
-        AND snapshots.captured_at <= ${params.to}
-        ${initialViewCorrectionWindowSql}
-      GROUP BY date_trunc(${bucketSql}, snapshots.captured_at)::TIMESTAMP(3)
     )
     SELECT
       bucket_start,

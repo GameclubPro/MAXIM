@@ -19576,9 +19576,8 @@ describe('AdminService.getChannelStats', () => {
     const contentSqlText = extractSqlText(prisma.$queryRaw.mock.calls[2]);
     expect(contentSqlText).toContain('channel_stats_bucket_rollups');
     expect(contentSqlText).toContain("date_trunc('day', bucket_start)");
-    expect(contentSqlText).toContain('channel_post_view_snapshots');
-    expect(contentSqlText).toContain('ORDER BY first_snapshot.captured_at ASC');
-    expect(contentSqlText).toContain('GREATEST(snapshots.views, 0)');
+    expect(contentSqlText).not.toContain('channel_post_view_snapshots');
+    expect(contentSqlText).not.toContain('ORDER BY first_snapshot.captured_at ASC');
   });
 
   it('returns cached channel stats immediately and refreshes stale MAX data in background', async () => {
