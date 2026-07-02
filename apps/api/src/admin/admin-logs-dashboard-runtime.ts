@@ -498,14 +498,7 @@ export class AdminLogsDashboardRuntime {
           select: { id: true, title: true },
         }),
         includeActivityPreview
-          ? selectLogsDashboardMembershipSummary(
-              this.prisma,
-              chatId,
-              from,
-              now,
-              (edgeChatId, edgeFrom, edgeTo, eventTypes) =>
-                this.getMembershipEventRows(edgeChatId, edgeFrom, edgeTo, eventTypes),
-            )
+          ? selectLogsDashboardMembershipSummary(this.prisma, chatId, from, now)
           : Promise.resolve({ joinedUsers: 0, leftUsers: 0 }),
         headerPromise,
         includeModerationPreview

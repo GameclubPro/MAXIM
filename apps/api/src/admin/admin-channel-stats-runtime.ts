@@ -178,8 +178,6 @@ export class AdminChannelStatsRuntime {
       summaryAudienceSnapshots,
       summaryWindowRows,
       summaryContentRows,
-      todayMembershipRows,
-      weekMembershipRows,
       sixteenDaysMembershipRows,
     ] = await Promise.all([
       this.prisma.chat.findUnique({
@@ -371,18 +369,6 @@ export class AdminChannelStatsRuntime {
         : Promise.resolve<ChannelStatsContentBucketRow[]>([]),
       selectChannelStatsMembershipBucketRows(this.prisma, {
         chatId,
-        from: summaryTodayFrom,
-        to: now,
-        bucket: 'hour',
-      }),
-      selectChannelStatsMembershipBucketRows(this.prisma, {
-        chatId,
-        from: summaryWeekFrom,
-        to: now,
-        bucket: 'hour',
-      }),
-      selectChannelStatsMembershipBucketRows(this.prisma, {
-        chatId,
         from: summarySixteenDaysFrom,
         to: now,
         bucket: 'hour',
@@ -397,6 +383,14 @@ export class AdminChannelStatsRuntime {
         syncState?.membershipCoverageFrom &&
           syncState.membershipCoverageFrom.getTime() <= windowFrom.getTime(),
       );
+    const todayMembershipRows = this.filterChannelStatsMembershipRowsFrom(
+      sixteenDaysMembershipRows,
+      summaryTodayFrom,
+    );
+    const weekMembershipRows = this.filterChannelStatsMembershipRowsFrom(
+      sixteenDaysMembershipRows,
+      summaryWeekFrom,
+    );
 
     const localTitle = chat?.title?.trim() || `Канал ${chatId}`;
     let maxSnapshotAvailable = latestAudienceSnapshot !== null;
@@ -1575,6 +1569,17 @@ export class AdminChannelStatsRuntime {
     }
 
     return null;
+  }
+
+  filterChannelStatsMembershipRowsFrom(
+    rows: ChannelStatsMembershipBucketRow[],
+    from: Date,
+  ): ChannelStatsMembershipBucketRow[] {
+    return rows.filter((row) => {
+      const bucketStart =
+        row.bucket_start instanceof Date ? row.bucket_start : new Date(row.bucket_start);
+      return Number.isFinite(bucketStart.getTime()) && bucketStart.getTime() >= from.getTime();
+    });
   }
 
   buildContentSeriesFromBucketRows(

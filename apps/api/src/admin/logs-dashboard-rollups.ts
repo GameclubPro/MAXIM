@@ -3,17 +3,6 @@ import type { PrismaService } from '../prisma/prisma.service';
 
 const ONE_HOUR_MS = 60 * 60 * 1000;
 
-type MembershipEdgeRow = {
-  event_type: string | null;
-};
-
-type MembershipEdgeRowsFetcher = (
-  chatId: string,
-  from: Date,
-  to: Date,
-  eventTypes: readonly string[],
-) => Promise<readonly MembershipEdgeRow[]>;
-
 type RollupWindow = {
   completeFrom: Date;
   completeTo: Date;
@@ -40,7 +29,6 @@ export async function selectLogsDashboardMembershipSummary(
   chatId: string,
   from: Date,
   to: Date,
-  fetchEdgeRows: MembershipEdgeRowsFetcher,
 ): Promise<LogsDashboardMembershipSummary> {
   const { completeFrom, completeTo, hasCompleteBuckets } = resolveCompleteRollupWindow(from, to);
   const rollupRowsPromise = hasCompleteBuckets
@@ -61,28 +49,26 @@ export async function selectLogsDashboardMembershipSummary(
     completeTo,
     hasCompleteBuckets,
   );
-  const [rollupRows, edgeRowsByRange] = await Promise.all([
+  const edgeRowsPromise = prisma.$queryRaw<Array<{ joined_users: unknown; left_users: unknown }>>`
+    WITH membership_edge_rows AS (
+      ${buildMembershipEdgeSummarySql(chatId, edgeRanges)}
+    )
+    SELECT
+      COALESCE(SUM(joined_users), 0) AS joined_users,
+      COALESCE(SUM(left_users), 0) AS left_users
+    FROM membership_edge_rows
+  `;
+  const [rollupRows, edgeRows] = await Promise.all([
     rollupRowsPromise,
-    Promise.all(
-      edgeRanges.map((range) =>
-        fetchEdgeRows(chatId, range.from, range.to, ['user_added', 'user_removed']),
-      ),
-    ),
+    edgeRowsPromise,
   ]);
 
   const rollupSource = rollupRows[0] ?? { joined_users: 0, left_users: 0 };
+  const edgeSource = edgeRows[0] ?? { joined_users: 0, left_users: 0 };
   const summary: LogsDashboardMembershipSummary = {
-    joinedUsers: toSafeInteger(rollupSource.joined_users),
-    leftUsers: toSafeInteger(rollupSource.left_users),
+    joinedUsers: toSafeInteger(rollupSource.joined_users) + toSafeInteger(edgeSource.joined_users),
+    leftUsers: toSafeInteger(rollupSource.left_users) + toSafeInteger(edgeSource.left_users),
   };
-
-  for (const row of edgeRowsByRange.flat()) {
-    if (row.event_type === 'user_added') {
-      summary.joinedUsers += 1;
-    } else if (row.event_type === 'user_removed') {
-      summary.leftUsers += 1;
-    }
-  }
 
   return summary;
 }
@@ -240,6 +226,36 @@ function resolveDashboardEdgeRanges(
     { from, to: firstEdgeTo },
     { from: completeTo, to },
   ].filter((range) => range.from.getTime() <= range.to.getTime());
+}
+
+function buildMembershipEdgeSummarySql(
+  chatId: string,
+  edgeRanges: Array<{ from: Date; to: Date }>,
+): Prisma.Sql {
+  if (edgeRanges.length === 0) {
+    return Prisma.sql`
+      SELECT
+        0::BIGINT AS joined_users,
+        0::BIGINT AS left_users
+      WHERE FALSE
+    `;
+  }
+
+  return Prisma.join(
+    edgeRanges.map(
+      (range) => Prisma.sql`
+        SELECT
+          COUNT(*) FILTER (WHERE event_type = 'user_added') AS joined_users,
+          COUNT(*) FILTER (WHERE event_type = 'user_removed') AS left_users
+        FROM chat_membership_activity_feed_items
+        WHERE chat_id = ${chatId}
+          AND event_type IN ('user_added', 'user_removed')
+          AND event_at >= ${range.from}
+          AND event_at <= ${range.to}
+      `,
+    ),
+    ' UNION ALL ',
+  );
 }
 
 function emptyModerationSummarySource(): LogsDashboardModerationSummary {

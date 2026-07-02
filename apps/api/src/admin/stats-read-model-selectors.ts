@@ -55,6 +55,12 @@ type CompleteHourlyRollupWindow = {
   hasCompleteBuckets: boolean;
 };
 
+export type ChannelStatsPartialEdgeRange = {
+  from: Date;
+  to: Date;
+  toInclusive: boolean;
+};
+
 const ONE_HOUR_MS = 60 * 60 * 1000;
 
 export async function selectModerationFeedReadModelRows(
@@ -132,9 +138,15 @@ export async function selectChannelStatsMembershipBucketRows(
           0::BIGINT AS left_users
         WHERE FALSE
       `;
-  const edgeExclusionSql = hasCompleteBuckets
-    ? Prisma.sql`AND NOT (event_at >= ${completeFrom} AND event_at < ${completeTo})`
-    : Prisma.empty;
+  const edgeRowsSql = buildChannelStatsMembershipEdgeRowsSql(
+    params.chatId,
+    params.from,
+    params.to,
+    completeFrom,
+    completeTo,
+    hasCompleteBuckets,
+    bucketSql,
+  );
 
   return prisma.$queryRaw<ChannelStatsMembershipBucketRow[]>`
     WITH membership_bucket_rows AS (
@@ -142,17 +154,7 @@ export async function selectChannelStatsMembershipBucketRows(
 
       UNION ALL
 
-      SELECT
-        date_trunc(${bucketSql}, event_at)::TIMESTAMP(3) AS bucket_start,
-        COUNT(*) FILTER (WHERE event_type = 'user_added') AS joined_users,
-        COUNT(*) FILTER (WHERE event_type = 'user_removed') AS left_users
-      FROM chat_membership_activity_feed_items
-      WHERE chat_id = ${params.chatId}
-        AND event_type IN ('user_added', 'user_removed')
-        AND event_at >= ${params.from}
-        AND event_at <= ${params.to}
-        ${edgeExclusionSql}
-      GROUP BY date_trunc(${bucketSql}, event_at)::TIMESTAMP(3)
+      ${edgeRowsSql}
     )
     SELECT
       bucket_start,
@@ -194,9 +196,15 @@ export async function selectChannelStatsContentBucketRows(
           0::BIGINT AS reactions
         WHERE FALSE
       `;
-  const postEdgeExclusionSql = hasCompleteBuckets
-    ? Prisma.sql`AND NOT (published_at >= ${completeFrom} AND published_at < ${completeTo})`
-    : Prisma.empty;
+  const edgeRowsSql = buildChannelStatsContentEdgeRowsSql(
+    params.chatId,
+    params.from,
+    params.to,
+    completeFrom,
+    completeTo,
+    hasCompleteBuckets,
+    bucketSql,
+  );
 
   return prisma.$queryRaw<ChannelStatsContentBucketRow[]>`
     WITH content_bucket_rows AS (
@@ -204,17 +212,7 @@ export async function selectChannelStatsContentBucketRows(
 
       UNION ALL
 
-      SELECT
-        date_trunc(${bucketSql}, published_at)::TIMESTAMP(3) AS bucket_start,
-        COUNT(*) AS posts,
-        COALESCE(SUM(GREATEST(latest_views, 0)), 0) AS views_delta,
-        COALESCE(SUM(GREATEST(latest_reactions_total, 0)), 0) AS reactions
-      FROM channel_posts
-      WHERE chat_id = ${params.chatId}
-        AND published_at >= ${params.from}
-        AND published_at <= ${params.to}
-        ${postEdgeExclusionSql}
-      GROUP BY date_trunc(${bucketSql}, published_at)::TIMESTAMP(3)
+      ${edgeRowsSql}
     )
     SELECT
       bucket_start,
@@ -229,6 +227,107 @@ export async function selectChannelStatsContentBucketRows(
 
 function buildChannelStatsBucketSql(bucket: ChannelStatsBucket): Prisma.Sql {
   return bucket === 'hour' ? Prisma.sql`'hour'` : Prisma.sql`'day'`;
+}
+
+function buildChannelStatsMembershipEdgeRowsSql(
+  chatId: string,
+  from: Date,
+  to: Date,
+  completeFrom: Date,
+  completeTo: Date,
+  hasCompleteBuckets: boolean,
+  bucketSql: Prisma.Sql,
+): Prisma.Sql {
+  const edgeRanges = resolveChannelStatsPartialEdgeRanges(
+    from,
+    to,
+    completeFrom,
+    completeTo,
+    hasCompleteBuckets,
+  );
+
+  if (edgeRanges.length === 0) {
+    return Prisma.sql`
+      SELECT
+        NULL::TIMESTAMP(3) AS bucket_start,
+        0::BIGINT AS joined_users,
+        0::BIGINT AS left_users
+      WHERE FALSE
+    `;
+  }
+
+  return Prisma.join(
+    edgeRanges.map((range) => {
+      const upperBoundSql = range.toInclusive
+        ? Prisma.sql`event_at <= ${range.to}`
+        : Prisma.sql`event_at < ${range.to}`;
+
+      return Prisma.sql`
+        SELECT
+          date_trunc(${bucketSql}, event_at)::TIMESTAMP(3) AS bucket_start,
+          COUNT(*) FILTER (WHERE event_type = 'user_added') AS joined_users,
+          COUNT(*) FILTER (WHERE event_type = 'user_removed') AS left_users
+        FROM chat_membership_activity_feed_items
+        WHERE chat_id = ${chatId}
+          AND event_type IN ('user_added', 'user_removed')
+          AND event_at >= ${range.from}
+          AND ${upperBoundSql}
+        GROUP BY date_trunc(${bucketSql}, event_at)::TIMESTAMP(3)
+      `;
+    }),
+    ' UNION ALL ',
+  );
+}
+
+function buildChannelStatsContentEdgeRowsSql(
+  chatId: string,
+  from: Date,
+  to: Date,
+  completeFrom: Date,
+  completeTo: Date,
+  hasCompleteBuckets: boolean,
+  bucketSql: Prisma.Sql,
+): Prisma.Sql {
+  const edgeRanges = resolveChannelStatsPartialEdgeRanges(
+    from,
+    to,
+    completeFrom,
+    completeTo,
+    hasCompleteBuckets,
+  );
+
+  if (edgeRanges.length === 0) {
+    return Prisma.sql`
+      SELECT
+        NULL::TIMESTAMP(3) AS bucket_start,
+        0::BIGINT AS posts,
+        0::BIGINT AS views_delta,
+        0::BIGINT AS reactions
+      WHERE FALSE
+    `;
+  }
+
+  return Prisma.join(
+    edgeRanges.map((range) => {
+      const upperBoundSql = range.toInclusive
+        ? Prisma.sql`published_at <= ${range.to}`
+        : Prisma.sql`published_at < ${range.to}`;
+
+      return Prisma.sql`
+        SELECT
+          date_trunc(${bucketSql}, published_at)::TIMESTAMP(3) AS bucket_start,
+          COUNT(*) AS posts,
+          COALESCE(SUM(GREATEST(latest_views, 0)), 0) AS views_delta,
+          COALESCE(SUM(GREATEST(latest_reactions_total, 0)), 0) AS reactions
+        FROM channel_posts
+        WHERE chat_id = ${chatId}
+          AND published_at >= ${range.from}
+          AND ${upperBoundSql}
+        GROUP BY date_trunc(${bucketSql}, published_at)::TIMESTAMP(3)
+      `;
+    }),
+    ' UNION ALL ',
+  );
 }
 
 function buildModerationFeedFilterSql(filter: ModerationFeedFilter): Prisma.Sql {
@@ -278,6 +377,28 @@ function resolveCompleteHourlyRollupWindow(from: Date, to: Date): CompleteHourly
     completeTo,
     hasCompleteBuckets: completeFrom.getTime() < completeTo.getTime(),
   };
+}
+
+export function resolveChannelStatsPartialEdgeRanges(
+  from: Date,
+  to: Date,
+  completeFrom: Date,
+  completeTo: Date,
+  hasCompleteBuckets: boolean,
+): ChannelStatsPartialEdgeRange[] {
+  if (!hasCompleteBuckets) {
+    return from.getTime() <= to.getTime() ? [{ from, to, toInclusive: true }] : [];
+  }
+
+  const ranges: ChannelStatsPartialEdgeRange[] = [];
+  if (from.getTime() < completeFrom.getTime()) {
+    ranges.push({ from, to: completeFrom, toInclusive: false });
+  }
+  if (completeTo.getTime() <= to.getTime()) {
+    ranges.push({ from: completeTo, to, toInclusive: true });
+  }
+
+  return ranges;
 }
 
 function floorDateToHour(date: Date): Date {

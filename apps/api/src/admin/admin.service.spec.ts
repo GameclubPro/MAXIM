@@ -4356,41 +4356,31 @@ describe('AdminService.getLogsDashboard', () => {
 
   it('keeps membership edge ranges outside complete rollup buckets', async () => {
     const prisma = {
-      $queryRaw: jest.fn().mockResolvedValue([{ joined_users: '4', left_users: '1' }]),
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValueOnce([{ joined_users: '4', left_users: '1' }])
+        .mockResolvedValueOnce([{ joined_users: '2', left_users: '1' }]),
     };
-    const fetchEdgeRows = jest.fn().mockResolvedValue([]);
 
     const summary = await selectLogsDashboardMembershipSummary(
       prisma as never,
       'chat-1',
       new Date('2026-03-01T12:15:30.000Z'),
       new Date('2026-03-02T12:45:00.000Z'),
-      fetchEdgeRows,
     );
 
-    expect(summary).toEqual({ joinedUsers: 4, leftUsers: 1 });
-    expect(fetchEdgeRows).toHaveBeenNthCalledWith(
-      1,
-      'chat-1',
-      new Date('2026-03-01T12:15:30.000Z'),
-      new Date('2026-03-01T12:59:59.999Z'),
-      ['user_added', 'user_removed'],
-    );
-    expect(fetchEdgeRows).toHaveBeenNthCalledWith(
-      2,
-      'chat-1',
-      new Date('2026-03-02T12:00:00.000Z'),
-      new Date('2026-03-02T12:45:00.000Z'),
-      ['user_added', 'user_removed'],
-    );
+    expect(summary).toEqual({ joinedUsers: 6, leftUsers: 2 });
+    const edgeSqlText = extractSqlText(prisma.$queryRaw.mock.calls[1]);
+    expect(edgeSqlText).toContain('FROM chat_membership_activity_feed_items');
+    expect(edgeSqlText).toContain('UNION ALL');
+    expect(edgeSqlText).toContain('COUNT(*) FILTER (WHERE event_type =');
   });
 
   it('returns membership and violations summary for selected chat', async () => {
     const prisma = createPrismaMock();
     prisma.$queryRaw
       .mockResolvedValueOnce([{ joined_users: '5', left_users: '2' }])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ joined_users: '0', left_users: '0' }])
       .mockResolvedValueOnce([
         {
           warn: '3',
@@ -4628,6 +4618,13 @@ describe('AdminService.getLogsDashboard', () => {
     const membershipRollupSqlText =
       querySqlTexts.find((sqlText) => sqlText.includes('chat_membership_activity_rollups')) ?? '';
     expect(membershipRollupSqlText).toContain('chat_membership_activity_rollups');
+    const membershipEdgeSummarySqlText =
+      querySqlTexts.find(
+        (sqlText) =>
+          sqlText.includes('membership_edge_rows') &&
+          sqlText.includes('COUNT(*) FILTER (WHERE event_type ='),
+      ) ?? '';
+    expect(membershipEdgeSummarySqlText).toContain('membership_edge_rows');
     const moderationRollupSqlText =
       querySqlTexts.find((sqlText) => sqlText.includes('chat_moderation_stats_rollups')) ?? '';
     expect(moderationRollupSqlText).toContain('chat_moderation_stats_rollups');
@@ -4642,7 +4639,8 @@ describe('AdminService.getLogsDashboard', () => {
     expect(moderationFeedSqlText).toContain('FROM chat_moderation_feed_items feed');
     const activitySqlText =
       querySqlTexts.find((sqlText) =>
-        sqlText.includes('FROM chat_membership_activity_feed_items'),
+        sqlText.includes('FROM chat_membership_activity_feed_items') &&
+        sqlText.includes('ORDER BY event_at'),
       ) ?? '';
     expect(activitySqlText).toContain('FROM chat_membership_activity_feed_items');
     expect(activitySqlText).toContain('ORDER BY event_at');
@@ -19248,22 +19246,13 @@ describe('AdminService.getChannelStats', () => {
       ])
       .mockResolvedValueOnce([
         {
+          bucket_start: new Date('2026-03-05T10:00:00.000Z'),
+          joined_users: createDecimalLike(1),
+          left_users: createDecimalLike(0),
+        },
+        {
           bucket_start: new Date('2026-03-07T10:00:00.000Z'),
           joined_users: createDecimalLike(1),
-          left_users: createDecimalLike(1),
-        },
-      ])
-      .mockResolvedValueOnce([
-        {
-          bucket_start: new Date('2026-03-07T10:00:00.000Z'),
-          joined_users: createDecimalLike(2),
-          left_users: createDecimalLike(1),
-        },
-      ])
-      .mockResolvedValueOnce([
-        {
-          bucket_start: new Date('2026-03-07T10:00:00.000Z'),
-          joined_users: createDecimalLike(2),
           left_users: createDecimalLike(1),
         },
       ])
@@ -19539,8 +19528,8 @@ describe('AdminService.getChannelStats', () => {
     expect(result.summary.daily.at(-1)).toEqual({
       date: '2026-03-07',
       subscribers: 1240,
-      delta: 1,
-      joined: 2,
+      delta: 0,
+      joined: 1,
       left: 1,
     });
     expect(result.secondary).toEqual({
@@ -19971,8 +19960,6 @@ describe('AdminService.getChannelStats', () => {
           reactions: '0',
         },
       ])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([
