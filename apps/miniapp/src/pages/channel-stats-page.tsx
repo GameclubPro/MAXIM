@@ -19,7 +19,7 @@ import '../styles/channel-stats.css';
 import '../styles/channel-stats-route-polish.css';
 import '../styles/channel-stats-executive.css';
 import type { CSSProperties, PointerEvent } from 'react';
-import { startTransition, useEffect, useMemo, useState } from 'react';
+import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
@@ -105,6 +105,81 @@ const CHART_VIEWBOX_WIDTH = 390;
 const CHART_VIEWBOX_HEIGHT = 210;
 const AUDIENCE_CHART_LEFT_PAD = 26;
 const AUDIENCE_CHART_RIGHT_PAD = 6;
+const COUNT_FORMATTER = new Intl.NumberFormat('ru-RU');
+const COMPACT_COUNT_FORMATTER = new Intl.NumberFormat('ru-RU', {
+  notation: 'compact',
+  maximumFractionDigits: 1,
+});
+const DENSE_COUNT_FORMATTER = new Intl.NumberFormat('ru-RU', { useGrouping: false });
+const DAY_MONTH_NUMERIC_FORMATTER = new Intl.DateTimeFormat('ru-RU', {
+  day: '2-digit',
+  month: '2-digit',
+});
+const CHART_DETAIL_HOUR_FORMATTER = new Intl.DateTimeFormat('ru-RU', {
+  day: '2-digit',
+  month: 'short',
+  hour: '2-digit',
+  minute: '2-digit',
+});
+const CHART_DETAIL_DAY_FORMATTER = new Intl.DateTimeFormat('ru-RU', {
+  day: '2-digit',
+  month: 'long',
+});
+const PERCENT_INTEGER_FORMATTER = new Intl.NumberFormat('ru-RU', {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 0,
+});
+const PERCENT_ONE_DECIMAL_FORMATTER = new Intl.NumberFormat('ru-RU', {
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+});
+const POST_DATE_TIME_FORMATTER = new Intl.DateTimeFormat('ru-RU', {
+  day: '2-digit',
+  month: 'short',
+  hour: '2-digit',
+  minute: '2-digit',
+});
+const DATE_ONLY_FORMATTER = new Intl.DateTimeFormat('ru-RU', {
+  day: '2-digit',
+  month: 'short',
+});
+const SIGNED_PERCENT_FORMATTERS = new Map<number, Intl.NumberFormat>();
+const SIGNED_DECIMAL_FORMATTERS = new Map<string, Intl.NumberFormat>();
+
+function getSignedPercentFormatter(maximumFractionDigits: number): Intl.NumberFormat {
+  const normalizedDigits = Math.max(0, Math.trunc(maximumFractionDigits));
+  const cached = SIGNED_PERCENT_FORMATTERS.get(normalizedDigits);
+  if (cached) {
+    return cached;
+  }
+
+  const formatter = new Intl.NumberFormat('ru-RU', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: normalizedDigits,
+  });
+  SIGNED_PERCENT_FORMATTERS.set(normalizedDigits, formatter);
+  return formatter;
+}
+
+function getSignedDecimalFormatter(
+  minimumFractionDigits: number,
+  maximumFractionDigits: number,
+): Intl.NumberFormat {
+  const normalizedMinimum = Math.max(0, Math.trunc(minimumFractionDigits));
+  const normalizedMaximum = Math.max(normalizedMinimum, Math.trunc(maximumFractionDigits));
+  const key = `${normalizedMinimum}:${normalizedMaximum}`;
+  const cached = SIGNED_DECIMAL_FORMATTERS.get(key);
+  if (cached) {
+    return cached;
+  }
+
+  const formatter = new Intl.NumberFormat('ru-RU', {
+    minimumFractionDigits: normalizedMinimum,
+    maximumFractionDigits: normalizedMaximum,
+  });
+  SIGNED_DECIMAL_FORMATTERS.set(key, formatter);
+  return formatter;
+}
 
 function getRouteState(state: unknown): ChannelStatsRouteState {
   if (!state || typeof state !== 'object') {
@@ -132,7 +207,7 @@ function formatCount(value: number | null): string {
     return '—';
   }
 
-  return new Intl.NumberFormat('ru-RU').format(value);
+  return COUNT_FORMATTER.format(value);
 }
 
 function formatCompactCount(value: number | null): string {
@@ -144,23 +219,17 @@ function formatCompactCount(value: number | null): string {
     return formatCount(value);
   }
 
-  return new Intl.NumberFormat('ru-RU', {
-    notation: 'compact',
-    maximumFractionDigits: 1,
-  }).format(value);
+  return COMPACT_COUNT_FORMATTER.format(value);
 }
 
 function formatDenseCount(value: number): string {
   const absolute = Math.abs(value);
 
   if (absolute < 100_000) {
-    return new Intl.NumberFormat('ru-RU', { useGrouping: false }).format(value);
+    return DENSE_COUNT_FORMATTER.format(value);
   }
 
-  return new Intl.NumberFormat('ru-RU', {
-    notation: 'compact',
-    maximumFractionDigits: 1,
-  }).format(value);
+  return COMPACT_COUNT_FORMATTER.format(value);
 }
 
 function formatSummaryTableDate(value: string): string {
@@ -174,10 +243,7 @@ function formatSummaryTableDate(value: string): string {
     return '—';
   }
 
-  return new Intl.DateTimeFormat('ru-RU', {
-    day: '2-digit',
-    month: '2-digit',
-  }).format(parsed);
+  return DAY_MONTH_NUMERIC_FORMATTER.format(parsed);
 }
 
 function formatChartDayMonth(value: string | null): string {
@@ -195,10 +261,7 @@ function formatChartDayMonth(value: string | null): string {
     return '—';
   }
 
-  return new Intl.DateTimeFormat('ru-RU', {
-    day: '2-digit',
-    month: '2-digit',
-  }).format(parsed);
+  return DAY_MONTH_NUMERIC_FORMATTER.format(parsed);
 }
 
 function formatMoscowDateKey(value: string): string {
@@ -221,18 +284,10 @@ function formatChartDetailDate(value: string | null, bucket: ChannelStatsBucket)
   }
 
   if (bucket === 'hour') {
-    return new Intl.DateTimeFormat('ru-RU', {
-      day: '2-digit',
-      month: 'short',
-      hour: '2-digit',
-      minute: '2-digit',
-    }).format(parsed);
+    return CHART_DETAIL_HOUR_FORMATTER.format(parsed);
   }
 
-  return new Intl.DateTimeFormat('ru-RU', {
-    day: '2-digit',
-    month: 'long',
-  }).format(parsed);
+  return CHART_DETAIL_DAY_FORMATTER.format(parsed);
 }
 
 function formatSignedCount(value: number | null): string {
@@ -240,7 +295,7 @@ function formatSignedCount(value: number | null): string {
     return '—';
   }
 
-  const formatted = new Intl.NumberFormat('ru-RU').format(Math.abs(value));
+  const formatted = COUNT_FORMATTER.format(Math.abs(value));
   if (value > 0) {
     return `+${formatted}`;
   }
@@ -273,10 +328,9 @@ function formatPercent(value: number | null): string {
     return '—';
   }
 
-  return `${new Intl.NumberFormat('ru-RU', {
-    minimumFractionDigits: value > 0 && value < 10 ? 1 : 0,
-    maximumFractionDigits: value > 0 && value < 10 ? 1 : 0,
-  }).format(value)}%`;
+  const formatter =
+    value > 0 && value < 10 ? PERCENT_ONE_DECIMAL_FORMATTER : PERCENT_INTEGER_FORMATTER;
+  return `${formatter.format(value)}%`;
 }
 
 function formatSignedPercent(value: number | null, maximumFractionDigits = 2): string {
@@ -284,10 +338,7 @@ function formatSignedPercent(value: number | null, maximumFractionDigits = 2): s
     return '—';
   }
 
-  const formatted = new Intl.NumberFormat('ru-RU', {
-    minimumFractionDigits: 0,
-    maximumFractionDigits,
-  })
+  const formatted = getSignedPercentFormatter(maximumFractionDigits)
     .format(Math.abs(value))
     .replace(',', '.');
 
@@ -307,10 +358,10 @@ function formatSignedDecimalCount(value: number | null, maximumFractionDigits = 
     return '—';
   }
 
-  const formatted = new Intl.NumberFormat('ru-RU', {
-    minimumFractionDigits: Number.isInteger(value) ? 0 : Math.min(2, maximumFractionDigits),
+  const formatted = getSignedDecimalFormatter(
+    Number.isInteger(value) ? 0 : Math.min(2, maximumFractionDigits),
     maximumFractionDigits,
-  })
+  )
     .format(Math.abs(value))
     .replace(',', '.');
 
@@ -453,12 +504,7 @@ function formatPostDateTime(value: string): string {
     return '';
   }
 
-  return new Intl.DateTimeFormat('ru-RU', {
-    day: '2-digit',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(parsed);
+  return POST_DATE_TIME_FORMATTER.format(parsed);
 }
 
 function formatBestWindowValue(window: ChannelStatsResponse['signals']['bestWindows'][number]) {
@@ -485,10 +531,7 @@ function formatDateOnly(value: string | null): string {
     return '—';
   }
 
-  return new Intl.DateTimeFormat('ru-RU', {
-    day: '2-digit',
-    month: 'short',
-  }).format(parsed);
+  return DATE_ONLY_FORMATTER.format(parsed);
 }
 
 function formatPeriodRange(from: string, to: string): string {
@@ -576,21 +619,6 @@ function resolveChartIndexFromClientX(
     rect.left + (rect.width * (CHART_VIEWBOX_WIDTH - rightPad)) / CHART_VIEWBOX_WIDTH;
   const ratio = clamp((clientX - plotLeft) / Math.max(plotRight - plotLeft, 1), 0, 1);
   return Math.round(ratio * (pointsLength - 1));
-}
-
-function readChartIndexFromPointer(
-  event: PointerEvent<HTMLDivElement>,
-  pointsLength: number,
-  leftPad = 0,
-  rightPad = 0,
-): number {
-  return resolveChartIndexFromClientX(
-    event.clientX,
-    event.currentTarget.getBoundingClientRect(),
-    pointsLength,
-    leftPad,
-    rightPad,
-  );
 }
 
 function captureChartPointer(event: PointerEvent<HTMLDivElement>): void {
@@ -828,10 +856,7 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
   const previousCurrentParticipants = previousParticipantSeries.at(-1)?.participantsCount ?? null;
   const rawPreviousPoints = previousBasePoints.map((point) => ({
     ...point,
-    displayValue:
-      point.participantsCount ??
-      previousCurrentParticipants ??
-      point.cumulativeNet,
+    displayValue: point.participantsCount ?? previousCurrentParticipants ?? point.cumulativeNet,
   }));
   const hasPreviousDisplayValues = rawPreviousPoints.some(
     (point) => point.participantsCount !== null || previousCurrentParticipants !== null,
@@ -872,18 +897,22 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
     Math.round(lineTop + (lineBottom - lineTop) * 0.75),
     lineBottom,
   ];
-  const axisLabels = guideYs.map((y) => {
-    const ratio = (y - lineTop) / Math.max(1, lineBottom - lineTop);
-    const value = maxValue - ratio * valueRange;
-    return {
-      y: y + 4,
-      label: formatDenseCount(Math.round(value)),
-    };
-  }).filter((label, index, labels) => {
-    const duplicateIndex = labels.findIndex((item) => item.label === label.label);
-    const overlapsPrevious = labels.slice(0, index).some((item) => Math.abs(item.y - label.y) < 12);
-    return duplicateIndex === index && !overlapsPrevious;
-  });
+  const axisLabels = guideYs
+    .map((y) => {
+      const ratio = (y - lineTop) / Math.max(1, lineBottom - lineTop);
+      const value = maxValue - ratio * valueRange;
+      return {
+        y: y + 4,
+        label: formatDenseCount(Math.round(value)),
+      };
+    })
+    .filter((label, index, labels) => {
+      const duplicateIndex = labels.findIndex((item) => item.label === label.label);
+      const overlapsPrevious = labels
+        .slice(0, index)
+        .some((item) => Math.abs(item.y - label.y) < 12);
+      return duplicateIndex === index && !overlapsPrevious;
+    });
 
   return {
     points,
@@ -925,6 +954,9 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
     resolveInitialAudienceChartIndex(chart.points),
   );
   const [isTooltipVisible, setIsTooltipVisible] = useState(false);
+  const pointerRectRef = useRef<DOMRect | null>(null);
+  const queuedPointerClientXRef = useRef<number | null>(null);
+  const pointerFrameRef = useRef<number | null>(null);
 
   useEffect(() => {
     setActiveIndex(resolveInitialAudienceChartIndex(chart.points));
@@ -938,6 +970,65 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
     stats.period.from,
     stats.period.to,
   ]);
+
+  useEffect(
+    () => () => {
+      if (pointerFrameRef.current !== null) {
+        window.cancelAnimationFrame(pointerFrameRef.current);
+      }
+    },
+    [],
+  );
+
+  const updateActiveIndexFromClientX = (clientX: number, rect: DOMRect) => {
+    const nextIndex = resolveChartIndexFromClientX(
+      clientX,
+      rect,
+      chart.points.length,
+      chart.leftPad,
+      chart.rightPad,
+    );
+    setActiveIndex((current) => (current === nextIndex ? current : nextIndex));
+  };
+  const cancelPendingPointerFrame = () => {
+    if (pointerFrameRef.current !== null) {
+      window.cancelAnimationFrame(pointerFrameRef.current);
+      pointerFrameRef.current = null;
+    }
+    queuedPointerClientXRef.current = null;
+  };
+  const schedulePointerIndexUpdate = (clientX: number) => {
+    queuedPointerClientXRef.current = clientX;
+    if (pointerFrameRef.current !== null) {
+      return;
+    }
+
+    if (typeof window.requestAnimationFrame !== 'function') {
+      const rect = pointerRectRef.current;
+      if (rect) {
+        updateActiveIndexFromClientX(clientX, rect);
+      }
+      queuedPointerClientXRef.current = null;
+      return;
+    }
+
+    pointerFrameRef.current = window.requestAnimationFrame(() => {
+      pointerFrameRef.current = null;
+      const rect = pointerRectRef.current;
+      const queuedClientX = queuedPointerClientXRef.current;
+      queuedPointerClientXRef.current = null;
+      if (!rect || queuedClientX === null) {
+        return;
+      }
+
+      updateActiveIndexFromClientX(queuedClientX, rect);
+    });
+  };
+  const stopChartScrub = () => {
+    setIsTooltipVisible(false);
+    pointerRectRef.current = null;
+    cancelPendingPointerFrame();
+  };
 
   const safeActiveIndex = clamp(activeIndex, 0, Math.max(chart.points.length - 1, 0));
   const activePoint = chart.points[safeActiveIndex] ?? null;
@@ -962,10 +1053,9 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
     firstPoint && lastPoint ? Math.round(lastPoint.displayValue - firstPoint.displayValue) : null;
   const averageGrowth =
     totalGrowth !== null ? totalGrowth / Math.max(1, chart.points.length - 1) : null;
-  const detailLabelIndices =
-    !renderPointMarkers
-      ? new Set<number>()
-      : labels.length <= 11
+  const detailLabelIndices = !renderPointMarkers
+    ? new Set<number>()
+    : labels.length <= 11
       ? new Set(labels.map((_, index) => index))
       : resolveSparseLabelIndices(labels.length, safeActiveIndex);
   const xAxisLabelIndices =
@@ -978,10 +1068,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
   const activePercentLabel = formatSignedPercent(activePoint?.deltaPercentFromPrevious ?? null, 1);
   const activeBucketLabel = stats.period.bucket === 'hour' ? 'За час' : 'За день';
   const activeGuideLabel = activePoint
-    ? `${formatChartDetailDate(
-        activePoint.at,
-        stats.period.bucket,
-      )}: ${formatCount(
+    ? `${formatChartDetailDate(activePoint.at, stats.period.bucket)}: ${formatCount(
         activePoint.displayValue,
       )} подписчиков, ${activeBucketLabel.toLocaleLowerCase(
         'ru-RU',
@@ -1014,15 +1101,10 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
             aria-valuetext={activeGuideLabel}
             onPointerDown={(event) => {
               captureChartPointer(event);
+              const rect = event.currentTarget.getBoundingClientRect();
+              pointerRectRef.current = rect;
               setIsTooltipVisible(true);
-              setActiveIndex(
-                readChartIndexFromPointer(
-                  event,
-                  chart.points.length,
-                  chart.leftPad,
-                  chart.rightPad,
-                ),
-              );
+              updateActiveIndexFromClientX(event.clientX, rect);
             }}
             onPointerMove={(event) => {
               if (event.buttons !== 1) {
@@ -1030,19 +1112,12 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
               }
 
               setIsTooltipVisible(true);
-              setActiveIndex(
-                readChartIndexFromPointer(
-                  event,
-                  chart.points.length,
-                  chart.leftPad,
-                  chart.rightPad,
-                ),
-              );
+              schedulePointerIndexUpdate(event.clientX);
             }}
-            onPointerUp={() => setIsTooltipVisible(false)}
-            onPointerCancel={() => setIsTooltipVisible(false)}
-            onPointerLeave={() => setIsTooltipVisible(false)}
-            onBlur={() => setIsTooltipVisible(false)}
+            onPointerUp={stopChartScrub}
+            onPointerCancel={stopChartScrub}
+            onPointerLeave={stopChartScrub}
+            onBlur={stopChartScrub}
             onKeyDown={(event) => {
               if (event.key === 'ArrowLeft') {
                 event.preventDefault();
@@ -1465,9 +1540,7 @@ function ChannelStatsOverview({
             </article>
           </div>
 
-          <article
-            className="channel-insights__chart-card channel-insights__chart-card--executive channel-insights__chart-card--audience"
-          >
+          <article className="channel-insights__chart-card channel-insights__chart-card--executive channel-insights__chart-card--audience">
             <header className="channel-insights__chart-header">
               <strong className="channel-insights__chart-title">Подписчики</strong>
 
@@ -1944,6 +2017,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
             <MembershipActivityFeed
               joinedLabel="каналу"
               leftLabel="канал"
+              resetKey={`${chatId}:${range}`}
               variant="immersive"
               filter={activityFeed.filter}
               onFilterChange={handleActivityFilterChange}
@@ -1958,11 +2032,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
             />
           </section>
         ) : stats ? (
-          <ChannelStatsOverview
-            stats={stats}
-            range={range}
-            onRangeChange={setRange}
-          />
+          <ChannelStatsOverview stats={stats} range={range} onRangeChange={setRange} />
         ) : null}
       </div>
     </div>

@@ -1,5 +1,11 @@
 import type { MembershipActivityFilter, MembershipActivityItem } from '@maxim/contracts';
-import { type MouseEvent, useMemo } from 'react';
+import { type MouseEvent, useEffect, useMemo, useState } from 'react';
+import {
+  buildMembershipActivityGroups,
+  MEMBERSHIP_ACTIVITY_INITIAL_RENDER_LIMIT,
+  MEMBERSHIP_ACTIVITY_RENDER_STEP,
+  resolveNextMembershipActivityRenderLimit,
+} from '../../lib/membership-activity-feed';
 import { PersonAvatar } from '../ui/person-avatar';
 import { SegmentedControl } from '../ui/segmented-control';
 import { Spinner } from '../ui/spinner';
@@ -8,6 +14,7 @@ import './membership-activity-feed.css';
 type MembershipActivityFeedProps = {
   title?: string | null;
   subtitle?: string | null;
+  resetKey?: string | null;
   variant?: 'default' | 'immersive';
   joinedLabel: string;
   leftLabel: string;
@@ -28,6 +35,10 @@ const filterOptions: Array<{ value: MembershipActivityFilter; label: string }> =
   { value: 'joined', label: 'Вошли' },
   { value: 'left', label: 'Вышли' },
 ];
+const ACTIVITY_TIME_FORMATTER = new Intl.DateTimeFormat('ru-RU', {
+  hour: '2-digit',
+  minute: '2-digit',
+});
 
 function formatActivityTime(value: string): string {
   const parsed = new Date(value);
@@ -35,39 +46,7 @@ function formatActivityTime(value: string): string {
     return '--:--';
   }
 
-  return new Intl.DateTimeFormat('ru-RU', {
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(parsed);
-}
-
-function startOfDay(date: Date): number {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
-}
-
-function resolveDayLabel(value: string): string {
-  const parsed = new Date(value);
-  if (!Number.isFinite(parsed.getTime())) {
-    return 'Без даты';
-  }
-
-  const today = startOfDay(new Date());
-  const target = startOfDay(parsed);
-  const diff = Math.round((today - target) / (24 * 60 * 60 * 1000));
-
-  if (diff === 0) {
-    return 'Сегодня';
-  }
-
-  if (diff === 1) {
-    return 'Вчера';
-  }
-
-  return new Intl.DateTimeFormat('ru-RU', {
-    day: 'numeric',
-    month: 'long',
-    ...(parsed.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}),
-  }).format(parsed);
+  return ACTIVITY_TIME_FORMATTER.format(parsed);
 }
 
 function resolveInitial(name: string): string {
@@ -107,6 +86,7 @@ function handleProfileLinkClick(
 export function MembershipActivityFeed({
   title = null,
   subtitle = null,
+  resetKey = null,
   variant = 'default',
   joinedLabel,
   leftLabel,
@@ -121,53 +101,20 @@ export function MembershipActivityFeed({
   onRetry,
   onProfileActivate = null,
 }: MembershipActivityFeedProps) {
-  const groups = useMemo(() => {
-    const result: Array<{
-      key: string;
-      label: string;
-      items: MembershipActivityItem[];
-      joinedCount: number;
-      leftCount: number;
-    }> = [];
-    const bucket = new Map<
-      string,
-      {
-        label: string;
-        items: MembershipActivityItem[];
-        joinedCount: number;
-        leftCount: number;
-      }
-    >();
+  const [renderLimit, setRenderLimit] = useState(MEMBERSHIP_ACTIVITY_INITIAL_RENDER_LIMIT);
+  const { groups, visibleCount, hiddenCount } = useMemo(
+    () => buildMembershipActivityGroups(items, renderLimit),
+    [items, renderLimit],
+  );
+  const nextRevealCount = Math.min(hiddenCount, MEMBERSHIP_ACTIVITY_RENDER_STEP);
 
-    items.forEach((item) => {
-      const parsed = new Date(item.createdAt);
-      const key = Number.isFinite(parsed.getTime())
-        ? `${parsed.getFullYear()}-${parsed.getMonth() + 1}-${parsed.getDate()}`
-        : `unknown-${item.id}`;
-      const existing = bucket.get(key);
+  useEffect(() => {
+    setRenderLimit(MEMBERSHIP_ACTIVITY_INITIAL_RENDER_LIMIT);
+  }, [filter, resetKey]);
 
-      if (existing) {
-        existing.items.push(item);
-        if (item.type === 'joined') {
-          existing.joinedCount += 1;
-        } else {
-          existing.leftCount += 1;
-        }
-        return;
-      }
-
-      const entry = {
-        label: resolveDayLabel(item.createdAt),
-        items: [item],
-        joinedCount: item.type === 'joined' ? 1 : 0,
-        leftCount: item.type === 'left' ? 1 : 0,
-      };
-      bucket.set(key, entry);
-      result.push({ key, ...entry });
-    });
-
-    return result;
-  }, [items]);
+  const revealLoadedItems = () => {
+    setRenderLimit((current) => resolveNextMembershipActivityRenderLimit(current, items.length));
+  };
 
   return (
     <section
@@ -323,7 +270,18 @@ export function MembershipActivityFeed({
         </div>
       ) : null}
 
-      {hasMore ? (
+      {hiddenCount > 0 ? (
+        <button
+          type="button"
+          className="button button--ghost membership-feed__load-more"
+          onClick={revealLoadedItems}
+          disabled={isReloading}
+        >
+          {nextRevealCount > 0
+            ? `Показать ещё ${nextRevealCount} из загруженных`
+            : 'Показать ещё загруженные'}
+        </button>
+      ) : hasMore ? (
         <button
           type="button"
           className="button button--ghost membership-feed__load-more"
@@ -332,6 +290,12 @@ export function MembershipActivityFeed({
         >
           {isLoadingMore ? 'Загружаем...' : 'Показать ещё'}
         </button>
+      ) : null}
+
+      {items.length > visibleCount ? (
+        <p className="membership-feed__render-status" aria-live="polite">
+          {`Показано ${visibleCount} из ${items.length} загруженных`}
+        </p>
       ) : null}
     </section>
   );

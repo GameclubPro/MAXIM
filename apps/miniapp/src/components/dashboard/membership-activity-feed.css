@@ -341,6 +341,14 @@
   min-height: 38px;
 }
 
+.membership-feed__render-status {
+  justify-self: start;
+  margin: -2px 0 0;
+  color: #6f879e;
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
 .membership-feed--immersive {
   gap: 9px;
   padding: 10px;

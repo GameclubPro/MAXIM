@@ -3070,6 +3070,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         <MembershipActivityFeed
           joinedLabel="чату"
           leftLabel="чат"
+          resetKey={`${chatId ?? ''}:${range}`}
           variant="immersive"
           filter={activityFeed.filter}
           onFilterChange={handleActivityFilterChange}
