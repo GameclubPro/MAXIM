@@ -151,6 +151,10 @@
   `shared_buffers=128MB`); reducing it can surface PostgreSQL `53100` shared-memory errors under
   admin/suggestion queries.
 - The `vps-pull-build-up*.sh` scripts are designed to run on the VPS host. From local machine, invoke them through SSH.
+- If multi-service API `docker compose build` stalls after the TypeScript build while buildx/bake
+  resolves provenance, build the shared API image directly on the VPS with
+  `docker buildx build --load --provenance=false -t infra-api-ingress:latest -f apps/api/Dockerfile .`,
+  then tag it to every `infra-api-*` role image before migrations and `--force-recreate`.
 - If `/var/www/Chat_bot/.env` is missing, restore it from any running API role container before `docker compose exec` or `docker compose run`. Current scripts check role-based containers first and keep `infra-api-1` only as a legacy fallback.
 - If `git pull --ff-only` is blocked by a dirty VPS worktree:
   - if current tracked contents already match `origin/<branch>`, `git stash push -> git pull --ff-only -> git stash drop` is acceptable
