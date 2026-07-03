@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/common';
 import {
   ChatBotAccessState,
   ChatBotMembershipRole,
@@ -13,6 +13,7 @@ import type {
   ManagedEntityType,
 } from '@maxim/contracts';
 import { PrismaService } from '../prisma/prisma.service';
+import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,
@@ -61,6 +62,7 @@ export class MaxBotExecutionPlannerService {
     private readonly maxClient: MaxClientService,
     private readonly maxBotLinkService: MaxBotLinkService,
     private readonly maxBotRegistry: MaxBotRegistryService,
+    @Optional() private readonly chatContextCache?: ChatContextCacheService,
   ) {}
 
   async getManagedEntityExecutionPlan(params: {
@@ -255,7 +257,9 @@ export class MaxBotExecutionPlannerService {
         continue;
       }
 
-      const snapshot = await this.refreshBotAccessSnapshot(chatId, bot.id);
+      const snapshot = await this.refreshBotAccessSnapshot(chatId, bot.id, {
+        honorSharedBackoff: true,
+      });
       await this.prisma.chatBotMembership.update({
         where: {
           chatId_botId: {
@@ -648,8 +652,9 @@ export class MaxBotExecutionPlannerService {
   private async refreshBotAccessSnapshot(
     chatId: string,
     botId: string,
+    options: { honorSharedBackoff?: boolean } = {},
   ): Promise<PermissionsSummary> {
-    if (this.isManagedRefreshBackoffActive()) {
+    if (await this.isManagedRefreshBackoffActive(options)) {
       return this.resolveStoredPermissionsSnapshot(chatId, botId);
     }
 
@@ -663,7 +668,16 @@ export class MaxBotExecutionPlannerService {
       return this.toPermissionsSummary(access);
     } catch (error: unknown) {
       if (this.isRateLimitPressureError(error)) {
-        this.markManagedRefreshBackoff();
+        await this.markManagedRefreshBackoff();
+        this.logger.debug(
+          {
+            chatId,
+            botId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Deferred execution planner access refresh under managed_refresh rate pressure',
+        );
+        return this.resolveStoredPermissionsSnapshot(chatId, botId);
       }
 
       this.logger.warn(
@@ -779,7 +793,7 @@ export class MaxBotExecutionPlannerService {
     );
   }
 
-  private isManagedRefreshBackoffActive(now = Date.now()): boolean {
+  private isLocalManagedRefreshBackoffActive(now = Date.now()): boolean {
     if (this.managedRefreshBackoffUntilMs <= now) {
       this.managedRefreshBackoffUntilMs = 0;
       return false;
@@ -788,11 +802,53 @@ export class MaxBotExecutionPlannerService {
     return true;
   }
 
-  private markManagedRefreshBackoff(now = Date.now()): void {
+  private async isManagedRefreshBackoffActive(
+    options: { honorSharedBackoff?: boolean } = {},
+    now = Date.now(),
+  ): Promise<boolean> {
+    if (this.isLocalManagedRefreshBackoffActive(now)) {
+      return true;
+    }
+
+    if (options.honorSharedBackoff !== true || !this.chatContextCache) {
+      return false;
+    }
+
+    try {
+      return await this.chatContextCache.isManagedRefreshSourceBackoffActive();
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to read shared managed_refresh backoff marker',
+      );
+      return false;
+    }
+  }
+
+  private async markManagedRefreshBackoff(now = Date.now()): Promise<void> {
     this.managedRefreshBackoffUntilMs = Math.max(
       this.managedRefreshBackoffUntilMs,
       now + ACCESS_SNAPSHOT_RATE_LIMIT_BACKOFF_MS,
     );
+
+    if (!this.chatContextCache) {
+      return;
+    }
+
+    try {
+      await this.chatContextCache.activateManagedRefreshSourceBackoff(
+        Math.ceil(ACCESS_SNAPSHOT_RATE_LIMIT_BACKOFF_MS / 1_000),
+      );
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to store shared managed_refresh backoff marker',
+      );
+    }
   }
 
   private toPrismaEntityType(entityType: ManagedEntityType): ChatEntityType {

@@ -203,6 +203,10 @@ function createFixture() {
   const maxBotRegistry = {
     getBotById: jest.fn((botId?: string | null) => bots.find((bot) => bot.id === botId) ?? null),
   };
+  const chatContextCache = {
+    isManagedRefreshSourceBackoffActive: jest.fn().mockResolvedValue(false),
+    activateManagedRefreshSourceBackoff: jest.fn().mockResolvedValue(undefined),
+  };
 
   return {
     service: new MaxBotExecutionPlannerService(
@@ -210,6 +214,7 @@ function createFixture() {
       maxClient as never,
       maxBotLinkService as never,
       maxBotRegistry as never,
+      chatContextCache as never,
     ),
     chat,
     bots,
@@ -217,6 +222,7 @@ function createFixture() {
     prisma,
     maxClient,
     maxBotLinkService,
+    chatContextCache,
   };
 }
 
@@ -394,6 +400,81 @@ describe('MaxBotExecutionPlannerService', () => {
 
     expect(fixture.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
     expect(fixture.prisma.chatBotMembership.update).not.toHaveBeenCalled();
+  });
+
+  it('uses stored snapshots without warning when managed_refresh source pressure defers refresh', async () => {
+    const fixture = createFixture();
+    const warnSpy = jest.spyOn((fixture.service as any).logger, 'warn');
+    const debugSpy = jest.spyOn((fixture.service as any).logger, 'debug');
+    fixture.memberships.find(
+      (membership) => membership.botId === 'id613002203036_4_bot',
+    )!.permissionsSnapshot = {
+      checkedAt: '2026-05-14T08:00:00.000Z',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write', 'delete'],
+    };
+    fixture.maxClient.getCurrentChatMemberAccess.mockRejectedValueOnce(
+      new Error('MAX API managed_refresh source limit exceeded for bot id613002203036_4_bot'),
+    );
+
+    await fixture.service.refreshChatBotCapabilitySnapshots({
+      chatId: 'chat-1',
+      entityType: 'chat',
+      botId: 'id613002203036_4_bot',
+    });
+    await fixture.service.refreshChatBotCapabilitySnapshots({
+      chatId: 'chat-1',
+      entityType: 'chat',
+      botId: 'id613002203036_5_bot',
+    });
+
+    expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+    expect(debugSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'chat-1',
+        botId: 'id613002203036_4_bot',
+        err: expect.stringContaining('managed_refresh source limit exceeded'),
+      }),
+      'Deferred execution planner access refresh under managed_refresh rate pressure',
+    );
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'Failed to refresh bot access snapshot for execution planner',
+    );
+    expect(fixture.chatContextCache.activateManagedRefreshSourceBackoff).toHaveBeenCalledWith(10);
+  });
+
+  it('uses stored snapshots while a shared managed_refresh backoff is active', async () => {
+    const fixture = createFixture();
+    fixture.chatContextCache.isManagedRefreshSourceBackoffActive.mockResolvedValue(true);
+    fixture.memberships.find(
+      (membership) => membership.botId === 'id613002203036_4_bot',
+    )!.permissionsSnapshot = {
+      checkedAt: '2026-05-14T08:00:00.000Z',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write', 'delete'],
+    };
+
+    await fixture.service.refreshChatBotCapabilitySnapshots({
+      chatId: 'chat-1',
+      entityType: 'chat',
+      botId: 'id613002203036_4_bot',
+    });
+
+    expect(fixture.chatContextCache.isManagedRefreshSourceBackoffActive).toHaveBeenCalledTimes(1);
+    expect(fixture.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(fixture.prisma.chatBotMembership.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          chatId_botId: {
+            chatId: 'chat-1',
+            botId: 'id613002203036_4_bot',
+          },
+        },
+      }),
+    );
   });
 
   it('does not promote a draining standby bot to primary', async () => {

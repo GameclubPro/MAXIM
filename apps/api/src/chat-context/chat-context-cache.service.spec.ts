@@ -1084,6 +1084,17 @@ describe('ChatContextCacheService', () => {
     await expect(
       service.getManagedEntitiesRefreshBackoffRemainingMs('user-1', 'channel'),
     ).resolves.toBe(45_000);
+
+    await service.activateManagedRefreshSourceBackoff(15);
+    expect(redisInstance.set).toHaveBeenCalledWith(
+      ChatContextCacheService.managedRefreshSourceBackoffKey(),
+      '1',
+      'EX',
+      15,
+    );
+
+    redisInstance.get.mockResolvedValueOnce('1');
+    await expect(service.isManagedRefreshSourceBackoffActive()).resolves.toBe(true);
   });
 
   it('stores managed giveaway runner retry state in redis', async () => {

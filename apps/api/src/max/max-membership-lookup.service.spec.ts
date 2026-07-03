@@ -195,6 +195,36 @@ describe('MaxMembershipLookupService', () => {
     expect(maxClient.hasChatMember).not.toHaveBeenCalled();
   });
 
+  it('reports whether membership resolutions are fresh or stale fallbacks', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:07:00.000Z'));
+
+    const timeoutError = Object.assign(new Error('lookup timeout'), {
+      code: 'ECONNABORTED',
+    });
+    const maxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest.fn().mockResolvedValueOnce(new Map()).mockRejectedValueOnce(
+        timeoutError,
+      ),
+    };
+    const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
+
+    await expect(
+      service.getMembershipResolution('channel-1', 'user-2', 'giveaway_interactive'),
+    ).resolves.toEqual({ membership: false, fresh: true });
+
+    jest.advanceTimersByTime(4_000);
+
+    await expect(
+      service.getMembershipResolution('channel-1', 'user-2', 'giveaway_interactive', {
+        allowStaleOnError: true,
+      }),
+    ).resolves.toEqual({ membership: false, fresh: false });
+
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(2);
+    expect(maxClient.hasChatMember).not.toHaveBeenCalled();
+  });
+
   it('uses MAX batch membership lookups for shared chat checks and reuses the cached result later', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:10:00.000Z'));
 

@@ -1875,6 +1875,60 @@ describe('ModerationService', () => {
     setTimeoutSpy.mockRestore();
   });
 
+  it('detaches required subscription follow-up earlier after delete boundary', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-03T10:00:00.000Z'));
+    const runtimeDiagnosticsService = {
+      recordHotPathStageOutcome: jest.fn(),
+    };
+    const service = new ModerationService(
+      {} as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn((key: string) =>
+          key === 'WEBHOOK_USER_FACING_TIMEOUT_MS' ? 10_000 : undefined,
+        ),
+      } as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      runtimeDiagnosticsService as never,
+    );
+    (service as any).webhookUserFacingTimeoutMs = 10_000;
+    const hotPathProfile = {
+      startedAtMs: Date.now() - 6_700,
+      lastMarkedAtMs: Date.now() - 10,
+      latestStage: 'required-subscription.follow-up',
+      stages: new Map<string, number>(),
+      stageTimelineMs: new Map<string, number>(),
+      successBoundaryReached: true,
+      successBoundaryStage: 'required-subscription.delete',
+    };
+
+    expect(
+      (service as any).shouldDetachFollowUpForBudget(
+        hotPathProfile,
+        'required-subscription.follow-up',
+        3_500,
+      ),
+    ).toBe(true);
+    expect(runtimeDiagnosticsService.recordHotPathStageOutcome).toHaveBeenCalledWith({
+      stage: 'required-subscription.follow-up.deferred',
+      outcome: 'skip',
+      failOpen: true,
+    });
+
+    jest.useRealTimers();
+  });
+
   it('fails open for stuck message_callback events instead of leaving the critical queue hung', async () => {
     const update = createPrivateCallbackUpdate('pc2|broadcast_send');
     const service = new ModerationService(
@@ -16945,6 +16999,105 @@ describe('ModerationService', () => {
         unresolvedChannelIds: [],
         terminalChannelIds: [],
       });
+    });
+
+    it('does not retry a fresh missing required subscription membership resolution', async () => {
+      const prisma = createPrismaForRequiredSubscription();
+      const membershipLookupService = {
+        getMembershipResolution: jest.fn().mockResolvedValue({ membership: false, fresh: true }),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        { detect: jest.fn() } as never,
+        { resolveAction: jest.fn() } as never,
+        {} as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        membershipLookupService as never,
+      );
+
+      await expect(
+        (
+          service as unknown as {
+            resolveRequiredSubscriptionMembership: (
+              chatId: string,
+              userId: string,
+              requiredChannelIds: string[],
+            ) => Promise<{
+              missingChannelIds: string[];
+              unresolvedChannelIds: string[];
+              terminalChannelIds: string[];
+            }>;
+          }
+        ).resolveRequiredSubscriptionMembership('chat-1', 'user-1', ['channel-1']),
+      ).resolves.toEqual({
+        missingChannelIds: ['channel-1'],
+        unresolvedChannelIds: [],
+        terminalChannelIds: [],
+      });
+      expect(membershipLookupService.getMembershipResolution).toHaveBeenCalledTimes(1);
+      expect(membershipLookupService.getMembershipResolution).toHaveBeenCalledWith(
+        'channel-1',
+        'user-1',
+        'moderation_required_subscription',
+        {},
+      );
+    });
+
+    it('still retries a stale missing required subscription membership before enforcing', async () => {
+      const prisma = createPrismaForRequiredSubscription();
+      const membershipLookupService = {
+        getMembershipResolution: jest
+          .fn()
+          .mockResolvedValueOnce({ membership: false, fresh: false })
+          .mockResolvedValueOnce({ membership: true, fresh: true }),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        { detect: jest.fn() } as never,
+        { resolveAction: jest.fn() } as never,
+        {} as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        membershipLookupService as never,
+      );
+
+      await expect(
+        (
+          service as unknown as {
+            resolveRequiredSubscriptionMembership: (
+              chatId: string,
+              userId: string,
+              requiredChannelIds: string[],
+            ) => Promise<{
+              missingChannelIds: string[];
+              unresolvedChannelIds: string[];
+              terminalChannelIds: string[];
+            }>;
+          }
+        ).resolveRequiredSubscriptionMembership('chat-1', 'user-1', ['channel-1']),
+      ).resolves.toEqual({
+        missingChannelIds: [],
+        unresolvedChannelIds: [],
+        terminalChannelIds: [],
+      });
+      expect(membershipLookupService.getMembershipResolution).toHaveBeenCalledTimes(2);
+      expect(membershipLookupService.getMembershipResolution).toHaveBeenLastCalledWith(
+        'channel-1',
+        'user-1',
+        'moderation_required_subscription',
+        { forceRefresh: true, allowStaleOnError: false },
+      );
     });
 
     it('excludes terminal required subscription lookup issues from missing targets', async () => {

@@ -159,6 +159,10 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     return `chat:managed-refresh-backoff:v1:${entityType}:${userId}`;
   }
 
+  static managedRefreshSourceBackoffKey(): string {
+    return 'maxapi:managed-refresh-source-backoff:v1';
+  }
+
   static managedEntitiesRefreshCursorKey(
     userId: string,
     entityType: ManagedEntityType | 'all',
@@ -607,6 +611,20 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
   ): Promise<void> {
     await this.redis.set(
       ChatContextCacheService.managedEntitiesRefreshBackoffKey(userId, entityType),
+      '1',
+      'EX',
+      ttlSec,
+    );
+  }
+
+  async isManagedRefreshSourceBackoffActive(): Promise<boolean> {
+    const raw = await this.redis.get(ChatContextCacheService.managedRefreshSourceBackoffKey());
+    return typeof raw === 'string' && raw.length > 0;
+  }
+
+  async activateManagedRefreshSourceBackoff(ttlSec: number): Promise<void> {
+    await this.redis.set(
+      ChatContextCacheService.managedRefreshSourceBackoffKey(),
       '1',
       'EX',
       ttlSec,

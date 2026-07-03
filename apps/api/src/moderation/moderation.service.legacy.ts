@@ -271,6 +271,7 @@ import {
   WEBHOOK_USER_FACING_SLOW_LOG_THRESHOLD_MS,
   WEBHOOK_OPTIONAL_STAGE_MIN_REMAINING_MS,
   REQUIRED_SUBSCRIPTION_NOTICE_MIN_REMAINING_MS,
+  REQUIRED_SUBSCRIPTION_FOLLOW_UP_DETACH_MIN_REMAINING_MS,
   VIOLATION_ADMIN_RECHECK_RESERVE_MS,
   CHANNEL_DIALOG_AUTO_ATTACH_ACTION,
   CHANNEL_DIALOG_AUTO_ATTACH_SKIP_ACTION,
@@ -8291,7 +8292,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (
       messageDeleted &&
-      this.shouldDetachFollowUpForBudget(params.hotPathProfile, 'required-subscription.follow-up')
+      this.shouldDetachFollowUpForBudget(
+        params.hotPathProfile,
+        'required-subscription.follow-up',
+        REQUIRED_SUBSCRIPTION_FOLLOW_UP_DETACH_MIN_REMAINING_MS,
+      )
     ) {
       this.scheduleDetachedWebhookFollowUp({
         stage: 'required-subscription.follow-up',
@@ -9145,18 +9150,38 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     options: RequiredSubscriptionMembershipLookupOptions = {},
   ): Promise<RequiredSubscriptionMembershipResolution> {
     if (this.membershipLookupService) {
+      const lookupOptions = {
+        ...(options.forceFresh ? { forceRefresh: true } : {}),
+        ...(options.allowStaleOnError !== undefined
+          ? { allowStaleOnError: options.allowStaleOnError }
+          : {}),
+      };
+      const lookupService = this.membershipLookupService as Partial<
+        Pick<MaxMembershipLookupService, 'getMembership' | 'getMembershipResolution'>
+      >;
+      if (typeof lookupService.getMembershipResolution === 'function') {
+        const resolution = await lookupService.getMembershipResolution(
+          channelId,
+          userId,
+          'moderation_required_subscription',
+          lookupOptions,
+        );
+        return {
+          membership: resolution.membership,
+          fresh: resolution.fresh,
+          terminal:
+            resolution.membership === null &&
+            this.isRequiredSubscriptionTerminalLookupIssue(channelId),
+        };
+      }
+
       let membership: boolean | null;
       if (options.forceFresh || options.allowStaleOnError !== undefined) {
         membership = await this.membershipLookupService.getMembership(
           channelId,
           userId,
           'moderation_required_subscription',
-          {
-            ...(options.forceFresh ? { forceRefresh: true } : {}),
-            ...(options.allowStaleOnError !== undefined
-              ? { allowStaleOnError: options.allowStaleOnError }
-              : {}),
-          },
+          lookupOptions,
         );
       } else {
         membership = await this.membershipLookupService.getMembership(
@@ -15134,6 +15159,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private shouldDetachFollowUpForBudget(
     hotPathProfile: WebhookHotPathProfile | null | undefined,
     stage: string,
+    minRemainingMs = 2_000,
   ): boolean {
     const snapshot = this.readWebhookHotPathProfileSnapshot(hotPathProfile);
     if (snapshot?.successBoundaryReached !== true) {
@@ -15149,7 +15175,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const remainingMs = Math.max(0, this.webhookUserFacingTimeoutMs - elapsedMs);
-    if (remainingMs >= 2_000) {
+    if (remainingMs >= Math.max(1, Math.ceil(minRemainingMs))) {
       return false;
     }
 
