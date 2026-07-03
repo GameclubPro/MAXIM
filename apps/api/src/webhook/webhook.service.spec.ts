@@ -266,6 +266,70 @@ describe('WebhookService', () => {
     );
   });
 
+  it('sanitizes normalized raw payload before the first webhook storage attempt', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-sanitized-first' }),
+        updateMany: jest.fn(),
+      },
+    };
+
+    const config = {
+      get: jest.fn().mockReturnValue(0),
+    };
+
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+    const result = await service.ingest(
+      {
+        updateId: 'u-sanitized-first',
+        type: 'message_created',
+        message: {
+          messageId: 'mid-sanitized-first',
+          chatId: 'chat-1',
+          senderId: 'user-1',
+          text: 'clean text',
+          createdAt: new Date('2026-03-26T12:00:00.000Z').toISOString(),
+        },
+        raw: {
+          message: {
+            body: {
+              text: 'bad-\ud800-json\u0000',
+            },
+          },
+          weird: 'bad-\ud800-json\u0000',
+        },
+      },
+      '127.0.0.1',
+    );
+
+    expect(result).toEqual({ accepted: true, duplicate: false });
+    expect(prisma.webhookEvent.create).toHaveBeenCalledTimes(1);
+    expect(prisma.webhookEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          rawPayload: {},
+          normalizedPayload: expect.objectContaining({
+            message: expect.objectContaining({
+              text: 'clean text',
+            }),
+            raw: expect.objectContaining({
+              message: expect.objectContaining({
+                body: expect.objectContaining({
+                  text: 'bad-\ufffd-json',
+                }),
+              }),
+              weird: 'bad-\ufffd-json',
+            }),
+          }),
+        }),
+      }),
+    );
+  });
+
   it('retries webhook storage with sanitized payload on Prisma json syntax errors', async () => {
     const prisma = {
       webhookEvent: {

@@ -3300,6 +3300,36 @@ describe('PrivateControlService', () => {
     ]);
   });
 
+  it('shows a processing state when another admin already claimed a suggestion review', async () => {
+    const { service, adminService, maxClient } = createHarness({
+      adminService: {
+        reviewChannelSuggestionByAdmin: jest.fn().mockResolvedValue({
+          status: 'review_in_progress',
+          reviewStatus: 'processing',
+          publishedUrl: null,
+        }),
+      },
+    });
+
+    await service.handleUpdate(
+      createPrivateCallbackUpdate('pc2|suggestion_review_publish|suggestion-42', {
+        userId: 'admin-1',
+        displayName: 'Главный редактор',
+      }),
+    );
+
+    expect(adminService.reviewChannelSuggestionByAdmin).toHaveBeenCalledWith(
+      'suggestion-42',
+      expect.objectContaining({
+        userId: 'admin-1',
+      }),
+      'publish',
+    );
+    expect(getLastEditedText(maxClient)).toContain('Предложка уже обрабатывается');
+    expect(getLastEditedText(maxClient)).not.toContain('Предложка отклонена');
+    expect(getLastEditedButtons(maxClient)).toEqual([]);
+  });
+
   it('does not expose raw MAX transport errors from suggestion review callbacks', async () => {
     const { service, maxClient } = createHarness({
       adminService: {

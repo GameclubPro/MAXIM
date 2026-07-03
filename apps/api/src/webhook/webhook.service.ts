@@ -282,13 +282,16 @@ export class WebhookService {
     sourceIp: string | null,
     rawPayload: Prisma.InputJsonValue,
   ) {
+    const storageRawPayload = this.sanitizeForJsonStorage(rawPayload);
+    const storageNormalizedPayload = this.sanitizeForJsonStorage(update);
+
     await this.prisma.webhookEvent.create({
       data: {
         dedupKey: update.updateId,
         ...(update.botId ? { botId: update.botId } : {}),
         sourceIp: sourceIp ?? undefined,
-        rawPayload,
-        normalizedPayload: update as Prisma.InputJsonValue,
+        rawPayload: storageRawPayload,
+        normalizedPayload: storageNormalizedPayload,
         status: WebhookStatus.RECEIVED,
       },
     });

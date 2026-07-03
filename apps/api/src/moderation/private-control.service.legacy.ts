@@ -1458,37 +1458,45 @@ export class PrivateControlService {
     );
     const publishedUrl = result.publishedUrl?.trim() ?? '';
     const view: PrivateView =
-      result.reviewStatus === 'published'
+      result.reviewStatus === 'processing'
         ? {
             text: [
-              privateMarkdownTitle('✅ Предложка опубликована'),
+              privateMarkdownTitle('⏳ Предложка уже обрабатывается'),
               '',
-              ...(publishedUrl ? [`Пост: [Открыть пост](${publishedUrl})`, ''] : []),
-              'Карточки в личке админов обновлены.',
+              'Подождите обновления карточки перед повторным действием.',
             ].join('\n'),
-            ...(publishedUrl
-              ? {
-                  options: {
-                    buttons: [
-                      [
-                        {
-                          type: 'link',
-                          text: 'Открыть пост',
-                          url: publishedUrl,
-                        },
-                      ],
-                    ],
-                  },
-                }
-              : {}),
           }
-        : {
-            text: [
-              privateMarkdownTitle('✖️ Предложка отклонена'),
-              '',
-              'Карточки в личке админов обновлены.',
-            ].join('\n'),
-          };
+        : result.reviewStatus === 'published'
+          ? {
+              text: [
+                privateMarkdownTitle('✅ Предложка опубликована'),
+                '',
+                ...(publishedUrl ? [`Пост: [Открыть пост](${publishedUrl})`, ''] : []),
+                'Карточки в личке админов обновлены.',
+              ].join('\n'),
+              ...(publishedUrl
+                ? {
+                    options: {
+                      buttons: [
+                        [
+                          {
+                            type: 'link',
+                            text: 'Открыть пост',
+                            url: publishedUrl,
+                          },
+                        ],
+                      ],
+                    },
+                  }
+                : {}),
+            }
+          : {
+              text: [
+                privateMarkdownTitle('✖️ Предложка отклонена'),
+                '',
+                'Карточки в личке админов обновлены.',
+              ].join('\n'),
+            };
 
     await this.respond(context, session, view, {
       callbackId: context.callbackId,
@@ -1497,6 +1505,8 @@ export class PrivateControlService {
           ? result.reviewStatus === 'published'
             ? 'Уже опубликовано'
             : 'Уже отменено'
+          : result.status === 'review_in_progress'
+            ? 'Уже обрабатывается'
           : result.reviewStatus === 'published'
             ? 'Пост опубликован'
             : 'Предложка отменена',

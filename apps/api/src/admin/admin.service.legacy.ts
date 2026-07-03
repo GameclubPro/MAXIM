@@ -438,6 +438,10 @@ export type {
   ChannelPublicationEngagementContext,
 } from './admin.service.support';
 
+const CHANNEL_SUGGESTION_AMBIGUOUS_SEND_ERROR = Symbol(
+  'channelSuggestionAmbiguousSendError',
+);
+
 type DialogNotificationPreferenceRow = {
   userId: string;
   mode: PrismaDialogNotificationMode;
@@ -6864,8 +6868,8 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     action: ChannelSuggestionReviewAction,
   ): Promise<{
-    status: 'reviewed' | 'already_reviewed';
-    reviewStatus: 'published' | 'cancelled';
+    status: 'reviewed' | 'already_reviewed' | 'review_in_progress';
+    reviewStatus: 'published' | 'cancelled' | 'processing';
     publishedUrl: string | null;
   }> {
     const normalizedSuggestionId = suggestionId.trim();
@@ -6905,20 +6909,101 @@ export class AdminService implements OnModuleDestroy {
         publishedUrl: this.readTrimmedString(payload.publishedUrl),
       };
     }
+    if (currentReviewStatus === 'publishing') {
+      return {
+        status: 'review_in_progress',
+        reviewStatus: 'processing',
+        publishedUrl: null,
+      };
+    }
 
-    const published =
-      action === 'publish'
-        ? await this.publishStoredChannelSuggestion(row.chatId, payload)
-        : {
-            messageId: null,
-            url: null,
-            threadId: null,
-            includeCommentsButton: false,
-            includeSuggestButton: false,
-            suggestButtonText: null,
-            autoPostButtonsMode: 'OFF' as ChannelSettings['autoPostButtonsMode'],
-            suggestionEntryMode: 'BOT' as ChannelSettings['postSuggestionsEntryMode'],
-          };
+    const claim = await this.claimChannelSuggestionReview({
+      suggestionId: row.id,
+      userId: user.userId,
+      action,
+    });
+    if (!claim) {
+      const latestRow = await this.prisma.auditLog.findFirst({
+        where: {
+          id: row.id,
+          action: CHANNEL_DIALOG_ACTION_SUGGEST,
+        },
+        select: {
+          payload: true,
+        },
+      });
+      const latestPayload = latestRow ? this.readObjectPayload(latestRow.payload) : {};
+      const latestReviewStatus = this.readLowerString(latestPayload.reviewStatus);
+      if (latestReviewStatus === 'published' || latestReviewStatus === 'cancelled') {
+        return {
+          status: 'already_reviewed',
+          reviewStatus: latestReviewStatus,
+          publishedUrl: this.readTrimmedString(latestPayload.publishedUrl),
+        };
+      }
+      if (latestReviewStatus === 'publishing') {
+        return {
+          status: 'review_in_progress',
+          reviewStatus: 'processing',
+          publishedUrl: null,
+        };
+      }
+
+      throw new BadRequestException('Предложка уже обрабатывается.');
+    }
+
+    let published: Awaited<ReturnType<typeof this.publishStoredChannelSuggestion>>;
+    try {
+      published =
+        action === 'publish'
+          ? await this.publishStoredChannelSuggestion(row.chatId, payload)
+          : {
+              messageId: null,
+              url: null,
+              threadId: null,
+              includeCommentsButton: false,
+              includeSuggestButton: false,
+              suggestButtonText: null,
+              autoPostButtonsMode: 'OFF' as ChannelSettings['autoPostButtonsMode'],
+              suggestionEntryMode: 'BOT' as ChannelSettings['postSuggestionsEntryMode'],
+              botId: null,
+            };
+    } catch (error) {
+      if (this.isChannelSuggestionAmbiguousSendError(error)) {
+        this.logger.warn(
+          {
+            suggestionId: row.id,
+            chatId: row.chatId,
+            userId: user.userId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Channel suggestion publish send failed ambiguously; keeping review claim for manual verification',
+        );
+        throw error;
+      }
+
+      try {
+        await this.releaseChannelSuggestionReviewClaim({
+          suggestionId: row.id,
+          userId: user.userId,
+          previousReviewStatus: currentReviewStatus ?? 'pending',
+          error,
+        });
+      } catch (releaseError) {
+        this.logger.warn(
+          {
+            suggestionId: row.id,
+            chatId: row.chatId,
+            userId: user.userId,
+            publishError: error instanceof Error ? error.message : String(error),
+            releaseError:
+              releaseError instanceof Error ? releaseError.message : String(releaseError),
+          },
+          'Failed to release channel suggestion review claim after publish error',
+        );
+      }
+      throw error;
+    }
     const reviewerLabel = user.displayName?.trim() || user.username?.trim() || user.userId;
     const reviewStatus = action === 'publish' ? 'published' : 'cancelled';
     const updatedPayload = {
@@ -6931,14 +7016,44 @@ export class AdminService implements OnModuleDestroy {
       publishedUrl: published.url,
     } as Prisma.InputJsonValue;
 
-    await this.prisma.auditLog.update({
+    const persisted = await this.prisma.auditLog.updateMany({
       where: {
         id: row.id,
+        action: CHANNEL_DIALOG_ACTION_SUGGEST,
+        payload: {
+          path: ['reviewStatus'],
+          equals: 'publishing',
+        } satisfies Prisma.JsonFilter,
+        AND: [
+          {
+            payload: {
+              path: ['reviewClaimedByUserId'],
+              equals: user.userId,
+            } satisfies Prisma.JsonFilter,
+          },
+          {
+            payload: {
+              path: ['reviewAction'],
+              equals: action,
+            } satisfies Prisma.JsonFilter,
+          },
+        ],
       },
       data: {
         payload: updatedPayload,
       },
     });
+    if (persisted.count === 0) {
+      this.logger.warn(
+        {
+          suggestionId: row.id,
+          chatId: row.chatId,
+          reviewStatus,
+          publishedMessageId: published.messageId,
+        },
+        'Channel suggestion disappeared before review persistence',
+      );
+    }
 
     if (
       action === 'publish' &&
@@ -6979,6 +7094,74 @@ export class AdminService implements OnModuleDestroy {
       reviewStatus,
       publishedUrl: published.url,
     };
+  }
+
+  private async claimChannelSuggestionReview(params: {
+    suggestionId: string;
+    userId: string;
+    action: ChannelSuggestionReviewAction;
+  }): Promise<boolean> {
+    const claimedAt = new Date().toISOString();
+    const updated = await this.prisma.$executeRaw(Prisma.sql`
+      UPDATE audit_logs
+      SET payload = payload::jsonb || jsonb_build_object(
+        'reviewStatus', 'publishing',
+        'reviewClaimedAt', ${claimedAt},
+        'reviewClaimedByUserId', ${params.userId},
+        'reviewAction', ${params.action}
+      )
+      WHERE id = ${params.suggestionId}
+        AND action = ${CHANNEL_DIALOG_ACTION_SUGGEST}
+        AND payload->>'type' = 'suggest'
+        AND COALESCE(NULLIF(payload->>'reviewStatus', ''), 'pending') = 'pending'
+    `);
+
+    return Number(updated) > 0;
+  }
+
+  private markChannelSuggestionAmbiguousSendError(error: unknown): void {
+    if (error && (typeof error === 'object' || typeof error === 'function')) {
+      Object.defineProperty(error, CHANNEL_SUGGESTION_AMBIGUOUS_SEND_ERROR, {
+        value: true,
+        configurable: true,
+      });
+    }
+  }
+
+  private isChannelSuggestionAmbiguousSendError(error: unknown): boolean {
+    return Boolean(
+      error &&
+        (typeof error === 'object' || typeof error === 'function') &&
+        (error as Record<typeof CHANNEL_SUGGESTION_AMBIGUOUS_SEND_ERROR, unknown>)[
+          CHANNEL_SUGGESTION_AMBIGUOUS_SEND_ERROR
+        ],
+    );
+  }
+
+  private async releaseChannelSuggestionReviewClaim(params: {
+    suggestionId: string;
+    userId: string;
+    previousReviewStatus: string;
+    error: unknown;
+  }): Promise<void> {
+    const releasedAt = new Date().toISOString();
+    const message =
+      (params.error instanceof Error ? params.error.message : String(params.error)).slice(0, 500);
+    await this.prisma.$executeRaw(Prisma.sql`
+      UPDATE audit_logs
+      SET payload = (
+        payload::jsonb
+        || jsonb_build_object(
+          'reviewStatus', ${params.previousReviewStatus},
+          'reviewClaimReleasedAt', ${releasedAt},
+          'reviewLastError', ${message}
+        )
+      ) - 'reviewClaimedAt' - 'reviewClaimedByUserId' - 'reviewAction'
+      WHERE id = ${params.suggestionId}
+        AND action = ${CHANNEL_DIALOG_ACTION_SUGGEST}
+        AND payload->>'reviewStatus' = 'publishing'
+        AND payload->>'reviewClaimedByUserId' = ${params.userId}
+    `);
   }
 
   parseChannelSuggestionStartPayload(
@@ -8479,6 +8662,10 @@ export class AdminService implements OnModuleDestroy {
           : await this.maxClient.sendMessageImmediateWithResolvedLink(chatId, text, options);
       } catch (error: unknown) {
         lastError = error;
+        if (isMaxApiTimeoutError(error)) {
+          this.markChannelSuggestionAmbiguousSendError(error);
+          throw error;
+        }
         if (
           !this.hasRetriableMaxAttachment(options) ||
           !this.isAttachmentNotReadyError(error) ||

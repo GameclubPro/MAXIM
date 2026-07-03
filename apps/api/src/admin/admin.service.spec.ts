@@ -333,6 +333,7 @@ function createPrismaMock() {
       count: jest.fn().mockResolvedValue(0),
       create: jest.fn().mockResolvedValue(undefined),
       update: jest.fn().mockResolvedValue(undefined),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       delete: jest.fn().mockResolvedValue(undefined),
     },
     dialogNotificationSubscription: {
@@ -494,6 +495,7 @@ function createPrismaMock() {
       findMany: jest.fn(),
     },
     $queryRaw: jest.fn().mockResolvedValue([]),
+    $executeRaw: jest.fn().mockResolvedValue(1),
     $transaction: jest.fn(),
   };
 
@@ -33309,9 +33311,35 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     expect(publishedThreadId).not.toBe(sourceThreadId);
     expect(commentsToken.d).toBe(publishedThreadId);
     expect(suggestToken.d).toBe(publishedThreadId);
-    expect(prisma.auditLog.update).toHaveBeenCalledWith(
+    expect(prisma.$executeRaw).toHaveBeenCalledWith(expect.any(Object));
+    expect(extractSqlText(prisma.$executeRaw.mock.calls[0]?.[0])).toContain('UPDATE audit_logs');
+    expect(extractSqlText(prisma.$executeRaw.mock.calls[0]?.[0])).toContain(
+      "payload->>'reviewStatus'",
+    );
+    expect(prisma.auditLog.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'suggestion-review-1' },
+        where: expect.objectContaining({
+          id: 'suggestion-review-1',
+          action: 'CHANNEL_DIALOG_SUGGESTION',
+          payload: {
+            path: ['reviewStatus'],
+            equals: 'publishing',
+          },
+          AND: expect.arrayContaining([
+            {
+              payload: {
+                path: ['reviewClaimedByUserId'],
+                equals: 'admin-1',
+              },
+            },
+            {
+              payload: {
+                path: ['reviewAction'],
+                equals: 'publish',
+              },
+            },
+          ]),
+        }),
         data: expect.objectContaining({
           payload: expect.objectContaining({
             reviewStatus: 'published',
@@ -33362,6 +33390,219 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     expect(maxClient.editMessageInlineKeyboard.mock.calls[0]?.[2]).toContain(
       'Пост: [Открыть пост](https://max.ru/chats/channel-1/message/100)',
     );
+  });
+
+  it('does not publish a channel suggestion when another admin already claimed review', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.auditLog.findFirst
+      .mockResolvedValueOnce({
+        id: 'suggestion-review-race-1',
+        chatId: 'channel-1',
+        actorUserId: 'user-1',
+        payload: {
+          type: 'suggest',
+          actorUserId: 'user-1',
+          authorDisplayName: 'Пользователь',
+          text: 'Пост уже забирает другой админ',
+          threadId: 'race-thread-1',
+          reviewStatus: 'pending',
+        },
+      })
+      .mockResolvedValueOnce({
+        payload: {
+          type: 'suggest',
+          reviewStatus: 'publishing',
+          reviewClaimedByUserId: 'admin-2',
+        },
+      });
+    prisma.$executeRaw.mockResolvedValueOnce(0);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'channel-1',
+        title: 'Новости MAX',
+        participantsCount: 1200,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/channels/news-max',
+        lastEventAt: '2026-03-10T12:00:00.000Z',
+        entityType: 'channel',
+      }),
+      sendMessageImmediateWithResolvedLink: jest.fn(),
+      editMessageInlineKeyboard: jest.fn(),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.reviewChannelSuggestionByAdmin(
+      'suggestion-review-race-1',
+      {
+        userId: 'admin-1',
+        username: 'chief',
+        displayName: 'Главный редактор',
+        chatTitle: null,
+      },
+      'publish',
+    );
+
+    expect(result).toEqual({
+      status: 'review_in_progress',
+      reviewStatus: 'processing',
+      publishedUrl: null,
+    });
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(prisma.auditLog.updateMany).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('keeps the review claim when channel suggestion publish send times out ambiguously', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        autoPostButtonsMode: 'OFF',
+        commentsEnabled: false,
+        postSuggestionsEnabled: false,
+      }),
+    );
+    prisma.auditLog.findFirst.mockResolvedValue({
+      id: 'suggestion-review-timeout-1',
+      chatId: 'channel-1',
+      actorUserId: 'user-1',
+      payload: {
+        type: 'suggest',
+        actorUserId: 'user-1',
+        authorDisplayName: 'Пользователь',
+        text: 'Пост мог быть принят MAX',
+        reviewStatus: 'pending',
+      },
+    });
+    const timeoutError = Object.assign(new Error('timeout of 12000ms exceeded'), {
+      code: 'ECONNABORTED',
+    });
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'channel-1',
+        title: 'Новости MAX',
+        participantsCount: 1200,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/channels/news-max',
+        lastEventAt: '2026-03-10T12:00:00.000Z',
+        entityType: 'channel',
+      }),
+      sendMessageImmediateWithResolvedLink: jest.fn().mockRejectedValue(timeoutError),
+      editMessageInlineKeyboard: jest.fn(),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.reviewChannelSuggestionByAdmin(
+        'suggestion-review-timeout-1',
+        {
+          userId: 'admin-1',
+          username: 'chief',
+          displayName: 'Главный редактор',
+          chatTitle: null,
+        },
+        'publish',
+      ),
+    ).rejects.toBe(timeoutError);
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(prisma.auditLog.updateMany).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('does not mask the publish error when releasing a channel suggestion review claim fails', async () => {
+    const prisma = createPrismaMock();
+    prisma.$executeRaw
+      .mockResolvedValueOnce(1)
+      .mockRejectedValueOnce(new Error('release write failed'));
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        autoPostButtonsMode: 'OFF',
+        commentsEnabled: false,
+        postSuggestionsEnabled: false,
+      }),
+    );
+    prisma.auditLog.findFirst.mockResolvedValue({
+      id: 'suggestion-review-error-1',
+      chatId: 'channel-1',
+      actorUserId: 'user-1',
+      payload: {
+        type: 'suggest',
+        actorUserId: 'user-1',
+        authorDisplayName: 'Пользователь',
+        text: 'Публикация упадет',
+        reviewStatus: 'pending',
+      },
+    });
+    const publishError = new Error('MAX rejected publish');
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'channel-1',
+        title: 'Новости MAX',
+        participantsCount: 1200,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/channels/news-max',
+        lastEventAt: '2026-03-10T12:00:00.000Z',
+        entityType: 'channel',
+      }),
+      sendMessageImmediateWithResolvedLink: jest.fn().mockRejectedValue(publishError),
+      editMessageInlineKeyboard: jest.fn(),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.reviewChannelSuggestionByAdmin(
+        'suggestion-review-error-1',
+        {
+          userId: 'admin-1',
+          username: 'chief',
+          displayName: 'Главный редактор',
+          chatTitle: null,
+        },
+        'publish',
+      ),
+    ).rejects.toBe(publishError);
+
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(2);
+    expect(prisma.auditLog.updateMany).not.toHaveBeenCalled();
   });
 
   it('publishes a reviewed suggestion with restored MAX markup without flattening paragraphs', async () => {
