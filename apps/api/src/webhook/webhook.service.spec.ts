@@ -2043,6 +2043,135 @@ describe('WebhookService', () => {
     }
   });
 
+  it('keeps bot_added Старт hint terminal MAX code failures quiet', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-7-hint-code-denied' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    const deniedError = Object.assign(new Error('chat not found'), {
+      response: { data: { code: 'chat.not.found' } },
+    });
+    const maxClient = {
+      sendMessageImmediateWithId: jest.fn().mockRejectedValue(deniedError),
+    };
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+      undefined,
+      maxClient as never,
+    );
+    const logger = {
+      debug: jest.fn(),
+      error: jest.fn(),
+      log: jest.fn(),
+      warn: jest.fn(),
+    };
+    (service as unknown as { logger: typeof logger }).logger = logger;
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-bot-added-hint-code-denied-1',
+          type: 'bot_added',
+          botId: 'id613002203036_bot',
+          message: {
+            messageId: 'bot_added:u-bot-added-hint-code-denied-1',
+            chatId: '-100133',
+            chatTitle: 'Чат с code-only отказом',
+            entityType: 'chat',
+            senderId: 'id613002203036_bot',
+            text: '',
+            createdAt: new Date('2026-04-03T12:07:00.000Z').toISOString(),
+          },
+        } as never,
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({
+      accepted: true,
+      duplicate: false,
+    });
+    await flushDeferredWebhookWork();
+
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(logger.debug).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-100133',
+        maxCode: 'chat.not.found',
+      }),
+      'Skipped managed entity start hint after bot_added webhook because chat is not yet reachable',
+    );
+  });
+
+  it('keeps unexpected bot_added Старт hint send failures visible', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-7-hint-server-error' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    const serverError = Object.assign(new Error('server error'), {
+      response: { status: 500 },
+    });
+    const maxClient = {
+      sendMessageImmediateWithId: jest.fn().mockRejectedValue(serverError),
+    };
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+      undefined,
+      maxClient as never,
+    );
+    const logger = {
+      debug: jest.fn(),
+      error: jest.fn(),
+      log: jest.fn(),
+      warn: jest.fn(),
+    };
+    (service as unknown as { logger: typeof logger }).logger = logger;
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-bot-added-hint-server-error-1',
+          type: 'bot_added',
+          botId: 'id613002203036_bot',
+          message: {
+            messageId: 'bot_added:u-bot-added-hint-server-error-1',
+            chatId: '-100134',
+            chatTitle: 'Чат с ошибкой подсказки',
+            entityType: 'chat',
+            senderId: 'id613002203036_bot',
+            text: '',
+            createdAt: new Date('2026-04-03T12:08:00.000Z').toISOString(),
+          },
+        } as never,
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({
+      accepted: true,
+      duplicate: false,
+    });
+    await flushDeferredWebhookWork();
+
+    expect(logger.debug).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-100134',
+      }),
+      'Failed to send managed entity start hint after bot_added webhook',
+    );
+  });
+
   it('throttles Старт hints per chat when several bots are added together', async () => {
     const prisma = {
       webhookEvent: {

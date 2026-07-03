@@ -470,6 +470,7 @@ export class WebhookService {
             chatId,
             botId,
             status: this.extractStatusCode(error),
+            maxCode: this.extractMaxErrorCode(error),
             err: error instanceof Error ? error.message : String(error),
           },
           'Skipped managed entity start hint after bot_added webhook because chat is not yet reachable',
@@ -491,7 +492,12 @@ export class WebhookService {
 
   private isExpectedBotAddedStartHintSendFailure(error: unknown): boolean {
     const status = this.extractStatusCode(error);
-    return BOT_ADDED_START_HINT_FAILURE_METRIC_STATUSES.some((expected) => expected === status);
+    if (BOT_ADDED_START_HINT_FAILURE_METRIC_STATUSES.some((expected) => expected === status)) {
+      return true;
+    }
+
+    const code = this.extractMaxErrorCode(error);
+    return code === 'chat.denied' || code === 'chat.not.found';
   }
 
   private readManagedEntityPendingBootstrapUserId(update: MaxUpdate): string | null {
