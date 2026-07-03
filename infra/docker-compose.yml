@@ -11,6 +11,7 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    shm_size: 512m
     environment:
       POSTGRES_USER: maxim
       POSTGRES_PASSWORD: maxim
