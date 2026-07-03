@@ -31,7 +31,6 @@ else
     "api-moderation-realtime-d"
     "api-moderation-background"
     "api-action"
-    "miniapp-static"
     "miniapp-major-static"
   )
 fi
@@ -339,7 +338,6 @@ sync_branch
 reexec_if_current_script_changed
 ensure_compose_env
 stop_conflicting_stacks
-ensure_service_requested_if_down "miniapp-static"
 ensure_service_requested_if_down "miniapp-major-static"
 if has_requested_api_service; then
   ensure_service_requested_if_down "api-enqueue"
