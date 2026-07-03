@@ -15,26 +15,35 @@ const API_SERVICE_POOL_CAPS = {
   'api-action': 3,
 } as const;
 
+const COMPOSE_FILES = [
+  ['main', '../../../../infra/docker-compose.yml'],
+  ['scale', '../../../../infra/docker-compose.scale.yml'],
+] as const;
+
 describe('production compose Prisma pool caps', () => {
-  const compose = readFileSync(resolve(__dirname, '../../../../infra/docker-compose.yml'), 'utf8');
+  describe.each(COMPOSE_FILES)('%s compose', (_name, composePath) => {
+    const compose = readFileSync(resolve(__dirname, composePath), 'utf8');
 
-  it('caps every API role below the Postgres cold-start budget', () => {
-    let total = 0;
+    it('caps every API role below the Postgres cold-start budget', () => {
+      let total = 0;
 
-    for (const [service, expectedCap] of Object.entries(API_SERVICE_POOL_CAPS)) {
-      const block = readServiceBlock(compose, service);
-      const cap = readEnvNumber(block, 'PRISMA_PG_POOL_MAX');
-      expect(cap).toBe(expectedCap);
-      total += cap;
-    }
+      for (const [service, expectedCap] of Object.entries(API_SERVICE_POOL_CAPS)) {
+        const block = readServiceBlock(compose, service);
+        const cap = readEnvNumber(block, 'PRISMA_PG_POOL_MAX');
+        expect(cap).toBe(expectedCap);
+        expect(readEnvNumber(block, 'PRISMA_PG_POOL_IDLE_TIMEOUT_MS')).toBe(10_000);
+        expect(readEnvNumber(block, 'PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS')).toBe(5_000);
+        total += cap;
+      }
 
-    expect(total).toBe(45);
-  });
+      expect(total).toBe(45);
+    });
 
-  it('caps the dedicated managed-entities read client separately', () => {
-    const adminBlock = readServiceBlock(compose, 'api-admin');
+    it('caps the dedicated managed-entities read client separately', () => {
+      const adminBlock = readServiceBlock(compose, 'api-admin');
 
-    expect(readEnvNumber(adminBlock, 'MANAGED_ENTITIES_READ_PRISMA_PG_POOL_MAX')).toBe(6);
+      expect(readEnvNumber(adminBlock, 'MANAGED_ENTITIES_READ_PRISMA_PG_POOL_MAX')).toBe(6);
+    });
   });
 });
 

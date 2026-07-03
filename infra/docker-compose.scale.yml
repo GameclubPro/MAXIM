@@ -34,6 +34,9 @@ services:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-ingress
       APP_ROLE: ingress
+      PRISMA_PG_POOL_MAX: 6
+      PRISMA_PG_POOL_IDLE_TIMEOUT_MS: 10000
+      PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS: 5000
       MAX_API_GLOBAL_RPS: 30
       MAX_API_GLOBAL_RPS_CRITICAL: 12
       MAX_API_GLOBAL_RPS_INTERACTIVE: 10
@@ -59,6 +62,10 @@ services:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-admin
       APP_ROLE: admin
+      PRISMA_PG_POOL_MAX: 10
+      PRISMA_PG_POOL_IDLE_TIMEOUT_MS: 10000
+      PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS: 5000
+      MANAGED_ENTITIES_READ_PRISMA_PG_POOL_MAX: 6
       MAX_API_GLOBAL_RPS: 30
       MAX_API_GLOBAL_RPS_CRITICAL: 8
       MAX_API_GLOBAL_RPS_INTERACTIVE: 6
@@ -84,6 +91,9 @@ services:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-enqueue
       APP_ROLE: enqueue
+      PRISMA_PG_POOL_MAX: 4
+      PRISMA_PG_POOL_IDLE_TIMEOUT_MS: 10000
+      PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS: 5000
       ENQUEUE_POLL_INTERVAL_MS: 200
       ENQUEUE_BATCH_SIZE: 400
       ENQUEUE_CONCURRENCY: 32
@@ -110,6 +120,9 @@ services:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-moderation
       APP_ROLE: moderation
+      PRISMA_PG_POOL_MAX: 3
+      PRISMA_PG_POOL_IDLE_TIMEOUT_MS: 10000
+      PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS: 5000
       WEBHOOK_DYNAMIC_LEASES_MODE: canary
       WEBHOOK_DYNAMIC_LEASES_WORKER_GROUP: api-moderation
       WEBHOOK_DYNAMIC_LEASES_CANARY_SHARDS: moderation-default-2,moderation-default-11
@@ -148,6 +161,9 @@ services:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-moderation-critical
       APP_ROLE: moderation
+      PRISMA_PG_POOL_MAX: 4
+      PRISMA_PG_POOL_IDLE_TIMEOUT_MS: 10000
+      PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS: 5000
       MODERATION_ENABLED_QUEUES: legacy,critical
       MODERATION_BACKGROUND_TASKS_ENABLED: 'false'
       MODERATION_CONCURRENCY_LEGACY: 1
@@ -185,6 +201,9 @@ services:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-moderation-join
       APP_ROLE: moderation
+      PRISMA_PG_POOL_MAX: 4
+      PRISMA_PG_POOL_IDLE_TIMEOUT_MS: 10000
+      PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS: 5000
       MODERATION_ENABLED_QUEUES: join
       MODERATION_BACKGROUND_TASKS_ENABLED: 'false'
       MODERATION_CONCURRENCY_JOIN: 4
@@ -221,6 +240,9 @@ services:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-moderation-realtime-b
       APP_ROLE: moderation
+      PRISMA_PG_POOL_MAX: 3
+      PRISMA_PG_POOL_IDLE_TIMEOUT_MS: 10000
+      PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS: 5000
       WEBHOOK_DYNAMIC_LEASES_MODE: canary
       WEBHOOK_DYNAMIC_LEASES_WORKER_GROUP: api-moderation-realtime-b
       WEBHOOK_DYNAMIC_LEASES_CANARY_SHARDS: moderation-default-2,moderation-default-11
@@ -259,6 +281,9 @@ services:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-moderation-realtime-c
       APP_ROLE: moderation
+      PRISMA_PG_POOL_MAX: 3
+      PRISMA_PG_POOL_IDLE_TIMEOUT_MS: 10000
+      PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS: 5000
       SPAMMER_OBSERVATION_DENORM_QUEUE_ENABLED: 'true'
       SPAMMER_OBSERVATION_FAST_PATH_ENABLED: 'true'
       WEBHOOK_DYNAMIC_LEASES_MODE: canary
@@ -299,6 +324,9 @@ services:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-moderation-realtime-d
       APP_ROLE: moderation
+      PRISMA_PG_POOL_MAX: 3
+      PRISMA_PG_POOL_IDLE_TIMEOUT_MS: 10000
+      PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS: 5000
       WEBHOOK_DYNAMIC_LEASES_MODE: canary
       WEBHOOK_DYNAMIC_LEASES_WORKER_GROUP: api-moderation-realtime-d
       WEBHOOK_DYNAMIC_LEASES_CANARY_SHARDS: moderation-default-2,moderation-default-11
@@ -337,6 +365,9 @@ services:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-moderation-background
       APP_ROLE: moderation
+      PRISMA_PG_POOL_MAX: 2
+      PRISMA_PG_POOL_IDLE_TIMEOUT_MS: 10000
+      PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS: 5000
       SPAMMER_OBSERVATION_DENORM_QUEUE_ENABLED: 'true'
       SPAMMER_OBSERVATION_FAST_PATH_ENABLED: 'true'
       MODERATION_ENABLED_QUEUES: background
@@ -380,6 +411,9 @@ services:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-action
       APP_ROLE: action
+      PRISMA_PG_POOL_MAX: 3
+      PRISMA_PG_POOL_IDLE_TIMEOUT_MS: 10000
+      PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS: 5000
       ACTION_CONCURRENCY: 12
       MAX_API_GLOBAL_RPS: 30
       MAX_API_GLOBAL_RPS_CRITICAL: 12
