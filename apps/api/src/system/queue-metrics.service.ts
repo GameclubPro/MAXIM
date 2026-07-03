@@ -4,8 +4,15 @@ import { ModuleRef } from '@nestjs/core';
 import { Prisma, WebhookStatus } from '../prisma/prisma-client';
 import type { Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
+import { ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE } from '../admin/admin-managed-entities-refresh.queue';
+import { ADMIN_MANUAL_FANOUT_QUEUE } from '../admin/admin-manual-fanout.queue';
+import { ADMIN_SUGGESTION_DELIVERY_QUEUE } from '../admin/admin-suggestion-delivery.queue';
+import { ADMIN_SUPER_BAN_QUEUE } from '../admin/admin-super-ban.queue';
+import { VK_PARSING_PUBLISH_QUEUE, VK_PARSING_SYNC_QUEUE } from '../admin/vk-parsing.queue';
+import { MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE } from '../max/max-chat-admin-roster-sync.queue';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { GLOBAL_SPAMMER_DENORM_QUEUE } from '../moderation/global-spammer-denorm.queue';
+import { NIGHT_MODE_TRANSITION_QUEUE } from '../moderation/night-mode-transition.queue';
 import {
   DEFAULT_WEBHOOK_WORKER_GROUP_NAMES,
   getDefaultWebhookHomeOwnerByQueue,
@@ -33,6 +40,18 @@ export type QueueCounters = {
   failed: number;
   completed: number;
 };
+
+export const AUXILIARY_QUEUE_NAMES = [
+  ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE,
+  VK_PARSING_SYNC_QUEUE,
+  VK_PARSING_PUBLISH_QUEUE,
+  NIGHT_MODE_TRANSITION_QUEUE,
+  MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE,
+  ADMIN_MANUAL_FANOUT_QUEUE,
+  ADMIN_SUPER_BAN_QUEUE,
+  ADMIN_SUGGESTION_DELIVERY_QUEUE,
+] as const;
+export type AuxiliaryQueueName = (typeof AUXILIARY_QUEUE_NAMES)[number];
 
 export type WebhookStatusMetrics = {
   count: number;
@@ -114,6 +133,7 @@ export type QueueMetricsSnapshot = {
   webhookLegacy: QueueCounters;
   actions: QueueCounters;
   globalSpammerDenorm: QueueCounters;
+  auxiliaryQueues: Record<AuxiliaryQueueName, QueueCounters>;
   webhookEvents: {
     received: WebhookStatusMetrics;
     queued: WebhookStatusMetrics;
@@ -190,6 +210,7 @@ export class QueueMetricsService {
   private defaultShardSnapshotPromise: Promise<WebhookDefaultShardSnapshot> | null = null;
   private readonly webhookJoinQueuesByName: Record<JoinWebhookQueueName, Queue | undefined>;
   private readonly webhookDefaultQueuesByName: Record<DefaultWebhookQueueName, Queue | undefined>;
+  private readonly auxiliaryQueuesByName: Record<AuxiliaryQueueName, Queue | undefined>;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -220,11 +241,12 @@ export class QueueMetricsService {
         this.resolveOptionalQueue(queueName),
       ]),
     ) as Record<DefaultWebhookQueueName, Queue | undefined>;
+    this.auxiliaryQueuesByName = Object.fromEntries(
+      AUXILIARY_QUEUE_NAMES.map((queueName) => [queueName, this.resolveOptionalQueue(queueName)]),
+    ) as Record<AuxiliaryQueueName, Queue | undefined>;
   }
 
-  private resolveOptionalQueue(
-    queueName: DefaultWebhookQueueName | JoinWebhookQueueName,
-  ): Queue | undefined {
+  private resolveOptionalQueue(queueName: string): Queue | undefined {
     try {
       return this.moduleRef.get<Queue>(getQueueToken(queueName), { strict: false });
     } catch {
@@ -336,6 +358,9 @@ export class QueueMetricsService {
       this.readQueueCounters(this.webhookLegacyQueue),
       this.readQueueCounters(this.actionQueue),
       this.readQueueCounters(this.globalSpammerDenormQueue),
+      ...AUXILIARY_QUEUE_NAMES.map((queueName) =>
+        this.readQueueCounters(this.auxiliaryQueuesByName[queueName]),
+      ),
     ]);
     const [received, queued, failed, userFacingReceived, userFacingQueued, userFacingFailed] =
       await Promise.all([
@@ -362,6 +387,13 @@ export class QueueMetricsService {
     const webhookLegacy = restSnapshots[defaultSnapshotOffset + 1] ?? EMPTY_COUNTERS;
     const actions = restSnapshots[defaultSnapshotOffset + 2] ?? EMPTY_COUNTERS;
     const globalSpammerDenorm = restSnapshots[defaultSnapshotOffset + 3] ?? EMPTY_COUNTERS;
+    const auxiliaryQueueSnapshotOffset = defaultSnapshotOffset + 4;
+    const auxiliaryQueues = Object.fromEntries(
+      AUXILIARY_QUEUE_NAMES.map((queueName, index) => [
+        queueName,
+        restSnapshots[auxiliaryQueueSnapshotOffset + index] ?? { ...EMPTY_COUNTERS },
+      ]),
+    ) as Record<AuxiliaryQueueName, QueueCounters>;
     const webhookDefaultShards = defaultShardSnapshot.webhookDefaultShards;
     const webhookDefault = this.sumQueueCounters(...Object.values(webhookDefaultShards));
     const webhookDefaultWorkerGroups = defaultShardSnapshot.webhookDefaultWorkerGroups;
@@ -396,6 +428,7 @@ export class QueueMetricsService {
       webhookLegacy,
       actions,
       globalSpammerDenorm,
+      auxiliaryQueues,
       webhookEvents: {
         received,
         queued,

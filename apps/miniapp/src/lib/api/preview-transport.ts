@@ -413,6 +413,29 @@ function buildPreviewSystemDashboard(state: PreviewState): SystemDashboardRespon
       failed: 0,
       completed: 0,
     },
+    auxiliaryQueues: {
+      'admin-managed-entities-refresh': {
+        waiting: 0,
+        active: inDegrade ? 1 : 0,
+        delayed: inDegrade ? 24 : 8,
+        failed: 0,
+        completed: 640,
+      },
+      'vk-parsing-publish': {
+        waiting: inDegrade ? 2 : 0,
+        active: 0,
+        delayed: inDegrade ? 12 : 4,
+        failed: inDegrade ? 1 : 0,
+        completed: 320,
+      },
+      'max-chat-admin-roster-sync': {
+        waiting: 0,
+        active: 0,
+        delayed: 3,
+        failed: 0,
+        completed: 180,
+      },
+    },
     webhookEvents: {
       received: {
         count: inDegrade ? 3 : 0,

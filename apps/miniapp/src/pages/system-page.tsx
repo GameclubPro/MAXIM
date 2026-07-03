@@ -73,6 +73,21 @@ function formatWindow(seconds: number): string {
   return `${minutes} мин`;
 }
 
+function formatAuxiliaryQueueLabel(name: string): string {
+  const labels: Record<string, string> = {
+    'admin-managed-entities-refresh': 'Managed refresh',
+    'vk-parsing-sync': 'VK sync',
+    'vk-parsing-publish': 'VK publish',
+    'night-mode-transitions': 'Night mode',
+    'max-chat-admin-roster-sync': 'Roster sync',
+    'admin-manual-fanout': 'Manual fanout',
+    'admin-super-ban': 'Super ban',
+    'admin-suggestion-delivery': 'Suggestion delivery',
+  };
+
+  return labels[name] ?? name;
+}
+
 function summaryTone(status: 'healthy' | 'warning' | 'critical') {
   if (status === 'critical') {
     return 'danger';
@@ -239,6 +254,17 @@ export function SystemPage({ api }: { api: ApiTransport }) {
     { label: 'Spammer denorm', queue: dashboard.queues.globalSpammerDenorm },
     { label: 'Moderation total', queue: dashboard.queues.moderation },
   ];
+  const auxiliaryQueueLayers = Object.entries(dashboard.queues.auxiliaryQueues ?? {})
+    .map(([name, queue]) => ({
+      name,
+      label: formatAuxiliaryQueueLabel(name),
+      queue,
+      pressure: queue.waiting + queue.active + queue.failed,
+    }))
+    .sort((left, right) => {
+      const pressureDiff = right.pressure - left.pressure;
+      return pressureDiff !== 0 ? pressureDiff : left.label.localeCompare(right.label);
+    });
   const hotPathStages = dashboard.hotPath?.stages.slice(0, 6) ?? [];
   const hotChats = dashboard.hotChats?.items.slice(0, 6) ?? [];
   const backgroundSources = dashboard.backgroundBudget?.topSources.slice(0, 5) ?? [];
@@ -247,7 +273,7 @@ export function SystemPage({ api }: { api: ApiTransport }) {
   const topBotLoad = dashboard.backgroundBudget?.botLoad?.topBots[0] ?? null;
   const membershipIssues = dashboard.membershipLookup?.issueSample.slice(0, 5) ?? [];
   const slo = dashboard.slo ?? dashboard.webhookSlo;
-  const queueGroups = dashboard.queueGroupHealth?.groups.slice(0, 8) ?? [];
+  const queueGroups = dashboard.queueGroupHealth?.groups.slice(0, 16) ?? [];
   const spammerReadModel = dashboard.spammerReadModel;
   const spammerSurfaceTimings = dashboard.spammerSurfaces?.timings.slice(0, 6) ?? [];
   return (
@@ -909,6 +935,46 @@ export function SystemPage({ api }: { api: ApiTransport }) {
           ))}
         </div>
       </GlassCard>
+
+      {auxiliaryQueueLayers.length > 0 ? (
+        <GlassCard className="system-panel" elevated>
+          <div className="system-panel__head">
+            <div>
+              <h2>Вспомогательные очереди</h2>
+              <p>Фоновые refresh, VK, night mode и roster sync задачи.</p>
+            </div>
+            <span className="chip">{auxiliaryQueueLayers.length} queues</span>
+          </div>
+          <div className="system-queue-grid">
+            {auxiliaryQueueLayers.map(({ name, label, queue }) => (
+              <article key={name} className="system-queue-card">
+                <div className="system-queue-card__head">
+                  <h3>{label}</h3>
+                  <span>{queue.waiting} waiting</span>
+                </div>
+                <dl className="system-queue-card__stats">
+                  <div>
+                    <dt>active</dt>
+                    <dd>{queue.active}</dd>
+                  </div>
+                  <div>
+                    <dt>delayed</dt>
+                    <dd>{queue.delayed}</dd>
+                  </div>
+                  <div>
+                    <dt>failed</dt>
+                    <dd>{queue.failed}</dd>
+                  </div>
+                  <div>
+                    <dt>done</dt>
+                    <dd>{queue.completed}</dd>
+                  </div>
+                </dl>
+              </article>
+            ))}
+          </div>
+        </GlassCard>
+      ) : null}
 
       {queueGroups.length > 0 ? (
         <GlassCard className="system-panel" elevated>

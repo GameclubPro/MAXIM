@@ -135,6 +135,8 @@ function createHealthyQueueSnapshot(overrides: Record<string, unknown> = {}) {
     webhookBackground: counters,
     webhookLegacy: counters,
     actions: counters,
+    globalSpammerDenorm: counters,
+    auxiliaryQueues: {},
     webhookEvents: {
       received: statusMetrics,
       queued: statusMetrics,
@@ -1148,6 +1150,74 @@ describe('SystemDashboardService', () => {
           total: expect.objectContaining({ withoutPrimary: 28 }),
         }),
       }),
+    });
+  });
+
+  it('surfaces auxiliary queue groups without treating scheduled delayed jobs as dashboard warnings', async () => {
+    const service = new SystemDashboardService(
+      {
+        getSnapshot: jest.fn().mockResolvedValue(
+          createHealthyQueueSnapshot({
+            auxiliaryQueues: {
+              'night-mode-transitions': {
+                waiting: 0,
+                prioritized: 0,
+                active: 0,
+                delayed: 3073,
+                failed: 0,
+                completed: 120,
+              },
+            },
+          }),
+        ),
+      } as never,
+      {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue({
+          mode: 'normal',
+          source: 'auto',
+          reason: 'system healthy',
+          updatedAt: '2026-03-29T12:00:00.000Z',
+          manualMode: null,
+          queueLagSec: 0,
+          action: {
+            windowSec: 60,
+            total: 12,
+            success: 12,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+        }),
+      } as never,
+      createConfigMock({ QUEUE_LAG_DEGRADE_SEC: 10 }),
+      {
+        getSnapshot: jest.fn().mockResolvedValue(createWebhookSubscriptionSnapshot()),
+      } as never,
+    );
+
+    await expect(service.getSnapshot()).resolves.toMatchObject({
+      summary: {
+        status: 'healthy',
+      },
+      queues: {
+        auxiliaryQueues: {
+          'night-mode-transitions': {
+            delayed: 3073,
+          },
+        },
+      },
+      queueGroupHealth: {
+        status: 'healthy',
+        groups: expect.arrayContaining([
+          expect.objectContaining({
+            name: 'aux:night-mode-transitions',
+            delayed: 3073,
+            pressure: 0,
+            status: 'healthy',
+          }),
+        ]),
+      },
     });
   });
 

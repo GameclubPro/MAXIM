@@ -60,6 +60,7 @@ export const queueMetricsSnapshotSchema = z.object({
     failed: 0,
     completed: 0,
   }),
+  auxiliaryQueues: z.record(z.string(), queueCountersSchema).optional().default({}),
   webhookEvents: z.object({
     received: webhookStatusMetricsSchema,
     queued: webhookStatusMetricsSchema,

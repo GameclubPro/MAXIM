@@ -1,5 +1,9 @@
 import { buildSystemQueueGroupHealth } from './runtime-reliability-profile';
-import type { QueueCounters, QueueMetricsSnapshot } from '../system/queue-metrics.service';
+import {
+  AUXILIARY_QUEUE_NAMES,
+  type QueueCounters,
+  type QueueMetricsSnapshot,
+} from '../system/queue-metrics.service';
 
 function counters(overrides: Partial<QueueCounters> = {}): QueueCounters {
   return {
@@ -23,6 +27,9 @@ function queueSnapshot(overrides: Partial<QueueMetricsSnapshot> = {}): QueueMetr
     webhookLegacy: counters(),
     actions: counters(),
     globalSpammerDenorm: counters(),
+    auxiliaryQueues: Object.fromEntries(
+      AUXILIARY_QUEUE_NAMES.map((queueName) => [queueName, counters()]),
+    ) as QueueMetricsSnapshot['auxiliaryQueues'],
     ...overrides,
   } as QueueMetricsSnapshot;
 }
@@ -61,6 +68,61 @@ describe('runtime reliability queue group health', () => {
         expect.objectContaining({
           name: 'actions',
           waiting: 50,
+          pressure: 50,
+          status: 'critical',
+        }),
+      ]),
+    );
+  });
+
+  it('tracks auxiliary queues without treating scheduled delayed jobs as pressure', () => {
+    const health = buildSystemQueueGroupHealth(
+      queueSnapshot({
+        auxiliaryQueues: {
+          ...Object.fromEntries(AUXILIARY_QUEUE_NAMES.map((queueName) => [queueName, counters()])),
+          'night-mode-transitions': counters({ delayed: 3073 }),
+          'max-chat-admin-roster-sync': counters({ waiting: 2, failed: 7581 }),
+        } as QueueMetricsSnapshot['auxiliaryQueues'],
+      }),
+    );
+
+    expect(health.status).toBe('warning');
+    expect(health.groups).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'aux:night-mode-transitions',
+          delayed: 3073,
+          pressure: 0,
+          status: 'healthy',
+        }),
+        expect.objectContaining({
+          name: 'aux:max-chat-admin-roster-sync',
+          waiting: 2,
+          failed: 7581,
+          pressure: 2,
+          status: 'warning',
+        }),
+      ]),
+    );
+  });
+
+  it('marks auxiliary queues critical when waiting backlog reaches the threshold', () => {
+    const health = buildSystemQueueGroupHealth(
+      queueSnapshot({
+        auxiliaryQueues: {
+          ...Object.fromEntries(AUXILIARY_QUEUE_NAMES.map((queueName) => [queueName, counters()])),
+          'vk-parsing-publish': counters({ waiting: 50, delayed: 5000 }),
+        } as QueueMetricsSnapshot['auxiliaryQueues'],
+      }),
+    );
+
+    expect(health.status).toBe('critical');
+    expect(health.groups).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'aux:vk-parsing-publish',
+          waiting: 50,
+          delayed: 5000,
           pressure: 50,
           status: 'critical',
         }),

@@ -1,6 +1,6 @@
 import { WebhookStatus } from '../prisma/prisma-client';
 import { getQueueToken } from '@nestjs/bullmq';
-import { QueueMetricsService } from './queue-metrics.service';
+import { AUXILIARY_QUEUE_NAMES, QueueMetricsService } from './queue-metrics.service';
 import { DEFAULT_WEBHOOK_QUEUE_NAMES } from '../webhook/webhook-queues';
 
 function createQueueMock(counts: {
@@ -105,16 +105,28 @@ describe('QueueMetricsService', () => {
         ),
       ]),
     );
-    const moduleRef = {
-      get: jest.fn(
-        (token: string) =>
-          Object.fromEntries(
-            DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) => [
-              getQueueToken(queueName),
-              defaultQueues[queueName],
-            ]),
-          )[token],
+    const auxiliaryQueues = {
+      'admin-managed-entities-refresh': createQueueMock({
+        waiting: 4,
+        prioritized: 0,
+        active: 1,
+        delayed: 12,
+        failed: 2,
+        completed: 80,
+      }),
+    };
+    const queueProviders: Record<string, ReturnType<typeof createQueueMock> | undefined> = {
+      ...Object.fromEntries(
+        DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) => [
+          getQueueToken(queueName),
+          defaultQueues[queueName],
+        ]),
       ),
+      [getQueueToken('admin-managed-entities-refresh')]:
+        auxiliaryQueues['admin-managed-entities-refresh'],
+    };
+    const moduleRef = {
+      get: jest.fn((token: string) => queueProviders[token]),
     };
     const botRegistry = {
       getAllBots: jest.fn().mockReturnValue([{ id: '777000_bot' }]),
@@ -195,6 +207,23 @@ describe('QueueMetricsService', () => {
       failed: 0,
       completed: 7,
     });
+    expect(snapshot.auxiliaryQueues['admin-managed-entities-refresh']).toEqual({
+      waiting: 4,
+      prioritized: 0,
+      active: 1,
+      delayed: 12,
+      failed: 2,
+      completed: 80,
+    });
+    expect(snapshot.auxiliaryQueues['vk-parsing-publish']).toEqual({
+      waiting: 0,
+      prioritized: 0,
+      active: 0,
+      delayed: 0,
+      failed: 0,
+      completed: 0,
+    });
+    expect(Object.keys(snapshot.auxiliaryQueues).sort()).toEqual([...AUXILIARY_QUEUE_NAMES].sort());
     expect(snapshot.webhookDefaultShards['moderation-default-0']).toEqual({
       waiting: 1,
       prioritized: 0,

@@ -1174,6 +1174,11 @@ function parseSystemDashboardResponse(value: unknown): SystemDashboardResponse {
       webhookLegacy: parseQueueCounters(queues.webhookLegacy),
       actions: parseQueueCounters(queues.actions),
       globalSpammerDenorm: parseQueueCounters(queues.globalSpammerDenorm),
+      auxiliaryQueues: Object.fromEntries(
+        Object.entries(isRecord(queues.auxiliaryQueues) ? queues.auxiliaryQueues : {}).map(
+          ([queueName, counters]) => [queueName, parseQueueCounters(counters)],
+        ),
+      ),
       webhookEvents: {
         received: parseWebhookStatusMetrics(queues.webhookEvents.received),
         queued: parseWebhookStatusMetrics(queues.webhookEvents.queued),

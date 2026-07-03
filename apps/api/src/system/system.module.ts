@@ -9,7 +9,7 @@ import { MaxApiMetricsService } from './max-api-metrics.service';
 import { MiniappBootTraceController } from './miniapp-boot-trace.controller';
 import { MiniappBootTraceService } from './miniapp-boot-trace.service';
 import { MiniappMutationTunnelController } from './miniapp-mutation-tunnel.controller';
-import { QueueMetricsService } from './queue-metrics.service';
+import { AUXILIARY_QUEUE_NAMES, QueueMetricsService } from './queue-metrics.service';
 import { RuntimeDiagnosticsService } from './runtime-diagnostics.service';
 import { SystemController } from './system.controller';
 import { SystemDashboardService } from './system-dashboard.service';
@@ -24,6 +24,7 @@ import { WebhookSubscriptionStatusService } from './webhook-subscription-status.
     BullModule.registerQueue(...ALL_WEBHOOK_QUEUE_NAMES.map((name) => ({ name }))),
     BullModule.registerQueue({ name: 'moderation-actions' }),
     BullModule.registerQueue({ name: GLOBAL_SPAMMER_DENORM_QUEUE }),
+    BullModule.registerQueue(...AUXILIARY_QUEUE_NAMES.map((name) => ({ name }))),
   ],
   controllers: [SystemController, MiniappBootTraceController, MiniappMutationTunnelController],
   providers: [

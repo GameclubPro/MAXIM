@@ -71,6 +71,9 @@ export function buildSystemQueueGroupHealth(queues: QueueMetricsSnapshot): Syste
     buildQueueGroup('webhook-legacy', ['moderation-legacy'], queues.webhookLegacy),
     buildQueueGroup('actions', ['moderation-actions'], queues.actions),
     buildQueueGroup('spammer-denorm', ['global-spammer-denorm'], queues.globalSpammerDenorm),
+    ...Object.entries(queues.auxiliaryQueues ?? {}).map(([queueName, counters]) =>
+      buildQueueGroup(`aux:${queueName}`, [queueName], counters, { ignoreDelayedForStatus: true }),
+    ),
   ];
 
   return {
@@ -172,6 +175,7 @@ function buildQueueGroup(
   name: string,
   queues: readonly string[],
   counters: QueueCounters | undefined,
+  options: { ignoreDelayedForStatus?: boolean } = {},
 ): SystemQueueGroup {
   const safeCounters = counters ?? {
     waiting: 0,
@@ -181,7 +185,10 @@ function buildQueueGroup(
     completed: 0,
     prioritized: 0,
   };
-  const pressure = safeCounters.waiting + safeCounters.active + safeCounters.delayed;
+  const pressure =
+    safeCounters.waiting +
+    safeCounters.active +
+    (options.ignoreDelayedForStatus === true ? 0 : safeCounters.delayed);
 
   return {
     name,
@@ -192,18 +199,21 @@ function buildQueueGroup(
     failed: safeCounters.failed,
     completed: safeCounters.completed,
     pressure,
-    status: resolveQueueGroupStatus(safeCounters),
+    status: resolveQueueGroupStatus(safeCounters, options),
   };
 }
 
-function resolveQueueGroupStatus(counters: QueueCounters): SystemQueueGroupStatus {
+function resolveQueueGroupStatus(
+  counters: QueueCounters,
+  options: { ignoreDelayedForStatus?: boolean } = {},
+): SystemQueueGroupStatus {
   if (counters.waiting >= QUEUE_GROUP_WAITING_CRITICAL) {
     return 'critical';
   }
 
   if (
     counters.waiting >= QUEUE_GROUP_WAITING_WARNING ||
-    counters.delayed > 0 ||
+    (options.ignoreDelayedForStatus !== true && counters.delayed > 0) ||
     counters.failed > 0
   ) {
     return 'warning';
