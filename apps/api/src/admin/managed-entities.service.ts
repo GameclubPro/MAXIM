@@ -67,6 +67,8 @@ import {
   readTrimmedString,
   fromPrismaEntityType,
   toPrismaEntityType,
+  isBotAdminLookupDeniedError,
+  extractMaxErrorStatus,
 } from './admin-legacy-utils';
 import {
   buildProfileMentionHandoffUrl,
@@ -226,16 +228,31 @@ export class ManagedEntitiesService {
         ...(canAccessSystem ? { canAccessSystem: true } : {}),
       };
     } catch (error: unknown) {
+      const logPayload = {
+        chatId: contextChatId,
+        userId: user.userId,
+        err: error instanceof Error ? error.message : String(error),
+      };
+      if (this.isCurrentAdminProfileEnrichmentUnavailableError(error)) {
+        this.logger.log(
+          logPayload,
+          'Skipped current admin profile enrichment because MAX denied access',
+        );
+        return fallback;
+      }
+
       this.logger.warn(
         {
-          chatId: contextChatId,
-          userId: user.userId,
-          err: error instanceof Error ? error.message : String(error),
+          ...logPayload,
         },
         'Failed to resolve current admin profile from MAX',
       );
       return fallback;
     }
+  }
+
+  private isCurrentAdminProfileEnrichmentUnavailableError(error: unknown): boolean {
+    return isBotAdminLookupDeniedError(error) || extractMaxErrorStatus(error) === 403;
   }
 
   listChats(

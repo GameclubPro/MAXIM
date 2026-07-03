@@ -1,4 +1,4 @@
-import { ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
+import { ForbiddenException, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ManagedEntitiesService } from './managed-entities.service';
 
 const user = {
@@ -426,6 +426,99 @@ describe('ManagedEntitiesService getMe', () => {
       trafficClass: 'interactive',
       actionHealthLane: 'background',
     });
+  });
+
+  it('logs expected MAX access denial quietly when optional profile enrichment is unavailable', async () => {
+    const deniedError = Object.assign(new Error('Request failed with status code 403'), {
+      response: { status: 403, data: { message: 'Request failed with status code 403' } },
+    });
+    const maxClient = {
+      getChatMemberProfiles: jest.fn().mockRejectedValue(deniedError),
+    };
+    const logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const { service } = createService({ maxClient });
+
+    try {
+      await expect(
+        service.getMe(
+          {
+            userId: 'admin-1',
+            username: 'designer',
+            displayName: 'Designer',
+            avatarUrl: null,
+          },
+          { chatId: 'chat-1', entityType: 'chat', enrichFromMax: true },
+        ),
+      ).resolves.toEqual({
+        userId: 'admin-1',
+        username: 'designer',
+        displayName: 'Designer',
+        avatarUrl: null,
+        profileUrl: 'https://max.ru/designer',
+        profileHandoffUrl: chatProfileHandoffUrl('Designer'),
+      });
+      expect(logSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chatId: 'chat-1',
+          userId: 'admin-1',
+          err: 'Request failed with status code 403',
+        }),
+        'Skipped current admin profile enrichment because MAX denied access',
+      );
+      expect(warnSpy).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'Failed to resolve current admin profile from MAX',
+      );
+    } finally {
+      logSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('keeps warning for unexpected optional profile enrichment failures', async () => {
+    const maxClient = {
+      getChatMemberProfiles: jest.fn().mockRejectedValue(new Error('MAX timeout')),
+    };
+    const logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const { service } = createService({ maxClient });
+
+    try {
+      await expect(
+        service.getMe(
+          {
+            userId: 'admin-1',
+            username: 'designer',
+            displayName: 'Designer',
+            avatarUrl: null,
+          },
+          { chatId: 'chat-1', entityType: 'chat', enrichFromMax: true },
+        ),
+      ).resolves.toEqual({
+        userId: 'admin-1',
+        username: 'designer',
+        displayName: 'Designer',
+        avatarUrl: null,
+        profileUrl: 'https://max.ru/designer',
+        profileHandoffUrl: chatProfileHandoffUrl('Designer'),
+      });
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chatId: 'chat-1',
+          userId: 'admin-1',
+          err: 'MAX timeout',
+        }),
+        'Failed to resolve current admin profile from MAX',
+      );
+      expect(logSpy).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'Skipped current admin profile enrichment because MAX denied access',
+      );
+    } finally {
+      logSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
   });
 
   it('returns init data fallback by default when profile enrichment is not explicitly requested', async () => {
