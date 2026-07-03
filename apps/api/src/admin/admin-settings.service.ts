@@ -197,6 +197,8 @@ export class AdminSettingsService {
       maxClient: this.maxClient,
       logger: this.logger,
       chatId,
+      resolveBotId: async () =>
+        (await this.legacyAdminService.resolveChatSettingsReadBotAssignmentData(chatId)).botId,
     });
   }
 

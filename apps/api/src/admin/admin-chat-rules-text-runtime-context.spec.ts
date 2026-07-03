@@ -17,6 +17,7 @@ describe('AdminChatRulesTextRuntimeContext', () => {
     const domains = [{ domain: 'example.com' }] as never;
     const headers = [{ id: 'channel-1', title: 'Канал' }] as never;
     const displayNames = new Map([['user-1', 'Admin Name']]);
+    const botAssignment = { botId: 'bot-1', primaryBotId: 'bot-1' };
     const target = {
       prisma: { chatRules: {} },
       chatContextCache: { invalidate: jest.fn() },
@@ -28,6 +29,7 @@ describe('AdminChatRulesTextRuntimeContext', () => {
       isRequiredSubscriptionCurrentlyActive: jest.fn().mockReturnValue(true),
       resolveRequiredSubscriptionChannelHeaders: jest.fn().mockResolvedValue(headers),
       resolveUserDisplayNames: jest.fn().mockResolvedValue(displayNames),
+      resolveChatSettingsReadBotAssignmentData: jest.fn().mockResolvedValue(botAssignment),
     };
     const context = createAdminChatRulesTextRuntimeContext(target);
 
@@ -44,6 +46,9 @@ describe('AdminChatRulesTextRuntimeContext', () => {
     );
     await expect(context.resolveUserDisplayNames('chat-1', ['user-1'])).resolves.toBe(
       displayNames,
+    );
+    await expect(context.resolveChatSettingsReadBotAssignmentData('chat-1')).resolves.toBe(
+      botAssignment,
     );
   });
 });

@@ -449,6 +449,8 @@ services:
     build:
       context: ..
       dockerfile: apps/miniapp/Dockerfile
+      args:
+        VITE_APP_CANONICAL_URL: https://maxim.play-team.ru/app/
     restart: unless-stopped
     ports:
       - '127.0.0.1:3000:3000'

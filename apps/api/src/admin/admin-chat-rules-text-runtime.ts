@@ -598,6 +598,12 @@ export class AdminChatRulesTextRuntime {
     return this.context.resolveUserDisplayNames(chatId, userIds);
   }
 
+  private resolveChatSettingsReadBotAssignmentData(
+    chatId: string,
+  ): Promise<ResolvedBotAssignmentData> {
+    return this.context.resolveChatSettingsReadBotAssignmentData(chatId);
+  }
+
   private readTrimmedString(value: unknown): string | null {
     return readTrimmedString(value);
   }
@@ -637,6 +643,7 @@ export class AdminChatRulesTextRuntime {
       logger: this.logger,
       chatId,
       rules,
+      resolveBotId: async () => (await this.resolveChatSettingsReadBotAssignmentData(chatId)).botId,
     });
   }
 

@@ -8,7 +8,7 @@ ARG VITE_API_FALLBACK_BASES=
 ARG VITE_ROUTER_MODE=browser
 ARG VITE_APP_NAME="Майор Максимов"
 ARG VITE_APP_DESCRIPTION="Мини-приложение для управления чатами, каналами и настройками бота в MAX."
-ARG VITE_APP_CANONICAL_URL=https://maxim.play-team.ru/app/
+ARG VITE_APP_CANONICAL_URL=https://major-maksimov.ru/app/
 
 ENV MINIAPP_BASE_PATH=${MINIAPP_BASE_PATH}
 ENV VITE_PUBLIC_BASE_PATH=${VITE_PUBLIC_BASE_PATH}
@@ -35,7 +35,7 @@ RUN npm run build --workspace @maxim/contracts && npm run build --workspace @max
   && sed -i \
     -e "s|Майор Максимов: мини-приложение для управления чатами, каналами и настройками бота в MAX.|${VITE_APP_DESCRIPTION}|g" \
     -e "s|Мини-приложение для управления чатами, каналами и настройками бота в MAX.|${VITE_APP_DESCRIPTION}|g" \
-    -e "s|https://maxim.play-team.ru/app/|${VITE_APP_CANONICAL_URL}|g" \
+    -e "s|https://major-maksimov.ru/app/|${VITE_APP_CANONICAL_URL}|g" \
     -e "s|/app/favicon.png|${VITE_PUBLIC_BASE_PATH}favicon.png|g" \
     -e "s|/app/apple-touch-icon.png|${VITE_PUBLIC_BASE_PATH}apple-touch-icon.png|g" \
     -e "s|/app/site.webmanifest|${VITE_PUBLIC_BASE_PATH}site.webmanifest|g" \

@@ -219,12 +219,15 @@ function messageOffsetIndexOf(source: string, value: string): number {
   return source.indexOf(value);
 }
 
-function createPrivatePhotoUpdate(options: { text?: string; photoIds?: string[] } = {}): MaxUpdate {
+function createPrivatePhotoUpdate(
+  options: { text?: string; photoIds?: string[]; botId?: string } = {},
+): MaxUpdate {
   const text = options.text ?? '';
   const photoIds = options.photoIds && options.photoIds.length > 0 ? options.photoIds : ['photo-1'];
 
   return {
     updateId: `upd-photo-${Date.now()}`,
+    ...(options.botId ? { botId: options.botId } : {}),
     type: 'message_created',
     message: {
       messageId: `msg-photo-${Date.now()}`,
@@ -316,9 +319,15 @@ function createPrivateImageFileUpdate(): MaxUpdate {
   return createPrivateFileUpdate();
 }
 
-function createPrivateVideoUpdate(text = ''): MaxUpdate {
+function createPrivateVideoUpdate(
+  options: string | { text?: string; botId?: string; includeToken?: boolean } = '',
+): MaxUpdate {
+  const text = typeof options === 'string' ? options : (options.text ?? '');
+  const botId = typeof options === 'string' ? undefined : options.botId;
+  const includeToken = typeof options === 'string' ? true : options.includeToken !== false;
   return {
     updateId: `upd-video-${Date.now()}`,
+    ...(botId ? { botId } : {}),
     type: 'message_created',
     message: {
       messageId: `msg-video-${Date.now()}`,
@@ -338,7 +347,7 @@ function createPrivateVideoUpdate(text = ''): MaxUpdate {
               type: 'video',
               payload: {
                 url: 'https://example.test/channel-suggestion-video.mp4',
-                token: 'incoming-video-token',
+                ...(includeToken ? { token: 'incoming-video-token' } : {}),
                 video_id: 'video-1',
                 file_name: 'channel-suggestion-video.mp4',
                 mime_type: 'video/mp4',
@@ -1177,17 +1186,29 @@ describe('PrivateControlService', () => {
     const fetchMock = mockImageFetch();
 
     try {
-      await service.handleUpdate(createPrivateCallbackUpdate('pc2|support_report'));
+      await service.handleUpdate(
+        createPrivateCallbackUpdate('pc2|support_report', { botId: '888000_bot' }),
+      );
 
       expect(getLastEditedText(maxClient)).toContain('Сообщить о проблеме');
       expect(getLastEditedText(maxClient)).toContain('Опишите проблему одним сообщением');
 
       await service.handleUpdate(
-        createPrivatePhotoUpdate({ text: 'Не открывается экран настроек' }),
+        createPrivatePhotoUpdate({
+          text: 'Не открывается экран настроек',
+          botId: '888000_bot',
+        }),
       );
 
+      expect(maxClient.uploadImage).toHaveBeenCalledWith(
+        expect.any(Buffer),
+        'support-request-photo-1.png',
+        'image/png',
+        { botId: '888000_bot' },
+      );
       expect(supportRequestsService.createRequest).toHaveBeenCalledWith(
         expect.objectContaining({
+          botId: '888000_bot',
           privateChatId: '152517912',
           userId: 'user-1',
           userName: 'Тестовый пользователь',
@@ -2858,6 +2879,54 @@ describe('PrivateControlService', () => {
     );
   });
 
+  it('uploads broadcast preview images through the remembered private bot after miniapp handoff', async () => {
+    const { service, maxClient, chats } = createHarness();
+    const actor = {
+      userId: 'user-1',
+      username: null,
+      displayName: 'Тестовый пользователь',
+      chatId: chats[0].id,
+      chatTitle: chats[0].title,
+    };
+    const imageMock = mockImageFetch();
+
+    try {
+      await service.handleBotStarted(createBotStartedPrivateUpdate('', { botId: '888000_bot' }));
+      await service.handoffBroadcastFromMiniapp(
+        chats[0].id,
+        actor,
+        {
+          applyToAllChats: false,
+          buttonEnabled: false,
+        },
+        'chat',
+      );
+      maxClient.uploadImage.mockClear();
+      maxClient.sendMessage.mockClear();
+
+      await service.handleUpdate(createPrivatePhotoUpdate());
+    } finally {
+      imageMock.restore();
+    }
+
+    expect(maxClient.uploadImage).toHaveBeenCalledWith(
+      TINY_PNG,
+      'private-broadcast-photo-1.png',
+      'image/png',
+      { botId: '888000_bot' },
+    );
+    expect(maxClient.sendMessage).toHaveBeenLastCalledWith(
+      '152517912',
+      expect.any(String),
+      expect.objectContaining({
+        imagePayload: { token: 'upload-token-1' },
+      }),
+      expect.objectContaining({
+        botId: '888000_bot',
+      }),
+    );
+  });
+
   it('acknowledges mass confirm immediately and ignores stale duplicate confirmations', async () => {
     const sendBroadcast = jest
       .fn()
@@ -3258,6 +3327,43 @@ describe('PrivateControlService', () => {
       }),
     );
     expect(getLastEditedText(maxClient)).toContain('✅ Материал отправлен');
+  });
+
+  it('uploads downloaded suggestion video through the incoming private bot', async () => {
+    const { service, maxClient, channels } = createHarness();
+    const startPayload = encodeChannelSuggestionStartPayload(channels[0].id, 'cdt-suggest-token-6');
+    const videoBuffer = Buffer.from('video-binary');
+    const videoFetch = mockImageFetch(videoBuffer, 'video/mp4');
+
+    try {
+      await service.handleBotStarted(
+        createBotStartedPrivateUpdate(startPayload, { botId: '888000_bot' }),
+      );
+      await service.handleUpdate(
+        createPrivateVideoUpdate({ botId: '888000_bot', includeToken: false }),
+      );
+    } finally {
+      videoFetch.restore();
+    }
+
+    expect(maxClient.uploadVideo).toHaveBeenCalledWith(
+      videoBuffer,
+      'channel-suggestion-video.mp4',
+      'video/mp4',
+      { botId: '888000_bot' },
+    );
+    expect(maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      '152517912',
+      expect.objectContaining({
+        attachments: expect.arrayContaining([
+          expect.objectContaining({
+            type: 'video',
+            payload: { token: 'upload-video-token-1' },
+          }),
+        ]),
+      }),
+      { botId: '888000_bot' },
+    );
   });
 
   it('accepts a video-only suggestion in the bot flow after explicit send', async () => {
@@ -4030,6 +4136,46 @@ describe('PrivateControlService', () => {
         textFormat: 'html',
       }),
     );
+  });
+
+  it('resolves profile mention handoff names through the header primary bot', async () => {
+    const { service, maxClient, chats } = createHarness({
+      adminService: {
+        getChatHeader: jest.fn().mockResolvedValue({
+          id: '-70000000000001',
+          title: 'Тестовый чат 1',
+          entityType: 'chat',
+          link: null,
+          participantsCount: null,
+          primaryBotId: '888000_bot',
+          assignedBots: [],
+        }),
+      },
+    });
+    const actor = {
+      userId: 'user-1',
+      username: null,
+      displayName: 'Тестовый пользователь',
+      chatId: chats[0].id,
+      chatTitle: chats[0].title,
+    };
+    maxClient.getChatMemberProfiles.mockResolvedValue(
+      new Map([['user-42', { displayName: 'Юлия Максимова' }]]),
+    );
+
+    await service.handoffProfileMentionFromMiniapp(
+      chats[0].id,
+      actor,
+      'user-42',
+      {
+        displayName: 'Юлия',
+      },
+      'chat',
+    );
+
+    expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith(chats[0].id, ['user-42'], {
+      botId: '888000_bot',
+    });
   });
 
   it('falls back to the provided profile name when MAX member profile lookup is empty', async () => {

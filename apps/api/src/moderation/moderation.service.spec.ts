@@ -1134,9 +1134,10 @@ function createPrivateCallbackUpdate(payload: string): MaxUpdate {
   };
 }
 
-function createGroupRulesCallbackUpdate(): MaxUpdate {
+function createGroupRulesCallbackUpdate(options: { botId?: string } = {}): MaxUpdate {
   return {
     updateId: 'upd-group-rules-callback-1',
+    ...(options.botId ? { botId: options.botId } : {}),
     type: 'message_callback',
     message: {
       messageId: 'msg-group-rules-callback-1',
@@ -14923,9 +14924,9 @@ describe('ModerationService', () => {
       maxClient as never,
     );
 
-    await service.handleUpdate(createGroupRulesCallbackUpdate());
+    await service.handleUpdate(createGroupRulesCallbackUpdate({ botId: 'bot-1' }));
 
-    expect(maxClient.resolveMessageLink).toHaveBeenCalledWith('mid-rules-1');
+    expect(maxClient.resolveMessageLink).toHaveBeenCalledWith('mid-rules-1', { botId: 'bot-1' });
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
       'chat-1',
       'msg-group-rules-callback-1',
@@ -14936,6 +14937,7 @@ describe('ModerationService', () => {
           url: 'https://max.ru/chats/chat-1/message/777',
         },
       },
+      { botId: 'bot-1' },
     );
     expect(maxClient.answerCallback).toHaveBeenCalledWith(
       'callback-rules-1',

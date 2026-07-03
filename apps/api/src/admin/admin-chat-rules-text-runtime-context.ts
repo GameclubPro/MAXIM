@@ -5,6 +5,7 @@ import type { AuthUser } from '../common/decorators/current-user.decorator';
 import type { MaxClientService } from '../max/max-client.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
+import type { ResolvedBotAssignmentData } from './admin-chat-settings';
 
 export type AdminChatRulesTextRuntimeContext = {
   readonly prisma: PrismaService;
@@ -19,6 +20,7 @@ export type AdminChatRulesTextRuntimeContext = {
     channelIds: readonly string[],
   ): Promise<ManagedEntityHeader[]>;
   resolveUserDisplayNames(chatId: string, userIds: string[]): Promise<Map<string, string>>;
+  resolveChatSettingsReadBotAssignmentData(chatId: string): Promise<ResolvedBotAssignmentData>;
   read(prop: PropertyKey): unknown;
   write(prop: PropertyKey, value: unknown): void;
 };
@@ -36,6 +38,7 @@ type AdminChatRulesTextRuntimeContextTarget = {
     channelIds: readonly string[],
   ): Promise<ManagedEntityHeader[]>;
   resolveUserDisplayNames(chatId: string, userIds: string[]): Promise<Map<string, string>>;
+  resolveChatSettingsReadBotAssignmentData(chatId: string): Promise<ResolvedBotAssignmentData>;
 };
 
 export function createAdminChatRulesTextRuntimeContext(
@@ -79,6 +82,9 @@ export function createAdminChatRulesTextRuntimeContext(
     },
     resolveUserDisplayNames(chatId: string, userIds: string[]): Promise<Map<string, string>> {
       return typedTarget.resolveUserDisplayNames(chatId, userIds);
+    },
+    resolveChatSettingsReadBotAssignmentData(chatId: string): Promise<ResolvedBotAssignmentData> {
+      return typedTarget.resolveChatSettingsReadBotAssignmentData(chatId);
     },
     read(prop: PropertyKey): unknown {
       return targetRecord[prop];

@@ -986,7 +986,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (callbackPayload === RULES_CALLBACK_PAYLOAD) {
-        await this.handleRulesCallback(chatId, callbackId, update.message?.messageId ?? null);
+        await this.handleRulesCallback(
+          chatId,
+          callbackId,
+          update.message?.messageId ?? null,
+          this.readString(update.botId) ?? undefined,
+        );
         return;
       }
 
@@ -10766,6 +10771,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     callbackId: string | null,
     sourceMessageId: string | null,
+    botId?: string,
   ): Promise<void> {
     const publishedRules = await this.prisma.chatRules?.findUnique?.({
       where: { chatId },
@@ -10779,6 +10785,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       chatId,
       publishedRules?.publishedUrl ?? null,
       publishedRules?.publishedMessageId ?? null,
+      botId,
     );
     if (!resolvedUrl) {
       if (callbackId) {
@@ -10789,12 +10796,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     try {
       if (sourceMessageId?.trim()) {
-        await this.maxClient.editMessageInlineKeyboard(chatId, sourceMessageId, null, {
-          button: {
-            text: RULES_BOT_BUTTON_TEXT,
-            url: resolvedUrl,
+        await this.maxClient.editMessageInlineKeyboard(
+          chatId,
+          sourceMessageId,
+          null,
+          {
+            button: {
+              text: RULES_BOT_BUTTON_TEXT,
+              url: resolvedUrl,
+            },
           },
-        });
+          botId ? { botId } : {},
+        );
       }
     } catch (error: unknown) {
       this.logger.warn(
@@ -15018,6 +15031,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     publishedUrl: string | null,
     publishedMessageId: string | null,
+    botId?: string,
   ): Promise<string | null> {
     const normalizedPublishedUrl = this.normalizeBotButtonUrl(publishedUrl ?? '');
     if (normalizedPublishedUrl) {
@@ -15032,7 +15046,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     let resolvedUrl: string | null = null;
     try {
       resolvedUrl = this.normalizeBotButtonUrl(
-        (await this.maxClient.resolveMessageLink(normalizedMessageId)) ?? '',
+        (botId
+          ? await this.maxClient.resolveMessageLink(normalizedMessageId, { botId })
+          : await this.maxClient.resolveMessageLink(normalizedMessageId)) ?? '',
       );
     } catch (error: unknown) {
       this.logger.warn(

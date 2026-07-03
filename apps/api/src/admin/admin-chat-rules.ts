@@ -342,6 +342,7 @@ export async function hydratePublishedRulesUrl(params: {
   logger: Pick<Logger, 'warn'>;
   chatId: string;
   rules: PersistedChatRules;
+  resolveBotId?: () => Promise<string | undefined> | string | undefined;
 }): Promise<PersistedChatRules> {
   const currentUrl = normalizePublishedRulesUrl(params.rules.publishedUrl);
   if (currentUrl || !params.rules.publishedMessageId?.trim()) {
@@ -351,10 +352,26 @@ export async function hydratePublishedRulesUrl(params: {
     };
   }
 
+  let botId: string | undefined;
+  try {
+    botId = await params.resolveBotId?.();
+  } catch (error: unknown) {
+    params.logger.warn(
+      {
+        chatId: params.chatId,
+        messageId: params.rules.publishedMessageId,
+        err: error instanceof Error ? error.message : String(error),
+      },
+      'Failed to resolve bot for published chat rules url recovery',
+    );
+  }
+
   let resolvedUrl: string | null = null;
   try {
     resolvedUrl = normalizePublishedRulesUrl(
-      await params.maxClient.resolveMessageLink(params.rules.publishedMessageId),
+      botId
+        ? await params.maxClient.resolveMessageLink(params.rules.publishedMessageId, { botId })
+        : await params.maxClient.resolveMessageLink(params.rules.publishedMessageId),
     );
   } catch (error: unknown) {
     params.logger.warn(
@@ -392,6 +409,7 @@ export async function readChatRules(params: {
   maxClient: Pick<MaxClientService, 'resolveMessageLink'>;
   logger: Pick<Logger, 'warn'>;
   chatId: string;
+  resolveBotId?: () => Promise<string | undefined> | string | undefined;
 }): Promise<ChatRules> {
   const rules = await ensureChatRules({
     prisma: params.prisma,
@@ -404,6 +422,7 @@ export async function readChatRules(params: {
     logger: params.logger,
     chatId: params.chatId,
     rules,
+    resolveBotId: params.resolveBotId,
   });
   return mapChatRules(hydratedRules);
 }
@@ -641,6 +660,7 @@ export async function publishChatRules(params: {
       publishedUrl: published.url,
       publishedAt,
     },
+    resolveBotId: () => resolvedBotId,
   });
   await params.chatContextCache.invalidate(params.chatId);
 

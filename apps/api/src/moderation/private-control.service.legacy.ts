@@ -14,6 +14,7 @@ import {
   type ChannelSettings,
   type ChatSettings,
   type ChatSettingsScreenResponse,
+  type ManagedEntityHeader,
   type ManagedGiveawayDetails,
   type ManagedGiveawayWinner,
   MAX_CHANNEL_DIALOG_SUGGEST_IMAGES,
@@ -425,16 +426,18 @@ export class PrivateControlService {
 
       this.clearPendingProfileMentionHandoff(session);
       await this.saveSession(context.actor.userId, session);
+      const deliveryBotId = this.resolvePrivateDeliveryBotId(context, session);
       const resolvedDisplayName = await this.resolveProfileMentionDisplayName(
         profileMentionPayload.chatId,
         profileMentionPayload.userId,
         pendingDisplayName ?? profileMentionPayload.displayName,
+        deliveryBotId,
       );
       await this.sendProfileMentionToPrivateChat(
         context.chatId,
         resolvedDisplayName,
         profileMentionPayload.userId,
-        this.resolvePrivateDeliveryBotId(context, session),
+        deliveryBotId,
       );
       return;
     }
@@ -870,17 +873,19 @@ export class PrivateControlService {
       throw new BadRequestException('Не указан пользователь для открытия профиля.');
     }
 
-    if (entityType === 'channel') {
-      await this.adminService.getChannelHeader(sourceChatId, user);
-    } else {
-      await this.adminService.getChatHeader(sourceChatId, user);
-    }
+    const header =
+      entityType === 'channel'
+        ? await this.adminService.getChannelHeader(sourceChatId, user)
+        : await this.adminService.getChatHeader(sourceChatId, user);
+    const profileLookupBotId = this.resolveManagedEntityHeaderBotId(header);
 
     let resolvedDisplayName = parsed.data.displayName;
     try {
-      const profiles = await this.maxClient.getChatMemberProfiles(sourceChatId, [
-        normalizedTargetUserId,
-      ]);
+      const profiles = profileLookupBotId
+        ? await this.maxClient.getChatMemberProfiles(sourceChatId, [normalizedTargetUserId], {
+            botId: profileLookupBotId,
+          })
+        : await this.maxClient.getChatMemberProfiles(sourceChatId, [normalizedTargetUserId]);
       const profile = profiles.get(normalizedTargetUserId);
       const displayName = readPrivateControlString(profile?.displayName);
       if (displayName) {
@@ -1158,7 +1163,7 @@ export class PrivateControlService {
       throw new BadRequestException('Сейчас обращение не удалось принять. Попробуйте позже.');
     }
 
-    const attachments = await this.buildSupportRequestAttachments(context.update);
+    const attachments = await this.buildSupportRequestAttachments(context, session);
     const text = rawText.trim();
     if (!text && attachments.length === 0) {
       throw new BadRequestException('Пришлите текст проблемы или фото.');
@@ -1213,9 +1218,11 @@ export class PrivateControlService {
   }
 
   private async buildSupportRequestAttachments(
-    update: MaxUpdate,
+    context: PrivateContext,
+    session: PrivateSession,
   ): Promise<SupportRequestAttachment[]> {
-    const imageSources = extractPrivateImageSourceAttachments(update).slice(0, 5);
+    const imageSources = extractPrivateImageSourceAttachments(context.update).slice(0, 5);
+    const uploader = this.buildPrivateControlMediaUploader(context, session);
     const attachments: SupportRequestAttachment[] = [];
 
     for (const imageSource of imageSources) {
@@ -1224,7 +1231,7 @@ export class PrivateControlService {
       try {
         const draft = await buildPrivateSuggestionMediaDraftFromImage(
           imageSource,
-          this.privateControlMediaUploader,
+          uploader,
           'support-request',
         );
         payload = draft.payload;
@@ -1250,7 +1257,7 @@ export class PrivateControlService {
       return attachments;
     }
 
-    for (const rawAttachment of collectPrivateMessageAttachments(update).slice(0, 5)) {
+    for (const rawAttachment of collectPrivateMessageAttachments(context.update).slice(0, 5)) {
       const rawType =
         typeof rawAttachment.type === 'string' ? rawAttachment.type.trim().toLowerCase() : '';
       if (rawType === 'image' || rawType === 'file') {
@@ -1259,7 +1266,8 @@ export class PrivateControlService {
 
       attachments.push({
         type: rawType === 'video' ? 'video' : 'unknown',
-        fileName: readPrivateControlString(rawAttachment.file_name ?? rawAttachment.fileName) ?? null,
+        fileName:
+          readPrivateControlString(rawAttachment.file_name ?? rawAttachment.fileName) ?? null,
         mimeType: null,
         url: null,
         payload: null,
@@ -3814,7 +3822,7 @@ export class PrivateControlService {
         if (videoSourceAttachment) {
           nextVideo = await buildPrivateSuggestionMediaDraftFromVideo(
             videoSourceAttachment,
-            this.privateControlMediaUploader,
+            this.buildPrivateControlMediaUploader(context, session),
             'channel-suggestion',
           );
           nextImages = [];
@@ -3833,7 +3841,7 @@ export class PrivateControlService {
             ...baseImages,
             ...(await buildPrivateSuggestionImageDraftsFromImages(
               imageSourceAttachments,
-              this.privateControlMediaUploader,
+              this.buildPrivateControlMediaUploader(context, session),
               'channel-suggestion',
             )),
           ];
@@ -3995,7 +4003,7 @@ export class PrivateControlService {
         if (videoSourceAttachment) {
           const video = await buildPrivateSuggestionMediaDraftFromVideo(
             videoSourceAttachment,
-            this.privateControlMediaUploader,
+            this.buildPrivateControlMediaUploader(context, session),
             'private-broadcast',
           );
           session.broadcastDraft.imageEnabled = false;
@@ -4449,7 +4457,7 @@ export class PrivateControlService {
     if (videoSourceAttachment) {
       const video = await buildPrivateSuggestionMediaDraftFromVideo(
         videoSourceAttachment,
-        this.privateControlMediaUploader,
+        this.buildPrivateControlMediaUploader(context, session),
         'private-broadcast',
       );
       session.broadcastDraft.imageEnabled = false;
@@ -4953,7 +4961,11 @@ export class PrivateControlService {
     const usesMarkdown = this.shouldUseMarkdown(previewText);
     const entityLead = await this.buildSelectedEntityLeadLine(context.actor, session, usesMarkdown);
     const imagePayload = giveaway
-      ? await this.buildContentPreviewImagePayload(giveaway, 'private-giveaway-preview')
+      ? await this.buildContentPreviewImagePayload(
+          giveaway,
+          'private-giveaway-preview',
+          this.resolvePrivateDeliveryBotId(context, session),
+        )
       : undefined;
     const rows: MaxMessageButton[][] = [];
 
@@ -5034,6 +5046,7 @@ export class PrivateControlService {
     const imagePayload = await this.buildContentPreviewImagePayload(
       giveaway,
       'private-giveaway-preview',
+      this.resolvePrivateDeliveryBotId(context, session),
     );
     const previewText = this.buildGiveawayPreviewText(giveaway);
     const previewTextFormat = this.buildGiveawayPreviewTextFormat(previewText);
@@ -5721,6 +5734,7 @@ export class PrivateControlService {
             imageFileName: draft.imageFileName,
           },
           'private-broadcast-preview',
+          this.resolvePrivateDeliveryBotId(context, session),
         )
       : undefined;
     const promptText =
@@ -6105,6 +6119,7 @@ export class PrivateControlService {
       'imageEnabled' | 'imageBase64' | 'imageMimeType' | 'imageFileName'
     >,
     filePrefix: string,
+    botId?: string,
   ): Promise<Record<string, unknown> | undefined> {
     if (!content.imageEnabled || !content.imageBase64.trim()) {
       return undefined;
@@ -6118,11 +6133,15 @@ export class PrivateControlService {
         return undefined;
       }
 
-      return await this.maxClient.uploadImage(
-        imageBuffer,
-        buildPrivateDownloadedFileName(filePrefix, content.imageFileName, null, mimeType),
+      const fileName = buildPrivateDownloadedFileName(
+        filePrefix,
+        content.imageFileName,
+        null,
         mimeType,
       );
+      return botId
+        ? await this.maxClient.uploadImage(imageBuffer, fileName, mimeType, { botId })
+        : await this.maxClient.uploadImage(imageBuffer, fileName, mimeType);
     } catch (error: unknown) {
       this.logger.warn(
         { err: error instanceof Error ? error.message : String(error) },
@@ -8096,6 +8115,23 @@ export class PrivateControlService {
       : null;
   }
 
+  private buildPrivateControlMediaUploader(
+    context: PrivateContext,
+    session: PrivateSession,
+  ): PrivateControlMediaAttachmentUploader {
+    const botId = this.resolvePrivateDeliveryBotId(context, session);
+    if (!botId) {
+      return this.privateControlMediaUploader;
+    }
+
+    return {
+      uploadImage: (data, fileName, mimeType) =>
+        this.maxClient.uploadImage(data, fileName, mimeType, { botId }),
+      uploadVideo: (data, fileName, mimeType) =>
+        this.maxClient.uploadVideo(data, fileName, mimeType, { botId }),
+    };
+  }
+
   private wasBroadcastHandoffAlreadyDelivered(session: PrivateSession, chatId: string): boolean {
     return wasPrivateHandoffRecentlyDelivered(
       session,
@@ -8266,6 +8302,7 @@ export class PrivateControlService {
     sourceChatId: string,
     userId: string,
     fallbackDisplayName: string,
+    botId?: string,
   ): Promise<string> {
     const fallback = fallbackDisplayName.trim() || 'Пользователь';
     if (fallback !== 'Пользователь') {
@@ -8273,7 +8310,9 @@ export class PrivateControlService {
     }
 
     try {
-      const profiles = await this.maxClient.getChatMemberProfiles(sourceChatId, [userId]);
+      const profiles = botId
+        ? await this.maxClient.getChatMemberProfiles(sourceChatId, [userId], { botId })
+        : await this.maxClient.getChatMemberProfiles(sourceChatId, [userId]);
       const resolvedDisplayName = readPrivateControlString(profiles.get(userId)?.displayName);
       return resolvedDisplayName || fallback;
     } catch (error: unknown) {
@@ -8287,6 +8326,31 @@ export class PrivateControlService {
       );
       return fallback;
     }
+  }
+
+  private resolveManagedEntityHeaderBotId(header: ManagedEntityHeader): string | undefined {
+    const primaryBotId = readPrivateControlString(header.primaryBotId);
+    if (primaryBotId) {
+      return primaryBotId;
+    }
+
+    const assignedBots = header.assignedBots ?? [];
+    const assignedBot =
+      assignedBots.find(
+        (bot) =>
+          bot.role === 'primary' &&
+          bot.membershipStatus !== 'removed' &&
+          bot.lifecycleState !== 'disabled' &&
+          readPrivateControlString(bot.botId),
+      ) ??
+      assignedBots.find(
+        (bot) =>
+          bot.membershipStatus !== 'removed' &&
+          bot.lifecycleState !== 'disabled' &&
+          readPrivateControlString(bot.botId),
+      );
+
+    return readPrivateControlString(assignedBot?.botId) ?? undefined;
   }
 
   private async deliverProfileMentionHandoffToKnownPrivateChat(
@@ -9632,5 +9696,4 @@ export class PrivateControlService {
     const parsed = Date.parse(trimmed);
     return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
   }
-
 }

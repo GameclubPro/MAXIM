@@ -163,6 +163,7 @@ function createService(
     persistedSettings?: ReturnType<typeof createPersistedChatSettings>;
     persistedRules?: ReturnType<typeof createPersistedChatRules>;
     persistedRulesUpdate?: ReturnType<typeof createPersistedChatRules>;
+    publishedRulesMessage?: { messageId: string; url: string | null };
     requiredSubscriptionChannels?: Array<Record<string, unknown>>;
     resolvedRequiredSubscriptionChannel?: Record<string, unknown>;
     resolvedRulesUrl?: string | null;
@@ -302,10 +303,12 @@ function createService(
     deleteMessage: jest.fn().mockResolvedValue(undefined),
     editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
     resolveMessageLink: jest.fn().mockResolvedValue(options.resolvedRulesUrl ?? null),
-    sendMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
-      messageId: 'message-2',
-      url: 'https://max.ru/chats/chat-1/message/2',
-    }),
+    sendMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue(
+      options.publishedRulesMessage ?? {
+        messageId: 'message-2',
+        url: 'https://max.ru/chats/chat-1/message/2',
+      },
+    ),
     uploadImage: jest.fn().mockResolvedValue({ token: 'rules-image-1' }),
   };
   const managedEntitiesService = {
@@ -1280,6 +1283,10 @@ describe('AdminSettingsService chat rules', () => {
 
   it('reads rules without routing through legacy getRules', async () => {
     const { chatContextCache, legacyAdminService, maxClient, prisma, service } = createService({
+      botAssignmentData: {
+        botId: 'bot-1',
+        primaryBotId: 'bot-1',
+      },
       persistedRules: createPersistedChatRules({
         publishedMessageId: 'message-1',
         publishedUrl: '',
@@ -1311,7 +1318,10 @@ describe('AdminSettingsService chat rules', () => {
       },
       update: {},
     });
-    expect(maxClient.resolveMessageLink).toHaveBeenCalledWith('message-1');
+    expect(legacyAdminService.resolveChatSettingsReadBotAssignmentData).toHaveBeenCalledWith(
+      'chat-1',
+    );
+    expect(maxClient.resolveMessageLink).toHaveBeenCalledWith('message-1', { botId: 'bot-1' });
     expect(prisma.chatRules.update).toHaveBeenCalledWith({
       where: { chatId: 'chat-1' },
       data: {
@@ -1392,6 +1402,29 @@ describe('AdminSettingsService chat rules', () => {
       user,
       'https://max.ru/chats/chat-1/message/2',
     );
+  });
+
+  it('hydrates a published rules URL through the action bot when MAX send omits the URL', async () => {
+    const { legacyAdminService, maxClient, service } = createService({
+      botAssignmentData: {
+        botId: 'bot-1',
+        primaryBotId: 'bot-1',
+      },
+      persistedRules: createPersistedChatRules({
+        text: 'Пишите по теме.',
+      }),
+      publishedRulesMessage: {
+        messageId: 'message-2',
+        url: null,
+      },
+      resolvedRulesUrl: 'https://max.ru/chats/chat-1/message/2',
+    });
+
+    const result = await service.publishRules('chat-1', user as never);
+
+    expect(result.url).toBe('https://max.ru/chats/chat-1/message/2');
+    expect(legacyAdminService.resolveChatRulesActionBotId).toHaveBeenCalledWith('chat-1');
+    expect(maxClient.resolveMessageLink).toHaveBeenCalledWith('message-2', { botId: 'bot-1' });
   });
 
   it('resets published rules without routing through legacy resetPublishedRules', async () => {
