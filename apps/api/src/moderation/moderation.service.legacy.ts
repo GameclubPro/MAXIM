@@ -271,8 +271,12 @@ import {
   WEBHOOK_USER_FACING_SLOW_LOG_THRESHOLD_MS,
   WEBHOOK_OPTIONAL_STAGE_MIN_REMAINING_MS,
   REQUIRED_SUBSCRIPTION_NOTICE_MIN_REMAINING_MS,
+  REQUIRED_SUBSCRIPTION_MEMBERSHIP_HOT_PATH_TIMEOUT_MS,
+  REQUIRED_SUBSCRIPTION_MEMBERSHIP_MIN_REMAINING_MS,
   REQUIRED_SUBSCRIPTION_FOLLOW_UP_DETACH_MIN_REMAINING_MS,
+  REQUIRED_SUBSCRIPTION_FOLLOW_UP_HOT_PATH_TIMEOUT_MS,
   VIOLATION_ADMIN_RECHECK_RESERVE_MS,
+  VIOLATION_FOLLOW_UP_HOT_PATH_TIMEOUT_MS,
   CHANNEL_DIALOG_AUTO_ATTACH_ACTION,
   CHANNEL_DIALOG_AUTO_ATTACH_SKIP_ACTION,
   CHAT_DIALOG_AUTO_ATTACH_ACTION,
@@ -281,7 +285,10 @@ import {
   GLOBAL_SPAMMER_REDIS_TTL_SEC,
   GLOBAL_SPAMMER_LOCAL_CHAT_OBSERVATION_TTL_MS,
   GLOBAL_SPAMMER_EXEMPTION_CACHE_TTL_MS,
+  GLOBAL_SPAMMER_EXEMPTION_HOT_PATH_TIMEOUT_MS,
   GLOBAL_SPAMMER_TRACK_HOT_PATH_TIMEOUT_MS,
+  DEVELOPER_FORCED_GLOBAL_SPAMMER_HOT_PATH_TIMEOUT_MS,
+  MODERATION_ACTION_ACCESS_LOSS_HOT_PATH_TIMEOUT_MS,
   GLOBAL_SPAMMER_HIGH_FANOUT_MIN_CHATS,
   GLOBAL_SPAMMER_EPISODE_LOCK_TTL_SEC,
   GLOBAL_SPAMMER_FANOUT_EPISODE_WINDOW_SEC,
@@ -1125,7 +1132,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       this.markWebhookHotPathStage(hotPathProfile, 'developer-forced-global-spammer');
       if (
         settings.deleteSpammersEnabled &&
-        (await this.isDeveloperForcedGlobalSpammerCached(senderId))
+        (await this.isDeveloperForcedGlobalSpammerCachedWithHotPathBudget(senderId, {
+          chatId,
+          messageId,
+        }))
       ) {
         await this.deleteAndKickDetectedGlobalSpammer({
           chatId,
@@ -1310,12 +1320,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const mediaFlags = detectMediaFlags(update);
       const skipAntiSpamBurstLimit = shouldSkipAntiSpamBurstForForward(update);
       if (!deferHotChatModerationSkipUntilAfterAccessGates) {
-        const globalSpammerAdminDecisions = settings.deleteSpammersEnabled
-          ? await this.resolveGlobalSpammerAdminDecisions([senderId], chat.adminUserIds, {
-              chatId,
-            })
-          : new Map<string, LocalGlobalSpammerAdminDecision>();
         this.markWebhookHotPathStage(hotPathProfile, 'global-spammer-exempt');
+        const globalSpammerAdminDecisions = settings.deleteSpammersEnabled
+          ? await this.resolveGlobalSpammerAdminDecisionsWithHotPathBudget(
+              [senderId],
+              chat.adminUserIds,
+              {
+                chatId,
+                userId: senderId,
+                messageId,
+              },
+            )
+          : new Map<string, LocalGlobalSpammerAdminDecision>();
         const globalSpammerAdminDecision = globalSpammerAdminDecisions.get(senderId) ?? null;
         if (globalSpammerAdminDecision === 'BLOCK') {
           const handled = await this.handleLocalAdminBlockedSenderMessage({
@@ -2508,22 +2524,155 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           },
         });
       };
-      if (this.shouldDetachFollowUpForBudget(hotPathProfile, 'violation-follow-up')) {
-        this.scheduleDetachedWebhookFollowUp({
-          stage: 'violation-follow-up',
-          chatId,
-          userId: senderId,
-          messageId,
-          task: runViolationFollowUp,
-        });
-        return;
-      }
-      await runViolationFollowUp();
+      await this.runWebhookFollowUpWithBudget({
+        stage: 'violation-follow-up',
+        hotPathProfile,
+        chatId,
+        userId: senderId,
+        messageId,
+        maxWaitMs: VIOLATION_FOLLOW_UP_HOT_PATH_TIMEOUT_MS,
+        task: runViolationFollowUp,
+      });
     } finally {
       if (sharedChatExecutionLock) {
         await this.releaseSharedChatExecutionLock(sharedChatExecutionLock);
       }
     }
+  }
+
+  private async runWebhookFollowUpWithBudget(params: {
+    stage: string;
+    hotPathProfile?: WebhookHotPathProfile | null;
+    chatId: string;
+    userId?: string | null;
+    messageId?: string | null;
+    maxWaitMs: number;
+    minRemainingMs?: number;
+    task: () => Promise<void>;
+  }): Promise<void> {
+    if (
+      this.shouldDetachFollowUpForBudget(
+        params.hotPathProfile,
+        params.stage,
+        params.minRemainingMs,
+      )
+    ) {
+      this.scheduleDetachedWebhookFollowUp({
+        stage: params.stage,
+        chatId: params.chatId,
+        userId: params.userId,
+        messageId: params.messageId,
+        task: params.task,
+      });
+      return;
+    }
+
+    const waitMs = this.resolveWebhookFollowUpWaitBudgetMs({
+      hotPathProfile: params.hotPathProfile,
+      maxWaitMs: params.maxWaitMs,
+      minRemainingMs: params.minRemainingMs,
+    });
+    if (waitMs <= 0) {
+      void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+        stage: `${params.stage}.deferred`,
+        outcome: 'skip',
+        failOpen: true,
+      });
+      this.scheduleDetachedWebhookFollowUp({
+        stage: params.stage,
+        chatId: params.chatId,
+        userId: params.userId,
+        messageId: params.messageId,
+        task: params.task,
+      });
+      return;
+    }
+
+    let detached = false;
+    const operation = Promise.resolve().then(params.task);
+    operation.catch((error: unknown) => {
+      if (!detached) {
+        return;
+      }
+      void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+        stage: 'follow_up_failed',
+        outcome: 'timeout',
+        failOpen: true,
+      });
+      void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+        stage: `${params.stage}.failed`,
+        outcome: 'timeout',
+        failOpen: true,
+      });
+      this.logger.warn(
+        {
+          stage: params.stage,
+          chatId: params.chatId,
+          userId: params.userId ?? null,
+          messageId: params.messageId ?? null,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Deferred webhook follow-up failed after the user-facing budget window',
+      );
+    });
+
+    let timedOut = false;
+    await raceWithTimeout({
+      operation,
+      timeoutMs: waitMs,
+      onTimeout: () => {
+        timedOut = true;
+        detached = true;
+      },
+    });
+    if (!timedOut) {
+      return;
+    }
+
+    void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+      stage: `${params.stage}.deferred`,
+      outcome: 'skip',
+      failOpen: true,
+    });
+    void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+      stage: 'follow_up_deferred',
+      outcome: 'skip',
+      failOpen: true,
+    });
+    this.logger.debug(
+      {
+        stage: params.stage,
+        chatId: params.chatId,
+        userId: params.userId ?? null,
+        messageId: params.messageId ?? null,
+        timeoutMs: waitMs,
+      },
+      'Detached webhook follow-up after hot-path budget window',
+    );
+  }
+
+  private resolveWebhookFollowUpWaitBudgetMs(params: {
+    hotPathProfile?: WebhookHotPathProfile | null;
+    maxWaitMs: number;
+    minRemainingMs?: number;
+  }): number {
+    const maxWaitMs = Math.max(1, Math.ceil(params.maxWaitMs));
+    const snapshot = this.readWebhookHotPathProfileSnapshot(params.hotPathProfile);
+    const elapsedMs =
+      typeof snapshot?.elapsedMs === 'number' && Number.isFinite(snapshot.elapsedMs)
+        ? snapshot.elapsedMs
+        : null;
+    if (elapsedMs === null) {
+      return maxWaitMs;
+    }
+
+    const minRemainingMs = Math.max(1, Math.ceil(params.minRemainingMs ?? 500));
+    const remainingMs = Math.max(0, this.webhookUserFacingTimeoutMs - elapsedMs);
+    if (remainingMs <= minRemainingMs) {
+      return 0;
+    }
+
+    return Math.min(maxWaitMs, Math.max(0, remainingMs - minRemainingMs));
   }
 
   private async handleDuplicateDecision(params: {
@@ -6761,6 +6910,47 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return result;
   }
 
+  private async resolveGlobalSpammerAdminDecisionsWithHotPathBudget(
+    userIds: readonly string[],
+    adminUserIds: readonly string[] | undefined,
+    options: {
+      chatId?: string;
+      userId?: string | null;
+      messageId?: string | null;
+    } = {},
+  ): Promise<Map<string, LocalGlobalSpammerAdminDecision>> {
+    let timedOut = false;
+    const operation = this.resolveGlobalSpammerAdminDecisions(userIds, adminUserIds, {
+      chatId: options.chatId,
+    });
+    const result = await raceWithTimeout({
+      operation,
+      timeoutMs: GLOBAL_SPAMMER_EXEMPTION_HOT_PATH_TIMEOUT_MS,
+      onTimeout: () => {
+        timedOut = true;
+        return new Map<string, LocalGlobalSpammerAdminDecision>();
+      },
+    });
+    if (timedOut) {
+      void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+        stage: 'global-spammer-exempt.budget',
+        outcome: 'timeout',
+        failOpen: true,
+      });
+      this.logger.debug(
+        {
+          chatId: options.chatId ?? null,
+          userId: options.userId ?? null,
+          messageId: options.messageId ?? null,
+          timeoutMs: GLOBAL_SPAMMER_EXEMPTION_HOT_PATH_TIMEOUT_MS,
+        },
+        'Global spammer admin exemption lookup exceeded hot-path budget; continuing fail-open',
+      );
+    }
+
+    return result;
+  }
+
   private runGlobalSpammerSideEffect(
     context: Record<string, unknown>,
     operation: () => Promise<void>,
@@ -7516,6 +7706,42 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return this.hasDeveloperForcedGlobalSpammerMemoryCache(normalizedUserId);
   }
 
+  private async isDeveloperForcedGlobalSpammerCachedWithHotPathBudget(
+    userId: string,
+    context: {
+      chatId?: string | null;
+      messageId?: string | null;
+    } = {},
+  ): Promise<boolean> {
+    let timedOut = false;
+    const result = await raceWithTimeout({
+      operation: this.isDeveloperForcedGlobalSpammerCached(userId),
+      timeoutMs: DEVELOPER_FORCED_GLOBAL_SPAMMER_HOT_PATH_TIMEOUT_MS,
+      onTimeout: () => {
+        timedOut = true;
+        return false;
+      },
+    });
+    if (timedOut) {
+      void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+        stage: 'developer-forced-global-spammer.budget',
+        outcome: 'timeout',
+        failOpen: true,
+      });
+      this.logger.debug(
+        {
+          chatId: context.chatId ?? null,
+          userId,
+          messageId: context.messageId ?? null,
+          timeoutMs: DEVELOPER_FORCED_GLOBAL_SPAMMER_HOT_PATH_TIMEOUT_MS,
+        },
+        'Developer-forced global spammer lookup exceeded hot-path budget; continuing fail-open',
+      );
+    }
+
+    return result;
+  }
+
   private hasDeveloperForcedGlobalSpammerMemoryCache(userId: string): boolean {
     const expiresAtMs = this.developerForcedGlobalSpammerMemoryCache.get(userId);
     if (!expiresAtMs) {
@@ -8028,12 +8254,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       resolvedRequiredChannels.map((channel) => [channel.id, channel] as const),
     );
 
-    const membership = await this.resolveRequiredSubscriptionMembership(
-      params.chatId,
-      params.userId,
-      requiredMembershipChannelIds,
-    );
     this.markWebhookHotPathStage(params.hotPathProfile, 'required-subscription.membership');
+    const membership = await this.resolveRequiredSubscriptionMembershipWithHotPathBudget({
+      chatId: params.chatId,
+      userId: params.userId,
+      requiredChannelIds: requiredMembershipChannelIds,
+      hotPathProfile: params.hotPathProfile,
+    });
+    if (!membership) {
+      return false;
+    }
     if (membership.missingChannelIds.length === 0) {
       return false;
     }
@@ -8331,25 +8561,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
     };
 
-    if (
-      messageDeleted &&
-      this.shouldDetachFollowUpForBudget(
-        params.hotPathProfile,
-        'required-subscription.follow-up',
-        REQUIRED_SUBSCRIPTION_FOLLOW_UP_DETACH_MIN_REMAINING_MS,
-      )
-    ) {
-      this.scheduleDetachedWebhookFollowUp({
-        stage: 'required-subscription.follow-up',
-        chatId: params.chatId,
-        userId: params.userId,
-        messageId: params.messageId,
-        task: runRequiredSubscriptionFollowUp,
-      });
-      return true;
-    }
-
-    await runRequiredSubscriptionFollowUp();
+    await this.runWebhookFollowUpWithBudget({
+      stage: 'required-subscription.follow-up',
+      hotPathProfile: params.hotPathProfile,
+      chatId: params.chatId,
+      userId: params.userId,
+      messageId: params.messageId,
+      maxWaitMs: REQUIRED_SUBSCRIPTION_FOLLOW_UP_HOT_PATH_TIMEOUT_MS,
+      minRemainingMs: REQUIRED_SUBSCRIPTION_FOLLOW_UP_DETACH_MIN_REMAINING_MS,
+      task: runRequiredSubscriptionFollowUp,
+    });
 
     return true;
   }
@@ -9000,6 +9221,59 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           .filter((item) => item.length > 0),
       ),
     );
+  }
+
+  private async resolveRequiredSubscriptionMembershipWithHotPathBudget(params: {
+    chatId: string;
+    userId: string;
+    requiredChannelIds: readonly string[];
+    hotPathProfile?: WebhookHotPathProfile | null;
+  }): Promise<RequiredSubscriptionMembershipResult | null> {
+    const waitMs = this.resolveWebhookFollowUpWaitBudgetMs({
+      hotPathProfile: params.hotPathProfile,
+      maxWaitMs: REQUIRED_SUBSCRIPTION_MEMBERSHIP_HOT_PATH_TIMEOUT_MS,
+      minRemainingMs: REQUIRED_SUBSCRIPTION_MEMBERSHIP_MIN_REMAINING_MS,
+    });
+    if (waitMs <= 0) {
+      void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+        stage: 'required-subscription.membership.deferred',
+        outcome: 'skip',
+        failOpen: true,
+      });
+      return null;
+    }
+
+    let timedOut = false;
+    const result = await raceWithTimeout({
+      operation: this.resolveRequiredSubscriptionMembership(
+        params.chatId,
+        params.userId,
+        params.requiredChannelIds,
+      ),
+      timeoutMs: waitMs,
+      onTimeout: () => {
+        timedOut = true;
+        return null;
+      },
+    });
+    if (timedOut) {
+      void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+        stage: 'required-subscription.membership.deferred',
+        outcome: 'skip',
+        failOpen: true,
+      });
+      this.logger.debug(
+        {
+          chatId: params.chatId,
+          userId: params.userId,
+          channelCount: params.requiredChannelIds.length,
+          timeoutMs: waitMs,
+        },
+        'Required subscription membership checks exceeded hot-path budget; continuing fail-open',
+      );
+    }
+
+    return result;
   }
 
   private async resolveRequiredSubscriptionMembership(
@@ -11068,7 +11342,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     botId: string;
     error: unknown;
   }): Promise<void> {
-    try {
+    let detached = false;
+    const operation = Promise.resolve().then(async () => {
       await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost?.({
         chatId: params.chatId,
         botId: params.botId,
@@ -11076,6 +11351,30 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         source: `moderation_action:${params.action}`,
         operation: params.action === 'delete_message' ? 'delete' : 'lookup',
         error: params.error,
+      });
+    });
+    operation.catch((error: unknown) => {
+      if (!detached) {
+        return;
+      }
+      this.logger.debug(
+        {
+          chatId: params.chatId,
+          botId: params.botId,
+          action: params.action,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to record moderation action MAX access loss after hot-path budget',
+      );
+    });
+
+    try {
+      await raceWithTimeout({
+        operation,
+        timeoutMs: MODERATION_ACTION_ACCESS_LOSS_HOT_PATH_TIMEOUT_MS,
+        onTimeout: () => {
+          detached = true;
+        },
       });
     } catch (error: unknown) {
       this.logger.debug(
@@ -11086,6 +11385,24 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           err: error instanceof Error ? error.message : String(error),
         },
         'Failed to record moderation action MAX access loss',
+      );
+      return;
+    }
+
+    if (detached) {
+      void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+        stage: 'moderation-action-access-loss.deferred',
+        outcome: 'skip',
+        failOpen: true,
+      });
+      this.logger.debug(
+        {
+          chatId: params.chatId,
+          botId: params.botId,
+          action: params.action,
+          timeoutMs: MODERATION_ACTION_ACCESS_LOSS_HOT_PATH_TIMEOUT_MS,
+        },
+        'Moderation action access-loss recording exceeded hot-path budget; continuing detached',
       );
     }
   }

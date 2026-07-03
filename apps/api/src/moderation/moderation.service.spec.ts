@@ -9,7 +9,13 @@ import {
 } from './developer-forced-global-spammer-cache';
 import { ModerationService } from './moderation.service';
 import { RuleEngineService } from './rule-engine.service.impl';
-import { GLOBAL_SPAMMER_TRACK_HOT_PATH_TIMEOUT_MS } from './moderation.service.support';
+import {
+  DEVELOPER_FORCED_GLOBAL_SPAMMER_HOT_PATH_TIMEOUT_MS,
+  GLOBAL_SPAMMER_EXEMPTION_HOT_PATH_TIMEOUT_MS,
+  GLOBAL_SPAMMER_TRACK_HOT_PATH_TIMEOUT_MS,
+  MODERATION_ACTION_ACCESS_LOSS_HOT_PATH_TIMEOUT_MS,
+  REQUIRED_SUBSCRIPTION_MEMBERSHIP_HOT_PATH_TIMEOUT_MS,
+} from './moderation.service.support';
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -1930,6 +1936,147 @@ describe('ModerationService', () => {
     jest.useRealTimers();
   });
 
+  it('budgets a hanging webhook follow-up even before the destructive boundary', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-03T10:00:00.000Z'));
+    const runtimeDiagnosticsService = {
+      recordHotPathStageOutcome: jest.fn(),
+    };
+    const service = new ModerationService(
+      {} as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn((key: string) =>
+          key === 'WEBHOOK_USER_FACING_TIMEOUT_MS' ? 10_000 : undefined,
+        ),
+      } as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      runtimeDiagnosticsService as never,
+    );
+    (service as any).webhookUserFacingTimeoutMs = 10_000;
+    const debugSpy = jest.spyOn((service as any).logger, 'debug').mockImplementation(() => undefined);
+    const task = jest.fn(
+      () =>
+        new Promise<void>(() => {
+          // Intentionally never resolves.
+        }),
+    );
+    const hotPathProfile = {
+      startedAtMs: Date.now() - 1_000,
+      lastMarkedAtMs: Date.now() - 100,
+      latestStage: 'violation-follow-up',
+      stages: new Map<string, number>(),
+      stageTimelineMs: new Map<string, number>(),
+      successBoundaryReached: false,
+      successBoundaryStage: null,
+    };
+
+    try {
+      const result = (service as any).runWebhookFollowUpWithBudget({
+        stage: 'violation-follow-up',
+        hotPathProfile,
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'message-1',
+        maxWaitMs: 2_000,
+        task,
+      });
+
+      await Promise.resolve();
+      expect(task).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(2_000);
+      await expect(result).resolves.toBeUndefined();
+
+      expect(runtimeDiagnosticsService.recordHotPathStageOutcome).toHaveBeenCalledWith({
+        stage: 'violation-follow-up.deferred',
+        outcome: 'skip',
+        failOpen: true,
+      });
+      expect(runtimeDiagnosticsService.recordHotPathStageOutcome).toHaveBeenCalledWith({
+        stage: 'follow_up_deferred',
+        outcome: 'skip',
+        failOpen: true,
+      });
+      expect(debugSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stage: 'violation-follow-up',
+          chatId: 'chat-1',
+          userId: 'user-1',
+          messageId: 'message-1',
+          timeoutMs: 2_000,
+        }),
+        'Detached webhook follow-up after hot-path budget window',
+      );
+    } finally {
+      debugSpy.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not mark fast webhook follow-up work as deferred', async () => {
+    const runtimeDiagnosticsService = {
+      recordHotPathStageOutcome: jest.fn(),
+    };
+    const service = new ModerationService(
+      {} as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn((key: string) =>
+          key === 'WEBHOOK_USER_FACING_TIMEOUT_MS' ? 10_000 : undefined,
+        ),
+      } as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      runtimeDiagnosticsService as never,
+    );
+    (service as any).webhookUserFacingTimeoutMs = 10_000;
+    const task = jest.fn(async () => undefined);
+
+    await expect(
+      (service as any).runWebhookFollowUpWithBudget({
+        stage: 'violation-follow-up',
+        hotPathProfile: null,
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'message-1',
+        maxWaitMs: 2_000,
+        task,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(task).toHaveBeenCalledTimes(1);
+    expect(runtimeDiagnosticsService.recordHotPathStageOutcome).not.toHaveBeenCalledWith({
+      stage: 'violation-follow-up.deferred',
+      outcome: 'skip',
+      failOpen: true,
+    });
+    expect(runtimeDiagnosticsService.recordHotPathStageOutcome).not.toHaveBeenCalledWith({
+      stage: 'follow_up_deferred',
+      outcome: 'skip',
+      failOpen: true,
+    });
+  });
+
   it('fails open for stuck message_callback events instead of leaving the critical queue hung', async () => {
     const update = createPrivateCallbackUpdate('pc2|broadcast_send');
     const service = new ModerationService(
@@ -2121,6 +2268,149 @@ describe('ModerationService', () => {
         'Global spammer tracking exceeded hot-path budget; continuing fail-open',
       );
     } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('fails open when global spammer admin exemption lookup exceeds the hot-path budget', async () => {
+    jest.useFakeTimers();
+    const runtimeDiagnosticsService = {
+      recordHotPathStageOutcome: jest.fn(),
+    };
+    const prisma = {
+      adminGlobalSpammerExemption: {
+        findMany: jest.fn(
+          () =>
+            new Promise(() => {
+              // Intentionally never resolves.
+            }),
+        ),
+      },
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      runtimeDiagnosticsService as never,
+    );
+    const debugSpy = jest
+      .spyOn((service as any).logger, 'debug')
+      .mockImplementation(() => undefined);
+
+    try {
+      const resultPromise = (service as any).resolveGlobalSpammerAdminDecisionsWithHotPathBudget(
+        ['user-1'],
+        ['owner-1'],
+        {
+          chatId: 'chat-1',
+          userId: 'user-1',
+          messageId: 'message-1',
+        },
+      );
+
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(prisma.adminGlobalSpammerExemption.findMany).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(GLOBAL_SPAMMER_EXEMPTION_HOT_PATH_TIMEOUT_MS);
+
+      await expect(resultPromise).resolves.toEqual(new Map());
+      expect(runtimeDiagnosticsService.recordHotPathStageOutcome).toHaveBeenCalledWith({
+        stage: 'global-spammer-exempt.budget',
+        outcome: 'timeout',
+        failOpen: true,
+      });
+      expect(debugSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          messageId: 'message-1',
+          timeoutMs: GLOBAL_SPAMMER_EXEMPTION_HOT_PATH_TIMEOUT_MS,
+        }),
+        'Global spammer admin exemption lookup exceeded hot-path budget; continuing fail-open',
+      );
+    } finally {
+      debugSpy.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
+  it('fails open when developer-forced global spammer cache lookup exceeds the hot-path budget', async () => {
+    jest.useFakeTimers();
+    const runtimeDiagnosticsService = {
+      recordHotPathStageOutcome: jest.fn(),
+    };
+    const redisCounter = {
+      getString: jest.fn(
+        () =>
+          new Promise(() => {
+            // Intentionally never resolves.
+          }),
+      ),
+    };
+    const service = new ModerationService(
+      {} as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      redisCounter as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      runtimeDiagnosticsService as never,
+    );
+    const debugSpy = jest
+      .spyOn((service as any).logger, 'debug')
+      .mockImplementation(() => undefined);
+
+    try {
+      const resultPromise = (service as any).isDeveloperForcedGlobalSpammerCachedWithHotPathBudget(
+        'user-1',
+        {
+          chatId: 'chat-1',
+          messageId: 'message-1',
+        },
+      );
+
+      await Promise.resolve();
+      expect(redisCounter.getString).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(DEVELOPER_FORCED_GLOBAL_SPAMMER_HOT_PATH_TIMEOUT_MS);
+
+      await expect(resultPromise).resolves.toBe(false);
+      expect(runtimeDiagnosticsService.recordHotPathStageOutcome).toHaveBeenCalledWith({
+        stage: 'developer-forced-global-spammer.budget',
+        outcome: 'timeout',
+        failOpen: true,
+      });
+      expect(debugSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          messageId: 'message-1',
+          timeoutMs: DEVELOPER_FORCED_GLOBAL_SPAMMER_HOT_PATH_TIMEOUT_MS,
+        }),
+        'Developer-forced global spammer lookup exceeded hot-path budget; continuing fail-open',
+      );
+    } finally {
+      debugSpy.mockRestore();
       jest.useRealTimers();
     }
   });
@@ -16837,6 +17127,101 @@ describe('ModerationService', () => {
         ).resolves.toBe(true);
       });
 
+      it('does not wait indefinitely for access-loss cleanup after a terminal moderation error', async () => {
+        jest.useFakeTimers();
+        const runtimeDiagnosticsService = {
+          recordHotPathStageOutcome: jest.fn(),
+          recordProblemChat: jest.fn(),
+        };
+        const maxBotLinkService = {
+          resolveBotIdsForModerationAction: jest.fn().mockResolvedValue(['id613002203036_bot']),
+          getResolvedBotSync: jest.fn((botId?: string | null) => ({
+            id: botId ?? 'id613002203036_bot',
+          })),
+        };
+        const managedEntityAccessLossService = {
+          recordIfManagedEntityAccessLost: jest.fn(
+            () =>
+              new Promise(() => {
+                // Intentionally never resolves.
+              }),
+          ),
+        };
+        const terminalError = createMaxApiError(
+          403,
+          'Request failed with status code 403',
+          'chat.denied',
+        );
+        const operation = jest.fn().mockRejectedValue(terminalError);
+        const service = new ModerationService(
+          {} as never,
+          {} as never,
+          {} as never,
+          {} as never,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          maxBotLinkService as never,
+          undefined,
+          undefined,
+          undefined,
+          runtimeDiagnosticsService as never,
+          undefined,
+          undefined,
+          managedEntityAccessLossService as never,
+        );
+        const debugSpy = jest
+          .spyOn((service as any).logger, 'debug')
+          .mockImplementation(() => undefined);
+
+        try {
+          const resultPromise = (service as any).executeModerationActionWithFallback({
+            chatId: 'chat-1',
+            action: 'delete_message',
+            explicitBotId: 'id613002203036_bot',
+            messageId: 'message-1',
+            operation,
+          });
+
+          await Promise.resolve();
+          await Promise.resolve();
+          await jest.advanceTimersByTimeAsync(MODERATION_ACTION_ACCESS_LOSS_HOT_PATH_TIMEOUT_MS);
+          expect(managedEntityAccessLossService.recordIfManagedEntityAccessLost).toHaveBeenCalledWith(
+            {
+              chatId: 'chat-1',
+              botId: 'id613002203036_bot',
+              entityType: null,
+              source: 'moderation_action:delete_message',
+              operation: 'delete',
+              error: terminalError,
+            },
+          );
+
+          await expect(resultPromise).resolves.toBe(false);
+          expect(runtimeDiagnosticsService.recordHotPathStageOutcome).toHaveBeenCalledWith({
+            stage: 'moderation-action-access-loss.deferred',
+            outcome: 'skip',
+            failOpen: true,
+          });
+          expect(debugSpy).toHaveBeenCalledWith(
+            expect.objectContaining({
+              chatId: 'chat-1',
+              botId: 'id613002203036_bot',
+              action: 'delete_message',
+              timeoutMs: MODERATION_ACTION_ACCESS_LOSS_HOT_PATH_TIMEOUT_MS,
+            }),
+            'Moderation action access-loss recording exceeded hot-path budget; continuing detached',
+          );
+        } finally {
+          debugSpy.mockRestore();
+          jest.useRealTimers();
+        }
+      });
+
       it('schedules async access recheck after a terminal moderation error without retrying inline', async () => {
         const prisma = {
           chat: {
@@ -17051,6 +17436,102 @@ describe('ModerationService', () => {
         unresolvedChannelIds: [],
         terminalChannelIds: [],
       });
+    });
+
+    it('fails open when required subscription membership checks exceed the hot-path budget', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-07-03T10:00:00.000Z'));
+      const runtimeDiagnosticsService = {
+        recordHotPathStageOutcome: jest.fn(),
+      };
+      const membershipLookupService = {
+        getMembership: jest.fn(
+          () =>
+            new Promise<boolean | null>(() => {
+              // Intentionally never resolves.
+            }),
+        ),
+      };
+      const service = new ModerationService(
+        {} as never,
+        { detect: jest.fn() } as never,
+        { resolveAction: jest.fn() } as never,
+        {} as never,
+        undefined,
+        undefined,
+        {
+          get: jest.fn((key: string) =>
+            key === 'WEBHOOK_USER_FACING_TIMEOUT_MS' ? 10_000 : undefined,
+          ),
+        } as never,
+        undefined,
+        undefined,
+        undefined,
+        membershipLookupService as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        runtimeDiagnosticsService as never,
+      );
+      (service as any).webhookUserFacingTimeoutMs = 10_000;
+      const debugSpy = jest
+        .spyOn((service as any).logger, 'debug')
+        .mockImplementation(() => undefined);
+      const hotPathProfile = {
+        startedAtMs: Date.now() - 1_000,
+        lastMarkedAtMs: Date.now() - 50,
+        latestStage: 'required-subscription.membership',
+        stages: new Map<string, number>(),
+        stageTimelineMs: new Map<string, number>(),
+        successBoundaryReached: false,
+        successBoundaryStage: null,
+      };
+
+      try {
+        const resultPromise = (
+          service as unknown as {
+            resolveRequiredSubscriptionMembershipWithHotPathBudget: (params: {
+              chatId: string;
+              userId: string;
+              requiredChannelIds: string[];
+              hotPathProfile: typeof hotPathProfile;
+            }) => Promise<{
+              missingChannelIds: string[];
+              unresolvedChannelIds: string[];
+              terminalChannelIds: string[];
+            } | null>;
+          }
+        ).resolveRequiredSubscriptionMembershipWithHotPathBudget({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          requiredChannelIds: ['channel-1', 'channel-2'],
+          hotPathProfile,
+        });
+
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(membershipLookupService.getMembership).toHaveBeenCalledTimes(2);
+        await jest.advanceTimersByTimeAsync(REQUIRED_SUBSCRIPTION_MEMBERSHIP_HOT_PATH_TIMEOUT_MS);
+
+        await expect(resultPromise).resolves.toBeNull();
+        expect(runtimeDiagnosticsService.recordHotPathStageOutcome).toHaveBeenCalledWith({
+          stage: 'required-subscription.membership.deferred',
+          outcome: 'skip',
+          failOpen: true,
+        });
+        expect(debugSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            chatId: 'chat-1',
+            userId: 'user-1',
+            channelCount: 2,
+            timeoutMs: REQUIRED_SUBSCRIPTION_MEMBERSHIP_HOT_PATH_TIMEOUT_MS,
+          }),
+          'Required subscription membership checks exceeded hot-path budget; continuing fail-open',
+        );
+      } finally {
+        debugSpy.mockRestore();
+        jest.useRealTimers();
+      }
     });
 
     it('does not retry a fresh missing required subscription membership resolution', async () => {
