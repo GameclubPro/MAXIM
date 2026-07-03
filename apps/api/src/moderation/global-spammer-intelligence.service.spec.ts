@@ -102,6 +102,15 @@ function createPrismaMock() {
       candidates.set(args.where.userId, next);
       return next;
     }),
+    updateMany: jest.fn(async (args: any) => {
+      const userId = args.where.userId;
+      const existing = candidates.get(userId);
+      if (!existing) {
+        return { count: 0 };
+      }
+      candidates.set(userId, { ...existing, ...args.data });
+      return { count: 1 };
+    }),
     findMany: jest.fn().mockResolvedValue([]),
     findUnique: jest.fn(async ({ where }: any) => candidates.get(where.userId) ?? null),
     count: jest.fn().mockResolvedValue(0),
@@ -2838,6 +2847,63 @@ describe('GlobalSpammerIntelligenceService', () => {
       expect.objectContaining({
         data: expect.objectContaining({
           humanReviewOutcome: 'SUPPRESS',
+        }),
+      }),
+    );
+  });
+
+  it('treats candidate review as stale-safe when the candidate disappears before update', async () => {
+    const { candidates, prisma, reviewFeedback, localAdminDecisions } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(prisma as never);
+
+    await service.recordObservation({
+      userId: 'user-review-stale',
+      source: 'FANOUT_REPEAT',
+      score: 0.68,
+      reason: 'HIGH_FANOUT_5_CHATS_REPEAT',
+      chatId: 'chat-review',
+      evidence: { uniqueChats: 5 },
+    });
+    prisma.globalSpammerCandidate.updateMany.mockImplementationOnce(async () => {
+      candidates.delete('user-review-stale');
+      return { count: 0 };
+    });
+
+    await expect(
+      service.reviewCandidate({
+        chatId: 'chat-review',
+        userId: 'user-review-stale',
+        reviewerUserId: 'admin-reviewer',
+        action: 'APPROVE',
+        reason: 'confirmed by admin',
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      status: 'APPROVED',
+      userId: 'user-review-stale',
+    });
+
+    expect(reviewFeedback).toEqual([
+      expect.objectContaining({
+        userId: 'user-review-stale',
+        reviewerUserId: 'admin-reviewer',
+        action: 'APPROVE',
+        candidateStatusBefore: 'PENDING',
+      }),
+    ]);
+    expect(localAdminDecisions).toEqual([
+      expect.objectContaining({
+        sourceChatId: 'chat-review',
+        userId: 'user-review-stale',
+        decision: 'BLOCK',
+      }),
+    ]);
+    expect(prisma.globalSpammerCandidate.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { userId: 'user-review-stale' },
+        data: expect.objectContaining({
+          status: 'APPROVED',
+          falsePositive: false,
         }),
       }),
     );

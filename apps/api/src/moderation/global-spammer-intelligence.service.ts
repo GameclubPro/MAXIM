@@ -1683,10 +1683,8 @@ export class GlobalSpammerIntelligenceService {
         decision: 'ALLOW',
         reason,
       });
-      await this.prisma.globalSpammerCandidate.update({
-        where: {
-          userId,
-        },
+      const candidateUpdate = await this.prisma.globalSpammerCandidate.updateMany({
+        where: { userId },
         data: {
           status: 'SUPPRESSED',
           reviewedAt: new Date(),
@@ -1695,6 +1693,7 @@ export class GlobalSpammerIntelligenceService {
           falsePositive: true,
         },
       });
+      this.logMissingCandidateReviewUpdate(candidateUpdate.count, userId, params.action);
       await this.markShadowScoresReviewed({
         userId,
         action: params.action,
@@ -1712,10 +1711,8 @@ export class GlobalSpammerIntelligenceService {
       reviewerUserId: params.reviewerUserId,
       decision: 'BLOCK',
     });
-    await this.prisma.globalSpammerCandidate.update({
-      where: {
-        userId,
-      },
+    const candidateUpdate = await this.prisma.globalSpammerCandidate.updateMany({
+      where: { userId },
       data: {
         status: 'APPROVED',
         reviewedAt: new Date(),
@@ -1724,6 +1721,7 @@ export class GlobalSpammerIntelligenceService {
         falsePositive: false,
       },
     });
+    this.logMissingCandidateReviewUpdate(candidateUpdate.count, userId, params.action);
     await this.markShadowScoresReviewed({
       userId,
       action: params.action,
@@ -1733,6 +1731,21 @@ export class GlobalSpammerIntelligenceService {
     await this.scheduleRuntimeProfileRefresh(userId, params.chatId, 'review-candidate');
 
     return { ok: true, status: 'APPROVED', userId };
+  }
+
+  private logMissingCandidateReviewUpdate(
+    updatedCount: number,
+    userId: string,
+    action: CandidateReviewAction,
+  ) {
+    if (updatedCount > 0) {
+      return;
+    }
+
+    this.logger.warn(
+      { userId, action },
+      'Global spammer candidate disappeared before review status update',
+    );
   }
 
   async listReviewQueue(params: {
