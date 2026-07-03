@@ -16234,7 +16234,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
 
-    const resolvedMessageOptions = await this.withBotSpeechMediaOptions(messageOptions, media);
+    const resolvedMessageOptions = await this.withBotSpeechMediaOptions(messageOptions, media, {
+      trafficClass: immediate === true ? 'interactive' : 'background',
+      actionHealthLane: immediate === true ? 'interactive' : 'background',
+      sourceTag: MAX_API_SOURCE_TAGS.MODERATION_NOTICE,
+      ...(botId ? { botId } : {}),
+    });
     await this.maxClient.sendMessage(
       chatId,
       text,

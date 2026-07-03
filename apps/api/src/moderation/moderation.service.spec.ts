@@ -4926,6 +4926,7 @@ describe('ModerationService', () => {
 
     await (service as any).sendBotMessageWithOptionalAutoDelete({
       chatId: 'chat-1',
+      botId: 'id613002203036_4_bot',
       text: 'notice with image',
       media: {
         base64: Buffer.from('image-bytes').toString('base64'),
@@ -4945,6 +4946,7 @@ describe('ModerationService', () => {
         trafficClass: 'background',
         actionHealthLane: 'background',
         sourceTag: 'moderation_notice',
+        botId: 'id613002203036_4_bot',
       }),
     );
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
@@ -4958,6 +4960,7 @@ describe('ModerationService', () => {
         trafficClass: 'background',
         actionHealthLane: 'background',
         sourceTag: 'moderation_notice',
+        botId: 'id613002203036_4_bot',
       }),
     );
   });
