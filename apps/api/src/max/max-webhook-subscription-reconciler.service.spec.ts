@@ -234,6 +234,95 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
     await service.onModuleDestroy();
   });
 
+  it('removes stale owned bot webhook URLs even when sync-state lost the previous URL', async () => {
+    process.env.APP_ROLE = 'ingress';
+
+    const botRegistry = {
+      getAllBots: jest.fn().mockReturnValue([
+        {
+          id: '777000_bot',
+          webhookHeaderSecrets: ['secret-header-current'],
+        },
+      ]),
+      getDefaultBot: jest.fn().mockReturnValue({ id: '777000_bot' }),
+      computeWebhookHeaderSecretFingerprint: jest.fn().mockReturnValue('fingerprint-777000_bot'),
+    };
+    const statusService = {
+      getSyncState: jest.fn().mockResolvedValue(null),
+      writeSnapshot: jest.fn().mockResolvedValue(undefined),
+      writeSyncState: jest.fn().mockResolvedValue(undefined),
+      getSnapshot: jest.fn(),
+    };
+    const maxClient = {
+      getConfiguredWebhookSubscriptionTarget: jest.fn().mockReturnValue({
+        url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
+        maskedUrl: 'https://major-maksimov.ru/api/webhook/max/777000_bot/***',
+      }),
+      listWebhookSubscriptions: jest.fn().mockResolvedValue([
+        {
+          url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
+          updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+        },
+        {
+          url: 'https://hook.maxim.play-team.ru/api/webhook/max/777000_bot/old-secret',
+          updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+        },
+        {
+          url: 'https://example.test/third-party/webhook',
+          updateTypes: ['message_created'],
+        },
+      ]),
+      matchesConfiguredWebhookUrl: jest.fn().mockImplementation((url: string) => {
+        return url === 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path';
+      }),
+      deleteWebhookSubscription: jest.fn().mockResolvedValue(undefined),
+      ensureWebhookSubscription: jest.fn().mockResolvedValue({
+        url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
+        updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+      }),
+    };
+    const service = new MaxWebhookSubscriptionReconcilerService(
+      maxClient as never,
+      botRegistry as never,
+      statusService as never,
+      createPrismaMock() as never,
+      {
+        get: jest.fn((key: string, fallback?: number) => {
+          if (key === 'MAX_WEBHOOK_RECONCILE_INTERVAL_MS') {
+            return 60_000;
+          }
+          return fallback;
+        }),
+      } as never,
+    );
+
+    await service.onModuleInit();
+
+    expect(maxClient.ensureWebhookSubscription).not.toHaveBeenCalled();
+    expect(maxClient.deleteWebhookSubscription).toHaveBeenCalledWith(
+      'https://hook.maxim.play-team.ru/api/webhook/max/777000_bot/old-secret',
+      {
+        trafficClass: 'background',
+        botId: '777000_bot',
+        sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
+      },
+    );
+    expect(maxClient.deleteWebhookSubscription).toHaveBeenCalledTimes(1);
+    expect(statusService.writeSnapshot).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: 'warning',
+        otherSubscriptionsCount: 1,
+        bots: expect.objectContaining({
+          '777000_bot': expect.objectContaining({
+            otherSubscriptionsCount: 1,
+          }),
+        }),
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('leaves the shared snapshot untouched when reconcile is not active on the current app role', async () => {
     process.env.APP_ROLE = 'admin';
 

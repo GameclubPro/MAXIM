@@ -180,7 +180,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     const configService = {
       getOrThrow: jest.fn((key: string) => {
         if (key === 'MAX_API_BASE_URL') {
-          return 'https://platform-api.max.ru';
+          return 'https://platform-api2.max.ru';
         }
         if (key === 'MAX_BOT_TOKEN') {
           return 'test-token';
@@ -556,7 +556,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       2,
       expect.objectContaining({
         method: 'put',
-        url: 'https://platform-api.max.ru/messages',
+        url: 'https://platform-api2.max.ru/messages',
         params: {
           chat_id: 'chat-1',
           message_id: 'mid-edit-1',
@@ -602,7 +602,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(httpService.request).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'post',
-        url: 'https://platform-api.max.ru/answers',
+        url: 'https://platform-api2.max.ru/answers',
         params: {
           callback_id: 'callback-1',
         },
@@ -686,7 +686,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(httpService.request).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'post',
-        url: 'https://platform-api.max.ru/messages',
+        url: 'https://platform-api2.max.ru/messages',
         params: {
           user_id: 'user-42',
         },
@@ -769,7 +769,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       1,
       expect.objectContaining({
         method: 'get',
-        url: 'https://platform-api.max.ru/messages',
+        url: 'https://platform-api2.max.ru/messages',
         params: { message_ids: 'mid-source-1' },
       }),
     );
@@ -777,7 +777,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       2,
       expect.objectContaining({
         method: 'post',
-        url: 'https://platform-api.max.ru/messages',
+        url: 'https://platform-api2.max.ru/messages',
         params: { chat_id: 'chat-1' },
         data: {
           text: '**Исходный** пост админа',
@@ -877,7 +877,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       2,
       expect.objectContaining({
         method: 'post',
-        url: 'https://platform-api.max.ru/messages',
+        url: 'https://platform-api2.max.ru/messages',
         params: { chat_id: 'chat-1' },
         data: {
           text: 'Пересланный пост',
@@ -980,7 +980,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       2,
       expect.objectContaining({
         method: 'post',
-        url: 'https://platform-api.max.ru/messages',
+        url: 'https://platform-api2.max.ru/messages',
         params: { chat_id: 'chat-1' },
         data: expect.objectContaining({
           text: '🔥[**MAX Docs**](https://dev.max.ru/docs-api)\n\nВторой абзац',
@@ -1052,7 +1052,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       2,
       expect.objectContaining({
         method: 'post',
-        url: 'https://platform-api.max.ru/messages',
+        url: 'https://platform-api2.max.ru/messages',
         params: { chat_id: 'chat-1' },
         data: expect.objectContaining({
           text: '**Заголовок**\n\n**Второй абзац**',
@@ -1113,7 +1113,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       2,
       expect.objectContaining({
         method: 'put',
-        url: 'https://platform-api.max.ru/messages',
+        url: 'https://platform-api2.max.ru/messages',
         params: {
           chat_id: 'chat-1',
           message_id: 'mid-edit-markup-1',
@@ -1341,14 +1341,14 @@ describe('MaxClientService inline keyboard guardrails', () => {
       2,
       expect.objectContaining({
         method: 'get',
-        url: 'https://platform-api.max.ru/messages/mid-edit-fallback-1',
+        url: 'https://platform-api2.max.ru/messages/mid-edit-fallback-1',
       }),
     );
     expect(httpService.request).toHaveBeenNthCalledWith(
       3,
       expect.objectContaining({
         method: 'put',
-        url: 'https://platform-api.max.ru/messages',
+        url: 'https://platform-api2.max.ru/messages',
         params: {
           chat_id: 'chat-1',
           message_id: 'mid-edit-fallback-1',
@@ -1409,7 +1409,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       2,
       expect.objectContaining({
         method: 'put',
-        url: 'https://platform-api.max.ru/messages',
+        url: 'https://platform-api2.max.ru/messages',
         params: {
           chat_id: 'chat-1',
           message_id: 'mid-edit-html-1',
@@ -1472,7 +1472,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       2,
       expect.objectContaining({
         method: 'put',
-        url: 'https://platform-api.max.ru/messages',
+        url: 'https://platform-api2.max.ru/messages',
         params: {
           chat_id: 'chat-1',
           message_id: 'mid-edit-forward-1',
@@ -1527,7 +1527,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(httpService.request).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'post',
-        url: 'https://platform-api.max.ru/messages',
+        url: 'https://platform-api2.max.ru/messages',
         params: {
           chat_id: 'chat-1',
         },
@@ -1598,7 +1598,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       1,
       expect.objectContaining({
         method: 'post',
-        url: 'https://platform-api.max.ru/messages',
+        url: 'https://platform-api2.max.ru/messages',
         params: { chat_id: 'chat-1' },
         data: { text: 'Правила чата', format: 'markdown' },
       }),
@@ -1607,7 +1607,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       2,
       expect.objectContaining({
         method: 'get',
-        url: 'https://platform-api.max.ru/messages',
+        url: 'https://platform-api2.max.ru/messages',
         params: { message_ids: 'mid-rules-1' },
       }),
     );
@@ -1791,7 +1791,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       1,
       expect.objectContaining({
         method: 'post',
-        url: 'https://platform-api.max.ru/messages',
+        url: 'https://platform-api2.max.ru/messages',
         params: { chat_id: 'chat-1' },
         data: {
           attachments: [
@@ -1847,7 +1847,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(httpService.request).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'post',
-        url: 'https://platform-api.max.ru/messages',
+        url: 'https://platform-api2.max.ru/messages',
         params: { chat_id: 'chat-1' },
         data: {
           text: 'Проверьте кнопки',
@@ -1966,7 +1966,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       3,
       expect.objectContaining({
         method: 'get',
-        url: 'https://platform-api.max.ru/messages/mid-rules-4',
+        url: 'https://platform-api2.max.ru/messages/mid-rules-4',
       }),
     );
 
@@ -2017,7 +2017,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       3,
       expect.objectContaining({
         method: 'get',
-        url: 'https://platform-api.max.ru/messages/mid-rules-4b',
+        url: 'https://platform-api2.max.ru/messages/mid-rules-4b',
       }),
     );
 
@@ -2066,7 +2066,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       2,
       expect.objectContaining({
         method: 'get',
-        url: 'https://platform-api.max.ru/messages',
+        url: 'https://platform-api2.max.ru/messages',
         params: { message_ids: 'mid-rules-5' },
       }),
     );
@@ -2102,7 +2102,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(httpService.request).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'post',
-        url: 'https://platform-api.max.ru/messages',
+        url: 'https://platform-api2.max.ru/messages',
         params: { chat_id: 'chat-1' },
         data: {
           text: 'Нарушение',
@@ -2149,7 +2149,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       1,
       expect.objectContaining({
         method: 'post',
-        url: 'https://platform-api.max.ru/uploads',
+        url: 'https://platform-api2.max.ru/uploads',
         params: {
           type: 'video',
         },
@@ -2192,7 +2192,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(httpService.request).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'post',
-        url: 'https://platform-api.max.ru/messages',
+        url: 'https://platform-api2.max.ru/messages',
         params: { chat_id: 'chat-1' },
         data: {
           text: 'Видео предложки',
@@ -2235,7 +2235,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(httpService.request).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'put',
-        url: 'https://platform-api.max.ru/chats/chat-1/pin',
+        url: 'https://platform-api2.max.ru/chats/chat-1/pin',
         data: {
           message_id: 'mid-rules-3',
           notify: false,
@@ -2348,7 +2348,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       1,
       expect.objectContaining({
         method: 'get',
-        url: 'https://platform-api.max.ru/messages',
+        url: 'https://platform-api2.max.ru/messages',
         params: {
           chat_id: 'channel-1',
           count: 2,
@@ -2360,7 +2360,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       2,
       expect.objectContaining({
         method: 'get',
-        url: 'https://platform-api.max.ru/messages',
+        url: 'https://platform-api2.max.ru/messages',
         params: {
           chat_id: 'channel-1',
           count: 2,
@@ -2430,7 +2430,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(httpService.request).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'get',
-        url: 'https://platform-api.max.ru/messages',
+        url: 'https://platform-api2.max.ru/messages',
         params: {
           message_ids: 'mid.ffffbb80bddbf2f4019ea860c3782a5a',
         },
@@ -2467,7 +2467,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(httpService.request).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'get',
-        url: 'https://platform-api.max.ru/chats/chat-1/members/me',
+        url: 'https://platform-api2.max.ru/chats/chat-1/members/me',
       }),
     );
 
@@ -2536,7 +2536,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(httpService.request).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'get',
-        url: 'https://platform-api.max.ru/chats/chat-1/members?user_ids=user-1',
+        url: 'https://platform-api2.max.ru/chats/chat-1/members?user_ids=user-1',
         timeout: 1_234,
       }),
     );
@@ -2571,7 +2571,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(httpService.request).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'get',
-        url: 'https://platform-api.max.ru/chats/chat-1/members?user_ids=user-1%2Cuser-2',
+        url: 'https://platform-api2.max.ru/chats/chat-1/members?user_ids=user-1%2Cuser-2',
       }),
     );
     expect([...result.keys()]).toEqual(['user-1', 'user-2']);
@@ -2663,7 +2663,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(httpService.request).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'get',
-        url: 'https://platform-api.max.ru/chats/chat-1/members/admins',
+        url: 'https://platform-api2.max.ru/chats/chat-1/members/admins',
         timeout: 1_234,
       }),
     );
@@ -2752,7 +2752,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(httpService.request).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'get',
-        url: 'https://platform-api.max.ru/chats/chat-1/members?user_ids=user-404',
+        url: 'https://platform-api2.max.ru/chats/chat-1/members?user_ids=user-404',
       }),
     );
 
@@ -2795,7 +2795,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(httpService.request).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'get',
-        url: 'https://platform-api.max.ru/chats/chat-1/members?user_ids=user-1%2Cuser-2',
+        url: 'https://platform-api2.max.ru/chats/chat-1/members?user_ids=user-1%2Cuser-2',
       }),
     );
     expect(result.get('user-1')).toEqual({
@@ -2856,7 +2856,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(httpService.request).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'get',
-        url: 'https://platform-api.max.ru/chats/chat-1/members',
+        url: 'https://platform-api2.max.ru/chats/chat-1/members',
         params: {
           count: 100,
           marker: 'page-1',
@@ -2995,7 +2995,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(httpService.request).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'get',
-        url: 'https://platform-api.max.ru/me',
+        url: 'https://platform-api2.max.ru/me',
       }),
     );
     expect(result).toEqual({
@@ -3381,7 +3381,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(httpService.request).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'get',
-        url: 'https://platform-api.max.ru/chats/news-max',
+        url: 'https://platform-api2.max.ru/chats/news-max',
       }),
     );
 
@@ -3741,7 +3741,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(httpService.request).toHaveBeenLastCalledWith(
       expect.objectContaining({
         method: 'post',
-        url: 'https://platform-api.max.ru/subscriptions',
+        url: 'https://platform-api2.max.ru/subscriptions',
         data: {
           url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
           update_types: [
@@ -3766,7 +3766,7 @@ describe('MaxClientService delayed member actions', () => {
     const configService = {
       getOrThrow: jest.fn((key: string) => {
         if (key === 'MAX_API_BASE_URL') {
-          return 'https://platform-api.max.ru';
+          return 'https://platform-api2.max.ru';
         }
         if (key === 'MAX_BOT_TOKEN') {
           return 'test-token';
@@ -3832,7 +3832,7 @@ describe('MaxClientService delayed member actions', () => {
     const configService = {
       getOrThrow: jest.fn((key: string) => {
         if (key === 'MAX_API_BASE_URL') {
-          return 'https://platform-api.max.ru';
+          return 'https://platform-api2.max.ru';
         }
         if (key === 'MAX_BOT_TOKEN') {
           return 'test-token';

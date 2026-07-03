@@ -1009,7 +1009,7 @@ function createHarness(
           return undefined;
         }
         if (key === 'APP_BASE_URL') {
-          return 'https://maxim.play-team.ru';
+          return 'https://major-maksimov.ru';
         }
         return undefined;
       }),

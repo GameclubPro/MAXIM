@@ -68,6 +68,9 @@ for service in "\${services[@]}"; do
   echo "-- \${service} --"
   docker compose -p infra -f infra/docker-compose.yml logs --since "${INTERVAL_SEC}s" --tail "$TAIL_LINES" "\$service" 2>/dev/null |
     grep -Eai '"level":(40|50)|"statusCode":(4[0-9][0-9]|5[0-9][0-9])|(^|[^[:alnum:]_])(error|warn|exception|failed|stalled|rate limit|ECONN|ETIMEDOUT|BullMQ|Redis)([^[:alnum:]_]|$)' |
+    sed -E \
+      -e "s#(https?://[^\"[:space:]]*)\\?[^\"[:space:]#]*#\\1?[redacted]#g" \
+      -e "s#((^|[[:space:]\":=])/(app|api)/[^\"[:space:]]*)\\?[^\"[:space:]#]*#\\1?[redacted]#g" |
     tail -40 || true
 done
 REMOTE

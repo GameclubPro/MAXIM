@@ -13,6 +13,8 @@ COMPOSE_FILES=(--env-file ".env" -p "$MAIN_PROJECT_NAME" -f "infra/docker-compos
 ALTERNATE_COMPOSE_FILES=(-p "$SCALE_PROJECT_NAME" -f "infra/docker-compose.scale.yml")
 BRANCH="${1:-main}"
 PRE_PULL_HEAD=""
+PUBLIC_HEALTH_URL="${MAXIM_VPS_PUBLIC_URL:-${MAXIM_PUBLIC_HEALTH_URL:-https://major-maksimov.ru}}"
+PUBLIC_HEALTH_URL="${PUBLIC_HEALTH_URL%/}"
 
 if [[ $# -ge 2 ]]; then
   SERVICES=("${@:2}")
@@ -406,8 +408,8 @@ if contains_service "api-admin" "${SERVICES[@]}"; then
   wait_for_url "http://127.0.0.1:3002/api/health/live" 180
   wait_for_url "http://127.0.0.1:3002/api/health/ready" 180
 fi
-wait_for_url "https://maxim.play-team.ru/api/health/live" 180
-wait_for_url "https://maxim.play-team.ru/api/health/ready" 180
+wait_for_url "$PUBLIC_HEALTH_URL/api/health/live" 180
+wait_for_url "$PUBLIC_HEALTH_URL/api/health/ready" 180
 
 curl -i http://127.0.0.1:3001/api/health/live
 curl -i http://127.0.0.1:3001/api/health/ready
@@ -415,8 +417,8 @@ if contains_service "api-admin" "${SERVICES[@]}"; then
   curl -i http://127.0.0.1:3002/api/health/live
   curl -i http://127.0.0.1:3002/api/health/ready
 fi
-curl -i https://maxim.play-team.ru/api/health/live
-curl -i https://maxim.play-team.ru/api/health/ready
+curl -i "$PUBLIC_HEALTH_URL/api/health/live"
+curl -i "$PUBLIC_HEALTH_URL/api/health/ready"
 
 if contains_service "miniapp-static" "${SERVICES[@]}"; then
   curl -i https://maxim.play-team.ru/app/

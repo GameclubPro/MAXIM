@@ -20690,6 +20690,77 @@ describe('AdminService.getChatParticipantsPage', () => {
     });
   });
 
+  it('returns a retry cursor instead of failing participant search on MAX API timeout', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'chat-1',
+      title: 'Команда MAX',
+      entityType: 'CHAT',
+    });
+    prisma.chatSettings.findUnique.mockResolvedValue({
+      nightModeTimezone: 'Europe/Moscow',
+    });
+    prisma.moderationEvent.groupBy.mockResolvedValue([]);
+    prisma.chatParticipantModerationImmunity.findMany.mockResolvedValue([]);
+
+    const timeoutError = Object.assign(new Error('timeout of 700ms exceeded'), {
+      code: 'ECONNABORTED',
+    });
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatMembersPage: jest.fn().mockRejectedValue(timeoutError),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'chat-1',
+        title: 'Команда MAX',
+        participantsCount: 1200,
+        status: 'active',
+        isPublic: false,
+        link: null,
+        lastEventAt: '2026-04-14T10:00:00.000Z',
+        entityType: 'chat',
+        avatarUrl: null,
+      }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.getChatParticipantsPage(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { limit: 10, range: '7d', search: 'тимо' },
+    );
+
+    expect(maxClient.getChatMembersPage).toHaveBeenCalledWith(
+      'chat-1',
+      {
+        limit: 100,
+        marker: null,
+      },
+      expect.objectContaining({
+        trafficClass: 'interactive',
+        actionHealthLane: 'background',
+        sourceTag: 'participant_search',
+        timeoutMs: 700,
+      }),
+    );
+    expect(result).toEqual({
+      items: [],
+      totalCount: 1200,
+      hasMore: true,
+      nextCursor: expect.any(String),
+    });
+  });
+
   it('returns an empty participant page when MAX denies roster access', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({

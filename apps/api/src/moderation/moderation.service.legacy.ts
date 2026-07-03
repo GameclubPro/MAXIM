@@ -10752,7 +10752,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return {
       type: 'link',
       text,
-      url: fallbackWebAppUrl ?? 'https://maxim.play-team.ru/app/',
+      url: fallbackWebAppUrl ?? 'https://major-maksimov.ru/app/',
     };
   }
 
@@ -14065,7 +14065,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return {
       type: 'link',
       text,
-      url: webAppUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
+      url: webAppUrl ?? `${this.appBaseUrl ?? 'https://major-maksimov.ru'}/app/`,
     };
   }
 
@@ -14100,7 +14100,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return {
       type: 'link',
       text,
-      url: webAppUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
+      url: webAppUrl ?? `${this.appBaseUrl ?? 'https://major-maksimov.ru'}/app/`,
     };
   }
 

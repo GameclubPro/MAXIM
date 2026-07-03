@@ -9,8 +9,8 @@ import {
 
 describe('user agreement notice', () => {
   it('uses public mini app legal documents by default', () => {
-    expect(USER_AGREEMENT_URL).toBe('https://maxim.play-team.ru/app/legal/agreement');
-    expect(PRIVACY_POLICY_URL).toBe('https://maxim.play-team.ru/app/legal/privacy');
+    expect(USER_AGREEMENT_URL).toBe('https://major-maksimov.ru/app/legal/agreement');
+    expect(PRIVACY_POLICY_URL).toBe('https://major-maksimov.ru/app/legal/privacy');
   });
 
   it('builds legal links from APP_BASE_URL for prefixed deployments', () => {

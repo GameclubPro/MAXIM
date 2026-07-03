@@ -6,6 +6,8 @@ cd "$ROOT_DIR"
 
 COMPOSE_FILES=(-p infra -f "infra/docker-compose.yml")
 ROLLBACK_REF="${1:-}"
+PUBLIC_HEALTH_URL="${MAXIM_VPS_PUBLIC_URL:-${MAXIM_PUBLIC_HEALTH_URL:-https://major-maksimov.ru}}"
+PUBLIC_HEALTH_URL="${PUBLIC_HEALTH_URL%/}"
 
 if [[ -z "$ROLLBACK_REF" ]]; then
   echo "Usage: $0 <git-ref> [services...]"
@@ -117,7 +119,7 @@ if contains_service "api-admin" "${SERVICES[@]}"; then
   wait_for_url "http://127.0.0.1:3002/api/health/live" 180
   wait_for_url "http://127.0.0.1:3002/api/health/ready" 180
 fi
-wait_for_url "https://maxim.play-team.ru/api/health/live" 180
-wait_for_url "https://maxim.play-team.ru/api/health/ready" 180
+wait_for_url "$PUBLIC_HEALTH_URL/api/health/live" 180
+wait_for_url "$PUBLIC_HEALTH_URL/api/health/ready" 180
 
 echo "Done: runtime rollback target=$TARGET_HEAD services=${SERVICES[*]}"

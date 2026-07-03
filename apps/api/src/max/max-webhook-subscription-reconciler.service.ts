@@ -303,6 +303,7 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
 
     let reconciledAt: string | null = null;
     let effectiveOtherSubscriptionsCount = otherSubscriptionsCount;
+    const deletedSubscriptionUrls = new Set<string>();
     if (shouldRotateWebhookSecret) {
       await this.maxClient.deleteWebhookSubscription(target.url, {
         trafficClass: 'background',
@@ -344,9 +345,29 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
           botId: bot.id,
           sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
         });
+        deletedSubscriptionUrls.add(previousConfiguredUrl);
         reconciledAt = reconciledAt ?? new Date().toISOString();
         effectiveOtherSubscriptionsCount = Math.max(0, effectiveOtherSubscriptionsCount - 1);
       }
+    }
+
+    for (const subscription of existing) {
+      if (
+        deletedSubscriptionUrls.has(subscription.url) ||
+        this.maxClient.matchesConfiguredWebhookUrl(subscription.url, bot.id) ||
+        !this.isOwnedBotWebhookSubscriptionUrl(subscription.url, bot.id)
+      ) {
+        continue;
+      }
+
+      await this.maxClient.deleteWebhookSubscription(subscription.url, {
+        trafficClass: 'background',
+        botId: bot.id,
+        sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
+      });
+      deletedSubscriptionUrls.add(subscription.url);
+      reconciledAt = reconciledAt ?? new Date().toISOString();
+      effectiveOtherSubscriptionsCount = Math.max(0, effectiveOtherSubscriptionsCount - 1);
     }
 
     const refreshedCurrent =
@@ -448,6 +469,23 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
       lastMembershipWebhookAt: params.membershipDiagnostics.lastMembershipWebhookAt,
       issueCodes,
     };
+  }
+
+  private isOwnedBotWebhookSubscriptionUrl(url: string, botId: string): boolean {
+    try {
+      const parsed = new URL(url);
+      const segments = parsed.pathname.split('/').filter((segment) => segment.length > 0);
+      return (
+        segments.length >= 5 &&
+        segments[0] === 'api' &&
+        segments[1] === 'webhook' &&
+        segments[2] === 'max' &&
+        decodeURIComponent(segments[3] ?? '') === botId &&
+        segments[4].length > 0
+      );
+    } catch {
+      return false;
+    }
   }
 
   private buildOperationalBotNote(

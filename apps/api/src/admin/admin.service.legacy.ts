@@ -8445,7 +8445,7 @@ export class AdminService implements OnModuleDestroy {
     return {
       type: 'link',
       text,
-      url: webAppUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
+      url: webAppUrl ?? `${this.appBaseUrl ?? 'https://major-maksimov.ru'}/app/`,
     };
   }
 

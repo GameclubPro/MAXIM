@@ -22,7 +22,11 @@ import {
 } from '../max/max-client.service';
 import type { Prisma } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
-import { buildChatParticipantsPageCacheKey, isMaxApiThrottleError } from './admin-legacy-utils';
+import {
+  buildChatParticipantsPageCacheKey,
+  isMaxApiThrottleError,
+  isMaxApiTimeoutError,
+} from './admin-legacy-utils';
 import type { AdminParticipantsRuntimeContext } from './admin-participants-runtime-context';
 import {
   ADMIN_ACTION_HEALTH_LANE,
@@ -459,7 +463,7 @@ export class AdminParticipantsRuntime {
           { search: true },
         );
       } catch (error: unknown) {
-        if (!isMaxApiThrottleError(error)) {
+        if (!this.isTransientChatParticipantsSearchError(error)) {
           throw error;
         }
 
@@ -471,7 +475,7 @@ export class AdminParticipantsRuntime {
             scannedRemotePages,
             err: error instanceof Error ? error.message : String(error),
           },
-          'Paused participant search page scan after MAX API throttling',
+          'Paused participant search page scan after MAX API throttling or timeout',
         );
         return {
           items,
@@ -579,6 +583,10 @@ export class AdminParticipantsRuntime {
     return candidates.some((candidate) =>
       this.normalizeChatParticipantsSearchText(candidate).includes(search),
     );
+  }
+
+  private isTransientChatParticipantsSearchError(error: unknown): boolean {
+    return isMaxApiThrottleError(error) || isMaxApiTimeoutError(error);
   }
 
   private normalizeChatParticipantsSearchText(value: string): string {

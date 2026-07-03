@@ -88,7 +88,7 @@ export class AdminDialogLinkHelper {
         : {
             type: 'link',
             text,
-            url: webAppUrl ?? `${this.options.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
+            url: webAppUrl ?? `${this.options.appBaseUrl ?? 'https://major-maksimov.ru'}/app/`,
           };
   }
 

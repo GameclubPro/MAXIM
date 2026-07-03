@@ -17,7 +17,7 @@ fi
 
 MAXIM_VPS_SSH_TARGET="${MAXIM_VPS_SSH_TARGET:-maxim-vps}"
 MAXIM_VPS_REPO_DIR="${MAXIM_VPS_REPO_DIR:-/var/www/Chat_bot}"
-MAXIM_VPS_PUBLIC_URL="${MAXIM_VPS_PUBLIC_URL:-https://maxim.play-team.ru}"
+MAXIM_VPS_PUBLIC_URL="${MAXIM_VPS_PUBLIC_URL:-https://major-maksimov.ru}"
 
 usage() {
   cat <<'USAGE'

@@ -8469,7 +8469,7 @@ export class PrivateControlService {
     return {
       type: 'link',
       text,
-      url: 'https://maxim.play-team.ru/app/',
+      url: 'https://major-maksimov.ru/app/',
     };
   }
 

@@ -1,4 +1,4 @@
-const DEFAULT_APP_BASE_URL = 'https://maxim.play-team.ru';
+const DEFAULT_APP_BASE_URL = 'https://major-maksimov.ru';
 
 export const USER_AGREEMENT_PATH = '/app/legal/agreement';
 export const PRIVACY_POLICY_PATH = '/app/legal/privacy';

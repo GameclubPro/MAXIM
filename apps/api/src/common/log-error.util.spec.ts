@@ -8,7 +8,7 @@ describe('sanitizeErrorForLogs', () => {
       code: 'ECONNABORTED',
       config: {
         method: 'get',
-        url: 'https://platform-api.max.ru/chats/chat-1/members?count=100',
+        url: 'https://platform-api2.max.ru/chats/chat-1/members?count=100',
         timeout: 700,
         headers: {
           Authorization: 'secret-token',
@@ -16,7 +16,7 @@ describe('sanitizeErrorForLogs', () => {
       },
       request: {
         _header:
-          'GET /chats/chat-1/members HTTP/1.1\r\nAuthorization: secret-token\r\nHost: platform-api.max.ru\r\n',
+          'GET /chats/chat-1/members HTTP/1.1\r\nAuthorization: secret-token\r\nHost: platform-api2.max.ru\r\n',
       },
     };
 
@@ -27,7 +27,7 @@ describe('sanitizeErrorForLogs', () => {
       message: 'timeout of 700ms exceeded',
       code: 'ECONNABORTED',
       method: 'GET',
-      url: 'https://platform-api.max.ru/chats/chat-1/members',
+      url: 'https://platform-api2.max.ru/chats/chat-1/members',
       timeout: 700,
     });
     expect(JSON.stringify(sanitized)).not.toContain('secret-token');

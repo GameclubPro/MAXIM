@@ -109,7 +109,9 @@ services:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-moderation
       APP_ROLE: moderation
+      WEBHOOK_DYNAMIC_LEASES_MODE: canary
       WEBHOOK_DYNAMIC_LEASES_WORKER_GROUP: api-moderation
+      WEBHOOK_DYNAMIC_LEASES_CANARY_SHARDS: moderation-default-2,moderation-default-11
       MODERATION_ENABLED_QUEUES: moderation-default-0,moderation-default-4,moderation-default-8,moderation-default-12
       MODERATION_BACKGROUND_TASKS_ENABLED: 'false'
       REQUIRED_SUBSCRIPTION_LOOKUP_CONCURRENCY: 2
@@ -218,7 +220,9 @@ services:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-moderation-realtime-b
       APP_ROLE: moderation
+      WEBHOOK_DYNAMIC_LEASES_MODE: canary
       WEBHOOK_DYNAMIC_LEASES_WORKER_GROUP: api-moderation-realtime-b
+      WEBHOOK_DYNAMIC_LEASES_CANARY_SHARDS: moderation-default-2,moderation-default-11
       MODERATION_ENABLED_QUEUES: moderation-default-1,moderation-default-5,moderation-default-9,moderation-default-13
       MODERATION_BACKGROUND_TASKS_ENABLED: 'false'
       REQUIRED_SUBSCRIPTION_LOOKUP_CONCURRENCY: 2
@@ -256,7 +260,9 @@ services:
       APP_ROLE: moderation
       SPAMMER_OBSERVATION_DENORM_QUEUE_ENABLED: 'true'
       SPAMMER_OBSERVATION_FAST_PATH_ENABLED: 'true'
+      WEBHOOK_DYNAMIC_LEASES_MODE: canary
       WEBHOOK_DYNAMIC_LEASES_WORKER_GROUP: api-moderation-realtime-c
+      WEBHOOK_DYNAMIC_LEASES_CANARY_SHARDS: moderation-default-2,moderation-default-11
       MODERATION_ENABLED_QUEUES: moderation-default-2,moderation-default-6,moderation-default-10,moderation-default-14
       MODERATION_BACKGROUND_TASKS_ENABLED: 'false'
       REQUIRED_SUBSCRIPTION_LOOKUP_CONCURRENCY: 2
@@ -292,7 +298,9 @@ services:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-moderation-realtime-d
       APP_ROLE: moderation
+      WEBHOOK_DYNAMIC_LEASES_MODE: canary
       WEBHOOK_DYNAMIC_LEASES_WORKER_GROUP: api-moderation-realtime-d
+      WEBHOOK_DYNAMIC_LEASES_CANARY_SHARDS: moderation-default-2,moderation-default-11
       MODERATION_ENABLED_QUEUES: moderation-default-3,moderation-default-7,moderation-default-11,moderation-default-15
       MODERATION_BACKGROUND_TASKS_ENABLED: 'false'
       REQUIRED_SUBSCRIPTION_LOOKUP_CONCURRENCY: 2
