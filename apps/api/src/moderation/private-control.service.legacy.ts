@@ -8092,9 +8092,11 @@ export class PrivateControlService {
     }
 
     const botId = this.readUpdateBotId(context.update);
+    const previousPrivateChatId = session.lastPrivateChatId;
+    const rememberedBotId = session.lastPrivateBotId?.trim() || null;
     if (session.lastPrivateChatId !== context.chatId) {
       session.lastPrivateChatId = context.chatId;
-      session.lastPrivateBotId = botId;
+      session.lastPrivateBotId = botId ?? (previousPrivateChatId ? null : rememberedBotId);
       return;
     }
 

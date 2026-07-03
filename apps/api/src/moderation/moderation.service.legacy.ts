@@ -19,6 +19,7 @@ import {
   INVITATION_ACCESS_REQUIRED_COUNT_MAX,
   INVITATION_ACCESS_REQUIRED_COUNT_MIN,
   MAX_BROADCAST_LINK_BUTTONS_PER_ROW,
+  REQUIRED_SUBSCRIPTION_MAX_CHANNELS,
   normalizeDeleteBotMessagesDelayMinutes,
   type MaxUpdate,
 } from '@maxim/contracts';
@@ -9323,7 +9324,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           .map((item) => (typeof item === 'string' ? item.trim() : ''))
           .filter((item) => item.length > 0),
       ),
-    );
+    ).slice(0, REQUIRED_SUBSCRIPTION_MAX_CHANNELS);
   }
 
   private async resolveRequiredSubscriptionMembershipWithHotPathBudget(params: {
@@ -14524,7 +14525,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   ): MaxMessageButton {
     if (type === 'suggest' && suggestionEntryMode !== 'MINIAPP') {
       const startPayload =
-        this.adminDialogLinkService?.buildChannelSuggestionStartPayload(chatId, threadId) ??
+        this.adminDialogLinkService?.buildChannelSuggestionStartPayload(chatId, threadId, botId) ??
         this.buildChannelDialogStartParam(chatId, 'suggest', threadId);
       const botStartUrl = this.buildBotStartUrl(startPayload, botId);
       if (botStartUrl) {

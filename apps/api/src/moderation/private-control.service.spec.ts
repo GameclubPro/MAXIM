@@ -11,6 +11,7 @@ import {
   USER_AGREEMENT_SHORT_NOTICE,
   USER_AGREEMENT_START_NOTICE,
 } from '../common/user-agreement-notice';
+import { createDefaultPrivateControlSession } from './private-control-session-normalizer';
 import { PrivateControlService } from './private-control.service';
 
 function createMaxApiError(status: number, message: string, code?: string): Error {
@@ -2915,6 +2916,48 @@ describe('PrivateControlService', () => {
     expect(maxClient.uploadImage).toHaveBeenCalledWith(
       TINY_PNG,
       'private-broadcast-photo-1.png',
+      'image/png',
+      { botId: '888000_bot' },
+    );
+    expect(maxClient.sendMessage).toHaveBeenLastCalledWith(
+      '152517912',
+      expect.any(String),
+      expect.objectContaining({
+        imagePayload: { token: 'upload-token-1' },
+      }),
+      expect.objectContaining({
+        botId: '888000_bot',
+      }),
+    );
+  });
+
+  it('keeps a remembered private bot for the first handoff update without bot metadata', async () => {
+    const { service, maxClient, chats } = createHarness();
+    const session = createDefaultPrivateControlSession();
+    session.lastPrivateBotId = '888000_bot';
+    session.lastPrivateChatId = null;
+    session.selectedChatId = chats[0].id;
+    session.selectedEntityType = 'chat';
+    session.screen = 'broadcast';
+    session.broadcastDraft = {
+      ...session.broadcastDraft,
+      imageEnabled: true,
+      imageBase64: TINY_PNG.toString('base64'),
+      imageMimeType: 'image/png',
+      imageFileName: 'handoff.png',
+    };
+
+    await (
+      service as unknown as {
+        saveSession(userId: string, nextSession: unknown): Promise<void>;
+      }
+    ).saveSession('user-1', session);
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate('broadcast_handoff'));
+
+    expect(maxClient.uploadImage).toHaveBeenCalledWith(
+      TINY_PNG,
+      'handoff.png',
       'image/png',
       { botId: '888000_bot' },
     );

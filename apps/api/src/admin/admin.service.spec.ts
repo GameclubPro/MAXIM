@@ -4605,8 +4605,12 @@ describe('AdminService.getLogsDashboard', () => {
       resolveContactIdSync: jest.fn((botId?: string | null) =>
         botId === 'channel-bot-2' ? '990002' : null,
       ),
-      getBotTokenSync: jest.fn().mockReturnValue('test-max-bot-token'),
-      getValidationTokens: jest.fn().mockReturnValue(['test-max-bot-token']),
+      getBotTokenSync: jest.fn((botId?: string | null) =>
+        botId?.trim() === 'channel-bot-2' ? 'test-channel-bot-token' : 'test-max-bot-token',
+      ),
+      getValidationTokens: jest
+        .fn()
+        .mockReturnValue(['test-max-bot-token', 'test-channel-bot-token']),
     };
 
     const service = new AdminService(
@@ -4786,8 +4790,12 @@ describe('AdminService.getLogsDashboard', () => {
       resolveContactIdSync: jest.fn((botId?: string | null) =>
         botId === 'channel-bot-2' ? '990002' : null,
       ),
-      getBotTokenSync: jest.fn().mockReturnValue('test-max-bot-token'),
-      getValidationTokens: jest.fn().mockReturnValue(['test-max-bot-token']),
+      getBotTokenSync: jest.fn((botId?: string | null) =>
+        botId?.trim() === 'channel-bot-2' ? 'test-channel-bot-token' : 'test-max-bot-token',
+      ),
+      getValidationTokens: jest
+        .fn()
+        .mockReturnValue(['test-max-bot-token', 'test-channel-bot-token']),
       resolveBotId: jest.fn().mockResolvedValue(undefined),
       resolveBotIdForCapability: jest.fn().mockResolvedValue(undefined),
       bindDiscoveredChatBots: jest.fn().mockResolvedValue(undefined),
@@ -33555,6 +33563,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       { botId: 'channel-bot-2' },
     );
     expect(maxBotLinkService.resolveContactIdSync).toHaveBeenCalledWith('channel-bot-2');
+    expect(maxBotLinkService.getBotTokenSync).toHaveBeenCalledWith('channel-bot-2');
     expect(maxBotLinkService.buildBotStartUrlSync).toHaveBeenCalledWith(
       expect.any(String),
       'channel-bot-2',

@@ -109,7 +109,11 @@ export class AdminDialogLinkHelper {
     return this.buildEntityDialogDirectWebAppUrl('chat', chatId, type, threadId);
   }
 
-  buildChannelSuggestionStartPayload(chatId: string, threadId: string): string {
+  buildChannelSuggestionStartPayload(
+    chatId: string,
+    threadId: string,
+    botId?: string | null,
+  ): string {
     const normalizedChatId = chatId.trim();
     const normalizedThreadId = threadId.trim();
     const compactThreadId = this.compactSuggestionThreadId(normalizedThreadId);
@@ -121,6 +125,7 @@ export class AdminDialogLinkHelper {
     const signature = this.buildChannelSuggestionStartSignature(
       normalizedChatId,
       normalizedThreadId,
+      this.getCurrentBotToken(botId),
     );
     return `${CHANNEL_SUGGESTION_START_PARAM_PREFIX}${normalizedChatId}.${compactThreadId}.${signature}`;
   }
@@ -159,13 +164,18 @@ export class AdminDialogLinkHelper {
       return null;
     }
 
-    if (!this.isValidChannelSuggestionStartSignature(signature, chatId, threadId)) {
+    const matchedBotToken = this.resolveChannelSuggestionStartBotToken(
+      signature,
+      chatId,
+      threadId,
+    );
+    if (!matchedBotToken) {
       return null;
     }
 
     return {
       chatId,
-      token: this.buildChannelDialogToken(chatId, 'suggest', threadId),
+      token: this.buildEntityDialogToken('channel', chatId, 'suggest', threadId, matchedBotToken),
     };
   }
 
@@ -428,16 +438,23 @@ export class AdminDialogLinkHelper {
     chatId: string,
     type: ChannelDialogType,
     threadId?: string | null,
+    botToken = this.getCurrentBotToken(),
   ): string {
     const normalizedThreadId = threadId?.trim() ?? '';
     if (!normalizedThreadId) {
-      return this.buildEntityDialogTokenSignature(entityType, chatId, type);
+      return this.buildEntityDialogTokenSignature(entityType, chatId, type, null, botToken);
     }
 
     const payload = JSON.stringify({
       v: 1,
       d: normalizedThreadId,
-      s: this.buildEntityDialogTokenSignature(entityType, chatId, type, normalizedThreadId),
+      s: this.buildEntityDialogTokenSignature(
+        entityType,
+        chatId,
+        type,
+        normalizedThreadId,
+        botToken,
+      ),
     } satisfies ChannelDialogTokenPayload);
     const encoded = Buffer.from(payload, 'utf8').toString('base64url');
     return `${CHANNEL_DIALOG_TOKEN_PREFIX}${encoded}`;
@@ -521,17 +538,23 @@ export class AdminDialogLinkHelper {
     return threadId;
   }
 
-  private isValidChannelSuggestionStartSignature(
+  private resolveChannelSuggestionStartBotToken(
     providedHex: string,
     chatId: string,
     threadId: string,
-  ): boolean {
-    return this.options.maxBotTokenValidationSecrets.some((botToken) =>
-      this.isValidChannelDialogSignature(
-        providedHex,
-        this.buildChannelSuggestionStartSignature(chatId, threadId, botToken),
-      ),
-    );
+  ): string | null {
+    for (const botToken of this.options.maxBotTokenValidationSecrets) {
+      if (
+        this.isValidChannelDialogSignature(
+          providedHex,
+          this.buildChannelSuggestionStartSignature(chatId, threadId, botToken),
+        )
+      ) {
+        return botToken;
+      }
+    }
+
+    return null;
   }
 
   private isValidEntityDialogTokenSignature(

@@ -8611,6 +8611,7 @@ export class AdminService implements OnModuleDestroy {
       const startPayload = this.dialogLinkHelper.buildChannelSuggestionStartPayload(
         chatId,
         threadId,
+        botId,
       );
       const botStartUrl = this.dialogLinkHelper.buildBotStartUrl(startPayload, botId);
       if (botStartUrl) {
@@ -12453,6 +12454,7 @@ export class AdminService implements OnModuleDestroy {
     const suggestPayload = this.dialogLinkHelper.buildChannelSuggestionStartPayload(
       params.chatId,
       params.threadId,
+      params.botId,
     );
     const suggestLaunchUrl = this.dialogLinkHelper.buildChannelDialogLaunchUrl(
       params.chatId,
@@ -17456,8 +17458,12 @@ export class AdminService implements OnModuleDestroy {
     return `Канал ${chatId}`;
   }
 
-  private buildChannelSuggestionStartPayload(chatId: string, threadId: string): string {
-    return this.dialogLinkHelper.buildChannelSuggestionStartPayload(chatId, threadId);
+  private buildChannelSuggestionStartPayload(
+    chatId: string,
+    threadId: string,
+    botId?: string | null,
+  ): string {
+    return this.dialogLinkHelper.buildChannelSuggestionStartPayload(chatId, threadId, botId);
   }
 
   private buildEntityDialogToken(

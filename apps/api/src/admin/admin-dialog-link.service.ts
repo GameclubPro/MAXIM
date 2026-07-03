@@ -43,8 +43,12 @@ export class AdminDialogLinkService {
     });
   }
 
-  buildChannelSuggestionStartPayload(chatId: string, threadId: string): string {
-    return this.helper.buildChannelSuggestionStartPayload(chatId, threadId);
+  buildChannelSuggestionStartPayload(
+    chatId: string,
+    threadId: string,
+    botId?: string | null,
+  ): string {
+    return this.helper.buildChannelSuggestionStartPayload(chatId, threadId, botId);
   }
 
   parseChannelSuggestionStartPayload(

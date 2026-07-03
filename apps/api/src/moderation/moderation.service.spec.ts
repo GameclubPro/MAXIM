@@ -1,4 +1,4 @@
-import type { MaxUpdate } from '@maxim/contracts';
+import { REQUIRED_SUBSCRIPTION_MAX_CHANNELS, type MaxUpdate } from '@maxim/contracts';
 import { USER_AGREEMENT_SHORT_NOTICE } from '../common/user-agreement-notice';
 import { ChatEntityType, EventType, Operator, SanctionAction } from '../prisma/prisma-client';
 import { buildActiveMuteStateKey } from './moderation-state.util';
@@ -18186,6 +18186,59 @@ describe('ModerationService', () => {
           ],
         }),
       );
+    });
+
+    it('caps required subscription targets read from persisted settings to the contract limit', async () => {
+      const requiredSubscriptionChannelIds = Array.from(
+        { length: REQUIRED_SUBSCRIPTION_MAX_CHANNELS + 2 },
+        (_, index) => `channel-${index + 1}`,
+      );
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds,
+      });
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const maxClient = {
+        hasChatMember: jest.fn().mockResolvedValue(true),
+        getChatSnapshot: jest.fn().mockImplementation(async (channelId: string) => ({
+          title: `Нужный канал ${channelId}`,
+          link: `https://max.ru/channels/${channelId}`,
+          participantsCount: 100,
+          entityType: 'channel',
+        })),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+      );
+
+      await service.handleUpdate(createUpdate());
+
+      const expectedChannelIds = requiredSubscriptionChannelIds.slice(
+        0,
+        REQUIRED_SUBSCRIPTION_MAX_CHANNELS,
+      );
+      expect(maxClient.getChatSnapshot.mock.calls.map((call) => call[0])).toEqual(
+        expectedChannelIds,
+      );
+      expect(maxClient.hasChatMember.mock.calls.map((call) => call[0])).toEqual(
+        expectedChannelIds,
+      );
+      expect(maxClient.hasChatMember).toHaveBeenCalledTimes(REQUIRED_SUBSCRIPTION_MAX_CHANNELS);
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
+      expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
     });
 
     it('confirms stale missing required subscription cache with a fresh lookup before deleting', async () => {
