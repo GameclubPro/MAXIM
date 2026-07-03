@@ -59,6 +59,7 @@ import {
   clearChannelBroadcastHandoffState,
   createChannelManagedAutopostRule,
   deleteChannelManagedAutopostRule,
+  getChannelBroadcastComposerClientResetState,
   getChannelBroadcastHandoffState,
   getChannelManagedAutopostRule,
   getChannelManagedAutopostRules,
@@ -106,8 +107,10 @@ import {
   type BroadcastTimingMode,
 } from '../lib/broadcast-schedule';
 import {
-  loadBroadcastComposerDraft,
+  clearBroadcastComposerDraft,
+  hasAppliedBroadcastComposerReset,
   loadBroadcastComposerDraftAsync,
+  markBroadcastComposerResetApplied,
   saveBroadcastComposerDraft,
   type BroadcastComposerDraft,
 } from '../lib/broadcast-composer-draft';
@@ -993,6 +996,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const [broadcastNowMs, setBroadcastNowMs] = useState(() => Date.now());
   const appliedBroadcastHandoffSignatureRef = useRef<string | null>(null);
   const broadcastDraftRestoreEpochRef = useRef(0);
+  const [broadcastDraftRestoreReady, setBroadcastDraftRestoreReady] = useState(false);
   const searchParams = new URLSearchParams(location.search);
   const focusSection = searchParams.get('focus');
   const handoffRequested = searchParams.get('handoff') === '1';
@@ -1030,6 +1034,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       focusSection === 'broadcast' &&
       handoffRequested,
     refetchOnWindowFocus: false,
+  });
+  const broadcastComposerClientResetQuery = useQuery({
+    queryKey: queryKeys.channelBroadcastComposerClientReset(chatId),
+    queryFn: ({ signal }) =>
+      getChannelBroadcastComposerClientResetState(api, chatId ?? '', { signal }),
+    enabled: Boolean(chatId),
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
   });
 
   useEffect(() => {
@@ -1230,14 +1242,49 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setPendingBroadcastPublishReview(null);
     resetBroadcastPlanner();
     const restoreEpoch = ++broadcastDraftRestoreEpochRef.current;
+    setBroadcastDraftRestoreReady(false);
+
+    if (!chatId || !broadcastComposerClientResetQuery.isSuccess) {
+      return;
+    }
+
+    const resetAt = broadcastComposerClientResetQuery.data?.resetAt;
+    const shouldApplyReset =
+      Boolean(resetAt) && !hasAppliedBroadcastComposerReset('channel', chatId, resetAt);
     let cancelled = false;
+    const markRestoreReady = () => {
+      if (cancelled || restoreEpoch !== broadcastDraftRestoreEpochRef.current) {
+        return;
+      }
+
+      setBroadcastDraftRestoreReady(true);
+    };
+
+    if (shouldApplyReset && resetAt) {
+      void (async () => {
+        await clearBroadcastComposerDraft('channel', chatId);
+        if (cancelled || restoreEpoch !== broadcastDraftRestoreEpochRef.current) {
+          return;
+        }
+
+        markBroadcastComposerResetApplied('channel', chatId, resetAt);
+        appliedBroadcastHandoffSignatureRef.current = null;
+        resetBroadcastComposer();
+        void queryClient.invalidateQueries({ queryKey: queryKeys.channelBroadcastHandoff(chatId) });
+        markRestoreReady();
+      })();
+
+      return () => {
+        cancelled = true;
+      };
+    }
+
     const applySavedBroadcastDraft = (savedBroadcastDraft: BroadcastComposerDraft) => {
       if (cancelled || restoreEpoch !== broadcastDraftRestoreEpochRef.current) {
         return;
       }
       setBroadcastText(savedBroadcastDraft.text);
       setBroadcastButtons(savedBroadcastDraft.buttons);
-      applyBroadcastImages(resolveBroadcastImagesFromLegacyFields(savedBroadcastDraft));
       setBroadcastTimingMode(savedBroadcastDraft.timingMode);
       setBroadcastCycleDraft(normalizeBroadcastCycleDraft(savedBroadcastDraft.cycle));
       setBroadcastScheduledSlots(sortAndUniqueBroadcastSlots(savedBroadcastDraft.scheduledSlots));
@@ -1245,26 +1292,30 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         savedBroadcastDraft.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
       );
     };
-    const savedBroadcastDraft = chatId ? loadBroadcastComposerDraft('channel', chatId) : null;
-    if (savedBroadcastDraft) {
-      applySavedBroadcastDraft(savedBroadcastDraft);
-    }
-
-    if (chatId) {
-      void loadBroadcastComposerDraftAsync('channel', chatId).then((draft) => {
-        if (draft) {
-          applySavedBroadcastDraft(draft);
-        }
-      });
-    }
+    void loadBroadcastComposerDraftAsync('channel', chatId).then((draft) => {
+      if (draft) {
+        applySavedBroadcastDraft(draft);
+      }
+      markRestoreReady();
+    });
 
     return () => {
       cancelled = true;
     };
-  }, [chatId]);
+  }, [
+    broadcastComposerClientResetQuery.data?.resetAt,
+    broadcastComposerClientResetQuery.isSuccess,
+    chatId,
+    queryClient,
+  ]);
 
   useEffect(() => {
-    if (!chatId || editingManagedBroadcast || editingManagedAutopostRule) {
+    if (
+      !chatId ||
+      editingManagedBroadcast ||
+      editingManagedAutopostRule ||
+      !broadcastDraftRestoreReady
+    ) {
       return;
     }
 
@@ -1289,6 +1340,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   }, [
     broadcastButtons,
     broadcastCycleDraft,
+    broadcastDraftRestoreReady,
     broadcastImageBase64,
     broadcastImageEnabled,
     broadcastImageFileName,

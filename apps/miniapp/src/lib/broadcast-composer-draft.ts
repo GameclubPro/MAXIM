@@ -37,7 +37,7 @@ export type BroadcastComposerDraft = {
 
 const STORAGE_VERSION = 1;
 const LOCAL_STORAGE_IMAGE_BASE64_LIMIT = 250_000;
-const RESTORABLE_IMAGE_BASE64_LIMIT = 8_000_000;
+const RESTORABLE_IMAGE_BASE64_LIMIT = 0;
 const DRAFT_DB_NAME = 'maxim-broadcast-composer';
 const DRAFT_DB_VERSION = 1;
 const DRAFT_STORE_NAME = 'drafts';
@@ -115,33 +115,6 @@ function readButtons(value: unknown): BroadcastLinkButton[] {
     .filter((item): item is BroadcastLinkButton => item !== null);
 }
 
-function readImages(value: unknown): BroadcastImage[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  const images = value
-    .map((item): BroadcastImage | null => {
-      if (!isObject(item)) {
-        return null;
-      }
-
-      const base64 = readString(item.base64).trim();
-      if (!base64) {
-        return null;
-      }
-
-      return {
-        base64,
-        mimeType: readString(item.mimeType).trim(),
-        fileName: readString(item.fileName).trim(),
-      };
-    })
-    .filter((item): item is BroadcastImage => item !== null);
-
-  return normalizeComposerBroadcastImages(images);
-}
-
 function stripBroadcastComposerDraftImages(draft: BroadcastComposerDraft): BroadcastComposerDraft {
   return {
     ...draft,
@@ -153,52 +126,23 @@ function stripBroadcastComposerDraftImages(draft: BroadcastComposerDraft): Broad
   };
 }
 
-function normalizeRestorableImages(images: BroadcastImage[]): BroadcastImage[] {
-  const normalizedImages = normalizeComposerBroadcastImages(images);
-  return getBroadcastImagesBase64Length(normalizedImages) > RESTORABLE_IMAGE_BASE64_LIMIT
-    ? []
-    : normalizedImages;
-}
-
-function resolveDraftImages(draft: Record<string, unknown>): BroadcastImage[] {
-  const images = normalizeRestorableImages(readImages(draft.images));
-  if (images.length > 0) {
-    return images;
-  }
-
-  const imageBase64 = readString(draft.imageBase64).trim();
-  if (!imageBase64) {
-    return [];
-  }
-
-  return normalizeRestorableImages([
-    {
-      base64: imageBase64,
-      mimeType: readString(draft.imageMimeType).trim(),
-      fileName: readString(draft.imageFileName).trim(),
-    },
-  ]);
-}
-
 function parseBroadcastComposerDraftEnvelope(value: unknown): BroadcastComposerDraft | null {
   if (!isObject(value) || value.version !== STORAGE_VERSION || !isObject(value.draft)) {
     return null;
   }
 
   const draft = value.draft;
-  const images = resolveDraftImages(draft);
-  const firstImage = images[0];
   return {
     text: readString(draft.text),
     targetMode: readTargetMode(draft.targetMode, 'current'),
     targetChatIds: readStringArray(draft.targetChatIds),
     lastScopedTargetMode: readScopedMode(draft.lastScopedTargetMode, 'current'),
     buttons: readButtons(draft.buttons),
-    imageEnabled: images.length > 0,
-    imageBase64: firstImage?.base64 ?? '',
-    imageMimeType: firstImage?.mimeType ?? '',
-    imageFileName: firstImage?.fileName ?? '',
-    images,
+    imageEnabled: false,
+    imageBase64: '',
+    imageMimeType: '',
+    imageFileName: '',
+    images: [],
     timingMode: readTimingMode(draft.timingMode, draft.quickPreset),
     scheduledSlots: readStringArray(draft.scheduledSlots),
     scheduleTimezone: readString(draft.scheduleTimezone),
@@ -432,6 +376,11 @@ export function saveBroadcastComposerDraft(
       draft,
       RESTORABLE_IMAGE_BASE64_LIMIT,
     );
+    if (isBroadcastComposerDraftEmpty(indexedDraft)) {
+      void clearBroadcastComposerDraft(entityType, entityId);
+      return;
+    }
+
     const localDraft = prepareBroadcastComposerDraftForStorage(
       draft,
       LOCAL_STORAGE_IMAGE_BASE64_LIMIT,

@@ -59,6 +59,8 @@ export const queryKeys = {
     ['channel-settings-screen', chatId] as const,
   channelBroadcastHandoff: (chatId: string | null | undefined) =>
     ['channel-broadcast-handoff', chatId] as const,
+  channelBroadcastComposerClientReset: (chatId: string | null | undefined) =>
+    ['channel-broadcast-composer-client-reset', chatId] as const,
   channelManagedBroadcastCalendar: (
     chatId: string | null | undefined,
     ...scope: readonly unknown[]

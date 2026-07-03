@@ -55,6 +55,23 @@ import {
 import type { BroadcastHandoffPayload, SendBroadcastPayload } from './shared-types';
 import type { ApiTransport } from './transport';
 
+export type ChannelBroadcastComposerClientResetState = {
+  resetAt: string | null;
+};
+
+function parseChannelBroadcastComposerClientResetState(
+  response: unknown,
+): ChannelBroadcastComposerClientResetState {
+  if (!response || typeof response !== 'object' || Array.isArray(response)) {
+    return { resetAt: null };
+  }
+
+  const resetAt = (response as Record<string, unknown>).resetAt;
+  return {
+    resetAt: typeof resetAt === 'string' && resetAt.trim().length > 0 ? resetAt.trim() : null,
+  };
+}
+
 function createBroadcastRequestId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID().replace(/-/gu, '');
@@ -186,6 +203,17 @@ export async function getChannelBroadcastHandoffState(
 ): Promise<BroadcastHandoffState> {
   const response = await api.request(`/channels/${chatId}/broadcast/handoff`);
   return broadcastHandoffStateSchema.parse(response);
+}
+
+export async function getChannelBroadcastComposerClientResetState(
+  api: ApiTransport,
+  chatId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<ChannelBroadcastComposerClientResetState> {
+  const response = await api.request(`/channels/${chatId}/broadcast/client-reset`, {
+    signal: options.signal,
+  });
+  return parseChannelBroadcastComposerClientResetState(response);
 }
 
 export async function clearChannelBroadcastHandoffState(

@@ -158,7 +158,6 @@ import {
 import {
   clearBroadcastComposerDraft,
   hasAppliedBroadcastComposerReset,
-  loadBroadcastComposerDraft,
   loadBroadcastComposerDraftAsync,
   markBroadcastComposerResetApplied,
   saveBroadcastComposerDraft,
@@ -566,12 +565,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const isLinksKeyboardOpen = useKeyboardOpen(120, expandedSections.links);
   const appliedBroadcastHandoffSignatureRef = useRef<string | null>(null);
   const broadcastDraftRestoreEpochRef = useRef(0);
+  const [broadcastDraftRestoreReady, setBroadcastDraftRestoreReady] = useState(false);
 
   const routeChatTitle = getRouteChatTitle(location.state);
   const routeChatAvatarUrl = getRouteChatAvatarUrl(location.state);
   const searchParams = new URLSearchParams(location.search);
   const focusSection = searchParams.get('focus');
   const handoffRequested = searchParams.get('handoff') === '1';
+  const broadcastComposerClientResetQuery = useQuery({
+    queryKey: queryKeys.chatBroadcastComposerClientReset(chatId),
+    queryFn: ({ signal }) => getBroadcastComposerClientResetState(api, chatId ?? '', { signal }),
+    enabled: Boolean(chatId),
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+  });
 
   useEffect(() => {
     if (
@@ -660,11 +667,54 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setEditingManagedAutopostRule(null);
     setMailingWorkspaceView('compose');
     const restoreEpoch = ++broadcastDraftRestoreEpochRef.current;
+    setBroadcastDraftRestoreReady(false);
+    setDuplicateWindowInputValue('');
+    setPendingSpeechStyle(null);
+    setRequiredSubscriptionChannelsRefreshRequest({
+      nonce: 0,
+      behavior: 'default',
+    });
+
+    if (!chatId || !broadcastComposerClientResetQuery.isSuccess) {
+      return;
+    }
+
+    const resetAt = broadcastComposerClientResetQuery.data?.resetAt;
+    const shouldApplyReset =
+      Boolean(resetAt) && !hasAppliedBroadcastComposerReset('chat', chatId, resetAt);
     let cancelled = false;
+    const markRestoreReady = () => {
+      if (cancelled || restoreEpoch !== broadcastDraftRestoreEpochRef.current) {
+        return;
+      }
+
+      setBroadcastDraftRestoreReady(true);
+    };
+
+    if (shouldApplyReset && resetAt) {
+      void (async () => {
+        await clearBroadcastComposerDraft('chat', chatId);
+        if (cancelled || restoreEpoch !== broadcastDraftRestoreEpochRef.current) {
+          return;
+        }
+
+        markBroadcastComposerResetApplied('chat', chatId, resetAt);
+        appliedBroadcastHandoffSignatureRef.current = null;
+        resetMailingComposer();
+        void queryClient.invalidateQueries({ queryKey: queryKeys.chatBroadcastHandoff(chatId) });
+        markRestoreReady();
+      })();
+
+      return () => {
+        cancelled = true;
+      };
+    }
+
     const applySavedBroadcastDraft = (savedBroadcastDraft: BroadcastComposerDraft) => {
       if (cancelled || restoreEpoch !== broadcastDraftRestoreEpochRef.current) {
         return;
       }
+
       setMailingTargetMode(savedBroadcastDraft.targetMode);
       setMailingTargetChatIds(
         savedBroadcastDraft.targetChatIds.length > 0
@@ -676,7 +726,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       setMailingLastScopedTargetMode(savedBroadcastDraft.lastScopedTargetMode);
       setMailingText(savedBroadcastDraft.text);
       setMailingButtons(savedBroadcastDraft.buttons);
-      applyMailingImages(resolveBroadcastImagesFromLegacyFields(savedBroadcastDraft));
       setMailingTimingMode(savedBroadcastDraft.timingMode);
       setMailingCycleDraft(normalizeBroadcastCycleDraft(savedBroadcastDraft.cycle));
       setMailingScheduledSlots(sortAndUniqueBroadcastSlots(savedBroadcastDraft.scheduledSlots));
@@ -684,27 +733,23 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         savedBroadcastDraft.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
       );
     };
-    const savedBroadcastDraft = chatId ? loadBroadcastComposerDraft('chat', chatId) : null;
-    if (savedBroadcastDraft) {
-      applySavedBroadcastDraft(savedBroadcastDraft);
-    }
-    if (chatId) {
-      void loadBroadcastComposerDraftAsync('chat', chatId).then((draft) => {
-        if (draft) {
-          applySavedBroadcastDraft(draft);
-        }
-      });
-    }
-    setDuplicateWindowInputValue('');
-    setPendingSpeechStyle(null);
-    setRequiredSubscriptionChannelsRefreshRequest({
-      nonce: 0,
-      behavior: 'default',
+
+    void loadBroadcastComposerDraftAsync('chat', chatId).then((draft) => {
+      if (draft) {
+        applySavedBroadcastDraft(draft);
+      }
+      markRestoreReady();
     });
+
     return () => {
       cancelled = true;
     };
-  }, [chatId]);
+  }, [
+    broadcastComposerClientResetQuery.data?.resetAt,
+    broadcastComposerClientResetQuery.isSuccess,
+    chatId,
+    queryClient,
+  ]);
 
   const settingsScreenQuery = useQuery({
     queryKey: ['settings-screen', chatId],
@@ -728,13 +773,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       focusSection === 'broadcast' &&
       handoffRequested,
     refetchOnWindowFocus: false,
-  });
-  const broadcastComposerClientResetQuery = useQuery({
-    queryKey: queryKeys.chatBroadcastComposerClientReset(chatId),
-    queryFn: ({ signal }) => getBroadcastComposerClientResetState(api, chatId ?? '', { signal }),
-    enabled: Boolean(chatId),
-    staleTime: 30_000,
-    refetchOnWindowFocus: true,
   });
   const meQuery = useQuery({
     queryKey: ['me', chatId ?? null],
@@ -1078,7 +1116,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }, [broadcastHandoffStateQuery.data, chatId, handoffRequested]);
 
   useEffect(() => {
-    if (!chatId || editingManagedBroadcast || editingManagedAutopostRule) {
+    if (
+      !chatId ||
+      editingManagedBroadcast ||
+      editingManagedAutopostRule ||
+      !broadcastDraftRestoreReady
+    ) {
       return;
     }
 
@@ -1101,6 +1144,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     saveBroadcastComposerDraft('chat', chatId, draftToPersist);
   }, [
+    broadcastDraftRestoreReady,
     chatId,
     editingManagedBroadcast,
     editingManagedAutopostRule,
@@ -3093,32 +3137,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingWorkspaceView('compose');
     resetMailingPlanner();
   }
-
-  useEffect(() => {
-    const resetAt = broadcastComposerClientResetQuery.data?.resetAt ?? null;
-    if (!chatId || !resetAt || hasAppliedBroadcastComposerReset('chat', chatId, resetAt)) {
-      return;
-    }
-
-    let cancelled = false;
-    broadcastDraftRestoreEpochRef.current += 1;
-
-    void (async () => {
-      await clearBroadcastComposerDraft('chat', chatId);
-      if (cancelled) {
-        return;
-      }
-
-      markBroadcastComposerResetApplied('chat', chatId, resetAt);
-      appliedBroadcastHandoffSignatureRef.current = null;
-      resetMailingComposer();
-      void queryClient.invalidateQueries({ queryKey: queryKeys.chatBroadcastHandoff(chatId) });
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [broadcastComposerClientResetQuery.data?.resetAt, chatId, queryClient]);
 
   function handleCancelMailingEdit() {
     resetMailingComposer();

@@ -41,6 +41,15 @@ export class PrivateControlController {
     return this.privateControlService.getBroadcastComposerClientResetState(chatId, user, 'chat');
   }
 
+  @Get('channels/:chatId/broadcast/client-reset')
+  getChannelBroadcastClientReset(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.privateControlService.getBroadcastComposerClientResetState(
+      chatId,
+      user,
+      'channel',
+    );
+  }
+
   @Get('channels/:chatId/broadcast/handoff')
   getChannelBroadcastHandoff(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.privateControlService.getBroadcastHandoffState(chatId, user, 'channel');
