@@ -147,6 +147,9 @@
 - Main prod stack: `infra/docker-compose.yml`
 - Split/load-testing stack: `infra/docker-compose.scale.yml`
 - Do not run both stacks at the same time.
+- Keep postgres `shm_size` in compose comfortably above `shared_buffers` (currently `512m` for
+  `shared_buffers=128MB`); reducing it can surface PostgreSQL `53100` shared-memory errors under
+  admin/suggestion queries.
 - The `vps-pull-build-up*.sh` scripts are designed to run on the VPS host. From local machine, invoke them through SSH.
 - If `/var/www/Chat_bot/.env` is missing, restore it from any running API role container before `docker compose exec` or `docker compose run`. Current scripts check role-based containers first and keep `infra-api-1` only as a legacy fallback.
 - If `git pull --ff-only` is blocked by a dirty VPS worktree:
