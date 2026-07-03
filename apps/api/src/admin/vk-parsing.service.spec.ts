@@ -1636,9 +1636,9 @@ describe('VkParsingService', () => {
         sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
       },
     );
-    expect(prisma.vkParsingPost.update).toHaveBeenCalledWith(
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'post-1' },
+        where: expect.objectContaining({ id: 'post-1' }),
         data: expect.objectContaining({
           status: 'PUBLISHED',
           autoPublishedAt: expect.any(Date),
@@ -1728,9 +1728,9 @@ describe('VkParsingService', () => {
       operation: 'send',
       error,
     });
-    expect(prisma.vkParsingPost.update).toHaveBeenCalledWith(
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'post-1' },
+        where: expect.objectContaining({ id: 'post-1' }),
         data: expect.objectContaining({
           status: 'FAILED',
           publishQueuedAt: null,
@@ -2791,9 +2791,9 @@ describe('VkParsingService', () => {
 
     expect(maxClient.uploadVideo).not.toHaveBeenCalled();
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
-    expect(prisma.vkParsingPost.update).toHaveBeenCalledWith(
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'post-1' },
+        where: expect.objectContaining({ id: 'post-1' }),
         data: expect.objectContaining({
           status: 'FAILED',
           lastError: expect.stringContaining('VK вернул не видео.'),
@@ -2860,9 +2860,9 @@ describe('VkParsingService', () => {
     ).rejects.toThrow('MAX API background rate limit exceeded');
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
-    expect(prisma.vkParsingPost.update).toHaveBeenCalledWith(
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'post-1' },
+        where: expect.objectContaining({ id: 'post-1' }),
         data: expect.objectContaining({
           status: 'FAILED',
           lastError: expect.stringContaining('[max.rate_limit]'),
@@ -2870,7 +2870,7 @@ describe('VkParsingService', () => {
         }),
       }),
     );
-    const lastUpdate = prisma.vkParsingPost.update.mock.calls.at(-1)?.[0] as
+    const lastUpdate = prisma.vkParsingPost.updateMany.mock.calls.at(-1)?.[0] as
       | { data?: Record<string, unknown> }
       | undefined;
     expect(lastUpdate?.data).toEqual(
@@ -2942,7 +2942,7 @@ describe('VkParsingService', () => {
       }),
     ).rejects.toThrow('MAX API background rate limit exceeded');
 
-    const lastUpdate = prisma.vkParsingPost.update.mock.calls.at(-1)?.[0] as
+    const lastUpdate = prisma.vkParsingPost.updateMany.mock.calls.at(-1)?.[0] as
       | { data?: Record<string, unknown> }
       | undefined;
     expect(lastUpdate?.data).toEqual(
@@ -2988,9 +2988,9 @@ describe('VkParsingService', () => {
     });
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
-    expect(prisma.vkParsingPost.update).toHaveBeenCalledWith(
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'post-1' },
+        where: expect.objectContaining({ id: 'post-1' }),
         data: expect.objectContaining({
           status: 'SKIPPED',
           skipReason: 'AD',
@@ -3038,9 +3038,9 @@ describe('VkParsingService', () => {
     });
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
-    expect(prisma.vkParsingPost.update).toHaveBeenCalledWith(
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'post-1' },
+        where: expect.objectContaining({ id: 'post-1' }),
         data: expect.objectContaining({
           status: 'SKIPPED',
           skipReason: 'NO_SUPPORTED_CONTENT',
@@ -3132,9 +3132,9 @@ describe('VkParsingService', () => {
         sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
       }),
     );
-    expect(prisma.vkParsingPost.update).toHaveBeenCalledWith(
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'post-1' },
+        where: expect.objectContaining({ id: 'post-1' }),
         data: expect.objectContaining({
           status: 'PUBLISHED',
           autoPublishError: null,
@@ -3814,6 +3814,43 @@ describe('VkParsingService', () => {
     expect(result.messageId).toBe('mid-chat-1');
   });
 
+  it('returns success when a VK post disappears after MAX accepts the publish', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const source = createSource();
+    const post = createPostRow({ source, text: 'Пост после stale-row гонки' });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingPost.updateMany
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 0 });
+    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+      messageId: 'mid-stale',
+      url: 'https://max.ru/channels/channel-1/message/mid-stale',
+    });
+
+    const result = await service.publishPost(
+      'channel-1',
+      'post-1',
+      { userId: '98315271' } as never,
+      {
+        text: 'Пост после stale-row гонки',
+        photoUrls: [],
+        linkUrls: [],
+      },
+    );
+
+    expect(result.messageId).toBe('mid-stale');
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: 'post-1' }),
+        data: expect.objectContaining({
+          status: 'PUBLISHED',
+          publishedMessageId: 'mid-stale',
+        }),
+      }),
+    );
+  });
+
   it('does not publish the same VK post twice', async () => {
     const { service, prisma, maxClient } = createFixture();
     const post = {
@@ -3903,6 +3940,7 @@ describe('VkParsingService', () => {
       lastError: 'Предыдущая попытка остановлена.',
     });
     prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
 
     await service.updateReviewPostDraft('channel-1', 'post-1', { userId: '98315271' } as never, {
       text: 'Черновик после правки',
@@ -3911,8 +3949,12 @@ describe('VkParsingService', () => {
     });
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
-    expect(prisma.vkParsingPost.update).toHaveBeenCalledWith({
-      where: { id: 'post-1' },
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        id: 'post-1',
+        chatId: 'channel-1',
+        source: { publishMode: 'REVIEW' },
+      }),
       data: expect.objectContaining({
         status: 'NEW',
         text: 'Черновик после правки',
@@ -4013,9 +4055,9 @@ describe('VkParsingService', () => {
     ).rejects.toThrow('Фото 1');
     expect(maxClient.uploadImage).not.toHaveBeenCalled();
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
-    expect(prisma.vkParsingPost.update).toHaveBeenCalledWith(
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'post-1' },
+        where: expect.objectContaining({ id: 'post-1' }),
         data: expect.objectContaining({
           status: 'FAILED',
           lastError: expect.stringContaining('Фото 1'),

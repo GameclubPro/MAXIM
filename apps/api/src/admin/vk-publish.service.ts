@@ -344,8 +344,13 @@ export class VkPublishService {
   ): Promise<RetryVkParsingPostResult> {
     const post = await this.findSchedulablePost(chatId, postId);
     const now = new Date();
-    await this.prisma.vkParsingPost.update({
-      where: { id: post.id },
+    const cancelled = await this.prisma.vkParsingPost.updateMany({
+      where: {
+        id: post.id,
+        chatId,
+        status: { notIn: [VK_POST_STATUS_PUBLISHED, VK_POST_STATUS_UNAVAILABLE] },
+        publishLockedAt: null,
+      },
       data: {
         publishQueuedAt: null,
         publishScheduledAt: null,
@@ -356,6 +361,9 @@ export class VkPublishService {
         publishCancelledByUserId: actorUserId,
       },
     });
+    if (cancelled.count === 0) {
+      throw new BadRequestException('Этот VK-пост уже нельзя отменить.');
+    }
     await this.writeAuditLog(chatId, actorUserId, 'VK_PARSING_CANCEL_POST', {
       postId,
       sourceId: post.sourceId,
@@ -851,22 +859,47 @@ export class VkPublishService {
           botId,
         });
       }
-      const updated = await this.prisma.vkParsingPost.update({
-        where: { id: post.id },
+      const publishedAtMax = new Date();
+      const publishedContentHash =
+        post.contentHash ||
+        computeVkParsingPostContentHash({
+          text: post.text,
+          photoUrls: storedPhotoUrls,
+          videoUrls: storedVideoUrls,
+          linkUrls: storedLinkUrls,
+        });
+      const publishedPost = {
+        ...post,
+        status: VK_POST_STATUS_PUBLISHED,
+        publishedContentHash,
+        publishedMessageId: result.messageId,
+        publishedUrl: result.url,
+        publishedAtMax,
+        autoPublishedAt: params.auto ? publishedAtMax : post.autoPublishedAt,
+        autoPublishError: null,
+        publishQueuedAt: null,
+        publishScheduledAt: null,
+        publishCancelledAt: null,
+        publishCancelledByUserId: null,
+        publishLockedAt: null,
+        publishIdempotencyKey: null,
+        publishReason: null,
+        skippedAt: null,
+        skipReason: null,
+        lastError: null,
+      };
+      const updated = await this.prisma.vkParsingPost.updateMany({
+        where: {
+          id: post.id,
+          status: { notIn: [VK_POST_STATUS_PUBLISHED, VK_POST_STATUS_UNAVAILABLE] },
+        },
         data: {
           status: VK_POST_STATUS_PUBLISHED,
-          publishedContentHash:
-            post.contentHash ||
-            computeVkParsingPostContentHash({
-              text: post.text,
-              photoUrls: storedPhotoUrls,
-              videoUrls: storedVideoUrls,
-              linkUrls: storedLinkUrls,
-            }),
+          publishedContentHash,
           publishedMessageId: result.messageId,
           publishedUrl: result.url,
-          publishedAtMax: new Date(),
-          autoPublishedAt: params.auto ? new Date() : post.autoPublishedAt,
+          publishedAtMax,
+          autoPublishedAt: publishedPost.autoPublishedAt,
           autoPublishError: null,
           publishQueuedAt: null,
           publishScheduledAt: null,
@@ -879,17 +912,28 @@ export class VkPublishService {
           skipReason: null,
           lastError: null,
         },
-        include: { source: true },
       });
+      if (updated.count === 0) {
+        this.logger.warn(
+          {
+            postId: post.id,
+            chatId: post.chatId,
+            messageId: result.messageId,
+          },
+          'VK parsing post disappeared before publish persistence',
+        );
+      }
       if (params.auto) {
         await this.prisma.vkParsingSource.updateMany({
           where: { id: post.sourceId },
-          data: { lastAutoPublishedAt: updated.autoPublishedAt ?? updated.publishedAtMax },
+          data: {
+            lastAutoPublishedAt: publishedPost.autoPublishedAt ?? publishedPost.publishedAtMax,
+          },
         });
       }
 
       return {
-        post: this.feedService.mapPost(updated),
+        post: this.feedService.mapPost(publishedPost),
         messageId: result.messageId,
         url: result.url,
       };
@@ -905,8 +949,11 @@ export class VkPublishService {
           operation: 'send',
           error,
         });
-      await this.prisma.vkParsingPost.update({
-        where: { id: post.id },
+      const failed = await this.prisma.vkParsingPost.updateMany({
+        where: {
+          id: post.id,
+          status: { notIn: [VK_POST_STATUS_PUBLISHED, VK_POST_STATUS_UNAVAILABLE] },
+        },
         data: {
           status: VK_POST_STATUS_FAILED,
           publishLockedAt: null,
@@ -930,6 +977,12 @@ export class VkPublishService {
             : {}),
         },
       });
+      if (failed.count === 0) {
+        this.logger.warn(
+          { postId: post.id, chatId: post.chatId, err: error },
+          'VK parsing post disappeared before publish failure persistence',
+        );
+      }
       throw error;
     }
   }
@@ -1540,8 +1593,11 @@ export class VkPublishService {
   ): Promise<void> {
     const message = formatVkParsingClassifiedErrorMessage(error);
     const shouldClearQueue = !error.retryable || options.finalAttempt;
-    await this.prisma.vkParsingPost.update({
-      where: { id: post.id },
+    const updated = await this.prisma.vkParsingPost.updateMany({
+      where: {
+        id: post.id,
+        status: { notIn: [VK_POST_STATUS_PUBLISHED, VK_POST_STATUS_UNAVAILABLE] },
+      },
       data: {
         status: VK_POST_STATUS_FAILED,
         lastError: message,
@@ -1557,6 +1613,12 @@ export class VkPublishService {
           : {}),
       },
     });
+    if (updated.count === 0) {
+      this.logger.warn(
+        { postId: post.id, errorClass: error.code },
+        'VK parsing queued post disappeared before failure persistence',
+      );
+    }
   }
 
   private isFinalPublishAttempt(params: { attemptsMade?: number; maxAttempts?: number }): boolean {
@@ -2286,8 +2348,11 @@ export class VkPublishService {
   }
 
   private async markPostSkipped(postId: string, reason: VkParsingSkipReason): Promise<void> {
-    await this.prisma.vkParsingPost.update({
-      where: { id: postId },
+    const updated = await this.prisma.vkParsingPost.updateMany({
+      where: {
+        id: postId,
+        status: { notIn: [VK_POST_STATUS_PUBLISHED, VK_POST_STATUS_UNAVAILABLE] },
+      },
       data: {
         status: VK_POST_STATUS_SKIPPED,
         skippedAt: new Date(),
@@ -2301,6 +2366,12 @@ export class VkPublishService {
         publishReason: null,
       },
     });
+    if (updated.count === 0) {
+      this.logger.warn(
+        { postId, reason },
+        'VK parsing post disappeared before skip persistence',
+      );
+    }
   }
 
   private assertSelectedUrls(selected: string[], stored: string[], label: string): string[] {

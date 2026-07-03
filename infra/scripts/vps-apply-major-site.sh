@@ -47,13 +47,15 @@ ssh "$HOST" "\
   rm -rf '${REMOTE_SITE_TMP}' '${REMOTE_CONF_TMP}'"
 
 echo "Verifying major-maksimov.ru root..."
-curl -fsS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/ | grep -i '^HTTP/2 200'
+curl -fsS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/ | grep -Ei '^HTTP/[0-9.]+ 200'
 curl -fsS --max-time 15 https://major-maksimov.ru/ | grep -F 'Бот-модератор для чатов MAX' >/dev/null
 
 echo "Verifying major-maksimov.ru app route..."
 curl -fsS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/app/ | grep -Ei '^HTTP/[0-9.]+ 200'
 curl -fsS --max-time 15 https://major-maksimov.ru/app/ | grep -F 'https://major-maksimov.ru/app/' >/dev/null
 curl -fsS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/ios-canary/ping.txt | grep -Ei '^HTTP/[0-9.]+ 200'
+curl -fsS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/health/live | grep -i '^x-maxim-ingress: webhook'
+curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/safety-desk/queue | grep -i '^x-maxim-ingress: admin'
 
 echo "Verifying app.major-maksimov.ru canonical redirect..."
 curl -fsS --max-time 15 -D - -o /dev/null https://app.major-maksimov.ru/app/ | grep -i '^location: https://major-maksimov.ru/app/'

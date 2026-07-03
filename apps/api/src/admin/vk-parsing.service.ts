@@ -232,8 +232,13 @@ export class VkParsingService {
     const photoUrls = this.assertSelectedUrls(parsed.data.photoUrls, storedPhotoUrls, 'фото');
     const linkUrls = this.assertSelectedUrls(parsed.data.linkUrls, storedLinkUrls, 'ссылку');
 
-    await this.prisma.vkParsingPost.update({
-      where: { id: post.id },
+    const updated = await this.prisma.vkParsingPost.updateMany({
+      where: {
+        id: post.id,
+        chatId,
+        status: { notIn: ['PUBLISHED', 'UNAVAILABLE', 'SKIPPED'] },
+        source: { publishMode: 'REVIEW' },
+      },
       data: {
         status: 'NEW',
         text: parsed.data.text,
@@ -248,6 +253,9 @@ export class VkParsingService {
         autoPublishError: null,
       },
     });
+    if (updated.count === 0) {
+      throw new NotFoundException('Пост на модерации уже обработан или недоступен.');
+    }
 
     return this.feedService.buildFeed(chatId, VK_PARSING_AVAILABLE_CAPABILITY);
   }

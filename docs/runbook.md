@@ -6,8 +6,9 @@
 2. Set real values for all MAX and security secrets.
 3. `docker compose -f infra/docker-compose.yml up -d --build`
 4. `docker compose -f infra/docker-compose.yml exec -T api npm run prisma:migrate:deploy --workspace @maxim/api`
-5. Register MAX webhook URL:
-   `https://maxim.play-team.ru/api/webhook/max/id613070470872_9_bot/<MAX_WEBHOOK_SECRET_PATH>`
+5. Let the ingress reconciler create MAX webhook subscriptions from `MAX_WEBHOOK_BASE_URL`.
+   For the current production host the fallback manual URL is
+   `https://major-maksimov.ru/api/webhook/max/<bot-id>/<MAX_WEBHOOK_SECRET_PATH>`.
 
 ## Health checks
 

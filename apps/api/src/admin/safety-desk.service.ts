@@ -136,8 +136,8 @@ export class SafetyDeskService {
     }
     const post = await this.findReviewPostOrThrow(itemId, { includeCancelled: false });
     const now = new Date();
-    await this.prisma.vkParsingPost.update({
-      where: { id: post.id },
+    const updated = await this.prisma.vkParsingPost.updateMany({
+      where: this.buildReviewPostWhere(post.id, { includeCancelled: false }),
       data: {
         publishQueuedAt: null,
         publishScheduledAt: null,
@@ -148,6 +148,9 @@ export class SafetyDeskService {
         publishReason: null,
       },
     });
+    if (updated.count === 0) {
+      throw new NotFoundException('Материал проверки уже обработан или недоступен.');
+    }
     await this.writeAuditLog(post.chatId, actorUserId, 'SAFETY_DESK_REJECT', {
       postId: post.id,
       sourceId: post.sourceId,
@@ -167,8 +170,8 @@ export class SafetyDeskService {
     actorUserId: string | null,
   ): Promise<SafetyDeskDecisionResponse> {
     const post = await this.findReviewPostOrThrow(itemId, { includeCancelled: true });
-    const updated = await this.prisma.vkParsingPost.update({
-      where: { id: post.id },
+    const updated = await this.prisma.vkParsingPost.updateMany({
+      where: this.buildReviewPostWhere(post.id, { includeCancelled: true }),
       data: {
         status: post.status === VK_POST_STATUS_FAILED ? VK_POST_STATUS_NEW : post.status,
         publishCancelledAt: null,
@@ -179,15 +182,15 @@ export class SafetyDeskService {
         lastError: null,
         autoPublishError: null,
       },
-      include: {
-        chat: { select: { title: true, entityType: true, vkParsingSettings: true } },
-        source: true,
-      },
     });
-    const item = this.mapReviewPost(updated);
-    await this.writeAuditLog(updated.chatId, actorUserId, 'SAFETY_DESK_RECHECK', {
-      postId: updated.id,
-      sourceId: updated.sourceId,
+    if (updated.count === 0) {
+      throw new NotFoundException('Материал проверки уже обработан или недоступен.');
+    }
+    const refreshed = await this.findReviewPostOrThrow(itemId, { includeCancelled: true });
+    const item = this.mapReviewPost(refreshed);
+    await this.writeAuditLog(refreshed.chatId, actorUserId, 'SAFETY_DESK_RECHECK', {
+      postId: refreshed.id,
+      sourceId: refreshed.sourceId,
       itemTitle: item.title,
     });
 
@@ -233,19 +236,7 @@ export class SafetyDeskService {
     options: { includeCancelled: boolean },
   ): Promise<ReviewPostRow> {
     const post = await this.prisma.vkParsingPost.findFirst({
-      where: {
-        id: itemId,
-        status: {
-          notIn: [VK_POST_STATUS_PUBLISHED, VK_POST_STATUS_UNAVAILABLE, VK_POST_STATUS_SKIPPED],
-        },
-        skippedAt: null,
-        unavailableAt: null,
-        ...(options.includeCancelled ? {} : { publishCancelledAt: null }),
-        source: {
-          status: VK_SOURCE_STATUS_ACTIVE,
-          publishMode: VK_SOURCE_PUBLISH_MODE_REVIEW,
-        },
-      },
+      where: this.buildReviewPostWhere(itemId, options),
       include: {
         chat: { select: { title: true, entityType: true, vkParsingSettings: true } },
         source: true,
@@ -257,6 +248,25 @@ export class SafetyDeskService {
     }
 
     return post;
+  }
+
+  private buildReviewPostWhere(
+    itemId: string,
+    options: { includeCancelled: boolean },
+  ): Prisma.VkParsingPostWhereInput {
+    return {
+      id: itemId,
+      status: {
+        notIn: [VK_POST_STATUS_PUBLISHED, VK_POST_STATUS_UNAVAILABLE, VK_POST_STATUS_SKIPPED],
+      },
+      skippedAt: null,
+      unavailableAt: null,
+      ...(options.includeCancelled ? {} : { publishCancelledAt: null }),
+      source: {
+        status: VK_SOURCE_STATUS_ACTIVE,
+        publishMode: VK_SOURCE_PUBLISH_MODE_REVIEW,
+      },
+    };
   }
 
   private async loadAuditEntries(): Promise<SafetyDeskAuditEntry[]> {

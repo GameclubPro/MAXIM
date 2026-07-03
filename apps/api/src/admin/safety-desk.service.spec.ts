@@ -69,6 +69,7 @@ function createFixture() {
       findMany: jest.fn().mockResolvedValue([]),
       findFirst: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     auditLog: {
       count: jest.fn().mockResolvedValue(0),
@@ -305,15 +306,19 @@ describe('SafetyDeskService', () => {
   it('rejects a review item without sending anything to MAX', async () => {
     const { prisma, service, vkPublishService } = createFixture();
     prisma.vkParsingPost.findFirst.mockResolvedValue(createReviewPost());
-    prisma.vkParsingPost.update.mockResolvedValue(
-      createReviewPost({ publishCancelledAt: new Date() }),
-    );
 
     const result = await service.rejectItem('post-1', 'maxim', {});
 
     expect(vkPublishService.publishPost).not.toHaveBeenCalled();
-    expect(prisma.vkParsingPost.update).toHaveBeenCalledWith({
-      where: { id: 'post-1' },
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        id: 'post-1',
+        publishCancelledAt: null,
+        source: {
+          status: 'ACTIVE',
+          publishMode: 'REVIEW',
+        },
+      }),
       data: expect.objectContaining({
         publishCancelledAt: expect.any(Date),
         publishCancelledByUserId: 'maxim',
@@ -321,5 +326,29 @@ describe('SafetyDeskService', () => {
       }),
     });
     expect(result.message).toContain('ничего не отправлено');
+  });
+
+  it('treats stale reject decisions as not found without audit side effects', async () => {
+    const { prisma, service } = createFixture();
+    prisma.vkParsingPost.findFirst.mockResolvedValue(createReviewPost());
+    prisma.vkParsingPost.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    await expect(service.rejectItem('post-1', 'maxim', {})).rejects.toThrow(
+      'Материал проверки уже обработан или недоступен',
+    );
+
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('treats stale recheck decisions as not found without audit side effects', async () => {
+    const { prisma, service } = createFixture();
+    prisma.vkParsingPost.findFirst.mockResolvedValue(createReviewPost({ publishCancelledAt: new Date() }));
+    prisma.vkParsingPost.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    await expect(service.recheckItem('post-1', 'maxim')).rejects.toThrow(
+      'Материал проверки уже обработан или недоступен',
+    );
+
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 });
