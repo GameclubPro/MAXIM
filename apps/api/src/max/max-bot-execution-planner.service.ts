@@ -35,6 +35,11 @@ type PersistedMembership = {
 };
 
 type PermissionsSummary = NonNullable<ManagedEntityAssignedBot['permissionsSummary']>;
+type BotAccessSnapshotRefreshResult = {
+  snapshot: PermissionsSummary | null;
+  accessStateOverride?: ChatBotAccessState;
+  lastErrorCode?: string | null;
+};
 
 const ASSIST_CAPABILITIES_BY_ENTITY: Record<
   ManagedEntityType,
@@ -107,7 +112,8 @@ export class MaxBotExecutionPlannerService {
     if (!targetMembership) {
       throw new BadRequestException('Бот ещё не состоит в этом чате как активный участник.');
     }
-    const targetSnapshot = await this.refreshBotAccessSnapshot(chatId, targetBot.id);
+    const targetAccess = await this.refreshBotAccessSnapshot(chatId, targetBot.id);
+    const targetSnapshot = targetAccess.snapshot;
     await this.prisma.chatBotMembership.update({
       where: {
         chatId_botId: {
@@ -117,10 +123,10 @@ export class MaxBotExecutionPlannerService {
       },
       data: {
         permissionsSnapshot: targetSnapshot ?? Prisma.JsonNull,
-        ...this.toBotAccessStateUpdate(targetSnapshot, 'execution_planner_primary'),
+        ...this.toBotAccessStateUpdate(targetSnapshot, 'execution_planner_primary', targetAccess),
       },
     });
-    if (!targetSnapshot.isAdmin && !targetSnapshot.isOwner) {
+    if (!targetSnapshot?.isAdmin && !targetSnapshot?.isOwner) {
       throw new BadRequestException(
         'Owner-ботом можно назначить только бота с подтверждёнными admin/owner правами.',
       );
@@ -205,9 +211,28 @@ export class MaxBotExecutionPlannerService {
     let nextPermissionsSnapshot: PermissionsSummary | null = this.normalizePermissionsSummary(
       membership.permissionsSnapshot,
     );
+    let nextAccess: BotAccessSnapshotRefreshResult | null = null;
     if (params.enabled) {
-      nextPermissionsSnapshot = await this.refreshBotAccessSnapshot(chatId, botId);
-      if (!nextPermissionsSnapshot.isAdmin && !nextPermissionsSnapshot.isOwner) {
+      nextAccess = await this.refreshBotAccessSnapshot(chatId, botId);
+      nextPermissionsSnapshot = nextAccess.snapshot;
+      if (!nextPermissionsSnapshot?.isAdmin && !nextPermissionsSnapshot?.isOwner) {
+        await this.prisma.chatBotMembership.update({
+          where: {
+            chatId_botId: {
+              chatId,
+              botId,
+            },
+          },
+          data: {
+            capabilities: [],
+            permissionsSnapshot: nextPermissionsSnapshot ?? Prisma.JsonNull,
+            ...this.toBotAccessStateUpdate(
+              nextPermissionsSnapshot,
+              'execution_planner_assist',
+              nextAccess,
+            ),
+          },
+        });
         throw new BadRequestException(
           'Assist-режим можно включить только для бота с admin/owner доступом в этом чате.',
         );
@@ -225,7 +250,11 @@ export class MaxBotExecutionPlannerService {
       data: {
         capabilities: nextCapabilities,
         permissionsSnapshot: nextPermissionsSnapshot ?? Prisma.JsonNull,
-        ...this.toBotAccessStateUpdate(nextPermissionsSnapshot, 'execution_planner_assist'),
+        ...this.toBotAccessStateUpdate(
+          nextPermissionsSnapshot,
+          'execution_planner_assist',
+          nextAccess ?? undefined,
+        ),
       },
     });
 
@@ -257,9 +286,10 @@ export class MaxBotExecutionPlannerService {
         continue;
       }
 
-      const snapshot = await this.refreshBotAccessSnapshot(chatId, bot.id, {
+      const access = await this.refreshBotAccessSnapshot(chatId, bot.id, {
         honorSharedBackoff: true,
       });
+      const snapshot = access.snapshot;
       await this.prisma.chatBotMembership.update({
         where: {
           chatId_botId: {
@@ -269,7 +299,7 @@ export class MaxBotExecutionPlannerService {
         },
         data: {
           permissionsSnapshot: snapshot ?? Prisma.JsonNull,
-          ...this.toBotAccessStateUpdate(snapshot, 'execution_planner_refresh'),
+          ...this.toBotAccessStateUpdate(snapshot, 'execution_planner_refresh', access),
         },
       });
     }
@@ -391,7 +421,8 @@ export class MaxBotExecutionPlannerService {
         continue;
       }
 
-      const snapshot = await this.refreshBotAccessSnapshot(chatId, membership.botId);
+      const access = await this.refreshBotAccessSnapshot(chatId, membership.botId);
+      const snapshot = access.snapshot;
       await this.prisma.chatBotMembership.update({
         where: {
           chatId_botId: {
@@ -401,7 +432,7 @@ export class MaxBotExecutionPlannerService {
         },
         data: {
           permissionsSnapshot: snapshot ?? Prisma.JsonNull,
-          ...this.toBotAccessStateUpdate(snapshot, 'execution_planner_promote'),
+          ...this.toBotAccessStateUpdate(snapshot, 'execution_planner_promote', access),
         },
       });
     }
@@ -653,9 +684,11 @@ export class MaxBotExecutionPlannerService {
     chatId: string,
     botId: string,
     options: { honorSharedBackoff?: boolean } = {},
-  ): Promise<PermissionsSummary> {
+  ): Promise<BotAccessSnapshotRefreshResult> {
     if (await this.isManagedRefreshBackoffActive(options)) {
-      return this.resolveStoredPermissionsSnapshot(chatId, botId);
+      return {
+        snapshot: await this.resolveStoredPermissionsSnapshot(chatId, botId),
+      };
     }
 
     try {
@@ -665,7 +698,9 @@ export class MaxBotExecutionPlannerService {
         timeoutMs: 1_500,
         sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
       });
-      return this.toPermissionsSummary(access);
+      return {
+        snapshot: this.toPermissionsSummary(access),
+      };
     } catch (error: unknown) {
       if (this.isRateLimitPressureError(error)) {
         await this.markManagedRefreshBackoff();
@@ -677,7 +712,25 @@ export class MaxBotExecutionPlannerService {
           },
           'Deferred execution planner access refresh under managed_refresh rate pressure',
         );
-        return this.resolveStoredPermissionsSnapshot(chatId, botId);
+        return {
+          snapshot: await this.resolveStoredPermissionsSnapshot(chatId, botId),
+        };
+      }
+
+      if (this.isTerminalBotAccessError(error)) {
+        this.logger.debug(
+          {
+            chatId,
+            botId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Execution planner access refresh confirmed denied bot access',
+        );
+        return {
+          snapshot: this.toDeniedPermissionsSummary(),
+          accessStateOverride: ChatBotAccessState.DENIED,
+          lastErrorCode: this.resolveBotAccessErrorCode(error),
+        };
       }
 
       this.logger.warn(
@@ -689,7 +742,9 @@ export class MaxBotExecutionPlannerService {
         'Failed to refresh bot access snapshot for execution planner',
       );
 
-      return this.resolveStoredPermissionsSnapshot(chatId, botId);
+      return {
+        snapshot: await this.resolveStoredPermissionsSnapshot(chatId, botId),
+      };
     }
   }
 
@@ -723,27 +778,37 @@ export class MaxBotExecutionPlannerService {
     };
   }
 
+  private toDeniedPermissionsSummary(): PermissionsSummary {
+    return {
+      checkedAt: new Date().toISOString(),
+      isAdmin: false,
+      isOwner: false,
+      permissions: [],
+    };
+  }
+
   private toBotAccessStateUpdate(
     snapshot: PermissionsSummary | null,
     source: string,
+    result?: Pick<BotAccessSnapshotRefreshResult, 'accessStateOverride' | 'lastErrorCode'>,
   ): {
     botAccessState: ChatBotAccessState;
     botAccessCheckedAt: Date | null;
     botAccessExpiresAt: Date | null;
     botAccessSource: string;
-    botAccessLastErrorCode: null;
+    botAccessLastErrorCode: string | null;
     permissionsHash: string | null;
   } {
     const checkedAtMs = snapshot?.checkedAt ? Date.parse(snapshot.checkedAt) : NaN;
     const checkedAt = Number.isFinite(checkedAtMs) ? new Date(checkedAtMs) : null;
     return {
-      botAccessState: this.resolveBotAccessState(snapshot),
+      botAccessState: result?.accessStateOverride ?? this.resolveBotAccessState(snapshot),
       botAccessCheckedAt: checkedAt,
       botAccessExpiresAt: checkedAt
         ? new Date(checkedAt.getTime() + ACCESS_SNAPSHOT_REFRESH_DEBOUNCE_MS)
         : null,
       botAccessSource: source,
-      botAccessLastErrorCode: null,
+      botAccessLastErrorCode: result?.lastErrorCode ?? null,
       permissionsHash: snapshot ? this.hashPermissionsSummary(snapshot) : null,
     };
   }
@@ -791,6 +856,34 @@ export class MaxBotExecutionPlannerService {
       normalizedMessage.includes('rate limit exceeded') ||
       normalizedMessage.includes('source limit exceeded')
     );
+  }
+
+  private isTerminalBotAccessError(error: unknown): boolean {
+    const status = (error as { response?: { status?: number } } | null)?.response?.status;
+    if (status === 403 || status === 404) {
+      return true;
+    }
+
+    const code = this.resolveBotAccessErrorCode(error);
+    return code === 'access.denied' || code === 'chat.denied' || code === 'chat.not.found';
+  }
+
+  private resolveBotAccessErrorCode(error: unknown): string | null {
+    const code = (error as { response?: { data?: { code?: unknown } } } | null)?.response?.data
+      ?.code;
+    if (typeof code === 'string' && code.trim().length > 0) {
+      return code.trim();
+    }
+
+    const status = (error as { response?: { status?: number } } | null)?.response?.status;
+    if (status === 403) {
+      return 'access.denied';
+    }
+    if (status === 404) {
+      return 'chat.not.found';
+    }
+
+    return null;
   }
 
   private isLocalManagedRefreshBackoffActive(now = Date.now()): boolean {

@@ -32994,6 +32994,154 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
   });
 
+  it('records unavailable admin private suggestion delivery without warning or failure metrics', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue({
+      postSuggestionsEnabled: false,
+    });
+    prisma.$queryRaw.mockResolvedValue([]);
+    prisma.auditLog.create.mockResolvedValueOnce(undefined).mockResolvedValueOnce({
+      id: 'suggestion-unavailable-private-chat-1',
+      actorUserId: 'user-1',
+      payload: {
+        type: 'suggest',
+        text: 'Предложка',
+        delivered: false,
+        deliveredToUserId: null,
+        source: 'private_bot',
+      },
+      createdAt: new Date('2026-03-25T06:33:00.000Z'),
+    });
+    prisma.auditLog.update.mockResolvedValue({
+      id: 'suggestion-unavailable-private-chat-1',
+      actorUserId: 'user-1',
+      payload: {},
+      createdAt: new Date('2026-03-25T06:33:00.000Z'),
+    });
+
+    const tokenPublisherClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-unavailable-private-chat', url: null }),
+    };
+    const unavailablePrivateError = {
+      response: {
+        status: 404,
+        data: {
+          code: 'chat.not.found',
+          message: 'chat not found',
+        },
+      },
+    };
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['98315271']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: '777000',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      }),
+      sendMessageImmediateWithId: jest.fn(),
+      sendMessageImmediateToUser: jest.fn().mockRejectedValue(unavailablePrivateError),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+    const warnSpy = jest
+      .spyOn((service as any).logger, 'warn')
+      .mockImplementation(() => undefined);
+    const debugSpy = jest
+      .spyOn((service as any).logger, 'debug')
+      .mockImplementation(() => undefined);
+
+    const tokenPublisher = new AdminService(
+      prisma as never,
+      tokenPublisherClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const suggestToken = await publishSuggestDialogToken(tokenPublisher, tokenPublisherClient);
+
+    await service.createChannelSuggestionFromBot(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      {
+        token: suggestToken,
+        text: 'Предложка',
+      },
+    );
+
+    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledWith(
+      '98315271',
+      expect.stringContaining('[Пользователь](max://user/user-1)'),
+      expect.objectContaining({
+        textFormat: 'markdown',
+      }),
+      expect.objectContaining({
+        trafficClass: 'background',
+        ignoreFailureMetricStatuses: [403, 404],
+      }),
+    );
+    expect(debugSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        suggestionId: 'suggestion-unavailable-private-chat-1',
+        chatId: 'channel-1',
+        adminUserId: '98315271',
+        privateChatId: null,
+        status: 404,
+        code: 'chat.not.found',
+      }),
+      'Skipped suggestion delivery to unavailable admin private chat',
+    );
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'Failed to deliver suggestion to admin private chat',
+    );
+    expect(prisma.auditLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            delivered: false,
+            deliveredToUserId: null,
+            deliveredToUserIds: [],
+            deliveries: [],
+            deliveryAttemptedAt: expect.any(String),
+            deliveryFailures: [
+              expect.objectContaining({
+                adminUserId: '98315271',
+                privateChatId: null,
+                status: 404,
+                code: 'chat.not.found',
+                terminal: true,
+                message: 'chat not found',
+              }),
+            ],
+          }),
+        }),
+      }),
+    );
+  });
+
   it('routes admin private suggestion delivery through the resolved delivery bot when assist bot differs', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({

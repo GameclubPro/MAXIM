@@ -3605,9 +3605,12 @@ describe('VkParsingService', () => {
     await service.processSyncSourceJob('source-1', 'scheduled');
 
     expect(String((global.fetch as jest.Mock).mock.calls[1]?.[0] ?? '')).toContain('wall.getById');
-    expect(prisma.vkParsingPost.update).toHaveBeenCalledWith(
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'missing-post-1' },
+        where: {
+          id: { in: ['missing-post-1'] },
+          status: { in: ['NEW', 'FAILED', 'CHANGED_AFTER_PUBLISH'] },
+        },
         data: expect.objectContaining({
           status: 'UNAVAILABLE',
           missingSinceAt: expect.any(Date),
@@ -3619,6 +3622,94 @@ describe('VkParsingService', () => {
         }),
       }),
     );
+    expect(prisma.vkParsingPost.update).not.toHaveBeenCalled();
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('bulk-resets found VK missing-post candidates and marks only confirmed missing posts unavailable', async () => {
+    const { service, prisma } = createFixture();
+    const source = createSource();
+    prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    prisma.vkParsingPost.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        id: 'found-post-1',
+        vkOwnerId: -36819802,
+        vkPostId: 100,
+        missingSeenCount: 2,
+      },
+      {
+        id: 'missing-post-1',
+        vkOwnerId: -36819802,
+        vkPostId: 99,
+        missingSeenCount: 2,
+      },
+    ]);
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(
+        createJsonFetchResponse({
+          response: {
+            items: [
+              {
+                owner_id: -36819802,
+                id: 101,
+                date: 1_779_708_000,
+                text: 'Оставшийся пост',
+              },
+            ],
+            groups: [],
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        createJsonFetchResponse({
+          response: {
+            items: [
+              {
+                owner_id: -36819802,
+                id: 100,
+                date: 1_779_707_000,
+                text: 'VK still has this post',
+              },
+            ],
+          },
+        }),
+      ) as unknown as typeof fetch;
+
+    await service.processSyncSourceJob('source-1', 'scheduled');
+
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: { in: ['found-post-1'] },
+          status: { in: ['NEW', 'FAILED', 'CHANGED_AFTER_PUBLISH'] },
+        },
+        data: expect.objectContaining({
+          missingSeenCount: 0,
+          missingSinceAt: null,
+          lastAvailabilityCheckedAt: expect.any(Date),
+        }),
+      }),
+    );
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: { in: ['missing-post-1'] },
+          status: { in: ['NEW', 'FAILED', 'CHANGED_AFTER_PUBLISH'] },
+        },
+        data: expect.objectContaining({
+          status: 'UNAVAILABLE',
+          missingSeenCount: { increment: 1 },
+          unavailableAt: expect.any(Date),
+          publishQueuedAt: null,
+          publishLockedAt: null,
+          publishIdempotencyKey: null,
+          publishReason: null,
+        }),
+      }),
+    );
+    expect(prisma.vkParsingPost.update).not.toHaveBeenCalled();
+    expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
   it('does not mark fetched-window missing VK posts unavailable before confirmation threshold', async () => {
@@ -3654,7 +3745,10 @@ describe('VkParsingService', () => {
     expect((global.fetch as jest.Mock).mock.calls).toHaveLength(1);
     expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: { in: ['missing-post-1'] } },
+        where: {
+          id: { in: ['missing-post-1'] },
+          status: { in: ['NEW', 'FAILED', 'CHANGED_AFTER_PUBLISH'] },
+        },
         data: expect.objectContaining({
           missingSeenCount: { increment: 1 },
           missingSinceAt: expect.any(Date),

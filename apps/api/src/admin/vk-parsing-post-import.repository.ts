@@ -51,6 +51,11 @@ const VK_POST_STATUS_NEW = 'NEW';
 const VK_POST_STATUS_FAILED = 'FAILED';
 const VK_POST_STATUS_CHANGED_AFTER_PUBLISH = 'CHANGED_AFTER_PUBLISH';
 const VK_POST_STATUS_UNAVAILABLE = 'UNAVAILABLE';
+const VK_POST_MISSING_RECONCILIATION_STATUSES = [
+  VK_POST_STATUS_NEW,
+  VK_POST_STATUS_FAILED,
+  VK_POST_STATUS_CHANGED_AFTER_PUBLISH,
+];
 const VK_POST_IMPORT_CHUNK_SIZE = 50;
 
 @Injectable()
@@ -121,7 +126,7 @@ export class VkParsingPostImportRepository {
         vkPublishedAt: { gte: oldestFetchedAt },
         vkPostId: { notIn: posts.map((post) => post.vkPostId) },
         status: {
-          in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED, VK_POST_STATUS_CHANGED_AFTER_PUBLISH],
+          in: VK_POST_MISSING_RECONCILIATION_STATUSES,
         },
       },
       select: {
@@ -140,7 +145,10 @@ export class VkParsingPostImportRepository {
     );
     if (belowThreshold.length > 0) {
       await this.prisma.vkParsingPost.updateMany({
-        where: { id: { in: belowThreshold.map((post) => post.id) } },
+        where: {
+          id: { in: belowThreshold.map((post) => post.id) },
+          status: { in: VK_POST_MISSING_RECONCILIATION_STATUSES },
+        },
         data: {
           missingSeenCount: { increment: 1 },
           missingSinceAt: seenAt,
@@ -157,37 +165,65 @@ export class VkParsingPostImportRepository {
     }
 
     const foundPostKeys = await params.spotCheckMissingPosts(thresholdCandidates);
-    const updateOperations = thresholdCandidates.map((post) => {
-      const postKey = this.buildPostKey(post.vkOwnerId, post.vkPostId);
-      if (foundPostKeys?.has(postKey)) {
-        return this.prisma.vkParsingPost.update({
-          where: { id: post.id },
-          data: {
-            missingSeenCount: 0,
-            missingSinceAt: null,
-            lastAvailabilityCheckedAt: seenAt,
-          },
-        });
-      }
 
-      return this.prisma.vkParsingPost.update({
-        where: { id: post.id },
+    if (foundPostKeys === null) {
+      await this.prisma.vkParsingPost.updateMany({
+        where: {
+          id: { in: thresholdCandidates.map((post) => post.id) },
+          status: { in: VK_POST_MISSING_RECONCILIATION_STATUSES },
+        },
         data: {
-          status: foundPostKeys === null ? undefined : VK_POST_STATUS_UNAVAILABLE,
           missingSeenCount: { increment: 1 },
           missingSinceAt: seenAt,
           lastAvailabilityCheckedAt: seenAt,
-          unavailableAt: foundPostKeys === null ? undefined : seenAt,
-          publishQueuedAt: foundPostKeys === null ? undefined : null,
-          publishLockedAt: foundPostKeys === null ? undefined : null,
-          publishIdempotencyKey: foundPostKeys === null ? undefined : null,
-          publishReason: foundPostKeys === null ? undefined : null,
         },
       });
-    });
+      return;
+    }
 
-    for (const chunk of this.chunkItems(updateOperations, VK_POST_IMPORT_CHUNK_SIZE)) {
-      await this.prisma.$transaction(chunk);
+    const foundIds: string[] = [];
+    const missingIds: string[] = [];
+    for (const post of thresholdCandidates) {
+      const postKey = this.buildPostKey(post.vkOwnerId, post.vkPostId);
+      if (foundPostKeys.has(postKey)) {
+        foundIds.push(post.id);
+      } else {
+        missingIds.push(post.id);
+      }
+    }
+
+    if (foundIds.length > 0) {
+      await this.prisma.vkParsingPost.updateMany({
+        where: {
+          id: { in: foundIds },
+          status: { in: VK_POST_MISSING_RECONCILIATION_STATUSES },
+        },
+        data: {
+          missingSeenCount: 0,
+          missingSinceAt: null,
+          lastAvailabilityCheckedAt: seenAt,
+        },
+      });
+    }
+
+    if (missingIds.length > 0) {
+      await this.prisma.vkParsingPost.updateMany({
+        where: {
+          id: { in: missingIds },
+          status: { in: VK_POST_MISSING_RECONCILIATION_STATUSES },
+        },
+        data: {
+          status: VK_POST_STATUS_UNAVAILABLE,
+          missingSeenCount: { increment: 1 },
+          missingSinceAt: seenAt,
+          lastAvailabilityCheckedAt: seenAt,
+          unavailableAt: seenAt,
+          publishQueuedAt: null,
+          publishLockedAt: null,
+          publishIdempotencyKey: null,
+          publishReason: null,
+        },
+      });
     }
   }
 

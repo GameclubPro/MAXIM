@@ -477,6 +477,162 @@ describe('MaxBotExecutionPlannerService', () => {
     );
   });
 
+  it('records denied access without warning when managed_refresh gets a terminal 403', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:10:00.000Z'));
+    const fixture = createFixture();
+    const warnSpy = jest.spyOn((fixture.service as any).logger, 'warn');
+    const debugSpy = jest.spyOn((fixture.service as any).logger, 'debug');
+    fixture.memberships.find(
+      (membership) => membership.botId === 'id613002203036_4_bot',
+    )!.permissionsSnapshot = {
+      checkedAt: '2026-05-14T08:00:00.000Z',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write', 'delete'],
+    };
+    const deniedError = Object.assign(new Error('Request failed with status code 403'), {
+      response: {
+        status: 403,
+        data: { code: 'chat.denied' },
+      },
+    });
+    fixture.maxClient.getCurrentChatMemberAccess.mockRejectedValueOnce(deniedError);
+
+    try {
+      await fixture.service.refreshChatBotCapabilitySnapshots({
+        chatId: 'chat-1',
+        entityType: 'chat',
+        botId: 'id613002203036_4_bot',
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+
+    expect(debugSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'chat-1',
+        botId: 'id613002203036_4_bot',
+        err: 'Request failed with status code 403',
+      }),
+      'Execution planner access refresh confirmed denied bot access',
+    );
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'Failed to refresh bot access snapshot for execution planner',
+    );
+    expect(fixture.prisma.chatBotMembership.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          botAccessState: 'DENIED',
+          botAccessLastErrorCode: 'chat.denied',
+          permissionsSnapshot: {
+            checkedAt: '2026-05-14T09:10:00.000Z',
+            isAdmin: false,
+            isOwner: false,
+            permissions: [],
+          },
+        }),
+      }),
+    );
+  });
+
+  it('does not promote a bot from a stale admin snapshot after a terminal access error', async () => {
+    const fixture = createFixture();
+    fixture.memberships.find(
+      (membership) => membership.botId === 'id613002203036_4_bot',
+    )!.permissionsSnapshot = {
+      checkedAt: '2026-05-14T08:00:00.000Z',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write', 'delete'],
+    };
+    fixture.maxClient.getCurrentChatMemberAccess.mockRejectedValueOnce(
+      Object.assign(new Error('Request failed with status code 403'), {
+        response: { status: 403 },
+      }),
+    );
+
+    await expect(
+      fixture.service.setPrimaryBot({
+        chatId: 'chat-1',
+        entityType: 'chat',
+        botId: 'id613002203036_4_bot',
+      }),
+    ).rejects.toThrow('подтверждёнными admin/owner');
+
+    expect(fixture.chat.primaryBotId).toBe('id613002203036_bot');
+    expect(fixture.prisma.chatBotMembership.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          botAccessState: 'DENIED',
+          botAccessLastErrorCode: 'access.denied',
+        }),
+      }),
+    );
+  });
+
+  it('records denied access when assist enablement hits a terminal access error', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:15:00.000Z'));
+    const fixture = createFixture();
+    const standbyMembership = fixture.memberships.find(
+      (membership) => membership.botId === 'id613002203036_4_bot',
+    );
+    if (!standbyMembership) {
+      throw new Error('standby membership fixture missing');
+    }
+    standbyMembership.capabilities = ['suggestion_delivery'];
+    standbyMembership.permissionsSnapshot = {
+      checkedAt: '2026-05-14T08:00:00.000Z',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write', 'delete'],
+    };
+    fixture.maxClient.getCurrentChatMemberAccess.mockRejectedValueOnce(
+      Object.assign(new Error('Request failed with status code 403'), {
+        response: {
+          status: 403,
+          data: { code: 'chat.denied' },
+        },
+      }),
+    );
+
+    try {
+      await expect(
+        fixture.service.setPartnerAssist({
+          chatId: 'chat-1',
+          entityType: 'chat',
+          botId: 'id613002203036_4_bot',
+          enabled: true,
+        }),
+      ).rejects.toThrow('admin/owner');
+    } finally {
+      jest.useRealTimers();
+    }
+
+    expect(fixture.prisma.chatBotMembership.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          chatId_botId: {
+            chatId: 'chat-1',
+            botId: 'id613002203036_4_bot',
+          },
+        },
+        data: expect.objectContaining({
+          capabilities: [],
+          botAccessState: 'DENIED',
+          botAccessLastErrorCode: 'chat.denied',
+          permissionsSnapshot: {
+            checkedAt: '2026-05-14T09:15:00.000Z',
+            isAdmin: false,
+            isOwner: false,
+            permissions: [],
+          },
+        }),
+      }),
+    );
+    expect(standbyMembership.capabilities).toEqual([]);
+  });
+
   it('does not promote a draining standby bot to primary', async () => {
     const fixture = createFixture();
     const standbyBot = fixture.bots.find((bot) => bot.id === 'id613002203036_4_bot');

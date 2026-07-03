@@ -968,6 +968,16 @@ export type ChannelSuggestionAdminDelivery = {
   botId?: string;
 };
 
+export type ChannelSuggestionAdminDeliveryFailure = {
+  adminUserId: string;
+  privateChatId: string | null;
+  botId?: string;
+  status: number | null;
+  code: string | null;
+  terminal: boolean;
+  message: string;
+};
+
 export function mapManagedEntityTypeToChatEntityType(
   entityType: ManagedEntityType,
 ): ChatEntityType {

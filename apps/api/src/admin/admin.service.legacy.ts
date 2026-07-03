@@ -247,6 +247,9 @@ import {
 import {
   buildChannelOverview,
   buildResolvedUserProfileCacheKey,
+  extractMaxErrorCode,
+  extractMaxErrorMessage,
+  extractMaxErrorStatus,
   fromPrismaEntityType,
   ignorePrismaUniqueConflict,
   isBotAdminLookupDeniedError,
@@ -432,6 +435,7 @@ import {
   type ChannelSuggestionFromBotPayload,
   type ChannelSuggestionReviewAction,
   type ChannelSuggestionAdminDelivery,
+  type ChannelSuggestionAdminDeliveryFailure,
 } from './admin.service.support';
 export type {
   AdminActionSource,
@@ -15979,7 +15983,12 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const alreadyDelivered = payload.delivered === true;
-    if (alreadyDelivered || this.readChannelSuggestionDeliveries(payload.deliveries).length > 0) {
+    const deliveryAttemptedAt = this.readTrimmedString(payload.deliveryAttemptedAt);
+    if (
+      alreadyDelivered ||
+      deliveryAttemptedAt ||
+      this.readChannelSuggestionDeliveries(payload.deliveries).length > 0
+    ) {
       return;
     }
 
@@ -16026,6 +16035,8 @@ export class AdminService implements OnModuleDestroy {
       deliveredToUserId: string | null;
       deliveredToUserIds: string[];
       deliveries: ChannelSuggestionAdminDelivery[];
+      deliveryAttemptedAt: string;
+      deliveryFailures: ChannelSuggestionAdminDeliveryFailure[];
     },
   ) {
     const createdPayload = this.readObjectPayload(row.payload);
@@ -16040,6 +16051,8 @@ export class AdminService implements OnModuleDestroy {
           deliveredToUserId: delivery.deliveredToUserId,
           deliveredToUserIds: delivery.deliveredToUserIds,
           deliveries: delivery.deliveries,
+          deliveryAttemptedAt: delivery.deliveryAttemptedAt,
+          deliveryFailures: delivery.deliveryFailures,
         } as Prisma.InputJsonValue,
       },
       select: {
@@ -16085,7 +16098,10 @@ export class AdminService implements OnModuleDestroy {
     deliveredToUserId: string | null;
     deliveredToUserIds: string[];
     deliveries: ChannelSuggestionAdminDelivery[];
+    deliveryAttemptedAt: string;
+    deliveryFailures: ChannelSuggestionAdminDeliveryFailure[];
   }> {
+    const deliveryAttemptedAt = new Date().toISOString();
     const deliveryBotId = await this.resolveAssistBotAssignment(chatId, 'suggestion_delivery');
     const privateDeliveryBotId = this.resolvePrivateDeliveryBotId(deliveryBotId);
     const knownBotUserIds = await this.resolveKnownBotUserIdsForChat(chatId, [deliveryBotId]);
@@ -16113,6 +16129,8 @@ export class AdminService implements OnModuleDestroy {
         deliveredToUserId: null,
         deliveredToUserIds: [],
         deliveries: [],
+        deliveryAttemptedAt,
+        deliveryFailures: [],
       };
     }
 
@@ -16147,6 +16165,7 @@ export class AdminService implements OnModuleDestroy {
       'buttons' | 'imagePayload' | 'attachments' | 'textFormat'
     >;
     const deliveries: ChannelSuggestionAdminDelivery[] = [];
+    const deliveryFailures: ChannelSuggestionAdminDeliveryFailure[] = [];
     const deliveredAdminUserIds: string[] = [];
 
     for (const adminUserId of adminIds) {
@@ -16190,13 +16209,34 @@ export class AdminService implements OnModuleDestroy {
           ...(privateDeliveryBotId ? { botId: privateDeliveryBotId } : {}),
         });
       } catch (error: unknown) {
+        const deliveryFailure = this.buildChannelSuggestionDeliveryFailure({
+          adminUserId,
+          privateChatId,
+          botId: privateDeliveryBotId,
+          error,
+        });
+        deliveryFailures.push(deliveryFailure);
+
+        const logPayload = {
+          suggestionId,
+          chatId,
+          adminUserId,
+          privateChatId,
+          status: deliveryFailure.status,
+          code: deliveryFailure.code,
+          err: error instanceof Error ? error.message : String(error),
+        };
+        if (deliveryFailure.terminal) {
+          this.logger.debug(
+            logPayload,
+            'Skipped suggestion delivery to unavailable admin private chat',
+          );
+          continue;
+        }
+
         this.logger.warn(
           {
-            suggestionId,
-            chatId,
-            adminUserId,
-            privateChatId,
-            err: error instanceof Error ? error.message : String(error),
+            ...logPayload,
           },
           'Failed to deliver suggestion to admin private chat',
         );
@@ -16208,6 +16248,27 @@ export class AdminService implements OnModuleDestroy {
       deliveredToUserId: deliveredAdminUserIds[0] ?? null,
       deliveredToUserIds: deliveredAdminUserIds,
       deliveries,
+      deliveryAttemptedAt,
+      deliveryFailures,
+    };
+  }
+
+  private buildChannelSuggestionDeliveryFailure(params: {
+    adminUserId: string;
+    privateChatId: string | null;
+    botId?: string | null;
+    error: unknown;
+  }): ChannelSuggestionAdminDeliveryFailure {
+    const status = extractMaxErrorStatus(params.error);
+    const code = extractMaxErrorCode(params.error);
+    return {
+      adminUserId: params.adminUserId,
+      privateChatId: params.privateChatId,
+      ...(params.botId ? { botId: params.botId } : {}),
+      status,
+      code,
+      terminal: isPrivateDialogChatUnavailableError(params.error),
+      message: extractMaxErrorMessage(params.error),
     };
   }
 
@@ -17212,6 +17273,7 @@ export class AdminService implements OnModuleDestroy {
                 trafficClass: 'background',
                 sourceTag: MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY,
                 timeoutMs: CHANNEL_SUGGESTION_SEND_TIMEOUT_MS,
+                ignoreFailureMetricStatuses: ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
                 ...(params.botId ? { botId: params.botId } : {}),
               },
             )
@@ -17223,6 +17285,7 @@ export class AdminService implements OnModuleDestroy {
                 trafficClass: 'background',
                 sourceTag: MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY,
                 timeoutMs: CHANNEL_SUGGESTION_SEND_TIMEOUT_MS,
+                ignoreFailureMetricStatuses: ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
                 ...(params.botId ? { botId: params.botId } : {}),
               },
             );
