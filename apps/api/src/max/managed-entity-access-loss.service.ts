@@ -3,6 +3,7 @@ import type { ManagedEntityType } from '@maxim/contracts';
 import { InjectQueue } from '@nestjs/bullmq';
 import type { Queue } from 'bullmq';
 import {
+  ChatBotAccessState,
   ChatBotMembershipStatus,
   ChatEntityType,
   ManagedBroadcastDeliveryStatus,
@@ -23,8 +24,13 @@ import {
   type MaxChatAdminRosterSyncJob,
 } from './max-chat-admin-roster-sync.queue';
 import { MaxBotLinkService } from './max-bot-link.service';
+import { MaxBotRegistryService } from './max-bot-registry.service';
 
 const MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS = 7 * 24 * 60 * 60 * 1_000;
+const CONFIRMED_BOT_ACCESS_STATES = [
+  ChatBotAccessState.CONFIRMED_ADMIN,
+  ChatBotAccessState.CONFIRMED_OWNER,
+] as const;
 
 export type ManagedEntityAccessLossReason =
   | 'chat_not_found'
@@ -99,6 +105,8 @@ export class ManagedEntityAccessLossService {
     @Optional()
     @InjectQueue(MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE)
     private readonly rosterSyncQueue?: Queue<MaxChatAdminRosterSyncJob>,
+    @Optional()
+    private readonly maxBotRegistry?: MaxBotRegistryService,
   ) {}
 
   async recordIfManagedEntityAccessLost(
@@ -177,17 +185,18 @@ export class ManagedEntityAccessLossService {
           lastMaxStatusCode: params.lastMaxStatusCode,
         })
       : 0;
-    const cleanup =
-      botId &&
-      nextOwnerBotId &&
-      nextOwnerBotId !== botId &&
-      (await this.hasConfirmedReplacementBotAccess(chatId, nextOwnerBotId))
-        ? this.createEmptyCleanupResult()
-        : await this.cleanupRuntimeWork({
-            chatId,
-            reason: params.reason,
-            source: params.source,
-          });
+    const hasSurvivingBotAccess = await this.hasConfirmedSurvivingBotAccess({
+      chatId,
+      lostBotId: botId,
+      preferredBotId: nextOwnerBotId,
+    });
+    const cleanup = hasSurvivingBotAccess
+      ? this.createEmptyCleanupResult()
+      : await this.cleanupRuntimeWork({
+          chatId,
+          reason: params.reason,
+          source: params.source,
+        });
 
     await Promise.all([
       this.chatContextCache.invalidate(chatId),
@@ -272,6 +281,8 @@ export class ManagedEntityAccessLossService {
               select: {
                 status: true,
                 permissionsSnapshot: true,
+                botAccessState: true,
+                botAccessExpiresAt: true,
               },
             })
           : Promise.resolve(null),
@@ -305,12 +316,7 @@ export class ManagedEntityAccessLossService {
         return false;
       }
 
-      const snapshot = normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
-      return Boolean(
-        snapshot &&
-          isFreshMembershipAccessSnapshot(snapshot) &&
-          (snapshot.isAdmin || snapshot.isOwner),
-      );
+      return this.membershipHasConfirmedAccess(membership, now);
     } catch (error: unknown) {
       this.logger.debug(
         {
@@ -322,6 +328,162 @@ export class ManagedEntityAccessLossService {
       );
       return false;
     }
+  }
+
+  private async hasConfirmedSurvivingBotAccess(params: {
+    chatId: string;
+    lostBotId: string | null;
+    preferredBotId: string | null;
+  }): Promise<boolean> {
+    const preferredBotId = this.readTrimmedString(params.preferredBotId);
+    if (
+      preferredBotId &&
+      preferredBotId !== params.lostBotId &&
+      this.isActionableRuntimeBotId(preferredBotId) &&
+      (await this.hasConfirmedReplacementBotAccess(params.chatId, preferredBotId))
+    ) {
+      return true;
+    }
+
+    return this.hasAnyConfirmedSurvivingBotAccess(params.chatId, params.lostBotId);
+  }
+
+  private async hasAnyConfirmedSurvivingBotAccess(
+    chatId: string,
+    lostBotId: string | null,
+  ): Promise<boolean> {
+    try {
+      const now = new Date();
+      const candidateBotIds = this.getSurvivingActionableBotIds(lostBotId);
+      if (candidateBotIds && candidateBotIds.length === 0) {
+        return false;
+      }
+
+      const botIdWhere = candidateBotIds
+        ? { in: candidateBotIds }
+        : lostBotId
+          ? { not: lostBotId }
+          : undefined;
+      const [grantedEdge, memberships] = await Promise.all([
+        typeof this.prisma.managedEntityAccessEdge?.findFirst === 'function'
+          ? this.prisma.managedEntityAccessEdge.findFirst({
+              where: {
+                chatId,
+                state: ManagedEntityAccessState.GRANTED,
+                ...(botIdWhere ? { botId: botIdWhere } : {}),
+                OR: [
+                  { expiresAt: { gt: now } },
+                  {
+                    expiresAt: null,
+                    checkedAt: {
+                      gt: new Date(now.getTime() - MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS),
+                    },
+                  },
+                ],
+              },
+              select: {
+                botId: true,
+              },
+            })
+          : Promise.resolve(null),
+        typeof this.prisma.chatBotMembership?.findMany === 'function'
+          ? this.prisma.chatBotMembership.findMany({
+              where: {
+                chatId,
+                status: ChatBotMembershipStatus.ACTIVE,
+                ...(botIdWhere ? { botId: botIdWhere } : {}),
+              },
+              select: {
+                botId: true,
+                status: true,
+                permissionsSnapshot: true,
+                botAccessState: true,
+                botAccessExpiresAt: true,
+              },
+            })
+          : Promise.resolve([]),
+      ]);
+
+      if (grantedEdge && this.isActionableRuntimeBotId(grantedEdge.botId)) {
+        return true;
+      }
+
+      return memberships.some(
+        (membership) =>
+          this.isActionableRuntimeBotId(membership.botId) &&
+          this.membershipHasConfirmedAccess(membership, now),
+      );
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          lostBotId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to verify surviving bot access after managed entity access loss',
+      );
+      return false;
+    }
+  }
+
+  private membershipHasConfirmedAccess(
+    membership: {
+      status?: ChatBotMembershipStatus | string | null;
+      permissionsSnapshot?: unknown;
+      botAccessState?: ChatBotAccessState | string | null;
+      botAccessExpiresAt?: Date | string | null;
+    },
+    now: Date,
+  ): boolean {
+    if (membership.status !== ChatBotMembershipStatus.ACTIVE) {
+      return false;
+    }
+
+    if (
+      CONFIRMED_BOT_ACCESS_STATES.some((state) => state === membership.botAccessState) &&
+      this.isFutureDate(membership.botAccessExpiresAt, now)
+    ) {
+      return true;
+    }
+
+    const snapshot = normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
+    return Boolean(
+      snapshot &&
+        isFreshMembershipAccessSnapshot(snapshot, { nowMs: now.getTime() }) &&
+        (snapshot.isAdmin || snapshot.isOwner),
+    );
+  }
+
+  private getSurvivingActionableBotIds(lostBotId: string | null): string[] | null {
+    if (!this.maxBotRegistry) {
+      return null;
+    }
+
+    return this.maxBotRegistry
+      .getActionableBots()
+      .map((bot) => bot.id)
+      .filter((botId) => botId !== lostBotId);
+  }
+
+  private isActionableRuntimeBotId(botId: string | null | undefined): boolean {
+    const normalizedBotId = this.readTrimmedString(botId);
+    if (!normalizedBotId) {
+      return false;
+    }
+    if (!this.maxBotRegistry) {
+      return true;
+    }
+    return this.maxBotRegistry.getActionableBots().some((bot) => bot.id === normalizedBotId);
+  }
+
+  private isFutureDate(value: Date | string | null | undefined, now: Date): boolean {
+    const timestamp =
+      value instanceof Date
+        ? value.getTime()
+        : typeof value === 'string'
+          ? Date.parse(value)
+          : NaN;
+    return Number.isFinite(timestamp) && timestamp > now.getTime();
   }
 
   private async clearNightModeJobs(
