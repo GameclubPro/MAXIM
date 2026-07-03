@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 
 const API_SERVICE_POOL_CAPS = {
   'api-ingress': 6,
-  'api-admin': 4,
+  'api-admin': 10,
   'api-enqueue': 4,
   'api-moderation': 3,
   'api-moderation-critical': 4,
@@ -28,13 +28,13 @@ describe('production compose Prisma pool caps', () => {
       total += cap;
     }
 
-    expect(total).toBe(39);
+    expect(total).toBe(45);
   });
 
   it('caps the dedicated managed-entities read client separately', () => {
     const adminBlock = readServiceBlock(compose, 'api-admin');
 
-    expect(readEnvNumber(adminBlock, 'MANAGED_ENTITIES_READ_PRISMA_PG_POOL_MAX')).toBe(2);
+    expect(readEnvNumber(adminBlock, 'MANAGED_ENTITIES_READ_PRISMA_PG_POOL_MAX')).toBe(6);
   });
 });
 
