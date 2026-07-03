@@ -57,6 +57,16 @@ function mockSystemPressure(
     });
 }
 
+function createStackRateLimitSnapshot(overrides: Record<string, unknown> = {}) {
+  return {
+    windowSec: 60,
+    smoothedLoad: 0,
+    peakLoad: 0,
+    avgLoad: 0,
+    ...overrides,
+  };
+}
+
 describe('BackgroundRuntimeGovernorService', () => {
   it('pauses background work during the recovery window before hard degrade', async () => {
     const service = new BackgroundRuntimeGovernorService(
@@ -98,6 +108,9 @@ describe('BackgroundRuntimeGovernorService', () => {
           },
           sources: {},
         }),
+        getStackRateLimitSnapshot: jest
+          .fn()
+          .mockResolvedValue(createStackRateLimitSnapshot()),
       } as never,
       createConfigMock(),
       {
@@ -153,6 +166,9 @@ describe('BackgroundRuntimeGovernorService', () => {
           },
           sources: {},
         }),
+        getStackRateLimitSnapshot: jest
+          .fn()
+          .mockResolvedValue(createStackRateLimitSnapshot()),
       } as never,
       createConfigMock(),
       {
@@ -212,6 +228,9 @@ describe('BackgroundRuntimeGovernorService', () => {
           },
           sources: {},
         }),
+        getStackRateLimitSnapshot: jest
+          .fn()
+          .mockResolvedValue(createStackRateLimitSnapshot()),
       } as never,
       createConfigMock(),
       {
@@ -287,6 +306,9 @@ describe('BackgroundRuntimeGovernorService', () => {
             },
           },
         }),
+        getStackRateLimitSnapshot: jest
+          .fn()
+          .mockResolvedValue(createStackRateLimitSnapshot()),
       } as never,
       createConfigMock({ BACKGROUND_GOVERNOR_BACKGROUND_SHARE_THRESHOLD: 0.4 }),
       {
@@ -342,6 +364,9 @@ describe('BackgroundRuntimeGovernorService', () => {
           },
           sources: {},
         }),
+        getStackRateLimitSnapshot: jest
+          .fn()
+          .mockResolvedValue(createStackRateLimitSnapshot()),
         getBotRateLimitSnapshot: jest.fn().mockResolvedValue({}),
       } as never,
       createConfigMock({
@@ -404,6 +429,9 @@ describe('BackgroundRuntimeGovernorService', () => {
           },
           sources: {},
         }),
+        getStackRateLimitSnapshot: jest
+          .fn()
+          .mockResolvedValue(createStackRateLimitSnapshot()),
         getBotRateLimitSnapshot: jest.fn().mockResolvedValue({}),
       } as never,
       createConfigMock({
@@ -424,6 +452,78 @@ describe('BackgroundRuntimeGovernorService', () => {
       service.decide({ component: 'channel-stats', sourceTag: 'channel_stats_sync' }),
     ).resolves.toMatchObject({
       action: 'run',
+    });
+  });
+
+  it('slows background work when stack-wide MAX API load is high across bots', async () => {
+    const service = new BackgroundRuntimeGovernorService(
+      {
+        getSnapshot: jest.fn().mockResolvedValue({
+          webhookDefaultWorkerGroups: {},
+          userFacingEffectiveLagSec: 0,
+          effectiveLagSec: 0,
+          bots: {
+            'bot-a': {},
+            'bot-b': {},
+            'bot-c': {},
+          },
+        }),
+      } as never,
+      {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue({
+          mode: 'normal',
+          source: 'auto',
+          reason: 'healthy',
+          updatedAt: '2026-03-29T12:00:00.000Z',
+          manualMode: null,
+          queueLagSec: 0,
+          action: {
+            windowSec: 60,
+            total: 0,
+            success: 0,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+        }),
+      } as never,
+      {
+        getSourceSnapshot: jest.fn().mockResolvedValue({
+          overall: {
+            totalRequests: 0,
+            trafficClasses: {
+              critical: { totalRequests: 0 },
+              interactive: { totalRequests: 0 },
+              background: { totalRequests: 0 },
+            },
+          },
+          sources: {},
+        }),
+        getStackRateLimitSnapshot: jest
+          .fn()
+          .mockResolvedValue(createStackRateLimitSnapshot({ smoothedLoad: 0.48 })),
+        getBotRateLimitSnapshot: jest.fn().mockResolvedValue({
+          'bot-a': { smoothedLoad: 0.18, peakLoad: 0.2, avgLoad: 0.05 },
+          'bot-b': { smoothedLoad: 0.17, peakLoad: 0.2, avgLoad: 0.05 },
+          'bot-c': { smoothedLoad: 0.16, peakLoad: 0.2, avgLoad: 0.05 },
+        }),
+      } as never,
+      createConfigMock({
+        BACKGROUND_GOVERNOR_BOT_LOAD_SLOW_THRESHOLD: 0.35,
+        BACKGROUND_GOVERNOR_BOT_LOAD_PAUSE_THRESHOLD: 0.7,
+      }),
+      {
+        recordBackgroundDecision: jest.fn().mockResolvedValue(undefined),
+      } as never,
+    );
+    mockSystemPressure(service, { enabled: false });
+
+    await expect(
+      service.decide({ component: 'channel-stats', sourceTag: 'channel_stats_sync' }),
+    ).resolves.toMatchObject({
+      action: 'slow',
+      reason: 'MAX API stack load 48.0%',
     });
   });
 });

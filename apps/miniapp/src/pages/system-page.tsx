@@ -243,6 +243,8 @@ export function SystemPage({ api }: { api: ApiTransport }) {
   const hotChats = dashboard.hotChats?.items.slice(0, 6) ?? [];
   const backgroundSources = dashboard.backgroundBudget?.topSources.slice(0, 5) ?? [];
   const backgroundPauses = dashboard.backgroundBudget?.pauseReasons.slice(0, 5) ?? [];
+  const stackLoad = dashboard.backgroundBudget?.stackLoad;
+  const topBotLoad = dashboard.backgroundBudget?.botLoad?.topBots[0] ?? null;
   const membershipIssues = dashboard.membershipLookup?.issueSample.slice(0, 5) ?? [];
   const slo = dashboard.slo ?? dashboard.webhookSlo;
   const queueGroups = dashboard.queueGroupHealth?.groups.slice(0, 8) ?? [];
@@ -756,6 +758,28 @@ export function SystemPage({ api }: { api: ApiTransport }) {
               </span>
             ) : null}
           </div>
+          {dashboard.backgroundBudget ? (
+            <div className="system-runtime-grid">
+              <article className="system-runtime-card">
+                <span>Stack load</span>
+                <strong>{stackLoad ? formatPercent(stackLoad.smoothedLoad) : 'n/a'}</strong>
+                <small>
+                  peak {stackLoad ? formatPercent(stackLoad.peakLoad) : 'n/a'} / slow{' '}
+                  {stackLoad ? formatPercent(stackLoad.slowThreshold) : 'n/a'}
+                </small>
+              </article>
+              <article className="system-runtime-card">
+                <span>Top bot</span>
+                <strong>{topBotLoad ? formatPercent(topBotLoad.smoothedLoad) : 'n/a'}</strong>
+                <small>{topBotLoad?.botId ?? 'no bot pressure'}</small>
+              </article>
+              <article className="system-runtime-card">
+                <span>Stack window</span>
+                <strong>{stackLoad ? formatWindow(stackLoad.windowSec) : 'n/a'}</strong>
+                <small>limiter sample</small>
+              </article>
+            </div>
+          ) : null}
           {backgroundSources.length > 0 ? (
             <div className="system-data-list">
               {backgroundSources.map((source) => (

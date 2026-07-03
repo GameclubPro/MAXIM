@@ -464,4 +464,60 @@ describe('MaxApiMetricsService', () => {
 
     await service.onModuleDestroy();
   });
+
+  it('aggregates stack-wide limiter pressure across all runtime bots', async () => {
+    const service = new MaxApiMetricsService(createConfigMock() as never);
+    const store = redisStores[0]!;
+    const nowSec = Math.floor(Date.now() / 1_000);
+    const expectedWindowSec = 60;
+    const avg = (totalRequests: number) => Number((totalRequests / expectedWindowSec).toFixed(3));
+
+    store.set(`maxapi:rps:stack:${nowSec}`, '20');
+    store.set(`maxapi:rps:stack:critical:${nowSec}`, '8');
+    store.set(`maxapi:rps:stack:interactive:${nowSec}`, '9');
+    store.set(`maxapi:rps:stack:background:${nowSec}`, '3');
+    store.set(`maxapi:rps:stack:${nowSec - 1}`, '16');
+    store.set(`maxapi:rps:stack:critical:${nowSec - 1}`, '2');
+    store.set(`maxapi:rps:stack:interactive:${nowSec - 1}`, '10');
+    store.set(`maxapi:rps:stack:background:${nowSec - 1}`, '4');
+
+    await expect(service.getStackRateLimitSnapshot({ windowSec: 10 })).resolves.toEqual({
+      windowSec: expectedWindowSec,
+      totalRequests: 36,
+      avgRps: avg(36),
+      peakRps: 20,
+      activeSeconds: 2,
+      trafficClasses: {
+        critical: {
+          totalRequests: 10,
+          avgRps: avg(10),
+          peakRps: 8,
+          activeSeconds: 2,
+        },
+        interactive: {
+          totalRequests: 19,
+          avgRps: avg(19),
+          peakRps: 10,
+          activeSeconds: 2,
+        },
+        background: {
+          totalRequests: 7,
+          avgRps: avg(7),
+          peakRps: 4,
+          activeSeconds: 2,
+        },
+      },
+      limits: {
+        globalRps: 30,
+        criticalRps: 16,
+        interactiveRps: 14,
+        backgroundRps: 4,
+      },
+      peakLoad: 1,
+      avgLoad: 0.0293,
+      smoothedLoad: 0.35,
+    });
+
+    await service.onModuleDestroy();
+  });
 });

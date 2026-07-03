@@ -15,7 +15,7 @@ export type MaxApiTrafficSnapshot = MaxApiTrafficClassStats & {
   trafficClasses: Record<MaxApiTrafficClass, MaxApiTrafficClassStats>;
 };
 
-export type MaxApiBotRateLimitSnapshot = MaxApiTrafficSnapshot & {
+export type MaxApiRateLimitSnapshot = MaxApiTrafficSnapshot & {
   windowSec: number;
   limits: {
     globalRps: number;
@@ -27,6 +27,8 @@ export type MaxApiBotRateLimitSnapshot = MaxApiTrafficSnapshot & {
   avgLoad: number;
   smoothedLoad: number;
 };
+export type MaxApiBotRateLimitSnapshot = MaxApiRateLimitSnapshot;
+export type MaxApiStackRateLimitSnapshot = MaxApiRateLimitSnapshot;
 
 type SourceCounterBucket = {
   perSecond: Map<number, number>;
@@ -231,12 +233,57 @@ export class MaxApiMetricsService implements OnModuleDestroy {
     return Object.fromEntries(
       normalizedBotIds.map((botId) => [
         botId,
-        this.buildBotRateLimitSnapshot(
+        this.buildRateLimitSnapshot(
           buckets.get(botId) ?? this.createSourceCounterBucket(),
           windowSec,
         ),
       ]),
     );
+  }
+
+  async getStackRateLimitSnapshot(
+    options: { windowSec?: number } = {},
+  ): Promise<MaxApiStackRateLimitSnapshot> {
+    const windowSec = this.normalizeWindowSec(options.windowSec);
+    const nowSec = Math.floor(Date.now() / 1_000);
+    const startSec = nowSec - windowSec + 1;
+    const keys: string[] = [];
+    const entries: Array<{
+      key: string;
+      sec: number;
+      trafficClass: MaxApiTrafficClass | null;
+    }> = [];
+
+    for (let sec = startSec; sec <= nowSec; sec += 1) {
+      const overallKey = `maxapi:rps:stack:${sec}`;
+      keys.push(overallKey);
+      entries.push({ key: overallKey, sec, trafficClass: null });
+
+      for (const trafficClass of MAX_API_TRAFFIC_CLASSES) {
+        const key = `maxapi:rps:stack:${trafficClass}:${sec}`;
+        keys.push(key);
+        entries.push({ key, sec, trafficClass });
+      }
+    }
+
+    const countsByKey = await this.readCounts(keys);
+    const bucket = this.createSourceCounterBucket();
+
+    for (const entry of entries) {
+      const count = countsByKey.get(entry.key) ?? 0;
+      if (count <= 0) {
+        continue;
+      }
+
+      if (entry.trafficClass) {
+        const trafficClassBucket = bucket.trafficClassBuckets[entry.trafficClass];
+        trafficClassBucket.set(entry.sec, (trafficClassBucket.get(entry.sec) ?? 0) + count);
+      } else {
+        bucket.perSecond.set(entry.sec, (bucket.perSecond.get(entry.sec) ?? 0) + count);
+      }
+    }
+
+    return this.buildRateLimitSnapshot(bucket, windowSec);
   }
 
   private normalizeWindowSec(value: number | undefined): number {
@@ -369,10 +416,10 @@ export class MaxApiMetricsService implements OnModuleDestroy {
     };
   }
 
-  private buildBotRateLimitSnapshot(
+  private buildRateLimitSnapshot(
     bucket: SourceCounterBucket,
     windowSec: number,
-  ): MaxApiBotRateLimitSnapshot {
+  ): MaxApiRateLimitSnapshot {
     const stats = this.buildStats(bucket, windowSec);
     const limits = {
       globalRps: this.globalRpsLimit,

@@ -255,6 +255,69 @@ function parseSystemDashboardBackgroundBudget(value: unknown) {
         lastObservedAt: typeof item.lastObservedAt === 'string' ? item.lastObservedAt : null,
       };
     }),
+    ...(value.stackLoad ? { stackLoad: parseSystemDashboardStackLoad(value.stackLoad) } : {}),
+    ...(value.botLoad ? { botLoad: parseSystemDashboardBotLoad(value.botLoad) } : {}),
+  };
+}
+
+function parseSystemDashboardStackLoad(value: unknown) {
+  if (
+    !isRecord(value) ||
+    typeof value.windowSec !== 'number' ||
+    typeof value.smoothedLoad !== 'number' ||
+    typeof value.peakLoad !== 'number' ||
+    typeof value.avgLoad !== 'number' ||
+    typeof value.slowThreshold !== 'number' ||
+    typeof value.pauseThreshold !== 'number'
+  ) {
+    throw new Error('Invalid system dashboard stack load');
+  }
+
+  return {
+    windowSec: value.windowSec,
+    smoothedLoad: value.smoothedLoad,
+    peakLoad: value.peakLoad,
+    avgLoad: value.avgLoad,
+    slowThreshold: value.slowThreshold,
+    pauseThreshold: value.pauseThreshold,
+  };
+}
+
+function parseSystemDashboardBotLoad(value: unknown) {
+  if (
+    !isRecord(value) ||
+    typeof value.maxSmoothedLoad !== 'number' ||
+    typeof value.maxPeakLoad !== 'number' ||
+    typeof value.slowThreshold !== 'number' ||
+    typeof value.pauseThreshold !== 'number' ||
+    !Array.isArray(value.topBots)
+  ) {
+    throw new Error('Invalid system dashboard bot load');
+  }
+
+  return {
+    maxSmoothedLoad: value.maxSmoothedLoad,
+    maxPeakLoad: value.maxPeakLoad,
+    slowThreshold: value.slowThreshold,
+    pauseThreshold: value.pauseThreshold,
+    topBots: value.topBots.map((item) => {
+      if (
+        !isRecord(item) ||
+        typeof item.botId !== 'string' ||
+        typeof item.smoothedLoad !== 'number' ||
+        typeof item.peakLoad !== 'number' ||
+        typeof item.avgLoad !== 'number'
+      ) {
+        throw new Error('Invalid system dashboard bot load item');
+      }
+
+      return {
+        botId: item.botId,
+        smoothedLoad: item.smoothedLoad,
+        peakLoad: item.peakLoad,
+        avgLoad: item.avgLoad,
+      };
+    }),
   };
 }
 

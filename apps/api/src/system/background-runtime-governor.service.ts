@@ -25,6 +25,7 @@ type BackgroundPressureSnapshot = {
   queues: QueueMetricsSnapshot;
   backgroundShare: number;
   systemPressure: BackgroundSystemPressureSnapshot;
+  stackLoad: BackgroundStackLoadSnapshot;
   botLoad: BackgroundBotLoadSnapshot;
   topSources: Array<{
     sourceTag: string;
@@ -68,6 +69,15 @@ type BackgroundBotLoadSnapshot = {
   }>;
 };
 
+type BackgroundStackLoadSnapshot = {
+  windowSec: number;
+  smoothedLoad: number;
+  peakLoad: number;
+  avgLoad: number;
+  slowThreshold: number;
+  pauseThreshold: number;
+};
+
 export type BackgroundRuntimeBudgetSummary = {
   windowSec: number;
   backgroundShare: number;
@@ -85,6 +95,7 @@ export type BackgroundRuntimeBudgetSummary = {
     count: number;
     lastObservedAt: string | null;
   }>;
+  stackLoad: BackgroundStackLoadSnapshot;
   botLoad: BackgroundBotLoadSnapshot;
 };
 
@@ -269,6 +280,7 @@ export class BackgroundRuntimeGovernorService {
       backgroundShare: Number(snapshot.backgroundShare.toFixed(3)),
       topSources: snapshot.topSources,
       pauseReasons: pauseReasons?.pauseReasons ?? [],
+      stackLoad: snapshot.stackLoad,
       botLoad: snapshot.botLoad,
     };
   }
@@ -312,15 +324,18 @@ export class BackgroundRuntimeGovernorService {
   }
 
   private async buildPressureSnapshot(): Promise<BackgroundPressureSnapshot> {
-    const [mode, queues, maxApi, systemPressure] = await Promise.all([
+    const rateLimitWindowSec = Math.min(60, this.sourceWindowSec);
+    const [mode, queues, maxApi, stackRateLimit, systemPressure] = await Promise.all([
       this.systemModeService.getEffectiveSnapshot(),
       this.queueMetricsService.getSnapshot({ maxAgeMs: 2_000 }),
       this.maxApiMetricsService.getSourceSnapshot({ windowSec: this.sourceWindowSec }),
+      this.maxApiMetricsService.getStackRateLimitSnapshot({ windowSec: rateLimitWindowSec }),
       this.buildSystemPressureSnapshot(),
     ]);
     const totalRequests = maxApi.overall.totalRequests;
     const backgroundRequests = maxApi.overall.trafficClasses.background.totalRequests;
     const backgroundShare = totalRequests > 0 ? backgroundRequests / totalRequests : 0;
+    const stackLoad = this.buildStackLoadSnapshot(stackRateLimit);
     const botLoad = await this.buildBotLoadSnapshot(queues);
 
     const workerGroups = Object.entries(queues.webhookDefaultWorkerGroups ?? {}).map(
@@ -357,6 +372,7 @@ export class BackgroundRuntimeGovernorService {
       queues,
       backgroundShare,
       systemPressure,
+      stackLoad,
       botLoad,
       topSources,
       workerSkew: {
@@ -420,6 +436,22 @@ export class BackgroundRuntimeGovernorService {
     const systemPressureDecision = this.buildSystemPressureDecision(snapshot.systemPressure);
     if (systemPressureDecision) {
       return systemPressureDecision;
+    }
+
+    if (snapshot.stackLoad.smoothedLoad >= snapshot.stackLoad.pauseThreshold) {
+      return {
+        action: 'pause',
+        retryAfterMs: this.pauseRetryAfterMs,
+        reason: `MAX API stack load ${(snapshot.stackLoad.smoothedLoad * 100).toFixed(1)}%`,
+      };
+    }
+
+    if (snapshot.stackLoad.smoothedLoad >= snapshot.stackLoad.slowThreshold) {
+      return {
+        action: 'slow',
+        retryAfterMs: this.slowRetryAfterMs,
+        reason: `MAX API stack load ${(snapshot.stackLoad.smoothedLoad * 100).toFixed(1)}%`,
+      };
     }
 
     if (snapshot.botLoad.maxSmoothedLoad >= this.botLoadPauseThreshold) {
@@ -631,6 +663,22 @@ export class BackgroundRuntimeGovernorService {
       slowThreshold: this.botLoadSlowThreshold,
       pauseThreshold: this.botLoadPauseThreshold,
       topBots,
+    };
+  }
+
+  private buildStackLoadSnapshot(snapshot: {
+    windowSec: number;
+    smoothedLoad: number;
+    peakLoad: number;
+    avgLoad: number;
+  }): BackgroundStackLoadSnapshot {
+    return {
+      windowSec: snapshot.windowSec,
+      smoothedLoad: snapshot.smoothedLoad,
+      peakLoad: snapshot.peakLoad,
+      avgLoad: snapshot.avgLoad,
+      slowThreshold: this.botLoadSlowThreshold,
+      pauseThreshold: this.botLoadPauseThreshold,
     };
   }
 

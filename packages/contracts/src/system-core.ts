@@ -336,11 +336,24 @@ export type SystemDashboardBackgroundBudgetBotLoad = z.infer<
   typeof systemDashboardBackgroundBudgetBotLoadSchema
 >;
 
+export const systemDashboardBackgroundBudgetStackLoadSchema = z.object({
+  windowSec: z.number().int().positive(),
+  smoothedLoad: z.number().min(0),
+  peakLoad: z.number().min(0),
+  avgLoad: z.number().min(0),
+  slowThreshold: z.number().min(0).max(1),
+  pauseThreshold: z.number().min(0).max(1),
+});
+export type SystemDashboardBackgroundBudgetStackLoad = z.infer<
+  typeof systemDashboardBackgroundBudgetStackLoadSchema
+>;
+
 export const systemDashboardBackgroundBudgetSchema = z.object({
   windowSec: z.number().int().positive(),
   backgroundShare: z.number().min(0).max(1),
   topSources: z.array(systemDashboardBackgroundBudgetSourceSchema),
   pauseReasons: z.array(systemDashboardBackgroundBudgetPauseReasonSchema),
+  stackLoad: systemDashboardBackgroundBudgetStackLoadSchema.optional(),
   botLoad: systemDashboardBackgroundBudgetBotLoadSchema.optional(),
 });
 export type SystemDashboardBackgroundBudget = z.infer<typeof systemDashboardBackgroundBudgetSchema>;

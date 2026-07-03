@@ -701,6 +701,28 @@ describe('SystemDashboardService', () => {
         getDashboardBudgetSummary: jest.fn().mockResolvedValue({
           windowSec: 600,
           backgroundShare: 0.45,
+          stackLoad: {
+            windowSec: 60,
+            smoothedLoad: 0.52,
+            peakLoad: 0.8,
+            avgLoad: 0.2,
+            slowThreshold: 0.35,
+            pauseThreshold: 0.7,
+          },
+          botLoad: {
+            maxSmoothedLoad: 0.24,
+            maxPeakLoad: 0.4,
+            slowThreshold: 0.35,
+            pauseThreshold: 0.7,
+            topBots: [
+              {
+                botId: 'id613002203036_bot',
+                smoothedLoad: 0.24,
+                peakLoad: 0.4,
+                avgLoad: 0.1,
+              },
+            ],
+          },
           topSources: [
             {
               sourceTag: 'managed_refresh',
@@ -736,6 +758,13 @@ describe('SystemDashboardService', () => {
       },
       backgroundBudget: {
         backgroundShare: 0.45,
+        stackLoad: {
+          windowSec: 60,
+          smoothedLoad: 0.52,
+        },
+        botLoad: {
+          topBots: [expect.objectContaining({ botId: 'id613002203036_bot' })],
+        },
       },
       membershipLookup: {
         hotChannels: 1,
