@@ -314,6 +314,7 @@ describe('SafetyDeskService', () => {
       where: expect.objectContaining({
         id: 'post-1',
         publishCancelledAt: null,
+        publishLockedAt: null,
         source: {
           status: 'ACTIVE',
           publishMode: 'REVIEW',
@@ -340,15 +341,45 @@ describe('SafetyDeskService', () => {
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
+  it('does not reject a review item while publish is locked', async () => {
+    const { prisma, service } = createFixture();
+    prisma.vkParsingPost.findFirst.mockResolvedValue(createReviewPost());
+    prisma.vkParsingPost.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    await expect(service.rejectItem('post-1', 'maxim', {})).rejects.toThrow(
+      'Материал проверки уже обработан или недоступен',
+    );
+
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        id: 'post-1',
+        publishLockedAt: null,
+      }),
+      data: expect.any(Object),
+    });
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
   it('treats stale recheck decisions as not found without audit side effects', async () => {
     const { prisma, service } = createFixture();
-    prisma.vkParsingPost.findFirst.mockResolvedValue(createReviewPost({ publishCancelledAt: new Date() }));
+    const cancelledAt = new Date('2026-06-27T10:06:00.000Z');
+    prisma.vkParsingPost.findFirst.mockResolvedValue(
+      createReviewPost({ publishCancelledAt: cancelledAt }),
+    );
     prisma.vkParsingPost.updateMany.mockResolvedValueOnce({ count: 0 });
 
     await expect(service.recheckItem('post-1', 'maxim')).rejects.toThrow(
       'Материал проверки уже обработан или недоступен',
     );
 
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        id: 'post-1',
+        publishCancelledAt: cancelledAt,
+        publishLockedAt: null,
+      }),
+      data: expect.any(Object),
+    });
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 });

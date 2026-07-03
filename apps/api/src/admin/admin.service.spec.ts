@@ -76,6 +76,24 @@ function createChatSummaryFixture(
   };
 }
 
+function createAssignedBotFixture(
+  overrides: Partial<ChatSummary['assignedBots'][number]> &
+    Pick<ChatSummary['assignedBots'][number], 'botId'>,
+): ChatSummary['assignedBots'][number] {
+  return {
+    botId: overrides.botId,
+    label: overrides.label ?? overrides.botId,
+    role: overrides.role ?? 'standby',
+    membershipStatus: overrides.membershipStatus ?? 'active',
+    lifecycleState: overrides.lifecycleState ?? 'active',
+    speechPersona: overrides.speechPersona ?? 'male',
+    characterName: overrides.characterName ?? null,
+    avatarUrl: overrides.avatarUrl ?? null,
+    capabilities: overrides.capabilities ?? [],
+    permissionsSummary: overrides.permissionsSummary ?? null,
+  };
+}
+
 function createManagedEntityHeaderFixture(
   overrides: Partial<ManagedEntityHeader> &
     Pick<ManagedEntityHeader, 'id' | 'title' | 'entityType'>,
@@ -11633,6 +11651,102 @@ describe('AdminService.listChats', () => {
     expect(JSON.stringify(prisma.chatAdminAllowlist.findMany.mock.calls)).not.toContain(
       'dormant-bot',
     );
+  });
+
+  it('keeps published snapshot chats visible through an active assigned bot when primary is stale', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock({
+      getManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue({
+        version: 'snapshot-v1',
+        builtAt: '2026-04-04T10:00:00.000Z',
+        lastSyncedAt: '2026-04-04T09:59:30.000Z',
+        itemCount: 3,
+        itemsHash: 'hash-v1',
+        items: [
+          createChatSummaryFixture({
+            id: 'chat-standby-visible',
+            title: 'Чат со старым primary',
+            createdAt: '2026-04-03T10:00:00.000Z',
+            entityType: 'chat',
+            primaryBotId: 'dormant-bot',
+            assignedBots: [
+              createAssignedBotFixture({
+                botId: 'active-bot',
+                role: 'standby',
+                lifecycleState: 'active',
+              }),
+            ],
+            sharedMode: 'shared-standby',
+          }),
+          createChatSummaryFixture({
+            id: 'chat-foreign-hidden',
+            title: 'Чужой чат',
+            createdAt: '2026-04-02T10:00:00.000Z',
+            entityType: 'chat',
+            primaryBotId: 'foreign-bot',
+            assignedBots: [
+              createAssignedBotFixture({
+                botId: 'foreign-bot',
+                role: 'primary',
+                lifecycleState: 'active',
+              }),
+            ],
+          }),
+          createChatSummaryFixture({
+            id: 'chat-dormant-hidden',
+            title: 'Только старый бот',
+            createdAt: '2026-04-01T10:00:00.000Z',
+            entityType: 'chat',
+            primaryBotId: 'dormant-bot',
+          }),
+        ],
+      }),
+    });
+    const maxBotRegistry = {
+      getOperationalBots: jest.fn().mockReturnValue([{ id: 'active-bot', state: 'active' }]),
+      getAllBots: jest.fn().mockReturnValue([
+        { id: 'active-bot', state: 'active' },
+        { id: 'dormant-bot', state: 'dormant' },
+        { id: 'foreign-bot', state: 'active' },
+      ]),
+      getBotById: jest.fn((botId: string | null | undefined) => {
+        if (botId === 'active-bot') {
+          return { id: 'active-bot', state: 'active' };
+        }
+        if (botId === 'dormant-bot') {
+          return { id: 'dormant-bot', state: 'dormant' };
+        }
+        if (botId === 'foreign-bot') {
+          return { id: 'foreign-bot', state: 'active' };
+        }
+        return null;
+      }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+      } as never,
+      chatContextCache as never,
+      createConfigMock({ botId: 'active-bot' }) as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotRegistry as never,
+    );
+
+    const result = await service.listChats({
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(result.map((chat) => chat.id)).toEqual(['chat-standby-visible']);
+    expect(result[0]?.primaryBotId).toBe('dormant-bot');
+    expect(result[0]?.assignedBots.map((bot) => bot.botId)).toEqual(['active-bot']);
   });
 
   it('excludes dormant persisted bot memberships from remote admin access candidates', async () => {

@@ -137,7 +137,10 @@ export class SafetyDeskService {
     const post = await this.findReviewPostOrThrow(itemId, { includeCancelled: false });
     const now = new Date();
     const updated = await this.prisma.vkParsingPost.updateMany({
-      where: this.buildReviewPostWhere(post.id, { includeCancelled: false }),
+      where: {
+        ...this.buildReviewPostWhere(post.id, { includeCancelled: false }),
+        publishLockedAt: null,
+      },
       data: {
         publishQueuedAt: null,
         publishScheduledAt: null,
@@ -171,7 +174,11 @@ export class SafetyDeskService {
   ): Promise<SafetyDeskDecisionResponse> {
     const post = await this.findReviewPostOrThrow(itemId, { includeCancelled: true });
     const updated = await this.prisma.vkParsingPost.updateMany({
-      where: this.buildReviewPostWhere(post.id, { includeCancelled: true }),
+      where: {
+        ...this.buildReviewPostWhere(post.id, { includeCancelled: true }),
+        publishCancelledAt: post.publishCancelledAt,
+        publishLockedAt: null,
+      },
       data: {
         status: post.status === VK_POST_STATUS_FAILED ? VK_POST_STATUS_NEW : post.status,
         publishCancelledAt: null,

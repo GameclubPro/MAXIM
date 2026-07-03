@@ -20,6 +20,34 @@ describe('validateEnv boolean parsing', () => {
     expect(env.MAX_API_BASE_URL).toBe('https://platform-api2.max.ru');
   });
 
+  it('requires APP_BASE_URL and MAX_WEBHOOK_BASE_URL to be origin-only URLs', () => {
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          APP_BASE_URL: 'https://major-maksimov.ru/app/',
+        }),
+      ),
+    ).toThrow(/APP_BASE_URL must be an origin URL/u);
+
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          MAX_WEBHOOK_BASE_URL: 'https://major-maksimov.ru/app/',
+        }),
+      ),
+    ).toThrow(/MAX_WEBHOOK_BASE_URL must be an origin URL/u);
+
+    const env = validateEnv(
+      createValidEnv({
+        APP_BASE_URL: ' https://major-maksimov.ru/ ',
+        MAX_WEBHOOK_BASE_URL: 'https://major-maksimov.ru',
+      }),
+    );
+
+    expect(env.APP_BASE_URL).toBe('https://major-maksimov.ru/');
+    expect(env.MAX_WEBHOOK_BASE_URL).toBe('https://major-maksimov.ru');
+  });
+
   it('parses string false values as false', () => {
     const env = validateEnv(
       createValidEnv({

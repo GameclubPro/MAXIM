@@ -237,6 +237,9 @@ export class VkParsingService {
         id: post.id,
         chatId,
         status: { notIn: ['PUBLISHED', 'UNAVAILABLE', 'SKIPPED'] },
+        updatedAt: post.updatedAt,
+        publishCancelledAt: null,
+        publishLockedAt: null,
         source: { publishMode: 'REVIEW' },
       },
       data: {

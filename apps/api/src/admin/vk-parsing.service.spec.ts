@@ -154,6 +154,9 @@ describe('VkParsingService', () => {
           }),
         ),
       },
+      auditLog: {
+        create: jest.fn().mockResolvedValue({ id: 'audit-1' }),
+      },
       $executeRaw: jest.fn().mockResolvedValue(1),
       $queryRaw: jest.fn().mockResolvedValue([
         {
@@ -4047,6 +4050,9 @@ describe('VkParsingService', () => {
       where: expect.objectContaining({
         id: 'post-1',
         chatId: 'channel-1',
+        updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+        publishCancelledAt: null,
+        publishLockedAt: null,
         source: { publishMode: 'REVIEW' },
       }),
       data: expect.objectContaining({
@@ -4059,6 +4065,74 @@ describe('VkParsingService', () => {
         lastError: null,
       }),
     });
+  });
+
+  it('does not clear review-mode VK publish metadata when the draft changed concurrently', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const source = createSource({ publishMode: 'REVIEW' });
+    const post = createPostRow({
+      source,
+      text: 'Черновик до правки',
+      publishLockedAt: null,
+      publishIdempotencyKey: 'review-job',
+      publishQueuedAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+    });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(
+      service.updateReviewPostDraft('channel-1', 'post-1', { userId: '98315271' } as never, {
+        text: 'Черновик после правки',
+        photoUrls: [],
+        linkUrls: [],
+      }),
+    ).rejects.toThrow('уже обработан или недоступен');
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        id: 'post-1',
+        chatId: 'channel-1',
+        updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+        publishLockedAt: null,
+        publishCancelledAt: null,
+      }),
+      data: expect.objectContaining({
+        publishIdempotencyKey: null,
+      }),
+    });
+  });
+
+  it('does not cancel a VK schedule after the queued publish state changed', async () => {
+    const { service, prisma } = createFixture();
+    const source = createSource();
+    const scheduledAt = new Date('2026-05-25T10:30:00.000Z');
+    const post = createPostRow({
+      source,
+      publishScheduledAt: scheduledAt,
+      publishIdempotencyKey: 'schedule-key-1',
+      publishReason: 'manual-schedule',
+    });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(
+      service.cancelScheduledPost('channel-1', 'post-1', { userId: '98315271' } as never),
+    ).rejects.toThrow('уже нельзя отменить');
+
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        id: 'post-1',
+        chatId: 'channel-1',
+        publishScheduledAt: scheduledAt,
+        publishIdempotencyKey: 'schedule-key-1',
+        publishCancelledAt: null,
+        publishLockedAt: null,
+      }),
+      data: expect.any(Object),
+    });
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
   it('clears stale queued jobs for review-mode VK sources without publishing', async () => {

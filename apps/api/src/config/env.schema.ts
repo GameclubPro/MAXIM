@@ -45,11 +45,27 @@ function envBoolean(defaultValue: boolean) {
     .transform((value) => value ?? defaultValue);
 }
 
+function originOnlyUrl(key: string) {
+  return z
+    .string()
+    .trim()
+    .url()
+    .refine(
+      (value) => {
+        const url = new URL(value);
+        return (url.pathname === '' || url.pathname === '/') && !url.search && !url.hash;
+      },
+      {
+        message: `${key} must be an origin URL without path, query, or hash; use https://major-maksimov.ru, not https://major-maksimov.ru/app/`,
+      },
+    );
+}
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3001),
-  APP_BASE_URL: z.string().url(),
-  MAX_WEBHOOK_BASE_URL: z.string().url().optional(),
+  APP_BASE_URL: originOnlyUrl('APP_BASE_URL'),
+  MAX_WEBHOOK_BASE_URL: originOnlyUrl('MAX_WEBHOOK_BASE_URL').optional(),
 
   MAX_BOT_ID: z.string().min(3),
   MAX_BOT_LABEL: z.string().min(1).max(64).optional(),

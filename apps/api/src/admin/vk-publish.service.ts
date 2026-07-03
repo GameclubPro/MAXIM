@@ -349,6 +349,9 @@ export class VkPublishService {
         id: post.id,
         chatId,
         status: { notIn: [VK_POST_STATUS_PUBLISHED, VK_POST_STATUS_UNAVAILABLE] },
+        publishScheduledAt: post.publishScheduledAt,
+        publishIdempotencyKey: post.publishIdempotencyKey,
+        publishCancelledAt: post.publishCancelledAt,
         publishLockedAt: null,
       },
       data: {

@@ -2898,8 +2898,8 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const primaryBotId = this.normalizeRuntimeManagedEntityBotId(chat.primaryBotId);
-    if (primaryBotId) {
-      return this.managedEntitiesRuntimeBotIds.has(primaryBotId);
+    if (primaryBotId && this.managedEntitiesRuntimeBotIds.has(primaryBotId)) {
+      return true;
     }
 
     const assignedBotIds = (chat.assignedBots ?? [])
@@ -2907,6 +2907,10 @@ export class AdminService implements OnModuleDestroy {
       .filter((botId): botId is string => Boolean(botId));
     if (assignedBotIds.length > 0) {
       return assignedBotIds.some((botId) => this.managedEntitiesRuntimeBotIds.has(botId));
+    }
+
+    if (primaryBotId) {
+      return false;
     }
 
     return options.requireKnownBot === true ? false : true;
