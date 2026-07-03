@@ -9,6 +9,7 @@ import {
 } from './developer-forced-global-spammer-cache';
 import { ModerationService } from './moderation.service';
 import { RuleEngineService } from './rule-engine.service.impl';
+import { GLOBAL_SPAMMER_TRACK_HOT_PATH_TIMEOUT_MS } from './moderation.service.support';
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -2070,6 +2071,57 @@ describe('ModerationService', () => {
       });
     } finally {
       dateNowSpy.mockRestore();
+    }
+  });
+
+  it('fails open when global spammer tracking exceeds the hot-path budget', async () => {
+    jest.useFakeTimers();
+    const service = new ModerationService(
+      {} as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn(),
+      } as never,
+    );
+    const trackSpy = jest
+      .spyOn(service as any, 'trackAndRegisterGlobalSpammer')
+      .mockReturnValue(new Promise(() => undefined));
+    const debugSpy = jest
+      .spyOn((service as any).logger, 'debug')
+      .mockImplementation(() => undefined);
+
+    try {
+      const resultPromise = (service as any).trackAndRegisterGlobalSpammerWithHotPathBudget({
+        chatId: '-chat-1',
+        userId: 'user-1',
+        messageId: 'message-1',
+        text: 'fanout text',
+        deleteSpammersEnabled: true,
+        exemptFromEnforcement: false,
+      });
+
+      await jest.advanceTimersByTimeAsync(GLOBAL_SPAMMER_TRACK_HOT_PATH_TIMEOUT_MS);
+
+      await expect(resultPromise).resolves.toEqual({
+        handled: false,
+        skipKnownSpammerCheck: false,
+      });
+      expect(trackSpy).toHaveBeenCalledTimes(1);
+      expect(debugSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chatId: '-chat-1',
+          userId: 'user-1',
+          messageId: 'message-1',
+          timeoutMs: GLOBAL_SPAMMER_TRACK_HOT_PATH_TIMEOUT_MS,
+        }),
+        'Global spammer tracking exceeded hot-path budget; continuing fail-open',
+      );
+    } finally {
+      jest.useRealTimers();
     }
   });
 

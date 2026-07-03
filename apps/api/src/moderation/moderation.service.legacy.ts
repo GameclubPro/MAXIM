@@ -281,6 +281,7 @@ import {
   GLOBAL_SPAMMER_REDIS_TTL_SEC,
   GLOBAL_SPAMMER_LOCAL_CHAT_OBSERVATION_TTL_MS,
   GLOBAL_SPAMMER_EXEMPTION_CACHE_TTL_MS,
+  GLOBAL_SPAMMER_TRACK_HOT_PATH_TIMEOUT_MS,
   GLOBAL_SPAMMER_HIGH_FANOUT_MIN_CHATS,
   GLOBAL_SPAMMER_EPISODE_LOCK_TTL_SEC,
   GLOBAL_SPAMMER_FANOUT_EPISODE_WINDOW_SEC,
@@ -1329,7 +1330,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         }
         const isGlobalSpammerExempt = globalSpammerAdminDecision === 'ALLOW';
         this.markWebhookHotPathStage(hotPathProfile, 'global-spammer-track');
-        const globalSpammerTracking = await this.trackAndRegisterGlobalSpammer({
+        const globalSpammerTracking = await this.trackAndRegisterGlobalSpammerWithHotPathBudget({
           chatId,
           userId: senderId,
           messageId,
@@ -6718,6 +6719,46 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
       return baseResult;
     }
+  }
+
+  private async trackAndRegisterGlobalSpammerWithHotPathBudget(params: {
+    chatId: string;
+    userId: string;
+    messageId: string;
+    text: string;
+    deleteSpammersEnabled: boolean;
+    exemptFromEnforcement: boolean;
+  }): Promise<GlobalSpammerTrackingResult> {
+    let timedOut = false;
+    const result = await raceWithTimeout({
+      operation: this.trackAndRegisterGlobalSpammer(params),
+      timeoutMs: GLOBAL_SPAMMER_TRACK_HOT_PATH_TIMEOUT_MS,
+      onTimeout: () => {
+        timedOut = true;
+        return {
+          handled: false,
+          skipKnownSpammerCheck: false,
+        };
+      },
+    });
+    if (timedOut) {
+      void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+        stage: 'global-spammer-track.budget',
+        outcome: 'timeout',
+        failOpen: true,
+      });
+      this.logger.debug(
+        {
+          chatId: params.chatId,
+          userId: params.userId,
+          messageId: params.messageId,
+          timeoutMs: GLOBAL_SPAMMER_TRACK_HOT_PATH_TIMEOUT_MS,
+        },
+        'Global spammer tracking exceeded hot-path budget; continuing fail-open',
+      );
+    }
+
+    return result;
   }
 
   private runGlobalSpammerSideEffect(
