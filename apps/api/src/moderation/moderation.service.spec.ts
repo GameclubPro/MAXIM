@@ -11,6 +11,7 @@ import { ModerationService } from './moderation.service';
 import { RuleEngineService } from './rule-engine.service.impl';
 import {
   DEVELOPER_FORCED_GLOBAL_SPAMMER_HOT_PATH_TIMEOUT_MS,
+  DUPLICATE_FOLLOW_UP_HOT_PATH_TIMEOUT_MS,
   GLOBAL_SPAMMER_EXEMPTION_HOT_PATH_TIMEOUT_MS,
   GLOBAL_SPAMMER_TRACK_HOT_PATH_TIMEOUT_MS,
   MODERATION_ACTION_ACCESS_LOSS_HOT_PATH_TIMEOUT_MS,
@@ -11952,6 +11953,133 @@ describe('ModerationService', () => {
         action: SanctionAction.DELETE_MESSAGE,
       }),
     });
+  });
+
+  it('detaches duplicate follow-up when bot notice delivery exceeds the hot-path budget', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-03T10:00:00.000Z'));
+    const runtimeDiagnosticsService = {
+      recordHotPathStageOutcome: jest.fn(),
+      recordHotPathProfile: jest.fn(),
+    };
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ duplicateBotMessageEnabled: true }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [],
+        duplicateHit: {
+          count: 1,
+          windowSec: 60,
+          hash: 'dup-hit-slow-follow-up',
+        },
+      }),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn(
+        () =>
+          new Promise(() => {
+            // Intentionally never resolves.
+          }),
+      ),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn((key: string) =>
+          key === 'WEBHOOK_USER_FACING_TIMEOUT_MS' ? 10_000 : undefined,
+        ),
+      } as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      runtimeDiagnosticsService as never,
+    );
+    (service as any).webhookUserFacingTimeoutMs = 10_000;
+    const debugSpy = jest.spyOn((service as any).logger, 'debug').mockImplementation(() => undefined);
+    const hotPathProfile = (service as any).createWebhookHotPathProfile();
+
+    try {
+      const result = service.handleUpdate(createUpdate(), hotPathProfile);
+
+      await Promise.resolve();
+      await Promise.resolve();
+      await jest.advanceTimersByTimeAsync(DUPLICATE_FOLLOW_UP_HOT_PATH_TIMEOUT_MS);
+      await expect(result).resolves.toBeUndefined();
+
+      expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+      expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          messageId: 'msg-1',
+          ruleCode: 'DUPLICATE_DELETE',
+          action: SanctionAction.DELETE_MESSAGE,
+        }),
+      });
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+
+      const snapshot = (service as any).readWebhookHotPathProfileSnapshot(hotPathProfile);
+      expect(snapshot).toMatchObject({
+        latestStage: 'duplicate-follow-up',
+        successBoundaryReached: true,
+        successBoundaryStage: 'duplicate-delete',
+      });
+      expect(runtimeDiagnosticsService.recordHotPathStageOutcome).toHaveBeenCalledWith({
+        stage: 'duplicate-follow-up.deferred',
+        outcome: 'skip',
+        failOpen: true,
+      });
+      expect(runtimeDiagnosticsService.recordHotPathStageOutcome).toHaveBeenCalledWith({
+        stage: 'follow_up_deferred',
+        outcome: 'skip',
+        failOpen: true,
+      });
+      expect(debugSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stage: 'duplicate-follow-up',
+          chatId: 'chat-1',
+          userId: 'user-1',
+          messageId: 'msg-1',
+          timeoutMs: DUPLICATE_FOLLOW_UP_HOT_PATH_TIMEOUT_MS,
+        }),
+        'Detached webhook follow-up after hot-path budget window',
+      );
+    } finally {
+      debugSpy.mockRestore();
+      jest.useRealTimers();
+    }
   });
 
   it('does not call SanctionService for text filter violations', async () => {

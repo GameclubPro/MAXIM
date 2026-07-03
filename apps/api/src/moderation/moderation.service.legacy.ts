@@ -277,6 +277,8 @@ import {
   REQUIRED_SUBSCRIPTION_FOLLOW_UP_HOT_PATH_TIMEOUT_MS,
   VIOLATION_ADMIN_RECHECK_RESERVE_MS,
   VIOLATION_FOLLOW_UP_HOT_PATH_TIMEOUT_MS,
+  DUPLICATE_FOLLOW_UP_DETACH_MIN_REMAINING_MS,
+  DUPLICATE_FOLLOW_UP_HOT_PATH_TIMEOUT_MS,
   CHANNEL_DIALOG_AUTO_ATTACH_ACTION,
   CHANNEL_DIALOG_AUTO_ATTACH_SKIP_ACTION,
   CHAT_DIALOG_AUTO_ATTACH_ACTION,
@@ -1545,6 +1547,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
           deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
           suppressNonEssentialMessages: hotChatBackoffActive,
+          hotPathProfile,
         });
         return;
       }
@@ -1578,6 +1581,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
           deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
           suppressNonEssentialMessages: hotChatBackoffActive,
+          hotPathProfile,
         });
         return;
       }
@@ -2700,6 +2704,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     deleteBotMessagesEnabled: boolean;
     deleteBotMessagesDelayMinutes: number;
     suppressNonEssentialMessages: boolean;
+    hotPathProfile?: WebhookHotPathProfile | null;
   }) {
     const {
       chatId,
@@ -2726,6 +2731,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes,
       suppressNonEssentialMessages,
+      hotPathProfile,
     } = params;
     const messageAgeMs = Date.now() - new Date(createdAt).getTime();
     const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
@@ -2733,6 +2739,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (canDeleteMessage) {
       try {
+        this.markWebhookHotPathStage(hotPathProfile, 'duplicate-delete');
         messageDeleted = await this.deleteMessageImmediately(chatId, messageId);
         if (messageDeleted) {
           await this.createBotModerationEvent({
@@ -2754,6 +2761,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               },
             },
           });
+          this.markWebhookHotPathSuccessBoundary(hotPathProfile, 'duplicate-delete');
         }
       } catch (error: unknown) {
         this.logger.warn(
@@ -2773,88 +2781,102 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
     }
 
-    const duplicateMessageOptions = this.buildBotMessageOptions(
-      chatId,
-      duplicateBotButtons,
-      duplicateBotButtonEnabled,
-      duplicateBotButtonUrl,
-      duplicateBotButtonText,
-      rulesAttachViolationsEnabled,
-      rulesPublishedUrl,
-      rulesPublishedMessageId,
-    );
+    this.markWebhookHotPathStage(hotPathProfile, 'duplicate-follow-up');
+    const runDuplicateFollowUp = async () => {
+      const duplicateMessageOptions = this.buildBotMessageOptions(
+        chatId,
+        duplicateBotButtons,
+        duplicateBotButtonEnabled,
+        duplicateBotButtonUrl,
+        duplicateBotButtonText,
+        rulesAttachViolationsEnabled,
+        rulesPublishedUrl,
+        rulesPublishedMessageId,
+      );
 
-    if (!suppressNonEssentialMessages && duplicateBotMessageEnabled && decision.action !== 'BAN') {
-      try {
-        const explanationText = this.buildDuplicateExplanation(
-          userLabel,
-          decision,
-          muteDurationHours,
-          messageDeleted,
-          duplicateBotMessageText,
-          botSpeechStyle,
-        );
-        await this.sendBotMessageWithOptionalAutoDelete({
-          chatId,
-          text:
-            decision.action === 'WARN'
-              ? await this.appendAdminContactMarkdownLink(
-                  chatId,
-                  explanationText,
-                  duplicateAdminContactButtonEnabled,
-                  duplicateAdminContactButtonUrl,
-                )
-              : explanationText,
-          messageOptions: duplicateMessageOptions ?? undefined,
-          media: this.resolveBotSpeechMedia({ botSpeechMedia }, 'duplicateBotMessageText'),
-          deleteBotMessagesEnabled,
-          deleteBotMessagesDelayMinutes,
-        });
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
+      if (!suppressNonEssentialMessages && duplicateBotMessageEnabled && decision.action !== 'BAN') {
+        try {
+          const explanationText = this.buildDuplicateExplanation(
+            userLabel,
+            decision,
+            muteDurationHours,
+            messageDeleted,
+            duplicateBotMessageText,
+            botSpeechStyle,
+          );
+          await this.sendBotMessageWithOptionalAutoDelete({
             chatId,
-            userId,
-            messageId,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          },
-          'Failed to send duplicate explanation message',
-        );
+            text:
+              decision.action === 'WARN'
+                ? await this.appendAdminContactMarkdownLink(
+                    chatId,
+                    explanationText,
+                    duplicateAdminContactButtonEnabled,
+                    duplicateAdminContactButtonUrl,
+                  )
+                : explanationText,
+            messageOptions: duplicateMessageOptions ?? undefined,
+            media: this.resolveBotSpeechMedia({ botSpeechMedia }, 'duplicateBotMessageText'),
+            deleteBotMessagesEnabled,
+            deleteBotMessagesDelayMinutes,
+          });
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId,
+              userId,
+              messageId,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            'Failed to send duplicate explanation message',
+          );
+        }
       }
-    }
 
-    const action = this.toSanctionAction(decision.action);
-    await this.applySanctionAction({
-      chatId,
-      userId,
-      action,
-      userLabel,
-      messageId,
-      muteDurationHours,
-      deleteBotMessagesEnabled,
-      deleteBotMessagesDelayMinutes,
-      botMessageOptions: duplicateMessageOptions ?? undefined,
-      botSpeechStyle,
-    });
-
-    await this.createBotModerationEvent({
-      data: {
+      const action = this.toSanctionAction(decision.action);
+      await this.applySanctionAction({
         chatId,
         userId,
-        messageId,
-        eventType: EventType.MESSAGE,
-        ruleCode: `DUPLICATE_${decision.action}`,
         action,
-        maskedExcerpt: maskText(text),
-        score: 0.8,
-        operator: Operator.BOT,
-        metadata: {
-          windowSec: decision.windowSec,
-          count: decision.count,
-          threshold: decision.threshold,
-          nextStep: decision.nextAction,
+        userLabel,
+        messageId,
+        muteDurationHours,
+        deleteBotMessagesEnabled,
+        deleteBotMessagesDelayMinutes,
+        botMessageOptions: duplicateMessageOptions ?? undefined,
+        botSpeechStyle,
+      });
+
+      await this.createBotModerationEvent({
+        data: {
+          chatId,
+          userId,
+          messageId,
+          eventType: EventType.MESSAGE,
+          ruleCode: `DUPLICATE_${decision.action}`,
+          action,
+          maskedExcerpt: maskText(text),
+          score: 0.8,
+          operator: Operator.BOT,
+          metadata: {
+            windowSec: decision.windowSec,
+            count: decision.count,
+            threshold: decision.threshold,
+            nextStep: decision.nextAction,
+          },
         },
-      },
+      });
+    };
+
+    await this.runWebhookFollowUpWithBudget({
+      stage: 'duplicate-follow-up',
+      hotPathProfile,
+      chatId,
+      userId,
+      messageId,
+      maxWaitMs: DUPLICATE_FOLLOW_UP_HOT_PATH_TIMEOUT_MS,
+      minRemainingMs: DUPLICATE_FOLLOW_UP_DETACH_MIN_REMAINING_MS,
+      task: runDuplicateFollowUp,
     });
   }
 
@@ -2882,6 +2904,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     deleteBotMessagesEnabled: boolean;
     deleteBotMessagesDelayMinutes: number;
     suppressNonEssentialMessages: boolean;
+    hotPathProfile?: WebhookHotPathProfile | null;
   }) {
     const {
       chatId,
@@ -2907,6 +2930,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes,
       suppressNonEssentialMessages,
+      hotPathProfile,
     } = params;
     const messageAgeMs = Date.now() - new Date(createdAt).getTime();
     const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
@@ -2914,6 +2938,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (canDeleteMessage) {
       try {
+        this.markWebhookHotPathStage(hotPathProfile, 'duplicate-delete');
         messageDeleted = await this.deleteMessageImmediately(chatId, messageId);
         if (messageDeleted) {
           await this.createBotModerationEvent({
@@ -2934,6 +2959,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               },
             },
           });
+          this.markWebhookHotPathSuccessBoundary(hotPathProfile, 'duplicate-delete');
         }
       } catch (error: unknown) {
         this.logger.warn(
@@ -2953,49 +2979,63 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
     }
 
-    const duplicateMessageOptions = this.buildBotMessageOptions(
-      chatId,
-      duplicateBotButtons,
-      duplicateBotButtonEnabled,
-      duplicateBotButtonUrl,
-      duplicateBotButtonText,
-      rulesAttachViolationsEnabled,
-      rulesPublishedUrl,
-      rulesPublishedMessageId,
-    );
+    this.markWebhookHotPathStage(hotPathProfile, 'duplicate-follow-up');
+    const runDuplicateFollowUp = async () => {
+      const duplicateMessageOptions = this.buildBotMessageOptions(
+        chatId,
+        duplicateBotButtons,
+        duplicateBotButtonEnabled,
+        duplicateBotButtonUrl,
+        duplicateBotButtonText,
+        rulesAttachViolationsEnabled,
+        rulesPublishedUrl,
+        rulesPublishedMessageId,
+      );
 
-    if (!suppressNonEssentialMessages && duplicateBotMessageEnabled) {
-      try {
-        await this.sendBotMessageWithOptionalAutoDelete({
-          chatId,
-          text: await this.appendAdminContactMarkdownLink(
+      if (!suppressNonEssentialMessages && duplicateBotMessageEnabled) {
+        try {
+          await this.sendBotMessageWithOptionalAutoDelete({
             chatId,
-            this.buildDuplicateHitExplanation(
-              userLabel,
-              messageDeleted,
-              duplicateBotMessageText,
-              botSpeechStyle,
+            text: await this.appendAdminContactMarkdownLink(
+              chatId,
+              this.buildDuplicateHitExplanation(
+                userLabel,
+                messageDeleted,
+                duplicateBotMessageText,
+                botSpeechStyle,
+              ),
+              duplicateAdminContactButtonEnabled,
+              duplicateAdminContactButtonUrl,
             ),
-            duplicateAdminContactButtonEnabled,
-            duplicateAdminContactButtonUrl,
-          ),
-          messageOptions: duplicateMessageOptions ?? undefined,
-          media: this.resolveBotSpeechMedia({ botSpeechMedia }, 'duplicateBotMessageText'),
-          deleteBotMessagesEnabled,
-          deleteBotMessagesDelayMinutes,
-        });
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
-            chatId,
-            userId,
-            messageId,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          },
-          'Failed to send duplicate explanation message',
-        );
+            messageOptions: duplicateMessageOptions ?? undefined,
+            media: this.resolveBotSpeechMedia({ botSpeechMedia }, 'duplicateBotMessageText'),
+            deleteBotMessagesEnabled,
+            deleteBotMessagesDelayMinutes,
+          });
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId,
+              userId,
+              messageId,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            'Failed to send duplicate explanation message',
+          );
+        }
       }
-    }
+    };
+
+    await this.runWebhookFollowUpWithBudget({
+      stage: 'duplicate-follow-up',
+      hotPathProfile,
+      chatId,
+      userId,
+      messageId,
+      maxWaitMs: DUPLICATE_FOLLOW_UP_HOT_PATH_TIMEOUT_MS,
+      minRemainingMs: DUPLICATE_FOLLOW_UP_DETACH_MIN_REMAINING_MS,
+      task: runDuplicateFollowUp,
+    });
   }
 
   private toSanctionAction(action: DuplicateAction): SanctionAction {
