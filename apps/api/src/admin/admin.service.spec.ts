@@ -33460,10 +33460,13 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     expect(commentsToken.d).toBe(publishedThreadId);
     expect(suggestToken.d).toBe(publishedThreadId);
     expect(prisma.$executeRaw).toHaveBeenCalledWith(expect.any(Object));
-    expect(extractSqlText(prisma.$executeRaw.mock.calls[0]?.[0])).toContain('UPDATE audit_logs');
-    expect(extractSqlText(prisma.$executeRaw.mock.calls[0]?.[0])).toContain(
-      "payload->>'reviewStatus'",
-    );
+    const claimSql = extractSqlText(prisma.$executeRaw.mock.calls[0]?.[0]);
+    expect(claimSql).toContain('UPDATE audit_logs');
+    expect(claimSql).toContain("payload->>'reviewStatus'");
+    expect(claimSql).toContain("'reviewClaimedAt',");
+    expect(claimSql).toContain("'reviewClaimedByUserId',");
+    expect(claimSql).toContain("'reviewAction',");
+    expect(claimSql.match(/::text/gu)?.length ?? 0).toBeGreaterThanOrEqual(5);
     expect(prisma.auditLog.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
@@ -33750,6 +33753,11 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     ).rejects.toBe(publishError);
 
     expect(prisma.$executeRaw).toHaveBeenCalledTimes(2);
+    const releaseSql = extractSqlText(prisma.$executeRaw.mock.calls[1]?.[0]);
+    expect(releaseSql).toContain("'reviewStatus',");
+    expect(releaseSql).toContain("'reviewClaimReleasedAt',");
+    expect(releaseSql).toContain("'reviewLastError',");
+    expect(releaseSql.match(/::text/gu)?.length ?? 0).toBeGreaterThanOrEqual(5);
     expect(prisma.auditLog.updateMany).not.toHaveBeenCalled();
   });
 

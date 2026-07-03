@@ -7110,12 +7110,12 @@ export class AdminService implements OnModuleDestroy {
       UPDATE audit_logs
       SET payload = payload::jsonb || jsonb_build_object(
         'reviewStatus', 'publishing',
-        'reviewClaimedAt', ${claimedAt},
-        'reviewClaimedByUserId', ${params.userId},
-        'reviewAction', ${params.action}
+        'reviewClaimedAt', ${claimedAt}::text,
+        'reviewClaimedByUserId', ${params.userId}::text,
+        'reviewAction', ${params.action}::text
       )
-      WHERE id = ${params.suggestionId}
-        AND action = ${CHANNEL_DIALOG_ACTION_SUGGEST}
+      WHERE id = ${params.suggestionId}::text
+        AND action = ${CHANNEL_DIALOG_ACTION_SUGGEST}::text
         AND payload->>'type' = 'suggest'
         AND COALESCE(NULLIF(payload->>'reviewStatus', ''), 'pending') = 'pending'
     `);
@@ -7156,15 +7156,15 @@ export class AdminService implements OnModuleDestroy {
       SET payload = (
         payload::jsonb
         || jsonb_build_object(
-          'reviewStatus', ${params.previousReviewStatus},
-          'reviewClaimReleasedAt', ${releasedAt},
-          'reviewLastError', ${message}
+          'reviewStatus', ${params.previousReviewStatus}::text,
+          'reviewClaimReleasedAt', ${releasedAt}::text,
+          'reviewLastError', ${message}::text
         )
       ) - 'reviewClaimedAt' - 'reviewClaimedByUserId' - 'reviewAction'
-      WHERE id = ${params.suggestionId}
-        AND action = ${CHANNEL_DIALOG_ACTION_SUGGEST}
+      WHERE id = ${params.suggestionId}::text
+        AND action = ${CHANNEL_DIALOG_ACTION_SUGGEST}::text
         AND payload->>'reviewStatus' = 'publishing'
-        AND payload->>'reviewClaimedByUserId' = ${params.userId}
+        AND payload->>'reviewClaimedByUserId' = ${params.userId}::text
     `);
   }
 
