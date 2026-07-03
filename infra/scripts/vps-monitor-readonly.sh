@@ -8,6 +8,7 @@ DURATION_SEC="${1:-${MAXIM_MONITOR_DURATION_SEC:-1800}}"
 INTERVAL_SEC="${2:-${MAXIM_MONITOR_INTERVAL_SEC:-300}}"
 TAIL_LINES="${MAXIM_MONITOR_LOG_TAIL_LINES:-300}"
 LOG_FILE="${MAXIM_MONITOR_LOG:-/tmp/maxim-vps-readonly-monitor-$(date +%Y%m%d%H%M%S).log}"
+PUBLIC_URL="${MAXIM_VPS_PUBLIC_URL:-https://major-maksimov.ru}"
 
 SERVICES=(
   api-ingress
@@ -79,11 +80,77 @@ REMOTE
   ./infra/scripts/vps-connect.sh exec "$remote_command"
 }
 
+summarize_public_ready_health() {
+  local ready_json
+
+  ready_json="$(curl -fsS --max-time 15 "$PUBLIC_URL/api/health/ready")"
+  READY_JSON="$ready_json" node <<'NODE'
+const payload = process.env.READY_JSON ?? '';
+const ready = JSON.parse(payload);
+const queueLag = ready.checks?.queueLag ?? {};
+const systemMode = ready.systemMode ?? {};
+const bots = Object.entries(ready.bots ?? {});
+const botsWithRecentFailedEvents = bots.filter(([, bot]) => Number(bot?.failedEvents ?? 0) > 0)
+  .length;
+const summary = {
+  ok: ready.ok === true,
+  mode: systemMode.mode ?? 'unknown',
+  degraded: systemMode.degraded === true,
+  queueLagSec: Number(systemMode.queueLagSec ?? queueLag.effectiveLagSec ?? 0),
+  database: ready.checks?.database === true,
+  redis: ready.checks?.redis === true,
+  softWarning: queueLag.softWarning === true,
+  softWarningCode: queueLag.softWarningCode ?? null,
+  rawOk: queueLag.rawOk !== false,
+  bots: bots.length,
+  botsWithRecentFailedEvents,
+};
+console.log(
+  [
+    `ready ok=${summary.ok}`,
+    `mode=${summary.mode}`,
+    `degraded=${summary.degraded}`,
+    `queueLagSec=${summary.queueLagSec}`,
+    `db=${summary.database}`,
+    `redis=${summary.redis}`,
+    `softWarning=${summary.softWarning}`,
+    `rawOk=${summary.rawOk}`,
+    `bots=${summary.bots}`,
+    `botsWithRecentFailedEvents=${summary.botsWithRecentFailedEvents}`,
+  ].join(' '),
+);
+
+const warnings = [];
+if (summary.degraded) {
+  warnings.push(`system mode degraded (${summary.mode})`);
+}
+if (!summary.database) {
+  warnings.push('database check is not true');
+}
+if (!summary.redis) {
+  warnings.push('redis check is not true');
+}
+if (summary.softWarning) {
+  warnings.push(`queue lag soft warning: ${summary.softWarningCode ?? 'unknown'}`);
+}
+if (!summary.rawOk) {
+  warnings.push('queue metrics rawOk=false');
+}
+for (const warning of warnings) {
+  console.log(`WARN: ${warning}`);
+}
+if (!summary.ok || !summary.database || !summary.redis) {
+  process.exitCode = 1;
+}
+NODE
+}
+
 sample_once() {
   local sample_index="$1"
 
   echo "===== sample $sample_index $(date -Is) ====="
   run_step health ./infra/scripts/vps-connect.sh health
+  run_step semantic-health summarize_public_ready_health
   run_step ps ./infra/scripts/vps-connect.sh ps
   run_step restart-counts ./infra/scripts/vps-connect.sh exec \
     'ids=$(docker ps -q --filter label=com.docker.compose.project=infra); docker inspect --format "{{.Name}}\t{{.RestartCount}}\t{{.State.Status}}\t{{.State.StartedAt}}" $ids'
