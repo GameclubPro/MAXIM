@@ -14,6 +14,7 @@ async function bootstrap() {
   if (!httpEnabled) {
     const context = await NestFactory.createApplicationContext(AppModule, { bufferLogs: true });
     context.useLogger(context.get(Logger));
+    context.enableShutdownHooks();
     return;
   }
 
@@ -26,6 +27,7 @@ async function bootstrap() {
   );
 
   app.useLogger(app.get(Logger));
+  app.enableShutdownHooks();
   app.useGlobalFilters(new SanitizedExceptionFilter());
   app.setGlobalPrefix('api');
   app.enableCors({
