@@ -288,6 +288,7 @@ import {
   GLOBAL_SPAMMER_LOCAL_CHAT_OBSERVATION_TTL_MS,
   GLOBAL_SPAMMER_EXEMPTION_CACHE_TTL_MS,
   GLOBAL_SPAMMER_EXEMPTION_HOT_PATH_TIMEOUT_MS,
+  GLOBAL_SPAMMER_EXEMPTION_HOT_PATH_MAX_ADMIN_IDS,
   GLOBAL_SPAMMER_TRACK_HOT_PATH_TIMEOUT_MS,
   DEVELOPER_FORCED_GLOBAL_SPAMMER_HOT_PATH_TIMEOUT_MS,
   MODERATION_ACTION_ACCESS_LOSS_HOT_PATH_TIMEOUT_MS,
@@ -2794,6 +2795,40 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         rulesPublishedMessageId,
       );
 
+      const action = this.toSanctionAction(decision.action);
+      await this.applySanctionAction({
+        chatId,
+        userId,
+        action,
+        userLabel,
+        messageId,
+        muteDurationHours,
+        deleteBotMessagesEnabled,
+        deleteBotMessagesDelayMinutes,
+        botMessageOptions: duplicateMessageOptions ?? undefined,
+        botSpeechStyle,
+      });
+
+      await this.createBotModerationEvent({
+        data: {
+          chatId,
+          userId,
+          messageId,
+          eventType: EventType.MESSAGE,
+          ruleCode: `DUPLICATE_${decision.action}`,
+          action,
+          maskedExcerpt: maskText(text),
+          score: 0.8,
+          operator: Operator.BOT,
+          metadata: {
+            windowSec: decision.windowSec,
+            count: decision.count,
+            threshold: decision.threshold,
+            nextStep: decision.nextAction,
+          },
+        },
+      });
+
       if (!suppressNonEssentialMessages && duplicateBotMessageEnabled && decision.action !== 'BAN') {
         try {
           const explanationText = this.buildDuplicateExplanation(
@@ -2832,40 +2867,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           );
         }
       }
-
-      const action = this.toSanctionAction(decision.action);
-      await this.applySanctionAction({
-        chatId,
-        userId,
-        action,
-        userLabel,
-        messageId,
-        muteDurationHours,
-        deleteBotMessagesEnabled,
-        deleteBotMessagesDelayMinutes,
-        botMessageOptions: duplicateMessageOptions ?? undefined,
-        botSpeechStyle,
-      });
-
-      await this.createBotModerationEvent({
-        data: {
-          chatId,
-          userId,
-          messageId,
-          eventType: EventType.MESSAGE,
-          ruleCode: `DUPLICATE_${decision.action}`,
-          action,
-          maskedExcerpt: maskText(text),
-          score: 0.8,
-          operator: Operator.BOT,
-          metadata: {
-            windowSec: decision.windowSec,
-            count: decision.count,
-            threshold: decision.threshold,
-            nextStep: decision.nextAction,
-          },
-        },
-      });
     };
 
     await this.runWebhookFollowUpWithBudget({
@@ -6797,6 +6798,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     text: string;
     deleteSpammersEnabled: boolean;
     exemptFromEnforcement: boolean;
+    allowDestructiveSideEffects?: () => boolean;
   }): Promise<GlobalSpammerTrackingResult> {
     const baseResult: GlobalSpammerTrackingResult = {
       handled: false,
@@ -6806,8 +6808,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return baseResult;
     }
 
-    const { chatId, userId, messageId, text, deleteSpammersEnabled, exemptFromEnforcement } =
-      params;
+    const {
+      chatId,
+      userId,
+      messageId,
+      text,
+      deleteSpammersEnabled,
+      exemptFromEnforcement,
+      allowDestructiveSideEffects,
+    } = params;
     if (this.isKnownRuntimeBotUserId(userId)) {
       return baseResult;
     }
@@ -6870,6 +6879,26 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           (!this.globalSpammerIntelligence ||
             (await this.isUserKnownGlobalSpammer(userId, { chatId, messageId, trigger: 'fanout' })))
         ) {
+          if (allowDestructiveSideEffects && !allowDestructiveSideEffects()) {
+            void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+              stage: 'global-spammer-track.side-effect.skipped-after-timeout',
+              outcome: 'skip',
+              failOpen: true,
+            });
+            this.logger.debug(
+              {
+                chatId,
+                userId,
+                messageId,
+              },
+              'Skipped detected global spammer destructive side effect after hot-path budget expired',
+            );
+            return {
+              handled: false,
+              skipKnownSpammerCheck: true,
+            };
+          }
+
           this.runGlobalSpammerSideEffect(
             { chatId, userId, messageId, action: 'delete-and-kick-detected' },
             async () =>
@@ -6920,7 +6949,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }): Promise<GlobalSpammerTrackingResult> {
     let timedOut = false;
     const result = await raceWithTimeout({
-      operation: this.trackAndRegisterGlobalSpammer(params),
+      operation: () =>
+        this.trackAndRegisterGlobalSpammer({
+          ...params,
+          allowDestructiveSideEffects: () => !timedOut,
+        }),
       timeoutMs: GLOBAL_SPAMMER_TRACK_HOT_PATH_TIMEOUT_MS,
       onTimeout: () => {
         timedOut = true;
@@ -6959,12 +6992,34 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       messageId?: string | null;
     } = {},
   ): Promise<Map<string, LocalGlobalSpammerAdminDecision>> {
+    if (
+      Array.isArray(adminUserIds) &&
+      adminUserIds.length > GLOBAL_SPAMMER_EXEMPTION_HOT_PATH_MAX_ADMIN_IDS
+    ) {
+      void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+        stage: 'global-spammer-exempt.budget',
+        outcome: 'skip',
+        failOpen: true,
+      });
+      this.logger.debug(
+        {
+          chatId: options.chatId ?? null,
+          userId: options.userId ?? null,
+          messageId: options.messageId ?? null,
+          adminCount: adminUserIds.length,
+          maxAdminCount: GLOBAL_SPAMMER_EXEMPTION_HOT_PATH_MAX_ADMIN_IDS,
+        },
+        'Skipped global spammer admin exemption lookup because the admin roster is too large for the hot path',
+      );
+      return new Map();
+    }
+
     let timedOut = false;
-    const operation = this.resolveGlobalSpammerAdminDecisions(userIds, adminUserIds, {
-      chatId: options.chatId,
-    });
     const result = await raceWithTimeout({
-      operation,
+      operation: () =>
+        this.resolveGlobalSpammerAdminDecisions(userIds, adminUserIds, {
+          chatId: options.chatId,
+        }),
       timeoutMs: GLOBAL_SPAMMER_EXEMPTION_HOT_PATH_TIMEOUT_MS,
       onTimeout: () => {
         timedOut = true;
@@ -7755,7 +7810,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   ): Promise<boolean> {
     let timedOut = false;
     const result = await raceWithTimeout({
-      operation: this.isDeveloperForcedGlobalSpammerCached(userId),
+      operation: () => this.isDeveloperForcedGlobalSpammerCached(userId),
       timeoutMs: DEVELOPER_FORCED_GLOBAL_SPAMMER_HOT_PATH_TIMEOUT_MS,
       onTimeout: () => {
         timedOut = true;
@@ -8324,6 +8379,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const messageDeleted = await this.deleteMessageImmediately(params.chatId, params.messageId);
     this.markWebhookHotPathStage(params.hotPathProfile, 'required-subscription.delete');
+    if (messageDeleted) {
+      this.markWebhookHotPathSuccessBoundary(params.hotPathProfile, 'required-subscription.delete');
+    }
 
     const missingChannelIdsNeedingRefresh = allowInitialRequiredSubscriptionMetadataFetch
       ? []
@@ -8350,48 +8408,47 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       .filter((title) => title.length > 0);
 
     this.markWebhookHotPathStage(params.hotPathProfile, 'required-subscription.follow-up');
-    await this.prisma.violation.create({
-      data: {
-        chatId: params.chatId,
-        userId: params.userId,
-        ruleCode: REQUIRED_SUBSCRIPTION_RULE_CODE,
-        score: 1,
-      },
-    });
-
-    const requiredSubscriptionViolationCount24h =
-      await this.countRecentRequiredSubscriptionViolations(params.chatId, params.userId);
-    const action = this.resolveRequiredSubscriptionEscalationAction(
-      requiredSubscriptionViolationCount24h,
-      {
-        warnEnabled: params.settings.requiredSubscriptionWarnEnabled,
-        banEnabled: params.settings.requiredSubscriptionBanEnabled,
-        muteEnabled: params.settings.requiredSubscriptionMuteEnabled,
-      },
-    );
-    if (messageDeleted) {
-      await this.createBotModerationEvent({
+    const runRequiredSubscriptionFollowUp = async () => {
+      await this.prisma.violation.create({
         data: {
           chatId: params.chatId,
           userId: params.userId,
-          messageId: params.messageId,
-          eventType: EventType.MESSAGE,
-          ruleCode: `${REQUIRED_SUBSCRIPTION_RULE_CODE}_DELETE`,
-          action: SanctionAction.DELETE_MESSAGE,
-          maskedExcerpt: maskText(params.text),
+          ruleCode: REQUIRED_SUBSCRIPTION_RULE_CODE,
           score: 1,
-          operator: Operator.BOT,
-          metadata: {
-            action: SanctionAction.DELETE_MESSAGE,
-            ...requiredSubscriptionChannelMetadata,
-            missingChannelTitles,
-          },
         },
       });
-      this.markWebhookHotPathSuccessBoundary(params.hotPathProfile, 'required-subscription.delete');
-    }
 
-    const runRequiredSubscriptionFollowUp = async () => {
+      const requiredSubscriptionViolationCount24h =
+        await this.countRecentRequiredSubscriptionViolations(params.chatId, params.userId);
+      const action = this.resolveRequiredSubscriptionEscalationAction(
+        requiredSubscriptionViolationCount24h,
+        {
+          warnEnabled: params.settings.requiredSubscriptionWarnEnabled,
+          banEnabled: params.settings.requiredSubscriptionBanEnabled,
+          muteEnabled: params.settings.requiredSubscriptionMuteEnabled,
+        },
+      );
+      if (messageDeleted) {
+        await this.createBotModerationEvent({
+          data: {
+            chatId: params.chatId,
+            userId: params.userId,
+            messageId: params.messageId,
+            eventType: EventType.MESSAGE,
+            ruleCode: `${REQUIRED_SUBSCRIPTION_RULE_CODE}_DELETE`,
+            action: SanctionAction.DELETE_MESSAGE,
+            maskedExcerpt: maskText(params.text),
+            score: 1,
+            operator: Operator.BOT,
+            metadata: {
+              action: SanctionAction.DELETE_MESSAGE,
+              ...requiredSubscriptionChannelMetadata,
+              missingChannelTitles,
+            },
+          },
+        });
+      }
+
       let noticeContextPrepared = false;
       let followUpMissingChannelTitles = missingChannelTitles;
       let requiredSubscriptionMessageOptions: MaxSendMessageOptions | undefined;
@@ -9285,11 +9342,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     let timedOut = false;
     const result = await raceWithTimeout({
-      operation: this.resolveRequiredSubscriptionMembership(
-        params.chatId,
-        params.userId,
-        params.requiredChannelIds,
-      ),
+      operation: () =>
+        this.resolveRequiredSubscriptionMembership(
+          params.chatId,
+          params.userId,
+          params.requiredChannelIds,
+        ),
       timeoutMs: waitMs,
       onTimeout: () => {
         timedOut = true;

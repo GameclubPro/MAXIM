@@ -12,7 +12,10 @@ import { RuleEngineService } from './rule-engine.service.impl';
 import {
   DEVELOPER_FORCED_GLOBAL_SPAMMER_HOT_PATH_TIMEOUT_MS,
   DUPLICATE_FOLLOW_UP_HOT_PATH_TIMEOUT_MS,
+  GLOBAL_SPAMMER_CONFIRMED_FANOUT_EPISODE_THRESHOLD,
   GLOBAL_SPAMMER_EXEMPTION_HOT_PATH_TIMEOUT_MS,
+  GLOBAL_SPAMMER_EXEMPTION_HOT_PATH_MAX_ADMIN_IDS,
+  GLOBAL_SPAMMER_HIGH_FANOUT_MIN_CHATS,
   GLOBAL_SPAMMER_TRACK_HOT_PATH_TIMEOUT_MS,
   MODERATION_ACTION_ACCESS_LOSS_HOT_PATH_TIMEOUT_MS,
   REQUIRED_SUBSCRIPTION_MEMBERSHIP_HOT_PATH_TIMEOUT_MS,
@@ -2273,6 +2276,107 @@ describe('ModerationService', () => {
     }
   });
 
+  it('does not run detected global spammer destructive side effects after tracking budget timeout', async () => {
+    jest.useFakeTimers();
+    const runtimeDiagnosticsService = {
+      recordHotPathStageOutcome: jest.fn(),
+    };
+    let releaseUniqueChatState!: (value: { added: boolean; size: number }) => void;
+    const delayedUniqueChatState = new Promise<{ added: boolean; size: number }>((resolve) => {
+      releaseUniqueChatState = resolve;
+    });
+    const prisma = {
+      globalSpammer: {
+        upsert: jest.fn().mockResolvedValue({}),
+      },
+      moderationEvent: {
+        create: jest.fn(),
+      },
+    };
+    const redisCounter = {
+      addToSetWithTtl: jest
+        .fn()
+        .mockReturnValueOnce(delayedUniqueChatState)
+        .mockResolvedValueOnce({ added: true, size: 1 }),
+      incrementWithTtl: jest
+        .fn()
+        .mockResolvedValue(GLOBAL_SPAMMER_CONFIRMED_FANOUT_EPISODE_THRESHOLD),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      kickMember: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn(),
+      } as never,
+      redisCounter as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      runtimeDiagnosticsService as never,
+    );
+    const debugSpy = jest
+      .spyOn((service as any).logger, 'debug')
+      .mockImplementation(() => undefined);
+
+    try {
+      const resultPromise = (service as any).trackAndRegisterGlobalSpammerWithHotPathBudget({
+        chatId: '-chat-1',
+        userId: 'user-1',
+        messageId: 'message-1',
+        text: 'fanout text',
+        deleteSpammersEnabled: true,
+        exemptFromEnforcement: false,
+      });
+
+      await Promise.resolve();
+      await jest.advanceTimersByTimeAsync(GLOBAL_SPAMMER_TRACK_HOT_PATH_TIMEOUT_MS);
+      await expect(resultPromise).resolves.toEqual({
+        handled: false,
+        skipKnownSpammerCheck: false,
+      });
+
+      releaseUniqueChatState({
+        added: true,
+        size: GLOBAL_SPAMMER_HIGH_FANOUT_MIN_CHATS,
+      });
+      for (let i = 0; i < 10; i += 1) {
+        await Promise.resolve();
+      }
+
+      expect(prisma.globalSpammer.upsert).toHaveBeenCalledTimes(1);
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(maxClient.kickMember).not.toHaveBeenCalled();
+      expect(runtimeDiagnosticsService.recordHotPathStageOutcome).toHaveBeenCalledWith({
+        stage: 'global-spammer-track.side-effect.skipped-after-timeout',
+        outcome: 'skip',
+        failOpen: true,
+      });
+      expect(debugSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chatId: '-chat-1',
+          userId: 'user-1',
+          messageId: 'message-1',
+        }),
+        'Skipped detected global spammer destructive side effect after hot-path budget expired',
+      );
+    } finally {
+      debugSpy.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
   it('fails open when global spammer admin exemption lookup exceeds the hot-path budget', async () => {
     jest.useFakeTimers();
     const runtimeDiagnosticsService = {
@@ -2344,6 +2448,74 @@ describe('ModerationService', () => {
     } finally {
       debugSpy.mockRestore();
       jest.useRealTimers();
+    }
+  });
+
+  it('skips global spammer admin exemption lookup when the admin roster is too large for the hot path', async () => {
+    const runtimeDiagnosticsService = {
+      recordHotPathStageOutcome: jest.fn(),
+    };
+    const prisma = {
+      adminGlobalSpammerExemption: {
+        findMany: jest.fn(),
+      },
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      runtimeDiagnosticsService as never,
+    );
+    const debugSpy = jest
+      .spyOn((service as any).logger, 'debug')
+      .mockImplementation(() => undefined);
+    const adminUserIds = Array.from(
+      { length: GLOBAL_SPAMMER_EXEMPTION_HOT_PATH_MAX_ADMIN_IDS + 1 },
+      (_, index) => `admin-${index}`,
+    );
+
+    try {
+      await expect(
+        (service as any).resolveGlobalSpammerAdminDecisionsWithHotPathBudget(
+          ['user-1'],
+          adminUserIds,
+          {
+            chatId: 'chat-1',
+            userId: 'user-1',
+            messageId: 'message-1',
+          },
+        ),
+      ).resolves.toEqual(new Map());
+
+      expect(prisma.adminGlobalSpammerExemption.findMany).not.toHaveBeenCalled();
+      expect(runtimeDiagnosticsService.recordHotPathStageOutcome).toHaveBeenCalledWith({
+        stage: 'global-spammer-exempt.budget',
+        outcome: 'skip',
+        failOpen: true,
+      });
+      expect(debugSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          messageId: 'message-1',
+          adminCount: GLOBAL_SPAMMER_EXEMPTION_HOT_PATH_MAX_ADMIN_IDS + 1,
+        }),
+        'Skipped global spammer admin exemption lookup because the admin roster is too large for the hot path',
+      );
+    } finally {
+      debugSpy.mockRestore();
     }
   });
 
@@ -12063,6 +12235,135 @@ describe('ModerationService', () => {
       });
       expect(runtimeDiagnosticsService.recordHotPathStageOutcome).toHaveBeenCalledWith({
         stage: 'follow_up_deferred',
+        outcome: 'skip',
+        failOpen: true,
+      });
+      expect(debugSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stage: 'duplicate-follow-up',
+          chatId: 'chat-1',
+          userId: 'user-1',
+          messageId: 'msg-1',
+          timeoutMs: DUPLICATE_FOLLOW_UP_HOT_PATH_TIMEOUT_MS,
+        }),
+        'Detached webhook follow-up after hot-path budget window',
+      );
+    } finally {
+      debugSpy.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
+  it('applies duplicate mute before a slow optional duplicate explanation exhausts the follow-up budget', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-03T10:00:00.000Z'));
+    const runtimeDiagnosticsService = {
+      recordHotPathStageOutcome: jest.fn(),
+      recordHotPathProfile: jest.fn(),
+    };
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ duplicateBotMessageEnabled: true }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [],
+        duplicateDecision: {
+          action: 'MUTE',
+          count: 3,
+          threshold: 3,
+          windowSec: 24 * 60 * 60,
+          hash: 'dup-mute-slow-explanation',
+          nextAction: 'BAN',
+        },
+      }),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockImplementationOnce(
+          () =>
+            new Promise(() => {
+              // Intentionally never resolves.
+            }),
+        ),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn((key: string) =>
+          key === 'WEBHOOK_USER_FACING_TIMEOUT_MS' ? 10_000 : undefined,
+        ),
+      } as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      runtimeDiagnosticsService as never,
+    );
+    (service as any).webhookUserFacingTimeoutMs = 10_000;
+    const debugSpy = jest.spyOn((service as any).logger, 'debug').mockImplementation(() => undefined);
+    const hotPathProfile = (service as any).createWebhookHotPathProfile();
+
+    try {
+      const result = service.handleUpdate(createUpdate(), hotPathProfile);
+
+      await Promise.resolve();
+      await Promise.resolve();
+      await jest.advanceTimersByTimeAsync(DUPLICATE_FOLLOW_UP_HOT_PATH_TIMEOUT_MS);
+      await expect(result).resolves.toBeUndefined();
+
+      expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(2);
+      (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+        'chat-1',
+        muteNotice('Алексей', '6ч'),
+      );
+      (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+        'chat-1',
+        duplicateExplanation('Алексей', 'Включаю тихий режим на 6ч 🔒.'),
+      );
+      expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          messageId: 'msg-1',
+          ruleCode: 'DUPLICATE_MUTE',
+          action: SanctionAction.MUTE,
+        }),
+      });
+      expect(runtimeDiagnosticsService.recordHotPathStageOutcome).toHaveBeenCalledWith({
+        stage: 'duplicate-follow-up.deferred',
         outcome: 'skip',
         failOpen: true,
       });

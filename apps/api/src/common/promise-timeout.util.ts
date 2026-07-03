@@ -1,12 +1,11 @@
 type TimeoutHandle = ReturnType<typeof setTimeout>;
 
 export async function raceWithTimeout<T>(params: {
-  operation: Promise<T>;
+  operation: Promise<T> | (() => Promise<T>);
   timeoutMs: number;
   onTimeout: () => T;
 }): Promise<T> {
   const { operation, timeoutMs, onTimeout } = params;
-  operation.catch(() => undefined);
 
   let timeout: TimeoutHandle | null = null;
   const timeoutPromise = new Promise<T>((resolve, reject) => {
@@ -20,8 +19,12 @@ export async function raceWithTimeout<T>(params: {
     timeout.unref?.();
   });
 
+  const operationPromise =
+    typeof operation === 'function' ? Promise.resolve().then(operation) : operation;
+  operationPromise.catch(() => undefined);
+
   try {
-    return await Promise.race([operation, timeoutPromise]);
+    return await Promise.race([operationPromise, timeoutPromise]);
   } finally {
     if (timeout) {
       clearTimeout(timeout);
