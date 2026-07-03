@@ -68,6 +68,28 @@ describe('validateEnv boolean parsing', () => {
     expect(env.BACKGROUND_GOVERNOR_SYSTEM_PRESSURE_ENABLED).toBe(false);
   });
 
+  it('validates optional Prisma pool caps', () => {
+    const env = validateEnv(
+      createValidEnv({
+        PRISMA_PG_POOL_MAX: '4',
+        PRISMA_PG_POOL_IDLE_TIMEOUT_MS: '10000',
+        PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS: '5000',
+        PRISMA_PG_POOL_MAX_LIFETIME_SEC: '300',
+        MANAGED_ENTITIES_READ_PRISMA_PG_POOL_MAX: '2',
+      }),
+    );
+
+    expect(env.PRISMA_PG_POOL_MAX).toBe(4);
+    expect(env.PRISMA_PG_POOL_IDLE_TIMEOUT_MS).toBe(10000);
+    expect(env.PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS).toBe(5000);
+    expect(env.PRISMA_PG_POOL_MAX_LIFETIME_SEC).toBe(300);
+    expect(env.MANAGED_ENTITIES_READ_PRISMA_PG_POOL_MAX).toBe(2);
+
+    expect(() => validateEnv(createValidEnv({ PRISMA_PG_POOL_MAX: '0' }))).toThrow(
+      /PRISMA_PG_POOL_MAX/u,
+    );
+  });
+
   it('parses string true values as true', () => {
     const env = validateEnv(
       createValidEnv({

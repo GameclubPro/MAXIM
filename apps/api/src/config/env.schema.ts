@@ -83,6 +83,13 @@ const envSchema = z.object({
   MAX_JOIN_DENY_CHAT_IDS: z.string().optional(),
 
   DATABASE_URL: z.string().min(10),
+  PRISMA_PG_POOL_MAX: z.coerce.number().int().positive().optional(),
+  PRISMA_PG_POOL_IDLE_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
+  PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
+  PRISMA_PG_POOL_MAX_LIFETIME_SEC: z.coerce.number().int().positive().optional(),
+  PRISMA_POOL_MAX: z.coerce.number().int().positive().optional(),
+  PRISMA_POOL_IDLE_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
+  PRISMA_POOL_CONNECTION_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
   REDIS_URL: z.string().url(),
 
   INIT_DATA_HMAC_SECRET: z.string().optional(),
@@ -145,6 +152,7 @@ const envSchema = z.object({
   MAX_API_LIST_BOT_CHATS_CACHE_SEC: z.coerce.number().int().min(0).default(120),
   MAX_API_CHAT_SNAPSHOT_CACHE_SEC: z.coerce.number().int().min(0).default(300),
   MANAGED_ENTITY_HEADER_CACHE_SEC: z.coerce.number().int().positive().default(3600),
+  MANAGED_ENTITIES_READ_PRISMA_PG_POOL_MAX: z.coerce.number().int().positive().default(2),
   MAX_MEMBERSHIP_LOOKUP_BATCH_WINDOW_MS: z.coerce.number().int().min(0).default(12),
   MAX_MEMBERSHIP_LOOKUP_TIMEOUT_MS_CRITICAL: z.coerce.number().int().positive().default(2_000),
   MAX_MEMBERSHIP_LOOKUP_TIMEOUT_MS_INTERACTIVE: z.coerce.number().int().positive().default(3_000),

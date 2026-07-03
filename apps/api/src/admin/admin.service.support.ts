@@ -1020,6 +1020,21 @@ export function readNonNegativeConfigInt(value: unknown, fallback: number): numb
   return fallback;
 }
 
+export function readPositiveConfigInt(value: unknown, fallback: number): number {
+  const numericValue =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && value.trim().length > 0
+        ? Number(value)
+        : Number.NaN;
+
+  if (Number.isFinite(numericValue) && numericValue > 0) {
+    return Math.trunc(numericValue);
+  }
+
+  return fallback;
+}
+
 export function readBooleanConfigFlag(value: unknown, fallback: boolean): boolean {
   if (typeof value === 'boolean') {
     return value;

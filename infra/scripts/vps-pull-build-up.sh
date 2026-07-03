@@ -265,11 +265,70 @@ recreate_service_wave() {
   fi
 
   echo "Recreating $label services: ${requested_services[*]}"
-  docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate "${requested_services[@]}"
+  local batch_size_name="MAXIM_DEPLOY_RECREATE_BATCH_SIZE"
+  local batch_delay_name="MAXIM_DEPLOY_RECREATE_BATCH_DELAY_SEC"
+  local batch_size="${MAXIM_DEPLOY_RECREATE_BATCH_SIZE:-0}"
+  local batch_delay_sec="${MAXIM_DEPLOY_RECREATE_BATCH_DELAY_SEC:-0}"
+  if [[ "$label" == "worker" || "$label" == "admin" || "$label" == "ingress" ]]; then
+    batch_size_name="MAXIM_DEPLOY_API_RECREATE_BATCH_SIZE"
+    batch_delay_name="MAXIM_DEPLOY_API_RECREATE_BATCH_DELAY_SEC"
+    batch_size="${MAXIM_DEPLOY_API_RECREATE_BATCH_SIZE:-1}"
+    batch_delay_sec="${MAXIM_DEPLOY_API_RECREATE_BATCH_DELAY_SEC:-5}"
+  fi
+  if [[ "$label" == "worker" ]]; then
+    batch_size_name="MAXIM_DEPLOY_WORKER_RECREATE_BATCH_SIZE"
+    batch_delay_name="MAXIM_DEPLOY_WORKER_RECREATE_BATCH_DELAY_SEC"
+    batch_size="${MAXIM_DEPLOY_WORKER_RECREATE_BATCH_SIZE:-$batch_size}"
+    batch_delay_sec="${MAXIM_DEPLOY_WORKER_RECREATE_BATCH_DELAY_SEC:-$batch_delay_sec}"
+  fi
+  validate_nonnegative_int "$batch_size_name" "$batch_size"
+  validate_nonnegative_int "$batch_delay_name" "$batch_delay_sec"
 
-  for service in "${requested_services[@]}"; do
-    wait_for_service_running "$service" 180
+  if [[ "$batch_size" -eq 0 ]] || [[ "$batch_size" -ge "${#requested_services[@]}" ]]; then
+    docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate "${requested_services[@]}"
+
+    for service in "${requested_services[@]}"; do
+      wait_for_service_running "$service" 180
+    done
+    return 0
+  fi
+
+  local batch=()
+  local start
+  local end
+  local index
+  for ((start = 0; start < ${#requested_services[@]}; start += batch_size)); do
+    end=$((start + batch_size))
+    if [[ "$end" -gt "${#requested_services[@]}" ]]; then
+      end="${#requested_services[@]}"
+    fi
+    batch=()
+    for ((index = start; index < end; index += 1)); do
+      batch+=("${requested_services[$index]}")
+    done
+
+    echo "Recreating $label services batch: ${batch[*]}"
+    docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate "${batch[@]}"
+    for service in "${batch[@]}"; do
+      wait_for_service_running "$service" 180
+    done
+
+    if [[ "$end" -lt "${#requested_services[@]}" ]] && [[ "$batch_delay_sec" -gt 0 ]]; then
+      sleep "$batch_delay_sec"
+    fi
   done
+}
+
+validate_nonnegative_int() {
+  local name="$1"
+  local value="$2"
+
+  if [[ "$value" =~ ^[0-9]+$ ]]; then
+    return 0
+  fi
+
+  echo "$name must be a non-negative integer." >&2
+  exit 1
 }
 
 ensure_requested_services_running() {
@@ -396,7 +455,8 @@ recreate_service_wave "worker" \
   "api-moderation-realtime-c" \
   "api-moderation-realtime-d" \
   "api-moderation-background"
-recreate_service_wave "support" "api-admin" "miniapp-static"
+recreate_service_wave "admin" "api-admin"
+recreate_service_wave "support static" "miniapp-static"
 recreate_service_wave "major static" "miniapp-major-static"
 recreate_service_wave "admin static" "admin-static"
 recreate_service_wave "ingress" "api-ingress"

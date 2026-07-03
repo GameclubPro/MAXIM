@@ -90,6 +90,7 @@ import {
   PrismaClient,
   SanctionAction,
   createPrismaClient,
+  type PrismaPoolConfig,
 } from '../prisma/prisma-client';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -387,6 +388,7 @@ import {
   ManagedEntitiesRefreshThrottledError,
   readBooleanConfigFlag,
   readNonNegativeConfigInt,
+  readPositiveConfigInt,
   sleep,
   sleepIfNeeded,
   type ApplySettingsToAllChatsResult,
@@ -684,6 +686,23 @@ export class AdminService implements OnModuleDestroy {
     );
     this.managedEntitiesReadPrisma = this.createManagedEntitiesReadPrisma(
       configService.get<string>('DATABASE_URL'),
+      {
+        max: readPositiveConfigInt(
+          configService.get<number>('MANAGED_ENTITIES_READ_PRISMA_PG_POOL_MAX'),
+          2,
+        ),
+        idleTimeoutMillis: readPositiveConfigInt(
+          configService.get<number>('PRISMA_PG_POOL_IDLE_TIMEOUT_MS') ??
+            configService.get<number>('PRISMA_POOL_IDLE_TIMEOUT_MS'),
+          10_000,
+        ),
+        connectionTimeoutMillis: readPositiveConfigInt(
+          configService.get<number>('PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS') ??
+            configService.get<number>('PRISMA_POOL_CONNECTION_TIMEOUT_MS'),
+          5_000,
+        ),
+        application_name: `${configService.get<string>('APP_SERVICE_NAME') ?? 'api-admin'}:managed-entities-read`,
+      },
     );
   }
 
@@ -691,13 +710,16 @@ export class AdminService implements OnModuleDestroy {
     await this.managedEntitiesReadPrisma?.$disconnect();
   }
 
-  private createManagedEntitiesReadPrisma(databaseUrl?: string | null): PrismaClient | null {
+  private createManagedEntitiesReadPrisma(
+    databaseUrl: string | null | undefined,
+    poolConfig: PrismaPoolConfig,
+  ): PrismaClient | null {
     const dedicatedUrl = this.buildManagedEntitiesReadDatabaseUrl(databaseUrl);
     if (!dedicatedUrl) {
       return null;
     }
 
-    return createPrismaClient(dedicatedUrl);
+    return createPrismaClient(dedicatedUrl, poolConfig);
   }
 
   private buildManagedEntitiesReadDatabaseUrl(databaseUrl?: string | null): string | null {
@@ -707,10 +729,7 @@ export class AdminService implements OnModuleDestroy {
     }
 
     try {
-      const url = new URL(normalized);
-      url.searchParams.set('connection_limit', '2');
-      url.searchParams.set('pool_timeout', '2');
-      return url.toString();
+      return new URL(normalized).toString();
     } catch {
       return null;
     }
