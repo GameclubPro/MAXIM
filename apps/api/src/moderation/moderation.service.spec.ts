@@ -733,10 +733,11 @@ function createServiceBotJoinedUpdate(): MaxUpdate {
   };
 }
 
-function createBotAddedUpdate(chatId = 'chat-1'): MaxUpdate {
+function createBotAddedUpdate(chatId = 'chat-1', botId?: string): MaxUpdate {
   return {
     updateId: 'upd-bot-added-1',
     type: 'bot_added',
+    ...(botId ? { botId } : {}),
     message: {
       messageId: 'bot_added:upd-bot-added-1',
       chatId,
@@ -4305,9 +4306,11 @@ describe('ModerationService', () => {
       configService as never,
     );
 
-    await service.handleUpdate(createBotAddedUpdate());
+    await service.handleUpdate(createBotAddedUpdate('chat-1', 'id613002203036_4_bot'));
 
-    expect(maxClient.leaveCurrentChat).toHaveBeenCalledWith('chat-1');
+    expect(maxClient.leaveCurrentChat).toHaveBeenCalledWith('chat-1', {
+      botId: 'id613002203036_4_bot',
+    });
     expect(prisma.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
       where: {
         chatId: 'chat-1',

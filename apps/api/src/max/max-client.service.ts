@@ -1359,11 +1359,15 @@ export class MaxClientService implements OnModuleDestroy {
     );
   }
 
-  async leaveCurrentChat(chatId: string): Promise<void> {
+  async leaveCurrentChat(chatId: string, options: MaxApiRequestOptions = {}): Promise<void> {
     try {
-      await this.executeMutation(chatId, async () => {
-        await this.request('delete', `/chats/${chatId}/members/me`);
-      });
+      await this.executeMutation(
+        chatId,
+        async () => {
+          await this.request('delete', `/chats/${chatId}/members/me`);
+        },
+        options,
+      );
     } catch (error: unknown) {
       if (this.isAlreadyOutsideChatError(error)) {
         return;

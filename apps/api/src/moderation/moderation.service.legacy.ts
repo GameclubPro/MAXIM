@@ -10196,7 +10196,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
 
-    await this.maxClient.leaveCurrentChat(chatId);
+    await this.maxClient.leaveCurrentChat(chatId, { botId: update.botId });
     await this.prisma.chatAdminAllowlist.deleteMany({
       where: {
         chatId,

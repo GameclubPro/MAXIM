@@ -2,10 +2,11 @@ import { ChatBotMembershipStatus } from '../prisma/prisma-client';
 import type { MaxUpdate } from '@maxim/contracts';
 import { ModerationService } from './moderation.service';
 
-function createGroupMessageUpdate(type = 'message_created'): MaxUpdate {
+function createGroupMessageUpdate(type = 'message_created', botId?: string): MaxUpdate {
   return {
     updateId: `upd-${type}-1`,
     type,
+    ...(botId ? { botId } : {}),
     message: {
       messageId: `mid-${type}-1`,
       chatId: '-100123',
@@ -129,9 +130,13 @@ describe('ModerationService shared chat ownership', () => {
       maxBotContextService as never,
     );
 
-    await service.handleUpdate(createGroupMessageUpdate('bot_added'));
+    await service.handleUpdate(
+      createGroupMessageUpdate('bot_added', 'id613002203036_4_bot'),
+    );
 
-    expect(maxClient.leaveCurrentChat).toHaveBeenCalledWith('-100123');
+    expect(maxClient.leaveCurrentChat).toHaveBeenCalledWith('-100123', {
+      botId: 'id613002203036_4_bot',
+    });
     expect(prisma.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
       where: { chatId: '-100123' },
     });
