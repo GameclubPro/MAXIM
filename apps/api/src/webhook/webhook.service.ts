@@ -60,7 +60,9 @@ const BOT_SELF_ACCESS_TIMEOUT_MS = 900;
 const BOT_SELF_ACCESS_SNAPSHOT_MAX_AGE_MS = 15 * 60 * 1_000;
 const EXECUTION_OWNER_ASYNC_RECHECK_BACKOFF_MS = 30 * 1_000;
 const BOT_ADDED_START_HINT_BACKOFF_MS = 5 * 60 * 1_000;
+const BOT_ADDED_START_HINT_FAILURE_BACKOFF_MS = 30 * 1_000;
 const BOT_ADDED_START_HINT_SEND_TIMEOUT_MS = 1_500;
+const BOT_ADDED_START_HINT_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const BOT_SELF_ACCESS_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const MANAGED_ENTITIES_PENDING_BOOTSTRAP_TTL_SEC = 15 * 60;
 const MANAGED_ENTITY_ACTIVITY_UPDATE_TYPES = new Set([
@@ -444,6 +446,7 @@ export class WebhookService {
           actionHealthLane: 'background',
           sourceTag: MAX_API_SOURCE_TAGS.MANAGED_HANDSHAKE,
           timeoutMs: BOT_ADDED_START_HINT_SEND_TIMEOUT_MS,
+          ignoreFailureMetricStatuses: BOT_ADDED_START_HINT_FAILURE_METRIC_STATUSES,
         },
       );
       this.logger.log(
@@ -456,6 +459,24 @@ export class WebhookService {
         'Managed entity handshake start hint sent',
       );
     } catch (error: unknown) {
+      if (this.isExpectedBotAddedStartHintSendFailure(error)) {
+        this.botAddedStartHintBackoffUntilMs.set(
+          `${chatId}:${entityType}`,
+          Date.now() + BOT_ADDED_START_HINT_FAILURE_BACKOFF_MS,
+        );
+        this.logger.debug(
+          {
+            updateId: update.updateId,
+            chatId,
+            botId,
+            status: this.extractStatusCode(error),
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Skipped managed entity start hint after bot_added webhook because chat is not yet reachable',
+        );
+        return;
+      }
+
       this.logger.warn(
         {
           updateId: update.updateId,
@@ -466,6 +487,11 @@ export class WebhookService {
         'Failed to send managed entity start hint after bot_added webhook',
       );
     }
+  }
+
+  private isExpectedBotAddedStartHintSendFailure(error: unknown): boolean {
+    const status = this.extractStatusCode(error);
+    return BOT_ADDED_START_HINT_FAILURE_METRIC_STATUSES.some((expected) => expected === status);
   }
 
   private readManagedEntityPendingBootstrapUserId(update: MaxUpdate): string | null {

@@ -1937,6 +1937,7 @@ describe('WebhookService', () => {
       }),
       expect.objectContaining({
         botId: 'id613002203036_bot',
+        ignoreFailureMetricStatuses: [403, 404],
         sourceTag: 'managed_handshake',
       }),
     );
@@ -1950,6 +1951,96 @@ describe('WebhookService', () => {
     await flushDeferredWebhookWork();
 
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps bot_added Старт hint 403 failures quiet and releases the long backoff', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-7-hint-denied' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    const deniedError = Object.assign(new Error('chat denied'), {
+      response: { status: 403 },
+    });
+    const maxClient = {
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockRejectedValueOnce(deniedError)
+        .mockResolvedValueOnce({ messageId: 'hint-2', url: null }),
+    };
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+      undefined,
+      maxClient as never,
+    );
+    const logger = {
+      debug: jest.fn(),
+      error: jest.fn(),
+      log: jest.fn(),
+      warn: jest.fn(),
+    };
+    (service as unknown as { logger: typeof logger }).logger = logger;
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(1_000);
+    const update = {
+      updateId: 'u-bot-added-hint-denied-1',
+      type: 'bot_added',
+      botId: 'id613002203036_bot',
+      message: {
+        messageId: 'bot_added:u-bot-added-hint-denied-1',
+        chatId: '-100132',
+        chatTitle: 'Чат с временным отказом',
+        entityType: 'chat',
+        senderId: 'id613002203036_bot',
+        text: '',
+        createdAt: new Date('2026-04-03T12:06:00.000Z').toISOString(),
+      },
+    };
+
+    try {
+      await expect(service.ingest(update as never, '127.0.0.1')).resolves.toEqual({
+        accepted: true,
+        duplicate: false,
+      });
+      await flushDeferredWebhookWork();
+
+      expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+        '-100132',
+        expect.stringContaining('Чат почти подключен'),
+        expect.anything(),
+        expect.objectContaining({
+          botId: 'id613002203036_bot',
+          ignoreFailureMetricStatuses: [403, 404],
+          sourceTag: 'managed_handshake',
+        }),
+      );
+      expect(logger.warn).not.toHaveBeenCalled();
+      expect(logger.debug).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chatId: '-100132',
+          status: 403,
+        }),
+        'Skipped managed entity start hint after bot_added webhook because chat is not yet reachable',
+      );
+
+      nowSpy.mockReturnValue(40_000);
+      await expect(
+        service.ingest({ ...update, updateId: 'u-bot-added-hint-denied-2' } as never, '127.0.0.1'),
+      ).resolves.toEqual({
+        accepted: true,
+        duplicate: false,
+      });
+      await flushDeferredWebhookWork();
+
+      expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(2);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   it('throttles Старт hints per chat when several bots are added together', async () => {
