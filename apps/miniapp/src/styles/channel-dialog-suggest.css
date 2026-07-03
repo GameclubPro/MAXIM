@@ -1,6 +1,150 @@
 @layer pages {
   /* Post suggestion dialog route styles split from channel-dialog-comments.css. */
 
+.channel-dialog-screen {
+  --dialog-accent: var(--suggest-coral);
+  --dialog-bg-start: var(--color-surface, #f7fbff);
+  --dialog-bg-end: var(--color-background, #eef6f8);
+  --dialog-surface: var(--suggest-surface);
+  position: relative;
+  min-height: 100%;
+  height: 100%;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  padding: max(10px, env(safe-area-inset-top, 0px)) clamp(10px, 2vw, 16px)
+    max(10px, calc(var(--safe-bottom) + 6px)) clamp(10px, 2vw, 16px);
+  background: linear-gradient(180deg, var(--dialog-bg-start), var(--dialog-bg-end));
+}
+
+.channel-dialog-screen__backdrop {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, var(--dialog-bg-start), var(--dialog-bg-end));
+}
+
+.channel-dialog-shell {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 780px);
+  margin: 0 auto;
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  gap: 10px;
+}
+
+.channel-dialog-body {
+  display: grid;
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 2px 1px 8px;
+  scrollbar-gutter: stable;
+}
+
+.channel-dialog-skeletons {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  padding: 6px 0;
+}
+
+.channel-dialog-skeleton {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 10px;
+  border: 1px solid var(--suggest-line);
+  border-radius: 15px;
+  background: var(--suggest-surface);
+  box-shadow: 0 10px 24px var(--suggest-shadow);
+}
+
+.channel-dialog-skeleton__avatar,
+.channel-dialog-skeleton__line {
+  display: block;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    var(--suggest-control-bg),
+    var(--suggest-surface-strong),
+    var(--suggest-control-bg)
+  );
+  background-size: 220% 100%;
+  animation: channelSuggestSkeleton 1.15s ease-in-out infinite;
+}
+
+.channel-dialog-skeleton__avatar {
+  width: 38px;
+  height: 38px;
+}
+
+.channel-dialog-skeleton__body {
+  display: grid;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.channel-dialog-skeleton__line {
+  width: 100%;
+  height: 10px;
+}
+
+.channel-dialog-skeleton__line.is-short {
+  width: 48%;
+}
+
+.channel-dialog-error {
+  min-height: min(360px, 56dvh);
+  display: grid;
+  align-items: center;
+}
+
+.channel-dialog-compose__picker-input {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+  inset: auto auto 0 0;
+}
+
+.channel-dialog-compose__attach-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.channel-dialog-submit__loader {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 2px solid color-mix(in srgb, currentColor 34%, transparent);
+  border-top-color: currentColor;
+  animation: dialogSubmitSpin 0.85s linear infinite;
+}
+
+@keyframes channelSuggestSkeleton {
+  to {
+    background-position: -220% 0;
+  }
+}
+
+@keyframes dialogSubmitSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .channel-dialog-screen--suggest {
   color-scheme: light;
   --dialog-accent: #f0643f;
@@ -1353,6 +1497,9 @@
   --suggest-cyan: var(--suggest-polish-cyan);
   --suggest-green: var(--suggest-polish-green);
   --suggest-plum: var(--suggest-polish-plum);
+  --suggest-bar-height: 56px;
+  --suggest-bar-bottom: max(8px, calc(var(--safe-bottom) + 6px));
+  --suggest-bar-space: calc(var(--suggest-bar-height) + var(--suggest-bar-bottom) + 12px);
   padding: 0 8px max(8px, calc(var(--safe-bottom) + 6px));
   background: linear-gradient(180deg, var(--dialog-bg-start), var(--dialog-bg-end));
 }
@@ -1362,13 +1509,16 @@
 }
 
 .channel-dialog-shell--suggest {
+  position: relative;
   width: min(100%, 620px);
   gap: 0;
+  --suggest-composer-pad: 8px;
 }
 
 .channel-suggest-body {
-  padding: 0 0 max(16px, calc(var(--safe-bottom) + 12px));
-  scroll-padding-bottom: max(24px, calc(var(--safe-bottom) + 18px));
+  margin-bottom: var(--suggest-bar-space);
+  padding: 0 0 12px;
+  scroll-padding-bottom: 16px;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
 }
@@ -1533,6 +1683,14 @@
   -webkit-backdrop-filter: blur(18px) saturate(145%);
 }
 
+.channel-suggest-composer__bar--anchored {
+  position: absolute;
+  left: var(--suggest-composer-pad);
+  right: var(--suggest-composer-pad);
+  bottom: var(--suggest-bar-bottom);
+  z-index: 5;
+}
+
 .channel-suggest-composer__tools {
   min-width: 0;
   display: inline-flex;
@@ -1664,29 +1822,32 @@
 }
 
 html[data-max-keyboard-open='true'] .channel-dialog-screen--suggest {
+  --suggest-bar-bottom: max(8px, calc(min(var(--app-keyboard-overlap), 320px) + 6px));
   padding-bottom: max(6px, var(--safe-bottom));
 }
 
 html[data-max-keyboard-open='true'] .channel-dialog-screen--suggest .channel-suggest-body {
-  padding-bottom: max(18px, min(var(--app-keyboard-overlap), 320px));
-  scroll-padding-bottom: calc(22px + min(var(--app-keyboard-overlap), 320px));
+  margin-bottom: var(--suggest-bar-space);
+  padding-bottom: 12px;
+  scroll-padding-bottom: 16px;
 }
 
 html[data-max-client='native']
   .channel-dialog-screen--suggest.is-suggest-editor-focused
   .channel-suggest-body {
-  padding-bottom: max(220px, min(var(--app-keyboard-overlap), 320px));
-  scroll-padding-bottom: max(244px, calc(22px + min(var(--app-keyboard-overlap), 320px)));
+  margin-bottom: var(--suggest-bar-space);
+  padding-bottom: 12px;
+  scroll-padding-bottom: 16px;
 }
 
 html[data-max-keyboard-open='true'] .channel-dialog-screen--suggest .channel-suggest-workspace {
-  padding-bottom: max(18px, min(var(--app-keyboard-overlap), 320px));
+  padding-bottom: 8px;
 }
 
 html[data-max-client='native']
   .channel-dialog-screen--suggest.is-suggest-editor-focused
   .channel-suggest-workspace {
-  padding-bottom: max(220px, min(var(--app-keyboard-overlap), 320px));
+  padding-bottom: 8px;
 }
 
 html[data-max-keyboard-open='true'] .channel-dialog-screen--suggest .channel-suggest-composer {
@@ -1786,6 +1947,10 @@ html[data-max-keyboard-open='true']
 }
 
 @media (max-width: 360px) {
+  .channel-dialog-shell--suggest {
+    --suggest-composer-pad: 7px;
+  }
+
   .channel-suggest-composer {
     padding: 7px;
   }

@@ -35,6 +35,7 @@ import {
 import { PUBLIC_ROUTER_BASENAME } from './lib/public-config';
 import {
   LazyChannelDialogPage,
+  LazyChannelSuggestDialogPage,
   LazyChannelSettingsPage,
   LazyChannelStatsPage,
   LazyChatsPage,
@@ -268,7 +269,7 @@ function AppRoutes({
             />
             <Route
               path="/channel/:chatId/dialog/suggest"
-              element={<LazyChannelDialogPage api={apiClient} />}
+              element={<LazyChannelSuggestDialogPage api={apiClient} />}
             />
             <Route path="/chat/:chatId/events" element={<LazyEventsPage api={apiClient} />} />
             <Route path="/system" element={<LazySystemPage api={apiClient} />} />

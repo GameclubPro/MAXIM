@@ -2,6 +2,7 @@ import { createElement, lazy, type ComponentType } from 'react';
 import type { ApiTransport } from '../lib/api/transport';
 import {
   preloadChannelDialogPage,
+  preloadChannelSuggestDialogPage,
   preloadChannelSettingsPage,
   preloadChannelStatsPage,
   preloadEventsPage,
@@ -12,6 +13,7 @@ import {
 } from './page-preloads';
 export {
   preloadChannelDialogPage,
+  preloadChannelSuggestDialogPage,
   preloadChannelSettingsPage,
   preloadChannelStatsPage,
   preloadEventsPage,
@@ -99,6 +101,10 @@ export const LazyChannelStatsPage = lazyPage<RoutedPageProps>(
 export const LazyChannelDialogPage = lazyPage<RoutedPageProps>(
   preloadChannelDialogPage,
   'ChannelDialogPage',
+);
+export const LazyChannelSuggestDialogPage = lazyPage<RoutedPageProps>(
+  preloadChannelSuggestDialogPage,
+  'ChannelSuggestDialogPage',
 );
 export const LazyEventsPage = lazyPage<RoutedPageProps>(preloadEventsPage, 'EventsPage');
 export const LazyGiveawayPage = lazyPage<RoutedPageProps>(preloadGiveawayPage, 'GiveawayPage');

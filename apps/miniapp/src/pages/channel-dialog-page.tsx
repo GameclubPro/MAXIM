@@ -6,14 +6,14 @@ import type {
   ChannelDialogNotificationSettings,
   ChannelDialogResponse,
   ChannelDialogType,
-} from '@maxim/contracts';
+} from '@maxim/contracts/channel-dialog';
 import {
   MAX_CHANNEL_DIALOG_ATTACHMENTS,
   MAX_CHANNEL_DIALOG_ATTACHMENTS_TOTAL_BASE64,
   MAX_CHANNEL_DIALOG_COMMENT_FILES,
   MAX_CHANNEL_DIALOG_IMAGE_BASE64_LENGTH,
   MAX_CHANNEL_DIALOG_SUGGEST_IMAGES,
-} from '@maxim/contracts';
+} from '@maxim/contracts/channel-dialog';
 import {
   Attachment as IconoirAttachment,
   Bell as IconoirBell,
@@ -67,7 +67,6 @@ import {
   deleteChannelDialogMessage,
   getChatDialog,
   getChannelDialog,
-  handoffEntityMemberProfile,
   updateChatDialogNotifications,
   updateChatDialogMessage,
   updateChannelDialogNotifications,
@@ -101,7 +100,6 @@ import { tokenizeTextLinks } from '../lib/text-links';
 import '../styles/channel-dialog-comments.css';
 import '../styles/channel-dialog-image-viewer.css';
 import '../styles/channel-dialog-native-comments.css';
-import '../styles/channel-dialog-suggest.css';
 
 const LazyChannelDialogNotificationSheet = lazy(
   () => import('../components/channel-dialog-notification-sheet'),
@@ -2908,8 +2906,12 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     },
   });
   const profileHandoffMutation = useMutation({
-    mutationFn: ({ userId, displayName }: { userId: string; displayName: string }) =>
-      handoffEntityMemberProfile(api, entityType, chatId, userId, { displayName }),
+    mutationFn: async ({ userId, displayName }: { userId: string; displayName: string }) => {
+      const { handoffEntityMemberProfile } = await import(
+        '../lib/api/member-profile-handoff-client'
+      );
+      return handoffEntityMemberProfile(api, entityType, chatId, userId, { displayName });
+    },
     onSuccess: (result) => {
       if (!openMaxBotLinkAndClose(result.botUrl)) {
         pushToast({

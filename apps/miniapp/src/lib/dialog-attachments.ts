@@ -1,4 +1,4 @@
-import { MAX_CHANNEL_DIALOG_ATTACHMENTS_TOTAL_BASE64 } from '@maxim/contracts';
+import { MAX_CHANNEL_DIALOG_ATTACHMENTS_TOTAL_BASE64 } from '@maxim/contracts/channel-dialog';
 import {
   MAX_PREPARED_IMAGE_BYTES,
   prepareBroadcastImage,

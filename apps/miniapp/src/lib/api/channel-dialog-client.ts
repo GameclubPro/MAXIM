@@ -6,17 +6,13 @@ import {
   createChannelDialogMessageResponseSchema,
   deleteChannelDialogMessageRequestSchema,
   deleteChannelDialogMessageResponseSchema,
-  broadcastHandoffResponseSchema,
-  profileMentionHandoffRequestSchema,
   updateChannelDialogNotificationsRequestSchema,
   updateChannelDialogNotificationsResponseSchema,
-  type BroadcastHandoffResponse,
   type ChannelDialogResponse,
   type ChannelSuggestionRedirectResponse,
   type ChannelDialogType,
   type CreateChannelDialogMessageResponse,
   type DeleteChannelDialogMessageResponse,
-  type ProfileMentionHandoffRequest,
   type UpdateChannelDialogNotificationsResponse,
   toggleChannelDialogReactionRequestSchema,
   toggleChannelDialogReactionResponseSchema,
@@ -24,7 +20,7 @@ import {
   updateChannelDialogMessageRequestSchema,
   updateChannelDialogMessageResponseSchema,
   type UpdateChannelDialogMessageResponse,
-} from '@maxim/contracts';
+} from '@maxim/contracts/channel-dialog';
 import type {
   CreateChannelDialogMessagePayload,
   DeleteChannelDialogMessagePayload,
@@ -79,15 +75,6 @@ function buildDialogNotificationsApiPath(
   dialogType: ChannelDialogType,
 ): string {
   return `${buildDialogApiPath(entityType, chatId, dialogType)}/notifications`;
-}
-
-function buildMemberProfileHandoffApiPath(
-  entityType: LastEntityType,
-  chatId: string,
-  userId: string,
-): string {
-  const entitySegment = entityType === 'channel' ? 'channels' : 'chats';
-  return `/${entitySegment}/${chatId}/members/${encodeURIComponent(userId)}/profile/handoff`;
 }
 
 export async function getEntityDialog(
@@ -193,21 +180,6 @@ export async function deleteEntityDialogMessage(
     },
   );
   return deleteChannelDialogMessageResponseSchema.parse(response);
-}
-
-export async function handoffEntityMemberProfile(
-  api: ApiTransport,
-  entityType: LastEntityType,
-  chatId: string,
-  userId: string,
-  payload: ProfileMentionHandoffRequest,
-): Promise<BroadcastHandoffResponse> {
-  const requestBody = profileMentionHandoffRequestSchema.parse(payload);
-  const response = await api.request(buildMemberProfileHandoffApiPath(entityType, chatId, userId), {
-    method: 'POST',
-    body: JSON.stringify(requestBody),
-  });
-  return broadcastHandoffResponseSchema.parse(response);
 }
 
 export async function getChannelDialog(

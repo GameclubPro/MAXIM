@@ -44,8 +44,15 @@ const STARTUP_JS_BUDGET_GZIP =
 // add a small amount of legitimate lazy-loaded logic.
 // The standalone autopost hub reuses settings broadcast/autopost chunks, changing Vite factoring.
 const AUTOPOSTS_SHARED_SETTINGS_JS_ALLOWANCE_GZIP = 1024;
+// The standalone public suggestion route uses a focused dialog entry. Vite can factor the
+// channel-dialog contract schemas into a shared chunk that settings already reaches through root
+// contracts; keep the budget adjustment narrow while preserving the route split.
+const SUGGEST_ROUTE_SHARED_SETTINGS_JS_ALLOWANCE_GZIP = 1024;
 const SETTINGS_JS_BUDGET_GZIP =
-  108 * 1024 + 21 * 1024 + AUTOPOSTS_SHARED_SETTINGS_JS_ALLOWANCE_GZIP;
+  108 * 1024 +
+  21 * 1024 +
+  AUTOPOSTS_SHARED_SETTINGS_JS_ALLOWANCE_GZIP +
+  SUGGEST_ROUTE_SHARED_SETTINGS_JS_ALLOWANCE_GZIP;
 // Startup CSS was effectively at the ceiling already, so widen it modestly instead of
 // forcing cosmetic regressions into the home surface and shared mobile shell.
 const STARTUP_CSS_BUDGET_GZIP = 42 * 1024;
