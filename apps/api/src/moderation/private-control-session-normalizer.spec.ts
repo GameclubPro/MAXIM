@@ -19,6 +19,7 @@ describe('private control session normalizer', () => {
     expect(createDefaultPrivateControlSession()).toEqual({
       version: 3,
       lastPrivateChatId: null,
+      lastPrivateBotId: null,
       lastBroadcastHandoffDeliveredChatId: null,
       lastBroadcastHandoffDeliveredAt: null,
       lastGiveawayHandoffDeliveredChatId: null,
@@ -86,6 +87,7 @@ describe('private control session normalizer', () => {
     const session = normalizePrivateControlSession(
       {
         lastPrivateChatId: ' private-chat ',
+        lastPrivateBotId: ' 888000_bot ',
         lastBroadcastHandoffDeliveredChatId: ' broadcast-chat ',
         lastBroadcastHandoffDeliveredAt: Number.NaN,
         lastGiveawayHandoffDeliveredAt: 123,
@@ -122,6 +124,7 @@ describe('private control session normalizer', () => {
     expect(session).toEqual(
       expect.objectContaining({
         lastPrivateChatId: 'private-chat',
+        lastPrivateBotId: '888000_bot',
         lastBroadcastHandoffDeliveredChatId: 'broadcast-chat',
         lastBroadcastHandoffDeliveredAt: null,
         lastGiveawayHandoffDeliveredAt: 123,

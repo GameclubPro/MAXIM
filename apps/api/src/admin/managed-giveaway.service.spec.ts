@@ -1486,6 +1486,63 @@ describe('ManagedGiveawayService', () => {
     );
   });
 
+  it('sends winner direct messages and claim links through the giveaway publication bot', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      title: 'Основной канал',
+      primaryBotId: '888000_bot',
+      botId: '777000_bot',
+    });
+    const maxClient = createMaxClientMock();
+    const maxBotLinkService = createMaxBotLinkMock({
+      resolvedBotId: '888000_bot',
+      token: 'selected-token',
+    });
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await (service as any).sendWinnerDirectMessages(
+      createGiveaway({
+        sourceChatId: '-70000000000001',
+        status: ManagedGiveawayStatus.COMPLETED,
+        winners: [
+          createWinner({
+            status: ManagedGiveawayWinnerStatus.SELECTED,
+          }),
+        ],
+      }),
+      ['entry-winner-1:prize-1'],
+    );
+
+    expect(maxBotLinkService.getBotTokenSync).toHaveBeenCalledWith('888000_bot');
+    expect(maxBotLinkService.buildBotStartUrlSync).toHaveBeenCalledWith(
+      expect.any(String),
+      '888000_bot',
+    );
+    expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledWith(
+      'winner-1',
+      expect.stringContaining('Вы выиграли в розыгрыше'),
+      expect.objectContaining({
+        buttons: [
+          [
+            expect.objectContaining({
+              text: 'Забрать приз',
+              url: expect.stringContaining('https://max.ru/888000_bot?start='),
+            }),
+          ],
+        ],
+      }),
+      { botId: '888000_bot' },
+    );
+  });
+
   it('accepts giveaway claim payloads signed with the previous bot token', () => {
     const previousToken = 'test-token-previous';
     const legacyService = new ManagedGiveawayService(

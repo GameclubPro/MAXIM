@@ -1136,10 +1136,14 @@ export class ManagedGiveawayService {
     };
   }
 
-  buildGiveawayClaimBotStartUrl(giveawayId: string, winnerId: string): string | null {
+  buildGiveawayClaimBotStartUrl(
+    giveawayId: string,
+    winnerId: string,
+    botId?: string | null,
+  ): string | null {
     const compactPayload = buildCompactGiveawayClaimStartPayload(
       { giveawayId, winnerId },
-      this.getCurrentBotToken(),
+      this.getCurrentBotToken(botId),
     );
     const payload =
       compactPayload ??
@@ -1149,7 +1153,7 @@ export class ManagedGiveawayService {
           k: 'giveaway-claim',
           g: giveawayId,
           w: winnerId,
-          s: this.buildGiveawayClaimSignature(giveawayId, winnerId),
+          s: this.buildGiveawayClaimSignature(giveawayId, winnerId, this.getCurrentBotToken(botId)),
         }),
         'utf8',
       ).toString('base64url')}`;
@@ -1157,10 +1161,11 @@ export class ManagedGiveawayService {
       return null;
     }
 
+    const targetBotId = botId?.trim() || this.ownBotUserId;
     return (
-      this.maxBotLinkService?.buildBotStartUrlSync(payload) ??
-      (this.ownBotUserId
-        ? `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?start=${encodeURIComponent(payload)}`
+      this.maxBotLinkService?.buildBotStartUrlSync(payload, botId) ??
+      (targetBotId
+        ? `https://max.ru/${encodeURIComponent(targetBotId)}?start=${encodeURIComponent(payload)}`
         : null)
     );
   }
@@ -1960,11 +1965,12 @@ export class ManagedGiveawayService {
   private buildGiveawayWinnerDirectMessageOptions(
     giveaway: PersistedGiveawayWithRelations,
     winner: PersistedManagedGiveawayWinner,
+    botId?: string | null,
   ): MaxSendMessageOptions | undefined {
     const claimRow: MaxMessageButton[] = [];
     const claimUrl =
       this.resolveEffectiveWinnerStatus(winner) === ManagedGiveawayWinnerStatus.SELECTED
-        ? this.buildGiveawayClaimBotStartUrl(giveaway.id, winner.id)
+        ? this.buildGiveawayClaimBotStartUrl(giveaway.id, winner.id, botId)
         : null;
     if (claimUrl) {
       claimRow.push({
@@ -2010,14 +2016,23 @@ export class ManagedGiveawayService {
         winner.status !== ManagedGiveawayWinnerStatus.REROLLED &&
         targetKeys.has(this.buildWinnerNotificationKey(winner.entryId, winner.prizeId)),
     );
+    const notificationBotId = await this.resolveGiveawayPublicationBotId(giveaway.sourceChatId);
 
     for (const winner of winners) {
       try {
-        await this.maxClient.sendMessageImmediateToUser(
-          winner.entry.userId,
-          this.buildGiveawayWinnerDirectMessageText(giveaway, winner),
-          this.buildGiveawayWinnerDirectMessageOptions(giveaway, winner),
+        const text = this.buildGiveawayWinnerDirectMessageText(giveaway, winner);
+        const options = this.buildGiveawayWinnerDirectMessageOptions(
+          giveaway,
+          winner,
+          notificationBotId,
         );
+        if (notificationBotId) {
+          await this.maxClient.sendMessageImmediateToUser(winner.entry.userId, text, options, {
+            botId: notificationBotId,
+          });
+        } else {
+          await this.maxClient.sendMessageImmediateToUser(winner.entry.userId, text, options);
+        }
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -3623,7 +3638,7 @@ export class ManagedGiveawayService {
     return /^\d+$/u.test(candidate) ? candidate : null;
   }
 
-  private getCurrentBotToken(): string {
-    return this.maxBotLinkService?.getBotTokenSync() ?? this.maxBotToken;
+  private getCurrentBotToken(botId?: string | null): string {
+    return this.maxBotLinkService?.getBotTokenSync(botId) ?? this.maxBotToken;
   }
 }

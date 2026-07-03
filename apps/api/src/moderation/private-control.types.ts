@@ -181,6 +181,7 @@ export type PrivateBroadcastView = 'basic' | 'advanced';
 export type PrivateSession = {
   version: 3;
   lastPrivateChatId: string | null;
+  lastPrivateBotId: string | null;
   lastBroadcastHandoffDeliveredChatId: string | null;
   lastBroadcastHandoffDeliveredAt: number | null;
   lastGiveawayHandoffDeliveredChatId: string | null;

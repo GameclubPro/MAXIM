@@ -45,9 +45,10 @@ function decodeStartAppRoute(url: string): string | null {
     : null;
 }
 
-function createPrivateTextUpdate(text: string): MaxUpdate {
+function createPrivateTextUpdate(text: string, options: { botId?: string } = {}): MaxUpdate {
   return {
     updateId: `upd-text-${Date.now()}`,
+    ...(options.botId ? { botId: options.botId } : {}),
     type: 'message_created',
     message: {
       messageId: `msg-${Date.now()}`,
@@ -364,12 +365,14 @@ function createPrivateCallbackUpdate(
     userId?: string;
     displayName?: string;
     messageId?: string;
+    botId?: string;
   } = {},
 ): MaxUpdate {
   const userId = options.userId ?? 'user-1';
   const displayName = options.displayName ?? 'Тестовый пользователь';
   return {
     updateId: `upd-cb-${Date.now()}`,
+    ...(options.botId ? { botId: options.botId } : {}),
     type: 'message_callback',
     message: {
       messageId: options.messageId ?? `msg-cb-${Date.now()}`,
@@ -399,9 +402,13 @@ function createPrivateCallbackUpdate(
   };
 }
 
-function createBotStartedPrivateUpdate(startPayload = 'broadcast_handoff'): MaxUpdate {
+function createBotStartedPrivateUpdate(
+  startPayload = 'broadcast_handoff',
+  options: { botId?: string } = {},
+): MaxUpdate {
   return {
     updateId: `upd-bot-started-${Date.now()}`,
+    ...(options.botId ? { botId: options.botId } : {}),
     type: 'bot_started',
     message: {
       messageId: `bot-started-${Date.now()}`,
@@ -1331,6 +1338,22 @@ describe('PrivateControlService', () => {
     expect(adminService.listManagedEntities).not.toHaveBeenCalled();
   });
 
+  it('routes private direct responses through the incoming runtime bot', async () => {
+    const { service, maxClient } = createHarness();
+
+    await service.handleUpdate(createPrivateTextUpdate('привет', { botId: '888000_bot' }));
+
+    expect(maxClient.sendMessage).toHaveBeenLastCalledWith(
+      '152517912',
+      expect.any(String),
+      expect.any(Object),
+      expect.objectContaining({
+        immediate: true,
+        botId: '888000_bot',
+      }),
+    );
+  });
+
   it('keeps private responses on the active bot while opening the mini app through the entry bot', async () => {
     const maxBotLinkService = {
       getBotTokenSync: jest.fn().mockReturnValue('test-token'),
@@ -1660,7 +1683,9 @@ describe('PrivateControlService', () => {
   it('handles stale legacy callback payload and refreshes current screen', async () => {
     const { service, maxClient } = createHarness();
 
-    await service.handleUpdate(createPrivateCallbackUpdate('private_menu:chats'));
+    await service.handleUpdate(
+      createPrivateCallbackUpdate('private_menu:chats', { botId: '888000_bot' }),
+    );
 
     expect(maxClient.answerCallback).toHaveBeenCalledWith(
       'callback-1',
@@ -1671,6 +1696,7 @@ describe('PrivateControlService', () => {
       expect.objectContaining({
         ignoreFailureMetricStatuses: [400, 404],
         timeoutMs: 1500,
+        botId: '888000_bot',
       }),
     );
   });
@@ -1685,7 +1711,9 @@ describe('PrivateControlService', () => {
       .mockImplementationOnce(() => new Promise<void>(() => undefined))
       .mockResolvedValueOnce(undefined);
 
-    await service.handleUpdate(createPrivateCallbackUpdate('private_menu:chats'));
+    await service.handleUpdate(
+      createPrivateCallbackUpdate('private_menu:chats', { botId: '888000_bot' }),
+    );
 
     expect(maxClient.answerCallback).toHaveBeenCalledTimes(2);
     expect(maxClient.answerCallback).toHaveBeenNthCalledWith(
@@ -1696,6 +1724,7 @@ describe('PrivateControlService', () => {
       {
         ignoreFailureMetricStatuses: [400, 404],
         timeoutMs: 800,
+        botId: '888000_bot',
       },
     );
   });
@@ -2791,6 +2820,42 @@ describe('PrivateControlService', () => {
     await service.handleBotStarted(createBotStartedPrivateUpdate());
 
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(sentBeforeHandoff + 1);
+  });
+
+  it('reuses the remembered private bot for miniapp broadcast handoff url and delivery', async () => {
+    const { service, maxClient, chats } = createHarness();
+    const actor = {
+      userId: 'user-1',
+      username: null,
+      displayName: 'Тестовый пользователь',
+      chatId: chats[0].id,
+      chatTitle: chats[0].title,
+    };
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate('', { botId: '888000_bot' }));
+    const sentBeforeHandoff = maxClient.sendMessage.mock.calls.length;
+
+    const result = await service.handoffBroadcastFromMiniapp(
+      chats[0].id,
+      actor,
+      {
+        applyToAllChats: false,
+        buttonEnabled: false,
+      },
+      'chat',
+    );
+
+    expect(result.botUrl).toBe('https://max.ru/888000_bot?start=broadcast_handoff');
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(sentBeforeHandoff + 1);
+    expect(maxClient.sendMessage).toHaveBeenLastCalledWith(
+      '152517912',
+      expect.any(String),
+      expect.any(Object),
+      expect.objectContaining({
+        immediate: true,
+        botId: '888000_bot',
+      }),
+    );
   });
 
   it('acknowledges mass confirm immediately and ignores stale duplicate confirmations', async () => {

@@ -231,9 +231,26 @@ describe('MaxClientService inline keyboard guardrails', () => {
       })),
       isKnownBotUserId: jest.fn().mockReturnValue(false),
     };
+    let activeBotId: string | null = null;
     const botContext = {
-      getActiveBotId: jest.fn().mockReturnValue(null),
-      runWithBot: jest.fn((_botId: string, callback: () => unknown) => callback()),
+      getActiveBotId: jest.fn(() => activeBotId),
+      runWithBot: jest.fn((botId: string, callback: () => unknown) => {
+        const previousBotId = activeBotId;
+        activeBotId = botId;
+        try {
+          const result = callback();
+          if (result && typeof (result as Promise<unknown>).finally === 'function') {
+            return (result as Promise<unknown>).finally(() => {
+              activeBotId = previousBotId;
+            });
+          }
+          activeBotId = previousBotId;
+          return result;
+        } catch (error: unknown) {
+          activeBotId = previousBotId;
+          throw error;
+        }
+      }),
     };
 
     return new MaxClientService(
@@ -1314,7 +1331,9 @@ describe('MaxClientService inline keyboard guardrails', () => {
                   {
                     type: 'inline_keyboard',
                     payload: {
-                      buttons: [[{ type: 'callback', text: 'Да (1)', payload: 'action|sample-1|1|0' }]],
+                      buttons: [
+                        [{ type: 'callback', text: 'Да (1)', payload: 'action|sample-1|1|0' }],
+                      ],
                     },
                   },
                 ],
@@ -2160,6 +2179,72 @@ describe('MaxClientService inline keyboard guardrails', () => {
       expect.objectContaining({
         method: 'post',
         url: 'https://upload.max.ru/video-1',
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('keeps an explicit bot token across both upload request legs', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            data: {
+              url: 'https://upload.max.ru/image-1',
+              token: 'image-upload-token-1',
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            data: {
+              token: 'image-binary-token-1',
+            },
+          }),
+        ),
+    };
+    const service = createService(httpService);
+    const defaultBot = (service as any).botRegistry.getDefaultBot();
+    (service as any).botRegistry.getBotById.mockImplementation((botId?: string | null) => {
+      if (botId === '888000_bot') {
+        return {
+          ...defaultBot,
+          id: '888000_bot',
+          token: 'selected-bot-token',
+          webhookSecretPath: 'selected-secret-path',
+        };
+      }
+      return !botId || botId === defaultBot.id ? defaultBot : null;
+    });
+
+    const result = await service.uploadImage(
+      Buffer.from('image-binary'),
+      'private-control-image.jpg',
+      'image/jpeg',
+      { botId: '888000_bot' },
+    );
+
+    expect(result).toEqual({ token: 'image-binary-token-1' });
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api2.max.ru/uploads',
+        headers: expect.objectContaining({
+          Authorization: 'selected-bot-token',
+        }),
+      }),
+    );
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://upload.max.ru/image-1',
+        headers: expect.objectContaining({
+          Authorization: 'selected-bot-token',
+        }),
       }),
     );
 

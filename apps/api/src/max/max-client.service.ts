@@ -1274,54 +1274,57 @@ export class MaxClientService implements OnModuleDestroy {
     mimeType: string,
     requestOptions: MaxApiRequestOptions = {},
   ): Promise<Record<string, unknown>> {
-    const uploadMeta = await this.executeMutation(
-      null,
-      () =>
-        this.request<Record<string, unknown>>('post', '/uploads', {
-          params: {
-            type: uploadType,
-          },
-        }),
-      {
-        trafficClass: requestOptions.trafficClass ?? 'critical',
-        actionHealthLane: requestOptions.actionHealthLane,
-        sourceTag: requestOptions.sourceTag,
-        timeoutMs: requestOptions.timeoutMs,
-        ...(requestOptions.botId ? { botId: requestOptions.botId } : {}),
-      },
-    );
-    const uploadUrl = typeof uploadMeta.url === 'string' ? uploadMeta.url.trim() : '';
-    const uploadMetaToken = typeof uploadMeta.token === 'string' ? uploadMeta.token.trim() : '';
-    if (!uploadUrl) {
-      throw new Error('MAX upload URL is missing');
-    }
+    const bot = this.resolveBot(requestOptions.botId);
+    return this.botContext.runWithBot(bot.id, async () => {
+      const uploadMeta = await this.executeMutation(
+        null,
+        () =>
+          this.request<Record<string, unknown>>('post', '/uploads', {
+            params: {
+              type: uploadType,
+            },
+          }),
+        {
+          trafficClass: requestOptions.trafficClass ?? 'critical',
+          actionHealthLane: requestOptions.actionHealthLane,
+          sourceTag: requestOptions.sourceTag,
+          timeoutMs: requestOptions.timeoutMs,
+          botId: bot.id,
+        },
+      );
+      const uploadUrl = typeof uploadMeta.url === 'string' ? uploadMeta.url.trim() : '';
+      const uploadMetaToken = typeof uploadMeta.token === 'string' ? uploadMeta.token.trim() : '';
+      if (!uploadUrl) {
+        throw new Error('MAX upload URL is missing');
+      }
 
-    const form = new FormData();
-    form.append('data', data, {
-      filename: fileName,
-      contentType: mimeType,
-    });
-    const uploadResult = await this.requestAbsolute<Record<string, unknown>>('post', uploadUrl, {
-      data: form,
-      headers: form.getHeaders(),
-      maxBodyLength: Infinity,
-      maxContentLength: Infinity,
-      timeout: requestOptions.timeoutMs ?? MAX_UPLOAD_BINARY_TIMEOUT_MS,
-    });
+      const form = new FormData();
+      form.append('data', data, {
+        filename: fileName,
+        contentType: mimeType,
+      });
+      const uploadResult = await this.requestAbsolute<Record<string, unknown>>('post', uploadUrl, {
+        data: form,
+        headers: form.getHeaders(),
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+        timeout: requestOptions.timeoutMs ?? MAX_UPLOAD_BINARY_TIMEOUT_MS,
+      });
 
-    if (!uploadResult || typeof uploadResult !== 'object') {
+      if (!uploadResult || typeof uploadResult !== 'object') {
+        throw new Error('MAX upload payload is missing');
+      }
+
+      if (Object.keys(uploadResult).length > 0) {
+        return uploadResult;
+      }
+
+      if (uploadMetaToken) {
+        return { token: uploadMetaToken };
+      }
+
       throw new Error('MAX upload payload is missing');
-    }
-
-    if (Object.keys(uploadResult).length > 0) {
-      return uploadResult;
-    }
-
-    if (uploadMetaToken) {
-      return { token: uploadMetaToken };
-    }
-
-    throw new Error('MAX upload payload is missing');
+    });
   }
 
   async kickMember(chatId: string, userId: string, options?: MaxActionDispatchOptions) {

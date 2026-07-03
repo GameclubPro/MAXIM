@@ -345,6 +345,7 @@ export class PrivateControlService {
           context.callbackId,
           DEFERRED_PRIVATE_CALLBACK_NOTIFICATION,
           this.privateCallbackAckTimeoutMs,
+          this.resolvePrivateDeliveryBotId(context),
         );
       }
 
@@ -408,7 +409,7 @@ export class PrivateControlService {
     const profileMentionPayload = this.parseProfileMentionStartPayload(startPayload);
     if (profileMentionPayload) {
       const session = await this.loadSession(context.actor.userId);
-      this.rememberPrivateChatId(session, context.chatId);
+      this.rememberPrivateChatRoute(session, context);
       const pendingDisplayName = this.readPendingProfileMentionDisplayName(
         session,
         profileMentionPayload.chatId,
@@ -433,12 +434,13 @@ export class PrivateControlService {
         context.chatId,
         resolvedDisplayName,
         profileMentionPayload.userId,
+        this.resolvePrivateDeliveryBotId(context, session),
       );
       return;
     }
 
     const session = await this.loadSession(context.actor.userId);
-    this.rememberPrivateChatId(session, context.chatId);
+    this.rememberPrivateChatRoute(session, context);
     if (!startPayload && this.wasProfileMentionHandoffAlreadyDelivered(session, context.chatId)) {
       this.clearDeliveredProfileMentionHandoff(session);
       await this.saveSession(context.actor.userId, session);
@@ -633,7 +635,8 @@ export class PrivateControlService {
     await this.saveSession(user.userId, session);
     await this.deliverBroadcastHandoffToKnownPrivateChat(user, session);
 
-    const botUrl = this.buildBotStartUrl(BROADCAST_HANDOFF_START_PAYLOAD);
+    const handoffBotId = session.lastPrivateBotId?.trim() || null;
+    const botUrl = this.buildBotStartUrl(BROADCAST_HANDOFF_START_PAYLOAD, handoffBotId);
     if (!botUrl) {
       throw new BadRequestException('Ссылка на личный чат бота не настроена.');
     }
@@ -732,7 +735,8 @@ export class PrivateControlService {
     await this.saveSession(user.userId, session);
     await this.deliverRulesHandoffToKnownPrivateChat(user, session);
 
-    const botUrl = this.buildBotStartUrl(RULES_HANDOFF_START_PAYLOAD);
+    const handoffBotId = session.lastPrivateBotId?.trim() || null;
+    const botUrl = this.buildBotStartUrl(RULES_HANDOFF_START_PAYLOAD, handoffBotId);
     if (!botUrl) {
       throw new BadRequestException('Ссылка на личный чат бота не настроена.');
     }
@@ -830,12 +834,17 @@ export class PrivateControlService {
     await this.saveSession(user.userId, session);
     await this.deliverGiveawayHandoffToKnownPrivateChat(user, session);
 
+    const handoffBotId = session.lastPrivateBotId?.trim() || null;
     const botUrl = this.buildBotStartUrl(
-      this.buildGiveawayHandoffStartPayload({
-        chatId: sourceChatId,
-        entityType,
-        giveawayId: parsed.data.giveawayId,
-      }),
+      this.buildGiveawayHandoffStartPayload(
+        {
+          chatId: sourceChatId,
+          entityType,
+          giveawayId: parsed.data.giveawayId,
+        },
+        handoffBotId,
+      ),
+      handoffBotId,
     );
     if (!botUrl) {
       throw new BadRequestException('Ссылка на личный чат бота не настроена.');
@@ -889,19 +898,24 @@ export class PrivateControlService {
       );
     }
 
+    const session = await this.loadSession(user.userId);
+    const handoffBotId = session.lastPrivateBotId?.trim() || null;
     const botUrl = this.buildBotStartUrl(
-      this.buildProfileMentionStartPayload({
-        chatId: sourceChatId,
-        entityType,
-        userId: normalizedTargetUserId,
-        displayName: resolvedDisplayName,
-      }),
+      this.buildProfileMentionStartPayload(
+        {
+          chatId: sourceChatId,
+          entityType,
+          userId: normalizedTargetUserId,
+          displayName: resolvedDisplayName,
+        },
+        handoffBotId,
+      ),
+      handoffBotId,
     );
     if (!botUrl) {
       throw new BadRequestException('Ссылка на личный чат бота не настроена.');
     }
 
-    const session = await this.loadSession(user.userId);
     this.rememberPendingProfileMentionHandoff(session, {
       chatId: sourceChatId,
       displayName: resolvedDisplayName,
@@ -918,7 +932,7 @@ export class PrivateControlService {
 
   private async processTextMessage(context: PrivateContext): Promise<void> {
     const session = await this.loadSession(context.actor.userId);
-    this.rememberPrivateChatId(session, context.chatId);
+    this.rememberPrivateChatRoute(session, context);
     const directText = this.extractDirectIncomingText(context.update);
     const forwardedModerationCommand = parsePrivateForwardedModerationCommand(directText);
     if (forwardedModerationCommand) {
@@ -1072,7 +1086,12 @@ export class PrivateControlService {
       command.action === 'BAN'
         ? [`Забанен: ${targetLabel}`, `Чат: ${chatLabel}`]
         : [result.message, `Чат: ${chatLabel}`, `Пользователь: ${targetLabel}`];
-    await this.sendImmediate(context.chatId, lines.join('\n'));
+    await this.sendImmediate(
+      context.chatId,
+      lines.join('\n'),
+      undefined,
+      this.resolvePrivateDeliveryBotId(context, session),
+    );
   }
 
   private async handleForwardedRulesCommand(
@@ -1107,7 +1126,12 @@ export class PrivateControlService {
       lines.push(`Пост: ${result.publishedUrl}`);
     }
     lines.push('Кнопка «Правила» в нарушениях включена.');
-    await this.sendImmediate(context.chatId, lines.join('\n'));
+    await this.sendImmediate(
+      context.chatId,
+      lines.join('\n'),
+      undefined,
+      this.resolvePrivateDeliveryBotId(context, session),
+    );
   }
 
   private async startSupportRequestFlow(
@@ -1141,7 +1165,10 @@ export class PrivateControlService {
     }
 
     await this.supportRequestsService.createRequest({
-      botId: this.maxBotLinkService?.getContextOrDefaultBotId() ?? this.botDeepLinkId,
+      botId:
+        this.resolvePrivateDeliveryBotId(context, session) ??
+        this.maxBotLinkService?.getContextOrDefaultBotId() ??
+        this.botDeepLinkId,
       privateChatId: context.chatId,
       userId: context.actor.userId,
       userName: context.actor.displayName ?? context.actor.username ?? null,
@@ -1516,7 +1543,7 @@ export class PrivateControlService {
   private async processCallback(context: PrivateContext): Promise<void> {
     const callback = this.parseCallbackAction(context.callbackPayload);
     const session = await this.loadSession(context.actor.userId);
-    this.rememberPrivateChatId(session, context.chatId);
+    this.rememberPrivateChatRoute(session, context);
 
     if (!callback) {
       const view = session.selectedChatId
@@ -2406,6 +2433,7 @@ export class PrivateControlService {
           });
           void this.finishConfirmedBroadcastPublish({
             privateChatId: context.chatId,
+            privateBotId: this.resolvePrivateDeliveryBotId(context, session),
             actor: context.actor,
             selectedChatId,
             selectedEntityType,
@@ -3215,6 +3243,7 @@ export class PrivateControlService {
         });
         void this.finishConfirmedBroadcastPublish({
           privateChatId: context.chatId,
+          privateBotId: this.resolvePrivateDeliveryBotId(context, session),
           actor: context.actor,
           selectedChatId,
           selectedEntityType,
@@ -3368,7 +3397,12 @@ export class PrivateControlService {
           if (session.suggestionDraft) {
             await this.sendChannelSuggestionDraftPreview(context, session);
             if (context.callbackId) {
-              await this.answerCallbackQuiet(context.callbackId, 'Черновик сохранён');
+              await this.answerCallbackQuiet(
+                context.callbackId,
+                'Черновик сохранён',
+                undefined,
+                this.resolvePrivateDeliveryBotId(context, session),
+              );
             }
             return;
           }
@@ -4572,6 +4606,7 @@ export class PrivateControlService {
 
   private async finishConfirmedBroadcastPublish(params: {
     privateChatId: string;
+    privateBotId?: string;
     actor: AuthUser;
     selectedChatId: string;
     selectedEntityType: ManagedEntityType;
@@ -4599,7 +4634,12 @@ export class PrivateControlService {
         draft: params.broadcastDraft,
       });
       rememberPublish = true;
-      await this.sendImmediate(params.privateChatId, this.buildBroadcastFollowUpMessage(result));
+      await this.sendImmediate(
+        params.privateChatId,
+        this.buildBroadcastFollowUpMessage(result),
+        undefined,
+        params.privateBotId,
+      );
     } catch (error: unknown) {
       const userMessage =
         this.extractBadRequestDetails(error) ??
@@ -4628,7 +4668,7 @@ export class PrivateControlService {
       );
 
       try {
-        await this.sendImmediate(params.privateChatId, userMessage);
+        await this.sendImmediate(params.privateChatId, userMessage, undefined, params.privateBotId);
       } catch (sendError: unknown) {
         this.logger.warn(
           {
@@ -7153,15 +7193,28 @@ export class PrivateControlService {
   private async clearChannelSuggestionPreviewButtons(
     chatId: string,
     previewMessageId: string | null,
+    botId?: string,
   ): Promise<void> {
     if (!previewMessageId) {
       return;
     }
 
     try {
-      await this.maxClient.editMessageInlineKeyboard(chatId, previewMessageId, null, {
-        buttons: [],
-      });
+      if (botId) {
+        await this.maxClient.editMessageInlineKeyboard(
+          chatId,
+          previewMessageId,
+          null,
+          {
+            buttons: [],
+          },
+          { botId },
+        );
+      } else {
+        await this.maxClient.editMessageInlineKeyboard(chatId, previewMessageId, null, {
+          buttons: [],
+        });
+      }
     } catch (error: unknown) {
       this.logger.debug(
         {
@@ -7185,15 +7238,22 @@ export class PrivateControlService {
 
     const previousPreviewMessageId = draft.previewMessageId;
     draft.previewMessageId = null;
-    await this.clearChannelSuggestionPreviewButtons(context.chatId, previousPreviewMessageId);
+    const botId = this.resolvePrivateDeliveryBotId(context, session);
+    await this.clearChannelSuggestionPreviewButtons(
+      context.chatId,
+      previousPreviewMessageId,
+      botId,
+    );
 
     const buttons = await this.buildChannelSuggestionPreviewButtons(draft.chatId);
 
     try {
-      const published = await this.maxClient.sendCustomMessageImmediateWithResolvedLink(
-        context.chatId,
-        this.buildChannelSuggestionPreviewPayload(draft, buttons),
-      );
+      const payload = this.buildChannelSuggestionPreviewPayload(draft, buttons);
+      const published = botId
+        ? await this.maxClient.sendCustomMessageImmediateWithResolvedLink(context.chatId, payload, {
+            botId,
+          })
+        : await this.maxClient.sendCustomMessageImmediateWithResolvedLink(context.chatId, payload);
       draft.previewMessageId = published.messageId;
       await this.saveSession(context.actor.userId, session);
       return;
@@ -7222,6 +7282,7 @@ export class PrivateControlService {
         session,
         'suggest_preview_fallback',
       ),
+      botId,
     );
   }
 
@@ -7877,6 +7938,7 @@ export class PrivateControlService {
       ? { ...(compactOptions ?? {}), textFormat: inferredTextFormat }
       : compactOptions;
     const options = this.withDebugContext(optionsWithFormat, session, callback.notification);
+    const botId = this.resolvePrivateDeliveryBotId(context, session);
 
     if (callback.callbackId) {
       const edited = await this.tryAnswerWithEdit(
@@ -7885,6 +7947,7 @@ export class PrivateControlService {
         text,
         options,
         this.privateCallbackEditTimeoutMs,
+        botId,
       );
       if (edited) {
         return;
@@ -7894,10 +7957,11 @@ export class PrivateControlService {
         callback.callbackId,
         callback.notification ?? 'Готово',
         this.privateCallbackAckTimeoutMs,
+        botId,
       );
     }
 
-    await this.sendImmediate(context.chatId, text, options);
+    await this.sendImmediate(context.chatId, text, options, botId);
   }
 
   private async respondWithFreshMessage(
@@ -7906,11 +7970,13 @@ export class PrivateControlService {
     view: PrivateView,
     callback: { callbackId: string | null; notification: string | null },
   ): Promise<void> {
+    const botId = this.resolvePrivateDeliveryBotId(context, session);
     if (callback.callbackId) {
       await this.answerCallbackQuiet(
         callback.callbackId,
         callback.notification ?? 'Готово',
         this.privateCallbackAckTimeoutMs,
+        botId,
       );
     }
 
@@ -7924,12 +7990,14 @@ export class PrivateControlService {
     chatId: string,
     text: string,
     options?: MaxSendMessageOptions,
+    botId?: string,
   ): Promise<void> {
     try {
       await this.maxClient.sendMessage(chatId, text, options, {
         immediate: true,
         ignoreFailureMetricStatuses: PRIVATE_DIALOG_TERMINAL_FAILURE_METRIC_STATUSES,
         timeoutMs: this.privateDialogSendTimeoutMs,
+        ...(botId ? { botId } : {}),
       });
     } catch (error: unknown) {
       if (this.isTerminalPrivateDialogDeliveryError(error)) {
@@ -7988,10 +8056,44 @@ export class PrivateControlService {
     );
   }
 
-  private rememberPrivateChatId(session: PrivateSession, chatId: string): void {
-    session.lastPrivateChatId = this.isPrivateDirectChat(chatId)
-      ? chatId
-      : session.lastPrivateChatId;
+  private rememberPrivateChatRoute(session: PrivateSession, context: PrivateContext): void {
+    if (!this.isPrivateDirectChat(context.chatId)) {
+      return;
+    }
+
+    const botId = this.readUpdateBotId(context.update);
+    if (session.lastPrivateChatId !== context.chatId) {
+      session.lastPrivateChatId = context.chatId;
+      session.lastPrivateBotId = botId;
+      return;
+    }
+
+    session.lastPrivateChatId = context.chatId;
+    if (botId) {
+      session.lastPrivateBotId = botId;
+    }
+  }
+
+  private resolvePrivateDeliveryBotId(
+    context: PrivateContext,
+    session?: PrivateSession | null,
+  ): string | undefined {
+    const updateBotId = this.readUpdateBotId(context.update);
+    if (updateBotId) {
+      return updateBotId;
+    }
+
+    if (session?.lastPrivateChatId === context.chatId) {
+      return session.lastPrivateBotId?.trim() || undefined;
+    }
+
+    return undefined;
+  }
+
+  private readUpdateBotId(update: MaxUpdate): string | null {
+    return typeof update.botId === 'string' && update.botId.trim().length > 0
+      ? update.botId.trim()
+      : null;
   }
 
   private wasBroadcastHandoffAlreadyDelivered(session: PrivateSession, chatId: string): boolean {
@@ -8068,10 +8170,15 @@ export class PrivateControlService {
     clearPendingPrivateProfileMentionHandoff(session);
   }
 
-  private createSyntheticPrivateContext(user: AuthUser, privateChatId: string): PrivateContext {
+  private createSyntheticPrivateContext(
+    user: AuthUser,
+    privateChatId: string,
+    botId?: string | null,
+  ): PrivateContext {
     return {
       update: {
         updateId: 'miniapp-handoff',
+        ...(botId?.trim() ? { botId: botId.trim() } : {}),
         type: 'message_created',
         message: {
           messageId: 'miniapp-handoff',
@@ -8120,7 +8227,8 @@ export class PrivateControlService {
     kind: PrivateScreenHandoffKind,
   ): Promise<void> {
     await deliverPrivateScreenHandoffToKnownPrivateChat(session, kind, {
-      createContext: (privateChatId) => this.createSyntheticPrivateContext(user, privateChatId),
+      createContext: (privateChatId) =>
+        this.createSyntheticPrivateContext(user, privateChatId, session.lastPrivateBotId),
       render: (context, currentSession) => this.renderByCurrentScreen(context, currentSession),
       respond: (context, currentSession, view) =>
         this.respond(context, currentSession, view, {
@@ -8145,12 +8253,13 @@ export class PrivateControlService {
     privateChatId: string,
     displayName: string,
     userId: string,
+    botId?: string,
   ): Promise<void> {
     const message = renderPrivateProfileMentionMessage({
       displayName,
       userId,
     });
-    await this.sendImmediate(privateChatId, message.text, message.options);
+    await this.sendImmediate(privateChatId, message.text, message.options, botId);
   }
 
   private async resolveProfileMentionDisplayName(
@@ -8187,7 +8296,12 @@ export class PrivateControlService {
   ): Promise<void> {
     await deliverPrivateProfileMentionHandoffToKnownPrivateChat(session, payload, {
       send: (privateChatId, message) =>
-        this.sendImmediate(privateChatId, message.text, message.options),
+        this.sendImmediate(
+          privateChatId,
+          message.text,
+          message.options,
+          session.lastPrivateBotId?.trim() || undefined,
+        ),
       saveSession: (currentSession) => this.saveSession(user.userId, currentSession),
       onFailure: (error, privateChatId) => {
         this.logger.warn(
@@ -8290,6 +8404,7 @@ export class PrivateControlService {
     text: string,
     options?: MaxSendMessageOptions,
     timeoutMs?: number,
+    botId?: string,
   ): Promise<boolean> {
     try {
       await this.maxClient.answerCallback(
@@ -8302,6 +8417,7 @@ export class PrivateControlService {
         {
           ignoreFailureMetricStatuses: CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES,
           ...(typeof timeoutMs === 'number' ? { timeoutMs } : {}),
+          ...(botId ? { botId } : {}),
         },
       );
       return true;
@@ -8321,11 +8437,13 @@ export class PrivateControlService {
     callbackId: string,
     notification: string,
     timeoutMs?: number,
+    botId?: string,
   ): Promise<void> {
     try {
       await this.maxClient.answerCallback(callbackId, notification, undefined, {
         ignoreFailureMetricStatuses: CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES,
         ...(typeof timeoutMs === 'number' ? { timeoutMs } : {}),
+        ...(botId ? { botId } : {}),
       });
     } catch (error: unknown) {
       this.logger.debug(
@@ -8374,7 +8492,12 @@ export class PrivateControlService {
       'Private control flow failed',
     );
 
-    await this.sendImmediate(context.chatId, userMessage);
+    await this.sendImmediate(
+      context.chatId,
+      userMessage,
+      undefined,
+      this.resolvePrivateDeliveryBotId(context, session),
+    );
   }
 
   private async awaitWithTimeout<T>(
@@ -8900,34 +9023,40 @@ export class PrivateControlService {
     );
   }
 
-  private buildBotStartUrl(startPayload: string): string | null {
+  private buildBotStartUrl(startPayload: string, botId?: string | null): string | null {
     if (!isValidMaxBotStartPayload(startPayload)) {
       return null;
     }
 
     return (
-      this.maxBotLinkService?.buildBotStartUrlSync?.(startPayload) ??
+      this.maxBotLinkService?.buildBotStartUrlSync?.(startPayload, botId) ??
       (this.botDeepLinkId
-        ? `https://max.ru/${encodeURIComponent(this.botDeepLinkId)}?start=${encodeURIComponent(startPayload)}`
+        ? `https://max.ru/${encodeURIComponent(botId?.trim() || this.botDeepLinkId)}?start=${encodeURIComponent(startPayload)}`
         : null)
     );
   }
 
-  private buildGiveawayHandoffStartPayload(params: {
-    chatId: string;
-    entityType: ManagedEntityType;
-    giveawayId: string | null;
-  }): string {
-    return buildPrivateGiveawayHandoffStartPayload(params, this.getCurrentBotToken());
+  private buildGiveawayHandoffStartPayload(
+    params: {
+      chatId: string;
+      entityType: ManagedEntityType;
+      giveawayId: string | null;
+    },
+    botId?: string | null,
+  ): string {
+    return buildPrivateGiveawayHandoffStartPayload(params, this.getCurrentBotToken(botId));
   }
 
-  private buildProfileMentionStartPayload(params: {
-    chatId: string;
-    entityType: ManagedEntityType;
-    userId: string;
-    displayName: string;
-  }): string {
-    return buildPrivateProfileMentionStartPayload(params, this.getCurrentBotToken());
+  private buildProfileMentionStartPayload(
+    params: {
+      chatId: string;
+      entityType: ManagedEntityType;
+      userId: string;
+      displayName: string;
+    },
+    botId?: string | null,
+  ): string {
+    return buildPrivateProfileMentionStartPayload(params, this.getCurrentBotToken(botId));
   }
 
   private parseGiveawayHandoffStartPayload(
@@ -9326,8 +9455,8 @@ export class PrivateControlService {
     return this.ownBotUserIdVariants.has(collapsed);
   }
 
-  private getCurrentBotToken(): string {
-    return this.maxBotLinkService?.getBotTokenSync() ?? this.maxBotToken;
+  private getCurrentBotToken(botId?: string | null): string {
+    return this.maxBotLinkService?.getBotTokenSync(botId) ?? this.maxBotToken;
   }
 
   private normalizeAppBaseUrl(value: string | undefined): string | null {

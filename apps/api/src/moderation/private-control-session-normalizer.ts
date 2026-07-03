@@ -42,6 +42,7 @@ export function createDefaultPrivateControlSession(): PrivateSession {
   return {
     version: 3,
     lastPrivateChatId: null,
+    lastPrivateBotId: null,
     lastBroadcastHandoffDeliveredChatId: null,
     lastBroadcastHandoffDeliveredAt: null,
     lastGiveawayHandoffDeliveredChatId: null,
@@ -97,6 +98,7 @@ export function normalizePrivateControlSession(
   return {
     version: 3,
     lastPrivateChatId: nonEmptyTrimmedString(row.lastPrivateChatId),
+    lastPrivateBotId: nonEmptyTrimmedString(row.lastPrivateBotId),
     lastBroadcastHandoffDeliveredChatId: nonEmptyTrimmedString(
       row.lastBroadcastHandoffDeliveredChatId,
     ),
