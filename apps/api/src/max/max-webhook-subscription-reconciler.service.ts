@@ -95,9 +95,13 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
       const latestRecordedIncomingWebhookAt = this.resolveLatestIso(
         Object.values(latestRecordedIncomingByBot),
       );
-      const botResults = await Promise.all(
-        operationalBots.map((bot) =>
-          this.reconcileBot(
+      const botResults: Array<{
+        snapshot: BotWebhookSubscriptionSnapshot;
+        syncState: WebhookSubscriptionBotSyncState;
+      }> = [];
+      for (const bot of operationalBots) {
+        botResults.push(
+          await this.reconcileBot(
             bot,
             syncState?.bots?.[bot.id] ?? null,
             {
@@ -109,8 +113,8 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
             },
             reason,
           ),
-        ),
-      );
+        );
+      }
       const botSnapshots = Object.fromEntries(
         botResults.map((result) => [result.snapshot.botId, result.snapshot]),
       );

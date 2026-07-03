@@ -49,6 +49,20 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
     };
   }
 
+  function createDeferred<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((promiseResolve, promiseReject) => {
+      resolve = promiseResolve;
+      reject = promiseReject;
+    });
+    return { promise, resolve, reject };
+  }
+
+  async function flushPromises() {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
   it('repairs missing webhook update types and stores a healthy snapshot', async () => {
     process.env.APP_ROLE = 'ingress';
 
@@ -135,6 +149,121 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
             configured: true,
             status: 'healthy',
           }),
+        }),
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('reconciles multiple operational bots sequentially to avoid background MAX API bursts', async () => {
+    process.env.APP_ROLE = 'ingress';
+
+    const bots = [
+      {
+        id: 'first_bot',
+        webhookHeaderSecrets: ['secret-header-current'],
+      },
+      {
+        id: 'second_bot',
+        webhookHeaderSecrets: ['secret-header-current'],
+      },
+    ];
+    const botRegistry = {
+      getAllBots: jest.fn().mockReturnValue(bots),
+      getDefaultBot: jest.fn().mockReturnValue({ id: 'first_bot' }),
+      computeWebhookHeaderSecretFingerprint: jest
+        .fn()
+        .mockImplementation((botId: string) => `fingerprint-${botId}`),
+    };
+    const statusService = {
+      getSyncState: jest.fn().mockResolvedValue(null),
+      writeSnapshot: jest.fn().mockResolvedValue(undefined),
+      writeSyncState: jest.fn().mockResolvedValue(undefined),
+      getSnapshot: jest.fn(),
+    };
+    const firstListSubscriptions = createDeferred<
+      Array<{ url: string; updateTypes: string[] }>
+    >();
+    const startedBots: string[] = [];
+    const maxClient = {
+      getConfiguredWebhookSubscriptionTarget: jest.fn().mockImplementation((botId: string) => ({
+        url: `https://major-maksimov.ru/api/webhook/max/${botId}/secret-path`,
+        maskedUrl: `https://major-maksimov.ru/api/webhook/max/${botId}/***`,
+      })),
+      listWebhookSubscriptions: jest
+        .fn()
+        .mockImplementation(({ botId }: { botId: string }) => {
+          startedBots.push(botId);
+          if (botId === 'first_bot') {
+            return firstListSubscriptions.promise;
+          }
+          return Promise.resolve([
+            {
+              url: `https://major-maksimov.ru/api/webhook/max/${botId}/secret-path`,
+              updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+            },
+          ]);
+        }),
+      matchesConfiguredWebhookUrl: jest
+        .fn()
+        .mockImplementation(
+          (url: string, botId: string) =>
+            url === `https://major-maksimov.ru/api/webhook/max/${botId}/secret-path`,
+        ),
+      deleteWebhookSubscription: jest.fn().mockResolvedValue(undefined),
+      ensureWebhookSubscription: jest.fn().mockImplementation((updateTypes, { botId }) =>
+        Promise.resolve({
+          url: `https://major-maksimov.ru/api/webhook/max/${botId}/secret-path`,
+          updateTypes,
+        }),
+      ),
+    };
+    const service = new MaxWebhookSubscriptionReconcilerService(
+      maxClient as never,
+      botRegistry as never,
+      statusService as never,
+      createPrismaMock({
+        latestWebhookByBot: {
+          first_bot: new Date('2026-07-03T12:00:00.000Z'),
+          second_bot: new Date('2026-07-03T12:00:00.000Z'),
+        },
+        activeMembershipsByBot: {
+          first_bot: { count: 1, lastWebhookAt: new Date('2026-07-03T12:00:00.000Z') },
+          second_bot: { count: 1, lastWebhookAt: new Date('2026-07-03T12:00:00.000Z') },
+        },
+      }) as never,
+      {
+        get: jest.fn((key: string, fallback?: number | string) => {
+          if (key === 'MAX_WEBHOOK_RECONCILE_INTERVAL_MS') {
+            return 60_000;
+          }
+          return fallback;
+        }),
+      } as never,
+    );
+
+    const initPromise = service.onModuleInit();
+    await flushPromises();
+
+    expect(startedBots).toEqual(['first_bot']);
+    expect(maxClient.listWebhookSubscriptions).toHaveBeenCalledTimes(1);
+
+    firstListSubscriptions.resolve([
+      {
+        url: 'https://major-maksimov.ru/api/webhook/max/first_bot/secret-path',
+        updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+      },
+    ]);
+    await initPromise;
+
+    expect(startedBots).toEqual(['first_bot', 'second_bot']);
+    expect(maxClient.listWebhookSubscriptions).toHaveBeenCalledTimes(2);
+    expect(statusService.writeSyncState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bots: expect.objectContaining({
+          first_bot: expect.any(Object),
+          second_bot: expect.any(Object),
         }),
       }),
     );
