@@ -154,6 +154,11 @@
     var(--suggest-polish-cyan) 38%,
     transparent
   );
+  --suggest-polish-composer-shadow:
+    0 10px 24px var(--suggest-polish-shadow),
+    inset 0 1px 0 var(--suggest-polish-surface-inset);
+  --suggest-polish-bar-shadow: none;
+  --suggest-polish-bubble-shadow: none;
   --suggest-polish-submit-shadow: 0 8px 18px rgba(35, 126, 148, 0.18);
   --suggest-polish-image-tile-bg: rgba(255, 255, 255, 0.56);
   --suggest-polish-image-tile-ink: rgba(16, 36, 54, 0.56);
@@ -280,6 +285,162 @@ html[data-max-theme='dark'] {
     --suggest-polish-image-remove-border: rgba(255, 255, 255, 0.08);
     --suggest-polish-image-remove-bg: rgba(9, 18, 24, 0.78);
     --suggest-polish-image-remove-ink: rgba(227, 244, 248, 0.92);
+  }
+}
+
+html[data-max-theme='dark'] {
+  --suggest-polish-app-bg: #0d0f12;
+  --suggest-polish-bg-start: #0d0f12;
+  --suggest-polish-bg-end: #121817;
+  --suggest-polish-ink: rgba(248, 250, 247, 0.96);
+  --suggest-polish-muted: rgba(198, 210, 205, 0.76);
+  --suggest-polish-line: rgba(255, 255, 255, 0.11);
+  --suggest-polish-surface: rgba(18, 20, 24, 0.9);
+  --suggest-polish-surface-strong: rgba(25, 28, 32, 0.96);
+  --suggest-polish-shadow: rgba(0, 0, 0, 0.34);
+  --suggest-polish-surface-inset: rgba(255, 255, 255, 0.08);
+  --suggest-polish-control-bg: rgba(255, 255, 255, 0.085);
+  --suggest-polish-control-active-bg: rgba(61, 183, 202, 0.16);
+  --suggest-polish-control-border: rgba(255, 255, 255, 0.12);
+  --suggest-polish-control-ink: rgba(225, 249, 248, 0.94);
+  --suggest-polish-phone-bg: linear-gradient(
+      180deg,
+      rgba(25, 29, 32, 0.98),
+      rgba(13, 16, 18, 0.98)
+    ),
+    #101214;
+  --suggest-polish-bubble-bg: linear-gradient(160deg, #1b4b4f, #17333d 72%);
+  --suggest-polish-bubble-ink: rgba(248, 250, 247, 0.96);
+  --suggest-polish-bubble-border: rgba(126, 215, 230, 0.16);
+  --suggest-polish-bar-bg: rgba(15, 17, 20, 0.92);
+  --suggest-polish-placeholder: rgba(198, 210, 205, 0.58);
+  --suggest-polish-link: #90e6e0;
+  --suggest-polish-warning-ink: #ffd08a;
+  --suggest-polish-warning-bg: rgba(240, 164, 43, 0.18);
+  --suggest-polish-ready-ink: #a5efb8;
+  --suggest-polish-ready-bg: rgba(99, 186, 122, 0.18);
+  --suggest-polish-cancelled-ink: #ffb4c0;
+  --suggest-polish-cancelled-bg: rgba(214, 91, 120, 0.18);
+  --suggest-polish-coral: #ff785c;
+  --suggest-polish-cyan: #45c9cf;
+  --suggest-polish-green: #75d08a;
+  --suggest-polish-plum: #a99bff;
+  --suggest-polish-backdrop-bg: linear-gradient(
+      180deg,
+      rgba(13, 15, 18, 0.995),
+      rgba(18, 24, 23, 0.98)
+    ),
+    linear-gradient(
+      145deg,
+      rgba(255, 120, 92, 0.12),
+      rgba(117, 208, 138, 0.07) 45%,
+      rgba(69, 201, 207, 0.1)
+    );
+  --suggest-polish-label-bg: rgba(255, 120, 92, 0.15);
+  --suggest-polish-label-ink: rgba(255, 225, 216, 0.98);
+  --suggest-polish-requirements-bg: rgba(24, 27, 31, 0.98);
+  --suggest-polish-requirements-text: rgba(248, 250, 247, 0.94);
+  --suggest-polish-code-bg: rgba(255, 255, 255, 0.1);
+  --suggest-polish-code-ink: rgba(230, 250, 249, 0.95);
+  --suggest-polish-link-panel-input-bg: rgba(255, 255, 255, 0.09);
+  --suggest-polish-active-border: rgba(69, 201, 207, 0.34);
+  --suggest-polish-composer-shadow:
+    0 18px 38px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --suggest-polish-bar-shadow:
+    0 14px 30px rgba(0, 0, 0, 0.32),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  --suggest-polish-bubble-shadow:
+    0 12px 24px rgba(0, 0, 0, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --suggest-polish-submit-shadow:
+    0 12px 28px rgba(69, 201, 207, 0.22),
+    0 8px 18px rgba(255, 120, 92, 0.16);
+  --suggest-polish-image-tile-bg: rgba(255, 255, 255, 0.08);
+  --suggest-polish-image-tile-ink: rgba(225, 249, 248, 0.76);
+  --suggest-polish-image-loader-bg: rgba(18, 28, 29, 0.9);
+  --suggest-polish-image-loader-ink: rgba(225, 249, 248, 0.92);
+  --suggest-polish-image-remove-border: rgba(255, 255, 255, 0.12);
+  --suggest-polish-image-remove-bg: rgba(12, 14, 16, 0.82);
+  --suggest-polish-image-remove-ink: rgba(248, 250, 247, 0.94);
+}
+
+@media (prefers-color-scheme: dark) {
+  html:not([data-max-theme]) {
+    --suggest-polish-app-bg: #0d0f12;
+    --suggest-polish-bg-start: #0d0f12;
+    --suggest-polish-bg-end: #121817;
+    --suggest-polish-ink: rgba(248, 250, 247, 0.96);
+    --suggest-polish-muted: rgba(198, 210, 205, 0.76);
+    --suggest-polish-line: rgba(255, 255, 255, 0.11);
+    --suggest-polish-surface: rgba(18, 20, 24, 0.9);
+    --suggest-polish-surface-strong: rgba(25, 28, 32, 0.96);
+    --suggest-polish-shadow: rgba(0, 0, 0, 0.34);
+    --suggest-polish-surface-inset: rgba(255, 255, 255, 0.08);
+    --suggest-polish-control-bg: rgba(255, 255, 255, 0.085);
+    --suggest-polish-control-active-bg: rgba(61, 183, 202, 0.16);
+    --suggest-polish-control-border: rgba(255, 255, 255, 0.12);
+    --suggest-polish-control-ink: rgba(225, 249, 248, 0.94);
+    --suggest-polish-phone-bg: linear-gradient(
+        180deg,
+        rgba(25, 29, 32, 0.98),
+        rgba(13, 16, 18, 0.98)
+      ),
+      #101214;
+    --suggest-polish-bubble-bg: linear-gradient(160deg, #1b4b4f, #17333d 72%);
+    --suggest-polish-bubble-ink: rgba(248, 250, 247, 0.96);
+    --suggest-polish-bubble-border: rgba(126, 215, 230, 0.16);
+    --suggest-polish-bar-bg: rgba(15, 17, 20, 0.92);
+    --suggest-polish-placeholder: rgba(198, 210, 205, 0.58);
+    --suggest-polish-link: #90e6e0;
+    --suggest-polish-warning-ink: #ffd08a;
+    --suggest-polish-warning-bg: rgba(240, 164, 43, 0.18);
+    --suggest-polish-ready-ink: #a5efb8;
+    --suggest-polish-ready-bg: rgba(99, 186, 122, 0.18);
+    --suggest-polish-cancelled-ink: #ffb4c0;
+    --suggest-polish-cancelled-bg: rgba(214, 91, 120, 0.18);
+    --suggest-polish-coral: #ff785c;
+    --suggest-polish-cyan: #45c9cf;
+    --suggest-polish-green: #75d08a;
+    --suggest-polish-plum: #a99bff;
+    --suggest-polish-backdrop-bg: linear-gradient(
+        180deg,
+        rgba(13, 15, 18, 0.995),
+        rgba(18, 24, 23, 0.98)
+      ),
+      linear-gradient(
+        145deg,
+        rgba(255, 120, 92, 0.12),
+        rgba(117, 208, 138, 0.07) 45%,
+        rgba(69, 201, 207, 0.1)
+      );
+    --suggest-polish-label-bg: rgba(255, 120, 92, 0.15);
+    --suggest-polish-label-ink: rgba(255, 225, 216, 0.98);
+    --suggest-polish-requirements-bg: rgba(24, 27, 31, 0.98);
+    --suggest-polish-requirements-text: rgba(248, 250, 247, 0.94);
+    --suggest-polish-code-bg: rgba(255, 255, 255, 0.1);
+    --suggest-polish-code-ink: rgba(230, 250, 249, 0.95);
+    --suggest-polish-link-panel-input-bg: rgba(255, 255, 255, 0.09);
+    --suggest-polish-active-border: rgba(69, 201, 207, 0.34);
+    --suggest-polish-composer-shadow:
+      0 18px 38px rgba(0, 0, 0, 0.3),
+      inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    --suggest-polish-bar-shadow:
+      0 14px 30px rgba(0, 0, 0, 0.32),
+      inset 0 1px 0 rgba(255, 255, 255, 0.07);
+    --suggest-polish-bubble-shadow:
+      0 12px 24px rgba(0, 0, 0, 0.24),
+      inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    --suggest-polish-submit-shadow:
+      0 12px 28px rgba(69, 201, 207, 0.22),
+      0 8px 18px rgba(255, 120, 92, 0.16);
+    --suggest-polish-image-tile-bg: rgba(255, 255, 255, 0.08);
+    --suggest-polish-image-tile-ink: rgba(225, 249, 248, 0.76);
+    --suggest-polish-image-loader-bg: rgba(18, 28, 29, 0.9);
+    --suggest-polish-image-loader-ink: rgba(225, 249, 248, 0.92);
+    --suggest-polish-image-remove-border: rgba(255, 255, 255, 0.12);
+    --suggest-polish-image-remove-bg: rgba(12, 14, 16, 0.82);
+    --suggest-polish-image-remove-ink: rgba(248, 250, 247, 0.94);
   }
 }
 

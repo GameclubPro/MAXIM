@@ -829,159 +829,6 @@
   text-align: center;
 }
 
-@media (prefers-color-scheme: dark) {
-  .channel-dialog-screen--suggest {
-    color-scheme: dark;
-    --dialog-bg-start: #101418;
-    --dialog-bg-end: #0b1d24;
-    --suggest-ink: rgba(242, 246, 248, 0.94);
-    --suggest-muted: rgba(190, 207, 216, 0.62);
-    --suggest-line: rgba(255, 255, 255, 0.08);
-    --suggest-surface: rgba(20, 30, 36, 0.78);
-    --suggest-surface-strong: rgba(31, 42, 49, 0.92);
-    --suggest-shadow: rgba(0, 0, 0, 0.3);
-    --suggest-coral: #f06f50;
-    --suggest-cyan: #3db7ca;
-    --suggest-green: #63ba7a;
-    --suggest-plum: #9284f0;
-  }
-
-  .channel-dialog-screen--suggest .channel-dialog-screen__backdrop {
-    background:
-      linear-gradient(150deg, rgba(17, 22, 27, 0.98) 0%, rgba(9, 30, 37, 0.96) 58%),
-      linear-gradient(25deg, rgba(240, 111, 80, 0.11), rgba(61, 183, 202, 0.1));
-  }
-
-  .channel-suggest-card,
-  .channel-suggest-empty,
-  .channel-suggest-requirements,
-  .channel-suggest-composer {
-    background:
-      linear-gradient(180deg, var(--suggest-surface-strong), var(--suggest-surface)),
-      rgba(15, 24, 30, 0.82);
-    box-shadow:
-      0 16px 34px var(--suggest-shadow),
-      inset 0 1px 0 rgba(255, 255, 255, 0.06);
-  }
-
-  .channel-suggest-requirements {
-    border-color: rgba(240, 111, 80, 0.14);
-  }
-
-  .channel-suggest-requirements__label {
-    color: rgba(255, 180, 157, 0.86);
-  }
-
-  .channel-suggest-requirements__text {
-    color: rgba(229, 240, 244, 0.82);
-  }
-
-  .channel-suggest-card p {
-    color: var(--suggest-ink);
-  }
-
-  .channel-suggest-card p.is-muted {
-    color: rgba(190, 207, 216, 0.62);
-  }
-
-  .channel-suggest-card__media,
-  .channel-suggest-composer__tool,
-  .channel-suggest-composer__modifier {
-    border-color: rgba(61, 183, 202, 0.18);
-    background: rgba(61, 183, 202, 0.09);
-    color: rgba(194, 238, 245, 0.88);
-  }
-
-  .channel-suggest-composer__phone {
-    border-color: rgba(255, 255, 255, 0.07);
-    background: linear-gradient(180deg, rgba(20, 31, 38, 0.98), rgba(14, 26, 34, 0.98)), #101d25;
-  }
-
-  .channel-suggest-composer__bubble,
-  .channel-suggest-composer__tail {
-    background: #173746;
-    color: var(--suggest-ink);
-  }
-
-  .channel-suggest-composer__bubble {
-    box-shadow:
-      0 14px 28px rgba(0, 0, 0, 0.28),
-      inset 0 1px 0 rgba(255, 255, 255, 0.06);
-  }
-
-  .channel-suggest-composer__field textarea::placeholder,
-  .channel-suggest-composer__rich-editor .max-rich-text-editor__surface:empty::before {
-    color: rgba(190, 207, 216, 0.46);
-  }
-
-  .channel-suggest-composer__rich-editor .max-rich-text-editor__surface code,
-  .channel-suggest-card .max-markdown-preview code {
-    background: rgba(255, 255, 255, 0.09);
-    color: rgba(227, 244, 248, 0.92);
-  }
-
-  .channel-suggest-composer__rich-editor .max-rich-text-editor__surface a,
-  .channel-suggest-card .max-markdown-preview a {
-    color: #7ed7e6;
-  }
-
-  .channel-suggest-composer__rich-editor .max-rich-text-editor__link-panel {
-    border-color: rgba(61, 183, 202, 0.16);
-    background: rgba(9, 18, 24, 0.88);
-  }
-
-  .channel-suggest-composer__rich-editor .max-rich-text-editor__link-panel input {
-    background: rgba(255, 255, 255, 0.08);
-    color: rgba(242, 246, 248, 0.94);
-  }
-
-  .channel-suggest-composer__rich-editor .max-rich-text-editor__link-panel button {
-    background: rgba(61, 183, 202, 0.12);
-    color: rgba(218, 248, 252, 0.94);
-  }
-
-  .channel-suggest-composer__image-tile {
-    background: rgba(255, 255, 255, 0.07);
-    color: rgba(194, 238, 245, 0.72);
-  }
-
-  .channel-suggest-composer__image-tile.is-loading {
-    background:
-      linear-gradient(135deg, rgba(61, 183, 202, 0.15), rgba(240, 111, 80, 0.1)),
-      rgba(255, 255, 255, 0.06);
-    box-shadow: inset 0 0 0 1px rgba(61, 183, 202, 0.14);
-  }
-
-  .channel-suggest-composer__image-tile.is-loading::before {
-    background: linear-gradient(
-      110deg,
-      rgba(255, 255, 255, 0) 0%,
-      rgba(255, 255, 255, 0.16) 46%,
-      rgba(255, 255, 255, 0) 74%
-    );
-  }
-
-  .channel-suggest-composer__image-loader {
-    background: rgba(12, 30, 38, 0.82);
-    color: rgba(194, 238, 245, 0.9);
-    box-shadow:
-      0 10px 24px rgba(0, 0, 0, 0.24),
-      inset 0 1px 0 rgba(255, 255, 255, 0.06);
-  }
-
-  .channel-suggest-composer__image-remove {
-    border-color: rgba(255, 255, 255, 0.08);
-    background: rgba(9, 18, 24, 0.78);
-    color: rgba(227, 244, 248, 0.92);
-  }
-
-  .channel-suggest-composer__tool.is-active {
-    border-color: rgba(61, 183, 202, 0.32);
-    background: rgba(61, 183, 202, 0.14);
-    color: rgba(218, 248, 252, 0.94);
-  }
-}
-
 @media (max-width: 420px) {
   .channel-dialog-screen--suggest {
     padding: max(7px, env(safe-area-inset-top, 0px)) 8px max(7px, calc(var(--safe-bottom) + 4px));
@@ -1361,52 +1208,6 @@
   box-shadow: none;
 }
 
-@media (prefers-color-scheme: dark) {
-  .channel-dialog-screen--suggest {
-    --dialog-bg-start: #10171b;
-    --dialog-bg-end: #0c2027;
-    --suggest-ink: rgba(242, 246, 248, 0.94);
-    --suggest-muted: rgba(190, 207, 216, 0.62);
-    --suggest-line: rgba(255, 255, 255, 0.08);
-    --suggest-surface: rgba(20, 30, 36, 0.78);
-    --suggest-surface-strong: rgba(31, 42, 49, 0.92);
-    --suggest-shadow: rgba(0, 0, 0, 0.24);
-  }
-
-  .channel-dialog-screen--suggest .channel-dialog-screen__backdrop {
-    background:
-      linear-gradient(180deg, rgba(15, 22, 27, 0.98), rgba(8, 30, 37, 0.96)),
-      linear-gradient(135deg, rgba(240, 111, 80, 0.08), rgba(61, 183, 202, 0.08));
-  }
-
-  .channel-suggest-requirements,
-  .channel-suggest-composer,
-  .channel-suggest-card,
-  .channel-suggest-empty {
-    border-color: rgba(255, 255, 255, 0.08);
-    background: rgba(18, 28, 34, 0.82);
-  }
-
-  .channel-suggest-requirements__text {
-    color: rgba(229, 240, 244, 0.76);
-  }
-
-  .channel-suggest-composer__phone,
-  .channel-suggest-composer__bar {
-    background: rgba(14, 27, 34, 0.92);
-  }
-
-  .channel-suggest-composer__bubble,
-  .channel-suggest-composer__tail {
-    background: #173746;
-  }
-
-  .channel-suggest-composer__tool,
-  .channel-suggest-composer__modifier {
-    background: rgba(255, 255, 255, 0.07);
-  }
-}
-
 @media (max-width: 420px) {
   .channel-dialog-screen--suggest {
     padding: 0 7px max(7px, calc(var(--safe-bottom) + 4px));
@@ -1566,8 +1367,8 @@
 }
 
 .channel-suggest-body {
-  padding: 0 0 10px;
-  scroll-padding-bottom: 18px;
+  padding: 0 0 max(16px, calc(var(--safe-bottom) + 12px));
+  scroll-padding-bottom: max(24px, calc(var(--safe-bottom) + 18px));
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
 }
@@ -1623,6 +1424,9 @@
   gap: 7px;
   padding: 8px;
   border-radius: 16px;
+  overflow-anchor: none;
+  scroll-margin-bottom: max(24px, calc(var(--safe-bottom) + 18px));
+  box-shadow: var(--suggest-polish-composer-shadow);
 }
 
 .channel-suggest-composer__head {
@@ -1660,7 +1464,7 @@
   border-radius: 16px 16px 5px 16px;
   background: var(--suggest-bubble-bg);
   color: var(--suggest-bubble-ink);
-  box-shadow: none;
+  box-shadow: var(--suggest-polish-bubble-shadow);
 }
 
 .channel-suggest-composer__tail {
@@ -1712,6 +1516,9 @@
 }
 
 .channel-suggest-composer__bar {
+  position: sticky;
+  bottom: max(0px, var(--safe-bottom));
+  z-index: 2;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
@@ -1721,6 +1528,9 @@
   border: 1px solid var(--suggest-line);
   border-radius: 15px;
   background: var(--suggest-bar-bg);
+  box-shadow: var(--suggest-polish-bar-shadow);
+  backdrop-filter: blur(18px) saturate(145%);
+  -webkit-backdrop-filter: blur(18px) saturate(145%);
 }
 
 .channel-suggest-composer__tools {
@@ -1768,6 +1578,7 @@
   min-height: 38px;
   padding: 0 11px;
   border-radius: 12px;
+  background: linear-gradient(135deg, var(--suggest-coral), var(--suggest-cyan));
   box-shadow: var(--suggest-polish-submit-shadow);
 }
 
@@ -1881,6 +1692,7 @@ html[data-max-client='native']
 html[data-max-keyboard-open='true'] .channel-dialog-screen--suggest .channel-suggest-composer {
   position: relative;
   z-index: 2;
+  scroll-margin-bottom: calc(22px + min(var(--app-keyboard-overlap), 320px));
 }
 
 html[data-max-keyboard-open='true']

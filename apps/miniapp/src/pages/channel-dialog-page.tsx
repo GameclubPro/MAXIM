@@ -499,9 +499,9 @@ function resolveSuggestionStatus(message: ChannelDialogMessage): SuggestionStatu
 
   if (message.delivered === false) {
     return {
-      badge: 'Не доставлено',
-      headline: 'Редакторы пока не получили материал',
-      note: 'Материал сохранён. Для правок или дополнений отправьте новую предложку.',
+      badge: 'Отправлено',
+      headline: 'Предложка отправлена',
+      note: 'Материал сохранён и ожидает обработки. Для правок или дополнений отправьте новую предложку.',
       tone: 'pending',
     };
   }
@@ -3469,6 +3469,19 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         } as CSSProperties)
       : undefined;
 
+  const blurSuggestComposerFocus = () => {
+    if (dialogType !== 'suggest' || typeof document === 'undefined') {
+      return;
+    }
+
+    const composer = suggestComposerRef.current;
+    const activeElement = document.activeElement;
+    if (composer && activeElement instanceof HTMLElement && composer.contains(activeElement)) {
+      activeElement.blur();
+    }
+    screenRef.current?.classList.remove('is-suggest-editor-focused');
+  };
+
   useLayoutEffect(() => {
     if (
       dialogType !== 'suggest' ||
@@ -3512,8 +3525,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       const activeElement = document.activeElement;
       if (activeElement instanceof HTMLElement && composer.contains(activeElement)) {
         const linkPanel = activeElement.closest<HTMLElement>('.max-rich-text-editor__link-panel');
-        const bubble = activeElement.closest<HTMLElement>('.channel-suggest-composer__bubble');
-        return linkPanel ?? bubble ?? activeElement;
+        const editorSurface = activeElement.closest<HTMLElement>(
+          '.max-rich-text-editor__surface, .channel-suggest-composer__field textarea',
+        );
+        return linkPanel ?? editorSurface ?? activeElement;
       }
 
       return composer;
@@ -3586,7 +3601,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
     const handleFocusOut = (event: FocusEvent) => {
       const nextTarget = event.relatedTarget;
-      if (nextTarget instanceof Node && composer.contains(nextTarget)) {
+      if (isSuggestEditorTarget(nextTarget)) {
         return;
       }
 
@@ -3673,6 +3688,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
             role="button"
             tabIndex={isComposePending || isPreparingAttachment ? -1 : 0}
             onClick={() => {
+              blurSuggestComposerFocus();
               armDraftAttachmentInputWatcher('image');
             }}
             onKeyDown={(event) => {
@@ -3680,6 +3696,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                 return;
               }
               event.preventDefault();
+              blurSuggestComposerFocus();
               armDraftAttachmentInputWatcher('image');
               imageInputRef.current?.click();
             }}
@@ -3714,6 +3731,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
               aria-label={`Добавить до ${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} фото`}
               disabled={isComposePending || isPreparingAttachment}
               onClick={() => {
+                blurSuggestComposerFocus();
                 armDraftAttachmentInputWatcher('image');
                 openFileInputPicker(imageInputRef.current);
               }}
