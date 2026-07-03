@@ -17,6 +17,17 @@ RUN npm run build --workspace @maxim/contracts && npm run build --workspace @max
 FROM node:24-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
+ENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/russian-trusted-ca-bundle.crt
+
+COPY infra/certs/russian-trusted-root-ca.pem /usr/local/share/ca-certificates/russian-trusted-root-ca.crt
+COPY infra/certs/russian-trusted-sub-ca.pem /usr/local/share/ca-certificates/russian-trusted-sub-ca.crt
+RUN apk add --no-cache ca-certificates \
+  && cat /usr/local/share/ca-certificates/russian-trusted-root-ca.crt \
+    > /usr/local/share/ca-certificates/russian-trusted-ca-bundle.crt \
+  && printf '\n' >> /usr/local/share/ca-certificates/russian-trusted-ca-bundle.crt \
+  && cat /usr/local/share/ca-certificates/russian-trusted-sub-ca.crt \
+    >> /usr/local/share/ca-certificates/russian-trusted-ca-bundle.crt \
+  && update-ca-certificates
 
 COPY --from=base /app/node_modules ./node_modules
 COPY --from=base /app/apps/api/node_modules ./apps/api/node_modules
