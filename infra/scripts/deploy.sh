@@ -50,14 +50,36 @@ ensure_compose_env() {
 
 ensure_compose_env
 
+if [[ $# -gt 0 ]]; then
+  SERVICES=("$@")
+else
+  SERVICES=(
+    "postgres"
+    "redis"
+    "api-ingress"
+    "api-admin"
+    "api-enqueue"
+    "api-moderation"
+    "api-moderation-critical"
+    "api-moderation-join"
+    "api-moderation-realtime-b"
+    "api-moderation-realtime-c"
+    "api-moderation-realtime-d"
+    "api-moderation-background"
+    "api-action"
+    "miniapp-major-static"
+    "admin-static"
+  )
+fi
+
 npm ci
 npm run build --workspace @maxim/contracts
 npm run build --workspace @maxim/api
 npm run build --workspace @maxim/miniapp
 
-docker compose -f infra/docker-compose.yml pull
+docker compose -f infra/docker-compose.yml pull --ignore-buildable "${SERVICES[@]}" || true
 
-docker compose -f infra/docker-compose.yml up -d --build --remove-orphans
+docker compose -f infra/docker-compose.yml up -d --build --remove-orphans "${SERVICES[@]}"
 
 ensure_compose_env
 docker compose -f infra/docker-compose.yml exec -T api-ingress sh -lc \

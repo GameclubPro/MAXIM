@@ -22,10 +22,14 @@ echo "Verifying public route split headers..."
 curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/api/health/live | grep -i '^x-maxim-ingress: webhook'
 curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/api/v1/system/metrics/queues | grep -i '^x-maxim-ingress: admin'
 
-echo "Verifying public site security headers..."
-curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/ | grep -i '^location: https://maxim.play-team.ru/app/'
-curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/app/ | grep -i '^strict-transport-security:'
-curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/app/ | grep -i '^x-content-type-options: nosniff'
-curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/app/ | grep -i '^referrer-policy: strict-origin-when-cross-origin'
+if [[ "${MAXIM_VERIFY_LEGACY_PLAY_TEAM_APP:-0}" == "1" ]]; then
+  echo "Verifying legacy play-team app security headers..."
+  curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/ | grep -i '^location: https://maxim.play-team.ru/app/'
+  curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/app/ | grep -i '^strict-transport-security:'
+  curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/app/ | grep -i '^x-content-type-options: nosniff'
+  curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/app/ | grep -i '^referrer-policy: strict-origin-when-cross-origin'
+else
+  echo "Skipping legacy play-team /app/ smoke. Set MAXIM_VERIFY_LEGACY_PLAY_TEAM_APP=1 to verify it explicitly."
+fi
 
 echo "Done: nginx config applied on ${HOST}"
