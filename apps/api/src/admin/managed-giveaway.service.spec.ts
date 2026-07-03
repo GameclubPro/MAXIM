@@ -16,7 +16,7 @@ function createConfigMock(options: { token?: string; previousToken?: string } = 
   return {
     get: jest.fn((key: string) => {
       if (key === 'APP_BASE_URL') {
-        return 'https://maxim.play-team.ru';
+        return 'https://major-maksimov.ru';
       }
       if (key === 'MAX_BOT_CONTACT_ID') {
         return 'maxim-bot';

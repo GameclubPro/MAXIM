@@ -112,6 +112,15 @@ export async function resolveNightModeTransitionBotId(
   deps: Pick<ModerationBotRoutingDependencies, 'maxBotLinkService'>,
   chatId: string,
 ): Promise<string | null> {
+  const sendRoute = await resolveUnifiedBotRoute(deps, {
+    purpose: 'send_message',
+    chatId,
+    fallbackToPrimary: true,
+  });
+  if (typeof sendRoute?.botId === 'string' && sendRoute.botId.trim().length > 0) {
+    return sendRoute.botId.trim();
+  }
+
   const route = await resolveUnifiedBotRoute(deps, {
     purpose: 'capability',
     chatId,

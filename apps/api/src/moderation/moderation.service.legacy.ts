@@ -969,6 +969,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           userId: callbackUserId,
           chatId: suggestionPayload.chatId,
           token: suggestionPayload.token,
+          botId: this.readString(update.botId) ?? undefined,
         });
         await this.answerCallbackSafe(
           callbackId,

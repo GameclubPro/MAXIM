@@ -608,6 +608,9 @@ function createHarness(
       .fn()
       .mockResolvedValue({ messageId: 'msg-preview-1', url: null }),
     sendCustomMessageImmediate: jest.fn().mockResolvedValue({ message_id: 'msg-custom-1' }),
+    sendMessageImmediateToUser: jest
+      .fn()
+      .mockResolvedValue({ messageId: 'msg-private-1', url: null }),
     uploadImage: jest.fn().mockImplementation(async () => {
       imageUploadCounter += 1;
       return { token: `upload-token-${imageUploadCounter}` };
@@ -927,11 +930,11 @@ function createHarness(
     getGiveawaySettingsMiniappUrl: jest
       .fn()
       .mockReturnValue(
-        'https://maxim.play-team.ru/app/chat/-70000000000001/settings?focus=giveaway',
+        'https://major-maksimov.ru/app/chat/-70000000000001/settings?focus=giveaway',
       ),
     getGiveawayPublicMiniappUrl: jest
       .fn()
-      .mockReturnValue('https://maxim.play-team.ru/app/giveaways/giveaway-1'),
+      .mockReturnValue('https://major-maksimov.ru/app/giveaways/giveaway-1'),
     publishManagedGiveaway: jest.fn().mockImplementation(async (_chatId, giveawayId) => {
       const existing =
         giveawayStore.get(giveawayId) ?? createGiveaway({ id: giveawayId, status: 'DRAFT' });
@@ -2953,6 +2956,26 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|mass_confirm'));
 
     expect(adminService.sendBroadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens channel suggestion callback intro through the callback bot', async () => {
+    const { service, maxClient, channels } = createHarness();
+
+    await expect(
+      service.openChannelSuggestionFromCallback({
+        userId: 'user-1',
+        chatId: channels[0].id,
+        token: 'cdt-suggest-token-1',
+        botId: ' bot-channel-1 ',
+      }),
+    ).resolves.toBe(true);
+
+    expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledWith(
+      'user-1',
+      expect.stringContaining('📰 Предложка'),
+      expect.any(Object),
+      { botId: 'bot-channel-1' },
+    );
   });
 
   it('builds a composed preview with edit, send and return buttons for channel suggestions', async () => {

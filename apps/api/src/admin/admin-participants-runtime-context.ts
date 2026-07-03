@@ -43,6 +43,7 @@ export type AdminParticipantsRuntimeContext = {
     entityType: ManagedEntityType,
     userId: string,
     displayName: string | null,
+    botId?: string | null,
   ): string | null;
   buildUserProfileUrl(username: string | null): string | null;
   ensureEntityType(
@@ -116,8 +117,15 @@ export function createAdminParticipantsRuntimeContext(
       entityType: ManagedEntityType,
       userId: string,
       displayName: string | null,
+      botId?: string | null,
     ): string | null {
-      return typedTarget.buildProfileMentionHandoffUrl(chatId, entityType, userId, displayName);
+      return typedTarget.buildProfileMentionHandoffUrl(
+        chatId,
+        entityType,
+        userId,
+        displayName,
+        botId,
+      );
     },
     buildUserProfileUrl(username: string | null): string | null {
       return typedTarget.buildUserProfileUrl(username);

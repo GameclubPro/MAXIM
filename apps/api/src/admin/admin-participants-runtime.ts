@@ -85,8 +85,15 @@ export class AdminParticipantsRuntime {
     entityType: ManagedEntityType,
     userId: string,
     displayName: string | null,
+    botId?: string | null,
   ): string | null {
-    return this.context.buildProfileMentionHandoffUrl(chatId, entityType, userId, displayName);
+    return this.context.buildProfileMentionHandoffUrl(
+      chatId,
+      entityType,
+      userId,
+      displayName,
+      botId,
+    );
   }
 
   private buildUserProfileUrl(username: string | null): string | null {
@@ -367,6 +374,7 @@ export class AdminParticipantsRuntime {
             entityType,
             member.userId,
             userDisplayName,
+            resolvedBotId,
           ),
           violationCount: violationCountByUserId.get(member.userId.trim()) ?? 0,
           immunity: immunityByUserId.get(member.userId.trim()) ?? null,

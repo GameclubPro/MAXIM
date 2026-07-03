@@ -290,12 +290,11 @@ describe('moderation bot routing util', () => {
     });
   });
 
-  it('resolves night mode transition bot id from background scan route first', async () => {
+  it('resolves night mode transition bot id from send route first', async () => {
     const resolveBotRoute = jest.fn().mockResolvedValue(
       createRoute({
-        purpose: 'capability',
-        capability: 'background_scans',
-        botId: ' route-scan-bot ',
+        purpose: 'send_message',
+        botId: ' send-route-bot ',
       }),
     );
     const resolveBotIdForCapability = jest.fn().mockResolvedValue('scan-helper-bot');
@@ -312,26 +311,33 @@ describe('moderation bot routing util', () => {
         },
         'chat-1',
       ),
-    ).resolves.toBe('route-scan-bot');
+    ).resolves.toBe('send-route-bot');
 
     expect(resolveBotRoute).toHaveBeenCalledWith({
-      purpose: 'capability',
+      purpose: 'send_message',
       chatId: 'chat-1',
-      capability: 'background_scans',
       fallbackToPrimary: true,
     });
     expect(resolveBotIdForCapability).not.toHaveBeenCalled();
     expect(resolveBotIdForRead).not.toHaveBeenCalled();
   });
 
-  it('falls back from night mode route to capability helper and trims it', async () => {
-    const resolveBotRoute = jest.fn().mockResolvedValue(
-      createRoute({
-        purpose: 'capability',
-        capability: 'background_scans',
-        botId: null,
-      }),
-    );
+  it('falls back from empty night mode send route to capability helper and trims it', async () => {
+    const resolveBotRoute = jest
+      .fn()
+      .mockResolvedValueOnce(
+        createRoute({
+          purpose: 'send_message',
+          botId: null,
+        }),
+      )
+      .mockResolvedValueOnce(
+        createRoute({
+          purpose: 'capability',
+          capability: 'background_scans',
+          botId: null,
+        }),
+      );
     const resolveBotIdForCapability = jest.fn().mockResolvedValue(' scan-helper-bot ');
     const resolveBotIdForRead = jest.fn().mockResolvedValue('read-bot');
 
@@ -353,11 +359,28 @@ describe('moderation bot routing util', () => {
       capability: 'background_scans',
     });
     expect(resolveBotIdForRead).not.toHaveBeenCalled();
+    expect(resolveBotRoute).toHaveBeenNthCalledWith(1, {
+      purpose: 'send_message',
+      chatId: 'chat-1',
+      fallbackToPrimary: true,
+    });
+    expect(resolveBotRoute).toHaveBeenNthCalledWith(2, {
+      purpose: 'capability',
+      chatId: 'chat-1',
+      capability: 'background_scans',
+      fallbackToPrimary: true,
+    });
   });
 
   it('falls back from empty night mode capability helper to read routing', async () => {
     const resolveBotRoute = jest
       .fn()
+      .mockResolvedValueOnce(
+        createRoute({
+          purpose: 'send_message',
+          botId: null,
+        }),
+      )
       .mockResolvedValueOnce(
         createRoute({
           purpose: 'capability',
@@ -385,12 +408,17 @@ describe('moderation bot routing util', () => {
     ).resolves.toBe('read-route-bot');
 
     expect(resolveBotRoute).toHaveBeenNthCalledWith(1, {
+      purpose: 'send_message',
+      chatId: 'chat-1',
+      fallbackToPrimary: true,
+    });
+    expect(resolveBotRoute).toHaveBeenNthCalledWith(2, {
       purpose: 'capability',
       chatId: 'chat-1',
       capability: 'background_scans',
       fallbackToPrimary: true,
     });
-    expect(resolveBotRoute).toHaveBeenNthCalledWith(2, {
+    expect(resolveBotRoute).toHaveBeenNthCalledWith(3, {
       purpose: 'read',
       chatId: 'chat-1',
     });

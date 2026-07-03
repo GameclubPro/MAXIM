@@ -751,8 +751,14 @@ export class PrivateControlService {
     userId: string;
     chatId: string;
     token: string;
+    botId?: string | null;
   }): Promise<boolean> {
     const session = await this.loadSession(params.userId);
+    const botId =
+      typeof params.botId === 'string' && params.botId.trim() ? params.botId.trim() : null;
+    if (botId) {
+      session.lastPrivateBotId = botId;
+    }
     session.pendingInput = {
       kind: 'channel_suggestion',
       chatId: params.chatId,
@@ -779,7 +785,12 @@ export class PrivateControlService {
     const options = this.withDebugContext(optionsWithFormat, session, 'suggest_callback_handoff');
 
     try {
-      await this.maxClient.sendMessageImmediateToUser(params.userId, text, options);
+      await this.maxClient.sendMessageImmediateToUser(
+        params.userId,
+        text,
+        options,
+        botId ? { botId } : {},
+      );
       return true;
     } catch (error: unknown) {
       this.logger.warn(

@@ -55,7 +55,7 @@ function createConfigMock() {
         return '777000';
       }
       if (key === 'APP_BASE_URL') {
-        return 'https://maxim.play-team.ru';
+        return 'https://major-maksimov.ru';
       }
       return undefined;
     }),

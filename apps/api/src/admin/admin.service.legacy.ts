@@ -13242,9 +13242,10 @@ export class AdminService implements OnModuleDestroy {
     >();
 
     const loadProfiles = this.maxClient.getChatMemberProfiles?.bind(this.maxClient);
+    let resolvedBotId: string | null = null;
     if (allowRemoteLookup && loadProfiles) {
       try {
-        const resolvedBotId = await this.resolveBackgroundReadBotAssignment(chatId);
+        resolvedBotId = (await this.resolveBackgroundReadBotAssignment(chatId)) ?? null;
         chatMemberProfiles = await loadProfiles(chatId, normalizedUserIds, {
           trafficClass: 'interactive',
           actionHealthLane: 'background',
@@ -13280,6 +13281,7 @@ export class AdminService implements OnModuleDestroy {
           entityType,
           userId,
           displayName,
+          resolvedBotId,
         ),
       });
     }
@@ -13304,6 +13306,7 @@ export class AdminService implements OnModuleDestroy {
     entityType: ManagedEntityType,
     userId: string,
     displayName: string | null,
+    botId?: string | null,
   ): string | null {
     return buildProfileMentionHandoffUrl(
       this.dialogLinkHelper,
@@ -13311,6 +13314,7 @@ export class AdminService implements OnModuleDestroy {
       entityType,
       userId,
       displayName,
+      botId,
     );
   }
 

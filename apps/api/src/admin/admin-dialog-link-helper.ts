@@ -218,19 +218,22 @@ export class AdminDialogLinkHelper {
     }
   }
 
-  buildProfileMentionStartPayload(params: {
-    chatId: string;
-    entityType: ManagedEntityType;
-    userId: string;
-    displayName: string;
-  }): string {
+  buildProfileMentionStartPayload(
+    params: {
+      chatId: string;
+      entityType: ManagedEntityType;
+      userId: string;
+      displayName: string;
+    },
+    botId?: string | null,
+  ): string {
     const compactPayload = buildCompactProfileMentionStartPayload(
       {
         chatId: params.chatId,
         entityType: params.entityType,
         userId: params.userId,
       },
-      this.getCurrentBotToken(),
+      this.getCurrentBotToken(botId),
     );
     if (compactPayload) {
       return compactPayload;
@@ -553,7 +556,7 @@ export class AdminDialogLinkHelper {
     );
   }
 
-  private getCurrentBotToken(): string {
-    return this.options.maxBotLinkService?.getBotTokenSync?.() ?? this.options.maxBotToken;
+  private getCurrentBotToken(botId?: string | null): string {
+    return this.options.maxBotLinkService?.getBotTokenSync?.(botId) ?? this.options.maxBotToken;
   }
 }

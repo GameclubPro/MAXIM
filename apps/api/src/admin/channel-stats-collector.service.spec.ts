@@ -128,7 +128,7 @@ describe('ChannelStatsCollectorService', () => {
         },
       ]),
       ensureWebhookSubscription: jest.fn().mockResolvedValue({
-        url: 'https://maxim.play-team.ru/api/webhook/max/test/secret',
+        url: 'https://major-maksimov.ru/api/webhook/max/test/secret',
         updateTypes: ['message_created', 'user_added', 'user_removed'],
       }),
     };
@@ -250,7 +250,7 @@ describe('ChannelStatsCollectorService', () => {
       }),
       listMessageSnapshots: jest.fn().mockResolvedValue([]),
       ensureWebhookSubscription: jest.fn().mockResolvedValue({
-        url: 'https://maxim.play-team.ru/api/webhook/max/test/secret',
+        url: 'https://major-maksimov.ru/api/webhook/max/test/secret',
         updateTypes: ['message_created', 'user_added', 'user_removed'],
       }),
     };
@@ -350,7 +350,7 @@ describe('ChannelStatsCollectorService', () => {
       }),
       listMessageSnapshots: jest.fn().mockResolvedValue([]),
       ensureWebhookSubscription: jest.fn().mockResolvedValue({
-        url: 'https://maxim.play-team.ru/api/webhook/max/test/secret',
+        url: 'https://major-maksimov.ru/api/webhook/max/test/secret',
         updateTypes: ['message_created', 'user_added', 'user_removed'],
       }),
     };
@@ -435,7 +435,7 @@ describe('ChannelStatsCollectorService', () => {
     prisma.chat.findMany.mockResolvedValue([{ id: 'channel-1' }]);
     const maxClient = {
       ensureWebhookSubscription: jest.fn().mockResolvedValue({
-        url: 'https://maxim.play-team.ru/api/webhook/max/test/secret',
+        url: 'https://major-maksimov.ru/api/webhook/max/test/secret',
         updateTypes: ['message_created', 'user_added', 'user_removed'],
       }),
     };
@@ -499,7 +499,7 @@ describe('ChannelStatsCollectorService', () => {
     ]);
     const maxClient = {
       ensureWebhookSubscription: jest.fn().mockResolvedValue({
-        url: 'https://maxim.play-team.ru/api/webhook/max/test/secret',
+        url: 'https://major-maksimov.ru/api/webhook/max/test/secret',
         updateTypes: ['message_created', 'user_added', 'user_removed'],
       }),
     };
@@ -587,7 +587,7 @@ describe('ChannelStatsCollectorService', () => {
       }),
       listMessageSnapshots: jest.fn().mockResolvedValue([]),
       ensureWebhookSubscription: jest.fn().mockResolvedValue({
-        url: 'https://maxim.play-team.ru/api/webhook/max/test/secret',
+        url: 'https://major-maksimov.ru/api/webhook/max/test/secret',
         updateTypes: ['message_created', 'user_added', 'user_removed'],
       }),
     };

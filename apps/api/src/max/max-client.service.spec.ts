@@ -210,8 +210,8 @@ describe('MaxClientService inline keyboard guardrails', () => {
         token: 'test-token',
         webhookSecretPath: 'secret-path',
         webhookHeaderSecret: 'header-secret',
-        webhookUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
-        maskedWebhookUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/***',
+        webhookUrl: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
+        maskedWebhookUrl: 'https://major-maksimov.ru/api/webhook/max/777000_bot/***',
       }),
       getBotById: jest.fn((botId?: string | null) =>
         !botId || botId === '777000_bot'
@@ -220,14 +220,14 @@ describe('MaxClientService inline keyboard guardrails', () => {
               token: 'test-token',
               webhookSecretPath: 'secret-path',
               webhookHeaderSecret: 'header-secret',
-              webhookUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
-              maskedWebhookUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/***',
+              webhookUrl: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
+              maskedWebhookUrl: 'https://major-maksimov.ru/api/webhook/max/777000_bot/***',
             }
           : null,
       ),
       getConfiguredWebhookSubscriptionTarget: jest.fn(() => ({
-        url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
-        maskedUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/***',
+        url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
+        maskedUrl: 'https://major-maksimov.ru/api/webhook/max/777000_bot/***',
       })),
       isKnownBotUserId: jest.fn().mockReturnValue(false),
     };
@@ -390,7 +390,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
           {
             type: 'open_app' as const,
             text: 'App',
-            webApp: 'https://maxim.play-team.ru/app/',
+            webApp: 'https://major-maksimov.ru/app/',
           },
           { type: 'link' as const, text: 'L4', url: 'https://example.com/4' },
         ],
@@ -479,7 +479,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
           {
             type: 'open_app',
             text: 'Открыть miniapp',
-            webApp: 'https://maxim.play-team.ru/app/',
+            webApp: 'https://major-maksimov.ru/app/',
             contactId: '613002203036',
           },
         ],
@@ -491,7 +491,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
         {
           type: 'open_app',
           text: 'Открыть miniapp',
-          web_app: 'https://maxim.play-team.ru/app/',
+          web_app: 'https://major-maksimov.ru/app/',
           contact_id: '613002203036',
         },
       ],
@@ -565,7 +565,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       service.editMessageInlineKeyboard('chat-1', 'mid-edit-1', 'Текст', {
         button: {
           text: 'Открыть',
-          url: 'https://maxim.play-team.ru/app/',
+          url: 'https://major-maksimov.ru/app/',
         },
       }),
     ).rejects.toThrow('Error on message edit');
@@ -773,7 +773,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       {
         button: {
           text: '💬 Комментарии',
-          url: 'https://maxim.play-team.ru/app/',
+          url: 'https://major-maksimov.ru/app/',
         },
       },
     );
@@ -816,7 +816,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
                     {
                       type: 'link',
                       text: '💬 Комментарии',
-                      url: 'https://maxim.play-team.ru/app/',
+                      url: 'https://major-maksimov.ru/app/',
                     },
                   ],
                 ],
@@ -881,7 +881,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       {
         button: {
           text: '💬 Комментарии',
-          url: 'https://maxim.play-team.ru/app/',
+          url: 'https://major-maksimov.ru/app/',
         },
       },
     );
@@ -911,7 +911,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
                     {
                       type: 'link',
                       text: '💬 Комментарии',
-                      url: 'https://maxim.play-team.ru/app/',
+                      url: 'https://major-maksimov.ru/app/',
                     },
                   ],
                 ],
@@ -984,7 +984,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       {
         button: {
           text: '💬 Комментарии',
-          url: 'https://maxim.play-team.ru/app/',
+          url: 'https://major-maksimov.ru/app/',
         },
       },
     );
@@ -1056,7 +1056,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       {
         button: {
           text: '💬 Комментарии',
-          url: 'https://maxim.play-team.ru/app/',
+          url: 'https://major-maksimov.ru/app/',
         },
       },
     );
@@ -1122,7 +1122,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.editMessageInlineKeyboard('chat-1', 'mid-edit-markup-1', '🔥Привет мир', {
       button: {
         text: 'Открыть',
-        url: 'https://maxim.play-team.ru/app/',
+        url: 'https://major-maksimov.ru/app/',
       },
     });
 
@@ -1483,7 +1483,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.editMessageInlineKeyboard('chat-1', 'mid-edit-forward-1', 'Пересланный текст', {
       button: {
         text: 'Открыть',
-        url: 'https://maxim.play-team.ru/app/',
+        url: 'https://major-maksimov.ru/app/',
       },
     });
 
@@ -1506,7 +1506,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
                     {
                       type: 'link',
                       text: 'Открыть',
-                      url: 'https://maxim.play-team.ru/app/',
+                      url: 'https://major-maksimov.ru/app/',
                     },
                   ],
                 ],
@@ -1539,7 +1539,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.sendMessageReplyWithInlineKeyboard('chat-1', 'mid-source-1', 'Открыть действия', {
       button: {
         text: 'Открыть',
-        url: 'https://maxim.play-team.ru/app/',
+        url: 'https://major-maksimov.ru/app/',
       },
     });
 
@@ -1565,7 +1565,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
                     {
                       type: 'link',
                       text: 'Открыть',
-                      url: 'https://maxim.play-team.ru/app/',
+                      url: 'https://major-maksimov.ru/app/',
                     },
                   ],
                 ],
@@ -3806,7 +3806,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
             data: {
               subscriptions: [
                 {
-                  url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+                  url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
                   update_types: ['message_created', 'user_added', 'bot_started'],
                 },
               ],
@@ -3816,7 +3816,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
         .mockReturnValueOnce(of({ data: {} })),
     };
     const service = createService(httpService, {
-      APP_BASE_URL: 'https://maxim.play-team.ru',
+      APP_BASE_URL: 'https://major-maksimov.ru',
       MAX_BOT_ID: '777000_bot',
       MAX_WEBHOOK_SECRET_PATH: 'secret-path',
       MAX_WEBHOOK_HEADER_SECRET: 'header-secret',
@@ -3832,7 +3832,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     ]);
 
     expect(result).toEqual({
-      url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+      url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
       updateTypes: [
         'bot_added',
         'bot_removed',
@@ -3847,7 +3847,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
         method: 'post',
         url: 'https://platform-api2.max.ru/subscriptions',
         data: {
-          url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+          url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
           update_types: [
             'bot_added',
             'bot_removed',
@@ -3893,8 +3893,8 @@ describe('MaxClientService delayed member actions', () => {
         token: 'test-token',
         webhookSecretPath: 'secret-path',
         webhookHeaderSecret: 'header-secret',
-        webhookUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
-        maskedWebhookUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/***',
+        webhookUrl: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
+        maskedWebhookUrl: 'https://major-maksimov.ru/api/webhook/max/777000_bot/***',
       }),
       getBotById: jest.fn((botId?: string | null) =>
         !botId || botId === '777000_bot'
@@ -3903,14 +3903,14 @@ describe('MaxClientService delayed member actions', () => {
               token: 'test-token',
               webhookSecretPath: 'secret-path',
               webhookHeaderSecret: 'header-secret',
-              webhookUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
-              maskedWebhookUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/***',
+              webhookUrl: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
+              maskedWebhookUrl: 'https://major-maksimov.ru/api/webhook/max/777000_bot/***',
             }
           : null,
       ),
       getConfiguredWebhookSubscriptionTarget: jest.fn(() => ({
-        url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
-        maskedUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/***',
+        url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
+        maskedUrl: 'https://major-maksimov.ru/api/webhook/max/777000_bot/***',
       })),
     };
     const botContext = {
@@ -3959,8 +3959,8 @@ describe('MaxClientService delayed member actions', () => {
         token: 'default-token',
         webhookSecretPath: 'default-secret',
         webhookHeaderSecret: 'default-header-secret',
-        webhookUrl: 'https://maxim.play-team.ru/api/webhook/max/id613002203036_bot/default-secret',
-        maskedWebhookUrl: 'https://maxim.play-team.ru/api/webhook/max/id613002203036_bot/***',
+        webhookUrl: 'https://major-maksimov.ru/api/webhook/max/id613002203036_bot/default-secret',
+        maskedWebhookUrl: 'https://major-maksimov.ru/api/webhook/max/id613002203036_bot/***',
       }),
       getBotById: jest.fn((botId?: string | null) => {
         if (!botId || botId === 'id613002203036_bot') {
@@ -3970,8 +3970,8 @@ describe('MaxClientService delayed member actions', () => {
             webhookSecretPath: 'default-secret',
             webhookHeaderSecret: 'default-header-secret',
             webhookUrl:
-              'https://maxim.play-team.ru/api/webhook/max/id613002203036_bot/default-secret',
-            maskedWebhookUrl: 'https://maxim.play-team.ru/api/webhook/max/id613002203036_bot/***',
+              'https://major-maksimov.ru/api/webhook/max/id613002203036_bot/default-secret',
+            maskedWebhookUrl: 'https://major-maksimov.ru/api/webhook/max/id613002203036_bot/***',
           };
         }
 
@@ -3982,16 +3982,16 @@ describe('MaxClientService delayed member actions', () => {
             webhookSecretPath: 'secondary-secret',
             webhookHeaderSecret: 'secondary-header-secret',
             webhookUrl:
-              'https://maxim.play-team.ru/api/webhook/max/id613002203036_4_bot/secondary-secret',
-            maskedWebhookUrl: 'https://maxim.play-team.ru/api/webhook/max/id613002203036_4_bot/***',
+              'https://major-maksimov.ru/api/webhook/max/id613002203036_4_bot/secondary-secret',
+            maskedWebhookUrl: 'https://major-maksimov.ru/api/webhook/max/id613002203036_4_bot/***',
           };
         }
 
         return null;
       }),
       getConfiguredWebhookSubscriptionTarget: jest.fn(() => ({
-        url: 'https://maxim.play-team.ru/api/webhook/max/id613002203036_bot/default-secret',
-        maskedUrl: 'https://maxim.play-team.ru/api/webhook/max/id613002203036_bot/***',
+        url: 'https://major-maksimov.ru/api/webhook/max/id613002203036_bot/default-secret',
+        maskedUrl: 'https://major-maksimov.ru/api/webhook/max/id613002203036_bot/***',
       })),
     };
     const botContext = {

@@ -84,21 +84,21 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
     };
     const maxClient = {
       getConfiguredWebhookSubscriptionTarget: jest.fn().mockReturnValue({
-        url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
-        maskedUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/***',
+        url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
+        maskedUrl: 'https://major-maksimov.ru/api/webhook/max/777000_bot/***',
       }),
       listWebhookSubscriptions: jest.fn().mockResolvedValue([
         {
-          url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+          url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
           updateTypes: ['message_created', 'message_callback', 'user_added'],
         },
       ]),
       matchesConfiguredWebhookUrl: jest.fn().mockImplementation((url: string) => {
-        return url === 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path';
+        return url === 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path';
       }),
       deleteWebhookSubscription: jest.fn().mockResolvedValue(undefined),
       ensureWebhookSubscription: jest.fn().mockResolvedValue({
-        url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+        url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
         updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
       }),
     };
@@ -131,7 +131,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
       expect.objectContaining({
         bots: expect.objectContaining({
           '777000_bot': expect.objectContaining({
-            configuredUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+            configuredUrl: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
           }),
         }),
       }),
@@ -140,7 +140,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
       expect.objectContaining({
         status: 'healthy',
         configured: true,
-        url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/***',
+        url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/***',
         missingUpdateTypes: [],
         actualUpdateTypes: expect.arrayContaining([...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES]),
         botCount: 1,
@@ -297,21 +297,21 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
     };
     const maxClient = {
       getConfiguredWebhookSubscriptionTarget: jest.fn().mockReturnValue({
-        url: 'https://maxim.play-team.ru/api/webhook/max/idle_bot/secret-path',
-        maskedUrl: 'https://maxim.play-team.ru/api/webhook/max/idle_bot/***',
+        url: 'https://major-maksimov.ru/api/webhook/max/idle_bot/secret-path',
+        maskedUrl: 'https://major-maksimov.ru/api/webhook/max/idle_bot/***',
       }),
       listWebhookSubscriptions: jest.fn().mockResolvedValue([
         {
-          url: 'https://maxim.play-team.ru/api/webhook/max/idle_bot/secret-path',
+          url: 'https://major-maksimov.ru/api/webhook/max/idle_bot/secret-path',
           updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
         },
       ]),
       matchesConfiguredWebhookUrl: jest.fn().mockImplementation((url: string) => {
-        return url === 'https://maxim.play-team.ru/api/webhook/max/idle_bot/secret-path';
+        return url === 'https://major-maksimov.ru/api/webhook/max/idle_bot/secret-path';
       }),
       deleteWebhookSubscription: jest.fn().mockResolvedValue(undefined),
       ensureWebhookSubscription: jest.fn().mockResolvedValue({
-        url: 'https://maxim.play-team.ru/api/webhook/max/idle_bot/secret-path',
+        url: 'https://major-maksimov.ru/api/webhook/max/idle_bot/secret-path',
         updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
       }),
     };
@@ -512,7 +512,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
       getSyncState: jest.fn().mockResolvedValue({
         bots: {
           '777000_bot': {
-            configuredUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+            configuredUrl: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
             headerSecretFingerprint: null,
             updatedAt: '2026-03-30T00:00:00.000Z',
             lastIncomingWebhookAt: null,
@@ -528,21 +528,21 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
     };
     const maxClient = {
       getConfiguredWebhookSubscriptionTarget: jest.fn().mockReturnValue({
-        url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
-        maskedUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/***',
+        url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
+        maskedUrl: 'https://major-maksimov.ru/api/webhook/max/777000_bot/***',
       }),
       listWebhookSubscriptions: jest.fn().mockResolvedValue([
         {
-          url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+          url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
           updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
         },
       ]),
       matchesConfiguredWebhookUrl: jest.fn().mockImplementation((url: string) => {
-        return url === 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path';
+        return url === 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path';
       }),
       deleteWebhookSubscription: jest.fn().mockResolvedValue(undefined),
       ensureWebhookSubscription: jest.fn().mockResolvedValue({
-        url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+        url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
         updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
       }),
     };
@@ -564,7 +564,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
     await service.onModuleInit();
 
     expect(maxClient.deleteWebhookSubscription).toHaveBeenCalledWith(
-      'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+      'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
       {
         trafficClass: 'background',
         botId: '777000_bot',
@@ -583,7 +583,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
       expect.objectContaining({
         bots: expect.objectContaining({
           '777000_bot': expect.objectContaining({
-            configuredUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+            configuredUrl: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
             headerSecretFingerprint: expect.any(String),
           }),
         }),
@@ -611,7 +611,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
       getSyncState: jest.fn().mockResolvedValue({
         bots: {
           '777000_bot': {
-            configuredUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+            configuredUrl: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
             headerSecretFingerprint: 'fingerprint-777000_bot',
             updatedAt: '2026-03-30T00:00:00.000Z',
             lastIncomingWebhookAt: staleAt,
@@ -627,21 +627,21 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
     };
     const maxClient = {
       getConfiguredWebhookSubscriptionTarget: jest.fn().mockReturnValue({
-        url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
-        maskedUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/***',
+        url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
+        maskedUrl: 'https://major-maksimov.ru/api/webhook/max/777000_bot/***',
       }),
       listWebhookSubscriptions: jest.fn().mockResolvedValue([
         {
-          url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+          url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
           updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
         },
       ]),
       matchesConfiguredWebhookUrl: jest.fn().mockImplementation((url: string) => {
-        return url === 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path';
+        return url === 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path';
       }),
       deleteWebhookSubscription: jest.fn().mockResolvedValue(undefined),
       ensureWebhookSubscription: jest.fn().mockResolvedValue({
-        url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+        url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
         updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
       }),
     };
@@ -669,7 +669,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
     await service.onModuleInit();
 
     expect(maxClient.deleteWebhookSubscription).toHaveBeenCalledWith(
-      'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+      'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
       {
         trafficClass: 'background',
         botId: '777000_bot',
@@ -724,14 +724,14 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
       getSyncState: jest.fn().mockResolvedValue({
         bots: {
           fresh_bot: {
-            configuredUrl: 'https://maxim.play-team.ru/api/webhook/max/fresh_bot/secret-path',
+            configuredUrl: 'https://major-maksimov.ru/api/webhook/max/fresh_bot/secret-path',
             headerSecretFingerprint: 'fingerprint-fresh_bot',
             updatedAt: '2026-03-30T00:00:00.000Z',
             lastIncomingWebhookAt: freshAt,
             lastAutoRecreateAt: null,
           },
           stale_bot: {
-            configuredUrl: 'https://maxim.play-team.ru/api/webhook/max/stale_bot/secret-path',
+            configuredUrl: 'https://major-maksimov.ru/api/webhook/max/stale_bot/secret-path',
             headerSecretFingerprint: 'fingerprint-stale_bot',
             updatedAt: '2026-03-30T00:00:00.000Z',
             lastIncomingWebhookAt: staleAt,
@@ -747,13 +747,13 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
     };
     const maxClient = {
       getConfiguredWebhookSubscriptionTarget: jest.fn().mockImplementation((botId: string) => ({
-        url: `https://maxim.play-team.ru/api/webhook/max/${botId}/secret-path`,
-        maskedUrl: `https://maxim.play-team.ru/api/webhook/max/${botId}/***`,
+        url: `https://major-maksimov.ru/api/webhook/max/${botId}/secret-path`,
+        maskedUrl: `https://major-maksimov.ru/api/webhook/max/${botId}/***`,
       })),
       listWebhookSubscriptions: jest.fn().mockImplementation(({ botId }: { botId: string }) =>
         Promise.resolve([
           {
-            url: `https://maxim.play-team.ru/api/webhook/max/${botId}/secret-path`,
+            url: `https://major-maksimov.ru/api/webhook/max/${botId}/secret-path`,
             updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
           },
         ]),
@@ -762,12 +762,12 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
         .fn()
         .mockImplementation(
           (url: string, botId: string) =>
-            url === `https://maxim.play-team.ru/api/webhook/max/${botId}/secret-path`,
+            url === `https://major-maksimov.ru/api/webhook/max/${botId}/secret-path`,
         ),
       deleteWebhookSubscription: jest.fn().mockResolvedValue(undefined),
       ensureWebhookSubscription: jest.fn().mockImplementation((updateTypes, { botId }) =>
         Promise.resolve({
-          url: `https://maxim.play-team.ru/api/webhook/max/${botId}/secret-path`,
+          url: `https://major-maksimov.ru/api/webhook/max/${botId}/secret-path`,
           updateTypes,
         }),
       ),
@@ -797,11 +797,11 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
 
     expect(maxClient.deleteWebhookSubscription).toHaveBeenCalledTimes(1);
     expect(maxClient.deleteWebhookSubscription).toHaveBeenCalledWith(
-      'https://maxim.play-team.ru/api/webhook/max/stale_bot/secret-path',
+      'https://major-maksimov.ru/api/webhook/max/stale_bot/secret-path',
       expect.objectContaining({ botId: 'stale_bot' }),
     );
     expect(maxClient.deleteWebhookSubscription).not.toHaveBeenCalledWith(
-      'https://maxim.play-team.ru/api/webhook/max/fresh_bot/secret-path',
+      'https://major-maksimov.ru/api/webhook/max/fresh_bot/secret-path',
       expect.anything(),
     );
     expect(statusService.writeSnapshot).toHaveBeenLastCalledWith(

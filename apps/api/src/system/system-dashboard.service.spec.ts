@@ -39,7 +39,7 @@ function createWebhookSubscriptionSnapshot(
   return {
     status: 'healthy' as const,
     configured: true,
-    url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/***',
+    url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/***',
     checkedAt: '2026-03-29T12:00:00.000Z',
     reconciledAt: '2026-03-29T12:00:00.000Z',
     requiredUpdateTypes: ['message_created', 'message_callback', 'user_added'],
@@ -907,7 +907,7 @@ describe('SystemDashboardService', () => {
                 botId: 'id613000010769_6_bot',
                 status: 'warning',
                 configured: true,
-                url: 'https://maxim.play-team.ru/api/webhook/max/id613000010769_6_bot/***',
+                url: 'https://major-maksimov.ru/api/webhook/max/id613000010769_6_bot/***',
                 checkedAt: '2026-03-29T12:00:00.000Z',
                 reconciledAt: null,
                 requiredUpdateTypes: ['message_created'],

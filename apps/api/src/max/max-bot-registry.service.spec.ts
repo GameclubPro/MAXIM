@@ -5,7 +5,7 @@ import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from './max-webhook-subscription.co
 describe('MaxBotRegistryService webhook base URL', () => {
   function createService(overrides: Partial<Record<string, string>> = {}) {
     const values: Record<string, string> = {
-      APP_BASE_URL: 'https://maxim.play-team.ru',
+      APP_BASE_URL: 'https://major-maksimov.ru',
       MAX_BOT_ID: '777000_bot',
       MAX_BOT_TOKEN: 'token-1234567890',
       MAX_WEBHOOK_SECRET_PATH: 'secret-path',
@@ -31,8 +31,8 @@ describe('MaxBotRegistryService webhook base URL', () => {
     const service = createService();
 
     expect(service.getConfiguredWebhookSubscriptionTarget('777000_bot')).toEqual({
-      url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
-      maskedUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/***',
+      url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
+      maskedUrl: 'https://major-maksimov.ru/api/webhook/max/777000_bot/***',
     });
   });
 
@@ -81,8 +81,8 @@ describe('MaxBotRegistryService webhook base URL', () => {
     expect(service.getOperationalBots().map((bot) => bot.id)).toContain('id613002203036_5_bot');
     expect(service.getValidationTokensForBot('id613002203036_5_bot')).toEqual(['token-rex-123456']);
     expect(service.getConfiguredWebhookSubscriptionTarget('id613002203036_5_bot')).toEqual({
-      url: 'https://maxim.play-team.ru/api/webhook/max/id613002203036_5_bot/rex-secret',
-      maskedUrl: 'https://maxim.play-team.ru/api/webhook/max/id613002203036_5_bot/***',
+      url: 'https://major-maksimov.ru/api/webhook/max/id613002203036_5_bot/rex-secret',
+      maskedUrl: 'https://major-maksimov.ru/api/webhook/max/id613002203036_5_bot/***',
     });
     expect(service.isKnownBotUserId('613002203036_5')).toBe(true);
   });

@@ -15,7 +15,7 @@ function createConfigMock(options: { token?: string; previousToken?: string | nu
         return options.previousToken ?? null;
       }
       if (key === 'APP_BASE_URL') {
-        return 'https://maxim.play-team.ru';
+        return 'https://major-maksimov.ru';
       }
       if (key === 'MAX_BOT_ID') {
         return '777000_bot';

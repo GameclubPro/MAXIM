@@ -1168,6 +1168,7 @@ function createGroupRulesCallbackUpdate(options: { botId?: string } = {}): MaxUp
 function createChannelSuggestionCallbackUpdate(payload: string): MaxUpdate {
   return {
     updateId: 'upd-channel-suggest-callback-1',
+    botId: 'bot-channel-1',
     type: 'message_callback',
     message: {
       messageId: 'msg-channel-suggest-callback-1',
@@ -5733,7 +5734,7 @@ describe('ModerationService', () => {
           }
 
           if (key === 'APP_BASE_URL') {
-            return 'https://maxim.play-team.ru';
+            return 'https://major-maksimov.ru';
           }
 
           return undefined;
@@ -15001,6 +15002,7 @@ describe('ModerationService', () => {
       userId: 'user-1',
       chatId: 'channel-1',
       token: 'cdt-suggest-token-1',
+      botId: 'bot-channel-1',
     });
     expect(maxClient.answerCallback).toHaveBeenCalledWith(
       'callback-suggest-1',
@@ -20649,7 +20651,7 @@ describe('ModerationService', () => {
             return '777000_bot';
           }
           if (key === 'APP_BASE_URL') {
-            return 'https://maxim.play-team.ru';
+            return 'https://major-maksimov.ru';
           }
           return undefined;
         }),
@@ -20856,7 +20858,7 @@ describe('ModerationService', () => {
             return '777000_bot';
           }
           if (key === 'APP_BASE_URL') {
-            return 'https://maxim.play-team.ru';
+            return 'https://major-maksimov.ru';
           }
           return undefined;
         }),

@@ -88,6 +88,7 @@ export function buildProfileMentionHandoffUrl(
   entityType: ManagedEntityType,
   userId: string,
   displayName: string | null,
+  botId?: string | null,
 ): string | null {
   const normalizedChatId = chatId.trim();
   const normalizedUserId = userId.trim();
@@ -95,13 +96,16 @@ export function buildProfileMentionHandoffUrl(
     return null;
   }
 
-  const startPayload = dialogLinkHelper.buildProfileMentionStartPayload({
-    chatId: normalizedChatId,
-    entityType,
-    userId: normalizedUserId,
-    displayName: displayName?.trim() || 'Пользователь',
-  });
-  const handoffUrl = dialogLinkHelper.buildBotStartUrl(startPayload);
+  const startPayload = dialogLinkHelper.buildProfileMentionStartPayload(
+    {
+      chatId: normalizedChatId,
+      entityType,
+      userId: normalizedUserId,
+      displayName: displayName?.trim() || 'Пользователь',
+    },
+    botId,
+  );
+  const handoffUrl = dialogLinkHelper.buildBotStartUrl(startPayload, botId);
   const normalizedDisplayName = readTrimmedString(displayName);
   if (!handoffUrl || !normalizedDisplayName) {
     return handoffUrl;

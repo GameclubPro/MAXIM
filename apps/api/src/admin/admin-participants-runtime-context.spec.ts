@@ -64,8 +64,11 @@ describe('AdminParticipantsRuntimeContext', () => {
         entityType: string,
         userId: string,
         displayName: string | null,
+        botId?: string | null,
       ) {
-        return `${this.prefix}:handoff:${chatId}:${entityType}:${userId}:${displayName ?? ''}`;
+        return `${this.prefix}:handoff:${chatId}:${entityType}:${userId}:${displayName ?? ''}:${
+          botId ?? ''
+        }`;
       },
       buildUserProfileUrl(username: string | null) {
         return username ? `${this.prefix}:profile:${username}` : null;
@@ -117,8 +120,8 @@ describe('AdminParticipantsRuntimeContext', () => {
       chatId: 'legacy:chat-1',
       userId: { in: ['legacy:user-1'] },
     });
-    expect(context.buildProfileMentionHandoffUrl('chat-1', 'chat', 'user-1', 'User')).toBe(
-      'legacy:handoff:chat-1:chat:user-1:User',
+    expect(context.buildProfileMentionHandoffUrl('chat-1', 'chat', 'user-1', 'User', 'bot-2')).toBe(
+      'legacy:handoff:chat-1:chat:user-1:User:bot-2',
     );
     expect(context.buildUserProfileUrl('username')).toBe('legacy:profile:username');
     await expect(context.getManagedEntityHeader('chat-1', user, 'chat')).resolves.toMatchObject({

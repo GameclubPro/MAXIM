@@ -1073,7 +1073,7 @@ function createConfigMock(
     }),
     get: jest.fn((key: string) => {
       if (key === 'APP_BASE_URL') {
-        return 'https://maxim.play-team.ru';
+        return 'https://major-maksimov.ru';
       }
       if (key === 'MAX_BOT_ID') {
         return options.botId ?? '777000_bot';
@@ -20342,13 +20342,30 @@ describe('AdminService.getChatParticipantsPage', () => {
           avatarUrl: 'https://cdn.max.ru/chats/chat-1/avatar.jpg',
         }),
       };
+      const maxBotLinkService = {
+        getBotTokenSync: jest.fn((botId?: string | null) =>
+          botId?.trim() ? `token:${botId.trim()}` : 'token:default',
+        ),
+        buildBotStartUrlSync: jest.fn((startPayload: string, botId?: string | null) => {
+          const targetBotId = botId?.trim() || '777000_bot';
+          return `https://max.ru/${encodeURIComponent(targetBotId)}?start=${encodeURIComponent(
+            startPayload,
+          )}`;
+        }),
+      };
 
       const service = new AdminService(
         prisma as never,
         maxClient as never,
         chatContextCache as never,
         createConfigMock() as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        maxBotLinkService as never,
       );
+      (service as any).resolveBackgroundReadBotAssignment = jest.fn().mockResolvedValue('bot-2');
 
       const result = await service.getChatParticipantsPage(
         'chat-1',
@@ -20370,7 +20387,13 @@ describe('AdminService.getChatParticipantsPage', () => {
         expect.objectContaining({
           trafficClass: 'interactive',
           actionHealthLane: 'background',
+          botId: 'bot-2',
         }),
+      );
+      expect(maxBotLinkService.getBotTokenSync).toHaveBeenCalledWith('bot-2');
+      expect(maxBotLinkService.buildBotStartUrlSync).toHaveBeenCalledWith(
+        expect.any(String),
+        'bot-2',
       );
       expect(prisma.moderationEvent.groupBy).toHaveBeenCalledWith({
         by: ['userId'],
@@ -20395,7 +20418,7 @@ describe('AdminService.getChatParticipantsPage', () => {
             username: 'alexandra',
             avatarUrl: 'https://cdn.max.ru/u/owner-1/avatar-full.jpg',
             profileUrl: 'https://max.ru/alexandra',
-            profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start='),
+            profileHandoffUrl: expect.stringContaining('https://max.ru/bot-2?start='),
             violationCount: 3,
             immunity: {
               expiresAt: '2026-04-16T12:00:00.000Z',
@@ -20412,7 +20435,7 @@ describe('AdminService.getChatParticipantsPage', () => {
             username: 'id613002203036_bot',
             avatarUrl: 'https://cdn.max.ru/u/maxim/avatar-full.jpg',
             profileUrl: 'https://max.ru/maxim-helper',
-            profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start='),
+            profileHandoffUrl: expect.stringContaining('https://max.ru/bot-2?start='),
             violationCount: 0,
             immunity: null,
             role: 'admin',
@@ -32745,7 +32768,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       }),
       get: jest.fn((key: string) => {
         if (key === 'APP_BASE_URL') {
-          return 'https://maxim.play-team.ru';
+          return 'https://major-maksimov.ru';
         }
         if (key === 'MAX_BOT_ID') {
           return 'id613002203036_bot';
@@ -32891,7 +32914,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       }),
       get: jest.fn((key: string) => {
         if (key === 'APP_BASE_URL') {
-          return 'https://maxim.play-team.ru';
+          return 'https://major-maksimov.ru';
         }
         if (key === 'MAX_BOT_ID') {
           return 'id613002203036_bot';
