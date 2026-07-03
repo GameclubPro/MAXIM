@@ -33032,10 +33032,10 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     };
     const unavailablePrivateError = {
       response: {
-        status: 404,
+        status: 403,
         data: {
-          code: 'chat.not.found',
-          message: 'chat not found',
+          code: 'access.denied',
+          message: 'access denied',
         },
       },
     };
@@ -33108,8 +33108,8 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         chatId: 'channel-1',
         adminUserId: '98315271',
         privateChatId: null,
-        status: 404,
-        code: 'chat.not.found',
+        status: 403,
+        code: 'access.denied',
       }),
       'Skipped suggestion delivery to unavailable admin private chat',
     );
@@ -33130,10 +33130,10 @@ describe('AdminService.publishChannelEngagementMessage', () => {
               expect.objectContaining({
                 adminUserId: '98315271',
                 privateChatId: null,
-                status: 404,
-                code: 'chat.not.found',
+                status: 403,
+                code: 'access.denied',
                 terminal: true,
-                message: 'chat not found',
+                message: 'access denied',
               }),
             ],
           }),

@@ -156,7 +156,7 @@ export function isPrivateDialogChatUnavailableError(error: unknown): boolean {
   }
 
   const code = extractMaxErrorCode(error);
-  if (code === 'chat.denied' || code === 'chat.not.found') {
+  if (code === 'access.denied' || code === 'chat.denied' || code === 'chat.not.found') {
     return true;
   }
 
