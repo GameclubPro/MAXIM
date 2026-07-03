@@ -118,6 +118,8 @@ type MaxMessageMarkup = {
 const MAX_CHAT_POST_LINK_BASE_URL = 'https://max.ru';
 const DEFAULT_SUCCESS_FALSE_STATUS = 200;
 const MAX_UPLOAD_BINARY_TIMEOUT_MS = 30_000;
+const MAX_LIST_BOT_CHATS_UNSUPPORTED_IN_PRODUCTION =
+  'MAX API GET /chats is not supported in production; use webhook/subscription managed chat catalog instead. See https://dev.max.ru/docs-api/methods/GET/chats';
 
 class MaxApiRequestRejectedError extends Error {
   readonly response: {
@@ -378,6 +380,7 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly rateLimitRetryFloorMs: number;
   private readonly listBotChatsCacheTtlSec: number;
   private readonly chatSnapshotCacheTtlSec: number;
+  private readonly isProduction: boolean;
   private readonly circuitFailureThreshold: number;
   private readonly circuitWindowSec: number;
   private readonly circuitOpenSec: number;
@@ -410,6 +413,10 @@ export class MaxClientService implements OnModuleDestroy {
     private readonly runtimeDiagnosticsService?: RuntimeDiagnosticsService,
   ) {
     this.baseUrl = configService.getOrThrow<string>('MAX_API_BASE_URL');
+    this.isProduction =
+      String(configService.get<string>('NODE_ENV', process.env.NODE_ENV ?? 'development') ?? '')
+        .trim()
+        .toLowerCase() === 'production';
     this.dispatchEnabled = configService.get<boolean>('MAX_ACTION_DISPATCH_ENABLED', true);
     this.globalRpsLimit = this.readConfigInt(
       configService.get('MAX_API_GLOBAL_RPS'),
@@ -2160,6 +2167,10 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   async listBotChats(options: MaxApiRequestOptions = {}): Promise<MaxBotChat[]> {
+    if (this.isProduction) {
+      throw new Error(MAX_LIST_BOT_CHATS_UNSUPPORTED_IN_PRODUCTION);
+    }
+
     const botId = this.resolveBot(options.botId).id;
     if (!options.bypassCache) {
       const cachedChats = await this.readJsonCache(

@@ -3305,6 +3305,25 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('blocks legacy bot chat discovery in production before limiter or HTTP calls', async () => {
+    const httpService = {
+      request: jest.fn(),
+    };
+    const service = createService(httpService, {
+      NODE_ENV: 'production',
+    });
+    const limiterRedis = (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis;
+
+    await expect(service.listBotChats({ bypassCache: true })).rejects.toThrow(
+      'MAX API GET /chats is not supported in production',
+    );
+
+    expect(limiterRedis.eval).not.toHaveBeenCalled();
+    expect(httpService.request).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
   it('bypasses cached chat snapshot when explicitly requested', async () => {
     const httpService = {
       request: jest
