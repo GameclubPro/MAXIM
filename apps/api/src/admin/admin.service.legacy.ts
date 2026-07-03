@@ -6768,6 +6768,7 @@ export class AdminService implements OnModuleDestroy {
       token,
       dialogLinkHelper: this.dialogLinkHelper,
       loadChannelSettings: (channelId) => this.getPublicChannelSettings(channelId),
+      resolveBotId: (channelId) => this.resolveBotAssignment(channelId),
     });
   }
 
@@ -13144,13 +13145,24 @@ export class AdminService implements OnModuleDestroy {
     const pendingByUserId = new Map<string, Promise<ResolvedUserProfile>>();
     const nowMs = Date.now();
     const missingUserIds: string[] = [];
+    const routeBotId =
+      this.readTrimmedString(options.botId) ??
+      (allowRemoteLookup
+        ? ((await this.resolveBackgroundReadBotAssignment(chatId).catch(() => undefined)) ?? null)
+        : null);
+    const cacheOptions: ResolveUserProfilesOptions = {
+      ...options,
+      ...(routeBotId ? { botId: routeBotId } : {}),
+    };
 
     for (const userId of normalizedUserIds) {
       const remoteCacheKey = buildResolvedUserProfileCacheKey(chatId, entityType, userId, {
         allowRemoteLookup: true,
+        ...(routeBotId ? { botId: routeBotId } : {}),
       });
       const localCacheKey = buildResolvedUserProfileCacheKey(chatId, entityType, userId, {
         allowRemoteLookup: false,
+        ...(routeBotId ? { botId: routeBotId } : {}),
       });
       const cached =
         this.resolvedUserProfileCache.get(remoteCacheKey) ??
@@ -13173,10 +13185,15 @@ export class AdminService implements OnModuleDestroy {
         chatId,
         entityType,
         missingUserIds,
-        options,
+        cacheOptions,
       ).catch((error: unknown) => {
         for (const userId of missingUserIds) {
-          const cacheKey = buildResolvedUserProfileCacheKey(chatId, entityType, userId, options);
+          const cacheKey = buildResolvedUserProfileCacheKey(
+            chatId,
+            entityType,
+            userId,
+            cacheOptions,
+          );
           const current = this.resolvedUserProfileCache.get(cacheKey);
           if (current?.promise === pendingByUserId.get(userId)) {
             this.resolvedUserProfileCache.delete(cacheKey);
@@ -13186,7 +13203,7 @@ export class AdminService implements OnModuleDestroy {
       });
 
       for (const userId of missingUserIds) {
-        const cacheKey = buildResolvedUserProfileCacheKey(chatId, entityType, userId, options);
+        const cacheKey = buildResolvedUserProfileCacheKey(chatId, entityType, userId, cacheOptions);
         const pendingProfile = batchPromise.then(
           (batch) =>
             batch.get(userId) ?? {
@@ -13198,6 +13215,7 @@ export class AdminService implements OnModuleDestroy {
                 entityType,
                 userId,
                 null,
+                routeBotId,
               ),
             },
         );
@@ -13244,10 +13262,11 @@ export class AdminService implements OnModuleDestroy {
     >();
 
     const loadProfiles = this.maxClient.getChatMemberProfiles?.bind(this.maxClient);
-    let resolvedBotId: string | null = null;
+    let resolvedBotId = this.readTrimmedString(options.botId);
     if (allowRemoteLookup && loadProfiles) {
       try {
-        resolvedBotId = (await this.resolveBackgroundReadBotAssignment(chatId)) ?? null;
+        resolvedBotId =
+          resolvedBotId ?? (await this.resolveBackgroundReadBotAssignment(chatId)) ?? null;
         chatMemberProfiles = await loadProfiles(chatId, normalizedUserIds, {
           trafficClass: 'interactive',
           actionHealthLane: 'background',

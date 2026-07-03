@@ -61,6 +61,19 @@ function originOnlyUrl(key: string) {
     );
 }
 
+function assertProductionPublicHttpsOrigin(key: string, value: string | undefined): void {
+  if (!value) {
+    return;
+  }
+
+  const url = new URL(value);
+  if (url.protocol !== 'https:' || url.port) {
+    throw new Error(
+      `Environment validation failed: ${key} must use public https on the default 443 port in production`,
+    );
+  }
+}
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3001),
@@ -261,11 +274,7 @@ const envSchema = z.object({
   VK_PARSING_QUEUE_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(100),
   VK_PARSING_LEASE_TTL_MS: z.coerce.number().int().positive().default(120_000),
   VK_PARSING_MEDIA_PREFLIGHT_TTL_MS: z.coerce.number().int().positive().default(86_400_000),
-  VK_PARSING_MEDIA_FAILED_PREFLIGHT_TTL_MS: z.coerce
-    .number()
-    .int()
-    .positive()
-    .default(120_000),
+  VK_PARSING_MEDIA_FAILED_PREFLIGHT_TTL_MS: z.coerce.number().int().positive().default(120_000),
   VK_PARSING_MEDIA_CONCURRENCY: z.coerce.number().int().min(1).max(5).default(3),
   KARAVAN_STOREFRONT_RELAY_ENABLED: envBoolean(false),
   KARAVAN_API_BASE_URL: z.string().url().optional(),
@@ -325,6 +334,9 @@ export function validateEnv(config: Record<string, unknown>): EnvSchema {
   }
 
   if (parsed.data.NODE_ENV === 'production') {
+    assertProductionPublicHttpsOrigin('APP_BASE_URL', parsed.data.APP_BASE_URL);
+    assertProductionPublicHttpsOrigin('MAX_WEBHOOK_BASE_URL', parsed.data.MAX_WEBHOOK_BASE_URL);
+
     for (const [key, value] of [
       ['MAX_WEBHOOK_SECRET_PATH', parsed.data.MAX_WEBHOOK_SECRET_PATH],
       ['MAX_WEBHOOK_HEADER_SECRET', parsed.data.MAX_WEBHOOK_HEADER_SECRET],

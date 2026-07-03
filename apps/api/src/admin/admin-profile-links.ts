@@ -3,6 +3,7 @@ import type { AdminDialogLinkHelper } from './admin-dialog-link-helper';
 import { readTrimmedString } from './admin-legacy-utils';
 
 const PROFILE_MENTION_START_PREFIX = 'pmh-';
+const PROFILE_MENTION_COMPACT_START_PREFIX = 'pm2_';
 
 export function buildUserProfileUrl(username: string | null): string | null {
   const normalizedUsername = username?.replace(/^@+/u, '').trim() ?? '';
@@ -67,7 +68,10 @@ export function isLegacyProfileHandoffUrl(url: string | null | undefined): boole
     }
 
     const startPayload = parsed.searchParams.get('start')?.trim() ?? '';
-    return startPayload.startsWith(PROFILE_MENTION_START_PREFIX);
+    return (
+      startPayload.startsWith(PROFILE_MENTION_START_PREFIX) ||
+      startPayload.startsWith(PROFILE_MENTION_COMPACT_START_PREFIX)
+    );
   } catch {
     return false;
   }

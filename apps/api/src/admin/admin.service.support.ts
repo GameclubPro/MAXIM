@@ -247,6 +247,7 @@ export type ResolvedUserProfile = {
 
 export type ResolveUserProfilesOptions = {
   allowRemoteLookup?: boolean;
+  botId?: string | null;
 };
 
 export type ModerationFeedCursor = {

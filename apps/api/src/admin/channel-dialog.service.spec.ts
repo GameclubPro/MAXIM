@@ -45,7 +45,9 @@ function createSuggestionToken(chatId: string, threadId?: string): string {
   ).toString('base64url')}`;
 }
 
-function createService(options: { postSuggestionsEnabled?: boolean } = {}) {
+function createService(
+  options: { postSuggestionsEnabled?: boolean; routeBotId?: string | null } = {},
+) {
   const legacyAdminService = {
     getChannelSuggestionRedirect: jest.fn(),
     toggleChannelDialogReaction: jest.fn(),
@@ -84,13 +86,28 @@ function createService(options: { postSuggestionsEnabled?: boolean } = {}) {
       },
     }),
   };
+  const maxBotLinkService = {
+    getStoredChatPrimaryBotId: jest.fn().mockResolvedValue(options.routeBotId ?? null),
+    getBotTokenSync: jest.fn((botId?: string | null) =>
+      botId?.trim() === 'channel-bot-2' ? 'token-bot-2' : 'test-max-bot-token',
+    ),
+    getValidationTokens: jest.fn().mockReturnValue(['test-max-bot-token', 'token-bot-2']),
+    buildBotStartUrlSync: jest.fn((startPayload: string, botId?: string | null) => {
+      const targetBotId = botId?.trim() || '777000_bot';
+      return `https://max.ru/${encodeURIComponent(targetBotId)}?start=${encodeURIComponent(
+        startPayload,
+      )}`;
+    }),
+  };
   const service = new ChannelDialogService(
     legacyAdminService as never,
     createConfigMock() as never,
+    maxBotLinkService as never,
   );
 
   return {
     legacyAdminService,
+    maxBotLinkService,
     service,
   };
 }
@@ -118,6 +135,30 @@ describe('ChannelDialogService suggestion redirect', () => {
 
     expect(legacyAdminService.getChannelSuggestionRedirect).not.toHaveBeenCalled();
     expect(legacyAdminService.getPublicChannelSettingsForDialog).toHaveBeenCalledWith('channel-1');
+  });
+
+  it('keeps channel suggestion redirects on the stored channel bot route', async () => {
+    const { maxBotLinkService, service } = createService({ routeBotId: 'channel-bot-2' });
+    const threadId = '12345678-1234-1234-9234-1234567890ab';
+
+    const result = await service.getChannelSuggestionRedirect(
+      'channel-1',
+      createSuggestionToken('channel-1', threadId),
+    );
+
+    expect(result.url).toMatch(/^https:\/\/max\.ru\/channel-bot-2\?start=/u);
+    const startPayload = new URL(result.url).searchParams.get('start') ?? '';
+    const expectedSignature = createHmac('sha256', 'token-bot-2')
+      .update(`suggest-start:channel-1:${threadId}`)
+      .digest('hex')
+      .slice(0, 24);
+    expect(startPayload).toContain(expectedSignature);
+    expect(maxBotLinkService.getStoredChatPrimaryBotId).toHaveBeenCalledWith('channel-1');
+    expect(maxBotLinkService.getBotTokenSync).toHaveBeenCalledWith('channel-bot-2');
+    expect(maxBotLinkService.buildBotStartUrlSync).toHaveBeenCalledWith(
+      expect.any(String),
+      'channel-bot-2',
+    );
   });
 
   it('keeps the closed suggestions guard in the dialog service', async () => {

@@ -303,13 +303,16 @@ export function buildResolvedUserProfileCacheKey(
   chatId: string,
   entityType: ManagedEntityType,
   userId: string,
-  options: { allowRemoteLookup?: boolean } = {},
+  options: { allowRemoteLookup?: boolean; botId?: string | null } = {},
 ): string {
+  const botId =
+    typeof options.botId === 'string' && options.botId.trim() ? options.botId.trim() : '';
   return [
     chatId,
     entityType,
     userId,
     options.allowRemoteLookup === false ? 'local' : 'remote',
+    botId || 'default-bot',
   ].join(':');
 }
 

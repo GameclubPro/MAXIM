@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import {
   channelSettingsSchema,
   chatRulesSchema,
@@ -2235,6 +2236,56 @@ describe('AdminService night mode settings normalization', () => {
         greetingBotMessageEnabled: true,
         greetingBotButtonEnabled: true,
         greetingBotButtonUrl: 'https://max.ru/777000_bot?start=pmh-legacy',
+        greetingBotButtonText: 'Профиль',
+      },
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.getSettings('chat-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(result.greetingBotButtonEnabled).toBe(false);
+    expect(result.greetingBotButtonUrl).toBe('');
+    expect(prisma.chatSettings.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { chatId: 'chat-1' },
+        data: expect.objectContaining({
+          greetingBotButtonEnabled: false,
+          greetingBotButtonUrl: '',
+        }),
+      }),
+    );
+  });
+
+  it('drops compact profile handoff button urls from stored settings', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'chat-1',
+      title: 'Команда MAX',
+      createdAt: new Date('2026-03-01T00:00:00.000Z'),
+      settings: {
+        greetingEnabled: true,
+        greetingBotMessageEnabled: true,
+        greetingBotButtonEnabled: true,
+        greetingBotButtonUrl:
+          'https://max.ru/777000_bot?start=pm2_chat-1_h_admin-1_abcdef0123456789',
         greetingBotButtonText: 'Профиль',
       },
     });
@@ -17665,6 +17716,61 @@ describe('AdminService.listChats', () => {
     });
   });
 
+  it('keeps resolved profile cache entries scoped to the routed bot', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatMemberProfiles: jest.fn().mockResolvedValue(new Map()),
+    };
+    const maxBotLinkService = {
+      getBotTokenSync: jest.fn((botId?: string | null) =>
+        botId?.trim() ? `token:${botId.trim()}` : 'token:default',
+      ),
+      getValidationTokens: jest.fn().mockReturnValue(['token:bot-1', 'token:bot-2']),
+      buildBotStartUrlSync: jest.fn((startPayload: string, botId?: string | null) => {
+        const targetBotId = botId?.trim() || '777000_bot';
+        return `https://max.ru/${encodeURIComponent(targetBotId)}?start=${encodeURIComponent(
+          startPayload,
+        )}`;
+      }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    (service as any).resolveUserDisplayNames = jest.fn().mockResolvedValue(new Map());
+    (service as any).resolveBackgroundReadBotAssignment = jest
+      .fn()
+      .mockResolvedValueOnce('bot-1')
+      .mockResolvedValueOnce('bot-2');
+
+    const first = await (service as any).resolveUserProfiles('chat-1', 'chat', ['user-1']);
+    const second = await (service as any).resolveUserProfiles('chat-1', 'chat', ['user-1']);
+
+    expect(first.get('user-1')?.profileHandoffUrl).toContain('https://max.ru/bot-1?start=');
+    expect(second.get('user-1')?.profileHandoffUrl).toContain('https://max.ru/bot-2?start=');
+    expect(maxClient.getChatMemberProfiles).toHaveBeenCalledTimes(2);
+    expect(maxClient.getChatMemberProfiles).toHaveBeenNthCalledWith(
+      1,
+      'chat-1',
+      ['user-1'],
+      expect.objectContaining({ botId: 'bot-1' }),
+    );
+    expect(maxClient.getChatMemberProfiles).toHaveBeenNthCalledWith(
+      2,
+      'chat-1',
+      ['user-1'],
+      expect.objectContaining({ botId: 'bot-2' }),
+    );
+  });
+
   it('backs off background header hydration after MAX API throttling', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
@@ -30412,6 +30518,59 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       chatId: 'channel-1',
       token,
     });
+  });
+
+  it('routes channel suggestion redirect urls through the channel bot assignment', async () => {
+    const prisma = createPrismaMock();
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        postSuggestionsEnabled: true,
+      }),
+    );
+    const maxBotLinkService = {
+      getBotTokenSync: jest.fn((botId?: string | null) =>
+        botId?.trim() === 'channel-bot-2' ? 'token-bot-2' : 'test-max-bot-token',
+      ),
+      getValidationTokens: jest.fn().mockReturnValue(['test-max-bot-token', 'token-bot-2']),
+      buildBotStartUrlSync: jest.fn((startPayload: string, botId?: string | null) => {
+        const targetBotId = botId?.trim() || '777000_bot';
+        return `https://max.ru/${encodeURIComponent(targetBotId)}?start=${encodeURIComponent(
+          startPayload,
+        )}`;
+      }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+    jest.spyOn(service as any, 'resolveBotAssignment').mockResolvedValue('channel-bot-2');
+
+    const threadId = '12345678-1234-1234-9234-1234567890ab';
+    const token = (
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
+    ).buildEntityDialogToken('channel', 'channel-1', 'suggest', threadId);
+
+    const result = await service.getChannelSuggestionRedirect('channel-1', token);
+
+    expect(result.url).toMatch(/^https:\/\/max\.ru\/channel-bot-2\?start=/u);
+    const startPayload = new URL(result.url).searchParams.get('start') ?? '';
+    const expectedSignature = createHmac('sha256', 'token-bot-2')
+      .update(`suggest-start:channel-1:${threadId}`)
+      .digest('hex')
+      .slice(0, 24);
+    expect(startPayload).toContain(expectedSignature);
+    expect(maxBotLinkService.buildBotStartUrlSync).toHaveBeenCalledWith(
+      expect.any(String),
+      'channel-bot-2',
+    );
   });
 
   it('rejects publishing when all engagement buttons are disabled', async () => {

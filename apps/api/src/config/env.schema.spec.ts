@@ -48,6 +48,52 @@ describe('validateEnv boolean parsing', () => {
     expect(env.MAX_WEBHOOK_BASE_URL).toBe('https://major-maksimov.ru');
   });
 
+  it('requires production public origins to use https on the default port', () => {
+    const productionSecrets = {
+      NODE_ENV: 'production',
+      MAX_WEBHOOK_SECRET_PATH: 'prod-secret-path-1',
+      MAX_WEBHOOK_HEADER_SECRET: 'prod-header-secret-1',
+    };
+
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          ...productionSecrets,
+          APP_BASE_URL: 'http://major-maksimov.ru',
+        }),
+      ),
+    ).toThrow(/APP_BASE_URL must use public https on the default 443 port/u);
+
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          ...productionSecrets,
+          MAX_WEBHOOK_BASE_URL: 'http://major-maksimov.ru',
+        }),
+      ),
+    ).toThrow(/MAX_WEBHOOK_BASE_URL must use public https on the default 443 port/u);
+
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          ...productionSecrets,
+          MAX_WEBHOOK_BASE_URL: 'https://major-maksimov.ru:8443',
+        }),
+      ),
+    ).toThrow(/MAX_WEBHOOK_BASE_URL must use public https on the default 443 port/u);
+
+    const env = validateEnv(
+      createValidEnv({
+        ...productionSecrets,
+        APP_BASE_URL: 'https://major-maksimov.ru',
+        MAX_WEBHOOK_BASE_URL: 'https://major-maksimov.ru',
+      }),
+    );
+
+    expect(env.APP_BASE_URL).toBe('https://major-maksimov.ru');
+    expect(env.MAX_WEBHOOK_BASE_URL).toBe('https://major-maksimov.ru');
+  });
+
   it('parses string false values as false', () => {
     const env = validateEnv(
       createValidEnv({

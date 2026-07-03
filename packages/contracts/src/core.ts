@@ -618,13 +618,18 @@ function isValidAdminContactButtonUrl(value: string): boolean {
   return parseHttpButtonUrl(value) !== null;
 }
 
+function isProfileHandoffStartPayload(value: string): boolean {
+  const normalized = value.trim();
+  return normalized.startsWith('pmh-') || normalized.startsWith('pm2_');
+}
+
 function isValidBotButtonUrl(value: string): boolean {
   const parsed = parseHttpButtonUrl(value);
   if (!parsed) {
     return false;
   }
 
-  return !(parsed.searchParams.get('start')?.trim() ?? '').startsWith('pmh-');
+  return !isProfileHandoffStartPayload(parsed.searchParams.get('start') ?? '');
 }
 
 const CHAT_ADMIN_CONTACT_BUTTON_GROUPS = [

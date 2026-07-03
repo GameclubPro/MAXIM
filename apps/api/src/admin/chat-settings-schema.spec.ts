@@ -85,24 +85,29 @@ describe('chatSettingsSchema duplicate flow validation', () => {
     expect(result.textFiltersBotButtonText).toBe('Правила');
   });
 
-  it('allows profile handoff links only for the dedicated admin contact button', () => {
-    const profileHandoffUrl = 'https://max.ru/id613002203036_bot?start=pmh-chat-user';
-    const adminContactSettings = chatSettingsSchema.parse({
-      linkAdminContactButtonEnabled: true,
-      linkAdminContactButtonUrl: profileHandoffUrl,
-    });
+  it.each([
+    'https://max.ru/id613002203036_bot?start=pmh-chat-user',
+    'https://max.ru/id613002203036_bot?start=pm2_chat-1_h_admin-1_abcdef0123456789',
+  ])(
+    'allows profile handoff links only for the dedicated admin contact button: %s',
+    (profileHandoffUrl) => {
+      const adminContactSettings = chatSettingsSchema.parse({
+        linkAdminContactButtonEnabled: true,
+        linkAdminContactButtonUrl: profileHandoffUrl,
+      });
 
-    expect(adminContactSettings.linkAdminContactButtonUrl).toBe(profileHandoffUrl);
+      expect(adminContactSettings.linkAdminContactButtonUrl).toBe(profileHandoffUrl);
 
-    const genericButtonResult = chatSettingsSchema.safeParse({
-      linkBotMessageEnabled: true,
-      linkBotButtonEnabled: true,
-      linkBotButtonUrl: profileHandoffUrl,
-      linkBotButtonText: 'Связь с админом',
-    });
+      const genericButtonResult = chatSettingsSchema.safeParse({
+        linkBotMessageEnabled: true,
+        linkBotButtonEnabled: true,
+        linkBotButtonUrl: profileHandoffUrl,
+        linkBotButtonText: 'Связь с админом',
+      });
 
-    expect(genericButtonResult.success).toBe(false);
-  });
+      expect(genericButtonResult.success).toBe(false);
+    },
+  );
 
   it('keeps bot speech media as a per-message image map', () => {
     const result = chatSettingsSchema.parse({
@@ -263,25 +268,30 @@ describe('updateChatRulesRequestSchema button normalization', () => {
     expect(result.buttonText).toBe('Открыть чат');
   });
 
-  it('allows profile handoff links for the dedicated rules admin contact button', () => {
-    const profileHandoffUrl = 'https://max.ru/id613002203036_bot?start=pmh-chat-user';
-    const result = updateChatRulesRequestSchema.parse({
-      text: 'Правила чата',
-      adminContactButtonEnabled: true,
-      adminContactButtonUrl: profileHandoffUrl,
-    });
+  it.each([
+    'https://max.ru/id613002203036_bot?start=pmh-chat-user',
+    'https://max.ru/id613002203036_bot?start=pm2_chat-1_h_admin-1_abcdef0123456789',
+  ])(
+    'allows profile handoff links for the dedicated rules admin contact button: %s',
+    (profileHandoffUrl) => {
+      const result = updateChatRulesRequestSchema.parse({
+        text: 'Правила чата',
+        adminContactButtonEnabled: true,
+        adminContactButtonUrl: profileHandoffUrl,
+      });
 
-    expect(result.adminContactButtonUrl).toBe(profileHandoffUrl);
+      expect(result.adminContactButtonUrl).toBe(profileHandoffUrl);
 
-    const genericButtonResult = updateChatRulesRequestSchema.safeParse({
-      text: 'Правила чата',
-      buttonEnabled: true,
-      buttonUrl: profileHandoffUrl,
-      buttonText: 'Связь с админом',
-    });
+      const genericButtonResult = updateChatRulesRequestSchema.safeParse({
+        text: 'Правила чата',
+        buttonEnabled: true,
+        buttonUrl: profileHandoffUrl,
+        buttonText: 'Связь с админом',
+      });
 
-    expect(genericButtonResult.success).toBe(false);
-  });
+      expect(genericButtonResult.success).toBe(false);
+    },
+  );
 });
 
 describe('broadcast request schema normalization', () => {

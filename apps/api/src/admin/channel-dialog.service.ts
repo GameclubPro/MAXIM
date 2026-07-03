@@ -52,6 +52,8 @@ export class ChannelDialogService {
       dialogLinkHelper: this.dialogLinkHelper,
       loadChannelSettings: (channelId) =>
         this.legacyAdminService.getPublicChannelSettingsForDialog(channelId),
+      resolveBotId: (channelId) =>
+        this.maxBotLinkService?.getStoredChatPrimaryBotId(channelId) ?? Promise.resolve(null),
     });
   }
 
