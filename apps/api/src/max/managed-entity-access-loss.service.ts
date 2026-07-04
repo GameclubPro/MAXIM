@@ -838,10 +838,6 @@ export function resolveManagedEntityAccessLossReason(
     return 'bot_denied';
   }
 
-  if (operation === 'delete' && classification.statusCode === 403) {
-    return 'bot_denied';
-  }
-
   return null;
 }
 

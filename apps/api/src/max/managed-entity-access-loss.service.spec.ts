@@ -102,6 +102,40 @@ describe('classifyMaxTerminalChatActionError', () => {
       ),
     ).toBe('bot_denied');
   });
+
+  it('does not resolve bare delete 403/404 as managed entity access loss', () => {
+    expect(
+      resolveManagedEntityAccessLossReason(
+        'delete',
+        classifyMaxTerminalChatActionError(createMaxApiError(403, 'Forbidden'))!,
+      ),
+    ).toBeNull();
+    expect(
+      resolveManagedEntityAccessLossReason(
+        'delete',
+        classifyMaxTerminalChatActionError(createMaxApiError(404, 'Not found'))!,
+      ),
+    ).toBeNull();
+  });
+
+  it('still resolves explicit chat loss errors for delete operations', () => {
+    expect(
+      resolveManagedEntityAccessLossReason(
+        'delete',
+        classifyMaxTerminalChatActionError(
+          createMaxApiError(403, 'Request failed with status code 403', 'chat.denied'),
+        )!,
+      ),
+    ).toBe('bot_denied');
+    expect(
+      resolveManagedEntityAccessLossReason(
+        'delete',
+        classifyMaxTerminalChatActionError(
+          createMaxApiError(404, 'Request failed with status code 404', 'chat.not.found'),
+        )!,
+      ),
+    ).toBe('chat_not_found');
+  });
 });
 
 describe('ManagedEntityAccessLossService', () => {
