@@ -71,7 +71,11 @@ import {
   saveLastEntityType,
 } from '../lib/last-chat';
 import { useNativeBackHandler } from '../lib/native-back';
-import { queryKeys } from '../lib/query-keys';
+import {
+  channelStatsQueryKey,
+  logsDashboardQueryKey,
+  managedEntityOnboardingDiagnosticsQueryKey,
+} from '../lib/query-key-builders';
 import { useManagedEntitiesSync } from '../lib/use-managed-entities-sync';
 import {
   MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_HIDDEN_MS,
@@ -566,7 +570,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     noteRefreshRequested();
     if (behavior === 'manual') {
       void queryClient.invalidateQueries({
-        queryKey: queryKeys.managedEntityOnboardingDiagnostics(tab),
+        queryKey: managedEntityOnboardingDiagnosticsQueryKey(tab),
       });
     }
     setRefreshRequestByTab((current) => ({
@@ -840,7 +844,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     preloadEventsPage();
     void queryClient
       .prefetchQuery({
-        queryKey: queryKeys.logsDashboard(chatId, DEFAULT_DASHBOARD_RANGE, false, true),
+        queryKey: logsDashboardQueryKey(chatId, DEFAULT_DASHBOARD_RANGE, false, true),
         queryFn: async ({ signal }) => {
           const { getChatModerationDashboard } = await import('../lib/api/events-client');
           return getChatModerationDashboard(api, chatId, DEFAULT_DASHBOARD_RANGE, { signal });
@@ -957,7 +961,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     preloadChannelStatsPage();
     void queryClient
       .prefetchQuery({
-        queryKey: queryKeys.channelStats(chatId, DEFAULT_CHANNEL_STATS_RANGE),
+        queryKey: channelStatsQueryKey(chatId, DEFAULT_CHANNEL_STATS_RANGE),
         queryFn: async ({ signal }) => {
           const { getChannelStats } = await import('../lib/api/channel-stats-client');
           return getChannelStats(

@@ -1,8 +1,21 @@
-export const queryKeys = {
-  systemDashboard: ['system-dashboard'] as const,
+import {
+  channelStatsQueryKey,
+  logsDashboardQueryKey,
+  managedEntityOnboardingDiagnosticsQueryKey,
+  systemDashboardQueryKey,
+} from './query-key-builders';
 
-  logsDashboard: (chatId: string, range: string, ...scope: readonly unknown[]) =>
-    ['logs-dashboard', chatId, range, ...scope] as const,
+export {
+  channelStatsQueryKey,
+  logsDashboardQueryKey,
+  managedEntityOnboardingDiagnosticsQueryKey,
+  systemDashboardQueryKey,
+} from './query-key-builders';
+
+export const queryKeys = {
+  systemDashboard: systemDashboardQueryKey,
+
+  logsDashboard: logsDashboardQueryKey,
   globalSpammerReviewQueue: (chatId: string | null | undefined, ...scope: readonly unknown[]) =>
     ['global-spammer-review-queue', chatId, ...scope] as const,
   globalSpammerReviewMetrics: (
@@ -14,8 +27,7 @@ export const queryKeys = {
     userId: string | null | undefined,
     ...scope: readonly unknown[]
   ) => ['global-spammer-user-diagnostics', chatId, userId, ...scope] as const,
-  channelStats: (chatId: string, range: string, mode = 'overview') =>
-    ['channel-stats', chatId, range, mode] as const,
+  channelStats: channelStatsQueryKey,
 
   entityDialog: (
     entityType: string,
@@ -46,8 +58,7 @@ export const queryKeys = {
   chatBroadcastComposerClientReset: (chatId: string | null | undefined) =>
     ['broadcast-composer-client-reset', chatId] as const,
   currentUser: (chatId: string | null | undefined) => ['me', chatId ?? null] as const,
-  managedEntityOnboardingDiagnostics: (entityType: string) =>
-    ['managed-entity-onboarding-diagnostics', entityType] as const,
+  managedEntityOnboardingDiagnostics: managedEntityOnboardingDiagnosticsQueryKey,
   settingsHeaderBotLoad: (botIdsSignature: string) =>
     ['settings-header-bot-load', botIdsSignature] as const,
   chatManagedBroadcastCalendar: (chatId: string | null | undefined, ...scope: readonly unknown[]) =>

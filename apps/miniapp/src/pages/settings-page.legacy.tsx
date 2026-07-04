@@ -186,7 +186,6 @@ import {
 } from '../lib/message-limits-blocked-words';
 import { resolveAdminContactProfileUrl } from '../lib/admin-contact-profile-url';
 import { maxNotify, openMaxBotLink, setMaxClosingConfirmation } from '../lib/max-bridge';
-import { queryKeys } from '../lib/query-keys';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
@@ -573,7 +572,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const focusSection = searchParams.get('focus');
   const handoffRequested = searchParams.get('handoff') === '1';
   const broadcastComposerClientResetQuery = useQuery({
-    queryKey: queryKeys.chatBroadcastComposerClientReset(chatId),
+    queryKey: ['broadcast-composer-client-reset', chatId],
     queryFn: ({ signal }) => getBroadcastComposerClientResetState(api, chatId ?? '', { signal }),
     enabled: Boolean(chatId),
     staleTime: 30_000,
@@ -701,7 +700,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         markBroadcastComposerResetApplied('chat', chatId, resetAt);
         appliedBroadcastHandoffSignatureRef.current = null;
         resetMailingComposer();
-        void queryClient.invalidateQueries({ queryKey: queryKeys.chatBroadcastHandoff(chatId) });
+        void queryClient.invalidateQueries({ queryKey: ['broadcast-handoff-state', chatId] });
         markRestoreReady();
       })();
 
@@ -782,14 +781,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     refetchOnWindowFocus: false,
   });
   const vkParsingCapabilityQuery = useQuery({
-    queryKey: queryKeys.vkParsingCapability('chat', chatId),
+    queryKey: ['vk-parsing-capability', 'chat', chatId],
     queryFn: () => getVkParsingCapability(api, 'chat', chatId ?? ''),
     enabled: Boolean(chatId),
     staleTime: 5 * 60_000,
     refetchOnWindowFocus: false,
   });
   const spammerReviewMetricsQuery = useQuery({
-    queryKey: queryKeys.globalSpammerReviewMetrics(chatId, 'summary'),
+    queryKey: ['global-spammer-review-metrics', chatId, 'summary'],
     queryFn: ({ signal }) =>
       getGlobalSpammerReviewMetrics(api, chatId ?? '', { mode: 'summary' }, { signal }),
     enabled: Boolean(chatId) && Boolean(settingsScreenQuery.data),
@@ -1281,7 +1280,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const recheckAccessMutation = useMutation({
     mutationFn: () => recheckManagedEntityAccess(api, 'chat', chatId ?? ''),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.chatSettingsScreen(chatId) });
+      void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
       pushToast({
         tone: 'success',
         title: 'Проверка доступа запущена',
@@ -1693,9 +1692,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   });
 
   const invalidateChatAutopostData = () => {
-    void queryClient.invalidateQueries({ queryKey: queryKeys.chatManagedAutopostRules(chatId) });
-    void queryClient.invalidateQueries({ queryKey: queryKeys.chatSettingsScreen(chatId) });
-    void queryClient.invalidateQueries({ queryKey: queryKeys.chatManagedBroadcastCalendar(chatId) });
+    void queryClient.invalidateQueries({ queryKey: ['managed-autopost-rules', chatId] });
+    void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
+    void queryClient.invalidateQueries({ queryKey: ['managed-broadcast-calendar', chatId] });
   };
 
   const createManagedAutopostRuleMutation = useMutation({
@@ -4685,7 +4684,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const refetchSettings = () => void settingsQuery.refetch();
   const managedBroadcasts = managedBroadcastsQuery.data ?? [];
   const managedAutopostRulesQuery = useQuery({
-    queryKey: queryKeys.chatManagedAutopostRules(chatId),
+    queryKey: ['managed-autopost-rules', chatId],
     queryFn: () => getManagedAutopostRules(api, chatId ?? ''),
     enabled: Boolean(chatId) && expandedSections.mailing,
     staleTime: 15_000,
