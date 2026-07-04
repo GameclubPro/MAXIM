@@ -30,6 +30,14 @@
       "types": "./dist/channel-dialog.d.ts",
       "default": "./dist/channel-dialog.js"
     },
+    "./chat-participants": {
+      "types": "./dist/chat-participants.d.ts",
+      "default": "./dist/chat-participants.js"
+    },
+    "./manual-moderation": {
+      "types": "./dist/manual-moderation.d.ts",
+      "default": "./dist/manual-moderation.js"
+    },
     "./managed-entities": {
       "types": "./dist/managed-entities.d.ts",
       "default": "./dist/managed-entities.js"

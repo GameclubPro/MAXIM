@@ -21413,6 +21413,190 @@ describe('AdminService.getChatParticipantsPage', () => {
       message: 'Иммунитет снят.',
     });
   });
+
+  it('removes only explicitly unavailable ordinary members during cleanup', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'chat-1',
+      title: 'Команда MAX',
+      entityType: 'CHAT',
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-2',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['add_remove_members'],
+      }),
+      getChatMembersPage: jest.fn().mockResolvedValue({
+        items: [
+          {
+            userId: 'ordinary-1',
+            displayName: 'Обычный участник',
+            username: null,
+            avatarUrl: null,
+            profileUrl: null,
+            role: 'member',
+            isBot: false,
+            unavailableReason: null,
+          },
+          {
+            userId: 'deleted-1',
+            displayName: 'MAX account',
+            username: null,
+            avatarUrl: null,
+            profileUrl: null,
+            role: 'member',
+            isBot: false,
+            unavailableReason: 'deleted',
+          },
+          {
+            userId: 'admin-2',
+            displayName: 'Админ',
+            username: null,
+            avatarUrl: null,
+            profileUrl: null,
+            role: 'admin',
+            isBot: false,
+            unavailableReason: 'blocked',
+          },
+          {
+            userId: 'helper-bot',
+            displayName: 'Helper',
+            username: 'helper_bot',
+            avatarUrl: null,
+            profileUrl: null,
+            role: 'member',
+            isBot: true,
+            unavailableReason: 'blocked',
+          },
+        ],
+        nextMarker: null,
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'deleted-1',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      kickMember: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    jest.spyOn(service, 'resolveParticipantCleanupBotAssignment').mockResolvedValue('bot-2');
+
+    const result = await service.cleanupUnavailableChatParticipants(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {},
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      dryRun: false,
+      scannedCount: 4,
+      matchedCount: 3,
+      removedCount: 1,
+      skippedCount: 2,
+      failedCount: 0,
+    });
+    expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith(
+      'chat-1',
+      'deleted-1',
+      expect.objectContaining({
+        botId: 'bot-2',
+        bypassCache: true,
+      }),
+    );
+    expect(maxClient.kickMember).toHaveBeenCalledWith(
+      'chat-1',
+      'deleted-1',
+      expect.objectContaining({
+        immediate: true,
+        botId: 'bot-2',
+        sourceTag: 'participant_cleanup',
+      }),
+    );
+    expect(maxClient.kickMember).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not remove suspicious-looking participants without an explicit MAX account flag', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'chat-1',
+      title: 'Команда MAX',
+      entityType: 'CHAT',
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-2',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['add_remove_members'],
+      }),
+      getChatMembersPage: jest.fn().mockResolvedValue({
+        items: [
+          {
+            userId: 'ordinary-1',
+            displayName: 'Удалённый аккаунт',
+            username: null,
+            avatarUrl: null,
+            profileUrl: null,
+            role: 'member',
+            isBot: false,
+            unavailableReason: null,
+          },
+        ],
+        nextMarker: null,
+      }),
+      getChatMemberAccess: jest.fn(),
+      kickMember: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    jest.spyOn(service, 'resolveParticipantCleanupBotAssignment').mockResolvedValue('bot-2');
+
+    const result = await service.cleanupUnavailableChatParticipants(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {},
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      scannedCount: 1,
+      matchedCount: 0,
+      removedCount: 0,
+      skippedCount: 0,
+      failedCount: 0,
+    });
+    expect(maxClient.getChatMemberAccess).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+  });
 });
 
 describe('AdminService.updateChannelSettings', () => {

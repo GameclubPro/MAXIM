@@ -75,6 +75,7 @@ export type MaxChatMemberAccess = {
 };
 
 export type MaxChatMemberRole = 'owner' | 'admin' | 'member';
+export type MaxChatRosterUnavailableReason = 'deleted' | 'blocked' | 'deactivated' | 'suspended';
 
 export type MaxChatRosterMember = {
   userId: string;
@@ -84,6 +85,7 @@ export type MaxChatRosterMember = {
   profileUrl: string | null;
   role: MaxChatMemberRole;
   isBot: boolean;
+  unavailableReason: MaxChatRosterUnavailableReason | null;
 };
 
 export type MaxChatMembersPage = {
@@ -292,6 +294,7 @@ export const MAX_API_SOURCE_TAGS = {
   MODERATION_NOTICE: 'moderation_notice',
   NIGHT_MODE_TRANSITION: 'night_mode_transition',
   PARTICIPANT_SEARCH: 'participant_search',
+  PARTICIPANT_CLEANUP: 'participant_cleanup',
   SETTINGS_BOT_PROFILE: 'settings_bot_profile',
   MANAGED_HANDSHAKE: 'managed_handshake',
   GIVEAWAY_DRAW_BACKGROUND: 'giveaway_draw_background',
@@ -2131,6 +2134,7 @@ export class MaxClientService implements OnModuleDestroy {
             profileUrl: profile.profileUrl,
             role: this.parseChatMemberRole(member),
             isBot: this.parseChatMemberBot(member, profile),
+            unavailableReason: this.parseChatMemberUnavailableReason(member),
           };
         })
         .filter((member): member is MaxChatRosterMember => member !== null),
@@ -2757,6 +2761,77 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     return profile.userId.toLowerCase().endsWith('_bot');
+  }
+
+  private parseChatMemberUnavailableReason(value: unknown): MaxChatRosterUnavailableReason | null {
+    if (!value || typeof value !== 'object') {
+      return null;
+    }
+
+    const row = value as Record<string, unknown>;
+    const nestedUser =
+      row.user && typeof row.user === 'object' && !Array.isArray(row.user)
+        ? (row.user as Record<string, unknown>)
+        : null;
+
+    for (const candidate of [row, nestedUser].filter(
+      (item): item is Record<string, unknown> => item !== null,
+    )) {
+      if (
+        candidate.is_deleted === true ||
+        candidate.isDeleted === true ||
+        candidate.deleted === true ||
+        candidate.deleted_account === true ||
+        candidate.deletedAccount === true
+      ) {
+        return 'deleted';
+      }
+
+      if (
+        candidate.is_blocked === true ||
+        candidate.isBlocked === true ||
+        candidate.blocked === true ||
+        candidate.blocked_by_platform === true ||
+        candidate.blockedByPlatform === true
+      ) {
+        return 'blocked';
+      }
+
+      if (
+        candidate.is_deactivated === true ||
+        candidate.isDeactivated === true ||
+        candidate.deactivated === true
+      ) {
+        return 'deactivated';
+      }
+
+      if (candidate.is_suspended === true || candidate.isSuspended === true) {
+        return 'suspended';
+      }
+
+      const explicitStatus = this.readLowerString(
+        candidate.account_status ??
+          candidate.accountStatus ??
+          candidate.user_status ??
+          candidate.userStatus ??
+          candidate.profile_status ??
+          candidate.profileStatus,
+      );
+      if (explicitStatus === 'deleted' || explicitStatus === 'removed') {
+        return 'deleted';
+      }
+      if (explicitStatus === 'blocked' || explicitStatus === 'banned') {
+        return 'blocked';
+      }
+      if (explicitStatus === 'deactivated' || explicitStatus === 'disabled') {
+        return 'deactivated';
+      }
+      if (explicitStatus === 'suspended') {
+        return 'suspended';
+      }
+    }
+
+    return null;
   }
 
   private readProfileUrl(...candidates: unknown[]): string | null {

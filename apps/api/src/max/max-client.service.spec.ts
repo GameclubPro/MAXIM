@@ -3012,6 +3012,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
           profileUrl: null,
           role: 'owner',
           isBot: false,
+          unavailableReason: null,
         },
         {
           userId: 'moderation_bot',
@@ -3021,6 +3022,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
           profileUrl: null,
           role: 'admin',
           isBot: true,
+          unavailableReason: null,
         },
       ],
       nextMarker: 'page-2',
@@ -3105,6 +3107,48 @@ describe('MaxClientService inline keyboard guardrails', () => {
         displayName: 'Алексей Иванов',
       }),
     );
+
+    await service.onModuleDestroy();
+  });
+
+  it('reads explicit unavailable account markers from chat member roster payloads', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            members: [
+              {
+                user_id: 'deleted-1',
+                name: 'MAX account',
+                is_deleted: true,
+              },
+              {
+                user: {
+                  user_id: 'blocked-1',
+                  name: 'MAX account',
+                  account_status: 'blocked',
+                },
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.getChatMembersPage('chat-1');
+
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        userId: 'deleted-1',
+        unavailableReason: 'deleted',
+      }),
+      expect.objectContaining({
+        userId: 'blocked-1',
+        unavailableReason: 'blocked',
+      }),
+    ]);
 
     await service.onModuleDestroy();
   });

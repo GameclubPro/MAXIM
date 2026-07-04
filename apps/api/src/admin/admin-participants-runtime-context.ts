@@ -66,6 +66,7 @@ export type AdminParticipantsRuntimeContext = {
   ): Promise<string>;
   readTrimmedString(value: unknown): string | null;
   resolveBackgroundReadBotAssignment(chatId: string): Promise<string | undefined>;
+  resolveParticipantCleanupBotAssignment(chatId: string): Promise<string | undefined>;
   resolveLogsDashboardFrom(range: ChatParticipantsQuery['range'], to: Date): Date;
   toSafeInteger(value: unknown): number;
 };
@@ -161,6 +162,9 @@ export function createAdminParticipantsRuntimeContext(
     },
     resolveBackgroundReadBotAssignment(chatId: string): Promise<string | undefined> {
       return typedTarget.resolveBackgroundReadBotAssignment(chatId);
+    },
+    resolveParticipantCleanupBotAssignment(chatId: string): Promise<string | undefined> {
+      return typedTarget.resolveParticipantCleanupBotAssignment(chatId);
     },
     resolveLogsDashboardFrom(range: ChatParticipantsQuery['range'], to: Date): Date {
       return typedTarget.resolveLogsDashboardFrom(range, to);

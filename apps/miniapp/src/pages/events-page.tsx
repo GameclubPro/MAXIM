@@ -42,6 +42,7 @@ import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import {
   applyManualModerationAction,
+  cleanupUnavailableChatParticipants,
   getChatActivityDashboard,
   getChatActivityFeed,
   getChatModerationDashboard,
@@ -2001,6 +2002,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const [expandedViolationId, setExpandedViolationId] = useState<string | null>(null);
   const [spammerReviewOpen, setSpammerReviewOpen] = useState(false);
   const [selectedParticipantId, setSelectedParticipantId] = useState<string | null>(null);
+  const [cleanupUnavailableConfirmOpen, setCleanupUnavailableConfirmOpen] = useState(false);
   const [spammerDiagnosticsTarget, setSpammerDiagnosticsTarget] =
     useState<SpammerDiagnosticsTarget | null>(null);
   const [pendingScopeAction, setPendingScopeAction] = useState<PendingScopeAction | null>(null);
@@ -2523,6 +2525,29 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       pushToast({
         tone: 'danger',
         title: 'Не удалось применить',
+        description: normalizeActionErrorMessage(error),
+      });
+    },
+  });
+  const cleanupUnavailableParticipantsMutation = useMutation({
+    mutationFn: () =>
+      cleanupUnavailableChatParticipants(api, chatId ?? '', {
+        dryRun: false,
+      }),
+    onSuccess: (result) => {
+      setCleanupUnavailableConfirmOpen(false);
+      pushToast({
+        tone: result.failedCount > 0 ? 'danger' : 'success',
+        title: result.message,
+        description: `Проверено: ${result.scannedCount}. Найдено: ${result.matchedCount}.`,
+      });
+      void dashboardQuery.refetch();
+      void participantsFeed.retry();
+    },
+    onError: (error: unknown) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось удалить',
         description: normalizeActionErrorMessage(error),
       });
     },
@@ -3196,6 +3221,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           onParticipantActivate={(item: ChatParticipantItem) =>
             setSelectedParticipantId(item.userId)
           }
+          onCleanupUnavailable={() => setCleanupUnavailableConfirmOpen(true)}
+          isCleanupUnavailableBusy={cleanupUnavailableParticipantsMutation.isPending}
         />
       ) : null}
 
@@ -3503,6 +3530,27 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         onExtraAction={() => applyPendingScopeAction('all_chats')}
         onClose={closePendingScopeAction}
         onConfirm={() => applyPendingScopeAction('current_chat')}
+      />
+
+      <ActionConfirmSheet
+        id="cleanup-unavailable-participants"
+        open={cleanupUnavailableConfirmOpen}
+        title="Удалить заблокированные"
+        summary="Будут удалены только участники, которых MAX явно пометил как удалённые, заблокированные или отключённые аккаунты."
+        previewTitle="Обычные участники, админы, владельцы и боты пропускаются."
+        previewMeta="Список на экране не используется как источник истины: сервер заново сканирует участников перед удалением."
+        confirmLabel="Удалить"
+        confirmBusyLabel="Проверяем..."
+        cancelLabel="Отмена"
+        tone="danger"
+        isBusy={cleanupUnavailableParticipantsMutation.isPending}
+        onClose={() => {
+          if (cleanupUnavailableParticipantsMutation.isPending) {
+            return;
+          }
+          setCleanupUnavailableConfirmOpen(false);
+        }}
+        onConfirm={() => cleanupUnavailableParticipantsMutation.mutate()}
       />
 
       <ChatParticipantSheet

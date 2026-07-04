@@ -241,6 +241,10 @@ const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
   },
   {
     method: 'POST',
+    pattern: new RegExp(`^/chats/${ENTITY_ID_SEGMENT}/members/unavailable-cleanup$`),
+  },
+  {
+    method: 'POST',
     pattern: new RegExp(
       `^/channels/${ENTITY_ID_SEGMENT}/members/${ENTITY_ID_SEGMENT}/profile/handoff$`,
     ),

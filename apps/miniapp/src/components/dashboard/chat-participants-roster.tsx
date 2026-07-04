@@ -1,4 +1,5 @@
 import type { ChatParticipantItem } from '@maxim/contracts';
+import { UserXmark as IconUserXmark } from 'iconoir-react';
 import { useEffect, useRef } from 'react';
 import { PersonAvatar } from '../ui/person-avatar';
 import { Spinner } from '../ui/spinner';
@@ -15,6 +16,8 @@ type ChatParticipantsRosterProps = {
   onLoadMore: () => void;
   onRetry: () => void;
   onParticipantActivate?: ((item: ChatParticipantItem) => void) | null;
+  onCleanupUnavailable?: (() => void) | null;
+  isCleanupUnavailableBusy?: boolean;
 };
 
 function resolveDisplayName(item: ChatParticipantItem): string {
@@ -124,6 +127,8 @@ export function ChatParticipantsRoster({
   onLoadMore,
   onRetry,
   onParticipantActivate = null,
+  onCleanupUnavailable = null,
+  isCleanupUnavailableBusy = false,
 }: ChatParticipantsRosterProps) {
   const isSearching = search.trim().length > 0;
   const isSearchBusy = isSearching && (isReloading || isLoadingMore);
@@ -195,6 +200,19 @@ export function ChatParticipantsRoster({
               <span className="participants-roster__search-progress" aria-hidden="true" />
             ) : null}
           </label>
+          {onCleanupUnavailable ? (
+            <button
+              type="button"
+              className="participants-roster__cleanup-button"
+              onClick={onCleanupUnavailable}
+              disabled={isCleanupUnavailableBusy || isReloading || isLoadingMore}
+              aria-label="Удалить заблокированные MAX аккаунты"
+              title="Удалить заблокированные MAX аккаунты"
+            >
+              <IconUserXmark width={17} height={17} strokeWidth={2.05} aria-hidden />
+              <span>{isCleanupUnavailableBusy ? 'Ищем...' : 'Удалить заблок.'}</span>
+            </button>
+          ) : null}
         </div>
       ) : null}
 

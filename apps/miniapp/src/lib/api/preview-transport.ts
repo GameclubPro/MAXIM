@@ -9,6 +9,8 @@ import {
   chatParticipantImmunityUpdateRequestSchema,
   chatParticipantImmunityUpdateResultSchema,
   chatParticipantsPageSchema,
+  chatUnavailableParticipantsCleanupRequestSchema,
+  chatUnavailableParticipantsCleanupResultSchema,
   channelDialogMessageSchema,
   channelDialogResponseSchema,
   channelSuggestionRedirectResponseSchema,
@@ -79,6 +81,7 @@ import {
   type ChatParticipantImmunityUpdateRequest,
   type ChatParticipantItem,
   type ChatParticipantsPage,
+  type ChatUnavailableParticipantsCleanupRequest,
   type ChannelDialogMessage,
   type ChannelDialogNotificationMode,
   type ChannelDialogNotificationScope,
@@ -5830,6 +5833,26 @@ async function handleChatRequest(
         state.chatViolations,
         now,
       ),
+    );
+  }
+
+  if (tail[0] === 'members' && tail[1] === 'unavailable-cleanup' && method === 'POST') {
+    const payload = chatUnavailableParticipantsCleanupRequestSchema.parse(
+      parseJsonBody(init) as ChatUnavailableParticipantsCleanupRequest,
+    );
+    return cloneJson(
+      chatUnavailableParticipantsCleanupResultSchema.parse({
+        ok: true,
+        dryRun: payload.dryRun,
+        scannedCount: state.chatParticipants.length,
+        matchedCount: 0,
+        removedCount: 0,
+        skippedCount: 0,
+        failedCount: 0,
+        scanLimitReached: false,
+        items: [],
+        message: 'Безопасных кандидатов не найдено.',
+      }),
     );
   }
 

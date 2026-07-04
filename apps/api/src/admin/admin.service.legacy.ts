@@ -27,6 +27,7 @@ import {
   type ChatParticipantImmunityUpdateResult,
   type ChatParticipantsPage,
   type ChatParticipantsQuery,
+  type ChatUnavailableParticipantsCleanupResult,
   type ChannelDialogType,
   type ChannelStatsBucket,
   type ChannelStatsQuery,
@@ -8851,6 +8852,18 @@ export class AdminService implements OnModuleDestroy {
       user,
       body,
     );
+  }
+
+  async cleanupUnavailableChatParticipants(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<ChatUnavailableParticipantsCleanupResult> {
+    return this.participantsRuntime.cleanupUnavailableChatParticipants(chatId, user, body);
+  }
+
+  async resolveParticipantCleanupBotAssignment(chatId: string): Promise<string | undefined> {
+    return this.resolveManualModerationActionBotAssignment(chatId, 'moderate_member');
   }
 
   async applyManualModerationAction(

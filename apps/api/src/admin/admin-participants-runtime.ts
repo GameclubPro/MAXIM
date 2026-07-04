@@ -4,6 +4,11 @@ import {
   chatParticipantImmunityUpdateResultSchema,
   chatParticipantsPageSchema,
   chatParticipantsQuerySchema,
+  chatUnavailableParticipantsCleanupRequestSchema,
+  chatUnavailableParticipantsCleanupResultSchema,
+  type ChatUnavailableParticipantReason,
+  type ChatUnavailableParticipantsCleanupItem,
+  type ChatUnavailableParticipantsCleanupResult,
   type ChatParticipantImmunity,
   type ChatParticipantImmunityUpdateResult,
   type ChatParticipantItem,
@@ -11,7 +16,7 @@ import {
   type ChatParticipantsQuery,
   type ManagedEntityType,
 } from '@maxim/contracts';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
   MAX_API_SOURCE_TAGS,
@@ -19,6 +24,7 @@ import {
   type MaxChatMemberAccess,
   type MaxChatMemberRole,
   type MaxChatRosterMember,
+  type MaxChatRosterUnavailableReason,
 } from '../max/max-client.service';
 import type { Prisma } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
@@ -39,6 +45,9 @@ import {
   type ChatParticipantsSearchCursor,
   type TimedPromiseCacheEntry,
 } from './admin.service.support';
+
+const UNAVAILABLE_PARTICIPANT_CLEANUP_PAGE_LIMIT = 100;
+const UNAVAILABLE_PARTICIPANT_CLEANUP_PAGE_SAFETY_CAP = 500;
 
 export class AdminParticipantsRuntime {
   constructor(private readonly context: AdminParticipantsRuntimeContext) {}
@@ -130,6 +139,10 @@ export class AdminParticipantsRuntime {
 
   private resolveBackgroundReadBotAssignment(chatId: string): Promise<string | undefined> {
     return this.context.resolveBackgroundReadBotAssignment(chatId);
+  }
+
+  private resolveParticipantCleanupBotAssignment(chatId: string): Promise<string | undefined> {
+    return this.context.resolveParticipantCleanupBotAssignment(chatId);
   }
 
   private resolveLogsDashboardFrom(range: ChatParticipantsQuery['range'], to: Date): Date {
@@ -235,6 +248,117 @@ export class AdminParticipantsRuntime {
     });
   }
 
+  async cleanupUnavailableChatParticipants(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<ChatUnavailableParticipantsCleanupResult> {
+    await this.assertReadOnlyChatAdmin(chatId, user.userId, 'chat', {
+      forceRemote: true,
+    });
+    await this.ensureEntityType(chatId, user.userId, 'chat');
+
+    const parsed = chatUnavailableParticipantsCleanupRequestSchema.safeParse(body ?? {});
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const dryRun = parsed.data.dryRun;
+    const resolvedBotId =
+      (await this.resolveParticipantCleanupBotAssignment(chatId)) ??
+      (await this.resolveBackgroundReadBotAssignment(chatId));
+    await this.assertBotCanCleanupUnavailableParticipants(chatId, resolvedBotId);
+
+    const items: ChatUnavailableParticipantsCleanupItem[] = [];
+    let marker: string | null = null;
+    let scannedCount = 0;
+    let matchedCount = 0;
+    let removedCount = 0;
+    let skippedCount = 0;
+    let failedCount = 0;
+    let scanLimitReached = false;
+
+    for (
+      let pageIndex = 0;
+      pageIndex < UNAVAILABLE_PARTICIPANT_CLEANUP_PAGE_SAFETY_CAP;
+      pageIndex += 1
+    ) {
+      const page = await this.maxClient.getChatMembersPage(
+        chatId,
+        {
+          limit: UNAVAILABLE_PARTICIPANT_CLEANUP_PAGE_LIMIT,
+          marker,
+        },
+        {
+          trafficClass: 'interactive',
+          actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+          sourceTag: MAX_API_SOURCE_TAGS.PARTICIPANT_CLEANUP,
+          ignoreFailureMetricStatuses: ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
+          ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+        },
+      );
+
+      for (const member of page.items) {
+        scannedCount += 1;
+        if (!member.unavailableReason) {
+          continue;
+        }
+
+        matchedCount += 1;
+        const result = await this.cleanupUnavailableChatParticipantCandidate({
+          chatId,
+          member,
+          actorUserId: user.userId,
+          dryRun,
+          botId: resolvedBotId,
+        });
+        items.push(result);
+
+        if (result.status === 'removed') {
+          removedCount += 1;
+        } else if (result.status === 'failed') {
+          failedCount += 1;
+        } else if (result.status === 'skipped') {
+          skippedCount += 1;
+        }
+      }
+
+      if (!page.nextMarker) {
+        marker = null;
+        break;
+      }
+      marker = page.nextMarker;
+
+      if (pageIndex === UNAVAILABLE_PARTICIPANT_CLEANUP_PAGE_SAFETY_CAP - 1) {
+        scanLimitReached = true;
+      }
+    }
+
+    if (!dryRun && (removedCount > 0 || skippedCount > 0 || failedCount > 0)) {
+      this.invalidateChatParticipantsPageCache(chatId);
+    }
+
+    return chatUnavailableParticipantsCleanupResultSchema.parse({
+      ok: true,
+      dryRun,
+      scannedCount,
+      matchedCount,
+      removedCount,
+      skippedCount,
+      failedCount,
+      scanLimitReached,
+      items,
+      message: this.buildUnavailableParticipantsCleanupMessage({
+        dryRun,
+        matchedCount,
+        removedCount,
+        skippedCount,
+        failedCount,
+        scanLimitReached,
+      }),
+    });
+  }
+
   invalidateChatParticipantsPageCache(chatId: string): void {
     const prefix = `${chatId}:`;
     for (const key of this.chatParticipantsPageCache.keys()) {
@@ -242,6 +366,273 @@ export class AdminParticipantsRuntime {
         this.chatParticipantsPageCache.delete(key);
       }
     }
+  }
+
+  private async assertBotCanCleanupUnavailableParticipants(
+    chatId: string,
+    botId?: string,
+  ): Promise<void> {
+    const botAccess = await this.maxClient.getCurrentChatMemberAccess(chatId, {
+      trafficClass: 'critical',
+      actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+      ...(botId ? { botId } : {}),
+    });
+
+    if (botAccess.isOwner) {
+      return;
+    }
+
+    if (!botAccess.isAdmin) {
+      throw new ForbiddenException(
+        'Бот должен быть администратором этого чата MAX, чтобы удалять участников.',
+      );
+    }
+
+    if (
+      botAccess.permissions.length > 0 &&
+      !botAccess.permissions.some((permission) => this.isAddRemoveMembersPermission(permission))
+    ) {
+      throw new ForbiddenException(
+        'У бота нет права MAX add_remove_members, поэтому он не может удалять участников.',
+      );
+    }
+  }
+
+  private async cleanupUnavailableChatParticipantCandidate(params: {
+    chatId: string;
+    member: MaxChatRosterMember;
+    actorUserId: string;
+    dryRun: boolean;
+    botId?: string;
+  }): Promise<ChatUnavailableParticipantsCleanupItem> {
+    const { chatId, member, actorUserId, dryRun, botId } = params;
+    const reason = this.toChatUnavailableParticipantReason(member.unavailableReason);
+    const userDisplayName = this.resolveCleanupParticipantDisplayName(member);
+
+    if (!reason) {
+      return {
+        userId: member.userId,
+        userDisplayName,
+        reason: 'deleted',
+        status: 'skipped',
+        message: 'MAX не вернул явный признак удаленного или заблокированного аккаунта.',
+      };
+    }
+
+    const base = {
+      userId: member.userId,
+      userDisplayName,
+      reason,
+    };
+
+    if (member.userId.trim() === actorUserId.trim()) {
+      return {
+        ...base,
+        status: 'skipped',
+        message: 'Нельзя удалить свой аккаунт.',
+      };
+    }
+
+    if (member.isBot) {
+      return {
+        ...base,
+        status: 'skipped',
+        message: 'Боты не удаляются этой операцией.',
+      };
+    }
+
+    if (member.role !== 'member') {
+      return {
+        ...base,
+        status: 'skipped',
+        message: 'Администраторы и владельцы не удаляются этой операцией.',
+      };
+    }
+
+    let targetAccess: MaxChatMemberAccess | null;
+    try {
+      targetAccess = await this.maxClient.getChatMemberAccess(chatId, member.userId, {
+        trafficClass: 'critical',
+        actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+        bypassCache: true,
+        ...(botId ? { botId } : {}),
+      });
+    } catch (error: unknown) {
+      return {
+        ...base,
+        status: 'failed',
+        message: this.describeUnavailableParticipantCleanupError(error),
+      };
+    }
+
+    if (!targetAccess) {
+      return {
+        ...base,
+        status: 'skipped',
+        message: 'Участник уже отсутствует в чате.',
+      };
+    }
+
+    if (targetAccess.isOwner || targetAccess.isAdmin) {
+      return {
+        ...base,
+        status: 'skipped',
+        message: 'Свежая проверка MAX показала, что это администратор или владелец.',
+      };
+    }
+
+    if (dryRun) {
+      return {
+        ...base,
+        status: 'candidate',
+        message: 'Кандидат подтвержден, удаление не запускалось.',
+      };
+    }
+
+    try {
+      await this.maxClient.kickMember(chatId, member.userId, {
+        immediate: true,
+        trafficClass: 'critical',
+        actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+        sourceTag: MAX_API_SOURCE_TAGS.PARTICIPANT_CLEANUP,
+        ...(botId ? { botId } : {}),
+      });
+      return {
+        ...base,
+        status: 'removed',
+        message: 'Удален из чата.',
+      };
+    } catch (error: unknown) {
+      if (this.isUnavailableParticipantAlreadyGoneError(error)) {
+        return {
+          ...base,
+          status: 'skipped',
+          message: 'Участник уже отсутствует в чате.',
+        };
+      }
+
+      return {
+        ...base,
+        status: 'failed',
+        message: this.describeUnavailableParticipantCleanupError(error),
+      };
+    }
+  }
+
+  private toChatUnavailableParticipantReason(
+    value: MaxChatRosterUnavailableReason | null,
+  ): ChatUnavailableParticipantReason | null {
+    if (
+      value === 'deleted' ||
+      value === 'blocked' ||
+      value === 'deactivated' ||
+      value === 'suspended'
+    ) {
+      return value;
+    }
+
+    return null;
+  }
+
+  private resolveCleanupParticipantDisplayName(member: MaxChatRosterMember): string {
+    const username = member.username?.replace(/^@+/u, '').trim() ?? '';
+    return (
+      member.displayName?.trim() ||
+      (username ? `@${username}` : '') ||
+      (member.isBot ? 'Бот MAX' : 'Участник MAX')
+    );
+  }
+
+  private buildUnavailableParticipantsCleanupMessage(params: {
+    dryRun: boolean;
+    matchedCount: number;
+    removedCount: number;
+    skippedCount: number;
+    failedCount: number;
+    scanLimitReached: boolean;
+  }): string {
+    if (params.matchedCount === 0) {
+      return params.scanLimitReached
+        ? 'Безопасных кандидатов не найдено в просканированной части списка.'
+        : 'Безопасных кандидатов не найдено.';
+    }
+
+    if (params.dryRun) {
+      return `Найдено кандидатов: ${params.matchedCount}. Удаление не запускалось.`;
+    }
+
+    const parts = [`Удалено: ${params.removedCount}`];
+    if (params.skippedCount > 0) {
+      parts.push(`пропущено: ${params.skippedCount}`);
+    }
+    if (params.failedCount > 0) {
+      parts.push(`ошибок: ${params.failedCount}`);
+    }
+    if (params.scanLimitReached) {
+      parts.push('достигнут лимит сканирования');
+    }
+
+    return `${parts.join(', ')}.`;
+  }
+
+  private describeUnavailableParticipantCleanupError(error: unknown): string {
+    const apiMessage = this.extractMaxApiErrorMessage(error);
+    if (apiMessage) {
+      return apiMessage;
+    }
+
+    if (error instanceof Error && error.message.trim()) {
+      return error.message.trim();
+    }
+
+    return 'MAX отклонил удаление участника.';
+  }
+
+  private extractMaxApiErrorMessage(error: unknown): string | null {
+    const responseData = (error as { response?: { data?: unknown } })?.response?.data;
+    if (responseData && typeof responseData === 'object' && !Array.isArray(responseData)) {
+      const message = (responseData as { message?: unknown }).message;
+      if (typeof message === 'string' && message.trim()) {
+        return message.trim();
+      }
+    }
+
+    return null;
+  }
+
+  private isUnavailableParticipantAlreadyGoneError(error: unknown): boolean {
+    const code = this.extractMaxApiErrorCode(error);
+    if (code === 'user.not.found' || code === 'member.not.found') {
+      return true;
+    }
+
+    const message = this.describeUnavailableParticipantCleanupError(error).toLowerCase();
+    return (
+      message.includes('not found') ||
+      message.includes('already') ||
+      message.includes('уже отсутств') ||
+      message.includes('не состоит')
+    );
+  }
+
+  private isAddRemoveMembersPermission(permission: string): boolean {
+    const normalized = permission.trim().toLowerCase().replace(/[-\s]+/gu, '_');
+    return (
+      normalized === 'add_remove_members' ||
+      normalized === 'can_add_remove_members' ||
+      normalized === 'remove_members' ||
+      normalized === 'can_remove_members' ||
+      normalized === 'manage_members' ||
+      normalized === 'can_manage_members' ||
+      normalized === 'kick_members' ||
+      normalized === 'can_kick_members' ||
+      normalized === 'ban_members' ||
+      normalized === 'can_ban_members' ||
+      normalized === 'ban_users' ||
+      normalized === 'can_ban_users' ||
+      normalized === 'delete_members' ||
+      normalized === 'can_delete_members'
+    );
   }
 
   private async buildChatParticipantsPage(

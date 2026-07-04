@@ -4,6 +4,8 @@ import type {
   ChatParticipantImmunityUpdateResult,
   ChatParticipantsPage,
   ChatParticipantsQuery,
+  ChatUnavailableParticipantsCleanupRequest,
+  ChatUnavailableParticipantsCleanupResult,
   GlobalSpammerCandidateStatus,
   GlobalSpammerReviewMetrics,
   GlobalSpammerReviewQueue,
@@ -314,6 +316,18 @@ export async function applyManualModerationAction(
     },
   );
   return response as ManualModerationActionResult;
+}
+
+export async function cleanupUnavailableChatParticipants(
+  api: ApiTransport,
+  chatId: string,
+  payload: Partial<ChatUnavailableParticipantsCleanupRequest> = {},
+): Promise<ChatUnavailableParticipantsCleanupResult> {
+  const response = await api.request(`/chats/${chatId}/members/unavailable-cleanup`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  return response as ChatUnavailableParticipantsCleanupResult;
 }
 
 export async function getGlobalSpammerReviewQueue(

@@ -66,6 +66,12 @@ export class ManualModerationService {
     return this.legacyAdminService.updateChatParticipantImmunity(...args);
   }
 
+  cleanupUnavailableChatParticipants(
+    ...args: Parameters<AdminService['cleanupUnavailableChatParticipants']>
+  ): ReturnType<AdminService['cleanupUnavailableChatParticipants']> {
+    return this.legacyAdminService.cleanupUnavailableChatParticipants(...args);
+  }
+
   getEvents(...args: Parameters<AdminService['getEvents']>): ReturnType<AdminService['getEvents']> {
     return this.legacyAdminService.getEvents(...args);
   }

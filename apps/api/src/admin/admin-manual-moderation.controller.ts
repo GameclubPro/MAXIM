@@ -100,6 +100,15 @@ export class AdminManualModerationController {
     return this.moderationService.updateChatParticipantImmunity(chatId, targetUserId, user, body);
   }
 
+  @Post('chats/:chatId/members/unavailable-cleanup')
+  cleanupUnavailableChatParticipants(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.moderationService.cleanupUnavailableChatParticipants(chatId, user, body);
+  }
+
   @Get('chats/:chatId/moderation-events')
   getEvents(
     @Param('chatId') chatId: string,
