@@ -86,6 +86,18 @@ ensure_service_requested_if_down() {
   SERVICES+=("$service")
 }
 
+warn_legacy_miniapp_static_target() {
+  if ! contains_service "miniapp-static" "${SERVICES[@]}"; then
+    return 0
+  fi
+
+  cat >&2 <<'EOF'
+WARNING: miniapp-static serves legacy https://maxim.play-team.ru/app/.
+Routine production mini app deploys should target miniapp-major-static for https://major-maksimov.ru/app/.
+Continue only if you intentionally need the legacy support static container.
+EOF
+}
+
 has_pulled_changes() {
   [[ -n "$PRE_PULL_HEAD" ]] && [[ "$PRE_PULL_HEAD" != "$(git rev-parse HEAD)" ]]
 }
@@ -338,6 +350,7 @@ sync_branch
 reexec_if_current_script_changed
 ensure_compose_env
 stop_conflicting_stacks
+warn_legacy_miniapp_static_target
 ensure_service_requested_if_down "miniapp-major-static"
 if has_requested_api_service; then
   ensure_service_requested_if_down "api-enqueue"
