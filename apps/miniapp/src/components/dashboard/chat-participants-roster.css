@@ -268,12 +268,8 @@
   padding: 0 10px;
   border: 1px solid rgba(61, 136, 208, 0.24);
   border-radius: 999px;
-  background:
-    linear-gradient(145deg, rgba(242, 249, 255, 0.98), rgba(221, 239, 255, 0.94)),
-    rgba(240, 247, 255, 0.98);
-  box-shadow:
-    0 10px 18px rgba(30, 109, 187, 0.1),
-    inset 0 1px 0 rgba(255, 255, 255, 0.86);
+  background: linear-gradient(145deg, rgba(242, 249, 255, 0.98), rgba(221, 239, 255, 0.94)), rgba(240, 247, 255, 0.98);
+  box-shadow: 0 10px 18px rgba(30, 109, 187, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.86);
   color: #0e6eb8;
   font-size: 0.73rem;
   font-weight: 900;
@@ -282,16 +278,18 @@
   white-space: nowrap;
 }
 
-.participants-roster__immunity-shield {
-  display: inline-flex;
-  width: 12px;
-  height: 12px;
+.participants-roster__immunity--always {
+  min-width: 42px;
+  border-color: rgba(20, 155, 132, 0.24);
+  background: linear-gradient(145deg, rgba(237, 253, 249, 0.98), rgba(213, 247, 239, 0.94)), rgba(238, 251, 248, 0.98);
+  box-shadow: 0 10px 18px rgba(20, 155, 132, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.86);
+  color: #0c7c6f;
+  font-size: 0.86rem;
 }
 
-.participants-roster__immunity-shield svg {
-  width: 100%;
-  height: 100%;
-}
+.participants-roster__immunity-shield { display: inline-flex; width: 12px; height: 12px; }
+
+.participants-roster__immunity-shield svg { width: 100%; height: 100%; }
 
 .participants-roster__violations {
   position: relative;

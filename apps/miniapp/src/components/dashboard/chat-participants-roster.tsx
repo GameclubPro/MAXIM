@@ -5,6 +5,16 @@ import { PersonAvatar } from '../ui/person-avatar';
 import { Spinner } from '../ui/spinner';
 import './chat-participants-roster.css';
 
+type ImmunityMode = 'limited' | 'always';
+type ChatParticipantImmunityView = Omit<
+  NonNullable<ChatParticipantItem['immunity']>,
+  'dailyViolationLimit' | 'remainingViolatingMessagesToday'
+> & {
+  mode?: ImmunityMode | null;
+  dailyViolationLimit?: number | null;
+  remainingViolatingMessagesToday?: number | null;
+};
+
 type ChatParticipantsRosterProps = {
   items: ChatParticipantItem[];
   search: string;
@@ -80,7 +90,7 @@ function formatViolationCount(count: number): string {
     return '99+';
   }
 
-  return String(count);
+  return String(Math.max(0, Math.trunc(count)));
 }
 
 function describeViolationCount(count: number): string {
@@ -91,20 +101,72 @@ function describeViolationCount(count: number): string {
   return `${count} нарушений за выбранный период`;
 }
 
-function formatImmunityValue(item: ChatParticipantItem): string | null {
-  if (!item.immunity) {
-    return null;
-  }
-
-  return `${item.immunity.remainingViolatingMessagesToday}/${item.immunity.dailyViolationLimit}`;
+function resolveImmunity(item: ChatParticipantItem): ChatParticipantImmunityView | null {
+  return item.immunity ? (item.immunity as ChatParticipantImmunityView) : null;
 }
 
-function describeImmunity(item: ChatParticipantItem): string | null {
-  if (!item.immunity) {
+function isAlwaysImmunity(immunity: ChatParticipantImmunityView | null): boolean {
+  return immunity?.mode === 'always';
+}
+
+function parsePositiveInteger(value: number | null | undefined): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
     return null;
   }
 
-  return `Иммунитет: ${item.immunity.remainingViolatingMessagesToday} из ${item.immunity.dailyViolationLimit} нарушающих сообщений осталось на сегодня`;
+  return Math.max(1, Math.trunc(value));
+}
+
+function parseNonNegativeInteger(value: number | null | undefined): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return null;
+  }
+
+  return Math.max(0, Math.trunc(value));
+}
+
+function formatImmunityValue(immunity: ChatParticipantImmunityView | null): string | null {
+  if (!immunity) {
+    return null;
+  }
+
+  if (isAlwaysImmunity(immunity)) {
+    return '∞';
+  }
+
+  const remaining = parseNonNegativeInteger(immunity.remainingViolatingMessagesToday);
+  const limit = parsePositiveInteger(immunity.dailyViolationLimit);
+  if (remaining !== null && limit !== null) {
+    return `${formatViolationCount(remaining)}/${formatViolationCount(limit)}`;
+  }
+
+  if (limit !== null) {
+    return `${formatViolationCount(limit)}/д`;
+  }
+
+  return 'Лимит';
+}
+
+function describeImmunity(immunity: ChatParticipantImmunityView | null): string | null {
+  if (!immunity) {
+    return null;
+  }
+
+  if (isAlwaysImmunity(immunity)) {
+    return 'Защита всегда: без срока и дневного лимита';
+  }
+
+  const remaining = parseNonNegativeInteger(immunity.remainingViolatingMessagesToday);
+  const limit = parsePositiveInteger(immunity.dailyViolationLimit);
+  if (remaining !== null && limit !== null) {
+    return `Защита: ${remaining} из ${limit} нарушающих сообщений осталось на сегодня`;
+  }
+
+  if (limit !== null) {
+    return `Защита: лимит ${limit} нарушающих сообщений в день`;
+  }
+
+  return 'Защита с дневным лимитом';
 }
 
 function SearchIcon() {
@@ -263,8 +325,10 @@ export function ChatParticipantsRoster({
               ? Math.max(0, Math.trunc(item.violationCount))
               : 0;
             const violationTone = resolveViolationTone(violationCount);
-            const immunityValue = formatImmunityValue(item);
-            const immunityDescription = describeImmunity(item);
+            const immunity = resolveImmunity(item);
+            const immunityValue = formatImmunityValue(immunity);
+            const immunityDescription = describeImmunity(immunity);
+            const hasAlwaysImmunity = isAlwaysImmunity(immunity);
             const itemBody = (
               <>
                 <div
@@ -305,7 +369,9 @@ export function ChatParticipantsRoster({
                   <div className="participants-roster__aside">
                     {item.immunity && immunityValue ? (
                       <span
-                        className="participants-roster__immunity"
+                        className={`participants-roster__immunity ${
+                          hasAlwaysImmunity ? 'participants-roster__immunity--always' : ''
+                        }`}
                         role="img"
                         aria-label={immunityDescription ?? undefined}
                         title={immunityDescription ?? undefined}

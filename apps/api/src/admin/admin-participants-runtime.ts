@@ -214,7 +214,14 @@ export class AdminParticipantsRuntime {
     ]);
     const timeZone = this.normalizeParticipantImmunityTimezone(settings?.nightModeTimezone ?? null);
     const usageDateKey = this.formatParticipantImmunityDateKey(now, timeZone);
-    const expiresAt = new Date(now.getTime() + parsed.data.durationHours! * ONE_HOUR_MS);
+    const immunityMode = parsed.data.mode ?? 'limited';
+    const expiresAt =
+      immunityMode === 'always'
+        ? null
+        : new Date(now.getTime() + parsed.data.durationHours! * ONE_HOUR_MS);
+    const dailyViolationLimit =
+      immunityMode === 'always' ? null : parsed.data.dailyViolationLimit!;
+    const nextUsageDateKey = immunityMode === 'always' ? null : usageDateKey;
     const immunity = await this.prisma.chatParticipantModerationImmunity.upsert({
       where: {
         chatId_userId: {
@@ -226,17 +233,17 @@ export class AdminParticipantsRuntime {
         chatId,
         userId: targetUserId,
         expiresAt,
-        dailyViolationLimit: parsed.data.dailyViolationLimit!,
+        dailyViolationLimit,
         dailyViolationUsage: 0,
-        usageDateKey,
+        usageDateKey: nextUsageDateKey,
         createdByUserId: user.userId,
         updatedByUserId: user.userId,
       },
       update: {
         expiresAt,
-        dailyViolationLimit: parsed.data.dailyViolationLimit!,
+        dailyViolationLimit,
         dailyViolationUsage: 0,
-        usageDateKey,
+        usageDateKey: nextUsageDateKey,
         updatedByUserId: user.userId,
       },
     });
@@ -711,9 +718,7 @@ export class AdminParticipantsRuntime {
             where: {
               chatId,
               userId: { in: participantUserIds },
-              expiresAt: {
-                gt: now,
-              },
+              OR: [{ expiresAt: { gt: now } }, { expiresAt: null }],
             },
           })
         : Promise.resolve([]),
@@ -1125,14 +1130,28 @@ export class AdminParticipantsRuntime {
 
   private buildChatParticipantImmunitySummary(
     immunity: {
-      expiresAt: Date;
-      dailyViolationLimit: number;
+      expiresAt: Date | null;
+      dailyViolationLimit: number | null;
       dailyViolationUsage: number;
       usageDateKey: string | null;
     },
     now: Date,
     timeZone: string,
   ): ChatParticipantImmunity | null {
+    if (immunity.expiresAt === null && immunity.dailyViolationLimit === null) {
+      return chatParticipantImmunitySchema.parse({
+        mode: 'always',
+        expiresAt: null,
+        dailyViolationLimit: null,
+        usedViolatingMessagesToday: 0,
+        remainingViolatingMessagesToday: null,
+      });
+    }
+
+    if (immunity.expiresAt === null || immunity.dailyViolationLimit === null) {
+      return null;
+    }
+
     if (!(immunity.expiresAt instanceof Date) || !Number.isFinite(immunity.expiresAt.getTime())) {
       return null;
     }
@@ -1150,6 +1169,7 @@ export class AdminParticipantsRuntime {
       immunity.usageDateKey === todayKey ? this.toSafeInteger(immunity.dailyViolationUsage) : 0;
 
     return chatParticipantImmunitySchema.parse({
+      mode: 'limited',
       expiresAt: immunity.expiresAt.toISOString(),
       dailyViolationLimit,
       usedViolatingMessagesToday,

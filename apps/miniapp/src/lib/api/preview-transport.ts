@@ -1709,10 +1709,21 @@ function handleVkParsingPreviewRequest(
 
 function createPreviewImmunity(durationHours: number, dailyViolationLimit: number, used = 0) {
   return chatParticipantImmunitySchema.parse({
+    mode: 'limited',
     expiresAt: addHours(new Date(), durationHours).toISOString(),
     dailyViolationLimit,
     usedViolatingMessagesToday: used,
     remainingViolatingMessagesToday: Math.max(0, dailyViolationLimit - used),
+  });
+}
+
+function createPreviewAlwaysImmunity() {
+  return chatParticipantImmunitySchema.parse({
+    mode: 'always',
+    expiresAt: null,
+    dailyViolationLimit: null,
+    usedViolatingMessagesToday: 0,
+    remainingViolatingMessagesToday: null,
   });
 }
 
@@ -2750,7 +2761,7 @@ function createParticipantsItems(prefix: string, count: number): ChatParticipant
       !isBot && index === 4
         ? createPreviewImmunity(72, 5, 1)
         : !isBot && index === 7
-          ? createPreviewImmunity(18, 3, 0)
+          ? createPreviewAlwaysImmunity()
           : null;
 
     return {
@@ -5870,7 +5881,9 @@ async function handleChatRequest(
       parseJsonBody(init) as ChatParticipantImmunityUpdateRequest,
     );
     const immunity = payload.enabled
-      ? createPreviewImmunity(payload.durationHours!, payload.dailyViolationLimit!)
+      ? payload.mode === 'always'
+        ? createPreviewAlwaysImmunity()
+        : createPreviewImmunity(payload.durationHours!, payload.dailyViolationLimit!)
       : null;
 
     state.chatParticipants = state.chatParticipants.map((item) =>

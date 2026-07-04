@@ -20466,6 +20466,19 @@ describe('AdminService.getChatParticipantsPage', () => {
           createdAt: new Date('2026-04-15T10:00:00.000Z'),
           updatedAt: new Date('2026-04-15T10:00:00.000Z'),
         },
+        {
+          id: 'immunity-2',
+          chatId: 'chat-1',
+          userId: 'member-1',
+          expiresAt: null,
+          dailyViolationLimit: null,
+          dailyViolationUsage: 0,
+          usageDateKey: null,
+          createdByUserId: 'admin-1',
+          updatedByUserId: 'admin-1',
+          createdAt: new Date('2026-04-15T10:00:00.000Z'),
+          updatedAt: new Date('2026-04-15T10:00:00.000Z'),
+        },
       ]);
 
       const chatContextCache = createChatContextCacheMock();
@@ -20480,6 +20493,15 @@ describe('AdminService.getChatParticipantsPage', () => {
               avatarUrl: 'https://cdn.max.ru/u/owner-1/avatar-full.jpg',
               profileUrl: null,
               role: 'owner',
+              isBot: false,
+            },
+            {
+              userId: 'member-1',
+              displayName: 'Олег',
+              username: 'oleg',
+              avatarUrl: null,
+              profileUrl: null,
+              role: 'member',
               isBot: false,
             },
             {
@@ -20539,13 +20561,13 @@ describe('AdminService.getChatParticipantsPage', () => {
           displayName: null,
           chatTitle: null,
         },
-        { limit: 2, range: '24h' },
+        { limit: 3, range: '24h' },
       );
 
       expect(maxClient.getChatMembersPage).toHaveBeenCalledWith(
         'chat-1',
         {
-          limit: 2,
+          limit: 3,
           marker: null,
         },
         expect.objectContaining({
@@ -20563,7 +20585,7 @@ describe('AdminService.getChatParticipantsPage', () => {
         by: ['userId'],
         where: {
           chatId: 'chat-1',
-          userId: { in: ['owner-1', 'id613002203036_bot'] },
+          userId: { in: ['owner-1', 'member-1', 'id613002203036_bot'] },
           createdAt: {
             gte: expect.any(Date),
             lte: expect.any(Date),
@@ -20573,6 +20595,13 @@ describe('AdminService.getChatParticipantsPage', () => {
           },
         },
         _count: { _all: true },
+      });
+      expect(prisma.chatParticipantModerationImmunity.findMany).toHaveBeenCalledWith({
+        where: {
+          chatId: 'chat-1',
+          userId: { in: ['owner-1', 'member-1', 'id613002203036_bot'] },
+          OR: [{ expiresAt: { gt: expect.any(Date) } }, { expiresAt: null }],
+        },
       });
       expect(result).toEqual({
         items: [
@@ -20585,12 +20614,31 @@ describe('AdminService.getChatParticipantsPage', () => {
             profileHandoffUrl: expect.stringContaining('https://max.ru/bot-2?start='),
             violationCount: 3,
             immunity: {
+              mode: 'limited',
               expiresAt: '2026-04-16T12:00:00.000Z',
               dailyViolationLimit: 5,
               usedViolatingMessagesToday: 2,
               remainingViolatingMessagesToday: 3,
             },
             role: 'owner',
+            isBot: false,
+          },
+          {
+            userId: 'member-1',
+            userDisplayName: 'Олег',
+            username: 'oleg',
+            avatarUrl: null,
+            profileUrl: 'https://max.ru/oleg',
+            profileHandoffUrl: expect.stringContaining('https://max.ru/bot-2?start='),
+            violationCount: 0,
+            immunity: {
+              mode: 'always',
+              expiresAt: null,
+              dailyViolationLimit: null,
+              usedViolatingMessagesToday: 0,
+              remainingViolatingMessagesToday: null,
+            },
+            role: 'member',
             isBot: false,
           },
           {
@@ -21206,10 +21254,107 @@ describe('AdminService.getChatParticipantsPage', () => {
       });
       expect(result).toEqual({
         immunity: {
+          mode: 'limited',
           expiresAt: '2026-05-15T09:00:00.000Z',
           dailyViolationLimit: 4,
           usedViolatingMessagesToday: 0,
           remainingViolatingMessagesToday: 4,
+        },
+        message: 'Иммунитет обновлён.',
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('upserts full participant protection without duration or daily limit', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T09:00:00.000Z'));
+    try {
+      const prisma = createPrismaMock();
+      prisma.chat.findUnique.mockResolvedValue({
+        id: 'chat-1',
+        title: 'Команда MAX',
+        entityType: 'CHAT',
+      });
+      prisma.chatSettings.findUnique.mockResolvedValue({
+        nightModeTimezone: 'Europe/Moscow',
+      });
+      prisma.chatParticipantModerationImmunity.upsert.mockResolvedValue({
+        id: 'immunity-1',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        expiresAt: null,
+        dailyViolationLimit: null,
+        dailyViolationUsage: 0,
+        usageDateKey: null,
+        createdByUserId: 'admin-1',
+        updatedByUserId: 'admin-1',
+        createdAt: new Date('2026-04-15T09:00:00.000Z'),
+        updatedAt: new Date('2026-04-15T09:00:00.000Z'),
+      });
+
+      const service = new AdminService(
+        prisma as never,
+        {
+          getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+          getChatMemberAccess: jest.fn().mockResolvedValue({
+            userId: 'user-1',
+            isAdmin: false,
+            isOwner: false,
+            permissions: [],
+          }),
+        } as never,
+        createChatContextCacheMock() as never,
+        createConfigMock() as never,
+      );
+
+      const result = await service.updateChatParticipantImmunity(
+        'chat-1',
+        'user-1',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        {
+          enabled: true,
+          mode: 'always',
+        },
+      );
+
+      expect(prisma.chatParticipantModerationImmunity.upsert).toHaveBeenCalledWith({
+        where: {
+          chatId_userId: {
+            chatId: 'chat-1',
+            userId: 'user-1',
+          },
+        },
+        create: {
+          chatId: 'chat-1',
+          userId: 'user-1',
+          expiresAt: null,
+          dailyViolationLimit: null,
+          dailyViolationUsage: 0,
+          usageDateKey: null,
+          createdByUserId: 'admin-1',
+          updatedByUserId: 'admin-1',
+        },
+        update: {
+          expiresAt: null,
+          dailyViolationLimit: null,
+          dailyViolationUsage: 0,
+          usageDateKey: null,
+          updatedByUserId: 'admin-1',
+        },
+      });
+      expect(result).toEqual({
+        immunity: {
+          mode: 'always',
+          expiresAt: null,
+          dailyViolationLimit: null,
+          usedViolatingMessagesToday: 0,
+          remainingViolatingMessagesToday: null,
         },
         message: 'Иммунитет обновлён.',
       });
@@ -21318,6 +21463,57 @@ describe('AdminService.getChatParticipantsPage', () => {
         _errors: ['Срок должен быть от 1 до 30 дней.'],
       },
     });
+  });
+
+  it('rejects full participant protection with duration or daily limit', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'chat-1',
+      title: 'Команда MAX',
+      entityType: 'CHAT',
+    });
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    let thrown: unknown;
+    try {
+      await service.updateChatParticipantImmunity(
+        'chat-1',
+        'user-1',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        {
+          enabled: true,
+          mode: 'always',
+          durationHours: 24,
+          dailyViolationLimit: 4,
+        },
+      );
+    } catch (error: unknown) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(BadRequestException);
+    expect((thrown as BadRequestException).getResponse()).toMatchObject({
+      durationHours: {
+        _errors: ['Для режима «Всегда» срок не нужен.'],
+      },
+      dailyViolationLimit: {
+        _errors: ['Для режима «Всегда» лимит не нужен.'],
+      },
+    });
+    expect(prisma.chatParticipantModerationImmunity.upsert).not.toHaveBeenCalled();
   });
 
   it('rejects participant immunity for chat admins', async () => {

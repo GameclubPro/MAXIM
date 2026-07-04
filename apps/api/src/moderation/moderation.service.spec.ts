@@ -55,6 +55,30 @@ expect.extend({
   },
 });
 
+function extractSqlText(arg: unknown): string {
+  if (Array.isArray(arg)) {
+    return arg.map((part) => extractSqlText(part)).join(' ');
+  }
+
+  if (arg && typeof arg === 'object' && 'strings' in arg) {
+    const sqlArg = arg as { strings?: unknown; values?: unknown };
+    const strings = sqlArg.strings;
+    const values = sqlArg.values;
+    const parts: string[] = [];
+    if (Array.isArray(strings)) {
+      parts.push(strings.map((part) => String(part)).join(' '));
+    }
+    if (Array.isArray(values)) {
+      parts.push(values.map((part) => extractSqlText(part)).join(' '));
+    }
+    if (parts.length > 0) {
+      return parts.filter(Boolean).join(' ');
+    }
+  }
+
+  return String(arg ?? '');
+}
+
 function escapeMaxMarkdown(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/([*_`[\]()~+])/g, '\\$1');
 }
@@ -20988,6 +21012,31 @@ describe('ModerationService', () => {
 });
 
 describe('ModerationService participant immunity', () => {
+  it('recognizes full participant protection without spending a daily limit', async () => {
+    const prisma = {
+      $queryRaw: jest.fn().mockResolvedValue([{ expires_at: null }]),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    const consumed = await (service as any).consumeChatParticipantModerationImmunity({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      nightModeTimezone: 'Europe/Moscow',
+    });
+
+    expect(consumed).toBe(true);
+    const sqlText = extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0]);
+    expect(sqlText).toContain('WITH active_immunity AS');
+    expect(sqlText).toContain('limited_update AS');
+    expect(sqlText).toContain('WHERE "expires_at" IS NULL');
+    expect(sqlText).toContain('AND "daily_violation_limit" IS NULL');
+  });
+
   it('bypasses ordinary moderation when participant immunity is consumed', async () => {
     const prisma = {
       chat: {

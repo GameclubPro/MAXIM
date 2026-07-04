@@ -12479,25 +12479,45 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const dateKey = this.formatDateKeyInTimeZone(now, timezone);
     const rows = await this.prisma.$queryRaw<
       Array<{
-        expires_at: Date | string;
+        expires_at: Date | string | null;
       }>
     >(Prisma.sql`
-      UPDATE "chat_participant_moderation_immunities"
-      SET
-        "usage_date_key" = ${dateKey},
-        "daily_violation_usage" = CASE
-          WHEN "usage_date_key" = ${dateKey} THEN "daily_violation_usage" + 1
-          ELSE 1
-        END,
-        "updated_at" = CURRENT_TIMESTAMP
-      WHERE "chat_id" = ${params.chatId}
-        AND "user_id" = ${params.userId}
-        AND "expires_at" > ${now}
-        AND CASE
-          WHEN "usage_date_key" = ${dateKey} THEN "daily_violation_usage" < "daily_violation_limit"
-          ELSE TRUE
-        END
-      RETURNING "expires_at"
+      WITH active_immunity AS (
+        SELECT
+          "id",
+          "expires_at",
+          "daily_violation_limit",
+          "daily_violation_usage",
+          "usage_date_key"
+        FROM "chat_participant_moderation_immunities"
+        WHERE "chat_id" = ${params.chatId}
+          AND "user_id" = ${params.userId}
+          AND ("expires_at" IS NULL OR "expires_at" > ${now})
+      ),
+      limited_update AS (
+        UPDATE "chat_participant_moderation_immunities" immunity
+        SET
+          "usage_date_key" = ${dateKey},
+          "daily_violation_usage" = CASE
+            WHEN immunity."usage_date_key" = ${dateKey} THEN immunity."daily_violation_usage" + 1
+            ELSE 1
+          END,
+          "updated_at" = CURRENT_TIMESTAMP
+        FROM active_immunity active
+        WHERE immunity."id" = active."id"
+          AND active."daily_violation_limit" IS NOT NULL
+          AND CASE
+            WHEN active."usage_date_key" = ${dateKey} THEN active."daily_violation_usage" < active."daily_violation_limit"
+            ELSE TRUE
+          END
+        RETURNING immunity."expires_at"
+      )
+      SELECT "expires_at" FROM limited_update
+      UNION ALL
+      SELECT "expires_at"
+      FROM active_immunity
+      WHERE "expires_at" IS NULL
+        AND "daily_violation_limit" IS NULL
     `);
 
     return rows.length > 0;

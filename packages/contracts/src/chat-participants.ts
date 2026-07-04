@@ -4,12 +4,54 @@ import { logsDashboardRangeSchema } from './core.js';
 export const chatParticipantRoleSchema = z.enum(['owner', 'admin', 'member']);
 export type ChatParticipantRole = z.infer<typeof chatParticipantRoleSchema>;
 
-export const chatParticipantImmunitySchema = z.object({
-  expiresAt: z.string().datetime(),
-  dailyViolationLimit: z.number().int().min(1).max(10),
-  usedViolatingMessagesToday: z.number().int().min(0),
-  remainingViolatingMessagesToday: z.number().int().min(0),
-});
+export const chatParticipantImmunityModeSchema = z.enum(['limited', 'always']);
+export type ChatParticipantImmunityMode = z.infer<typeof chatParticipantImmunityModeSchema>;
+
+export const chatParticipantImmunitySchema = z
+  .object({
+    mode: chatParticipantImmunityModeSchema.default('limited'),
+    expiresAt: z.string().datetime().nullable().default(null),
+    dailyViolationLimit: z.number().int().min(1).max(10).nullable().default(null),
+    usedViolatingMessagesToday: z.number().int().min(0),
+    remainingViolatingMessagesToday: z.number().int().min(0).nullable().default(null),
+  })
+  .superRefine((value, ctx) => {
+    if (value.mode === 'always') {
+      if (value.expiresAt !== null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['expiresAt'],
+          message: 'Для режима «Всегда» срок не нужен.',
+        });
+      }
+
+      if (value.dailyViolationLimit !== null || value.remainingViolatingMessagesToday !== null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['dailyViolationLimit'],
+          message: 'Для режима «Всегда» лимит не нужен.',
+        });
+      }
+
+      return;
+    }
+
+    if (value.expiresAt === null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['expiresAt'],
+        message: 'Укажите срок иммунитета.',
+      });
+    }
+
+    if (value.dailyViolationLimit === null || value.remainingViolatingMessagesToday === null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['dailyViolationLimit'],
+        message: 'Укажите лимит.',
+      });
+    }
+  });
 export type ChatParticipantImmunity = z.infer<typeof chatParticipantImmunitySchema>;
 
 export const chatParticipantItemSchema = z.object({
@@ -89,6 +131,7 @@ export type ChatUnavailableParticipantsCleanupResult = z.infer<
 export const chatParticipantImmunityUpdateRequestSchema = z
   .object({
     enabled: z.boolean(),
+    mode: chatParticipantImmunityModeSchema.optional(),
     durationHours: z
       .number()
       .int()
@@ -98,7 +141,9 @@ export const chatParticipantImmunityUpdateRequestSchema = z
     dailyViolationLimit: z.number().int().min(1).max(10).optional(),
   })
   .superRefine((value, ctx) => {
-    if (value.enabled && value.durationHours === undefined) {
+    const mode = value.mode ?? 'limited';
+
+    if (value.enabled && mode === 'limited' && value.durationHours === undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['durationHours'],
@@ -106,11 +151,27 @@ export const chatParticipantImmunityUpdateRequestSchema = z
       });
     }
 
-    if (value.enabled && value.dailyViolationLimit === undefined) {
+    if (value.enabled && mode === 'limited' && value.dailyViolationLimit === undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['dailyViolationLimit'],
         message: 'Укажите лимит.',
+      });
+    }
+
+    if (value.enabled && mode === 'always' && value.durationHours !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['durationHours'],
+        message: 'Для режима «Всегда» срок не нужен.',
+      });
+    }
+
+    if (value.enabled && mode === 'always' && value.dailyViolationLimit !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['dailyViolationLimit'],
+        message: 'Для режима «Всегда» лимит не нужен.',
       });
     }
 
@@ -127,6 +188,14 @@ export const chatParticipantImmunityUpdateRequestSchema = z
         code: z.ZodIssueCode.custom,
         path: ['dailyViolationLimit'],
         message: 'Лимит доступен только для активного иммунитета.',
+      });
+    }
+
+    if (!value.enabled && value.mode !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['mode'],
+        message: 'Режим доступен только для активного иммунитета.',
       });
     }
   });

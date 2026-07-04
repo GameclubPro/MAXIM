@@ -2459,17 +2459,24 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const participantImmunityMutation = useMutation({
     mutationFn: ({
       userId,
+      mode,
       durationHours,
       dailyViolationLimit,
     }: {
       userId: string;
-      durationHours: number;
-      dailyViolationLimit: number;
+      mode?: 'limited' | 'always';
+      durationHours?: number;
+      dailyViolationLimit?: number;
     }) =>
       updateChatParticipantImmunity(api, chatId ?? '', userId, {
         enabled: true,
-        durationHours,
-        dailyViolationLimit,
+        mode,
+        ...(mode === 'always'
+          ? {}
+          : {
+              durationHours,
+              dailyViolationLimit,
+            }),
       }),
     onSuccess: (result) => {
       setSelectedParticipantId(null);
@@ -3562,15 +3569,14 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         }
         isApplyingModeration={participantModerationMutation.isPending}
         onClose={() => setSelectedParticipantId(null)}
-        onSaveImmunity={({ durationHours, dailyViolationLimit }) => {
+        onSaveImmunity={(payload) => {
           if (!selectedParticipant) {
             return;
           }
 
           participantImmunityMutation.mutate({
             userId: selectedParticipant.userId,
-            durationHours,
-            dailyViolationLimit,
+            ...payload,
           });
         }}
         onClearImmunity={() => {
