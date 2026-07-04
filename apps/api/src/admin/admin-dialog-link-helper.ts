@@ -135,10 +135,11 @@ export class AdminDialogLinkHelper {
       return null;
     }
 
+    const fallbackBotId = botId?.trim() || this.options.ownBotUserId;
     return (
       this.options.maxBotLinkService?.buildBotStartUrlSync?.(startPayload, botId) ??
-      (this.options.ownBotUserId
-        ? `https://max.ru/${encodeURIComponent(this.options.ownBotUserId)}?start=${encodeURIComponent(startPayload)}`
+      (fallbackBotId
+        ? `https://max.ru/${encodeURIComponent(fallbackBotId)}?start=${encodeURIComponent(startPayload)}`
         : null)
     );
   }

@@ -14699,10 +14699,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return null;
     }
 
+    const fallbackBotId = botId?.trim() || this.ownBotUserId;
     return (
       this.maxBotLinkService?.buildBotStartUrlSync?.(startPayload, botId) ??
-      (this.ownBotUserId
-        ? `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?start=${encodeURIComponent(startPayload)}`
+      (fallbackBotId
+        ? `https://max.ru/${encodeURIComponent(fallbackBotId)}?start=${encodeURIComponent(startPayload)}`
         : null)
     );
   }

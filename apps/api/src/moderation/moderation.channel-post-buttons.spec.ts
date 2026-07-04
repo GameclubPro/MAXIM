@@ -1107,6 +1107,82 @@ describe('ModerationService channel auto post buttons', () => {
     );
   });
 
+  it('uses the resolved scan bot for suggestion start URL fallback during poll repair', async () => {
+    const prisma = {
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const maxClient = {
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+    };
+    const maxBotLinkService = {
+      resolveBotIdForCapability: jest.fn().mockResolvedValue('scan-bot-2'),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await (service as any).tryAutoAttachChannelMessageButtons({
+      chatId: 'channel-1',
+      messageId: 'mid-channel-1',
+      text: 'Новый пост в канале',
+      linkType: null,
+      managedChannel: {
+        channelSettings: {
+          updatedAt: new Date('2026-03-06T15:00:00.000Z'),
+          autoPostButtonsMode: 'SUGGEST',
+          commentsEnabled: false,
+          postSuggestionsEnabled: true,
+          postSuggestionsEntryMode: 'BOT',
+          postSuggestionsButtonText: '📰 Предложить пост',
+        },
+        adminUserIds: ['admin-1'],
+      },
+      source: 'poll',
+      senderId: null,
+    });
+
+    expect(maxBotLinkService.resolveBotIdForCapability).toHaveBeenCalledWith({
+      chatId: 'channel-1',
+      capability: 'background_scans',
+    });
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-channel-1',
+      'Новый пост в канале',
+      expect.objectContaining({
+        buttons: [
+          [
+            expect.objectContaining({
+              type: 'link',
+              text: '📰 Предложить пост',
+              url: expect.stringContaining('https://max.ru/scan-bot-2?start='),
+            }),
+          ],
+        ],
+      }),
+      expect.objectContaining({
+        botId: 'scan-bot-2',
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+      }),
+    );
+  });
+
   it('polls channel posts and attaches buttons even without webhook delivery', async () => {
     const prisma = {
       channelSettings: {

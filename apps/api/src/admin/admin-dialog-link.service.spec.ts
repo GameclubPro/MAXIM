@@ -110,6 +110,14 @@ describe('AdminDialogLinkService', () => {
     );
   });
 
+  it('uses the explicit bot id for bot start URL fallback without the link service', () => {
+    const service = new AdminDialogLinkService(createConfigMock() as never);
+
+    expect(service.buildBotStartUrl('profile_payload', 'bot-2')).toBe(
+      'https://max.ru/bot-2?start=profile_payload',
+    );
+  });
+
   it('parses legacy channel-dialog start payloads for suggestion links', () => {
     const service = new AdminDialogLinkService(createConfigMock() as never);
     const token = 'cdt-legacy-token';

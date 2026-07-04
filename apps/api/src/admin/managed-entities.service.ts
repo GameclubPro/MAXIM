@@ -166,6 +166,9 @@ export class ManagedEntitiesService {
     const contextChatId = readTrimmedString(options.chatId) ?? readTrimmedString(user.chatId);
     const contextEntityType: ManagedEntityType =
       options.entityType ?? (user.chatType === 'channel' ? 'channel' : 'chat');
+    const profileHandoffBotId = contextChatId
+      ? await this.resolveCurrentAdminProfileHandoffBotId(contextChatId)
+      : null;
     const fallbackDisplayName = readTrimmedString(user.displayName) ?? null;
     const fallbackUsername = readTrimmedString(user.username) ?? null;
     const fallback: Me = {
@@ -183,6 +186,7 @@ export class ManagedEntitiesService {
             contextEntityType,
             user.userId,
             fallbackDisplayName ?? fallbackUsername,
+            profileHandoffBotId,
           )
         : null,
       ...(canAccessSystem ? { canAccessSystem: true } : {}),
@@ -202,6 +206,7 @@ export class ManagedEntitiesService {
       const profiles = await loadProfiles(contextChatId, [user.userId], {
         trafficClass: 'interactive',
         actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+        ...(profileHandoffBotId ? { botId: profileHandoffBotId } : {}),
       });
       const profile = profiles.get(user.userId);
       const username = readTrimmedString(profile?.username) ?? fallback.username;
@@ -224,6 +229,7 @@ export class ManagedEntitiesService {
           contextEntityType,
           user.userId,
           displayName ?? username,
+          profileHandoffBotId,
         ),
         ...(canAccessSystem ? { canAccessSystem: true } : {}),
       };
@@ -253,6 +259,24 @@ export class ManagedEntitiesService {
 
   private isCurrentAdminProfileEnrichmentUnavailableError(error: unknown): boolean {
     return isBotAdminLookupDeniedError(error) || extractMaxErrorStatus(error) === 403;
+  }
+
+  private async resolveCurrentAdminProfileHandoffBotId(chatId: string): Promise<string | null> {
+    try {
+      return (
+        readTrimmedString(await this.legacyAdminService.resolveManagedEntityHeaderReadBotId(chatId)) ??
+        null
+      );
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve current admin profile handoff bot',
+      );
+      return null;
+    }
   }
 
   listChats(

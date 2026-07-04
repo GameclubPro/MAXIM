@@ -242,7 +242,7 @@ describe('ManagedEntitiesService getMe', () => {
   const chatProfileHandoffUrl = (profileLabel: string | null) =>
     expect.stringMatching(
       new RegExp(
-        `^https:\\/\\/max\\.ru\\/777000_bot\\?start=pm2_chat-1_h_admin-1_[a-f0-9]{16}${
+        `^https:\\/\\/max\\.ru\\/bot-1\\?start=pm2_chat-1_h_admin-1_[a-f0-9]{16}${
           profileLabel ? `&profile_label=${escapeRegex(encodeProfileLabel(profileLabel))}` : ''
         }$`,
         'u',
@@ -315,6 +315,7 @@ describe('ManagedEntitiesService getMe', () => {
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
       trafficClass: 'interactive',
       actionHealthLane: 'background',
+      botId: 'bot-1',
     });
   });
 
@@ -382,6 +383,7 @@ describe('ManagedEntitiesService getMe', () => {
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
       trafficClass: 'interactive',
       actionHealthLane: 'background',
+      botId: 'bot-1',
     });
   });
 
@@ -425,6 +427,7 @@ describe('ManagedEntitiesService getMe', () => {
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
       trafficClass: 'interactive',
       actionHealthLane: 'background',
+      botId: 'bot-1',
     });
   });
 

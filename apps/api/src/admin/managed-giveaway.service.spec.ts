@@ -831,6 +831,51 @@ describe('ManagedGiveawayService', () => {
     expect(result.missingChannelIds).toEqual(['extra-1']);
   });
 
+  it('scopes participant claim bot url to the giveaway source bot', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const maxBotLinkService = createMaxBotLinkMock({ resolvedBotId: '888000_bot' });
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+      undefined,
+      maxBotLinkService as never,
+    );
+    const entry = createEntry({
+      id: 'entry-claim-1',
+      userId: 'user-1',
+      eligibilityState: GiveawayEligibilityState.VERIFIED,
+      eligibilityReason: null,
+      missingChannelIds: [],
+    });
+    const winner = createWinner({
+      id: 'winner-claim-1',
+      entryId: entry.id,
+      entry,
+      status: ManagedGiveawayWinnerStatus.SELECTED,
+    });
+    const giveaway = createGiveaway({
+      publicationMessageId: 'publication-1',
+      publishedAt: new Date('2026-03-21T10:30:00.000Z'),
+      entries: [entry],
+      prizes: [winner.prize],
+      winners: [winner],
+    });
+    prisma.managedGiveaway.findUnique.mockResolvedValue(giveaway);
+
+    const result = await service.getGiveawayParticipantState('giveaway-1', user);
+
+    expect(result.canClaim).toBe(true);
+    expect(result.claimBotUrl).toContain('https://max.ru/888000_bot?start=');
+    expect(maxBotLinkService.buildBotStartUrlSync).toHaveBeenCalledWith(
+      expect.any(String),
+      '888000_bot',
+    );
+  });
+
   it('does not expose an unpublished draft through the public giveaway endpoint', async () => {
     const prisma = createPrismaMock();
     const service = new ManagedGiveawayService(

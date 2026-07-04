@@ -719,9 +719,10 @@ export class ManagedGiveawayService {
   ): Promise<ManagedGiveawayParticipantState> {
     const refreshed = await this.findPublicGiveawayById(giveawayId);
     await this.upsertParticipantChatAccess(refreshed);
+    const claimBotId = await this.resolveGiveawayParticipantClaimBotId(refreshed.sourceChatId);
 
     return managedGiveawayParticipantStateSchema.parse(
-      this.mapParticipantState(refreshed, user.userId),
+      this.mapParticipantState(refreshed, user.userId, claimBotId),
     );
   }
 
@@ -777,8 +778,9 @@ export class ManagedGiveawayService {
 
     const latest = await this.findGiveawayById(refreshed.id);
     await this.editGiveawayPublicationIfNeeded(latest, ManagedGiveawayStatus.ACTIVE);
+    const claimBotId = await this.resolveGiveawayParticipantClaimBotId(latest.sourceChatId);
     return managedGiveawayParticipantStateSchema.parse(
-      this.mapParticipantState(latest, user.userId),
+      this.mapParticipantState(latest, user.userId, claimBotId),
     );
   }
 
@@ -1515,6 +1517,7 @@ export class ManagedGiveawayService {
   private mapParticipantState(
     row: PersistedGiveawayWithRelations,
     userId: string,
+    claimBotId?: string | null,
   ): ManagedGiveawayParticipantState {
     const prizeDisplayTitleById = this.buildPrizeDisplayTitleById(row.prizes);
     const entry = row.entries.find((item) => item.userId === userId) ?? null;
@@ -1555,7 +1558,7 @@ export class ManagedGiveawayService {
         : null,
       canClaim,
       claimBotUrl:
-        canClaim && winner ? this.buildGiveawayClaimBotStartUrl(row.id, winner.id) : null,
+        canClaim && winner ? this.buildGiveawayClaimBotStartUrl(row.id, winner.id, claimBotId) : null,
     };
   }
 
@@ -3616,6 +3619,21 @@ export class ManagedGiveawayService {
           ? persisted.botId.trim()
           : null;
     return normalizedBotId ?? undefined;
+  }
+
+  private async resolveGiveawayParticipantClaimBotId(sourceChatId: string): Promise<string | null> {
+    try {
+      return (await this.resolveGiveawayPublicationBotId(sourceChatId)) ?? null;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          sourceChatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve giveaway participant claim bot id',
+      );
+      return null;
+    }
   }
 
   private resolveBotContactId(botId?: string | null): string | null {

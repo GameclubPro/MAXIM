@@ -13147,9 +13147,7 @@ export class AdminService implements OnModuleDestroy {
     const missingUserIds: string[] = [];
     const routeBotId =
       this.readTrimmedString(options.botId) ??
-      (allowRemoteLookup
-        ? ((await this.resolveBackgroundReadBotAssignment(chatId).catch(() => undefined)) ?? null)
-        : null);
+      ((await this.resolveBackgroundReadBotAssignment(chatId).catch(() => undefined)) ?? null);
     const cacheOptions: ResolveUserProfilesOptions = {
       ...options,
       ...(routeBotId ? { botId: routeBotId } : {}),

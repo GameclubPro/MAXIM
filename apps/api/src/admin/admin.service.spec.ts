@@ -17771,6 +17771,52 @@ describe('AdminService.listChats', () => {
     );
   });
 
+  it('keeps local-only resolved profile handoffs scoped to the routed bot', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatMemberProfiles: jest.fn().mockResolvedValue(new Map()),
+    };
+    const maxBotLinkService = {
+      getBotTokenSync: jest.fn((botId?: string | null) =>
+        botId?.trim() ? `token:${botId.trim()}` : 'token:default',
+      ),
+      getValidationTokens: jest.fn().mockReturnValue(['token:bot-2']),
+      buildBotStartUrlSync: jest.fn((startPayload: string, botId?: string | null) => {
+        const targetBotId = botId?.trim() || '777000_bot';
+        return `https://max.ru/${encodeURIComponent(targetBotId)}?start=${encodeURIComponent(
+          startPayload,
+        )}`;
+      }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    (service as any).resolveUserDisplayNames = jest
+      .fn()
+      .mockResolvedValue(new Map([['user-1', 'User One']]));
+    (service as any).resolveBackgroundReadBotAssignment = jest.fn().mockResolvedValue('bot-2');
+
+    const profiles = await (service as any).resolveUserProfiles('chat-1', 'chat', ['user-1'], {
+      allowRemoteLookup: false,
+    });
+
+    expect(profiles.get('user-1')?.profileHandoffUrl).toContain('https://max.ru/bot-2?start=');
+    expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
+    expect(maxBotLinkService.buildBotStartUrlSync).toHaveBeenCalledWith(
+      expect.any(String),
+      'bot-2',
+    );
+  });
+
   it('backs off background header hydration after MAX API throttling', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
