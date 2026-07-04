@@ -18,6 +18,7 @@ function parseArgs(argv) {
     rps: 10,
     concurrency: 4,
     fixturePath: DEFAULT_FIXTURE_PATH,
+    envFilePath: resolve(ROOT_DIR, '.env'),
     allowPublic: false,
     dryRun: false,
     probeUrl: '',
@@ -51,6 +52,10 @@ function parseArgs(argv) {
         break;
       case '--fixture':
         options.fixturePath = resolve(ROOT_DIR, String(next ?? '').trim());
+        index += 1;
+        break;
+      case '--env-file':
+        options.envFilePath = resolve(ROOT_DIR, String(next ?? '').trim());
         index += 1;
         break;
       case '--webhook-url':
@@ -105,6 +110,7 @@ Options:
   --rps <number>              Aggregate webhook requests per second. Default: 10
   --concurrency <number>      Number of webhook workers. Default: 4
   --fixture <path>            Repo-relative JSON fixture path.
+  --env-file <path>           Env file to read. Default: .env
   --webhook-url <url>         Override webhook URL directly.
   --probe-url <url>           Optional sidecar GET probe URL.
   --probe-rps <number>        Aggregate probe requests per second. Default: 0
@@ -128,8 +134,8 @@ function assertNonNegativeNumber(value, label) {
   }
 }
 
-async function readEnvFile() {
-  const raw = await readFile(resolve(ROOT_DIR, '.env'), 'utf8');
+async function readEnvFile(path) {
+  const raw = await readFile(path, 'utf8');
   const values = {};
 
   for (const line of raw.split(/\r?\n/u)) {
@@ -299,20 +305,21 @@ async function main() {
   assertNonNegativeNumber(options.probeRps, 'probe-rps');
   assertPositiveNumber(options.probeConcurrency, 'probe-concurrency');
 
-  const env = await readEnvFile();
+  const env = await readEnvFile(options.envFilePath);
   const appBaseUrl = normalizeBaseUrl(env.APP_BASE_URL);
+  const webhookBaseUrl = normalizeBaseUrl(env.MAX_WEBHOOK_BASE_URL || env.APP_BASE_URL);
   const botId = String(env.MAX_BOT_ID ?? '').trim();
   const secretPath = String(env.MAX_WEBHOOK_SECRET_PATH ?? '').trim();
   const headerSecret = String(env.MAX_WEBHOOK_HEADER_SECRET ?? '').trim();
 
   if (!botId || !secretPath || !headerSecret) {
-    throw new Error('Missing MAX webhook env values in .env');
+    throw new Error('Missing MAX webhook env values in env file');
   }
 
   const target =
     options.webhookUrl?.trim() ||
     (options.target === 'public'
-      ? `${appBaseUrl}/api/webhook/max/${encodeURIComponent(botId)}/${encodeURIComponent(secretPath)}`
+      ? `${webhookBaseUrl}/api/webhook/max/${encodeURIComponent(botId)}/${encodeURIComponent(secretPath)}`
       : `http://127.0.0.1:3001/api/webhook/max/${encodeURIComponent(botId)}/${encodeURIComponent(secretPath)}`);
 
   if (options.target === 'public' && !options.allowPublic) {

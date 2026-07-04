@@ -11348,6 +11348,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       this.scheduleModerationActionAccessRecheck(params.chatId, params.action);
     }
 
+    await this.recordModerationActionNoCandidateProblemChat({
+      chatId: params.chatId,
+      action: params.action,
+      reason:
+        attempt.status === 'backoff_blocked'
+          ? 'all candidate bots are temporarily backed off after permission failures'
+          : 'no active bot has the required MAX permissions in this chat',
+    });
     this.logSkippedModerationActionDueToPermissions({
       chatId: params.chatId,
       action: params.action,
@@ -12024,6 +12032,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       action: params.action,
       statusCode: this.extractStatusCode(params.error),
       reason: this.extractMaxErrorMessage(params.error) || 'terminal moderation action error',
+    });
+  }
+
+  private async recordModerationActionNoCandidateProblemChat(params: {
+    chatId: string;
+    action: 'delete_message' | 'moderate_member';
+    reason: string;
+  }): Promise<void> {
+    await this.runtimeDiagnosticsService?.recordProblemChat({
+      chatId: params.chatId,
+      botId: null,
+      category: 'moderation_action_no_candidate',
+      severity: 'warning',
+      action: params.action,
+      statusCode: null,
+      reason: params.reason,
     });
   }
 

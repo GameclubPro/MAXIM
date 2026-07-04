@@ -94,6 +94,32 @@ describe('validateEnv boolean parsing', () => {
     expect(env.MAX_WEBHOOK_BASE_URL).toBe('https://major-maksimov.ru');
   });
 
+  it('rejects the deprecated MAX API host in production', () => {
+    const productionSecrets = {
+      NODE_ENV: 'production',
+      MAX_WEBHOOK_SECRET_PATH: 'prod-secret-path-1',
+      MAX_WEBHOOK_HEADER_SECRET: 'prod-header-secret-1',
+    };
+
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          ...productionSecrets,
+          MAX_API_BASE_URL: 'https://platform-api.max.ru',
+        }),
+      ),
+    ).toThrow(/MAX_API_BASE_URL must use https:\/\/platform-api2\.max\.ru in production/u);
+
+    const env = validateEnv(
+      createValidEnv({
+        ...productionSecrets,
+        MAX_API_BASE_URL: 'https://platform-api2.max.ru',
+      }),
+    );
+
+    expect(env.MAX_API_BASE_URL).toBe('https://platform-api2.max.ru');
+  });
+
   it('parses string false values as false', () => {
     const env = validateEnv(
       createValidEnv({

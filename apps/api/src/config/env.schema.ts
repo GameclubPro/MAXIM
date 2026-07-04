@@ -74,6 +74,15 @@ function assertProductionPublicHttpsOrigin(key: string, value: string | undefine
   }
 }
 
+function assertProductionCurrentMaxApiHost(value: string): void {
+  const url = new URL(value);
+  if (url.hostname.toLowerCase() === 'platform-api.max.ru') {
+    throw new Error(
+      'Environment validation failed: MAX_API_BASE_URL must use https://platform-api2.max.ru in production',
+    );
+  }
+}
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3001),
@@ -336,6 +345,7 @@ export function validateEnv(config: Record<string, unknown>): EnvSchema {
   if (parsed.data.NODE_ENV === 'production') {
     assertProductionPublicHttpsOrigin('APP_BASE_URL', parsed.data.APP_BASE_URL);
     assertProductionPublicHttpsOrigin('MAX_WEBHOOK_BASE_URL', parsed.data.MAX_WEBHOOK_BASE_URL);
+    assertProductionCurrentMaxApiHost(parsed.data.MAX_API_BASE_URL);
 
     for (const [key, value] of [
       ['MAX_WEBHOOK_SECRET_PATH', parsed.data.MAX_WEBHOOK_SECRET_PATH],

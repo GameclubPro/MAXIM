@@ -17511,6 +17511,9 @@ describe('ModerationService', () => {
         const maxChatAdminRosterSyncService = {
           scheduleChatAdminRosterSync: jest.fn().mockResolvedValue(true),
         };
+        const runtimeDiagnosticsService = {
+          recordProblemChat: jest.fn().mockResolvedValue(undefined),
+        };
         const operation = jest.fn().mockResolvedValue(undefined);
         const service = new ModerationService(
           prisma as never,
@@ -17528,7 +17531,7 @@ describe('ModerationService', () => {
           undefined,
           undefined,
           undefined,
-          undefined,
+          runtimeDiagnosticsService as never,
           maxChatAdminRosterSyncService as never,
         );
 
@@ -17549,6 +17552,15 @@ describe('ModerationService', () => {
 
         expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
         expect(operation).not.toHaveBeenCalled();
+        expect(runtimeDiagnosticsService.recordProblemChat).toHaveBeenCalledWith({
+          chatId: 'chat-1',
+          botId: null,
+          category: 'moderation_action_no_candidate',
+          severity: 'warning',
+          action: 'delete_message',
+          statusCode: null,
+          reason: 'all candidate bots are temporarily backed off after permission failures',
+        });
         expect(maxChatAdminRosterSyncService.scheduleChatAdminRosterSync).toHaveBeenCalledWith({
           chatId: 'chat-1',
           botIds: [],
