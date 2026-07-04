@@ -1658,6 +1658,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         }
       }
       if (violationSenderAdminCheck.isAdmin) {
+        if (
+          await this.tryHandleKaravanStorefrontRelay({
+            update,
+            updateType,
+            chatId,
+            messageId,
+            senderId,
+            senderName,
+            text,
+          })
+        ) {
+          return;
+        }
+
         this.markWebhookHotPathStage(hotPathProfile, 'admin-command');
         await this.handleChatAdminModerationBypass({
           update,
