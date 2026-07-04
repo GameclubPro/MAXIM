@@ -2829,9 +2829,46 @@ export class MaxClientService implements OnModuleDestroy {
       if (explicitStatus === 'suspended') {
         return 'suspended';
       }
+
+      if (this.isMaxDeletedUserPlaceholder(candidate)) {
+        return 'deleted';
+      }
     }
 
     return null;
+  }
+
+  private isMaxDeletedUserPlaceholder(candidate: Record<string, unknown>): boolean {
+    const name = this.readLowerString(candidate.name);
+    const firstName = this.readLowerString(candidate.first_name ?? candidate.firstName);
+    const lastName = this.readLowerString(candidate.last_name ?? candidate.lastName);
+    if (name !== 'deleted user' || firstName !== 'deleted' || lastName !== 'user') {
+      return false;
+    }
+
+    if (
+      candidate.is_bot === true ||
+      candidate.isBot === true ||
+      candidate.bot === true ||
+      candidate.is_service === true ||
+      candidate.isService === true
+    ) {
+      return false;
+    }
+
+    const publicProfileFields = [
+      candidate.username,
+      candidate.avatar_url,
+      candidate.avatarUrl,
+      candidate.full_avatar_url,
+      candidate.fullAvatarUrl,
+      candidate.description,
+      candidate.profile_url,
+      candidate.profileUrl,
+      candidate.url,
+      candidate.link,
+    ];
+    return publicProfileFields.every((value) => this.readTrimmedString(value) === null);
   }
 
   private readProfileUrl(...candidates: unknown[]): string | null {

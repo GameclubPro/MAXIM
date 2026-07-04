@@ -3153,6 +3153,62 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('treats exact MAX deleted-user placeholders as unavailable without matching named users', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            members: [
+              {
+                user_id: 'deleted-placeholder',
+                name: 'DELETED USER',
+                first_name: 'DELETED',
+                last_name: 'USER',
+                is_bot: false,
+              },
+              {
+                user_id: 'spoofed-profile',
+                name: 'DELETED USER',
+                first_name: 'DELETED',
+                last_name: 'USER',
+                username: 'deleted_user',
+                is_bot: false,
+              },
+              {
+                user_id: 'ordinary-user',
+                name: 'Deleted User',
+                first_name: 'Deleted',
+                last_name: '',
+                is_bot: false,
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.getChatMembersPage('chat-1');
+
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        userId: 'deleted-placeholder',
+        unavailableReason: 'deleted',
+      }),
+      expect.objectContaining({
+        userId: 'spoofed-profile',
+        unavailableReason: null,
+      }),
+      expect.objectContaining({
+        userId: 'ordinary-user',
+        unavailableReason: null,
+      }),
+    ]);
+
+    await service.onModuleDestroy();
+  });
+
   it('reads the current bot profile from GET /me', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(
