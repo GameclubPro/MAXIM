@@ -38,7 +38,13 @@ export type ManagedEntityAccessLossReason =
   | 'bot_removed'
   | 'chat_inaccessible';
 
-export type ManagedEntityAccessLossOperation = 'send' | 'edit' | 'delete' | 'read' | 'lookup';
+export type ManagedEntityAccessLossOperation =
+  | 'send'
+  | 'edit'
+  | 'delete'
+  | 'read'
+  | 'lookup'
+  | 'member_moderation';
 
 export type MaxTerminalChatActionErrorClassification = {
   kind: 'managed_entity_access_lost' | 'message_not_found' | 'terminal_unknown';

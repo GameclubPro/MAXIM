@@ -11470,7 +11470,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         botId: params.botId,
         entityType: null,
         source: `moderation_action:${params.action}`,
-        operation: params.action === 'delete_message' ? 'delete' : 'lookup',
+        operation: params.action === 'delete_message' ? 'delete' : 'member_moderation',
         error: params.error,
       });
     });

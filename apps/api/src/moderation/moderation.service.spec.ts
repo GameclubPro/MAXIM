@@ -17795,7 +17795,7 @@ describe('ModerationService', () => {
             botId: 'id613002203036_bot',
             entityType: null,
             source: 'moderation_action:moderate_member',
-            operation: 'lookup',
+            operation: 'member_moderation',
             error: terminalError,
           },
         );
