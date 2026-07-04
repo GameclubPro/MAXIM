@@ -3,6 +3,7 @@ const MAX_INLINE_KEYBOARD_ROWS = 30;
 const MAX_INLINE_KEYBOARD_BUTTONS_PER_ROW = 7;
 const MAX_INLINE_KEYBOARD_ACTION_BUTTONS_PER_ROW = 1;
 const MAX_INLINE_KEYBOARD_ROW_TEXT_WEIGHT = 22;
+const MAX_INLINE_KEYBOARD_LINK_URL_LENGTH = 2048;
 const MAX_INLINE_KEYBOARD_FULL_WIDTH_BUTTON_TYPES = new Set([
   'link',
   'open_app',
@@ -143,7 +144,9 @@ function normalizeMaxInlineKeyboardButton(button: unknown): Record<string, unkno
 
   switch (type) {
     case 'link': {
-      const url = readTrimmedString(source.url);
+      const url = normalizeHttpInlineKeyboardUrl(source.url, {
+        maxLength: MAX_INLINE_KEYBOARD_LINK_URL_LENGTH,
+      });
       if (!url) {
         return null;
       }
@@ -171,7 +174,7 @@ function normalizeMaxInlineKeyboardButton(button: unknown): Record<string, unkno
       };
     }
     case 'open_app': {
-      const webApp = readTrimmedString(source.webApp ?? source.web_app);
+      const webApp = normalizeHttpInlineKeyboardUrl(source.webApp ?? source.web_app);
       const contactIdCandidate = source.contactId ?? source.contact_id;
       const contactId =
         typeof contactIdCandidate === 'number'
@@ -179,6 +182,9 @@ function normalizeMaxInlineKeyboardButton(button: unknown): Record<string, unkno
           : typeof contactIdCandidate === 'string'
             ? contactIdCandidate.trim()
             : '';
+      if (!webApp && !contactId) {
+        return null;
+      }
 
       return {
         type: 'open_app',
@@ -253,6 +259,27 @@ function readTrimmedString(value: unknown): string {
 function readLowerString(value: unknown): string | null {
   const normalized = readTrimmedString(value);
   return normalized ? normalized.toLowerCase() : null;
+}
+
+function normalizeHttpInlineKeyboardUrl(
+  value: unknown,
+  options: { maxLength?: number } = {},
+): string | null {
+  const normalized = readTrimmedString(value);
+  if (!normalized || (options.maxLength !== undefined && normalized.length > options.maxLength)) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(normalized);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+
+    return parsed.toString();
+  } catch {
+    return null;
+  }
 }
 
 function resolveInlineKeyboardButtonRowLimit(button: Record<string, unknown>): number {

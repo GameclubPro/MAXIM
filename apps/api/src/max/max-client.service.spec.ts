@@ -500,6 +500,60 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('drops link buttons with non-http or oversized urls before MAX send', async () => {
+    const service = createService();
+
+    const normalized = (service as any).normalizeInlineKeyboardButtons({
+      buttons: [
+        [
+          { type: 'link', text: 'Bad scheme', url: 'max://user/user-42' },
+          { type: 'link', text: 'Bad url', url: 'not a url' },
+          { type: 'link', text: 'Too long', url: `https://example.com/${'a'.repeat(2049)}` },
+          { type: 'link', text: 'Good', url: 'https://example.com/path?x=1' },
+        ],
+      ],
+    }) as Array<Array<Record<string, unknown>>> | null;
+
+    expect(normalized).toEqual([
+      [{ type: 'link', text: 'Good', url: 'https://example.com/path?x=1' }],
+    ]);
+
+    await service.onModuleDestroy();
+  });
+
+  it('drops open_app buttons without a valid web_app or contact_id', async () => {
+    const service = createService();
+
+    const normalized = (service as any).normalizeInlineKeyboardButtons({
+      buttons: [
+        [
+          { type: 'open_app', text: 'Bad app', webApp: 'javascript:alert(1)' },
+          { type: 'open_app', text: 'Contact only', contactId: 613002203036 },
+          { type: 'open_app', text: 'Good app', webApp: 'https://major-maksimov.ru/app/' },
+        ],
+      ],
+    }) as Array<Array<Record<string, unknown>>> | null;
+
+    expect(normalized).toEqual([
+      [
+        {
+          type: 'open_app',
+          text: 'Contact only',
+          contact_id: '613002203036',
+        },
+      ],
+      [
+        {
+          type: 'open_app',
+          text: 'Good app',
+          web_app: 'https://major-maksimov.ru/app/',
+        },
+      ],
+    ]);
+
+    await service.onModuleDestroy();
+  });
+
   it('supports clipboard button type', async () => {
     const service = createService();
 
