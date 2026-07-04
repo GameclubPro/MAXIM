@@ -64,6 +64,10 @@ export function resolveChannelStatsAverageViews(stats: ViewsDisplayStats): numbe
   return 0;
 }
 
+export function resolveAudienceChartAverageGrowthLabel(bucket: string): 'В час' | 'В день' {
+  return bucket === 'hour' ? 'В час' : 'В день';
+}
+
 export function isChannelStatsResponseForRange<T extends ViewsDisplayStats>(
   stats: T | null | undefined,
   chatId: string,

@@ -114,7 +114,10 @@ export async function selectChannelStatsMembershipBucketRows(
   prisma: PrismaService,
   params: SelectChannelStatsMembershipBucketRowsParams,
 ): Promise<ChannelStatsMembershipBucketRow[]> {
-  const bucketSql = buildChannelStatsBucketSql(params.bucket);
+  const rollupBucketStartSql = buildChannelStatsBucketStartSql(
+    params.bucket,
+    Prisma.sql`bucket_start`,
+  );
   const { completeFrom, completeTo, hasCompleteBuckets } = resolveCompleteHourlyRollupWindow(
     params.from,
     params.to,
@@ -122,14 +125,14 @@ export async function selectChannelStatsMembershipBucketRows(
   const rollupRowsSql = hasCompleteBuckets
     ? Prisma.sql`
         SELECT
-          date_trunc(${bucketSql}, bucket_start)::TIMESTAMP(3) AS bucket_start,
+          ${rollupBucketStartSql} AS bucket_start,
           COALESCE(SUM(joined_users), 0) AS joined_users,
           COALESCE(SUM(left_users), 0) AS left_users
         FROM channel_stats_bucket_rollups
         WHERE chat_id = ${params.chatId}
           AND bucket_start >= ${completeFrom}
           AND bucket_start < ${completeTo}
-        GROUP BY date_trunc(${bucketSql}, bucket_start)::TIMESTAMP(3)
+        GROUP BY ${rollupBucketStartSql}
       `
     : Prisma.sql`
         SELECT
@@ -145,7 +148,7 @@ export async function selectChannelStatsMembershipBucketRows(
     completeFrom,
     completeTo,
     hasCompleteBuckets,
-    bucketSql,
+    params.bucket,
   );
 
   return prisma.$queryRaw<ChannelStatsMembershipBucketRow[]>`
@@ -170,7 +173,10 @@ export async function selectChannelStatsContentBucketRows(
   prisma: PrismaService,
   params: SelectChannelStatsMembershipBucketRowsParams,
 ): Promise<ChannelStatsContentBucketRow[]> {
-  const bucketSql = buildChannelStatsBucketSql(params.bucket);
+  const rollupBucketStartSql = buildChannelStatsBucketStartSql(
+    params.bucket,
+    Prisma.sql`bucket_start`,
+  );
   const { completeFrom, completeTo, hasCompleteBuckets } = resolveCompleteHourlyRollupWindow(
     params.from,
     params.to,
@@ -178,7 +184,7 @@ export async function selectChannelStatsContentBucketRows(
   const rollupRowsSql = hasCompleteBuckets
     ? Prisma.sql`
         SELECT
-          date_trunc(${bucketSql}, bucket_start)::TIMESTAMP(3) AS bucket_start,
+          ${rollupBucketStartSql} AS bucket_start,
           COALESCE(SUM(posts), 0) AS posts,
           COALESCE(SUM(views_total), 0) AS views_delta,
           COALESCE(SUM(reactions), 0) AS reactions
@@ -186,7 +192,7 @@ export async function selectChannelStatsContentBucketRows(
         WHERE chat_id = ${params.chatId}
           AND bucket_start >= ${completeFrom}
           AND bucket_start < ${completeTo}
-        GROUP BY date_trunc(${bucketSql}, bucket_start)::TIMESTAMP(3)
+        GROUP BY ${rollupBucketStartSql}
       `
     : Prisma.sql`
         SELECT
@@ -203,7 +209,7 @@ export async function selectChannelStatsContentBucketRows(
     completeFrom,
     completeTo,
     hasCompleteBuckets,
-    bucketSql,
+    params.bucket,
   );
 
   return prisma.$queryRaw<ChannelStatsContentBucketRow[]>`
@@ -225,8 +231,17 @@ export async function selectChannelStatsContentBucketRows(
   `;
 }
 
-function buildChannelStatsBucketSql(bucket: ChannelStatsBucket): Prisma.Sql {
-  return bucket === 'hour' ? Prisma.sql`'hour'` : Prisma.sql`'day'`;
+function buildChannelStatsBucketStartSql(
+  bucket: ChannelStatsBucket,
+  valueSql: Prisma.Sql,
+): Prisma.Sql {
+  if (bucket === 'hour') {
+    return Prisma.sql`date_trunc('hour', ${valueSql})::TIMESTAMP(3)`;
+  }
+
+  return Prisma.sql`
+    (date_trunc('day', ${valueSql} + INTERVAL '3 hours') - INTERVAL '3 hours')::TIMESTAMP(3)
+  `;
 }
 
 function buildChannelStatsMembershipEdgeRowsSql(
@@ -236,7 +251,7 @@ function buildChannelStatsMembershipEdgeRowsSql(
   completeFrom: Date,
   completeTo: Date,
   hasCompleteBuckets: boolean,
-  bucketSql: Prisma.Sql,
+  bucket: ChannelStatsBucket,
 ): Prisma.Sql {
   const edgeRanges = resolveChannelStatsPartialEdgeRanges(
     from,
@@ -261,10 +276,11 @@ function buildChannelStatsMembershipEdgeRowsSql(
       const upperBoundSql = range.toInclusive
         ? Prisma.sql`event_at <= ${range.to}`
         : Prisma.sql`event_at < ${range.to}`;
+      const bucketStartSql = buildChannelStatsBucketStartSql(bucket, Prisma.sql`event_at`);
 
       return Prisma.sql`
         SELECT
-          date_trunc(${bucketSql}, event_at)::TIMESTAMP(3) AS bucket_start,
+          ${bucketStartSql} AS bucket_start,
           COUNT(*) FILTER (WHERE event_type = 'user_added') AS joined_users,
           COUNT(*) FILTER (WHERE event_type = 'user_removed') AS left_users
         FROM chat_membership_activity_feed_items
@@ -272,7 +288,7 @@ function buildChannelStatsMembershipEdgeRowsSql(
           AND event_type IN ('user_added', 'user_removed')
           AND event_at >= ${range.from}
           AND ${upperBoundSql}
-        GROUP BY date_trunc(${bucketSql}, event_at)::TIMESTAMP(3)
+        GROUP BY ${bucketStartSql}
       `;
     }),
     ' UNION ALL ',
@@ -286,7 +302,7 @@ function buildChannelStatsContentEdgeRowsSql(
   completeFrom: Date,
   completeTo: Date,
   hasCompleteBuckets: boolean,
-  bucketSql: Prisma.Sql,
+  bucket: ChannelStatsBucket,
 ): Prisma.Sql {
   const edgeRanges = resolveChannelStatsPartialEdgeRanges(
     from,
@@ -312,10 +328,11 @@ function buildChannelStatsContentEdgeRowsSql(
       const upperBoundSql = range.toInclusive
         ? Prisma.sql`published_at <= ${range.to}`
         : Prisma.sql`published_at < ${range.to}`;
+      const bucketStartSql = buildChannelStatsBucketStartSql(bucket, Prisma.sql`published_at`);
 
       return Prisma.sql`
         SELECT
-          date_trunc(${bucketSql}, published_at)::TIMESTAMP(3) AS bucket_start,
+          ${bucketStartSql} AS bucket_start,
           COUNT(*) AS posts,
           COALESCE(SUM(GREATEST(latest_views, 0)), 0) AS views_delta,
           COALESCE(SUM(GREATEST(latest_reactions_total, 0)), 0) AS reactions
@@ -323,7 +340,7 @@ function buildChannelStatsContentEdgeRowsSql(
         WHERE chat_id = ${chatId}
           AND published_at >= ${range.from}
           AND ${upperBoundSql}
-        GROUP BY date_trunc(${bucketSql}, published_at)::TIMESTAMP(3)
+        GROUP BY ${bucketStartSql}
       `;
     }),
     ' UNION ALL ',

@@ -139,3 +139,21 @@ test('preview channel stats marks empty view buckets with zero posts', async () 
   assert.equal(currentViews.some((point) => point.posts === 0 && point.views === 0), true);
   assert.equal(previousViews.every((point) => Number.isInteger(point.posts)), true);
 });
+
+test('preview channel stats overview mirrors production lightweight fields', async () => {
+  const api = createPreviewApiTransport();
+
+  const stats = (await api.request(
+    '/channels/preview-channel/stats?range=7d&mode=overview&includeActivityPreview=false',
+  )) as ChannelStatsResponse;
+  const expectedAverage = Math.round(
+    stats.official.content.views / Math.max(1, stats.official.content.posts),
+  );
+
+  assert.equal(stats.official.content.topPosts.length, 0);
+  assert.equal(stats.official.content.topReactions.length, 0);
+  assert.equal(stats.signals.bestWindows.length, 0);
+  assert.equal(stats.comparison.series, undefined);
+  assert.equal(stats.comparison.deltas.averageViewsPerPost.current, expectedAverage);
+  assert.equal(stats.activityFeed.items.length, 0);
+});

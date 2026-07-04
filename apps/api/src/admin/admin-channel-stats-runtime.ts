@@ -1008,11 +1008,12 @@ export class AdminChannelStatsRuntime {
   }
 
   floorChannelStatsBucket(date: Date, bucket: ChannelStatsBucket): Date {
+    if (bucket === 'day') {
+      return this.floorChannelStatsMoscowDay(date);
+    }
+
     const result = new Date(date);
     result.setUTCMinutes(0, 0, 0);
-    if (bucket === 'day') {
-      result.setUTCHours(0, 0, 0, 0);
-    }
     return result;
   }
 

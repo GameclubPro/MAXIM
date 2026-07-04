@@ -1,5 +1,8 @@
-import { selectChannelStatsMembershipBucketRows } from './stats-read-model-selectors';
-import { resolveChannelStatsPartialEdgeRanges } from './stats-read-model-selectors';
+import {
+  resolveChannelStatsPartialEdgeRanges,
+  selectChannelStatsContentBucketRows,
+  selectChannelStatsMembershipBucketRows,
+} from './stats-read-model-selectors';
 
 function extractSqlText(arg: unknown): string {
   if (Array.isArray(arg)) {
@@ -72,5 +75,32 @@ describe('stats read model selectors', () => {
     expect(sqlText).toContain('event_at <');
     expect(sqlText).toContain('event_at <=');
     expect(sqlText).not.toContain('AND NOT (event_at');
+  });
+
+  it('groups daily channel stats buckets on Moscow day boundaries', async () => {
+    const queryRaw = jest.fn().mockResolvedValue([]);
+    const prisma = {
+      $queryRaw: queryRaw,
+    };
+
+    const params = {
+      chatId: 'channel-1',
+      from: new Date('2026-03-06T21:30:00.000Z'),
+      to: new Date('2026-03-07T20:30:00.000Z'),
+      bucket: 'day' as const,
+    };
+
+    await selectChannelStatsMembershipBucketRows(prisma as never, params);
+    await selectChannelStatsContentBucketRows(prisma as never, params);
+
+    const membershipSqlText = extractSqlText(queryRaw.mock.calls[0]);
+    expect(membershipSqlText).toContain("bucket_start + INTERVAL '3 hours'");
+    expect(membershipSqlText).toContain("event_at + INTERVAL '3 hours'");
+    expect(membershipSqlText).toContain("- INTERVAL '3 hours'");
+
+    const contentSqlText = extractSqlText(queryRaw.mock.calls[1]);
+    expect(contentSqlText).toContain("bucket_start + INTERVAL '3 hours'");
+    expect(contentSqlText).toContain("published_at + INTERVAL '3 hours'");
+    expect(contentSqlText).toContain("- INTERVAL '3 hours'");
   });
 });

@@ -613,7 +613,10 @@ const scenarios = [
     name: 'channel-stats-top-posts',
     path: '/channel/preview-channel/stats',
     beforeShot: async (page) => {
-      await page.locator('.channel-top-posts-panel').evaluate((element) => {
+      const detailTarget = page
+        .locator('.channel-top-posts-panel, .channel-summary-table-card')
+        .first();
+      await detailTarget.evaluate((element) => {
         element.scrollIntoView({ block: 'start', behavior: 'instant' });
         window.scrollBy({ top: -116, behavior: 'instant' });
       });

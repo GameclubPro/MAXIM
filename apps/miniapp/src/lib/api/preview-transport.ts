@@ -126,6 +126,7 @@ import {
 } from '@maxim/contracts';
 import {
   channelStatsResponseSchema,
+  type ChannelStatsMode,
   type ChannelStatsRange,
   type ChannelStatsResponse,
 } from '@maxim/contracts/channel-stats';
@@ -3736,9 +3737,11 @@ function buildChannelStats(
   range: ChannelStatsRange,
   options: Partial<{
     includeActivityPreview: boolean;
+    mode: ChannelStatsMode;
   }> = {},
 ) {
   const now = new Date();
+  const isOverviewMode = options.mode === 'overview';
   const activityItems = filterActivityItems(state.channelActivity, range, 'all', now);
   const joined = activityItems.filter((item) => item.type === 'joined').length;
   const left = activityItems.filter((item) => item.type === 'left').length;
@@ -3907,6 +3910,7 @@ function buildChannelStats(
   const summaryLast48h = range === '24h' ? views : Math.round(views * 0.44);
   const summaryLast24hPerPost = Math.round(summaryLast24h / Math.max(1, posts));
   const summaryLast48hPerPost = Math.round(summaryLast48h / Math.max(1, posts));
+  const selectedPeriodAverageViewsPerPost = Math.round(views / Math.max(1, posts));
   const summaryEr24 =
     summaryLast24h > 0 ? Math.round((reactions / summaryLast24h) * 10_000) / 100 : null;
   const todayFrom = new Date(now.getTime() + 3 * 60 * 60 * 1000);
@@ -3950,6 +3954,37 @@ function buildChannelStats(
           : null
         : Math.round(((current - previous) / previous) * 1000) / 10,
   });
+  const topReactions = [
+    { emoji: '🔥', count: 182 },
+    { emoji: '👍', count: 133 },
+    { emoji: '❤️', count: 97 },
+  ];
+  const bestWindows = [
+    {
+      dayOfWeek: 4,
+      hour: 18,
+      score: 6200,
+      posts: 3,
+      averageViews: 5800,
+      averageReactions: 310,
+    },
+    {
+      dayOfWeek: 2,
+      hour: 12,
+      score: 5200,
+      posts: 2,
+      averageViews: 4900,
+      averageReactions: 250,
+    },
+    {
+      dayOfWeek: 6,
+      hour: 11,
+      score: 4700,
+      posts: 2,
+      averageViews: 4400,
+      averageReactions: 220,
+    },
+  ];
   const response: ChannelStatsResponse = {
     channel: {
       id: channelId,
@@ -3977,12 +4012,8 @@ function buildChannelStats(
         posts,
         views,
         reactions,
-        topReactions: [
-          { emoji: '🔥', count: 182 },
-          { emoji: '👍', count: 133 },
-          { emoji: '❤️', count: 97 },
-        ],
-        topPosts,
+        topReactions: isOverviewMode ? [] : topReactions,
+        topPosts: isOverviewMode ? [] : topPosts,
         lastPublishedAt: addHours(now, -3).toISOString(),
       },
       series: {
@@ -4036,25 +4067,36 @@ function buildChannelStats(
         left: buildDelta(left, previousLeft),
         posts: buildDelta(posts, previousPosts),
         views: buildDelta(views, previousViews),
-        averageViewsPerPost: buildDelta(summaryLast24hPerPost, previousAverageViewsPerPost),
+        averageViewsPerPost: buildDelta(
+          selectedPeriodAverageViewsPerPost,
+          isOverviewMode ? 0 : previousAverageViewsPerPost,
+        ),
         reactions: buildDelta(reactions, previousReactions),
       },
-      series: {
-        participants: previousParticipantsSeries,
-        membership: previousMembershipSeries,
-        views: previousViewsSeries,
-      },
+      ...(isOverviewMode
+        ? {}
+        : {
+            series: {
+              participants: previousParticipantsSeries,
+              membership: previousMembershipSeries,
+              views: previousViewsSeries,
+            },
+          }),
     },
     signals: {
       markers: [
-        {
-          code: 'top-post',
-          type: 'post',
-          label: '#1',
-          value: '4 800',
-          tone: 'accent',
-          at: topPosts[0]?.publishedAt ?? addHours(now, -4).toISOString(),
-        },
+        ...(isOverviewMode
+          ? []
+          : [
+              {
+                code: 'top-post' as const,
+                type: 'post' as const,
+                label: '#1',
+                value: '4 800',
+                tone: 'accent' as const,
+                at: topPosts[0]?.publishedAt ?? addHours(now, -4).toISOString(),
+              },
+            ]),
         {
           code: 'views-peak',
           type: 'peak',
@@ -4064,32 +4106,7 @@ function buildChannelStats(
           at: viewsSeries[Math.floor(viewsSeries.length * 0.62)]?.at ?? now.toISOString(),
         },
       ],
-      bestWindows: [
-        {
-          dayOfWeek: 4,
-          hour: 18,
-          score: 6200,
-          posts: 3,
-          averageViews: 5800,
-          averageReactions: 310,
-        },
-        {
-          dayOfWeek: 2,
-          hour: 12,
-          score: 5200,
-          posts: 2,
-          averageViews: 4900,
-          averageReactions: 250,
-        },
-        {
-          dayOfWeek: 6,
-          hour: 11,
-          score: 4700,
-          posts: 2,
-          averageViews: 4400,
-          averageReactions: 220,
-        },
-      ],
+      bestWindows: isOverviewMode ? [] : bestWindows,
     },
     activityFeed:
       options.includeActivityPreview === false
@@ -6290,9 +6307,11 @@ async function handleChannelRequest(
 
   if (tail[0] === 'stats' && method === 'GET') {
     const range = (url.searchParams.get('range') as ChannelStatsRange | null) ?? '7d';
+    const mode = (url.searchParams.get('mode') as ChannelStatsMode | null) ?? undefined;
     return cloneJson(
       buildChannelStats(state, channelId, range, {
         includeActivityPreview: url.searchParams.get('includeActivityPreview') !== 'false',
+        mode,
       }),
     );
   }

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   isChannelStatsResponseForRange,
+  resolveAudienceChartAverageGrowthLabel,
   resolveAudienceChartDisplayValue,
   resolveAverageViewsFromSeries,
   resolveChannelStatsAverageViews,
@@ -190,4 +191,9 @@ test('does not render point markers for the 24 hour channel stats range', () => 
   assert.equal(shouldRenderChannelStatsPointMarkers('24h', 25), false);
   assert.equal(shouldRenderChannelStatsPointMarkers('7d', 7), true);
   assert.equal(shouldRenderChannelStatsPointMarkers('30d', 30), false);
+});
+
+test('labels audience chart average growth by bucket granularity', () => {
+  assert.equal(resolveAudienceChartAverageGrowthLabel('hour'), 'В час');
+  assert.equal(resolveAudienceChartAverageGrowthLabel('day'), 'В день');
 });

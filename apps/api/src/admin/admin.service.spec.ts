@@ -19069,7 +19069,7 @@ describe('AdminService.getChannelStats', () => {
     };
 
     const series = statsHelpers.buildAverageViewsSeriesFromPostMetrics(
-      [new Date('2026-03-07T00:00:00.000Z')],
+      [new Date('2026-03-06T21:00:00.000Z')],
       [
         {
           post: {
@@ -19105,7 +19105,7 @@ describe('AdminService.getChannelStats', () => {
 
     expect(series).toEqual([
       {
-        at: '2026-03-07T00:00:00.000Z',
+        at: '2026-03-06T21:00:00.000Z',
         posts: 2,
         views: 200,
       },
@@ -19213,7 +19213,7 @@ describe('AdminService.getChannelStats', () => {
     };
 
     const series = statsHelpers.buildAverageViewsSeriesFromPostMetrics(
-      [new Date('2026-06-12T00:00:00.000Z'), new Date('2026-06-18T00:00:00.000Z')],
+      [new Date('2026-06-11T21:00:00.000Z'), new Date('2026-06-17T21:00:00.000Z')],
       [
         {
           post: {
@@ -19235,12 +19235,12 @@ describe('AdminService.getChannelStats', () => {
 
     expect(series).toEqual([
       {
-        at: '2026-06-12T00:00:00.000Z',
+        at: '2026-06-11T21:00:00.000Z',
         posts: 1,
         views: 900,
       },
       {
-        at: '2026-06-18T00:00:00.000Z',
+        at: '2026-06-17T21:00:00.000Z',
         posts: 0,
         views: 0,
       },
@@ -19535,30 +19535,30 @@ describe('AdminService.getChannelStats', () => {
       ])
       .mockResolvedValueOnce([
         {
-          bucket_start: new Date('2026-03-03T00:00:00.000Z'),
+          bucket_start: new Date('2026-03-02T21:00:00.000Z'),
           joined_users: createDecimalLike(1),
           left_users: createDecimalLike(0),
         },
         {
-          bucket_start: new Date('2026-03-04T00:00:00.000Z'),
+          bucket_start: new Date('2026-03-03T21:00:00.000Z'),
           joined_users: createDecimalLike(1),
           left_users: createDecimalLike(0),
         },
         {
-          bucket_start: new Date('2026-03-05T00:00:00.000Z'),
+          bucket_start: new Date('2026-03-04T21:00:00.000Z'),
           joined_users: createDecimalLike(0),
           left_users: createDecimalLike(1),
         },
       ])
       .mockResolvedValueOnce([
         {
-          bucket_start: new Date('2026-03-03T00:00:00.000Z'),
+          bucket_start: new Date('2026-03-02T21:00:00.000Z'),
           posts: createDecimalLike(1),
           views_delta: createDecimalLike(150),
           reactions: createDecimalLike(5),
         },
         {
-          bucket_start: new Date('2026-03-06T00:00:00.000Z'),
+          bucket_start: new Date('2026-03-05T21:00:00.000Z'),
           posts: createDecimalLike(1),
           views_delta: createDecimalLike(260),
           reactions: createDecimalLike(7),
@@ -19924,7 +19924,7 @@ describe('AdminService.getChannelStats', () => {
     expect(result.comparison.series?.membership).toHaveLength(8);
     expect(result.comparison.series?.views).toHaveLength(8);
     expect(result.comparison.series?.participants[0]).toEqual({
-      at: '2026-02-21T00:00:00.000Z',
+      at: '2026-02-20T21:00:00.000Z',
       participantsCount: 1180,
     });
     expect(channelStatsCollector.syncChannelIfStale).not.toHaveBeenCalled();
@@ -19937,11 +19937,11 @@ describe('AdminService.getChannelStats', () => {
     const membershipSqlText = extractSqlText(prisma.$queryRaw.mock.calls[1]);
     expect(membershipSqlText).toContain('channel_stats_bucket_rollups');
     expect(membershipSqlText).toContain('chat_membership_activity_feed_items');
-    expect(membershipSqlText).toContain("date_trunc('day', bucket_start)");
+    expect(membershipSqlText).toContain("bucket_start + INTERVAL '3 hours'");
     expect(membershipSqlText).toContain('ORDER BY bucket_start ASC');
     const contentSqlText = extractSqlText(prisma.$queryRaw.mock.calls[2]);
     expect(contentSqlText).toContain('channel_stats_bucket_rollups');
-    expect(contentSqlText).toContain("date_trunc('day', bucket_start)");
+    expect(contentSqlText).toContain("bucket_start + INTERVAL '3 hours'");
     expect(contentSqlText).not.toContain('channel_post_view_snapshots');
     expect(contentSqlText).not.toContain('ORDER BY first_snapshot.captured_at ASC');
   });
@@ -20076,14 +20076,14 @@ describe('AdminService.getChannelStats', () => {
     prisma.$queryRaw
       .mockResolvedValueOnce([
         {
-          bucket_start: new Date('2026-03-07T00:00:00.000Z'),
+          bucket_start: new Date('2026-03-06T21:00:00.000Z'),
           joined_users: '5',
           left_users: '2',
         },
       ])
       .mockResolvedValueOnce([
         {
-          bucket_start: new Date('2026-03-07T00:00:00.000Z'),
+          bucket_start: new Date('2026-03-06T21:00:00.000Z'),
           posts: '3',
           views_delta: '900',
           reactions: '30',
@@ -20256,7 +20256,11 @@ describe('AdminService.getChannelStats', () => {
       expect(result.period.bucket).toBe(expectedBucket);
       const querySqlTexts = prisma.$queryRaw.mock.calls.map((call) => extractSqlText(call));
       expect(
-        querySqlTexts.some((sqlText) => sqlText.includes(`date_trunc('${expectedBucket}',`)),
+        querySqlTexts.some((sqlText) =>
+          expectedBucket === 'day'
+            ? sqlText.includes("INTERVAL '3 hours'")
+            : sqlText.includes(`date_trunc('${expectedBucket}',`),
+        ),
       ).toBe(true);
     },
   );

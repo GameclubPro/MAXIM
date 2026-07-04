@@ -51,7 +51,9 @@ import {
 } from '../lib/stats-snapshot-cache';
 import {
   isChannelStatsResponseForRange,
+  resolveAudienceChartAverageGrowthLabel,
   resolveAudienceChartDisplayValue,
+  resolveChannelStatsAverageViews,
   resolveInitialAudienceChartIndex,
   shouldRenderChannelStatsPointMarkers,
 } from '../lib/channel-stats-chart';
@@ -118,16 +120,19 @@ const DENSE_COUNT_FORMATTER = new Intl.NumberFormat('ru-RU', { useGrouping: fals
 const DAY_MONTH_NUMERIC_FORMATTER = new Intl.DateTimeFormat('ru-RU', {
   day: '2-digit',
   month: '2-digit',
+  timeZone: 'Europe/Moscow',
 });
 const CHART_DETAIL_HOUR_FORMATTER = new Intl.DateTimeFormat('ru-RU', {
   day: '2-digit',
   month: 'short',
   hour: '2-digit',
   minute: '2-digit',
+  timeZone: 'Europe/Moscow',
 });
 const CHART_DETAIL_DAY_FORMATTER = new Intl.DateTimeFormat('ru-RU', {
   day: '2-digit',
   month: 'long',
+  timeZone: 'Europe/Moscow',
 });
 const PERCENT_INTEGER_FORMATTER = new Intl.NumberFormat('ru-RU', {
   minimumFractionDigits: 0,
@@ -142,10 +147,12 @@ const POST_DATE_TIME_FORMATTER = new Intl.DateTimeFormat('ru-RU', {
   month: 'short',
   hour: '2-digit',
   minute: '2-digit',
+  timeZone: 'Europe/Moscow',
 });
 const DATE_ONLY_FORMATTER = new Intl.DateTimeFormat('ru-RU', {
   day: '2-digit',
   month: 'short',
+  timeZone: 'Europe/Moscow',
 });
 const SIGNED_PERCENT_FORMATTERS = new Map<number, Intl.NumberFormat>();
 const SIGNED_DECIMAL_FORMATTERS = new Map<string, Intl.NumberFormat>();
@@ -1057,6 +1064,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
     firstPoint && lastPoint ? Math.round(lastPoint.displayValue - firstPoint.displayValue) : null;
   const averageGrowth =
     totalGrowth !== null ? totalGrowth / Math.max(1, chart.points.length - 1) : null;
+  const averageGrowthLabel = resolveAudienceChartAverageGrowthLabel(stats.period.bucket);
   const detailLabelIndices = !renderPointMarkers
     ? new Set<number>()
     : labels.length <= 11
@@ -1374,7 +1382,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                   strokeWidth={2}
                 />
                 <b>{formatSignedDecimalCount(averageGrowth)}</b>
-                <em>В день</em>
+                <em>{averageGrowthLabel}</em>
               </span>
             </div>
           </div>
@@ -1485,7 +1493,11 @@ function ChannelStatsOverview({
   onRangeChange: (range: ChannelStatsRange) => void;
 }) {
   const summary = resolveChannelStatsSummary(stats);
+  const selectedPeriodAverageViews = resolveChannelStatsAverageViews(stats);
   const summaryDailyRows = summary.daily.slice(-9).reverse();
+  const hasTopPosts = stats.official.content.topPosts.length > 0;
+  const hasBestWindows = stats.signals.bestWindows.some((window) => window.posts > 0);
+  const hasDetailPanels = hasTopPosts || hasBestWindows;
 
   return (
     <section
@@ -1525,7 +1537,7 @@ function ChannelStatsOverview({
             <article className="channel-summary-card channel-summary-card--views">
               <header>
                 <small>Просмотров на пост</small>
-                <strong>{formatCount(summary.views.perPost)}</strong>
+                <strong>{formatCount(selectedPeriodAverageViews)}</strong>
               </header>
               <div className="channel-summary-card__rows">
                 <span>
@@ -1632,18 +1644,22 @@ function ChannelStatsOverview({
         ) : null}
       </div>
 
-      <div className="channel-insights__detail-grid">
-        <article className="channel-fact-panel channel-top-posts-panel">
-          <div className="channel-insights__panel-head">
-            <div className="channel-insights__panel-copy">
-              <strong>Топ публикаций</strong>
-            </div>
-          </div>
-          <TopPostsChart stats={stats} />
-        </article>
+      {hasDetailPanels ? (
+        <div className="channel-insights__detail-grid">
+          {hasTopPosts ? (
+            <article className="channel-fact-panel channel-top-posts-panel">
+              <div className="channel-insights__panel-head">
+                <div className="channel-insights__panel-copy">
+                  <strong>Топ публикаций</strong>
+                </div>
+              </div>
+              <TopPostsChart stats={stats} />
+            </article>
+          ) : null}
 
-        <ChannelBestWindowsPanel stats={stats} />
-      </div>
+          {hasBestWindows ? <ChannelBestWindowsPanel stats={stats} /> : null}
+        </div>
+      ) : null}
     </section>
   );
 }
