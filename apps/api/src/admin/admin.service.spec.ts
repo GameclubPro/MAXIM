@@ -33753,6 +33753,13 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       },
     );
 
+    const privateChatLookupSql = prisma.$queryRaw.mock.calls
+      .map((call) => extractSqlText(call))
+      .find((sqlText) => sqlText.includes('FROM webhook_events'));
+    expect(privateChatLookupSql).toContain("normalized_payload->'message'->>'senderId'");
+    expect(privateChatLookupSql).toContain("normalized_payload->'message'->>'chatId'");
+    expect(privateChatLookupSql).toContain("normalized_payload->>'type'");
+    expect(privateChatLookupSql).not.toContain('raw_payload');
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       '555001',
       expect.stringContaining('[Пользователь](max://user/user-1)'),

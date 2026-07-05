@@ -17398,10 +17398,11 @@ export class AdminService implements OnModuleDestroy {
     const rows = await this.prisma.$queryRaw<Array<{ recipient_chat_id: string | null }>>(
       Prisma.sql`
         SELECT
-          COALESCE(raw_payload->'message'->'recipient'->>'chat_id', raw_payload->'message'->>'chat_id') AS recipient_chat_id
+          NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), '') AS recipient_chat_id
         FROM webhook_events
-        WHERE COALESCE(raw_payload->'message'->'sender'->>'user_id', raw_payload->'message'->>'sender_id') = ${normalizedUserId}
-          AND COALESCE(raw_payload->'message'->'recipient'->>'chat_id', raw_payload->'message'->>'chat_id') ~ '^[0-9]+$'
+        WHERE normalized_payload->'message'->>'senderId' = ${normalizedUserId}
+          AND NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), '') ~ '^[0-9]+$'
+          AND normalized_payload->>'type' IN ('message_created', 'message_callback', 'bot_started', 'bot_added')
           ${botFilter}
         ORDER BY created_at DESC
         LIMIT 1

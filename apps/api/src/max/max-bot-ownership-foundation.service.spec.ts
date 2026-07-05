@@ -212,6 +212,30 @@ function createPrismaMock(params: {
   };
 }
 
+function extractSqlText(arg: unknown): string {
+  if (Array.isArray(arg)) {
+    return arg.map((part) => extractSqlText(part)).join(' ');
+  }
+
+  if (arg && typeof arg === 'object' && 'strings' in arg) {
+    const sqlArg = arg as { strings?: unknown; values?: unknown };
+    const strings = sqlArg.strings;
+    const values = sqlArg.values;
+    const parts: string[] = [];
+    if (Array.isArray(strings)) {
+      parts.push(strings.map((part) => String(part)).join(' '));
+    }
+    if (Array.isArray(values)) {
+      parts.push(values.map((part) => extractSqlText(part)).join(' '));
+    }
+    if (parts.length > 0) {
+      return parts.filter(Boolean).join(' ');
+    }
+  }
+
+  return String(arg);
+}
+
 function createConfigMock() {
   return {
     getOrThrow: jest.fn((key: string) => {
@@ -374,6 +398,12 @@ describe('MaxBotOwnershipFoundationService', () => {
     await runDeferredStartupSync();
     const snapshot = await service.getSnapshot(0);
 
+    const webhookRepairSql = extractSqlText(prisma.$queryRaw.mock.calls[0]);
+    expect(webhookRepairSql).toContain('WITH candidate_events AS');
+    expect(webhookRepairSql).toContain('bot_id IN');
+    expect(webhookRepairSql).toContain('created_at >= now() - interval');
+    expect(webhookRepairSql).toContain("normalized_payload->'message'->>'chatId'");
+    expect(webhookRepairSql).toContain("normalized_payload->>'chatId'");
     expect(prisma.chat.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 'chat-legacy' },
