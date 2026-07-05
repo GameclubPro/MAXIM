@@ -16041,7 +16041,7 @@ export class AdminService implements OnModuleDestroy {
           ),
           0
         ) = 0
-      ORDER BY created_at ASC
+      ORDER BY created_at DESC
       LIMIT ${boundedLimit}
     `);
 
