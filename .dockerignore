@@ -9,6 +9,10 @@ dist
 coverage
 artifacts
 
+infra/**
+!infra/certs/
+!infra/certs/**
+
 apps/*/node_modules
 apps/*/dist
 apps/api/src/generated
