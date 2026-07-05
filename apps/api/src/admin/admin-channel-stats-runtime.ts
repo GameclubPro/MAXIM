@@ -382,10 +382,11 @@ export class AdminChannelStatsRuntime {
     const refreshQueued = this.shouldRefreshChannelStats(latestAudienceSnapshot, syncState)
       ? this.scheduleChannelStatsRefresh(chatId)
       : false;
+    const audienceFresh = this.isChannelStatsAudienceFresh(latestAudienceSnapshot, syncState, now);
     const hasMembershipCoverageFrom = (windowFrom: Date) =>
       Boolean(
         syncState?.membershipCoverageFrom &&
-          syncState.membershipCoverageFrom.getTime() <= windowFrom.getTime(),
+        syncState.membershipCoverageFrom.getTime() <= windowFrom.getTime(),
       );
     const todayMembershipRows = this.filterChannelStatsMembershipRowsFrom(
       sixteenDaysMembershipRows,
@@ -397,9 +398,11 @@ export class AdminChannelStatsRuntime {
     );
 
     const localTitle = chat?.title?.trim() || `Канал ${chatId}`;
-    let maxSnapshotAvailable = latestAudienceSnapshot !== null;
+    let maxSnapshotAvailable = audienceFresh;
     let title = localTitle;
-    let participantsCount = latestAudienceSnapshot?.participantsCount ?? null;
+    let participantsCount = audienceFresh
+      ? (latestAudienceSnapshot?.participantsCount ?? null)
+      : null;
     let status = latestAudienceSnapshot?.status ?? null;
     let isPublic = latestAudienceSnapshot?.isPublic ?? null;
     let link = latestAudienceSnapshot?.link ?? null;
@@ -493,6 +496,7 @@ export class AdminChannelStatsRuntime {
         ),
       },
       now,
+      useAudienceSnapshotFallbackForCurrent: audienceFresh,
     });
     const topReactions = isOverviewMode ? [] : this.buildTopReactions(periodPosts);
     const topPosts = isOverviewMode
@@ -503,6 +507,14 @@ export class AdminChannelStatsRuntime {
       bucket,
       previousAudienceSnapshot?.participantsCount ?? participantsCount,
       audienceSnapshots,
+      {
+        carryForwardUntil:
+          audienceFresh || !latestAudienceSnapshot
+            ? null
+            : new Date(
+                latestAudienceSnapshot.capturedAt.getTime() + CHANNEL_STATS_REFRESH_STALE_MS,
+              ),
+      },
     );
     const activityFeed = statsQuery.includeActivityPreview
       ? await this.getMembershipActivityFeedPage(
@@ -519,7 +531,12 @@ export class AdminChannelStatsRuntime {
       : this.buildEmptyMembershipActivityPage();
     const previousPeriod = isOverviewMode
       ? this.buildEmptyPreviousChannelStatsPeriodSnapshot()
-      : await this.buildPreviousChannelStatsPeriodSnapshot(chatId, previousFrom, previousTo, bucket);
+      : await this.buildPreviousChannelStatsPeriodSnapshot(
+          chatId,
+          previousFrom,
+          previousTo,
+          bucket,
+        );
     const previousTotals = previousPeriod.totals;
     const currentTotals: ChannelStatsPeriodTotals = {
       joined,
@@ -527,8 +544,7 @@ export class AdminChannelStatsRuntime {
       net: joined - left,
       posts: periodPostsCount,
       views: periodViews,
-      averageViewsPerPost:
-        periodPostsCount > 0 ? Math.round(periodViews / periodPostsCount) : 0,
+      averageViewsPerPost: periodPostsCount > 0 ? Math.round(periodViews / periodPostsCount) : 0,
       reactions: contentTotals.reactions,
     };
     const comparison = this.buildChannelStatsComparison(
@@ -675,6 +691,22 @@ export class AdminChannelStatsRuntime {
     return audienceStale || viewsStale;
   }
 
+  isChannelStatsAudienceFresh(
+    latestAudienceSnapshot: { capturedAt: Date } | null,
+    syncState: { lastAudienceSyncAt: Date | null } | null,
+    now: Date,
+  ): boolean {
+    if (!latestAudienceSnapshot || !syncState?.lastAudienceSyncAt) {
+      return false;
+    }
+
+    const nowMs = now.getTime();
+    return (
+      nowMs - latestAudienceSnapshot.capturedAt.getTime() <= CHANNEL_STATS_REFRESH_STALE_MS &&
+      nowMs - syncState.lastAudienceSyncAt.getTime() <= CHANNEL_STATS_REFRESH_STALE_MS
+    );
+  }
+
   scheduleChannelStatsRefresh(chatId: string): boolean {
     const collector = this.channelStatsCollector;
     if (!collector) {
@@ -755,48 +787,48 @@ export class AdminChannelStatsRuntime {
       audienceSnapshots,
       periodPosts,
     ] = await Promise.all([
-        selectChannelStatsMembershipBucketRows(this.prisma, { chatId, from, to, bucket }),
-        selectChannelStatsContentBucketRows(this.prisma, { chatId, from, to, bucket }),
-        this.prisma.channelAudienceSnapshot.findFirst({
-          where: {
-            chatId,
-            capturedAt: { lt: from },
-          },
-          orderBy: { capturedAt: 'desc' },
-          select: {
-            participantsCount: true,
-          },
-        }),
-        this.prisma.channelAudienceSnapshot.findMany({
-          where: {
-            chatId,
-            capturedAt: { gte: from, lte: to },
-          },
-          orderBy: { capturedAt: 'asc' },
-          select: {
-            capturedAt: true,
-            participantsCount: true,
-          },
-        }),
-        this.prisma.channelPost.findMany({
-          where: {
-            chatId,
-            publishedAt: { gte: from, lte: to },
-          },
-          orderBy: { publishedAt: 'asc' },
-          select: {
-            id: true,
-            messageId: true,
-            publishedAt: true,
-            url: true,
-            previewUrl: true,
-            latestViews: true,
-            latestReactions: true,
-            latestReactionsTotal: true,
-            latestSnapshotAt: true,
-          },
-        }),
-      ]);
+      selectChannelStatsMembershipBucketRows(this.prisma, { chatId, from, to, bucket }),
+      selectChannelStatsContentBucketRows(this.prisma, { chatId, from, to, bucket }),
+      this.prisma.channelAudienceSnapshot.findFirst({
+        where: {
+          chatId,
+          capturedAt: { lt: from },
+        },
+        orderBy: { capturedAt: 'desc' },
+        select: {
+          participantsCount: true,
+        },
+      }),
+      this.prisma.channelAudienceSnapshot.findMany({
+        where: {
+          chatId,
+          capturedAt: { gte: from, lte: to },
+        },
+        orderBy: { capturedAt: 'asc' },
+        select: {
+          capturedAt: true,
+          participantsCount: true,
+        },
+      }),
+      this.prisma.channelPost.findMany({
+        where: {
+          chatId,
+          publishedAt: { gte: from, lte: to },
+        },
+        orderBy: { publishedAt: 'asc' },
+        select: {
+          id: true,
+          messageId: true,
+          publishedAt: true,
+          url: true,
+          previewUrl: true,
+          latestViews: true,
+          latestReactions: true,
+          latestReactionsTotal: true,
+          latestSnapshotAt: true,
+        },
+      }),
+    ]);
 
     const bucketStarts = this.buildChannelStatsBucketStarts(from, to, bucket);
     const contentSeries = this.buildContentSeriesFromBucketRows(bucketStarts, contentBucketRows);
@@ -1065,9 +1097,11 @@ export class AdminChannelStatsRuntime {
     bucket: ChannelStatsBucket,
     initialParticipantsCount: number | null,
     snapshots: Array<{ capturedAt: Date; participantsCount: number | null }>,
+    options: { carryForwardUntil?: Date | null } = {},
   ) {
     let cursorValue = initialParticipantsCount;
     let snapshotIndex = 0;
+    const carryForwardUntilMs = options.carryForwardUntil?.getTime() ?? null;
 
     return bucketStarts.map((bucketStart) => {
       const bucketEnd = this.shiftChannelStatsBucket(bucketStart, bucket, 1);
@@ -1081,7 +1115,10 @@ export class AdminChannelStatsRuntime {
 
       return {
         at: bucketStart.toISOString(),
-        participantsCount: cursorValue,
+        participantsCount:
+          carryForwardUntilMs !== null && bucketStart.getTime() > carryForwardUntilMs
+            ? null
+            : cursorValue,
       };
     });
   }
@@ -1180,13 +1217,16 @@ export class AdminChannelStatsRuntime {
       sixteenDays: number | null;
     };
     now: Date;
+    useAudienceSnapshotFallbackForCurrent?: boolean;
   }): ChannelStatsResponse['summary'] {
     const sortedAudienceSnapshots = params.audienceSnapshots
       .slice()
       .sort((left, right) => left.capturedAt.getTime() - right.capturedAt.getTime());
     const currentParticipants =
       params.participantsCount ??
-      this.resolveLastAudienceCountAt(sortedAudienceSnapshots, params.now) ??
+      (params.useAudienceSnapshotFallbackForCurrent === false
+        ? null
+        : this.resolveLastAudienceCountAt(sortedAudienceSnapshots, params.now)) ??
       null;
     const daily = this.buildChannelStatsDailySummary(
       sortedAudienceSnapshots,
@@ -1194,6 +1234,10 @@ export class AdminChannelStatsRuntime {
       params.now,
       params.summaryMembershipRows,
       params.summaryMembershipCoverageFrom,
+      {
+        useAudienceSnapshotFallbackForCurrent:
+          params.useAudienceSnapshotFallbackForCurrent !== false,
+      },
     );
     const resolveDelta = (lookbackMs: number) => {
       if (currentParticipants === null) {
@@ -1281,6 +1325,7 @@ export class AdminChannelStatsRuntime {
     now: Date,
     membershipRows?: ChannelStatsMembershipBucketRow[],
     membershipCoverageFrom?: Date | null,
+    options: { useAudienceSnapshotFallbackForCurrent?: boolean } = {},
   ): ChannelStatsResponse['summary']['daily'] {
     const firstDay = this.floorChannelStatsMoscowDay(
       new Date(now.getTime() - 15 * TWENTY_FOUR_HOURS_MS),
@@ -1299,7 +1344,9 @@ export class AdminChannelStatsRuntime {
       const subscribers =
         offset === 0 && currentParticipants !== null
           ? currentParticipants
-          : this.resolveLastAudienceCountAt(audienceSnapshots, dayEnd);
+          : offset === 0 && options.useAudienceSnapshotFallbackForCurrent === false
+            ? null
+            : this.resolveLastAudienceCountAt(audienceSnapshots, dayEnd);
       const delta =
         subscribers === null || previousCount === null ? null : subscribers - previousCount;
       days.push({
@@ -1427,7 +1474,7 @@ export class AdminChannelStatsRuntime {
       if (flow) {
         const hasDayCoverage = Boolean(
           membershipCoverageFrom &&
-            membershipCoverageFrom.getTime() <= firstDayMs + index * TWENTY_FOUR_HOURS_MS,
+          membershipCoverageFrom.getTime() <= firstDayMs + index * TWENTY_FOUR_HOURS_MS,
         );
         const joined = this.toSafeInteger(row.joined_users);
         const left = this.toSafeInteger(row.left_users);
@@ -1849,9 +1896,7 @@ export class AdminChannelStatsRuntime {
       .filter((item): item is { emoji: string; count: number } => item !== null);
   }
 
-  readChannelPostReaction(
-    value: Prisma.JsonValue,
-  ): { emoji: string; count: number } | null {
+  readChannelPostReaction(value: Prisma.JsonValue): { emoji: string; count: number } | null {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       return null;
     }
@@ -1891,5 +1936,4 @@ export class AdminChannelStatsRuntime {
     );
     return earliest.toISOString();
   }
-
 }

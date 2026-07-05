@@ -313,6 +313,8 @@ import {
   MANAGED_ENTITIES_LOCAL_REFRESH_SCAN_WINDOW_SIZE,
   MANAGED_ENTITIES_ALLOWLIST_CACHE_TTL_MS,
   MANAGED_ENTITIES_ALLOWLIST_RESPONSE_BUDGET_MS,
+  MANAGED_ENTITIES_ACCESS_EDGE_RESPONSE_BUDGET_MS,
+  MANAGED_ENTITIES_ACCESS_EDGE_RESPONSE_LIMIT,
   MANAGED_ENTITIES_ALLOWLIST_EDGE_REPAIR_BATCH_SIZE,
   MANAGED_ENTITIES_SUSPICIOUS_ALLOWLIST_REVALIDATION_LIMIT,
   MANAGED_ENTITIES_SUSPICIOUS_ALLOWLIST_ADMIN_TIMEOUT_MS,
@@ -447,9 +449,7 @@ export type {
   ChannelPublicationEngagementContext,
 } from './admin.service.support';
 
-const CHANNEL_SUGGESTION_AMBIGUOUS_SEND_ERROR = Symbol(
-  'channelSuggestionAmbiguousSendError',
-);
+const CHANNEL_SUGGESTION_AMBIGUOUS_SEND_ERROR = Symbol('channelSuggestionAmbiguousSendError');
 
 type DialogNotificationPreferenceRow = {
   userId: string;
@@ -940,8 +940,18 @@ export class AdminService implements OnModuleDestroy {
           source: 'default',
         }),
       );
-      const initial = await mergeWithLightweightBootstrap(cached);
-      if (cached.length === 0) {
+      const edgeItems = await this.listManagedEntitiesFromFreshAccessEdgesWithinResponseBudget(
+        user.userId,
+        entityType,
+        new Set(cached.map((item) => item.id)),
+        { source: 'default' },
+      );
+      const cachedWithEdges = this.mergeManagedEntityGroups(cached, edgeItems);
+      const initial = await mergeWithLightweightBootstrap(cachedWithEdges);
+      if (edgeItems.length > 0) {
+        this.scheduleManagedEntitiesPublishedSnapshotRebuild(user.userId, entityType);
+      }
+      if (cachedWithEdges.length === 0) {
         this.scheduleManagedEntitiesPriorityAllowlistWarmup(user, entityType, {
           seededChats: initial,
         });
@@ -1079,10 +1089,16 @@ export class AdminService implements OnModuleDestroy {
     // If no published snapshot exists yet, prefer showing lightweight bootstrap candidates
     // over returning a temporarily empty refresh response.
     const shouldMergeLightweightBootstrap = true;
+    const edgeItems = await this.listManagedEntitiesFromFreshAccessEdgesWithinResponseBudget(
+      user.userId,
+      entityType,
+      new Set(cached.map((item) => item.id)),
+      { source: 'refresh' },
+    );
     const responseBaseItems =
       responseWarmup && responseWarmup.items.length > 0
-        ? this.mergeManagedEntityGroups(responseWarmup.items, cached)
-        : cached;
+        ? this.mergeManagedEntityGroups(responseWarmup.items, cached, edgeItems)
+        : this.mergeManagedEntityGroups(cached, edgeItems);
     const mergedCached = shouldMergeLightweightBootstrap
       ? await mergeWithLightweightBootstrap(responseBaseItems)
       : responseBaseItems;
@@ -1160,11 +1176,18 @@ export class AdminService implements OnModuleDestroy {
         edgeVisibleItems,
         { ignoreBotDenied: true },
       );
-      const responseItems = await this.mergeManagedEntitiesPublishedSnapshotWithAllowlistItems(
-        userId,
-        entityType,
-        filteredItems,
-      );
+      const allowlistMergedItems =
+        await this.mergeManagedEntitiesPublishedSnapshotWithAllowlistItems(
+          userId,
+          entityType,
+          filteredItems,
+        );
+      const responseItems =
+        await this.mergeManagedEntitiesPublishedSnapshotWithFreshAccessEdgeItems(
+          userId,
+          entityType,
+          allowlistMergedItems,
+        );
       let responseSnapshot = snapshot;
       if (!this.haveSameManagedEntityIds(responseItems, runtimeScopedItems)) {
         try {
@@ -1327,6 +1350,224 @@ export class AdminService implements OnModuleDestroy {
         'Failed to merge allowlisted managed entities into published snapshot response',
       );
       return snapshotItems;
+    }
+  }
+
+  private async mergeManagedEntitiesPublishedSnapshotWithFreshAccessEdgeItems(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+    items: readonly ChatSummary[],
+  ): Promise<ChatSummary[]> {
+    const snapshotItems = items.map((item) => this.cloneManagedEntitySummary(item));
+    if (!this.supportsManagedEntitiesPublishedSnapshot(entityType)) {
+      return snapshotItems;
+    }
+
+    try {
+      const edgeItems = await this.listManagedEntitiesFromFreshAccessEdgesWithinResponseBudget(
+        userId,
+        entityType,
+        new Set(snapshotItems.map((item) => item.id)),
+        { source: 'published_snapshot' },
+      );
+      if (edgeItems.length === 0) {
+        return snapshotItems;
+      }
+
+      this.scheduleManagedEntitiesPublishedSnapshotRebuild(userId, entityType);
+      return this.mergeManagedEntityGroups(snapshotItems, edgeItems);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          entityType,
+          userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to merge fresh access-edge managed entities into published snapshot response',
+      );
+      return snapshotItems;
+    }
+  }
+
+  private listManagedEntitiesFromFreshAccessEdgesWithinResponseBudget(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+    excludeIds: ReadonlySet<string>,
+    options: {
+      source: 'default' | 'refresh' | 'published_snapshot';
+    },
+  ): Promise<ChatSummary[]> {
+    if (!this.supportsManagedEntitiesPublishedSnapshot(entityType)) {
+      return Promise.resolve([]);
+    }
+
+    return this.awaitManagedEntitiesResponseValueWithinBudget(
+      this.listManagedEntitiesFromFreshAccessEdges(userId, entityType, excludeIds),
+      {
+        fallback: [],
+        budgetMs: MANAGED_ENTITIES_ACCESS_EDGE_RESPONSE_BUDGET_MS,
+        timeoutMessage:
+          'Detached managed entities access-edge read from response after response budget exceeded',
+        failureMessage:
+          'Managed entities access-edge read failed during user-facing managed entities response',
+        logData: {
+          entityType,
+          source: options.source,
+          userId,
+        },
+      },
+    );
+  }
+
+  private async listManagedEntitiesFromFreshAccessEdges(
+    userId: string,
+    entityType: ManagedEntityType,
+    excludeIds: ReadonlySet<string> = new Set(),
+  ): Promise<ChatSummary[]> {
+    const client = (
+      this.prisma as unknown as {
+        managedEntityAccessEdge?: {
+          findMany?: (args: unknown) => Promise<
+            Array<{
+              chatId: string;
+              botId: string;
+              checkedAt?: Date | null;
+              chat?: {
+                id: string;
+                title: string;
+                createdAt: Date;
+                entityType: ChatEntityType;
+                primaryBotId?: string | null;
+                botId?: string | null;
+              } | null;
+            }>
+          >;
+        };
+      }
+    ).managedEntityAccessEdge;
+    if (typeof client?.findMany !== 'function') {
+      return [];
+    }
+
+    const normalizedExcludeIds = Array.from(
+      new Set(
+        [...excludeIds]
+          .map((chatId) => this.readTrimmedString(chatId))
+          .filter((chatId): chatId is string => Boolean(chatId)),
+      ),
+    );
+    const runtimeBotIds = [...this.managedEntitiesRuntimeBotIds];
+
+    try {
+      const rows = await client.findMany({
+        where: {
+          userId,
+          entityType: toPrismaEntityType(entityType),
+          state: 'GRANTED',
+          ...(runtimeBotIds.length > 0
+            ? {
+                botId: {
+                  in: runtimeBotIds,
+                },
+              }
+            : {}),
+          ...(normalizedExcludeIds.length > 0
+            ? {
+                chatId: {
+                  notIn: normalizedExcludeIds,
+                },
+              }
+            : {}),
+          OR: [
+            { expiresAt: { gt: new Date() } },
+            {
+              expiresAt: null,
+              checkedAt: { gt: new Date(Date.now() - MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS) },
+            },
+          ],
+        },
+        select: {
+          chatId: true,
+          botId: true,
+          checkedAt: true,
+          chat: {
+            select: {
+              id: true,
+              title: true,
+              createdAt: true,
+              entityType: true,
+              primaryBotId: true,
+              botId: true,
+            },
+          },
+        },
+        orderBy: [{ checkedAt: 'desc' }],
+        take: MANAGED_ENTITIES_ACCESS_EDGE_RESPONSE_LIMIT,
+      });
+      if (!Array.isArray(rows) || rows.length === 0) {
+        return [];
+      }
+
+      const activeMembershipKeys = await this.readActiveManagedEntityMembershipKeys(rows, {
+        userId,
+        requestedItems: rows.length,
+        source: 'fresh_access_edges',
+      });
+      const summaries: ChatSummary[] = [];
+      const seenChatIds = new Set<string>();
+      for (const row of rows) {
+        const chatId = this.readTrimmedString(row.chatId);
+        const botId = this.normalizeManagedEntityAccessBotId(row.botId);
+        const chat = row.chat;
+        if (
+          !chatId ||
+          !botId ||
+          !chat ||
+          seenChatIds.has(chatId) ||
+          !activeMembershipKeys.has(this.buildManagedEntityRepairEdgeKey(chatId, botId))
+        ) {
+          continue;
+        }
+
+        const resolvedEntityType = fromPrismaEntityType(chat.entityType);
+        if (
+          resolvedEntityType !== entityType ||
+          isUnsupportedManagedChat(chat.id, resolvedEntityType)
+        ) {
+          continue;
+        }
+
+        const chatPrimaryBotId =
+          this.normalizeRuntimeManagedEntityBotId(
+            this.readTrimmedString(chat.primaryBotId) ?? this.readTrimmedString(chat.botId),
+          ) ?? botId;
+        seenChatIds.add(chatId);
+        summaries.push(
+          this.createManagedEntitySummary({
+            id: chat.id,
+            title: chat.title,
+            createdAt: chat.createdAt.toISOString(),
+            entityType: resolvedEntityType,
+            primaryBotId: chatPrimaryBotId,
+          }),
+        );
+      }
+
+      if (summaries.length === 0) {
+        return [];
+      }
+
+      return this.attachChannelOverview(await this.attachManagedEntityAvatars(summaries));
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          entityType,
+          userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to read managed entities from fresh access edges',
+      );
+      return [];
     }
   }
 
@@ -2004,13 +2245,21 @@ export class AdminService implements OnModuleDestroy {
     const allowlist = await this.listChatsFromAllowlistUncached(userId, entityType, {
       allowLastSuccessFallback: false,
     });
+    const edgeItems = await this.listManagedEntitiesFromFreshAccessEdges(
+      userId,
+      entityType,
+      new Set(allowlist.map((item) => item.id)),
+    );
     const user: AuthUser = {
       userId,
       username: null,
       displayName: null,
       chatTitle: null,
     };
-    const revalidated = await this.revalidateCachedManagedEntities(user, allowlist);
+    const revalidated = this.mergeManagedEntityGroups(
+      await this.revalidateCachedManagedEntities(user, allowlist),
+      edgeItems,
+    );
     const items = await this.attachManagedEntityBotAssignments(
       await this.hydrateManagedEntities(revalidated),
     );
@@ -7163,10 +7412,10 @@ export class AdminService implements OnModuleDestroy {
   private isChannelSuggestionAmbiguousSendError(error: unknown): boolean {
     return Boolean(
       error &&
-        (typeof error === 'object' || typeof error === 'function') &&
-        (error as Record<typeof CHANNEL_SUGGESTION_AMBIGUOUS_SEND_ERROR, unknown>)[
-          CHANNEL_SUGGESTION_AMBIGUOUS_SEND_ERROR
-        ],
+      (typeof error === 'object' || typeof error === 'function') &&
+      (error as Record<typeof CHANNEL_SUGGESTION_AMBIGUOUS_SEND_ERROR, unknown>)[
+        CHANNEL_SUGGESTION_AMBIGUOUS_SEND_ERROR
+      ],
     );
   }
 
@@ -7177,8 +7426,9 @@ export class AdminService implements OnModuleDestroy {
     error: unknown;
   }): Promise<void> {
     const releasedAt = new Date().toISOString();
-    const message =
-      (params.error instanceof Error ? params.error.message : String(params.error)).slice(0, 500);
+    const message = (
+      params.error instanceof Error ? params.error.message : String(params.error)
+    ).slice(0, 500);
     await this.prisma.$executeRaw(Prisma.sql`
       UPDATE audit_logs
       SET payload = (
@@ -13164,7 +13414,8 @@ export class AdminService implements OnModuleDestroy {
     const missingUserIds: string[] = [];
     const routeBotId =
       this.readTrimmedString(options.botId) ??
-      ((await this.resolveBackgroundReadBotAssignment(chatId).catch(() => undefined)) ?? null);
+      (await this.resolveBackgroundReadBotAssignment(chatId).catch(() => undefined)) ??
+      null;
     const cacheOptions: ResolveUserProfilesOptions = {
       ...options,
       ...(routeBotId ? { botId: routeBotId } : {}),
@@ -16019,10 +16270,7 @@ export class AdminService implements OnModuleDestroy {
   async recoverStaleChannelSuggestionDeliveries(
     limit = CHANNEL_SUGGESTION_DELIVERY_RECOVERY_BATCH_SIZE,
   ): Promise<number> {
-    const boundedLimit = Math.max(
-      1,
-      Math.min(50, Number.isFinite(limit) ? Math.trunc(limit) : 1),
-    );
+    const boundedLimit = Math.max(1, Math.min(50, Number.isFinite(limit) ? Math.trunc(limit) : 1));
     const staleBefore = new Date(Date.now() - CHANNEL_SUGGESTION_DELIVERY_RECOVERY_STALE_MS);
     const staleBeforeIso = staleBefore.toISOString();
     const rows = await this.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
@@ -20073,9 +20321,7 @@ export class AdminService implements OnModuleDestroy {
         (candidate): candidate is { chat: ChatSummary; botIds: string[]; allowlistedAt: Date } =>
           candidate !== null,
       );
-    const repairCandidates = await this.attachActiveManagedEntityRepairBotIds(
-      baseRepairCandidates,
-    );
+    const repairCandidates = await this.attachActiveManagedEntityRepairBotIds(baseRepairCandidates);
     if (repairCandidates.length === 0) {
       return [];
     }
@@ -20254,10 +20500,7 @@ export class AdminService implements OnModuleDestroy {
           continue;
         }
 
-        activeBotIdsByChatId.set(chatId, [
-          ...(activeBotIdsByChatId.get(chatId) ?? []),
-          botId,
-        ]);
+        activeBotIdsByChatId.set(chatId, [...(activeBotIdsByChatId.get(chatId) ?? []), botId]);
       }
 
       return candidates.map((candidate) => {
