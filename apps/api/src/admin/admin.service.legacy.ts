@@ -16023,6 +16023,7 @@ export class AdminService implements OnModuleDestroy {
       Math.min(50, Number.isFinite(limit) ? Math.trunc(limit) : 1),
     );
     const staleBefore = new Date(Date.now() - CHANNEL_SUGGESTION_DELIVERY_RECOVERY_STALE_MS);
+    const staleBeforeIso = staleBefore.toISOString();
     const rows = await this.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
       SELECT id
       FROM audit_logs
@@ -16030,7 +16031,6 @@ export class AdminService implements OnModuleDestroy {
         AND created_at <= ${staleBefore}
         AND COALESCE(NULLIF(payload->>'reviewStatus', ''), 'pending') = 'pending'
         AND payload->>'delivered' = 'false'
-        AND NOT (payload ? 'deliveryAttemptedAt')
         AND COALESCE(
           jsonb_array_length(
             CASE
@@ -16041,7 +16041,45 @@ export class AdminService implements OnModuleDestroy {
           ),
           0
         ) = 0
-      ORDER BY created_at DESC
+        AND (
+          NOT (payload ? 'deliveryAttemptedAt')
+          OR (
+            NULLIF(payload->>'deliveryAttemptedAt', '') <= ${staleBeforeIso}
+            AND EXISTS (
+              SELECT 1
+              FROM jsonb_array_elements(
+                CASE
+                  WHEN jsonb_typeof(payload->'deliveryFailures') = 'array'
+                  THEN payload->'deliveryFailures'
+                  ELSE '[]'::jsonb
+                END
+              ) AS delivery_failure(value)
+              WHERE delivery_failure.value->>'recoverable' = 'true'
+                OR (
+                  delivery_failure.value->>'terminal' = 'false'
+                  AND (
+                    delivery_failure.value->>'status' IN ('408', '429')
+                    OR (
+                      (delivery_failure.value->>'status') ~ '^[0-9]+$'
+                      AND (delivery_failure.value->>'status')::integer >= 500
+                    )
+                    OR LOWER(COALESCE(delivery_failure.value->>'code', '')) = 'attachment.not.ready'
+                    OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%timeout%'
+                    OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%timed out%'
+                    OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%rate limit%'
+                    OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%temporarily%'
+                    OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%try again%'
+                    OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%econnreset%'
+                    OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%etimedout%'
+                    OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%eai_again%'
+                    OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%connection%'
+                    OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%connect%'
+                  )
+                )
+            )
+          )
+        )
+      ORDER BY created_at ASC
       LIMIT ${boundedLimit}
     `);
 
@@ -16133,6 +16171,7 @@ export class AdminService implements OnModuleDestroy {
           status,
           code,
           terminal: true,
+          recoverable: false,
           message,
         },
       ];
@@ -16177,10 +16216,16 @@ export class AdminService implements OnModuleDestroy {
 
     const alreadyDelivered = payload.delivered === true;
     const deliveryAttemptedAt = this.readTrimmedString(payload.deliveryAttemptedAt);
+    const deliveries = this.readChannelSuggestionDeliveries(payload.deliveries);
+    const deliveryFailures = this.readChannelSuggestionDeliveryFailures(payload.deliveryFailures);
+    const shouldRetryRecoverableDeliveryFailure =
+      Boolean(deliveryAttemptedAt) &&
+      deliveries.length === 0 &&
+      this.hasRecoverableChannelSuggestionDeliveryFailure(deliveryFailures);
     if (
       alreadyDelivered ||
-      deliveryAttemptedAt ||
-      this.readChannelSuggestionDeliveries(payload.deliveries).length > 0
+      deliveries.length > 0 ||
+      (deliveryAttemptedAt && !shouldRetryRecoverableDeliveryFailure)
     ) {
       return;
     }
@@ -16236,20 +16281,27 @@ export class AdminService implements OnModuleDestroy {
     },
   ) {
     const createdPayload = this.readObjectPayload(row.payload);
+    const nextPayload: Record<string, unknown> = {
+      ...createdPayload,
+      delivered: delivery.delivered,
+      deliveredToUserId: delivery.deliveredToUserId,
+      deliveredToUserIds: delivery.deliveredToUserIds,
+      deliveries: delivery.deliveries,
+      deliveryAttemptedAt: delivery.deliveryAttemptedAt,
+      deliveryFailures: delivery.deliveryFailures,
+    };
+    delete nextPayload.deliveryJobLastError;
+    delete nextPayload.deliveryJobLastFailedAt;
+    delete nextPayload.deliveryJobFinalFailedAt;
+    delete nextPayload.deliveryJobFailureCount;
+    delete nextPayload.deliveryJobRecoverable;
+
     return this.prisma.auditLog.update({
       where: {
         id: row.id,
       },
       data: {
-        payload: {
-          ...createdPayload,
-          delivered: delivery.delivered,
-          deliveredToUserId: delivery.deliveredToUserId,
-          deliveredToUserIds: delivery.deliveredToUserIds,
-          deliveries: delivery.deliveries,
-          deliveryAttemptedAt: delivery.deliveryAttemptedAt,
-          deliveryFailures: delivery.deliveryFailures,
-        } as Prisma.InputJsonValue,
+        payload: nextPayload as Prisma.InputJsonValue,
       },
       select: {
         id: true,
@@ -16457,28 +16509,56 @@ export class AdminService implements OnModuleDestroy {
   }): ChannelSuggestionAdminDeliveryFailure {
     const status = extractMaxErrorStatus(params.error);
     const code = extractMaxErrorCode(params.error);
+    const message = extractMaxErrorMessage(params.error);
+    const terminal = isPrivateDialogChatUnavailableError(params.error);
     return {
       adminUserId: params.adminUserId,
       privateChatId: params.privateChatId,
       ...(params.botId ? { botId: params.botId } : {}),
       status,
       code,
-      terminal: isPrivateDialogChatUnavailableError(params.error),
-      message: extractMaxErrorMessage(params.error),
+      terminal,
+      recoverable:
+        !terminal &&
+        this.isRecoverableChannelSuggestionDeliveryFailureData({
+          status,
+          code,
+          message,
+        }),
+      message,
     };
   }
 
   private isRecoverableChannelSuggestionDeliveryJobError(error: unknown): boolean {
     const status = extractMaxErrorStatus(error);
-    if (status === 408 || status === 429 || (typeof status === 'number' && status >= 500)) {
+    const code = extractMaxErrorCode(error);
+    const message = extractMaxErrorMessage(error);
+    return this.isRecoverableChannelSuggestionDeliveryFailureData({ status, code, message });
+  }
+
+  private isRecoverableChannelSuggestionDeliveryFailureData(params: {
+    status: number | null;
+    code: string | null;
+    message: string;
+  }): boolean {
+    if (
+      params.status === 408 ||
+      params.status === 429 ||
+      (typeof params.status === 'number' && params.status >= 500)
+    ) {
       return true;
     }
 
-    if (typeof status === 'number') {
+    const normalizedCode = params.code?.trim().toLowerCase() ?? '';
+    const message = params.message.toLowerCase();
+    if (normalizedCode === 'attachment.not.ready' || message.includes('attachment.not.ready')) {
+      return true;
+    }
+
+    if (typeof params.status === 'number') {
       return false;
     }
 
-    const message = extractMaxErrorMessage(error).toLowerCase();
     return (
       message.includes('timeout') ||
       message.includes('timed out') ||
@@ -16491,6 +16571,12 @@ export class AdminService implements OnModuleDestroy {
       message.includes('connection') ||
       message.includes('connect')
     );
+  }
+
+  private hasRecoverableChannelSuggestionDeliveryFailure(
+    failures: ChannelSuggestionAdminDeliveryFailure[],
+  ): boolean {
+    return failures.some((failure) => !failure.terminal && failure.recoverable);
   }
 
   private buildChannelSuggestionAdminReviewButtons(suggestionId: string): MaxMessageButton[][] {
@@ -16930,6 +17016,68 @@ export class AdminService implements OnModuleDestroy {
       .filter((entry): entry is ChannelSuggestionAdminDelivery => entry !== null);
   }
 
+  private readChannelSuggestionDeliveryFailures(
+    value: unknown,
+  ): ChannelSuggestionAdminDeliveryFailure[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .map((item) => {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) {
+          return null;
+        }
+
+        const row = item as Record<string, unknown>;
+        const adminUserId = this.readTrimmedString(row.adminUserId);
+        if (!adminUserId) {
+          return null;
+        }
+
+        const privateChatId = this.readTrimmedString(row.privateChatId);
+        const botId = this.resolvePrivateDeliveryBotId(this.readTrimmedString(row.botId));
+        const status = this.readNullableStatusCode(row.status);
+        const code = this.readLowerString(row.code);
+        const message = this.readRawString(row.message)?.trim() ?? '';
+        const terminal = row.terminal === true || this.readLowerString(row.terminal) === 'true';
+        const persistedRecoverable = typeof row.recoverable === 'boolean' ? row.recoverable : null;
+        const recoverable =
+          persistedRecoverable ??
+          (!terminal &&
+            this.isRecoverableChannelSuggestionDeliveryFailureData({
+              status,
+              code,
+              message,
+            }));
+
+        return {
+          adminUserId,
+          privateChatId,
+          ...(botId ? { botId } : {}),
+          status,
+          code,
+          terminal,
+          recoverable,
+          message,
+        };
+      })
+      .filter((entry): entry is ChannelSuggestionAdminDeliveryFailure => entry !== null);
+  }
+
+  private readNullableStatusCode(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isInteger(value)) {
+      return value;
+    }
+
+    if (typeof value === 'string') {
+      const parsed = Number.parseInt(value, 10);
+      return Number.isNaN(parsed) ? null : parsed;
+    }
+
+    return null;
+  }
+
   private markdownTitle(title: string): string {
     return `**${this.escapeMarkdown(title)}**`;
   }
@@ -17337,6 +17485,9 @@ export class AdminService implements OnModuleDestroy {
         },
         'Failed to upload channel suggestion image',
       );
+      if (this.isRecoverableChannelSuggestionDeliveryJobError(error)) {
+        throw error;
+      }
       throw new BadRequestException('Не удалось загрузить фото предложки.');
     }
   }

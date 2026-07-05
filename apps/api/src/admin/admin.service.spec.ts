@@ -32700,6 +32700,40 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     expect(adminSuggestionDeliveryQueue.add).not.toHaveBeenCalled();
   });
 
+  it('includes recoverable attempted delivery failures in stale suggestion recovery', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw.mockResolvedValue([{ id: 'suggestion-recoverable-delivery-failure-1' }]);
+    const adminSuggestionDeliveryQueue = {
+      getJob: jest.fn().mockResolvedValue(null),
+      add: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      { getChatAdminIds: jest.fn() } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      adminSuggestionDeliveryQueue as never,
+    );
+
+    await expect(service.recoverStaleChannelSuggestionDeliveries()).resolves.toBe(1);
+
+    const recoverySql = extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0]);
+    expect(recoverySql).toContain("payload->'deliveryFailures'");
+    expect(recoverySql).toContain("delivery_failure.value->>'recoverable' = 'true'");
+    expect(recoverySql).toContain('ORDER BY created_at ASC');
+    expect(adminSuggestionDeliveryQueue.add).toHaveBeenCalledWith(
+      'deliver-channel-suggestion',
+      { auditLogId: 'suggestion-recoverable-delivery-failure-1' },
+      expect.objectContaining({
+        jobId: 'channel-suggestion-delivery__suggestion-recoverable-delivery-failure-1',
+      }),
+    );
+  });
+
   it('records recoverable suggestion delivery job failures without closing the pending delivery', async () => {
     const prisma = createPrismaMock();
     prisma.auditLog.findUnique.mockResolvedValue({
@@ -32820,6 +32854,140 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         }),
       }),
     );
+  });
+
+  it('retries attempted suggestion delivery when every admin send failed transiently', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw.mockResolvedValue([{ recipient_chat_id: '555001' }]);
+    prisma.auditLog.findUnique.mockResolvedValue({
+      id: 'suggestion-transient-attempt-1',
+      chatId: 'channel-1',
+      actorUserId: 'user-1',
+      action: 'CHANNEL_DIALOG_SUGGESTION',
+      payload: {
+        type: 'suggest',
+        actorUserId: 'user-1',
+        authorDisplayName: 'Пользователь',
+        text: 'Повторить доставку',
+        textFormat: 'plain',
+        textMarkup: [],
+        delivered: false,
+        deliveredToUserId: null,
+        deliveredToUserIds: [],
+        deliveries: [],
+        deliveryAttemptedAt: '2026-03-10T12:00:00.000Z',
+        deliveryFailures: [
+          {
+            adminUserId: 'admin-1',
+            privateChatId: '555001',
+            status: 429,
+            code: 'rate.limit',
+            terminal: false,
+            recoverable: true,
+            message: 'rate limit exceeded',
+          },
+        ],
+        source: 'private_bot',
+        reviewStatus: 'pending',
+        hasImage: false,
+        imageCount: 0,
+        hasVideo: false,
+        images: [],
+      },
+      createdAt: new Date('2026-03-10T12:00:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-suggestion-recovered-1', url: null }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await service.processChannelSuggestionDeliveryJob('suggestion-transient-attempt-1');
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      '555001',
+      expect.stringContaining('Повторить доставку'),
+      expect.objectContaining({
+        textFormat: 'markdown',
+      }),
+      expect.objectContaining({
+        trafficClass: 'background',
+      }),
+    );
+    expect(prisma.auditLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            delivered: true,
+            deliveredToUserId: 'admin-1',
+            deliveries: [
+              expect.objectContaining({
+                adminUserId: 'admin-1',
+                privateChatId: '555001',
+                messageId: 'mid-suggestion-recovered-1',
+              }),
+            ],
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('does not retry attempted suggestion delivery when failures are terminal', async () => {
+    const prisma = createPrismaMock();
+    prisma.auditLog.findUnique.mockResolvedValue({
+      id: 'suggestion-terminal-attempt-1',
+      chatId: 'channel-1',
+      actorUserId: 'user-1',
+      action: 'CHANNEL_DIALOG_SUGGESTION',
+      payload: {
+        type: 'suggest',
+        text: 'Не гонять по кругу',
+        delivered: false,
+        deliveredToUserId: null,
+        deliveredToUserIds: [],
+        deliveries: [],
+        deliveryAttemptedAt: '2026-03-10T12:00:00.000Z',
+        deliveryFailures: [
+          {
+            adminUserId: 'admin-1',
+            privateChatId: null,
+            status: 403,
+            code: 'access.denied',
+            terminal: true,
+            recoverable: false,
+            message: 'access denied',
+          },
+        ],
+        reviewStatus: 'pending',
+      },
+      createdAt: new Date('2026-03-10T12:00:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn(),
+      sendMessageImmediateWithId: jest.fn(),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await service.processChannelSuggestionDeliveryJob('suggestion-terminal-attempt-1');
+
+    expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+    expect(prisma.auditLog.update).not.toHaveBeenCalled();
   });
 
   it('marks bot-submitted suggestions with private_bot source', async () => {
@@ -33307,6 +33475,37 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         }),
       }),
     );
+  });
+
+  it('keeps recoverable suggestion photo upload errors retriable for the delivery worker', async () => {
+    const prisma = createPrismaMock();
+    const recoverableUploadError = {
+      response: {
+        status: 500,
+        data: {
+          code: 'internal.error',
+          message: 'temporary upload failure',
+        },
+      },
+    };
+    const maxClient = {
+      uploadImage: jest.fn().mockRejectedValue(recoverableUploadError),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      (service as any).uploadChannelSuggestionImage({
+        imageBase64:
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==',
+        imageMimeType: 'image/png',
+        imageFileName: 'suggestion.png',
+      }),
+    ).rejects.toBe(recoverableUploadError);
   });
 
   it('delivers bot-submitted multi-photo suggestions to admins as image attachments', async () => {
@@ -34003,7 +34202,10 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       sendMessageImmediateWithResolvedLink: jest
         .fn()
-        .mockResolvedValue({ messageId: 'mid-channel-engagement-unavailable-private-chat', url: null }),
+        .mockResolvedValue({
+          messageId: 'mid-channel-engagement-unavailable-private-chat',
+          url: null,
+        }),
     };
     const unavailablePrivateError = {
       response: {
@@ -34035,9 +34237,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
-    const warnSpy = jest
-      .spyOn((service as any).logger, 'warn')
-      .mockImplementation(() => undefined);
+    const warnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
     const debugSpy = jest
       .spyOn((service as any).logger, 'debug')
       .mockImplementation(() => undefined);

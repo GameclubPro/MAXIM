@@ -980,6 +980,7 @@ export type ChannelSuggestionAdminDeliveryFailure = {
   status: number | null;
   code: string | null;
   terminal: boolean;
+  recoverable: boolean;
   message: string;
 };
 
