@@ -437,12 +437,21 @@ describe('ChannelStatsCollectorService', () => {
     await service.onModuleDestroy();
   });
 
-  it('skips stats endpoint refreshes while background channel stats work is paused', async () => {
+  it('refreshes stale audience for stats endpoint while heavy stats work is paused', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
 
     const prisma = createPrismaMock();
     const maxClient = {
-      getChatSnapshot: jest.fn(),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'channel-1',
+        title: 'Новости MAX',
+        participantsCount: 4096,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/news',
+        lastEventAt: '2026-03-07T11:55:00.000Z',
+        entityType: 'channel',
+      }),
       listMessageSnapshots: jest.fn(),
       ensureWebhookSubscription: jest.fn(),
     };
@@ -478,7 +487,38 @@ describe('ChannelStatsCollectorService', () => {
     });
 
     expect(systemModeService.getEffectiveSnapshot).toHaveBeenCalled();
-    expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledWith(
+      'channel-1',
+      expect.objectContaining({
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
+        bypassCache: true,
+      }),
+    );
+    expect(prisma.channelAudienceSnapshot.create).toHaveBeenCalledWith({
+      data: {
+        chatId: 'channel-1',
+        participantsCount: 4096,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/news',
+        lastEventAt: new Date('2026-03-07T11:55:00.000Z'),
+        capturedAt: new Date('2026-03-07T12:00:00.000Z'),
+      },
+    });
+    expect(prisma.channelStatsSyncState.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          chatId: 'channel-1',
+          lastAudienceSyncAt: new Date('2026-03-07T12:00:00.000Z'),
+          lastOpportunisticSyncAt: new Date('2026-03-07T12:00:00.000Z'),
+        }),
+        update: expect.objectContaining({
+          lastAudienceSyncAt: new Date('2026-03-07T12:00:00.000Z'),
+          lastOpportunisticSyncAt: new Date('2026-03-07T12:00:00.000Z'),
+        }),
+      }),
+    );
     expect(maxClient.listMessageSnapshots).not.toHaveBeenCalled();
     expect(maxClient.ensureWebhookSubscription).not.toHaveBeenCalled();
 

@@ -45,6 +45,13 @@ type ChannelStatsSyncResult = {
   throttled: boolean;
 };
 
+type ChannelStatsAudienceSyncResult = Pick<
+  ChannelStatsSyncResult,
+  'audienceSynced' | 'throttled'
+> & {
+  syncedAt: Date | null;
+};
+
 type ChannelStartupSyncCandidate = {
   id: string;
   channelStatsSyncState: {
@@ -190,6 +197,27 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
 
     const reason = options?.reason ?? 'opportunistic';
     const isStatsEndpointRefresh = reason === 'stats_endpoint';
+    let refreshedAudienceForStatsEndpoint = false;
+    let audienceSyncedAtForStatsEndpoint: Date | null = null;
+
+    if (isStatsEndpointRefresh && audienceStale) {
+      const audienceResult = await this.syncAudienceSnapshotIfStale(chatId, {
+        staleMs,
+        reason,
+        markOpportunistic: true,
+      });
+      refreshedAudienceForStatsEndpoint = audienceResult.audienceSynced;
+      audienceSyncedAtForStatsEndpoint = audienceResult.syncedAt;
+      if (audienceResult.throttled) {
+        await this.activateBackgroundSyncBackoff();
+        return;
+      }
+    }
+
+    if (isStatsEndpointRefresh && !viewsStale) {
+      return;
+    }
+
     const shouldPauseStatsEndpointRefresh =
       isStatsEndpointRefresh &&
       ((await this.isBackgroundWorkPaused('scheduled')) ||
@@ -202,10 +230,109 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       reason: options?.reason ?? 'opportunistic',
       markOpportunistic: true,
       ...(isStatsEndpointRefresh ? { maxPages: this.endpointSyncMaxPages } : {}),
+      ...(refreshedAudienceForStatsEndpoint
+        ? { skipAudience: true, audienceSyncedAt: audienceSyncedAtForStatsEndpoint ?? undefined }
+        : {}),
     });
     if (isStatsEndpointRefresh && syncResult.throttled) {
       await this.activateBackgroundSyncBackoff();
     }
+  }
+
+  async syncAudienceSnapshotIfStale(
+    chatId: string,
+    options?: {
+      staleMs?: number;
+      reason?: string;
+      markOpportunistic?: boolean;
+    },
+  ): Promise<ChannelStatsAudienceSyncResult> {
+    const result: ChannelStatsAudienceSyncResult = {
+      audienceSynced: false,
+      throttled: false,
+      syncedAt: null,
+    };
+    const staleMs = options?.staleMs ?? CHANNEL_STATS_STALE_MS;
+    const [latestAudienceSnapshot, syncState] = await Promise.all([
+      this.prisma.channelAudienceSnapshot.findFirst({
+        where: { chatId },
+        orderBy: { capturedAt: 'desc' },
+        select: { capturedAt: true },
+      }),
+      this.prisma.channelStatsSyncState.findUnique({
+        where: { chatId },
+        select: {
+          lastAudienceSyncAt: true,
+        },
+      }),
+    ]);
+
+    if (!this.isAudienceSnapshotStale(latestAudienceSnapshot, syncState, staleMs, Date.now())) {
+      return result;
+    }
+
+    await this.withRedisLock(
+      `channel-stats:chat:${chatId}`,
+      CHANNEL_STATS_CHAT_LOCK_TTL_MS,
+      async () => {
+        const now = new Date();
+        const [lockedLatestAudienceSnapshot, lockedState] = await Promise.all([
+          this.prisma.channelAudienceSnapshot.findFirst({
+            where: { chatId },
+            orderBy: { capturedAt: 'desc' },
+            select: { capturedAt: true },
+          }),
+          this.prisma.channelStatsSyncState.findUnique({
+            where: { chatId },
+          }),
+        ]);
+
+        if (
+          !this.isAudienceSnapshotStale(
+            lockedLatestAudienceSnapshot,
+            lockedState,
+            staleMs,
+            now.getTime(),
+          )
+        ) {
+          return;
+        }
+
+        const statsBotId = await this.resolveCapabilityRouteBotId(chatId, 'channel_stats');
+        const audienceResult = await this.syncOfficialAudienceSnapshot(chatId, {
+          now,
+          reason: options?.reason ?? 'opportunistic',
+          statsBotId,
+        });
+        result.audienceSynced = audienceResult.audienceSynced;
+        result.throttled = audienceResult.throttled;
+        result.syncedAt = audienceResult.syncedAt;
+
+        if (!audienceResult.audienceSynced) {
+          return;
+        }
+
+        await this.prisma.channelStatsSyncState.upsert({
+          where: { chatId },
+          create: {
+            chatId,
+            viewsCoverageFrom: lockedState?.viewsCoverageFrom ?? null,
+            membershipCoverageFrom: lockedState?.membershipCoverageFrom ?? null,
+            lastAudienceSyncAt: now,
+            lastViewsSyncAt: lockedState?.lastViewsSyncAt ?? null,
+            lastOpportunisticSyncAt: options?.markOpportunistic
+              ? now
+              : (lockedState?.lastOpportunisticSyncAt ?? null),
+          },
+          update: {
+            lastAudienceSyncAt: now,
+            ...(options?.markOpportunistic ? { lastOpportunisticSyncAt: now } : {}),
+          },
+        });
+      },
+    );
+
+    return result;
   }
 
   async syncAllChannels(reason: 'startup' | 'scheduled') {
@@ -355,6 +482,8 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       reason?: string;
       markOpportunistic?: boolean;
       maxPages?: number;
+      skipAudience?: boolean;
+      audienceSyncedAt?: Date;
     },
   ): Promise<ChannelStatsSyncResult> {
     const result: ChannelStatsSyncResult = {
@@ -375,49 +504,14 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         });
         const ensuredCoverageFrom = await this.ensureWebhookCoverage();
 
-        try {
-          const snapshot = await this.maxClient.getChatSnapshot(chatId, {
-            trafficClass: 'background',
-            ignoreFailureMetricStatuses: CHANNEL_STATS_IGNORED_FAILURE_METRIC_STATUSES,
-            sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
-            ...(statsBotId ? { botId: statsBotId } : {}),
-          });
-          await this.prisma.$transaction([
-            this.prisma.chat.update({
-              where: { id: chatId },
-              data: {
-                title: snapshot.title?.trim() || `Канал ${chatId}`,
-                entityType: ChatEntityType.CHANNEL,
-              },
-            }),
-            this.prisma.channelAudienceSnapshot.create({
-              data: {
-                chatId,
-                participantsCount: snapshot.participantsCount,
-                status: snapshot.status,
-                isPublic: snapshot.isPublic,
-                link: snapshot.link,
-                lastEventAt: snapshot.lastEventAt ? new Date(snapshot.lastEventAt) : null,
-                capturedAt: now,
-              },
-            }),
-          ]);
-          result.audienceSynced = true;
-        } catch (error: unknown) {
-          result.throttled ||= this.isMaxApiThrottleError(error);
-          const logPayload = {
-            chatId,
+        if (!options?.skipAudience) {
+          const audienceResult = await this.syncOfficialAudienceSnapshot(chatId, {
+            now,
             reason: options?.reason ?? 'manual',
-            err: error instanceof Error ? error.message : String(error),
-          };
-          if (this.isMaxApiNotFoundError(error)) {
-            this.logger.debug(
-              logPayload,
-              'Skipped official channel audience snapshot after MAX 404',
-            );
-          } else {
-            this.logger.warn(logPayload, 'Failed to sync official channel audience snapshot');
-          }
+            statsBotId,
+          });
+          result.audienceSynced = audienceResult.audienceSynced;
+          result.throttled ||= audienceResult.throttled;
         }
 
         if (!result.throttled) {
@@ -449,11 +543,15 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
 
         const nextMembershipCoverageFrom =
           state?.membershipCoverageFrom ?? (ensuredCoverageFrom ? now : null);
+        const nextLastAudienceSyncAt =
+          result.audienceSynced || options?.audienceSyncedAt
+            ? (options?.audienceSyncedAt ?? now)
+            : (state?.lastAudienceSyncAt ?? null);
         const nextStateCreate = {
           chatId,
           viewsCoverageFrom: state?.viewsCoverageFrom ?? lookbackFrom,
           membershipCoverageFrom: nextMembershipCoverageFrom,
-          lastAudienceSyncAt: result.audienceSynced ? now : (state?.lastAudienceSyncAt ?? null),
+          lastAudienceSyncAt: nextLastAudienceSyncAt,
           lastViewsSyncAt: result.viewsSynced ? now : (state?.lastViewsSyncAt ?? null),
           lastOpportunisticSyncAt: options?.markOpportunistic
             ? now
@@ -466,7 +564,9 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
           update: {
             viewsCoverageFrom: state?.viewsCoverageFrom ?? lookbackFrom,
             membershipCoverageFrom: nextMembershipCoverageFrom,
-            ...(result.audienceSynced ? { lastAudienceSyncAt: now } : {}),
+            ...(result.audienceSynced || options?.audienceSyncedAt
+              ? { lastAudienceSyncAt: nextLastAudienceSyncAt }
+              : {}),
             ...(result.viewsSynced ? { lastViewsSyncAt: now } : {}),
             ...(options?.markOpportunistic ? { lastOpportunisticSyncAt: now } : {}),
           },
@@ -539,6 +639,68 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     }
   }
 
+  private async syncOfficialAudienceSnapshot(
+    chatId: string,
+    params: {
+      now: Date;
+      reason: string;
+      statsBotId?: string;
+    },
+  ): Promise<ChannelStatsAudienceSyncResult> {
+    try {
+      const snapshot = await this.maxClient.getChatSnapshot(chatId, {
+        trafficClass: 'background',
+        ignoreFailureMetricStatuses: CHANNEL_STATS_IGNORED_FAILURE_METRIC_STATUSES,
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
+        bypassCache: true,
+        ...(params.statsBotId ? { botId: params.statsBotId } : {}),
+      });
+      await this.prisma.$transaction([
+        this.prisma.chat.update({
+          where: { id: chatId },
+          data: {
+            title: snapshot.title?.trim() || `Канал ${chatId}`,
+            entityType: ChatEntityType.CHANNEL,
+          },
+        }),
+        this.prisma.channelAudienceSnapshot.create({
+          data: {
+            chatId,
+            participantsCount: snapshot.participantsCount,
+            status: snapshot.status,
+            isPublic: snapshot.isPublic,
+            link: snapshot.link,
+            lastEventAt: snapshot.lastEventAt ? new Date(snapshot.lastEventAt) : null,
+            capturedAt: params.now,
+          },
+        }),
+      ]);
+
+      return {
+        audienceSynced: true,
+        throttled: false,
+        syncedAt: params.now,
+      };
+    } catch (error: unknown) {
+      const logPayload = {
+        chatId,
+        reason: params.reason,
+        err: error instanceof Error ? error.message : String(error),
+      };
+      if (this.isMaxApiNotFoundError(error)) {
+        this.logger.debug(logPayload, 'Skipped official channel audience snapshot after MAX 404');
+      } else {
+        this.logger.warn(logPayload, 'Failed to sync official channel audience snapshot');
+      }
+
+      return {
+        audienceSynced: false,
+        throttled: this.isMaxApiThrottleError(error),
+        syncedAt: null,
+      };
+    }
+  }
+
   private async ensureWebhookCoverage(): Promise<Date | null> {
     if (!this.backgroundEnabled) {
       return null;
@@ -588,6 +750,20 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
 
   private isMaxApiNotFoundError(error: unknown): boolean {
     return (error as { response?: { status?: number } })?.response?.status === 404;
+  }
+
+  private isAudienceSnapshotStale(
+    latestAudienceSnapshot: { capturedAt: Date } | null,
+    syncState: { lastAudienceSyncAt: Date | null } | null,
+    staleMs: number,
+    nowMs: number,
+  ): boolean {
+    return (
+      !latestAudienceSnapshot ||
+      nowMs - latestAudienceSnapshot.capturedAt.getTime() > staleMs ||
+      !syncState?.lastAudienceSyncAt ||
+      nowMs - syncState.lastAudienceSyncAt.getTime() > staleMs
+    );
   }
 
   private async isBackgroundSyncBackoffActive(): Promise<boolean> {
