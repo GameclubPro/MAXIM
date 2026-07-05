@@ -102,12 +102,12 @@ export function shouldPreferMembershipFlowForAudienceChart(
   }
 
   const firstFlowIndex = points.findIndex((point) => point.joined > 0 || point.left > 0);
-  if (firstFlowIndex <= 0) {
+  if (firstFlowIndex < 0) {
     return false;
   }
 
   return points
-    .slice(0, firstFlowIndex)
+    .slice(0, firstFlowIndex + 1)
     .some(
       (point) =>
         typeof point.participantsCount === 'number' && Number.isFinite(point.participantsCount),

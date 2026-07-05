@@ -88,6 +88,20 @@ test('audience chart can use membership flow after an earlier audience baseline'
   assert.equal(shouldPreferMembershipFlowForAudienceChart(points, 113, true), true);
 });
 
+test('audience chart can use membership flow when the first active bucket has a baseline', () => {
+  const points = [
+    { participantsCount: 4_008, joined: 41, left: 11, cumulativeNet: 30 },
+    { participantsCount: 4_008, joined: 36, left: 11, cumulativeNet: 55 },
+    { participantsCount: 4_100, joined: 37, left: 0, cumulativeNet: 92 },
+  ];
+
+  assert.equal(shouldPreferMembershipFlowForAudienceChart(points, 4_100, true), true);
+  assert.deepEqual(
+    points.map((point) => resolveAudienceChartDisplayValue(point, 4_100, 92, true)),
+    [4_038, 4_063, 4_100],
+  );
+});
+
 test('falls back to known audience totals when per-bucket activity is absent', () => {
   assert.equal(
     resolveInitialAudienceChartIndex([
