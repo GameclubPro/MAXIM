@@ -5296,7 +5296,15 @@ describe('AdminService.getChatActivityFeed', () => {
       title: 'Канал MAX',
       entityType: 'CHANNEL',
     });
-    prisma.$queryRaw.mockResolvedValue([]);
+    prisma.$queryRaw.mockResolvedValue([
+      {
+        id: 'wh-channel-join-1',
+        created_at: new Date('2026-03-02T11:00:00.000Z'),
+        event_type: 'user_added',
+        user_id: 'user-1',
+        sender_name: 'Участник канала',
+      },
+    ]);
     const chatContextCache = createChatContextCacheMock({
       getAdminAccess: jest.fn().mockResolvedValue('granted'),
     });
@@ -5323,12 +5331,21 @@ describe('AdminService.getChatActivityFeed', () => {
         { range: '7d', filter: 'all', limit: 20 },
       ),
     ).resolves.toEqual({
-      items: [],
+      items: [
+        expect.objectContaining({
+          id: 'wh-channel-join-1',
+          type: 'joined',
+          userId: 'user-1',
+          userDisplayName: 'Участник канала',
+          createdAt: '2026-03-02T11:00:00.000Z',
+        }),
+      ],
       hasMore: false,
       nextCursor: null,
     });
 
     expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
+    expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
     expect(prisma.chat.upsert).not.toHaveBeenCalled();
     expect(prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
     expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);

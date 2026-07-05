@@ -237,6 +237,7 @@ export class AdminLogsDashboardRuntime {
       now,
       parsed.data,
       'channel',
+      { allowRemoteLookup: false },
     );
   }
 

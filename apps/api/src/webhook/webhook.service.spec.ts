@@ -383,15 +383,15 @@ describe('WebhookService', () => {
     );
   });
 
-  it('does not wait for deferred membership invalidation or admin read models before accepting webhook events', async () => {
+  it('does not wait for deferred membership invalidation or secondary read models before accepting webhook events', async () => {
     const neverSettles = new Promise<never>(() => undefined);
     const prisma = {
       webhookEvent: {
         create: jest.fn().mockResolvedValue({ id: 'evt-3' }),
         updateMany: jest.fn(),
       },
-      chatMembershipActivityEvent: {
-        createMany: jest.fn().mockReturnValue(neverSettles),
+      managedEntityLocalActivity: {
+        upsert: jest.fn().mockReturnValue(neverSettles),
       },
     };
     const config = {
@@ -415,9 +415,12 @@ describe('WebhookService', () => {
             {
               updateId: 'u-join-1',
               type: 'user_added',
+              botId: 'id613002203036_bot',
               message: {
                 messageId: 'user_added:u-join-1',
-                chatId: 'chat-1',
+                chatId: '-100200',
+                chatTitle: 'Новый чат',
+                entityType: 'chat',
                 senderId: 'user-10',
                 text: '',
                 createdAt: new Date('2026-03-29T12:00:00.000Z').toISOString(),
@@ -440,6 +443,66 @@ describe('WebhookService', () => {
     });
 
     expect(prisma.webhookEvent.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('repairs membership activity projection when MAX redelivers a duplicate join event', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockRejectedValue({ code: 'P2002' }),
+        updateMany: jest.fn(),
+      },
+      chatMembershipActivityEvent: {
+        createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-duplicate-join-1',
+          type: 'user_added',
+          botId: 'id613002203036_bot',
+          message: {
+            messageId: 'mid-duplicate-join-1',
+            chatId: '-100200',
+            chatTitle: 'Новый чат',
+            entityType: 'channel',
+            senderId: 'user-77',
+            senderName: 'Пользователь',
+            text: '',
+            createdAt: new Date('2026-04-06T00:00:00.000Z').toISOString(),
+          },
+          membership: {
+            action: 'added',
+            memberUserIds: ['user-77'],
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: true });
+
+    expect(prisma.chatMembershipActivityEvent.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          id: 'u-duplicate-join-1',
+          dedupeKey: 'membership:user_added:-100200:user-77:2026-04-06T00:00:00.000Z',
+          chatId: '-100200',
+          eventType: 'user_added',
+          userId: 'user-77',
+          senderName: 'Пользователь',
+        }),
+      ],
+      skipDuplicates: true,
+    });
   });
 
   it('best-effort invalidates membership cache for join and leave events after webhook persistence', async () => {
@@ -639,6 +702,149 @@ describe('WebhookService', () => {
         }),
       }),
     );
+  });
+
+  it('persists service message membership collections as per-member activity events', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-service-membership' }),
+        updateMany: jest.fn(),
+      },
+      chatMembershipActivityEvent: {
+        createMany: jest.fn().mockResolvedValue({ count: 2 }),
+      },
+      managedEntityLocalActivity: {
+        upsert: jest.fn().mockResolvedValue({}),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-service-membership-1',
+          type: 'message_created',
+          botId: 'id613002203036_bot',
+          message: {
+            messageId: 'mid-service-membership-1',
+            chatId: '-100200',
+            chatTitle: 'Новый чат',
+            entityType: 'chat',
+            senderId: 'admin-1',
+            senderName: 'Админ',
+            text: '',
+            createdAt: new Date('2026-04-06T02:00:00.000Z').toISOString(),
+          },
+          membership: {
+            action: 'added',
+            memberUserIds: ['user-1001', 'user-1002'],
+          },
+          raw: {
+            update_type: 'message_created',
+            message: {
+              new_members: [
+                {
+                  user_id: 'user-1001',
+                  display_name: 'Первый участник',
+                },
+                {
+                  user: {
+                    user_id: 'user-1002',
+                    first_name: 'Второй',
+                    last_name: 'Участник',
+                  },
+                },
+              ],
+            },
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(prisma.chatMembershipActivityEvent.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          id: 'u-service-membership-1:user_added:user-1001',
+          dedupeKey: 'membership:user_added:-100200:user-1001:2026-04-06T02:00:00.000Z',
+          eventType: 'user_added',
+          userId: 'user-1001',
+          senderName: 'Первый участник',
+        }),
+        expect.objectContaining({
+          id: 'u-service-membership-1:user_added:user-1002',
+          dedupeKey: 'membership:user_added:-100200:user-1002:2026-04-06T02:00:00.000Z',
+          eventType: 'user_added',
+          userId: 'user-1002',
+          senderName: 'Второй Участник',
+        }),
+      ],
+      skipDuplicates: true,
+    });
+  });
+
+  it('persists service message removals as left membership activity events', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-service-membership-left' }),
+        updateMany: jest.fn(),
+      },
+      chatMembershipActivityEvent: {
+        createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-service-membership-left-1',
+          type: 'message_created',
+          message: {
+            messageId: 'mid-service-membership-left-1',
+            chatId: '-100200',
+            entityType: 'channel',
+            senderId: 'admin-1',
+            text: '',
+            createdAt: new Date('2026-04-06T02:01:00.000Z').toISOString(),
+          },
+          membership: {
+            action: 'removed',
+            memberUserIds: ['user-1003'],
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(prisma.chatMembershipActivityEvent.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          id: 'u-service-membership-left-1',
+          dedupeKey: 'membership:user_removed:-100200:user-1003:2026-04-06T02:01:00.000Z',
+          eventType: 'user_removed',
+          userId: 'user-1003',
+          senderName: null,
+        }),
+      ],
+      skipDuplicates: true,
+    });
   });
 
   it('uses the same membership dedupe key for equivalent join events from different bots', async () => {

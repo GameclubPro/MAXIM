@@ -31,6 +31,25 @@ type WebhookIngestResult = {
   duplicate: boolean;
 };
 
+type MembershipActivityProjection = {
+  id: string;
+  dedupeKey: string;
+  botId?: string | null;
+  chatId: string;
+  eventType: string;
+  userId?: string | null;
+  senderName?: string | null;
+  eventAt: Date;
+  createdAt: Date;
+};
+
+type MembershipActivityEventModel = {
+  createMany: (args: {
+    data: MembershipActivityProjection[];
+    skipDuplicates?: boolean;
+  }) => Promise<unknown>;
+};
+
 type ExecutionOwnerFailoverRecheckParams = {
   update: MaxUpdate;
   chatId: string;
@@ -140,7 +159,7 @@ export class WebhookService {
 
       return { accepted: true, duplicate: false };
     } catch (error: unknown) {
-      const duplicateResult = await this.handleDuplicateError(error);
+      const duplicateResult = await this.handleDuplicateError(error, update);
       if (duplicateResult) {
         return duplicateResult;
       }
@@ -166,7 +185,7 @@ export class WebhookService {
           );
           return { accepted: true, duplicate: false };
         } catch (retryError: unknown) {
-          const duplicateRetryResult = await this.handleDuplicateError(retryError);
+          const duplicateRetryResult = await this.handleDuplicateError(retryError, sanitizedUpdate);
           if (duplicateRetryResult) {
             return duplicateRetryResult;
           }
@@ -286,16 +305,52 @@ export class WebhookService {
   ) {
     const storageRawPayload = this.sanitizeForJsonStorage(rawPayload);
     const storageNormalizedPayload = this.sanitizeForJsonStorage(update);
+    const webhookEventData = {
+      dedupKey: update.updateId,
+      ...(update.botId ? { botId: update.botId } : {}),
+      sourceIp: sourceIp ?? undefined,
+      rawPayload: storageRawPayload,
+      normalizedPayload: storageNormalizedPayload,
+      status: WebhookStatus.RECEIVED,
+    };
+    const membershipProjections = this.buildMembershipActivityProjections(update);
+    const membershipModel = this.getMembershipActivityEventModel();
+
+    if (membershipProjections.length > 0 && membershipModel) {
+      const transaction = (
+        this.prisma as PrismaService & {
+          $transaction?: (promises: Promise<unknown>[]) => Promise<unknown>;
+        }
+      ).$transaction;
+      if (typeof transaction === 'function') {
+        await transaction.call(this.prisma, [
+          this.prisma.webhookEvent.create({
+            data: webhookEventData,
+          }),
+          membershipModel.createMany({
+            data: membershipProjections,
+            skipDuplicates: true,
+          }),
+        ]);
+      } else {
+        await this.prisma.webhookEvent.create({
+          data: webhookEventData,
+        });
+        await membershipModel.createMany({
+          data: membershipProjections,
+          skipDuplicates: true,
+        });
+      }
+      this.deferBackgroundTask(
+        () => this.persistAdminReadModels(update),
+        'admin read model refresh',
+        update,
+      );
+      return;
+    }
 
     await this.prisma.webhookEvent.create({
-      data: {
-        dedupKey: update.updateId,
-        ...(update.botId ? { botId: update.botId } : {}),
-        sourceIp: sourceIp ?? undefined,
-        rawPayload: storageRawPayload,
-        normalizedPayload: storageNormalizedPayload,
-        status: WebhookStatus.RECEIVED,
-      },
+      data: webhookEventData,
     });
     this.deferBackgroundTask(
       () => this.persistAdminReadModels(update),
@@ -813,36 +868,6 @@ export class WebhookService {
   private async persistAdminReadModels(update: MaxUpdate): Promise<void> {
     const writes: Promise<unknown>[] = [];
 
-    const membershipProjection = this.buildMembershipActivityProjection(update);
-    const membershipModel = (
-      this.prisma as PrismaService & {
-        chatMembershipActivityEvent?: {
-          createMany?: (args: {
-            data: Array<{
-              id: string;
-              dedupeKey: string;
-              botId?: string | null;
-              chatId: string;
-              eventType: string;
-              userId?: string | null;
-              senderName?: string | null;
-              eventAt: Date;
-              createdAt: Date;
-            }>;
-            skipDuplicates?: boolean;
-          }) => Promise<unknown>;
-        };
-      }
-    ).chatMembershipActivityEvent;
-    if (membershipProjection && typeof membershipModel?.createMany === 'function') {
-      writes.push(
-        membershipModel.createMany({
-          data: [membershipProjection],
-          skipDuplicates: true,
-        }),
-      );
-    }
-
     const managedProjection = this.buildManagedEntityLocalActivityProjection(update);
     const managedModel = (
       this.prisma as PrismaService & {
@@ -993,44 +1018,251 @@ export class WebhookService {
     }
   }
 
-  private buildMembershipActivityProjection(update: MaxUpdate): {
-    id: string;
-    dedupeKey: string;
-    botId?: string | null;
-    chatId: string;
-    eventType: string;
-    userId?: string | null;
-    senderName?: string | null;
-    eventAt: Date;
-    createdAt: Date;
-  } | null {
-    const normalizedType = update.type.trim().toLowerCase();
-    if (!MEMBERSHIP_ACTIVITY_UPDATE_TYPES.has(normalizedType)) {
-      return null;
+  private getMembershipActivityEventModel(): MembershipActivityEventModel | null {
+    const model = (
+      this.prisma as PrismaService & {
+        chatMembershipActivityEvent?: {
+          createMany?: MembershipActivityEventModel['createMany'];
+        };
+      }
+    ).chatMembershipActivityEvent;
+    return typeof model?.createMany === 'function'
+      ? { createMany: model.createMany.bind(model) }
+      : null;
+  }
+
+  private async persistMembershipActivityProjection(update: MaxUpdate): Promise<void> {
+    const projections = this.buildMembershipActivityProjections(update);
+    const membershipModel = this.getMembershipActivityEventModel();
+    if (projections.length === 0 || !membershipModel) {
+      return;
     }
 
+    await membershipModel.createMany({
+      data: projections,
+      skipDuplicates: true,
+    });
+  }
+
+  private buildMembershipActivityProjections(update: MaxUpdate): MembershipActivityProjection[] {
+    const normalizedType = update.type.trim().toLowerCase();
     const chatId = update.message?.chatId?.trim() ?? '';
     if (!chatId) {
-      return null;
+      return [];
+    }
+
+    const membershipAction = update.membership?.action;
+    const eventType =
+      normalizedType === 'message_created' && membershipAction === 'added'
+        ? 'user_added'
+        : normalizedType === 'message_created' && membershipAction === 'removed'
+          ? 'user_removed'
+          : MEMBERSHIP_ACTIVITY_UPDATE_TYPES.has(normalizedType)
+            ? normalizedType
+            : null;
+    if (!eventType) {
+      return [];
+    }
+
+    const memberUserIds = this.resolveMembershipActivityUserIds(update);
+    if (memberUserIds.length === 0) {
+      return [];
     }
 
     const eventAt = this.resolveUpdateEventAt(update);
-    return {
-      id: update.updateId,
-      dedupeKey: this.buildMembershipActivityDedupeKey(
-        normalizedType,
-        chatId,
-        update.message?.senderId?.trim() || null,
-        eventAt,
+    return memberUserIds.map((userId, index) => ({
+      id: this.buildMembershipActivityProjectionId(
+        update.updateId,
+        eventType,
+        userId,
+        memberUserIds.length,
+        index,
       ),
+      dedupeKey: this.buildMembershipActivityDedupeKey(eventType, chatId, userId, eventAt),
       botId: update.botId?.trim() || null,
       chatId,
-      eventType: normalizedType,
-      userId: update.message?.senderId?.trim() || null,
-      senderName: update.message?.senderName?.trim() || null,
+      eventType,
+      userId,
+      senderName: this.resolveMembershipActivitySenderName(update, eventType, userId),
       eventAt,
       createdAt: eventAt,
-    };
+    }));
+  }
+
+  private resolveMembershipActivityUserIds(update: MaxUpdate): string[] {
+    const memberUserIds = update.membership?.memberUserIds ?? [];
+    const normalizedMemberUserIds = Array.from(
+      new Set(
+        memberUserIds
+          .map((userId) => userId.trim())
+          .filter((userId): userId is string => userId.length > 0),
+      ),
+    );
+    if (normalizedMemberUserIds.length > 0) {
+      return normalizedMemberUserIds;
+    }
+
+    const senderId = update.message?.senderId?.trim() ?? '';
+    return senderId ? [senderId] : [];
+  }
+
+  private buildMembershipActivityProjectionId(
+    updateId: string,
+    eventType: string,
+    userId: string,
+    totalUsers: number,
+    index: number,
+  ): string {
+    if (totalUsers === 1) {
+      return updateId;
+    }
+
+    return `${updateId}:${eventType}:${userId || index}`;
+  }
+
+  private resolveMembershipActivitySenderName(
+    update: MaxUpdate,
+    eventType: string,
+    userId: string,
+  ): string | null {
+    const action = eventType === 'user_removed' ? 'removed' : 'added';
+    const rawName = this.findMembershipMemberDisplayName(update.raw, action, userId);
+    if (rawName) {
+      return rawName;
+    }
+
+    const senderId = update.message?.senderId?.trim() ?? '';
+    if (senderId && senderId === userId) {
+      return update.message?.senderName?.trim() || null;
+    }
+
+    return null;
+  }
+
+  private findMembershipMemberDisplayName(
+    node: unknown,
+    action: 'added' | 'removed',
+    userId: string,
+    depth = 0,
+    insideMembershipCollection = false,
+  ): string | null {
+    if (depth > 6 || node === null || node === undefined) {
+      return null;
+    }
+
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        const displayName = this.findMembershipMemberDisplayName(
+          item,
+          action,
+          userId,
+          depth + 1,
+          insideMembershipCollection,
+        );
+        if (displayName) {
+          return displayName;
+        }
+      }
+      return null;
+    }
+
+    const row = this.asRecord(node);
+    if (!row) {
+      return null;
+    }
+
+    if (insideMembershipCollection && this.readMembershipMemberUserId(row) === userId) {
+      return this.readMembershipMemberDisplayName(row);
+    }
+
+    for (const [key, value] of Object.entries(row)) {
+      const normalizedKey = key.trim().toLowerCase();
+      const displayName = this.findMembershipMemberDisplayName(
+        value,
+        action,
+        userId,
+        depth + 1,
+        insideMembershipCollection || this.isMembershipCollectionKey(normalizedKey, action),
+      );
+      if (displayName) {
+        return displayName;
+      }
+    }
+
+    return null;
+  }
+
+  private readMembershipMemberUserId(row: Record<string, unknown>): string | null {
+    const directUser = this.asRecord(row.user) ?? this.asRecord(row.member);
+    return (
+      this.readTrimmedString(row.user_id) ??
+      this.readTrimmedString(row.userId) ??
+      this.readTrimmedString(row.id) ??
+      this.readTrimmedString(directUser?.user_id) ??
+      this.readTrimmedString(directUser?.userId) ??
+      this.readTrimmedString(directUser?.id)
+    );
+  }
+
+  private readMembershipMemberDisplayName(row: Record<string, unknown>): string | null {
+    const directUser = this.asRecord(row.user) ?? this.asRecord(row.member) ?? row;
+    const directName =
+      this.readTrimmedString(directUser.display_name) ??
+      this.readTrimmedString(directUser.displayName) ??
+      this.readTrimmedString(directUser.name) ??
+      this.readTrimmedString(directUser.full_name) ??
+      this.readTrimmedString(directUser.fullName) ??
+      this.readTrimmedString(directUser.nickname);
+    if (directName) {
+      return directName;
+    }
+
+    const firstName =
+      this.readTrimmedString(directUser.first_name) ??
+      this.readTrimmedString(directUser.firstName) ??
+      this.readTrimmedString(directUser.given_name) ??
+      this.readTrimmedString(directUser.givenName);
+    const lastName =
+      this.readTrimmedString(directUser.last_name) ??
+      this.readTrimmedString(directUser.lastName) ??
+      this.readTrimmedString(directUser.family_name) ??
+      this.readTrimmedString(directUser.familyName);
+    const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
+    return fullName || null;
+  }
+
+  private isMembershipCollectionKey(key: string, action: 'added' | 'removed'): boolean {
+    if (action === 'added') {
+      return (
+        key === 'new_members' ||
+        key === 'new_member' ||
+        key === 'members_added' ||
+        key === 'member_added' ||
+        key === 'added_members' ||
+        key === 'added_member' ||
+        key === 'joined_members' ||
+        key === 'joined_member' ||
+        key === 'invited_members' ||
+        key === 'invited_member' ||
+        key === 'new_users' ||
+        key === 'new_user'
+      );
+    }
+
+    return (
+      key === 'removed_members' ||
+      key === 'removed_member' ||
+      key === 'members_removed' ||
+      key === 'member_removed' ||
+      key === 'left_members' ||
+      key === 'left_member' ||
+      key === 'leaving_members' ||
+      key === 'leaving_member' ||
+      key === 'departed_members' ||
+      key === 'departed_member' ||
+      key === 'kicked_members' ||
+      key === 'kicked_member'
+    );
   }
 
   private buildManagedEntityLocalActivityProjection(update: MaxUpdate): {
@@ -1579,10 +1811,27 @@ export class WebhookService {
     return null;
   }
 
-  private async handleDuplicateError(error: unknown): Promise<WebhookIngestResult | null> {
+  private async handleDuplicateError(
+    error: unknown,
+    update: MaxUpdate,
+  ): Promise<WebhookIngestResult | null> {
     const code = (error as { code?: string }).code;
     if (code !== 'P2002') {
       return null;
+    }
+
+    try {
+      await this.persistMembershipActivityProjection(update);
+    } catch (repairError: unknown) {
+      this.logger.warn(
+        {
+          updateId: update.updateId,
+          type: update.type,
+          err: repairError instanceof Error ? repairError.message : String(repairError),
+        },
+        'Failed to repair membership activity projection for duplicate webhook event',
+      );
+      throw repairError;
     }
 
     return { accepted: true, duplicate: true };
