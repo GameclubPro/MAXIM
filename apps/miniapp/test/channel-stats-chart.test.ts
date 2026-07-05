@@ -31,7 +31,7 @@ test('selects the latest informative audience bucket instead of a trailing zero 
   );
 });
 
-test('audience chart prefers membership flow over stale carried participant snapshots', () => {
+test('audience chart uses backend participant values instead of local flow reconstruction', () => {
   const points = [
     { participantsCount: 3_567, joined: 0, left: 0, cumulativeNet: 0 },
     { participantsCount: 3_567, joined: 32, left: 21, cumulativeNet: 11 },
@@ -45,7 +45,7 @@ test('audience chart prefers membership flow over stale carried participant snap
 
   assert.deepEqual(
     points.map((point) => resolveAudienceChartDisplayValue(point, 3_721, 157, true)),
-    [3_564, 3_575, 3_600, 3_619, 3_652, 3_674, 3_716, 3_721],
+    [3_567, 3_567, 3_567, 3_567, 3_567, 3_567, 3_718, 3_721],
   );
   assert.deepEqual(
     points.map((point) => resolveAudienceChartDisplayValue(point, 3_721, 157, false)),
@@ -59,7 +59,7 @@ test('audience chart prefers membership flow over stale carried participant snap
       150,
       false,
     ),
-    3_721,
+    null,
   );
 });
 
@@ -78,31 +78,31 @@ test('audience chart does not reconstruct a zero history from an unbaselined imp
   );
   assert.deepEqual(
     points.map((point) => resolveAudienceChartDisplayValue(point, 250, 250, false)),
-    [250, 250, 250, 250],
+    [null, null, null, 250],
   );
 });
 
-test('audience chart can use membership flow after an earlier audience baseline', () => {
+test('audience chart does not choose frontend membership flow after an earlier audience baseline', () => {
   const points = [
     { participantsCount: 100, joined: 0, left: 0, cumulativeNet: 0 },
     { participantsCount: 100, joined: 12, left: 2, cumulativeNet: 10 },
     { participantsCount: 100, joined: 4, left: 1, cumulativeNet: 13 },
   ];
 
-  assert.equal(shouldPreferMembershipFlowForAudienceChart(points, 113, true), true);
+  assert.equal(shouldPreferMembershipFlowForAudienceChart(points, 113, true), false);
 });
 
-test('audience chart can use membership flow when the first active bucket has a baseline', () => {
+test('audience chart keeps first-active-bucket values from backend participants', () => {
   const points = [
     { participantsCount: 4_008, joined: 41, left: 11, cumulativeNet: 30 },
     { participantsCount: 4_008, joined: 36, left: 11, cumulativeNet: 55 },
     { participantsCount: 4_100, joined: 37, left: 0, cumulativeNet: 92 },
   ];
 
-  assert.equal(shouldPreferMembershipFlowForAudienceChart(points, 4_100, true), true);
+  assert.equal(shouldPreferMembershipFlowForAudienceChart(points, 4_100, true), false);
   assert.deepEqual(
     points.map((point) => resolveAudienceChartDisplayValue(point, 4_100, 92, true)),
-    [4_038, 4_063, 4_100],
+    [4_008, 4_008, 4_100],
   );
 });
 

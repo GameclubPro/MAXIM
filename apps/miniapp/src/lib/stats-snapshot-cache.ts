@@ -22,7 +22,7 @@ type WindowWithIdleCallback = Window &
     cancelIdleCallback?: (handle: number) => void;
   };
 
-const STATS_SNAPSHOT_VERSION = 'v6';
+const STATS_SNAPSHOT_VERSION = 'v7';
 const STATS_SNAPSHOT_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const STATS_SNAPSHOT_WRITE_IDLE_TIMEOUT_MS = 1_500;
 const STATS_SNAPSHOT_PARSE_CACHE_LIMIT = 24;

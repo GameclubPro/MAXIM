@@ -55,7 +55,6 @@ import {
   resolveAudienceChartDisplayValue,
   resolveChannelStatsAverageViews,
   resolveInitialAudienceChartIndex,
-  shouldPreferMembershipFlowForAudienceChart,
   shouldRenderChannelStatsPointMarkers,
 } from '../lib/channel-stats-chart';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
@@ -71,7 +70,8 @@ type ChannelStatsSection = 'overview' | 'events';
 type AudienceChartPoint = {
   at: string;
   participantsCount: number | null;
-  displayValue: number;
+  displayValue: number | null;
+  plotValue: number;
   deltaFromPrevious: number | null;
   deltaPercentFromPrevious: number | null;
   joined: number;
@@ -82,6 +82,8 @@ type AudienceChartPoint = {
   y: number;
   joinedFlowY: number;
   leftFlowY: number;
+  source: ChannelStatsSummary['daily'][number]['source'];
+  confidence: ChannelStatsSummary['daily'][number]['confidence'];
 };
 
 type PreviousAudienceChartPoint = {
@@ -94,6 +96,8 @@ type PreviousAudienceChartPoint = {
   cumulativeNet: number;
   x: number;
   y: number;
+  source: ChannelStatsSummary['daily'][number]['source'];
+  confidence: ChannelStatsSummary['daily'][number]['confidence'];
 };
 
 type AudienceChartModel = {
@@ -248,6 +252,14 @@ function formatCount(value: number | null): string {
   }
 
   return COUNT_FORMATTER.format(value);
+}
+
+function formatAudienceCount(
+  value: number | null,
+  confidence: ChannelStatsSummary['daily'][number]['confidence'] | null | undefined,
+): string {
+  const formatted = formatCount(value);
+  return formatted !== '—' && confidence === 'medium' ? `~${formatted}` : formatted;
 }
 
 function formatCompactCount(value: number | null): string {
@@ -426,6 +438,46 @@ function hasAudienceDisplayValue<T extends { displayValue: number | null }>(
   return typeof point.displayValue === 'number' && Number.isFinite(point.displayValue);
 }
 
+function resolveAudiencePlotValue<T extends { displayValue: number | null }>(
+  points: readonly T[],
+  index: number,
+): number | null {
+  const ownValue = points[index]?.displayValue;
+  if (typeof ownValue === 'number' && Number.isFinite(ownValue)) {
+    return ownValue;
+  }
+
+  let previousIndex = -1;
+  let previousValue: number | null = null;
+  for (let candidateIndex = index - 1; candidateIndex >= 0; candidateIndex -= 1) {
+    const candidateValue = points[candidateIndex]?.displayValue;
+    if (typeof candidateValue === 'number' && Number.isFinite(candidateValue)) {
+      previousIndex = candidateIndex;
+      previousValue = candidateValue;
+      break;
+    }
+  }
+
+  let nextIndex = -1;
+  let nextValue: number | null = null;
+  for (let candidateIndex = index + 1; candidateIndex < points.length; candidateIndex += 1) {
+    const candidateValue = points[candidateIndex]?.displayValue;
+    if (typeof candidateValue === 'number' && Number.isFinite(candidateValue)) {
+      nextIndex = candidateIndex;
+      nextValue = candidateValue;
+      break;
+    }
+  }
+
+  if (previousValue !== null && nextValue !== null) {
+    const span = Math.max(1, nextIndex - previousIndex);
+    const progress = (index - previousIndex) / span;
+    return previousValue + (nextValue - previousValue) * progress;
+  }
+
+  return previousValue ?? nextValue;
+}
+
 function resolveChannelStatsSummary(stats: ChannelStatsResponse): ChannelStatsSummary {
   const maybeSummary = (stats as Partial<ChannelStatsResponse>).summary;
   if (maybeSummary) {
@@ -442,6 +494,8 @@ function resolveChannelStatsSummary(stats: ChannelStatsResponse): ChannelStatsSu
           ...row,
           joined: readNullableCount(row.joined),
           left: readNullableCount(row.left),
+          source: row.source ?? 'unavailable',
+          confidence: row.confidence ?? 'low',
         };
       }),
     };
@@ -509,21 +563,25 @@ function resolveChannelStatsSummary(stats: ChannelStatsResponse): ChannelStatsSu
     current.left += point.left ?? 0;
     membershipByDate.set(date, current);
   });
-  const daily = dailySource.map(([date, subscribers], index, rows) => {
-    const previous = index > 0 ? rows[index - 1]?.[1] : null;
-    const flow = membershipByDate.get(date) ?? null;
+  const daily: ChannelStatsSummary['daily'] = dailySource.map(
+    ([date, subscribers], index, rows) => {
+      const previous = index > 0 ? rows[index - 1]?.[1] : null;
+      const flow = membershipByDate.get(date) ?? null;
 
-    return {
-      date,
-      subscribers,
-      delta:
-        subscribers === null || previous === null || previous === undefined
-          ? null
-          : subscribers - previous,
-      joined: flow?.joined ?? null,
-      left: flow?.left ?? null,
-    };
-  });
+      return {
+        date,
+        subscribers,
+        delta:
+          subscribers === null || previous === null || previous === undefined
+            ? null
+            : subscribers - previous,
+        joined: flow?.joined ?? null,
+        left: flow?.left ?? null,
+        source: subscribers === null ? 'unavailable' : 'snapshot',
+        confidence: subscribers === null ? 'low' : 'high',
+      };
+    },
+  );
 
   return {
     subscribers: {
@@ -765,11 +823,7 @@ function buildAudienceChart(stats: ChannelStatsResponse): AudienceChartModel {
   const previousParticipantSeries = stats.comparison.series?.participants ?? [];
   const previousMembershipSeries = stats.comparison.series?.membership ?? [];
   const currentParticipants = readNullableCount(stats.channel.participantsCount);
-  const pointCount = Math.max(
-    participantSeries.length,
-    membershipSeries.length,
-    currentParticipants !== null ? 1 : 0,
-  );
+  const pointCount = Math.max(participantSeries.length, membershipSeries.length);
   if (pointCount === 0) {
     return buildEmptyAudienceChart();
   }
@@ -788,7 +842,7 @@ function buildAudienceChart(stats: ChannelStatsResponse): AudienceChartModel {
 
   let cumulativeNet = 0;
   const basePoints = Array.from({ length: pointCount }, (_, index) => {
-    const participant = participantSeries[index] ?? participantSeries.at(-1) ?? null;
+    const participant = participantSeries[index] ?? null;
     const membership = membershipSeries[index] ?? null;
     const at = membership?.at ?? participant?.at ?? new Date().toISOString();
     const joined = membership?.joined ?? 0;
@@ -809,22 +863,13 @@ function buildAudienceChart(stats: ChannelStatsResponse): AudienceChartModel {
       y: lineBottom,
       joinedFlowY: activityRailY,
       leftFlowY: activityRailY,
+      source: participant?.source ?? 'unavailable',
+      confidence: participant?.confidence ?? 'low',
     };
   });
-  const totalNet = basePoints.at(-1)?.cumulativeNet ?? 0;
-  const preferMembershipFlow = shouldPreferMembershipFlowForAudienceChart(
-    basePoints,
-    currentParticipants,
-    stats.meta.churnAvailable,
-  );
   let previousKnownDisplayValue: number | null = null;
   const rawPoints = basePoints.map((point) => {
-    const displayValue = resolveAudienceChartDisplayValue(
-      point,
-      currentParticipants,
-      totalNet,
-      preferMembershipFlow,
-    );
+    const displayValue = resolveAudienceChartDisplayValue(point, currentParticipants, 0, false);
     const previousDisplayValue = previousKnownDisplayValue;
     const deltaFromPrevious =
       displayValue === null || previousDisplayValue === null
@@ -846,9 +891,6 @@ function buildAudienceChart(stats: ChannelStatsResponse): AudienceChartModel {
     };
   });
   const displayablePoints = rawPoints.filter(hasAudienceDisplayValue);
-  if (displayablePoints.length === 0) {
-    return buildEmptyAudienceChart();
-  }
 
   const previousPointCount = Math.max(
     previousParticipantSeries.length,
@@ -856,8 +898,7 @@ function buildAudienceChart(stats: ChannelStatsResponse): AudienceChartModel {
   );
   let previousCumulativeNet = 0;
   const previousBasePoints = Array.from({ length: previousPointCount }, (_, index) => {
-    const participant =
-      previousParticipantSeries[index] ?? previousParticipantSeries.at(-1) ?? null;
+    const participant = previousParticipantSeries[index] ?? null;
     const membership = previousMembershipSeries[index] ?? null;
     const at = membership?.at ?? participant?.at ?? new Date().toISOString();
     const joined = membership?.joined ?? 0;
@@ -878,12 +919,13 @@ function buildAudienceChart(stats: ChannelStatsResponse): AudienceChartModel {
       cumulativeNet: previousCumulativeNet,
       x,
       y: lineBottom,
+      source: participant?.source ?? 'unavailable',
+      confidence: participant?.confidence ?? 'low',
     };
   });
-  const previousCurrentParticipants = previousParticipantSeries.at(-1)?.participantsCount ?? null;
   const rawPreviousPoints = previousBasePoints.map((point) => ({
     ...point,
-    displayValue: point.participantsCount ?? previousCurrentParticipants,
+    displayValue: point.participantsCount,
   }));
   const previousDisplayablePoints = rawPreviousPoints.filter(hasAudienceDisplayValue);
   const hasPreviousDisplayValues = previousDisplayablePoints.length > 0;
@@ -893,8 +935,9 @@ function buildAudienceChart(stats: ChannelStatsResponse): AudienceChartModel {
       ? previousDisplayablePoints.map((point) => point.displayValue)
       : []),
   ];
-  const rawMinValue = Math.min(...displayValues);
-  const rawMaxValue = Math.max(...displayValues);
+  const hasAnyDisplayValue = displayValues.length > 0;
+  const rawMinValue = hasAnyDisplayValue ? Math.min(...displayValues) : 0;
+  const rawMaxValue = hasAnyDisplayValue ? Math.max(...displayValues) : 0;
   const valueSpan = Math.max(1, rawMaxValue - rawMinValue);
   const valuePadding = Math.max(1, valueSpan * 0.18);
   const minValue = Math.max(0, rawMinValue - valuePadding);
@@ -902,45 +945,55 @@ function buildAudienceChart(stats: ChannelStatsResponse): AudienceChartModel {
   const valueRange = Math.max(1, maxValue - minValue);
   const resolveValueY = (value: number) =>
     lineTop + ((maxValue - value) / valueRange) * (lineBottom - lineTop);
-  const points = displayablePoints.map((point) => ({
-    ...point,
-    y: resolveValueY(point.displayValue),
-  }));
+  const fallbackPlotValue = displayValues[0] ?? 0;
+  const points = rawPoints.map((point, index) => {
+    const plotValue = resolveAudiencePlotValue(rawPoints, index) ?? fallbackPlotValue;
+    return {
+      ...point,
+      plotValue,
+      y: resolveValueY(plotValue),
+    };
+  });
+  const linePoints = points.filter(hasAudienceDisplayValue);
   const previousPoints = previousDisplayablePoints.map((point) => ({
     ...point,
     y: resolveValueY(point.displayValue),
   }));
 
-  const linePath = buildAudiencePath(points.map((point) => ({ x: point.x, y: point.y })));
+  const linePath = buildAudiencePath(linePoints.map((point) => ({ x: point.x, y: point.y })));
   const previousLinePath = buildAudiencePath(
     previousPoints.map((point) => ({ x: point.x, y: point.y })),
   );
   const joinedFlowLinePath = '';
   const leftFlowLinePath = '';
   const zeroY = lineBottom;
-  const guideYs = [
-    lineTop,
-    Math.round(lineTop + (lineBottom - lineTop) * 0.25),
-    Math.round(lineTop + (lineBottom - lineTop) * 0.5),
-    Math.round(lineTop + (lineBottom - lineTop) * 0.75),
-    lineBottom,
-  ];
-  const axisLabels = guideYs
-    .map((y) => {
-      const ratio = (y - lineTop) / Math.max(1, lineBottom - lineTop);
-      const value = maxValue - ratio * valueRange;
-      return {
-        y: y + 4,
-        label: formatDenseCount(Math.round(value)),
-      };
-    })
-    .filter((label, index, labels) => {
-      const duplicateIndex = labels.findIndex((item) => item.label === label.label);
-      const overlapsPrevious = labels
-        .slice(0, index)
-        .some((item) => Math.abs(item.y - label.y) < 12);
-      return duplicateIndex === index && !overlapsPrevious;
-    });
+  const guideYs = hasAnyDisplayValue
+    ? [
+        lineTop,
+        Math.round(lineTop + (lineBottom - lineTop) * 0.25),
+        Math.round(lineTop + (lineBottom - lineTop) * 0.5),
+        Math.round(lineTop + (lineBottom - lineTop) * 0.75),
+        lineBottom,
+      ]
+    : [];
+  const axisLabels = hasAnyDisplayValue
+    ? guideYs
+        .map((y) => {
+          const ratio = (y - lineTop) / Math.max(1, lineBottom - lineTop);
+          const value = maxValue - ratio * valueRange;
+          return {
+            y: y + 4,
+            label: formatDenseCount(Math.round(value)),
+          };
+        })
+        .filter((label, index, labels) => {
+          const duplicateIndex = labels.findIndex((item) => item.label === label.label);
+          const overlapsPrevious = labels
+            .slice(0, index)
+            .some((item) => Math.abs(item.y - label.y) < 12);
+          return duplicateIndex === index && !overlapsPrevious;
+        })
+    : [];
 
   return {
     points,
@@ -948,7 +1001,7 @@ function buildAudienceChart(stats: ChannelStatsResponse): AudienceChartModel {
     linePath,
     areaPath: buildAudienceAreaPath(
       linePath,
-      points.map((point) => ({ x: point.x, y: point.y })),
+      linePoints.map((point) => ({ x: point.x, y: point.y })),
       lineFloor,
     ),
     joinedFlowPath: '',
@@ -956,7 +1009,7 @@ function buildAudienceChart(stats: ChannelStatsResponse): AudienceChartModel {
     leftFlowPath: '',
     leftFlowLinePath,
     previousLinePath,
-    hasLine: points.length > 0,
+    hasLine: linePoints.length > 0,
     hasPreviousLine: hasPreviousDisplayValues && previousPoints.length > 0,
     hasJoinedFlow: false,
     hasLeftFlow: false,
@@ -1077,10 +1130,18 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
 
   const firstPoint = chart.points[0] ?? null;
   const lastPoint = chart.points.at(-1) ?? null;
+  const knownPoints = chart.points.filter(hasAudienceDisplayValue);
+  const firstKnownPoint = knownPoints[0] ?? null;
+  const lastKnownPoint = knownPoints.at(-1) ?? null;
   const totalGrowth =
-    firstPoint && lastPoint ? Math.round(lastPoint.displayValue - firstPoint.displayValue) : null;
-  const averageGrowth =
-    totalGrowth !== null ? totalGrowth / Math.max(1, chart.points.length - 1) : null;
+    firstKnownPoint && lastKnownPoint
+      ? Math.round(lastKnownPoint.displayValue - firstKnownPoint.displayValue)
+      : null;
+  const knownPointSpan =
+    firstKnownPoint && lastKnownPoint
+      ? Math.max(1, chart.points.indexOf(lastKnownPoint) - chart.points.indexOf(firstKnownPoint))
+      : 1;
+  const averageGrowth = totalGrowth !== null ? totalGrowth / knownPointSpan : null;
   const averageGrowthLabel = resolveAudienceChartAverageGrowthLabel(stats.period.bucket);
   const detailLabelIndices = !renderPointMarkers
     ? new Set<number>()
@@ -1091,14 +1152,18 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
     labels.length <= 12
       ? new Set(labels.map((_, index) => index))
       : resolveSparseLabelIndices(labels.length, safeActiveIndex);
-  const activeParticipantsLabel = formatCount(activePoint?.displayValue ?? null);
+  const activeParticipantsLabel = formatAudienceCount(
+    activePoint?.displayValue ?? null,
+    activePoint?.confidence,
+  );
   const activeDelta = activePoint?.deltaFromPrevious ?? activePoint?.net ?? null;
   const activeDeltaLabel = formatSignedCount(activeDelta);
   const activePercentLabel = formatSignedPercent(activePoint?.deltaPercentFromPrevious ?? null, 1);
   const activeBucketLabel = stats.period.bucket === 'hour' ? 'За час' : 'За день';
   const activeGuideLabel = activePoint
-    ? `${formatChartDetailDate(activePoint.at, stats.period.bucket)}: ${formatCount(
+    ? `${formatChartDetailDate(activePoint.at, stats.period.bucket)}: ${formatAudienceCount(
         activePoint.displayValue,
+        activePoint.confidence,
       )} подписчиков, ${activeBucketLabel.toLocaleLowerCase(
         'ru-RU',
       )} ${activeDeltaLabel}, ${formatCount(activePoint.joined)} пришли, ${formatCount(
@@ -1169,7 +1234,9 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
             <div className="channel-audience-board__metrics">
               <span className="channel-audience-metric">
                 <IconGroup aria-hidden focusable="false" width={24} height={24} strokeWidth={2} />
-                <b>{formatCount(firstPoint?.displayValue ?? null)}</b>
+                <b>
+                  {formatAudienceCount(firstPoint?.displayValue ?? null, firstPoint?.confidence)}
+                </b>
                 <small>{firstPoint ? formatChartDayMonth(firstPoint.at) : '—'}</small>
                 <em>Начало периода</em>
               </span>
@@ -1181,7 +1248,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                   height={25}
                   strokeWidth={2}
                 />
-                <b>{formatCount(lastPoint?.displayValue ?? null)}</b>
+                <b>{formatAudienceCount(lastPoint?.displayValue ?? null, lastPoint?.confidence)}</b>
                 <small>{lastPoint ? formatChartDayMonth(lastPoint.at) : '—'}</small>
                 <em>Конец периода</em>
               </span>
@@ -1334,7 +1401,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                             textAnchor="middle"
                             className="channel-stats-graph__point-value"
                           >
-                            {formatCompactCount(Math.round(point.displayValue))}
+                            {formatAudienceCount(point.displayValue, point.confidence)}
                           </text>
                           {point.deltaFromPrevious !== null ? (
                             <>
@@ -1358,7 +1425,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                           ) : null}
                         </>
                       ) : null}
-                      {renderPointMarkers ? (
+                      {renderPointMarkers && point.displayValue !== null ? (
                         <circle
                           cx={point.x}
                           cy={point.y}
@@ -1618,7 +1685,7 @@ function ChannelStatsOverview({
                       </td>
                       <td className="channel-summary-table__total">
                         <span className="channel-summary-table__total-value">
-                          {formatCount(row.subscribers)}
+                          {formatAudienceCount(row.subscribers, row.confidence)}
                         </span>
                       </td>
                       <td

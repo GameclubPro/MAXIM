@@ -37,9 +37,7 @@ export function normalizeMaxInlineKeyboardButtons(
     (acc, row) => acc + (Array.isArray(row) ? row.length : 0),
     0,
   );
-  const requestedRows = sourceButtons.filter(
-    (row) => Array.isArray(row) && row.length > 0,
-  ).length;
+  const requestedRows = sourceButtons.filter((row) => Array.isArray(row) && row.length > 0).length;
   let totalButtons = 0;
   let truncated = false;
   let rowBuffer: Array<Record<string, unknown>> = [];
@@ -224,9 +222,7 @@ function normalizeMaxInlineKeyboardButton(button: unknown): Record<string, unkno
         return null;
       }
 
-      const chatDescription = readTrimmedString(
-        source.chatDescription ?? source.chat_description,
-      );
+      const chatDescription = readTrimmedString(source.chatDescription ?? source.chat_description);
       const startPayload = readTrimmedString(source.startPayload ?? source.start_payload);
       const uuid = readTrimmedString(source.uuid);
 
@@ -300,7 +296,7 @@ function measureInlineKeyboardButtonTextWeight(button: Record<string, unknown>):
       return weight + 2;
     }
 
-    if (/[^\u0000-\u007f]/u.test(char)) {
+    if ((char.codePointAt(0) ?? 0) > 0x7f) {
       return weight + 1;
     }
 

@@ -78,45 +78,22 @@ export function isChannelStatsResponseForRange<T extends ViewsDisplayStats>(
 
 export function resolveAudienceChartDisplayValue(
   point: AudienceChartActivePoint,
-  currentParticipants: number | null,
-  totalNet: number,
-  preferMembershipFlow: boolean,
+  _currentParticipants: number | null,
+  _totalNet: number,
+  _preferMembershipFlow: boolean,
 ): number | null {
-  const flowValue =
-    currentParticipants !== null ? currentParticipants - (totalNet - point.cumulativeNet) : null;
-
-  if (preferMembershipFlow && flowValue !== null) {
-    return flowValue;
-  }
-
-  return point.participantsCount ?? currentParticipants;
+  return point.participantsCount;
 }
 
 export function shouldPreferMembershipFlowForAudienceChart(
-  points: readonly AudienceChartActivePoint[],
-  currentParticipants: number | null,
-  churnAvailable: boolean,
+  _points: readonly AudienceChartActivePoint[],
+  _currentParticipants: number | null,
+  _churnAvailable: boolean,
 ): boolean {
-  if (!churnAvailable || currentParticipants === null) {
-    return false;
-  }
-
-  const firstFlowIndex = points.findIndex((point) => point.joined > 0 || point.left > 0);
-  if (firstFlowIndex < 0) {
-    return false;
-  }
-
-  return points
-    .slice(0, firstFlowIndex + 1)
-    .some(
-      (point) =>
-        typeof point.participantsCount === 'number' && Number.isFinite(point.participantsCount),
-    );
+  return false;
 }
 
-export function resolveAverageViewsFromSeries(
-  points: readonly ViewsSeriesPoint[],
-): number | null {
+export function resolveAverageViewsFromSeries(points: readonly ViewsSeriesPoint[]): number | null {
   const totals = points.reduce(
     (result, point) => {
       const posts =

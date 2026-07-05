@@ -92,6 +92,8 @@ export const channelStatsSummarySchema = z.object({
       delta: z.number().int().nullable(),
       joined: z.number().int().min(0).nullable().optional(),
       left: z.number().int().min(0).nullable().optional(),
+      source: z.enum(['snapshot', 'flow', 'unavailable']).default('unavailable'),
+      confidence: z.enum(['high', 'medium', 'low']).default('low'),
     }),
   ),
 });
@@ -133,6 +135,8 @@ export const channelStatsResponseSchema = z.object({
         z.object({
           at: z.string().datetime(),
           participantsCount: z.number().int().min(0).nullable(),
+          source: z.enum(['snapshot', 'flow', 'unavailable']).default('unavailable'),
+          confidence: z.enum(['high', 'medium', 'low']).default('low'),
         }),
       ),
       membership: z.array(
@@ -189,6 +193,8 @@ export const channelStatsResponseSchema = z.object({
           z.object({
             at: z.string().datetime(),
             participantsCount: z.number().int().min(0).nullable(),
+            source: z.enum(['snapshot', 'flow', 'unavailable']).default('unavailable'),
+            confidence: z.enum(['high', 'medium', 'low']).default('low'),
           }),
         ),
         membership: z.array(

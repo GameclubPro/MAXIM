@@ -20293,6 +20293,8 @@ describe('AdminService.getChannelStats', () => {
       delta: 2,
       joined: 4,
       left: 2,
+      source: 'flow',
+      confidence: 'medium',
     });
     expect(daily.at(-1)).toEqual({
       date: '2026-03-07',
@@ -20300,6 +20302,8 @@ describe('AdminService.getChannelStats', () => {
       delta: 2,
       joined: 3,
       left: 1,
+      source: 'flow',
+      confidence: 'medium',
     });
   });
 
@@ -20341,14 +20345,20 @@ describe('AdminService.getChannelStats', () => {
       {
         at: '2026-03-07T11:00:00.000Z',
         participantsCount: 4100,
+        source: 'snapshot',
+        confidence: 'high',
       },
       {
         at: '2026-03-07T12:00:00.000Z',
         participantsCount: 4100,
+        source: 'snapshot',
+        confidence: 'low',
       },
       {
         at: '2026-03-07T14:00:00.000Z',
         participantsCount: null,
+        source: 'unavailable',
+        confidence: 'low',
       },
     ]);
   });
@@ -20409,6 +20419,117 @@ describe('AdminService.getChannelStats', () => {
       delta: 1,
       joined: 150,
       left: 0,
+      source: 'snapshot',
+      confidence: 'high',
+    });
+  });
+
+  it('does not expose carried snapshot totals as exact daily audience history', () => {
+    const service = new AdminService(
+      createPrismaMock() as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const statsHelpers = service as unknown as {
+      buildChannelStatsDailySummary: (
+        audienceSnapshots: Array<{ capturedAt: Date; participantsCount: number | null }>,
+        currentParticipants: number | null,
+        now: Date,
+        membershipRows?: Array<{
+          bucket_start: Date | string;
+          joined_users: unknown;
+          left_users: unknown;
+        }>,
+        membershipCoverageFrom?: Date | null,
+      ) => Array<{
+        date: string;
+        subscribers: number | null;
+        delta: number | null;
+        joined?: number | null;
+        left?: number | null;
+        source?: string;
+        confidence?: string;
+      }>;
+    };
+
+    const daily = statsHelpers.buildChannelStatsDailySummary(
+      [
+        {
+          capturedAt: new Date('2026-06-22T12:59:16.557Z'),
+          participantsCount: 129,
+        },
+        {
+          capturedAt: new Date('2026-07-02T08:26:26.411Z'),
+          participantsCount: 274,
+        },
+        {
+          capturedAt: new Date('2026-07-05T18:32:49.779Z'),
+          participantsCount: 477,
+        },
+      ],
+      477,
+      new Date('2026-07-05T18:40:00.000Z'),
+      [
+        {
+          bucket_start: new Date('2026-07-01T21:00:00.000Z'),
+          joined_users: '96',
+          left_users: '0',
+        },
+        {
+          bucket_start: new Date('2026-07-02T21:00:00.000Z'),
+          joined_users: '44',
+          left_users: '5',
+        },
+        {
+          bucket_start: new Date('2026-07-03T21:00:00.000Z'),
+          joined_users: '71',
+          left_users: '3',
+        },
+        {
+          bucket_start: new Date('2026-07-04T21:00:00.000Z'),
+          joined_users: '43',
+          left_users: '0',
+        },
+      ],
+      null,
+    );
+
+    expect(daily.find((row) => row.date === '2026-07-02')).toEqual({
+      date: '2026-07-02',
+      subscribers: 274,
+      delta: null,
+      joined: 96,
+      left: 0,
+      source: 'snapshot',
+      confidence: 'high',
+    });
+    expect(daily.find((row) => row.date === '2026-07-03')).toEqual({
+      date: '2026-07-03',
+      subscribers: null,
+      delta: null,
+      joined: 44,
+      left: 5,
+      source: 'unavailable',
+      confidence: 'low',
+    });
+    expect(daily.find((row) => row.date === '2026-07-04')).toEqual({
+      date: '2026-07-04',
+      subscribers: null,
+      delta: null,
+      joined: 71,
+      left: 3,
+      source: 'unavailable',
+      confidence: 'low',
+    });
+    expect(daily.find((row) => row.date === '2026-07-05')).toEqual({
+      date: '2026-07-05',
+      subscribers: 477,
+      delta: null,
+      joined: 43,
+      left: 0,
+      source: 'snapshot',
+      confidence: 'high',
     });
   });
 
@@ -20464,6 +20585,8 @@ describe('AdminService.getChannelStats', () => {
       delta: null,
       joined: null,
       left: null,
+      source: 'unavailable',
+      confidence: 'low',
     });
     expect(daily.at(-1)).toEqual({
       date: '2026-03-07',
@@ -20471,6 +20594,8 @@ describe('AdminService.getChannelStats', () => {
       delta: null,
       joined: 250,
       left: 0,
+      source: 'snapshot',
+      confidence: 'high',
     });
   });
 
@@ -20524,6 +20649,8 @@ describe('AdminService.getChannelStats', () => {
       delta: 1,
       joined: null,
       left: null,
+      source: 'snapshot',
+      confidence: 'high',
     });
     expect(daily.at(-1)).toEqual({
       date: '2026-03-07',
@@ -20531,6 +20658,8 @@ describe('AdminService.getChannelStats', () => {
       delta: 3,
       joined: null,
       left: null,
+      source: 'snapshot',
+      confidence: 'high',
     });
   });
 
@@ -20876,7 +21005,7 @@ describe('AdminService.getChannelStats', () => {
         todayJoined: 1,
         todayLeft: 1,
         weekDelta: 1,
-        sixteenDaysDelta: 40,
+        sixteenDaysDelta: null,
       },
       views: {
         perPost: 260,
@@ -20892,6 +21021,8 @@ describe('AdminService.getChannelStats', () => {
       delta: 0,
       joined: 1,
       left: 1,
+      source: 'flow',
+      confidence: 'medium',
     });
     expect(result.secondary).toEqual({
       postsWithButtons: 2,
@@ -20949,6 +21080,8 @@ describe('AdminService.getChannelStats', () => {
     expect(result.comparison.series?.participants[0]).toEqual({
       at: '2026-02-20T21:00:00.000Z',
       participantsCount: 1180,
+      source: 'snapshot',
+      confidence: 'low',
     });
     expect(channelStatsCollector.syncChannelIfStale).not.toHaveBeenCalled();
 

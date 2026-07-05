@@ -129,6 +129,7 @@ import {
 } from '@maxim/contracts';
 import {
   channelStatsResponseSchema,
+  type ChannelStatsBucket,
   type ChannelStatsMode,
   type ChannelStatsRange,
   type ChannelStatsResponse,
@@ -820,6 +821,46 @@ function addDays(value: Date, days: number): Date {
 
 function formatMoscowDateKey(value: Date): string {
   return new Date(value.getTime() + 3 * 60 * 60 * 1_000).toISOString().slice(0, 10);
+}
+
+function floorPreviewMoscowDay(value: Date): Date {
+  const moscowDate = new Date(value.getTime() + 3 * 60 * 60 * 1_000);
+  moscowDate.setUTCHours(0, 0, 0, 0);
+  return new Date(moscowDate.getTime() - 3 * 60 * 60 * 1_000);
+}
+
+function floorPreviewStatsBucket(value: Date, bucket: ChannelStatsBucket): Date {
+  if (bucket === 'day') {
+    return floorPreviewMoscowDay(value);
+  }
+
+  const result = new Date(value);
+  result.setUTCMinutes(0, 0, 0);
+  return result;
+}
+
+function shiftPreviewStatsBucket(value: Date, bucket: ChannelStatsBucket, amount: number): Date {
+  const result = new Date(value);
+  if (bucket === 'hour') {
+    result.setUTCHours(result.getUTCHours() + amount);
+    return result;
+  }
+
+  result.setUTCDate(result.getUTCDate() + amount);
+  return result;
+}
+
+function buildPreviewStatsBucketStarts(from: Date, to: Date, bucket: ChannelStatsBucket): Date[] {
+  const starts: Date[] = [];
+  let cursor = floorPreviewStatsBucket(from, bucket);
+  const end = floorPreviewStatsBucket(to, bucket);
+
+  while (cursor.getTime() <= end.getTime()) {
+    starts.push(cursor);
+    cursor = shiftPreviewStatsBucket(cursor, bucket, 1);
+  }
+
+  return starts;
 }
 
 function createPreviewVkParsingFeed(chatId: string, now: Date): VkParsingFeed {
@@ -3760,8 +3801,9 @@ function buildChannelStats(
   const joined = activityItems.filter((item) => item.type === 'joined').length;
   const left = activityItems.filter((item) => item.type === 'left').length;
   const { from, to } = resolveRangeWindow(range, now);
-  const points = range === '24h' ? 24 : range === '7d' ? 8 : 10;
-  const stepMs = Math.max(1, (to.getTime() - from.getTime()) / Math.max(1, points - 1));
+  const bucket: ChannelStatsBucket = range === '24h' ? 'hour' : 'day';
+  const bucketStarts = buildPreviewStatsBucketStarts(from, to, bucket);
+  const points = bucketStarts.length;
 
   function distributeTotal(total: number, weights: number[]): number[] {
     if (total <= 0) {
@@ -3814,7 +3856,7 @@ function buildChannelStats(
 
   let runningParticipants = baseParticipants;
   const membershipSeries = Array.from({ length: points }, (_, index) => {
-    const at = new Date(from.getTime() + stepMs * index);
+    const at = bucketStarts[index] ?? to;
     const joinedValue = joinedDistribution[index] ?? 0;
     const leftValue = leftDistribution[index] ?? 0;
     return {
@@ -3828,6 +3870,8 @@ function buildChannelStats(
     return {
       at: item.at,
       participantsCount: runningParticipants,
+      source: 'flow' as const,
+      confidence: 'medium' as const,
     };
   });
   const viewWeights = Array.from({ length: points }, (_, index) => {
@@ -3846,7 +3890,7 @@ function buildChannelStats(
     ),
   );
   const viewsSeries = Array.from({ length: points }, (_, index) => {
-    const at = new Date(from.getTime() + stepMs * index);
+    const at = bucketStarts[index] ?? to;
     const postCount = postDistribution[index] ?? 0;
     const viewCount = viewsDistribution[index] ?? 0;
     return {
@@ -3862,6 +3906,7 @@ function buildChannelStats(
   const previousViews = Math.round(views * 0.84);
   const previousPosts = Math.max(1, Math.round(posts * 0.88));
   const previousReactions = Math.round(reactions * 0.76);
+  const previousBucketStarts = buildPreviewStatsBucketStarts(previousFrom, previousTo, bucket);
   const previousNet = Math.round((joined - left) * 0.62);
   const previousJoined = Math.round(joined * 0.78);
   const previousLeft = Math.round(left * 1.18);
@@ -3874,14 +3919,17 @@ function buildChannelStats(
       postCount > 0 ? viewWeights[index]! * postCount : 0,
     ),
   );
-  const previousMembershipSeries = Array.from({ length: points }, (_, index) => {
-    const at = new Date(previousFrom.getTime() + stepMs * index);
-    return {
-      at: at.toISOString(),
-      joined: previousJoinedDistribution[index] ?? 0,
-      left: previousLeftDistribution[index] ?? 0,
-    };
-  });
+  const previousMembershipSeries = Array.from(
+    { length: previousBucketStarts.length },
+    (_, index) => {
+      const at = previousBucketStarts[index] ?? previousTo;
+      return {
+        at: at.toISOString(),
+        joined: previousJoinedDistribution[index] ?? 0,
+        left: previousLeftDistribution[index] ?? 0,
+      };
+    },
+  );
   let previousRunningParticipants =
     baseParticipants - Math.max(0, previousNet) + Math.max(0, joined - left - previousNet);
   const previousParticipantsSeries = previousMembershipSeries.map((item) => {
@@ -3892,10 +3940,12 @@ function buildChannelStats(
     return {
       at: item.at,
       participantsCount: previousRunningParticipants,
+      source: 'flow' as const,
+      confidence: 'medium' as const,
     };
   });
-  const previousViewsSeries = Array.from({ length: points }, (_, index) => {
-    const at = new Date(previousFrom.getTime() + stepMs * index);
+  const previousViewsSeries = Array.from({ length: previousBucketStarts.length }, (_, index) => {
+    const at = previousBucketStarts[index] ?? previousTo;
     const postCount = previousPostDistribution[index] ?? 0;
     const value = previousViewsDistribution[index] ?? 0;
     return {
@@ -3918,6 +3968,8 @@ function buildChannelStats(
       delta,
       joined: joinedValue,
       left: leftValue,
+      source: 'flow' as const,
+      confidence: 'medium' as const,
     };
   });
   const summaryLast24h = range === '24h' ? views : Math.round(views * 0.28);
@@ -4014,7 +4066,7 @@ function buildChannelStats(
       range,
       from: from.toISOString(),
       to: to.toISOString(),
-      bucket: range === '24h' ? 'hour' : 'day',
+      bucket,
     },
     official: {
       audience: {

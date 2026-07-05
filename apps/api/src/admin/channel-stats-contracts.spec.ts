@@ -51,6 +51,8 @@ describe('channel stats contract exports', () => {
           delta: 3,
           joined: 5,
           left: 2,
+          source: 'flow',
+          confidence: 'medium',
         },
       ],
     });
@@ -64,6 +66,37 @@ describe('channel stats contract exports', () => {
       delta: 3,
       joined: 5,
       left: 2,
+      source: 'flow',
+      confidence: 'medium',
+    });
+  });
+
+  it('defaults missing daily audience source metadata for cached payloads', () => {
+    const result = channelStatsSummarySchema.parse({
+      subscribers: {
+        current: 1240,
+        todayDelta: null,
+        weekDelta: null,
+        sixteenDaysDelta: null,
+      },
+      views: {
+        perPost: null,
+        last24h: null,
+        last48h: null,
+        er24: null,
+      },
+      daily: [
+        {
+          date: '2026-03-07',
+          subscribers: null,
+          delta: null,
+        },
+      ],
+    });
+
+    expect(result.daily[0]).toMatchObject({
+      source: 'unavailable',
+      confidence: 'low',
     });
   });
 

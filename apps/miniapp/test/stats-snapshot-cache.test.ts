@@ -1,9 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {
-  readStatsSnapshotMirror,
-  saveStatsSnapshot,
-} from '../src/lib/stats-snapshot-cache';
+import { readStatsSnapshotMirror, saveStatsSnapshot } from '../src/lib/stats-snapshot-cache';
 
 type IdleCallback = () => void;
 
@@ -49,7 +46,7 @@ test.afterEach(() => {
 });
 
 test('stats snapshot mirror reuses parsed raw values', () => {
-  const key = 'maxim:stats-snapshot:v6:channel:chat-1:7d:overview';
+  const key = 'maxim:stats-snapshot:v7:channel:chat-1:7d:overview';
   installWindowMock({
     initialItems: {
       [key]: JSON.stringify({
@@ -82,7 +79,7 @@ test('stats snapshot mirror reuses parsed raw values', () => {
 
 test('stats snapshot save defers storage write but keeps pending value readable', () => {
   const { store, idleCallbacks } = installWindowMock({});
-  const key = 'maxim:stats-snapshot:v6:channel:chat-2:7d:overview';
+  const key = 'maxim:stats-snapshot:v7:channel:chat-2:7d:overview';
 
   saveStatsSnapshot('channel', ['chat-2', '7d', 'overview'], { count: 42 });
 

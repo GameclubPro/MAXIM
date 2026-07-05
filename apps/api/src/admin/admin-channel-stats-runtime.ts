@@ -67,6 +67,10 @@ type ChannelStatsViewWindowSummary = {
   reactions24h: number;
 };
 
+type ChannelStatsDailyRow = ChannelStatsResponse['summary']['daily'][number];
+type ChannelStatsDailySource = ChannelStatsDailyRow['source'];
+type ChannelStatsDailyConfidence = ChannelStatsDailyRow['confidence'];
+
 export class AdminChannelStatsRuntime {
   constructor(private readonly context: AdminChannelStatsRuntimeContext) {}
 
@@ -508,6 +512,10 @@ export class AdminChannelStatsRuntime {
       previousAudienceSnapshot?.participantsCount ?? participantsCount,
       audienceSnapshots,
       {
+        carryForward: churnAvailable,
+        currentParticipants: participantsCount,
+        membershipSeries,
+        useMembershipFlow: churnAvailable,
         carryForwardUntil:
           audienceFresh || !latestAudienceSnapshot
             ? null
@@ -1097,30 +1105,122 @@ export class AdminChannelStatsRuntime {
     bucket: ChannelStatsBucket,
     initialParticipantsCount: number | null,
     snapshots: Array<{ capturedAt: Date; participantsCount: number | null }>,
-    options: { carryForwardUntil?: Date | null } = {},
+    options: {
+      carryForward?: boolean;
+      carryForwardUntil?: Date | null;
+      currentParticipants?: number | null;
+      membershipSeries?: ChannelStatsResponse['official']['series']['membership'];
+      useMembershipFlow?: boolean;
+    } = {},
   ) {
     let cursorValue = initialParticipantsCount;
     let snapshotIndex = 0;
+    const carryForward = options.carryForward !== false;
     const carryForwardUntilMs = options.carryForwardUntil?.getTime() ?? null;
 
-    return bucketStarts.map((bucketStart) => {
+    const snapshotPoints = bucketStarts.map((bucketStart) => {
       const bucketEnd = this.shiftChannelStatsBucket(bucketStart, bucket, 1);
+      let bucketValue: number | null = null;
       while (
         snapshotIndex < snapshots.length &&
         snapshots[snapshotIndex].capturedAt.getTime() < bucketEnd.getTime()
       ) {
         cursorValue = snapshots[snapshotIndex].participantsCount;
+        if (snapshots[snapshotIndex].capturedAt.getTime() >= bucketStart.getTime()) {
+          bucketValue = snapshots[snapshotIndex].participantsCount;
+        }
         snapshotIndex += 1;
       }
 
       return {
         at: bucketStart.toISOString(),
-        participantsCount:
-          carryForwardUntilMs !== null && bucketStart.getTime() > carryForwardUntilMs
+        participantsCount: !carryForward
+          ? bucketValue
+          : carryForwardUntilMs !== null && bucketStart.getTime() > carryForwardUntilMs
             ? null
             : cursorValue,
+        source:
+          bucketValue !== null
+            ? ('snapshot' as const)
+            : !carryForward ||
+                (carryForwardUntilMs !== null && bucketStart.getTime() > carryForwardUntilMs) ||
+                cursorValue === null
+              ? ('unavailable' as const)
+              : ('snapshot' as const),
+        confidence:
+          bucketValue !== null
+            ? ('high' as const)
+            : !carryForward ||
+                (carryForwardUntilMs !== null && bucketStart.getTime() > carryForwardUntilMs) ||
+                cursorValue === null
+              ? ('low' as const)
+              : ('low' as const),
       };
     });
+
+    const membershipSeries = options.membershipSeries ?? [];
+    const currentParticipants =
+      typeof options.currentParticipants === 'number' &&
+      Number.isFinite(options.currentParticipants)
+        ? options.currentParticipants
+        : null;
+    if (
+      options.useMembershipFlow === true &&
+      currentParticipants !== null &&
+      membershipSeries.length === bucketStarts.length &&
+      this.canUseMembershipSeriesForParticipantBackfill(
+        initialParticipantsCount,
+        bucketStarts,
+        snapshots,
+        membershipSeries,
+      )
+    ) {
+      let cumulativeNet = 0;
+      const cumulativePoints = membershipSeries.map((point) => {
+        cumulativeNet += point.joined - (point.left ?? 0);
+        return cumulativeNet;
+      });
+      const totalNet = cumulativePoints.at(-1) ?? 0;
+
+      return snapshotPoints.map((point, index) => ({
+        ...point,
+        participantsCount: currentParticipants - (totalNet - (cumulativePoints[index] ?? 0)),
+        source: 'flow' as const,
+        confidence: 'medium' as const,
+      }));
+    }
+
+    return snapshotPoints;
+  }
+
+  private canUseMembershipSeriesForParticipantBackfill(
+    initialParticipantsCount: number | null,
+    bucketStarts: Date[],
+    snapshots: Array<{ capturedAt: Date; participantsCount: number | null }>,
+    membershipSeries: ChannelStatsResponse['official']['series']['membership'],
+  ): boolean {
+    const firstFlowIndex = membershipSeries.findIndex(
+      (point) => point.joined > 0 || (point.left ?? 0) > 0,
+    );
+    if (firstFlowIndex < 0) {
+      return false;
+    }
+
+    if (typeof initialParticipantsCount === 'number' && Number.isFinite(initialParticipantsCount)) {
+      return true;
+    }
+
+    const firstFlowStartMs = bucketStarts[firstFlowIndex]?.getTime();
+    if (!Number.isFinite(firstFlowStartMs)) {
+      return false;
+    }
+
+    return snapshots.some(
+      (snapshot) =>
+        typeof snapshot.participantsCount === 'number' &&
+        Number.isFinite(snapshot.participantsCount) &&
+        snapshot.capturedAt.getTime() < firstFlowStartMs,
+    );
   }
 
   buildMembershipSeriesFromBucketRows(
@@ -1239,16 +1339,13 @@ export class AdminChannelStatsRuntime {
           params.useAudienceSnapshotFallbackForCurrent !== false,
       },
     );
-    const resolveDelta = (lookbackMs: number) => {
-      if (currentParticipants === null) {
+    const resolveDailyDelta = (lookbackDays: number) => {
+      const rows = daily.slice(-lookbackDays);
+      if (rows.length === 0 || rows.some((row) => row.delta === null)) {
         return null;
       }
 
-      const baseline = this.resolveLastAudienceCountAt(
-        sortedAudienceSnapshots,
-        new Date(params.now.getTime() - lookbackMs),
-      );
-      return baseline === null ? null : currentParticipants - baseline;
+      return rows.reduce((total, row) => total + (row.delta ?? 0), 0);
     };
     const viewWindows =
       params.viewWindows ??
@@ -1265,12 +1362,11 @@ export class AdminChannelStatsRuntime {
     return {
       subscribers: {
         current: currentParticipants,
-        todayDelta: params.membershipDeltas?.today ?? resolveDelta(TWENTY_FOUR_HOURS_MS),
+        todayDelta: daily.at(-1)?.delta ?? null,
         todayJoined: params.membershipDeltas?.todayJoined ?? null,
         todayLeft: params.membershipDeltas?.todayLeft ?? null,
-        weekDelta: params.membershipDeltas?.week ?? resolveDelta(7 * TWENTY_FOUR_HOURS_MS),
-        sixteenDaysDelta:
-          params.membershipDeltas?.sixteenDays ?? resolveDelta(16 * TWENTY_FOUR_HOURS_MS),
+        weekDelta: resolveDailyDelta(7),
+        sixteenDaysDelta: resolveDailyDelta(16),
       },
       views: {
         perPost: viewWindows.last24h,
@@ -1330,36 +1426,52 @@ export class AdminChannelStatsRuntime {
     const firstDay = this.floorChannelStatsMoscowDay(
       new Date(now.getTime() - 15 * TWENTY_FOUR_HOURS_MS),
     );
-    const days: ChannelStatsResponse['summary']['daily'] = [];
-    let previousCount = this.resolveLastAudienceCountAt(
-      audienceSnapshots,
-      new Date(firstDay.getTime() - 1),
+    const days: ChannelStatsResponse['summary']['daily'] = Array.from(
+      { length: 16 },
+      (_, index) => {
+        const day = new Date(firstDay.getTime() + index * TWENTY_FOUR_HOURS_MS);
+        return this.buildChannelStatsDailySummaryRow({
+          day,
+          subscribers: null,
+          delta: null,
+          source: 'unavailable',
+          confidence: 'low',
+        });
+      },
     );
+    const exactSnapshotByDayIndex = this.buildChannelStatsDailySnapshotCounts(
+      firstDay,
+      audienceSnapshots,
+    );
+    let previousExactCount: number | null = null;
+    let previousExactIndex: number | null = null;
 
-    for (let offset = 15; offset >= 0; offset -= 1) {
-      const day = this.floorChannelStatsMoscowDay(
-        new Date(now.getTime() - offset * TWENTY_FOUR_HOURS_MS),
-      );
-      const dayEnd = new Date(day.getTime() + TWENTY_FOUR_HOURS_MS - 1);
-      const subscribers =
-        offset === 0 && currentParticipants !== null
+    for (let index = 0; index < days.length; index += 1) {
+      const snapshotCount =
+        index === days.length - 1 &&
+        currentParticipants !== null &&
+        options.useAudienceSnapshotFallbackForCurrent !== false
           ? currentParticipants
-          : offset === 0 && options.useAudienceSnapshotFallbackForCurrent === false
-            ? null
-            : this.resolveLastAudienceCountAt(audienceSnapshots, dayEnd);
+          : (exactSnapshotByDayIndex.get(index) ?? null);
+      if (snapshotCount === null) {
+        continue;
+      }
+
+      const day = new Date(firstDay.getTime() + index * TWENTY_FOUR_HOURS_MS);
       const delta =
-        subscribers === null || previousCount === null ? null : subscribers - previousCount;
-      days.push({
-        date: this.formatChannelStatsMoscowDate(day),
-        subscribers,
+        previousExactCount !== null && previousExactIndex === index - 1
+          ? snapshotCount - previousExactCount
+          : null;
+      days[index] = this.buildChannelStatsDailySummaryRow({
+        day,
+        subscribers: snapshotCount,
         delta,
-        joined: null,
-        left: null,
+        source: 'snapshot',
+        confidence: 'high',
       });
 
-      if (subscribers !== null) {
-        previousCount = subscribers;
-      }
+      previousExactCount = snapshotCount;
+      previousExactIndex = index;
     }
 
     const dailyMembershipFlows = membershipRows
@@ -1408,12 +1520,75 @@ export class AdminChannelStatsRuntime {
           delta: flow.net,
           joined: flow.joined,
           left: flow.left,
+          source: 'flow',
+          confidence: 'medium',
         };
         runningSubscribers -= flow.net;
       }
     }
 
     return days;
+  }
+
+  private buildChannelStatsDailySummaryRow(params: {
+    day: Date;
+    subscribers: number | null;
+    delta: number | null;
+    source: ChannelStatsDailySource;
+    confidence: ChannelStatsDailyConfidence;
+  }): ChannelStatsDailyRow {
+    return {
+      date: this.formatChannelStatsMoscowDate(params.day),
+      subscribers: params.subscribers,
+      delta: params.delta,
+      joined: null,
+      left: null,
+      source: params.source,
+      confidence: params.confidence,
+    };
+  }
+
+  private buildChannelStatsDailySnapshotCounts(
+    firstDay: Date,
+    audienceSnapshots: Array<{ capturedAt: Date; participantsCount: number | null }>,
+  ): Map<number, number> {
+    const firstDayMs = firstDay.getTime();
+    const lastDayExclusiveMs = firstDayMs + 16 * TWENTY_FOUR_HOURS_MS;
+    const snapshotsByDay = new Map<number, { capturedAtMs: number; participantsCount: number }>();
+
+    for (const snapshot of audienceSnapshots) {
+      if (
+        typeof snapshot.participantsCount !== 'number' ||
+        !Number.isFinite(snapshot.participantsCount)
+      ) {
+        continue;
+      }
+
+      const capturedAtMs = snapshot.capturedAt.getTime();
+      if (
+        !Number.isFinite(capturedAtMs) ||
+        capturedAtMs < firstDayMs ||
+        capturedAtMs >= lastDayExclusiveMs
+      ) {
+        continue;
+      }
+
+      const index = Math.floor((capturedAtMs - firstDayMs) / TWENTY_FOUR_HOURS_MS);
+      const previous = snapshotsByDay.get(index);
+      if (!previous || capturedAtMs >= previous.capturedAtMs) {
+        snapshotsByDay.set(index, {
+          capturedAtMs,
+          participantsCount: snapshot.participantsCount,
+        });
+      }
+    }
+
+    return new Map(
+      Array.from(snapshotsByDay.entries()).map(([index, snapshot]) => [
+        index,
+        snapshot.participantsCount,
+      ]),
+    );
   }
 
   private canUseMembershipFlowsForDailySubscriberBackfill(
