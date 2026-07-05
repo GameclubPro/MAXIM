@@ -399,11 +399,14 @@ describe('MaxBotOwnershipFoundationService', () => {
     const snapshot = await service.getSnapshot(0);
 
     const webhookRepairSql = extractSqlText(prisma.$queryRaw.mock.calls[0]);
-    expect(webhookRepairSql).toContain('WITH candidate_events AS');
-    expect(webhookRepairSql).toContain('bot_id IN');
+    expect(webhookRepairSql).toContain('FROM unnest(ARRAY');
+    expect(webhookRepairSql).toContain('JOIN LATERAL');
+    expect(webhookRepairSql).toContain('selected_bot');
+    expect(webhookRepairSql).toContain('webhook_events.bot_id = selected_bot.bot_id');
     expect(webhookRepairSql).toContain('created_at >= now() - interval');
     expect(webhookRepairSql).toContain("normalized_payload->'message'->>'chatId'");
     expect(webhookRepairSql).toContain("normalized_payload->>'chatId'");
+    expect(webhookRepairSql).toContain('LIMIT 1');
     expect(prisma.chat.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 'chat-legacy' },

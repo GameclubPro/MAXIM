@@ -22,6 +22,8 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    command: ['redis-server', '--save', '3600', '1', '--appendonly', 'no']
+    stop_grace_period: 15m
 
   api-ingress:
     build:

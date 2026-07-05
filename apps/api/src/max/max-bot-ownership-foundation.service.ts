@@ -258,7 +258,6 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
       chats,
       membershipsByChat,
       knownBotIds,
-      localActivityRepairByChat,
     );
     const repairSignalsByChat = this.mergeRepairSignals(
       localActivityRepairByChat,
@@ -535,57 +534,63 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
     chats: readonly ChatRecord[],
     membershipsByChat: ReadonlyMap<string, readonly MembershipRecord[]>,
     knownBotIds: ReadonlySet<string>,
-    existingSignals: ReadonlyMap<string, RepairSignal>,
   ): Promise<Map<string, RepairSignal>> {
     const knownBotIdList = Array.from(knownBotIds);
     if (knownBotIdList.length === 0) {
       return new Map();
     }
 
-    const candidateChatIds = chats
-      .filter((chat) =>
-        this.shouldUseWebhookRepairSignal(
-          chat,
-          membershipsByChat.get(chat.id) ?? [],
-          knownBotIds,
-          existingSignals.get(chat.id) ?? null,
-        ),
-      )
-      .map((chat) => chat.id);
+    const candidateChatIds = [
+      ...new Set(
+        chats
+          .filter((chat) =>
+            this.shouldUseWebhookRepairSignal(
+              chat,
+              membershipsByChat.get(chat.id) ?? [],
+              knownBotIds,
+            ),
+          )
+          .map((chat) => chat.id.trim())
+          .filter(Boolean),
+      ),
+    ];
     if (candidateChatIds.length === 0) {
       return new Map();
     }
 
     const rows = await this.prisma.$queryRaw<RawWebhookRepairSignal[]>(Prisma.sql`
-      WITH candidate_events AS (
-        SELECT
-          COALESCE(
-            NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), ''),
-            NULLIF(BTRIM(normalized_payload->>'chatId'), '')
-          ) AS chat_id,
-          NULLIF(BTRIM(bot_id), '') AS bot_id,
-          COALESCE(
-            NULLIF(BTRIM(normalized_payload->'message'->>'chatTitle'), ''),
-            NULLIF(BTRIM(normalized_payload->>'chatTitle'), '')
-          ) AS chat_title,
-          created_at
-        FROM webhook_events
-        WHERE bot_id IN (${Prisma.join(knownBotIdList)})
-          AND created_at >= now() - interval '30 days'
-          AND COALESCE(
-            NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), ''),
-            NULLIF(BTRIM(normalized_payload->>'chatId'), '')
-          ) IN (${Prisma.join(candidateChatIds)})
-      )
       SELECT
-        chat_id,
-        (ARRAY_AGG(bot_id ORDER BY created_at DESC) FILTER (WHERE bot_id IS NOT NULL))[1] AS bot_id,
-        (ARRAY_AGG(chat_title ORDER BY created_at DESC) FILTER (WHERE chat_title IS NOT NULL))[1] AS chat_title,
-        MAX(created_at) AS created_at
-      FROM candidate_events
-      WHERE chat_id IS NOT NULL
-        AND (bot_id IS NOT NULL OR chat_title IS NOT NULL)
-      GROUP BY chat_id
+        selected.chat_id,
+        event_row.bot_id,
+        event_row.chat_title,
+        event_row.created_at
+      FROM unnest(ARRAY[${Prisma.join(candidateChatIds)}]::text[]) AS selected(chat_id)
+      JOIN LATERAL (
+        SELECT bot_event.bot_id, bot_event.chat_title, bot_event.created_at
+        FROM unnest(ARRAY[${Prisma.join(knownBotIdList)}]::text[]) AS selected_bot(bot_id)
+        JOIN LATERAL (
+          SELECT
+            NULLIF(BTRIM(webhook_events.bot_id), '') AS bot_id,
+            COALESCE(
+              NULLIF(BTRIM(normalized_payload->'message'->>'chatTitle'), ''),
+              NULLIF(BTRIM(normalized_payload->>'chatTitle'), '')
+            ) AS chat_title,
+            created_at
+          FROM webhook_events
+          WHERE webhook_events.bot_id = selected_bot.bot_id
+            AND created_at >= now() - interval '30 days'
+            AND COALESCE(
+              NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), ''),
+              NULLIF(BTRIM(normalized_payload->>'chatId'), '')
+            ) = selected.chat_id
+          ORDER BY created_at DESC
+          LIMIT 1
+        ) bot_event ON TRUE
+        ORDER BY bot_event.created_at DESC
+        LIMIT 1
+      ) event_row ON TRUE
+      WHERE event_row.bot_id IS NOT NULL
+         OR event_row.chat_title IS NOT NULL
     `);
 
     const result = new Map<string, RepairSignal>();
@@ -668,14 +673,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
     chat: ChatRecord,
     memberships: readonly MembershipRecord[],
     knownBotIds: ReadonlySet<string>,
-    existingSignal: RepairSignal | null,
   ): boolean {
-    const needsTitleSignal =
-      this.isFallbackTitle(chat.id, chat.title) && !this.readTrimmedString(existingSignal?.title);
-    if (needsTitleSignal) {
-      return true;
-    }
-
     if (chat.primaryBotId || chat.botId) {
       return false;
     }

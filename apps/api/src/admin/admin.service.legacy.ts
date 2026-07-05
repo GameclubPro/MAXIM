@@ -11354,6 +11354,7 @@ export class AdminService implements OnModuleDestroy {
           WHERE normalized_payload->>'type' = 'message_created'
             AND normalized_payload->'message'->>'senderId' = ${normalizedTargetUserId}
             AND normalized_payload->'message'->>'chatId' = ${normalizedChatId}
+            AND NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), '') IS NOT NULL
             AND created_at >= ${since}
         ) AS source_rows
         WHERE message_id IS NOT NULL

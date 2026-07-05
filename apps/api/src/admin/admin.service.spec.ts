@@ -6576,6 +6576,20 @@ describe('AdminService.applyManualModerationAction', () => {
     expect(maxClient.deleteMessage.mock.invocationCallOrder[1]).toBeLessThan(
       maxClient.banMember.mock.invocationCallOrder[1],
     );
+    const recentMessageCleanupSqlTexts = prisma.$queryRaw.mock.calls
+      .map((call) => extractSqlText(call))
+      .filter(
+        (sqlText) =>
+          sqlText.includes('SELECT message_id') && sqlText.includes('FROM webhook_events'),
+      );
+    expect(recentMessageCleanupSqlTexts).toHaveLength(2);
+    for (const sqlText of recentMessageCleanupSqlTexts) {
+      expect(sqlText).toContain("normalized_payload->'message'->>'senderId'");
+      expect(sqlText).toContain("normalized_payload->'message'->>'chatId'");
+      expect(sqlText).toContain(
+        "NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), '') IS NOT NULL",
+      );
+    }
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
