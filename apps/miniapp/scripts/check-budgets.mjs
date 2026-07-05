@@ -18,8 +18,14 @@ const HASH_ROUTER_STARTUP_JS_ALLOWANCE_GZIP =
   process.env.VITE_ROUTER_MODE?.trim() === 'hash' ? 512 : 0;
 // The standalone autopost hub is a top-level lazy route; only route registration is paid at startup.
 const AUTOPOSTS_ROUTE_STARTUP_JS_ALLOWANCE_GZIP = 512;
+// Keepalive writes must use the GET mutation tunnel synchronously on CDN-preferred hosts so
+// page-leave profile handoff/stat updates preserve auth and survive GET-only front doors.
+const KEEPALIVE_MUTATION_TUNNEL_STARTUP_JS_ALLOWANCE_GZIP = 512;
 const STARTUP_JS_BUDGET_GZIP =
-  113 * 1024 + HASH_ROUTER_STARTUP_JS_ALLOWANCE_GZIP + AUTOPOSTS_ROUTE_STARTUP_JS_ALLOWANCE_GZIP;
+  113 * 1024 +
+  HASH_ROUTER_STARTUP_JS_ALLOWANCE_GZIP +
+  AUTOPOSTS_ROUTE_STARTUP_JS_ALLOWANCE_GZIP +
+  KEEPALIVE_MUTATION_TUNNEL_STARTUP_JS_ALLOWANCE_GZIP;
 // Settings remains lazy-loaded, but richer giveaway, rules, and broadcast editors,
 // shared drilldown UI reuse, the compact required-subscription timer card,
 // the per-day broadcast agenda sheet, and the compact managed-broadcast

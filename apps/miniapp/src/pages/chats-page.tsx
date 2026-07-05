@@ -30,7 +30,7 @@ import {
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { describeApiError } from '../lib/api-error';
-import { getMe, updateManagedEntityFavorites } from '../lib/api/root-client';
+import { getMe } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { saveChatTitle, saveChatTitles } from '../lib/chat-titles';
 import { cn } from '../lib/cn';
@@ -233,6 +233,18 @@ function buildEntitySignals(entity: ManagedHomeEntity, entityType: ManagedTab): 
   }
 
   return [...signals, ...secondarySignals].slice(0, 2);
+}
+
+async function saveManagedEntityFavoriteTypes(
+  api: ApiTransport,
+  entityType: ManagedTab,
+  entityId: string,
+  favoriteTypes: ManagedEntityFavoriteType[],
+) {
+  const { updateManagedEntityFavorites } = await import(
+    '../lib/api/managed-entity-favorites-client'
+  );
+  return updateManagedEntityFavorites(api, entityType, entityId, favoriteTypes);
 }
 
 function buildEntitySettingsRoute(entityType: ManagedTab, entityId: string): string {
@@ -808,7 +820,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
 
     void Promise.allSettled(
       legacyItems.map((item) =>
-        updateManagedEntityFavorites(
+        saveManagedEntityFavoriteTypes(
           api,
           item.entityType,
           item.id,
@@ -938,7 +950,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     setSavingFavoriteEntityKey(buildFavoriteEntityKey(entityType, entityId));
 
     try {
-      const saved = await updateManagedEntityFavorites(
+      const saved = await saveManagedEntityFavoriteTypes(
         api,
         entityType,
         entityId,

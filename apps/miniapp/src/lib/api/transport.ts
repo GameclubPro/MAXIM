@@ -1,6 +1,7 @@
 import { buildApiErrorMessage } from '../api-error';
 import { traceFirstMiniappApiResult } from '../boot-trace';
 import { resolveRuntimeApiBases } from '../public-config';
+import { isMutationTunnelPreferredHost } from './transport-mutation-tunnel-hosts';
 import { buildMutationTunnelPathSync } from './transport-mutation-tunnel-path';
 const INIT_DATA_REFRESH_WAIT_MS = 1_000;
 const INIT_DATA_REFRESH_POLL_INTERVAL_MS = 50;
@@ -9,11 +10,6 @@ const API_FALLBACKS_ENABLED =
   typeof __MAXIM_API_FALLBACKS_ENABLED__ === 'boolean'
     ? __MAXIM_API_FALLBACKS_ENABLED__
     : true;
-const MUTATION_TUNNEL_PREFERRED_HOSTS = new Set([
-  'api-cdn.flex-craft.ru',
-  'api2.major-maksimov.ru',
-]);
-
 export type ApiTransport = {
   request: (path: string, init?: RequestInit) => Promise<unknown>;
   requestKeepalive: (path: string, init?: RequestInit) => void;
@@ -30,14 +26,6 @@ type FetchAttemptResult = {
 
 function resolveInitDataValue(initData: string | (() => string)): string {
   return (typeof initData === 'function' ? initData() : initData).trim();
-}
-
-function shouldPreferMutationTunnel(apiBase: string): boolean {
-  try {
-    return MUTATION_TUNNEL_PREFERRED_HOSTS.has(new URL(apiBase, window.location.href).hostname);
-  } catch {
-    return [...MUTATION_TUNNEL_PREFERRED_HOSTS].some((host) => apiBase.includes(host));
-  }
 }
 
 async function waitForUpdatedInitData(
@@ -170,7 +158,7 @@ export function createApiTransport(
     const method = (init.method ?? 'GET').toUpperCase();
 
     if (!API_FALLBACKS_ENABLED || attemptBases.length <= 1) {
-      if (!['GET', 'HEAD'].includes(method) && shouldPreferMutationTunnel(attemptBases[0])) {
+      if (!['GET', 'HEAD'].includes(method) && isMutationTunnelPreferredHost(attemptBases[0])) {
         const { fetchMutationWithTunnel } = await import('./transport-mutation-tunnel');
         const tunnelResult = await fetchMutationWithTunnel(
           attemptBases[0],
@@ -333,7 +321,7 @@ export function createApiTransport(
         return true;
       };
 
-      if (isMutation && shouldPreferMutationTunnel(apiBase) && sendSyncTunnel()) {
+      if (isMutation && isMutationTunnelPreferredHost(apiBase) && sendSyncTunnel()) {
         return;
       }
 
