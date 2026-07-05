@@ -19,6 +19,10 @@ type CandidateRow = {
 type CandidateReadClient = Pick<PrismaService, '$queryRaw'>;
 type CandidateEntityType = Exclude<ManagedEntityTypeFilter, 'all'>;
 
+const WEBHOOK_FALLBACK_MIN_SCAN_LIMIT = 200;
+const WEBHOOK_FALLBACK_MAX_SCAN_LIMIT = 5_000;
+const WEBHOOK_FALLBACK_SCAN_LIMIT_MULTIPLIER = 100;
+
 @Injectable()
 export class ManagedEntityCandidateSyncService {
   async loadLocalDiscoverySnapshot(
@@ -33,6 +37,10 @@ export class ManagedEntityCandidateSyncService {
     }
 
     const limit = Math.max(1, Math.trunc(options.limit));
+    const webhookFallbackScanLimit = Math.min(
+      WEBHOOK_FALLBACK_MAX_SCAN_LIMIT,
+      Math.max(WEBHOOK_FALLBACK_MIN_SCAN_LIMIT, limit * WEBHOOK_FALLBACK_SCAN_LIMIT_MULTIPLIER),
+    );
     const now = options.now ?? new Date();
     const lookbackFrom = new Date(now.getTime() - MANAGED_ENTITIES_LOCAL_ACTIVITY_LOOKBACK_MS);
     const requestedEntityType = this.resolveRequestedEntityType(entityType);
@@ -72,6 +80,7 @@ export class ManagedEntityCandidateSyncService {
             normalizedUserId,
             lookbackFrom,
             limit,
+            webhookFallbackScanLimit,
             requestedEntityType,
           );
 
@@ -83,43 +92,47 @@ export class ManagedEntityCandidateSyncService {
     normalizedUserId: string,
     lookbackFrom: Date,
     limit: number,
+    scanLimit: number,
     requestedEntityType: CandidateEntityType | null,
   ): Promise<CandidateRow[]> {
     return prisma.$queryRaw<CandidateRow[]>(Prisma.sql`
-      WITH local_candidates AS (
+      WITH recent_events AS (
+        SELECT
+          NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), '') AS chat_id,
+          NULLIF(BTRIM(normalized_payload->'message'->>'chatTitle'), '') AS chat_title,
+          LOWER(
+            COALESCE(
+              NULLIF(BTRIM(normalized_payload->'raw'->>'chat_type'), ''),
+              NULLIF(BTRIM(normalized_payload->'raw'->>'chatType'), ''),
+              NULLIF(BTRIM(normalized_payload->'raw'->'chat'->>'chat_type'), ''),
+              NULLIF(BTRIM(normalized_payload->'raw'->'chat'->>'chatType'), ''),
+              CASE
+                WHEN NULLIF(BTRIM(normalized_payload->'raw'->>'is_channel'), '') = 'true'
+                  THEN 'channel'
+                WHEN NULLIF(BTRIM(normalized_payload->'raw'->>'is_channel'), '') = 'false'
+                  THEN 'chat'
+                ELSE NULL
+              END
+            )
+          ) AS chat_type,
+          created_at
+        FROM webhook_events
+        WHERE normalized_payload->'message'->>'senderId' = ${normalizedUserId}
+          AND NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), '') IS NOT NULL
+          AND normalized_payload->>'type' IN (${Prisma.join(
+            MANAGED_ENTITIES_LOCAL_ACTIVITY_EVENT_TYPES,
+          )})
+          AND created_at >= ${lookbackFrom}
+        ORDER BY created_at DESC
+        LIMIT ${scanLimit}
+      ),
+      local_candidates AS (
         SELECT DISTINCT ON (chat_id)
           chat_id,
           chat_title,
           chat_type,
           created_at
-        FROM (
-          SELECT
-            NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), '') AS chat_id,
-            NULLIF(BTRIM(normalized_payload->'message'->>'chatTitle'), '') AS chat_title,
-            LOWER(
-              COALESCE(
-                NULLIF(BTRIM(normalized_payload->'raw'->>'chat_type'), ''),
-                NULLIF(BTRIM(normalized_payload->'raw'->>'chatType'), ''),
-                NULLIF(BTRIM(normalized_payload->'raw'->'chat'->>'chat_type'), ''),
-                NULLIF(BTRIM(normalized_payload->'raw'->'chat'->>'chatType'), ''),
-                CASE
-                  WHEN NULLIF(BTRIM(normalized_payload->'raw'->>'is_channel'), '') = 'true'
-                    THEN 'channel'
-                  WHEN NULLIF(BTRIM(normalized_payload->'raw'->>'is_channel'), '') = 'false'
-                    THEN 'chat'
-                  ELSE NULL
-                END
-              )
-            ) AS chat_type,
-            created_at
-          FROM webhook_events
-          WHERE normalized_payload->'message'->>'senderId' = ${normalizedUserId}
-            AND NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), '') IS NOT NULL
-            AND normalized_payload->>'type' IN (${Prisma.join(
-              MANAGED_ENTITIES_LOCAL_ACTIVITY_EVENT_TYPES,
-            )})
-            AND created_at >= ${lookbackFrom}
-        ) ranked
+        FROM recent_events
         WHERE chat_id IS NOT NULL
         ORDER BY chat_id, created_at DESC
       )

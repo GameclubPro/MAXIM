@@ -1128,6 +1128,7 @@ model ModerationEvent {
   @@index([chatId, action, createdAt(sort: Desc), id(sort: Desc)], map: "moderation_events_chat_action_created_id_idx")
   @@index([chatId, ruleCode, createdAt(sort: Desc), id(sort: Desc)], map: "moderation_events_chat_rule_created_id_idx")
   @@index([botId, createdAt(sort: Desc)], map: "moderation_events_bot_id_created_at_idx")
+  @@index([createdAt], map: "moderation_events_created_at_idx")
   @@index([chatId, userId, createdAt])
   @@index([chatId, userId, action, createdAt(sort: Desc)])
   @@map("moderation_events")

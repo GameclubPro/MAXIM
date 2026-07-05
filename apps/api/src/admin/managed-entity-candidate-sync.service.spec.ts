@@ -150,6 +150,10 @@ describe('ManagedEntityCandidateSyncService', () => {
       }),
     ]);
     expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+    const fallbackSql = readSqlText(prisma.$queryRaw.mock.calls[1]?.[0]);
+    expect(fallbackSql).toContain('WITH recent_events AS');
+    expect(fallbackSql).toContain('ORDER BY created_at DESC');
+    expect(readSqlValues(prisma.$queryRaw.mock.calls[1]?.[0])).toContain(5000);
   });
 
   it('pushes requested entity type filtering into webhook fallback SQL before limiting', async () => {
@@ -229,4 +233,10 @@ function readSqlValues(value: unknown): unknown[] {
   return value && typeof value === 'object' && Array.isArray((value as { values?: unknown[] }).values)
     ? (value as { values: unknown[] }).values
     : [];
+}
+
+function readSqlText(value: unknown): string {
+  return value && typeof value === 'object' && Array.isArray((value as { strings?: unknown[] }).strings)
+    ? (value as { strings: unknown[] }).strings.map(String).join(' ')
+    : String(value);
 }
