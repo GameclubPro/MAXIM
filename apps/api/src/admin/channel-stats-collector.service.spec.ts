@@ -1053,4 +1053,74 @@ describe('ChannelStatsCollectorService', () => {
 
     await service.onModuleDestroy();
   });
+
+  it('runs limited audience-only catch-up when the runtime governor asks to slow down', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    prisma.chat.findMany.mockResolvedValue(
+      Array.from({ length: 31 }, (_, index) =>
+        createScheduledChannelCandidate({
+          id: `channel-stale-${String(index + 1).padStart(2, '0')}`,
+          latestAudienceSnapshotAt: null,
+          lastAudienceSyncAt: null,
+          lastViewsSyncAt: null,
+        }),
+      ),
+    );
+    const maxClient = {
+      ensureWebhookSubscription: jest.fn(),
+    };
+    const backgroundRuntimeGovernorService = {
+      decide: jest.fn().mockResolvedValue({
+        action: 'slow',
+        reason: 'MAX API bot load 26.7%',
+        retryAfterMs: 90_000,
+      }),
+    };
+
+    const service = new ChannelStatsCollectorService(
+      prisma as never,
+      maxClient as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      backgroundRuntimeGovernorService as never,
+    );
+    jest
+      .spyOn(
+        service as unknown as {
+          resolveInterChannelDelayMs: (reason: 'startup' | 'scheduled') => number;
+        },
+        'resolveInterChannelDelayMs',
+      )
+      .mockReturnValue(0);
+    const audienceSpy = jest.spyOn(service, 'syncAudienceSnapshotIfStale').mockResolvedValue({
+      audienceSynced: true,
+      throttled: false,
+      syncedAt: new Date('2026-03-07T12:00:00.000Z'),
+    });
+    const syncSpy = jest.spyOn(service, 'syncChannel').mockResolvedValue({
+      audienceSynced: false,
+      viewsSynced: true,
+      throttled: false,
+    });
+
+    await service.syncAllChannels('scheduled');
+
+    expect(backgroundRuntimeGovernorService.decide).toHaveBeenCalledWith({
+      component: 'channel-stats',
+      sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
+    });
+    expect(audienceSpy).toHaveBeenCalledTimes(30);
+    expect(audienceSpy.mock.calls.map(([chatId]) => chatId)).toEqual(
+      Array.from(
+        { length: 30 },
+        (_, index) => `channel-stale-${String(index + 1).padStart(2, '0')}`,
+      ),
+    );
+    expect(syncSpy).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
 });

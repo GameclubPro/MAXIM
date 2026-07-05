@@ -41,6 +41,7 @@ const DEFAULT_CHANNEL_STATS_STARTUP_MAX_PAGES = 20;
 const DEFAULT_CHANNEL_STATS_ENDPOINT_MAX_PAGES = 8;
 const CHANNEL_STATS_SCHEDULED_CATCH_UP_STARTUP_DELAY_MS = 90_000;
 const CHANNEL_STATS_SCHEDULED_AUDIENCE_CATCH_UP_MAX_CHANNELS = 360;
+const CHANNEL_STATS_SCHEDULED_AUDIENCE_CATCH_UP_SLOW_MAX_CHANNELS = 30;
 const CHANNEL_STATS_SCHEDULED_VIEWS_SYNC_MAX_CHANNELS = 6;
 type ChannelStatsSyncResult = {
   audienceSynced: boolean;
@@ -87,6 +88,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
   private scheduledCatchUpStartupTimer: NodeJS.Timeout | null = null;
   private scheduledSyncInFlight = false;
   private backgroundSyncBackoffUntilMs = 0;
+  private backgroundSyncSlowUntilMs = 0;
   private subscriptionCoverageFrom: Date | null = null;
   private degradePauseLogAtMs = 0;
 
@@ -482,9 +484,13 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         ),
       )
       .sort((left, right) => this.compareScheduledAudienceSyncCandidates(left, right))
-      .slice(0, CHANNEL_STATS_SCHEDULED_AUDIENCE_CATCH_UP_MAX_CHANNELS);
+      .slice(0, this.resolveScheduledAudienceCatchUpMaxChannels());
     const audienceResult = await this.syncScheduledAudienceCatchUp(audienceCandidates);
     if (audienceResult.throttled) {
+      return;
+    }
+
+    if (this.isBackgroundSyncSlowActive()) {
       return;
     }
 
@@ -667,6 +673,12 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       (leftMs ?? Number.NEGATIVE_INFINITY) - (rightMs ?? Number.NEGATIVE_INFINITY) ||
       leftId.localeCompare(rightId)
     );
+  }
+
+  private resolveScheduledAudienceCatchUpMaxChannels(): number {
+    return this.isBackgroundSyncSlowActive()
+      ? CHANNEL_STATS_SCHEDULED_AUDIENCE_CATCH_UP_SLOW_MAX_CHANNELS
+      : CHANNEL_STATS_SCHEDULED_AUDIENCE_CATCH_UP_MAX_CHANNELS;
   }
 
   async syncChannel(
@@ -977,6 +989,10 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     }
   }
 
+  private isBackgroundSyncSlowActive(): boolean {
+    return Date.now() < this.backgroundSyncSlowUntilMs;
+  }
+
   private async activateBackgroundSyncBackoff(): Promise<number> {
     const now = Date.now();
     this.backgroundSyncBackoffUntilMs = Math.max(
@@ -1045,6 +1061,27 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       }
 
       const now = Date.now();
+      if (decision.action === 'slow') {
+        this.backgroundSyncSlowUntilMs = Math.max(
+          this.backgroundSyncSlowUntilMs,
+          now + decision.retryAfterMs,
+        );
+        if (now - this.degradePauseLogAtMs >= CHANNEL_STATS_DEGRADE_PAUSE_LOG_INTERVAL_MS) {
+          this.degradePauseLogAtMs = now;
+          this.logger.log(
+            {
+              reason,
+              action: decision.action,
+              details: decision.reason,
+              retryAfterMs: decision.retryAfterMs,
+              audienceLimit: CHANNEL_STATS_SCHEDULED_AUDIENCE_CATCH_UP_SLOW_MAX_CHANNELS,
+            },
+            'Slowed background channel stats sync because the runtime governor detected pressure',
+          );
+        }
+        return false;
+      }
+
       if (now - this.degradePauseLogAtMs >= CHANNEL_STATS_DEGRADE_PAUSE_LOG_INTERVAL_MS) {
         this.degradePauseLogAtMs = now;
         this.logger.log(
