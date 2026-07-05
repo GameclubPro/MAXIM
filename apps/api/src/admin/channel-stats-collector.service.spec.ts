@@ -700,18 +700,29 @@ describe('ChannelStatsCollectorService', () => {
       maxClient as never,
       createConfigMock() as never,
     );
-    const syncSpy = jest.spyOn(service, 'syncAllChannels').mockResolvedValue(undefined);
+    const catchUpSpy = jest
+      .spyOn(
+        service as unknown as {
+          syncScheduledAudienceCatchUpOnly: (reason: 'scheduled') => Promise<void>;
+        },
+        'syncScheduledAudienceCatchUpOnly',
+      )
+      .mockResolvedValue(undefined);
 
     service.onModuleInit();
-    expect(syncSpy).not.toHaveBeenCalled();
+    expect(catchUpSpy).not.toHaveBeenCalled();
 
     jest.advanceTimersByTime(89_999);
     await Promise.resolve();
-    expect(syncSpy).not.toHaveBeenCalled();
+    expect(catchUpSpy).not.toHaveBeenCalled();
 
     jest.advanceTimersByTime(1);
     await Promise.resolve();
-    expect(syncSpy).toHaveBeenCalledWith('scheduled');
+    expect(catchUpSpy).toHaveBeenCalledWith('scheduled');
+
+    jest.advanceTimersByTime(210_000);
+    await Promise.resolve();
+    expect(catchUpSpy).toHaveBeenCalledTimes(2);
 
     await service.onModuleDestroy();
   });
@@ -872,6 +883,57 @@ describe('ChannelStatsCollectorService', () => {
     });
 
     await service.syncAllChannels('scheduled');
+
+    expect(audienceSpy).toHaveBeenCalledWith(
+      'channel-stale-audience-and-views',
+      expect.objectContaining({
+        reason: 'scheduled',
+      }),
+    );
+    expect(syncSpy).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('runs recurring audience catch-up without heavy views work', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    prisma.chat.findMany.mockResolvedValue([
+      createScheduledChannelCandidate({
+        id: 'channel-stale-audience-and-views',
+        latestAudienceSnapshotAt: null,
+        lastAudienceSyncAt: null,
+        lastViewsSyncAt: null,
+      }),
+    ]);
+    const maxClient = {
+      getChatSnapshot: jest.fn(),
+      listMessageSnapshots: jest.fn(),
+      ensureWebhookSubscription: jest.fn(),
+    };
+
+    const service = new ChannelStatsCollectorService(
+      prisma as never,
+      maxClient as never,
+      createConfigMock() as never,
+    );
+    const audienceSpy = jest.spyOn(service, 'syncAudienceSnapshotIfStale').mockResolvedValue({
+      audienceSynced: true,
+      throttled: false,
+      syncedAt: new Date('2026-03-07T12:00:00.000Z'),
+    });
+    const syncSpy = jest.spyOn(service, 'syncChannel').mockResolvedValue({
+      audienceSynced: false,
+      viewsSynced: true,
+      throttled: false,
+    });
+
+    await (
+      service as unknown as {
+        syncScheduledAudienceCatchUpOnly: (reason: 'scheduled') => Promise<void>;
+      }
+    ).syncScheduledAudienceCatchUpOnly('scheduled');
 
     expect(audienceSpy).toHaveBeenCalledWith(
       'channel-stale-audience-and-views',

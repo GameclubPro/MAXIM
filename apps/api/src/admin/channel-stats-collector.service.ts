@@ -40,6 +40,7 @@ const DEFAULT_CHANNEL_STATS_STARTUP_JITTER_MS = 15_000;
 const DEFAULT_CHANNEL_STATS_STARTUP_MAX_PAGES = 20;
 const DEFAULT_CHANNEL_STATS_ENDPOINT_MAX_PAGES = 8;
 const CHANNEL_STATS_SCHEDULED_CATCH_UP_STARTUP_DELAY_MS = 90_000;
+const CHANNEL_STATS_AUDIENCE_CATCH_UP_INTERVAL_MS = 5 * 60 * 1000;
 const CHANNEL_STATS_SCHEDULED_AUDIENCE_CATCH_UP_MAX_CHANNELS = 360;
 const CHANNEL_STATS_SCHEDULED_AUDIENCE_CATCH_UP_SLOW_MAX_CHANNELS = 30;
 const CHANNEL_STATS_SCHEDULED_VIEWS_SYNC_MAX_CHANNELS = 6;
@@ -86,6 +87,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
   private timer: NodeJS.Timeout | null = null;
   private startupTimer: NodeJS.Timeout | null = null;
   private scheduledCatchUpStartupTimer: NodeJS.Timeout | null = null;
+  private scheduledAudienceCatchUpTimer: NodeJS.Timeout | null = null;
   private scheduledSyncInFlight = false;
   private backgroundSyncBackoffUntilMs = 0;
   private backgroundSyncSlowUntilMs = 0;
@@ -155,6 +157,11 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     }, this.syncIntervalMs);
     this.timer.unref();
 
+    this.scheduledAudienceCatchUpTimer = setInterval(() => {
+      void this.syncScheduledAudienceCatchUpOnly('scheduled');
+    }, CHANNEL_STATS_AUDIENCE_CATCH_UP_INTERVAL_MS);
+    this.scheduledAudienceCatchUpTimer.unref();
+
     this.scheduleScheduledCatchUpOnStartup();
     this.scheduleStartupSync();
   }
@@ -171,6 +178,10 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     if (this.scheduledCatchUpStartupTimer) {
       clearTimeout(this.scheduledCatchUpStartupTimer);
       this.scheduledCatchUpStartupTimer = null;
+    }
+    if (this.scheduledAudienceCatchUpTimer) {
+      clearInterval(this.scheduledAudienceCatchUpTimer);
+      this.scheduledAudienceCatchUpTimer = null;
     }
 
     await this.redis.quit();
@@ -390,6 +401,9 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
   private async syncChannels(
     reason: 'startup' | 'scheduled',
     channelsOverride?: Array<{ id: string }>,
+    options?: {
+      audienceOnly?: boolean;
+    },
   ) {
     if (
       !this.backgroundEnabled ||
@@ -407,7 +421,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         CHANNEL_STATS_ALL_LOCK_TTL_MS,
         async () => {
           if (reason === 'scheduled' && !channelsOverride) {
-            await this.syncScheduledChannels();
+            await this.syncScheduledChannels({ audienceOnly: options?.audienceOnly ?? false });
             return;
           }
 
@@ -454,7 +468,11 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     }
   }
 
-  private async syncScheduledChannels() {
+  private async syncScheduledAudienceCatchUpOnly(reason: 'scheduled') {
+    await this.syncChannels(reason, undefined, { audienceOnly: true });
+  }
+
+  private async syncScheduledChannels(options?: { audienceOnly?: boolean }) {
     const channels = await this.prisma.chat.findMany({
       where: { entityType: ChatEntityType.CHANNEL },
       select: {
@@ -487,6 +505,10 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       .slice(0, this.resolveScheduledAudienceCatchUpMaxChannels());
     const audienceResult = await this.syncScheduledAudienceCatchUp(audienceCandidates);
     if (audienceResult.throttled) {
+      return;
+    }
+
+    if (options?.audienceOnly) {
       return;
     }
 
@@ -1045,7 +1067,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
   private scheduleScheduledCatchUpOnStartup() {
     this.scheduledCatchUpStartupTimer = setTimeout(() => {
       this.scheduledCatchUpStartupTimer = null;
-      void this.syncAllChannels('scheduled');
+      void this.syncScheduledAudienceCatchUpOnly('scheduled');
     }, CHANNEL_STATS_SCHEDULED_CATCH_UP_STARTUP_DELAY_MS);
     this.scheduledCatchUpStartupTimer.unref();
   }
