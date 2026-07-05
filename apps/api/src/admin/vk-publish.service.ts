@@ -166,17 +166,7 @@ export class VkPublishService {
   async recoverStalePublishJobs(): Promise<number> {
     const now = new Date();
     const staleLockBefore = new Date(now.getTime() - this.publishLeaseTtlMs);
-    const posts = await this.prisma.vkParsingPost.findMany({
-      where: {
-        publishQueuedAt: { not: null },
-        publishIdempotencyKey: { not: null },
-        status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
-        OR: [{ publishLockedAt: null }, { publishLockedAt: { lt: staleLockBefore } }],
-      },
-      include: { source: true },
-      orderBy: [{ publishQueuedAt: 'asc' }, { updatedAt: 'asc' }],
-      take: this.queueBatchSize,
-    });
+    const posts = await this.findRecoverableStalePublishPosts(now, staleLockBefore);
     if (posts.length === 0) {
       return 0;
     }
@@ -214,6 +204,49 @@ export class VkPublishService {
     }
 
     return recovered;
+  }
+
+  private async findRecoverableStalePublishPosts(
+    now: Date,
+    staleLockBefore: Date,
+  ): Promise<VkParsingPostWithSource[]> {
+    const baseWhere = {
+      publishQueuedAt: { not: null },
+      publishIdempotencyKey: { not: null },
+      status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
+      OR: [{ publishLockedAt: null }, { publishLockedAt: { lt: staleLockBefore } }],
+    };
+    const duePosts = await this.prisma.vkParsingPost.findMany({
+      where: {
+        ...baseWhere,
+        AND: [
+          {
+            OR: [{ publishScheduledAt: null }, { publishScheduledAt: { lte: now } }],
+          },
+        ],
+      },
+      include: { source: true },
+      orderBy: [{ publishScheduledAt: 'asc' }, { publishQueuedAt: 'asc' }, { updatedAt: 'asc' }],
+      take: this.queueBatchSize,
+    });
+    if (duePosts.length >= this.queueBatchSize) {
+      return duePosts;
+    }
+
+    const futurePosts = await this.prisma.vkParsingPost.findMany({
+      where: {
+        ...baseWhere,
+        publishScheduledAt: { gt: now },
+      },
+      include: { source: true },
+      orderBy: [{ publishScheduledAt: 'asc' }, { publishQueuedAt: 'asc' }, { updatedAt: 'asc' }],
+      take: this.queueBatchSize - duePosts.length,
+    });
+    if (futurePosts.length === 0) {
+      return duePosts;
+    }
+
+    return [...duePosts, ...futurePosts];
   }
 
   async publishPost(

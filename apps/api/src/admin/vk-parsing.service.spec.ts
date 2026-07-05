@@ -1572,6 +1572,73 @@ describe('VkParsingService', () => {
     );
   });
 
+  it('recovers overdue VK publish jobs before scanning future delayed jobs', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-25T12:00:00.000Z'));
+    try {
+      const { service, prisma, publishQueue } = createFixture({
+        VK_PARSING_QUEUE_BATCH_SIZE: 1,
+      });
+      const source = createSource();
+      const duePost = createPostRow({
+        source,
+        id: 'post-due',
+        publishQueuedAt: new Date('2026-05-25T10:01:00.000Z'),
+        publishScheduledAt: new Date('2026-05-25T11:55:00.000Z'),
+        publishLockedAt: new Date('2026-05-25T10:01:05.000Z'),
+        publishIdempotencyKey: 'publish-key-due',
+        publishReason: 'autopublish',
+      });
+      prisma.vkParsingPost.findMany.mockResolvedValueOnce([duePost]);
+      prisma.vkParsingSettings.findUnique.mockResolvedValue({
+        id: 'settings-1',
+        chatId: 'channel-1',
+        autoPublishEnabled: true,
+        autoPublishEnabledAt: new Date('2026-05-25T09:00:00.000Z'),
+        stripLinksEnabled: false,
+        skipAdsEnabled: false,
+        createdAt: new Date('2026-05-25T10:00:00.000Z'),
+        updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+      });
+
+      await expect(service.recoverStalePublishJobs()).resolves.toBe(1);
+
+      expect(prisma.vkParsingPost.findMany).toHaveBeenCalledTimes(1);
+      expect(prisma.vkParsingPost.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            AND: [
+              {
+                OR: [
+                  { publishScheduledAt: null },
+                  { publishScheduledAt: { lte: new Date('2026-05-25T12:00:00.000Z') } },
+                ],
+              },
+            ],
+          }),
+          orderBy: [
+            { publishScheduledAt: 'asc' },
+            { publishQueuedAt: 'asc' },
+            { updatedAt: 'asc' },
+          ],
+          take: 1,
+        }),
+      );
+      expect(publishQueue.add).toHaveBeenCalledWith(
+        'publish-vk-post',
+        expect.objectContaining({
+          postId: 'post-due',
+          idempotencyKey: 'publish-key-due',
+        }),
+        expect.objectContaining({
+          delay: 0,
+          jobId: 'vk-parsing-publish__post-due__publish-key-due',
+        }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('recovers an existing failed VK publish job instead of re-adding a duplicate jobId', async () => {
     const { service, prisma, publishQueue } = createFixture();
     const source = createSource();
