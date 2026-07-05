@@ -12002,7 +12002,116 @@ describe('AdminService.listChats', () => {
       }),
     ]);
     expect(rebuildSpy).toHaveBeenCalledWith('admin-1', 'chat');
-    expect(prisma.chatAdminAllowlist.findMany).not.toHaveBeenCalled();
+  });
+
+  it('merges allowlisted chats missing from a published snapshot response', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:00:00.000Z'));
+    try {
+      const prisma = createPrismaMock();
+      prisma.chatAdminAllowlist.findMany.mockResolvedValueOnce([
+        {
+          chat: {
+            id: 'chat-1',
+            title: 'Чат из snapshot',
+            createdAt: new Date('2026-03-02T10:00:00.000Z'),
+            entityType: 'CHAT',
+            primaryBotId: '777000_bot',
+            botId: '777000_bot',
+          },
+        },
+        {
+          chat: {
+            id: 'chat-2',
+            title: 'Чат вне snapshot',
+            createdAt: new Date('2026-03-01T10:00:00.000Z'),
+            entityType: 'CHAT',
+            primaryBotId: '777000_bot',
+            botId: '777000_bot',
+          },
+        },
+      ]);
+      (prisma as any).managedEntityAccessEdge = {
+        findMany: jest
+          .fn()
+          .mockResolvedValueOnce([{ chatId: 'chat-1', botId: '777000_bot' }])
+          .mockResolvedValueOnce([
+            { chatId: 'chat-1', botId: '777000_bot' },
+            { chatId: 'chat-2', botId: '777000_bot' },
+          ]),
+        upsert: jest.fn().mockResolvedValue(undefined),
+      };
+      const chatContextCache = createChatContextCacheMock({
+        getManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue({
+          version: 'snapshot-v1',
+          builtAt: '2026-04-04T10:00:00.000Z',
+          lastSyncedAt: '2026-04-04T09:59:30.000Z',
+          itemCount: 1,
+          itemsHash: 'hash-v1',
+          items: [
+            createChatSummaryFixture({
+              id: 'chat-1',
+              title: 'Чат из snapshot',
+              createdAt: '2026-03-02T10:00:00.000Z',
+              entityType: 'chat',
+              primaryBotId: '777000_bot',
+            }),
+          ],
+        }),
+      });
+
+      const service = new AdminService(
+        prisma as never,
+        {
+          listBotChats: jest.fn(),
+        } as never,
+        chatContextCache as never,
+        createConfigMock() as never,
+      );
+      const rebuildSpy = jest
+        .spyOn(service as any, 'scheduleManagedEntitiesPublishedSnapshotRebuild')
+        .mockImplementation(() => undefined);
+
+      await expect(
+        service.listChats({
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        }),
+      ).resolves.toEqual([
+        createChatSummaryFixture({
+          id: 'chat-1',
+          title: 'Чат из snapshot',
+          createdAt: '2026-03-02T10:00:00.000Z',
+          entityType: 'chat',
+          primaryBotId: '777000_bot',
+        }),
+        createChatSummaryFixture({
+          id: 'chat-2',
+          title: 'Чат вне snapshot',
+          createdAt: '2026-03-01T10:00:00.000Z',
+          entityType: 'chat',
+          primaryBotId: '777000_bot',
+        }),
+      ]);
+
+      expect(chatContextCache.setManagedEntitiesPublishedSnapshot).toHaveBeenCalledWith(
+        'admin-1',
+        'chat',
+        expect.objectContaining({
+          itemCount: 2,
+          items: [
+            expect.objectContaining({ id: 'chat-1' }),
+            expect.objectContaining({ id: 'chat-2' }),
+          ],
+        }),
+        expect.any(Number),
+      );
+      expect(rebuildSpy).toHaveBeenCalledWith('admin-1', 'chat');
+      expect((prisma as any).managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('excludes dormant configured bots from the managed entity runtime scope', async () => {
@@ -12310,7 +12419,6 @@ describe('AdminService.listChats', () => {
       }),
       expect.any(Number),
     );
-    expect(prisma.chatAdminAllowlist.findMany).not.toHaveBeenCalled();
   });
 
   it('keeps fresh access-edge chats visible when legacy cache says bot_denied', async () => {
@@ -12464,7 +12572,6 @@ describe('AdminService.listChats', () => {
         stale: true,
       },
     });
-    expect(prisma.chatAdminAllowlist.findMany).not.toHaveBeenCalled();
   });
 
   it('overlays globally refreshed headers onto published snapshot responses', async () => {
@@ -20501,6 +20608,108 @@ describe('AdminService.getChannelStats', () => {
     });
 
     await flushAsyncTasks();
+  });
+
+  it('refreshes stale channel audience before building the stats response when it fits the response budget', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    try {
+      const prisma = createPrismaMock();
+      prisma.chat.findUnique.mockResolvedValue({
+        id: 'channel-1',
+        title: 'Авторынок',
+        entityType: 'CHANNEL',
+      });
+      prisma.channelAudienceSnapshot.findFirst
+        .mockResolvedValueOnce({
+          chatId: 'channel-1',
+          participantsCount: 4099,
+          status: 'active',
+          isPublic: true,
+          link: 'https://max.ru/autorunok',
+          lastEventAt: new Date('2026-03-07T11:55:00.000Z'),
+          capturedAt: new Date('2026-03-07T12:00:00.000Z'),
+        })
+        .mockResolvedValueOnce({
+          capturedAt: new Date('2026-03-01T08:00:00.000Z'),
+        })
+        .mockResolvedValueOnce({
+          participantsCount: 4008,
+        });
+      prisma.channelAudienceSnapshot.findMany.mockResolvedValue([
+        {
+          capturedAt: new Date('2026-03-07T12:00:00.000Z'),
+          participantsCount: 4099,
+        },
+      ]);
+      prisma.channelStatsSyncState.findUnique.mockResolvedValue({
+        id: 'sync-1',
+        chatId: 'channel-1',
+        viewsCoverageFrom: new Date('2026-03-01T08:00:00.000Z'),
+        membershipCoverageFrom: new Date('2026-03-01T08:00:00.000Z'),
+        lastAudienceSyncAt: new Date('2026-03-07T12:00:00.000Z'),
+        lastViewsSyncAt: new Date('2026-03-07T12:00:00.000Z'),
+        lastOpportunisticSyncAt: new Date('2026-03-07T12:00:00.000Z'),
+        createdAt: new Date('2026-03-01T08:00:00.000Z'),
+        updatedAt: new Date('2026-03-07T12:00:00.000Z'),
+      });
+      prisma.channelPost.findMany.mockResolvedValue([]);
+      prisma.channelPost.findFirst.mockResolvedValue(null);
+
+      const maxClient = {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+        getChatSnapshot: jest.fn(),
+      };
+      const chatContextCache = {
+        invalidate: jest.fn(),
+      };
+      const channelStatsCollector = {
+        syncAudienceSnapshotIfStale: jest.fn().mockResolvedValue({
+          audienceSynced: true,
+          throttled: false,
+          syncedAt: new Date('2026-03-07T12:00:00.000Z'),
+        }),
+        syncChannelIfStale: jest.fn().mockResolvedValue(undefined),
+      };
+
+      const service = new AdminService(
+        prisma as never,
+        maxClient as never,
+        chatContextCache as never,
+        createConfigMock() as never,
+        channelStatsCollector as never,
+      );
+
+      const result = await service.getChannelStats(
+        'channel-1',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { range: '7d', includeActivityPreview: false, mode: 'overview' },
+      );
+
+      expect(channelStatsCollector.syncAudienceSnapshotIfStale).toHaveBeenCalledWith(
+        'channel-1',
+        {
+          staleMs: 7200000,
+          reason: 'stats_endpoint',
+          markOpportunistic: true,
+        },
+      );
+      expect(
+        channelStatsCollector.syncAudienceSnapshotIfStale.mock.invocationCallOrder[0],
+      ).toBeLessThan(prisma.channelAudienceSnapshot.findFirst.mock.invocationCallOrder[0]);
+      expect(result.channel.participantsCount).toBe(4099);
+      expect(result.summary.subscribers.current).toBe(4099);
+      expect(result.official.series.participants.at(-1)?.participantsCount).toBe(4099);
+      expect(result.meta.refreshQueued).toBe(false);
+      expect(channelStatsCollector.syncChannelIfStale).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('serves overview channel stats without unbounded post or snapshot scans', async () => {

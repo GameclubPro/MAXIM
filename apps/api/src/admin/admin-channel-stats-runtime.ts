@@ -9,6 +9,7 @@ import {
   type MembershipActivityQuery,
 } from '@maxim/contracts';
 import { Prisma } from '../prisma/prisma-client';
+import { raceWithTimeout } from '../common/promise-timeout.util';
 import { MAX_API_SOURCE_TAGS, type MaxClientService } from '../max/max-client.service';
 import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import type { PrismaService } from '../prisma/prisma.service';
@@ -25,6 +26,7 @@ import {
   CHANNEL_DIALOG_ACTION_COMMENT,
   CHANNEL_DIALOG_ACTION_SUGGEST,
   CHANNEL_STATS_ACTIVITY_ACTIONS,
+  CHANNEL_STATS_AUDIENCE_REFRESH_RESPONSE_BUDGET_MS,
   CHANNEL_STATS_POST_ACTIONS,
   CHANNEL_STATS_REFRESH_STALE_MS,
   MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
@@ -160,6 +162,8 @@ export class AdminChannelStatsRuntime {
     const summaryWeekFrom = new Date(now.getTime() - 7 * TWENTY_FOUR_HOURS_MS);
     const summarySixteenDaysFrom = new Date(now.getTime() - 16 * TWENTY_FOUR_HOURS_MS);
     const summaryViewsFrom = new Date(now.getTime() - 2 * TWENTY_FOUR_HOURS_MS);
+
+    await this.refreshChannelStatsAudienceWithinResponseBudget(chatId);
 
     const [
       chat,
@@ -609,6 +613,34 @@ export class AdminChannelStatsRuntime {
     };
 
     return channelStatsResponseSchema.parse(response);
+  }
+
+  private async refreshChannelStatsAudienceWithinResponseBudget(chatId: string): Promise<void> {
+    const collector = this.channelStatsCollector;
+    if (!collector || typeof collector.syncAudienceSnapshotIfStale !== 'function') {
+      return;
+    }
+
+    try {
+      await raceWithTimeout({
+        operation: () =>
+          collector.syncAudienceSnapshotIfStale(chatId, {
+            staleMs: CHANNEL_STATS_REFRESH_STALE_MS,
+            reason: 'stats_endpoint',
+            markOpportunistic: true,
+          }),
+        timeoutMs: CHANNEL_STATS_AUDIENCE_REFRESH_RESPONSE_BUDGET_MS,
+        onTimeout: () => null,
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to refresh channel audience before stats response',
+      );
+    }
   }
 
   buildChannelStatsResponseCacheKey(

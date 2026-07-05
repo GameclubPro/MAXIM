@@ -73,6 +73,10 @@ test('audience chart does not reconstruct a zero history from an unbaselined imp
 
   assert.equal(shouldPreferMembershipFlowForAudienceChart(points, 250, true), false);
   assert.deepEqual(
+    points.map((point) => resolveAudienceChartDisplayValue(point, null, 250, false)),
+    [null, null, null, 250],
+  );
+  assert.deepEqual(
     points.map((point) => resolveAudienceChartDisplayValue(point, 250, 250, false)),
     [250, 250, 250, 250],
   );

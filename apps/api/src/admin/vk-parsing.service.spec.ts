@@ -207,9 +207,11 @@ describe('VkParsingService', () => {
     };
     const syncQueue = {
       add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(null),
     };
     const publishQueue = {
       add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(null),
     };
     const managedEntityAccessLossService = {
       recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue(null),
@@ -357,6 +359,14 @@ describe('VkParsingService', () => {
       createdAt: new Date('2026-05-25T10:00:00.000Z'),
       updatedAt: new Date('2026-05-25T10:00:00.000Z'),
       ...overrides,
+    };
+  }
+
+  function createQueueJob(state: string) {
+    return {
+      getState: jest.fn().mockResolvedValue(state),
+      updateData: jest.fn().mockResolvedValue(undefined),
+      retry: jest.fn().mockResolvedValue(undefined),
     };
   }
 
@@ -805,6 +815,37 @@ describe('VkParsingService', () => {
         }),
       }),
     );
+  });
+
+  it('recovers an existing failed VK source sync job instead of leaving it failed', async () => {
+    const { service, prisma, syncQueue } = createFixture();
+    const source = createSource({
+      syncStatus: 'QUEUED',
+      updatedAt: new Date('2026-05-25T09:55:00.000Z'),
+    });
+    const failedJob = createQueueJob('failed');
+    prisma.vkParsingSource.findFirst.mockResolvedValue(source);
+    prisma.vkParsingSource.updateMany.mockResolvedValueOnce({ count: 1 });
+    syncQueue.getJob.mockResolvedValueOnce(failedJob);
+
+    const result = await service.refreshSource('channel-1', 'source-1', {
+      userId: '183470701',
+    } as never);
+
+    expect(result.queued).toBe(1);
+    expect(syncQueue.getJob).toHaveBeenCalledWith('vk-parsing-sync__source-1');
+    expect(failedJob.updateData).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceId: 'source-1',
+        reason: 'manual',
+        retryPolicyName: 'vk-parsing-sync',
+      }),
+    );
+    expect(failedJob.retry).toHaveBeenCalledWith('failed', {
+      resetAttemptsMade: true,
+      resetAttemptsStarted: true,
+    });
+    expect(syncQueue.add).not.toHaveBeenCalled();
   });
 
   it('imports text, direct VK videos and links from a public VK community', async () => {
@@ -1529,6 +1570,51 @@ describe('VkParsingService', () => {
         attempts: 5,
       }),
     );
+  });
+
+  it('recovers an existing failed VK publish job instead of re-adding a duplicate jobId', async () => {
+    const { service, prisma, publishQueue } = createFixture();
+    const source = createSource();
+    const post = createPostRow({
+      source,
+      publishQueuedAt: new Date('2026-05-25T10:01:00.000Z'),
+      publishLockedAt: new Date('2026-05-25T10:01:05.000Z'),
+      publishIdempotencyKey: 'publish-key-1',
+      publishReason: 'autopublish',
+    });
+    const failedJob = createQueueJob('failed');
+    prisma.vkParsingPost.findMany.mockResolvedValueOnce([post]);
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      id: 'settings-1',
+      chatId: 'channel-1',
+      autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date('2026-05-25T09:00:00.000Z'),
+      stripLinksEnabled: false,
+      skipAdsEnabled: false,
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+    });
+    publishQueue.getJob.mockResolvedValueOnce(failedJob);
+
+    await expect(service.recoverStalePublishJobs()).resolves.toBe(1);
+
+    expect(publishQueue.getJob).toHaveBeenCalledWith(
+      'vk-parsing-publish__post-1__publish-key-1',
+    );
+    expect(failedJob.updateData).toHaveBeenCalledWith(
+      expect.objectContaining({
+        postId: 'post-1',
+        chatId: 'channel-1',
+        reason: 'autopublish',
+        idempotencyKey: 'publish-key-1',
+        retryPolicyName: 'vk-parsing-publish',
+      }),
+    );
+    expect(failedJob.retry).toHaveBeenCalledWith('failed', {
+      resetAttemptsMade: true,
+      resetAttemptsStarted: true,
+    });
+    expect(publishQueue.add).not.toHaveBeenCalled();
   });
 
   it('recovers stale manual retry rows without the autopublish eligibility gate', async () => {

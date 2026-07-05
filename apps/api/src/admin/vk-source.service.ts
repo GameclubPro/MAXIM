@@ -7,7 +7,7 @@ import {
   type VkParsingRefreshResult,
 } from '@maxim/contracts';
 import { InjectQueue } from '@nestjs/bullmq';
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Queue } from 'bullmq';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
@@ -61,6 +61,7 @@ const VK_PARSING_AVAILABLE_CAPABILITY: VkParsingCapability = {
 
 @Injectable()
 export class VkSourceService {
+  private readonly logger = new Logger(VkSourceService.name);
   private readonly queueBatchSize: number;
   private readonly syncLeaseTtlMs: number;
 
@@ -429,21 +430,69 @@ export class VkSourceService {
       return 0;
     }
 
+    const job = this.buildSyncJob(sourceId, reason, now);
+    const jobId = this.buildSyncJobId(sourceId);
+    const recovered = await this.recoverExistingSyncJob(jobId, job);
+    if (recovered !== null) {
+      return recovered ? 1 : 0;
+    }
+
     await this.syncQueue.add(
       VK_SYNC_JOB_NAME,
+      job,
       {
-        sourceId,
-        reason,
-        retryPolicyName: 'vk-parsing-sync',
-        createdAt: now.toISOString(),
-      },
-      {
-        jobId: this.buildSyncJobId(sourceId),
+        jobId,
         ...VK_PARSING_SYNC_RETRY_POLICY,
       },
     );
 
     return 1;
+  }
+
+  private buildSyncJob(
+    sourceId: string,
+    reason: VkParsingSyncReason,
+    createdAt: Date,
+  ): VkParsingSyncJob {
+    return {
+      sourceId,
+      reason,
+      retryPolicyName: 'vk-parsing-sync',
+      createdAt: createdAt.toISOString(),
+    };
+  }
+
+  private async recoverExistingSyncJob(
+    jobId: string,
+    job: VkParsingSyncJob,
+  ): Promise<boolean | null> {
+    try {
+      const existingJob = await this.syncQueue.getJob(jobId);
+      if (!existingJob) {
+        return null;
+      }
+
+      const state = await existingJob.getState();
+      if (state === 'failed' || state === 'completed') {
+        await existingJob.updateData(job);
+        await existingJob.retry(state, {
+          resetAttemptsMade: true,
+          resetAttemptsStarted: true,
+        });
+      }
+
+      return true;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          jobId,
+          sourceId: job.sourceId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to recover VK parsing sync job',
+      );
+      return false;
+    }
   }
 
   private buildSyncJobId(sourceId: string): string {

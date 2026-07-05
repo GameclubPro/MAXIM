@@ -1300,7 +1300,7 @@ export class AdminService implements OnModuleDestroy {
     items: readonly ChatSummary[],
   ): Promise<ChatSummary[]> {
     const snapshotItems = items.map((item) => this.cloneManagedEntitySummary(item));
-    if (entityType !== 'channel') {
+    if (!this.supportsManagedEntitiesPublishedSnapshot(entityType)) {
       return snapshotItems;
     }
 

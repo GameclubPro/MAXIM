@@ -81,7 +81,7 @@ export function resolveAudienceChartDisplayValue(
   currentParticipants: number | null,
   totalNet: number,
   preferMembershipFlow: boolean,
-): number {
+): number | null {
   const flowValue =
     currentParticipants !== null ? currentParticipants - (totalNet - point.cumulativeNet) : null;
 
@@ -89,7 +89,7 @@ export function resolveAudienceChartDisplayValue(
     return flowValue;
   }
 
-  return point.participantsCount ?? currentParticipants ?? point.cumulativeNet;
+  return point.participantsCount ?? currentParticipants;
 }
 
 export function shouldPreferMembershipFlowForAudienceChart(

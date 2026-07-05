@@ -201,8 +201,16 @@ export class VkPublishService {
         continue;
       }
 
-      await this.addPublishJob(post, reason, idempotencyKey, now, post.publishScheduledAt);
-      recovered += 1;
+      const queued = await this.addPublishJob(
+        post,
+        reason,
+        idempotencyKey,
+        now,
+        post.publishScheduledAt,
+      );
+      if (queued) {
+        recovered += 1;
+      }
     }
 
     return recovered;
@@ -1113,24 +1121,74 @@ export class VkPublishService {
     idempotencyKey: string,
     createdAt: Date,
     scheduledAt: Date | null = null,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const delay = scheduledAt ? Math.max(0, scheduledAt.getTime() - Date.now()) : 0;
+    const job = this.buildPublishJob(post, reason, idempotencyKey, createdAt);
+    const jobId = this.buildPublishJobId(post.id, idempotencyKey);
+    const recovered = await this.recoverExistingPublishJob(jobId, job);
+    if (recovered !== null) {
+      return recovered;
+    }
+
     await this.publishQueue.add(
       VK_PUBLISH_JOB_NAME,
+      job,
       {
-        postId: post.id,
-        chatId: post.chatId,
-        reason,
-        idempotencyKey,
-        retryPolicyName: 'vk-parsing-publish',
-        createdAt: createdAt.toISOString(),
-      },
-      {
-        jobId: this.buildPublishJobId(post.id, idempotencyKey),
+        jobId,
         delay,
         ...VK_PARSING_PUBLISH_RETRY_POLICY,
       },
     );
+    return true;
+  }
+
+  private buildPublishJob(
+    post: Pick<VkParsingPostWithSource, 'id' | 'chatId'>,
+    reason: VkParsingPublishReason,
+    idempotencyKey: string,
+    createdAt: Date,
+  ): VkParsingPublishJob {
+    return {
+      postId: post.id,
+      chatId: post.chatId,
+      reason,
+      idempotencyKey,
+      retryPolicyName: 'vk-parsing-publish',
+      createdAt: createdAt.toISOString(),
+    };
+  }
+
+  private async recoverExistingPublishJob(
+    jobId: string,
+    job: VkParsingPublishJob,
+  ): Promise<boolean | null> {
+    try {
+      const existingJob = await this.publishQueue.getJob(jobId);
+      if (!existingJob) {
+        return null;
+      }
+
+      const state = await existingJob.getState();
+      if (state === 'failed' || state === 'completed') {
+        await existingJob.updateData(job);
+        await existingJob.retry(state, {
+          resetAttemptsMade: true,
+          resetAttemptsStarted: true,
+        });
+      }
+
+      return true;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          jobId,
+          postId: job.postId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to recover VK parsing publish job',
+      );
+      return false;
+    }
   }
 
   private sortAutoPublishCandidates(posts: VkParsingPostWithSource[]): VkParsingPostWithSource[] {
