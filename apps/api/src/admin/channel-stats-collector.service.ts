@@ -55,6 +55,7 @@ type ChannelStatsAudienceSyncResult = Pick<
   'audienceSynced' | 'throttled'
 > & {
   syncedAt: Date | null;
+  unavailable?: boolean;
 };
 
 type ChannelStartupSyncCandidate = {
@@ -279,6 +280,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       audienceSynced: false,
       throttled: false,
       syncedAt: null,
+      unavailable: false,
     };
     const staleMs = options?.staleMs ?? CHANNEL_STATS_STALE_MS;
     const [latestAudienceSnapshot, syncState] = await Promise.all([
@@ -335,6 +337,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         result.audienceSynced = audienceResult.audienceSynced;
         result.throttled = audienceResult.throttled;
         result.syncedAt = audienceResult.syncedAt;
+        result.unavailable = audienceResult.unavailable;
 
         if (!audienceResult.audienceSynced) {
           return;
@@ -730,6 +733,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
           where: { chatId },
         });
         const ensuredCoverageFrom = await this.ensureWebhookCoverage();
+        let audienceUnavailable = false;
 
         if (!options?.skipAudience) {
           const audienceResult = await this.syncOfficialAudienceSnapshot(chatId, {
@@ -739,9 +743,10 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
           });
           result.audienceSynced = audienceResult.audienceSynced;
           result.throttled ||= audienceResult.throttled;
+          audienceUnavailable = audienceResult.unavailable === true;
         }
 
-        if (!result.throttled) {
+        if (!result.throttled && !audienceUnavailable) {
           try {
             const messages = await this.maxClient.listMessageSnapshots(chatId, {
               from: lookbackFrom,
@@ -907,6 +912,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         audienceSynced: true,
         throttled: false,
         syncedAt: params.now,
+        unavailable: false,
       };
     } catch (error: unknown) {
       const logPayload = {
@@ -915,7 +921,16 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         err: error instanceof Error ? error.message : String(error),
       };
       if (this.isMaxApiNotFoundError(error)) {
+        const recorded = await this.recordUnavailableAudienceSnapshot(chatId, params.now, {
+          status: 'not_found',
+        });
         this.logger.debug(logPayload, 'Skipped official channel audience snapshot after MAX 404');
+        return {
+          audienceSynced: recorded,
+          throttled: false,
+          syncedAt: recorded ? params.now : null,
+          unavailable: recorded,
+        };
       } else {
         this.logger.warn(logPayload, 'Failed to sync official channel audience snapshot');
       }
@@ -924,7 +939,41 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         audienceSynced: false,
         throttled: this.isMaxApiThrottleError(error),
         syncedAt: null,
+        unavailable: false,
       };
+    }
+  }
+
+  private async recordUnavailableAudienceSnapshot(
+    chatId: string,
+    capturedAt: Date,
+    params: {
+      status: string;
+    },
+  ): Promise<boolean> {
+    try {
+      await this.prisma.channelAudienceSnapshot.create({
+        data: {
+          chatId,
+          participantsCount: null,
+          status: params.status,
+          isPublic: null,
+          link: null,
+          lastEventAt: null,
+          capturedAt,
+        },
+      });
+      return true;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          status: params.status,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to record unavailable channel audience snapshot',
+      );
+      return false;
     }
   }
 

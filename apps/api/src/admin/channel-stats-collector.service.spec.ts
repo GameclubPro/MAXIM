@@ -254,6 +254,97 @@ describe('ChannelStatsCollectorService', () => {
     await service.onModuleDestroy();
   });
 
+  it('records unavailable audience snapshots after MAX 404', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatSnapshot: jest
+        .fn()
+        .mockRejectedValue(Object.assign(new Error('not found'), { response: { status: 404 } })),
+      ensureWebhookSubscription: jest.fn(),
+    };
+    const service = new ChannelStatsCollectorService(
+      prisma as never,
+      maxClient as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.syncAudienceSnapshotIfStale('channel-missing', {
+      reason: 'scheduled',
+    });
+
+    expect(result).toEqual({
+      audienceSynced: true,
+      throttled: false,
+      syncedAt: new Date('2026-03-07T12:00:00.000Z'),
+      unavailable: true,
+    });
+    expect(prisma.channelAudienceSnapshot.create).toHaveBeenCalledWith({
+      data: {
+        chatId: 'channel-missing',
+        participantsCount: null,
+        status: 'not_found',
+        isPublic: null,
+        link: null,
+        lastEventAt: null,
+        capturedAt: new Date('2026-03-07T12:00:00.000Z'),
+      },
+    });
+    expect(prisma.channelStatsSyncState.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          chatId: 'channel-missing',
+          lastAudienceSyncAt: new Date('2026-03-07T12:00:00.000Z'),
+        }),
+        update: expect.objectContaining({
+          lastAudienceSyncAt: new Date('2026-03-07T12:00:00.000Z'),
+        }),
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('skips views sync after a MAX 404 audience snapshot', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatSnapshot: jest
+        .fn()
+        .mockRejectedValue(Object.assign(new Error('not found'), { response: { status: 404 } })),
+      listMessageSnapshots: jest.fn(),
+      ensureWebhookSubscription: jest.fn().mockResolvedValue({
+        url: 'https://major-maksimov.ru/api/webhook/max/test/secret',
+        updateTypes: ['message_created', 'user_added', 'user_removed'],
+      }),
+    };
+    const service = new ChannelStatsCollectorService(
+      prisma as never,
+      maxClient as never,
+      createConfigMock() as never,
+    );
+
+    await service.syncChannel('channel-missing', { reason: 'scheduled' });
+
+    expect(maxClient.listMessageSnapshots).not.toHaveBeenCalled();
+    expect(prisma.channelStatsSyncState.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          chatId: 'channel-missing',
+          lastAudienceSyncAt: new Date('2026-03-07T12:00:00.000Z'),
+          lastViewsSyncAt: null,
+        }),
+        update: expect.objectContaining({
+          lastAudienceSyncAt: new Date('2026-03-07T12:00:00.000Z'),
+        }),
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('uses the unified capability route for channel stats sync when available', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:01:00.000Z'));
 
