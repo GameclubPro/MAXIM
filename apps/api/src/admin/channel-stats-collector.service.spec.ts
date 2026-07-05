@@ -688,6 +688,34 @@ describe('ChannelStatsCollectorService', () => {
     await service.onModuleDestroy();
   });
 
+  it('schedules a delayed lightweight catch-up pass on startup', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const maxClient = {
+      ensureWebhookSubscription: jest.fn(),
+    };
+    const service = new ChannelStatsCollectorService(
+      prisma as never,
+      maxClient as never,
+      createConfigMock() as never,
+    );
+    const syncSpy = jest.spyOn(service, 'syncAllChannels').mockResolvedValue(undefined);
+
+    service.onModuleInit();
+    expect(syncSpy).not.toHaveBeenCalled();
+
+    jest.advanceTimersByTime(89_999);
+    await Promise.resolve();
+    expect(syncSpy).not.toHaveBeenCalled();
+
+    jest.advanceTimersByTime(1);
+    await Promise.resolve();
+    expect(syncSpy).toHaveBeenCalledWith('scheduled');
+
+    await service.onModuleDestroy();
+  });
+
   it('uses a lighter MAX page budget for startup channel stats sync', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
 

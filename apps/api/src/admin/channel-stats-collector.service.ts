@@ -39,6 +39,7 @@ const DEFAULT_CHANNEL_STATS_STARTUP_DELAY_MS = 30_000;
 const DEFAULT_CHANNEL_STATS_STARTUP_JITTER_MS = 15_000;
 const DEFAULT_CHANNEL_STATS_STARTUP_MAX_PAGES = 20;
 const DEFAULT_CHANNEL_STATS_ENDPOINT_MAX_PAGES = 8;
+const CHANNEL_STATS_SCHEDULED_CATCH_UP_STARTUP_DELAY_MS = 90_000;
 const CHANNEL_STATS_SCHEDULED_AUDIENCE_CATCH_UP_MAX_CHANNELS = 360;
 const CHANNEL_STATS_SCHEDULED_VIEWS_SYNC_MAX_CHANNELS = 6;
 type ChannelStatsSyncResult = {
@@ -83,6 +84,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
   private readonly syncIntervalMs: number;
   private timer: NodeJS.Timeout | null = null;
   private startupTimer: NodeJS.Timeout | null = null;
+  private scheduledCatchUpStartupTimer: NodeJS.Timeout | null = null;
   private scheduledSyncInFlight = false;
   private backgroundSyncBackoffUntilMs = 0;
   private subscriptionCoverageFrom: Date | null = null;
@@ -151,6 +153,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     }, this.syncIntervalMs);
     this.timer.unref();
 
+    this.scheduleScheduledCatchUpOnStartup();
     this.scheduleStartupSync();
   }
 
@@ -162,6 +165,10 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     if (this.startupTimer) {
       clearTimeout(this.startupTimer);
       this.startupTimer = null;
+    }
+    if (this.scheduledCatchUpStartupTimer) {
+      clearTimeout(this.scheduledCatchUpStartupTimer);
+      this.scheduledCatchUpStartupTimer = null;
     }
 
     await this.redis.quit();
@@ -1017,6 +1024,14 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       void this.syncStartupChannels();
     }, startupDelayMs);
     this.startupTimer.unref();
+  }
+
+  private scheduleScheduledCatchUpOnStartup() {
+    this.scheduledCatchUpStartupTimer = setTimeout(() => {
+      this.scheduledCatchUpStartupTimer = null;
+      void this.syncAllChannels('scheduled');
+    }, CHANNEL_STATS_SCHEDULED_CATCH_UP_STARTUP_DELAY_MS);
+    this.scheduledCatchUpStartupTimer.unref();
   }
 
   private async isBackgroundWorkPaused(reason: 'startup' | 'scheduled'): Promise<boolean> {
