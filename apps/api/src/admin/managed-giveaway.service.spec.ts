@@ -2061,6 +2061,37 @@ describe('ManagedGiveawayService', () => {
     }
   });
 
+  it('pauses due giveaways when the background governor is unavailable', async () => {
+    const prisma = createPrismaMock();
+    const backgroundRuntimeGovernor = {
+      decide: jest.fn().mockRejectedValue(new Error('timeout exceeded when trying to connect')),
+    };
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      createMaxClientMock() as never,
+      createChatContextCacheMock() as never,
+      {} as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      backgroundRuntimeGovernor as never,
+    );
+    const processSpy = jest
+      .spyOn(service as any, 'processDueManagedGiveaway')
+      .mockResolvedValue(undefined);
+
+    await service.processDueManagedGiveaways('scheduled');
+
+    expect(backgroundRuntimeGovernor.decide).toHaveBeenCalledWith({
+      component: 'managed-giveaway',
+      sourceTag: 'giveaway_draw_background',
+    });
+    expect(prisma.managedGiveawayWinner.findMany).not.toHaveBeenCalled();
+    expect(prisma.managedGiveaway.findMany).not.toHaveBeenCalled();
+    expect(processSpy).not.toHaveBeenCalled();
+  });
+
   it('skips due giveaways for chats with bot-denied access edges', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-21T13:22:00.000Z'));
 

@@ -1585,7 +1585,11 @@ export class VkPublishService {
       });
     } catch (error) {
       this.logger.warn({ err: error }, 'VK autopublish governor check failed');
-      return null;
+      return {
+        action: 'pause',
+        retryAfterMs: 180_000,
+        reason: 'background governor unavailable',
+      };
     }
   }
 

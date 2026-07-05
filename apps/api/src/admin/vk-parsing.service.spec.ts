@@ -413,6 +413,28 @@ describe('VkParsingService', () => {
     };
   }
 
+  it('pauses VK autopublish when the background governor is unavailable', async () => {
+    const { publishService } = createFixture();
+    const backgroundRuntimeGovernorService = {
+      decide: jest.fn().mockRejectedValue(new Error('timeout exceeded when trying to connect')),
+    };
+    const testPublishService = publishService as unknown as {
+      backgroundRuntimeGovernorService?: unknown;
+      decideBackgroundAutoPublish: () => Promise<unknown>;
+    };
+    testPublishService.backgroundRuntimeGovernorService = backgroundRuntimeGovernorService;
+
+    await expect(testPublishService.decideBackgroundAutoPublish()).resolves.toEqual({
+      action: 'pause',
+      retryAfterMs: 180_000,
+      reason: 'background governor unavailable',
+    });
+    expect(backgroundRuntimeGovernorService.decide).toHaveBeenCalledWith({
+      component: 'vk_parsing_autopublish',
+      sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+    });
+  });
+
   it('allows any channel admin to use VK parsing', async () => {
     const { service, adminService } = createFixture();
 

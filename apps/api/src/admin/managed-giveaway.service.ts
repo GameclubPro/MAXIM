@@ -975,8 +975,8 @@ export class ManagedGiveawayService {
         'Managed giveaway runner governor check failed',
       );
       return {
-        action: 'run',
-        retryAfterMs: 0,
+        action: 'pause',
+        retryAfterMs: 180_000,
         reason: 'background governor unavailable',
       };
     }

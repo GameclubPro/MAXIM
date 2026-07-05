@@ -15,6 +15,10 @@ const API_SERVICE_POOL_CAPS = {
   'api-action': 3,
 } as const;
 
+const API_SERVICE_POOL_CONNECTION_TIMEOUT_MS = {
+  'api-action': 10_000,
+} as const satisfies Partial<Record<keyof typeof API_SERVICE_POOL_CAPS, number>>;
+
 const COMPOSE_FILES = [
   ['main', '../../../../infra/docker-compose.yml'],
   ['scale', '../../../../infra/docker-compose.scale.yml'],
@@ -32,7 +36,11 @@ describe('production compose Prisma pool caps', () => {
         const cap = readEnvNumber(block, 'PRISMA_PG_POOL_MAX');
         expect(cap).toBe(expectedCap);
         expect(readEnvNumber(block, 'PRISMA_PG_POOL_IDLE_TIMEOUT_MS')).toBe(10_000);
-        expect(readEnvNumber(block, 'PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS')).toBe(5_000);
+        expect(readEnvNumber(block, 'PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS')).toBe(
+          API_SERVICE_POOL_CONNECTION_TIMEOUT_MS[
+            service as keyof typeof API_SERVICE_POOL_CONNECTION_TIMEOUT_MS
+          ] ?? 5_000,
+        );
         total += cap;
       }
 
