@@ -1,6 +1,13 @@
-const MUTATION_TUNNEL_PATH = '/_mutation-tunnel';
+import {
+  MAX_TUNNEL_URL_LENGTH,
+  MUTATION_TUNNEL_PATH,
+  buildBaseTunnelParams,
+  buildMutationTunnelPathSync,
+  encodeBase64UrlBytes,
+  encodeBase64UrlUtf8,
+} from './transport-mutation-tunnel-path';
+
 const COMPRESSED_TUNNEL_BODY_THRESHOLD = 1024;
-const MAX_TUNNEL_URL_LENGTH = 7500;
 const CHUNKED_TUNNEL_CHUNK_BYTES = 4_200;
 const MAX_CHUNKED_TUNNEL_BODY_LENGTH = 34 * 1024 * 1024;
 const CHUNKED_TUNNEL_CONCURRENCY = 6;
@@ -16,21 +23,6 @@ type FetchWithTimeout = (
   authInitData: string,
   init?: RequestInit,
 ) => Promise<FetchAttemptResult>;
-
-function encodeBase64UrlUtf8(value: string): string {
-  const bytes = new TextEncoder().encode(value);
-  return encodeBase64UrlBytes(bytes);
-}
-
-function encodeBase64UrlBytes(bytes: Uint8Array): string {
-  let binary = '';
-  const chunkSize = 0x8000;
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
-  }
-
-  return globalThis.btoa(binary).replace(/\+/gu, '-').replace(/\//gu, '_').replace(/=+$/u, '');
-}
 
 function createChunkedTunnelUploadId(): string {
   const randomBytes = new Uint8Array(16);
@@ -58,23 +50,6 @@ async function encodeGzipBody(value: string): Promise<string | null> {
   } catch {
     return null;
   }
-}
-
-function buildBaseTunnelParams(path: string, init: RequestInit): URLSearchParams {
-  const method = (init.method ?? 'GET').toUpperCase();
-  const params = new URLSearchParams({
-    method,
-    path,
-    nonce: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
-  });
-  const contentType = new Headers(init.headers).get('Content-Type');
-  if (contentType) {
-    params.set('contentType', contentType);
-  } else if (typeof init.body === 'string' && init.body) {
-    params.set('contentType', 'application/json');
-  }
-
-  return params;
 }
 
 export async function buildMutationTunnelPath(
@@ -108,6 +83,8 @@ export async function buildMutationTunnelPath(
   const tunnelPath = `${MUTATION_TUNNEL_PATH}?${params.toString()}`;
   return tunnelPath.length <= MAX_TUNNEL_URL_LENGTH ? tunnelPath : null;
 }
+
+export { buildMutationTunnelPathSync };
 
 async function fetchChunkedMutationWithTunnel(
   apiBase: string,

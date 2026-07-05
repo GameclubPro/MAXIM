@@ -11,7 +11,16 @@
     "baseUrl": ".",
     "paths": {
       "@maxim/contracts": ["packages/contracts/src/index.ts"],
-      "@maxim/contracts/*": ["packages/contracts/src/*.ts"]
+      "@maxim/contracts/bot-speech": ["packages/contracts/src/bot-speech.ts"],
+      "@maxim/contracts/broadcast": ["packages/contracts/src/broadcast.ts"],
+      "@maxim/contracts/channel-dialog": ["packages/contracts/src/channel-dialog.ts"],
+      "@maxim/contracts/channel-stats": ["packages/contracts/src/channel-stats.ts"],
+      "@maxim/contracts/chat-participants": ["packages/contracts/src/chat-participants.ts"],
+      "@maxim/contracts/giveaway": ["packages/contracts/src/giveaway.ts"],
+      "@maxim/contracts/managed-entities": ["packages/contracts/src/managed-entities.ts"],
+      "@maxim/contracts/manual-moderation": ["packages/contracts/src/manual-moderation.ts"],
+      "@maxim/contracts/settings": ["packages/contracts/src/settings.ts"],
+      "@maxim/contracts/system": ["packages/contracts/src/system.ts"]
     }
   }
 }

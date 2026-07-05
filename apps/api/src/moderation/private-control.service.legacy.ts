@@ -59,8 +59,6 @@ import {
   extractIncomingSuggestionTextPayload,
 } from './private-control-markup-importer';
 import {
-  BROADCAST_COMPOSER_CLIENT_RESET_KEY_PREFIX,
-  BROADCAST_COMPOSER_CLIENT_RESET_TTL_SEC,
   BROADCAST_HANDOFF_DEDUP_WINDOW_MS,
   BROADCAST_HANDOFF_START_PAYLOAD,
   BROADCAST_PUBLISH_DEDUP_WINDOW_MS,
@@ -99,6 +97,12 @@ import {
   SEARCH_RESULT_LIMIT,
   SUPPORT_CHAT_URL,
 } from './private-control.constants';
+import { extractPrivateControlBadRequestDetails } from './private-control-bad-request.util';
+import {
+  buildBroadcastComposerClientResetKey,
+  normalizeBroadcastComposerClientResetValue,
+  rememberBroadcastComposerClientReset,
+} from './private-control-broadcast-reset.util';
 import type {
   ActiveBotSpeechProfile,
   CallbackAction,
@@ -411,20 +415,27 @@ export class PrivateControlService {
     if (profileMentionPayload) {
       const session = await this.loadSession(context.actor.userId);
       this.rememberPrivateChatRoute(session, context);
-      const pendingDisplayName = this.readPendingProfileMentionDisplayName(
+      const pendingDisplayName = readPendingPrivateProfileMentionDisplayName(
         session,
         profileMentionPayload.chatId,
         profileMentionPayload.userId,
       );
 
-      if (this.wasProfileMentionHandoffAlreadyDelivered(session, context.chatId)) {
-        this.clearDeliveredProfileMentionHandoff(session);
-        this.clearPendingProfileMentionHandoff(session);
+      if (
+        wasPrivateHandoffRecentlyDelivered(
+          session,
+          'profileMention',
+          context.chatId,
+          PROFILE_MENTION_HANDOFF_DEDUP_WINDOW_MS,
+        )
+      ) {
+        clearPrivateHandoffDelivery(session, 'profileMention');
+        clearPendingPrivateProfileMentionHandoff(session);
         await this.saveSession(context.actor.userId, session);
         return;
       }
 
-      this.clearPendingProfileMentionHandoff(session);
+      clearPendingPrivateProfileMentionHandoff(session);
       await this.saveSession(context.actor.userId, session);
       const deliveryBotId = this.resolvePrivateDeliveryBotId(context, session);
       const resolvedDisplayName = await this.resolveProfileMentionDisplayName(
@@ -444,8 +455,16 @@ export class PrivateControlService {
 
     const session = await this.loadSession(context.actor.userId);
     this.rememberPrivateChatRoute(session, context);
-    if (!startPayload && this.wasProfileMentionHandoffAlreadyDelivered(session, context.chatId)) {
-      this.clearDeliveredProfileMentionHandoff(session);
+    if (
+      !startPayload &&
+      wasPrivateHandoffRecentlyDelivered(
+        session,
+        'profileMention',
+        context.chatId,
+        PROFILE_MENTION_HANDOFF_DEDUP_WINDOW_MS,
+      )
+    ) {
+      clearPrivateHandoffDelivery(session, 'profileMention');
       await this.saveSession(context.actor.userId, session);
       return;
     }
@@ -507,26 +526,44 @@ export class PrivateControlService {
     }
     session.pendingMassAction = null;
 
-    if (handoffPayload && this.wasGiveawayHandoffAlreadyDelivered(session, context.chatId)) {
-      this.clearDeliveredGiveawayHandoff(session);
+    if (
+      handoffPayload &&
+      wasPrivateHandoffRecentlyDelivered(
+        session,
+        'giveaway',
+        context.chatId,
+        GIVEAWAY_HANDOFF_DEDUP_WINDOW_MS,
+      )
+    ) {
+      clearPrivateHandoffDelivery(session, 'giveaway');
       await this.saveSession(context.actor.userId, session);
       return;
     }
 
     if (
       startPayload === BROADCAST_HANDOFF_START_PAYLOAD &&
-      this.wasBroadcastHandoffAlreadyDelivered(session, context.chatId)
+      wasPrivateHandoffRecentlyDelivered(
+        session,
+        'broadcast',
+        context.chatId,
+        BROADCAST_HANDOFF_DEDUP_WINDOW_MS,
+      )
     ) {
-      this.clearDeliveredBroadcastHandoff(session);
+      clearPrivateHandoffDelivery(session, 'broadcast');
       await this.saveSession(context.actor.userId, session);
       return;
     }
 
     if (
       startPayload === RULES_HANDOFF_START_PAYLOAD &&
-      this.wasRulesHandoffAlreadyDelivered(session, context.chatId)
+      wasPrivateHandoffRecentlyDelivered(
+        session,
+        'rules',
+        context.chatId,
+        RULES_HANDOFF_DEDUP_WINDOW_MS,
+      )
     ) {
-      this.clearDeliveredRulesHandoff(session);
+      clearPrivateHandoffDelivery(session, 'rules');
       await this.saveSession(context.actor.userId, session);
       return;
     }
@@ -687,7 +724,12 @@ export class PrivateControlService {
       await this.saveSession(user.userId, session);
     }
 
-    await this.rememberBroadcastComposerClientReset(user.userId, entityType, sourceChatId);
+    await rememberBroadcastComposerClientReset(
+      this.redisCounter,
+      user.userId,
+      entityType,
+      sourceChatId,
+    );
 
     return this.buildBroadcastHandoffState(entityType, DEFAULT_BROADCAST_DRAFT);
   }
@@ -708,10 +750,10 @@ export class PrivateControlService {
     }
 
     const resetAt = await this.redisCounter.getString(
-      this.broadcastComposerClientResetKey(user.userId, entityType, sourceChatId),
+      buildBroadcastComposerClientResetKey(user.userId, entityType, sourceChatId),
     );
     return {
-      resetAt: this.normalizeBroadcastComposerClientResetValue(resetAt),
+      resetAt: normalizeBroadcastComposerClientResetValue(resetAt),
     };
   }
 
@@ -932,7 +974,7 @@ export class PrivateControlService {
       throw new BadRequestException('Ссылка на личный чат бота не настроена.');
     }
 
-    this.rememberPendingProfileMentionHandoff(session, {
+    rememberPendingPrivateProfileMentionHandoff(session, {
       chatId: sourceChatId,
       displayName: resolvedDisplayName,
       userId: normalizedTargetUserId,
@@ -4661,9 +4703,9 @@ export class PrivateControlService {
       );
     } catch (error: unknown) {
       const userMessage =
-        this.extractBadRequestDetails(error) ??
+        extractPrivateControlBadRequestDetails(error) ??
         'Автопостинг недоступен. Попробуйте ещё раз через несколько секунд.';
-      const badRequestDetails = this.extractBadRequestDetails(error);
+      const badRequestDetails = extractPrivateControlBadRequestDetails(error);
       const badRequestResponse = error instanceof BadRequestException ? error.getResponse() : null;
       this.logger.warn(
         {
@@ -8145,80 +8187,6 @@ export class PrivateControlService {
     };
   }
 
-  private wasBroadcastHandoffAlreadyDelivered(session: PrivateSession, chatId: string): boolean {
-    return wasPrivateHandoffRecentlyDelivered(
-      session,
-      'broadcast',
-      chatId,
-      BROADCAST_HANDOFF_DEDUP_WINDOW_MS,
-    );
-  }
-
-  private clearDeliveredBroadcastHandoff(session: PrivateSession): void {
-    clearPrivateHandoffDelivery(session, 'broadcast');
-  }
-
-  private wasGiveawayHandoffAlreadyDelivered(session: PrivateSession, chatId: string): boolean {
-    return wasPrivateHandoffRecentlyDelivered(
-      session,
-      'giveaway',
-      chatId,
-      GIVEAWAY_HANDOFF_DEDUP_WINDOW_MS,
-    );
-  }
-
-  private clearDeliveredGiveawayHandoff(session: PrivateSession): void {
-    clearPrivateHandoffDelivery(session, 'giveaway');
-  }
-
-  private wasRulesHandoffAlreadyDelivered(session: PrivateSession, chatId: string): boolean {
-    return wasPrivateHandoffRecentlyDelivered(
-      session,
-      'rules',
-      chatId,
-      RULES_HANDOFF_DEDUP_WINDOW_MS,
-    );
-  }
-
-  private clearDeliveredRulesHandoff(session: PrivateSession): void {
-    clearPrivateHandoffDelivery(session, 'rules');
-  }
-
-  private wasProfileMentionHandoffAlreadyDelivered(
-    session: PrivateSession,
-    chatId: string,
-  ): boolean {
-    return wasPrivateHandoffRecentlyDelivered(
-      session,
-      'profileMention',
-      chatId,
-      PROFILE_MENTION_HANDOFF_DEDUP_WINDOW_MS,
-    );
-  }
-
-  private clearDeliveredProfileMentionHandoff(session: PrivateSession): void {
-    clearPrivateHandoffDelivery(session, 'profileMention');
-  }
-
-  private rememberPendingProfileMentionHandoff(
-    session: PrivateSession,
-    payload: { chatId: string; userId: string; displayName: string },
-  ): void {
-    rememberPendingPrivateProfileMentionHandoff(session, payload);
-  }
-
-  private readPendingProfileMentionDisplayName(
-    session: PrivateSession,
-    chatId: string,
-    userId: string,
-  ): string | null {
-    return readPendingPrivateProfileMentionDisplayName(session, chatId, userId);
-  }
-
-  private clearPendingProfileMentionHandoff(session: PrivateSession): void {
-    clearPendingPrivateProfileMentionHandoff(session);
-  }
-
   private createSyntheticPrivateContext(
     user: AuthUser,
     privateChatId: string,
@@ -8538,7 +8506,7 @@ export class PrivateControlService {
     callback: CallbackAction | null,
     error: unknown,
   ): Promise<void> {
-    const badRequestDetails = this.extractBadRequestDetails(error);
+    const badRequestDetails = extractPrivateControlBadRequestDetails(error);
     const userMessage =
       typeof badRequestDetails === 'string' && badRequestDetails.trim().length > 0
         ? badRequestDetails
@@ -9557,106 +9525,6 @@ export class PrivateControlService {
     return this.sessionStore.loadSessionForDiagnostics(userId);
   }
 
-  private extractBadRequestDetails(error: unknown): string | null {
-    if (error instanceof BadRequestException) {
-      return this.normalizePrivateControlErrorMessage(
-        this.normalizeBadRequestResponse(error.getResponse()),
-      );
-    }
-
-    return null;
-  }
-
-  private normalizePrivateControlErrorMessage(message: string | null): string | null {
-    const normalized = message?.trim() ?? '';
-    if (!normalized || this.isTechnicalPrivateControlErrorMessage(normalized)) {
-      return null;
-    }
-
-    return normalized;
-  }
-
-  private isTechnicalPrivateControlErrorMessage(message: string): boolean {
-    const normalized = message.trim().toLowerCase();
-    return (
-      /^request failed with status code \d{3}$/u.test(normalized) ||
-      /^timeout of \d+ms exceeded$/u.test(normalized) ||
-      normalized.includes('axioserror') ||
-      normalized.includes('max api')
-    );
-  }
-
-  private normalizeBadRequestResponse(response: unknown): string | null {
-    const messages = this.collectBadRequestMessages(response);
-    if (messages.length > 0) {
-      return Array.from(new Set(messages)).join('; ');
-    }
-
-    if (
-      response &&
-      typeof response === 'object' &&
-      typeof (response as Record<string, unknown>).error === 'string'
-    ) {
-      const errorLabel = ((response as Record<string, unknown>).error as string).trim();
-      if (errorLabel.length > 0) {
-        return errorLabel;
-      }
-    }
-
-    try {
-      return JSON.stringify(response);
-    } catch {
-      return null;
-    }
-  }
-
-  private collectBadRequestMessages(response: unknown): string[] {
-    if (typeof response === 'string') {
-      const normalized = response.trim();
-      return normalized.length > 0 ? [normalized] : [];
-    }
-
-    if (Array.isArray(response)) {
-      return response.flatMap((item) => this.collectBadRequestMessages(item));
-    }
-
-    if (!response || typeof response !== 'object') {
-      return [];
-    }
-
-    const row = response as Record<string, unknown>;
-    const messages: string[] = [];
-    const directMessage = row.message;
-
-    if (typeof directMessage === 'string' && directMessage.trim().length > 0) {
-      messages.push(directMessage.trim());
-    } else if (Array.isArray(directMessage)) {
-      messages.push(...directMessage.flatMap((item) => this.collectBadRequestMessages(item)));
-    }
-
-    const zodErrors = row._errors;
-    if (Array.isArray(zodErrors)) {
-      messages.push(
-        ...zodErrors
-          .filter((item): item is string => typeof item === 'string')
-          .map((item) => item.trim())
-          .filter(Boolean),
-      );
-    }
-
-    for (const [key, value] of Object.entries(row)) {
-      if (key === 'message' || key === 'error' || key === '_errors') {
-        continue;
-      }
-      if (!value || (typeof value !== 'object' && !Array.isArray(value))) {
-        continue;
-      }
-      messages.push(...this.collectBadRequestMessages(value));
-    }
-
-    return messages;
-  }
-
   private async saveSession(userId: string, session: PrivateSession): Promise<void> {
     await this.sessionStore.saveSession(userId, session);
   }
@@ -9676,37 +9544,4 @@ export class PrivateControlService {
     return this.sessionStore.sessionKey(userId);
   }
 
-  private async rememberBroadcastComposerClientReset(
-    userId: string,
-    entityType: ManagedEntityType,
-    sourceChatId: string,
-  ): Promise<void> {
-    if (!this.redisCounter) {
-      return;
-    }
-
-    await this.redisCounter.setStringWithTtl(
-      this.broadcastComposerClientResetKey(userId, entityType, sourceChatId),
-      new Date().toISOString(),
-      BROADCAST_COMPOSER_CLIENT_RESET_TTL_SEC,
-    );
-  }
-
-  private broadcastComposerClientResetKey(
-    userId: string,
-    entityType: ManagedEntityType,
-    sourceChatId: string,
-  ): string {
-    return `${BROADCAST_COMPOSER_CLIENT_RESET_KEY_PREFIX}:${entityType}:${sourceChatId}:${userId}`;
-  }
-
-  private normalizeBroadcastComposerClientResetValue(value: string | null): string | null {
-    const trimmed = value?.trim();
-    if (!trimmed) {
-      return null;
-    }
-
-    const parsed = Date.parse(trimmed);
-    return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
-  }
 }

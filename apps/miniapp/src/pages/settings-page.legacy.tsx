@@ -50,7 +50,6 @@ import './settings/settings-duplicate-stage.css';
 import '../styles/broadcast-autopost-polish.css';
 import {
   Suspense,
-  lazy,
   startTransition,
   useEffect,
   useMemo,
@@ -68,14 +67,12 @@ import {
   type BroadcastStudioSignal,
 } from '../components/broadcast-studio-header';
 import {
-  BroadcastDraftCard,
   BroadcastHistoryFilterTabs,
   BroadcastWorkspaceChrome,
   countManagedBroadcastHistoryFilters,
   filterManagedBroadcastsByHistoryFilter,
   type BroadcastHistoryFilter,
 } from '../components/broadcast-studio-workspace';
-import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
@@ -240,10 +237,19 @@ import {
   LazyBroadcastAudienceControls,
   LazyBroadcastSchedulePlanner,
   LazyBroadcastContentComposer,
+  LazyBroadcastDraftCardSlot,
   LazyBroadcastButtonsSheet,
   LazyBroadcastPublishReviewSheet,
   LazySettingsHandoffState,
   LazyManagedGiveawayCard,
+  LazyActionConfirmMarkdownPreview,
+  LazyVkParsingCard,
+  LazyManagedAutopostRuleCard,
+  LazyManagedBroadcastHistoryCard,
+  LazySettingsTimeFields,
+  LazyRequiredSubscriptionSourcePicker,
+  LazyManagedEntityAccessDiagnosticsBanner,
+  LazySettingsAdminCommandsSection,
   preloadBotSpeechMessageEditorSheet,
   AUTO_SAVE_DELAY_MS,
   AUTO_MUTE_DURATION_MIN_HOURS,
@@ -358,36 +364,6 @@ import {
   areBroadcastPlannerStatesEqual,
   LazyWarnMessageEditor,
 } from './settings/settings-page-helpers';
-
-const LazyVkParsingCard = lazy(() =>
-  import('../components/vk-parsing-card').then((module) => ({ default: module.VkParsingCard })),
-);
-const LazyManagedAutopostRuleCard = lazy(() =>
-  import('../components/managed-autopost-rule-card').then((module) => ({
-    default: module.ManagedAutopostRuleCard,
-  })),
-);
-const LazyManagedBroadcastHistoryCard = lazy(() =>
-  import('../components/managed-broadcast-history-card').then((module) => ({
-    default: module.ManagedBroadcastHistoryCard,
-  })),
-);
-const LazySettingsTimeFields = lazy(() => import('./settings/night-mode-time-fields'));
-const LazyRequiredSubscriptionSourcePicker = lazy(() =>
-  import('../components/required-subscription-source-picker').then((module) => ({
-    default: module.RequiredSubscriptionSourcePicker,
-  })),
-);
-const LazyManagedEntityAccessDiagnosticsBanner = lazy(() =>
-  import('../components/managed-entity-access-diagnostics').then((module) => ({
-    default: module.ManagedEntityAccessDiagnosticsBanner,
-  })),
-);
-const LazySettingsAdminCommandsSection = lazy(() =>
-  import('./settings/settings-admin-commands-section').then((module) => ({
-    default: module.SettingsAdminCommandsSection,
-  })),
-);
 
 export function SettingsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
@@ -4913,6 +4889,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     !mailingVideoCleared &&
     mailingVideoSource?.mediaType === 'video' &&
     Boolean(mailingVideoSource.mediaPayload);
+  const mailingDraftFallback = editingMailingHasVideo
+    ? 'Видео без текста'
+    : mailingImageEnabled
+      ? 'Фото без текста'
+      : undefined;
   const mailingImageLabel =
     mailingImages.length > 1 ? `${mailingImages.length} фото` : mailingImageEnabled ? 'Фото' : null;
   const mailingHasDirectContent = Boolean(
@@ -5105,6 +5086,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mailingFooterScheduleLabel,
     mailingFooterMeta,
   ].filter((item): item is string => Boolean(item));
+  const renderMailingDraftCard = () =>
+    showMailingDraftCard ? (
+      <LazyBroadcastDraftCardSlot
+        preview={normalizedMailingText}
+        fallback={mailingDraftFallback}
+        facts={mailingDraftFacts}
+        disabled={isMailingBusy}
+        onOpen={() => setMailingWorkspaceView('compose')}
+        onReset={handleClearMailingComposer}
+      />
+    ) : null;
   const mailingDrilldownFooter = (
     <BroadcastPublishBar
       title={mailingFooterTitle}
@@ -10513,16 +10505,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                             <div className="broadcast-stage-card__body">
                               <div className="managed-broadcasts-list managed-broadcasts-list--autoposts">
-                                {showMailingDraftCard ? (
-                                  <BroadcastDraftCard
-                                    preview={normalizedMailingText}
-                                    fallback={editingMailingHasVideo ? 'Видео без текста' : mailingImageEnabled ? 'Фото без текста' : undefined}
-                                    facts={mailingDraftFacts}
-                                    disabled={isMailingBusy}
-                                    onOpen={() => setMailingWorkspaceView('compose')}
-                                    onReset={handleClearMailingComposer}
-                                  />
-                                ) : null}
+                                {renderMailingDraftCard()}
 
                                 {orderedManagedAutopostRules.length === 0 &&
                                 !showMailingDraftCard &&
@@ -10584,16 +10567,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               />
 
                               <div className="managed-broadcasts-list">
-                                {showMailingDraftCard ? (
-                                  <BroadcastDraftCard
-                                    preview={normalizedMailingText}
-                                    fallback={editingMailingHasVideo ? 'Видео без текста' : mailingImageEnabled ? 'Фото без текста' : undefined}
-                                    facts={mailingDraftFacts}
-                                    disabled={isMailingBusy}
-                                    onOpen={() => setMailingWorkspaceView('compose')}
-                                    onReset={handleClearMailingComposer}
-                                  />
-                                ) : null}
+                                {renderMailingDraftCard()}
 
                                 {filteredManagedBroadcasts.length === 0 &&
                                 !showMailingDraftCard &&
@@ -11431,11 +11405,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         title="Удалить публикацию?"
         previewTitle={
           managedBroadcastDeleteTarget ? (
-            <MaxMarkdownPreview
+            <LazyActionConfirmMarkdownPreview
               value={managedBroadcastDeleteTarget.textPreview}
-              className="action-confirm-sheet__preview-markdown max-markdown-preview--clamp-2"
-              normalizeWhitespace
-              fallback={managedBroadcastDeleteTarget.hasImage ? 'Фото без текста' : null}
+              fallback={
+                managedBroadcastDeleteTarget.textPreview ||
+                (managedBroadcastDeleteTarget.hasImage ? 'Фото без текста' : null)
+              }
             />
           ) : undefined
         }
@@ -11463,16 +11438,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         title="Удалить автопост?"
         previewTitle={
           managedAutopostRuleDeleteTarget ? (
-            <MaxMarkdownPreview
+            <LazyActionConfirmMarkdownPreview
               value={managedAutopostRuleDeleteTarget.textPreview}
-              className="action-confirm-sheet__preview-markdown max-markdown-preview--clamp-2"
-              normalizeWhitespace
               fallback={
-                managedAutopostRuleDeleteTarget.hasVideo
+                managedAutopostRuleDeleteTarget.textPreview ||
+                (managedAutopostRuleDeleteTarget.hasVideo
                   ? 'Видео без текста'
                   : managedAutopostRuleDeleteTarget.hasImage
                     ? 'Фото без текста'
-                    : 'Пусто'
+                    : 'Пусто')
               }
             />
           ) : undefined

@@ -616,7 +616,44 @@ test('tunnels mutation requests when the original CDN mutation fails as a networ
   );
 });
 
-test('tunnels keepalive mutation requests when the front door rejects the original method', async () => {
+test('starts keepalive mutation requests with the tunnel on preferred API hosts', async () => {
+  const calls: FetchCall[] = [];
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    return createResponse({
+      ok: true,
+      status: 204,
+      text: '',
+      contentType: null,
+    });
+  }) as typeof fetch;
+
+  const api = createApiTransport('auth_date=1&hash=first', {
+    apiBases: ['https://api-cdn.flex-craft.ru/api/v1'],
+  });
+
+  api.requestKeepalive('/chats/chat-1/members/user-1/profile/handoff', {
+    method: 'POST',
+    body: JSON.stringify({ label: 'Admin' }),
+  });
+  await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+
+  assert.equal(calls.length, 1);
+  const tunnelUrl = new URL(String(calls[0].input));
+  assert.equal(tunnelUrl.origin, 'https://api-cdn.flex-craft.ru');
+  assert.equal(tunnelUrl.pathname, '/api/v1/_mutation-tunnel');
+  assert.equal(tunnelUrl.searchParams.get('method'), 'POST');
+  assert.equal(tunnelUrl.searchParams.get('path'), '/chats/chat-1/members/user-1/profile/handoff');
+  assert.equal(calls[0].init?.method, 'GET');
+  assert.equal(calls[0].init?.keepalive, true);
+  assert.equal(
+    new Headers(calls[0].init?.headers).get('Authorization'),
+    'InitData auth_date=1&hash=first',
+  );
+});
+
+test('falls back to the keepalive mutation tunnel after a non-preferred host rejects POST', async () => {
   const calls: FetchCall[] = [];
 
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -640,7 +677,7 @@ test('tunnels keepalive mutation requests when the front door rejects the origin
   }) as typeof fetch;
 
   const api = createApiTransport('auth_date=1&hash=first', {
-    apiBases: ['https://api-cdn.flex-craft.ru/api/v1'],
+    apiBases: ['https://major-maksimov.ru/api/v1'],
   });
 
   api.requestKeepalive('/chats/chat-1/members/user-1/profile/handoff', {
@@ -652,10 +689,10 @@ test('tunnels keepalive mutation requests when the front door rejects the origin
   assert.equal(calls.length, 2);
   assert.equal(
     String(calls[0].input),
-    'https://api-cdn.flex-craft.ru/api/v1/chats/chat-1/members/user-1/profile/handoff',
+    'https://major-maksimov.ru/api/v1/chats/chat-1/members/user-1/profile/handoff',
   );
   const tunnelUrl = new URL(String(calls[1].input));
-  assert.equal(tunnelUrl.origin, 'https://api-cdn.flex-craft.ru');
+  assert.equal(tunnelUrl.origin, 'https://major-maksimov.ru');
   assert.equal(tunnelUrl.pathname, '/api/v1/_mutation-tunnel');
   assert.equal(tunnelUrl.searchParams.get('method'), 'POST');
   assert.equal(tunnelUrl.searchParams.get('path'), '/chats/chat-1/members/user-1/profile/handoff');

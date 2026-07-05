@@ -438,8 +438,14 @@ function scheduleMiniAppClose(): void {
   }, 40);
 }
 
-export function readyMaxMiniApp(): void {
-  resolveNativeSideEffectBridge()?.ready?.();
+export function readyMaxMiniApp(): boolean {
+  const bridge = resolveNativeSideEffectBridge();
+  if (typeof bridge?.ready !== 'function') {
+    return false;
+  }
+
+  bridge.ready();
+  return true;
 }
 
 export function closeMaxMiniApp(fallback?: () => void): void {

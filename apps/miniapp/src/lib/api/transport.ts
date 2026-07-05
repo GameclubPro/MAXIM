@@ -1,6 +1,7 @@
 import { buildApiErrorMessage } from '../api-error';
 import { traceFirstMiniappApiResult } from '../boot-trace';
 import { resolveRuntimeApiBases } from '../public-config';
+import { buildMutationTunnelPathSync } from './transport-mutation-tunnel-path';
 const INIT_DATA_REFRESH_WAIT_MS = 1_000;
 const INIT_DATA_REFRESH_POLL_INTERVAL_MS = 50;
 const API_REQUEST_TIMEOUT_MS = 25_000;
@@ -294,8 +295,9 @@ export function createApiTransport(
       const apiBase = preferredApiBase ?? apiBases[0];
       const headers = buildHeaders(readInitData(), init);
       const method = (init.method ?? 'GET').toUpperCase();
+      const isMutation = !['GET', 'HEAD'].includes(method);
       const sendTunnel = async () => {
-        if (['GET', 'HEAD'].includes(method)) {
+        if (!isMutation) {
           return;
         }
 
@@ -312,6 +314,28 @@ export function createApiTransport(
           signal: init.signal,
         });
       };
+      const sendSyncTunnel = (): boolean => {
+        if (!isMutation) {
+          return false;
+        }
+
+        const tunnelPath = buildMutationTunnelPathSync(path, { ...init, headers });
+        if (!tunnelPath) {
+          return false;
+        }
+
+        void fetch(`${apiBase}${tunnelPath}`, {
+          method: 'GET',
+          headers,
+          keepalive: true,
+          signal: init.signal,
+        }).catch(() => undefined);
+        return true;
+      };
+
+      if (isMutation && shouldPreferMutationTunnel(apiBase) && sendSyncTunnel()) {
+        return;
+      }
 
       void fetch(`${apiBase}${path}`, {
         ...init,

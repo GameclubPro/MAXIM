@@ -62,7 +62,7 @@
   - режимы `normal/degrade` (auto/manual).
 - `HealthModule`:
   - `GET /api/health/live`,
-  - `GET /api/health/ready` (db + redis + queue lag threshold).
+  - local-only `GET /api/health/ready` (db + redis + queue lag threshold).
 
 ### 3.3 Поток webhook -> модерация
 

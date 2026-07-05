@@ -1,3 +1,9 @@
+import {
+  systemCanaryStateSchema,
+  systemQueueGroupHealthSchema,
+  systemRollbackReadinessSchema,
+  systemRuntimeProfileSchema,
+} from '@maxim/contracts/system';
 import type {
   BotOwnershipFoundationSnapshot,
   BotWebhookSubscriptionSnapshot,
@@ -14,6 +20,10 @@ import type {
   WebhookSubscriptionSnapshot,
 } from '@maxim/contracts/system';
 import type { ApiTransport } from './transport';
+
+type ContractParser<T> = {
+  parse(value: unknown): T;
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -600,196 +610,31 @@ function parseSystemDashboardWebhookSlo(value: unknown): SystemDashboardWebhookS
 }
 
 function parseSystemRuntimeProfile(value: unknown): SystemRuntimeProfile {
-  if (
-    !isRecord(value) ||
-    (value.appRole !== 'all' &&
-      value.appRole !== 'ingress' &&
-      value.appRole !== 'admin' &&
-      value.appRole !== 'enqueue' &&
-      value.appRole !== 'moderation' &&
-      value.appRole !== 'action') ||
-    typeof value.httpEnabled !== 'boolean' ||
-    typeof value.ingressEnabled !== 'boolean' ||
-    typeof value.adminEnabled !== 'boolean' ||
-    typeof value.enqueueEnabled !== 'boolean' ||
-    typeof value.moderationEnabled !== 'boolean' ||
-    typeof value.actionEnabled !== 'boolean' ||
-    !Array.isArray(value.enabledQueues) ||
-    (value.dynamicLeasesMode !== 'off' &&
-      value.dynamicLeasesMode !== 'shadow' &&
-      value.dynamicLeasesMode !== 'canary' &&
-      value.dynamicLeasesMode !== 'on') ||
-    (value.dynamicLeasesWorkerGroup !== null &&
-      value.dynamicLeasesWorkerGroup !== undefined &&
-      typeof value.dynamicLeasesWorkerGroup !== 'string') ||
-    !Array.isArray(value.canaryShardIds) ||
-    typeof value.targetWebhookP95Ms !== 'number' ||
-    typeof value.generatedAt !== 'string'
-  ) {
-    throw new Error('Invalid system runtime profile');
-  }
-
-  return {
-    appRole: value.appRole,
-    serviceName: typeof value.serviceName === 'string' ? value.serviceName : undefined,
-    serviceTitle: typeof value.serviceTitle === 'string' ? value.serviceTitle : undefined,
-    queueProfile: typeof value.queueProfile === 'string' ? value.queueProfile : undefined,
-    queuePriority:
-      value.queuePriority === 'all' ||
-      value.queuePriority === 'http-ingress' ||
-      value.queuePriority === 'admin-heavy-read' ||
-      value.queuePriority === 'webhook-enqueue' ||
-      value.queuePriority === 'user-facing-critical' ||
-      value.queuePriority === 'user-facing-realtime' ||
-      value.queuePriority === 'background' ||
-      value.queuePriority === 'action-dispatch'
-        ? value.queuePriority
-        : undefined,
-    topologySource:
-      value.topologySource === 'declared-service' ||
-      value.topologySource === 'role-inference' ||
-      value.topologySource === 'queue-inference' ||
-      value.topologySource === 'fallback'
-        ? value.topologySource
-        : undefined,
-    httpEnabled: value.httpEnabled,
-    ingressEnabled: value.ingressEnabled,
-    adminEnabled: value.adminEnabled,
-    enqueueEnabled: value.enqueueEnabled,
-    moderationEnabled: value.moderationEnabled,
-    actionEnabled: value.actionEnabled,
-    enabledQueues: value.enabledQueues.filter((item): item is string => typeof item === 'string'),
-    dynamicLeasesMode: value.dynamicLeasesMode,
-    dynamicLeasesWorkerGroup:
-      typeof value.dynamicLeasesWorkerGroup === 'string' ? value.dynamicLeasesWorkerGroup : null,
-    canaryShardIds: value.canaryShardIds.filter((item): item is string => typeof item === 'string'),
-    targetWebhookP95Ms: value.targetWebhookP95Ms,
-    generatedAt: value.generatedAt,
-  };
+  return parseContractValue(systemRuntimeProfileSchema, value, 'system runtime profile');
 }
 
 function parseSystemCanaryState(value: unknown): SystemCanaryState {
-  if (
-    !isRecord(value) ||
-    typeof value.enabled !== 'boolean' ||
-    (value.mode !== 'off' &&
-      value.mode !== 'shadow' &&
-      value.mode !== 'canary' &&
-      value.mode !== 'on') ||
-    (value.status !== 'disabled' &&
-      value.status !== 'shadow' &&
-      value.status !== 'canary' &&
-      value.status !== 'active' &&
-      value.status !== 'degraded') ||
-    (value.recommendation !== 'observe' &&
-      value.recommendation !== 'expand' &&
-      value.recommendation !== 'hold' &&
-      value.recommendation !== 'rollback') ||
-    (value.workerGroup !== null &&
-      value.workerGroup !== undefined &&
-      typeof value.workerGroup !== 'string') ||
-    !Array.isArray(value.canaryShardIds) ||
-    !Array.isArray(value.liveWorkerGroups) ||
-    !Array.isArray(value.handoffPendingQueues) ||
-    !Array.isArray(value.unhealthyQueues) ||
-    typeof value.reason !== 'string'
-  ) {
-    throw new Error('Invalid system canary state');
-  }
-
-  return {
-    enabled: value.enabled,
-    mode: value.mode,
-    status: value.status,
-    recommendation: value.recommendation,
-    workerGroup: typeof value.workerGroup === 'string' ? value.workerGroup : null,
-    canaryShardIds: value.canaryShardIds.filter((item): item is string => typeof item === 'string'),
-    liveWorkerGroups: value.liveWorkerGroups.filter(
-      (item): item is string => typeof item === 'string',
-    ),
-    handoffPendingQueues: value.handoffPendingQueues.filter(
-      (item): item is string => typeof item === 'string',
-    ),
-    unhealthyQueues: value.unhealthyQueues.filter(
-      (item): item is string => typeof item === 'string',
-    ),
-    reason: value.reason,
-  };
+  return parseContractValue(systemCanaryStateSchema, value, 'system canary state');
 }
 
 function parseSystemRollbackReadiness(value: unknown): SystemRollbackReadiness {
-  if (
-    !isRecord(value) ||
-    (value.status !== 'ready' &&
-      value.status !== 'blocked' &&
-      value.status !== 'rollback-recommended') ||
-    typeof value.canRollbackRuntime !== 'boolean' ||
-    typeof value.liveOk !== 'boolean' ||
-    typeof value.readyOk !== 'boolean' ||
-    typeof value.webhookSloOk !== 'boolean' ||
-    typeof value.queueLagOk !== 'boolean' ||
-    typeof value.failedWebhookOk !== 'boolean' ||
-    !Array.isArray(value.reasons) ||
-    typeof value.command !== 'string'
-  ) {
-    throw new Error('Invalid system rollback readiness');
-  }
-
-  return {
-    status: value.status,
-    canRollbackRuntime: value.canRollbackRuntime,
-    liveOk: value.liveOk,
-    readyOk: value.readyOk,
-    webhookSloOk: value.webhookSloOk,
-    queueLagOk: value.queueLagOk,
-    failedWebhookOk: value.failedWebhookOk,
-    reasons: value.reasons.filter((item): item is string => typeof item === 'string'),
-    command: value.command,
-  };
+  return parseContractValue(
+    systemRollbackReadinessSchema,
+    value,
+    'system rollback readiness',
+  );
 }
 
 function parseSystemQueueGroupHealth(value: unknown): SystemQueueGroupHealth {
-  if (
-    !isRecord(value) ||
-    (value.status !== 'healthy' && value.status !== 'warning' && value.status !== 'critical') ||
-    !Array.isArray(value.groups) ||
-    typeof value.generatedAt !== 'string'
-  ) {
-    throw new Error('Invalid system queue group health');
+  return parseContractValue(systemQueueGroupHealthSchema, value, 'system queue group health');
+}
+
+function parseContractValue<T>(schema: ContractParser<T>, value: unknown, label: string): T {
+  try {
+    return schema.parse(value);
+  } catch {
+    throw new Error(`Invalid ${label}`);
   }
-
-  return {
-    status: value.status,
-    generatedAt: value.generatedAt,
-    groups: value.groups.map((group) => {
-      if (
-        !isRecord(group) ||
-        typeof group.name !== 'string' ||
-        !Array.isArray(group.queues) ||
-        typeof group.waiting !== 'number' ||
-        typeof group.active !== 'number' ||
-        typeof group.delayed !== 'number' ||
-        typeof group.failed !== 'number' ||
-        typeof group.completed !== 'number' ||
-        typeof group.pressure !== 'number' ||
-        (group.status !== 'healthy' && group.status !== 'warning' && group.status !== 'critical')
-      ) {
-        throw new Error('Invalid system queue group');
-      }
-
-      return {
-        name: group.name,
-        queues: group.queues.filter((item): item is string => typeof item === 'string'),
-        waiting: group.waiting,
-        active: group.active,
-        delayed: group.delayed,
-        failed: group.failed,
-        completed: group.completed,
-        pressure: group.pressure,
-        status: group.status,
-      };
-    }),
-  };
 }
 
 function parseQueueCounters(value: unknown) {

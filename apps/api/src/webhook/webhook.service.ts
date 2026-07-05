@@ -88,6 +88,7 @@ const MANAGED_ENTITY_ACTIVITY_UPDATE_TYPES = new Set([
   'message_created',
   'message_edited',
   'message_callback',
+  'chat_title_changed',
   'bot_started',
   'bot_added',
   'user_added',

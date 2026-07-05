@@ -11,6 +11,7 @@ artifacts/miniapp-screenshots/
 artifacts/vps-review/
 artifacts/commercial-audit/
 apps/api/src/generated/prisma/
+packages/contracts/src/**/*.js
 
 # Env
 .env

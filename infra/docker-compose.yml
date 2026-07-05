@@ -477,7 +477,7 @@ services:
       args:
         ADMIN_BASE_PATH: /
         VITE_PUBLIC_BASE_PATH: /
-        VITE_ADMIN_ACCESS_CODE: ${ADMIN_ACCESS_CODE:-change-me}
+        VITE_ADMIN_ACCESS_CODE: ${ADMIN_ACCESS_CODE:?ADMIN_ACCESS_CODE is required for admin-static builds}
     restart: unless-stopped
     ports:
       - '127.0.0.1:3004:3000'

@@ -4,6 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
+# shellcheck source=infra/scripts/lib/deploy-topology.sh
+source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"
+
 COMPOSE_FILES=(-p infra -f "infra/docker-compose.yml")
 ROLLBACK_REF="${1:-}"
 PUBLIC_HEALTH_URL="${MAXIM_VPS_PUBLIC_URL:-${MAXIM_PUBLIC_HEALTH_URL:-https://major-maksimov.ru}}"
@@ -16,19 +19,7 @@ if [[ -z "$ROLLBACK_REF" ]]; then
 fi
 shift || true
 
-API_SERVICES=(
-  "api-ingress"
-  "api-admin"
-  "api-enqueue"
-  "api-moderation"
-  "api-moderation-critical"
-  "api-moderation-join"
-  "api-moderation-realtime-b"
-  "api-moderation-realtime-c"
-  "api-moderation-realtime-d"
-  "api-moderation-background"
-  "api-action"
-)
+API_SERVICES=("${MAXIM_PRODUCTION_API_SERVICES[@]}")
 
 if [[ $# -gt 0 ]]; then
   SERVICES=("$@")
@@ -47,6 +38,21 @@ contains_service() {
   done
   return 1
 }
+
+has_requested_api_service() {
+  local service
+  for service in "${SERVICES[@]}"; do
+    if maxim_topology_is_api_service "$service"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+if has_requested_api_service; then
+  maxim_topology_expand_api_services SERVICES \
+    "Runtime rollback includes an API role."
+fi
 
 wait_for_url() {
   local url="$1"
@@ -120,6 +126,5 @@ if contains_service "api-admin" "${SERVICES[@]}"; then
   wait_for_url "http://127.0.0.1:3002/api/health/ready" 180
 fi
 wait_for_url "$PUBLIC_HEALTH_URL/api/health/live" 180
-wait_for_url "$PUBLIC_HEALTH_URL/api/health/ready" 180
 
 echo "Done: runtime rollback target=$TARGET_HEAD services=${SERVICES[*]}"

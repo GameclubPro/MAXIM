@@ -304,6 +304,7 @@ export function App() {
   const previewApiRef = useRef<ReturnType<typeof createApiTransport> | null>(null);
   const [previewRuntime, setPreviewRuntime] = useState<PreviewRuntime | null>(null);
   const preparedLaunchRouteRef = useRef<string | null>(null);
+  const nativeReadyCalledRef = useRef(false);
 
   useEffect(() => {
     if (initData) {
@@ -319,7 +320,9 @@ export function App() {
     const cleanup = syncMaxNativeEnvironment({
       previewDevice: preview.enabled ? preview.device : null,
     });
-    readyMaxMiniApp();
+    if (!nativeReadyCalledRef.current && readyMaxMiniApp()) {
+      nativeReadyCalledRef.current = true;
+    }
     traceMiniappBoot(
       'bridge_ready',
       {
@@ -331,6 +334,16 @@ export function App() {
     );
     return cleanup;
   }, [preview.device, preview.enabled]);
+
+  useEffect(() => {
+    if (!initData) {
+      return;
+    }
+
+    if (!nativeReadyCalledRef.current && readyMaxMiniApp()) {
+      nativeReadyCalledRef.current = true;
+    }
+  }, [initData]);
 
   useEffect(() => installMaxNativeInteractionFeedback(), []);
 

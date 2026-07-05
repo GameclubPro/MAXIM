@@ -22,7 +22,7 @@ import {
   type BotSpeechPersona,
   type BotSpeechStyle,
 } from '@maxim/contracts/bot-speech';
-import { Suspense, lazy, useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState, type ReactNode } from 'react';
 import botSpeechRobotImage from '../../../../../bot.webp';
 import botSpeechFriendlyImage from '../../../../../frendly.webp';
 import botSpeechIronicImage from '../../../../../joker.webp';
@@ -211,10 +211,81 @@ export const LazyBroadcastButtonsSheet = lazy(
 export const LazyBroadcastPublishReviewSheet = lazy(
   () => import('../../components/broadcast-publish-review-sheet'),
 );
+export const LazyBroadcastDraftCard = lazy(() =>
+  import('../../components/broadcast-draft-card').then((module) => ({
+    default: module.BroadcastDraftCard,
+  })),
+);
+export function LazyBroadcastDraftCardSlot(props: {
+  preview: string;
+  fallback?: string;
+  facts: string[];
+  disabled?: boolean;
+  onOpen: () => void;
+  onReset: () => void;
+}) {
+  return (
+    <Suspense fallback={null}>
+      <LazyBroadcastDraftCard {...props} />
+    </Suspense>
+  );
+}
 export const LazySettingsHandoffState = lazy(() => import('../../components/handoff'));
 export const LazyManagedGiveawayCard = lazy(() =>
   import('../../components/managed-giveaway-card').then((module) => ({
     default: module.ManagedGiveawayCard,
+  })),
+);
+export const LazyMaxMarkdownPreview = lazy(() =>
+  import('../../components/max-markdown-preview').then((module) => ({
+    default: module.MaxMarkdownPreview,
+  })),
+);
+export function LazyActionConfirmMarkdownPreview({
+  value,
+  fallback,
+}: {
+  value: string;
+  fallback: ReactNode;
+}) {
+  return (
+    <Suspense fallback={fallback}>
+      <LazyMaxMarkdownPreview
+        value={value}
+        className="action-confirm-sheet__preview-markdown max-markdown-preview--clamp-2"
+        normalizeWhitespace
+        fallback={fallback}
+      />
+    </Suspense>
+  );
+}
+export const LazyVkParsingCard = lazy(() =>
+  import('../../components/vk-parsing-card').then((module) => ({ default: module.VkParsingCard })),
+);
+export const LazyManagedAutopostRuleCard = lazy(() =>
+  import('../../components/managed-autopost-rule-card').then((module) => ({
+    default: module.ManagedAutopostRuleCard,
+  })),
+);
+export const LazyManagedBroadcastHistoryCard = lazy(() =>
+  import('../../components/managed-broadcast-history-card').then((module) => ({
+    default: module.ManagedBroadcastHistoryCard,
+  })),
+);
+export const LazySettingsTimeFields = lazy(() => import('./night-mode-time-fields'));
+export const LazyRequiredSubscriptionSourcePicker = lazy(() =>
+  import('../../components/required-subscription-source-picker').then((module) => ({
+    default: module.RequiredSubscriptionSourcePicker,
+  })),
+);
+export const LazyManagedEntityAccessDiagnosticsBanner = lazy(() =>
+  import('../../components/managed-entity-access-diagnostics').then((module) => ({
+    default: module.ManagedEntityAccessDiagnosticsBanner,
+  })),
+);
+export const LazySettingsAdminCommandsSection = lazy(() =>
+  import('./settings-admin-commands-section').then((module) => ({
+    default: module.SettingsAdminCommandsSection,
   })),
 );
 

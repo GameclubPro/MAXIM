@@ -33,9 +33,9 @@ import {
 } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import type { BroadcastSchedulePlannerSelectionState } from '../components/broadcast-schedule-planner';
+import { BroadcastDraftCard } from '../components/broadcast-draft-card';
 import { BroadcastPublishBar } from '../components/broadcast-publish-bar';
 import {
-  BroadcastDraftCard,
   BroadcastHistoryFilterTabs,
   BroadcastWorkspaceChrome,
   countManagedBroadcastHistoryFilters,

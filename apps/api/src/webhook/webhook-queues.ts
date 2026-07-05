@@ -81,6 +81,7 @@ export function resolveWebhookJobPriority(
         ? WEBHOOK_JOB_PRIORITY.manualCloseMessage
         : WEBHOOK_JOB_PRIORITY.message;
     case 'message_edited':
+    case 'chat_title_changed':
       return options?.manualCloseMessage
         ? WEBHOOK_JOB_PRIORITY.manualCloseMessage
         : WEBHOOK_JOB_PRIORITY.message;
@@ -108,6 +109,7 @@ export function resolveWebhookQueueName(payload: unknown): ActiveWebhookQueueNam
         ? WEBHOOK_QUEUE_CRITICAL
         : resolveDefaultWebhookQueueName(payload);
     case 'message_edited':
+    case 'chat_title_changed':
     default:
       return resolveDefaultWebhookQueueName(payload);
   }
@@ -170,10 +172,12 @@ function readWebhookChatId(payload: unknown): string {
   const row = payload as {
     message?: {
       chatId?: unknown;
+      chat_id?: unknown;
     };
     chatId?: unknown;
+    chat_id?: unknown;
   };
-  const directCandidates = [row.message?.chatId, row.chatId];
+  const directCandidates = [row.message?.chatId, row.message?.chat_id, row.chatId, row.chat_id];
   for (const value of directCandidates) {
     if (typeof value === 'string' || typeof value === 'number') {
       const normalized = String(value).trim();
@@ -195,6 +199,7 @@ function readWebhookChatId(payload: unknown): string {
     record.user_removed,
     record.bot_removed,
     record.bot_started,
+    record.chat_title_changed,
   ];
 
   for (const candidate of nestedCandidates) {

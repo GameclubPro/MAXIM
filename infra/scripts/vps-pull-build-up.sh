@@ -7,6 +7,9 @@ SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SO
 SCRIPT_REL_PATH="${SCRIPT_PATH#$ROOT_DIR/}"
 ORIGINAL_ARGS=("$@")
 
+# shellcheck source=infra/scripts/lib/deploy-topology.sh
+source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"
+
 MAIN_PROJECT_NAME="infra"
 SCALE_PROJECT_NAME="infra-scale"
 COMPOSE_FILES=(--env-file ".env" -p "$MAIN_PROJECT_NAME" -f "infra/docker-compose.yml")
@@ -36,19 +39,7 @@ else
   )
 fi
 
-API_SERVICES=(
-  "api-ingress"
-  "api-admin"
-  "api-enqueue"
-  "api-moderation"
-  "api-moderation-critical"
-  "api-moderation-join"
-  "api-moderation-realtime-b"
-  "api-moderation-realtime-c"
-  "api-moderation-realtime-d"
-  "api-moderation-background"
-  "api-action"
-)
+API_SERVICES=("${MAXIM_PRODUCTION_API_SERVICES[@]}")
 
 contains_service() {
   local needle="$1"
@@ -416,7 +407,12 @@ done
 
 if [[ "$BUILD_API_IMAGE" -eq 0 ]] && diff_in_paths apps/api packages/contracts package.json package-lock.json tsconfig.base.json; then
   BUILD_API_IMAGE=1
-  echo "API-related changes detected. Building split API services for migrations, but API role recreation was not requested."
+  echo "API-related changes detected."
+fi
+
+if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
+  maxim_topology_expand_api_services SERVICES \
+    "Shared API image build or API-related diff detected."
 fi
 
 docker compose "${COMPOSE_FILES[@]}" up -d postgres redis
@@ -480,7 +476,6 @@ if contains_service "api-admin" "${SERVICES[@]}"; then
   wait_for_url "http://127.0.0.1:3002/api/health/ready" 180
 fi
 wait_for_url "$PUBLIC_HEALTH_URL/api/health/live" 180
-wait_for_url "$PUBLIC_HEALTH_URL/api/health/ready" 180
 
 curl -i http://127.0.0.1:3001/api/health/live
 curl -i http://127.0.0.1:3001/api/health/ready
@@ -489,7 +484,6 @@ if contains_service "api-admin" "${SERVICES[@]}"; then
   curl -i http://127.0.0.1:3002/api/health/ready
 fi
 curl -i "$PUBLIC_HEALTH_URL/api/health/live"
-curl -i "$PUBLIC_HEALTH_URL/api/health/ready"
 
 if contains_service "miniapp-static" "${SERVICES[@]}"; then
   curl -i https://maxim.play-team.ru/app/

@@ -214,6 +214,15 @@ export class MaxBotLinkService {
     return this.getResolvedBotSync(botId).token;
   }
 
+  getExecutableBotById(botId: string | null | undefined): MaxBotDefinition | null {
+    const bot = this.botRegistry.getBotById(botId);
+    return bot && canExecuteActionsForBotState(bot.state) ? bot : null;
+  }
+
+  resolveExecutableBotId(botId: string | null | undefined): string | null {
+    return this.getExecutableBotById(botId)?.id ?? null;
+  }
+
   resolveBotIdSync(botId?: string | null, chatId?: string | null): string {
     const explicitBot = this.getOperationalBotById(botId);
     if (explicitBot) {
@@ -1404,7 +1413,7 @@ export class MaxBotLinkService {
   ): string[] {
     const candidateBotIds: string[] = [];
     const pushCandidate = (botId: string | null | undefined) => {
-      const normalizedBotId = this.resolveOperationalBotId(botId);
+      const normalizedBotId = this.resolveExecutableBotId(botId);
       if (!normalizedBotId || candidateBotIds.includes(normalizedBotId)) {
         return;
       }
@@ -1461,7 +1470,7 @@ export class MaxBotLinkService {
 
     if (fallbackToPrimary !== false) {
       const pushFallbackCandidate = (botId: string | null | undefined) => {
-        const normalizedBotId = this.resolveOperationalBotId(botId);
+        const normalizedBotId = this.resolveExecutableBotId(botId);
         if (!normalizedBotId) {
           return;
         }
@@ -1495,7 +1504,7 @@ export class MaxBotLinkService {
   ): string[] {
     const candidateBotIds: string[] = [];
     const pushCandidate = (botId: string | null | undefined) => {
-      const normalizedBotId = this.resolveOperationalBotId(botId);
+      const normalizedBotId = this.resolveExecutableBotId(botId);
       if (!normalizedBotId || candidateBotIds.includes(normalizedBotId)) {
         return;
       }
@@ -1643,11 +1652,15 @@ export class MaxBotLinkService {
         ? params.chatId.trim()
         : null;
     const normalizedPrimaryBotId = this.resolveOperationalBotId(params.primaryBotId);
-    const normalizedBotId = this.resolveOperationalBotId(params.botId);
+    const normalizeRouteBotId = (botId: string | null | undefined) =>
+      this.isExecutableRoutePurpose(params.purpose)
+        ? this.resolveExecutableBotId(botId)
+        : this.resolveOperationalBotId(botId);
+    const normalizedBotId = normalizeRouteBotId(params.botId);
     const normalizedCandidateBotIds = Array.from(
       new Set(
         (params.candidateBotIds ?? [])
-          .map((botId) => this.resolveOperationalBotId(botId))
+          .map((botId) => normalizeRouteBotId(botId))
           .filter((botId): botId is string => Boolean(botId)),
       ),
     );
@@ -1656,13 +1669,14 @@ export class MaxBotLinkService {
         ? [normalizedBotId, ...normalizedCandidateBotIds]
         : normalizedCandidateBotIds;
     const botId = normalizedBotId ?? candidateBotIds[0] ?? null;
+    const routeReason = botId ? (params.reason ?? null) : null;
     const baseRoute = {
       purpose: params.purpose,
       chatId: normalizedChatId,
       primaryBotId: normalizedPrimaryBotId,
       botId,
       candidateBotIds,
-      reason: params.reason ?? null,
+      reason: routeReason,
     };
 
     if (params.purpose === 'moderation_action') {
@@ -1685,6 +1699,14 @@ export class MaxBotLinkService {
       ...baseRoute,
       purpose: params.purpose,
     };
+  }
+
+  private isExecutableRoutePurpose(purpose: MaxBotRoutePurpose): boolean {
+    return (
+      purpose === 'send_message' ||
+      purpose === 'moderation_action' ||
+      purpose === 'capability'
+    );
   }
 
   private isPrismaKnownError(error: unknown, code: string): boolean {

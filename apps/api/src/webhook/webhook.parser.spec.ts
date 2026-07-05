@@ -37,6 +37,54 @@ describe('WebhookParser', () => {
     expect(parsed.message?.chatTitle).toBe('Another Chat');
   });
 
+  it('normalizes top-level chat_title_changed updates with a synthetic message id', () => {
+    const parsed = parser.parse({
+      update_id: 'u-title-1',
+      update_type: 'chat_title_changed',
+      chat_id: '-100501',
+      title: 'Новое название',
+      actor: {
+        user_id: 'user-title-1',
+        first_name: 'Анна',
+      },
+      timestamp: '2026-07-06T09:00:00.000Z',
+    });
+
+    expect(parsed.type).toBe('chat_title_changed');
+    expect(parsed.message).toMatchObject({
+      messageId: 'chat_title_changed:u-title-1',
+      chatId: '-100501',
+      chatTitle: 'Новое название',
+      senderId: 'user-title-1',
+      senderName: 'Анна',
+      text: '',
+      createdAt: '2026-07-06T09:00:00.000Z',
+    });
+  });
+
+  it('normalizes nested chat_title_changed updates from their event envelope', () => {
+    const parsed = parser.parse({
+      update_id: 'u-title-2',
+      type: 'chat_title_changed',
+      chat_title_changed: {
+        chat_id: '-100502',
+        chat_title: 'Nested Title',
+        actor: {
+          user_id: 'user-title-2',
+        },
+      },
+      timestamp: '2026-07-06T09:01:00.000Z',
+    });
+
+    expect(parsed.message).toMatchObject({
+      messageId: 'chat_title_changed:u-title-2',
+      chatId: '-100502',
+      chatTitle: 'Nested Title',
+      text: '',
+      createdAt: '2026-07-06T09:01:00.000Z',
+    });
+  });
+
   it('extracts senderName from sender profile fields', () => {
     const parsed = parser.parse({
       update_type: 'message_created',

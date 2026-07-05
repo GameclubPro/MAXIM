@@ -29,7 +29,8 @@ Commands:
   shell                       Open an interactive shell in the remote repo
   exec <command...>           Run a command in the remote repo
   deploy [branch] [services]  Run the main production deploy script on the VPS
-  deploy-scale [branch] [...] Run the split/load-testing deploy script on the VPS
+  deploy-scale [branch] [...] Run the split/load-testing deploy script on the VPS.
+                              Requires MAXIM_ALLOW_SCALE_DEPLOY=1.
   rollback-runtime <ref> [...] Rebuild/recreate API roles from a previous git ref
   allow-ssh-current-ip [sg]  Add current public IP/32 to the Yandex Cloud SSH security group
   ensure-ssh [sg]            Allow current public IP, then run doctor
@@ -248,7 +249,16 @@ deploy_scale() {
   local branch="${1:-main}"
   shift || true
 
-  remote_exec "$(shell_quote_args ./infra/scripts/vps-pull-build-up-scale.sh "$branch" "$@")"
+  case "${MAXIM_ALLOW_SCALE_DEPLOY:-0}" in
+    1|true|TRUE|yes|YES)
+      ;;
+    *)
+      echo "deploy-scale is loadtest-only and can stop the main infra stack. Set MAXIM_ALLOW_SCALE_DEPLOY=1 to continue." >&2
+      exit 2
+      ;;
+  esac
+
+  remote_exec "MAXIM_ALLOW_SCALE_DEPLOY=1 $(shell_quote_args ./infra/scripts/vps-pull-build-up-scale.sh "$branch" "$@")"
 }
 
 rollback_runtime() {
@@ -263,8 +273,6 @@ rollback_runtime() {
 health() {
   remote_exec 'curl -fsS --max-time 15 http://127.0.0.1:3001/api/health/live && printf "\n" && curl -fsS --max-time 15 http://127.0.0.1:3001/api/health/ready && printf "\n"'
   curl -fsS --max-time 15 "$MAXIM_VPS_PUBLIC_URL/api/health/live"
-  printf '\n'
-  curl -fsS --max-time 15 "$MAXIM_VPS_PUBLIC_URL/api/health/ready"
   printf '\n'
 }
 

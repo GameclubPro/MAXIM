@@ -153,7 +153,24 @@ test('reads the user id from initData payload', () => {
   );
 });
 
-test('prefers the bridge user id when MAX exposes initDataUnsafe', () => {
+test('prefers signed initData user id over initDataUnsafe', () => {
+  assignWindow(
+    'https://maxim.play-team.ru/app/?init_data=query_id%3Dtest%26user%3D%257B%2522id%2522%253A9876%257D%26hash%3Dnew',
+    {
+      WebApp: {
+        initDataUnsafe: {
+          user: {
+            id: 4321,
+          },
+        },
+      },
+    },
+  );
+
+  assert.equal(getInitDataUserId(), '9876');
+});
+
+test('falls back to initDataUnsafe user id when signed initData has no user payload', () => {
   assignWindow('https://maxim.play-team.ru/app/?init_data=query-hash%3Dnew', {
     WebApp: {
       initDataUnsafe: {

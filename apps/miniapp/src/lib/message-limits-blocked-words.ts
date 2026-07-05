@@ -1,7 +1,7 @@
 import {
   normalizeMessageLimitsBlockedDomainCandidate,
   normalizeMessageLimitsBlockedWordCandidate,
-} from '@maxim/contracts';
+} from '@maxim/contracts/settings';
 
 export type MessageLimitsBlockedWordInputOperation = 'add' | 'remove';
 

@@ -10,7 +10,8 @@
 - Inspect Redis and queue depth.
 - Scale API replicas if needed.
 - Verify MAX API availability.
-- Use `GET /api/health/ready` and inspect `checks.queueLag`:
+- Use the VPS-local ready endpoint (`http://127.0.0.1:3001/api/health/ready`)
+  and inspect `checks.queueLag`:
   - `oldestQueuedEventId`, `oldestQueuedCreatedAt`,
   - `oldestReceivedEventId`, `oldestReceivedCreatedAt`.
 - If `effectiveLagSec` grows and `QUEUED` is stale:
@@ -21,7 +22,7 @@
   3. Apply operational policy for stale events:
      - quarantine (set `FAILED`, `next_enqueue_at=null`) for explicitly approved IDs, or
      - reprocess after root-cause fix.
-  4. Re-check `ready` and confirm `effectiveLagSec` returns to `0`.
+  4. Re-check the VPS-local `ready` endpoint and confirm `effectiveLagSec` returns to `0`.
 
 ## Domain allowlist drift (legacy path/query rows)
 

@@ -2562,6 +2562,61 @@ describe('WebhookService', () => {
     expect(scheduledJob.retryUntilMs).toBeLessThanOrEqual(Date.now() + 120_000);
   });
 
+  it('enqueues chat admin roster sync for chat_title_changed updates', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-title-changed' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+      undefined,
+      undefined,
+      maxChatAdminRosterSyncService as never,
+    );
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-title-changed-1',
+          type: 'chat_title_changed',
+          botId: 'id613002203036_bot',
+          message: {
+            messageId: 'chat_title_changed:u-title-changed-1',
+            chatId: '-100129',
+            chatTitle: 'Новое название',
+            entityType: 'chat',
+            senderId: 'user-title-1',
+            text: '',
+            createdAt: new Date('2026-07-06T09:00:00.000Z').toISOString(),
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(maxBotLinkService.bindChatToBot).toHaveBeenCalledWith({
+      chatId: '-100129',
+      title: 'Новое название',
+      entityType: 'CHAT',
+      botId: 'id613002203036_bot',
+    });
+    expect(maxChatAdminRosterSyncService.scheduleChatAdminRosterSync).toHaveBeenCalledWith({
+      chatId: '-100129',
+      botIds: ['id613002203036_bot'],
+      title: 'Новое название',
+      entityType: 'chat',
+      source: 'webhook_chat_title_changed',
+      retryUntilMs: null,
+    });
+  });
+
   it('prewarms admin roster snapshots for webhook membership churn updates', async () => {
     const prisma = {
       webhookEvent: {

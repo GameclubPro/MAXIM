@@ -1019,6 +1019,51 @@ describe('MaxBotLinkService', () => {
     });
   });
 
+  it('does not fall back to a draining primary bot for send-message routes', async () => {
+    const fixture = createServiceFixture();
+    const primaryBot = fixture.bots.find((bot) => bot.id === 'id613002203036_bot');
+    if (!primaryBot) {
+      throw new Error('primary bot fixture missing');
+    }
+    primaryBot.state = 'draining';
+    fixture.chats.set('channel-draining-send-route', {
+      id: 'channel-draining-send-route',
+      title: 'Writable channel',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push({
+      chatId: 'channel-draining-send-route',
+      botId: 'id613002203036_bot',
+      role: ChatBotMembershipRole.PRIMARY,
+      status: ChatBotMembershipStatus.ACTIVE,
+      permissionsSnapshot: {
+        checkedAt: '2026-05-26T10:00:00.000Z',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+      },
+      createdAt: new Date('2026-05-26T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-26T10:00:00.000Z'),
+      lastSeenAt: new Date('2026-05-26T10:00:00.000Z'),
+      lastWebhookAt: new Date('2026-05-26T10:00:00.000Z'),
+    });
+
+    await expect(
+      fixture.service.resolveBotRoute({
+        purpose: 'send_message',
+        chatId: 'channel-draining-send-route',
+      }),
+    ).resolves.toMatchObject({
+      purpose: 'send_message',
+      chatId: 'channel-draining-send-route',
+      primaryBotId: 'id613002203036_bot',
+      botId: null,
+      candidateBotIds: [],
+      reason: null,
+    });
+  });
+
   it('falls back to the active bot context for chat reads when no binding exists yet', async () => {
     const fixture = createServiceFixture();
     fixture.botContext.getActiveBotId.mockReturnValue('id613002203036_4_bot');

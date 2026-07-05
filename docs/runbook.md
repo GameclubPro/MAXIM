@@ -12,8 +12,10 @@
 
 ## Health checks
 
-- Live: `GET /api/health/live`
-- Ready: `GET /api/health/ready`
+- Public live: `GET /api/health/live`
+- Local-on-VPS ready: `GET http://127.0.0.1:3001/api/health/ready`
+  (and `http://127.0.0.1:3002/api/health/ready` for `api-admin`).
+  The public `/api/health/ready` endpoint is intentionally hidden.
 
 ## Local access to production
 

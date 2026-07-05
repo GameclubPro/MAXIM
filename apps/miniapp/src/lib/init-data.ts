@@ -149,7 +149,7 @@ export function readUserIdFromInitData(initData: string): string | null {
 }
 
 export function getInitDataUserId(): string | null {
-  return readUnsafeBridgeUserId() ?? readUserIdFromInitData(getInitData());
+  return readUserIdFromInitData(getInitData()) ?? readUnsafeBridgeUserId();
 }
 
 const DEFAULT_INIT_DATA_POLL_INTERVAL_MS = 150;

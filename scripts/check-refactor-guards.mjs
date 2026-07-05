@@ -492,6 +492,17 @@ for (const violation of findMiniappDirectCssLayerViolations(root)) {
   );
 }
 
+for (const violation of findContractsArchitectureViolations(root)) {
+  failed = true;
+  console.error(
+    [
+      violation.message,
+      'Keep packages/contracts package exports, root TS paths, and API Jest mappers exact and aligned.',
+      'Generated contract JS must live under dist/, not tracked src/.',
+    ].join('\n'),
+  );
+}
+
 for (const guard of miniappCssMetricGuards) {
   const actual = guard.count(root);
   if (actual <= guard.max) {
@@ -661,6 +672,72 @@ function findMiniappDirectCssLayerViolations(directory) {
         importer: toRepoPath(filePath),
         cssPath: toRepoPath(cssPath),
         reason: layerViolationReason,
+      });
+    }
+  }
+
+  return violations;
+}
+
+function findContractsArchitectureViolations(directory) {
+  const violations = [];
+  const contractsSrcRoot = resolve(directory, 'packages/contracts/src');
+  const contractsPackagePath = resolve(directory, 'packages/contracts/package.json');
+  const tsconfigPath = resolve(directory, 'tsconfig.base.json');
+  const apiJestConfigPath = resolve(directory, 'apps/api/jest.config.cjs');
+
+  for (const filePath of walkFilesByExtension(contractsSrcRoot, new Set(['.js']))) {
+    violations.push({
+      message: `${toRepoPath(filePath)} is generated JavaScript under contracts src and must not be tracked.`,
+    });
+  }
+
+  const contractsPackage = JSON.parse(readFileSync(contractsPackagePath, 'utf8'));
+  const exportKeys = Object.keys(contractsPackage.exports ?? {});
+  const expectedPathKeys = new Set(
+    exportKeys.map((key) => (key === '.' ? '@maxim/contracts' : `@maxim/contracts/${key.slice(2)}`)),
+  );
+  const tsconfig = JSON.parse(readFileSync(tsconfigPath, 'utf8'));
+  const tsPaths = tsconfig.compilerOptions?.paths ?? {};
+  const tsPathKeys = new Set(Object.keys(tsPaths));
+
+  if (tsPathKeys.has('@maxim/contracts/*')) {
+    violations.push({
+      message:
+        'tsconfig.base.json uses @maxim/contracts/* wildcard mapping, which allows importing non-exported contract internals.',
+    });
+  }
+
+  for (const key of expectedPathKeys) {
+    if (!tsPathKeys.has(key)) {
+      violations.push({
+        message: `tsconfig.base.json is missing explicit path mapping for ${key}.`,
+      });
+    }
+  }
+
+  for (const key of tsPathKeys) {
+    if (key.startsWith('@maxim/contracts') && !expectedPathKeys.has(key)) {
+      violations.push({
+        message: `tsconfig.base.json maps ${key}, but packages/contracts does not export it.`,
+      });
+    }
+  }
+
+  const apiJestConfig = readFileSync(apiJestConfigPath, 'utf8');
+  if (apiJestConfig.includes("^@maxim/contracts/(.*)$")) {
+    violations.push({
+      message:
+        'apps/api/jest.config.cjs uses @maxim/contracts/(.*) wildcard mapper, which allows non-exported contract internals.',
+    });
+  }
+
+  for (const key of expectedPathKeys) {
+    const mapperPattern =
+      key === '@maxim/contracts' ? "'^@maxim/contracts$'" : `'^${escapeRegExp(key)}$'`;
+    if (!apiJestConfig.includes(mapperPattern)) {
+      violations.push({
+        message: `apps/api/jest.config.cjs is missing explicit mapper for ${key}.`,
       });
     }
   }
@@ -922,4 +999,8 @@ function readExtension(fileName) {
 
 function toRepoPath(filePath) {
   return relative(root, filePath).split('\\').join('/');
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }

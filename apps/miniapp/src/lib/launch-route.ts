@@ -291,9 +291,9 @@ function parseMiniappRouteStartParam(value: string): string | null {
 
 export function resolveLaunchRoute(initData: string): string | null {
   const startParam =
-    readStartParamFromLocation() ||
+    readStartParamFromInitData(initData) ||
     readStartParamFromBridge() ||
-    readStartParamFromInitData(initData);
+    readStartParamFromLocation();
 
   const routeLaunch = parseMiniappRouteStartParam(startParam);
   if (routeLaunch) {

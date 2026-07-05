@@ -2,7 +2,7 @@ import { HttpService } from '@nestjs/axios';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { Queue } from 'bullmq';
+import { UnrecoverableError, type Queue } from 'bullmq';
 import FormData from 'form-data';
 import { randomUUID } from 'node:crypto';
 import { firstValueFrom } from 'rxjs';
@@ -12,6 +12,8 @@ import { ActionHealthService, type ActionHealthLane } from '../system/action-hea
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import { MaxBotContextService } from './max-bot-context.service';
 import { MaxBotRegistryService, type MaxBotDefinition } from './max-bot-registry.service';
+import type { MaxBotLifecycleState } from './max-bot-config.util';
+import { canExecuteActionsForBotState } from './max-bot-state.util';
 import { normalizeMaxInlineKeyboardButtons } from './max-inline-keyboard-layout';
 
 export type MaxBotChat = {
@@ -1213,6 +1215,7 @@ export class MaxClientService implements OnModuleDestroy {
         botId: bot.id,
         ...(sourceTag ? { sourceTag } : {}),
       },
+      { requireExecutableBot: false },
     );
 
     return {
@@ -1240,6 +1243,7 @@ export class MaxClientService implements OnModuleDestroy {
         botId: options.botId,
         ...(options.sourceTag ? { sourceTag: options.sourceTag } : {}),
       },
+      { requireExecutableBot: false },
     );
   }
 
@@ -1277,7 +1281,9 @@ export class MaxClientService implements OnModuleDestroy {
     mimeType: string,
     requestOptions: MaxApiRequestOptions = {},
   ): Promise<Record<string, unknown>> {
-    const bot = this.resolveBot(requestOptions.botId);
+    const bot = this.resolveExecutableBot(requestOptions.botId, {
+      explicit: Boolean(requestOptions.botId?.trim()),
+    });
     return this.botContext.runWithBot(bot.id, async () => {
       const uploadMeta = await this.executeMutation(
         null,
@@ -1418,7 +1424,7 @@ export class MaxClientService implements OnModuleDestroy {
       ...job,
       attempt: Number.isInteger(job.attempt) && job.attempt > 0 ? job.attempt : 1,
     };
-    const bot = this.resolveBot(action.botId);
+    const bot = this.resolveExecutableBot(action.botId, { explicit: Boolean(action.botId?.trim()) });
     const mutationOptions = this.buildQueuedActionMutationOptions(action, bot.id);
 
     await this.botContext.runWithBot(bot.id, async () => {
@@ -1446,22 +1452,9 @@ export class MaxClientService implements OnModuleDestroy {
             throw new Error('text is required for SEND_MESSAGE');
           }
           const attachments = this.buildMessageAttachments(action.options);
-          const sendResponse = await this.executeMutation(
-            action.chatId,
-            async () => {
-              const messageLink = this.buildMessageLinkData(action.options?.messageLink);
-              return this.request<Record<string, unknown>>('post', '/messages', {
-                params: {
-                  chat_id: action.chatId,
-                },
-                data: {
-                  text: action.text,
-                  ...(action.options?.textFormat ? { format: action.options.textFormat } : {}),
-                  ...(messageLink ? { link: messageLink } : {}),
-                  ...(attachments.length > 0 ? { attachments } : {}),
-                },
-              });
-            },
+          const sendResponse = await this.executeQueuedSendMessage(
+            action,
+            attachments,
             mutationOptions,
           );
           const autoDeleteDelayMs = this.normalizeDelayMs(action.autoDeleteDelayMs);
@@ -3432,7 +3425,10 @@ export class MaxClientService implements OnModuleDestroy {
       );
     }
 
-    const bot = this.resolveBot(options?.botId ?? payload.botId);
+    const explicitBotId = options?.botId ?? payload.botId;
+    const bot = this.resolveExecutableBot(explicitBotId, {
+      explicit: Boolean(explicitBotId?.trim()),
+    });
     const autoDeleteDelayMs = this.normalizeDelayMs(options?.autoDeleteDelayMs);
     const delayMs = this.normalizeDelayMs(options?.delayMs);
     const immediate = options?.immediate === true;
@@ -4409,8 +4405,15 @@ export class MaxClientService implements OnModuleDestroy {
     chatId: string | null,
     operation: () => Promise<T>,
     options: MaxApiRequestOptions | MaxApiTrafficClass = 'critical',
+    guard: { requireExecutableBot?: boolean } = {},
   ): Promise<T> {
     const normalizedOptions = this.normalizeReadRequestOptions(options);
+    const executableBot =
+      guard.requireExecutableBot === false
+        ? null
+        : this.resolveExecutableBot(normalizedOptions.botId, {
+            explicit: Boolean(normalizedOptions.botId),
+          });
     return this.executeReadRequest(operation, {
       chatId,
       trafficClass: normalizedOptions.trafficClass ?? 'critical',
@@ -4418,7 +4421,7 @@ export class MaxClientService implements OnModuleDestroy {
       sourceTag: normalizedOptions.sourceTag,
       ignoreFailureMetricStatuses: normalizedOptions.ignoreFailureMetricStatuses,
       timeoutMs: normalizedOptions.timeoutMs,
-      botId: normalizedOptions.botId,
+      botId: executableBot?.id ?? normalizedOptions.botId,
     });
   }
 
@@ -4490,6 +4493,40 @@ export class MaxClientService implements OnModuleDestroy {
         action.ignoreFailureMetricStatuses,
       ),
     };
+  }
+
+  private async executeQueuedSendMessage(
+    action: MaxActionJob,
+    attachments: Record<string, unknown>[],
+    mutationOptions: MaxApiRequestOptions,
+  ): Promise<Record<string, unknown>> {
+    try {
+      return await this.executeMutation(
+        action.chatId,
+        async () => {
+          const messageLink = this.buildMessageLinkData(action.options?.messageLink);
+          return this.request<Record<string, unknown>>('post', '/messages', {
+            params: {
+              chat_id: action.chatId,
+            },
+            data: {
+              text: action.text,
+              ...(action.options?.textFormat ? { format: action.options.textFormat } : {}),
+              ...(messageLink ? { link: messageLink } : {}),
+              ...(attachments.length > 0 ? { attachments } : {}),
+            },
+          });
+        },
+        mutationOptions,
+      );
+    } catch (error: unknown) {
+      if (this.isAmbiguousSendMessageTransportError(error)) {
+        throw new UnrecoverableError(
+          `Ambiguous MAX SEND_MESSAGE transport failure for chat ${action.chatId}: ${this.extractErrorMessage(error) || 'no HTTP status'}`,
+        );
+      }
+      throw error;
+    }
   }
 
   private normalizeFailureMetricStatuses(
@@ -4987,6 +5024,52 @@ export class MaxClientService implements OnModuleDestroy {
       (explicitBotId ? this.botRegistry.getBotById(explicitBotId) : null) ??
       this.botRegistry.getBotById(this.botContext.getActiveBotId()) ??
       this.botRegistry.getDefaultBot()
+    );
+  }
+
+  private resolveExecutableBot(
+    botId?: string | null,
+    options: { explicit?: boolean } = {},
+  ): MaxBotDefinition {
+    const explicitBotId = this.readTrimmedString(botId);
+    if (options.explicit === true && explicitBotId && !this.botRegistry.getBotById(explicitBotId)) {
+      throw new UnrecoverableError(`MAX bot ${explicitBotId} is not configured for execution`);
+    }
+
+    const bot = this.resolveBot(botId);
+    if (this.canExecuteActionsForBot(bot)) {
+      return bot;
+    }
+
+    throw new UnrecoverableError(`MAX bot ${bot.id} is not executable in state ${bot.state}`);
+  }
+
+  private canExecuteActionsForBot(bot: MaxBotDefinition): boolean {
+    const state = (bot as MaxBotDefinition & { state?: MaxBotLifecycleState }).state ?? 'active';
+    return canExecuteActionsForBotState(state);
+  }
+
+  private isAmbiguousSendMessageTransportError(error: unknown): boolean {
+    if (this.extractStatusCode(error) !== null) {
+      return false;
+    }
+
+    const code = this.extractErrorCode(error);
+    if (
+      code === 'ECONNABORTED' ||
+      code === 'ETIMEDOUT' ||
+      code === 'ECONNRESET' ||
+      code === 'EPIPE'
+    ) {
+      return true;
+    }
+
+    const message = this.extractErrorMessage(error);
+    return (
+      message.includes('timeout') ||
+      message.includes('timed out') ||
+      message.includes('socket hang up') ||
+      message.includes('network error')
     );
   }
 

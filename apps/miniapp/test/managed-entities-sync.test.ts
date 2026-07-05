@@ -6,6 +6,7 @@ import {
   isManagedEntitiesUserVisibleComplete,
   mergeManagedEntitiesInitialItems,
   mergeManagedEntitiesRefreshItems,
+  readManagedEntitiesLocalCacheUserScope,
   readManagedEntitiesLocalCacheUserScopeFromInitData,
   resolveManagedEntitiesSettledPhase,
   resolveManagedEntitiesRefreshRequestOptions,
@@ -15,6 +16,35 @@ import {
   shouldStartManagedEntitiesBackgroundRefresh,
   shouldSettleManagedEntitiesFreshReload,
 } from '../src/lib/use-managed-entities-sync';
+
+type MutableWindow = Window &
+  typeof globalThis & {
+    WebApp?: {
+      initData?: string;
+      initDataUnsafe?: {
+        user?: {
+          id?: number | string;
+        };
+      };
+    };
+  };
+
+function assignWindow(url: string, overrides: Partial<MutableWindow> = {}): void {
+  const windowLike = {
+    location: new URL(url),
+    ...overrides,
+  } as MutableWindow;
+
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: windowLike,
+  });
+}
+
+test.afterEach(() => {
+  delete (globalThis as { window?: Window }).window;
+});
 
 function createItem(id: string, title: string, overrides: Partial<ChatSummary> = {}): ChatSummary {
   return {
@@ -423,6 +453,37 @@ test('extracts local cache user scope from init data user payload', () => {
     ),
     'u:123456',
   );
+});
+
+test('local cache user scope ignores unsafe bridge user candidates', () => {
+  assignWindow('https://maxim.play-team.ru/app/', {
+    WebApp: {
+      initDataUnsafe: {
+        user: {
+          id: 123456,
+        },
+      },
+    },
+  });
+
+  assert.equal(readManagedEntitiesLocalCacheUserScope(), null);
+});
+
+test('local cache user scope uses signed initData before unsafe bridge candidates', () => {
+  assignWindow(
+    'https://maxim.play-team.ru/app/?init_data=query_id%3Dtest%26user%3D%257B%2522id%2522%253A654321%257D%26hash%3Dtest',
+    {
+      WebApp: {
+        initDataUnsafe: {
+          user: {
+            id: 123456,
+          },
+        },
+      },
+    },
+  );
+
+  assert.equal(readManagedEntitiesLocalCacheUserScope(), 'u:654321');
 });
 
 test('preserves the visible list when cache scope switches but the new scope has no data yet', () => {

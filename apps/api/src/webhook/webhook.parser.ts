@@ -18,7 +18,7 @@ export class WebhookParser {
     const chatId = this.extractChatId(message, payload);
     const senderId = this.extractSenderId(message, payload);
     const senderName = this.extractSenderName(message, payload);
-    const chatTitle = this.extractChatTitle(message);
+    const chatTitle = this.extractChatTitle(message, payload);
     const messageText = this.extractMessageText(message);
     const createdAt = this.extractCreatedAt(message, payload);
     const membershipPayload = this.extractMembershipPayload(payload, type);
@@ -83,7 +83,8 @@ export class WebhookParser {
       normalized === 'bot_added' ||
       normalized === 'user_removed' ||
       normalized === 'bot_removed' ||
-      normalized === 'bot_started'
+      normalized === 'bot_started' ||
+      normalized === 'chat_title_changed'
     );
   }
 
@@ -563,18 +564,17 @@ export class WebhookParser {
     message: Record<string, unknown> | undefined,
     payload: Record<string, unknown>,
   ): string {
-    if (!message) {
-      return '';
-    }
-
-    const chat = this.asRecord(message.chat);
-    const recipient = this.asRecord(message.recipient);
-    const conversation = this.asRecord(message.conversation);
+    const chat = this.asRecord(message?.chat);
+    const recipient = this.asRecord(message?.recipient);
+    const conversation = this.asRecord(message?.conversation);
     const payloadChat = this.asRecord(payload.chat);
+    const payloadData = this.asRecord(payload.data);
+    const payloadEvent = this.asRecord(payload.event);
+    const titleChanged = this.asRecord(payload.chat_title_changed);
 
     const candidates = [
-      message.chatId,
-      message.chat_id,
+      message?.chatId,
+      message?.chat_id,
       chat?.chatId,
       chat?.chat_id,
       chat?.id,
@@ -589,6 +589,12 @@ export class WebhookParser {
       payloadChat?.chat_id,
       payloadChat?.chatId,
       payloadChat?.id,
+      payloadData?.chat_id,
+      payloadData?.chatId,
+      payloadEvent?.chat_id,
+      payloadEvent?.chatId,
+      titleChanged?.chat_id,
+      titleChanged?.chatId,
     ];
 
     for (const value of candidates) {
@@ -747,18 +753,23 @@ export class WebhookParser {
     return new Date().toISOString();
   }
 
-  private extractChatTitle(message: Record<string, unknown> | undefined): string | undefined {
-    if (!message) {
-      return undefined;
-    }
-
-    const recipient = this.asRecord(message.recipient);
-    const chat = this.asRecord(message.chat);
+  private extractChatTitle(
+    message: Record<string, unknown> | undefined,
+    payload: Record<string, unknown>,
+  ): string | undefined {
+    const recipient = this.asRecord(message?.recipient);
+    const chat = this.asRecord(message?.chat);
+    const payloadChat = this.asRecord(payload.chat);
+    const payloadData = this.asRecord(payload.data);
+    const payloadEvent = this.asRecord(payload.event);
+    const titleChanged = this.asRecord(payload.chat_title_changed);
     const candidates = [
-      message.chatTitle,
-      message.chat_title,
-      message.chatName,
-      message.chat_name,
+      message?.chatTitle,
+      message?.chat_title,
+      message?.chatName,
+      message?.chat_name,
+      message?.title,
+      message?.name,
       chat?.title,
       chat?.name,
       recipient?.title,
@@ -766,6 +777,24 @@ export class WebhookParser {
       recipient?.chatTitle,
       recipient?.name,
       recipient?.display_name,
+      payload.chat_title,
+      payload.chatTitle,
+      payload.title,
+      payload.name,
+      payloadChat?.title,
+      payloadChat?.name,
+      payloadData?.chat_title,
+      payloadData?.chatTitle,
+      payloadData?.title,
+      payloadData?.name,
+      payloadEvent?.chat_title,
+      payloadEvent?.chatTitle,
+      payloadEvent?.title,
+      payloadEvent?.name,
+      titleChanged?.chat_title,
+      titleChanged?.chatTitle,
+      titleChanged?.title,
+      titleChanged?.name,
     ];
 
     for (const value of candidates) {
@@ -1266,6 +1295,13 @@ export class WebhookParser {
     }
 
     if (typeof row.text === 'string' || typeof row.caption === 'string') {
+      score += 1;
+    }
+    if (
+      typeof row.title === 'string' ||
+      typeof row.chat_title === 'string' ||
+      typeof row.chatTitle === 'string'
+    ) {
       score += 1;
     }
     if (this.asRecord(row.body) || this.asRecord(row.content) || Array.isArray(row.attachments)) {

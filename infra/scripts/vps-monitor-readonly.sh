@@ -80,10 +80,10 @@ REMOTE
   ./infra/scripts/vps-connect.sh exec "$remote_command"
 }
 
-summarize_public_ready_health() {
+summarize_local_ready_health() {
   local ready_json
 
-  ready_json="$(curl -fsS --max-time 15 "$PUBLIC_URL/api/health/ready")"
+  ready_json="$(./infra/scripts/vps-connect.sh exec 'curl -fsS --max-time 15 http://127.0.0.1:3001/api/health/ready')"
   READY_JSON="$ready_json" node <<'NODE'
 const payload = process.env.READY_JSON ?? '';
 const ready = JSON.parse(payload);
@@ -150,7 +150,7 @@ sample_once() {
 
   echo "===== sample $sample_index $(date -Is) ====="
   run_step health ./infra/scripts/vps-connect.sh health
-  run_step semantic-health summarize_public_ready_health
+  run_step semantic-health summarize_local_ready_health
   run_step ps ./infra/scripts/vps-connect.sh ps
   run_step restart-counts ./infra/scripts/vps-connect.sh exec \
     'ids=$(docker ps -q --filter label=com.docker.compose.project=infra); docker inspect --format "{{.Name}}\t{{.RestartCount}}\t{{.State.Status}}\t{{.State.StartedAt}}" $ids'

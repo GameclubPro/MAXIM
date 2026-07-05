@@ -169,7 +169,7 @@ function normalizeBaseUrl(value) {
     .replace(/\/+$/u, '');
 }
 
-function redactWebhookUrl(rawUrl) {
+function redactSensitiveUrl(rawUrl) {
   try {
     const url = new URL(rawUrl);
     const segments = url.pathname.split('/').filter(Boolean);
@@ -182,10 +182,19 @@ function redactWebhookUrl(rawUrl) {
       segments[4] = '[redacted]';
       url.pathname = `/${segments.join('/')}`;
     }
-    return url.toString();
+    return `${url.origin}${url.pathname}${url.search ? '?[redacted]' : ''}${url.hash ? '#[redacted]' : ''}`;
   } catch {
     return '[redacted-webhook-url]';
   }
+}
+
+function redactLogValue(value) {
+  return String(value)
+    .replace(/https?:\/\/[^\s"'<>]+/gu, (url) => redactSensitiveUrl(url))
+    .replace(
+      /(\/api\/webhook\/max\/[^/\s"'<>?#]+\/)[^/\s"'<>?#]+/gu,
+      '$1[redacted]',
+    );
 }
 
 function percentile(values, ratio) {
@@ -276,7 +285,7 @@ async function runFixedRateWorkers({
           }
         } catch (error) {
           const latencyMs = Date.now() - startedAt;
-          const message = error instanceof Error ? error.message : String(error);
+          const message = redactLogValue(error instanceof Error ? error.message : String(error));
           stats.total += 1;
           stats.latenciesMs.push(latencyMs);
           stats.errorCounts.set(message, (stats.errorCounts.get(message) ?? 0) + 1);
@@ -289,7 +298,7 @@ async function runFixedRateWorkers({
 
   return {
     label,
-    url,
+    url: redactLogValue(url),
     requestedRps: rps,
     concurrency,
     ...summarizeRun(stats),
@@ -338,12 +347,12 @@ async function main() {
 
   const runConfig = {
     target: options.target,
-    webhookUrl: redactWebhookUrl(target),
+    webhookUrl: redactLogValue(target),
     durationSec: options.durationSec,
     rps: options.rps,
     concurrency: options.concurrency,
     fixture: basename(options.fixturePath),
-    probeUrl,
+    probeUrl: probeUrl ? redactLogValue(probeUrl) : '',
     probeRps: options.probeRps,
     probeConcurrency: options.probeConcurrency,
     allowPublic: options.allowPublic,
@@ -415,6 +424,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+  process.stderr.write(`${redactLogValue(error instanceof Error ? error.message : String(error))}\n`);
   process.exit(1);
 });

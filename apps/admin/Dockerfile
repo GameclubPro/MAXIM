@@ -3,7 +3,7 @@ WORKDIR /app
 
 ARG ADMIN_BASE_PATH=/
 ARG VITE_PUBLIC_BASE_PATH=/
-ARG VITE_ADMIN_ACCESS_CODE=change-me
+ARG VITE_ADMIN_ACCESS_CODE
 
 ENV ADMIN_BASE_PATH=${ADMIN_BASE_PATH}
 ENV VITE_PUBLIC_BASE_PATH=${VITE_PUBLIC_BASE_PATH}
@@ -20,6 +20,7 @@ COPY tsconfig.base.json ./
 COPY packages/contracts packages/contracts
 COPY apps/admin apps/admin
 
+RUN test -n "$VITE_ADMIN_ACCESS_CODE" && test "$VITE_ADMIN_ACCESS_CODE" != "change-me"
 RUN npm run build --workspace @maxim/admin
 
 FROM nginx:1.27-alpine AS runtime

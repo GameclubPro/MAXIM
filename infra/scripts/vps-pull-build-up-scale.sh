@@ -7,6 +7,9 @@ SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SO
 SCRIPT_REL_PATH="${SCRIPT_PATH#$ROOT_DIR/}"
 ORIGINAL_ARGS=("$@")
 
+# shellcheck source=infra/scripts/lib/deploy-topology.sh
+source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"
+
 SCALE_PROJECT_NAME="infra-scale"
 MAIN_PROJECT_NAME="infra"
 COMPOSE_FILES=(-p "$SCALE_PROJECT_NAME" -f "infra/docker-compose.scale.yml")
@@ -35,19 +38,7 @@ else
   )
 fi
 
-API_SERVICES=(
-  "api-ingress"
-  "api-admin"
-  "api-enqueue"
-  "api-moderation"
-  "api-moderation-critical"
-  "api-moderation-join"
-  "api-moderation-realtime-b"
-  "api-moderation-realtime-c"
-  "api-moderation-realtime-d"
-  "api-moderation-background"
-  "api-action"
-)
+API_SERVICES=("${MAXIM_PRODUCTION_API_SERVICES[@]}")
 
 contains_service() {
   local needle="$1"
@@ -96,6 +87,21 @@ WARNING: miniapp-static serves legacy https://maxim.play-team.ru/app/.
 Routine production mini app deploys should target miniapp-major-static for https://major-maksimov.ru/app/.
 Continue only if you intentionally need the legacy support static container.
 EOF
+}
+
+require_scale_deploy_confirmation() {
+  case "${MAXIM_ALLOW_SCALE_DEPLOY:-0}" in
+    1|true|TRUE|yes|YES)
+      return 0
+      ;;
+  esac
+
+  cat >&2 <<'EOF'
+Refusing to run infra-scale deploy without explicit confirmation.
+This script is loadtest-only, uses the infra-scale compose project, and can stop the main infra stack to free ports.
+Set MAXIM_ALLOW_SCALE_DEPLOY=1 only when you intentionally want the split/load-testing stack.
+EOF
+  exit 2
 }
 
 has_pulled_changes() {
@@ -346,6 +352,7 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
+require_scale_deploy_confirmation
 sync_branch
 reexec_if_current_script_changed
 ensure_compose_env
@@ -367,7 +374,12 @@ done
 
 if [[ "$BUILD_API_IMAGE" -eq 0 ]] && diff_in_paths apps/api packages/contracts package.json package-lock.json tsconfig.base.json; then
   BUILD_API_IMAGE=1
-  echo "API-related changes detected. Building split API services for migrations, but API role recreation was not requested."
+  echo "API-related changes detected."
+fi
+
+if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
+  maxim_topology_expand_api_services SERVICES \
+    "Shared API image build or API-related diff detected."
 fi
 
 docker compose "${COMPOSE_FILES[@]}" up -d postgres redis
@@ -420,7 +432,6 @@ if contains_service "api-admin" "${SERVICES[@]}"; then
   wait_for_url "http://127.0.0.1:3002/api/health/ready" 180
 fi
 wait_for_url "$PUBLIC_HEALTH_URL/api/health/live" 180
-wait_for_url "$PUBLIC_HEALTH_URL/api/health/ready" 180
 
 curl -i http://127.0.0.1:3001/api/health/live
 curl -i http://127.0.0.1:3001/api/health/ready
@@ -429,7 +440,6 @@ if contains_service "api-admin" "${SERVICES[@]}"; then
   curl -i http://127.0.0.1:3002/api/health/ready
 fi
 curl -i "$PUBLIC_HEALTH_URL/api/health/live"
-curl -i "$PUBLIC_HEALTH_URL/api/health/ready"
 
 if contains_service "miniapp-static" "${SERVICES[@]}"; then
   curl -i https://maxim.play-team.ru/app/

@@ -4,19 +4,82 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
+DRY_RUN=0
+if [[ "${1:-}" == "--dry-run" ]]; then
+  DRY_RUN=1
+  shift
+fi
+
 HOST="${1:-maxim-vps}"
 LOCAL_CONF="infra/nginx/maxim.play-team.ru.conf"
 REMOTE_TMP="/tmp/maxim.play-team.ru.conf"
 REMOTE_CONF="/etc/nginx/sites-available/maxim.play-team.ru.conf"
+REMOTE_BACKUP_DIR="/etc/nginx/backups"
 
 if [[ ! -f "$LOCAL_CONF" ]]; then
   echo "Missing local nginx config: $LOCAL_CONF"
   exit 1
 fi
 
+CURRENT_CONF="$(mktemp)"
+trap 'rm -f "$CURRENT_CONF"' EXIT
+
+if ssh "$HOST" "sudo test -f '${REMOTE_CONF}'"; then
+  ssh "$HOST" "sudo cat '${REMOTE_CONF}'" >"$CURRENT_CONF"
+  echo "Diff against ${HOST}:${REMOTE_CONF}:"
+  diff -u "$CURRENT_CONF" "$LOCAL_CONF" || true
+else
+  echo "Remote config does not exist yet: ${HOST}:${REMOTE_CONF}"
+fi
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "Dry run only. No remote files changed."
+  exit 0
+fi
+
+case "${MAXIM_APPLY_NGINX_CONFIRM:-0}" in
+  1|true|TRUE|yes|YES)
+    ;;
+  *)
+    echo "Refusing to apply nginx config without MAXIM_APPLY_NGINX_CONFIRM=1. Run with --dry-run first and review the diff." >&2
+    exit 2
+    ;;
+esac
+
 scp "$LOCAL_CONF" "${HOST}:${REMOTE_TMP}"
 
-ssh "$HOST" "sudo install -m 644 '${REMOTE_TMP}' '${REMOTE_CONF}' && sudo nginx -t && sudo systemctl reload nginx && rm -f '${REMOTE_TMP}'"
+ssh "$HOST" "REMOTE_TMP='${REMOTE_TMP}' REMOTE_CONF='${REMOTE_CONF}' REMOTE_BACKUP_DIR='${REMOTE_BACKUP_DIR}' bash -s" <<'REMOTE'
+set -euo pipefail
+
+backup=""
+sudo mkdir -p "${REMOTE_BACKUP_DIR}"
+if [[ -f "${REMOTE_CONF}" ]]; then
+  backup="${REMOTE_BACKUP_DIR}/$(basename "${REMOTE_CONF}").bak-$(date +%Y%m%d%H%M%S)"
+  sudo cp "${REMOTE_CONF}" "${backup}"
+fi
+
+restore_backup() {
+  if [[ -n "${backup}" && -f "${backup}" ]]; then
+    sudo cp "${backup}" "${REMOTE_CONF}"
+    sudo nginx -t >/dev/null 2>&1 && sudo systemctl reload nginx || true
+  fi
+}
+
+sudo install -m 644 "${REMOTE_TMP}" "${REMOTE_CONF}"
+if ! sudo nginx -t; then
+  restore_backup
+  rm -f "${REMOTE_TMP}"
+  exit 1
+fi
+
+if ! sudo systemctl reload nginx; then
+  restore_backup
+  rm -f "${REMOTE_TMP}"
+  exit 1
+fi
+
+rm -f "${REMOTE_TMP}"
+REMOTE
 
 echo "Verifying public route split headers..."
 curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/api/health/live | grep -i '^x-maxim-ingress: webhook'

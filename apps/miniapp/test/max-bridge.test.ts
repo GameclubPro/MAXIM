@@ -105,7 +105,7 @@ test('readyMaxMiniApp ignores browser bridge stubs without init data', () => {
     assignedUrls,
   );
 
-  readyMaxMiniApp();
+  assert.equal(readyMaxMiniApp(), false);
 
   assert.equal(readyCount, 0);
 });
@@ -124,7 +124,7 @@ test('readyMaxMiniApp keeps native ready when bridge init data exists', () => {
     assignedUrls,
   );
 
-  readyMaxMiniApp();
+  assert.equal(readyMaxMiniApp(), true);
 
   assert.equal(readyCount, 1);
 });
@@ -143,7 +143,7 @@ test('readyMaxMiniApp skips forced visual mode without the visual bridge shim', 
   );
   globalThis.window.__MAXIM_FORCE_NATIVE_VISUAL_MODE__ = true;
 
-  readyMaxMiniApp();
+  assert.equal(readyMaxMiniApp(), false);
 
   assert.equal(readyCount, 0);
 });
@@ -161,7 +161,7 @@ test('readyMaxMiniApp allows forced visual mode when the visual bridge shim is i
   globalThis.window.__MAXIM_FORCE_NATIVE_VISUAL_MODE__ = true;
   globalThis.window.__MAXIM_VISUAL_BRIDGE__ = bridge;
 
-  readyMaxMiniApp();
+  assert.equal(readyMaxMiniApp(), true);
 
   assert.equal(readyCount, 1);
 });

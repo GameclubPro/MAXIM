@@ -199,28 +199,9 @@ function buildManagedEntitiesLocalCacheKey(entityType: ManagedEntityKind, scope:
   return `me:v${MANAGED_ENTITIES_LOCAL_CACHE_VERSION}:${scope}:${entityType}`;
 }
 
-function readManagedEntitiesLocalCacheUserScope(): string | null {
+export function readManagedEntitiesLocalCacheUserScope(): string | null {
   if (typeof window === 'undefined') {
     return null;
-  }
-
-  const bridgeCandidates = [
-    window.MAX?.WebApp?.initDataUnsafe,
-    window.MAX?.WebApp?.init_data_unsafe,
-    window.WebApp?.initDataUnsafe,
-    window.WebApp?.init_data_unsafe,
-  ];
-
-  for (const candidate of bridgeCandidates) {
-    const userId =
-      (candidate as { user?: { id?: unknown } } | undefined)?.user?.id ??
-      (candidate as { user_id?: unknown } | undefined)?.user_id;
-    if (typeof userId === 'string' || typeof userId === 'number') {
-      const normalized = String(userId).trim();
-      if (normalized) {
-        return `u:${normalized}`;
-      }
-    }
   }
 
   const initDataUserScope = readManagedEntitiesLocalCacheUserScopeFromInitData(getInitData());

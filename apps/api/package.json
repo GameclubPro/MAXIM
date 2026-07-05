@@ -19,7 +19,7 @@
     "start:action": "APP_ROLE=action node dist/main.js",
     "typecheck": "npm run build --workspace @maxim/contracts && npm run prisma:generate && tsc -p tsconfig.json --noEmit",
     "test": "npm run build --workspace @maxim/contracts && npm run prisma:generate && jest --config jest.config.cjs --runInBand --detectOpenHandles",
-    "test:watch": "jest --config jest.config.cjs --watch",
+    "test:watch": "npm run build --workspace @maxim/contracts && npm run prisma:generate && jest --config jest.config.cjs --watch",
     "prisma:generate": "prisma generate --config prisma.config.ts",
     "prisma:migrate:dev": "prisma migrate dev --config prisma.config.ts",
     "prisma:migrate:deploy": "prisma migrate deploy --config prisma.config.ts",

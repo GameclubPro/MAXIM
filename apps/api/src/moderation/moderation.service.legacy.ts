@@ -892,6 +892,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    if (this.isChatTitleChangedUpdate(update)) {
+      return;
+    }
+
     const serviceAuthored = this.isServiceAuthoredMessage(update);
     const serviceMembersEvent = this.extractServiceMemberUserIds(update).length > 0;
 
@@ -10201,6 +10205,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private isBotStartedUpdate(update: MaxUpdate): boolean {
     return this.readLowerString(update.type) === 'bot_started';
+  }
+
+  private isChatTitleChangedUpdate(update: MaxUpdate): boolean {
+    return this.readLowerString(update.type) === 'chat_title_changed';
   }
 
   private isMembershipLeaveUpdate(update: MaxUpdate): boolean {

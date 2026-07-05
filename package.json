@@ -11,7 +11,7 @@
   ],
   "scripts": {
     "build": "npm run build --workspace @maxim/contracts && npm run build --workspace @maxim/api && npm run build --workspace @maxim/miniapp && npm run build --workspace @maxim/admin",
-    "build:docker": "docker build -f apps/api/Dockerfile -t maxim-api-ci . && docker build -f apps/miniapp/Dockerfile -t maxim-miniapp-ci .",
+    "build:docker": "docker build -f apps/api/Dockerfile -t maxim-api-ci . && docker build -f apps/miniapp/Dockerfile -t maxim-miniapp-ci . && docker build --build-arg VITE_ADMIN_ACCESS_CODE=ci-admin-access-code -f apps/admin/Dockerfile -t maxim-admin-ci .",
     "check": "npm run lint && npm run check:refactor-guards && npm run typecheck && npm run test && npm run build",
     "check:api": "npm run typecheck:api && npm run test:api",
     "check:miniapp": "npm run check:miniapp-css && npm run typecheck:miniapp && npm run test:miniapp",

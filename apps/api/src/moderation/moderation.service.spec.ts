@@ -5353,6 +5353,76 @@ describe('ModerationService', () => {
     );
   });
 
+  it('treats chat_title_changed updates as lifecycle no-ops for moderation', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn(),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const systemModeService = {
+      getEffectiveSnapshot: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      systemModeService as never,
+    );
+
+    await service.handleUpdate({
+      updateId: 'upd-title-1',
+      type: 'chat_title_changed',
+      message: {
+        messageId: 'chat_title_changed:upd-title-1',
+        chatId: 'chat-1',
+        chatTitle: 'Новый заголовок',
+        senderId: 'actor-1',
+        senderName: 'Админ',
+        text: '',
+        createdAt: new Date().toISOString(),
+      },
+      raw: {},
+    });
+
+    expect(systemModeService.getEffectiveSnapshot).not.toHaveBeenCalled();
+    expect(prisma.chat.upsert).not.toHaveBeenCalled();
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(maxClient.notifyModerators).not.toHaveBeenCalled();
+  });
+
   it('skips moderation flow for user_removed update', async () => {
     const prisma = {
       chat: {

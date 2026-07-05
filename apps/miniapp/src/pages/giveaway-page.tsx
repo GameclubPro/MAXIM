@@ -3,7 +3,7 @@ import type {
   ManagedGiveawayParticipantState,
   ManagedGiveawayPublic,
   ManagedGiveawayPublicWinner,
-} from '@maxim/contracts';
+} from '@maxim/contracts/giveaway';
 import '../styles/giveaway-page.css';
 import type { CSSProperties } from 'react';
 import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';

@@ -1,6 +1,7 @@
 import { MAX_API_SOURCE_TAGS, MaxClientService } from './max-client.service';
 import { from, of, throwError } from 'rxjs';
 import Redis from 'ioredis';
+import { UnrecoverableError } from 'bullmq';
 
 jest.mock('ioredis', () => {
   const store = new Map<string, { value: string; expiresAtMs: number | null }>();
@@ -305,6 +306,159 @@ describe('MaxClientService inline keyboard guardrails', () => {
     });
 
     expect(httpService.request).not.toHaveBeenCalled();
+  });
+
+  it('refuses stale queued actions with an explicit non-executable bot id', async () => {
+    const httpService = { request: jest.fn() };
+    const service = createService(httpService);
+    const botRegistry = (service as any).botRegistry;
+    const defaultBot = botRegistry.getDefaultBot();
+    botRegistry.getBotById.mockImplementation((botId?: string | null) => {
+      if (!botId || botId === defaultBot.id) {
+        return defaultBot;
+      }
+      if (botId === 'draining-bot') {
+        return {
+          id: 'draining-bot',
+          token: 'draining-token',
+          state: 'draining',
+          webhookSecretPath: 'draining-secret',
+          webhookHeaderSecret: 'draining-header-secret',
+          webhookUrl: 'https://major-maksimov.ru/api/webhook/max/draining-bot/draining-secret',
+          maskedWebhookUrl: 'https://major-maksimov.ru/api/webhook/max/draining-bot/***',
+        };
+      }
+      return null;
+    });
+
+    await expect(
+      service.executeActionJob({
+        actionType: 'DELETE_MESSAGE',
+        chatId: 'chat-1',
+        messageId: 'mid-1',
+        botId: 'draining-bot',
+        attempt: 1,
+        idempotencyKey: 'delete-draining',
+        createdAt: new Date().toISOString(),
+      }),
+    ).rejects.toBeInstanceOf(UnrecoverableError);
+    expect(httpService.request).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('refuses enqueue-time actions with explicit non-executable or unknown bot ids', async () => {
+    const httpService = { request: jest.fn() };
+    const actionQueue = {
+      add: jest.fn(),
+      getJob: jest.fn(),
+    };
+    const service = createService(httpService, {}, actionQueue);
+    const botRegistry = (service as any).botRegistry;
+    const defaultBot = botRegistry.getDefaultBot();
+    botRegistry.getBotById.mockImplementation((botId?: string | null) => {
+      if (!botId || botId === defaultBot.id) {
+        return defaultBot;
+      }
+      if (botId === 'draining-bot') {
+        return {
+          ...defaultBot,
+          id: 'draining-bot',
+          token: 'draining-token',
+          state: 'draining',
+        };
+      }
+      return null;
+    });
+
+    await expect(
+      service.sendMessage('chat-1', 'hello', undefined, { botId: 'draining-bot' }),
+    ).rejects.toBeInstanceOf(UnrecoverableError);
+    await expect(
+      service.deleteMessage('chat-1', 'mid-1', { botId: 'removed-bot' }),
+    ).rejects.toBeInstanceOf(UnrecoverableError);
+
+    expect(actionQueue.add).not.toHaveBeenCalled();
+    expect(httpService.request).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('refuses stale queued actions with an explicit unknown bot id', async () => {
+    const httpService = { request: jest.fn() };
+    const service = createService(httpService);
+
+    await expect(
+      service.executeActionJob({
+        actionType: 'DELETE_MESSAGE',
+        chatId: 'chat-1',
+        messageId: 'mid-1',
+        botId: 'removed-bot',
+        attempt: 1,
+        idempotencyKey: 'delete-removed-bot',
+        createdAt: new Date().toISOString(),
+      }),
+    ).rejects.toBeInstanceOf(UnrecoverableError);
+    expect(httpService.request).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('marks ambiguous queued SEND_MESSAGE transport timeouts as unrecoverable', async () => {
+    const timeoutError = Object.assign(new Error('timeout of 1500ms exceeded'), {
+      code: 'ECONNABORTED',
+    });
+    const httpService = {
+      request: jest.fn(() => throwError(() => timeoutError)),
+    };
+    const service = createService(httpService);
+
+    await expect(
+      service.executeActionJob({
+        actionType: 'SEND_MESSAGE',
+        chatId: 'chat-1',
+        text: 'hello',
+        attempt: 1,
+        idempotencyKey: 'send-timeout',
+        createdAt: new Date().toISOString(),
+      }),
+    ).rejects.toBeInstanceOf(UnrecoverableError);
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api2.max.ru/messages',
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('keeps queued SEND_MESSAGE HTTP failures retryable', async () => {
+    const statusError = {
+      response: {
+        status: 500,
+        data: {
+          message: 'server failure',
+        },
+      },
+    };
+    const httpService = {
+      request: jest.fn(() => throwError(() => statusError)),
+    };
+    const service = createService(httpService);
+
+    await expect(
+      service.executeActionJob({
+        actionType: 'SEND_MESSAGE',
+        chatId: 'chat-1',
+        text: 'hello',
+        attempt: 1,
+        idempotencyKey: 'send-http-500',
+        createdAt: new Date().toISOString(),
+      }),
+    ).rejects.toBe(statusError);
+
+    await service.onModuleDestroy();
   });
 
   it('trims inline keyboard buttons to 210 and logs warning', async () => {
@@ -1817,6 +1971,42 @@ describe('MaxClientService inline keyboard guardrails', () => {
 
     expect(actionHealthService.recordFailure).not.toHaveBeenCalled();
     expect(actionHealthService.recordSuccess).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('refuses direct send mutations with explicit non-executable or unknown bot ids', async () => {
+    const httpService = { request: jest.fn() };
+    const service = createService(httpService);
+    const botRegistry = (service as any).botRegistry;
+    const defaultBot = botRegistry.getDefaultBot();
+    botRegistry.getBotById.mockImplementation((botId?: string | null) => {
+      if (!botId || botId === defaultBot.id) {
+        return defaultBot;
+      }
+      if (botId === 'draining-bot') {
+        return {
+          ...defaultBot,
+          id: 'draining-bot',
+          token: 'draining-token',
+          state: 'draining',
+        };
+      }
+      return null;
+    });
+
+    await expect(
+      service.sendMessageImmediateWithId('chat-1', 'hello', undefined, {
+        botId: 'draining-bot',
+      }),
+    ).rejects.toBeInstanceOf(UnrecoverableError);
+    await expect(
+      service.sendMessageImmediateWithId('chat-1', 'hello', undefined, {
+        botId: 'removed-bot',
+      }),
+    ).rejects.toBeInstanceOf(UnrecoverableError);
+
+    expect(httpService.request).not.toHaveBeenCalled();
 
     await service.onModuleDestroy();
   });

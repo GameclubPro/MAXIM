@@ -69,6 +69,47 @@ test('resolves chat activity route from startapp payload', () => {
   assert.equal(resolveLaunchRoute(''), '/chat/-68085832859751/events');
 });
 
+test('prefers signed initData start_param over bridge and URL fallbacks', () => {
+  assignWindow(
+    `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(
+      encodeRouteStartParam('/chat/url/events'),
+    )}`,
+    {
+      WebApp: {
+        initDataUnsafe: {
+          start_param: encodeRouteStartParam('/chat/bridge/events'),
+        },
+      },
+    },
+  );
+
+  assert.equal(
+    resolveLaunchRoute(
+      `query_id=test&start_param=${encodeURIComponent(
+        encodeRouteStartParam('/chat/signed/events'),
+      )}&hash=ok`,
+    ),
+    '/chat/signed/events',
+  );
+});
+
+test('prefers bridge start_param over URL fallback when signed initData has no launcher', () => {
+  assignWindow(
+    `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(
+      encodeRouteStartParam('/chat/url/events'),
+    )}`,
+    {
+      WebApp: {
+        initDataUnsafe: {
+          start_param: encodeRouteStartParam('/chat/bridge/events'),
+        },
+      },
+    },
+  );
+
+  assert.equal(resolveLaunchRoute('query_id=test&hash=ok'), '/chat/bridge/events');
+});
+
 test('resolves channel stats route from startapp payload', () => {
   assignWindow(
     `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(

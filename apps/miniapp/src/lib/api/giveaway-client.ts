@@ -5,7 +5,7 @@ import {
   type ClaimManagedGiveawayResponse,
   type ManagedGiveawayParticipantState,
   type ManagedGiveawayPublic,
-} from '@maxim/contracts';
+} from '@maxim/contracts/giveaway';
 import type { ApiTransport } from './transport';
 
 export async function getPublicGiveaway(

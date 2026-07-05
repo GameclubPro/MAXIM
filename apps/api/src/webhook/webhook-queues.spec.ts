@@ -42,6 +42,26 @@ describe('webhook-queues', () => {
     );
   });
 
+  it('routes chat_title_changed updates through the chat default shard', () => {
+    const chatId = '-69202557471484';
+
+    expect(resolveWebhookQueueName({ type: 'chat_title_changed', chat_id: chatId })).toBe(
+      resolveDefaultWebhookQueueNameForChatId(chatId),
+    );
+    expect(
+      resolveWebhookQueueName({
+        type: 'chat_title_changed',
+        chat_title_changed: {
+          chat_id: chatId,
+          title: 'Новое название',
+        },
+      }),
+    ).toBe(resolveDefaultWebhookQueueNameForChatId(chatId));
+    expect(resolveWebhookJobPriority({ type: 'chat_title_changed', chat_id: chatId })).toBe(
+      WEBHOOK_JOB_PRIORITY.message,
+    );
+  });
+
   it('spreads real numeric MAX chat ids across multiple default shards', () => {
     const hotChatIds = [
       '-69202557471483',
