@@ -447,10 +447,12 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
           }
         }
 
+        const nextMembershipCoverageFrom =
+          state?.membershipCoverageFrom ?? (ensuredCoverageFrom ? now : null);
         const nextStateCreate = {
           chatId,
           viewsCoverageFrom: state?.viewsCoverageFrom ?? lookbackFrom,
-          membershipCoverageFrom: state?.membershipCoverageFrom ?? ensuredCoverageFrom,
+          membershipCoverageFrom: nextMembershipCoverageFrom,
           lastAudienceSyncAt: result.audienceSynced ? now : (state?.lastAudienceSyncAt ?? null),
           lastViewsSyncAt: result.viewsSynced ? now : (state?.lastViewsSyncAt ?? null),
           lastOpportunisticSyncAt: options?.markOpportunistic
@@ -463,7 +465,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
           create: nextStateCreate,
           update: {
             viewsCoverageFrom: state?.viewsCoverageFrom ?? lookbackFrom,
-            membershipCoverageFrom: state?.membershipCoverageFrom ?? ensuredCoverageFrom,
+            membershipCoverageFrom: nextMembershipCoverageFrom,
             ...(result.audienceSynced ? { lastAudienceSyncAt: now } : {}),
             ...(result.viewsSynced ? { lastViewsSyncAt: now } : {}),
             ...(options?.markOpportunistic ? { lastOpportunisticSyncAt: now } : {}),

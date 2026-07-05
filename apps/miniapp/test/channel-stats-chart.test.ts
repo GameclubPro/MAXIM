@@ -7,6 +7,7 @@ import {
   resolveAverageViewsFromSeries,
   resolveChannelStatsAverageViews,
   resolveInitialAudienceChartIndex,
+  shouldPreferMembershipFlowForAudienceChart,
   shouldRenderChannelStatsPointMarkers,
 } from '../src/lib/channel-stats-chart';
 
@@ -60,6 +61,31 @@ test('audience chart prefers membership flow over stale carried participant snap
     ),
     3_721,
   );
+});
+
+test('audience chart does not reconstruct a zero history from an unbaselined import burst', () => {
+  const points = [
+    { participantsCount: null, joined: 0, left: 0, cumulativeNet: 0 },
+    { participantsCount: null, joined: 0, left: 0, cumulativeNet: 0 },
+    { participantsCount: null, joined: 250, left: 0, cumulativeNet: 250 },
+    { participantsCount: 250, joined: 0, left: 0, cumulativeNet: 250 },
+  ];
+
+  assert.equal(shouldPreferMembershipFlowForAudienceChart(points, 250, true), false);
+  assert.deepEqual(
+    points.map((point) => resolveAudienceChartDisplayValue(point, 250, 250, false)),
+    [250, 250, 250, 250],
+  );
+});
+
+test('audience chart can use membership flow after an earlier audience baseline', () => {
+  const points = [
+    { participantsCount: 100, joined: 0, left: 0, cumulativeNet: 0 },
+    { participantsCount: 100, joined: 12, left: 2, cumulativeNet: 10 },
+    { participantsCount: 100, joined: 4, left: 1, cumulativeNet: 13 },
+  ];
+
+  assert.equal(shouldPreferMembershipFlowForAudienceChart(points, 113, true), true);
 });
 
 test('falls back to known audience totals when per-bucket activity is absent', () => {

@@ -298,6 +298,63 @@ describe('ChannelStatsCollectorService', () => {
     await service.onModuleDestroy();
   });
 
+  it('does not reuse cached webhook coverage as a new channel membership baseline', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatSnapshot: jest.fn((chatId: string) =>
+        Promise.resolve({
+          chatId,
+          title: `Канал ${chatId}`,
+          participantsCount: 250,
+          status: 'active',
+          isPublic: true,
+          link: null,
+          lastEventAt: '2026-03-07T11:55:00.000Z',
+          entityType: 'channel',
+        }),
+      ),
+      listMessageSnapshots: jest.fn().mockResolvedValue([]),
+      ensureWebhookSubscription: jest.fn().mockResolvedValue({
+        url: 'https://major-maksimov.ru/api/webhook/max/test/secret',
+        updateTypes: ['message_created', 'user_added', 'user_removed'],
+      }),
+    };
+
+    const service = new ChannelStatsCollectorService(
+      prisma as never,
+      maxClient as never,
+      createConfigMock() as never,
+    );
+
+    await service.syncChannel('channel-1', { reason: 'manual' });
+    jest.setSystemTime(new Date('2026-03-07T12:10:00.000Z'));
+    await service.syncChannel('channel-2', { reason: 'manual' });
+
+    expect(maxClient.ensureWebhookSubscription).toHaveBeenCalledTimes(1);
+    expect(prisma.channelStatsSyncState.upsert).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        create: expect.objectContaining({
+          chatId: 'channel-1',
+          membershipCoverageFrom: new Date('2026-03-07T12:00:00.000Z'),
+        }),
+      }),
+    );
+    expect(prisma.channelStatsSyncState.upsert).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        create: expect.objectContaining({
+          chatId: 'channel-2',
+          membershipCoverageFrom: new Date('2026-03-07T12:10:00.000Z'),
+        }),
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('skips opportunistic sync when snapshots are still fresh', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
 

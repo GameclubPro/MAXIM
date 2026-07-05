@@ -92,6 +92,28 @@ export function resolveAudienceChartDisplayValue(
   return point.participantsCount ?? currentParticipants ?? point.cumulativeNet;
 }
 
+export function shouldPreferMembershipFlowForAudienceChart(
+  points: readonly AudienceChartActivePoint[],
+  currentParticipants: number | null,
+  churnAvailable: boolean,
+): boolean {
+  if (!churnAvailable || currentParticipants === null) {
+    return false;
+  }
+
+  const firstFlowIndex = points.findIndex((point) => point.joined > 0 || point.left > 0);
+  if (firstFlowIndex <= 0) {
+    return false;
+  }
+
+  return points
+    .slice(0, firstFlowIndex)
+    .some(
+      (point) =>
+        typeof point.participantsCount === 'number' && Number.isFinite(point.participantsCount),
+    );
+}
+
 export function resolveAverageViewsFromSeries(
   points: readonly ViewsSeriesPoint[],
 ): number | null {

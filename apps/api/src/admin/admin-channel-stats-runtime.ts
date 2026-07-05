@@ -1305,7 +1305,15 @@ export class AdminChannelStatsRuntime {
       });
     }
 
-    if (dailyMembershipFlows && currentParticipants !== null) {
+    if (
+      dailyMembershipFlows &&
+      currentParticipants !== null &&
+      this.canUseMembershipFlowsForDailySubscriberBackfill(
+        firstDay,
+        audienceSnapshots,
+        dailyMembershipFlows,
+      )
+    ) {
       let runningSubscribers = currentParticipants;
       for (let index = 15; index >= 0; index -= 1) {
         const flow = dailyMembershipFlows[index];
@@ -1327,6 +1335,27 @@ export class AdminChannelStatsRuntime {
     }
 
     return days;
+  }
+
+  private canUseMembershipFlowsForDailySubscriberBackfill(
+    firstDay: Date,
+    audienceSnapshots: Array<{ capturedAt: Date; participantsCount: number | null }>,
+    flows: Array<{ joined: number | null; left: number | null; net: number | null }>,
+  ): boolean {
+    const firstFlowIndex = flows.findIndex(
+      (flow) => flow.net !== null && ((flow.joined ?? 0) > 0 || (flow.left ?? 0) > 0),
+    );
+    if (firstFlowIndex < 0) {
+      return false;
+    }
+
+    const firstFlowDayStartMs = firstDay.getTime() + firstFlowIndex * TWENTY_FOUR_HOURS_MS;
+    return audienceSnapshots.some(
+      (snapshot) =>
+        typeof snapshot.participantsCount === 'number' &&
+        Number.isFinite(snapshot.participantsCount) &&
+        snapshot.capturedAt.getTime() < firstFlowDayStartMs,
+    );
   }
 
   buildChannelStatsDailyMembershipFlows(

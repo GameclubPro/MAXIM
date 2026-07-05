@@ -150,6 +150,9 @@
 - Keep postgres `shm_size` in compose comfortably above `shared_buffers` (currently `512m` for
   `shared_buffers=128MB`); reducing it can surface PostgreSQL `53100` shared-memory errors under
   admin/suggestion queries.
+- Keep production API Prisma pool caps aligned with `apps/api/src/config/production-compose-prisma-pool.spec.ts`;
+  for `api-action` pressure incidents, prefer lowering concurrency/batch sizes and adding governor
+  checks before raising Postgres connection caps.
 - The `vps-pull-build-up*.sh` scripts are designed to run on the VPS host. From local machine, invoke them through SSH.
 - If multi-service API `docker compose build` stalls after the TypeScript build while buildx/bake
   resolves provenance, build the shared API image directly on the VPS with

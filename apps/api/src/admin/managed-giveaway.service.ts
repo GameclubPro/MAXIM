@@ -53,6 +53,7 @@ import {
   renderSupportedMarkdownAsHtml,
 } from '../common/max-markdown.util';
 import {
+  MAX_API_SOURCE_TAGS,
   MaxClientService,
   type MaxMessageButton,
   type MaxSendMessageOptions,
@@ -76,6 +77,10 @@ import {
 import { normalizeMembershipAccessSnapshot } from '../max/max-bot-access-policy.util';
 import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  BackgroundRuntimeGovernorService,
+  type BackgroundRuntimeGovernorDecision,
+} from '../system/background-runtime-governor.service';
 import { AdminService } from './admin.service';
 import { MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS } from './admin.service.support';
 
@@ -95,6 +100,7 @@ const GIVEAWAY_RUNNER_LOOKUP_BACKOFF_MAX_MS = 60 * 60_000;
 const GIVEAWAY_RUNNER_LOOKUP_DEFER_AFTER_FAILURE_COUNT = 4;
 const GIVEAWAY_RUNNER_LOOKUP_DEFER_MS = 30 * 60_000;
 const GIVEAWAY_RUNNER_LOOKUP_TERMINAL_DEFER_MS = 2 * 60 * 60_000;
+const GIVEAWAY_RUNNER_THROTTLE_LOG_INTERVAL_MS = 60_000;
 const MANAGED_GIVEAWAY_INCLUDE = {
   prizes: {
     orderBy: { position: 'asc' },
@@ -164,6 +170,7 @@ export class ManagedGiveawayService {
   >();
   private readonly giveawayRunnerBackoffUntilMs = new Map<string, number>();
   private readonly giveawayRunnerDeferredUntilMs = new Map<string, number>();
+  private giveawayRunnerThrottleLogAtMs = 0;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -174,6 +181,7 @@ export class ManagedGiveawayService {
     @Optional() private readonly membershipLookupService?: MaxMembershipLookupService,
     @Optional() private readonly maxBotLinkService?: MaxBotLinkService,
     @Optional() private readonly managedEntityAccessLossService?: ManagedEntityAccessLossService,
+    @Optional() private readonly backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService,
   ) {
     this.appBaseUrl = this.normalizeAppBaseUrl(configService.get<string>('APP_BASE_URL'));
     this.explicitBotContactId = this.normalizeBotContactId(
@@ -868,6 +876,11 @@ export class ManagedGiveawayService {
   }
 
   async processDueManagedGiveaways(reason: 'startup' | 'scheduled'): Promise<void> {
+    const decision = await this.resolveManagedGiveawayBackgroundDecision(reason);
+    if (decision.action === 'pause') {
+      return;
+    }
+
     const now = new Date();
     await this.expireDueGiveawayClaims(now);
     const staleLockBefore = new Date(now.getTime() - GIVEAWAY_LOCK_STALE_MS);
@@ -902,7 +915,10 @@ export class ManagedGiveawayService {
         ],
       },
       orderBy: [{ endsAt: 'asc' }, { startsAt: 'asc' }],
-      take: GIVEAWAY_DUE_FETCH_BATCH_SIZE,
+      take:
+        decision.action === 'slow'
+          ? Math.max(1, Math.floor(GIVEAWAY_DUE_FETCH_BATCH_SIZE / 2))
+          : GIVEAWAY_DUE_FETCH_BATCH_SIZE,
       select: { id: true, sourceChatId: true },
     });
     const accessBlockedSourceChatIds = await this.findAccessBlockedGiveawaySourceChatIds(
@@ -910,8 +926,12 @@ export class ManagedGiveawayService {
     );
 
     let processed = 0;
+    const processingLimit =
+      decision.action === 'slow'
+        ? Math.max(1, Math.floor(GIVEAWAY_DUE_BATCH_SIZE / 2))
+        : GIVEAWAY_DUE_BATCH_SIZE;
     for (const row of rows) {
-      if (processed >= GIVEAWAY_DUE_BATCH_SIZE) {
+      if (processed >= processingLimit) {
         break;
       }
       const sourceChatId = this.normalizeNonEmptyString(row.sourceChatId);
@@ -927,6 +947,60 @@ export class ManagedGiveawayService {
       await this.processDueManagedGiveaway(row.id, reason, staleLockBefore);
       processed += 1;
     }
+  }
+
+  private async resolveManagedGiveawayBackgroundDecision(
+    reason: 'startup' | 'scheduled',
+  ): Promise<BackgroundRuntimeGovernorDecision> {
+    if (!this.backgroundRuntimeGovernorService) {
+      return {
+        action: 'run',
+        retryAfterMs: 0,
+        reason: 'background headroom available',
+      };
+    }
+
+    try {
+      const decision = await this.backgroundRuntimeGovernorService.decide({
+        component: 'managed-giveaway',
+        sourceTag: MAX_API_SOURCE_TAGS.GIVEAWAY_DRAW_BACKGROUND,
+      });
+      if (decision.action !== 'run') {
+        this.logManagedGiveawayBackgroundThrottleDecision(reason, decision);
+      }
+      return decision;
+    } catch (error: unknown) {
+      this.logger.warn(
+        { reason, err: error instanceof Error ? error.message : String(error) },
+        'Managed giveaway runner governor check failed',
+      );
+      return {
+        action: 'run',
+        retryAfterMs: 0,
+        reason: 'background governor unavailable',
+      };
+    }
+  }
+
+  private logManagedGiveawayBackgroundThrottleDecision(
+    reason: 'startup' | 'scheduled',
+    decision: BackgroundRuntimeGovernorDecision,
+  ): void {
+    const now = Date.now();
+    if (now - this.giveawayRunnerThrottleLogAtMs < GIVEAWAY_RUNNER_THROTTLE_LOG_INTERVAL_MS) {
+      return;
+    }
+
+    this.giveawayRunnerThrottleLogAtMs = now;
+    this.logger.log(
+      {
+        reason,
+        action: decision.action,
+        details: decision.reason,
+        retryAfterMs: decision.retryAfterMs,
+      },
+      'Throttled managed giveaway background runner because the runtime governor detected pressure',
+    );
   }
 
   private async findAccessBlockedGiveawaySourceChatIds(

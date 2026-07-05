@@ -55,6 +55,7 @@ import {
   resolveAudienceChartDisplayValue,
   resolveChannelStatsAverageViews,
   resolveInitialAudienceChartIndex,
+  shouldPreferMembershipFlowForAudienceChart,
   shouldRenderChannelStatsPointMarkers,
 } from '../lib/channel-stats-chart';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
@@ -799,10 +800,11 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
     };
   });
   const totalNet = basePoints.at(-1)?.cumulativeNet ?? 0;
-  const preferMembershipFlow =
-    stats.meta.churnAvailable &&
-    currentParticipants !== null &&
-    membershipSeries.some((point) => point.joined > 0 || (point.left ?? 0) > 0);
+  const preferMembershipFlow = shouldPreferMembershipFlowForAudienceChart(
+    basePoints,
+    currentParticipants,
+    stats.meta.churnAvailable,
+  );
   const rawPoints = basePoints.map((point, index, points) => {
     const displayValue = resolveAudienceChartDisplayValue(
       point,
