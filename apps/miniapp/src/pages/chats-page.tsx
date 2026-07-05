@@ -240,7 +240,9 @@ function buildEntitySettingsRoute(entityType: ManagedTab, entityId: string): str
 }
 
 function buildEntityActivityRoute(entityType: ManagedTab, entityId: string): string {
-  return entityType === 'channel' ? `/channel/${entityId}/stats` : `/chat/${entityId}/events`;
+  return entityType === 'channel'
+    ? `/channel/${entityId}/stats?section=events`
+    : `/chat/${entityId}/events?section=activity`;
 }
 
 function buildEntityRouteState(entityType: ManagedTab, entity: ManagedHomeEntity) {
@@ -844,10 +846,10 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     preloadEventsPage();
     void queryClient
       .prefetchQuery({
-        queryKey: logsDashboardQueryKey(chatId, DEFAULT_DASHBOARD_RANGE, false, true),
+        queryKey: logsDashboardQueryKey(chatId, DEFAULT_DASHBOARD_RANGE, true, false),
         queryFn: async ({ signal }) => {
-          const { getChatModerationDashboard } = await import('../lib/api/events-client');
-          return getChatModerationDashboard(api, chatId, DEFAULT_DASHBOARD_RANGE, { signal });
+          const { getChatActivityDashboard } = await import('../lib/api/events-client');
+          return getChatActivityDashboard(api, chatId, DEFAULT_DASHBOARD_RANGE, { signal });
         },
       })
       .catch(() => undefined);

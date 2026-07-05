@@ -286,8 +286,8 @@ export function Shell() {
     : '';
   const activityRoute = resolvedChatId
     ? resolvedEntityType === 'channel'
-      ? `/channel/${resolvedChatId}/stats`
-      : `/chat/${resolvedChatId}/events`
+      ? `/channel/${resolvedChatId}/stats?section=events`
+      : `/chat/${resolvedChatId}/events?section=activity`
     : '';
   const activityNavLabel = 'Статистика';
   const isChatsListRoute = isChatsRoute && selectedRootEntityType === 'chat';
