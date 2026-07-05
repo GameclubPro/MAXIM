@@ -20788,6 +20788,57 @@ describe('ModerationService', () => {
     );
   });
 
+  it('pauses channel auto-post scans when the runtime governor is unavailable', async () => {
+    const prisma = {
+      channelSettings: {
+        findMany: jest.fn(),
+      },
+    };
+    const backgroundRuntimeGovernorService = {
+      decide: jest.fn().mockRejectedValue(new Error('timeout exceeded when trying to connect')),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      backgroundRuntimeGovernorService as never,
+    );
+    const loggerSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => {});
+    const beforeScanMs = Date.now();
+
+    await expect((service as any).processChannelAutoPostButtons()).resolves.toBeUndefined();
+
+    expect(backgroundRuntimeGovernorService.decide).toHaveBeenCalledWith({
+      component: 'moderation',
+      sourceTag: 'channel_auto_post',
+      allowQueueLagSlowPathBelowSec: 5,
+    });
+    expect(prisma.channelSettings.findMany).not.toHaveBeenCalled();
+    expect((service as any).channelAutoPostBackoffUntilMs).toBeGreaterThanOrEqual(
+      beforeScanMs + 180_000,
+    );
+    expect(loggerSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        task: 'channel-auto-post-buttons',
+        retryAfterMs: 180_000,
+        err: 'timeout exceeded when trying to connect',
+      }),
+      'Paused moderation background work because the runtime governor is unavailable',
+    );
+  });
+
   it('loads full channel auto-post contexts only for the selected scan batch', async () => {
     const candidateChannels = [
       { chatId: 'channel-1' },

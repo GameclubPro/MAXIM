@@ -255,6 +255,7 @@ import {
   DEFAULT_CHANNEL_AUTO_POST_STARTUP_JITTER_MS,
   DEFAULT_CHANNEL_AUTO_POST_MAX_NEW_MESSAGES_PER_SCAN,
   DEFAULT_CHANNEL_AUTO_POST_REPAIR_SWEEP_MS,
+  CHANNEL_AUTO_POST_GOVERNOR_UNAVAILABLE_BACKOFF_MS,
   CHANNEL_AUTO_POST_SLOW_BATCH_DIVISOR,
   CHANNEL_AUTO_POST_SLOW_INTER_CHANNEL_DELAY_MS,
   CHANNEL_AUTO_POST_SLOW_MAX_NEW_MESSAGES_PER_SCAN,
@@ -13210,16 +13211,38 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     };
 
     if (this.backgroundRuntimeGovernorService) {
-      const decision = await this.backgroundRuntimeGovernorService.decide({
-        component: 'moderation',
-        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
-        allowQueueLagSlowPathBelowSec: this.backgroundWorkSoftPauseQueueLagSec,
-      });
+      const now = Date.now();
+      const decision = await this.backgroundRuntimeGovernorService
+        .decide({
+          component: 'moderation',
+          sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+          allowQueueLagSlowPathBelowSec: this.backgroundWorkSoftPauseQueueLagSec,
+        })
+        .catch((error: unknown) => {
+          if (now - this.channelAutoPostPausedLogAtMs >= BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS) {
+            this.channelAutoPostPausedLogAtMs = now;
+            this.logger.warn(
+              {
+                task: 'channel-auto-post-buttons',
+                retryAfterMs: CHANNEL_AUTO_POST_GOVERNOR_UNAVAILABLE_BACKOFF_MS,
+                err: error instanceof Error ? error.message : String(error),
+              },
+              'Paused moderation background work because the runtime governor is unavailable',
+            );
+          }
+          this.channelAutoPostBackoffUntilMs = Math.max(
+            this.channelAutoPostBackoffUntilMs,
+            now + CHANNEL_AUTO_POST_GOVERNOR_UNAVAILABLE_BACKOFF_MS,
+          );
+          return null;
+        });
+      if (!decision) {
+        return null;
+      }
       if (decision.action === 'run') {
         return basePlan;
       }
 
-      const now = Date.now();
       if (decision.action === 'slow') {
         if (now - this.channelAutoPostPausedLogAtMs >= BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS) {
           this.channelAutoPostPausedLogAtMs = now;
