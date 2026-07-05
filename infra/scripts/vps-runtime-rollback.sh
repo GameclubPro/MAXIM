@@ -7,7 +7,7 @@ cd "$ROOT_DIR"
 # shellcheck source=infra/scripts/lib/deploy-topology.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"
 
-COMPOSE_FILES=(-p infra -f "infra/docker-compose.yml")
+COMPOSE_FILES=(--env-file ".env" -p infra -f "infra/docker-compose.yml")
 ROLLBACK_REF="${1:-}"
 PUBLIC_HEALTH_URL="${MAXIM_VPS_PUBLIC_URL:-${MAXIM_PUBLIC_HEALTH_URL:-https://major-maksimov.ru}}"
 PUBLIC_HEALTH_URL="${PUBLIC_HEALTH_URL%/}"

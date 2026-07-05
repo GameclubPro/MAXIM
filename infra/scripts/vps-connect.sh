@@ -372,7 +372,7 @@ case "$command" in
     "$ROOT_DIR/infra/scripts/vps-monitor-readonly.sh" "$@"
     ;;
   ps)
-    remote_exec "$(shell_quote_args docker compose -p infra -f infra/docker-compose.yml ps "$@")"
+    remote_exec "$(shell_quote_args docker compose --env-file .env -p infra -f infra/docker-compose.yml ps "$@")"
     ;;
   logs)
     if [[ $# -lt 1 ]]; then
@@ -381,7 +381,7 @@ case "$command" in
     fi
     service="$1"
     tail="${2:-200}"
-    remote_exec "$(shell_quote_args docker compose -p infra -f infra/docker-compose.yml logs --tail "$tail" "$service")"
+    remote_exec "$(shell_quote_args docker compose --env-file .env -p infra -f infra/docker-compose.yml logs --tail "$tail" "$service")"
     ;;
   yc-shell)
     yc_shell

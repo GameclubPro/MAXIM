@@ -13,7 +13,7 @@ source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"
 SCALE_PROJECT_NAME="infra-scale"
 MAIN_PROJECT_NAME="infra"
 COMPOSE_FILES=(-p "$SCALE_PROJECT_NAME" -f "infra/docker-compose.scale.yml")
-LEGACY_COMPOSE_FILES=(-p "$MAIN_PROJECT_NAME" -f "infra/docker-compose.yml")
+LEGACY_COMPOSE_FILES=(--env-file ".env" -p "$MAIN_PROJECT_NAME" -f "infra/docker-compose.yml")
 BRANCH="${1:-main}"
 PRE_PULL_HEAD=""
 PUBLIC_HEALTH_URL="${MAXIM_VPS_PUBLIC_URL:-${MAXIM_PUBLIC_HEALTH_URL:-https://major-maksimov.ru}}"

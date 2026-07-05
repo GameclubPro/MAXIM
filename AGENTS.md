@@ -171,7 +171,7 @@
   - apply Prisma migrations
   - rebuild only changed services
   - recreate containers with `--force-recreate`
-  - check `/api/health/live` and `/api/health/ready` locally and publicly
+  - check `/api/health/live` and `/api/health/ready` locally on the VPS, and check only `/api/health/live` publicly; public `/api/health/ready` is intentionally hidden
   - check `https://major-maksimov.ru/app/` when mini app flows were touched
   - do not run CDN/app2/Object Storage mini app smokes for routine work; use only `https://major-maksimov.ru/app/`
 - During API deploys, `ready` can recover later than `live` while queues drain. Treat that as a recovery window first, not an instant regression.

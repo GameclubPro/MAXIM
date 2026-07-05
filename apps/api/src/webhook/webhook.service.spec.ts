@@ -704,6 +704,75 @@ describe('WebhookService', () => {
     );
   });
 
+  it('persists managed-entities activity for chat_title_changed updates', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-title-activity' }),
+        updateMany: jest.fn(),
+      },
+      managedEntityLocalActivity: {
+        upsert: jest.fn().mockResolvedValue({}),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+    const eventAt = new Date('2026-04-06T00:02:00.000Z');
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-title-activity-1',
+          type: 'chat_title_changed',
+          botId: 'id613002203036_bot',
+          message: {
+            messageId: 'chat_title_changed:u-title-activity-1',
+            chatId: '-100200',
+            chatTitle: 'Новое название',
+            entityType: 'chat',
+            senderId: 'user-title-77',
+            senderName: 'Редактор',
+            text: '',
+            createdAt: eventAt.toISOString(),
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    await flushDeferredWebhookWork();
+
+    expect(prisma.managedEntityLocalActivity.upsert).toHaveBeenCalledWith({
+      where: {
+        userId_chatId: {
+          userId: 'user-title-77',
+          chatId: '-100200',
+        },
+      },
+      create: {
+        userId: 'user-title-77',
+        chatId: '-100200',
+        entityType: 'CHAT',
+        chatTitle: 'Новое название',
+        sourceEventType: 'chat_title_changed',
+        botId: 'id613002203036_bot',
+        lastEventAt: eventAt,
+      },
+      update: {
+        entityType: 'CHAT',
+        chatTitle: 'Новое название',
+        sourceEventType: 'chat_title_changed',
+        botId: 'id613002203036_bot',
+        lastEventAt: eventAt,
+      },
+    });
+  });
+
   it('persists service message membership collections as per-member activity events', async () => {
     const prisma = {
       webhookEvent: {
