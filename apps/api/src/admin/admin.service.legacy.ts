@@ -1315,6 +1315,7 @@ export class AdminService implements OnModuleDestroy {
       return this.filterManagedEntitiesByCachedDeniedAccess(
         userId,
         this.mergeManagedEntityGroups(snapshotItems, allowlistItems),
+        { ignoreBotDenied: true },
       );
     } catch (error: unknown) {
       this.logger.warn(
@@ -20058,7 +20059,7 @@ export class AdminService implements OnModuleDestroy {
       return [];
     }
 
-    const repairCandidates = missingEdgeCandidates
+    const baseRepairCandidates = missingEdgeCandidates
       .map((chat) => {
         const allowlistedAt = allowlistedChats.get(chat.id);
         if (!allowlistedAt) {
@@ -20072,6 +20073,9 @@ export class AdminService implements OnModuleDestroy {
         (candidate): candidate is { chat: ChatSummary; botIds: string[]; allowlistedAt: Date } =>
           candidate !== null,
       );
+    const repairCandidates = await this.attachActiveManagedEntityRepairBotIds(
+      baseRepairCandidates,
+    );
     if (repairCandidates.length === 0) {
       return [];
     }
@@ -20190,6 +20194,91 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
+  private async attachActiveManagedEntityRepairBotIds(
+    candidates: ReadonlyArray<{
+      chat: ChatSummary;
+      botIds: string[];
+      allowlistedAt: Date;
+    }>,
+  ): Promise<Array<{ chat: ChatSummary; botIds: string[]; allowlistedAt: Date }>> {
+    if (candidates.length === 0) {
+      return [];
+    }
+
+    const memberships = (this.prisma as unknown as { chatBotMembership?: unknown })
+      .chatBotMembership;
+    if (!memberships || typeof memberships !== 'object') {
+      return [...candidates];
+    }
+
+    const membershipClient = memberships as {
+      findMany?: (args: unknown) => Promise<Array<{ chatId: string; botId: string }>>;
+    };
+    if (typeof membershipClient.findMany !== 'function') {
+      return [...candidates];
+    }
+
+    const chatIds = Array.from(
+      new Set(candidates.map((candidate) => candidate.chat.id.trim()).filter(Boolean)),
+    );
+    if (chatIds.length === 0) {
+      return [...candidates];
+    }
+
+    const runtimeBotIds = [...this.managedEntitiesRuntimeBotIds];
+    try {
+      const rows = await membershipClient.findMany({
+        where: {
+          chatId: {
+            in: chatIds,
+          },
+          ...(runtimeBotIds.length > 0
+            ? {
+                botId: {
+                  in: runtimeBotIds,
+                },
+              }
+            : {}),
+          status: ChatBotMembershipStatus.ACTIVE,
+        },
+        select: {
+          chatId: true,
+          botId: true,
+        },
+      });
+      const activeBotIdsByChatId = new Map<string, string[]>();
+      for (const row of rows) {
+        const chatId = this.readTrimmedString(row.chatId);
+        const botId = this.normalizeManagedEntityAccessBotId(row.botId);
+        if (!chatId || !botId || !this.isManagedEntityAccessBotInRuntimeScope(botId)) {
+          continue;
+        }
+
+        activeBotIdsByChatId.set(chatId, [
+          ...(activeBotIdsByChatId.get(chatId) ?? []),
+          botId,
+        ]);
+      }
+
+      return candidates.map((candidate) => {
+        const activeBotIds = activeBotIdsByChatId.get(candidate.chat.id) ?? [];
+        return {
+          ...candidate,
+          botIds: Array.from(new Set([...activeBotIds, ...candidate.botIds])),
+        };
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          requestedItems: candidates.length,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to read active bot memberships for managed entity allowlist repair',
+      );
+      return [...candidates];
+    }
+  }
+
   private async findFreshDeniedManagedEntityRepairKeys(
     userId: string,
     candidates: ReadonlyArray<{
@@ -20232,6 +20321,7 @@ export class AdminService implements OnModuleDestroy {
           botId: true,
           state: true,
           checkedAt: true,
+          deniedReason: true,
         },
       });
       const deniedKeys = new Set<string>();
@@ -20244,7 +20334,26 @@ export class AdminService implements OnModuleDestroy {
           continue;
         }
         if (!row.checkedAt || row.checkedAt.getTime() >= allowlistedAt.getTime()) {
-          deniedKeys.add(this.buildManagedEntityRepairEdgeKey(row.chatId, row.botId));
+          const deniedReason = this.readTrimmedString(
+            (row as { deniedReason?: string | null }).deniedReason,
+          );
+          if (
+            row.state === 'USER_DENIED' ||
+            this.isTerminalManagedEntityAccessDeniedReason(deniedReason)
+          ) {
+            for (const botId of this.readManagedEntityRepairCandidateBotIds(
+              candidates,
+              row.chatId,
+            )) {
+              deniedKeys.add(this.buildManagedEntityRepairEdgeKey(row.chatId, botId));
+            }
+            continue;
+          }
+
+          const botId = this.normalizeManagedEntityAccessBotId(row.botId);
+          if (botId) {
+            deniedKeys.add(this.buildManagedEntityRepairEdgeKey(row.chatId, botId));
+          }
         }
       }
       return deniedKeys;
@@ -20259,6 +20368,32 @@ export class AdminService implements OnModuleDestroy {
       );
       return new Set();
     }
+  }
+
+  private readManagedEntityRepairCandidateBotIds(
+    candidates: ReadonlyArray<{
+      chat: ChatSummary;
+      botIds: readonly string[];
+    }>,
+    chatId: string,
+  ): string[] {
+    const normalizedChatId = this.readTrimmedString(chatId);
+    if (!normalizedChatId) {
+      return [];
+    }
+
+    const candidate = candidates.find((item) => item.chat.id === normalizedChatId);
+    if (!candidate) {
+      return [];
+    }
+
+    return Array.from(new Set(candidate.botIds));
+  }
+
+  private isTerminalManagedEntityAccessDeniedReason(reason: string | null): boolean {
+    return (
+      reason === 'chat_not_found' || reason === 'chat_inaccessible' || reason === 'bot_removed'
+    );
   }
 
   private buildManagedEntityRepairEdgeKey(chatId: string, botId: string): string {

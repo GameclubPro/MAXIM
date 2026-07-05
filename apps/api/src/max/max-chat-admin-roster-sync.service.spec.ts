@@ -391,6 +391,102 @@ describe('MaxChatAdminRosterSyncService', () => {
     expect(nightModeTransitionScheduler.reconcileChat).toHaveBeenCalledWith('-100123');
   });
 
+  it('resolves empty job botIds from persisted active bot memberships before runtime fallback', async () => {
+    const { service, prisma, maxClient, maxBotLinkService } = createService();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: '-100-empty-bots',
+      title: 'Persisted membership chat',
+      entityType: 'CHAT',
+      primaryBotId: null,
+      botId: null,
+      botMemberships: [{ botId: 'bot-2' }],
+      createdAt: new Date('2026-04-05T10:00:00.000Z'),
+    });
+    maxClient.getCurrentChatMemberAccess.mockResolvedValue({
+      userId: 'bot-user-2',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['delete_messages'],
+    });
+    maxClient.getChatAdminIds.mockResolvedValue(['user-1']);
+
+    await expect(
+      service.processJob({
+        chatId: '-100-empty-bots',
+        botIds: [],
+        title: 'Persisted membership chat',
+        entityType: 'chat',
+        source: 'admin_access_validation',
+      }),
+    ).resolves.toBe(true);
+
+    expect(maxBotLinkService.bindDiscoveredChatBots).toHaveBeenCalledWith({
+      chatId: '-100-empty-bots',
+      primaryBotId: 'bot-2',
+      botIds: ['bot-2'],
+      title: 'Persisted membership chat',
+      entityType: 'CHAT',
+    });
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
+      '-100-empty-bots',
+      expect.objectContaining({
+        botId: 'bot-2',
+      }),
+    );
+  });
+
+  it('falls back from empty job botIds to runtime discovery bots when no persisted membership exists', async () => {
+    const { service, prisma, maxClient } = createService();
+    prisma.chat.findUnique.mockResolvedValue(null);
+    maxClient.getCurrentChatMemberAccess
+      .mockResolvedValueOnce({
+        userId: 'bot-user-1',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      })
+      .mockResolvedValueOnce({
+        userId: 'bot-user-2',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['delete_messages'],
+      });
+    maxClient.getChatAdminIds.mockResolvedValue(['user-1']);
+
+    await expect(
+      service.processJob({
+        chatId: '-100-runtime-fallback',
+        botIds: [],
+        title: 'Runtime fallback chat',
+        entityType: 'chat',
+        source: 'admin_access_validation',
+      }),
+    ).resolves.toBe(true);
+
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenNthCalledWith(
+      1,
+      '-100-runtime-fallback',
+      expect.objectContaining({
+        botId: 'bot-1',
+      }),
+    );
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenNthCalledWith(
+      2,
+      '-100-runtime-fallback',
+      expect.objectContaining({
+        botId: 'bot-2',
+      }),
+    );
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith(
+      '-100-runtime-fallback',
+      expect.objectContaining({
+        botId: 'bot-2',
+      }),
+    );
+    expect(prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalled();
+  });
+
   it('clears stale allowlist rows when no bot keeps admin access', async () => {
     const {
       service,
@@ -439,7 +535,7 @@ describe('MaxChatAdminRosterSyncService', () => {
     expect(nightModeTransitionScheduler.reconcileChat).not.toHaveBeenCalled();
   });
 
-  it('keeps allowlist visible and records bot-scoped denied edges when roster candidates are incomplete', async () => {
+  it('keeps allowlist repairable without writing fresh bot-scoped denied visibility edges when candidates are incomplete', async () => {
     const { service, prisma, maxClient, chatContextCache, nightModeTransitionScheduler } =
       createService();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([{ userId: 'user-7' }]);
@@ -481,22 +577,7 @@ describe('MaxChatAdminRosterSyncService', () => {
       'user-7',
       'bot_denied',
     );
-    expect(prisma.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          chatId: '-100-partial',
-          userId: {
-            in: ['user-7'],
-          },
-          botId: 'bot-1',
-        },
-        data: expect.objectContaining({
-          state: 'BOT_DENIED',
-          deniedReason: 'bot_denied',
-          source: 'admin_roster_sync_bot_scoped',
-        }),
-      }),
-    );
+    expect(prisma.managedEntityAccessEdge.updateMany).not.toHaveBeenCalled();
     expect(prisma.managedEntityAdminMember.updateMany).not.toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
@@ -512,6 +593,34 @@ describe('MaxChatAdminRosterSyncService', () => {
       null,
     );
     expect(nightModeTransitionScheduler.reconcileChat).not.toHaveBeenCalled();
+  });
+
+  it('does not clear allowlist or write denied visibility edges for ambiguous MAX 400 failures', async () => {
+    const { service, prisma, maxClient, maxBotRegistry, chatContextCache } = createService();
+    maxBotRegistry.getDiscoveryBots.mockReturnValue([{ id: 'bot-1', state: 'active' }]);
+    maxClient.getCurrentChatMemberAccess.mockRejectedValue(
+      Object.assign(new Error('Request failed with status code 400'), {
+        response: {
+          status: 400,
+          data: {},
+        },
+      }),
+    );
+
+    await expect(
+      service.processJob({
+        chatId: '-100-ambiguous-400',
+        botIds: ['bot-1'],
+        title: 'Ambiguous 400 chat',
+        entityType: 'chat',
+        source: 'admin_access_validation',
+      }),
+    ).rejects.toThrow('Request failed with status code 400');
+
+    expect(prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalled();
+    expect(chatContextCache.replaceChatAdminUsers).not.toHaveBeenCalled();
+    expect(chatContextCache.setAdminAccess).not.toHaveBeenCalled();
+    expect(prisma.managedEntityAccessEdge.updateMany).not.toHaveBeenCalled();
   });
 
   it('backs off repeated terminal bot access failures before clearing allowlist again', async () => {
