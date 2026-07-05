@@ -1323,6 +1323,7 @@ model AuditLog {
 
   @@index([chatId, createdAt])
   @@index([chatId, action, createdAt], map: "audit_logs_chat_action_created_at_idx")
+  @@index([action, createdAt(sort: Desc)], map: "audit_logs_action_created_at_idx")
   @@map("audit_logs")
 }
 
