@@ -220,9 +220,7 @@ export class AdminLogsDashboardRuntime {
     user: AuthUser,
     query: unknown,
   ): Promise<MembershipActivityPage> {
-    await this.assertChatAdmin(chatId, user.userId, 'channel', {
-      syncPersistedAccess: false,
-    });
+    await this.assertReadOnlyChatAdmin(chatId, user.userId, 'channel');
     await this.ensureEntityType(chatId, user.userId, 'channel');
 
     const parsed = membershipActivityQuerySchema.safeParse(query);
