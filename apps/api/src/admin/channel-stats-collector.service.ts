@@ -39,6 +39,8 @@ const DEFAULT_CHANNEL_STATS_STARTUP_DELAY_MS = 30_000;
 const DEFAULT_CHANNEL_STATS_STARTUP_JITTER_MS = 15_000;
 const DEFAULT_CHANNEL_STATS_STARTUP_MAX_PAGES = 20;
 const DEFAULT_CHANNEL_STATS_ENDPOINT_MAX_PAGES = 8;
+const CHANNEL_STATS_SCHEDULED_AUDIENCE_CATCH_UP_MAX_CHANNELS = 360;
+const CHANNEL_STATS_SCHEDULED_VIEWS_SYNC_MAX_CHANNELS = 6;
 type ChannelStatsSyncResult = {
   audienceSynced: boolean;
   viewsSynced: boolean;
@@ -58,6 +60,12 @@ type ChannelStartupSyncCandidate = {
     lastAudienceSyncAt: Date | null;
     lastViewsSyncAt: Date | null;
   } | null;
+};
+
+type ChannelScheduledSyncCandidate = ChannelStartupSyncCandidate & {
+  channelAudienceSnapshots: Array<{
+    capturedAt: Date;
+  }>;
 };
 
 @Injectable()
@@ -389,6 +397,11 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         'channel-stats:sync-all',
         CHANNEL_STATS_ALL_LOCK_TTL_MS,
         async () => {
+          if (reason === 'scheduled' && !channelsOverride) {
+            await this.syncScheduledChannels();
+            return;
+          }
+
           await this.ensureWebhookCoverage();
           const channels =
             channelsOverride ??
@@ -400,7 +413,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
 
           for (const [index, channel] of channels.entries()) {
             if (index > 0) {
-              await this.sleep(this.resolveInterChannelDelayMs(reason));
+              await this.sleepBetweenChannels(reason);
             }
 
             const syncResult = await this.syncChannel(channel.id, { reason });
@@ -429,6 +442,126 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       );
     } finally {
       this.scheduledSyncInFlight = false;
+    }
+  }
+
+  private async syncScheduledChannels() {
+    const channels = await this.prisma.chat.findMany({
+      where: { entityType: ChatEntityType.CHANNEL },
+      select: {
+        id: true,
+        channelStatsSyncState: {
+          select: {
+            lastAudienceSyncAt: true,
+            lastViewsSyncAt: true,
+          },
+        },
+        channelAudienceSnapshots: {
+          orderBy: { capturedAt: 'desc' },
+          take: 1,
+          select: { capturedAt: true },
+        },
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+    const nowMs = Date.now();
+    const audienceCandidates = channels
+      .filter((channel) =>
+        this.isAudienceSnapshotStale(
+          channel.channelAudienceSnapshots[0] ?? null,
+          channel.channelStatsSyncState,
+          CHANNEL_STATS_STALE_MS,
+          nowMs,
+        ),
+      )
+      .sort((left, right) => this.compareScheduledAudienceSyncCandidates(left, right))
+      .slice(0, CHANNEL_STATS_SCHEDULED_AUDIENCE_CATCH_UP_MAX_CHANNELS);
+    const audienceResult = await this.syncScheduledAudienceCatchUp(audienceCandidates);
+    if (audienceResult.throttled) {
+      return;
+    }
+
+    const viewsCandidates = channels
+      .filter(
+        (channel) =>
+          this.isViewsSyncStale(channel.channelStatsSyncState, CHANNEL_STATS_STALE_MS, nowMs) &&
+          (!this.isAudienceSnapshotStale(
+            channel.channelAudienceSnapshots[0] ?? null,
+            channel.channelStatsSyncState,
+            CHANNEL_STATS_STALE_MS,
+            nowMs,
+          ) ||
+            audienceResult.syncedAudienceAtByChatId.has(channel.id)),
+      )
+      .sort((left, right) => this.compareScheduledViewsSyncCandidates(left, right))
+      .slice(0, CHANNEL_STATS_SCHEDULED_VIEWS_SYNC_MAX_CHANNELS);
+    await this.syncScheduledViews(viewsCandidates, audienceResult.syncedAudienceAtByChatId);
+  }
+
+  private async syncScheduledAudienceCatchUp(
+    channels: ChannelScheduledSyncCandidate[],
+  ): Promise<{
+    throttled: boolean;
+    syncedAudienceAtByChatId: Map<string, Date>;
+  }> {
+    const syncedAudienceAtByChatId = new Map<string, Date>();
+
+    for (const [index, channel] of channels.entries()) {
+      if (index > 0) {
+        await this.sleepBetweenChannels('scheduled');
+      }
+
+      const audienceResult = await this.syncAudienceSnapshotIfStale(channel.id, {
+        staleMs: CHANNEL_STATS_STALE_MS,
+        reason: 'scheduled',
+      });
+      if (audienceResult.audienceSynced && audienceResult.syncedAt) {
+        syncedAudienceAtByChatId.set(channel.id, audienceResult.syncedAt);
+      }
+      if (audienceResult.throttled) {
+        const backoffMs = await this.activateBackgroundSyncBackoff();
+        this.logger.warn(
+          {
+            reason: 'scheduled',
+            chatId: channel.id,
+            backoffMs,
+          },
+          'Paused background channel audience catch-up after MAX API throttling',
+        );
+        return { throttled: true, syncedAudienceAtByChatId };
+      }
+    }
+
+    return { throttled: false, syncedAudienceAtByChatId };
+  }
+
+  private async syncScheduledViews(
+    channels: ChannelScheduledSyncCandidate[],
+    syncedAudienceAtByChatId: Map<string, Date>,
+  ) {
+    for (const [index, channel] of channels.entries()) {
+      if (index > 0) {
+        await this.sleepBetweenChannels('scheduled');
+      }
+
+      const audienceSyncedAt = syncedAudienceAtByChatId.get(channel.id);
+      const syncResult = await this.syncChannel(channel.id, {
+        reason: 'scheduled',
+        skipAudience: true,
+        ...(audienceSyncedAt ? { audienceSyncedAt } : {}),
+      });
+      if (syncResult.throttled) {
+        const backoffMs = await this.activateBackgroundSyncBackoff();
+        this.logger.warn(
+          {
+            reason: 'scheduled',
+            chatId: channel.id,
+            backoffMs,
+          },
+          'Paused background channel stats sync after MAX API throttling',
+        );
+        break;
+      }
     }
   }
 
@@ -474,6 +607,59 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     }
 
     return Math.max(lastAudienceSyncAt.getTime(), lastViewsSyncAt.getTime());
+  }
+
+  private compareScheduledAudienceSyncCandidates(
+    left: ChannelScheduledSyncCandidate,
+    right: ChannelScheduledSyncCandidate,
+  ): number {
+    const leftFreshnessMs = this.resolveScheduledAudienceFreshnessMs(left);
+    const rightFreshnessMs = this.resolveScheduledAudienceFreshnessMs(right);
+    return this.compareNullableFreshness(leftFreshnessMs, rightFreshnessMs, left.id, right.id);
+  }
+
+  private compareScheduledViewsSyncCandidates(
+    left: ChannelScheduledSyncCandidate,
+    right: ChannelScheduledSyncCandidate,
+  ): number {
+    const leftSyncedAtMs = left.channelStatsSyncState?.lastViewsSyncAt?.getTime() ?? null;
+    const rightSyncedAtMs = right.channelStatsSyncState?.lastViewsSyncAt?.getTime() ?? null;
+    return this.compareNullableFreshness(leftSyncedAtMs, rightSyncedAtMs, left.id, right.id);
+  }
+
+  private resolveScheduledAudienceFreshnessMs(
+    channel: ChannelScheduledSyncCandidate,
+  ): number | null {
+    const latestSnapshotAtMs = channel.channelAudienceSnapshots[0]?.capturedAt.getTime() ?? null;
+    const lastAudienceSyncAtMs =
+      channel.channelStatsSyncState?.lastAudienceSyncAt?.getTime() ?? null;
+    if (latestSnapshotAtMs === null || lastAudienceSyncAtMs === null) {
+      return null;
+    }
+
+    return Math.min(latestSnapshotAtMs, lastAudienceSyncAtMs);
+  }
+
+  private compareNullableFreshness(
+    leftMs: number | null,
+    rightMs: number | null,
+    leftId: string,
+    rightId: string,
+  ): number {
+    if (leftMs === null && rightMs !== null) {
+      return -1;
+    }
+    if (leftMs !== null && rightMs === null) {
+      return 1;
+    }
+    if (leftMs === null && rightMs === null) {
+      return leftId.localeCompare(rightId);
+    }
+
+    return (
+      (leftMs ?? Number.NEGATIVE_INFINITY) - (rightMs ?? Number.NEGATIVE_INFINITY) ||
+      leftId.localeCompare(rightId)
+    );
   }
 
   async syncChannel(
@@ -766,6 +952,14 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     );
   }
 
+  private isViewsSyncStale(
+    syncState: { lastViewsSyncAt: Date | null } | null,
+    staleMs: number,
+    nowMs: number,
+  ): boolean {
+    return !syncState?.lastViewsSyncAt || nowMs - syncState.lastViewsSyncAt.getTime() > staleMs;
+  }
+
   private async isBackgroundSyncBackoffActive(): Promise<boolean> {
     const memoryActive = Date.now() < this.backgroundSyncBackoffUntilMs;
     try {
@@ -876,6 +1070,13 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private async sleepBetweenChannels(reason: 'startup' | 'scheduled') {
+    const delayMs = this.resolveInterChannelDelayMs(reason);
+    if (delayMs > 0) {
+      await this.sleep(delayMs);
+    }
   }
 
   private async resolveCapabilityRouteBotId(
