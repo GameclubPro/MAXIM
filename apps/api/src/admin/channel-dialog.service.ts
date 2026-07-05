@@ -164,4 +164,16 @@ export class ChannelDialogService {
   ): ReturnType<AdminService['processChannelSuggestionDeliveryJob']> {
     return this.legacyAdminService.processChannelSuggestionDeliveryJob(...args);
   }
+
+  recoverStaleChannelSuggestionDeliveries(
+    ...args: Parameters<AdminService['recoverStaleChannelSuggestionDeliveries']>
+  ): ReturnType<AdminService['recoverStaleChannelSuggestionDeliveries']> {
+    return this.legacyAdminService.recoverStaleChannelSuggestionDeliveries(...args);
+  }
+
+  recordChannelSuggestionDeliveryJobFailure(
+    ...args: Parameters<AdminService['recordChannelSuggestionDeliveryJobFailure']>
+  ): ReturnType<AdminService['recordChannelSuggestionDeliveryJobFailure']> {
+    return this.legacyAdminService.recordChannelSuggestionDeliveryJobFailure(...args);
+  }
 }

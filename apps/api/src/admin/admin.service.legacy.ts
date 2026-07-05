@@ -291,6 +291,8 @@ import {
   BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS,
   BROADCAST_THROTTLE_RETRY_DELAYS_MS,
   CHANNEL_SUGGESTION_ADMIN_LOOKUP_TIMEOUT_MS,
+  CHANNEL_SUGGESTION_DELIVERY_RECOVERY_BATCH_SIZE,
+  CHANNEL_SUGGESTION_DELIVERY_RECOVERY_STALE_MS,
   CHANNEL_SUGGESTION_SEND_TIMEOUT_MS,
   CHANNEL_SUGGESTION_UPLOAD_TIMEOUT_MS,
   CHANNEL_STATS_RESPONSE_CACHE_TTL_MS,
@@ -16013,6 +16015,137 @@ export class AdminService implements OnModuleDestroy {
     await this.suggestionDeliveryRuntime.processChannelSuggestionDeliveryJob(auditLogId);
   }
 
+  async recoverStaleChannelSuggestionDeliveries(
+    limit = CHANNEL_SUGGESTION_DELIVERY_RECOVERY_BATCH_SIZE,
+  ): Promise<number> {
+    const boundedLimit = Math.max(
+      1,
+      Math.min(50, Number.isFinite(limit) ? Math.trunc(limit) : 1),
+    );
+    const staleBefore = new Date(Date.now() - CHANNEL_SUGGESTION_DELIVERY_RECOVERY_STALE_MS);
+    const rows = await this.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT id
+      FROM audit_logs
+      WHERE action = ${CHANNEL_DIALOG_ACTION_SUGGEST}::text
+        AND created_at <= ${staleBefore}
+        AND COALESCE(NULLIF(payload->>'reviewStatus', ''), 'pending') = 'pending'
+        AND payload->>'delivered' = 'false'
+        AND NOT (payload ? 'deliveryAttemptedAt')
+        AND COALESCE(
+          jsonb_array_length(
+            CASE
+              WHEN jsonb_typeof(payload->'deliveries') = 'array'
+              THEN payload->'deliveries'
+              ELSE '[]'::jsonb
+            END
+          ),
+          0
+        ) = 0
+      ORDER BY created_at ASC
+      LIMIT ${boundedLimit}
+    `);
+
+    let recovered = 0;
+    for (const row of rows) {
+      if (await this.enqueueChannelSuggestionDelivery(row.id, { recoverFailed: true })) {
+        recovered += 1;
+      }
+    }
+
+    return recovered;
+  }
+
+  async recordChannelSuggestionDeliveryJobFailure(
+    auditLogId: string,
+    error: unknown,
+    metadata: { final: boolean; attemptsMade: number; maxAttempts: number },
+  ): Promise<void> {
+    const normalizedAuditLogId = auditLogId.trim();
+    if (!normalizedAuditLogId) {
+      return;
+    }
+
+    const row = await this.prisma.auditLog.findUnique({
+      where: { id: normalizedAuditLogId },
+      select: {
+        id: true,
+        action: true,
+        payload: true,
+      },
+    });
+    if (!row || row.action !== CHANNEL_DIALOG_ACTION_SUGGEST) {
+      return;
+    }
+
+    const payload = this.readObjectPayload(row.payload);
+    const reviewStatus = this.readLowerString(payload.reviewStatus);
+    if (reviewStatus && reviewStatus !== 'pending') {
+      return;
+    }
+
+    if (
+      payload.delivered === true ||
+      this.readTrimmedString(payload.deliveryAttemptedAt) ||
+      this.readChannelSuggestionDeliveries(payload.deliveries).length > 0
+    ) {
+      return;
+    }
+
+    const failedAt = new Date().toISOString();
+    const status = extractMaxErrorStatus(error);
+    const code = extractMaxErrorCode(error);
+    const message = extractMaxErrorMessage(error) || 'unknown delivery job failure';
+    const recoverable = this.isRecoverableChannelSuggestionDeliveryJobError(error);
+    const failureCount = this.toSafeInteger(payload.deliveryJobFailureCount) + 1;
+    const deliveryJobLastError = {
+      message,
+      status,
+      code,
+      recoverable,
+      attemptsMade: Math.max(1, Math.trunc(metadata.attemptsMade)),
+      maxAttempts: Math.max(1, Math.trunc(metadata.maxAttempts)),
+      final: metadata.final,
+    };
+
+    const nextPayload: Record<string, unknown> = {
+      ...payload,
+      delivered: false,
+      deliveredToUserId: null,
+      deliveredToUserIds: [],
+      deliveries: [],
+      deliveryJobFailureCount: failureCount,
+      deliveryJobLastFailedAt: failedAt,
+      deliveryJobLastError,
+      ...(metadata.final
+        ? {
+            deliveryJobFinalFailedAt: failedAt,
+            deliveryJobRecoverable: recoverable,
+          }
+        : {}),
+    };
+
+    if (metadata.final && !recoverable) {
+      nextPayload.deliveryAttemptedAt = failedAt;
+      nextPayload.deliveryFailures = [
+        {
+          adminUserId: 'delivery_job',
+          privateChatId: null,
+          status,
+          code,
+          terminal: true,
+          message,
+        },
+      ];
+    }
+
+    await this.prisma.auditLog.update({
+      where: { id: row.id },
+      data: {
+        payload: nextPayload as Prisma.InputJsonValue,
+      },
+    });
+  }
+
   private async processChannelSuggestionDeliveryJobWithinTimeout(
     auditLogId: string,
   ): Promise<void> {
@@ -16084,8 +16217,11 @@ export class AdminService implements OnModuleDestroy {
     return user.displayName?.trim() || user.username?.trim() || null;
   }
 
-  private async enqueueChannelSuggestionDelivery(auditLogId: string): Promise<boolean> {
-    return this.suggestionDeliveryRuntime.enqueueChannelSuggestionDelivery(auditLogId);
+  private async enqueueChannelSuggestionDelivery(
+    auditLogId: string,
+    options: { recoverFailed?: boolean } = {},
+  ): Promise<boolean> {
+    return this.suggestionDeliveryRuntime.enqueueChannelSuggestionDelivery(auditLogId, options);
   }
 
   private async applyChannelSuggestionDeliveryResult(
@@ -16330,6 +16466,31 @@ export class AdminService implements OnModuleDestroy {
       terminal: isPrivateDialogChatUnavailableError(params.error),
       message: extractMaxErrorMessage(params.error),
     };
+  }
+
+  private isRecoverableChannelSuggestionDeliveryJobError(error: unknown): boolean {
+    const status = extractMaxErrorStatus(error);
+    if (status === 408 || status === 429 || (typeof status === 'number' && status >= 500)) {
+      return true;
+    }
+
+    if (typeof status === 'number') {
+      return false;
+    }
+
+    const message = extractMaxErrorMessage(error).toLowerCase();
+    return (
+      message.includes('timeout') ||
+      message.includes('timed out') ||
+      message.includes('rate limit') ||
+      message.includes('temporarily') ||
+      message.includes('try again') ||
+      message.includes('econnreset') ||
+      message.includes('etimedout') ||
+      message.includes('eai_again') ||
+      message.includes('connection') ||
+      message.includes('connect')
+    );
   }
 
   private buildChannelSuggestionAdminReviewButtons(suggestionId: string): MaxMessageButton[][] {

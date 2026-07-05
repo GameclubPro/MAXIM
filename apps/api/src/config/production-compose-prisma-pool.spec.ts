@@ -12,11 +12,11 @@ const API_SERVICE_POOL_CAPS = {
   'api-moderation-realtime-c': 3,
   'api-moderation-realtime-d': 3,
   'api-moderation-background': 2,
-  'api-action': 3,
+  'api-action': 6,
 } as const;
 
 const API_SERVICE_POOL_CONNECTION_TIMEOUT_MS = {
-  'api-action': 10_000,
+  'api-action': 20_000,
 } as const satisfies Partial<Record<keyof typeof API_SERVICE_POOL_CAPS, number>>;
 
 const COMPOSE_FILES = [
@@ -44,7 +44,7 @@ describe('production compose Prisma pool caps', () => {
         total += cap;
       }
 
-      expect(total).toBe(45);
+      expect(total).toBe(48);
     });
 
     it('caps the dedicated managed-entities read client separately', () => {

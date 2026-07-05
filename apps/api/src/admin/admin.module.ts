@@ -14,6 +14,7 @@ import { AdminManualFanoutProcessor } from './admin-manual-fanout.processor';
 import { ADMIN_MANUAL_FANOUT_QUEUE } from './admin-manual-fanout.queue';
 import { AdminSuggestionDeliveryProcessor } from './admin-suggestion-delivery.processor';
 import { ADMIN_SUGGESTION_DELIVERY_QUEUE } from './admin-suggestion-delivery.queue';
+import { AdminSuggestionDeliveryRecoveryService } from './admin-suggestion-delivery-recovery.service';
 import { AdminSuperBanProcessor } from './admin-super-ban.processor';
 import { ADMIN_SUPER_BAN_QUEUE } from './admin-super-ban.queue';
 import { AdminManagedBroadcastRuntime } from './admin-managed-broadcast-runtime';
@@ -130,6 +131,7 @@ import { SupportRequestsService } from './support-requests.service';
     ...(roleRunsAction(getAppRole()) ? [AdminManualFanoutProcessor] : []),
     ...(roleRunsAction(getAppRole()) ? [AdminSuperBanProcessor] : []),
     ...(roleRunsAction(getAppRole()) ? [AdminSuggestionDeliveryProcessor] : []),
+    ...(roleRunsAction(getAppRole()) ? [AdminSuggestionDeliveryRecoveryService] : []),
   ],
   exports: [
     AdminService,

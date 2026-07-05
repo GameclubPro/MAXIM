@@ -347,6 +347,7 @@ function createPrismaMock() {
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     auditLog: {
+      findUnique: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),
       findFirst: jest.fn().mockResolvedValue(null),
       count: jest.fn().mockResolvedValue(0),
@@ -32641,12 +32642,12 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       },
       expect.objectContaining({
         jobId: 'channel-suggestion-delivery__suggestion-queued-1',
-        attempts: 5,
+        attempts: 8,
         removeOnComplete: true,
         removeOnFail: false,
         backoff: {
           type: 'exponential',
-          delay: 1000,
+          delay: 5000,
         },
       }),
     );
@@ -32662,6 +32663,163 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         reviewStatus: 'pending',
       },
     });
+  });
+
+  it('recovers stale pending suggestion delivery by retrying the failed BullMQ job', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw.mockResolvedValue([{ id: 'suggestion-stale-queued-1' }]);
+    const failedJob = {
+      getState: jest.fn().mockResolvedValue('failed'),
+      retry: jest.fn().mockResolvedValue(undefined),
+    };
+    const adminSuggestionDeliveryQueue = {
+      getJob: jest.fn().mockResolvedValue(failedJob),
+      add: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      { getChatAdminIds: jest.fn() } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      adminSuggestionDeliveryQueue as never,
+    );
+
+    await expect(service.recoverStaleChannelSuggestionDeliveries()).resolves.toBe(1);
+
+    expect(adminSuggestionDeliveryQueue.getJob).toHaveBeenCalledWith(
+      'channel-suggestion-delivery__suggestion-stale-queued-1',
+    );
+    expect(failedJob.retry).toHaveBeenCalledWith('failed', {
+      resetAttemptsMade: true,
+      resetAttemptsStarted: true,
+    });
+    expect(adminSuggestionDeliveryQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('records recoverable suggestion delivery job failures without closing the pending delivery', async () => {
+    const prisma = createPrismaMock();
+    prisma.auditLog.findUnique.mockResolvedValue({
+      id: 'suggestion-timeout-1',
+      action: 'CHANNEL_DIALOG_SUGGESTION',
+      payload: {
+        type: 'suggest',
+        text: 'Зависшая предложка',
+        delivered: false,
+        deliveredToUserId: null,
+        deliveredToUserIds: [],
+        deliveries: [],
+        reviewStatus: 'pending',
+      },
+    });
+
+    const service = new AdminService(
+      prisma as never,
+      { getChatAdminIds: jest.fn() } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await service.recordChannelSuggestionDeliveryJobFailure(
+      'suggestion-timeout-1',
+      new Error('timeout exceeded when trying to connect'),
+      {
+        final: true,
+        attemptsMade: 8,
+        maxAttempts: 8,
+      },
+    );
+
+    expect(prisma.auditLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'suggestion-timeout-1' },
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            delivered: false,
+            deliveryJobFailureCount: 1,
+            deliveryJobRecoverable: true,
+            deliveryJobLastError: expect.objectContaining({
+              recoverable: true,
+              final: true,
+              attemptsMade: 8,
+              maxAttempts: 8,
+            }),
+          }),
+        }),
+      }),
+    );
+    const updatedPayload = prisma.auditLog.update.mock.calls[0]?.[0]?.data?.payload as Record<
+      string,
+      unknown
+    >;
+    expect(updatedPayload.deliveryAttemptedAt).toBeUndefined();
+    expect(updatedPayload.deliveryFailures).toBeUndefined();
+  });
+
+  it('marks terminal suggestion delivery job failures as attempted so recovery does not loop forever', async () => {
+    const prisma = createPrismaMock();
+    prisma.auditLog.findUnique.mockResolvedValue({
+      id: 'suggestion-terminal-1',
+      action: 'CHANNEL_DIALOG_SUGGESTION',
+      payload: {
+        type: 'suggest',
+        text: 'Недоступная предложка',
+        delivered: false,
+        deliveredToUserId: null,
+        deliveredToUserIds: [],
+        deliveries: [],
+        reviewStatus: 'pending',
+      },
+    });
+
+    const service = new AdminService(
+      prisma as never,
+      { getChatAdminIds: jest.fn() } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await service.recordChannelSuggestionDeliveryJobFailure(
+      'suggestion-terminal-1',
+      {
+        response: {
+          status: 403,
+          data: {
+            code: 'access.denied',
+            message: 'access denied',
+          },
+        },
+      },
+      {
+        final: true,
+        attemptsMade: 8,
+        maxAttempts: 8,
+      },
+    );
+
+    expect(prisma.auditLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            delivered: false,
+            deliveryAttemptedAt: expect.any(String),
+            deliveryJobRecoverable: false,
+            deliveryFailures: [
+              expect.objectContaining({
+                adminUserId: 'delivery_job',
+                status: 403,
+                code: 'access.denied',
+                terminal: true,
+                message: 'access denied',
+              }),
+            ],
+          }),
+        }),
+      }),
+    );
   });
 
   it('marks bot-submitted suggestions with private_bot source', async () => {
