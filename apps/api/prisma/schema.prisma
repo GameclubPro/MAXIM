@@ -178,6 +178,14 @@ enum ManagedBroadcastDeliveryStatus {
   CANCELED
 }
 
+enum ChannelSuggestionAdminDeliveryStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+  AMBIGUOUS
+}
+
 enum ManagedAutopostRuleStatus {
   ACTIVE
   PAUSED
@@ -1320,11 +1328,40 @@ model AuditLog {
   createdAt   DateTime @default(now()) @map("created_at")
 
   chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  channelSuggestionAdminDeliveries ChannelSuggestionAdminDelivery[]
 
   @@index([chatId, createdAt])
   @@index([chatId, action, createdAt], map: "audit_logs_chat_action_created_at_idx")
   @@index([action, createdAt(sort: Desc)], map: "audit_logs_action_created_at_idx")
   @@map("audit_logs")
+}
+
+model ChannelSuggestionAdminDelivery {
+  id              String                               @id @default(cuid())
+  auditLogId      String                               @map("audit_log_id")
+  adminUserId     String                               @map("admin_user_id")
+  botKey          String                               @map("bot_key")
+  botId           String?                              @map("bot_id")
+  privateChatId   String?                              @map("private_chat_id")
+  status          ChannelSuggestionAdminDeliveryStatus @default(PENDING)
+  attemptCount    Int                                  @default(0) @map("attempt_count")
+  remoteMessageId String?                              @map("remote_message_id")
+  lastError       String?                              @map("last_error")
+  lastStatusCode  Int?                                 @map("last_status_code")
+  lastErrorCode   String?                              @map("last_error_code")
+  terminal        Boolean                              @default(false)
+  sentAt          DateTime?                            @map("sent_at")
+  lockedAt        DateTime?                            @map("locked_at")
+  lockToken       String?                              @map("lock_token")
+  createdAt       DateTime                             @default(now()) @map("created_at")
+  updatedAt       DateTime                             @updatedAt @map("updated_at")
+
+  auditLog AuditLog @relation(fields: [auditLogId], references: [id], onDelete: Cascade)
+
+  @@unique([auditLogId, adminUserId, botKey], map: "channel_suggestion_admin_deliveries_scope_key")
+  @@index([auditLogId, status], map: "channel_suggestion_admin_deliveries_audit_status_idx")
+  @@index([status, lockedAt], map: "channel_suggestion_admin_deliveries_status_locked_idx")
+  @@map("channel_suggestion_admin_deliveries")
 }
 
 model ChannelAutoPostAttachMarker {

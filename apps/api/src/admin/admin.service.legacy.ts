@@ -81,6 +81,7 @@ import {
 } from '@maxim/contracts';
 import { InjectQueue } from '@nestjs/bullmq';
 import {
+  ChannelSuggestionAdminDeliveryStatus as PrismaChannelSuggestionAdminDeliveryStatus,
   ChatBotMembershipStatus,
   ChatEntityType,
   DialogNotificationMode as PrismaDialogNotificationMode,
@@ -450,6 +451,28 @@ export type {
 } from './admin.service.support';
 
 const CHANNEL_SUGGESTION_AMBIGUOUS_SEND_ERROR = Symbol('channelSuggestionAmbiguousSendError');
+const CHANNEL_SUGGESTION_ADMIN_DELIVERY_DEFAULT_BOT_KEY = '__default__';
+
+type ChannelSuggestionAdminDeliveryLedgerRow = {
+  id: string;
+  auditLogId: string;
+  adminUserId: string;
+  botKey: string;
+  botId: string | null;
+  privateChatId: string | null;
+  status: PrismaChannelSuggestionAdminDeliveryStatus;
+  attemptCount: number;
+  remoteMessageId: string | null;
+  lastError: string | null;
+  lastStatusCode: number | null;
+  lastErrorCode: string | null;
+  terminal: boolean;
+  sentAt: Date | null;
+  lockedAt: Date | null;
+  lockToken: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
 
 type DialogNotificationPreferenceRow = {
   userId: string;
@@ -7366,6 +7389,7 @@ export class AdminService implements OnModuleDestroy {
     }
 
     await this.syncChannelSuggestionAdminReviewMessages(
+      row.id,
       row.chatId,
       updatedPayload as Record<string, unknown>,
     );
@@ -16273,62 +16297,84 @@ export class AdminService implements OnModuleDestroy {
     const boundedLimit = Math.max(1, Math.min(50, Number.isFinite(limit) ? Math.trunc(limit) : 1));
     const staleBefore = new Date(Date.now() - CHANNEL_SUGGESTION_DELIVERY_RECOVERY_STALE_MS);
     const staleBeforeIso = staleBefore.toISOString();
+    await this.prisma.channelSuggestionAdminDelivery.updateMany({
+      where: {
+        status: PrismaChannelSuggestionAdminDeliveryStatus.SENDING,
+        lockedAt: { lt: staleBefore },
+      },
+      data: {
+        status: PrismaChannelSuggestionAdminDeliveryStatus.AMBIGUOUS,
+        lockedAt: null,
+        lockToken: null,
+        lastError: 'stale sending delivery; send outcome is ambiguous',
+        terminal: false,
+      },
+    });
     const rows = await this.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-      SELECT id
-      FROM audit_logs
-      WHERE action = ${CHANNEL_DIALOG_ACTION_SUGGEST}::text
-        AND created_at <= ${staleBefore}
-        AND COALESCE(NULLIF(payload->>'reviewStatus', ''), 'pending') = 'pending'
-        AND payload->>'delivered' = 'false'
-        AND COALESCE(
-          jsonb_array_length(
-            CASE
-              WHEN jsonb_typeof(payload->'deliveries') = 'array'
-              THEN payload->'deliveries'
-              ELSE '[]'::jsonb
-            END
-          ),
-          0
-        ) = 0
+      SELECT DISTINCT audit.id
+      FROM audit_logs audit
+      LEFT JOIN channel_suggestion_admin_deliveries delivery
+        ON delivery.audit_log_id = audit.id
+      WHERE audit.action = ${CHANNEL_DIALOG_ACTION_SUGGEST}::text
+        AND audit.created_at <= ${staleBefore}
+        AND COALESCE(NULLIF(audit.payload->>'reviewStatus', ''), 'pending') = 'pending'
         AND (
-          NOT (payload ? 'deliveryAttemptedAt')
+          delivery.status = 'PENDING'::"ChannelSuggestionAdminDeliveryStatus"
           OR (
-            NULLIF(payload->>'deliveryAttemptedAt', '') <= ${staleBeforeIso}
-            AND EXISTS (
-              SELECT 1
-              FROM jsonb_array_elements(
+            delivery.status = 'FAILED'::"ChannelSuggestionAdminDeliveryStatus"
+            AND delivery.terminal = false
+          )
+          OR (
+            delivery.id IS NULL
+            AND audit.payload->>'delivered' = 'false'
+            AND COALESCE(
+              jsonb_array_length(
                 CASE
-                  WHEN jsonb_typeof(payload->'deliveryFailures') = 'array'
-                  THEN payload->'deliveryFailures'
+                  WHEN jsonb_typeof(audit.payload->'deliveries') = 'array'
+                  THEN audit.payload->'deliveries'
                   ELSE '[]'::jsonb
                 END
-              ) AS delivery_failure(value)
-              WHERE delivery_failure.value->>'recoverable' = 'true'
-                OR (
-                  delivery_failure.value->>'terminal' = 'false'
-                  AND (
-                    delivery_failure.value->>'status' IN ('408', '429')
+              ),
+              0
+            ) = 0
+            AND (
+              NOT (audit.payload ? 'deliveryAttemptedAt')
+              OR (
+                NULLIF(audit.payload->>'deliveryAttemptedAt', '') <= ${staleBeforeIso}
+                AND EXISTS (
+                  SELECT 1
+                  FROM jsonb_array_elements(
+                    CASE
+                      WHEN jsonb_typeof(audit.payload->'deliveryFailures') = 'array'
+                      THEN audit.payload->'deliveryFailures'
+                      ELSE '[]'::jsonb
+                    END
+                  ) AS delivery_failure(value)
+                  WHERE delivery_failure.value->>'recoverable' = 'true'
                     OR (
-                      (delivery_failure.value->>'status') ~ '^[0-9]+$'
-                      AND (delivery_failure.value->>'status')::integer >= 500
+                      delivery_failure.value->>'terminal' = 'false'
+                      AND (
+                        delivery_failure.value->>'status' IN ('408', '429')
+                        OR (
+                          (delivery_failure.value->>'status') ~ '^[0-9]+$'
+                          AND (delivery_failure.value->>'status')::integer >= 500
+                        )
+                        OR LOWER(COALESCE(delivery_failure.value->>'code', '')) = 'attachment.not.ready'
+                        OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%rate limit%'
+                        OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%temporarily%'
+                        OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%try again%'
+                        OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%econnreset%'
+                        OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%eai_again%'
+                        OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%connection%'
+                        OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%connect%'
+                      )
                     )
-                    OR LOWER(COALESCE(delivery_failure.value->>'code', '')) = 'attachment.not.ready'
-                    OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%timeout%'
-                    OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%timed out%'
-                    OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%rate limit%'
-                    OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%temporarily%'
-                    OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%try again%'
-                    OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%econnreset%'
-                    OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%etimedout%'
-                    OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%eai_again%'
-                    OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%connection%'
-                    OR LOWER(COALESCE(delivery_failure.value->>'message', '')) LIKE '%connect%'
-                  )
                 )
+              )
             )
           )
         )
-      ORDER BY created_at ASC
+      ORDER BY audit.created_at ASC
       LIMIT ${boundedLimit}
     `);
 
@@ -16367,6 +16413,13 @@ export class AdminService implements OnModuleDestroy {
     const payload = this.readObjectPayload(row.payload);
     const reviewStatus = this.readLowerString(payload.reviewStatus);
     if (reviewStatus && reviewStatus !== 'pending') {
+      return;
+    }
+
+    const ledgerRows = await this.readChannelSuggestionAdminDeliveryLedgerRows(row.id);
+    if (ledgerRows.length > 0) {
+      await this.reconcileStaleChannelSuggestionAdminDeliveries(row.id);
+      await this.syncChannelSuggestionLegacyDeliveryPayload(row);
       return;
     }
 
@@ -16463,6 +16516,14 @@ export class AdminService implements OnModuleDestroy {
       return;
     }
 
+    await this.reconcileStaleChannelSuggestionAdminDeliveries(row.id);
+    const ledgerRows = await this.readChannelSuggestionAdminDeliveryLedgerRows(row.id);
+    if (ledgerRows.length > 0) {
+      if (!ledgerRows.some((delivery) => this.isRetryableChannelSuggestionAdminDeliveryRow(delivery))) {
+        await this.syncChannelSuggestionLegacyDeliveryPayload(row);
+        return;
+      }
+    } else {
     const alreadyDelivered = payload.delivered === true;
     const deliveryAttemptedAt = this.readTrimmedString(payload.deliveryAttemptedAt);
     const deliveries = this.readChannelSuggestionDeliveries(payload.deliveries);
@@ -16477,6 +16538,7 @@ export class AdminService implements OnModuleDestroy {
       (deliveryAttemptedAt && !shouldRetryRecoverableDeliveryFailure)
     ) {
       return;
+    }
     }
 
     const delivery = await this.deliverSuggestionToAdminPrivates(
@@ -16557,6 +16619,161 @@ export class AdminService implements OnModuleDestroy {
         actorUserId: true,
         payload: true,
         createdAt: true,
+      },
+    });
+  }
+
+  private normalizeChannelSuggestionAdminDeliveryBotKey(botId?: string | null): string {
+    return (
+      this.resolvePrivateDeliveryBotId(botId) ??
+      this.readTrimmedString(botId) ??
+      CHANNEL_SUGGESTION_ADMIN_DELIVERY_DEFAULT_BOT_KEY
+    );
+  }
+
+  private isRetryableChannelSuggestionAdminDeliveryRow(
+    row: Pick<
+      ChannelSuggestionAdminDeliveryLedgerRow,
+      'status' | 'terminal' | 'lastStatusCode' | 'lastErrorCode' | 'lastError'
+    >,
+  ): boolean {
+    if (row.status === PrismaChannelSuggestionAdminDeliveryStatus.PENDING) {
+      return true;
+    }
+    if (row.status !== PrismaChannelSuggestionAdminDeliveryStatus.FAILED || row.terminal) {
+      return false;
+    }
+
+    return this.isRecoverableChannelSuggestionDeliveryFailureData({
+      status: row.lastStatusCode,
+      code: row.lastErrorCode,
+      message: row.lastError ?? '',
+    });
+  }
+
+  private mapChannelSuggestionAdminDeliveryRowToLegacyDelivery(
+    row: ChannelSuggestionAdminDeliveryLedgerRow,
+  ): ChannelSuggestionAdminDelivery | null {
+    if (
+      row.status !== PrismaChannelSuggestionAdminDeliveryStatus.SENT ||
+      !row.privateChatId ||
+      !row.remoteMessageId
+    ) {
+      return null;
+    }
+
+    return {
+      adminUserId: row.adminUserId,
+      privateChatId: row.privateChatId,
+      messageId: row.remoteMessageId,
+      ...(row.botId ? { botId: row.botId } : {}),
+    };
+  }
+
+  private mapChannelSuggestionAdminDeliveryRowToLegacyFailure(
+    row: ChannelSuggestionAdminDeliveryLedgerRow,
+  ): ChannelSuggestionAdminDeliveryFailure | null {
+    if (
+      row.status !== PrismaChannelSuggestionAdminDeliveryStatus.FAILED &&
+      row.status !== PrismaChannelSuggestionAdminDeliveryStatus.AMBIGUOUS
+    ) {
+      return null;
+    }
+
+    const ambiguous = row.status === PrismaChannelSuggestionAdminDeliveryStatus.AMBIGUOUS;
+    return {
+      adminUserId: row.adminUserId,
+      privateChatId: row.privateChatId,
+      ...(row.botId ? { botId: row.botId } : {}),
+      status: row.lastStatusCode,
+      code: row.lastErrorCode,
+      terminal: ambiguous ? false : row.terminal,
+      recoverable: ambiguous ? false : this.isRetryableChannelSuggestionAdminDeliveryRow(row),
+      message: row.lastError ?? (ambiguous ? 'ambiguous send timeout' : ''),
+    };
+  }
+
+  private buildChannelSuggestionDeliveryResultFromLedgerRows(
+    rows: ChannelSuggestionAdminDeliveryLedgerRow[],
+    deliveryAttemptedAt: string,
+  ): {
+    delivered: boolean;
+    deliveredToUserId: string | null;
+    deliveredToUserIds: string[];
+    deliveries: ChannelSuggestionAdminDelivery[];
+    deliveryAttemptedAt: string;
+    deliveryFailures: ChannelSuggestionAdminDeliveryFailure[];
+  } {
+    const deliveredToUserIds = rows
+      .filter((row) => row.status === PrismaChannelSuggestionAdminDeliveryStatus.SENT)
+      .map((row) => row.adminUserId);
+    const deliveries = rows
+      .map((row) => this.mapChannelSuggestionAdminDeliveryRowToLegacyDelivery(row))
+      .filter((entry): entry is ChannelSuggestionAdminDelivery => entry !== null);
+    const deliveryFailures = rows
+      .map((row) => this.mapChannelSuggestionAdminDeliveryRowToLegacyFailure(row))
+      .filter((entry): entry is ChannelSuggestionAdminDeliveryFailure => entry !== null);
+
+    return {
+      delivered: deliveredToUserIds.length > 0,
+      deliveredToUserId: deliveredToUserIds[0] ?? null,
+      deliveredToUserIds,
+      deliveries,
+      deliveryAttemptedAt,
+      deliveryFailures,
+    };
+  }
+
+  private async readChannelSuggestionAdminDeliveryLedgerRows(
+    auditLogId: string,
+  ): Promise<ChannelSuggestionAdminDeliveryLedgerRow[]> {
+    return (await this.prisma.channelSuggestionAdminDelivery.findMany({
+      where: { auditLogId },
+      orderBy: [{ adminUserId: 'asc' }, { botKey: 'asc' }],
+    })) as ChannelSuggestionAdminDeliveryLedgerRow[];
+  }
+
+  private async syncChannelSuggestionLegacyDeliveryPayload(
+    row: { id: string; actorUserId?: string; payload: Prisma.JsonValue; createdAt?: Date },
+    deliveryAttemptedAt = new Date().toISOString(),
+  ): Promise<{
+    id: string;
+    actorUserId: string;
+    payload: Prisma.JsonValue;
+    createdAt: Date;
+  } | null> {
+    const ledgerRows = await this.readChannelSuggestionAdminDeliveryLedgerRows(row.id);
+    if (ledgerRows.length === 0) {
+      return null;
+    }
+
+    return this.applyChannelSuggestionDeliveryResult(
+      {
+        id: row.id,
+        actorUserId: row.actorUserId ?? '',
+        payload: row.payload,
+        createdAt: row.createdAt ?? new Date(),
+      },
+      this.buildChannelSuggestionDeliveryResultFromLedgerRows(ledgerRows, deliveryAttemptedAt),
+    );
+  }
+
+  private async reconcileStaleChannelSuggestionAdminDeliveries(
+    auditLogId: string,
+    staleBefore = new Date(Date.now() - CHANNEL_SUGGESTION_DELIVERY_RECOVERY_STALE_MS),
+  ): Promise<void> {
+    await this.prisma.channelSuggestionAdminDelivery.updateMany({
+      where: {
+        auditLogId,
+        status: PrismaChannelSuggestionAdminDeliveryStatus.SENDING,
+        lockedAt: { lt: staleBefore },
+      },
+      data: {
+        status: PrismaChannelSuggestionAdminDeliveryStatus.AMBIGUOUS,
+        lockedAt: null,
+        lockToken: null,
+        lastError: 'stale sending delivery; send outcome is ambiguous',
+        terminal: false,
       },
     });
   }
@@ -16661,69 +16878,151 @@ export class AdminService implements OnModuleDestroy {
       MaxSendMessageOptions,
       'buttons' | 'imagePayload' | 'attachments' | 'textFormat'
     >;
-    const deliveries: ChannelSuggestionAdminDelivery[] = [];
-    const deliveryFailures: ChannelSuggestionAdminDeliveryFailure[] = [];
-    const deliveredAdminUserIds: string[] = [];
+    const botKey = this.normalizeChannelSuggestionAdminDeliveryBotKey(privateDeliveryBotId);
+    await this.prisma.channelSuggestionAdminDelivery.createMany({
+      data: adminIds.map((adminUserId) => ({
+        auditLogId: suggestionId,
+        adminUserId,
+        botKey,
+        botId: privateDeliveryBotId ?? null,
+        status: PrismaChannelSuggestionAdminDeliveryStatus.PENDING,
+      })),
+      skipDuplicates: true,
+    });
+    await this.reconcileStaleChannelSuggestionAdminDeliveries(suggestionId);
+    const ledgerRows = await this.readChannelSuggestionAdminDeliveryLedgerRows(suggestionId);
 
-    for (const adminUserId of adminIds) {
-      let privateChatId: string | null = null;
+    for (const ledgerRow of ledgerRows.filter((row) => adminIds.includes(row.adminUserId))) {
+      if (!this.isRetryableChannelSuggestionAdminDeliveryRow(ledgerRow)) {
+        continue;
+      }
+
+      let privateChatId: string | null = ledgerRow.privateChatId;
+      const deliveryLockToken = randomUUID();
+      const lockedAt = new Date();
       try {
-        privateChatId = await this.findLatestPrivateChatIdForUser(
-          adminUserId,
-          privateDeliveryBotId,
-        );
+        privateChatId =
+          privateChatId ??
+          (await this.findLatestPrivateChatIdForUser(ledgerRow.adminUserId, privateDeliveryBotId));
+        const claimed = await this.prisma.channelSuggestionAdminDelivery.updateMany({
+          where: {
+            id: ledgerRow.id,
+            status: {
+              in: [
+                PrismaChannelSuggestionAdminDeliveryStatus.PENDING,
+                PrismaChannelSuggestionAdminDeliveryStatus.FAILED,
+              ],
+            },
+          },
+          data: {
+            status: PrismaChannelSuggestionAdminDeliveryStatus.SENDING,
+            privateChatId,
+            botId: privateDeliveryBotId ?? null,
+            lockedAt,
+            lockToken: deliveryLockToken,
+            attemptCount: { increment: 1 },
+            lastError: null,
+            lastStatusCode: null,
+            lastErrorCode: null,
+            terminal: false,
+          },
+        });
+        if (claimed.count === 0) {
+          continue;
+        }
+
         const published = await this.sendChannelSuggestionAdminMessageWithRetry({
-          adminUserId,
+          adminUserId: ledgerRow.adminUserId,
           privateChatId,
           message: messagePayload.text,
           options: messageOptions,
           ...(privateDeliveryBotId ? { botId: privateDeliveryBotId } : {}),
         });
 
-        deliveredAdminUserIds.push(adminUserId);
         privateChatId =
           this.readTrimmedString(published.chatId) ??
           privateChatId ??
-          (await this.findLatestPrivateChatIdForUser(adminUserId, privateDeliveryBotId));
+          (await this.findLatestPrivateChatIdForUser(ledgerRow.adminUserId, privateDeliveryBotId));
 
         if (!privateChatId) {
           this.logger.warn(
             {
               chatId,
-              adminUserId,
+              adminUserId: ledgerRow.adminUserId,
               suggestionId,
               messageId: published.messageId,
             },
             'Delivered suggestion to admin user but could not resolve private chat id',
           );
-          continue;
         }
 
-        deliveries.push({
-          adminUserId,
-          privateChatId,
-          messageId: published.messageId,
-          ...(privateDeliveryBotId ? { botId: privateDeliveryBotId } : {}),
+        await this.prisma.channelSuggestionAdminDelivery.updateMany({
+          where: {
+            id: ledgerRow.id,
+            status: PrismaChannelSuggestionAdminDeliveryStatus.SENDING,
+            lockToken: deliveryLockToken,
+          },
+          data: {
+            status: PrismaChannelSuggestionAdminDeliveryStatus.SENT,
+            privateChatId,
+            remoteMessageId: published.messageId,
+            sentAt: new Date(),
+            lockedAt: null,
+            lockToken: null,
+            lastError: null,
+            lastStatusCode: null,
+            lastErrorCode: null,
+            terminal: false,
+          },
         });
       } catch (error: unknown) {
+        const ambiguous =
+          isMaxApiTimeoutError(error) || this.isChannelSuggestionAmbiguousSendError(error);
         const deliveryFailure = this.buildChannelSuggestionDeliveryFailure({
-          adminUserId,
+          adminUserId: ledgerRow.adminUserId,
           privateChatId,
           botId: privateDeliveryBotId,
           error,
         });
-        deliveryFailures.push(deliveryFailure);
+        await this.prisma.channelSuggestionAdminDelivery.updateMany({
+          where: {
+            id: ledgerRow.id,
+            status: PrismaChannelSuggestionAdminDeliveryStatus.SENDING,
+            lockToken: deliveryLockToken,
+          },
+          data: {
+            status: ambiguous
+              ? PrismaChannelSuggestionAdminDeliveryStatus.AMBIGUOUS
+              : PrismaChannelSuggestionAdminDeliveryStatus.FAILED,
+            privateChatId,
+            lockedAt: null,
+            lockToken: null,
+            lastError: deliveryFailure.message,
+            lastStatusCode: deliveryFailure.status,
+            lastErrorCode: deliveryFailure.code,
+            terminal: ambiguous
+              ? false
+              : deliveryFailure.terminal || !deliveryFailure.recoverable,
+          },
+        });
 
         const logPayload = {
           suggestionId,
           chatId,
-          adminUserId,
+          adminUserId: ledgerRow.adminUserId,
           privateChatId,
           status: deliveryFailure.status,
           code: deliveryFailure.code,
           err: error instanceof Error ? error.message : String(error),
         };
-        if (deliveryFailure.terminal) {
+        if (ambiguous) {
+          this.logger.warn(
+            logPayload,
+            'Suggestion delivery to admin private chat is ambiguous after send timeout',
+          );
+          continue;
+        }
+        if (deliveryFailure.terminal || !deliveryFailure.recoverable) {
           this.logger.debug(
             logPayload,
             'Skipped suggestion delivery to unavailable admin private chat',
@@ -16740,14 +17039,10 @@ export class AdminService implements OnModuleDestroy {
       }
     }
 
-    return {
-      delivered: deliveredAdminUserIds.length > 0,
-      deliveredToUserId: deliveredAdminUserIds[0] ?? null,
-      deliveredToUserIds: deliveredAdminUserIds,
-      deliveries,
+    return this.buildChannelSuggestionDeliveryResultFromLedgerRows(
+      await this.readChannelSuggestionAdminDeliveryLedgerRows(suggestionId),
       deliveryAttemptedAt,
-      deliveryFailures,
-    };
+    );
   }
 
   private buildChannelSuggestionDeliveryFailure(params: {
@@ -17160,10 +17455,18 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private async syncChannelSuggestionAdminReviewMessages(
+    suggestionId: string,
     chatId: string,
     payload: Record<string, unknown>,
   ): Promise<void> {
-    const deliveries = this.readChannelSuggestionDeliveries(payload.deliveries);
+    const ledgerRows = await this.readChannelSuggestionAdminDeliveryLedgerRows(suggestionId);
+    const ledgerDeliveries = ledgerRows
+      .map((row) => this.mapChannelSuggestionAdminDeliveryRowToLegacyDelivery(row))
+      .filter((entry): entry is ChannelSuggestionAdminDelivery => entry !== null);
+    const deliveries =
+      ledgerDeliveries.length > 0
+        ? ledgerDeliveries
+        : this.readChannelSuggestionDeliveries(payload.deliveries);
     if (deliveries.length === 0) {
       return;
     }

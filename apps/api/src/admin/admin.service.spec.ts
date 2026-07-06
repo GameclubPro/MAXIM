@@ -266,6 +266,80 @@ function createPrismaMock() {
 
     return true;
   };
+  type ChannelSuggestionAdminDeliveryMockRow = {
+    id: string;
+    auditLogId: string;
+    adminUserId: string;
+    botKey: string;
+    botId: string | null;
+    privateChatId: string | null;
+    status: string;
+    attemptCount: number;
+    remoteMessageId: string | null;
+    lastError: string | null;
+    lastStatusCode: number | null;
+    lastErrorCode: string | null;
+    terminal: boolean;
+    sentAt: Date | null;
+    lockedAt: Date | null;
+    lockToken: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+  };
+  const channelSuggestionAdminDeliveries: ChannelSuggestionAdminDeliveryMockRow[] = [];
+  const matchesChannelSuggestionAdminDeliveryWhere = (
+    row: ChannelSuggestionAdminDeliveryMockRow,
+    where: Record<string, unknown> | undefined,
+  ): boolean => {
+    if (!where) {
+      return true;
+    }
+    if (typeof where.id === 'string' && row.id !== where.id) {
+      return false;
+    }
+    if (typeof where.auditLogId === 'string' && row.auditLogId !== where.auditLogId) {
+      return false;
+    }
+    if (typeof where.adminUserId === 'string' && row.adminUserId !== where.adminUserId) {
+      return false;
+    }
+    if (typeof where.botKey === 'string' && row.botKey !== where.botKey) {
+      return false;
+    }
+    if (typeof where.status === 'string' && row.status !== where.status) {
+      return false;
+    }
+    if (where.status && typeof where.status === 'object') {
+      const statusFilter = where.status as { in?: string[]; not?: string };
+      if (Array.isArray(statusFilter.in) && !statusFilter.in.includes(row.status)) {
+        return false;
+      }
+      if (typeof statusFilter.not === 'string' && row.status === statusFilter.not) {
+        return false;
+      }
+    }
+    if ('lockToken' in where) {
+      if (where.lockToken === null && row.lockToken !== null) {
+        return false;
+      }
+      if (typeof where.lockToken === 'string' && row.lockToken !== where.lockToken) {
+        return false;
+      }
+    }
+    if ('lockedAt' in where && where.lockedAt === null && row.lockedAt !== null) {
+      return false;
+    }
+    if (where.lockedAt && typeof where.lockedAt === 'object') {
+      const lockedAtFilter = where.lockedAt as { lt?: Date; gte?: Date };
+      if (lockedAtFilter.lt && !(row.lockedAt && row.lockedAt < lockedAtFilter.lt)) {
+        return false;
+      }
+      if (lockedAtFilter.gte && !(row.lockedAt && row.lockedAt >= lockedAtFilter.gte)) {
+        return false;
+      }
+    }
+    return true;
+  };
   const prisma = {
     chat: {
       upsert: jest.fn().mockResolvedValue({
@@ -428,6 +502,135 @@ function createPrismaMock() {
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
       update: jest.fn().mockResolvedValue(undefined),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    channelSuggestionAdminDelivery: {
+      createMany: jest.fn().mockImplementation(
+        async ({
+          data,
+          skipDuplicates,
+        }: {
+          data: Array<Record<string, unknown>>;
+          skipDuplicates?: boolean;
+        }) => {
+          let count = 0;
+          for (const item of data) {
+            const auditLogId = String(item.auditLogId);
+            const adminUserId = String(item.adminUserId);
+            const botKey = String(item.botKey);
+            if (
+              skipDuplicates &&
+              channelSuggestionAdminDeliveries.some(
+                (row) =>
+                  row.auditLogId === auditLogId &&
+                  row.adminUserId === adminUserId &&
+                  row.botKey === botKey,
+              )
+            ) {
+              continue;
+            }
+            channelSuggestionAdminDeliveries.push({
+              id:
+                typeof item.id === 'string'
+                  ? item.id
+                  : `suggestion-delivery-${channelSuggestionAdminDeliveries.length + 1}`,
+              auditLogId,
+              adminUserId,
+              botKey,
+              botId: typeof item.botId === 'string' ? item.botId : null,
+              privateChatId:
+                typeof item.privateChatId === 'string' ? item.privateChatId : null,
+              status: typeof item.status === 'string' ? item.status : 'PENDING',
+              attemptCount: Number(item.attemptCount ?? 0),
+              remoteMessageId:
+                typeof item.remoteMessageId === 'string' ? item.remoteMessageId : null,
+              lastError: typeof item.lastError === 'string' ? item.lastError : null,
+              lastStatusCode:
+                typeof item.lastStatusCode === 'number' ? item.lastStatusCode : null,
+              lastErrorCode:
+                typeof item.lastErrorCode === 'string' ? item.lastErrorCode : null,
+              terminal: item.terminal === true,
+              sentAt: item.sentAt instanceof Date ? item.sentAt : null,
+              lockedAt: item.lockedAt instanceof Date ? item.lockedAt : null,
+              lockToken: typeof item.lockToken === 'string' ? item.lockToken : null,
+              createdAt:
+                item.createdAt instanceof Date
+                  ? item.createdAt
+                  : new Date('2026-03-01T00:00:00.000Z'),
+              updatedAt:
+                item.updatedAt instanceof Date
+                  ? item.updatedAt
+                  : new Date('2026-03-01T00:00:00.000Z'),
+            });
+            count += 1;
+          }
+          return { count };
+        },
+      ),
+      findMany: jest.fn().mockImplementation(
+        async ({ where }: { where?: Record<string, unknown> } = {}) =>
+          channelSuggestionAdminDeliveries.filter((row) =>
+            matchesChannelSuggestionAdminDeliveryWhere(row, where),
+          ),
+      ),
+      updateMany: jest.fn().mockImplementation(
+        async ({
+          where,
+          data,
+        }: {
+          where?: Record<string, unknown>;
+          data: Record<string, unknown>;
+        }) => {
+          let count = 0;
+          for (const row of channelSuggestionAdminDeliveries) {
+            if (!matchesChannelSuggestionAdminDeliveryWhere(row, where)) {
+              continue;
+            }
+            count += 1;
+            if (typeof data.status === 'string') {
+              row.status = data.status;
+            }
+            if ('botId' in data) {
+              row.botId = (data.botId as string | null) ?? null;
+            }
+            if ('privateChatId' in data) {
+              row.privateChatId = (data.privateChatId as string | null) ?? null;
+            }
+            if ('remoteMessageId' in data) {
+              row.remoteMessageId = (data.remoteMessageId as string | null) ?? null;
+            }
+            if ('lastError' in data) {
+              row.lastError = (data.lastError as string | null) ?? null;
+            }
+            if ('lastStatusCode' in data) {
+              row.lastStatusCode = (data.lastStatusCode as number | null) ?? null;
+            }
+            if ('lastErrorCode' in data) {
+              row.lastErrorCode = (data.lastErrorCode as string | null) ?? null;
+            }
+            if ('terminal' in data) {
+              row.terminal = data.terminal === true;
+            }
+            if ('sentAt' in data) {
+              row.sentAt = (data.sentAt as Date | null) ?? null;
+            }
+            if ('lockedAt' in data) {
+              row.lockedAt = (data.lockedAt as Date | null) ?? null;
+            }
+            if ('lockToken' in data) {
+              row.lockToken = (data.lockToken as string | null) ?? null;
+            }
+            if (
+              data.attemptCount &&
+              typeof data.attemptCount === 'object' &&
+              'increment' in data.attemptCount
+            ) {
+              row.attemptCount += Number((data.attemptCount as { increment: number }).increment);
+            }
+            row.updatedAt = new Date('2026-03-01T00:00:00.000Z');
+          }
+          return { count };
+        },
+      ),
     },
     managedBroadcastOccurrence: {
       findMany: jest.fn().mockResolvedValue([]),
@@ -34259,9 +34462,10 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     await expect(service.recoverStaleChannelSuggestionDeliveries()).resolves.toBe(1);
 
     const recoverySql = extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0]);
+    expect(recoverySql).toContain('channel_suggestion_admin_deliveries');
     expect(recoverySql).toContain("payload->'deliveryFailures'");
     expect(recoverySql).toContain("delivery_failure.value->>'recoverable' = 'true'");
-    expect(recoverySql).toContain('ORDER BY created_at ASC');
+    expect(recoverySql).toContain('ORDER BY audit.created_at ASC');
     expect(adminSuggestionDeliveryQueue.add).toHaveBeenCalledWith(
       'deliver-channel-suggestion',
       { auditLogId: 'suggestion-recoverable-delivery-failure-1' },
@@ -34476,6 +34680,253 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         }),
       }),
     );
+  });
+
+  it('claims durable suggestion admin delivery rows before sending', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw.mockResolvedValue([{ recipient_chat_id: '555001' }]);
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.auditLog.findUnique.mockResolvedValue({
+      id: 'suggestion-ledger-claim-1',
+      chatId: 'channel-1',
+      actorUserId: 'user-1',
+      action: 'CHANNEL_DIALOG_SUGGESTION',
+      payload: {
+        type: 'suggest',
+        actorUserId: 'user-1',
+        authorDisplayName: 'Пользователь',
+        text: 'Проверить ledger',
+        delivered: false,
+        deliveredToUserId: null,
+        deliveredToUserIds: [],
+        deliveries: [],
+        source: 'private_bot',
+        reviewStatus: 'pending',
+        hasImage: false,
+        imageCount: 0,
+        hasVideo: false,
+        images: [],
+      },
+      createdAt: new Date('2026-03-10T12:00:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithId: jest.fn().mockImplementation(async () => {
+        const rows = await prisma.channelSuggestionAdminDelivery.findMany({
+          where: { auditLogId: 'suggestion-ledger-claim-1' },
+        });
+        expect(rows).toEqual([
+          expect.objectContaining({
+            adminUserId: 'admin-1',
+            status: 'SENDING',
+            attemptCount: 1,
+            remoteMessageId: null,
+            lockToken: expect.any(String),
+          }),
+        ]);
+        return { messageId: 'mid-suggestion-ledger-1', url: null };
+      }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await service.processChannelSuggestionDeliveryJob('suggestion-ledger-claim-1');
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    await expect(
+      prisma.channelSuggestionAdminDelivery.findMany({
+        where: { auditLogId: 'suggestion-ledger-claim-1' },
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        adminUserId: 'admin-1',
+        status: 'SENT',
+        attemptCount: 1,
+        remoteMessageId: 'mid-suggestion-ledger-1',
+        privateChatId: '555001',
+      }),
+    ]);
+  });
+
+  it('does not resend successful suggestion admin deliveries when retrying remaining admins', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw.mockResolvedValue([{ recipient_chat_id: '555001' }]);
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.auditLog.findUnique.mockResolvedValue({
+      id: 'suggestion-ledger-retry-1',
+      chatId: 'channel-1',
+      actorUserId: 'user-1',
+      action: 'CHANNEL_DIALOG_SUGGESTION',
+      payload: {
+        type: 'suggest',
+        actorUserId: 'user-1',
+        authorDisplayName: 'Пользователь',
+        text: 'Повторить оставшимся',
+        delivered: false,
+        deliveredToUserId: null,
+        deliveredToUserIds: [],
+        deliveries: [],
+        source: 'private_bot',
+        reviewStatus: 'pending',
+        hasImage: false,
+        imageCount: 0,
+        hasVideo: false,
+        images: [],
+      },
+      createdAt: new Date('2026-03-10T12:00:00.000Z'),
+    });
+
+    const rateLimitError = {
+      response: {
+        status: 503,
+        data: {
+          code: 'temporarily.unavailable',
+          message: 'temporarily unavailable',
+        },
+      },
+    };
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1', 'admin-2']),
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockResolvedValueOnce({ messageId: 'mid-suggestion-admin-1', url: null })
+        .mockRejectedValueOnce(rateLimitError)
+        .mockResolvedValueOnce({ messageId: 'mid-suggestion-admin-2', url: null }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await service.processChannelSuggestionDeliveryJob('suggestion-ledger-retry-1');
+    await expect(
+      prisma.channelSuggestionAdminDelivery.findMany({
+        where: { auditLogId: 'suggestion-ledger-retry-1' },
+      }),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          adminUserId: 'admin-1',
+          status: 'SENT',
+          remoteMessageId: 'mid-suggestion-admin-1',
+          attemptCount: 1,
+        }),
+        expect.objectContaining({
+          adminUserId: 'admin-2',
+          status: 'FAILED',
+          attemptCount: 1,
+          terminal: false,
+        }),
+      ]),
+    );
+
+    await service.processChannelSuggestionDeliveryJob('suggestion-ledger-retry-1');
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(3);
+    await expect(
+      prisma.channelSuggestionAdminDelivery.findMany({
+        where: { auditLogId: 'suggestion-ledger-retry-1' },
+      }),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          adminUserId: 'admin-1',
+          status: 'SENT',
+          remoteMessageId: 'mid-suggestion-admin-1',
+          attemptCount: 1,
+        }),
+        expect.objectContaining({
+          adminUserId: 'admin-2',
+          status: 'SENT',
+          remoteMessageId: 'mid-suggestion-admin-2',
+          attemptCount: 2,
+        }),
+      ]),
+    );
+  });
+
+  it('marks timed out suggestion admin sends ambiguous and does not auto retry them', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw.mockResolvedValue([{ recipient_chat_id: '555001' }]);
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.auditLog.findUnique.mockResolvedValue({
+      id: 'suggestion-ledger-timeout-1',
+      chatId: 'channel-1',
+      actorUserId: 'user-1',
+      action: 'CHANNEL_DIALOG_SUGGESTION',
+      payload: {
+        type: 'suggest',
+        actorUserId: 'user-1',
+        authorDisplayName: 'Пользователь',
+        text: 'Не дублировать таймаут',
+        delivered: false,
+        deliveredToUserId: null,
+        deliveredToUserIds: [],
+        deliveries: [],
+        source: 'private_bot',
+        reviewStatus: 'pending',
+        hasImage: false,
+        imageCount: 0,
+        hasVideo: false,
+        images: [],
+      },
+      createdAt: new Date('2026-03-10T12:00:00.000Z'),
+    });
+    const timeoutError = Object.assign(new Error('timeout of 5000ms exceeded'), {
+      code: 'ECONNABORTED',
+    });
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithId: jest.fn().mockRejectedValue(timeoutError),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await service.processChannelSuggestionDeliveryJob('suggestion-ledger-timeout-1');
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    await expect(
+      prisma.channelSuggestionAdminDelivery.findMany({
+        where: { auditLogId: 'suggestion-ledger-timeout-1' },
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        adminUserId: 'admin-1',
+        status: 'AMBIGUOUS',
+        attemptCount: 1,
+        remoteMessageId: null,
+        terminal: false,
+      }),
+    ]);
+
+    maxClient.getChatAdminIds.mockClear();
+    await service.processChannelSuggestionDeliveryJob('suggestion-ledger-timeout-1');
+
+    expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
   });
 
   it('does not retry attempted suggestion delivery when failures are terminal', async () => {
