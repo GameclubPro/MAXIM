@@ -4,25 +4,18 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
+# shellcheck source=infra/scripts/lib/deploy-topology.sh
+source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"
+
 DURATION_SEC="${1:-${MAXIM_MONITOR_DURATION_SEC:-1800}}"
 INTERVAL_SEC="${2:-${MAXIM_MONITOR_INTERVAL_SEC:-300}}"
 TAIL_LINES="${MAXIM_MONITOR_LOG_TAIL_LINES:-300}"
 LOG_FILE="${MAXIM_MONITOR_LOG:-/tmp/maxim-vps-readonly-monitor-$(date +%Y%m%d%H%M%S).log}"
 PUBLIC_URL="${MAXIM_VPS_PUBLIC_URL:-https://major-maksimov.ru}"
+SIGNAL_WINDOW_MIN="${MAXIM_MONITOR_SIGNAL_WINDOW_MIN:-30}"
+PUBLIC_URL="${PUBLIC_URL%/}"
 
-SERVICES=(
-  api-ingress
-  api-admin
-  api-enqueue
-  api-moderation
-  api-moderation-critical
-  api-moderation-join
-  api-moderation-realtime-b
-  api-moderation-realtime-c
-  api-moderation-realtime-d
-  api-moderation-background
-  api-action
-)
+SERVICES=("${MAXIM_PRODUCTION_API_SERVICES[@]}")
 
 is_positive_integer() {
   [[ "$1" =~ ^[1-9][0-9]*$ ]]
@@ -40,6 +33,11 @@ fi
 
 if ! is_positive_integer "$TAIL_LINES"; then
   echo "MAXIM_MONITOR_LOG_TAIL_LINES must be a positive integer, got: $TAIL_LINES" >&2
+  exit 2
+fi
+
+if ! is_positive_integer "$SIGNAL_WINDOW_MIN"; then
+  echo "MAXIM_MONITOR_SIGNAL_WINDOW_MIN must be a positive integer, got: $SIGNAL_WINDOW_MIN" >&2
   exit 2
 fi
 
@@ -145,18 +143,120 @@ if (!summary.ok || !summary.database || !summary.redis) {
 NODE
 }
 
+summarize_real_chat_signals() {
+  local remote_command
+
+  remote_command=$(cat <<REMOTE
+docker compose --env-file .env -p infra -f infra/docker-compose.yml exec -T postgres \\
+  psql -U maxim -d maxim -v window_min="$SIGNAL_WINDOW_MIN" -P pager=off <<'SQL'
+\\echo webhook_status_last_window
+select status, count(*) as count
+from webhook_events
+where created_at >= now() - make_interval(mins => :window_min)
+group by 1
+order by 1;
+
+\\echo webhook_failed_last_window
+select count(*) as failed, max(created_at) as last_failed_at
+from webhook_events
+where status = 'FAILED'
+  and created_at >= now() - make_interval(mins => :window_min);
+
+\\echo night_mode_close_duplicates_last_window
+with close_events as (
+  select id, chat_id, metadata->>'sessionKey' as session_key, message_id, created_at,
+         row_number() over (
+           partition by chat_id, metadata->>'sessionKey'
+           order by created_at desc, id desc
+         ) as newest_rank,
+         count(*) over (partition by chat_id, metadata->>'sessionKey') as group_count
+  from moderation_events
+  where rule_code = 'NIGHT_MODE_CLOSE_NOTICE'
+    and created_at >= now() - make_interval(mins => :window_min)
+    and metadata->>'sessionKey' is not null
+), unrecovered_extras as (
+  select *
+  from close_events
+  where group_count > 1
+    and newest_rank > 1
+    and not exists (
+      select 1
+      from moderation_events recovery
+      where recovery.chat_id = close_events.chat_id
+        and recovery.rule_code = 'NIGHT_MODE_CLOSE_NOTICE_RECOVERY_DELETE'
+        and recovery.created_at >= close_events.created_at
+        and (
+          recovery.message_id = close_events.message_id
+          or recovery.metadata->>'originalEventId' = close_events.id
+        )
+    )
+)
+select count(distinct (chat_id, session_key)) as duplicate_groups,
+       count(*) as duplicate_extra_events
+from unrecovered_extras;
+
+\\echo night_mode_events_last_window
+select rule_code,
+       count(*) as events,
+       count(distinct (chat_id, metadata->>'sessionKey')) as chat_sessions
+from moderation_events
+where rule_code in (
+    'NIGHT_MODE_CLOSE_NOTICE',
+    'NIGHT_MODE_OPEN_NOTICE',
+    'NIGHT_MODE_CLOSE_NOTICE_RECOVERY_DELETE'
+  )
+  and created_at >= now() - make_interval(mins => :window_min)
+group by 1
+order by 1;
+SQL
+REMOTE
+)
+
+  ./infra/scripts/vps-connect.sh exec "$remote_command"
+}
+
+summarize_bullmq_state() {
+  local remote_command
+
+  remote_command=$(cat <<'REMOTE'
+queues=(
+  webhook-events
+  max-actions
+  night-mode-transitions
+  managed-broadcast
+  managed-entities-refresh
+  chat-admin-roster-sync
+  suggestion-delivery
+  manual-fanout
+)
+docker compose --env-file .env -p infra -f infra/docker-compose.yml exec -T redis sh -lc '
+for q in "$@"; do
+  printf "%s wait=" "$q"; redis-cli --raw llen "bull:$q:wait"
+  printf "%s active=" "$q"; redis-cli --raw llen "bull:$q:active"
+  printf "%s failed=" "$q"; redis-cli --raw llen "bull:$q:failed"
+  printf "%s delayed=" "$q"; redis-cli --raw zcard "bull:$q:delayed"
+done
+' sh "${queues[@]}"
+REMOTE
+)
+
+  ./infra/scripts/vps-connect.sh exec "$remote_command"
+}
+
 sample_once() {
   local sample_index="$1"
 
   echo "===== sample $sample_index $(date -Is) ====="
   run_step health ./infra/scripts/vps-connect.sh health
   run_step semantic-health summarize_local_ready_health
+  run_step real-chat-signals summarize_real_chat_signals
+  run_step bullmq-state summarize_bullmq_state
   run_step ps ./infra/scripts/vps-connect.sh ps
   run_step restart-counts ./infra/scripts/vps-connect.sh exec \
     'ids=$(docker ps -q --filter label=com.docker.compose.project=infra); docker inspect --format "{{.Name}}\t{{.RestartCount}}\t{{.State.Status}}\t{{.State.StartedAt}}" $ids'
   run_step log-scan scan_service_logs
   run_step public-app curl -fsS --max-time 15 -o /dev/null -w 'app %{http_code} %{time_total}\n' \
-    https://major-maksimov.ru/app/
+    "$PUBLIC_URL/app/"
 }
 
 run_monitor() {
@@ -166,6 +266,7 @@ run_monitor() {
   end_at=$(($(date +%s) + DURATION_SEC))
   echo "Readonly VPS monitor started at $(date -Is)"
   echo "duration_sec=$DURATION_SEC interval_sec=$INTERVAL_SEC log_tail_lines=$TAIL_LINES"
+  echo "signal_window_min=$SIGNAL_WINDOW_MIN"
   echo "log_file=$LOG_FILE"
 
   while true; do

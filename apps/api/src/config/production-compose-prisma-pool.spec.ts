@@ -64,6 +64,17 @@ describe('production compose Prisma pool caps', () => {
 });
 
 describe('production deploy script guards', () => {
+  it('keeps shared shell API service topology aligned with production guards', () => {
+    const topology = readRepoFile('infra/scripts/lib/deploy-topology.sh');
+    const monitor = readRepoFile('infra/scripts/vps-monitor-readonly.sh');
+
+    expect(readShellArray(topology, 'MAXIM_PRODUCTION_API_SERVICES')).toEqual(
+      Object.keys(API_SERVICE_POOL_CAPS),
+    );
+    expect(monitor).toContain('source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"');
+    expect(monitor).toContain('SERVICES=("${MAXIM_PRODUCTION_API_SERVICES[@]}")');
+  });
+
   it('keeps the legacy deploy script fail-closed before deploy side effects', () => {
     const script = readRepoFile('infra/scripts/deploy.sh');
     const gateCall = lineCallIndex(script, 'require_legacy_deploy_confirmation');
@@ -138,6 +149,19 @@ function readEnvNumber(serviceBlock: string, key: string): number {
   }
 
   return Number(match[1]);
+}
+
+function readShellArray(script: string, variableName: string): string[] {
+  const match = new RegExp(
+    `^${escapeRegExp(variableName)}=\\(\\n([\\s\\S]*?)^\\)`,
+    'mu',
+  ).exec(script);
+
+  if (!match?.[1]) {
+    throw new Error(`Missing shell array ${variableName}`);
+  }
+
+  return Array.from(match[1].matchAll(/^\s+"([^"]+)"\s*$/gmu), ([, item]) => item);
 }
 
 function lineCallIndex(script: string, command: string): number {
