@@ -195,6 +195,16 @@ enum ManualModerationFanoutLedgerStatus {
   FAILED_TERMINAL
 }
 
+enum MaxActionLedgerStatus {
+  ENQUEUED
+  IN_PROGRESS
+  SUCCEEDED
+  SKIPPED
+  AMBIGUOUS
+  FAILED_RETRYABLE
+  FAILED_TERMINAL
+}
+
 enum ManagedAutopostRuleStatus {
   ACTIVE
   PAUSED
@@ -1408,6 +1418,39 @@ model ManualModerationFanoutLedgerEntry {
   @@index([jobId, operation, targetChatId], map: "manual_mod_fanout_ledger_job_operation_target_idx")
   @@index([rootIntentKey, operation, targetChatId], map: "manual_mod_fanout_ledger_root_operation_target_idx")
   @@map("manual_moderation_fanout_ledger")
+}
+
+model MaxActionLedgerEntry {
+  id               String                @id @default(cuid())
+  jobId            String                @unique @map("job_id")
+  actionType       String                @map("action_type")
+  chatId           String                @map("chat_id")
+  botId            String?               @map("bot_id")
+  messageId        String?               @map("message_id")
+  userId           String?               @map("user_id")
+  sourceTag        String?               @map("source_tag")
+  trafficClass     String?               @map("traffic_class")
+  actionHealthLane String?               @map("action_health_lane")
+  status           MaxActionLedgerStatus @default(ENQUEUED)
+  ambiguous        Boolean               @default(false)
+  terminal         Boolean               @default(false)
+  attemptCount     Int                   @default(0) @map("attempt_count")
+  lastStatusCode   Int?                  @map("last_status_code")
+  lastErrorCode    String?               @map("last_error_code")
+  lastError        String?               @map("last_error")
+  metadata         Json?
+  enqueuedAt       DateTime?             @map("enqueued_at")
+  firstAttemptAt   DateTime?             @map("first_attempt_at")
+  lastAttemptAt    DateTime?             @map("last_attempt_at")
+  completedAt      DateTime?             @map("completed_at")
+  createdAt        DateTime              @default(now()) @map("created_at")
+  updatedAt        DateTime              @updatedAt @map("updated_at")
+
+  @@index([status, terminal, updatedAt], map: "max_action_ledger_status_terminal_updated_idx")
+  @@index([chatId, actionType, updatedAt], map: "max_action_ledger_chat_action_updated_idx")
+  @@index([botId, status, updatedAt], map: "max_action_ledger_bot_status_updated_idx")
+  @@index([chatId, userId, actionType, updatedAt], map: "max_action_ledger_chat_user_action_updated_idx")
+  @@map("max_action_ledger")
 }
 
 model ChannelAutoPostAttachMarker {

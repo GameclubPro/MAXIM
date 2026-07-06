@@ -16,6 +16,7 @@ import type { MaxBotLifecycleState } from './max-bot-config.util';
 import { canExecuteActionsForBotState } from './max-bot-state.util';
 import { normalizeMaxInlineKeyboardButtons } from './max-inline-keyboard-layout';
 import { isAmbiguousMaxMutationError } from './max-send-ambiguity.util';
+import { MaxActionLedgerService } from './max-action-ledger.service';
 
 export type MaxBotChat = {
   chatId: string;
@@ -424,6 +425,8 @@ export class MaxClientService implements OnModuleDestroy {
     private readonly actionQueue?: Queue<MaxActionJob>,
     @Optional()
     private readonly runtimeDiagnosticsService?: RuntimeDiagnosticsService,
+    @Optional()
+    private readonly actionLedgerService?: MaxActionLedgerService,
   ) {
     this.baseUrl = configService.getOrThrow<string>('MAX_API_BASE_URL');
     this.isProduction =
@@ -3474,23 +3477,41 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     if (this.dispatchEnabled && this.actionQueue) {
+      await this.actionLedgerService?.assertCanEnqueue(job);
+
       if (scheduledJobId) {
         await this.removeQueuedActionJob(scheduledJobId);
       } else if (logicalIdempotencyKey) {
         await this.removeRetainedFailedActionJob(logicalIdempotencyKey, payload.actionType);
       }
 
-      await this.actionQueue.add('execute-max-action', job, {
-        jobId: job.idempotencyKey,
-        attempts: 5,
-        removeOnComplete: true,
-        removeOnFail: MAX_ACTION_FAILED_JOB_RETENTION,
-        ...(delayMs > 0 ? { delay: delayMs } : {}),
-        backoff: {
-          type: 'exponential',
-          delay: 1_000,
-        },
-      });
+      await this.actionLedgerService?.recordEnqueued(job);
+      try {
+        await this.actionQueue.add('execute-max-action', job, {
+          jobId: job.idempotencyKey,
+          attempts: 5,
+          removeOnComplete: true,
+          removeOnFail: MAX_ACTION_FAILED_JOB_RETENTION,
+          ...(delayMs > 0 ? { delay: delayMs } : {}),
+          backoff: {
+            type: 'exponential',
+            delay: 1_000,
+          },
+        });
+      } catch (error: unknown) {
+        await this.actionLedgerService?.recordFailed(job, error).catch((ledgerError: unknown) => {
+          this.logger.warn(
+            {
+              actionType: job.actionType,
+              chatId: job.chatId,
+              botId: job.botId,
+              error: ledgerError instanceof Error ? ledgerError.message : 'Unknown error',
+            },
+            'Failed to record MAX action enqueue failure',
+          );
+        });
+        throw error;
+      }
       return;
     }
 

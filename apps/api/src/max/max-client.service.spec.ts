@@ -4352,7 +4352,14 @@ describe('MaxClientService inline keyboard guardrails', () => {
 });
 
 describe('MaxClientService delayed member actions', () => {
-  function createServiceWithQueue(queue: { add: jest.Mock; getJob: jest.Mock }) {
+  function createServiceWithQueue(
+    queue: { add: jest.Mock; getJob: jest.Mock },
+    actionLedgerService?: {
+      assertCanEnqueue?: jest.Mock;
+      recordEnqueued?: jest.Mock;
+      recordFailed?: jest.Mock;
+    },
+  ) {
     const configService = {
       getOrThrow: jest.fn((key: string) => {
         if (key === 'MAX_API_BASE_URL') {
@@ -4411,6 +4418,8 @@ describe('MaxClientService delayed member actions', () => {
       botRegistry as never,
       botContext as never,
       queue as never,
+      undefined,
+      actionLedgerService as never,
     );
   }
 
@@ -4585,6 +4594,81 @@ describe('MaxClientService delayed member actions', () => {
     expect(banJobId).toMatch(/^max-action__logical__/);
     expect(new Set([deleteJobId, kickJobId, banJobId]).size).toBe(3);
     expect(jobsById.size).toBe(3);
+
+    await service.onModuleDestroy();
+  });
+
+  it('records queued actions in the durable ledger before BullMQ add', async () => {
+    const queue = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(null),
+    };
+    const actionLedgerService = {
+      assertCanEnqueue: jest.fn().mockResolvedValue(undefined),
+      recordEnqueued: jest.fn().mockResolvedValue(undefined),
+      recordFailed: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = createServiceWithQueue(queue, actionLedgerService);
+
+    await service.banMember('chat-1', 'user-1', {
+      botId: '777000_bot',
+      sourceTag: 'interactive',
+    });
+
+    const job = queue.add.mock.calls[0][1];
+    expect(actionLedgerService.assertCanEnqueue).toHaveBeenCalledWith(job);
+    expect(actionLedgerService.recordEnqueued).toHaveBeenCalledWith(job);
+    expect(queue.add).toHaveBeenCalledTimes(1);
+    expect(actionLedgerService.recordEnqueued.mock.invocationCallOrder[0]).toBeLessThan(
+      queue.add.mock.invocationCallOrder[0],
+    );
+    expect(actionLedgerService.recordFailed).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('does not enqueue actions blocked by a durable ambiguous ledger entry', async () => {
+    const queue = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(null),
+    };
+    const actionLedgerService = {
+      assertCanEnqueue: jest.fn().mockRejectedValue(new UnrecoverableError('manual review')),
+      recordEnqueued: jest.fn().mockResolvedValue(undefined),
+      recordFailed: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = createServiceWithQueue(queue, actionLedgerService);
+
+    await expect(service.banMember('chat-1', 'user-1')).rejects.toBeInstanceOf(
+      UnrecoverableError,
+    );
+
+    expect(queue.getJob).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordEnqueued).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordFailed).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('records queue add failures in the durable ledger', async () => {
+    const error = new Error('redis is unavailable');
+    const queue = {
+      add: jest.fn().mockRejectedValue(error),
+      getJob: jest.fn().mockResolvedValue(null),
+    };
+    const actionLedgerService = {
+      assertCanEnqueue: jest.fn().mockResolvedValue(undefined),
+      recordEnqueued: jest.fn().mockResolvedValue(undefined),
+      recordFailed: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = createServiceWithQueue(queue, actionLedgerService);
+
+    await expect(service.banMember('chat-1', 'user-1')).rejects.toBe(error);
+
+    const job = queue.add.mock.calls[0][1];
+    expect(actionLedgerService.recordEnqueued).toHaveBeenCalledWith(job);
+    expect(actionLedgerService.recordFailed).toHaveBeenCalledWith(job, error);
 
     await service.onModuleDestroy();
   });

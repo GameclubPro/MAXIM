@@ -7,6 +7,7 @@ import { getAppRole, roleRunsAction } from '../runtime/app-role';
 import { SystemModule } from '../system/system.module';
 import { ManagedEntityAccessLossService } from './managed-entity-access-loss.service';
 import { MaxActionDispatchService } from './max-action-dispatch.service';
+import { MaxActionLedgerService } from './max-action-ledger.service';
 import { MaxActionProcessor } from './max-action.processor';
 import { MaxChatAdminRosterSyncProcessor } from './max-chat-admin-roster-sync.processor';
 import { MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE } from './max-chat-admin-roster-sync.queue';
@@ -23,6 +24,7 @@ import { MaxBotModule } from './max-bot.module';
 const maxProviders = [
   MaxClientService,
   MaxActionDispatchService,
+  MaxActionLedgerService,
   MaxChatAdminRosterSyncService,
   MaxBotExecutionPlannerService,
   MaxMembershipLookupService,
@@ -52,6 +54,7 @@ const maxProviders = [
   exports: [
     MaxClientService,
     MaxActionDispatchService,
+    MaxActionLedgerService,
     MaxChatAdminRosterSyncService,
     MaxBotExecutionPlannerService,
     MaxMembershipLookupService,

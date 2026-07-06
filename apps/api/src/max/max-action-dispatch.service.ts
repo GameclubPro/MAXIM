@@ -1,5 +1,6 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { UnrecoverableError } from 'bullmq';
+import { MaxActionLedgerService } from './max-action-ledger.service';
 import { MaxClientService, type MaxActionJob } from './max-client.service';
 import {
   ManagedEntityAccessLossService,
@@ -14,15 +15,22 @@ export class MaxActionDispatchService {
     private readonly maxClient: MaxClientService,
     @Optional()
     private readonly managedEntityAccessLossService?: ManagedEntityAccessLossService,
+    @Optional()
+    private readonly actionLedgerService?: MaxActionLedgerService,
   ) {}
 
   async execute(job: MaxActionJob): Promise<void> {
+    await this.actionLedgerService?.recordStarted(job);
+
     try {
       await this.maxClient.executeActionJob(job);
+      await this.recordLedgerSucceeded(job);
     } catch (error: unknown) {
       if (await this.handleTerminalManagedEntityError(job, error)) {
+        await this.recordLedgerSkipped(job, this.extractErrorMessage(error));
         return;
       }
+      await this.recordLedgerFailed(job, error);
       throw error;
     }
   }
@@ -88,5 +96,62 @@ export class MaxActionDispatchService {
       default:
         return null;
     }
+  }
+
+  private async recordLedgerSucceeded(job: MaxActionJob): Promise<void> {
+    try {
+      await this.actionLedgerService?.recordSucceeded(job);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          actionType: job.actionType,
+          chatId: job.chatId,
+          botId: job.botId,
+          error: this.extractErrorMessage(error),
+        },
+        'Failed to record successful MAX action ledger outcome',
+      );
+    }
+  }
+
+  private async recordLedgerSkipped(job: MaxActionJob, reason: string): Promise<void> {
+    try {
+      await this.actionLedgerService?.recordSkipped(job, reason);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          actionType: job.actionType,
+          chatId: job.chatId,
+          botId: job.botId,
+          error: this.extractErrorMessage(error),
+        },
+        'Failed to record skipped MAX action ledger outcome',
+      );
+    }
+  }
+
+  private async recordLedgerFailed(job: MaxActionJob, error: unknown): Promise<void> {
+    try {
+      await this.actionLedgerService?.recordFailed(job, error);
+    } catch (ledgerError: unknown) {
+      this.logger.warn(
+        {
+          actionType: job.actionType,
+          chatId: job.chatId,
+          botId: job.botId,
+          error: this.extractErrorMessage(ledgerError),
+          originalError: this.extractErrorMessage(error),
+        },
+        'Failed to record failed MAX action ledger outcome',
+      );
+    }
+  }
+
+  private extractErrorMessage(error: unknown): string {
+    if (error instanceof Error && error.message.trim().length > 0) {
+      return error.message.trim();
+    }
+
+    return String(error).trim();
   }
 }
