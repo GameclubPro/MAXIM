@@ -10,6 +10,7 @@ import { queryKeys } from '../lib/query-keys';
 import '../styles/system-page.css';
 
 type SystemModeSelection = 'auto' | 'normal' | 'degrade';
+type WebhookSubscriptionStatus = 'healthy' | 'warning' | 'critical' | 'disabled';
 
 const SYSTEM_MODE_OPTIONS = [
   { value: 'auto', label: 'Auto' },
@@ -160,6 +161,55 @@ function rollbackChipStatus(status: string): 'healthy' | 'warning' | 'critical' 
   return 'healthy';
 }
 
+function webhookStatusChipClass(status: WebhookSubscriptionStatus | undefined): string {
+  if (status === 'critical') {
+    return 'chip chip--danger';
+  }
+
+  if (status === 'warning') {
+    return 'chip chip--warning';
+  }
+
+  if (status === 'healthy') {
+    return 'chip chip--success';
+  }
+
+  return 'chip';
+}
+
+function webhookStatusRank(status: WebhookSubscriptionStatus | undefined): number {
+  if (status === 'critical') {
+    return 3;
+  }
+
+  if (status === 'warning') {
+    return 2;
+  }
+
+  if (status === 'disabled') {
+    return 1;
+  }
+
+  return 0;
+}
+
+function sumNumericRecord(record: Record<string, number> | undefined): number {
+  if (!record) {
+    return 0;
+  }
+
+  return Object.values(record).reduce((sum, value) => sum + value, 0);
+}
+
+function formatBotIssue(code: string): string {
+  const labels: Record<string, string> = {
+    'no-active-memberships': 'нет active memberships',
+    'no-incoming-webhooks': 'нет входящих webhook',
+  };
+
+  return labels[code] ?? code;
+}
+
 export function SystemPage({ api }: { api: ApiTransport }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
@@ -276,6 +326,56 @@ export function SystemPage({ api }: { api: ApiTransport }) {
   const queueGroups = dashboard.queueGroupHealth?.groups.slice(0, 16) ?? [];
   const spammerReadModel = dashboard.spammerReadModel;
   const spammerSurfaceTimings = dashboard.spammerSurfaces?.timings.slice(0, 6) ?? [];
+  const ownershipAnomalyCount = Object.values(dashboard.ownership.anomalies).reduce(
+    (sum, value) => sum + value,
+    0,
+  );
+  const recoverableOwnershipCount =
+    dashboard.ownership.anomalies.recoverableLegacyOnly +
+    dashboard.ownership.anomalies.recoverableFromMemberships;
+  const webhookOperationalDiagnostics = dashboard.webhookSubscription.operationalDiagnostics;
+  const botRows = Array.from(
+    new Set([
+      ...Object.keys(dashboard.webhookSubscription.bots),
+      ...Object.keys(dashboard.queues.bots),
+    ]),
+  )
+    .map((botId) => {
+      const webhook = dashboard.webhookSubscription.bots[botId];
+      const queues = dashboard.queues.bots[botId];
+      const operationalDiagnostics = webhook?.operationalDiagnostics;
+
+      return {
+        botId,
+        webhook,
+        queues,
+        operationalDiagnostics,
+        issueCodes: operationalDiagnostics?.issueCodes ?? [],
+        queuedWork: sumNumericRecord(queues?.queuedByQueue),
+        failedEvents: queues?.webhookEvents.failed.count ?? 0,
+        receivedEvents: queues?.webhookEvents.received.count ?? 0,
+        effectiveLagSec: queues?.effectiveLagSec ?? 0,
+      };
+    })
+    .sort((left, right) => {
+      const statusDiff =
+        webhookStatusRank(right.webhook?.status) - webhookStatusRank(left.webhook?.status);
+      if (statusDiff !== 0) {
+        return statusDiff;
+      }
+
+      const failedDiff = right.failedEvents - left.failedEvents;
+      if (failedDiff !== 0) {
+        return failedDiff;
+      }
+
+      const lagDiff = right.effectiveLagSec - left.effectiveLagSec;
+      if (lagDiff !== 0) {
+        return lagDiff;
+      }
+
+      return left.botId.localeCompare(right.botId);
+    });
   return (
     <div className="page-stack page-enter">
       <GlassCard className="system-hero" elevated>
@@ -641,6 +741,106 @@ export function SystemPage({ api }: { api: ApiTransport }) {
           )}
         </GlassCard>
       </section>
+
+      <GlassCard className="system-panel" elevated>
+        <div className="system-panel__head">
+          <div>
+            <h2>Боты</h2>
+            <p>Операционный срез по multi-bot ownership, webhook и per-bot очередям.</p>
+          </div>
+          <span className={webhookStatusChipClass(dashboard.webhookSubscription.status)}>
+            {dashboard.webhookSubscription.botCount} webhook bots
+          </span>
+        </div>
+        <div className="system-bot-overview-grid">
+          <article className="system-runtime-card">
+            <span>Lifecycle</span>
+            <strong>
+              {dashboard.ownership.bots.active}/{dashboard.ownership.bots.configured} active
+            </strong>
+            <small>
+              visible {dashboard.ownership.bots.adminVisible} · draining{' '}
+              {dashboard.ownership.bots.draining} · dormant {dashboard.ownership.bots.dormant} ·
+              disabled {dashboard.ownership.bots.disabled}
+            </small>
+          </article>
+          <article className="system-runtime-card">
+            <span>Ownership coverage</span>
+            <strong>{formatPercent(dashboard.ownership.entities.total.coverageRatio)}</strong>
+            <small>
+              {dashboard.ownership.entities.total.withPrimary}/
+              {dashboard.ownership.entities.total.total} entities ·{' '}
+              {dashboard.ownership.entities.total.withoutPrimary} without primary
+            </small>
+          </article>
+          <article className="system-runtime-card">
+            <span>Anomalies</span>
+            <strong>{ownershipAnomalyCount}</strong>
+            <small>
+              recoverable {recoverableOwnershipCount} · shared chats{' '}
+              {dashboard.ownership.anomalies.sharedChats}
+            </small>
+          </article>
+          <article className="system-runtime-card">
+            <span>Webhook warnings</span>
+            <strong>{webhookOperationalDiagnostics?.warningBotCount ?? 0}</strong>
+            <small>
+              no memberships{' '}
+              {webhookOperationalDiagnostics?.noActiveMembershipBotIds.length ?? 0} · no incoming{' '}
+              {webhookOperationalDiagnostics?.noIncomingWebhookBotIds.length ?? 0}
+            </small>
+          </article>
+        </div>
+        {botRows.length > 0 ? (
+          <div className="system-bot-list">
+            {botRows.map((row) => (
+              <article key={row.botId} className="system-bot-card">
+                <div className="system-bot-card__head">
+                  <div>
+                    <strong>{row.botId}</strong>
+                    <small>
+                      {row.operationalDiagnostics?.lifecycleState ?? 'state n/a'} · memberships{' '}
+                      {row.operationalDiagnostics?.activeMemberships ?? 0}
+                    </small>
+                  </div>
+                  <span className={webhookStatusChipClass(row.webhook?.status)}>
+                    {row.webhook?.status ?? 'unknown'}
+                  </span>
+                </div>
+                <div className="system-bot-card__metrics">
+                  <span>{row.receivedEvents} received</span>
+                  <span>{row.queuedWork} queued</span>
+                  <span>{row.failedEvents} failed</span>
+                  <span>{formatLag(row.effectiveLagSec)} lag</span>
+                </div>
+                {row.issueCodes.length > 0 || row.webhook?.lastError ? (
+                  <div className="system-chip-list system-chip-list--compact">
+                    {row.issueCodes.map((issue) => (
+                      <span key={`${row.botId}:${issue}`} className="chip chip--warning">
+                        {formatBotIssue(issue)}
+                      </span>
+                    ))}
+                    {row.webhook?.lastError ? (
+                      <span className="chip chip--danger">{row.webhook.lastError}</span>
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="system-panel__hint">
+                    Последний webhook{' '}
+                    {row.operationalDiagnostics?.lastIncomingWebhookAt
+                      ? formatDateTime(row.operationalDiagnostics.lastIncomingWebhookAt)
+                      : 'n/a'}
+                  </p>
+                )}
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="system-panel__hint">
+            Snapshot пока не содержит per-bot webhook rows; смотрите общий статус подписки выше.
+          </p>
+        )}
+      </GlassCard>
 
       <GlassCard className="system-panel" elevated>
         <div className="system-panel__head">

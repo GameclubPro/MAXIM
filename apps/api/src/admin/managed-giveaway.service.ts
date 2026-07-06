@@ -77,6 +77,7 @@ import {
 import { normalizeMembershipAccessSnapshot } from '../max/max-bot-access-policy.util';
 import { collectActiveManagedEntityBotMembershipIdsByChat } from '../max/managed-entity-bot-access.util';
 import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
+import { isAmbiguousMaxSendError } from '../max/max-send-ambiguity.util';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   BackgroundRuntimeGovernorService,
@@ -395,6 +396,11 @@ export class ManagedGiveawayService {
     if (giveaway.status !== ManagedGiveawayStatus.DRAFT) {
       throw new BadRequestException('Публиковать можно только черновик розыгрыша.');
     }
+    if (giveaway.lockedAt) {
+      throw new BadRequestException(
+        'Публикация розыгрыша уже отправлялась и требует ручной проверки перед повтором.',
+      );
+    }
     await this.ensureNoConcurrentManagedGiveaway(sourceChatId, entityType, giveaway.id);
 
     const now = new Date();
@@ -405,55 +411,100 @@ export class ManagedGiveawayService {
       throw new BadRequestException('Добавьте текст розыгрыша в чат-боте перед публикацией.');
     }
     const publicationBotId = await this.resolveGiveawayPublicationBotId(sourceChatId);
-    const publicationButton = await this.buildGiveawayEntryButton(giveaway);
-    const imagePayload = await this.uploadGiveawayImage(giveaway, publicationBotId);
-    const publicationTextPayload = this.buildFormattedGiveawayTextPayload(
-      this.buildGiveawayPublicationText(giveaway),
-    );
-    const publicationOptions = {
-      ...(publicationTextPayload.textFormat
-        ? { textFormat: publicationTextPayload.textFormat }
-        : {}),
-      ...(publicationButton ? { buttons: [[publicationButton]] } : {}),
-      ...(imagePayload ? { imagePayload } : {}),
-    } satisfies MaxSendMessageOptions;
-    const publication = publicationBotId
-      ? await this.maxClient.sendMessageImmediateWithResolvedLink(
-          sourceChatId,
-          publicationTextPayload.text,
-          publicationOptions,
-          { botId: publicationBotId },
-        )
-      : await this.maxClient.sendMessageImmediateWithResolvedLink(
-          sourceChatId,
-          publicationTextPayload.text,
-          publicationOptions,
-        );
+    const publicationLockAt = new Date();
+    const lock = await this.prisma.managedGiveaway.updateMany({
+      where: {
+        id: giveaway.id,
+        status: ManagedGiveawayStatus.DRAFT,
+        lockedAt: null,
+      },
+      data: { lockedAt: publicationLockAt },
+    });
+    if (lock.count === 0) {
+      throw new BadRequestException(
+        'Публикация розыгрыша уже выполняется или требует ручной проверки.',
+      );
+    }
 
-    const publishedAt = new Date();
-    const updated = await this.prisma.managedGiveaway.update({
-      where: { id: giveaway.id },
-      data: {
-        actorUserId: user.userId,
+    let maxSendAttempted = false;
+    let maxSendAccepted = false;
+    try {
+      const publicationButton = await this.buildGiveawayEntryButton(giveaway);
+      const imagePayload = await this.uploadGiveawayImage(giveaway, publicationBotId);
+      const publicationTextPayload = this.buildFormattedGiveawayTextPayload(
+        this.buildGiveawayPublicationText(giveaway),
+      );
+      const publicationOptions = {
+        ...(publicationTextPayload.textFormat
+          ? { textFormat: publicationTextPayload.textFormat }
+          : {}),
+        ...(publicationButton ? { buttons: [[publicationButton]] } : {}),
+        ...(imagePayload ? { imagePayload } : {}),
+      } satisfies MaxSendMessageOptions;
+      maxSendAttempted = true;
+      const publication = publicationBotId
+        ? await this.maxClient.sendMessageImmediateWithResolvedLink(
+            sourceChatId,
+            publicationTextPayload.text,
+            publicationOptions,
+            { botId: publicationBotId },
+          )
+        : await this.maxClient.sendMessageImmediateWithResolvedLink(
+            sourceChatId,
+            publicationTextPayload.text,
+            publicationOptions,
+          );
+      maxSendAccepted = true;
+
+      const publishedAt = new Date();
+      const updated = await this.prisma.managedGiveaway.update({
+        where: { id: giveaway.id },
+        data: {
+          actorUserId: user.userId,
+          status: nextStatus,
+          publicationMessageId: publication.messageId,
+          publicationUrl: publication.url,
+          publishedAt,
+          lockedAt: null,
+        },
+        include: MANAGED_GIVEAWAY_INCLUDE,
+      });
+
+      await this.writeAuditLog(sourceChatId, user.userId, 'PUBLISH_GIVEAWAY', {
+        giveawayId: giveaway.id,
+        entityType,
         status: nextStatus,
         publicationMessageId: publication.messageId,
         publicationUrl: publication.url,
-        publishedAt,
-      },
-      include: MANAGED_GIVEAWAY_INCLUDE,
-    });
+        source,
+      });
+      await this.chatContextCache.invalidate(sourceChatId);
 
-    await this.writeAuditLog(sourceChatId, user.userId, 'PUBLISH_GIVEAWAY', {
-      giveawayId: giveaway.id,
-      entityType,
-      status: nextStatus,
-      publicationMessageId: publication.messageId,
-      publicationUrl: publication.url,
-      source,
-    });
-    await this.chatContextCache.invalidate(sourceChatId);
-
-    return managedGiveawayDetailsSchema.parse(this.mapGiveawayDetails(updated));
+      return managedGiveawayDetailsSchema.parse(this.mapGiveawayDetails(updated));
+    } catch (error: unknown) {
+      const shouldQuarantine =
+        maxSendAccepted || (maxSendAttempted && isAmbiguousMaxSendError(error));
+      if (shouldQuarantine) {
+        this.logger.warn(
+          {
+            giveawayId: giveaway.id,
+            sourceChatId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Managed giveaway publication send is ambiguous; leaving publication lock for manual verification',
+        );
+      } else {
+        await this.prisma.managedGiveaway.updateMany({
+          where: {
+            id: giveaway.id,
+            status: ManagedGiveawayStatus.DRAFT,
+            lockedAt: publicationLockAt,
+          },
+          data: { lockedAt: null },
+        });
+      }
+      throw error;
+    }
   }
 
   async closeManagedGiveaway(
@@ -2230,7 +2281,31 @@ export class ManagedGiveawayService {
       resultsTextPayload.textFormat,
     );
     if (!giveaway.resultsMessageId?.trim()) {
+      if (giveaway.lockedAt) {
+        this.logger.warn(
+          { giveawayId: giveaway.id, sourceChatId: giveaway.sourceChatId },
+          'Managed giveaway results send is locked for manual verification',
+        );
+        return;
+      }
+
+      const resultLockAt = new Date();
+      const lock = await this.prisma.managedGiveaway.updateMany({
+        where: {
+          id: giveaway.id,
+          resultsMessageId: null,
+          lockedAt: null,
+        },
+        data: { lockedAt: resultLockAt },
+      });
+      if (lock.count === 0) {
+        return;
+      }
+
+      let maxSendAttempted = false;
+      let maxSendAccepted = false;
       try {
+        maxSendAttempted = true;
         const result = publicationBotId
           ? await this.maxClient.sendMessageImmediateWithResolvedLink(
               giveaway.sourceChatId,
@@ -2243,28 +2318,44 @@ export class ManagedGiveawayService {
               resultsTextPayload.text,
               resultOptions,
             );
+        maxSendAccepted = true;
         await this.prisma.managedGiveaway.update({
           where: { id: giveaway.id },
           data: {
             resultsMessageId: result.messageId,
             resultsUrl: result.url,
+            lockedAt: null,
           },
         });
       } catch (error: unknown) {
+        const shouldQuarantine =
+          maxSendAccepted || (maxSendAttempted && isAmbiguousMaxSendError(error));
         this.logger.warn(
           {
             giveawayId: giveaway.id,
             err: error instanceof Error ? error.message : String(error),
           },
-          'Failed to publish giveaway results message',
+          shouldQuarantine
+            ? 'Managed giveaway results send is ambiguous; leaving results lock for manual verification'
+            : 'Failed to publish giveaway results message',
         );
-        await this.recordManagedGiveawayMaxAccessLoss({
-          giveaway,
-          botId: publicationBotId ?? null,
-          source: 'managed_giveaway:results',
-          operation: 'send',
-          error,
-        });
+        if (!shouldQuarantine) {
+          await this.prisma.managedGiveaway.updateMany({
+            where: {
+              id: giveaway.id,
+              resultsMessageId: null,
+              lockedAt: resultLockAt,
+            },
+            data: { lockedAt: null },
+          });
+          await this.recordManagedGiveawayMaxAccessLoss({
+            giveaway,
+            botId: publicationBotId ?? null,
+            source: 'managed_giveaway:results',
+            operation: 'send',
+            error,
+          });
+        }
       }
       return;
     }

@@ -1922,6 +1922,68 @@ describe('VkParsingService', () => {
     expect(publishQueue.add).not.toHaveBeenCalled();
   });
 
+  it('quarantines autopublish after an ambiguous MAX send timeout', async () => {
+    const { service, prisma, maxClient, publishQueue } = createFixture();
+    const source = createSource();
+    const post = createPostRow({
+      source,
+      publishQueuedAt: new Date('2026-05-25T09:59:00.000Z'),
+      publishScheduledAt: new Date('2026-05-25T10:00:00.000Z'),
+      publishIdempotencyKey: 'publish-key-1',
+      publishReason: 'autopublish',
+    });
+    const timeoutError = new Error('request timed out before response body arrived');
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    prisma.vkParsingPost.findFirst.mockResolvedValueOnce(post).mockResolvedValueOnce(null);
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      id: 'settings-1',
+      chatId: 'channel-1',
+      autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date('2026-05-25T09:00:00.000Z'),
+      stripLinksEnabled: false,
+      skipAdsEnabled: false,
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+    });
+    maxClient.sendMessageImmediateWithResolvedLink.mockRejectedValue(timeoutError);
+
+    await expect(
+      service.processPublishPostJob({
+        postId: 'post-1',
+        chatId: 'channel-1',
+        reason: 'autopublish',
+        idempotencyKey: 'publish-key-1',
+      }),
+    ).rejects.toBe(timeoutError);
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: 'post-1' }),
+        data: expect.objectContaining({
+          status: 'FAILED',
+          lastError: expect.stringContaining('[max.send_ambiguous]'),
+          autoPublishError: expect.stringContaining('manual verification'),
+          publishQueuedAt: null,
+          publishScheduledAt: null,
+          publishIdempotencyKey: null,
+          publishReason: null,
+          publishLockedAt: null,
+        }),
+      }),
+    );
+
+    await service.processPublishPostJob({
+      postId: 'post-1',
+      chatId: 'channel-1',
+      reason: 'autopublish',
+      idempotencyKey: 'publish-key-1',
+    });
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+    expect(publishQueue.add).not.toHaveBeenCalled();
+  });
+
   it('defers VK autopublish jobs while the runtime governor reports pressure', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-25T10:00:00.000Z'));
     try {

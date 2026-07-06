@@ -31,6 +31,7 @@ import {
 } from '../max/max-client.service';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
+import { isAmbiguousMaxSendError } from '../max/max-send-ambiguity.util';
 import { ChatEntityType, Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -832,6 +833,7 @@ export class VkPublishService {
       },
     };
 
+    let maxSendAttempted = false;
     try {
       let engagementContext: Awaited<
         ReturnType<AdminService['buildChannelPublicationEngagementContext']>
@@ -891,6 +893,9 @@ export class VkPublishService {
         payload.text,
         options,
         requestOptions,
+        () => {
+          maxSendAttempted = true;
+        },
       );
       if (engagementContext) {
         await this.recordChannelPublicationEngagementSafely({
@@ -984,6 +989,14 @@ export class VkPublishService {
     } catch (error) {
       const classified = classifyVkParsingPublishError(error);
       const formattedError = formatVkParsingClassifiedErrorMessage(classified);
+      const ambiguousAutopublishSend =
+        params.auto && maxSendAttempted && isAmbiguousMaxSendError(error);
+      const persistedError = ambiguousAutopublishSend
+        ? `[max.send_ambiguous] ${formattedError}. Delivery may have been accepted by MAX; autopublish retry is quarantined for manual verification.`.slice(
+            0,
+            500,
+          )
+        : formattedError;
       const accessLossResult =
         await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost?.({
           chatId: post.chatId,
@@ -1001,10 +1014,17 @@ export class VkPublishService {
         data: {
           status: VK_POST_STATUS_FAILED,
           publishLockedAt: null,
-          lastError: formattedError,
-          autoPublishError: params.auto ? formattedError : post.autoPublishError,
+          lastError: persistedError,
+          autoPublishError: params.auto ? persistedError : post.autoPublishError,
           ...(params.auto
-            ? {}
+            ? ambiguousAutopublishSend
+              ? {
+                  publishQueuedAt: null,
+                  publishScheduledAt: null,
+                  publishIdempotencyKey: null,
+                  publishReason: null,
+                }
+              : {}
             : {
                 publishQueuedAt: null,
                 publishScheduledAt: null,
@@ -1074,10 +1094,12 @@ export class VkPublishService {
       trafficClass: MaxApiTrafficClass;
       sourceTag: string;
     },
+    onAttempt?: () => void,
   ): Promise<Awaited<ReturnType<MaxClientService['sendMessageImmediateWithResolvedLink']>>> {
     let lastError: unknown = null;
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {
+        onAttempt?.();
         return await this.maxClient.sendMessageImmediateWithResolvedLink(
           chatId,
           text || ' ',

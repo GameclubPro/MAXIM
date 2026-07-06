@@ -852,6 +852,40 @@ function parseBotQueueMetricsSnapshot(value: unknown) {
   };
 }
 
+function parseBotWebhookOperationalDiagnostics(
+  value: unknown,
+): NonNullable<BotWebhookSubscriptionSnapshot['operationalDiagnostics']> {
+  if (
+    !isRecord(value) ||
+    typeof value.lifecycleState !== 'string' ||
+    typeof value.activeMemberships !== 'number' ||
+    typeof value.hasCurrentSubscription !== 'boolean' ||
+    (value.lastIncomingWebhookAt !== null &&
+      value.lastIncomingWebhookAt !== undefined &&
+      typeof value.lastIncomingWebhookAt !== 'string') ||
+    (value.lastMembershipWebhookAt !== null &&
+      value.lastMembershipWebhookAt !== undefined &&
+      typeof value.lastMembershipWebhookAt !== 'string') ||
+    !Array.isArray(value.issueCodes)
+  ) {
+    throw new Error('Invalid bot webhook operational diagnostics');
+  }
+
+  return {
+    lifecycleState: value.lifecycleState,
+    activeMemberships: value.activeMemberships,
+    hasCurrentSubscription: value.hasCurrentSubscription,
+    lastIncomingWebhookAt:
+      typeof value.lastIncomingWebhookAt === 'string' ? value.lastIncomingWebhookAt : null,
+    lastMembershipWebhookAt:
+      typeof value.lastMembershipWebhookAt === 'string' ? value.lastMembershipWebhookAt : null,
+    issueCodes: value.issueCodes.filter(
+      (item): item is 'no-active-memberships' | 'no-incoming-webhooks' =>
+        item === 'no-active-memberships' || item === 'no-incoming-webhooks',
+    ),
+  };
+}
+
 function parseBotWebhookSubscriptionSnapshot(value: unknown): BotWebhookSubscriptionSnapshot {
   if (
     !isRecord(value) ||
@@ -903,6 +937,34 @@ function parseBotWebhookSubscriptionSnapshot(value: unknown): BotWebhookSubscrip
     otherSubscriptionsCount: value.otherSubscriptionsCount,
     lastError: typeof value.lastError === 'string' ? value.lastError : null,
     note: typeof value.note === 'string' ? value.note : null,
+    ...(value.operationalDiagnostics !== undefined
+      ? { operationalDiagnostics: parseBotWebhookOperationalDiagnostics(value.operationalDiagnostics) }
+      : {}),
+  };
+}
+
+function parseWebhookSubscriptionOperationalDiagnostics(
+  value: unknown,
+): NonNullable<WebhookSubscriptionSnapshot['operationalDiagnostics']> {
+  if (
+    !isRecord(value) ||
+    typeof value.warningBotCount !== 'number' ||
+    !Array.isArray(value.warningBotIds) ||
+    !Array.isArray(value.noActiveMembershipBotIds) ||
+    !Array.isArray(value.noIncomingWebhookBotIds)
+  ) {
+    throw new Error('Invalid webhook subscription operational diagnostics');
+  }
+
+  return {
+    warningBotCount: value.warningBotCount,
+    warningBotIds: value.warningBotIds.filter((item): item is string => typeof item === 'string'),
+    noActiveMembershipBotIds: value.noActiveMembershipBotIds.filter(
+      (item): item is string => typeof item === 'string',
+    ),
+    noIncomingWebhookBotIds: value.noIncomingWebhookBotIds.filter(
+      (item): item is string => typeof item === 'string',
+    ),
   };
 }
 
@@ -964,6 +1026,13 @@ function parseWebhookSubscriptionSnapshot(value: unknown): WebhookSubscriptionSn
         parseBotWebhookSubscriptionSnapshot(snapshot),
       ]),
     ),
+    ...(value.operationalDiagnostics !== undefined
+      ? {
+          operationalDiagnostics: parseWebhookSubscriptionOperationalDiagnostics(
+            value.operationalDiagnostics,
+          ),
+        }
+      : {}),
   };
 }
 

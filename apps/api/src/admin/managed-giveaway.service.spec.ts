@@ -47,7 +47,7 @@ function createPrismaMock() {
       findUnique: jest.fn(),
       findUniqueOrThrow: jest.fn(),
       update: jest.fn(),
-      updateMany: jest.fn(),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     managedGiveawayEntry: {
       upsert: jest.fn(),
@@ -1035,8 +1035,63 @@ describe('ManagedGiveawayService', () => {
       data: {
         resultsMessageId: 'results-1',
         resultsUrl: 'https://max.ru/channels/source-1/messages/results-1',
+        lockedAt: null,
       },
     });
+  });
+
+  it('quarantines giveaway results after an ambiguous MAX send timeout', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const managedEntityAccessLossService = createManagedEntityAccessLossMock();
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+      undefined,
+      createMaxBotLinkMock() as never,
+      managedEntityAccessLossService as never,
+    );
+    const timeoutError = new Error('request timed out before response body arrived');
+    const giveaway = createGiveaway({
+      status: ManagedGiveawayStatus.COMPLETED,
+      publicationMessageId: 'publication-1',
+      publicationUrl: 'https://max.ru/channels/source-1/messages/publication-1',
+      winners: [createWinner({ status: ManagedGiveawayWinnerStatus.CLAIMED })],
+    });
+    prisma.managedGiveaway.updateMany.mockResolvedValue({ count: 1 });
+    maxClient.sendMessageImmediateWithResolvedLink.mockRejectedValue(timeoutError);
+
+    await (service as any).republishGiveawayResults(giveaway);
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+    expect(prisma.managedGiveaway.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: 'giveaway-1',
+          resultsMessageId: null,
+          lockedAt: null,
+        },
+        data: { lockedAt: expect.any(Date) },
+      }),
+    );
+    expect(prisma.managedGiveaway.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { lockedAt: null },
+      }),
+    );
+    expect(prisma.managedGiveaway.update).not.toHaveBeenCalled();
+    expect(managedEntityAccessLossService.recordIfManagedEntityAccessLost).not.toHaveBeenCalled();
+
+    maxClient.sendMessageImmediateWithResolvedLink.mockClear();
+    await (service as any).republishGiveawayResults({
+      ...giveaway,
+      lockedAt: new Date('2026-03-21T12:40:00.000Z'),
+    });
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
   });
 
   it('records MAX access loss when publishing giveaway results is denied', async () => {
@@ -1161,6 +1216,59 @@ describe('ManagedGiveawayService', () => {
       }),
     );
     expect(chatContextCache.invalidate).toHaveBeenCalledWith('source-1');
+  });
+
+  it('quarantines giveaway publication after an ambiguous MAX send timeout', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const chatContextCache = { invalidate: jest.fn() };
+    const adminService = {
+      getChannelSettings: jest.fn().mockResolvedValue({}),
+      getSettings: jest.fn().mockResolvedValue({}),
+    };
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      adminService as never,
+      createConfigMock() as never,
+    );
+    const draft = createGiveaway({
+      status: ManagedGiveawayStatus.DRAFT,
+      description: 'Текст публикации',
+      entries: [],
+      winners: [],
+    });
+    const timeoutError = new Error('request timed out before response body arrived');
+    prisma.managedGiveaway.findFirst.mockResolvedValueOnce(draft).mockResolvedValueOnce(null);
+    prisma.managedGiveaway.updateMany.mockResolvedValue({ count: 1 });
+    maxClient.sendMessageImmediateWithResolvedLink.mockRejectedValue(timeoutError);
+
+    await expect(
+      service.publishManagedGiveaway('source-1', 'giveaway-1', user as never, 'channel'),
+    ).rejects.toBe(timeoutError);
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+    expect(prisma.managedGiveaway.updateMany).toHaveBeenCalledTimes(1);
+    expect(prisma.managedGiveaway.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'giveaway-1',
+        status: ManagedGiveawayStatus.DRAFT,
+        lockedAt: null,
+      },
+      data: { lockedAt: expect.any(Date) },
+    });
+    expect(prisma.managedGiveaway.update).not.toHaveBeenCalled();
+    expect(chatContextCache.invalidate).not.toHaveBeenCalled();
+
+    prisma.managedGiveaway.findFirst.mockResolvedValueOnce({
+      ...draft,
+      lockedAt: new Date('2026-03-21T12:35:00.000Z'),
+    });
+    await expect(
+      service.publishManagedGiveaway('source-1', 'giveaway-1', user as never, 'channel'),
+    ).rejects.toThrow('требует ручной проверки');
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
   });
 
   it('publishes nested bold italic underline links in giveaway text', async () => {
