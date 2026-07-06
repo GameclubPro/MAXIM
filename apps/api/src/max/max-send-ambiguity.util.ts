@@ -1,4 +1,4 @@
-export function isAmbiguousMaxSendError(error: unknown): boolean {
+export function isAmbiguousMaxMutationError(error: unknown): boolean {
   const status = (error as { response?: { status?: number } })?.response?.status;
   if (status === 408 || status === 504) {
     return true;
@@ -6,6 +6,19 @@ export function isAmbiguousMaxSendError(error: unknown): boolean {
 
   if (typeof status === 'number') {
     return false;
+  }
+
+  const code = (error as { code?: unknown })?.code;
+  if (typeof code === 'string' && code.trim().length > 0) {
+    const normalizedCode = code.trim().toLowerCase();
+    if (
+      normalizedCode === 'econnreset' ||
+      normalizedCode === 'econnaborted' ||
+      normalizedCode === 'etimedout' ||
+      normalizedCode === 'epipe'
+    ) {
+      return true;
+    }
   }
 
   const message = error instanceof Error && error.message.trim() ? error.message : String(error);
@@ -20,4 +33,8 @@ export function isAmbiguousMaxSendError(error: unknown): boolean {
     normalized.includes('socket hang up') ||
     normalized.includes('network')
   );
+}
+
+export function isAmbiguousMaxSendError(error: unknown): boolean {
+  return isAmbiguousMaxMutationError(error);
 }

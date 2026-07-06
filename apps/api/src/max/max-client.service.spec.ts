@@ -433,6 +433,115 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it.each([408, 504])(
+    'marks ambiguous queued SEND_MESSAGE HTTP %s responses as unrecoverable',
+    async (status) => {
+      const statusError = {
+        response: {
+          status,
+          data: {
+            message: 'upstream timeout',
+          },
+        },
+      };
+      const httpService = {
+        request: jest.fn(() => throwError(() => statusError)),
+      };
+      const service = createService(httpService);
+
+      await expect(
+        service.executeActionJob({
+          actionType: 'SEND_MESSAGE',
+          chatId: 'chat-1',
+          text: 'hello',
+          attempt: 1,
+          idempotencyKey: `send-http-${status}`,
+          createdAt: new Date().toISOString(),
+        }),
+      ).rejects.toBeInstanceOf(UnrecoverableError);
+
+      await service.onModuleDestroy();
+    },
+  );
+
+  it.each([
+    {
+      actionType: 'BAN_MEMBER' as const,
+      expectedParams: {
+        user_id: 'user-1',
+        block: true,
+      },
+    },
+    {
+      actionType: 'KICK_MEMBER' as const,
+      expectedParams: {
+        user_id: 'user-1',
+      },
+    },
+  ])(
+    'marks ambiguous queued $actionType transport timeouts as unrecoverable',
+    async ({ actionType, expectedParams }) => {
+      const timeoutError = Object.assign(new Error('socket hang up'), {
+        code: 'ECONNRESET',
+      });
+      const httpService = {
+        request: jest.fn(() => throwError(() => timeoutError)),
+      };
+      const service = createService(httpService);
+
+      await expect(
+        service.executeActionJob({
+          actionType,
+          chatId: 'chat-1',
+          userId: 'user-1',
+          attempt: 1,
+          idempotencyKey: `${actionType.toLowerCase()}-timeout`,
+          createdAt: new Date().toISOString(),
+        }),
+      ).rejects.toBeInstanceOf(UnrecoverableError);
+      expect(httpService.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: 'delete',
+          url: 'https://platform-api2.max.ru/chats/chat-1/members',
+          params: expectedParams,
+        }),
+      );
+
+      await service.onModuleDestroy();
+    },
+  );
+
+  it.each(['BAN_MEMBER', 'KICK_MEMBER'] as const)(
+    'marks ambiguous queued %s HTTP 504 responses as unrecoverable',
+    async (actionType) => {
+      const statusError = {
+        response: {
+          status: 504,
+          data: {
+            message: 'gateway timeout',
+          },
+        },
+      };
+      const httpService = {
+        request: jest.fn(() => throwError(() => statusError)),
+      };
+      const service = createService(httpService);
+
+      await expect(
+        service.executeActionJob({
+          actionType,
+          chatId: 'chat-1',
+          userId: 'user-1',
+          attempt: 1,
+          idempotencyKey: `${actionType.toLowerCase()}-http-504`,
+          createdAt: new Date().toISOString(),
+        }),
+      ).rejects.toBeInstanceOf(UnrecoverableError);
+
+      await service.onModuleDestroy();
+    },
+  );
+
   it('keeps queued SEND_MESSAGE HTTP failures retryable', async () => {
     const statusError = {
       response: {
@@ -460,6 +569,37 @@ describe('MaxClientService inline keyboard guardrails', () => {
 
     await service.onModuleDestroy();
   });
+
+  it.each(['BAN_MEMBER', 'KICK_MEMBER'] as const)(
+    'keeps queued %s HTTP failures retryable',
+    async (actionType) => {
+      const statusError = {
+        response: {
+          status: 500,
+          data: {
+            message: 'server failure',
+          },
+        },
+      };
+      const httpService = {
+        request: jest.fn(() => throwError(() => statusError)),
+      };
+      const service = createService(httpService);
+
+      await expect(
+        service.executeActionJob({
+          actionType,
+          chatId: 'chat-1',
+          userId: 'user-1',
+          attempt: 1,
+          idempotencyKey: `${actionType.toLowerCase()}-http-500`,
+          createdAt: new Date().toISOString(),
+        }),
+      ).rejects.toBe(statusError);
+
+      await service.onModuleDestroy();
+    },
+  );
 
   it('trims inline keyboard buttons to 210 and logs warning', async () => {
     const service = createService();
@@ -4469,6 +4609,34 @@ describe('MaxClientService delayed member actions', () => {
     expect(failedJob.getState).toHaveBeenCalledTimes(1);
     expect(remove).toHaveBeenCalledTimes(1);
     expect(queue.add.mock.calls[1][2].jobId).toBe(firstJobId);
+
+    await service.onModuleDestroy();
+  });
+
+  it('does not replace retained ambiguous irreversible action jobs', async () => {
+    const remove = jest.fn().mockResolvedValue(undefined);
+    const failedJob = {
+      data: {
+        actionType: 'BAN_MEMBER',
+      },
+      failedReason: 'Ambiguous MAX BAN_MEMBER transport failure for chat chat-1 user user-1',
+      getState: jest.fn().mockResolvedValue('failed'),
+      remove,
+    };
+    const queue = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(failedJob),
+    };
+    const service = createServiceWithQueue(queue);
+
+    await expect(service.banMember('chat-1', 'user-1')).rejects.toBeInstanceOf(
+      UnrecoverableError,
+    );
+
+    expect(queue.getJob).toHaveBeenCalledTimes(1);
+    expect(failedJob.getState).toHaveBeenCalledTimes(1);
+    expect(remove).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
 
     await service.onModuleDestroy();
   });

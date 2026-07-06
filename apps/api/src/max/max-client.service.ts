@@ -15,6 +15,7 @@ import { MaxBotRegistryService, type MaxBotDefinition } from './max-bot-registry
 import type { MaxBotLifecycleState } from './max-bot-config.util';
 import { canExecuteActionsForBotState } from './max-bot-state.util';
 import { normalizeMaxInlineKeyboardButtons } from './max-inline-keyboard-layout';
+import { isAmbiguousMaxMutationError } from './max-send-ambiguity.util';
 
 export type MaxBotChat = {
   chatId: string;
@@ -1520,17 +1521,9 @@ export class MaxClientService implements OnModuleDestroy {
           ) {
             return;
           }
-          await this.executeMutation(
-            action.chatId,
-            async () => {
-              await this.request('delete', `/chats/${action.chatId}/members`, {
-                params: {
-                  user_id: action.userId,
-                },
-              });
-            },
-            mutationOptions,
-          );
+          await this.executeQueuedMemberModerationAction(action, mutationOptions, {
+            block: false,
+          });
           return;
 
         case 'BAN_MEMBER':
@@ -1546,18 +1539,9 @@ export class MaxClientService implements OnModuleDestroy {
           ) {
             return;
           }
-          await this.executeMutation(
-            action.chatId,
-            async () => {
-              await this.request('delete', `/chats/${action.chatId}/members`, {
-                params: {
-                  user_id: action.userId,
-                  block: true,
-                },
-              });
-            },
-            mutationOptions,
-          );
+          await this.executeQueuedMemberModerationAction(action, mutationOptions, {
+            block: true,
+          });
           return;
 
         case 'UNBAN_MEMBER':
@@ -3493,7 +3477,7 @@ export class MaxClientService implements OnModuleDestroy {
       if (scheduledJobId) {
         await this.removeQueuedActionJob(scheduledJobId);
       } else if (logicalIdempotencyKey) {
-        await this.removeRetainedFailedActionJob(logicalIdempotencyKey);
+        await this.removeRetainedFailedActionJob(logicalIdempotencyKey, payload.actionType);
       }
 
       await this.actionQueue.add('execute-max-action', job, {
@@ -3636,7 +3620,7 @@ export class MaxClientService implements OnModuleDestroy {
     await existingJob.remove();
   }
 
-  private async removeRetainedFailedActionJob(jobId: string) {
+  private async removeRetainedFailedActionJob(jobId: string, replacementActionType: MaxActionType) {
     if (!this.actionQueue) {
       return;
     }
@@ -3646,7 +3630,69 @@ export class MaxClientService implements OnModuleDestroy {
       return;
     }
 
+    if (this.isRetainedAmbiguousActionFailure(existingJob, replacementActionType)) {
+      throw new UnrecoverableError(
+        `Retained ambiguous MAX ${replacementActionType} job ${jobId} requires manual review before retry`,
+      );
+    }
+
     await existingJob.remove();
+  }
+
+  private isRetainedAmbiguousActionFailure(
+    job: unknown,
+    replacementActionType: MaxActionType,
+  ): boolean {
+    const actionType = this.readRetainedJobActionType(job) ?? replacementActionType;
+    if (!this.isIrreversibleQueuedActionType(actionType)) {
+      return false;
+    }
+
+    const failureText = this.readRetainedJobFailureText(job);
+    return failureText.includes('ambiguous max');
+  }
+
+  private isIrreversibleQueuedActionType(actionType: MaxActionType): boolean {
+    return (
+      actionType === 'SEND_MESSAGE' ||
+      actionType === 'KICK_MEMBER' ||
+      actionType === 'BAN_MEMBER'
+    );
+  }
+
+  private readRetainedJobActionType(job: unknown): MaxActionType | null {
+    const value = (job as { data?: { actionType?: unknown } })?.data?.actionType;
+    if (
+      value === 'DELETE_MESSAGE' ||
+      value === 'SEND_MESSAGE' ||
+      value === 'KICK_MEMBER' ||
+      value === 'BAN_MEMBER' ||
+      value === 'UNBAN_MEMBER' ||
+      value === 'NOTIFY_MODERATORS'
+    ) {
+      return value;
+    }
+
+    return null;
+  }
+
+  private readRetainedJobFailureText(job: unknown): string {
+    const values: string[] = [];
+    const failedReason = (job as { failedReason?: unknown })?.failedReason;
+    if (typeof failedReason === 'string') {
+      values.push(failedReason);
+    }
+
+    const stacktrace = (job as { stacktrace?: unknown })?.stacktrace;
+    if (Array.isArray(stacktrace)) {
+      for (const entry of stacktrace) {
+        if (typeof entry === 'string') {
+          values.push(entry);
+        }
+      }
+    }
+
+    return values.join('\n').toLowerCase();
   }
 
   private normalizeDelayMs(value: number | undefined): number {
@@ -4615,9 +4661,37 @@ export class MaxClientService implements OnModuleDestroy {
         mutationOptions,
       );
     } catch (error: unknown) {
-      if (this.isAmbiguousSendMessageTransportError(error)) {
+      if (this.isAmbiguousQueuedMutationTransportError(error)) {
         throw new UnrecoverableError(
           `Ambiguous MAX SEND_MESSAGE transport failure for chat ${action.chatId}: ${this.extractErrorMessage(error) || 'no HTTP status'}`,
+        );
+      }
+      throw error;
+    }
+  }
+
+  private async executeQueuedMemberModerationAction(
+    action: MaxActionJob,
+    mutationOptions: MaxApiRequestOptions,
+    options: { block: boolean },
+  ): Promise<void> {
+    try {
+      await this.executeMutation(
+        action.chatId,
+        async () => {
+          await this.request('delete', `/chats/${action.chatId}/members`, {
+            params: {
+              user_id: action.userId,
+              ...(options.block ? { block: true } : {}),
+            },
+          });
+        },
+        mutationOptions,
+      );
+    } catch (error: unknown) {
+      if (this.isAmbiguousQueuedMutationTransportError(error)) {
+        throw new UnrecoverableError(
+          `Ambiguous MAX ${action.actionType} transport failure for chat ${action.chatId} user ${action.userId}: ${this.extractErrorMessage(error) || 'no HTTP status'}`,
         );
       }
       throw error;
@@ -5144,28 +5218,8 @@ export class MaxClientService implements OnModuleDestroy {
     return canExecuteActionsForBotState(state);
   }
 
-  private isAmbiguousSendMessageTransportError(error: unknown): boolean {
-    if (this.extractStatusCode(error) !== null) {
-      return false;
-    }
-
-    const code = this.extractErrorCode(error);
-    if (
-      code === 'ECONNABORTED' ||
-      code === 'ETIMEDOUT' ||
-      code === 'ECONNRESET' ||
-      code === 'EPIPE'
-    ) {
-      return true;
-    }
-
-    const message = this.extractErrorMessage(error);
-    return (
-      message.includes('timeout') ||
-      message.includes('timed out') ||
-      message.includes('socket hang up') ||
-      message.includes('network error')
-    );
+  private isAmbiguousQueuedMutationTransportError(error: unknown): boolean {
+    return isAmbiguousMaxMutationError(error);
   }
 
   private getCurrentBot(): MaxBotDefinition {
