@@ -9018,14 +9018,22 @@ export class AdminService implements OnModuleDestroy {
   ): Promise<{ messageId: string; url: string | null }> {
     let lastError: unknown = null;
     const attempts = BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length + 1;
+    const requestOptions = {
+      trafficClass: 'interactive',
+      actionHealthLane: 'interactive',
+      sourceTag: MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY,
+      timeoutMs: 10_000,
+      ...(botId ? { botId } : {}),
+    } as const;
 
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       try {
-        return botId
-          ? await this.maxClient.sendMessageImmediateWithResolvedLink(chatId, text, options, {
-              botId,
-            })
-          : await this.maxClient.sendMessageImmediateWithResolvedLink(chatId, text, options);
+        return await this.maxClient.sendMessageImmediateWithResolvedLink(
+          chatId,
+          text,
+          options,
+          requestOptions,
+        );
       } catch (error: unknown) {
         lastError = error;
         if (isMaxApiTimeoutError(error)) {
@@ -9479,7 +9487,9 @@ export class AdminService implements OnModuleDestroy {
           await this.markManualModerationFanoutLedgerFailed({
             operationKey: sourceBanLedgerOperationKey,
             status: PrismaManualModerationFanoutLedgerStatus.AMBIGUOUS,
-            error: new Error('manual source ban member action started; outcome unknown until confirmed'),
+            error: new Error(
+              'manual source ban member action started; outcome unknown until confirmed',
+            ),
             botId: resolvedBotId ?? null,
             executionMode,
             metadata: {
@@ -9876,7 +9886,9 @@ export class AdminService implements OnModuleDestroy {
         await this.markManualModerationFanoutLedgerFailed({
           operationKey: sourceBanLedgerOperationKey,
           status: PrismaManualModerationFanoutLedgerStatus.AMBIGUOUS,
-          error: new Error('manual source ban member action started; outcome unknown until confirmed'),
+          error: new Error(
+            'manual source ban member action started; outcome unknown until confirmed',
+          ),
           botId: resolvedBotId ?? null,
           executionMode,
           metadata: {
@@ -11032,7 +11044,9 @@ export class AdminService implements OnModuleDestroy {
         await this.markManualModerationFanoutLedgerFailed({
           operationKey,
           status: PrismaManualModerationFanoutLedgerStatus.AMBIGUOUS,
-          error: new Error('manual group command notice send started; outcome unknown until confirmed'),
+          error: new Error(
+            'manual group command notice send started; outcome unknown until confirmed',
+          ),
           botId: params.botId ?? null,
         });
       }
@@ -11565,8 +11579,7 @@ export class AdminService implements OnModuleDestroy {
     claim: ManualModerationFanoutLedgerClaim,
   ): boolean {
     return (
-      !claim.claimed &&
-      claim.row?.status === PrismaManualModerationFanoutLedgerStatus.SUCCEEDED
+      !claim.claimed && claim.row?.status === PrismaManualModerationFanoutLedgerStatus.SUCCEEDED
     );
   }
 
@@ -12341,7 +12354,9 @@ export class AdminService implements OnModuleDestroy {
         await this.markManualModerationFanoutLedgerFailed({
           operationKey,
           status: PrismaManualModerationFanoutLedgerStatus.AMBIGUOUS,
-          error: new Error('manual ban fanout member action started; outcome unknown until confirmed'),
+          error: new Error(
+            'manual ban fanout member action started; outcome unknown until confirmed',
+          ),
           botId: resolvedBotId ?? null,
           executionMode,
           metadata: actionStartedMetadata,
@@ -13668,7 +13683,10 @@ export class AdminService implements OnModuleDestroy {
   async resolveChannelSettingsWriteBotAssignmentData(
     chatId: string,
   ): Promise<ResolvedBotAssignmentData> {
-    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
+    const resolvedBotId = await this.resolveManualActionBotAssignment(
+      chatId,
+      ChatEntityType.CHANNEL,
+    );
     return this.buildResolvedBotAssignmentData(resolvedBotId);
   }
 
@@ -13677,7 +13695,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   async resolveChannelEngagementActionBotId(chatId: string): Promise<string | undefined> {
-    return this.resolveManualActionBotAssignment(chatId);
+    return this.resolveManualActionBotAssignment(chatId, ChatEntityType.CHANNEL);
   }
 
   normalizeChatSettingsForApply(sourceChatId: string, settings: ChatSettings): ChatSettings {
@@ -17521,26 +17539,28 @@ export class AdminService implements OnModuleDestroy {
     await this.reconcileStaleChannelSuggestionAdminDeliveries(row.id);
     const ledgerRows = await this.readChannelSuggestionAdminDeliveryLedgerRows(row.id);
     if (ledgerRows.length > 0) {
-      if (!ledgerRows.some((delivery) => this.isRetryableChannelSuggestionAdminDeliveryRow(delivery))) {
+      if (
+        !ledgerRows.some((delivery) => this.isRetryableChannelSuggestionAdminDeliveryRow(delivery))
+      ) {
         await this.syncChannelSuggestionLegacyDeliveryPayload(row);
         return;
       }
     } else {
-    const alreadyDelivered = payload.delivered === true;
-    const deliveryAttemptedAt = this.readTrimmedString(payload.deliveryAttemptedAt);
-    const deliveries = this.readChannelSuggestionDeliveries(payload.deliveries);
-    const deliveryFailures = this.readChannelSuggestionDeliveryFailures(payload.deliveryFailures);
-    const shouldRetryRecoverableDeliveryFailure =
-      Boolean(deliveryAttemptedAt) &&
-      deliveries.length === 0 &&
-      this.hasRecoverableChannelSuggestionDeliveryFailure(deliveryFailures);
-    if (
-      alreadyDelivered ||
-      deliveries.length > 0 ||
-      (deliveryAttemptedAt && !shouldRetryRecoverableDeliveryFailure)
-    ) {
-      return;
-    }
+      const alreadyDelivered = payload.delivered === true;
+      const deliveryAttemptedAt = this.readTrimmedString(payload.deliveryAttemptedAt);
+      const deliveries = this.readChannelSuggestionDeliveries(payload.deliveries);
+      const deliveryFailures = this.readChannelSuggestionDeliveryFailures(payload.deliveryFailures);
+      const shouldRetryRecoverableDeliveryFailure =
+        Boolean(deliveryAttemptedAt) &&
+        deliveries.length === 0 &&
+        this.hasRecoverableChannelSuggestionDeliveryFailure(deliveryFailures);
+      if (
+        alreadyDelivered ||
+        deliveries.length > 0 ||
+        (deliveryAttemptedAt && !shouldRetryRecoverableDeliveryFailure)
+      ) {
+        return;
+      }
     }
 
     const delivery = await this.deliverSuggestionToAdminPrivates(
@@ -18002,9 +18022,7 @@ export class AdminService implements OnModuleDestroy {
             lastError: deliveryFailure.message,
             lastStatusCode: deliveryFailure.status,
             lastErrorCode: deliveryFailure.code,
-            terminal: ambiguous
-              ? false
-              : deliveryFailure.terminal || !deliveryFailure.recoverable,
+            terminal: ambiguous ? false : deliveryFailure.terminal || !deliveryFailure.recoverable,
           },
         });
 
@@ -18270,7 +18288,7 @@ export class AdminService implements OnModuleDestroy {
     suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'];
     botId: string | null;
   }> {
-    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
+    const resolvedBotId = await this.resolveDeliveryBotAssignment(chatId);
     const text = this.readRawString(payload.text) ?? '';
     const media = await this.resolveChannelSuggestionAttachments(
       {
@@ -18839,7 +18857,10 @@ export class AdminService implements OnModuleDestroy {
       return [];
     }
 
-    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
+    const resolvedBotId = await this.resolveManualActionBotAssignment(
+      chatId,
+      ChatEntityType.CHANNEL,
+    );
     const uploaded: ChannelDialogAttachmentAsset[] = [];
 
     for (const attachment of attachments) {
@@ -19463,15 +19484,20 @@ export class AdminService implements OnModuleDestroy {
       return undefined;
     }
 
+    const routedBotId = await this.resolveBotAssignment(normalizedChatId);
+    if (routedBotId) {
+      return routedBotId;
+    }
+
     const persisted = await this.prisma.chat.findUnique({
       where: { id: normalizedChatId },
       select: { primaryBotId: true, botId: true },
     });
-    const persistedBotId =
+    return (
       this.maxBotRegistry?.getBotById(persisted?.primaryBotId ?? persisted?.botId ?? null)?.id ??
-      this.readTrimmedString(persisted?.primaryBotId ?? persisted?.botId);
-
-    return persistedBotId ?? (await this.resolveBotAssignment(normalizedChatId)) ?? undefined;
+      this.readTrimmedString(persisted?.primaryBotId ?? persisted?.botId) ??
+      undefined
+    );
   }
 
   private resolveManualModerationBotAction(action: string): ManualModerationBotAction | null {
@@ -19794,14 +19820,18 @@ export class AdminService implements OnModuleDestroy {
     return access.permissions.some((permission) => this.isAddRemoveMembersPermission(permission));
   }
 
-  private async resolveManualActionBotAssignment(chatId: string): Promise<string | undefined> {
+  private async resolveManualActionBotAssignment(
+    chatId: string,
+    entityType: ChatEntityType = ChatEntityType.CHAT,
+  ): Promise<string | undefined> {
     const normalizedChatId = chatId.trim();
     if (!normalizedChatId) {
       return undefined;
     }
 
     const persistedBotId = await this.resolveChatBotIdForRead(normalizedChatId);
-    const fallbackBotId = persistedBotId;
+    let fallbackBotId = persistedBotId;
+    let transientAccessPressure = false;
     const seenBotIds = new Set<string>();
 
     if (persistedBotId) {
@@ -19823,20 +19853,21 @@ export class AdminService implements OnModuleDestroy {
           },
           'Persisted chat bot assignment is no longer admin-capable for manual action',
         );
+        fallbackBotId = undefined;
       } catch (error: unknown) {
         if (isMaxApiThrottleError(error) || isMaxApiTimeoutError(error)) {
+          transientAccessPressure = true;
           this.logger.debug(
             {
               chatId: normalizedChatId,
               botId: persistedBotId,
               err: error instanceof Error ? error.message : String(error),
             },
-            'Using persisted chat bot assignment after transient MAX API pressure',
+            'Deferring persisted chat bot assignment after transient MAX API pressure',
           );
-          return persistedBotId;
-        }
-
-        if (!isBotAdminLookupDeniedError(error)) {
+        } else if (isBotAdminLookupDeniedError(error)) {
+          fallbackBotId = undefined;
+        } else {
           this.logger.debug(
             {
               chatId: normalizedChatId,
@@ -19868,7 +19899,7 @@ export class AdminService implements OnModuleDestroy {
           if (this.maxBotLinkService?.bindChatToBot) {
             await this.maxBotLinkService.bindChatToBot({
               chatId: normalizedChatId,
-              entityType: ChatEntityType.CHAT,
+              entityType,
               botId: bot.id,
             });
           } else {
@@ -19877,7 +19908,7 @@ export class AdminService implements OnModuleDestroy {
               create: {
                 id: normalizedChatId,
                 title: `Chat ${normalizedChatId}`,
-                entityType: ChatEntityType.CHAT,
+                entityType,
                 ...this.buildResolvedBotAssignmentData(bot.id),
               },
               update: this.buildResolvedBotAssignmentData(bot.id),
@@ -19901,6 +19932,7 @@ export class AdminService implements OnModuleDestroy {
         }
 
         if (isMaxApiThrottleError(error) || isMaxApiTimeoutError(error)) {
+          transientAccessPressure = true;
           this.logger.debug(
             {
               chatId: normalizedChatId,
@@ -19909,7 +19941,7 @@ export class AdminService implements OnModuleDestroy {
             },
             'Stopped probing actionable bots for manual action after transient MAX API pressure',
           );
-          return fallbackBotId;
+          break;
         }
 
         this.logger.debug(
@@ -19921,6 +19953,12 @@ export class AdminService implements OnModuleDestroy {
           'Failed to probe actionable bot while resolving manual action bot assignment',
         );
       }
+    }
+
+    if (transientAccessPressure) {
+      throw new ServiceUnavailableException(
+        'Не удалось подтвердить права бота MAX для действия. Повторите попытку позже.',
+      );
     }
 
     return fallbackBotId;

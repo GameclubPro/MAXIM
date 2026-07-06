@@ -452,6 +452,58 @@ describe('MaxBotLinkService', () => {
     );
   });
 
+  it('does not promote a standby with fresh explicit denied access when primary is removed', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-3bot-denied-standby', {
+      id: 'chat-3bot-denied-standby',
+      title: 'Shared chat',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push(
+      createActiveMembership('chat-3bot-denied-standby', 'id613002203036_bot', 0),
+      createActiveMembership('chat-3bot-denied-standby', 'id613002203036_4_bot', 1, {
+        permissionsSnapshot: {
+          checkedAt: '2026-05-09T10:04:30.000Z',
+          isAdmin: false,
+          isOwner: false,
+          permissions: [],
+        },
+      }),
+      createActiveMembership('chat-3bot-denied-standby', 'id613002203036_5_bot', 2, {
+        permissionsSnapshot: {
+          checkedAt: '2026-05-07T10:00:00.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages'],
+        },
+      }),
+    );
+
+    await expect(
+      fixture.service.markChatBotRemoved({
+        chatId: 'chat-3bot-denied-standby',
+        botId: 'id613002203036_bot',
+        title: 'Shared chat',
+      }),
+    ).resolves.toBe('id613002203036_5_bot');
+
+    expect(fixture.chats.get('chat-3bot-denied-standby')).toEqual(
+      expect.objectContaining({
+        botId: 'id613002203036_5_bot',
+        primaryBotId: 'id613002203036_5_bot',
+      }),
+    );
+    expect(
+      fixture.memberships.find((membership) => membership.botId === 'id613002203036_4_bot'),
+    ).toEqual(
+      expect.objectContaining({
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+      }),
+    );
+  });
+
   it('resolves an assist-capable standby bot for shared background lanes', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('chat-2', {
@@ -540,11 +592,7 @@ describe('MaxBotLinkService', () => {
         chatId: 'chat-2-multi-assist',
         capability: 'suggestion_delivery',
       }),
-    ).resolves.toEqual([
-      'id613002203036_4_bot',
-      'id613002203036_5_bot',
-      'id613002203036_bot',
-    ]);
+    ).resolves.toEqual(['id613002203036_4_bot', 'id613002203036_5_bot', 'id613002203036_bot']);
 
     const route = await fixture.service.resolveBotRoute({
       purpose: 'capability',
@@ -557,6 +605,43 @@ describe('MaxBotLinkService', () => {
       'id613002203036_5_bot',
       'id613002203036_bot',
     ]);
+  });
+
+  it('does not route assist capabilities to a bot with explicit denied access', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-denied-capability', {
+      id: 'chat-denied-capability',
+      title: 'Denied assist chat',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push(
+      createActiveMembership('chat-denied-capability', 'id613002203036_bot', 0),
+      createActiveMembership('chat-denied-capability', 'id613002203036_4_bot', 1, {
+        capabilities: ['suggestion_delivery'],
+        permissionsSnapshot: {
+          checkedAt: '2026-05-09T10:04:30.000Z',
+          isAdmin: false,
+          isOwner: false,
+          permissions: [],
+        },
+      }),
+    );
+
+    await expect(
+      fixture.service.resolveBotIdsForCapability({
+        chatId: 'chat-denied-capability',
+        capability: 'suggestion_delivery',
+        fallbackToPrimary: false,
+      }),
+    ).resolves.toEqual([]);
+
+    await expect(
+      fixture.service.resolveBotIdsForCapability({
+        chatId: 'chat-denied-capability',
+        capability: 'suggestion_delivery',
+      }),
+    ).resolves.toEqual(['id613002203036_bot']);
   });
 
   it('stores access-loss diagnostics on removed bot memberships', async () => {
@@ -1182,10 +1267,10 @@ describe('MaxBotLinkService', () => {
     ).resolves.toMatchObject({
       purpose: 'read',
       chatId: 'channel-read-route-1',
-      primaryBotId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_4_bot',
       botId: 'id613002203036_4_bot',
       candidateBotIds: ['id613002203036_4_bot'],
-      reason: 'alternate_confirmed',
+      reason: 'primary_confirmed',
     });
   });
 
@@ -1240,11 +1325,57 @@ describe('MaxBotLinkService', () => {
     ).resolves.toMatchObject({
       purpose: 'send_message',
       chatId: 'channel-send-route-1',
-      primaryBotId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_4_bot',
       botId: 'id613002203036_4_bot',
-      candidateBotIds: ['id613002203036_4_bot', 'id613002203036_bot'],
-      reason: 'alternate_confirmed',
+      candidateBotIds: ['id613002203036_4_bot'],
+      reason: 'primary_confirmed',
     });
+  });
+
+  it('keeps an explicit denied stored primary out of route fallbacks', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-denied-primary-fallbacks', {
+      id: 'chat-denied-primary-fallbacks',
+      title: 'Denied primary fallbacks',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push(
+      createActiveMembership('chat-denied-primary-fallbacks', 'id613002203036_bot', 0, {
+        permissionsSnapshot: {
+          checkedAt: '2026-05-09T10:04:30.000Z',
+          isAdmin: false,
+          isOwner: false,
+          permissions: [],
+        },
+      }),
+      createActiveMembership('chat-denied-primary-fallbacks', 'id613002203036_4_bot', 1, {
+        capabilities: ['suggestion_delivery'],
+        permissionsSnapshot: {
+          checkedAt: '2026-05-09T10:04:31.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['write', 'read_all_messages'],
+        },
+      }),
+    );
+
+    await expect(
+      fixture.service.resolveBotRoute({
+        purpose: 'send_message',
+        chatId: 'chat-denied-primary-fallbacks',
+      }),
+    ).resolves.toMatchObject({
+      primaryBotId: 'id613002203036_4_bot',
+      botId: 'id613002203036_4_bot',
+      candidateBotIds: ['id613002203036_4_bot'],
+    });
+    await expect(
+      fixture.service.resolveBotIdsForCapability({
+        chatId: 'chat-denied-primary-fallbacks',
+        capability: 'suggestion_delivery',
+      }),
+    ).resolves.toEqual(['id613002203036_4_bot']);
   });
 
   it('does not fall back to a draining primary bot for send-message routes', async () => {

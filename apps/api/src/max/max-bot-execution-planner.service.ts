@@ -22,7 +22,10 @@ import {
 import { MaxBotLinkService } from './max-bot-link.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
 import { canDiscoverChatsForBotState, canExecuteActionsForBotState } from './max-bot-state.util';
-import { resolvePreferredPrimaryBotId } from './max-bot-access-policy.util';
+import {
+  membershipExplicitlyLacksAccess,
+  resolvePreferredPrimaryBotId,
+} from './max-bot-access-policy.util';
 
 type PersistedMembership = {
   botId: string;
@@ -283,6 +286,9 @@ export class MaxBotExecutionPlannerService {
       }
       const cachedSnapshot = this.readFreshPermissionsSummary(membership.permissionsSnapshot);
       if (cachedSnapshot) {
+        if (this.permissionsSummaryExplicitlyLacksAdminAccess(cachedSnapshot)) {
+          await this.clearMembershipAssistCapabilities(chatId, bot.id);
+        }
         continue;
       }
 
@@ -298,6 +304,9 @@ export class MaxBotExecutionPlannerService {
           },
         },
         data: {
+          ...(this.permissionsSummaryExplicitlyLacksAdminAccess(snapshot)
+            ? { capabilities: [] }
+            : {}),
           permissionsSnapshot: snapshot ?? Prisma.JsonNull,
           ...this.toBotAccessStateUpdate(snapshot, 'execution_planner_refresh', access),
         },
@@ -397,6 +406,7 @@ export class MaxBotExecutionPlannerService {
       (membership) =>
         membership.status === ChatBotMembershipStatus.ACTIVE &&
         membership.role === ChatBotMembershipRole.STANDBY &&
+        !membershipExplicitlyLacksAccess(membership.permissionsSnapshot) &&
         canExecuteActionsForBotState(
           this.maxBotRegistry.getBotById(membership.botId)?.state ?? 'disabled',
         ),
@@ -409,7 +419,9 @@ export class MaxBotExecutionPlannerService {
       requireFreshSnapshotForPromotion: true,
     });
     return (
-      activeExecutableStandbyMemberships.find((membership) => membership.botId === preferredBotId) ??
+      activeExecutableStandbyMemberships.find(
+        (membership) => membership.botId === preferredBotId,
+      ) ??
       activeExecutableStandbyMemberships[0] ??
       null
     );
@@ -440,11 +452,34 @@ export class MaxBotExecutionPlannerService {
           },
         },
         data: {
+          ...(this.permissionsSummaryExplicitlyLacksAdminAccess(snapshot)
+            ? { capabilities: [] }
+            : {}),
           permissionsSnapshot: snapshot ?? Prisma.JsonNull,
           ...this.toBotAccessStateUpdate(snapshot, 'execution_planner_promote', access),
         },
       });
     }
+  }
+
+  private permissionsSummaryExplicitlyLacksAdminAccess(
+    snapshot: PermissionsSummary | null,
+  ): boolean {
+    return Boolean(snapshot && !snapshot.isAdmin && !snapshot.isOwner);
+  }
+
+  private async clearMembershipAssistCapabilities(chatId: string, botId: string): Promise<void> {
+    await this.prisma.chatBotMembership.update({
+      where: {
+        chatId_botId: {
+          chatId,
+          botId,
+        },
+      },
+      data: {
+        capabilities: [],
+      },
+    });
   }
 
   private async loadChatState(chatId: string): Promise<{
@@ -760,20 +795,10 @@ export class MaxBotExecutionPlannerService {
   private async resolveStoredPermissionsSnapshot(
     chatId: string,
     botId: string,
-  ): Promise<PermissionsSummary> {
+  ): Promise<PermissionsSummary | null> {
     const state = await this.loadChatState(chatId);
     const existing = state.memberships.find((membership) => membership.botId === botId) ?? null;
-    const snapshot = this.normalizePermissionsSummary(existing?.permissionsSnapshot ?? null);
-    if (snapshot) {
-      return snapshot;
-    }
-
-    return {
-      checkedAt: null,
-      isAdmin: false,
-      isOwner: false,
-      permissions: [],
-    };
+    return this.normalizePermissionsSummary(existing?.permissionsSnapshot ?? null);
   }
 
   private toPermissionsSummary(access: MaxChatMemberAccess): PermissionsSummary {

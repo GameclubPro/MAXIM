@@ -7,10 +7,11 @@ import {
 import { BadRequestException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
-import type {
-  MaxClientService,
-  MaxMessageButton,
-  MaxSendMessageOptions,
+import {
+  MAX_API_SOURCE_TAGS,
+  type MaxClientService,
+  type MaxMessageButton,
+  type MaxSendMessageOptions,
 } from '../max/max-client.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import { extractMaxApiErrorMessage } from './admin-chat-rules';
@@ -39,6 +40,13 @@ type ChannelEngagementMaxClient = Pick<
   'editMessageInlineKeyboard' | 'sendMessageImmediateWithResolvedLink'
 >;
 
+const CHANNEL_ENGAGEMENT_MAX_API_OPTIONS = {
+  trafficClass: 'interactive',
+  actionHealthLane: 'interactive',
+  sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+  timeoutMs: 10_000,
+} as const;
+
 export async function publishChannelEngagementMessage(params: {
   prisma: PrismaService;
   maxClient: ChannelEngagementMaxClient;
@@ -65,6 +73,7 @@ export async function publishChannelEngagementMessage(params: {
     update: {},
     select: {
       engagementPublishedMessageId: true,
+      engagementPublishedBotId: true,
       engagementPublishedThreadId: true,
       engagementPublishedAt: true,
       postSuggestionsEntryMode: true,
@@ -73,31 +82,35 @@ export async function publishChannelEngagementMessage(params: {
   const resolvedBotId = await params.resolveBotId();
 
   const existingPublishedMessageId = persistedSettings.engagementPublishedMessageId?.trim() ?? '';
+  const existingPublishedBotId = persistedSettings.engagementPublishedBotId?.trim() || undefined;
   const existingThreadId = persistedSettings.engagementPublishedThreadId?.trim() ?? '';
   const threadId = existingThreadId || (params.generateThreadId ?? randomUUID)();
   const suggestionEntryMode = persistedSettings.postSuggestionsEntryMode ?? 'BOT';
-  const {
-    commentsButton,
-    suggestButton,
-    commentsUrl,
-    suggestPayload,
-    suggestUrl,
-  } = params.buildDialogArtifacts({
-    chatId: params.chatId,
-    threadId,
-    formattedCommentsButtonText: formatCommentsButtonText(parsed.data.commentsButtonText, 0),
-    suggestButtonText: parsed.data.suggestButtonText,
-    botId: resolvedBotId,
-    suggestionEntryMode,
-  });
+  const buildArtifactsForBot = (botId: string | undefined) => {
+    const artifacts = params.buildDialogArtifacts({
+      chatId: params.chatId,
+      threadId,
+      formattedCommentsButtonText: formatCommentsButtonText(parsed.data.commentsButtonText, 0),
+      suggestButtonText: parsed.data.suggestButtonText,
+      botId,
+      suggestionEntryMode,
+    });
+    const buttons: MaxMessageButton[][] = [];
+    if (parsed.data.includeCommentsButton) {
+      buttons.push([artifacts.commentsButton]);
+    }
+    if (parsed.data.includeSuggestButton) {
+      buttons.push([artifacts.suggestButton]);
+    }
+    return { ...artifacts, buttons };
+  };
 
-  const buttons: MaxMessageButton[][] = [];
-  if (parsed.data.includeCommentsButton) {
-    buttons.push([commentsButton]);
-  }
-  if (parsed.data.includeSuggestButton) {
-    buttons.push([suggestButton]);
-  }
+  let authorBotId = existingPublishedBotId ?? resolvedBotId;
+  let { buttons, commentsUrl, suggestPayload, suggestUrl } = buildArtifactsForBot(authorBotId);
+  const buildRequestOptions = (botId: string | undefined) => ({
+    ...CHANNEL_ENGAGEMENT_MAX_API_OPTIONS,
+    ...(botId ? { botId } : {}),
+  });
 
   let messageId = existingPublishedMessageId;
   let updatedExisting = false;
@@ -110,22 +123,13 @@ export async function publishChannelEngagementMessage(params: {
       const options = {
         buttons,
       } satisfies Pick<MaxSendMessageOptions, 'buttons'>;
-      if (resolvedBotId) {
-        await params.maxClient.editMessageInlineKeyboard(
-          params.chatId,
-          messageId,
-          parsed.data.text,
-          options,
-          { botId: resolvedBotId },
-        );
-      } else {
-        await params.maxClient.editMessageInlineKeyboard(
-          params.chatId,
-          messageId,
-          parsed.data.text,
-          options,
-        );
-      }
+      await params.maxClient.editMessageInlineKeyboard(
+        params.chatId,
+        messageId,
+        parsed.data.text,
+        options,
+        buildRequestOptions(authorBotId),
+      );
       updatedExisting = true;
     } catch (error: unknown) {
       if (!shouldRecreateEditableMessage(error)) {
@@ -137,6 +141,8 @@ export async function publishChannelEngagementMessage(params: {
 
       recreatedFromMessageId = messageId;
       messageId = '';
+      authorBotId = resolvedBotId;
+      ({ buttons, commentsUrl, suggestPayload, suggestUrl } = buildArtifactsForBot(authorBotId));
     }
   }
 
@@ -145,18 +151,12 @@ export async function publishChannelEngagementMessage(params: {
       const options = {
         buttons,
       } satisfies MaxSendMessageOptions;
-      const published = resolvedBotId
-        ? await params.maxClient.sendMessageImmediateWithResolvedLink(
-            params.chatId,
-            parsed.data.text,
-            options,
-            { botId: resolvedBotId },
-          )
-        : await params.maxClient.sendMessageImmediateWithResolvedLink(
-            params.chatId,
-            parsed.data.text,
-            options,
-          );
+      const published = await params.maxClient.sendMessageImmediateWithResolvedLink(
+        params.chatId,
+        parsed.data.text,
+        options,
+        buildRequestOptions(authorBotId),
+      );
       messageId = published.messageId;
       publishedUrl = published.url ?? null;
     } catch (error: unknown) {
@@ -173,6 +173,7 @@ export async function publishChannelEngagementMessage(params: {
     where: { chatId: params.chatId },
     data: {
       engagementPublishedMessageId: messageId,
+      engagementPublishedBotId: authorBotId ?? null,
       engagementPublishedThreadId: threadId,
       engagementPublishedAt: publishedAt,
     },
@@ -198,7 +199,7 @@ export async function publishChannelEngagementMessage(params: {
         suggestUrl,
         suggestionEntryMode,
         ...(publishedUrl ? { publishedUrl } : {}),
-        ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+        ...(authorBotId ? { botId: authorBotId } : {}),
       },
     },
   });

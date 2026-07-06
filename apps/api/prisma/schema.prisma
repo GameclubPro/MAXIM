@@ -175,6 +175,7 @@ enum ManagedBroadcastDeliveryStatus {
   SENDING
   SENT
   FAILED
+  AMBIGUOUS
   CANCELED
 }
 
@@ -609,6 +610,7 @@ model ChannelSettings {
   commentsLimitTwoInRowEnabled Boolean                    @default(true) @map("comments_limit_two_in_row_enabled")
   commentsMessageText          String                     @default("") @map("comments_message_text")
   engagementPublishedMessageId String?                    @map("engagement_published_message_id")
+  engagementPublishedBotId     String?                    @map("engagement_published_bot_id")
   engagementPublishedThreadId  String?                    @map("engagement_published_thread_id")
   engagementPublishedAt        DateTime?                  @map("engagement_published_at")
   createdAt                    DateTime                   @default(now()) @map("created_at")
@@ -1620,6 +1622,7 @@ model ManagedBroadcastDelivery {
   broadcastId     String                         @map("broadcast_id")
   occurrenceIndex Int                            @map("occurrence_index")
   targetChatId    String                         @map("target_chat_id")
+  botId           String?                        @map("bot_id")
   status          ManagedBroadcastDeliveryStatus @default(PENDING)
   attemptCount    Int                            @default(0) @map("attempt_count")
   remoteMessageId String?                        @map("remote_message_id")

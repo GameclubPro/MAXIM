@@ -409,8 +409,7 @@ describe('MaxBotExecutionPlannerService', () => {
 
     expect(fixture.chat.primaryBotId).toBe('id613002203036_bot');
     expect(
-      fixture.memberships.find((membership) => membership.botId === 'id613002203036_4_bot')
-        ?.role,
+      fixture.memberships.find((membership) => membership.botId === 'id613002203036_4_bot')?.role,
     ).toBe(ChatBotMembershipRole.STANDBY);
   });
 
@@ -528,9 +527,14 @@ describe('MaxBotExecutionPlannerService', () => {
     const fixture = createFixture();
     const warnSpy = jest.spyOn((fixture.service as any).logger, 'warn');
     const debugSpy = jest.spyOn((fixture.service as any).logger, 'debug');
-    fixture.memberships.find(
+    const standbyMembership = fixture.memberships.find(
       (membership) => membership.botId === 'id613002203036_4_bot',
-    )!.permissionsSnapshot = {
+    );
+    if (!standbyMembership) {
+      throw new Error('standby membership fixture missing');
+    }
+    standbyMembership.capabilities = ['suggestion_delivery'];
+    standbyMembership.permissionsSnapshot = {
       checkedAt: '2026-05-14T08:00:00.000Z',
       isAdmin: true,
       isOwner: false,
@@ -599,14 +603,48 @@ describe('MaxBotExecutionPlannerService', () => {
     );
   });
 
+  it('keeps capabilities unknown instead of clearing them when managed_refresh is deferred without a stored snapshot', async () => {
+    const fixture = createFixture();
+    fixture.chatContextCache.isManagedRefreshSourceBackoffActive.mockResolvedValue(true);
+    const standbyMembership = fixture.memberships.find(
+      (membership) => membership.botId === 'id613002203036_4_bot',
+    );
+    if (!standbyMembership) {
+      throw new Error('standby membership fixture missing');
+    }
+    standbyMembership.capabilities = ['suggestion_delivery'];
+    standbyMembership.permissionsSnapshot = null;
+
+    await fixture.service.refreshChatBotCapabilitySnapshots({
+      chatId: 'chat-1',
+      entityType: 'chat',
+      botId: 'id613002203036_4_bot',
+    });
+
+    expect(fixture.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(standbyMembership).toEqual(
+      expect.objectContaining({
+        capabilities: ['suggestion_delivery'],
+        permissionsSnapshot: expect.anything(),
+        botAccessState: 'UNKNOWN',
+        botAccessCheckedAt: null,
+      }),
+    );
+  });
+
   it('records denied access without warning when managed_refresh gets a terminal 403', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:10:00.000Z'));
     const fixture = createFixture();
     const warnSpy = jest.spyOn((fixture.service as any).logger, 'warn');
     const debugSpy = jest.spyOn((fixture.service as any).logger, 'debug');
-    fixture.memberships.find(
+    const standbyMembership = fixture.memberships.find(
       (membership) => membership.botId === 'id613002203036_4_bot',
-    )!.permissionsSnapshot = {
+    );
+    if (!standbyMembership) {
+      throw new Error('standby membership fixture missing');
+    }
+    standbyMembership.capabilities = ['suggestion_delivery'];
+    standbyMembership.permissionsSnapshot = {
       checkedAt: '2026-05-14T08:00:00.000Z',
       isAdmin: true,
       isOwner: false,
@@ -620,8 +658,14 @@ describe('MaxBotExecutionPlannerService', () => {
     });
     fixture.maxClient.getCurrentChatMemberAccess.mockRejectedValueOnce(deniedError);
 
+    let plan:
+      | {
+          sharedMode: string;
+          assignedBots: Array<{ botId: string; capabilities: string[] }>;
+        }
+      | undefined;
     try {
-      await fixture.service.refreshChatBotCapabilitySnapshots({
+      plan = await fixture.service.refreshChatBotCapabilitySnapshots({
         chatId: 'chat-1',
         entityType: 'chat',
         botId: 'id613002203036_4_bot',
@@ -645,6 +689,7 @@ describe('MaxBotExecutionPlannerService', () => {
     expect(fixture.prisma.chatBotMembership.update).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
+          capabilities: [],
           botAccessState: 'DENIED',
           botAccessLastErrorCode: 'chat.denied',
           permissionsSnapshot: {
@@ -656,6 +701,11 @@ describe('MaxBotExecutionPlannerService', () => {
         }),
       }),
     );
+    expect(standbyMembership.capabilities).toEqual([]);
+    expect(plan?.sharedMode).toBe('shared-standby');
+    expect(
+      plan?.assignedBots.find((bot) => bot.botId === 'id613002203036_4_bot')?.capabilities,
+    ).toEqual([]);
   });
 
   it('does not promote a bot from a stale admin snapshot after a terminal access error', async () => {

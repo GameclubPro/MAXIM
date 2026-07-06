@@ -375,19 +375,36 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
     activeKnownStandbyBotIds: string[];
   } | null {
     const primaryKnown = this.readKnownBotId(chat.primaryBotId, knownBotIds);
-    const primaryEligible = this.readKnownBotId(chat.primaryBotId, eligiblePrimaryBotIds);
-    const legacyEligible = this.readKnownBotId(chat.botId, eligiblePrimaryBotIds);
-    const signalEligible = this.readKnownBotId(repairSignal?.botId ?? null, eligiblePrimaryBotIds);
+    const rawPrimaryEligible = this.readKnownBotId(chat.primaryBotId, eligiblePrimaryBotIds);
+    const rawLegacyEligible = this.readKnownBotId(chat.botId, eligiblePrimaryBotIds);
+    const rawSignalEligible = this.readKnownBotId(
+      repairSignal?.botId ?? null,
+      eligiblePrimaryBotIds,
+    );
     const nextTitle = this.resolveRepairTitle(chat, repairSignal);
     const hasUnknownPrimary = Boolean(chat.primaryBotId && !primaryKnown);
-    const hasIneligiblePrimary = Boolean(primaryKnown && !primaryEligible);
 
     const activeKnownMemberships = memberships.filter(
       (membership) =>
         membership.status === ChatBotMembershipStatus.ACTIVE && knownBotIds.has(membership.botId),
     );
-    const activeEligibleMemberships = activeKnownMemberships.filter((membership) =>
-      eligiblePrimaryBotIds.has(membership.botId),
+    const isAccessEligible = (botId: string | null): boolean => {
+      if (!botId) {
+        return false;
+      }
+      const membership =
+        activeKnownMemberships.find((candidate) => candidate.botId === botId) ?? null;
+      return !membership || !membershipExplicitlyLacksAccess(membership.permissionsSnapshot);
+    };
+    const primaryEligible = isAccessEligible(rawPrimaryEligible) ? rawPrimaryEligible : null;
+    const legacyEligible = isAccessEligible(rawLegacyEligible) ? rawLegacyEligible : null;
+    const signalEligible = isAccessEligible(rawSignalEligible) ? rawSignalEligible : null;
+    const hasIneligiblePrimary = Boolean(primaryKnown && !primaryEligible);
+
+    const activeEligibleMemberships = activeKnownMemberships.filter(
+      (membership) =>
+        eligiblePrimaryBotIds.has(membership.botId) &&
+        !membershipExplicitlyLacksAccess(membership.permissionsSnapshot),
     );
     const activePrimaryMembership = activeEligibleMemberships.find(
       (membership) => membership.role === ChatBotMembershipRole.PRIMARY,

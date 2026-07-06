@@ -263,6 +263,39 @@ describe('max bot access policy', () => {
     ).toBe('fresh-admin-bot');
   });
 
+  it('does not promote a fresh explicit denied snapshot over an unknown fallback', () => {
+    const nowMs = Date.parse('2026-05-11T10:00:00.000Z');
+
+    expect(
+      resolvePreferredPrimaryBotId(
+        null,
+        [
+          {
+            botId: 'fresh-denied-bot',
+            role: ChatBotMembershipRole.STANDBY,
+            status: ChatBotMembershipStatus.ACTIVE,
+            permissionsSnapshot: {
+              checkedAt: '2026-05-11T09:59:00.000Z',
+              isAdmin: false,
+              isOwner: false,
+              permissions: [],
+            },
+          },
+          {
+            botId: 'unknown-standby-bot',
+            role: ChatBotMembershipRole.STANDBY,
+            status: ChatBotMembershipStatus.ACTIVE,
+          },
+        ],
+        {
+          requireFreshSnapshotForPromotion: true,
+          nowMs,
+          freshMs: 60 * 60 * 1_000,
+        },
+      ),
+    ).toBe('unknown-standby-bot');
+  });
+
   it('prefers owner access and ignores removed memberships', () => {
     expect(
       resolvePreferredPrimaryBotId('primary-bot', [

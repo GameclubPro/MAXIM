@@ -532,6 +532,7 @@ function createPrismaMock() {
         postSuggestionsButtonText: 'Предложить пост',
         commentsEnabled: false,
         engagementPublishedMessageId: null,
+        engagementPublishedBotId: null,
         engagementPublishedThreadId: null,
         engagementPublishedAt: null,
       }),
@@ -665,242 +666,257 @@ function createPrismaMock() {
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     channelSuggestionAdminDelivery: {
-      createMany: jest.fn().mockImplementation(
-        async ({
-          data,
-          skipDuplicates,
-        }: {
-          data: Array<Record<string, unknown>>;
-          skipDuplicates?: boolean;
-        }) => {
-          let count = 0;
-          for (const item of data) {
-            const auditLogId = String(item.auditLogId);
-            const adminUserId = String(item.adminUserId);
-            const botKey = String(item.botKey);
-            if (
-              skipDuplicates &&
-              channelSuggestionAdminDeliveries.some(
-                (row) =>
-                  row.auditLogId === auditLogId &&
-                  row.adminUserId === adminUserId &&
-                  row.botKey === botKey,
-              )
-            ) {
-              continue;
+      createMany: jest
+        .fn()
+        .mockImplementation(
+          async ({
+            data,
+            skipDuplicates,
+          }: {
+            data: Array<Record<string, unknown>>;
+            skipDuplicates?: boolean;
+          }) => {
+            let count = 0;
+            for (const item of data) {
+              const auditLogId = String(item.auditLogId);
+              const adminUserId = String(item.adminUserId);
+              const botKey = String(item.botKey);
+              if (
+                skipDuplicates &&
+                channelSuggestionAdminDeliveries.some(
+                  (row) =>
+                    row.auditLogId === auditLogId &&
+                    row.adminUserId === adminUserId &&
+                    row.botKey === botKey,
+                )
+              ) {
+                continue;
+              }
+              channelSuggestionAdminDeliveries.push({
+                id:
+                  typeof item.id === 'string'
+                    ? item.id
+                    : `suggestion-delivery-${channelSuggestionAdminDeliveries.length + 1}`,
+                auditLogId,
+                adminUserId,
+                botKey,
+                botId: typeof item.botId === 'string' ? item.botId : null,
+                privateChatId: typeof item.privateChatId === 'string' ? item.privateChatId : null,
+                status: typeof item.status === 'string' ? item.status : 'PENDING',
+                attemptCount: Number(item.attemptCount ?? 0),
+                remoteMessageId:
+                  typeof item.remoteMessageId === 'string' ? item.remoteMessageId : null,
+                lastError: typeof item.lastError === 'string' ? item.lastError : null,
+                lastStatusCode:
+                  typeof item.lastStatusCode === 'number' ? item.lastStatusCode : null,
+                lastErrorCode: typeof item.lastErrorCode === 'string' ? item.lastErrorCode : null,
+                terminal: item.terminal === true,
+                sentAt: item.sentAt instanceof Date ? item.sentAt : null,
+                lockedAt: item.lockedAt instanceof Date ? item.lockedAt : null,
+                lockToken: typeof item.lockToken === 'string' ? item.lockToken : null,
+                createdAt:
+                  item.createdAt instanceof Date
+                    ? item.createdAt
+                    : new Date('2026-03-01T00:00:00.000Z'),
+                updatedAt:
+                  item.updatedAt instanceof Date
+                    ? item.updatedAt
+                    : new Date('2026-03-01T00:00:00.000Z'),
+              });
+              count += 1;
             }
-            channelSuggestionAdminDeliveries.push({
-              id:
-                typeof item.id === 'string'
-                  ? item.id
-                  : `suggestion-delivery-${channelSuggestionAdminDeliveries.length + 1}`,
-              auditLogId,
-              adminUserId,
-              botKey,
-              botId: typeof item.botId === 'string' ? item.botId : null,
-              privateChatId:
-                typeof item.privateChatId === 'string' ? item.privateChatId : null,
-              status: typeof item.status === 'string' ? item.status : 'PENDING',
-              attemptCount: Number(item.attemptCount ?? 0),
-              remoteMessageId:
-                typeof item.remoteMessageId === 'string' ? item.remoteMessageId : null,
-              lastError: typeof item.lastError === 'string' ? item.lastError : null,
-              lastStatusCode:
-                typeof item.lastStatusCode === 'number' ? item.lastStatusCode : null,
-              lastErrorCode:
-                typeof item.lastErrorCode === 'string' ? item.lastErrorCode : null,
-              terminal: item.terminal === true,
-              sentAt: item.sentAt instanceof Date ? item.sentAt : null,
-              lockedAt: item.lockedAt instanceof Date ? item.lockedAt : null,
-              lockToken: typeof item.lockToken === 'string' ? item.lockToken : null,
-              createdAt:
-                item.createdAt instanceof Date
-                  ? item.createdAt
-                  : new Date('2026-03-01T00:00:00.000Z'),
-              updatedAt:
-                item.updatedAt instanceof Date
-                  ? item.updatedAt
-                  : new Date('2026-03-01T00:00:00.000Z'),
-            });
-            count += 1;
-          }
-          return { count };
-        },
-      ),
-      findMany: jest.fn().mockImplementation(
-        async ({ where }: { where?: Record<string, unknown> } = {}) =>
+            return { count };
+          },
+        ),
+      findMany: jest
+        .fn()
+        .mockImplementation(async ({ where }: { where?: Record<string, unknown> } = {}) =>
           channelSuggestionAdminDeliveries.filter((row) =>
             matchesChannelSuggestionAdminDeliveryWhere(row, where),
           ),
-      ),
-      updateMany: jest.fn().mockImplementation(
-        async ({
-          where,
-          data,
-        }: {
-          where?: Record<string, unknown>;
-          data: Record<string, unknown>;
-        }) => {
-          let count = 0;
-          for (const row of channelSuggestionAdminDeliveries) {
-            if (!matchesChannelSuggestionAdminDeliveryWhere(row, where)) {
-              continue;
+        ),
+      updateMany: jest
+        .fn()
+        .mockImplementation(
+          async ({
+            where,
+            data,
+          }: {
+            where?: Record<string, unknown>;
+            data: Record<string, unknown>;
+          }) => {
+            let count = 0;
+            for (const row of channelSuggestionAdminDeliveries) {
+              if (!matchesChannelSuggestionAdminDeliveryWhere(row, where)) {
+                continue;
+              }
+              count += 1;
+              if (typeof data.status === 'string') {
+                row.status = data.status;
+              }
+              if ('botId' in data) {
+                row.botId = (data.botId as string | null) ?? null;
+              }
+              if ('privateChatId' in data) {
+                row.privateChatId = (data.privateChatId as string | null) ?? null;
+              }
+              if ('remoteMessageId' in data) {
+                row.remoteMessageId = (data.remoteMessageId as string | null) ?? null;
+              }
+              if ('lastError' in data) {
+                row.lastError = (data.lastError as string | null) ?? null;
+              }
+              if ('lastStatusCode' in data) {
+                row.lastStatusCode = (data.lastStatusCode as number | null) ?? null;
+              }
+              if ('lastErrorCode' in data) {
+                row.lastErrorCode = (data.lastErrorCode as string | null) ?? null;
+              }
+              if ('terminal' in data) {
+                row.terminal = data.terminal === true;
+              }
+              if ('sentAt' in data) {
+                row.sentAt = (data.sentAt as Date | null) ?? null;
+              }
+              if ('lockedAt' in data) {
+                row.lockedAt = (data.lockedAt as Date | null) ?? null;
+              }
+              if ('lockToken' in data) {
+                row.lockToken = (data.lockToken as string | null) ?? null;
+              }
+              if (
+                data.attemptCount &&
+                typeof data.attemptCount === 'object' &&
+                'increment' in data.attemptCount
+              ) {
+                row.attemptCount += Number((data.attemptCount as { increment: number }).increment);
+              }
+              row.updatedAt = new Date('2026-03-01T00:00:00.000Z');
             }
-            count += 1;
-            if (typeof data.status === 'string') {
-              row.status = data.status;
-            }
-            if ('botId' in data) {
-              row.botId = (data.botId as string | null) ?? null;
-            }
-            if ('privateChatId' in data) {
-              row.privateChatId = (data.privateChatId as string | null) ?? null;
-            }
-            if ('remoteMessageId' in data) {
-              row.remoteMessageId = (data.remoteMessageId as string | null) ?? null;
-            }
-            if ('lastError' in data) {
-              row.lastError = (data.lastError as string | null) ?? null;
-            }
-            if ('lastStatusCode' in data) {
-              row.lastStatusCode = (data.lastStatusCode as number | null) ?? null;
-            }
-            if ('lastErrorCode' in data) {
-              row.lastErrorCode = (data.lastErrorCode as string | null) ?? null;
-            }
-            if ('terminal' in data) {
-              row.terminal = data.terminal === true;
-            }
-            if ('sentAt' in data) {
-              row.sentAt = (data.sentAt as Date | null) ?? null;
-            }
-            if ('lockedAt' in data) {
-              row.lockedAt = (data.lockedAt as Date | null) ?? null;
-            }
-            if ('lockToken' in data) {
-              row.lockToken = (data.lockToken as string | null) ?? null;
-            }
-            if (
-              data.attemptCount &&
-              typeof data.attemptCount === 'object' &&
-              'increment' in data.attemptCount
-            ) {
-              row.attemptCount += Number((data.attemptCount as { increment: number }).increment);
-            }
-            row.updatedAt = new Date('2026-03-01T00:00:00.000Z');
-          }
-          return { count };
-        },
-      ),
+            return { count };
+          },
+        ),
     },
     manualModerationFanoutLedgerEntry: {
-      createMany: jest.fn().mockImplementation(
-        async ({
-          data,
-          skipDuplicates,
-        }: {
-          data: Array<Record<string, unknown>>;
-          skipDuplicates?: boolean;
-        }) => {
-          let count = 0;
-          for (const item of data) {
-            const operationKey = String(item.operationKey);
-            if (
-              skipDuplicates &&
-              manualModerationFanoutLedgerEntries.some((row) => row.operationKey === operationKey)
-            ) {
-              continue;
+      createMany: jest
+        .fn()
+        .mockImplementation(
+          async ({
+            data,
+            skipDuplicates,
+          }: {
+            data: Array<Record<string, unknown>>;
+            skipDuplicates?: boolean;
+          }) => {
+            let count = 0;
+            for (const item of data) {
+              const operationKey = String(item.operationKey);
+              if (
+                skipDuplicates &&
+                manualModerationFanoutLedgerEntries.some((row) => row.operationKey === operationKey)
+              ) {
+                continue;
+              }
+              manualModerationFanoutLedgerEntries.push({
+                id:
+                  typeof item.id === 'string'
+                    ? item.id
+                    : `manual-fanout-ledger-${manualModerationFanoutLedgerEntries.length + 1}`,
+                operationKey,
+                jobId: typeof item.jobId === 'string' ? item.jobId : null,
+                rootIntentKey: typeof item.rootIntentKey === 'string' ? item.rootIntentKey : null,
+                sourceKind: String(item.sourceKind ?? ''),
+                operation: String(item.operation ?? ''),
+                sourceChatId: String(item.sourceChatId ?? ''),
+                targetChatId: String(item.targetChatId ?? ''),
+                targetUserId: String(item.targetUserId ?? ''),
+                actorUserId: String(item.actorUserId ?? ''),
+                logicalAction: String(item.logicalAction ?? ''),
+                executionMode: typeof item.executionMode === 'string' ? item.executionMode : null,
+                botId: typeof item.botId === 'string' ? item.botId : null,
+                status: typeof item.status === 'string' ? item.status : 'IN_PROGRESS',
+                attemptCount: Number(item.attemptCount ?? 0),
+                moderationEventId:
+                  typeof item.moderationEventId === 'string' ? item.moderationEventId : null,
+                auditLogId: typeof item.auditLogId === 'string' ? item.auditLogId : null,
+                remoteMessageId:
+                  typeof item.remoteMessageId === 'string' ? item.remoteMessageId : null,
+                lastError: typeof item.lastError === 'string' ? item.lastError : null,
+                lastStatusCode:
+                  typeof item.lastStatusCode === 'number' ? item.lastStatusCode : null,
+                lastErrorCode: typeof item.lastErrorCode === 'string' ? item.lastErrorCode : null,
+                metadata: 'metadata' in item ? item.metadata : null,
+                terminal: item.terminal === true,
+                lockedAt: item.lockedAt instanceof Date ? item.lockedAt : null,
+                lockToken: typeof item.lockToken === 'string' ? item.lockToken : null,
+                createdAt:
+                  item.createdAt instanceof Date
+                    ? item.createdAt
+                    : new Date('2026-03-01T00:00:00.000Z'),
+                updatedAt:
+                  item.updatedAt instanceof Date
+                    ? item.updatedAt
+                    : new Date('2026-03-01T00:00:00.000Z'),
+              });
+              count += 1;
             }
-            manualModerationFanoutLedgerEntries.push({
-              id:
-                typeof item.id === 'string'
-                  ? item.id
-                  : `manual-fanout-ledger-${manualModerationFanoutLedgerEntries.length + 1}`,
-              operationKey,
-              jobId: typeof item.jobId === 'string' ? item.jobId : null,
-              rootIntentKey: typeof item.rootIntentKey === 'string' ? item.rootIntentKey : null,
-              sourceKind: String(item.sourceKind ?? ''),
-              operation: String(item.operation ?? ''),
-              sourceChatId: String(item.sourceChatId ?? ''),
-              targetChatId: String(item.targetChatId ?? ''),
-              targetUserId: String(item.targetUserId ?? ''),
-              actorUserId: String(item.actorUserId ?? ''),
-              logicalAction: String(item.logicalAction ?? ''),
-              executionMode: typeof item.executionMode === 'string' ? item.executionMode : null,
-              botId: typeof item.botId === 'string' ? item.botId : null,
-              status: typeof item.status === 'string' ? item.status : 'IN_PROGRESS',
-              attemptCount: Number(item.attemptCount ?? 0),
-              moderationEventId:
-                typeof item.moderationEventId === 'string' ? item.moderationEventId : null,
-              auditLogId: typeof item.auditLogId === 'string' ? item.auditLogId : null,
-              remoteMessageId:
-                typeof item.remoteMessageId === 'string' ? item.remoteMessageId : null,
-              lastError: typeof item.lastError === 'string' ? item.lastError : null,
-              lastStatusCode:
-                typeof item.lastStatusCode === 'number' ? item.lastStatusCode : null,
-              lastErrorCode: typeof item.lastErrorCode === 'string' ? item.lastErrorCode : null,
-              metadata: 'metadata' in item ? item.metadata : null,
-              terminal: item.terminal === true,
-              lockedAt: item.lockedAt instanceof Date ? item.lockedAt : null,
-              lockToken: typeof item.lockToken === 'string' ? item.lockToken : null,
-              createdAt:
-                item.createdAt instanceof Date
-                  ? item.createdAt
-                  : new Date('2026-03-01T00:00:00.000Z'),
-              updatedAt:
-                item.updatedAt instanceof Date
-                  ? item.updatedAt
-                  : new Date('2026-03-01T00:00:00.000Z'),
-            });
-            count += 1;
-          }
-          return { count };
-        },
-      ),
-      findMany: jest.fn().mockImplementation(
-        async ({ where }: { where?: Record<string, unknown> } = {}) =>
+            return { count };
+          },
+        ),
+      findMany: jest
+        .fn()
+        .mockImplementation(async ({ where }: { where?: Record<string, unknown> } = {}) =>
           manualModerationFanoutLedgerEntries.filter((row) =>
             matchesManualModerationFanoutLedgerWhere(row, where),
           ),
-      ),
-      count: jest.fn().mockImplementation(
-        async ({ where }: { where?: Record<string, unknown> } = {}) =>
-          manualModerationFanoutLedgerEntries.filter((row) =>
-            matchesManualModerationFanoutLedgerWhere(row, where),
-          ).length,
-      ),
-      updateMany: jest.fn().mockImplementation(
-        async ({
-          where,
-          data,
-        }: {
-          where?: Record<string, unknown>;
-          data: Record<string, unknown>;
-        }) => {
-          let count = 0;
-          for (const row of manualModerationFanoutLedgerEntries) {
-            if (!matchesManualModerationFanoutLedgerWhere(row, where)) {
-              continue;
+        ),
+      count: jest
+        .fn()
+        .mockImplementation(
+          async ({ where }: { where?: Record<string, unknown> } = {}) =>
+            manualModerationFanoutLedgerEntries.filter((row) =>
+              matchesManualModerationFanoutLedgerWhere(row, where),
+            ).length,
+        ),
+      updateMany: jest
+        .fn()
+        .mockImplementation(
+          async ({
+            where,
+            data,
+          }: {
+            where?: Record<string, unknown>;
+            data: Record<string, unknown>;
+          }) => {
+            let count = 0;
+            for (const row of manualModerationFanoutLedgerEntries) {
+              if (!matchesManualModerationFanoutLedgerWhere(row, where)) {
+                continue;
+              }
+              count += 1;
+              applyManualModerationFanoutLedgerData(row, data);
             }
-            count += 1;
-            applyManualModerationFanoutLedgerData(row, data);
-          }
-          return { count };
-        },
-      ),
-      deleteMany: jest.fn().mockImplementation(
-        async ({ where }: { where?: Record<string, unknown> } = {}) => {
+            return { count };
+          },
+        ),
+      deleteMany: jest
+        .fn()
+        .mockImplementation(async ({ where }: { where?: Record<string, unknown> } = {}) => {
           let count = 0;
           for (let index = manualModerationFanoutLedgerEntries.length - 1; index >= 0; index -= 1) {
-            if (!matchesManualModerationFanoutLedgerWhere(manualModerationFanoutLedgerEntries[index], where)) {
+            if (
+              !matchesManualModerationFanoutLedgerWhere(
+                manualModerationFanoutLedgerEntries[index],
+                where,
+              )
+            ) {
               continue;
             }
             manualModerationFanoutLedgerEntries.splice(index, 1);
             count += 1;
           }
           return { count };
-        },
-      ),
+        }),
     },
     managedBroadcastOccurrence: {
       findMany: jest.fn().mockResolvedValue([]),
@@ -1010,6 +1026,7 @@ type ManagedBroadcastDeliveryRow = {
   broadcastId: string;
   occurrenceIndex: number;
   targetChatId: string;
+  botId: string | null;
   status: string;
   attemptCount: number;
   remoteMessageId: string | null;
@@ -1199,6 +1216,7 @@ function wireManagedBroadcastDeliveryStore(prisma: ReturnType<typeof createPrism
           broadcastId: String(row.broadcastId),
           occurrenceIndex: Number(row.occurrenceIndex),
           targetChatId: String(row.targetChatId),
+          botId: typeof row.botId === 'string' ? row.botId : null,
           status: String(row.status ?? 'PENDING'),
           attemptCount: Number(row.attemptCount ?? 0),
           remoteMessageId: typeof row.remoteMessageId === 'string' ? row.remoteMessageId : null,
@@ -1246,6 +1264,9 @@ function wireManagedBroadcastDeliveryStore(prisma: ReturnType<typeof createPrism
       if ('remoteMessageId' in data) {
         delivery.remoteMessageId = (data.remoteMessageId as string | null) ?? null;
       }
+      if ('botId' in data) {
+        delivery.botId = (data.botId as string | null) ?? null;
+      }
       if ('legacySentWithoutRemoteId' in data) {
         delivery.legacySentWithoutRemoteId = Boolean(data.legacySentWithoutRemoteId);
       }
@@ -1278,6 +1299,9 @@ function wireManagedBroadcastDeliveryStore(prisma: ReturnType<typeof createPrism
         }
         if ('remoteMessageId' in data) {
           delivery.remoteMessageId = (data.remoteMessageId as string | null) ?? null;
+        }
+        if ('botId' in data) {
+          delivery.botId = (data.botId as string | null) ?? null;
         }
         if ('legacySentWithoutRemoteId' in data) {
           delivery.legacySentWithoutRemoteId = Boolean(data.legacySentWithoutRemoteId);
@@ -8033,6 +8057,99 @@ describe('AdminService.applyManualModerationAction', () => {
     });
     expect(maxClient.unbanMember).toHaveBeenCalledWith('chat-1', 'user-4', {
       immediate: true,
+      botId: 'bot-2',
+    });
+  });
+
+  it('prefers the multi-bot read route over a stale persisted bot assignment', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({ primaryBotId: 'bot-1', botId: 'bot-1' });
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'read',
+        chatId: 'chat-1',
+        primaryBotId: 'bot-2',
+        botId: 'bot-2',
+        candidateBotIds: ['bot-2'],
+        reason: 'alternate_confirmed',
+      }),
+    };
+    const maxBotRegistry = {
+      getBotById: jest.fn((botId?: string | null) => (botId ? { id: botId } : null)),
+    };
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+      maxBotRegistry as never,
+    );
+
+    await expect((service as any).resolveChatBotIdForRead('chat-1')).resolves.toBe('bot-2');
+
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledWith({
+      purpose: 'read',
+      chatId: 'chat-1',
+    });
+    expect(prisma.chat.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('repairs channel manual action bindings as channels when the persisted bot lost access', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getCurrentChatMemberAccess: jest
+        .fn()
+        .mockResolvedValueOnce({
+          userId: 'bot-1-user',
+          isAdmin: false,
+          isOwner: false,
+          permissions: [],
+        })
+        .mockResolvedValueOnce({
+          userId: 'bot-2-user',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['write'],
+        }),
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'read',
+        chatId: 'channel-1',
+        primaryBotId: 'bot-1',
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1'],
+        reason: 'chat_primary',
+      }),
+      bindChatToBot: jest.fn().mockResolvedValue('bot-2'),
+    };
+    const maxBotRegistry = {
+      getBotById: jest.fn((botId?: string | null) => (botId ? { id: botId } : null)),
+      getActionableBots: jest.fn().mockReturnValue([{ id: 'bot-1' }, { id: 'bot-2' }]),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+      maxBotRegistry as never,
+    );
+
+    await expect(service.resolveChannelEngagementActionBotId('channel-1')).resolves.toBe('bot-2');
+
+    expect(maxBotLinkService.bindChatToBot).toHaveBeenCalledWith({
+      chatId: 'channel-1',
+      entityType: 'CHANNEL',
       botId: 'bot-2',
     });
   });
@@ -25501,6 +25618,7 @@ describe('AdminService.sendBroadcast', () => {
             broadcastId: 'broadcast-1',
             occurrenceIndex: 1,
             targetChatId: 'channel-1',
+            botId: 'channel-bot-2',
             status: 'SENDING',
             attemptCount: 1,
             remoteMessageId: null,
@@ -25519,6 +25637,7 @@ describe('AdminService.sendBroadcast', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
+    jest.spyOn(service as any, 'resolveDeliveryBotAssignment').mockResolvedValue('channel-bot-2');
 
     const result = await service.sendChannelBroadcast(
       'channel-1',
@@ -25559,6 +25678,7 @@ describe('AdminService.sendBroadcast', () => {
         trafficClass: 'interactive',
         actionHealthLane: 'interactive',
         sourceTag: 'managed_broadcast',
+        botId: 'channel-bot-2',
       }),
     );
     expect(prisma.managedBroadcast.create).toHaveBeenCalledWith(
@@ -25584,15 +25704,16 @@ describe('AdminService.sendBroadcast', () => {
         }),
       ],
     });
-    expect(
-      prisma.managedBroadcastDelivery.createMany.mock.invocationCallOrder[0],
-    ).toBeLessThan(maxClient.sendMessageImmediateWithId.mock.invocationCallOrder[0]);
+    expect(prisma.managedBroadcastDelivery.createMany.mock.invocationCallOrder[0]).toBeLessThan(
+      maxClient.sendMessageImmediateWithId.mock.invocationCallOrder[0],
+    );
     expect(result.scheduleId).toBe('broadcast-1');
     expect(result.sentChats).toBe(1);
     expect(result.failedChats).toBe(0);
     expect(deliveries[0]).toEqual(
       expect.objectContaining({
         status: 'SENT',
+        botId: 'channel-bot-2',
         attemptCount: 1,
         remoteMessageId: 'mid-channel-broadcast-1',
         legacySentWithoutRemoteId: false,
@@ -25679,7 +25800,7 @@ describe('AdminService.sendBroadcast', () => {
     expect(result.failedChats).toBe(1);
     expect(deliveries[0]).toEqual(
       expect.objectContaining({
-        status: 'FAILED',
+        status: 'AMBIGUOUS',
         attemptCount: 1,
         remoteMessageId: null,
         lastError: 'timeout of 5000ms exceeded',
@@ -26716,7 +26837,7 @@ describe('AdminService.sendBroadcast', () => {
     expect(result.failedChats).toBe(1);
     expect(deliveries[0]).toEqual(
       expect.objectContaining({
-        status: 'FAILED',
+        status: 'AMBIGUOUS',
         attemptCount: 1,
         lastError: 'timeout of 5000ms exceeded',
       }),
@@ -26764,11 +26885,11 @@ describe('AdminService.sendBroadcast', () => {
           broadcastId: 'broadcast-1',
           occurrenceIndex: 1,
           targetChatId: 'chat-1',
-          status: 'FAILED',
+          status: 'AMBIGUOUS',
         },
       ],
     });
-    deliveries[0].status = 'FAILED';
+    deliveries[0].status = 'AMBIGUOUS';
     deliveries[0].attemptCount = 1;
     deliveries[0].lastError = 'timeout of 5000ms exceeded';
     deliveries[0].updatedAt = new Date('2026-03-03T10:00:00.000Z');
@@ -26803,7 +26924,7 @@ describe('AdminService.sendBroadcast', () => {
     expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
     expect(deliveries[0]).toEqual(
       expect.objectContaining({
-        status: 'FAILED',
+        status: 'AMBIGUOUS',
         remoteMessageId: null,
         lastError: 'timeout of 5000ms exceeded',
       }),
@@ -26814,7 +26935,7 @@ describe('AdminService.sendBroadcast', () => {
         sentChatIds: [],
         failedChatIds: ['chat-1'],
         pendingChatIds: [],
-        canRetry: true,
+        canRetry: false,
       }),
     );
     await expect(
@@ -26825,6 +26946,132 @@ describe('AdminService.sendBroadcast', () => {
         sentCount: 0,
         nextSendAt: new Date('2026-03-03T10:00:00.000Z'),
       }),
+    );
+    await expect(
+      service.retryManagedBroadcast('chat-1', 'broadcast-1', {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      }),
+    ).rejects.toThrow('неоднозначные доставки');
+  });
+
+  it('retries failed managed broadcast deliveries without touching ambiguous ones', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:15:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const deliveries = wireManagedBroadcastDeliveryStore(prisma);
+    await prisma.managedBroadcast.create({
+      data: {
+        id: 'broadcast-1',
+        sourceChatId: 'chat-1',
+        entityType: 'CHAT',
+        actorUserId: 'admin-1',
+        text: 'Напоминание',
+        textFormat: 'plain',
+        applyToAllChats: true,
+        targetChatIds: ['chat-1', 'chat-2'],
+        buttons: [],
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        scheduleMode: 'legacy',
+        scheduleTimezone: 'Europe/Moscow',
+        nextSendAt: new Date('2026-03-03T10:00:00.000Z'),
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+        sentCount: 0,
+        status: 'FAILED',
+        lastError: 'Есть неотправленные и неоднозначные доставки.',
+        lockedAt: null,
+      },
+    });
+    await prisma.managedBroadcastDelivery.createMany({
+      data: [
+        {
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 1,
+          targetChatId: 'chat-1',
+          status: 'FAILED',
+        },
+        {
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 1,
+          targetChatId: 'chat-2',
+          status: 'AMBIGUOUS',
+        },
+      ],
+    });
+    deliveries[0].status = 'FAILED';
+    deliveries[0].attemptCount = 1;
+    deliveries[0].lastError = 'MAX send failed';
+    deliveries[1].status = 'AMBIGUOUS';
+    deliveries[1].attemptCount = 1;
+    deliveries[1].lastError = 'timeout of 5000ms exceeded';
+    deliveries[1].updatedAt = new Date('2026-03-03T10:00:00.000Z');
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({
+        messageId: 'mid-chat-1-retry',
+        url: null,
+      }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.retryManagedBroadcast('chat-1', 'broadcast-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      'chat-1',
+      'Напоминание',
+      undefined,
+      expect.objectContaining({
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: 'managed_broadcast',
+      }),
+    );
+    expect(result).toEqual(
+      expect.objectContaining({
+        status: 'PARTIAL',
+        deliveredChats: 1,
+        failedChats: 1,
+        pendingChats: 0,
+        canRetry: false,
+      }),
+    );
+    expect(deliveries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          targetChatId: 'chat-1',
+          status: 'SENT',
+          remoteMessageId: 'mid-chat-1-retry',
+          lastError: null,
+        }),
+        expect.objectContaining({
+          targetChatId: 'chat-2',
+          status: 'AMBIGUOUS',
+          remoteMessageId: null,
+          lastError: 'timeout of 5000ms exceeded',
+        }),
+      ]),
     );
   });
 
@@ -28759,6 +29006,122 @@ describe('AdminService.sendBroadcast', () => {
     expect(result.sentChats).toBe(2);
     expect(result.failedChats).toBe(0);
     expect(result.scheduleId).toBe('broadcast-1');
+  });
+
+  it('stores the selected author bot id on each managed broadcast delivery', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const deliveries = wireManagedBroadcastDeliveryStore(prisma);
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithId: jest.fn().mockImplementation(async (chatId: string) => ({
+        messageId: `mid-${chatId}`,
+        url: null,
+      })),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      createConfigMock() as never,
+    );
+    jest.spyOn(service, 'listChatsForMassBroadcast').mockResolvedValue([
+      createChatSummaryFixture({
+        id: 'chat-2',
+        title: 'Чат 2',
+        createdAt: '2026-03-01T00:00:00.000Z',
+        entityType: 'chat',
+      }),
+      createChatSummaryFixture({
+        id: 'chat-3',
+        title: 'Чат 3',
+        createdAt: '2026-03-01T00:00:00.000Z',
+        entityType: 'chat',
+      }),
+    ]);
+    jest
+      .spyOn(service as any, 'resolveDeliveryBotAssignment')
+      .mockImplementation(async (chatId: unknown) => {
+        const normalizedChatId = String(chatId);
+        const botIdsByChatId: Record<string, string> = {
+          'chat-1': 'bot-1',
+          'chat-2': 'bot-3',
+          'chat-3': 'bot-6',
+        };
+        return botIdsByChatId[normalizedChatId];
+      });
+
+    const result = await service.sendBroadcast(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: 'Напоминание',
+        textFormat: 'plain',
+        applyToAllChats: true,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+      },
+    );
+
+    expect(result.sentChats).toBe(3);
+    expect(deliveries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          targetChatId: 'chat-1',
+          botId: 'bot-1',
+          status: 'SENT',
+          remoteMessageId: 'mid-chat-1',
+        }),
+        expect.objectContaining({
+          targetChatId: 'chat-2',
+          botId: 'bot-3',
+          status: 'SENT',
+          remoteMessageId: 'mid-chat-2',
+        }),
+        expect.objectContaining({
+          targetChatId: 'chat-3',
+          botId: 'bot-6',
+          status: 'SENT',
+          remoteMessageId: 'mid-chat-3',
+        }),
+      ]),
+    );
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenNthCalledWith(
+      1,
+      'chat-1',
+      'Напоминание',
+      undefined,
+      expect.objectContaining({ botId: 'bot-1' }),
+    );
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenNthCalledWith(
+      2,
+      'chat-2',
+      'Напоминание',
+      undefined,
+      expect.objectContaining({ botId: 'bot-3' }),
+    );
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenNthCalledWith(
+      3,
+      'chat-3',
+      'Напоминание',
+      undefined,
+      expect.objectContaining({ botId: 'bot-6' }),
+    );
   });
 
   it('sends a chat broadcast only to selected chats and dedupes target ids', async () => {
@@ -33623,6 +33986,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       where: { chatId: 'channel-1' },
       data: {
         engagementPublishedMessageId: 'mid-channel-engagement-1',
+        engagementPublishedBotId: null,
         engagementPublishedThreadId: commentsToken.d,
         engagementPublishedAt: expect.any(Date),
       },
@@ -37576,9 +37940,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       undefined,
       maxBotLinkService as never,
     );
-    jest
-      .spyOn(service as any, 'resolveManualActionBotAssignment')
-      .mockResolvedValue('channel-bot-2');
+    jest.spyOn(service as any, 'resolveDeliveryBotAssignment').mockResolvedValue('channel-bot-2');
 
     const result = await service.reviewChannelSuggestionByAdmin(
       'suggestion-review-1',
@@ -37618,7 +37980,13 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           ],
         ],
       }),
-      { botId: 'channel-bot-2' },
+      expect.objectContaining({
+        botId: 'channel-bot-2',
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY,
+        timeoutMs: 10_000,
+      }),
     );
     expect(maxBotLinkService.resolveContactIdSync).toHaveBeenCalledWith('channel-bot-2');
     expect(maxBotLinkService.getBotTokenSync).toHaveBeenCalledWith('channel-bot-2');
@@ -38047,9 +38415,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
-    jest
-      .spyOn(service as any, 'resolveManualActionBotAssignment')
-      .mockResolvedValue('channel-bot-2');
+    jest.spyOn(service as any, 'resolveDeliveryBotAssignment').mockResolvedValue('channel-bot-2');
 
     const result = await service.reviewChannelSuggestionByAdmin(
       'suggestion-review-rich-1',
@@ -38073,7 +38439,13 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       expect.objectContaining({
         textFormat: 'html',
       }),
-      { botId: 'channel-bot-2' },
+      expect.objectContaining({
+        botId: 'channel-bot-2',
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY,
+        timeoutMs: 10_000,
+      }),
     );
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
       '555001',
@@ -38168,9 +38540,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
-    jest
-      .spyOn(service as any, 'resolveManualActionBotAssignment')
-      .mockResolvedValue('channel-bot-2');
+    jest.spyOn(service as any, 'resolveDeliveryBotAssignment').mockResolvedValue('channel-bot-2');
 
     const result = await service.reviewChannelSuggestionByAdmin(
       'suggestion-review-photo-1',
@@ -38218,7 +38588,13 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           ],
         ],
       }),
-      { botId: 'channel-bot-2' },
+      expect.objectContaining({
+        botId: 'channel-bot-2',
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY,
+        timeoutMs: 10_000,
+      }),
     );
     const autoAttachPayload = prisma.auditLog.create.mock.calls[0]?.[0]?.data?.payload as {
       threadId?: unknown;
@@ -38363,6 +38739,12 @@ describe('AdminService.publishChannelEngagementMessage', () => {
             }),
           ],
         ],
+      }),
+      expect.objectContaining({
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY,
+        timeoutMs: 10_000,
       }),
     );
     const autoAttachPayload = prisma.auditLog.create.mock.calls[0]?.[0]?.data?.payload as {
@@ -38509,6 +38891,12 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           ],
         ],
       }),
+      expect.objectContaining({
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY,
+        timeoutMs: 10_000,
+      }),
     );
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
       '555001',
@@ -38582,6 +38970,12 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       expect.objectContaining({
         buttons: expect.any(Array),
       }),
+      expect.objectContaining({
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+        timeoutMs: 10_000,
+      }),
     );
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
     expect(result).toMatchObject({
@@ -38590,6 +38984,106 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       messageId: 'mid-existing-engagement-1',
       updatedExisting: true,
       publishedAt: '2026-03-10T12:00:00.000Z',
+    });
+  });
+
+  it('edits channel engagement with the stored author bot and stores the new bot after recreate', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.upsert.mockResolvedValue({
+      chatId: 'channel-1',
+      engagementPublishedMessageId: 'mid-existing-engagement-1',
+      engagementPublishedBotId: 'channel-bot-2',
+      engagementPublishedThreadId: 'thread-existing-1',
+      engagementPublishedAt: new Date('2026-03-10T12:00:00.000Z'),
+      postSuggestionsEntryMode: 'BOT',
+    });
+
+    const recreateError = {
+      response: {
+        status: 403,
+        data: { message: "message can't be edited" },
+      },
+    };
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      editMessageInlineKeyboard: jest.fn().mockRejectedValue(recreateError),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-new-engagement-1', url: null }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    jest
+      .spyOn(service as any, 'resolveChannelEngagementActionBotId')
+      .mockResolvedValue('channel-bot-5');
+
+    const result = await service.publishChannelEngagementMessage(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: 'Обновленный текст публикации.',
+        commentsButtonText: 'Комментарии',
+        suggestButtonText: 'Предложить пост',
+      },
+    );
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-existing-engagement-1',
+      'Обновленный текст публикации.',
+      expect.objectContaining({
+        buttons: expect.any(Array),
+      }),
+      expect.objectContaining({
+        botId: 'channel-bot-2',
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+      }),
+    );
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'channel-1',
+      'Обновленный текст публикации.',
+      expect.objectContaining({
+        buttons: expect.any(Array),
+      }),
+      expect.objectContaining({
+        botId: 'channel-bot-5',
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+      }),
+    );
+    expect(prisma.channelSettings.update).toHaveBeenCalledWith({
+      where: { chatId: 'channel-1' },
+      data: {
+        engagementPublishedMessageId: 'mid-new-engagement-1',
+        engagementPublishedBotId: 'channel-bot-5',
+        engagementPublishedThreadId: 'thread-existing-1',
+        engagementPublishedAt: expect.any(Date),
+      },
+    });
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        payload: expect.objectContaining({
+          messageId: 'mid-new-engagement-1',
+          recreatedFromMessageId: 'mid-existing-engagement-1',
+          botId: 'channel-bot-5',
+        }),
+      }),
+    });
+    expect(result).toMatchObject({
+      messageId: 'mid-new-engagement-1',
+      updatedExisting: false,
     });
   });
 

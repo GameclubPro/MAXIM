@@ -651,18 +651,31 @@ export class MaxBotLinkService {
         membership.status === ChatBotMembershipStatus.ACTIVE &&
         Boolean(this.resolveOperationalBotId(membership.botId)),
     );
+    const accessEligibleActiveKnownMemberships = activeKnownMemberships.filter(
+      (membership) => !membershipExplicitlyLacksAccess(membership.permissionsSnapshot),
+    );
+    const storedOperationalBotId = this.resolveOperationalBotId(
+      chat?.primaryBotId ?? chat?.botId ?? null,
+    );
+    const storedOperationalMembership = storedOperationalBotId
+      ? (activeKnownMemberships.find((membership) => membership.botId === storedOperationalBotId) ??
+        null)
+      : null;
+    const storedAccessEligibleBotId =
+      storedOperationalBotId &&
+      (!storedOperationalMembership ||
+        !membershipExplicitlyLacksAccess(storedOperationalMembership.permissionsSnapshot))
+        ? storedOperationalBotId
+        : null;
     const primaryBotId =
-      resolvePreferredPrimaryBotId(
-        this.resolveOperationalBotId(chat?.primaryBotId ?? chat?.botId ?? null),
-        activeKnownMemberships,
-        {
-          requireFreshSnapshotForPromotion: true,
-        },
-      ) ??
-      this.resolveOperationalBotId(chat?.primaryBotId ?? chat?.botId ?? null) ??
-      activeKnownMemberships.find((membership) => membership.role === ChatBotMembershipRole.PRIMARY)
-        ?.botId ??
-      activeKnownMemberships[0]?.botId ??
+      resolvePreferredPrimaryBotId(storedAccessEligibleBotId, activeKnownMemberships, {
+        requireFreshSnapshotForPromotion: true,
+      }) ??
+      storedAccessEligibleBotId ??
+      accessEligibleActiveKnownMemberships.find(
+        (membership) => membership.role === ChatBotMembershipRole.PRIMARY,
+      )?.botId ??
+      accessEligibleActiveKnownMemberships[0]?.botId ??
       null;
     const activeMembership =
       activeBotId && chat?.botMemberships
@@ -945,7 +958,10 @@ export class MaxBotLinkService {
       return null;
     }
 
-    const nextPrimaryBotId = state.primaryBotId;
+    const nextPrimaryBotId =
+      resolvePreferredPrimaryBotId(state.primaryBotId, state.activeActionableMemberships, {
+        requireFreshSnapshotForPromotion: true,
+      }) ?? state.primaryBotId;
     const activeMemberships = state.activeKnownMemberships;
     const roleAlreadyConsistent =
       activeMemberships.some(
@@ -1037,6 +1053,19 @@ export class MaxBotLinkService {
 
       const cachedBotId = this.getCachedChatBotId(chatId);
       if (cachedBotId) {
+        const cachedMembership =
+          state?.activeOperationalMemberships.find(
+            (membership) => membership.botId === cachedBotId,
+          ) ?? null;
+        if (
+          cachedMembership &&
+          membershipExplicitlyLacksAccess(cachedMembership.permissionsSnapshot)
+        ) {
+          return this.buildRoute({
+            purpose: 'default',
+            chatId,
+          });
+        }
         return this.buildRoute({
           purpose: 'default',
           chatId,
@@ -1199,9 +1228,13 @@ export class MaxBotLinkService {
 
     const fallbackBotId =
       state.activeOperationalMemberships.find(
-        (membership) => membership.botId === state.primaryBotId,
+        (membership) =>
+          membership.botId === state.primaryBotId &&
+          !membershipExplicitlyLacksAccess(membership.permissionsSnapshot),
       )?.botId ??
-      state.activeOperationalMemberships[0]?.botId ??
+      state.activeOperationalMemberships.find(
+        (membership) => !membershipExplicitlyLacksAccess(membership.permissionsSnapshot),
+      )?.botId ??
       null;
     return this.buildRoute({
       purpose: 'member_access',
@@ -1384,20 +1417,35 @@ export class MaxBotLinkService {
       const bot = this.botRegistry.getBotById(membership.botId);
       return Boolean(bot && canExecuteActionsForBotState(bot.state));
     });
+    const accessEligibleActiveActionableMemberships = activeActionableMemberships.filter(
+      (membership) => !membershipExplicitlyLacksAccess(membership.permissionsSnapshot),
+    );
     const storedPrimaryBotId = this.resolveOperationalBotId(chat.primaryBotId ?? null);
-    const storedExecutableBotId =
+    const rawStoredExecutableBotId =
       this.resolveExecutableBotId(chat.primaryBotId ?? null) ??
       this.resolveExecutableBotId(chat.botId ?? null);
-    const primaryBotId =
+    const storedExecutableMembership = rawStoredExecutableBotId
+      ? (activeActionableMemberships.find(
+          (membership) => membership.botId === rawStoredExecutableBotId,
+        ) ?? null)
+      : null;
+    const storedExecutableBotId =
+      rawStoredExecutableBotId &&
+      (!storedExecutableMembership ||
+        !membershipExplicitlyLacksAccess(storedExecutableMembership.permissionsSnapshot))
+        ? rawStoredExecutableBotId
+        : null;
+    const preferredPrimaryBotId =
       resolvePreferredPrimaryBotId(storedExecutableBotId, activeActionableMemberships, {
         requireFreshSnapshotForPromotion: true,
       }) ??
       storedExecutableBotId ??
-      activeActionableMemberships.find(
+      accessEligibleActiveActionableMemberships.find(
         (membership) => membership.role === ChatBotMembershipRole.PRIMARY,
       )?.botId ??
-      activeActionableMemberships[0]?.botId ??
+      accessEligibleActiveActionableMemberships[0]?.botId ??
       null;
+    const primaryBotId = preferredPrimaryBotId;
 
     return {
       chatId: normalizedChatId,
@@ -1575,8 +1623,26 @@ export class MaxBotLinkService {
     }
 
     if (fallbackToPrimary !== false) {
-      pushCandidate(state.primaryBotId);
-      pushCandidate(state.activeActionableMemberships[0]?.botId ?? null);
+      const pushFallbackCandidate = (botId: string | null | undefined) => {
+        const normalizedBotId = this.resolveExecutableBotId(botId);
+        if (!normalizedBotId) {
+          return;
+        }
+
+        const membership =
+          state.activeActionableMemberships.find((item) => item.botId === normalizedBotId) ?? null;
+        if (
+          membership &&
+          this.membershipExplicitlyLacksSendMessageAccess(membership.permissionsSnapshot)
+        ) {
+          return;
+        }
+
+        pushCandidate(normalizedBotId);
+      };
+
+      pushFallbackCandidate(state.primaryBotId);
+      pushFallbackCandidate(state.activeActionableMemberships[0]?.botId ?? null);
     }
 
     return candidateBotIds;
@@ -1600,6 +1666,9 @@ export class MaxBotLinkService {
       if (membership.role === ChatBotMembershipRole.PRIMARY) {
         continue;
       }
+      if (membershipExplicitlyLacksAccess(membership.permissionsSnapshot)) {
+        continue;
+      }
       if (!this.normalizeBotCapabilities(membership.capabilities).includes(capability)) {
         continue;
       }
@@ -1607,7 +1676,18 @@ export class MaxBotLinkService {
     }
 
     if (fallbackToPrimary !== false) {
-      pushCandidate(state.primaryBotId);
+      const primaryMembership =
+        state.primaryBotId !== null
+          ? (state.activeActionableMemberships.find(
+              (membership) => membership.botId === state.primaryBotId,
+            ) ?? null)
+          : null;
+      if (
+        !primaryMembership ||
+        !membershipExplicitlyLacksAccess(primaryMembership.permissionsSnapshot)
+      ) {
+        pushCandidate(state.primaryBotId);
+      }
     }
 
     return candidateBotIds;
@@ -1744,9 +1824,7 @@ export class MaxBotLinkService {
 
   private isExecutableRoutePurpose(purpose: MaxBotRoutePurpose): boolean {
     return (
-      purpose === 'send_message' ||
-      purpose === 'moderation_action' ||
-      purpose === 'capability'
+      purpose === 'send_message' || purpose === 'moderation_action' || purpose === 'capability'
     );
   }
 
@@ -1918,13 +1996,17 @@ export class MaxBotLinkService {
         membership.status === ChatBotMembershipStatus.ACTIVE &&
         this.resolveExecutableBotId(membership.botId),
     );
+    const accessEligibleActiveMemberships = activeMemberships.filter(
+      (membership) => !membershipExplicitlyLacksAccess(membership.permissionsSnapshot),
+    );
     const nextPrimaryBotId =
       resolvePreferredPrimaryBotId(null, activeMemberships, {
         requireFreshSnapshotForPromotion: true,
       }) ??
-      activeMemberships.find((membership) => membership.role === ChatBotMembershipRole.PRIMARY)
-        ?.botId ??
-      activeMemberships[0]?.botId ??
+      accessEligibleActiveMemberships.find(
+        (membership) => membership.role === ChatBotMembershipRole.PRIMARY,
+      )?.botId ??
+      accessEligibleActiveMemberships[0]?.botId ??
       null;
 
     await this.prisma.chat.update({

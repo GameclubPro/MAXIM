@@ -177,14 +177,12 @@ function createService(
     assertManagedEntityReadAccess: jest.fn().mockResolvedValue(undefined),
     assertRequiredSubscriptionSettingsForChatSettings: jest.fn().mockResolvedValue(undefined),
     buildAutofilledChatRulesTextFromCurrentSettings: jest.fn().mockResolvedValue('Автоправила.'),
-    buildFormattedChatRulesPublicationText: jest
-      .fn()
-      .mockImplementation((_chatId, sourceText) =>
-        Promise.resolve({
-          text: sourceText,
-          textFormat: 'markdown',
-        }),
-      ),
+    buildFormattedChatRulesPublicationText: jest.fn().mockImplementation((_chatId, sourceText) =>
+      Promise.resolve({
+        text: sourceText,
+        textFormat: 'markdown',
+      }),
+    ),
     getSettings: jest.fn(),
     getChatSettingsScreen: jest.fn(),
     getChannelSettings: jest.fn(),
@@ -196,16 +194,14 @@ function createService(
     publishChannelEngagementMessage: jest.fn(),
     publishRules: jest.fn(),
     resolveRequiredSubscriptionChannel: jest.fn(),
-    resolveRequiredSubscriptionChannelReferenceValue: jest
-      .fn()
-      .mockResolvedValue(
-        options.resolvedRequiredSubscriptionChannel ??
-          createManagedEntityHeader({
-            id: 'channel-1',
-            title: 'Канал новостей',
-            entityType: 'channel',
-          }),
-      ),
+    resolveRequiredSubscriptionChannelReferenceValue: jest.fn().mockResolvedValue(
+      options.resolvedRequiredSubscriptionChannel ??
+        createManagedEntityHeader({
+          id: 'channel-1',
+          title: 'Канал новостей',
+          entityType: 'channel',
+        }),
+    ),
     refreshChatSettingsExecutionReadiness: jest.fn().mockResolvedValue(undefined),
     resolveRequiredSubscriptionChannelHeadersForSettings: jest
       .fn()
@@ -326,17 +322,11 @@ function createService(
       ),
   };
   const manualModerationService = {
-    getDomainAllowlistDetails: jest
-      .fn()
-      .mockResolvedValue(options.domainAllowlistDetails ?? []),
+    getDomainAllowlistDetails: jest.fn().mockResolvedValue(options.domainAllowlistDetails ?? []),
   };
   const managedBroadcastService = {
-    listManagedBroadcasts: jest
-      .fn()
-      .mockResolvedValue(options.managedBroadcasts ?? []),
-    listChannelManagedBroadcasts: jest
-      .fn()
-      .mockResolvedValue(options.managedBroadcasts ?? []),
+    listManagedBroadcasts: jest.fn().mockResolvedValue(options.managedBroadcasts ?? []),
+    listChannelManagedBroadcasts: jest.fn().mockResolvedValue(options.managedBroadcasts ?? []),
   };
   const nightModeTransitionScheduler = options.nightModeTransitionScheduler ?? {
     reconcileChats: jest.fn().mockResolvedValue(undefined),
@@ -536,18 +526,13 @@ describe('AdminSettingsService chat rules', () => {
   });
 
   it('updates chat settings without routing through legacy updateSettings', async () => {
-    const {
-      chatContextCache,
-      legacyAdminService,
-      nightModeTransitionScheduler,
-      prisma,
-      service,
-    } = createService({
-      botAssignmentData: {
-        botId: 'bot-1',
-        primaryBotId: 'bot-1',
-      },
-    });
+    const { chatContextCache, legacyAdminService, nightModeTransitionScheduler, prisma, service } =
+      createService({
+        botAssignmentData: {
+          botId: 'bot-1',
+          primaryBotId: 'bot-1',
+        },
+      });
 
     const result = await service.updateSettings('chat-1', user as never, {
       antiSpamEnabled: false,
@@ -718,22 +703,18 @@ describe('AdminSettingsService chat rules', () => {
       title: 'Канал MAX',
       entityType: 'channel',
     });
-    const {
-      legacyAdminService,
-      managedBroadcastService,
-      managedEntitiesService,
-      service,
-    } = createService({
-      botAssignmentData: {
-        botId: 'bot-1',
-        primaryBotId: 'bot-1',
-      },
-      managedBroadcasts: [createManagedBroadcastSummary()],
-      managedEntityHeader: channelHeader,
-      persistedChannelSettings: createPersistedChannelSettings({
-        commentsEnabled: true,
-      }),
-    });
+    const { legacyAdminService, managedBroadcastService, managedEntitiesService, service } =
+      createService({
+        botAssignmentData: {
+          botId: 'bot-1',
+          primaryBotId: 'bot-1',
+        },
+        managedBroadcasts: [createManagedBroadcastSummary()],
+        managedEntityHeader: channelHeader,
+        persistedChannelSettings: createPersistedChannelSettings({
+          commentsEnabled: true,
+        }),
+      });
 
     const result = await service.getChannelSettingsScreen('channel-1', user as never, {
       liveAdminCheck: false,
@@ -916,7 +897,13 @@ describe('AdminSettingsService chat rules', () => {
           ],
         ],
       },
-      { botId: 'bot-1' },
+      {
+        botId: 'bot-1',
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+        timeoutMs: 10_000,
+      },
     );
     expect(prisma.channelSettings.upsert).toHaveBeenCalledWith({
       where: { chatId: 'channel-1' },
@@ -927,6 +914,7 @@ describe('AdminSettingsService chat rules', () => {
       update: {},
       select: {
         engagementPublishedMessageId: true,
+        engagementPublishedBotId: true,
         engagementPublishedThreadId: true,
         engagementPublishedAt: true,
         postSuggestionsEntryMode: true,
@@ -936,6 +924,7 @@ describe('AdminSettingsService chat rules', () => {
       where: { chatId: 'channel-1' },
       data: {
         engagementPublishedMessageId: 'message-2',
+        engagementPublishedBotId: 'bot-1',
         engagementPublishedThreadId: threadId,
         engagementPublishedAt: expect.any(Date),
       },
@@ -966,22 +955,17 @@ describe('AdminSettingsService chat rules', () => {
   });
 
   it('applies settings to target chats without routing through legacy applySettingsToAllChats', async () => {
-    const {
-      chatContextCache,
-      legacyAdminService,
-      nightModeTransitionScheduler,
-      prisma,
-      service,
-    } = createService({
-      botAssignmentData: {
-        botId: 'bot-1',
-        primaryBotId: 'bot-1',
-      },
-      applyTargetChats: [
-        createChatSummary({ id: 'chat-1' }),
-        createChatSummary({ id: 'chat-2', title: 'Второй чат' }),
-      ],
-    });
+    const { chatContextCache, legacyAdminService, nightModeTransitionScheduler, prisma, service } =
+      createService({
+        botAssignmentData: {
+          botId: 'bot-1',
+          primaryBotId: 'bot-1',
+        },
+        applyTargetChats: [
+          createChatSummary({ id: 'chat-1' }),
+          createChatSummary({ id: 'chat-2', title: 'Второй чат' }),
+        ],
+      });
     const settings = chatSettingsSchema.parse({ antiSpamEnabled: false });
 
     const result = await service.applySettingsToAllChats('chat-1', user as never, settings);
@@ -1006,12 +990,8 @@ describe('AdminSettingsService chat rules', () => {
       user,
       { mode: 'all', favoriteTypes: [], chatIds: [] },
     );
-    expect(legacyAdminService.resolveSettingsApplyBotAssignmentData).toHaveBeenCalledWith(
-      'chat-1',
-    );
-    expect(legacyAdminService.resolveSettingsApplyBotAssignmentData).toHaveBeenCalledWith(
-      'chat-2',
-    );
+    expect(legacyAdminService.resolveSettingsApplyBotAssignmentData).toHaveBeenCalledWith('chat-1');
+    expect(legacyAdminService.resolveSettingsApplyBotAssignmentData).toHaveBeenCalledWith('chat-2');
     expect(prisma.chat.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 'chat-2' },
@@ -1075,10 +1055,7 @@ describe('AdminSettingsService chat rules', () => {
       shouldRefreshRequiredSubscription: false,
       requiredSubscriptionChannelIds: [],
     });
-    expect(nightModeTransitionScheduler.reconcileChats).toHaveBeenCalledWith([
-      'chat-1',
-      'chat-2',
-    ]);
+    expect(nightModeTransitionScheduler.reconcileChats).toHaveBeenCalledWith(['chat-1', 'chat-2']);
   });
 
   it('applies settings sections without routing through legacy section endpoint', async () => {
@@ -1336,9 +1313,9 @@ describe('AdminSettingsService chat rules', () => {
       'chat',
     );
     expect(legacyAdminService.resolveRequiredSubscriptionChannel).not.toHaveBeenCalled();
-    expect(legacyAdminService.resolveRequiredSubscriptionChannelReferenceValue).toHaveBeenCalledWith(
-      'https://max.ru/channels/news',
-    );
+    expect(
+      legacyAdminService.resolveRequiredSubscriptionChannelReferenceValue,
+    ).toHaveBeenCalledWith('https://max.ru/channels/news');
   });
 
   it('reads rules without routing through legacy getRules', async () => {
@@ -1678,5 +1655,4 @@ describe('AdminSettingsService chat rules', () => {
       }),
     });
   });
-
 });

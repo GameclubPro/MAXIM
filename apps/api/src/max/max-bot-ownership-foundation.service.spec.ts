@@ -721,6 +721,86 @@ describe('MaxBotOwnershipFoundationService', () => {
     await service.onModuleDestroy();
   });
 
+  it('repairs primary assignment away from an explicit denied stored primary', async () => {
+    process.env.APP_ROLE = 'admin';
+
+    const prisma = createPrismaMock({
+      chats: [
+        {
+          id: 'chat-denied-primary-repair',
+          entityType: ChatEntityType.CHAT,
+          botId: 'id613002203036_bot',
+          primaryBotId: 'id613002203036_bot',
+          catalogKind: ChatCatalogKind.MANAGED,
+        },
+      ],
+      memberships: [
+        {
+          chatId: 'chat-denied-primary-repair',
+          botId: 'id613002203036_bot',
+          role: ChatBotMembershipRole.PRIMARY,
+          status: ChatBotMembershipStatus.ACTIVE,
+          permissionsSnapshot: {
+            checkedAt: '2026-05-09T10:04:00.000Z',
+            isAdmin: false,
+            isOwner: false,
+            permissions: [],
+          },
+        },
+        {
+          chatId: 'chat-denied-primary-repair',
+          botId: 'id613002203036_4_bot',
+          role: ChatBotMembershipRole.STANDBY,
+          status: ChatBotMembershipStatus.ACTIVE,
+          permissionsSnapshot: {
+            checkedAt: '2026-05-09T10:04:01.000Z',
+            isAdmin: true,
+            isOwner: false,
+            permissions: ['read_all_messages', 'delete_messages', 'add_remove_members'],
+          },
+        },
+      ],
+    });
+    const maxBotLinkService = {
+      rememberChatBotBinding: jest.fn(),
+    };
+
+    const service = new MaxBotOwnershipFoundationService(
+      createConfigMock() as never,
+      prisma as never,
+      {
+        getAllBots: jest.fn().mockReturnValue([
+          { id: 'id613002203036_bot', state: 'active' },
+          { id: 'id613002203036_4_bot', state: 'active' },
+        ]),
+        getAdminVisibleBots: jest.fn().mockReturnValue([
+          { id: 'id613002203036_bot', state: 'active' },
+          { id: 'id613002203036_4_bot', state: 'active' },
+        ]),
+      } as never,
+      maxBotLinkService as never,
+    );
+
+    await service.onModuleInit();
+    await runDeferredStartupSync();
+
+    expect(prisma.chat.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'chat-denied-primary-repair' },
+        data: {
+          primaryBotId: 'id613002203036_4_bot',
+          botId: 'id613002203036_4_bot',
+        },
+      }),
+    );
+    expect(maxBotLinkService.rememberChatBotBinding).toHaveBeenCalledWith(
+      'chat-denied-primary-repair',
+      'id613002203036_4_bot',
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('does not move primary to a stronger standby with a stale permissions snapshot', async () => {
     process.env.APP_ROLE = 'admin';
 

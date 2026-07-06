@@ -289,6 +289,7 @@ import {
   isPrivateDialogChatUnavailableError,
   isPrivateDirectChat,
   isPrismaKnownError,
+  isMaxApiTimeoutError,
   isUnsupportedManagedChat,
   mapWithConcurrencyLimit,
   normalizeAppBaseUrl,
@@ -1049,8 +1050,9 @@ export class AdminManagedBroadcastRuntime {
       this.getManagedBroadcastUpcomingSlotsMap(rows),
       this.getManagedBroadcastTargetPreviewBundles(rows),
     ]);
-    const autopostRuleIdsByBroadcastId =
-      await this.loadManagedAutopostRuleIdsByBroadcastId(rows.map((row) => row.id));
+    const autopostRuleIdsByBroadcastId = await this.loadManagedAutopostRuleIdsByBroadcastId(
+      rows.map((row) => row.id),
+    );
 
     return rows.map((row) =>
       managedBroadcastSummarySchema.parse(
@@ -1301,7 +1303,13 @@ export class AdminManagedBroadcastRuntime {
     ]);
     const autopostRuleId = await this.resolveManagedAutopostRuleIdForBroadcast(row.id);
     return managedBroadcastDetailsSchema.parse(
-      this.mapManagedBroadcastDetails(row, snapshot, upcomingSlots, targetPreviewBundle, autopostRuleId),
+      this.mapManagedBroadcastDetails(
+        row,
+        snapshot,
+        upcomingSlots,
+        targetPreviewBundle,
+        autopostRuleId,
+      ),
     );
   }
 
@@ -1692,11 +1700,20 @@ export class AdminManagedBroadcastRuntime {
       const hasFailedDeliveries = deliveriesAfterReconcile.some(
         (delivery: any) => delivery.status === PrismaManagedBroadcastDeliveryStatus.FAILED,
       );
+      const hasAmbiguousDeliveries = deliveriesAfterReconcile.some(
+        (delivery: any) => delivery.status === PrismaManagedBroadcastDeliveryStatus.AMBIGUOUS,
+      );
       const hasPendingDeliveries = deliveriesAfterReconcile.some(
         (delivery: any) =>
           delivery.status === PrismaManagedBroadcastDeliveryStatus.PENDING ||
           delivery.status === PrismaManagedBroadcastDeliveryStatus.SENDING,
       );
+
+      if (!hasFailedDeliveries && !hasPendingDeliveries && hasAmbiguousDeliveries) {
+        throw new BadRequestException(
+          'Есть неоднозначные доставки после таймаута MAX. Проверьте канал вручную перед повтором.',
+        );
+      }
 
       if (!hasFailedDeliveries && !hasPendingDeliveries) {
         await this.finalizeManagedBroadcastOccurrence(existing, currentOccurrence, [], [], null, {
@@ -3010,6 +3027,16 @@ export class AdminManagedBroadcastRuntime {
             activeLease,
           );
           resolvedBotId = await resolveTargetBotId(delivery.targetChatId);
+          await this.prisma.managedBroadcastDelivery.updateMany({
+            where: {
+              id: delivery.id,
+              status: PrismaManagedBroadcastDeliveryStatus.SENDING,
+              lockToken: deliveryLockToken,
+            },
+            data: {
+              botId: resolvedBotId ?? null,
+            },
+          });
           const media = await resolveMedia(resolvedBotId);
           const message = await this.buildManagedBroadcastMessage(
             delivery.targetChatId,
@@ -3150,6 +3177,9 @@ export class AdminManagedBroadcastRuntime {
             },
             'Managed broadcast delivery failed for target chat',
           );
+          const failedDeliveryStatus = isMaxApiTimeoutError(error)
+            ? PrismaManagedBroadcastDeliveryStatus.AMBIGUOUS
+            : PrismaManagedBroadcastDeliveryStatus.FAILED;
           await this.prisma.managedBroadcastDelivery.updateMany({
             where: {
               id: delivery.id,
@@ -3157,7 +3187,8 @@ export class AdminManagedBroadcastRuntime {
               lockToken: deliveryLockToken,
             },
             data: {
-              status: PrismaManagedBroadcastDeliveryStatus.FAILED,
+              status: failedDeliveryStatus,
+              botId: resolvedBotId ?? null,
               lockedAt: null,
               lockToken: null,
               lastError: deliveryFailureMessage,
@@ -3177,6 +3208,7 @@ export class AdminManagedBroadcastRuntime {
             data: {
               status: PrismaManagedBroadcastDeliveryStatus.SENT,
               sentAt,
+              botId: resolvedBotId ?? null,
               remoteMessageId: sentMessage.messageId,
               legacySentWithoutRemoteId: false,
               lockedAt: null,
@@ -3213,6 +3245,7 @@ export class AdminManagedBroadcastRuntime {
               data: {
                 status: PrismaManagedBroadcastDeliveryStatus.SENT,
                 sentAt,
+                botId: resolvedBotId ?? null,
                 remoteMessageId: sentMessage.messageId,
                 legacySentWithoutRemoteId: false,
                 lockedAt: null,
@@ -5365,11 +5398,11 @@ export class AdminManagedBroadcastRuntime {
         ...(extraWhere ?? {}),
       },
       data: {
-        status: PrismaManagedBroadcastDeliveryStatus.FAILED,
+        status: PrismaManagedBroadcastDeliveryStatus.AMBIGUOUS,
         lockedAt: null,
         lockToken: null,
         lastError:
-          'Прошлая попытка была прервана после старта отправки. Проверьте чат и повторите только ошибочные доставки.',
+          'Прошлая попытка была прервана после старта отправки. Проверьте чат вручную перед повтором.',
       },
     });
   }
@@ -5593,6 +5626,10 @@ export class AdminManagedBroadcastRuntime {
     const failedChats = deliveries.filter(
       (delivery: any) => delivery.status === PrismaManagedBroadcastDeliveryStatus.FAILED,
     );
+    const ambiguousChats = deliveries.filter(
+      (delivery: any) => delivery.status === PrismaManagedBroadcastDeliveryStatus.AMBIGUOUS,
+    );
+    const failedLikeChats = [...failedChats, ...ambiguousChats];
     const pendingChats = deliveries.filter(
       (delivery: any) =>
         delivery.status === PrismaManagedBroadcastDeliveryStatus.PENDING ||
@@ -5654,13 +5691,13 @@ export class AdminManagedBroadcastRuntime {
       };
     }
 
-    if (failedChats.length > 0) {
+    if (failedLikeChats.length > 0) {
       const status =
         deliveredChats.length > 0
           ? PrismaManagedBroadcastStatus.PARTIAL
           : PrismaManagedBroadcastStatus.FAILED;
       const failureMessage = this.buildManagedBroadcastFailureMessage(
-        failedChats.length,
+        failedLikeChats.length,
         firstSendError,
       );
       const updated = await this.updateManagedBroadcastIfNotCanceled(
@@ -5681,7 +5718,7 @@ export class AdminManagedBroadcastRuntime {
             : deliveredChats.map((delivery: any) => delivery.targetChatId),
           failedChatIds.length > 0
             ? failedChatIds
-            : failedChats.map((delivery: any) => delivery.targetChatId),
+            : failedLikeChats.map((delivery: any) => delivery.targetChatId),
           pendingChats.map((delivery: any) => delivery.targetChatId),
           firstSendError,
         );
@@ -5708,7 +5745,7 @@ export class AdminManagedBroadcastRuntime {
         failedChatIds:
           failedChatIds.length > 0
             ? failedChatIds
-            : failedChats.map((delivery: any) => delivery.targetChatId),
+            : failedLikeChats.map((delivery: any) => delivery.targetChatId),
         pendingChatIds: pendingChats.map((delivery: any) => delivery.targetChatId),
         canRetry,
         firstSendError,
@@ -5858,6 +5895,7 @@ export class AdminManagedBroadcastRuntime {
     for (const delivery of deliveries) {
       if (
         delivery.status !== PrismaManagedBroadcastDeliveryStatus.FAILED &&
+        delivery.status !== PrismaManagedBroadcastDeliveryStatus.AMBIGUOUS &&
         delivery.status !== PrismaManagedBroadcastDeliveryStatus.CANCELED
       ) {
         continue;
@@ -5885,7 +5923,9 @@ export class AdminManagedBroadcastRuntime {
         (delivery: any) => delivery.status === PrismaManagedBroadcastDeliveryStatus.SENT,
       ).length,
       failedChats: deliveries.filter(
-        (delivery: any) => delivery.status === PrismaManagedBroadcastDeliveryStatus.FAILED,
+        (delivery: any) =>
+          delivery.status === PrismaManagedBroadcastDeliveryStatus.FAILED ||
+          delivery.status === PrismaManagedBroadcastDeliveryStatus.AMBIGUOUS,
       ).length,
       pendingChats: deliveries.filter(
         (delivery) =>
@@ -5897,8 +5937,11 @@ export class AdminManagedBroadcastRuntime {
       ).length,
       failureBreakdown,
       canRetry:
-        row.status === PrismaManagedBroadcastStatus.PARTIAL ||
-        row.status === PrismaManagedBroadcastStatus.FAILED,
+        (row.status === PrismaManagedBroadcastStatus.PARTIAL ||
+          row.status === PrismaManagedBroadcastStatus.FAILED) &&
+        deliveries.some(
+          (delivery: any) => delivery.status === PrismaManagedBroadcastDeliveryStatus.FAILED,
+        ),
     };
   }
 

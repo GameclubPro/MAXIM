@@ -134,7 +134,9 @@ export function calculatePrimaryAccessScore(snapshot: MembershipAccessSnapshot |
       ? PRIMARY_ADMIN_BASE_SCORE
       : 0;
   const permissionScore =
-    snapshot.isOwner || snapshot.isAdmin ? calculatePrimaryPermissionScore(snapshot.permissions) : 0;
+    snapshot.isOwner || snapshot.isAdmin
+      ? calculatePrimaryPermissionScore(snapshot.permissions)
+      : 0;
   return baseScore + permissionScore;
 }
 
@@ -164,16 +166,24 @@ export function resolvePreferredPrimaryBotId(
     return currentPrimaryBotId;
   }
 
+  const accessEligibleMemberships = activeMemberships.filter(
+    (membership) => !membershipExplicitlyLacksAccess(membership.permissionsSnapshot),
+  );
+  if (accessEligibleMemberships.length === 0) {
+    return null;
+  }
+
   const fallback =
     (currentPrimaryBotId &&
-    activeMemberships.some((membership) => membership.botId === currentPrimaryBotId)
+    accessEligibleMemberships.some((membership) => membership.botId === currentPrimaryBotId)
       ? currentPrimaryBotId
       : null) ??
-    activeMemberships.find((membership) => membership.role === ChatBotMembershipRole.PRIMARY)
-      ?.botId ??
-    activeMemberships[0]?.botId ??
+    accessEligibleMemberships.find(
+      (membership) => membership.role === ChatBotMembershipRole.PRIMARY,
+    )?.botId ??
+    accessEligibleMemberships[0]?.botId ??
     null;
-  const scored = activeMemberships.map((membership, index) => {
+  const scored = accessEligibleMemberships.map((membership, index) => {
     const snapshot = normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
     return {
       membership,
