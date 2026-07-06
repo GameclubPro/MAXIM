@@ -1291,6 +1291,41 @@ describe('MaxBotLinkService', () => {
     ).resolves.toBeNull();
   });
 
+  it('does not use fallback candidates whose explicit snapshot lacks delete permission', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-fallback-delete-limited', {
+      id: 'chat-fallback-delete-limited',
+      title: 'Restricted chat',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+      entityType: 'CHAT',
+    });
+    fixture.memberships.push({
+      chatId: 'chat-fallback-delete-limited',
+      botId: 'id613002203036_bot',
+      role: ChatBotMembershipRole.PRIMARY,
+      status: ChatBotMembershipStatus.ACTIVE,
+      permissionsSnapshot: {
+        checkedAt: '2026-07-06T09:40:01.508Z',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['add_remove_members', 'read_all_messages', 'pin_message', 'can_call'],
+        health: 'ok',
+      },
+      createdAt: new Date('2026-07-06T09:40:01.508Z'),
+      updatedAt: new Date('2026-07-06T09:40:01.508Z'),
+      lastSeenAt: new Date('2026-07-06T09:40:01.508Z'),
+      lastWebhookAt: new Date('2026-07-06T09:40:01.508Z'),
+    });
+
+    await expect(
+      fixture.service.resolveBotIdsForModerationAction({
+        chatId: 'chat-fallback-delete-limited',
+        action: 'delete_message',
+      }),
+    ).resolves.toEqual([]);
+  });
+
   it('does not fall back to a bot whose refreshed snapshot marks delete as action-limited', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('chat-action-limited', {

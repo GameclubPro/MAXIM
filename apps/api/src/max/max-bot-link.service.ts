@@ -1486,11 +1486,16 @@ export class MaxBotLinkService {
           state.activeActionableMemberships.find((item) => item.botId === normalizedBotId) ?? null;
         if (
           membership &&
-          this.membershipSnapshotMarksActionLimited(
+          (this.membershipExplicitlyLacksModerationAction(
             membership.permissionsSnapshot,
             action,
             state.entityType,
-          )
+          ) ||
+            this.membershipSnapshotMarksActionLimited(
+              membership.permissionsSnapshot,
+              action,
+              state.entityType,
+            ))
         ) {
           return;
         }
