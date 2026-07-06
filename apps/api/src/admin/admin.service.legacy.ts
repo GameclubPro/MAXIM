@@ -16311,7 +16311,7 @@ export class AdminService implements OnModuleDestroy {
       },
     });
     const rows = await this.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-      SELECT DISTINCT audit.id
+      SELECT audit.id
       FROM audit_logs audit
       LEFT JOIN channel_suggestion_admin_deliveries delivery
         ON delivery.audit_log_id = audit.id
@@ -16374,6 +16374,7 @@ export class AdminService implements OnModuleDestroy {
             )
           )
         )
+      GROUP BY audit.id, audit.created_at
       ORDER BY audit.created_at ASC
       LIMIT ${boundedLimit}
     `);

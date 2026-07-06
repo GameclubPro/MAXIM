@@ -34465,6 +34465,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     expect(recoverySql).toContain('channel_suggestion_admin_deliveries');
     expect(recoverySql).toContain("payload->'deliveryFailures'");
     expect(recoverySql).toContain("delivery_failure.value->>'recoverable' = 'true'");
+    expect(recoverySql).toContain('GROUP BY audit.id, audit.created_at');
     expect(recoverySql).toContain('ORDER BY audit.created_at ASC');
     expect(adminSuggestionDeliveryQueue.add).toHaveBeenCalledWith(
       'deliver-channel-suggestion',
