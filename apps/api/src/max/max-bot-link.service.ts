@@ -733,6 +733,20 @@ export class MaxBotLinkService {
     return route.botId;
   }
 
+  async resolveBotIdsForCapability(params: {
+    chatId: string;
+    capability: ManagedEntityBotCapability;
+    fallbackToPrimary?: boolean;
+  }): Promise<string[]> {
+    const route = await this.resolveBotRoute({
+      purpose: 'capability',
+      chatId: params.chatId,
+      capability: params.capability,
+      fallbackToPrimary: params.fallbackToPrimary,
+    });
+    return route.candidateBotIds;
+  }
+
   async markChatBotRemoved(params: {
     chatId: string;
     botId?: string | null;
@@ -1296,27 +1310,13 @@ export class MaxBotLinkService {
       });
     }
 
-    const partnerBotId =
-      state.activeActionableMemberships.find((membership) => {
-        if (membership.role === ChatBotMembershipRole.PRIMARY) {
-          return false;
-        }
-
-        return this.normalizeBotCapabilities(membership.capabilities).includes(capability);
-      })?.botId ?? null;
-    if (partnerBotId) {
-      return this.buildRoute({
-        purpose: 'capability',
-        chatId: normalizedChatId,
-        primaryBotId: state.primaryBotId,
-        botId: partnerBotId,
-        candidateBotIds: [partnerBotId],
-        reason: 'alternate_confirmed',
-        capability,
-      });
-    }
-
-    if (fallbackToPrimary === false || !state.primaryBotId) {
+    const candidateBotIds = this.buildCapabilityCandidateBotIdsFromState(
+      state,
+      capability,
+      fallbackToPrimary !== false,
+    );
+    const selectedBotId = candidateBotIds[0] ?? null;
+    if (!selectedBotId) {
       return this.buildRoute({
         purpose: 'capability',
         chatId: normalizedChatId,
@@ -1329,9 +1329,9 @@ export class MaxBotLinkService {
       purpose: 'capability',
       chatId: normalizedChatId,
       primaryBotId: state.primaryBotId,
-      botId: state.primaryBotId,
-      candidateBotIds: [state.primaryBotId],
-      reason: 'primary_fallback',
+      botId: selectedBotId,
+      candidateBotIds,
+      reason: selectedBotId === state.primaryBotId ? 'primary_fallback' : 'alternate_confirmed',
       capability,
     });
   }
@@ -1579,6 +1579,37 @@ export class MaxBotLinkService {
     if (fallbackToPrimary !== false) {
       pushCandidate(state.primaryBotId);
       pushCandidate(state.activeActionableMemberships[0]?.botId ?? null);
+    }
+
+    return candidateBotIds;
+  }
+
+  private buildCapabilityCandidateBotIdsFromState(
+    state: ResolvedChatRouteState,
+    capability: ManagedEntityBotCapability,
+    fallbackToPrimary = true,
+  ): string[] {
+    const candidateBotIds: string[] = [];
+    const pushCandidate = (botId: string | null | undefined) => {
+      const normalizedBotId = this.resolveExecutableBotId(botId);
+      if (!normalizedBotId || candidateBotIds.includes(normalizedBotId)) {
+        return;
+      }
+      candidateBotIds.push(normalizedBotId);
+    };
+
+    for (const membership of state.activeActionableMemberships) {
+      if (membership.role === ChatBotMembershipRole.PRIMARY) {
+        continue;
+      }
+      if (!this.normalizeBotCapabilities(membership.capabilities).includes(capability)) {
+        continue;
+      }
+      pushCandidate(membership.botId);
+    }
+
+    if (fallbackToPrimary !== false) {
+      pushCandidate(state.primaryBotId);
     }
 
     return candidateBotIds;

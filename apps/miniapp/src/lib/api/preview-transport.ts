@@ -340,6 +340,7 @@ function buildPreviewBotExecutionPlan(
     entityType === 'chat' ? state.chatPartnerAssistEnabled : state.channelPartnerAssistEnabled;
   const assignedBots = buildPreviewAssignedBots({ primaryBotId, assistEnabled });
   const partnerBotId = assignedBots.find((bot) => bot.role !== 'primary')?.botId ?? null;
+  const partnerBotIds = partnerBotId ? [partnerBotId] : [];
 
   return managedEntityBotExecutionPlanSchema.parse({
     chatId,
@@ -349,6 +350,7 @@ function buildPreviewBotExecutionPlan(
     workerBotId: primaryBotId,
     linkBotId: primaryBotId,
     partnerBotId,
+    partnerBotIds,
     sharedMode: buildPreviewSharedMode(assistEnabled),
     userFacingPolicy: 'owner-only',
     reasons: [

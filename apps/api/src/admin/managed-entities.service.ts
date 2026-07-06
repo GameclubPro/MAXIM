@@ -56,7 +56,10 @@ import {
 } from '../system/system-access.util';
 import { AdminDialogLinkHelper } from './admin-dialog-link-helper';
 import type { AdminManagedEntitiesRefreshJob } from './admin-managed-entities-refresh.queue';
-import { getManagedEntityHeaderValue } from './admin-managed-entity-header';
+import {
+  getManagedEntityHeaderValue,
+  sanitizePublicManagedEntityHeader,
+} from './admin-managed-entity-header';
 import {
   listManagedEntitiesValue,
   listManagedEntitiesWithRefreshStateValue,
@@ -510,7 +513,7 @@ export class ManagedEntitiesService {
         this.legacyAdminService.attachManagedEntityHeaderBotAssignmentsForManagedEntities(header),
     });
 
-    return this.sanitizePublicManagedEntityHeader({
+    return sanitizePublicManagedEntityHeader({
       ...header,
       accessDiagnostics: await this.getManagedEntityAccessDiagnostics(chatId),
       viewerAccess: await this.getManagedEntityViewerAccess(chatId, user.userId, entityType),
@@ -787,31 +790,6 @@ export class ManagedEntitiesService {
 
     return {
       ...item,
-      primaryBotId: null,
-      assignedBots: [],
-      sharedMode: 'owned',
-      ...(botCount > 0 ? { botCount } : {}),
-      ...(hasSharedAutomation ? { hasSharedAutomation } : {}),
-    };
-  }
-
-  private sanitizePublicManagedEntityHeader(header: ManagedEntityHeader): ManagedEntityHeader {
-    const assignedBots = Array.isArray(header.assignedBots) ? header.assignedBots : [];
-    const activeBotCount =
-      header.accessDiagnostics.activeBotCount > 0
-        ? header.accessDiagnostics.activeBotCount
-        : assignedBots.filter((bot) => bot.membershipStatus === 'active').length;
-    const botCount =
-      typeof header.botCount === 'number' && header.botCount > 0
-        ? header.botCount
-        : activeBotCount > 0
-          ? activeBotCount
-          : assignedBots.filter((bot) => bot.membershipStatus === 'active').length;
-    const hasSharedAutomation =
-      header.hasSharedAutomation === true || botCount > 1 || header.sharedMode !== 'owned';
-
-    return {
-      ...header,
       primaryBotId: null,
       assignedBots: [],
       sharedMode: 'owned',

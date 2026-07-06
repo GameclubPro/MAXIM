@@ -17,6 +17,7 @@ function createPlan(entityType: 'chat' | 'channel' = 'chat') {
     workerBotId: 'bot-1',
     linkBotId: 'bot-1',
     partnerBotId: null,
+    partnerBotIds: [],
     sharedMode: 'owned',
     userFacingPolicy: 'owner-only',
     reasons: [],

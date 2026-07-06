@@ -60,6 +60,48 @@ describe('WebhookService', () => {
     expect(prisma.webhookEvent.create).toHaveBeenCalledTimes(1);
   });
 
+  it('stores same logical update id separately for different webhook bots', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-shared' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+    const baseUpdate = {
+      updateId: 'u-shared-1',
+      type: 'message_created',
+      message: {
+        messageId: 'm-shared-1',
+        chatId: '-100',
+        chatTitle: 'Shared chat',
+        senderId: 'user-1',
+        text: 'hello',
+        createdAt: '2026-06-20T12:00:00.000Z',
+      },
+    };
+
+    await expect(
+      service.ingest({ ...baseUpdate, botId: 'standby-bot' } as never, '127.0.0.1'),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+    await expect(
+      service.ingest({ ...baseUpdate, botId: 'owner-bot' } as never, '127.0.0.1'),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(prisma.webhookEvent.create).toHaveBeenCalledTimes(2);
+    expect(prisma.webhookEvent.create.mock.calls.map(([args]) => args.data.dedupKey)).toEqual([
+      'standby-bot:u-shared-1',
+      'owner-bot:u-shared-1',
+    ]);
+  });
+
   it('defers the Старт handshake after storing the webhook event', async () => {
     const prisma = {
       webhookEvent: {
@@ -2447,7 +2489,7 @@ describe('WebhookService', () => {
     );
   });
 
-  it('throttles Старт hints per chat when several bots are added together', async () => {
+  it('throttles Старт hints per bot when several bots are added together', async () => {
     const prisma = {
       webhookEvent: {
         create: jest.fn().mockResolvedValue({ id: 'evt-7-multi-bot-hint' }),
@@ -2506,16 +2548,11 @@ describe('WebhookService', () => {
     });
     await flushDeferredWebhookWork();
 
-    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
-    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
-      '-100131',
-      expect.stringContaining('Чат почти подключен'),
-      expect.anything(),
-      expect.objectContaining({
-        botId: 'id613070470872_5_bot',
-        sourceTag: 'managed_handshake',
-      }),
-    );
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(2);
+    expect(maxClient.sendMessageImmediateWithId.mock.calls.map((call) => call[3]?.botId)).toEqual([
+      'id613070470872_5_bot',
+      'id613070470872_6_bot',
+    ]);
   });
 
   it('uses channel wording in the Старт hint after channel bot_added webhooks', async () => {

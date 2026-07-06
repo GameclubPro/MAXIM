@@ -369,6 +369,30 @@ describe('AdminSettingsService chat rules', () => {
       id: 'channel-1',
       title: 'Канал новостей',
       entityType: 'channel',
+      primaryBotId: 'bot-1',
+      assignedBots: [
+        {
+          botId: 'bot-1',
+          label: 'Owner bot',
+          role: 'primary',
+          membershipStatus: 'active',
+          lifecycleState: 'active',
+          speechPersona: 'male',
+          capabilities: [],
+          permissionsSummary: null,
+        },
+        {
+          botId: 'bot-2',
+          label: 'Assist bot',
+          role: 'standby',
+          membershipStatus: 'active',
+          lifecycleState: 'active',
+          speechPersona: 'female',
+          capabilities: ['suggestion_delivery'],
+          permissionsSummary: null,
+        },
+      ],
+      sharedMode: 'shared-assist',
     });
     const {
       legacyAdminService,
@@ -398,7 +422,18 @@ describe('AdminSettingsService chat rules', () => {
       liveAdminCheck: false,
     });
 
-    expect(result.requiredSubscriptionChannels).toEqual([requiredChannel]);
+    expect(result.requiredSubscriptionChannels).toEqual([
+      expect.objectContaining({
+        id: 'channel-1',
+        title: 'Канал новостей',
+        entityType: 'channel',
+        primaryBotId: null,
+        assignedBots: [],
+        sharedMode: 'owned',
+        botCount: 2,
+        hasSharedAutomation: true,
+      }),
+    ]);
     expect(result.domains).toHaveLength(1);
     expect(result.managedBroadcasts).toHaveLength(1);
     expect(legacyAdminService.assertManagedEntityReadAccess).toHaveBeenCalledWith(
@@ -1259,7 +1294,27 @@ describe('AdminSettingsService chat rules', () => {
   });
 
   it('resolves required subscription channel without routing through legacy endpoint method', async () => {
-    const { legacyAdminService, service } = createService();
+    const { legacyAdminService, service } = createService({
+      resolvedRequiredSubscriptionChannel: createManagedEntityHeader({
+        id: 'channel-1',
+        title: 'Канал новостей',
+        entityType: 'channel',
+        primaryBotId: 'bot-1',
+        assignedBots: [
+          {
+            botId: 'bot-1',
+            label: 'Owner bot',
+            role: 'primary',
+            membershipStatus: 'active',
+            lifecycleState: 'active',
+            speechPersona: 'male',
+            capabilities: [],
+            permissionsSummary: null,
+          },
+        ],
+        sharedMode: 'shared-standby',
+      }),
+    });
 
     const result = await service.resolveRequiredSubscriptionChannel('chat-1', user as never, {
       value: 'https://max.ru/channels/news',
@@ -1269,6 +1324,9 @@ describe('AdminSettingsService chat rules', () => {
       id: 'channel-1',
       title: 'Канал новостей',
       entityType: 'channel',
+      primaryBotId: null,
+      assignedBots: [],
+      sharedMode: 'owned',
     });
     expect(legacyAdminService.assertManagedEntityAdminAccess).toHaveBeenCalledWith(
       'chat-1',

@@ -31,6 +31,7 @@ import {
   type ManagedEntitiesDiscoverySnapshot,
   mapManagedEntityTypeToChatEntityType,
 } from './admin.service.support';
+import { sanitizePublicManagedEntityHeader } from './admin-managed-entity-header';
 
 export class AdminRequiredSubscriptionRuntime {
   constructor(private readonly context: AdminRequiredSubscriptionRuntimeContext) {}
@@ -399,7 +400,7 @@ export class AdminRequiredSubscriptionRuntime {
     }
 
     await this.chatContextCache.setManagedEntityHeader?.(header);
-    return header;
+    return sanitizePublicManagedEntityHeader(header);
   }
 
   async assertBotCanInspectRequiredSubscriptionChannel(

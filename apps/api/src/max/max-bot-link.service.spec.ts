@@ -417,6 +417,73 @@ describe('MaxBotLinkService', () => {
     expect(resolved).toBe('id613002203036_4_bot');
   });
 
+  it('returns every assist-capable standby before the primary capability fallback', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-2-multi-assist', {
+      id: 'chat-2-multi-assist',
+      title: 'Assist chat',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push(
+      {
+        chatId: 'chat-2-multi-assist',
+        botId: 'id613002203036_bot',
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        createdAt: new Date('2026-03-31T00:00:00.000Z'),
+        updatedAt: new Date('2026-03-31T00:00:00.000Z'),
+        lastSeenAt: new Date('2026-03-31T00:00:00.000Z'),
+        lastWebhookAt: new Date('2026-03-31T00:00:00.000Z'),
+      },
+      {
+        chatId: 'chat-2-multi-assist',
+        botId: 'id613002203036_4_bot',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        capabilities: ['suggestion_delivery', 'channel_stats'],
+        createdAt: new Date('2026-03-31T00:00:01.000Z'),
+        updatedAt: new Date('2026-03-31T00:00:01.000Z'),
+        lastSeenAt: new Date('2026-03-31T00:00:01.000Z'),
+        lastWebhookAt: new Date('2026-03-31T00:00:01.000Z'),
+      },
+      {
+        chatId: 'chat-2-multi-assist',
+        botId: 'id613002203036_5_bot',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        capabilities: ['suggestion_delivery'],
+        createdAt: new Date('2026-03-31T00:00:02.000Z'),
+        updatedAt: new Date('2026-03-31T00:00:02.000Z'),
+        lastSeenAt: new Date('2026-03-31T00:00:02.000Z'),
+        lastWebhookAt: new Date('2026-03-31T00:00:02.000Z'),
+      },
+    );
+
+    await expect(
+      fixture.service.resolveBotIdsForCapability({
+        chatId: 'chat-2-multi-assist',
+        capability: 'suggestion_delivery',
+      }),
+    ).resolves.toEqual([
+      'id613002203036_4_bot',
+      'id613002203036_5_bot',
+      'id613002203036_bot',
+    ]);
+
+    const route = await fixture.service.resolveBotRoute({
+      purpose: 'capability',
+      chatId: 'chat-2-multi-assist',
+      capability: 'suggestion_delivery',
+    });
+    expect(route.botId).toBe('id613002203036_4_bot');
+    expect(route.candidateBotIds).toEqual([
+      'id613002203036_4_bot',
+      'id613002203036_5_bot',
+      'id613002203036_bot',
+    ]);
+  });
+
   it('stores access-loss diagnostics on removed bot memberships', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('chat-access-lost', {

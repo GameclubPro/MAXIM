@@ -56,6 +56,33 @@ function createManagedEntityHeader(params: {
   };
 }
 
+export function sanitizePublicManagedEntityHeader(
+  header: ManagedEntityHeader,
+): ManagedEntityHeader {
+  const assignedBots = Array.isArray(header.assignedBots) ? header.assignedBots : [];
+  const activeBotCount =
+    header.accessDiagnostics.activeBotCount > 0
+      ? header.accessDiagnostics.activeBotCount
+      : assignedBots.filter((bot) => bot.membershipStatus === 'active').length;
+  const botCount =
+    typeof header.botCount === 'number' && header.botCount > 0
+      ? header.botCount
+      : activeBotCount > 0
+        ? activeBotCount
+        : assignedBots.length;
+  const hasSharedAutomation =
+    header.hasSharedAutomation === true || botCount > 1 || header.sharedMode !== 'owned';
+
+  return {
+    ...header,
+    primaryBotId: null,
+    assignedBots: [],
+    sharedMode: 'owned',
+    ...(botCount > 0 ? { botCount } : {}),
+    ...(hasSharedAutomation ? { hasSharedAutomation } : {}),
+  };
+}
+
 function isManagedEntityHeaderStale(
   header: ManagedEntityHeader | null,
   options: {

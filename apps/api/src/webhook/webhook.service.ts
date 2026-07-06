@@ -307,7 +307,7 @@ export class WebhookService {
     const storageRawPayload = this.sanitizeForJsonStorage(rawPayload);
     const storageNormalizedPayload = this.sanitizeForJsonStorage(update);
     const webhookEventData = {
-      dedupKey: update.updateId,
+      dedupKey: this.buildWebhookDedupKey(update),
       ...(update.botId ? { botId: update.botId } : {}),
       sourceIp: sourceIp ?? undefined,
       rawPayload: storageRawPayload,
@@ -448,7 +448,7 @@ export class WebhookService {
       return;
     }
 
-    const backoffKey = `${chatId}:${entityType}`;
+    const backoffKey = this.buildBotAddedStartHintBackoffKey(chatId, entityType, botId);
     const now = Date.now();
     const blockedUntil = this.botAddedStartHintBackoffUntilMs.get(backoffKey) ?? 0;
     if (blockedUntil > now) {
@@ -517,7 +517,7 @@ export class WebhookService {
     } catch (error: unknown) {
       if (this.isExpectedBotAddedStartHintSendFailure(error)) {
         this.botAddedStartHintBackoffUntilMs.set(
-          `${chatId}:${entityType}`,
+          this.buildBotAddedStartHintBackoffKey(chatId, entityType, botId),
           Date.now() + BOT_ADDED_START_HINT_FAILURE_BACKOFF_MS,
         );
         this.logger.debug(
@@ -544,6 +544,14 @@ export class WebhookService {
         'Failed to send managed entity start hint after bot_added webhook',
       );
     }
+  }
+
+  private buildBotAddedStartHintBackoffKey(
+    chatId: string,
+    entityType: ChatEntityType,
+    botId: string,
+  ): string {
+    return `${botId}:${chatId}:${entityType}`;
   }
 
   private isExpectedBotAddedStartHintSendFailure(error: unknown): boolean {
@@ -1836,6 +1844,12 @@ export class WebhookService {
     }
 
     return { accepted: true, duplicate: true };
+  }
+
+  private buildWebhookDedupKey(update: Pick<MaxUpdate, 'updateId' | 'botId'>): string {
+    const updateId = String(update.updateId ?? '').trim();
+    const botId = typeof update.botId === 'string' ? update.botId.trim() : '';
+    return botId ? `${botId}:${updateId}` : updateId;
   }
 
   private shouldRetryWithSanitizedPayload(error: unknown): boolean {

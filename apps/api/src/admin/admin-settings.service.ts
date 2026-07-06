@@ -36,6 +36,7 @@ import {
   previewApplySettingsSectionTarget as previewApplySettingsSectionTargetValue,
 } from './admin-settings-apply';
 import { AdminService } from './admin.service';
+import { sanitizePublicManagedEntityHeader } from './admin-managed-entity-header';
 import {
   type AdminActionSource,
   type AdminReadBypassOptions,
@@ -128,7 +129,9 @@ export class AdminSettingsService {
       settings,
       rules,
       header,
-      requiredSubscriptionChannels,
+      requiredSubscriptionChannels: requiredSubscriptionChannels.map((channel) =>
+        sanitizePublicManagedEntityHeader(channel),
+      ),
       domains,
       managedBroadcasts,
     });
@@ -145,8 +148,8 @@ export class AdminSettingsService {
       throw new BadRequestException(parsed.error.format());
     }
 
-    const channel = await this.legacyAdminService.resolveRequiredSubscriptionChannelReferenceValue(
-      parsed.data.value,
+    const channel = sanitizePublicManagedEntityHeader(
+      await this.legacyAdminService.resolveRequiredSubscriptionChannelReferenceValue(parsed.data.value),
     );
     return resolveRequiredSubscriptionChannelResponseSchema.parse({ channel });
   }

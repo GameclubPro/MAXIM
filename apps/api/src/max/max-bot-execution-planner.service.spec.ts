@@ -239,9 +239,39 @@ describe('MaxBotExecutionPlannerService', () => {
 
     expect(plan.sharedMode).toBe('shared-assist');
     expect(plan.partnerBotId).toBe('id613002203036_4_bot');
+    expect(plan.partnerBotIds).toEqual(['id613002203036_4_bot']);
     expect(
       plan.assignedBots.find((bot) => bot.botId === 'id613002203036_4_bot')?.capabilities,
     ).toEqual(['suggestion_delivery', 'membership_prewarm', 'access_prewarm']);
+  });
+
+  it('keeps every active assist standby in the execution plan', async () => {
+    const fixture = createFixture();
+
+    await fixture.service.setPartnerAssist({
+      chatId: 'chat-1',
+      entityType: 'chat',
+      botId: 'id613002203036_4_bot',
+      enabled: true,
+    });
+    const plan = await fixture.service.setPartnerAssist({
+      chatId: 'chat-1',
+      entityType: 'chat',
+      botId: 'id613002203036_5_bot',
+      enabled: true,
+    });
+
+    expect(plan.sharedMode).toBe('shared-assist');
+    expect(plan.partnerBotIds).toHaveLength(2);
+    expect(plan.partnerBotIds).toEqual(
+      expect.arrayContaining(['id613002203036_4_bot', 'id613002203036_5_bot']),
+    );
+    expect(plan.partnerBotId).toBe(plan.partnerBotIds[0]);
+    expect(
+      plan.assignedBots
+        .filter((bot) => plan.partnerBotIds.includes(bot.botId))
+        .every((bot) => bot.capabilities.includes('suggestion_delivery')),
+    ).toBe(true);
   });
 
   it('transfers owner role to another active bot and updates the cached binding', async () => {

@@ -80,6 +80,7 @@ export const managedEntityBotExecutionPlanSchema = z.object({
   workerBotId: z.string().nullable(),
   linkBotId: z.string().nullable(),
   partnerBotId: z.string().nullable(),
+  partnerBotIds: z.array(z.string()).optional().default([]),
   sharedMode: managedEntitySharedModeSchema,
   userFacingPolicy: z.literal('owner-only'),
   reasons: z.array(z.string()),

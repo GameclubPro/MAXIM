@@ -319,13 +319,13 @@ export class MaxBotExecutionPlannerService {
     const state = await this.loadChatState(chatId);
     const assignedBots = this.buildAssignedBots(state.memberships, state.primaryBotId);
     const sharedMode = this.resolveSharedMode(assignedBots);
-    const activePartner =
-      assignedBots.find((bot) => this.isActiveExecutableStandbyBot(bot)) ?? null;
-    const assistPartner =
-      assignedBots.find(
-        (bot) => this.isActiveExecutableStandbyBot(bot) && bot.capabilities.length > 0,
-      ) ?? null;
-    const partnerBotId = assistPartner?.botId ?? activePartner?.botId ?? null;
+    const activePartners = assignedBots.filter((bot) => this.isActiveExecutableStandbyBot(bot));
+    const assistPartners = activePartners.filter((bot) => bot.capabilities.length > 0);
+    const partnerBotIds =
+      assistPartners.length > 0
+        ? assistPartners.map((bot) => bot.botId)
+        : activePartners.map((bot) => bot.botId);
+    const partnerBotId = partnerBotIds[0] ?? null;
     const primaryBotId =
       this.maxBotRegistry.getBotById(state.primaryBotId)?.id ??
       assignedBots.find((bot) => bot.role === 'primary' && bot.membershipStatus === 'active')
@@ -334,13 +334,18 @@ export class MaxBotExecutionPlannerService {
     const reasons = [
       'Пользовательские deep link-сценарии стараются оставаться на том боте, из которого пользователь открыл поток.',
     ];
-    if (assistPartner) {
+    if (assistPartners.length > 0) {
+      const assistLabels = assistPartners.map((bot) => bot.label).join(', ');
+      const capabilityNames = Array.from(
+        new Set(assistPartners.flatMap((bot) => bot.capabilities)),
+      ).join(', ');
       reasons.push(
-        `Assist-бот ${assistPartner.label} обслуживает только фоновые lane’ы: ${assistPartner.capabilities.join(', ')}.`,
+        `Assist-боты ${assistLabels} обслуживают только фоновые lane’ы: ${capabilityNames}.`,
       );
-    } else if (activePartner) {
+    } else if (activePartners.length > 0) {
+      const standbyLabels = activePartners.map((bot) => bot.label).join(', ');
       reasons.push(
-        `Standby-бот ${activePartner.label} готов к promotion, но assist-режим для него ещё не включён.`,
+        `Standby-боты ${standbyLabels} готовы к promotion, но assist-режим для них ещё не включён.`,
       );
     } else {
       reasons.push('В этом чате сейчас нет активного standby-бота, поэтому режим остаётся owned.');
@@ -352,15 +357,18 @@ export class MaxBotExecutionPlannerService {
         'У чата нет валидного owner-бота. До multi-bot rollout надо назначить primary.',
       );
     }
-    if (activePartner && !assistPartner) {
-      const snapshot = activePartner.permissionsSummary;
+    for (const partner of activePartners) {
+      if (partner.capabilities.length > 0) {
+        continue;
+      }
+      const snapshot = partner.permissionsSummary;
       if (!snapshot) {
         warnings.push(
-          `Для ${activePartner.label} ещё нет актуального permissions snapshot. Нажмите «Обновить права» перед включением assist.`,
+          `Для ${partner.label} ещё нет актуального permissions snapshot. Нажмите «Обновить права» перед включением assist.`,
         );
       } else if (!snapshot.isAdmin && !snapshot.isOwner) {
         warnings.push(
-          `${activePartner.label} больше не выглядит админом этого чата. Assist для него безопасно выключен.`,
+          `${partner.label} больше не выглядит админом этого чата. Assist для него безопасно выключен.`,
         );
       }
     }
@@ -373,6 +381,7 @@ export class MaxBotExecutionPlannerService {
       workerBotId: primaryBotId,
       linkBotId: primaryBotId,
       partnerBotId,
+      partnerBotIds,
       sharedMode,
       userFacingPolicy: 'owner-only',
       reasons,
