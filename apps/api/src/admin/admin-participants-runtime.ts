@@ -271,9 +271,12 @@ export class AdminParticipantsRuntime {
     }
 
     const dryRun = parsed.data.dryRun;
-    const resolvedBotId =
-      (await this.resolveParticipantCleanupBotAssignment(chatId)) ??
-      (await this.resolveBackgroundReadBotAssignment(chatId));
+    const resolvedBotId = await this.resolveParticipantCleanupBotAssignment(chatId);
+    if (!resolvedBotId) {
+      throw new ForbiddenException(
+        'Не найден бот MAX с подтвержденным правом удалять участников этого чата.',
+      );
+    }
     await this.assertBotCanCleanupUnavailableParticipants(chatId, resolvedBotId);
 
     const items: ChatUnavailableParticipantsCleanupItem[] = [];
@@ -301,7 +304,7 @@ export class AdminParticipantsRuntime {
           actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
           sourceTag: MAX_API_SOURCE_TAGS.PARTICIPANT_CLEANUP,
           ignoreFailureMetricStatuses: ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
-          ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+          botId: resolvedBotId,
         },
       );
 
@@ -377,12 +380,12 @@ export class AdminParticipantsRuntime {
 
   private async assertBotCanCleanupUnavailableParticipants(
     chatId: string,
-    botId?: string,
+    botId: string,
   ): Promise<void> {
     const botAccess = await this.maxClient.getCurrentChatMemberAccess(chatId, {
       trafficClass: 'critical',
       actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
-      ...(botId ? { botId } : {}),
+      botId,
     });
 
     if (botAccess.isOwner) {

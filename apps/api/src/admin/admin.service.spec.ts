@@ -6935,6 +6935,218 @@ describe('AdminService.applyManualModerationAction', () => {
     );
   });
 
+  it('rejects manual ban when no live-verified bot has add_remove_members', async () => {
+    const prisma = createPrismaMock();
+    const candidateBotIds = ['bot-1', 'bot-2', 'bot-3', 'bot-4', 'bot-5', 'bot-6'];
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest
+        .fn()
+        .mockImplementation(async (_chatId: string, options?: { botId?: string }) => ({
+          userId: options?.botId ?? 'bot-1',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages'],
+        })),
+      getChatMemberAccess: jest.fn(),
+      banMember: jest.fn(),
+      kickMember: jest.fn(),
+    };
+    const maxBotLinkService = {
+      getBotTokenSync: jest.fn().mockReturnValue('test-max-bot-token'),
+      getValidationTokens: jest.fn().mockReturnValue(['test-max-bot-token']),
+      resolveBotRoutes: jest
+        .fn()
+        .mockImplementation(async (request: { chatId: string; action: string }) => ({
+          purpose: 'moderation_action',
+          chatId: request.chatId,
+          primaryBotId: 'bot-1',
+          botId: 'bot-1',
+          candidateBotIds,
+          reason: 'primary_soft',
+          action: request.action,
+        })),
+    };
+    const maxBotRegistry = {
+      getBotById: jest.fn((botId?: string | null) => (botId ? { id: botId } : null)),
+      getActionableBots: jest.fn().mockReturnValue(candidateBotIds.map((id) => ({ id }))),
+      getDiscoveryBots: jest.fn().mockReturnValue([]),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+      maxBotRegistry as never,
+    );
+
+    await expect(
+      service.applyManualModerationAction(
+        'chat-1',
+        'user-3',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { action: 'BAN' },
+      ),
+    ).rejects.toThrow('Не найден бот MAX с подтвержденным правом выполнить действие модерации');
+
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.getChatMemberAccess).not.toHaveBeenCalled();
+  });
+
+  it('routes manual unban through a member-moderation-capable standby bot', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest
+        .fn()
+        .mockImplementation(async (_chatId: string, options?: { botId?: string }) => {
+          const botId = options?.botId ?? 'primary-bot';
+          return {
+            userId: botId,
+            isAdmin: true,
+            isOwner: false,
+            permissions: botId === 'standby-bot' ? ['add_remove_members'] : ['read_all_messages'],
+          };
+        }),
+      getChatMemberAccess: jest.fn().mockResolvedValue(null),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      unbanMember: jest.fn().mockResolvedValue(undefined),
+    };
+    const maxBotLinkService = {
+      getBotTokenSync: jest.fn().mockReturnValue('test-max-bot-token'),
+      getValidationTokens: jest.fn().mockReturnValue(['test-max-bot-token']),
+      resolveBotRoutes: jest
+        .fn()
+        .mockImplementation(async (request: { chatId: string; action: string }) => ({
+          purpose: 'moderation_action',
+          chatId: request.chatId,
+          primaryBotId: 'primary-bot',
+          botId: 'primary-bot',
+          candidateBotIds: ['primary-bot', 'standby-bot'],
+          reason: 'primary_soft',
+          action: request.action,
+        })),
+    };
+    const maxBotRegistry = {
+      getBotById: jest.fn((botId?: string | null) => (botId ? { id: botId } : null)),
+      getActionableBots: jest.fn().mockReturnValue([{ id: 'primary-bot' }, { id: 'standby-bot' }]),
+      getDiscoveryBots: jest.fn().mockReturnValue([]),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+      maxBotRegistry as never,
+    );
+
+    await service.applyManualModerationAction(
+      'chat-1',
+      'user-3',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { action: 'UNBAN' },
+    );
+
+    expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-3', {
+      botId: 'standby-bot',
+    });
+    expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith(
+      'chat-1',
+      'user-3',
+      expect.objectContaining({
+        botId: 'standby-bot',
+      }),
+    );
+    expect(maxClient.unbanMember).toHaveBeenCalledWith('chat-1', 'user-3', {
+      immediate: true,
+      botId: 'standby-bot',
+    });
+  });
+
+  it('does not fall back to the first manual moderation bot after transient access lookup failure', async () => {
+    const prisma = createPrismaMock();
+    const timeoutError = Object.assign(new Error('timeout of 5000ms exceeded'), {
+      code: 'ECONNABORTED',
+    });
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockRejectedValue(timeoutError),
+      getChatMemberAccess: jest.fn(),
+      banMember: jest.fn(),
+    };
+    const maxBotLinkService = {
+      getBotTokenSync: jest.fn().mockReturnValue('test-max-bot-token'),
+      getValidationTokens: jest.fn().mockReturnValue(['test-max-bot-token']),
+      resolveBotRoutes: jest.fn().mockResolvedValue({
+        purpose: 'moderation_action',
+        chatId: 'chat-1',
+        primaryBotId: 'bot-1',
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1', 'bot-2'],
+        reason: 'primary_soft',
+        action: 'moderate_member',
+      }),
+    };
+    const maxBotRegistry = {
+      getBotById: jest.fn((botId?: string | null) => (botId ? { id: botId } : null)),
+      getActionableBots: jest.fn().mockReturnValue([{ id: 'bot-1' }, { id: 'bot-2' }]),
+      getDiscoveryBots: jest.fn().mockReturnValue([]),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+      maxBotRegistry as never,
+    );
+
+    await expect(
+      service.applyManualModerationAction(
+        'chat-1',
+        'user-3',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { action: 'BAN' },
+      ),
+    ).rejects.toThrow(ServiceUnavailableException);
+
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(maxClient.getChatMemberAccess).not.toHaveBeenCalled();
+  });
+
   it('rejects manual mute when the selected bot is not a chat admin', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
@@ -6993,9 +7205,7 @@ describe('AdminService.applyManualModerationAction', () => {
         },
         { action: 'MUTE', muteDurationHours: 6 },
       ),
-    ).rejects.toThrow(
-      'Бот должен быть администратором этого чата MAX, чтобы удалять сообщения во время мута.',
-    );
+    ).rejects.toThrow('Не найден бот MAX с подтвержденным правом выполнить действие модерации');
 
     expect(maxClient.getChatMemberAccess).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
@@ -23917,6 +24127,52 @@ describe('AdminService.getChatParticipantsPage', () => {
       }),
     );
     expect(maxClient.kickMember).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not clean unavailable participants through a read/default bot when no cleanup bot is resolved', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'chat-1',
+      title: 'Команда MAX',
+      entityType: 'CHAT',
+      primaryBotId: 'read-bot',
+      botId: 'read-bot',
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn(),
+      getChatMembersPage: jest.fn(),
+      getChatMemberAccess: jest.fn(),
+      kickMember: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    jest.spyOn(service, 'resolveParticipantCleanupBotAssignment').mockResolvedValue(undefined);
+    jest.spyOn(service as any, 'resolveBackgroundReadBotAssignment').mockResolvedValue('read-bot');
+
+    await expect(
+      service.cleanupUnavailableChatParticipants(
+        'chat-1',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        {},
+      ),
+    ).rejects.toThrow('Не найден бот MAX с подтвержденным правом удалять участников');
+
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(maxClient.getChatMembersPage).not.toHaveBeenCalled();
+    expect(maxClient.getChatMemberAccess).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
   });
 
   it('does not remove suspicious-looking participants without an explicit MAX account flag', async () => {

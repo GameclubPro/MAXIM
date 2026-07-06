@@ -19478,7 +19478,7 @@ export class AdminService implements OnModuleDestroy {
     if (action === 'MUTE') {
       return 'delete_message';
     }
-    if (action === 'BAN') {
+    if (action === 'BAN' || action === 'UNBAN') {
       return 'moderate_member';
     }
     return null;
@@ -19549,9 +19549,11 @@ export class AdminService implements OnModuleDestroy {
               botId: preferredBotId,
               err: error instanceof Error ? error.message : String(error),
             },
-            'Using preferred manual moderation bot after transient MAX API pressure',
+            'Failed to verify preferred manual moderation bot after transient MAX API pressure',
           );
-          return preferredBotId;
+          throw new ServiceUnavailableException(
+            'Не удалось подтвердить права бота MAX для действия модерации. Повторите попытку позже.',
+          );
         } else {
           this.logger.debug(
             {
@@ -19568,6 +19570,9 @@ export class AdminService implements OnModuleDestroy {
 
     const candidateBotIds: string[] = [];
     const seenBotIds = new Set<string>();
+    const routeCandidateBotIds = new Set<string>();
+    const membershipCandidateBotIds = new Set<string>();
+    const registryCandidateBotIds = new Set<string>();
 
     try {
       const route = await this.resolveUnifiedBotRoute({
@@ -19577,9 +19582,21 @@ export class AdminService implements OnModuleDestroy {
         fallbackToPrimary: true,
       });
       for (const candidateBotId of route?.candidateBotIds ?? []) {
-        this.appendManualModerationBotCandidate(candidateBotIds, seenBotIds, candidateBotId);
+        const normalizedCandidateBotId = this.normalizeManualModerationBotId(candidateBotId);
+        this.appendManualModerationBotCandidate(
+          candidateBotIds,
+          seenBotIds,
+          normalizedCandidateBotId,
+        );
+        if (normalizedCandidateBotId) {
+          routeCandidateBotIds.add(normalizedCandidateBotId);
+        }
       }
-      this.appendManualModerationBotCandidate(candidateBotIds, seenBotIds, route?.botId);
+      const normalizedRouteBotId = this.normalizeManualModerationBotId(route?.botId);
+      this.appendManualModerationBotCandidate(candidateBotIds, seenBotIds, normalizedRouteBotId);
+      if (normalizedRouteBotId) {
+        routeCandidateBotIds.add(normalizedRouteBotId);
+      }
     } catch (error: unknown) {
       this.logger.debug(
         {
@@ -19593,7 +19610,15 @@ export class AdminService implements OnModuleDestroy {
 
     try {
       for (const candidateBotId of await this.resolveCandidateBotIdsForChat(normalizedChatId)) {
-        this.appendManualModerationBotCandidate(candidateBotIds, seenBotIds, candidateBotId);
+        const normalizedCandidateBotId = this.normalizeManualModerationBotId(candidateBotId);
+        this.appendManualModerationBotCandidate(
+          candidateBotIds,
+          seenBotIds,
+          normalizedCandidateBotId,
+        );
+        if (normalizedCandidateBotId) {
+          membershipCandidateBotIds.add(normalizedCandidateBotId);
+        }
       }
     } catch (error: unknown) {
       this.logger.debug(
@@ -19606,28 +19631,39 @@ export class AdminService implements OnModuleDestroy {
       );
     }
 
-    this.appendManualModerationBotCandidate(
-      candidateBotIds,
-      seenBotIds,
-      await this.resolveChatBotIdForRead(normalizedChatId),
-    );
-
     for (const bot of this.maxBotRegistry?.getActionableBots() ?? []) {
-      this.appendManualModerationBotCandidate(candidateBotIds, seenBotIds, bot.id);
-    }
-
-    if (candidateBotIds.length === 0) {
+      const normalizedCandidateBotId = this.normalizeManualModerationBotId(bot.id);
       this.appendManualModerationBotCandidate(
         candidateBotIds,
         seenBotIds,
-        await this.resolveManualActionBotAssignment(normalizedChatId),
+        normalizedCandidateBotId,
       );
+      if (normalizedCandidateBotId) {
+        registryCandidateBotIds.add(normalizedCandidateBotId);
+      }
     }
 
-    const fallbackBotId = candidateBotIds[0];
-    if (typeof maxClientWithAccess.getCurrentChatMemberAccess !== 'function') {
-      return fallbackBotId;
+    if (candidateBotIds.length === 0 && !this.maxBotRegistry) {
+      return this.resolveManualActionBotAssignment(normalizedChatId);
     }
+
+    if (typeof maxClientWithAccess.getCurrentChatMemberAccess !== 'function') {
+      return candidateBotIds[0];
+    }
+
+    const persistRecoveredCandidateIfNeeded = async (candidateBotId: string) => {
+      if (
+        !registryCandidateBotIds.has(candidateBotId) ||
+        routeCandidateBotIds.has(candidateBotId) ||
+        membershipCandidateBotIds.has(candidateBotId)
+      ) {
+        return;
+      }
+
+      await this.persistRecoveredManualActionBotAssignment(normalizedChatId, candidateBotId);
+    };
+
+    let softDeleteMessageBotId: string | null = null;
 
     for (const candidateBotId of candidateBotIds) {
       try {
@@ -19636,7 +19672,24 @@ export class AdminService implements OnModuleDestroy {
           actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
           botId: candidateBotId,
         });
+        if (action === 'delete_message') {
+          if (
+            access.isOwner ||
+            (access.isAdmin &&
+              access.permissions.some((permission) => this.isDeleteMessagesPermission(permission)))
+          ) {
+            await persistRecoveredCandidateIfNeeded(candidateBotId);
+            return candidateBotId;
+          }
+
+          if (access.isAdmin && !softDeleteMessageBotId) {
+            softDeleteMessageBotId = candidateBotId;
+          }
+          continue;
+        }
+
         if (this.hasManualModerationBotActionAccess(access, action)) {
+          await persistRecoveredCandidateIfNeeded(candidateBotId);
           return candidateBotId;
         }
       } catch (error: unknown) {
@@ -19652,9 +19705,11 @@ export class AdminService implements OnModuleDestroy {
               botId: candidateBotId,
               err: error instanceof Error ? error.message : String(error),
             },
-            'Using fallback manual moderation bot assignment after transient MAX API pressure',
+            'Stopped resolving manual moderation action bot after transient MAX API pressure',
           );
-          return fallbackBotId;
+          throw new ServiceUnavailableException(
+            'Не удалось подтвердить права бота MAX для действия модерации. Повторите попытку позже.',
+          );
         }
 
         this.logger.debug(
@@ -19669,7 +19724,54 @@ export class AdminService implements OnModuleDestroy {
       }
     }
 
-    return fallbackBotId;
+    if (softDeleteMessageBotId) {
+      await persistRecoveredCandidateIfNeeded(softDeleteMessageBotId);
+      return softDeleteMessageBotId;
+    }
+
+    if (!this.maxBotRegistry) {
+      return this.resolveManualActionBotAssignment(normalizedChatId);
+    }
+
+    throw new ForbiddenException(
+      'Не найден бот MAX с подтвержденным правом выполнить действие модерации в этом чате.',
+    );
+  }
+
+  private async persistRecoveredManualActionBotAssignment(
+    chatId: string,
+    botId: string,
+  ): Promise<void> {
+    try {
+      if (this.maxBotLinkService?.bindChatToBot) {
+        await this.maxBotLinkService.bindChatToBot({
+          chatId,
+          entityType: ChatEntityType.CHAT,
+          botId,
+        });
+        return;
+      }
+
+      await this.prisma.chat.upsert({
+        where: { id: chatId },
+        create: {
+          id: chatId,
+          title: `Chat ${chatId}`,
+          entityType: ChatEntityType.CHAT,
+          ...this.buildResolvedBotAssignmentData(botId),
+        },
+        update: this.buildResolvedBotAssignmentData(botId),
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          botId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to persist recovered chat bot assignment for manual moderation action',
+      );
+    }
   }
 
   private hasManualModerationBotActionAccess(
@@ -19685,9 +19787,11 @@ export class AdminService implements OnModuleDestroy {
     if (access.permissions.length === 0) {
       return true;
     }
-    return action === 'delete_message'
-      ? access.permissions.some((permission) => this.isDeleteMessagesPermission(permission))
-      : access.permissions.some((permission) => this.isAddRemoveMembersPermission(permission));
+    if (action === 'delete_message') {
+      return true;
+    }
+
+    return access.permissions.some((permission) => this.isAddRemoveMembersPermission(permission));
   }
 
   private async resolveManualActionBotAssignment(chatId: string): Promise<string | undefined> {
