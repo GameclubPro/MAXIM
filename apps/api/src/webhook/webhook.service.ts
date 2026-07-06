@@ -84,6 +84,7 @@ const BOT_ADDED_START_HINT_SEND_TIMEOUT_MS = 1_500;
 const BOT_ADDED_START_HINT_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const BOT_SELF_ACCESS_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const MANAGED_ENTITIES_PENDING_BOOTSTRAP_TTL_SEC = 15 * 60;
+const WEBHOOK_LEGACY_DEDUP_COMPAT_WINDOW_MS = 24 * 60 * 60 * 1_000;
 const MANAGED_ENTITY_ACTIVITY_UPDATE_TYPES = new Set([
   'message_created',
   'message_edited',
@@ -148,6 +149,11 @@ export class WebhookService {
     const bindingSync = await this.syncChatBotBindingFromWebhook(update);
     this.attachExecutionOwnerBotId(update, bindingSync.executionOwnerBotId);
 
+    const legacyDuplicateResult = await this.handleLegacyDedupKeyDuplicate(update);
+    if (legacyDuplicateResult) {
+      return legacyDuplicateResult;
+    }
+
     const shouldKeepRawPayload = Math.random() <= this.rawPayloadSampleRate;
     const rawPayload = shouldKeepRawPayload ? (update.raw ?? {}) : {};
 
@@ -179,7 +185,7 @@ export class WebhookService {
           this.deferManagedEntityHandshake(sanitizedUpdate);
           this.logger.warn(
             {
-              dedupKey: update.updateId,
+              dedupKey: this.buildWebhookDedupKey(update),
               reason: this.extractErrorMessage(error),
             },
             'Stored webhook event with sanitized payload fallback',
@@ -1829,6 +1835,59 @@ export class WebhookService {
       return null;
     }
 
+    return this.acceptDuplicateWebhookEvent(update);
+  }
+
+  private async handleLegacyDedupKeyDuplicate(
+    update: MaxUpdate,
+  ): Promise<WebhookIngestResult | null> {
+    const updateId = String(update.updateId ?? '').trim();
+    const botId = typeof update.botId === 'string' ? update.botId.trim() : '';
+    if (!updateId || !botId) {
+      return null;
+    }
+
+    const findUnique = (
+      this.prisma.webhookEvent as unknown as {
+        findUnique?: (args: unknown) => Promise<{
+          id: string;
+          createdAt: Date;
+        } | null>;
+      }
+    ).findUnique;
+    if (typeof findUnique !== 'function') {
+      return null;
+    }
+
+    const legacyEvent = await findUnique.call(this.prisma.webhookEvent, {
+      where: {
+        dedupKey: updateId,
+      },
+      select: {
+        id: true,
+        createdAt: true,
+      },
+    });
+    if (
+      !legacyEvent ||
+      legacyEvent.createdAt.getTime() < Date.now() - WEBHOOK_LEGACY_DEDUP_COMPAT_WINDOW_MS
+    ) {
+      return null;
+    }
+
+    this.logger.debug(
+      {
+        updateId,
+        botId,
+        dedupKey: this.buildWebhookDedupKey(update),
+        legacyDedupKey: updateId,
+      },
+      'Accepted webhook event as duplicate via legacy unscoped dedup key',
+    );
+    return this.acceptDuplicateWebhookEvent(update);
+  }
+
+  private async acceptDuplicateWebhookEvent(update: MaxUpdate): Promise<WebhookIngestResult> {
     try {
       await this.persistMembershipActivityProjection(update);
     } catch (repairError: unknown) {

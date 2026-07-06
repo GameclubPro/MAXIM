@@ -63,6 +63,7 @@ describe('WebhookService', () => {
   it('stores same logical update id separately for different webhook bots', async () => {
     const prisma = {
       webhookEvent: {
+        findUnique: jest.fn().mockResolvedValue(null),
         create: jest.fn().mockResolvedValue({ id: 'evt-shared' }),
         updateMany: jest.fn(),
       },
@@ -100,6 +101,49 @@ describe('WebhookService', () => {
       'standby-bot:u-shared-1',
       'owner-bot:u-shared-1',
     ]);
+  });
+
+  it('treats a fresh legacy unscoped dedup key as duplicate for bot-scoped retries', async () => {
+    const prisma = {
+      webhookEvent: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'evt-legacy',
+          createdAt: new Date(),
+        }),
+        create: jest.fn().mockResolvedValue({ id: 'evt-new' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-legacy-cutover',
+          botId: 'owner-bot',
+          type: 'message_created',
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: true });
+
+    expect(prisma.webhookEvent.findUnique).toHaveBeenCalledWith({
+      where: {
+        dedupKey: 'u-legacy-cutover',
+      },
+      select: {
+        id: true,
+        createdAt: true,
+      },
+    });
+    expect(prisma.webhookEvent.create).not.toHaveBeenCalled();
   });
 
   it('defers the Старт handshake after storing the webhook event', async () => {
