@@ -159,6 +159,10 @@
   the current RDB/AOF state is intentionally preserved and queues are checked first; deploy
   API-only changes with `docker compose up -d --no-deps --force-recreate ...` when Redis must stay
   untouched.
+- After Redis volume restores/merges, audit schedule-driven BullMQ queues before restarting
+  workers. For `night-mode-transitions`, rebuild from DB future occurrences instead of restoring
+  stale due jobs blindly, verify `wait`/`active`/`failed` are empty and `delayed_due_now=0`, and
+  treat persisted `NIGHT_MODE_CLOSE_NOTICE` events as the idempotency source.
 - The `vps-pull-build-up*.sh` scripts are designed to run on the VPS host. From local machine, invoke them through SSH.
 - If multi-service API `docker compose build` stalls after the TypeScript build while buildx/bake
   resolves provenance, build the shared API image directly on the VPS with
