@@ -18,6 +18,7 @@ import {
   GLOBAL_SPAMMER_HIGH_FANOUT_MIN_CHATS,
   GLOBAL_SPAMMER_TRACK_HOT_PATH_TIMEOUT_MS,
   MODERATION_ACTION_ACCESS_LOSS_HOT_PATH_TIMEOUT_MS,
+  MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
   REQUIRED_SUBSCRIPTION_MEMBERSHIP_HOT_PATH_TIMEOUT_MS,
 } from './moderation.service.support';
 
@@ -165,6 +166,7 @@ function expectImmediateDeleteMessage(mockFn: jest.Mock, chatId: string, message
       trafficClass: 'critical',
       actionHealthLane: 'critical',
       sourceTag: 'moderation_delete',
+      timeoutMs: MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
     }),
   );
 }
@@ -178,6 +180,7 @@ function expectImmediateKickMember(mockFn: jest.Mock, chatId: string, userId: st
       trafficClass: 'critical',
       actionHealthLane: 'critical',
       sourceTag: 'moderation_sanction',
+      timeoutMs: MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
     }),
   );
 }
@@ -191,6 +194,7 @@ function expectImmediateBanMember(mockFn: jest.Mock, chatId: string, userId: str
       trafficClass: 'critical',
       actionHealthLane: 'critical',
       sourceTag: 'moderation_sanction',
+      timeoutMs: MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
     }),
   );
 }
@@ -18944,6 +18948,7 @@ describe('ModerationService', () => {
         trafficClass: 'critical',
         actionHealthLane: 'critical',
         sourceTag: 'moderation_delete',
+        timeoutMs: MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
       });
       expect(maxClient.deleteMessage).toHaveBeenNthCalledWith(2, 'chat-1', 'msg-1', {
         botId: 'id613002203036_4_bot',
@@ -18951,6 +18956,7 @@ describe('ModerationService', () => {
         trafficClass: 'critical',
         actionHealthLane: 'critical',
         sourceTag: 'moderation_delete',
+        timeoutMs: MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
       });
       expect(
         prisma.moderationEvent.create.mock.calls.some(
