@@ -3375,6 +3375,7 @@ export const maxMembershipChangeSchema = z.object({
 export const maxUpdateSchema = z.object({
   updateId: z.string(),
   botId: z.string().optional(),
+  executionOwnerBotId: z.string().optional(),
   type: z.string(),
   message: maxMessagePayloadSchema.optional(),
   membership: maxMembershipChangeSchema.optional(),

@@ -689,7 +689,7 @@ export class ManagedEntityAccessLossService {
   }
 
   private async resolveBotId(
-    chatId: string,
+    _chatId: string,
     botId: string | null | undefined,
   ): Promise<string | null> {
     const explicit = this.readTrimmedString(botId);
@@ -697,12 +697,7 @@ export class ManagedEntityAccessLossService {
       return explicit;
     }
 
-    try {
-      const resolved = await this.maxBotLinkService.resolveBotId({ chatId });
-      return this.readTrimmedString(resolved);
-    } catch {
-      return null;
-    }
+    return null;
   }
 
   private async markAccessEdgesBotDenied(params: {

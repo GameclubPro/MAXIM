@@ -21,11 +21,15 @@ const AUTOPOSTS_ROUTE_STARTUP_JS_ALLOWANCE_GZIP = 512;
 // Keepalive writes must use the GET mutation tunnel synchronously on CDN-preferred hosts so
 // page-leave profile handoff/stat updates preserve auth and survive GET-only front doors.
 const KEEPALIVE_MUTATION_TUNNEL_STARTUP_JS_ALLOWANCE_GZIP = 512;
+// Home cards preserve primary/assigned bot metadata so 1-6 bot ownership state survives
+// diff refreshes and required-subscription pickers without reloading settings screens.
+const MULTIBOT_HOME_METADATA_STARTUP_JS_ALLOWANCE_GZIP = 512;
 const STARTUP_JS_BUDGET_GZIP =
   113 * 1024 +
   HASH_ROUTER_STARTUP_JS_ALLOWANCE_GZIP +
   AUTOPOSTS_ROUTE_STARTUP_JS_ALLOWANCE_GZIP +
-  KEEPALIVE_MUTATION_TUNNEL_STARTUP_JS_ALLOWANCE_GZIP;
+  KEEPALIVE_MUTATION_TUNNEL_STARTUP_JS_ALLOWANCE_GZIP +
+  MULTIBOT_HOME_METADATA_STARTUP_JS_ALLOWANCE_GZIP;
 // Settings remains lazy-loaded, but richer giveaway, rules, and broadcast editors,
 // shared drilldown UI reuse, the compact required-subscription timer card,
 // the per-day broadcast agenda sheet, and the compact managed-broadcast

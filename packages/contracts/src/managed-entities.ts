@@ -241,6 +241,8 @@ export type ManagedEntityAccessLossReason = z.infer<typeof managedEntityAccessLo
 export const managedEntityAccessLossDiagnosticItemSchema = z.object({
   reason: managedEntityAccessLossReasonSchema,
   detectedAt: z.string().datetime(),
+  botId: z.string().trim().min(1).nullable().optional().default(null),
+  botLabel: z.string().trim().max(120).nullable().optional().default(null),
 });
 export type ManagedEntityAccessLossDiagnosticItem = z.infer<
   typeof managedEntityAccessLossDiagnosticItemSchema
@@ -248,8 +250,8 @@ export type ManagedEntityAccessLossDiagnosticItem = z.infer<
 
 export const managedEntityPrivateAccessLossDiagnosticItemSchema =
   managedEntityAccessLossDiagnosticItemSchema.extend({
-    botId: z.string(),
-    botLabel: z.string().nullable().optional().default(null),
+    botId: z.string().trim().min(1),
+    botLabel: z.string().trim().max(120).nullable().optional().default(null),
     source: z.string().trim().min(1),
     lastMaxErrorCode: z.string().trim().min(1).nullable().optional().default(null),
     lastMaxErrorMessage: z.string().trim().min(1).nullable().optional().default(null),

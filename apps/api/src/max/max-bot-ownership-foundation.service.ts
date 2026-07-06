@@ -19,7 +19,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsAdmin } from '../runtime/app-role';
 import { MaxBotLinkService } from './max-bot-link.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
-import { createBotLifecycleStats } from './max-bot-state.util';
+import { canExecuteActionsForBotState, createBotLifecycleStats } from './max-bot-state.util';
 import {
   membershipExplicitlyLacksAccess,
   resolvePreferredPrimaryBotId,
@@ -224,6 +224,12 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
 
   private async repairRecoverableOwnership(): Promise<number> {
     const knownBotIds = new Set(this.botRegistry.getAllBots().map((bot) => bot.id));
+    const eligiblePrimaryBotIds = new Set(
+      this.botRegistry
+        .getAllBots()
+        .filter((bot) => canExecuteActionsForBotState(bot.state))
+        .map((bot) => bot.id),
+    );
     const [chats, memberships] = await Promise.all([
       this.prisma.chat.findMany({
         select: {
@@ -279,6 +285,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
         chat,
         chatMemberships,
         knownBotIds,
+        eligiblePrimaryBotIds,
         repairSignalsByChat.get(chat.id) ?? null,
       );
       if (!repair) {
@@ -360,6 +367,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
     chat: ChatRecord,
     memberships: readonly MembershipRecord[],
     knownBotIds: ReadonlySet<string>,
+    eligiblePrimaryBotIds: ReadonlySet<string>,
     repairSignal: RepairSignal | null = null,
   ): {
     nextPrimaryBotId: string | null;
@@ -367,24 +375,26 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
     activeKnownStandbyBotIds: string[];
   } | null {
     const primaryKnown = this.readKnownBotId(chat.primaryBotId, knownBotIds);
-    const legacyKnown = this.readKnownBotId(chat.botId, knownBotIds);
-    const signalKnown = this.readKnownBotId(repairSignal?.botId ?? null, knownBotIds);
+    const primaryEligible = this.readKnownBotId(chat.primaryBotId, eligiblePrimaryBotIds);
+    const legacyEligible = this.readKnownBotId(chat.botId, eligiblePrimaryBotIds);
+    const signalEligible = this.readKnownBotId(repairSignal?.botId ?? null, eligiblePrimaryBotIds);
     const nextTitle = this.resolveRepairTitle(chat, repairSignal);
     const hasUnknownPrimary = Boolean(chat.primaryBotId && !primaryKnown);
-    if (hasUnknownPrimary && !nextTitle) {
-      return null;
-    }
+    const hasIneligiblePrimary = Boolean(primaryKnown && !primaryEligible);
 
     const activeKnownMemberships = memberships.filter(
       (membership) =>
         membership.status === ChatBotMembershipStatus.ACTIVE && knownBotIds.has(membership.botId),
     );
-    const activePrimaryMembership = activeKnownMemberships.find(
+    const activeEligibleMemberships = activeKnownMemberships.filter((membership) =>
+      eligiblePrimaryBotIds.has(membership.botId),
+    );
+    const activePrimaryMembership = activeEligibleMemberships.find(
       (membership) => membership.role === ChatBotMembershipRole.PRIMARY,
     );
     const hasActivePrimaryMembership =
-      primaryKnown !== null &&
-      activeKnownMemberships.some((membership) => membership.botId === primaryKnown);
+      primaryEligible !== null &&
+      activeEligibleMemberships.some((membership) => membership.botId === primaryEligible);
     const hasRemovedPrimaryMembership =
       primaryKnown !== null &&
       memberships.some(
@@ -393,29 +403,29 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
           membership.status === ChatBotMembershipStatus.REMOVED,
       );
 
-    let nextPrimaryBotId: string | null = hasUnknownPrimary ? null : primaryKnown;
-    if (!chat.primaryBotId) {
+    let nextPrimaryBotId: string | null = hasUnknownPrimary ? null : primaryEligible;
+    if (!chat.primaryBotId || hasUnknownPrimary || hasIneligiblePrimary) {
       if (activePrimaryMembership) {
         nextPrimaryBotId = activePrimaryMembership.botId;
       } else {
-        const legacyObservedMembership = legacyKnown
-          ? activeKnownMemberships.find((membership) => membership.botId === legacyKnown)
+        const legacyObservedMembership = legacyEligible
+          ? activeEligibleMemberships.find((membership) => membership.botId === legacyEligible)
           : null;
         if (legacyObservedMembership) {
           nextPrimaryBotId = legacyObservedMembership.botId;
-        } else if (activeKnownMemberships[0]) {
-          nextPrimaryBotId = activeKnownMemberships[0].botId;
-        } else if (legacyKnown) {
-          nextPrimaryBotId = legacyKnown;
-        } else if (signalKnown) {
-          nextPrimaryBotId = signalKnown;
+        } else if (activeEligibleMemberships[0]) {
+          nextPrimaryBotId = activeEligibleMemberships[0].botId;
+        } else if (legacyEligible) {
+          nextPrimaryBotId = legacyEligible;
+        } else if (signalEligible) {
+          nextPrimaryBotId = signalEligible;
         }
       }
-    } else if (primaryKnown && !hasActivePrimaryMembership && hasRemovedPrimaryMembership) {
+    } else if (primaryEligible && !hasActivePrimaryMembership && hasRemovedPrimaryMembership) {
       if (activePrimaryMembership) {
         nextPrimaryBotId = activePrimaryMembership.botId;
-      } else if (activeKnownMemberships[0]) {
-        nextPrimaryBotId = activeKnownMemberships[0].botId;
+      } else if (activeEligibleMemberships[0]) {
+        nextPrimaryBotId = activeEligibleMemberships[0].botId;
       } else {
         return null;
       }
@@ -423,7 +433,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
 
     const strongestAccessBotId = resolvePreferredPrimaryBotId(
       nextPrimaryBotId,
-      activeKnownMemberships,
+      activeEligibleMemberships,
       {
         requireFreshSnapshotForPromotion: true,
       },

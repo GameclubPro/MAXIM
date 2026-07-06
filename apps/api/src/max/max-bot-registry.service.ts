@@ -28,6 +28,8 @@ export class MaxBotRegistryService {
   private readonly defaultBot: MaxBotDefinition;
   private readonly entryBot: MaxBotDefinition;
   private readonly knownBotUserIdVariants: ReadonlySet<string>;
+  private readonly botIdByUserIdVariant: ReadonlyMap<string, string>;
+  private readonly ambiguousBotUserIdVariants: ReadonlySet<string>;
 
   constructor(configService: ConfigService) {
     this.appBaseUrl = this.normalizeAppBaseUrl(configService.get<string>('APP_BASE_URL'));
@@ -58,12 +60,24 @@ export class MaxBotRegistryService {
     this.botsById = new Map(this.bots.map((bot) => [bot.id, bot]));
     this.defaultBot = this.bots[0]!;
     this.entryBot = this.resolveEntryBot(configService.get<string>('MAX_ENTRY_BOT_ID'));
-    this.knownBotUserIdVariants = new Set(
-      this.bots.flatMap((bot) => [
+    const botIdByUserIdVariant = new Map<string, string>();
+    const ambiguousBotUserIdVariants = new Set<string>();
+    for (const bot of this.bots) {
+      for (const variant of [
         ...buildBotIdVariants(bot.id),
         ...buildBotIdVariants(bot.contactId),
-      ]),
-    );
+      ]) {
+        const existingBotId = botIdByUserIdVariant.get(variant);
+        if (existingBotId && existingBotId !== bot.id) {
+          ambiguousBotUserIdVariants.add(variant);
+          continue;
+        }
+        botIdByUserIdVariant.set(variant, bot.id);
+      }
+    }
+    this.botIdByUserIdVariant = botIdByUserIdVariant;
+    this.ambiguousBotUserIdVariants = ambiguousBotUserIdVariants;
+    this.knownBotUserIdVariants = new Set(botIdByUserIdVariant.keys());
   }
 
   getDefaultBot(): MaxBotDefinition {
@@ -130,6 +144,27 @@ export class MaxBotRegistryService {
     }
 
     return false;
+  }
+
+  resolveBotIdFromUserId(userId: string | number | null | undefined): string | null {
+    const normalizedUserId =
+      typeof userId === 'number' && Number.isFinite(userId)
+        ? String(Math.trunc(userId))
+        : typeof userId === 'string'
+          ? userId
+          : null;
+    const variants = buildBotIdVariants(normalizedUserId);
+    for (const variant of variants) {
+      if (this.ambiguousBotUserIdVariants.has(variant)) {
+        return null;
+      }
+      const botId = this.botIdByUserIdVariant.get(variant);
+      if (botId) {
+        return botId;
+      }
+    }
+
+    return null;
   }
 
   resolveWebhookBot(params: {

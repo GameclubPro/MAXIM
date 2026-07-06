@@ -220,6 +220,10 @@ export class MaxBotLinkService {
     return bot && canExecuteActionsForBotState(bot.state) ? bot : null;
   }
 
+  resolveBotIdFromUserId(userId: string | number | null | undefined): string | null {
+    return this.botRegistry.resolveBotIdFromUserId(userId);
+  }
+
   resolveExecutableBotId(botId: string | null | undefined): string | null {
     return this.getExecutableBotById(botId)?.id ?? null;
   }
@@ -1380,25 +1384,19 @@ export class MaxBotLinkService {
       const bot = this.botRegistry.getBotById(membership.botId);
       return Boolean(bot && canExecuteActionsForBotState(bot.state));
     });
-    const storedPrimaryBotId = this.resolveOperationalBotId(
-      chat.primaryBotId ?? chat.botId ?? null,
-    );
+    const storedPrimaryBotId = this.resolveOperationalBotId(chat.primaryBotId ?? null);
+    const storedExecutableBotId =
+      this.resolveExecutableBotId(chat.primaryBotId ?? null) ??
+      this.resolveExecutableBotId(chat.botId ?? null);
     const primaryBotId =
-      resolvePreferredPrimaryBotId(
-        storedPrimaryBotId,
-        activeActionableMemberships.length > 0
-          ? activeActionableMemberships
-          : activeOperationalMemberships.length > 0
-            ? activeOperationalMemberships
-            : activeKnownMemberships,
-        {
-          requireFreshSnapshotForPromotion: true,
-        },
-      ) ??
-      storedPrimaryBotId ??
-      activeKnownMemberships.find((membership) => membership.role === ChatBotMembershipRole.PRIMARY)
-        ?.botId ??
-      activeKnownMemberships[0]?.botId ??
+      resolvePreferredPrimaryBotId(storedExecutableBotId, activeActionableMemberships, {
+        requireFreshSnapshotForPromotion: true,
+      }) ??
+      storedExecutableBotId ??
+      activeActionableMemberships.find(
+        (membership) => membership.role === ChatBotMembershipRole.PRIMARY,
+      )?.botId ??
+      activeActionableMemberships[0]?.botId ??
       null;
 
     return {
@@ -1918,7 +1916,7 @@ export class MaxBotLinkService {
     const activeMemberships = memberships.filter(
       (membership) =>
         membership.status === ChatBotMembershipStatus.ACTIVE &&
-        this.resolveOperationalBotId(membership.botId),
+        this.resolveExecutableBotId(membership.botId),
     );
     const nextPrimaryBotId =
       resolvePreferredPrimaryBotId(null, activeMemberships, {

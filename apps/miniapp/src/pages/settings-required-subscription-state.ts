@@ -1,4 +1,8 @@
 import type { ChatSummary, ManagedEntityHeader } from '@maxim/contracts';
+import {
+  chatSummaryToManagedEntityHeader,
+  normalizeManagedEntityLink,
+} from '../lib/managed-entity-header';
 
 export type RequiredSubscriptionSelectedChannel = {
   id: string;
@@ -20,49 +24,14 @@ export type RequiredSubscriptionUnavailableChannel = {
 
 export type RequiredSubscriptionChannelCollections = {
   selectedChannels: RequiredSubscriptionSelectedChannel[];
+  selectedHeaders: ManagedEntityHeader[];
   selectedUnavailableChannels: RequiredSubscriptionUnavailableChannel[];
   unavailableManagedChannels: RequiredSubscriptionUnavailableChannel[];
   availableChoices: ManagedEntityHeader[];
 };
 
 function normalizeLink(link: string | null | undefined): string | null {
-  if (typeof link !== 'string') {
-    return null;
-  }
-
-  const normalized = link.trim();
-  return normalized.length > 0 ? normalized : null;
-}
-
-function toManagedEntityHeader(channel: ChatSummary): ManagedEntityHeader {
-  return {
-    id: channel.id,
-    title: channel.title,
-    entityType: channel.entityType,
-    link: normalizeLink(channel.link),
-    participantsCount: null,
-    avatarUrl: channel.avatarUrl ?? null,
-    primaryBotId: null,
-    assignedBots: [],
-    sharedMode: 'owned',
-    botCount: channel.botCount,
-    hasSharedAutomation: channel.hasSharedAutomation,
-    accessDiagnostics: {
-      state: 'ok',
-      lastDetectedAt: null,
-      lastCheckedAt: null,
-      freshUntil: null,
-      source: 'unknown',
-      activeBotCount: channel.botCount ?? 0,
-      lostBots: [],
-    },
-    viewerAccess: {
-      state: 'checking',
-      reason: null,
-      checkedAt: null,
-      canEdit: false,
-    },
-  };
+  return normalizeManagedEntityLink(link);
 }
 
 function createUnavailableChannel(channelId: string): RequiredSubscriptionUnavailableChannel {
@@ -89,7 +58,7 @@ export function buildRequiredSubscriptionChannelCollections(params: {
       continue;
     }
 
-    const header = toManagedEntityHeader(channel);
+    const header = chatSummaryToManagedEntityHeader(channel);
     availableChoiceById.set(channel.id, header);
     selectedChannelById.set(channel.id, header);
   }
@@ -99,7 +68,7 @@ export function buildRequiredSubscriptionChannelCollections(params: {
       continue;
     }
 
-    const header = toManagedEntityHeader(channel);
+    const header = chatSummaryToManagedEntityHeader(channel);
     availableChoiceById.set(channel.id, header);
     selectedChannelById.set(channel.id, header);
   }
@@ -115,10 +84,12 @@ export function buildRequiredSubscriptionChannelCollections(params: {
   }
 
   const selectedChannels: RequiredSubscriptionSelectedChannel[] = [];
+  const selectedHeaders: ManagedEntityHeader[] = [];
   const selectedUnavailableChannels: RequiredSubscriptionUnavailableChannel[] = [];
   for (const channelId of params.selectedChannelIds ?? []) {
     const availableChannel = selectedChannelById.get(channelId);
     if (availableChannel) {
+      selectedHeaders.push(availableChannel);
       selectedChannels.push({
         id: availableChannel.id,
         title: availableChannel.title,
@@ -140,6 +111,7 @@ export function buildRequiredSubscriptionChannelCollections(params: {
 
   return {
     selectedChannels,
+    selectedHeaders,
     selectedUnavailableChannels,
     unavailableManagedChannels,
     availableChoices,

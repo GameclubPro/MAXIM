@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import type { ManagedEntityAssignedBot } from '@maxim/contracts';
 import { getChats, getMe } from '../src/lib/api/root-client';
 import type { ApiTransport } from '../src/lib/api/transport';
 
@@ -10,6 +11,29 @@ function createApiStub(response: unknown, calls: string[]): ApiTransport {
       return response;
     },
     requestKeepalive: () => undefined,
+  };
+}
+
+function createAssignedBot(
+  overrides: Partial<ManagedEntityAssignedBot> = {},
+): ManagedEntityAssignedBot {
+  return {
+    botId: 'bot-1',
+    label: 'Primary Bot',
+    role: 'primary',
+    membershipStatus: 'active',
+    lifecycleState: 'active',
+    speechPersona: 'male',
+    characterName: 'Primary Bot',
+    avatarUrl: null,
+    capabilities: [],
+    permissionsSummary: {
+      checkedAt: '2026-04-04T10:03:00.000Z',
+      isAdmin: true,
+      isOwner: true,
+      permissions: ['all'],
+    },
+    ...overrides,
   };
 }
 
@@ -117,10 +141,21 @@ test('getChats parses a diff-aware refresh response and sends sinceVersion', asy
             avatarUrl: null,
             channelOverview: null,
             assignedBots: [
-              {
-                botId: 'bot-1',
-                label: 'Primary Bot',
-              },
+              createAssignedBot(),
+              createAssignedBot({
+                botId: 'bot-2',
+                label: 'Standby Bot',
+                role: 'standby',
+                speechPersona: 'female',
+                characterName: 'Standby Bot',
+                capabilities: ['access_prewarm', 'membership_prewarm'],
+                permissionsSummary: {
+                  checkedAt: '2026-04-04T10:03:30.000Z',
+                  isAdmin: true,
+                  isOwner: false,
+                  permissions: ['read', 'write'],
+                },
+              }),
             ],
             primaryBotId: 'bot-1',
             sharedMode: 'shared-standby',
@@ -168,9 +203,25 @@ test('getChats parses a diff-aware refresh response and sends sinceVersion', asy
         link: null,
         avatarUrl: null,
         channelOverview: null,
-        assignedBots: [],
-        primaryBotId: null,
-        sharedMode: 'owned',
+        assignedBots: [
+          createAssignedBot(),
+          createAssignedBot({
+            botId: 'bot-2',
+            label: 'Standby Bot',
+            role: 'standby',
+            speechPersona: 'female',
+            characterName: 'Standby Bot',
+            capabilities: ['access_prewarm', 'membership_prewarm'],
+            permissionsSummary: {
+              checkedAt: '2026-04-04T10:03:30.000Z',
+              isAdmin: true,
+              isOwner: false,
+              permissions: ['read', 'write'],
+            },
+          }),
+        ],
+        primaryBotId: 'bot-1',
+        sharedMode: 'shared-standby',
         botCount: 2,
         hasSharedAutomation: true,
       },

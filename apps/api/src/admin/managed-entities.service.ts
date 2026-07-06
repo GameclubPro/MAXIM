@@ -1071,6 +1071,8 @@ export class ManagedEntitiesService {
       lostBots: lostBots.map((item) => ({
         reason: item.reason,
         detectedAt: item.detectedAt,
+        botId: item.botId,
+        botLabel: item.botLabel,
       })),
     };
   }

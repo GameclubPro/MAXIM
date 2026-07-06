@@ -57,6 +57,8 @@ describe('managed entities contract exports', () => {
 
     expect(result.accessDiagnostics.lostBots).toEqual([
       {
+        botId: 'bot-1',
+        botLabel: 'Primary Bot',
         reason: 'bot_denied',
         detectedAt: '2026-06-01T10:00:00.000Z',
       },

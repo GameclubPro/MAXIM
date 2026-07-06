@@ -41,15 +41,17 @@ export function ManagedEntityAccessDiagnosticsBanner({
         </strong>
         <ul className="managed-access-alert__bots" aria-label="Причины потери доступа">
           {lostBots.map((item, index) => (
-            <li key={`${item.reason}:${item.detectedAt}:${index}`}>
-              <span>{REASON_LABELS[item.reason]}</span>
-              <span>{formatDateTime(item.detectedAt)}</span>
+            <li key={`${item.botId ?? 'unknown'}:${item.reason}:${item.detectedAt}:${index}`}>
+              <span>{formatLostBotIdentity(item, index)}</span>
+              <span>
+                {REASON_LABELS[item.reason]} · {formatDateTime(item.detectedAt)}
+              </span>
             </li>
           ))}
         </ul>
         <span>
-          Верните {lostCount > 1 ? 'ботов' : 'бота'} в администраторы MAX, затем поставьте
-          проверку в очередь
+          Верните {lostCount > 1 ? 'ботов' : 'бота'} в администраторы MAX, затем поставьте проверку
+          в очередь
         </span>
       </div>
       <button
@@ -65,6 +67,19 @@ export function ManagedEntityAccessDiagnosticsBanner({
       </button>
     </section>
   );
+}
+
+function formatLostBotIdentity(
+  item: ManagedEntityAccessDiagnostics['lostBots'][number],
+  index: number,
+): string {
+  const label = typeof item.botLabel === 'string' ? item.botLabel.trim() : '';
+  const botId = typeof item.botId === 'string' ? item.botId.trim() : '';
+  if (label && botId && label !== botId) {
+    return `${label} (${botId})`;
+  }
+
+  return label || botId || `Бот ${index + 1}`;
 }
 
 function formatBotCount(count: number): string {

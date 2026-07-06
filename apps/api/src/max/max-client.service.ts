@@ -4,7 +4,7 @@ import { Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { UnrecoverableError, type Queue } from 'bullmq';
 import FormData from 'form-data';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { firstValueFrom } from 'rxjs';
 import Redis from 'ioredis';
 import type { QueueJobEnvelope, QueueRetryPolicyName } from '../common/queue-job-envelope';
@@ -271,6 +271,11 @@ export type MaxActionDispatchOptions = {
   delayMs?: number;
   immediate?: boolean;
   autoDeleteDelayMs?: number;
+  /**
+   * Caller-provided logical dedupe key. It is normalized and scoped by bot/action
+   * before being used as a BullMQ job id.
+   */
+  idempotencyKey?: string | null;
   trafficClass?: MaxApiTrafficClass;
   actionHealthLane?: ActionHealthLane;
   sourceTag?: string;
@@ -313,6 +318,8 @@ export const MAX_API_SOURCE_TAGS = {
 } as const;
 
 const MAX_ACTION_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
+const MAX_ACTION_IDEMPOTENCY_KEY_PART_MAX_LENGTH = 48;
+const MAX_ACTION_IDEMPOTENCY_KEY_READABLE_MAX_LENGTH = 160;
 const DEFAULT_MAX_API_GLOBAL_RPS = 30;
 const DEFAULT_MAX_API_LIST_BOT_CHATS_CACHE_SEC = 15;
 const DEFAULT_MAX_API_CHAT_SNAPSHOT_CACHE_SEC = 10;
@@ -3446,6 +3453,15 @@ export class MaxClientService implements OnModuleDestroy {
             bot.id,
           )
         : null;
+    const explicitIdempotencyKey = this.buildExplicitActionIdempotencyKey(
+      options?.idempotencyKey,
+      payload.actionType,
+      bot.id,
+    );
+    const logicalIdempotencyKey =
+      scheduledJobId ??
+      explicitIdempotencyKey ??
+      this.buildDefaultActionIdempotencyKey(payload, bot.id);
     const job: MaxActionJob = {
       ...payload,
       botId: bot.id,
@@ -3460,7 +3476,7 @@ export class MaxClientService implements OnModuleDestroy {
         : {}),
       ...(ignoreFailureMetricStatuses ? { ignoreFailureMetricStatuses } : {}),
       attempt: 1,
-      idempotencyKey: scheduledJobId ?? randomUUID(),
+      idempotencyKey: logicalIdempotencyKey ?? randomUUID(),
       createdAt: new Date().toISOString(),
     };
 
@@ -3476,6 +3492,8 @@ export class MaxClientService implements OnModuleDestroy {
     if (this.dispatchEnabled && this.actionQueue) {
       if (scheduledJobId) {
         await this.removeQueuedActionJob(scheduledJobId);
+      } else if (logicalIdempotencyKey) {
+        await this.removeRetainedFailedActionJob(logicalIdempotencyKey);
       }
 
       await this.actionQueue.add('execute-max-action', job, {
@@ -3542,6 +3560,69 @@ export class MaxClientService implements OnModuleDestroy {
     return `member-action__${botId ?? this.botRegistry.getDefaultBot().id}__${actionType}__${chatId}__${userId}`;
   }
 
+  private buildExplicitActionIdempotencyKey(
+    value: string | null | undefined,
+    actionType: MaxActionType,
+    botId: string,
+  ): string | null {
+    const normalized = this.readTrimmedString(value);
+    if (!normalized) {
+      return null;
+    }
+
+    return this.buildActionIdempotencyKey('explicit', [botId, actionType, normalized]);
+  }
+
+  private buildDefaultActionIdempotencyKey(
+    payload: Omit<MaxActionJob, 'attempt' | 'idempotencyKey' | 'createdAt'>,
+    botId: string,
+  ): string | null {
+    const chatId = this.readTrimmedString(payload.chatId);
+    if (!chatId) {
+      return null;
+    }
+
+    if (payload.actionType === 'DELETE_MESSAGE') {
+      const messageId = this.readTrimmedString(payload.messageId);
+      return messageId
+        ? this.buildActionIdempotencyKey('logical', [botId, payload.actionType, chatId, messageId])
+        : null;
+    }
+
+    if (payload.actionType === 'KICK_MEMBER' || payload.actionType === 'BAN_MEMBER') {
+      const userId = this.readTrimmedString(payload.userId);
+      return userId
+        ? this.buildActionIdempotencyKey('logical', [botId, payload.actionType, chatId, userId])
+        : null;
+    }
+
+    return null;
+  }
+
+  private buildActionIdempotencyKey(namespace: string, parts: readonly string[]): string {
+    const normalizedParts = [namespace, ...parts].map((part) => part.trim()).filter(Boolean);
+    const canonical = normalizedParts.join('\u001f');
+    const digest = createHash('sha256').update(canonical).digest('base64url').slice(0, 24);
+    const readable = normalizedParts
+      .map((part) => this.normalizeActionIdempotencyKeyPart(part))
+      .filter(Boolean)
+      .join('__')
+      .slice(0, MAX_ACTION_IDEMPOTENCY_KEY_READABLE_MAX_LENGTH)
+      .replace(/_+$/u, '');
+
+    return readable ? `max-action__${readable}__${digest}` : `max-action__${digest}`;
+  }
+
+  private normalizeActionIdempotencyKeyPart(value: string): string {
+    return value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/gu, '_')
+      .replace(/_+/gu, '_')
+      .replace(/^_+|_+$/gu, '')
+      .slice(0, MAX_ACTION_IDEMPOTENCY_KEY_PART_MAX_LENGTH);
+  }
+
   private async removeQueuedActionJob(jobId: string) {
     if (!this.actionQueue) {
       return;
@@ -3549,6 +3630,19 @@ export class MaxClientService implements OnModuleDestroy {
 
     const existingJob = await this.actionQueue.getJob(jobId);
     if (!existingJob) {
+      return;
+    }
+
+    await existingJob.remove();
+  }
+
+  private async removeRetainedFailedActionJob(jobId: string) {
+    if (!this.actionQueue) {
+      return;
+    }
+
+    const existingJob = await this.actionQueue.getJob(jobId);
+    if (!existingJob || (await existingJob.getState()) !== 'failed') {
       return;
     }
 

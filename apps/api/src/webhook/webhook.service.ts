@@ -1628,23 +1628,48 @@ export class WebhookService {
 
   private resolveRemovedChatBotId(update: MaxUpdate): string | null {
     const raw = this.asRecord(update.raw);
-    const rawUser = this.asRecord(raw?.user);
-    const removedUserIsBot = rawUser?.is_bot === true || rawUser?.isBot === true;
-    const rawUsername = this.readTrimmedString(rawUser?.username);
-    if (removedUserIsBot && rawUsername) {
-      return rawUsername;
+    const rawRecords = [
+      this.asRecord(raw?.user),
+      this.asRecord(raw?.member),
+      this.asRecord(raw?.removed_user),
+      this.asRecord(raw?.removedUser),
+      this.asRecord(raw?.bot),
+      raw,
+    ].filter((record): record is Record<string, unknown> => record !== null);
+    const candidateKeys = [
+      'username',
+      'id',
+      'user_id',
+      'userId',
+      'bot_id',
+      'botId',
+      'contact_id',
+      'contactId',
+    ];
+    const candidates = rawRecords.flatMap((record) => candidateKeys.map((key) => record[key]));
+
+    for (const candidate of candidates) {
+      const botId = this.resolveKnownBotIdFromWebhookValue(candidate);
+      if (botId) {
+        return botId;
+      }
     }
 
     const senderId = this.readTrimmedString(update.message?.senderId);
-    if (senderId && this.looksLikeBotUsername(senderId)) {
-      return senderId;
+    if (senderId) {
+      return this.resolveKnownBotIdFromWebhookValue(senderId);
     }
 
-    return this.readTrimmedString(update.botId);
+    return null;
   }
 
-  private looksLikeBotUsername(value: string): boolean {
-    return /(?:^|_)bot$/i.test(value.trim());
+  private resolveKnownBotIdFromWebhookValue(value: unknown): string | null {
+    const rawValue = this.readTrimmedString(value);
+    if (!rawValue) {
+      return null;
+    }
+
+    return this.maxBotLinkService.resolveBotIdFromUserId?.(rawValue) ?? null;
   }
 
   private asRecord(value: unknown): Record<string, unknown> | null {
@@ -1808,11 +1833,7 @@ export class WebhookService {
       return;
     }
 
-    (
-      update as MaxUpdate & {
-        executionOwnerBotId?: string;
-      }
-    ).executionOwnerBotId = botId;
+    update.executionOwnerBotId = botId;
   }
 
   private readWebhookChatEntityType(update: MaxUpdate): ChatEntityType | null {
@@ -1852,6 +1873,7 @@ export class WebhookService {
         findUnique?: (args: unknown) => Promise<{
           id: string;
           createdAt: Date;
+          botId?: string | null;
         } | null>;
       }
     ).findUnique;
@@ -1866,11 +1888,13 @@ export class WebhookService {
       select: {
         id: true,
         createdAt: true,
+        botId: true,
       },
     });
     if (
       !legacyEvent ||
-      legacyEvent.createdAt.getTime() < Date.now() - WEBHOOK_LEGACY_DEDUP_COMPAT_WINDOW_MS
+      legacyEvent.createdAt.getTime() < Date.now() - WEBHOOK_LEGACY_DEDUP_COMPAT_WINDOW_MS ||
+      legacyEvent.botId !== botId
     ) {
       return null;
     }

@@ -4274,6 +4274,23 @@ describe('MaxClientService delayed member actions', () => {
     );
   }
 
+  function createCollapsingQueue() {
+    const jobsById = new Map<string, unknown>();
+    return {
+      jobsById,
+      queue: {
+        add: jest.fn().mockImplementation(async (_name: string, job: unknown, options: unknown) => {
+          const jobId = (options as { jobId?: string }).jobId;
+          if (jobId && !jobsById.has(jobId)) {
+            jobsById.set(jobId, job);
+          }
+          return { id: jobId };
+        }),
+        getJob: jest.fn().mockResolvedValue(null),
+      },
+    };
+  }
+
   it('dispatches queued delete actions with the active bot context when botId is omitted', async () => {
     const queue = {
       add: jest.fn().mockResolvedValue(undefined),
@@ -4376,6 +4393,86 @@ describe('MaxClientService delayed member actions', () => {
     await service.onModuleDestroy();
   });
 
+  it('uses caller-provided idempotency keys as stable BullMQ job ids', async () => {
+    const { jobsById, queue } = createCollapsingQueue();
+    const service = createServiceWithQueue(queue);
+
+    await service.sendMessage('chat-1', 'first notice', undefined, {
+      idempotencyKey: ' moderation:notice:chat-1:user-1 ',
+    });
+    await service.sendMessage('chat-1', 'second notice', undefined, {
+      idempotencyKey: 'moderation:notice:chat-1:user-1',
+    });
+
+    const firstJobId = queue.add.mock.calls[0][2].jobId;
+    const secondJobId = queue.add.mock.calls[1][2].jobId;
+
+    expect(firstJobId).toBe(secondJobId);
+    expect(firstJobId).toMatch(/^max-action__explicit__/);
+    expect(firstJobId).not.toContain(':');
+    expect(jobsById.size).toBe(1);
+    expect([...jobsById.values()][0]).toEqual(
+      expect.objectContaining({
+        actionType: 'SEND_MESSAGE',
+        text: 'first notice',
+        idempotencyKey: firstJobId,
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('derives stable logical job ids for duplicate delete and member actions', async () => {
+    const { jobsById, queue } = createCollapsingQueue();
+    const service = createServiceWithQueue(queue);
+
+    await service.deleteMessage('chat-1', 'mid-1');
+    await service.deleteMessage('chat-1', 'mid-1');
+    await service.kickMember('chat-1', 'user-1');
+    await service.kickMember('chat-1', 'user-1');
+    await service.banMember('chat-1', 'user-1');
+
+    const deleteJobId = queue.add.mock.calls[0][2].jobId;
+    const duplicateDeleteJobId = queue.add.mock.calls[1][2].jobId;
+    const kickJobId = queue.add.mock.calls[2][2].jobId;
+    const duplicateKickJobId = queue.add.mock.calls[3][2].jobId;
+    const banJobId = queue.add.mock.calls[4][2].jobId;
+
+    expect(duplicateDeleteJobId).toBe(deleteJobId);
+    expect(duplicateKickJobId).toBe(kickJobId);
+    expect(deleteJobId).toMatch(/^max-action__logical__/);
+    expect(kickJobId).toMatch(/^max-action__logical__/);
+    expect(banJobId).toMatch(/^max-action__logical__/);
+    expect(new Set([deleteJobId, kickJobId, banJobId]).size).toBe(3);
+    expect(jobsById.size).toBe(3);
+
+    await service.onModuleDestroy();
+  });
+
+  it('replaces retained failed logical jobs so repair retries are not swallowed', async () => {
+    const remove = jest.fn().mockResolvedValue(undefined);
+    const failedJob = {
+      getState: jest.fn().mockResolvedValue('failed'),
+      remove,
+    };
+    const queue = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(failedJob),
+    };
+    const service = createServiceWithQueue(queue);
+
+    await service.deleteMessage('chat-1', 'mid-1');
+    const firstJobId = queue.add.mock.calls[0][2].jobId;
+    await service.deleteMessage('chat-1', 'mid-1');
+
+    expect(queue.getJob).toHaveBeenNthCalledWith(2, firstJobId);
+    expect(failedJob.getState).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(queue.add.mock.calls[1][2].jobId).toBe(firstJobId);
+
+    await service.onModuleDestroy();
+  });
+
   it('uses deterministic queue job id for delayed unban', async () => {
     const queue = {
       add: jest.fn().mockResolvedValue(undefined),
@@ -4384,7 +4481,10 @@ describe('MaxClientService delayed member actions', () => {
     const service = createServiceWithQueue(queue);
     const expectedJobId = 'member-action__777000_bot__UNBAN_MEMBER__chat-1__user-1';
 
-    await service.unbanMember('chat-1', 'user-1', { delayMs: 60_000 });
+    await service.unbanMember('chat-1', 'user-1', {
+      delayMs: 60_000,
+      idempotencyKey: 'manual-unban:user-1',
+    });
 
     expect(queue.getJob).toHaveBeenCalledWith(expectedJobId);
     expect(queue.add).toHaveBeenCalledWith(

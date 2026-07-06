@@ -223,6 +223,7 @@ import {
   serializeRulesDraftPayload,
   shouldHydrateRulesDraftFromServer,
 } from './settings-rules-state';
+import { createManagedEntityHeader } from '../lib/managed-entity-header';
 import { buildRequiredSubscriptionChannelCollections } from './settings-required-subscription-state';
 import {
   FieldErrors,
@@ -915,6 +916,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   );
   const selectedRequiredSubscriptionChannels =
     requiredSubscriptionChannelCollections.selectedChannels;
+  const selectedRequiredSubscriptionChannelHeaders =
+    requiredSubscriptionChannelCollections.selectedHeaders;
   const selectedUnavailableRequiredSubscriptionChannels =
     requiredSubscriptionChannelCollections.selectedUnavailableChannels;
   const unavailableManagedRequiredSubscriptionChannels =
@@ -931,23 +934,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     for (const channel of settingsScreenQuery.data?.requiredSubscriptionChannels ?? []) {
       channelById.set(channel.id, channel);
     }
-    for (const channel of selectedRequiredSubscriptionChannels) {
-      channelById.set(channel.id, {
-        id: channel.id,
-        title: channel.title,
-        entityType: channel.entityType,
-        link: channel.link,
-        participantsCount: null,
-      } as ManagedEntityHeader);
+    for (const channel of selectedRequiredSubscriptionChannelHeaders) {
+      channelById.set(channel.id, channel);
     }
     for (const channel of selectedUnavailableRequiredSubscriptionChannels) {
-      channelById.set(channel.id, {
-        id: channel.id,
-        title: channel.title,
-        entityType: 'channel',
-        link: null,
-        participantsCount: null,
-      } as ManagedEntityHeader);
+      channelById.set(
+        channel.id,
+        createManagedEntityHeader({
+          id: channel.id,
+          title: channel.title,
+          entityType: 'channel',
+          link: null,
+          participantsCount: null,
+        }),
+      );
     }
 
     return {
@@ -960,7 +960,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }, [
     domainsQuery.data,
     draft,
-    selectedRequiredSubscriptionChannels,
+    selectedRequiredSubscriptionChannelHeaders,
     selectedUnavailableRequiredSubscriptionChannels,
     settingsScreenQuery.data?.domains,
     settingsScreenQuery.data?.requiredSubscriptionChannels,

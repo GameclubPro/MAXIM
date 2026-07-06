@@ -320,6 +320,13 @@ describe('MaxBotOwnershipFoundationService', () => {
           catalogKind: ChatCatalogKind.MANAGED,
         },
         {
+          id: 'chat-ineligible-primary',
+          entityType: ChatEntityType.CHAT,
+          botId: 'id613002203036_bot',
+          primaryBotId: 'id613002203036_4_bot',
+          catalogKind: ChatCatalogKind.MANAGED,
+        },
+        {
           id: 'chat-local-activity',
           entityType: ChatEntityType.CHAT,
           botId: null,
@@ -436,10 +443,26 @@ describe('MaxBotOwnershipFoundationService', () => {
     );
     expect(prisma.chat.update).toHaveBeenCalledWith(
       expect.objectContaining({
+        where: { id: 'chat-unknown-primary' },
+        data: {
+          primaryBotId: 'id613002203036_bot',
+          botId: 'id613002203036_bot',
+        },
+      }),
+    );
+    expect(prisma.chat.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'chat-ineligible-primary' },
+        data: {
+          primaryBotId: 'id613002203036_bot',
+          botId: 'id613002203036_bot',
+        },
+      }),
+    );
+    expect(prisma.chat.update).toHaveBeenCalledWith(
+      expect.objectContaining({
         where: { id: 'chat-webhook-signal' },
         data: {
-          primaryBotId: 'id613002203036_4_bot',
-          botId: 'id613002203036_4_bot',
           title: 'Webhook Real Chat',
         },
       }),
@@ -454,8 +477,8 @@ describe('MaxBotOwnershipFoundationService', () => {
       dormant: 1,
     });
     expect(snapshot.entities.total).toMatchObject({
-      total: 6,
-      withPrimary: 5,
+      total: 7,
+      withPrimary: 6,
       withoutPrimary: 1,
     });
     expect(snapshot.entities.channels).toMatchObject({
@@ -464,11 +487,11 @@ describe('MaxBotOwnershipFoundationService', () => {
       withoutPrimary: 0,
     });
     expect(snapshot.anomalies).toMatchObject({
-      noPrimary: 0,
+      noPrimary: 1,
       recoverableLegacyOnly: 0,
       recoverableFromMemberships: 0,
-      unbound: 0,
-      primaryBotUnknown: 1,
+      unbound: 1,
+      primaryBotUnknown: 0,
       primaryWithoutActiveMembership: 0,
     });
     expect(snapshot.repair.lastAppliedChanges).toBeGreaterThan(0);

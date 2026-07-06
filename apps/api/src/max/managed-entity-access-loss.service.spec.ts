@@ -1061,4 +1061,50 @@ describe('ManagedEntityAccessLossService', () => {
     expect(maxBotLinkService.markChatBotRemoved).not.toHaveBeenCalled();
     expect(prisma.managedEntityAccessEdge.updateMany).not.toHaveBeenCalled();
   });
+
+  it('does not mark the default routed bot lost when terminal access loss has no explicit bot id', async () => {
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          title: 'Managed chat',
+          entityType: ChatEntityType.CHAT,
+        }),
+      },
+      managedEntityAccessEdge: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const maxBotLinkService = {
+      markChatBotRemoved: jest.fn(),
+      resolveBotId: jest.fn().mockResolvedValue('id613002203036_bot'),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+      clearManagedEntitiesRecentBootstrapForChat: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new ManagedEntityAccessLossService(
+      prisma as never,
+      maxBotLinkService as never,
+      chatContextCache as never,
+    );
+
+    await expect(
+      service.recordManagedEntityAccessLost({
+        chatId: 'chat-1',
+        botId: null,
+        reason: 'bot_denied',
+        source: 'unit-test',
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        chatId: 'chat-1',
+        botId: null,
+        updatedAccessEdges: 0,
+      }),
+    );
+
+    expect(maxBotLinkService.resolveBotId).not.toHaveBeenCalled();
+    expect(maxBotLinkService.markChatBotRemoved).not.toHaveBeenCalled();
+    expect(prisma.managedEntityAccessEdge.updateMany).not.toHaveBeenCalled();
+  });
 });

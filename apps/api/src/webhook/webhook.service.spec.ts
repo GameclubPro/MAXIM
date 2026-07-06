@@ -12,6 +12,24 @@ describe('WebhookService', () => {
     getStoredChatPrimaryBotId: jest.fn().mockResolvedValue(null),
     observeStoredChatBotWebhook: jest.fn().mockResolvedValue(undefined),
     markChatBotRemoved: jest.fn().mockResolvedValue(undefined),
+    resolveBotIdFromUserId: jest.fn((userId: string | number | null | undefined) => {
+      const normalized = String(userId ?? '').trim().toLowerCase();
+      if (
+        normalized === 'id613002203036_bot' ||
+        normalized === '613002203036' ||
+        normalized === '214634782'
+      ) {
+        return 'id613002203036_bot';
+      }
+      if (
+        normalized === 'id613002203036_4_bot' ||
+        normalized === '613002203036_4' ||
+        normalized === '214634783'
+      ) {
+        return 'id613002203036_4_bot';
+      }
+      return null;
+    }),
   };
   const maxChatAdminRosterSyncService = {
     scheduleChatAdminRosterSync: jest.fn().mockResolvedValue(true),
@@ -27,6 +45,7 @@ describe('WebhookService', () => {
     maxBotLinkService.observeStoredChatBotWebhook.mockResolvedValue(undefined);
     maxBotLinkService.markChatBotRemoved.mockReset();
     maxBotLinkService.markChatBotRemoved.mockResolvedValue(undefined);
+    maxBotLinkService.resolveBotIdFromUserId.mockClear();
     maxChatAdminRosterSyncService.scheduleChatAdminRosterSync.mockReset();
     maxChatAdminRosterSyncService.scheduleChatAdminRosterSync.mockResolvedValue(true);
   });
@@ -103,12 +122,13 @@ describe('WebhookService', () => {
     ]);
   });
 
-  it('treats a fresh legacy unscoped dedup key as duplicate for bot-scoped retries', async () => {
+  it('treats a fresh same-bot legacy unscoped dedup key as duplicate for bot-scoped retries', async () => {
     const prisma = {
       webhookEvent: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'evt-legacy',
           createdAt: new Date(),
+          botId: 'owner-bot',
         }),
         create: jest.fn().mockResolvedValue({ id: 'evt-new' }),
         updateMany: jest.fn(),
@@ -141,9 +161,51 @@ describe('WebhookService', () => {
       select: {
         id: true,
         createdAt: true,
+        botId: true,
       },
     });
     expect(prisma.webhookEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('does not treat another bot legacy unscoped dedup row as duplicate', async () => {
+    const prisma = {
+      webhookEvent: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'evt-legacy-standby',
+          createdAt: new Date(),
+          botId: 'standby-bot',
+        }),
+        create: jest.fn().mockResolvedValue({ id: 'evt-owner' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-legacy-owner-delivery',
+          botId: 'owner-bot',
+          type: 'message_created',
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(prisma.webhookEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          dedupKey: 'owner-bot:u-legacy-owner-delivery',
+        }),
+      }),
+    );
   });
 
   it('defers the Старт handshake after storing the webhook event', async () => {
@@ -1168,7 +1230,8 @@ describe('WebhookService', () => {
           raw: {
             update_type: 'bot_removed',
             chat_id: -73729721862151,
-            user_id: 214634783,
+            user_id: 214634782,
+            bot_id: 'id613002203036_bot',
             user: {
               user_id: 214634783,
               username: 'id613002203036_4_bot',
@@ -1196,6 +1259,58 @@ describe('WebhookService', () => {
         }),
       }),
     );
+  });
+
+  it('does not fall back to the receiving bot when bot_removed payload is ambiguous', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-4c' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-bot-removed-ambiguous-1',
+          type: 'bot_removed',
+          botId: 'id613002203036_bot',
+          message: {
+            messageId: 'bot_removed:u-bot-removed-ambiguous-1',
+            chatId: '-73729721862151',
+            chatTitle: 'Пантера',
+            entityType: 'chat',
+            senderId: 'unknown-service-user',
+            text: '',
+            createdAt: new Date('2026-05-10T02:10:01.411Z').toISOString(),
+          },
+          raw: {
+            update_type: 'bot_removed',
+            chat_id: -73729721862151,
+            user: {
+              user_id: 999999,
+              is_bot: true,
+            },
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(maxBotLinkService.markChatBotRemoved).toHaveBeenCalledWith({
+      chatId: '-73729721862151',
+      title: 'Пантера',
+      entityType: 'CHAT',
+      botId: null,
+    });
   });
 
   it('fails over execution owner to the incoming bot from cached snapshots without a live MAX lookup', async () => {

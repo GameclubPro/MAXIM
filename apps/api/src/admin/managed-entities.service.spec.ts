@@ -1089,6 +1089,8 @@ describe('ManagedEntitiesService headers', () => {
         {
           reason: 'bot_denied',
           detectedAt: '2026-05-31T09:59:00.000Z',
+          botId: 'bot-1',
+          botLabel: 'Основной бот',
         },
       ],
     });
@@ -1204,6 +1206,8 @@ describe('ManagedEntitiesService headers', () => {
         {
           reason: 'bot_denied',
           detectedAt: '2026-05-31T09:59:00.000Z',
+          botId: 'bot-1',
+          botLabel: 'Основной бот',
         },
       ],
     });
@@ -1294,6 +1298,8 @@ describe('ManagedEntitiesService headers', () => {
         {
           reason: 'bot_denied',
           detectedAt: '2026-06-01T10:00:00.000Z',
+          botId: 'bot-1',
+          botLabel: 'Основной бот',
         },
       ],
     });

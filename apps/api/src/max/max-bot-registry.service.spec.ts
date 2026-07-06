@@ -104,6 +104,48 @@ describe('MaxBotRegistryService webhook base URL', () => {
     expect(service.isKnownBotUserId('700000000001')).toBe(true);
   });
 
+  it('resolves id, numeric suffix, and contact ids to canonical bot ids', () => {
+    const service = createService({
+      MAX_BOT_ID: 'id613002203036_bot',
+      MAX_BOT_CONTACT_ID: '214634782',
+      MAX_BOTS_JSON: JSON.stringify([
+        {
+          id: 'id613002203036_4_bot',
+          contactId: '214634783',
+          token: 'token-secondary-123456',
+          webhookSecretPath: 'secondary-secret',
+          webhookHeaderSecret: 'secondary-header',
+          state: 'active',
+        },
+      ]),
+    });
+
+    expect(service.resolveBotIdFromUserId('id613002203036_4_bot')).toBe('id613002203036_4_bot');
+    expect(service.resolveBotIdFromUserId('613002203036_4')).toBe('id613002203036_4_bot');
+    expect(service.resolveBotIdFromUserId(214634783)).toBe('id613002203036_4_bot');
+    expect(service.resolveBotIdFromUserId('214634782')).toBe('id613002203036_bot');
+  });
+
+  it('does not resolve ambiguous bot user id variants', () => {
+    const service = createService({
+      MAX_BOT_ID: 'id613002203036_bot',
+      MAX_BOT_CONTACT_ID: '214634782',
+      MAX_BOTS_JSON: JSON.stringify([
+        {
+          id: 'custom-secondary-bot',
+          contactId: '214634782',
+          token: 'token-secondary-123456',
+          webhookSecretPath: 'secondary-secret',
+          webhookHeaderSecret: 'secondary-header',
+          state: 'active',
+        },
+      ]),
+    });
+
+    expect(service.isKnownBotUserId('214634782')).toBe(true);
+    expect(service.resolveBotIdFromUserId('214634782')).toBeNull();
+  });
+
   it('accepts dormant bot tokens for init data without making them operational', () => {
     const service = createService({
       MAX_BOTS_JSON: JSON.stringify([

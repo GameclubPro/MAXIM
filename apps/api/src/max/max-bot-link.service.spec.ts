@@ -863,6 +863,48 @@ describe('MaxBotLinkService', () => {
     );
   });
 
+  it('repairs an ineligible stored primary by falling back to an executable legacy bot', async () => {
+    const fixture = createServiceFixture();
+    const dormantPrimaryBot = fixture.bots.find((bot) => bot.id === 'id613002203036_4_bot');
+    if (!dormantPrimaryBot) {
+      throw new Error('standby bot fixture missing');
+    }
+    dormantPrimaryBot.state = 'dormant';
+    fixture.chats.set('chat-ineligible-primary', {
+      id: 'chat-ineligible-primary',
+      title: 'Shared transition chat',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_4_bot',
+    });
+    fixture.memberships.push({
+      chatId: 'chat-ineligible-primary',
+      botId: 'id613002203036_bot',
+      role: ChatBotMembershipRole.STANDBY,
+      status: ChatBotMembershipStatus.ACTIVE,
+      permissionsSnapshot: {
+        checkedAt: '2026-05-09T10:00:00.000Z',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+      },
+      createdAt: new Date('2026-05-09T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-09T10:00:00.000Z'),
+      lastSeenAt: new Date('2026-05-09T10:00:00.000Z'),
+      lastWebhookAt: new Date('2026-05-09T10:00:00.000Z'),
+    });
+
+    await expect(
+      fixture.service.reconcileChatPrimaryByAccess({ chatId: 'chat-ineligible-primary' }),
+    ).resolves.toBe('id613002203036_bot');
+
+    expect(fixture.chats.get('chat-ineligible-primary')).toEqual(
+      expect.objectContaining({
+        botId: 'id613002203036_bot',
+        primaryBotId: 'id613002203036_bot',
+      }),
+    );
+  });
+
   it('prefers a standby bot with confirmed admin access for member-access lookups', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('channel-1', {
@@ -1168,7 +1210,7 @@ describe('MaxBotLinkService', () => {
     ).resolves.toMatchObject({
       purpose: 'send_message',
       chatId: 'channel-draining-send-route',
-      primaryBotId: 'id613002203036_bot',
+      primaryBotId: null,
       botId: null,
       candidateBotIds: [],
       reason: null,

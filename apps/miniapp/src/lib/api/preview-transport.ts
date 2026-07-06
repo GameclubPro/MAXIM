@@ -99,10 +99,13 @@ import {
   type GlobalSpammerUserDiagnostics,
   type LogsDashboardRange,
   type LogsDashboardResponse,
+  type BotSpeechPersona,
   type ManagedBroadcastDetails,
   type ManagedAutopostHubRuleDetails,
   type ManagedAutopostPayload,
+  type ManagedEntityAssignedBot,
   type ManagedEntityBotExecutionPlan,
+  type ManagedEntityBotCapability,
   type ManagedEntityType,
   type ManagedEntitiesListResponse,
   type ManagedGiveawayDetails,
@@ -200,6 +203,79 @@ const PREVIEW_STANDBY_BOT_ID = '777001_bot';
 const PREVIEW_STANDBY_BOT_LABEL = 'Майор Максимова';
 const PREVIEW_REX_BOT_ID = '777002_bot';
 const PREVIEW_REX_BOT_LABEL = 'Рэкс';
+const PREVIEW_EDITOR_BOT_ID = '777003_bot';
+const PREVIEW_EDITOR_BOT_LABEL = 'Редактор Майя';
+const PREVIEW_SCOUT_BOT_ID = '777004_bot';
+const PREVIEW_SCOUT_BOT_LABEL = 'Скаут Илья';
+const PREVIEW_BACKUP_BOT_ID = '777005_bot';
+const PREVIEW_BACKUP_BOT_LABEL = 'Резервный Максим';
+
+type PreviewBotFixture = {
+  botId: string;
+  label: string;
+  speechPersona: BotSpeechPersona;
+  characterName: string;
+  avatarColors: readonly [string, string];
+  assistCapabilities: ManagedEntityBotCapability[];
+  standbyPermissions: string[];
+};
+
+const PREVIEW_BOT_FIXTURES = [
+  {
+    botId: PREVIEW_PRIMARY_BOT_ID,
+    label: PREVIEW_PRIMARY_BOT_LABEL,
+    speechPersona: 'male',
+    characterName: 'Майор Максимов',
+    avatarColors: ['#22b6b7', '#1484a0'],
+    assistCapabilities: [],
+    standbyPermissions: ['read', 'write'],
+  },
+  {
+    botId: PREVIEW_STANDBY_BOT_ID,
+    label: PREVIEW_STANDBY_BOT_LABEL,
+    speechPersona: 'female',
+    characterName: 'Майор Максимова',
+    avatarColors: ['#ff89b8', '#de5a82'],
+    assistCapabilities: ['access_prewarm', 'membership_prewarm'],
+    standbyPermissions: ['read', 'write', 'manage'],
+  },
+  {
+    botId: PREVIEW_REX_BOT_ID,
+    label: PREVIEW_REX_BOT_LABEL,
+    speechPersona: 'male',
+    characterName: 'Рэкс',
+    avatarColors: ['#39c58f', '#178a68'],
+    assistCapabilities: ['access_prewarm'],
+    standbyPermissions: ['read', 'write'],
+  },
+  {
+    botId: PREVIEW_EDITOR_BOT_ID,
+    label: PREVIEW_EDITOR_BOT_LABEL,
+    speechPersona: 'female',
+    characterName: 'Редактор Майя',
+    avatarColors: ['#f6b453', '#d36a35'],
+    assistCapabilities: ['suggestion_delivery', 'channel_stats'],
+    standbyPermissions: ['read', 'write', 'manage'],
+  },
+  {
+    botId: PREVIEW_SCOUT_BOT_ID,
+    label: PREVIEW_SCOUT_BOT_LABEL,
+    speechPersona: 'neutral',
+    characterName: 'Скаут Илья',
+    avatarColors: ['#7c9dff', '#3f5bd7'],
+    assistCapabilities: ['background_scans', 'membership_prewarm'],
+    standbyPermissions: ['read'],
+  },
+  {
+    botId: PREVIEW_BACKUP_BOT_ID,
+    label: PREVIEW_BACKUP_BOT_LABEL,
+    speechPersona: 'male',
+    characterName: 'Резервный Максим',
+    avatarColors: ['#b17cff', '#7042c8'],
+    assistCapabilities: ['background_scans', 'access_prewarm'],
+    standbyPermissions: ['read', 'write'],
+  },
+] satisfies PreviewBotFixture[];
 
 type PreviewGiveawayVariant = 'blocked' | 'joined' | 'winner' | 'completed';
 type PreviewGiveawayParticipantVariant =
@@ -220,74 +296,42 @@ function buildPreviewAssignedBots(
   const primaryBotId = options.primaryBotId ?? PREVIEW_PRIMARY_BOT_ID;
   const assistEnabled = options.assistEnabled === true;
 
-  return [
-    {
-      botId: PREVIEW_PRIMARY_BOT_ID,
-      label: PREVIEW_PRIMARY_BOT_LABEL,
-      role: primaryBotId === PREVIEW_PRIMARY_BOT_ID ? 'primary' : 'standby',
+  return PREVIEW_BOT_FIXTURES.map((fixture): ManagedEntityAssignedBot => {
+    const isPrimary = primaryBotId === fixture.botId;
+    const [avatarStart, avatarEnd] = fixture.avatarColors;
+
+    return {
+      botId: fixture.botId,
+      label: fixture.label,
+      role: isPrimary ? 'primary' : 'standby',
       membershipStatus: 'active',
       lifecycleState: 'active',
-      speechPersona: 'male',
-      characterName: 'Майор Максимов',
-      avatarUrl: buildPreviewAvatarDataUrl('Майор Максимов', '#22b6b7', '#1484a0'),
-      capabilities: [],
+      speechPersona: fixture.speechPersona,
+      characterName: fixture.characterName,
+      avatarUrl: buildPreviewAvatarDataUrl(fixture.characterName, avatarStart, avatarEnd),
+      capabilities: assistEnabled && !isPrimary ? fixture.assistCapabilities : [],
       permissionsSummary: {
         checkedAt: new Date().toISOString(),
         isAdmin: true,
-        isOwner: primaryBotId === PREVIEW_PRIMARY_BOT_ID,
-        permissions: primaryBotId === PREVIEW_PRIMARY_BOT_ID ? ['all'] : ['read', 'write'],
+        isOwner: isPrimary,
+        permissions: isPrimary ? ['all'] : fixture.standbyPermissions,
       },
-    },
-    {
-      botId: PREVIEW_STANDBY_BOT_ID,
-      label: PREVIEW_STANDBY_BOT_LABEL,
-      role: primaryBotId === PREVIEW_STANDBY_BOT_ID ? 'primary' : 'standby',
-      membershipStatus: 'active',
-      lifecycleState: 'active',
-      speechPersona: 'female',
-      characterName: 'Майор Максимова',
-      avatarUrl: buildPreviewAvatarDataUrl('Майор Максимова', '#ff89b8', '#de5a82'),
-      capabilities:
-        assistEnabled && primaryBotId !== PREVIEW_STANDBY_BOT_ID
-          ? ['access_prewarm', 'membership_prewarm']
-          : [],
-      permissionsSummary: {
-        checkedAt: new Date().toISOString(),
-        isAdmin: true,
-        isOwner: primaryBotId === PREVIEW_STANDBY_BOT_ID,
-        permissions:
-          primaryBotId === PREVIEW_STANDBY_BOT_ID ? ['all'] : ['read', 'write', 'manage'],
-      },
-    },
-    {
-      botId: PREVIEW_REX_BOT_ID,
-      label: PREVIEW_REX_BOT_LABEL,
-      role: primaryBotId === PREVIEW_REX_BOT_ID ? 'primary' : 'standby',
-      membershipStatus: 'active',
-      lifecycleState: 'active',
-      speechPersona: 'male',
-      characterName: 'Рэкс',
-      avatarUrl: buildPreviewAvatarDataUrl('Рэкс', '#39c58f', '#178a68'),
-      capabilities:
-        assistEnabled && primaryBotId !== PREVIEW_REX_BOT_ID ? ['access_prewarm'] : [],
-      permissionsSummary: {
-        checkedAt: new Date().toISOString(),
-        isAdmin: true,
-        isOwner: primaryBotId === PREVIEW_REX_BOT_ID,
-        permissions: primaryBotId === PREVIEW_REX_BOT_ID ? ['all'] : ['read', 'write'],
-      },
-    },
-  ];
+    };
+  });
 }
 
 function createPreviewChatSummary(
   params: Omit<ChatSummary, 'primaryBotId' | 'assignedBots' | 'sharedMode'>,
 ): ChatSummary {
+  const assignedBots = buildPreviewAssignedBots();
+
   return {
     ...params,
     primaryBotId: PREVIEW_PRIMARY_BOT_ID,
-    assignedBots: buildPreviewAssignedBots(),
-    sharedMode: 'owned',
+    assignedBots,
+    sharedMode: 'shared-standby',
+    botCount: params.botCount ?? assignedBots.length,
+    hasSharedAutomation: params.hasSharedAutomation ?? assignedBots.length > 1,
   };
 }
 
@@ -3642,6 +3686,8 @@ function buildChatSettingsScreen(state: PreviewState, chatId: string): ChatSetti
       primaryBotId: state.chatPrimaryBotId,
       assignedBots,
       sharedMode: buildPreviewSharedMode(state.chatPartnerAssistEnabled),
+      botCount: assignedBots.length,
+      hasSharedAutomation: assignedBots.length > 1,
     },
     requiredSubscriptionChannels: (state.chatSettings.requiredSubscriptionChannelIds ?? []).map(
       (channelId) => {
@@ -3663,6 +3709,11 @@ function buildChatSettingsScreen(state: PreviewState, chatId: string): ChatSetti
             (channel?.entityType === 'chat'
               ? resolveChatAvatarUrl(channelId, state)
               : resolveChannelAvatarUrl(channelId, state)),
+          primaryBotId: channel?.primaryBotId ?? null,
+          assignedBots: channel?.assignedBots ?? [],
+          sharedMode: channel?.sharedMode ?? 'owned',
+          botCount: channel?.botCount,
+          hasSharedAutomation: channel?.hasSharedAutomation,
         };
       },
     ),
@@ -3691,6 +3742,8 @@ function buildChannelSettingsScreen(
       primaryBotId: state.channelPrimaryBotId,
       assignedBots,
       sharedMode: buildPreviewSharedMode(state.channelPartnerAssistEnabled),
+      botCount: assignedBots.length,
+      hasSharedAutomation: assignedBots.length > 1,
     },
     managedBroadcasts: state.channelBroadcasts.map(buildBroadcastSummary),
   });
@@ -5183,6 +5236,11 @@ async function handleChatRequest(
   init?: RequestInit,
 ): Promise<unknown> {
   if (tail[0] === 'header' && method === 'GET') {
+    const assignedBots = buildPreviewAssignedBots({
+      primaryBotId: state.chatPrimaryBotId,
+      assistEnabled: state.chatPartnerAssistEnabled,
+    });
+
     return {
       id: chatId,
       title: resolveChatTitle(chatId, state),
@@ -5190,6 +5248,11 @@ async function handleChatRequest(
       link: null,
       participantsCount: state.chatHeaderParticipantsCount,
       avatarUrl: resolveChatAvatarUrl(chatId, state),
+      primaryBotId: state.chatPrimaryBotId,
+      assignedBots,
+      sharedMode: buildPreviewSharedMode(state.chatPartnerAssistEnabled),
+      botCount: assignedBots.length,
+      hasSharedAutomation: assignedBots.length > 1,
     };
   }
 
@@ -5979,6 +6042,11 @@ async function handleChannelRequest(
   init?: RequestInit,
 ): Promise<unknown> {
   if (tail[0] === 'header' && method === 'GET') {
+    const assignedBots = buildPreviewAssignedBots({
+      primaryBotId: state.channelPrimaryBotId,
+      assistEnabled: state.channelPartnerAssistEnabled,
+    });
+
     return {
       id: channelId,
       title: resolveChannelTitle(channelId, state),
@@ -5986,6 +6054,11 @@ async function handleChannelRequest(
       link: 'https://max.ru/channels/yuzhnoe-news',
       participantsCount: state.channelHeaderParticipantsCount,
       avatarUrl: resolveChannelAvatarUrl(channelId, state),
+      primaryBotId: state.channelPrimaryBotId,
+      assignedBots,
+      sharedMode: buildPreviewSharedMode(state.channelPartnerAssistEnabled),
+      botCount: assignedBots.length,
+      hasSharedAutomation: assignedBots.length > 1,
     };
   }
 

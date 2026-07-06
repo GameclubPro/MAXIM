@@ -1,5 +1,7 @@
 import type {
   ChatSummary,
+  ManagedEntityAssignedBot,
+  ManagedEntityBotCapability,
   ManagedEntitiesListResponse,
   ManagedEntitiesResponseDiff,
   ManagedEntitiesResponseSnapshot,
@@ -78,6 +80,77 @@ function parseFavoriteTypes(value: unknown): ManagedEntityFavoriteType[] {
   return favoriteTypes;
 }
 
+function parseBotCapabilities(value: unknown): ManagedEntityBotCapability[] {
+  if (value === undefined) {
+    return [];
+  }
+
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter(
+    (item): item is ManagedEntityBotCapability =>
+      item === 'background_scans' ||
+      item === 'channel_stats' ||
+      item === 'suggestion_delivery' ||
+      item === 'membership_prewarm' ||
+      item === 'access_prewarm',
+  );
+}
+
+function parseBotPermissionsSummary(
+  value: unknown,
+): ManagedEntityAssignedBot['permissionsSummary'] {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  return {
+    checkedAt: typeof value.checkedAt === 'string' ? value.checkedAt : null,
+    isAdmin: value.isAdmin === true,
+    isOwner: value.isOwner === true,
+    permissions: Array.isArray(value.permissions)
+      ? value.permissions.filter((item): item is string => typeof item === 'string')
+      : [],
+  };
+}
+
+function parseAssignedBot(value: unknown): ManagedEntityAssignedBot {
+  if (!isRecord(value) || typeof value.botId !== 'string' || typeof value.label !== 'string') {
+    throw new Error('Invalid assigned bot');
+  }
+
+  return {
+    botId: value.botId,
+    label: value.label,
+    role: value.role === 'standby' ? 'standby' : 'primary',
+    membershipStatus: value.membershipStatus === 'removed' ? 'removed' : 'active',
+    lifecycleState:
+      value.lifecycleState === 'dormant' ||
+      value.lifecycleState === 'draining' ||
+      value.lifecycleState === 'disabled'
+        ? value.lifecycleState
+        : 'active',
+    speechPersona:
+      value.speechPersona === 'female' || value.speechPersona === 'neutral'
+        ? value.speechPersona
+        : 'male',
+    characterName: typeof value.characterName === 'string' ? value.characterName : null,
+    avatarUrl: typeof value.avatarUrl === 'string' ? value.avatarUrl.trim() || null : null,
+    capabilities: parseBotCapabilities(value.capabilities),
+    permissionsSummary: parseBotPermissionsSummary(value.permissionsSummary),
+  };
+}
+
+function parseAssignedBots(value: unknown): ManagedEntityAssignedBot[] {
+  return Array.isArray(value) ? value.map(parseAssignedBot) : [];
+}
+
 function parseChatSummary(value: unknown): ChatSummary {
   if (!isRecord(value)) {
     throw new Error('Invalid chat summary');
@@ -100,6 +173,7 @@ function parseChatSummary(value: unknown): ChatSummary {
   }
 
   const favoriteTypes = parseFavoriteTypes(value.favoriteTypes);
+  const assignedBots = parseAssignedBots(value.assignedBots);
   return {
     id: value.id,
     title: value.title,
@@ -108,9 +182,14 @@ function parseChatSummary(value: unknown): ChatSummary {
     link,
     avatarUrl,
     channelOverview: parseChannelOverview(value.channelOverview),
-    primaryBotId: null,
-    assignedBots: [],
-    sharedMode: 'owned',
+    primaryBotId: typeof value.primaryBotId === 'string' ? value.primaryBotId : null,
+    assignedBots,
+    sharedMode:
+      value.sharedMode === 'shared-standby' ||
+      value.sharedMode === 'shared-assist' ||
+      value.sharedMode === 'shared-failover'
+        ? value.sharedMode
+        : 'owned',
     ...(botCount !== undefined ? { botCount } : {}),
     ...(value.hasSharedAutomation === true ? { hasSharedAutomation: true } : {}),
     ...(favoriteTypes.length > 0 ? { favoriteTypes } : {}),
