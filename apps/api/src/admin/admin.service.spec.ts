@@ -24255,6 +24255,319 @@ describe('AdminService.sendBroadcast', () => {
     expect(result.failedChats).toBe(0);
   });
 
+  it('routes immediate channel broadcasts through durable delivery rows before sending', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+      createdAt: new Date('2026-03-01T00:00:00.000Z'),
+    });
+    const deliveries = wireManagedBroadcastDeliveryStore(prisma);
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn(),
+      sendMessageImmediateWithId: jest.fn().mockImplementation(async () => {
+        expect(deliveries).toEqual([
+          expect.objectContaining({
+            broadcastId: 'broadcast-1',
+            occurrenceIndex: 1,
+            targetChatId: 'channel-1',
+            status: 'SENDING',
+            attemptCount: 1,
+            remoteMessageId: null,
+          }),
+        ]);
+        return {
+          messageId: 'mid-channel-broadcast-1',
+          url: 'https://max.ru/channels/channel-1/message/mid-channel-broadcast-1',
+        };
+      }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.sendChannelBroadcast(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        requestId: 'channel_req_1',
+        text: 'Пост в канал',
+        textFormat: 'plain',
+        targetMode: 'current',
+        targetChatIds: ['channel-1'],
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+      },
+    );
+
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      'channel-1',
+      'Пост в канал',
+      undefined,
+      expect.objectContaining({
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: 'managed_broadcast',
+      }),
+    );
+    expect(prisma.managedBroadcast.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          sourceChatId: 'channel-1',
+          entityType: 'CHANNEL',
+          targetChatIds: ['channel-1'],
+          nextSendAt: new Date('2026-03-03T10:00:00.000Z'),
+          cycleEnabled: false,
+          cycleCount: 1,
+          sentCount: 0,
+        }),
+      }),
+    );
+    expect(prisma.managedBroadcastDelivery.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 1,
+          targetChatId: 'channel-1',
+          status: 'PENDING',
+        }),
+      ],
+    });
+    expect(
+      prisma.managedBroadcastDelivery.createMany.mock.invocationCallOrder[0],
+    ).toBeLessThan(maxClient.sendMessageImmediateWithId.mock.invocationCallOrder[0]);
+    expect(result.scheduleId).toBe('broadcast-1');
+    expect(result.sentChats).toBe(1);
+    expect(result.failedChats).toBe(0);
+    expect(deliveries[0]).toEqual(
+      expect.objectContaining({
+        status: 'SENT',
+        attemptCount: 1,
+        remoteMessageId: 'mid-channel-broadcast-1',
+        legacySentWithoutRemoteId: false,
+        lastError: null,
+      }),
+    );
+    expect(prisma.managedBroadcastIdempotencyRecord.update).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: { id: 'broadcast-idempotency-1' },
+        data: expect.objectContaining({
+          broadcastId: 'broadcast-1',
+          result: expect.objectContaining({
+            scheduleId: 'broadcast-1',
+            sentChats: 1,
+            failedChats: 0,
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('does not retry ambiguous immediate channel broadcast timeouts', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+      createdAt: new Date('2026-03-01T00:00:00.000Z'),
+    });
+    const deliveries = wireManagedBroadcastDeliveryStore(prisma);
+    const timeoutError = Object.assign(new Error('timeout of 5000ms exceeded'), {
+      code: 'ECONNABORTED',
+    });
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithId: jest.fn().mockRejectedValue(timeoutError),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.sendChannelBroadcast(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: 'Пост в канал',
+        textFormat: 'plain',
+        targetMode: 'current',
+        targetChatIds: ['channel-1'],
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+      },
+    );
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(result.scheduleId).toBe('broadcast-1');
+    expect(result.sentChats).toBe(0);
+    expect(result.failedChats).toBe(1);
+    expect(deliveries[0]).toEqual(
+      expect.objectContaining({
+        status: 'FAILED',
+        attemptCount: 1,
+        remoteMessageId: null,
+        lastError: 'timeout of 5000ms exceeded',
+      }),
+    );
+  });
+
+  it('replays immediate channel broadcast request ids without sending again', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+      createdAt: new Date('2026-03-01T00:00:00.000Z'),
+    });
+    wireManagedBroadcastDeliveryStore(prisma);
+    const cachedResult = {
+      sourceChatId: 'channel-1',
+      targetChats: 1,
+      sentChats: 1,
+      failedChats: 0,
+      sentChatIds: ['channel-1'],
+      failedChatIds: [],
+      sentChatPreviews: [],
+      failedChatPreviews: [],
+      sentChatOverflowCount: 0,
+      failedChatOverflowCount: 0,
+      scheduleMode: 'legacy',
+      scheduleTimezone: 'Europe/Moscow',
+      scheduledSlots: [],
+      sendAt: null,
+      nextSendAt: null,
+      cycleEnabled: false,
+      cycleEveryHours: 1,
+      cycleCount: 1,
+      scheduleId: 'broadcast-1',
+      scheduledOccurrences: 0,
+    };
+    prisma.managedBroadcastIdempotencyRecord.create.mockImplementationOnce(
+      async ({ data }: { data: Record<string, unknown> }) => {
+        prisma.managedBroadcastIdempotencyRecord.findUnique.mockResolvedValueOnce({
+          id: 'broadcast-idempotency-1',
+          requestId: 'channel_req_1',
+          requestHash: data.requestHash,
+          sourceChatId: 'channel-1',
+          entityType: 'CHANNEL',
+          actorUserId: 'admin-1',
+          source: 'miniapp',
+          broadcastId: 'broadcast-1',
+          result: cachedResult,
+          createdAt: new Date('2026-03-03T10:00:00.000Z'),
+          updatedAt: new Date('2026-03-03T10:00:00.000Z'),
+        });
+        throw { code: 'P2002' };
+      },
+    );
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithId: jest.fn(),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.sendChannelBroadcast(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        requestId: 'channel_req_1',
+        text: 'Пост в канал',
+        textFormat: 'plain',
+        targetMode: 'current',
+        targetChatIds: ['channel-1'],
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+      },
+    );
+
+    expect(result).toEqual(cachedResult);
+    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+    expect(prisma.managedBroadcast.create).not.toHaveBeenCalled();
+    expect(prisma.managedBroadcastDelivery.createMany).not.toHaveBeenCalled();
+  });
+
   it('records chat broadcast comments button target after immediate delivery', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
 
@@ -29349,6 +29662,7 @@ describe('AdminService.sendChannelBroadcast', () => {
 
   it('sends immediate broadcast to channel with button and image', async () => {
     const prisma = createPrismaMock();
+    wireManagedBroadcastDeliveryStore(prisma);
     prisma.chat.findUnique.mockResolvedValue({
       id: 'channel-1',
       title: 'Новости MAX',
@@ -29374,7 +29688,11 @@ describe('AdminService.sendChannelBroadcast', () => {
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       uploadImage: jest.fn().mockResolvedValue({ token: 'upload-token-channel-1' }),
-      sendMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn(),
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({
+        messageId: 'mid-channel-image-1',
+        url: 'https://max.ru/chats/channel-1/message/mid-channel-image-1',
+      }),
     };
     const chatContextCache = {
       invalidate: jest.fn(),
@@ -29424,7 +29742,8 @@ describe('AdminService.sendChannelBroadcast', () => {
         sourceTag: 'managed_broadcast',
       }),
     );
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       'channel-1',
       '<strong>Новый выпуск</strong> уже в канале.',
       {
@@ -29433,7 +29752,6 @@ describe('AdminService.sendChannelBroadcast', () => {
         imagePayload: { token: 'upload-token-channel-1' },
       },
       expect.objectContaining({
-        immediate: true,
         trafficClass: 'interactive',
         actionHealthLane: 'interactive',
         sourceTag: 'managed_broadcast',
@@ -29445,11 +29763,12 @@ describe('AdminService.sendChannelBroadcast', () => {
       data: expect.objectContaining({
         chatId: 'channel-1',
         actorUserId: 'admin-1',
-        action: 'SEND_BROADCAST',
+        action: 'SCHEDULE_BROADCAST',
         payload: expect.objectContaining({
           entityType: 'channel',
           applyToAllChats: false,
-          sentChats: 1,
+          broadcastId: 'broadcast-1',
+          sentCount: 1,
         }),
       }),
     });
@@ -29457,6 +29776,7 @@ describe('AdminService.sendChannelBroadcast', () => {
 
   it('records channel broadcast comments button target after immediate delivery', async () => {
     const prisma = createPrismaMock();
+    wireManagedBroadcastDeliveryStore(prisma);
     prisma.chat.findUnique.mockResolvedValue({
       id: 'channel-1',
       title: 'Новости MAX',
@@ -29547,7 +29867,9 @@ describe('AdminService.sendChannelBroadcast', () => {
           autoPostButtonsMode: 'COMMENTS',
           suggestionEntryMode: 'MINIAPP',
           source: 'managed_broadcast',
-          managedBroadcastSource: 'miniapp',
+          managedBroadcastSource: 'immediate',
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 1,
           text: 'Пост с обсуждением',
           publishedUrl: 'https://max.ru/chats/channel-1/message/mid-channel-comments-1',
         }),
@@ -29557,6 +29879,7 @@ describe('AdminService.sendChannelBroadcast', () => {
 
   it('sends immediate channel broadcast with image gallery attachments', async () => {
     const prisma = createPrismaMock();
+    wireManagedBroadcastDeliveryStore(prisma);
     prisma.chat.findUnique.mockResolvedValue({
       id: 'channel-1',
       title: 'Новости MAX',
@@ -29585,7 +29908,11 @@ describe('AdminService.sendChannelBroadcast', () => {
         .fn()
         .mockResolvedValueOnce({ token: 'upload-token-gallery-1' })
         .mockResolvedValueOnce({ token: 'upload-token-gallery-2' }),
-      sendMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn(),
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({
+        messageId: 'mid-channel-gallery-1',
+        url: 'https://max.ru/chats/channel-1/message/mid-channel-gallery-1',
+      }),
     };
     const service = new AdminService(
       prisma as never,
@@ -29629,7 +29956,8 @@ describe('AdminService.sendChannelBroadcast', () => {
     );
 
     expect(maxClient.uploadImage).toHaveBeenCalledTimes(2);
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       'channel-1',
       'Галерея недели',
       {
@@ -29645,7 +29973,6 @@ describe('AdminService.sendChannelBroadcast', () => {
         ],
       },
       expect.objectContaining({
-        immediate: true,
         trafficClass: 'interactive',
         actionHealthLane: 'interactive',
         sourceTag: 'managed_broadcast',
@@ -29657,6 +29984,7 @@ describe('AdminService.sendChannelBroadcast', () => {
 
   it('sends immediate broadcast to channel with a video attachment', async () => {
     const prisma = createPrismaMock();
+    wireManagedBroadcastDeliveryStore(prisma);
     prisma.chat.findUnique.mockResolvedValue({
       id: 'channel-1',
       title: 'Новости MAX',
@@ -29681,7 +30009,11 @@ describe('AdminService.sendChannelBroadcast', () => {
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      sendMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn(),
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({
+        messageId: 'mid-channel-video-1',
+        url: 'https://max.ru/chats/channel-1/message/mid-channel-video-1',
+      }),
     };
     const service = new AdminService(
       prisma as never,
@@ -29720,14 +30052,14 @@ describe('AdminService.sendChannelBroadcast', () => {
       },
     );
 
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       'channel-1',
       ' ',
       {
         attachments: [{ type: 'video', payload: { token: 'video-token-1' } }],
       },
       expect.objectContaining({
-        immediate: true,
         trafficClass: 'interactive',
         actionHealthLane: 'interactive',
         sourceTag: 'managed_broadcast',
@@ -29739,6 +30071,7 @@ describe('AdminService.sendChannelBroadcast', () => {
 
   it('preserves markdown formatting when channel broadcast has no button', async () => {
     const prisma = createPrismaMock();
+    wireManagedBroadcastDeliveryStore(prisma);
     prisma.chat.findUnique.mockResolvedValue({
       id: 'channel-1',
       title: 'Новости MAX',
@@ -29764,7 +30097,11 @@ describe('AdminService.sendChannelBroadcast', () => {
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       uploadImage: jest.fn().mockResolvedValue({ token: 'upload-token-channel-1' }),
-      sendMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn(),
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({
+        messageId: 'mid-channel-markdown-1',
+        url: null,
+      }),
     };
     const chatContextCache = {
       invalidate: jest.fn(),
@@ -29803,14 +30140,14 @@ describe('AdminService.sendChannelBroadcast', () => {
       },
     );
 
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       'channel-1',
       '<strong>Новый выпуск</strong> уже в <a href="https://max.ru/channel/maxim">канале</a>.\n\n&nbsp;&nbsp;Второй абзац с&nbsp;&nbsp;отступом',
       {
         textFormat: 'html',
       },
       expect.objectContaining({
-        immediate: true,
         trafficClass: 'interactive',
         actionHealthLane: 'interactive',
         sourceTag: 'managed_broadcast',
@@ -29820,6 +30157,7 @@ describe('AdminService.sendChannelBroadcast', () => {
 
   it('renders escaped markdown punctuation as literal text in channel broadcasts', async () => {
     const prisma = createPrismaMock();
+    wireManagedBroadcastDeliveryStore(prisma);
     prisma.chat.findUnique.mockResolvedValue({
       id: 'channel-1',
       title: 'Новости MAX',
@@ -29845,7 +30183,11 @@ describe('AdminService.sendChannelBroadcast', () => {
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       uploadImage: jest.fn().mockResolvedValue({ token: 'upload-token-channel-1' }),
-      sendMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn(),
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({
+        messageId: 'mid-channel-escaped-markdown-1',
+        url: null,
+      }),
     };
     const chatContextCache = {
       invalidate: jest.fn(),
@@ -29884,14 +30226,14 @@ describe('AdminService.sendChannelBroadcast', () => {
       },
     );
 
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       'channel-1',
       '<strong>Анонс</strong> C++ [beta] (v2) _raw_',
       {
         textFormat: 'html',
       },
       expect.objectContaining({
-        immediate: true,
         trafficClass: 'interactive',
         actionHealthLane: 'interactive',
         sourceTag: 'managed_broadcast',
@@ -29958,6 +30300,7 @@ describe('AdminService.sendChannelBroadcast', () => {
 
   it('publishes nested bold italic underline links in channel broadcasts', async () => {
     const prisma = createPrismaMock();
+    wireManagedBroadcastDeliveryStore(prisma);
     prisma.chat.findUnique.mockResolvedValue({
       id: 'channel-1',
       title: 'Новости MAX',
@@ -29983,7 +30326,11 @@ describe('AdminService.sendChannelBroadcast', () => {
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       uploadImage: jest.fn().mockResolvedValue({ token: 'upload-token-channel-1' }),
-      sendMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn(),
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({
+        messageId: 'mid-channel-nested-markdown-1',
+        url: null,
+      }),
     };
     const chatContextCache = {
       invalidate: jest.fn(),
@@ -30022,14 +30369,14 @@ describe('AdminService.sendChannelBroadcast', () => {
       },
     );
 
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       'channel-1',
       '<a href="https://dev.max.ru/docs-api"><strong><em><u>MAX Docs</u></em></strong></a>',
       {
         textFormat: 'html',
       },
       expect.objectContaining({
-        immediate: true,
         trafficClass: 'interactive',
         actionHealthLane: 'interactive',
         sourceTag: 'managed_broadcast',
@@ -30039,6 +30386,7 @@ describe('AdminService.sendChannelBroadcast', () => {
 
   it('publishes channel broadcast with system comments button in the first message', async () => {
     const prisma = createPrismaMock();
+    wireManagedBroadcastDeliveryStore(prisma);
     prisma.chat.findUnique.mockResolvedValue({
       id: 'channel-1',
       title: 'Новости MAX',
@@ -30175,7 +30523,9 @@ describe('AdminService.sendChannelBroadcast', () => {
           includeCommentsButton: true,
           includeSuggestButton: false,
           source: 'managed_broadcast',
-          managedBroadcastSource: 'miniapp',
+          managedBroadcastSource: 'immediate',
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 1,
           botId: 'channel-bot-2',
         }),
       }),
@@ -30184,6 +30534,7 @@ describe('AdminService.sendChannelBroadcast', () => {
 
   it('publishes channel broadcast with system suggestion button in the first message', async () => {
     const prisma = createPrismaMock();
+    wireManagedBroadcastDeliveryStore(prisma);
     prisma.chat.findUnique.mockResolvedValue({
       id: 'channel-1',
       title: 'Новости MAX',
@@ -30286,7 +30637,9 @@ describe('AdminService.sendChannelBroadcast', () => {
           suggestionEntryMode: 'BOT',
           suggestButtonText: '📰 Предложить пост',
           source: 'managed_broadcast',
-          managedBroadcastSource: 'miniapp',
+          managedBroadcastSource: 'immediate',
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 1,
           publishedUrl: 'https://max.ru/chats/channel-1/message/mid-channel-system-suggest-1',
         }),
       }),
@@ -30295,6 +30648,7 @@ describe('AdminService.sendChannelBroadcast', () => {
 
   it('does not publish channel broadcast system buttons when auto-post buttons mode is off', async () => {
     const prisma = createPrismaMock();
+    wireManagedBroadcastDeliveryStore(prisma);
     prisma.chat.findUnique.mockResolvedValue({
       id: 'channel-1',
       title: 'Новости MAX',
@@ -30319,8 +30673,11 @@ describe('AdminService.sendChannelBroadcast', () => {
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      sendMessage: jest.fn().mockResolvedValue(undefined),
-      sendMessageImmediateWithId: jest.fn(),
+      sendMessage: jest.fn(),
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({
+        messageId: 'mid-channel-no-system-buttons-1',
+        url: null,
+      }),
     };
     const service = new AdminService(
       prisma as never,
@@ -30355,9 +30712,9 @@ describe('AdminService.sendChannelBroadcast', () => {
       },
     );
 
-    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
-    const [, , options] = maxClient.sendMessage.mock.calls[0];
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    const [, , options] = maxClient.sendMessageImmediateWithId.mock.calls[0];
     expect(options).toEqual({
       textFormat: 'html',
     });

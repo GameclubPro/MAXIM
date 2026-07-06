@@ -1848,6 +1848,7 @@ export class AdminManagedBroadcastRuntime {
 
     const shouldSchedule =
       options.entityType === 'chat' ||
+      options.entityType === 'channel' ||
       request.payload.scheduleMode === 'calendar' ||
       request.payload.sendAt !== null ||
       request.payload.cycleEnabled;
