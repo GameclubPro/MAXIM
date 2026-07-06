@@ -2132,6 +2132,83 @@ describe('ManagedGiveawayService', () => {
     }
   });
 
+  it('still skips due giveaways when a fresh granted edge lacks active bot membership', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-21T13:22:00.000Z'));
+
+    try {
+      const prisma = createPrismaMock();
+      prisma.managedGiveaway.findMany.mockResolvedValue([
+        { id: 'giveaway-denied', sourceChatId: 'source-denied' },
+      ]);
+      prisma.managedEntityAccessEdge.findMany
+        .mockResolvedValueOnce([{ chatId: 'source-denied', botId: 'lost-bot' }])
+        .mockResolvedValueOnce([{ chatId: 'source-denied', botId: 'active-bot' }]);
+
+      const service = new ManagedGiveawayService(
+        prisma as never,
+        createMaxClientMock() as never,
+        createChatContextCacheMock() as never,
+        {} as never,
+        createConfigMock() as never,
+      );
+      const processSpy = jest
+        .spyOn(service as any, 'processDueManagedGiveaway')
+        .mockResolvedValue(undefined);
+
+      await service.processDueManagedGiveaways('scheduled');
+
+      expect(processSpy).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('keeps due giveaways running when a fresh granted edge matches active bot membership', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-21T13:22:00.000Z'));
+
+    try {
+      const prisma = createPrismaMock();
+      prisma.managedGiveaway.findMany.mockResolvedValue([
+        { id: 'giveaway-shared', sourceChatId: 'source-shared' },
+      ]);
+      prisma.managedEntityAccessEdge.findMany
+        .mockResolvedValueOnce([{ chatId: 'source-shared', botId: 'lost-bot' }])
+        .mockResolvedValueOnce([{ chatId: 'source-shared', botId: 'active-bot' }]);
+      prisma.chatBotMembership.findMany.mockResolvedValue([
+        {
+          chatId: 'source-shared',
+          botId: 'active-bot',
+          status: ChatBotMembershipStatus.ACTIVE,
+          permissionsSnapshot: null,
+        },
+        {
+          chatId: 'source-shared',
+          botId: 'lost-bot',
+          status: ChatBotMembershipStatus.REMOVED,
+          permissionsSnapshot: null,
+        },
+      ]);
+
+      const service = new ManagedGiveawayService(
+        prisma as never,
+        createMaxClientMock() as never,
+        createChatContextCacheMock() as never,
+        {} as never,
+        createConfigMock() as never,
+      );
+      const processSpy = jest
+        .spyOn(service as any, 'processDueManagedGiveaway')
+        .mockResolvedValue(undefined);
+
+      await service.processDueManagedGiveaways('scheduled');
+
+      expect(processSpy).toHaveBeenCalledTimes(1);
+      expect(processSpy).toHaveBeenCalledWith('giveaway-shared', 'scheduled', expect.any(Date));
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('keeps due giveaways running when another bot still has confirmed admin access', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-21T13:22:00.000Z'));
 

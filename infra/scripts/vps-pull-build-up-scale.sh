@@ -14,6 +14,8 @@ SCALE_PROJECT_NAME="infra-scale"
 MAIN_PROJECT_NAME="infra"
 COMPOSE_FILES=(-p "$SCALE_PROJECT_NAME" -f "infra/docker-compose.scale.yml")
 LEGACY_COMPOSE_FILES=(--env-file ".env" -p "$MAIN_PROJECT_NAME" -f "infra/docker-compose.yml")
+SCALE_REDIS_VOLUME="${SCALE_PROJECT_NAME}_redis_data"
+REDIS_DATA_COPY_IMAGE="${MAXIM_REDIS_VOLUME_COPY_IMAGE:-redis:7-alpine}"
 BRANCH="${1:-main}"
 PRE_PULL_HEAD=""
 PUBLIC_HEALTH_URL="${MAXIM_VPS_PUBLIC_URL:-${MAXIM_PUBLIC_HEALTH_URL:-https://major-maksimov.ru}}"
@@ -314,6 +316,124 @@ ensure_requested_services_running() {
   done
 }
 
+find_redis_container_for_project() {
+  local project="$1"
+
+  docker ps -a \
+    --filter "label=com.docker.compose.project=$project" \
+    --filter "label=com.docker.compose.service=redis" \
+    --format '{{.Names}}' \
+    | sed -n '1p'
+}
+
+read_redis_data_mount_line() {
+  local container_name="$1"
+
+  docker inspect "$container_name" \
+    --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{printf "%s\t%s\t%s\n" .Type .Name .Source}}{{end}}{{end}}' \
+    | sed -n '1p'
+}
+
+save_redis_snapshot_if_running() {
+  local container_name="$1"
+  local running
+
+  running="$(docker inspect --format '{{.State.Running}}' "$container_name" 2>/dev/null || true)"
+  if [[ "$running" != "true" ]]; then
+    return 0
+  fi
+
+  echo "Saving Redis snapshot in $container_name before named-volume prep..."
+  docker exec "$container_name" redis-cli SAVE >/dev/null
+}
+
+copy_redis_data_to_named_volume() {
+  local source_container="$1"
+  local target_volume="$2"
+  local mount_line
+  local mount_type
+  local mount_name
+  local mount_source
+  local source_mount=()
+
+  mount_line="$(read_redis_data_mount_line "$source_container")"
+  if [[ -z "$mount_line" ]]; then
+    echo "Redis container $source_container has no /data mount to copy." >&2
+    return 1
+  fi
+
+  IFS=$'\t' read -r mount_type mount_name mount_source <<<"$mount_line"
+  case "$mount_type" in
+    volume)
+      if [[ -z "$mount_name" ]]; then
+        echo "Redis /data volume mount on $source_container has no volume name." >&2
+        return 1
+      fi
+      source_mount=(--mount "type=volume,src=$mount_name,dst=/from,readonly")
+      ;;
+    bind)
+      if [[ -z "$mount_source" ]]; then
+        echo "Redis /data bind mount on $source_container has no source path." >&2
+        return 1
+      fi
+      source_mount=(--mount "type=bind,src=$mount_source,dst=/from,readonly")
+      ;;
+    *)
+      echo "Unsupported Redis /data mount type on $source_container: ${mount_type:-unknown}" >&2
+      return 1
+      ;;
+  esac
+
+  docker volume create "$target_volume" >/dev/null
+  if docker run --rm \
+    "${source_mount[@]}" \
+    --mount "type=volume,src=$target_volume,dst=/to" \
+    "$REDIS_DATA_COPY_IMAGE" \
+    sh -lc 'set -eu; cd /from; tar cf - . | tar xf - -C /to'; then
+    echo "Prepared Redis named volume $target_volume from $source_container /data."
+    return 0
+  fi
+
+  docker volume rm "$target_volume" >/dev/null 2>&1 || true
+  echo "Failed to prepare Redis named volume $target_volume from $source_container /data." >&2
+  return 1
+}
+
+prepare_scale_redis_named_volume() {
+  local target_volume="$SCALE_REDIS_VOLUME"
+  local source_container
+
+  if docker volume inspect "$target_volume" >/dev/null 2>&1; then
+    echo "Redis named volume already exists: $target_volume"
+    return 0
+  fi
+
+  source_container="$(find_redis_container_for_project "$SCALE_PROJECT_NAME")"
+  if [[ -z "$source_container" ]]; then
+    source_container="$(find_redis_container_for_project "$MAIN_PROJECT_NAME")"
+  fi
+
+  if [[ -z "$source_container" ]]; then
+    case "${MAXIM_ALLOW_EMPTY_SCALE_REDIS_DATA:-0}" in
+      1|true|TRUE|yes|YES)
+        echo "No Redis container found. Creating empty Redis named volume $target_volume by explicit request."
+        docker volume create "$target_volume" >/dev/null
+        return 0
+        ;;
+    esac
+
+    cat >&2 <<EOF
+Refusing to stop conflicting stacks before preparing $target_volume.
+No existing scale or main Redis container was found as a /data source.
+Set MAXIM_ALLOW_EMPTY_SCALE_REDIS_DATA=1 only when an empty scale Redis volume is intentional.
+EOF
+    return 1
+  fi
+
+  save_redis_snapshot_if_running "$source_container"
+  copy_redis_data_to_named_volume "$source_container" "$target_volume"
+}
+
 stop_conflicting_stacks() {
   docker compose "${LEGACY_COMPOSE_FILES[@]}" down --remove-orphans >/dev/null 2>&1 || true
 }
@@ -356,6 +476,7 @@ require_scale_deploy_confirmation
 sync_branch
 reexec_if_current_script_changed
 ensure_compose_env
+prepare_scale_redis_named_volume
 stop_conflicting_stacks
 warn_legacy_miniapp_static_target
 ensure_service_requested_if_down "miniapp-major-static"

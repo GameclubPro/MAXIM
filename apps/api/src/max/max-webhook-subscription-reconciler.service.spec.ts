@@ -593,6 +593,90 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
     await service.onModuleDestroy();
   });
 
+  it('deletes the exact current subscription URL when rotating a normalized match', async () => {
+    process.env.APP_ROLE = 'ingress';
+
+    const configuredUrl = 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path';
+    const currentUrl = `${configuredUrl}/`;
+    const botRegistry = {
+      getAllBots: jest.fn().mockReturnValue([
+        {
+          id: '777000_bot',
+          webhookHeaderSecrets: ['secret-header-current', 'secret-header-previous'],
+        },
+      ]),
+      getDefaultBot: jest.fn().mockReturnValue({ id: '777000_bot' }),
+      computeWebhookHeaderSecretFingerprint: jest.fn().mockReturnValue('fingerprint-777000_bot'),
+    };
+    const statusService = {
+      getSyncState: jest.fn().mockResolvedValue({
+        bots: {
+          '777000_bot': {
+            configuredUrl,
+            headerSecretFingerprint: null,
+            updatedAt: '2026-03-30T00:00:00.000Z',
+            lastIncomingWebhookAt: null,
+            lastAutoRecreateAt: null,
+          },
+        },
+        lastGlobalIncomingWebhookAt: null,
+        lastGlobalAutoRecreateAt: null,
+      }),
+      writeSnapshot: jest.fn().mockResolvedValue(undefined),
+      writeSyncState: jest.fn().mockResolvedValue(undefined),
+      getSnapshot: jest.fn(),
+    };
+    const maxClient = {
+      getConfiguredWebhookSubscriptionTarget: jest.fn().mockReturnValue({
+        url: configuredUrl,
+        maskedUrl: 'https://major-maksimov.ru/api/webhook/max/777000_bot/***',
+      }),
+      listWebhookSubscriptions: jest.fn().mockResolvedValue([
+        {
+          url: currentUrl,
+          updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+        },
+      ]),
+      matchesConfiguredWebhookUrl: jest
+        .fn()
+        .mockImplementation((url: string) => url.replace(/\/+$/u, '') === configuredUrl),
+      deleteWebhookSubscription: jest.fn().mockResolvedValue(undefined),
+      ensureWebhookSubscription: jest.fn().mockResolvedValue({
+        url: configuredUrl,
+        updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+      }),
+    };
+    const service = new MaxWebhookSubscriptionReconcilerService(
+      maxClient as never,
+      botRegistry as never,
+      statusService as never,
+      createPrismaMock() as never,
+      {
+        get: jest.fn((key: string, fallback?: number | string) => {
+          if (key === 'MAX_WEBHOOK_RECONCILE_INTERVAL_MS') {
+            return 60_000;
+          }
+          return fallback;
+        }),
+      } as never,
+    );
+
+    await service.onModuleInit();
+
+    expect(maxClient.deleteWebhookSubscription).toHaveBeenCalledTimes(1);
+    expect(maxClient.deleteWebhookSubscription).toHaveBeenCalledWith(currentUrl, {
+      trafficClass: 'background',
+      botId: '777000_bot',
+      sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
+    });
+    expect(maxClient.deleteWebhookSubscription).not.toHaveBeenCalledWith(
+      configuredUrl,
+      expect.anything(),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('auto-recreates healthy subscriptions when ingress is stale', async () => {
     process.env.APP_ROLE = 'ingress';
 

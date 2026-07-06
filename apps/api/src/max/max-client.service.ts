@@ -1318,6 +1318,7 @@ export class MaxClientService implements OnModuleDestroy {
         maxBodyLength: Infinity,
         maxContentLength: Infinity,
         timeout: requestOptions.timeoutMs ?? MAX_UPLOAD_BINARY_TIMEOUT_MS,
+        skipAuthorization: true,
       });
 
       if (!uploadResult || typeof uploadResult !== 'object') {
@@ -5149,17 +5150,18 @@ export class MaxClientService implements OnModuleDestroy {
   private async requestAbsolute<T = unknown>(
     method: 'delete' | 'post' | 'get' | 'put',
     url: string,
-    config: Record<string, unknown> = {},
+    config: Record<string, unknown> & { skipAuthorization?: boolean } = {},
   ): Promise<T> {
     const bot = this.getCurrentBot();
-    const headers = config.headers as Record<string, string> | undefined;
+    const { skipAuthorization, ...requestConfig } = config;
+    const headers = requestConfig.headers as Record<string, string> | undefined;
     const response = await firstValueFrom(
       this.httpService.request<T>({
         method,
         url,
-        ...config,
+        ...requestConfig,
         headers: {
-          Authorization: bot.token,
+          ...(skipAuthorization ? {} : { Authorization: bot.token }),
           ...(headers ?? {}),
         },
       }),

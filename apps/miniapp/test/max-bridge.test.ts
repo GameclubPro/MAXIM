@@ -231,6 +231,54 @@ test('openMaxBotLink opens MAX deep links inside bridge', () => {
   assert.deepEqual(assignedUrls, []);
 });
 
+test('openMaxBotLink opens www.max.ru deep links inside bridge', () => {
+  const assignedUrls: string[] = [];
+  const opened: Array<{ kind: 'max' | 'external'; url: string }> = [];
+  setMockWindow(
+    {
+      openMaxLink: (url) => opened.push({ kind: 'max', url }),
+      openLink: (url) => opened.push({ kind: 'external', url }),
+    },
+    assignedUrls,
+  );
+
+  openMaxBotLink('https://www.max.ru/chats/chat-1/message/42');
+  assert.deepEqual(opened, [{ kind: 'max', url: 'https://www.max.ru/chats/chat-1/message/42' }]);
+  assert.deepEqual(assignedUrls, []);
+});
+
+test('openMaxBotLink does not send non-HTTPS MAX links to openMaxLink', () => {
+  const assignedUrls: string[] = [];
+  const opened: Array<{ kind: 'max' | 'external'; url: string }> = [];
+  setMockWindow(
+    {
+      openMaxLink: (url) => opened.push({ kind: 'max', url }),
+      openLink: (url) => opened.push({ kind: 'external', url }),
+    },
+    assignedUrls,
+  );
+
+  assert.equal(openMaxBotLink('http://max.ru/chats/chat-1/message/42'), 'bridge-external');
+  assert.deepEqual(opened, [{ kind: 'external', url: 'http://max.ru/chats/chat-1/message/42' }]);
+  assert.deepEqual(assignedUrls, []);
+});
+
+test('openMaxBotLink ignores max user mentions instead of passing them to generic openLink', () => {
+  const assignedUrls: string[] = [];
+  const opened: Array<{ kind: 'max' | 'external'; url: string }> = [];
+  setMockWindow(
+    {
+      openMaxLink: (url) => opened.push({ kind: 'max', url }),
+      openLink: (url) => opened.push({ kind: 'external', url }),
+    },
+    assignedUrls,
+  );
+
+  assert.equal(openMaxBotLink('max://user/12345'), 'noop');
+  assert.deepEqual(opened, []);
+  assert.deepEqual(assignedUrls, []);
+});
+
 test('openMaxBotLink opens bot start handoff links through MAX bridge', () => {
   const assignedUrls: string[] = [];
   const opened: Array<{ kind: 'max' | 'external'; url: string }> = [];

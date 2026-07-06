@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
+  ChatCatalogKind,
   ChatBotMembershipRole,
   ChatBotMembershipStatus,
   ChatEntityType,
@@ -752,6 +753,20 @@ export class MaxBotLinkService {
     const title = params.title?.trim() || `Chat ${chatId}`;
     const entityType = params.entityType ?? undefined;
     const now = new Date();
+    const existingChat = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      select: {
+        catalogKind: true,
+      },
+    });
+    const catalogKind = resolveChatCatalogKind({
+      chatId,
+      entityType: entityType ?? null,
+      contextOnlyHint: true,
+    });
+    const preserveManagedCatalogKind =
+      existingChat?.catalogKind === ChatCatalogKind.MANAGED &&
+      catalogKind === ChatCatalogKind.CONTEXT_ONLY;
     const accessLossSnapshot =
       params.accessLostReason ||
       params.accessLostSource ||
@@ -774,20 +789,12 @@ export class MaxBotLinkService {
         id: chatId,
         title,
         ...(entityType ? { entityType } : {}),
-        catalogKind: resolveChatCatalogKind({
-          chatId,
-          entityType: entityType ?? null,
-          contextOnlyHint: true,
-        }),
+        catalogKind,
       },
       update: {
         title,
         ...(entityType ? { entityType } : {}),
-        catalogKind: resolveChatCatalogKind({
-          chatId,
-          entityType: entityType ?? null,
-          contextOnlyHint: true,
-        }),
+        ...(preserveManagedCatalogKind ? {} : { catalogKind }),
       },
     });
 

@@ -75,6 +75,7 @@ import {
   type MaxBotRouteRequest,
 } from '../max/max-bot-link.service';
 import { normalizeMembershipAccessSnapshot } from '../max/max-bot-access-policy.util';
+import { collectActiveManagedEntityBotMembershipIdsByChat } from '../max/managed-entity-bot-access.util';
 import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -1058,10 +1059,12 @@ export class ManagedGiveawayService {
                 },
               ],
             },
-            select: { chatId: true },
+            select: { chatId: true, botId: true },
           })
         : Promise.resolve([]),
     ]);
+    const activeMembershipBotIdsByChat =
+      collectActiveManagedEntityBotMembershipIdsByChat(membershipRows);
     const activeMembershipChatIds = new Set(
       membershipRows
         .filter((row) => {
@@ -1076,7 +1079,8 @@ export class ManagedGiveawayService {
     );
     for (const row of grantedRows) {
       const chatId = this.normalizeNonEmptyString(row.chatId);
-      if (chatId) {
+      const botId = this.normalizeNonEmptyString(row.botId);
+      if (chatId && botId && activeMembershipBotIdsByChat.get(chatId)?.has(botId)) {
         activeMembershipChatIds.add(chatId);
       }
     }

@@ -19,6 +19,7 @@ import {
   isFreshMembershipAccessSnapshot,
   normalizeMembershipAccessSnapshot,
 } from './max-bot-access-policy.util';
+import { collectActiveManagedEntityBotMembershipIds } from './managed-entity-bot-access.util';
 import {
   MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE,
   type MaxChatAdminRosterSyncJob,
@@ -315,11 +316,11 @@ export class ManagedEntityAccessLossService {
           : Promise.resolve(null),
       ]);
 
-      if (grantedEdge) {
-        return true;
-      }
       if (membership?.status !== ChatBotMembershipStatus.ACTIVE) {
         return false;
+      }
+      if (grantedEdge) {
+        return true;
       }
 
       return this.membershipHasConfirmedAccess(membership, now);
@@ -370,13 +371,34 @@ export class ManagedEntityAccessLossService {
         : lostBotId
           ? { not: lostBotId }
           : undefined;
-      const [grantedEdge, memberships] = await Promise.all([
+      const memberships =
+        typeof this.prisma.chatBotMembership?.findMany === 'function'
+          ? await this.prisma.chatBotMembership.findMany({
+              where: {
+                chatId,
+                status: ChatBotMembershipStatus.ACTIVE,
+                ...(botIdWhere ? { botId: botIdWhere } : {}),
+              },
+              select: {
+                botId: true,
+                status: true,
+                permissionsSnapshot: true,
+                botAccessState: true,
+                botAccessExpiresAt: true,
+              },
+            })
+          : [];
+      const activeMembershipBotIds = collectActiveManagedEntityBotMembershipIds(memberships, {
+        isRuntimeBotId: (botId) => this.isActionableRuntimeBotId(botId),
+      });
+      const grantedEdge =
+        activeMembershipBotIds.size > 0 &&
         typeof this.prisma.managedEntityAccessEdge?.findFirst === 'function'
-          ? this.prisma.managedEntityAccessEdge.findFirst({
+          ? await this.prisma.managedEntityAccessEdge.findFirst({
               where: {
                 chatId,
                 state: ManagedEntityAccessState.GRANTED,
-                ...(botIdWhere ? { botId: botIdWhere } : {}),
+                botId: { in: [...activeMembershipBotIds] },
                 OR: [
                   { expiresAt: { gt: now } },
                   {
@@ -391,32 +413,15 @@ export class ManagedEntityAccessLossService {
                 botId: true,
               },
             })
-          : Promise.resolve(null),
-        typeof this.prisma.chatBotMembership?.findMany === 'function'
-          ? this.prisma.chatBotMembership.findMany({
-              where: {
-                chatId,
-                status: ChatBotMembershipStatus.ACTIVE,
-                ...(botIdWhere ? { botId: botIdWhere } : {}),
-              },
-              select: {
-                botId: true,
-                status: true,
-                permissionsSnapshot: true,
-                botAccessState: true,
-                botAccessExpiresAt: true,
-              },
-            })
-          : Promise.resolve([]),
-      ]);
+          : null;
 
-      if (grantedEdge && this.isActionableRuntimeBotId(grantedEdge.botId)) {
+      if (grantedEdge && activeMembershipBotIds.has(grantedEdge.botId)) {
         return true;
       }
 
       return memberships.some(
         (membership) =>
-          this.isActionableRuntimeBotId(membership.botId) &&
+          activeMembershipBotIds.has(membership.botId) &&
           this.membershipHasConfirmedAccess(membership, now),
       );
     } catch (error: unknown) {

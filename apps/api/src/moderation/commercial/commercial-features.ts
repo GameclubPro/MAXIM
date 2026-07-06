@@ -4,7 +4,7 @@ import type { CommercialThresholdProfile } from '../rule-engine-commercial-thres
 import type { CommercialSubtype } from '../rule-engine.contract';
 import { COMMERCIAL_ENGINE_CONFIG } from './commercial-config';
 import { buildCommercialFeatureVector } from './commercial-explain';
-import { normalizeCommercialText } from './commercial-normalization';
+import { normalizeCommercialRawText, normalizeCommercialText } from './commercial-normalization';
 import {
   collectFirstMarkers,
   collectFirstPatternLabels,
@@ -89,13 +89,15 @@ import type {
 } from './commercial.types';
 
 export function hasCommercialSpamMarkers(text: string): boolean {
-  const normalizedText = normalizeCommercialText(text);
-  const rawLoweredText = text.toLowerCase();
+  const rawLoweredText = normalizeCommercialRawText(text.toLowerCase());
+  const normalizedText = normalizeCommercialText(rawLoweredText);
   if (!normalizedText) {
     return false;
   }
 
-  const matcher = createCommercialTextMatcher(normalizedText, rawLoweredText);
+  const matcher = createCommercialTextMatcher(normalizedText, rawLoweredText, {
+    rawLoweredTextIsCommercialNormalized: true,
+  });
   const hasMarker = matcher.hasMarker;
   const matchesPattern = matcher.matchesPattern;
   const hasUtilityPaymentContext =
@@ -506,7 +508,9 @@ export function collectCommercialSignals(params: {
   let hasChannelPlacementContext = false;
   let hasPropertyPrivateContext = false;
 
-  const matcher = createCommercialTextMatcher(normalizedText, rawLoweredText);
+  const matcher = createCommercialTextMatcher(normalizedText, rawLoweredText, {
+    rawLoweredTextIsCommercialNormalized: true,
+  });
   const hasMarker = matcher.hasMarker;
   const matchesPattern = matcher.matchesPattern;
   const hasUtilityPaymentContext =

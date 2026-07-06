@@ -52,6 +52,50 @@ describe('production compose Prisma pool caps', () => {
 
       expect(readEnvNumber(adminBlock, 'MANAGED_ENTITIES_READ_PRISMA_PG_POOL_MAX')).toBe(6);
     });
+
+    it('persists Redis /data on an explicit named volume', () => {
+      const redisBlock = readServiceBlock(compose, 'redis');
+      const volumesBlock = readTopLevelVolumesBlock(compose);
+
+      expect(redisBlock).toMatch(/^\s{4}volumes:\n\s{6}- redis_data:\/data\s*$/mu);
+      expect(volumesBlock).toMatch(/^\s{2}redis_data:\s*$/mu);
+    });
+  });
+});
+
+describe('production deploy script guards', () => {
+  it('keeps the legacy deploy script fail-closed before deploy side effects', () => {
+    const script = readRepoFile('infra/scripts/deploy.sh');
+    const gateCall = lineCallIndex(script, 'require_legacy_deploy_confirmation');
+
+    expect(script).toContain('MAXIM_ALLOW_LEGACY_DEPLOY');
+    expect(gateCall).toBeLessThan(lineCallIndex(script, 'ensure_compose_env'));
+    expect(gateCall).toBeLessThan(indexOfRequired(script, 'npm ci'));
+    expect(gateCall).toBeLessThan(
+      indexOfRequired(script, 'docker compose -f infra/docker-compose.yml up'),
+    );
+  });
+
+  it('prepares scale Redis named volume before stopping conflicting stacks', () => {
+    const script = readRepoFile('infra/scripts/vps-pull-build-up-scale.sh');
+
+    expect(script).toContain('SCALE_REDIS_VOLUME="${SCALE_PROJECT_NAME}_redis_data"');
+    expect(script).toContain('MAXIM_ALLOW_EMPTY_SCALE_REDIS_DATA');
+    expect(script).toContain('redis-cli SAVE');
+    expect(script).toContain('docker volume create "$target_volume"');
+    expect(lineCallIndex(script, 'prepare_scale_redis_named_volume')).toBeLessThan(
+      lineCallIndex(script, 'stop_conflicting_stacks'),
+    );
+  });
+
+  it('checks rollback Prisma migration compatibility before switching git refs', () => {
+    const script = readRepoFile('infra/scripts/vps-runtime-rollback.sh');
+
+    expect(script).toContain('apps/api/prisma/migrations');
+    expect(script).toContain('_prisma_migrations');
+    expect(lineCallIndex(script, 'ensure_rollback_migrations_compatible')).toBeLessThan(
+      indexOfRequired(script, 'git switch --detach "$ROLLBACK_REF"'),
+    );
   });
 });
 
@@ -70,6 +114,20 @@ function readServiceBlock(compose: string, service: string): string {
   return match[1];
 }
 
+function readTopLevelVolumesBlock(compose: string): string {
+  const match = compose.match(/\nvolumes:\n([\s\S]*)$/u);
+
+  if (!match?.[1]) {
+    throw new Error('Missing top-level compose volumes block');
+  }
+
+  return match[1];
+}
+
+function readRepoFile(relativePath: string): string {
+  return readFileSync(resolve(__dirname, '../../../..', relativePath), 'utf8');
+}
+
 function readEnvNumber(serviceBlock: string, key: string): number {
   const match = serviceBlock.match(
     new RegExp(`^\\s{6}${escapeRegExp(key)}:\\s*'?([0-9]+)'?\\s*$`, 'mu'),
@@ -80,6 +138,26 @@ function readEnvNumber(serviceBlock: string, key: string): number {
   }
 
   return Number(match[1]);
+}
+
+function lineCallIndex(script: string, command: string): number {
+  const match = new RegExp(`^${escapeRegExp(command)}$`, 'mu').exec(script);
+
+  if (!match) {
+    throw new Error(`Missing shell command line: ${command}`);
+  }
+
+  return match.index;
+}
+
+function indexOfRequired(value: string, needle: string): number {
+  const index = value.indexOf(needle);
+
+  if (index === -1) {
+    throw new Error(`Missing required text: ${needle}`);
+  }
+
+  return index;
 }
 
 function escapeRegExp(value: string): string {

@@ -1,6 +1,10 @@
 import { BadRequestException } from '@nestjs/common';
 import { parseMiniappBootTracePayload } from './miniapp-boot-trace.service';
 
+function encodeBase64Url(value: unknown): string {
+  return Buffer.from(JSON.stringify(value), 'utf8').toString('base64url');
+}
+
 describe('parseMiniappBootTracePayload', () => {
   it('sanitizes sensitive route, url, and detail values before logging', () => {
     const trace = parseMiniappBootTracePayload({
@@ -42,6 +46,54 @@ describe('parseMiniappBootTracePayload', () => {
         },
       },
     });
+  });
+
+  it('redacts startapp and channel dialog launch payload previews', () => {
+    const dialogToken = 'dialog-token-secret-123456';
+    const encodedPayload = encodeBase64Url({
+      v: 1,
+      k: 'channel-dialog',
+      c: '-100',
+      m: 'comments',
+      t: dialogToken,
+    });
+    const startParam = `cd-${encodedPayload}`;
+
+    const trace = parseMiniappBootTracePayload({
+      phase: 'route_resolved',
+      route: `/app/?startapp=${startParam}&screen=dialog`,
+      url: `https://major-maksimov.ru/app/#/?start_param=${startParam}&screen=dialog`,
+      details: {
+        startParam,
+        launchPreview: `payload ${startParam}`,
+        decodedPreview: {
+          v: 1,
+          k: 'channel-dialog',
+          c: '-100',
+          m: 'comments',
+          t: dialogToken,
+        },
+      },
+    });
+
+    expect(trace).toEqual({
+      phase: 'route_resolved',
+      route: '/app/?startapp=[redacted]&screen=dialog',
+      url: 'https://major-maksimov.ru/app/#/?start_param=[redacted]&screen=dialog',
+      details: {
+        startParam: '[redacted]',
+        launchPreview: 'payload cd-[redacted]',
+        decodedPreview: {
+          v: 1,
+          k: 'channel-dialog',
+          c: '-100',
+          m: 'comments',
+          t: '[redacted]',
+        },
+      },
+    });
+    expect(JSON.stringify(trace)).not.toContain(dialogToken);
+    expect(JSON.stringify(trace)).not.toContain(encodedPayload);
   });
 
   it('rejects invalid payloads', () => {

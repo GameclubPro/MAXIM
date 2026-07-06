@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { maxUpdateSchema, type MaxUpdate } from '@maxim/contracts';
-import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import {
   extractUrlsFromText as extractTextUrls,
   stripUrlsFromText as stripTextUrls,
@@ -11,7 +11,11 @@ export class WebhookParser {
   parse(payload: Record<string, unknown>, options: { botId?: string } = {}): MaxUpdate {
     const type = this.extractUpdateType(payload);
     const updateId = String(
-      payload.updateId ?? payload.update_id ?? payload.eventId ?? payload.event_id ?? randomUUID(),
+      payload.updateId ??
+        payload.update_id ??
+        payload.eventId ??
+        payload.event_id ??
+        this.buildSyntheticUpdateId(type, payload),
     );
     const message = this.extractMessageNode(payload, type);
     const messageId = this.extractMessageId(message, payload);
@@ -74,6 +78,38 @@ export class WebhookParser {
   private extractUpdateType(payload: Record<string, unknown>): string {
     const value = payload.type ?? payload.update_type ?? payload.event_type ?? 'unknown';
     return String(value);
+  }
+
+  private buildSyntheticUpdateId(type: string, payload: Record<string, unknown>): string {
+    const canonicalPayload = this.stableStringify(payload);
+    const digest = createHash('sha256').update(canonicalPayload).digest('hex');
+    return `synthetic:${type}:${digest}`;
+  }
+
+  private stableStringify(value: unknown): string {
+    if (typeof value === 'undefined') {
+      return '"[undefined]"';
+    }
+    if (value === null || typeof value !== 'object') {
+      return JSON.stringify(value) ?? String(value);
+    }
+
+    if (Array.isArray(value)) {
+      return `[${value.map((entry) => this.stableStringify(entry)).join(',')}]`;
+    }
+
+    const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) => {
+      if (left < right) {
+        return -1;
+      }
+      if (left > right) {
+        return 1;
+      }
+      return 0;
+    });
+    return `{${entries
+      .map(([key, entry]) => `${JSON.stringify(key)}:${this.stableStringify(entry)}`)
+      .join(',')}}`;
   }
 
   private isSyntheticMessageUpdateType(type: string): boolean {

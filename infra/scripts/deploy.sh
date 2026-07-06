@@ -48,6 +48,23 @@ ensure_compose_env() {
   exit 1
 }
 
+require_legacy_deploy_confirmation() {
+  case "${MAXIM_ALLOW_LEGACY_DEPLOY:-0}" in
+    1|true|TRUE|yes|YES)
+      return 0
+      ;;
+  esac
+
+  cat >&2 <<'EOF'
+Refusing to run legacy infra/scripts/deploy.sh without explicit confirmation.
+Use ./infra/scripts/vps-pull-build-up.sh on the VPS for production deploys.
+Set MAXIM_ALLOW_LEGACY_DEPLOY=1 only when you intentionally need this legacy script.
+EOF
+  exit 2
+}
+
+require_legacy_deploy_confirmation
+
 ensure_compose_env
 
 if [[ $# -gt 0 ]]; then

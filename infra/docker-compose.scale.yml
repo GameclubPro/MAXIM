@@ -24,6 +24,8 @@ services:
     restart: unless-stopped
     command: ['redis-server', '--save', '3600', '1', '--appendonly', 'no']
     stop_grace_period: 15m
+    volumes:
+      - redis_data:/data
 
   api-ingress:
     build:
@@ -464,3 +466,4 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:

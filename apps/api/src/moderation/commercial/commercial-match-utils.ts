@@ -20,11 +20,26 @@ export type CommercialTextMatcher = {
   matchesPattern(pattern: RegExp): boolean;
 };
 
+type NormalizedCommercialMarker = {
+  normalizedMarker: string;
+  rawLoweredMarker: string;
+  tokenOnly: boolean;
+  specialTokenMatcher: RegExp | undefined;
+};
+
+export type CommercialTextMatcherOptions = {
+  rawLoweredTextIsCommercialNormalized?: boolean;
+};
+
+const COMMERCIAL_MARKER_TOKEN_PATTERN = /^[\p{L}\p{N}]+$/u;
+const normalizedCommercialMarkerCache = new Map<string, NormalizedCommercialMarker>();
+
 export function createCommercialTextMatcher(
   normalizedText: string,
   rawLoweredText: string,
+  options: CommercialTextMatcherOptions = {},
 ): CommercialTextMatcher {
-  const context = buildCommercialMarkerContext(normalizedText, rawLoweredText);
+  const context = buildCommercialMarkerContext(normalizedText, rawLoweredText, options);
   const markerCache = new Map<string, boolean>();
   const patternCache = new WeakMap<RegExp, boolean>();
 
@@ -56,11 +71,15 @@ export function createCommercialTextMatcher(
 export function buildCommercialMarkerContext(
   normalizedText: string,
   rawLoweredText: string,
+  options: CommercialTextMatcherOptions = {},
 ): CommercialMarkerContext {
-  const commercialRawLoweredText = normalizeCommercialRawText(rawLoweredText);
+  const commercialRawLoweredText = options.rawLoweredTextIsCommercialNormalized
+    ? rawLoweredText
+    : normalizeCommercialRawText(rawLoweredText);
   const rawLoweredTextWithoutUrls = stripUrlsFromText(commercialRawLoweredText);
-  const rawLoweredTextWithoutUrlsNormalized =
-    normalizeCommercialConfusables(rawLoweredTextWithoutUrls);
+  const rawLoweredTextWithoutUrlsNormalized = options.rawLoweredTextIsCommercialNormalized
+    ? rawLoweredTextWithoutUrls
+    : normalizeCommercialConfusables(rawLoweredTextWithoutUrls);
   const normalizedTextWithoutUrls =
     rawLoweredTextWithoutUrls === rawLoweredText
       ? normalizedText
@@ -69,7 +88,8 @@ export function buildCommercialMarkerContext(
     rawLoweredTextWithoutUrlsNormalized === rawLoweredTextWithoutUrls
       ? normalizedTextWithoutUrls
       : normalizeCommercialText(rawLoweredTextWithoutUrlsNormalized);
-  const hasDistinctConfusableText = normalizedTextWithRawConfusables !== normalizedTextWithoutUrls;
+  const hasDistinctConfusableText =
+    normalizedTextWithRawConfusables !== normalizedTextWithoutUrls;
   const normalizedTokensWithoutUrls = [
     ...(normalizedTextWithoutUrls.match(/[\p{L}\p{N}]+/gu) ?? []),
     ...(hasDistinctConfusableText
@@ -88,28 +108,51 @@ export function buildCommercialMarkerContext(
 }
 
 export function hasCommercialMarker(marker: string, context: CommercialMarkerContext): boolean {
-  const normalizedMarker = normalizeCommercialText(marker);
+  const {
+    normalizedMarker,
+    rawLoweredMarker,
+    tokenOnly,
+    specialTokenMatcher,
+  } = getNormalizedCommercialMarker(marker);
   if (!normalizedMarker) {
     return false;
   }
 
-  const specialTokenMatcher = ADS_SPECIAL_TOKEN_MATCHERS.get(normalizedMarker);
   if (specialTokenMatcher) {
     return context.normalizedTokensWithoutUrls.some((token) =>
       testCommercialPattern(specialTokenMatcher, token),
     );
   }
 
-  if (/^[\p{L}\p{N}]+$/u.test(normalizedMarker)) {
-    return context.normalizedTokensWithoutUrls.some((token) => token.startsWith(normalizedMarker));
+  if (tokenOnly) {
+    return context.normalizedTokensWithoutUrls.some((token) =>
+      token.startsWith(normalizedMarker),
+    );
   }
 
   return (
     context.normalizedTextWithoutUrls.includes(normalizedMarker) ||
     (context.normalizedConfusableTextWithoutUrls !== '' &&
       context.normalizedConfusableTextWithoutUrls.includes(normalizedMarker)) ||
-    context.rawLoweredTextWithoutUrls.includes(marker.toLowerCase())
+    context.rawLoweredTextWithoutUrls.includes(rawLoweredMarker)
   );
+}
+
+function getNormalizedCommercialMarker(marker: string): NormalizedCommercialMarker {
+  const cached = normalizedCommercialMarkerCache.get(marker);
+  if (cached) {
+    return cached;
+  }
+
+  const normalizedMarker = normalizeCommercialText(marker);
+  const normalized = {
+    normalizedMarker,
+    rawLoweredMarker: marker.toLowerCase(),
+    tokenOnly: COMMERCIAL_MARKER_TOKEN_PATTERN.test(normalizedMarker),
+    specialTokenMatcher: ADS_SPECIAL_TOKEN_MATCHERS.get(normalizedMarker),
+  };
+  normalizedCommercialMarkerCache.set(marker, normalized);
+  return normalized;
 }
 
 export function matchesCommercialPattern(

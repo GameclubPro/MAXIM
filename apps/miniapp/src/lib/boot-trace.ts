@@ -17,10 +17,12 @@ type MiniappBootTraceDetails = Record<string, unknown>;
 
 const SESSION_STORAGE_KEY = 'maxim:miniappBootTraceSession';
 const TRACE_OVERRIDE_STORAGE_KEY = 'maxim:miniappBootTraceOverride';
+const REDACTED = '[redacted]';
 const MAX_DETAIL_STRING_LENGTH = 240;
 const MAX_DETAILS_JSON_LENGTH = 1_500;
 const MAX_ROUTE_LENGTH = 320;
-const SENSITIVE_PARAM_PATTERN = /(?:token|webapp|init[_-]?data|authorization|hash|secret|sig)/iu;
+const SENSITIVE_PARAM_PATTERN =
+  /(?:token|webapp|init[_-]?data|authorization|hash|secret|sig|start(?:app|[_-]?param))/iu;
 const TRACE_PATH = '/system/miniapp-boot-trace';
 
 const startedAtMs = Date.now();
@@ -124,21 +126,50 @@ function sanitizeRoute(value: string | null | undefined): string | null {
     const parsed = new URL(value, typeof window !== 'undefined' ? window.location.href : undefined);
     const search = new URLSearchParams();
     parsed.searchParams.forEach((paramValue, key) => {
-      search.append(key, SENSITIVE_PARAM_PATTERN.test(key) ? '[redacted]' : paramValue);
+      search.append(
+        key,
+        SENSITIVE_PARAM_PATTERN.test(key)
+          ? REDACTED
+          : sanitizeMiniappBootTraceText(paramValue, MAX_DETAIL_STRING_LENGTH),
+      );
     });
 
     const query = search.toString();
     const route = `${parsed.pathname}${query ? `?${query}` : ''}`;
     return route.slice(0, MAX_ROUTE_LENGTH);
   } catch {
-    return value.replace(/([?&][^=]*(?:token|WebAppData|initData|init_data)[^=]*=)[^&#]*/giu, '$1[redacted]')
-      .slice(0, MAX_ROUTE_LENGTH);
+    return sanitizeMiniappBootTraceText(value, MAX_ROUTE_LENGTH);
   }
+}
+
+export function sanitizeMiniappBootTraceText(
+  value: string,
+  maxLength = MAX_DETAIL_STRING_LENGTH,
+): string {
+  const redactedQueryValues = value.replace(
+    /(^|[?&#\s|,;])([^=&#\s|,;]{1,100})=([^&#\s|,;]*)/g,
+    (match: string, separator: string, key: string) => {
+      return SENSITIVE_PARAM_PATTERN.test(decodeURIComponentSafe(key))
+        ? `${separator}${key}=${REDACTED}`
+        : match;
+    },
+  );
+  const redactedLaunchParamAssignments = redactedQueryValues.replace(
+    /\b((?:WebAppStartParam|startapp|start[-_]?param)\s*=\s*)[^\s&#,;|]+/giu,
+    (_match: string, prefix: string) => `${prefix}${REDACTED}`,
+  );
+
+  const redactedAuthorization = redactedLaunchParamAssignments.replace(
+    /\b(authorization\s*[:=]\s*)((?:bearer|initdata)\s+)?[^\r\n,;]+/giu,
+    (_match: string, prefix: string, scheme = '') => `${prefix}${scheme}${REDACTED}`,
+  );
+
+  return redactChannelDialogPayloadFragments(redactedAuthorization).slice(0, maxLength);
 }
 
 function sanitizeValue(value: unknown): unknown {
   if (typeof value === 'string') {
-    return value.slice(0, MAX_DETAIL_STRING_LENGTH);
+    return sanitizeMiniappBootTraceText(value);
   }
 
   if (typeof value === 'number' || typeof value === 'boolean' || value === null) {
@@ -151,13 +182,43 @@ function sanitizeValue(value: unknown): unknown {
 
   if (typeof value === 'object' && value !== null) {
     const sanitized: MiniappBootTraceDetails = {};
+    const redactDialogPayloadToken = isChannelDialogLaunchPayload(value);
     for (const [key, entryValue] of Object.entries(value).slice(0, 16)) {
-      sanitized[key] = SENSITIVE_PARAM_PATTERN.test(key) ? '[redacted]' : sanitizeValue(entryValue);
+      sanitized[key] =
+        SENSITIVE_PARAM_PATTERN.test(key) || (redactDialogPayloadToken && isDialogTokenKey(key))
+          ? REDACTED
+          : sanitizeValue(entryValue);
     }
     return sanitized;
   }
 
   return undefined;
+}
+
+function isDialogTokenKey(key: string): boolean {
+  return key.trim().toLowerCase() === 't';
+}
+
+function isChannelDialogLaunchPayload(value: object): boolean {
+  const payload = value as MiniappBootTraceDetails;
+  return payload.k === 'channel-dialog' || payload.k === 'chat-dialog';
+}
+
+function redactChannelDialogPayloadFragments(value: string): string {
+  const redactedPayload = value.replace(/\bcd-[A-Za-z0-9_-]{16,}/gu, `cd-${REDACTED}`);
+  if (!/["']k["']\s*:\s*["'](?:channel-dialog|chat-dialog)["']/u.test(redactedPayload)) {
+    return redactedPayload;
+  }
+
+  return redactedPayload.replace(/(["']t["']\s*:\s*["'])[^"']{1,512}(["'])/gu, `$1${REDACTED}$2`);
+}
+
+function decodeURIComponentSafe(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 
 function sanitizeDetails(details: MiniappBootTraceDetails | undefined): MiniappBootTraceDetails {

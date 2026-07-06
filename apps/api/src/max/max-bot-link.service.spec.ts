@@ -1,7 +1,8 @@
 import {
+  ChatCatalogKind,
   ChatBotMembershipRole,
   ChatBotMembershipStatus,
-  type ChatEntityType,
+  ChatEntityType,
 } from '../prisma/prisma-client';
 import { MaxBotLinkService } from './max-bot-link.service';
 
@@ -11,6 +12,7 @@ type MutableChat = {
   botId: string | null;
   primaryBotId: string | null;
   entityType?: ChatEntityType;
+  catalogKind?: ChatCatalogKind;
 };
 
 type MutableMembership = {
@@ -40,6 +42,7 @@ function createServiceFixture() {
         }
         return {
           entityType: chat.entityType ?? null,
+          catalogKind: chat.catalogKind ?? null,
           primaryBotId: chat.primaryBotId,
           botId: chat.botId,
           botMemberships: memberships
@@ -65,6 +68,7 @@ function createServiceFixture() {
           botId: data.botId ?? null,
           primaryBotId: data.primaryBotId ?? null,
           entityType: data.entityType,
+          catalogKind: data.catalogKind,
         });
         return chats.get(data.id);
       }),
@@ -99,6 +103,7 @@ function createServiceFixture() {
             botId: create.botId ?? null,
             primaryBotId: create.primaryBotId ?? null,
             entityType: create.entityType,
+            catalogKind: create.catalogKind,
           };
           chats.set(create.id, created);
           return created;
@@ -445,6 +450,45 @@ describe('MaxBotLinkService', () => {
           lastMaxStatusCode: 403,
           accessLostAt: expect.any(String),
         }),
+      }),
+    );
+  });
+
+  it('does not downgrade a managed group chat to context-only when marking a bot removed', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('managed-chat', {
+      id: 'managed-chat',
+      title: 'Managed group',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+      entityType: ChatEntityType.CHAT,
+      catalogKind: ChatCatalogKind.MANAGED,
+    });
+    fixture.memberships.push({
+      chatId: 'managed-chat',
+      botId: 'id613002203036_bot',
+      role: ChatBotMembershipRole.PRIMARY,
+      status: ChatBotMembershipStatus.ACTIVE,
+      createdAt: new Date('2026-05-09T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-09T10:00:00.000Z'),
+      lastSeenAt: new Date('2026-05-09T10:00:00.000Z'),
+      lastWebhookAt: new Date('2026-05-09T10:00:00.000Z'),
+    });
+
+    await expect(
+      fixture.service.markChatBotRemoved({
+        chatId: 'managed-chat',
+        botId: 'id613002203036_bot',
+        title: 'Managed group',
+        entityType: ChatEntityType.CHAT,
+      }),
+    ).resolves.toBeNull();
+
+    expect(fixture.chats.get('managed-chat')).toEqual(
+      expect.objectContaining({
+        catalogKind: ChatCatalogKind.MANAGED,
+        botId: null,
+        primaryBotId: null,
       }),
     );
   });

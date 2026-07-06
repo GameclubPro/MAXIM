@@ -153,11 +153,12 @@
 - Keep production API Prisma pool caps aligned with `apps/api/src/config/production-compose-prisma-pool.spec.ts`;
   for `api-action` pressure incidents, prefer lowering concurrency/batch sizes and adding governor
   checks before raising Postgres connection caps.
-- Redis stores BullMQ queues, delayed jobs, locks, and runtime snapshots under `/data`; the
-  official image may provide this as an anonymous Docker volume even when compose has no named
-  volume. When changing Redis compose config, avoid routine Redis recreation unless the current
-  RDB/AOF state is intentionally preserved and queues are checked first; deploy API-only changes
-  with `docker compose up -d --no-deps --force-recreate ...` when Redis must stay untouched.
+- Redis stores BullMQ queues, delayed jobs, locks, and runtime snapshots under `/data`; main and
+  scale compose pin it to `redis_data:/data`. The scale deploy script preflights
+  `infra-scale_redis_data` before stopping the main stack. Avoid routine Redis recreation unless
+  the current RDB/AOF state is intentionally preserved and queues are checked first; deploy
+  API-only changes with `docker compose up -d --no-deps --force-recreate ...` when Redis must stay
+  untouched.
 - The `vps-pull-build-up*.sh` scripts are designed to run on the VPS host. From local machine, invoke them through SSH.
 - If multi-service API `docker compose build` stalls after the TypeScript build while buildx/bake
   resolves provenance, build the shared API image directly on the VPS with

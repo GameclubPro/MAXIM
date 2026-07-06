@@ -3,6 +3,53 @@ import { WebhookParser } from './webhook.parser';
 describe('WebhookParser', () => {
   const parser = new WebhookParser();
 
+  it('uses a deterministic synthetic update id when MAX omits update_id', () => {
+    const payload = {
+      update_type: 'message_created',
+      message: {
+        message_id: 'msg-dedup-1',
+        chat_id: 'chat-dedup-1',
+        sender_id: 'user-dedup-1',
+        text: 'same webhook',
+        created_at: '2026-07-06T09:00:00.000Z',
+      },
+    };
+
+    const first = parser.parse(payload);
+    const second = parser.parse({
+      message: payload.message,
+      update_type: payload.update_type,
+    });
+
+    expect(first.updateId).toMatch(/^synthetic:message_created:[a-f0-9]{64}$/u);
+    expect(second.updateId).toBe(first.updateId);
+  });
+
+  it('produces different synthetic update ids for different no-id payloads', () => {
+    const first = parser.parse({
+      update_type: 'message_created',
+      message: {
+        message_id: 'msg-dedup-1',
+        chat_id: 'chat-dedup-1',
+        sender_id: 'user-dedup-1',
+        text: 'first webhook',
+        created_at: '2026-07-06T09:00:00.000Z',
+      },
+    });
+    const second = parser.parse({
+      update_type: 'message_created',
+      message: {
+        message_id: 'msg-dedup-2',
+        chat_id: 'chat-dedup-1',
+        sender_id: 'user-dedup-1',
+        text: 'second webhook',
+        created_at: '2026-07-06T09:00:00.000Z',
+      },
+    });
+
+    expect(second.updateId).not.toBe(first.updateId);
+  });
+
   it('extracts chatTitle from recipient.title', () => {
     const parsed = parser.parse({
       update_type: 'message_created',

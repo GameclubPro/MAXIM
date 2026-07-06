@@ -48,6 +48,7 @@ import {
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { normalizeMembershipAccessSnapshot } from '../max/max-bot-access-policy.util';
+import { collectActiveManagedEntityBotMembershipIds } from '../max/managed-entity-bot-access.util';
 import {
   canUserAccessSystem,
   readSystemAccessConfig,
@@ -1262,32 +1263,34 @@ export class ManagedEntitiesService {
     grantedAccessEdgeRows: Array<{ botId: string }>,
   ): Set<string> {
     const activeAccessBotIds = new Set<string>();
+    const activeMembershipBotIds = collectActiveManagedEntityBotMembershipIds(membershipRows, {
+      isRuntimeBotId: (botId) => this.isRuntimeBotId(botId),
+    });
     for (const row of membershipRows) {
-      if (row.status !== ChatBotMembershipStatus.ACTIVE) {
-        continue;
-      }
-      if (!this.isRuntimeBotId(row.botId)) {
+      const botId = readTrimmedString(row.botId);
+      if (!botId || !activeMembershipBotIds.has(botId)) {
         continue;
       }
       if (
         row.botAccessState === ChatBotAccessState.CONFIRMED_ADMIN ||
         row.botAccessState === ChatBotAccessState.CONFIRMED_OWNER
       ) {
-        activeAccessBotIds.add(row.botId);
+        activeAccessBotIds.add(botId);
         continue;
       }
       const snapshot = normalizeMembershipAccessSnapshot(row.permissionsSnapshot);
       if (!snapshot || (!snapshot.isAdmin && !snapshot.isOwner)) {
         continue;
       }
-      activeAccessBotIds.add(row.botId);
+      activeAccessBotIds.add(botId);
     }
 
     for (const row of grantedAccessEdgeRows) {
-      if (!this.isRuntimeBotId(row.botId)) {
+      const botId = readTrimmedString(row.botId);
+      if (!botId || !activeMembershipBotIds.has(botId)) {
         continue;
       }
-      activeAccessBotIds.add(row.botId);
+      activeAccessBotIds.add(botId);
     }
 
     return activeAccessBotIds;

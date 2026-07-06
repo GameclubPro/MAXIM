@@ -24,7 +24,10 @@ const sensitiveKeyFragments = [
   'initdataunsafe',
   'secret',
   'signature',
+  'startapp',
+  'startparam',
   'token',
+  'webappstartparam',
   'webappdata',
 ];
 
@@ -148,11 +151,13 @@ function sanitizeDetails(value: unknown, depth = 0): unknown {
 
   if (typeof value === 'object') {
     const sanitized: Record<string, unknown> = {};
+    const redactDialogPayloadToken = isChannelDialogLaunchPayload(value);
     for (const [key, nestedValue] of Object.entries(value).slice(0, MAX_DETAILS_OBJECT_KEYS)) {
       const sanitizedKey = sanitizeText(key, 80);
-      sanitized[sanitizedKey] = isSensitiveKey(key)
-        ? REDACTED
-        : sanitizeDetails(nestedValue, depth + 1);
+      sanitized[sanitizedKey] =
+        isSensitiveKey(key) || (redactDialogPayloadToken && isDialogTokenKey(key))
+          ? REDACTED
+          : sanitizeDetails(nestedValue, depth + 1);
     }
     return sanitized;
   }
@@ -178,23 +183,46 @@ function sanitizeText(value: string, maxLength: number): string {
 
 function redactSensitiveFragments(value: string): string {
   const redactedQueryValues = value.replace(
-    /([?&#])([^=&#]{1,100})=([^&#]*)/g,
+    /(^|[?&#\s|,;])([^=&#\s|,;]{1,100})=([^&#\s|,;]*)/g,
     (match: string, separator: string, key: string) => {
-      return isSensitiveKey(decodeURIComponentSafe(key))
-        ? `${separator}${key}=${REDACTED}`
-        : match;
+      return isSensitiveKey(decodeURIComponentSafe(key)) ? `${separator}${key}=${REDACTED}` : match;
     },
   );
 
-  return redactedQueryValues.replace(
+  const redactedLaunchParamAssignments = redactedQueryValues.replace(
+    /\b((?:WebAppStartParam|startapp|start[-_]?param)\s*=\s*)[^\s&#,;|]+/giu,
+    (_match: string, prefix: string) => `${prefix}${REDACTED}`,
+  );
+
+  const redactedAuthorization = redactedLaunchParamAssignments.replace(
     /\b(authorization\s*[:=]\s*)((?:bearer|initdata)\s+)?[^\r\n,;]+/gi,
     (_match: string, prefix: string, scheme = '') => `${prefix}${scheme}${REDACTED}`,
   );
+
+  return redactChannelDialogPayloadFragments(redactedAuthorization);
 }
 
 function isSensitiveKey(key: string): boolean {
   const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '');
   return sensitiveKeyFragments.some((fragment) => normalized.includes(fragment));
+}
+
+function isDialogTokenKey(key: string): boolean {
+  return key.trim().toLowerCase() === 't';
+}
+
+function isChannelDialogLaunchPayload(value: object): boolean {
+  const payload = value as Record<string, unknown>;
+  return payload.k === 'channel-dialog' || payload.k === 'chat-dialog';
+}
+
+function redactChannelDialogPayloadFragments(value: string): string {
+  const redactedPayload = value.replace(/\bcd-[A-Za-z0-9_-]{16,}/g, `cd-${REDACTED}`);
+  if (!/["']k["']\s*:\s*["'](?:channel-dialog|chat-dialog)["']/u.test(redactedPayload)) {
+    return redactedPayload;
+  }
+
+  return redactedPayload.replace(/(["']t["']\s*:\s*["'])[^"']{1,512}(["'])/gu, `$1${REDACTED}$2`);
 }
 
 function decodeURIComponentSafe(value: string): string {

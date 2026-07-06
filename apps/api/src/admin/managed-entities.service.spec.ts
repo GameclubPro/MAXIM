@@ -1159,6 +1159,106 @@ describe('ManagedEntitiesService headers', () => {
     });
   });
 
+  it('does not suppress access-loss diagnostics when a fresh granted edge lacks active bot membership', async () => {
+    const { prisma, service } = createService();
+    prisma.chatBotMembership.findMany.mockResolvedValueOnce([
+      {
+        botId: 'bot-1',
+        status: 'REMOVED',
+        updatedAt: new Date('2026-05-31T10:00:00.000Z'),
+        permissionsSnapshot: {
+          accessLostReason: 'bot_denied',
+          accessLostSource: 'managed_broadcast:delivery',
+          accessLostAt: '2026-05-31T09:59:00.000Z',
+          lastMaxErrorCode: 'chat.denied',
+          lastMaxErrorMessage: 'Forbidden',
+          lastMaxStatusCode: 403,
+        },
+      },
+    ]);
+    prisma.managedEntityAccessEdge.findMany
+      .mockResolvedValueOnce([
+        {
+          botId: 'bot-1',
+          checkedAt: new Date('2026-05-31T09:59:00.000Z'),
+          deniedReason: 'bot_denied',
+          source: 'managed_broadcast:delivery',
+          lastMaxErrorCode: 'chat.denied',
+          lastMaxErrorMessage: 'Forbidden',
+          lastMaxStatusCode: 403,
+        },
+      ])
+      .mockResolvedValueOnce([{ botId: 'bot-2' }]);
+
+    const result = await service.getChatHeader('chat-1', user as never);
+
+    expect(result.accessDiagnostics).toEqual({
+      state: 'bot_access_lost',
+      lastDetectedAt: '2026-05-31T09:59:00.000Z',
+      lastCheckedAt: null,
+      freshUntil: null,
+      source: 'unknown',
+      activeBotCount: 0,
+      lostBots: [
+        {
+          reason: 'bot_denied',
+          detectedAt: '2026-05-31T09:59:00.000Z',
+        },
+      ],
+    });
+  });
+
+  it('suppresses access-loss diagnostics when a fresh granted edge matches active bot membership', async () => {
+    const { prisma, service } = createService();
+    prisma.chatBotMembership.findMany.mockResolvedValueOnce([
+      {
+        botId: 'bot-1',
+        status: 'REMOVED',
+        updatedAt: new Date('2026-05-31T10:00:00.000Z'),
+        permissionsSnapshot: {
+          accessLostReason: 'bot_denied',
+          accessLostSource: 'managed_broadcast:delivery',
+          accessLostAt: '2026-05-31T09:59:00.000Z',
+          lastMaxErrorCode: 'chat.denied',
+          lastMaxErrorMessage: 'Forbidden',
+          lastMaxStatusCode: 403,
+        },
+      },
+      {
+        botId: 'bot-2',
+        status: 'ACTIVE',
+        updatedAt: new Date('2026-05-31T10:02:00.000Z'),
+        permissionsSnapshot: null,
+        botAccessState: null,
+      },
+    ]);
+    prisma.managedEntityAccessEdge.findMany
+      .mockResolvedValueOnce([
+        {
+          botId: 'bot-1',
+          checkedAt: new Date('2026-05-31T09:59:00.000Z'),
+          deniedReason: 'bot_denied',
+          source: 'managed_broadcast:delivery',
+          lastMaxErrorCode: 'chat.denied',
+          lastMaxErrorMessage: 'Forbidden',
+          lastMaxStatusCode: 403,
+        },
+      ])
+      .mockResolvedValueOnce([{ botId: 'bot-2' }]);
+
+    const result = await service.getChatHeader('chat-1', user as never);
+
+    expect(result.accessDiagnostics).toEqual({
+      state: 'checking',
+      lastDetectedAt: null,
+      lastCheckedAt: null,
+      freshUntil: null,
+      source: 'unknown',
+      activeBotCount: 1,
+      lostBots: [],
+    });
+  });
+
   it('surfaces active denied bot access snapshots as bot access loss diagnostics', async () => {
     const { prisma, service } = createService();
     prisma.chatBotMembership.findMany.mockResolvedValueOnce([

@@ -127,7 +127,7 @@ export class CommercialAdDetector {
   }): CommercialDetection | null {
     const { settings, commercialCampaignContext } = params;
     const rawLoweredText = normalizeCommercialRawText(params.rawLoweredText);
-    const normalizedText = normalizeCommercialText(params.normalizedText);
+    const normalizedText = normalizeCommercialText(rawLoweredText || params.normalizedText);
 
     if (!normalizedText || normalizedText.length < 6) {
       return null;

@@ -3,6 +3,12 @@ import { normalizeForDetection } from '../rule-engine-normalization';
 const SPACED_LETTER_SEQUENCE_PATTERN =
   /(?:^|(?<=[\s.,:;!?/+-]))\p{L}(?:[\s.,:;!?/+-]+\p{L}){2,}(?=$|[\s.,:;!?/+-])/gu;
 const ZERO_WIDTH_PATTERN = /[\u200B-\u200F\u202A-\u202E\u2060\uFEFF]/gu;
+const ZERO_WIDTH_TEST_PATTERN = /[\u200B-\u200F\u202A-\u202E\u2060\uFEFF]/u;
+const COMMERCIAL_LATIN_PATTERN = /[a-z]/u;
+const COMMERCIAL_CYRILLIC_PATTERN = /[а-яё]/u;
+const COMMERCIAL_OBFUSCATED_URL_HINT_PATTERN =
+  /(?:h\s*x|hxxp|https?\s*(?:[:：]|[\\/])|dot|точка)/iu;
+const COMMERCIAL_MIXED_TOKEN_PATTERN = /[\p{L}\p{N}_-]+/gu;
 const COMMERCIAL_LATIN_CONFUSABLES: Readonly<Record<string, string>> = {
   a: 'а',
   b: 'б',
@@ -42,12 +48,12 @@ export function normalizeCommercialText(value: string): string {
 
 export function normalizeCommercialConfusables(value: string): string {
   const lowered = normalizeCommercialRawText(value);
-  if (!/[a-z]/u.test(lowered) || !/[а-яё]/u.test(lowered)) {
+  if (!COMMERCIAL_LATIN_PATTERN.test(lowered) || !COMMERCIAL_CYRILLIC_PATTERN.test(lowered)) {
     return lowered;
   }
 
-  return lowered.replace(/[\p{L}\p{N}_-]+/gu, (token) => {
-    if (!/[a-z]/u.test(token) || !/[а-яё]/u.test(token)) {
+  return lowered.replace(COMMERCIAL_MIXED_TOKEN_PATTERN, (token) => {
+    if (!COMMERCIAL_LATIN_PATTERN.test(token) || !COMMERCIAL_CYRILLIC_PATTERN.test(token)) {
       return token;
     }
 
@@ -64,9 +70,19 @@ export function normalizeCommercialRawText(value: string): string {
     return '';
   }
 
-  let normalized = value.toLowerCase().replace(ZERO_WIDTH_PATTERN, '');
-  normalized = normalizeObfuscatedUrls(normalized);
-  normalized = normalized.replace(/[\p{L}\p{N}_-]+/gu, normalizeMixedCommercialToken);
+  let normalized = value.toLowerCase();
+  if (ZERO_WIDTH_TEST_PATTERN.test(normalized)) {
+    normalized = normalized.replace(ZERO_WIDTH_PATTERN, '');
+  }
+  if (COMMERCIAL_OBFUSCATED_URL_HINT_PATTERN.test(normalized)) {
+    normalized = normalizeObfuscatedUrls(normalized);
+  }
+  if (
+    COMMERCIAL_LATIN_PATTERN.test(normalized) &&
+    COMMERCIAL_CYRILLIC_PATTERN.test(normalized)
+  ) {
+    normalized = normalized.replace(COMMERCIAL_MIXED_TOKEN_PATTERN, normalizeMixedCommercialToken);
+  }
   return normalized;
 }
 
@@ -88,7 +104,7 @@ function normalizeObfuscatedUrls(value: string): string {
 }
 
 function normalizeMixedCommercialToken(token: string): string {
-  if (!/[a-z]/u.test(token) || !/[а-яё]/u.test(token)) {
+  if (!COMMERCIAL_LATIN_PATTERN.test(token) || !COMMERCIAL_CYRILLIC_PATTERN.test(token)) {
     return token;
   }
 

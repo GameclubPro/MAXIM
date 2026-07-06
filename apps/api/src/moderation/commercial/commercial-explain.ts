@@ -123,42 +123,90 @@ export function buildCommercialFeatureVector(
   matchedSignals: readonly string[],
   negativeSignals: readonly string[],
 ): CommercialFeatureVector {
-  const hasPrefix = (prefix: string): boolean =>
-    matchedSignals.some((signal) => signal.startsWith(prefix));
-  const hasAny = (...signals: string[]): boolean =>
-    signals.some((signal) => matchedSignals.includes(signal));
+  let commercialIntent = 0;
+  let dealEvidence = 0;
+  let contactEvidence = 0;
+  let businessContext = 0;
+  let massDistribution = 0;
+  let priceStructure = 0;
+  let cta = 0;
+  let highRisk = 0;
+
+  for (const signal of matchedSignals) {
+    if (commercialIntent === 0 && signal.startsWith('intent:')) {
+      commercialIntent = 1;
+    }
+    if (
+      dealEvidence === 0 &&
+      (signal.startsWith('deal-channel:') || signal.startsWith('transaction:'))
+    ) {
+      dealEvidence = 1;
+    }
+    if (contactEvidence === 0 && signal.startsWith('contact:')) {
+      contactEvidence = 1;
+    }
+    if (
+      businessContext === 0 &&
+      (signal.startsWith('business:') ||
+        signal.startsWith('service-specialty:') ||
+        signal.startsWith('goods-retail:') ||
+        signal.startsWith('property-agent:') ||
+        signal.startsWith('property-commercial:'))
+    ) {
+      businessContext = 1;
+    }
+    if (
+      massDistribution === 0 &&
+      (signal.startsWith('campaign:') || signal.startsWith('channel-placement:'))
+    ) {
+      massDistribution = 1;
+    }
+    if (
+      priceStructure === 0 &&
+      (signal === 'transaction:price' ||
+        signal === 'transaction:implied-price' ||
+        signal === 'combo:contact+price')
+    ) {
+      priceStructure = 1;
+    }
+    if (cta === 0 && (signal.startsWith('cta:') || signal.startsWith('group-promo:'))) {
+      cta = 1;
+    }
+    if (highRisk === 0 && signal.startsWith('risk:')) {
+      highRisk = 1;
+    }
+  }
+
+  let negativePrivateContext = 0;
+  let questionContext = 0;
+  for (const signal of negativeSignals) {
+    if (
+      negativePrivateContext === 0 &&
+      (signal.startsWith('private:') ||
+        signal.startsWith('private-single:') ||
+        signal.startsWith('private-goods:'))
+    ) {
+      negativePrivateContext = 1;
+    }
+    if (
+      questionContext === 0 &&
+      (signal.startsWith('context:') || signal.startsWith('search:'))
+    ) {
+      questionContext = 1;
+    }
+  }
 
   return {
-    commercialIntent: hasPrefix('intent:') ? 1 : 0,
-    dealEvidence: hasPrefix('deal-channel:') || hasPrefix('transaction:') ? 1 : 0,
-    contactEvidence: hasPrefix('contact:') ? 1 : 0,
-    businessContext:
-      hasPrefix('business:') ||
-      hasPrefix('service-specialty:') ||
-      hasPrefix('goods-retail:') ||
-      hasPrefix('property-agent:') ||
-      hasPrefix('property-commercial:')
-        ? 1
-        : 0,
-    massDistribution: hasPrefix('campaign:') || hasPrefix('channel-placement:') ? 1 : 0,
-    priceStructure: hasAny('transaction:price', 'transaction:implied-price', 'combo:contact+price')
-      ? 1
-      : 0,
-    cta: hasPrefix('cta:') || hasPrefix('group-promo:') ? 1 : 0,
-    negativePrivateContext: negativeSignals.some(
-      (signal) =>
-        signal.startsWith('private:') ||
-        signal.startsWith('private-single:') ||
-        signal.startsWith('private-goods:'),
-    )
-      ? 1
-      : 0,
-    questionContext: negativeSignals.some(
-      (signal) => signal.startsWith('context:') || signal.startsWith('search:'),
-    )
-      ? 1
-      : 0,
-    highRisk: hasPrefix('risk:') ? 1 : 0,
+    commercialIntent,
+    dealEvidence,
+    contactEvidence,
+    businessContext,
+    massDistribution,
+    priceStructure,
+    cta,
+    negativePrivateContext,
+    questionContext,
+    highRisk,
   };
 }
 

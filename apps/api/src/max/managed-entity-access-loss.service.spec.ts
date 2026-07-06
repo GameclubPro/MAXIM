@@ -402,6 +402,92 @@ describe('ManagedEntityAccessLossService', () => {
     expect(prisma.vkParsingSource.updateMany).not.toHaveBeenCalled();
   });
 
+  it('cleans runtime work when a promoted replacement has a fresh edge but no active membership', async () => {
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          title: 'Managed chat',
+          entityType: ChatEntityType.CHAT,
+        }),
+      },
+      chatBotMembership: {
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
+      managedEntityAccessEdge: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findFirst: jest.fn().mockResolvedValue({ botId: 'bot-2' }),
+      },
+      managedBroadcast: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      managedBroadcastDelivery: {
+        updateMany: jest.fn().mockResolvedValue({ count: 2 }),
+      },
+      managedBroadcastOccurrence: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      vkParsingPost: {
+        updateMany: jest.fn().mockResolvedValue({ count: 3 }),
+      },
+      vkParsingSource: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const maxBotLinkService = {
+      markChatBotRemoved: jest.fn().mockResolvedValue('bot-2'),
+      resolveBotId: jest.fn(),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+      clearManagedEntitiesRecentBootstrapForChat: jest.fn().mockResolvedValue(undefined),
+    };
+    const nightModeTransitionScheduler = {
+      clearChatJobs: jest.fn().mockResolvedValue(undefined),
+    };
+    const rosterSyncQueue = {
+      getJob: jest.fn().mockResolvedValue(null),
+    };
+    const service = new ManagedEntityAccessLossService(
+      prisma as never,
+      maxBotLinkService as never,
+      chatContextCache as never,
+      nightModeTransitionScheduler as never,
+      rosterSyncQueue as never,
+    );
+
+    await expect(
+      service.recordManagedEntityAccessLost({
+        chatId: 'chat-1',
+        botId: 'bot-1',
+        reason: 'bot_denied',
+        source: 'unit-test',
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        nextOwnerBotId: 'bot-2',
+        cleanup: expect.objectContaining({
+          nightModeJobsCleared: true,
+          canceledBroadcasts: 1,
+          canceledBroadcastDeliveries: 2,
+          canceledBroadcastOccurrences: 1,
+          clearedVkPublishPosts: 3,
+          pausedVkSources: 1,
+          removedRosterSyncJobs: 0,
+        }),
+      }),
+    );
+    expect(prisma.managedEntityAccessEdge.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: 'chat-1',
+          botId: 'bot-2',
+          state: ManagedEntityAccessState.GRANTED,
+        }),
+      }),
+    );
+    expect(nightModeTransitionScheduler.clearChatJobs).toHaveBeenCalledWith('chat-1');
+  });
+
   it('cleans runtime work when the replacement bot only has stale snapshot access', async () => {
     const staleCheckedAt = new Date(Date.now() - 2 * 24 * 60 * 60 * 1_000).toISOString();
     const prisma = {
@@ -512,7 +598,7 @@ describe('ManagedEntityAccessLossService', () => {
     );
   });
 
-  it('keeps runtime work when another actionable bot has a fresh granted access edge', async () => {
+  it('cleans runtime work when a fresh granted access edge has no active bot membership', async () => {
     const prisma = {
       chat: {
         findUnique: jest.fn().mockResolvedValue({
@@ -522,6 +608,108 @@ describe('ManagedEntityAccessLossService', () => {
       },
       chatBotMembership: {
         findMany: jest.fn().mockResolvedValue([]),
+      },
+      managedEntityAccessEdge: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findFirst: jest.fn().mockResolvedValue({ botId: 'bot-2' }),
+      },
+      managedBroadcast: {
+        updateMany: jest.fn(),
+      },
+      managedBroadcastDelivery: {
+        updateMany: jest.fn(),
+      },
+      managedBroadcastOccurrence: {
+        updateMany: jest.fn(),
+      },
+      vkParsingPost: {
+        updateMany: jest.fn(),
+      },
+      vkParsingSource: {
+        updateMany: jest.fn(),
+      },
+    };
+    const maxBotLinkService = {
+      markChatBotRemoved: jest.fn().mockResolvedValue(null),
+      resolveBotId: jest.fn(),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+      clearManagedEntitiesRecentBootstrapForChat: jest.fn().mockResolvedValue(undefined),
+    };
+    const nightModeTransitionScheduler = {
+      clearChatJobs: jest.fn(),
+    };
+    const rosterSyncQueue = {
+      getJob: jest.fn(),
+    };
+    const service = new ManagedEntityAccessLossService(
+      prisma as never,
+      maxBotLinkService as never,
+      chatContextCache as never,
+      nightModeTransitionScheduler as never,
+      rosterSyncQueue as never,
+      createMaxBotRegistry(['bot-1', 'bot-2']) as never,
+    );
+
+    await expect(
+      service.recordManagedEntityAccessLost({
+        chatId: 'chat-1',
+        botId: 'bot-1',
+        reason: 'bot_denied',
+        source: 'unit-test',
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        chatId: 'chat-1',
+        botId: 'bot-1',
+        nextOwnerBotId: null,
+        cleanup: expect.objectContaining({
+          nightModeJobsCleared: true,
+          canceledBroadcasts: null,
+          canceledBroadcastDeliveries: null,
+          canceledBroadcastOccurrences: null,
+          clearedVkPublishPosts: null,
+          pausedVkSources: null,
+          removedRosterSyncJobs: 0,
+        }),
+      }),
+    );
+
+    expect(prisma.chatBotMembership.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: 'chat-1',
+          botId: { in: ['bot-2'] },
+          status: ChatBotMembershipStatus.ACTIVE,
+        }),
+      }),
+    );
+    expect(prisma.managedEntityAccessEdge.findFirst).not.toHaveBeenCalled();
+    expect(nightModeTransitionScheduler.clearChatJobs).toHaveBeenCalledWith('chat-1');
+    expect(rosterSyncQueue.getJob).toHaveBeenCalledWith('chat-admin-roster-sync__chat-1');
+    expect(prisma.managedBroadcast.updateMany).toHaveBeenCalled();
+    expect(prisma.vkParsingSource.updateMany).toHaveBeenCalled();
+  });
+
+  it('keeps runtime work when a fresh granted edge belongs to an active surviving bot membership', async () => {
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          title: 'Managed chat',
+          entityType: ChatEntityType.CHAT,
+        }),
+      },
+      chatBotMembership: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            botId: 'bot-2',
+            status: ChatBotMembershipStatus.ACTIVE,
+            permissionsSnapshot: null,
+            botAccessState: null,
+            botAccessExpiresAt: null,
+          },
+        ]),
       },
       managedEntityAccessEdge: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),

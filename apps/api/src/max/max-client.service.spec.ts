@@ -2429,7 +2429,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
-  it('keeps an explicit bot token across both upload request legs', async () => {
+  it('keeps bot auth on /uploads but omits it from the returned multipart upload URL', async () => {
     const httpService = {
       request: jest
         .fn()
@@ -2481,16 +2481,18 @@ describe('MaxClientService inline keyboard guardrails', () => {
         }),
       }),
     );
-    expect(httpService.request).toHaveBeenNthCalledWith(
-      2,
+    const uploadRequest = httpService.request.mock.calls[1]?.[0] as {
+      method?: string;
+      url?: string;
+      headers?: Record<string, unknown>;
+    };
+    expect(uploadRequest).toEqual(
       expect.objectContaining({
         method: 'post',
         url: 'https://upload.max.ru/image-1',
-        headers: expect.objectContaining({
-          Authorization: 'selected-bot-token',
-        }),
       }),
     );
+    expect(uploadRequest.headers).not.toHaveProperty('Authorization');
 
     await service.onModuleDestroy();
   });

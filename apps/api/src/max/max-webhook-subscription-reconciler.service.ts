@@ -308,24 +308,26 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
     let reconciledAt: string | null = null;
     let effectiveOtherSubscriptionsCount = otherSubscriptionsCount;
     const deletedSubscriptionUrls = new Set<string>();
-    if (shouldRotateWebhookSecret) {
-      await this.maxClient.deleteWebhookSubscription(target.url, {
+    if (shouldRotateWebhookSecret && current) {
+      await this.maxClient.deleteWebhookSubscription(current.url, {
         trafficClass: 'background',
         botId: bot.id,
         sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
       });
+      deletedSubscriptionUrls.add(current.url);
       await this.maxClient.ensureWebhookSubscription([...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES], {
         trafficClass: 'background',
         botId: bot.id,
         sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
       });
       reconciledAt = new Date().toISOString();
-    } else if (shouldAutoRecreateStaleIngress) {
-      await this.maxClient.deleteWebhookSubscription(target.url, {
+    } else if (shouldAutoRecreateStaleIngress && current) {
+      await this.maxClient.deleteWebhookSubscription(current.url, {
         trafficClass: 'background',
         botId: bot.id,
         sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
       });
+      deletedSubscriptionUrls.add(current.url);
       await this.maxClient.ensureWebhookSubscription([...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES], {
         trafficClass: 'background',
         botId: bot.id,
