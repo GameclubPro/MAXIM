@@ -18020,10 +18020,11 @@ describe('ModerationService', () => {
         }
       });
 
-      it('schedules async access recheck after a terminal moderation error without retrying inline', async () => {
+      it('refreshes candidates and retries another bot after a terminal moderation access error', async () => {
         const prisma = {
           chat: {
             findUnique: jest.fn().mockResolvedValue({
+              entityType: ChatEntityType.CHAT,
               botMemberships: [
                 { botId: 'id613002203036_bot', status: 'ACTIVE' },
                 { botId: 'id613002203036_4_bot', status: 'ACTIVE' },
@@ -18108,10 +18109,24 @@ describe('ModerationService', () => {
             userId: 'user-1',
             operation,
           }),
-        ).resolves.toBe(false);
+        ).resolves.toBe(true);
 
-        expect(operation.mock.calls).toEqual([['id613002203036_bot']]);
-        expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+        expect(operation.mock.calls).toEqual([
+          ['id613002203036_bot'],
+          ['id613002203036_4_bot'],
+        ]);
+        expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith('chat-1', {
+          botId: 'id613002203036_bot',
+          trafficClass: 'background',
+          actionHealthLane: 'background',
+          timeoutMs: 1_500,
+        });
+        expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith('chat-1', {
+          botId: 'id613002203036_4_bot',
+          trafficClass: 'background',
+          actionHealthLane: 'background',
+          timeoutMs: 1_500,
+        });
         expect(managedEntityAccessLossService.recordIfManagedEntityAccessLost).toHaveBeenCalledWith(
           {
             chatId: 'chat-1',
@@ -18122,14 +18137,7 @@ describe('ModerationService', () => {
             error: terminalError,
           },
         );
-        expect(maxChatAdminRosterSyncService.scheduleChatAdminRosterSync).toHaveBeenCalledWith({
-          chatId: 'chat-1',
-          botIds: [],
-          title: null,
-          entityType: null,
-          source: 'moderation_destructive_path',
-          retryUntilMs: null,
-        });
+        expect(maxChatAdminRosterSyncService.scheduleChatAdminRosterSync).not.toHaveBeenCalled();
       });
     });
 

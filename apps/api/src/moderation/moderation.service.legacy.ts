@@ -11354,6 +11354,38 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
+    if (
+      !params.explicitBotId &&
+      attempt.status === 'terminal_error' &&
+      this.isTerminalModerationActionAccessError(attempt.error)
+    ) {
+      const initialTerminalAttempt = attempt;
+      const refreshedCandidateBotIds = await this.refreshModerationActionCandidateBotIds({
+        chatId: params.chatId,
+        action: params.action,
+        force: true,
+        skipBackoffClearBotIds: initialTerminalAttempt.attemptedBotIds,
+      });
+      if (refreshedCandidateBotIds.length > 0) {
+        const retryAttempt = await this.attemptModerationActionWithCandidateBots(
+          params,
+          refreshedCandidateBotIds,
+        );
+        if (retryAttempt.status === 'success') {
+          return true;
+        }
+        if (retryAttempt.status === 'terminal_error') {
+          attempt = {
+            status: 'terminal_error',
+            attemptedBotIds: Array.from(
+              new Set([...initialTerminalAttempt.attemptedBotIds, ...retryAttempt.attemptedBotIds]),
+            ),
+            error: retryAttempt.error,
+          };
+        }
+      }
+    }
+
     if (attempt.status === 'terminal_error') {
       this.scheduleModerationActionAccessRecheck(params.chatId, params.action);
       this.logSkippedModerationActionAfterTerminalError({

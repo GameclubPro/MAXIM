@@ -57,8 +57,11 @@ describe('url-text util', () => {
     expect(extractUrlsFromText('Продам кузов Нивы.Весь перевареный')).toEqual([]);
   });
 
-  it('does not treat zero-width-split bare domains as suffix urls', () => {
-    expect(extractUrlsFromText('пример exa\u200bmple.com в тексте')).toEqual([]);
+  it('extracts urls split with zero-width format controls', () => {
+    const text = 'пример exa\u200bmple.com и https://bad.ex\u200bample/path в тексте';
+
+    expect(extractUrlsFromText(text)).toEqual(['example.com', 'https://bad.example/path']);
+    expect(stripUrlsFromText(text)).toBe('пример и в тексте');
   });
 
   it('does not treat dotted addresses as a url', () => {
