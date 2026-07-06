@@ -1,6 +1,6 @@
 import { Injectable, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { ChatEntityType, type ChatSettings } from '../prisma/prisma-client';
+import { ChatEntityType, type ChatSettings, type Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   NIGHT_MODE_TRANSITION_PROCESS_CONTINUE,
@@ -210,6 +210,16 @@ export class NightModeTransitionRuntimeService {
           settings.nightModeBotMessageEnabled &&
           !closeNoticeMessageId
         ) {
+          closeNoticeMessageId = await this.findPersistedCloseNoticeMessageId(
+            settings.chatId,
+            snapshot.sessionKey,
+          );
+        }
+        if (
+          snapshot.isCloseBoundary &&
+          settings.nightModeBotMessageEnabled &&
+          !closeNoticeMessageId
+        ) {
           const noticeResult = await hooks.sendClosedNotice(settings, snapshot);
           if (!noticeResult.shouldEnqueueNext) {
             return noticeResult;
@@ -283,6 +293,37 @@ export class NightModeTransitionRuntimeService {
 
   private buildNightModeTransitionLockKey(chatId: string): string {
     return `night-mode-transition-lock:v1:${chatId}`;
+  }
+
+  private async findPersistedCloseNoticeMessageId(
+    chatId: string,
+    sessionKey: string,
+  ): Promise<string | null> {
+    if (typeof this.prisma.moderationEvent?.findFirst !== 'function') {
+      return null;
+    }
+
+    const event = await this.prisma.moderationEvent.findFirst({
+      where: {
+        chatId,
+        ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
+        messageId: {
+          not: null,
+        },
+        metadata: {
+          path: ['sessionKey'],
+          equals: sessionKey,
+        } satisfies Prisma.JsonFilter,
+      },
+      select: {
+        messageId: true,
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+    });
+    const messageId = event?.messageId?.trim() ?? '';
+    return messageId ? messageId : null;
   }
 
   private async readNightModeTransitionState(

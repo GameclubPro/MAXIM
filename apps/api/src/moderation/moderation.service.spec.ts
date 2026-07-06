@@ -8290,6 +8290,84 @@ describe('ModerationService', () => {
     }
   });
 
+  it('restores close notice state from persisted events instead of resending after Redis loss', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-30T20:12:10.000Z'));
+    try {
+      const prisma = {
+        chatSettings: {
+          findUnique: jest.fn().mockResolvedValue({
+            ...createSettings({
+              nightModeEnabled: true,
+              nightModeStartTimeMinutes: 23 * 60,
+              nightModeEndTimeMinutes: 8 * 60,
+              nightModeTimezone: 'Europe/Moscow',
+              nightModeBotMessageEnabled: true,
+              nightModeBotMessageText: '',
+              nightModeOpenMessageEnabled: true,
+            }),
+            chat: {
+              rules: null,
+            },
+          }),
+        },
+        moderationEvent: {
+          findFirst: jest.fn().mockResolvedValue({
+            messageId: 'night-close-existing-1',
+          }),
+          create: jest.fn(),
+        },
+      };
+      const maxClient = {
+        sendMessageImmediateWithId: jest.fn(),
+        deleteMessage: jest.fn(),
+      };
+      const redisCounter = createRedisCounterMock();
+      const service = new ModerationService(
+        prisma as never,
+        {} as never,
+        {} as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        { get: jest.fn().mockReturnValue('bot-1') } as never,
+        redisCounter as never,
+      );
+
+      await service.processNightModeTransitionJob({
+        chatId: 'chat-1',
+        transition: 'close',
+        scheduledFor: '2026-05-30T20:00:00.000Z',
+        sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+      });
+
+      expect(prisma.moderationEvent.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            chatId: 'chat-1',
+            ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
+            messageId: {
+              not: null,
+            },
+            metadata: {
+              path: ['sessionKey'],
+              equals: 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+            },
+          }),
+        }),
+      );
+      expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+      expect(redisCounter.setStringWithTtl).toHaveBeenCalledWith(
+        'night-mode-transition-state:v1:chat-1',
+        expect.stringContaining('"closeNoticeMessageId":"night-close-existing-1"'),
+        expect.any(Number),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('repairs a closed transition state that missed its close notice', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-30T20:12:10.000Z'));
     try {
