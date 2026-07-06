@@ -19,6 +19,7 @@ export type AdminManualMuteFanoutJob = QueueJobEnvelope<
   {
     kind: 'manual_mute_fanout';
     jobId: string;
+    rootIntentKey?: string | null;
     sourceChatId: string;
     targetUserId: string;
     cleanupSourceChatMessages?: boolean;
@@ -35,6 +36,7 @@ export type AdminManualBanFanoutJob = QueueJobEnvelope<
   {
     kind: 'manual_ban_fanout';
     jobId: string;
+    rootIntentKey?: string | null;
     sourceChatId: string;
     targetUserId: string;
     actor: AdminManualFanoutActor;
@@ -47,6 +49,7 @@ export type AdminManualBanSourceCleanupJob = QueueJobEnvelope<
   {
     kind: 'manual_ban_source_cleanup';
     jobId: string;
+    rootIntentKey?: string | null;
     sourceChatId: string;
     targetUserId: string;
     actor: AdminManualFanoutActor;

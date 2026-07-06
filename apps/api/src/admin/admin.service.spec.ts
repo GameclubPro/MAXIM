@@ -340,6 +340,136 @@ function createPrismaMock() {
     }
     return true;
   };
+  type ManualModerationFanoutLedgerMockRow = {
+    id: string;
+    operationKey: string;
+    jobId: string | null;
+    rootIntentKey: string | null;
+    sourceKind: string;
+    operation: string;
+    sourceChatId: string;
+    targetChatId: string;
+    targetUserId: string;
+    actorUserId: string;
+    logicalAction: string;
+    executionMode: string | null;
+    botId: string | null;
+    status: string;
+    attemptCount: number;
+    moderationEventId: string | null;
+    auditLogId: string | null;
+    remoteMessageId: string | null;
+    lastError: string | null;
+    lastStatusCode: number | null;
+    lastErrorCode: string | null;
+    metadata: unknown;
+    terminal: boolean;
+    lockedAt: Date | null;
+    lockToken: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+  };
+  const manualModerationFanoutLedgerEntries: ManualModerationFanoutLedgerMockRow[] = [];
+  const matchesManualModerationFanoutLedgerWhere = (
+    row: ManualModerationFanoutLedgerMockRow,
+    where: Record<string, unknown> | undefined,
+  ): boolean => {
+    if (!where) {
+      return true;
+    }
+    for (const key of [
+      'id',
+      'operationKey',
+      'jobId',
+      'rootIntentKey',
+      'sourceKind',
+      'operation',
+      'sourceChatId',
+      'targetChatId',
+      'targetUserId',
+      'actorUserId',
+      'logicalAction',
+      'botId',
+      'lockToken',
+    ] as const) {
+      if (typeof where[key] === 'string' && row[key] !== where[key]) {
+        return false;
+      }
+      if (where[key] === null && row[key] !== null) {
+        return false;
+      }
+    }
+    if (typeof where.status === 'string' && row.status !== where.status) {
+      return false;
+    }
+    if (where.status && typeof where.status === 'object') {
+      const statusFilter = where.status as { in?: string[]; not?: string };
+      if (Array.isArray(statusFilter.in) && !statusFilter.in.includes(row.status)) {
+        return false;
+      }
+      if (typeof statusFilter.not === 'string' && row.status === statusFilter.not) {
+        return false;
+      }
+    }
+    if ('lockedAt' in where && where.lockedAt === null && row.lockedAt !== null) {
+      return false;
+    }
+    if (where.lockedAt && typeof where.lockedAt === 'object') {
+      const lockedAtFilter = where.lockedAt as { lt?: Date; gte?: Date };
+      if (lockedAtFilter.lt && !(row.lockedAt && row.lockedAt < lockedAtFilter.lt)) {
+        return false;
+      }
+      if (lockedAtFilter.gte && !(row.lockedAt && row.lockedAt >= lockedAtFilter.gte)) {
+        return false;
+      }
+    }
+    return true;
+  };
+  const applyManualModerationFanoutLedgerData = (
+    row: ManualModerationFanoutLedgerMockRow,
+    data: Record<string, unknown>,
+  ) => {
+    for (const key of [
+      'jobId',
+      'rootIntentKey',
+      'sourceKind',
+      'operation',
+      'sourceChatId',
+      'targetChatId',
+      'targetUserId',
+      'actorUserId',
+      'logicalAction',
+      'executionMode',
+      'botId',
+      'status',
+      'moderationEventId',
+      'auditLogId',
+      'remoteMessageId',
+      'lastError',
+      'lastStatusCode',
+      'lastErrorCode',
+      'metadata',
+      'lockedAt',
+      'lockToken',
+    ] as const) {
+      if (key in data && data[key] !== undefined) {
+        (row as unknown as Record<string, unknown>)[key] = data[key] ?? null;
+      }
+    }
+    if ('terminal' in data && data.terminal !== undefined) {
+      row.terminal = data.terminal === true;
+    }
+    if (
+      data.attemptCount &&
+      typeof data.attemptCount === 'object' &&
+      'increment' in data.attemptCount
+    ) {
+      row.attemptCount += Number((data.attemptCount as { increment: number }).increment);
+    } else if (typeof data.attemptCount === 'number') {
+      row.attemptCount = data.attemptCount;
+    }
+    row.updatedAt = new Date('2026-03-01T00:00:00.000Z');
+  };
   const prisma = {
     chat: {
       upsert: jest.fn().mockResolvedValue({
@@ -627,6 +757,115 @@ function createPrismaMock() {
               row.attemptCount += Number((data.attemptCount as { increment: number }).increment);
             }
             row.updatedAt = new Date('2026-03-01T00:00:00.000Z');
+          }
+          return { count };
+        },
+      ),
+    },
+    manualModerationFanoutLedgerEntry: {
+      createMany: jest.fn().mockImplementation(
+        async ({
+          data,
+          skipDuplicates,
+        }: {
+          data: Array<Record<string, unknown>>;
+          skipDuplicates?: boolean;
+        }) => {
+          let count = 0;
+          for (const item of data) {
+            const operationKey = String(item.operationKey);
+            if (
+              skipDuplicates &&
+              manualModerationFanoutLedgerEntries.some((row) => row.operationKey === operationKey)
+            ) {
+              continue;
+            }
+            manualModerationFanoutLedgerEntries.push({
+              id:
+                typeof item.id === 'string'
+                  ? item.id
+                  : `manual-fanout-ledger-${manualModerationFanoutLedgerEntries.length + 1}`,
+              operationKey,
+              jobId: typeof item.jobId === 'string' ? item.jobId : null,
+              rootIntentKey: typeof item.rootIntentKey === 'string' ? item.rootIntentKey : null,
+              sourceKind: String(item.sourceKind ?? ''),
+              operation: String(item.operation ?? ''),
+              sourceChatId: String(item.sourceChatId ?? ''),
+              targetChatId: String(item.targetChatId ?? ''),
+              targetUserId: String(item.targetUserId ?? ''),
+              actorUserId: String(item.actorUserId ?? ''),
+              logicalAction: String(item.logicalAction ?? ''),
+              executionMode: typeof item.executionMode === 'string' ? item.executionMode : null,
+              botId: typeof item.botId === 'string' ? item.botId : null,
+              status: typeof item.status === 'string' ? item.status : 'IN_PROGRESS',
+              attemptCount: Number(item.attemptCount ?? 0),
+              moderationEventId:
+                typeof item.moderationEventId === 'string' ? item.moderationEventId : null,
+              auditLogId: typeof item.auditLogId === 'string' ? item.auditLogId : null,
+              remoteMessageId:
+                typeof item.remoteMessageId === 'string' ? item.remoteMessageId : null,
+              lastError: typeof item.lastError === 'string' ? item.lastError : null,
+              lastStatusCode:
+                typeof item.lastStatusCode === 'number' ? item.lastStatusCode : null,
+              lastErrorCode: typeof item.lastErrorCode === 'string' ? item.lastErrorCode : null,
+              metadata: 'metadata' in item ? item.metadata : null,
+              terminal: item.terminal === true,
+              lockedAt: item.lockedAt instanceof Date ? item.lockedAt : null,
+              lockToken: typeof item.lockToken === 'string' ? item.lockToken : null,
+              createdAt:
+                item.createdAt instanceof Date
+                  ? item.createdAt
+                  : new Date('2026-03-01T00:00:00.000Z'),
+              updatedAt:
+                item.updatedAt instanceof Date
+                  ? item.updatedAt
+                  : new Date('2026-03-01T00:00:00.000Z'),
+            });
+            count += 1;
+          }
+          return { count };
+        },
+      ),
+      findMany: jest.fn().mockImplementation(
+        async ({ where }: { where?: Record<string, unknown> } = {}) =>
+          manualModerationFanoutLedgerEntries.filter((row) =>
+            matchesManualModerationFanoutLedgerWhere(row, where),
+          ),
+      ),
+      count: jest.fn().mockImplementation(
+        async ({ where }: { where?: Record<string, unknown> } = {}) =>
+          manualModerationFanoutLedgerEntries.filter((row) =>
+            matchesManualModerationFanoutLedgerWhere(row, where),
+          ).length,
+      ),
+      updateMany: jest.fn().mockImplementation(
+        async ({
+          where,
+          data,
+        }: {
+          where?: Record<string, unknown>;
+          data: Record<string, unknown>;
+        }) => {
+          let count = 0;
+          for (const row of manualModerationFanoutLedgerEntries) {
+            if (!matchesManualModerationFanoutLedgerWhere(row, where)) {
+              continue;
+            }
+            count += 1;
+            applyManualModerationFanoutLedgerData(row, data);
+          }
+          return { count };
+        },
+      ),
+      deleteMany: jest.fn().mockImplementation(
+        async ({ where }: { where?: Record<string, unknown> } = {}) => {
+          let count = 0;
+          for (let index = manualModerationFanoutLedgerEntries.length - 1; index >= 0; index -= 1) {
+            if (!matchesManualModerationFanoutLedgerWhere(manualModerationFanoutLedgerEntries[index], where)) {
+              continue;
+            }
+            manualModerationFanoutLedgerEntries.splice(index, 1);
+            count += 1;
           }
           return { count };
         },
@@ -8855,6 +9094,7 @@ describe('AdminService.applyManualSystemBan', () => {
         targetDisplayNameHint: 'Нарушитель',
         allowTargetDisplayNameRemoteLookup: false,
         fanoutAllChats: false,
+        fanoutLedgerJobId: 'job-command-1',
       },
     );
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-target-1', {
@@ -9035,6 +9275,94 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
   });
 
+  it('does not report success when a retried source ban command is already ambiguous', async () => {
+    const prisma = createPrismaMock();
+    const timeoutError = Object.assign(new Error('timeout'), { code: 'ECONNABORTED' });
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-2',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['add_remove_members'],
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'user-2',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      banMember: jest.fn().mockRejectedValue(timeoutError),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const job = {
+      kind: 'manual_group_moderation_command' as const,
+      jobId: 'job-command-source-timeout-1',
+      sourceChatId: 'chat-1',
+      commandBotId: 'bot-2',
+      targetUserId: 'user-2',
+      targetSenderName: 'Нарушитель',
+      targetMessageId: 'mid-target-1',
+      commandMessageId: 'mid-command-1',
+      actor: {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatId: 'chat-1',
+        chatTitle: 'Chat 1',
+      },
+      action: 'BAN' as const,
+      muteDurationHours: null,
+      deleteBotMessagesEnabled: true,
+      deleteBotMessagesDelayMinutes: 3,
+    };
+
+    await expect(service.processManualModerationFanoutJob(job)).rejects.toThrow(
+      ServiceUnavailableException,
+    );
+    await expect(service.processManualModerationFanoutJob(job)).resolves.toBeUndefined();
+
+    expect(maxClient.banMember).toHaveBeenCalledTimes(1);
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      expect.stringContaining('MAX не подтвердил результат предыдущей попытки'),
+      { textFormat: 'markdown' },
+      expect.objectContaining({
+        immediate: true,
+        trafficClass: 'interactive',
+        botId: 'bot-2',
+      }),
+    );
+    expect(maxClient.sendMessage).not.toHaveBeenCalledWith(
+      'chat-1',
+      expect.stringContaining('забанен'),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(prisma.manualModerationFanoutLedgerEntry.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          operationKey: expect.stringContaining('COMMAND_SOURCE_BAN'),
+        }),
+        data: expect.objectContaining({
+          status: 'AMBIGUOUS',
+          terminal: true,
+        }),
+      }),
+    );
+  });
+
   it('processes queued primary group permanent mute commands outside the webhook hot path', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
@@ -9099,6 +9427,7 @@ describe('AdminService.applyManualSystemBan', () => {
         targetDisplayNameHint: 'Нарушитель',
         allowTargetDisplayNameRemoteLookup: false,
         fanoutAllChats: false,
+        fanoutLedgerJobId: 'job-command-1',
       },
     );
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-target-1', {
@@ -9362,6 +9691,408 @@ describe('AdminService.applyManualSystemBan', () => {
       immediate: true,
       botId: 'bot-2',
     });
+  });
+
+  it('does not repeat a succeeded queued manual ban fanout target on replay', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        userId: 'admin-1',
+        chatId: 'chat-2',
+        chat: {
+          id: 'chat-2',
+          title: 'Вторая группа',
+          createdAt: new Date('2026-03-02T00:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-2',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['add_remove_members'],
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'user-3',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      banMember: jest.fn().mockResolvedValue(undefined),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const job = {
+      kind: 'manual_ban_fanout' as const,
+      jobId: 'job-ban-replay-1',
+      rootIntentKey: 'command-root-1',
+      sourceChatId: 'chat-1',
+      targetUserId: 'user-3',
+      actor: {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatId: null,
+        chatTitle: null,
+      },
+      source: 'group_command' as const,
+    };
+
+    await service.processManualModerationFanoutJob(job);
+    await service.processManualModerationFanoutJob(job);
+
+    expect(maxClient.banMember).toHaveBeenCalledTimes(1);
+    expect(prisma.manualModerationFanoutLedgerEntry.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          operationKey: expect.stringContaining('FANOUT_BAN_MEMBER'),
+        }),
+        data: expect.objectContaining({
+          status: 'SUCCEEDED',
+        }),
+      }),
+    );
+  });
+
+  it('marks timed out queued manual ban fanout ambiguous and does not auto retry it', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        userId: 'admin-1',
+        chatId: 'chat-2',
+        chat: {
+          id: 'chat-2',
+          title: 'Вторая группа',
+          createdAt: new Date('2026-03-02T00:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+
+    const timeoutError = Object.assign(new Error('timeout'), { code: 'ECONNABORTED' });
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-2',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['add_remove_members'],
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'user-3',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      banMember: jest.fn().mockRejectedValueOnce(timeoutError).mockResolvedValue(undefined),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const job = {
+      kind: 'manual_ban_fanout' as const,
+      jobId: 'job-ban-timeout-1',
+      rootIntentKey: 'command-root-timeout-1',
+      sourceChatId: 'chat-1',
+      targetUserId: 'user-3',
+      actor: {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatId: null,
+        chatTitle: null,
+      },
+      source: 'group_command' as const,
+    };
+
+    await service.processManualModerationFanoutJob(job);
+    await service.processManualModerationFanoutJob(job);
+
+    expect(maxClient.banMember).toHaveBeenCalledTimes(1);
+    expect(prisma.manualModerationFanoutLedgerEntry.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          operationKey: expect.stringContaining('FANOUT_BAN_MEMBER'),
+        }),
+        data: expect.objectContaining({
+          status: 'AMBIGUOUS',
+        }),
+      }),
+    );
+  });
+
+  it('reclaims stale in-progress manual fanout ledger entries instead of making them ambiguous', async () => {
+    const prisma = createPrismaMock();
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const operationKey = 'manual_moderation_fanout:v1:FANOUT_MUTE_RECORD:test-stale';
+    const params = {
+      operationKey,
+      jobId: 'job-stale-1',
+      rootIntentKey: 'root-stale-1',
+      sourceKind: 'manual_mute_fanout',
+      operation: 'FANOUT_MUTE_RECORD',
+      sourceChatId: 'chat-1',
+      targetChatId: 'chat-2',
+      targetUserId: 'user-2',
+      actorUserId: 'admin-1',
+      logicalAction: 'MUTE',
+      botId: 'bot-2',
+      metadata: { source: 'group_command' },
+    };
+
+    const firstClaim = await (service as any).claimManualModerationFanoutLedgerEntry(params);
+    await prisma.manualModerationFanoutLedgerEntry.updateMany({
+      where: { operationKey },
+      data: {
+        lockedAt: new Date(Date.now() - 11 * 60 * 1000),
+      },
+    });
+    const secondClaim = await (service as any).claimManualModerationFanoutLedgerEntry(params);
+    const rows = await prisma.manualModerationFanoutLedgerEntry.findMany({
+      where: { operationKey },
+    });
+
+    expect(firstClaim.claimed).toBe(true);
+    expect(secondClaim.claimed).toBe(true);
+    expect(secondClaim.lockToken).not.toEqual(firstClaim.lockToken);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual(
+      expect.objectContaining({
+        status: 'IN_PROGRESS',
+        attemptCount: 2,
+        terminal: false,
+        lockToken: secondClaim.lockToken,
+      }),
+    );
+  });
+
+  it('throws queued manual mute fanout jobs when a target failure is retryable', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        userId: 'admin-1',
+        chatId: 'chat-2',
+        chat: {
+          id: 'chat-2',
+          title: 'Вторая группа',
+          createdAt: new Date('2026-03-02T00:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-2',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'user-2',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.processManualModerationFanoutJob({
+        kind: 'manual_mute_fanout',
+        jobId: 'job-mute-retryable-1',
+        rootIntentKey: 'command-root-mute-retryable-1',
+        sourceChatId: 'chat-1',
+        targetUserId: 'user-2',
+        cleanupSourceChatMessages: false,
+        actor: {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatId: null,
+          chatTitle: null,
+        },
+        muteDurationHours: 6,
+        muteExpiresAt: '2026-04-08T22:18:25.418Z',
+        mutePermanent: false,
+        source: 'group_command',
+      }),
+    ).rejects.toThrow(ServiceUnavailableException);
+
+    expect(prisma.manualModerationFanoutLedgerEntry.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          operationKey: expect.stringContaining('FANOUT_MUTE_RECORD'),
+        }),
+        data: expect.objectContaining({
+          status: 'FAILED_RETRYABLE',
+        }),
+      }),
+    );
+  });
+
+  it('does not duplicate manual mute fanout records on replay', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        userId: 'admin-1',
+        chatId: 'chat-2',
+        chat: {
+          id: 'chat-2',
+          title: 'Вторая группа',
+          createdAt: new Date('2026-03-02T00:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-2',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['delete_messages'],
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'user-2',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const job = {
+      kind: 'manual_mute_fanout' as const,
+      jobId: 'job-mute-replay-1',
+      rootIntentKey: 'command-root-mute-1',
+      sourceChatId: 'chat-1',
+      targetUserId: 'user-2',
+      cleanupSourceChatMessages: false,
+      actor: {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatId: null,
+        chatTitle: null,
+      },
+      muteDurationHours: 6,
+      muteExpiresAt: '2026-04-08T22:18:25.418Z',
+      mutePermanent: false,
+      source: 'group_command' as const,
+    };
+
+    await service.processManualModerationFanoutJob(job);
+    await service.processManualModerationFanoutJob(job);
+
+    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
+    expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
+    expect(prisma.manualModerationFanoutLedgerEntry.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          operationKey: expect.stringContaining('FANOUT_MUTE_RECORD'),
+        }),
+        data: expect.objectContaining({
+          status: 'SUCCEEDED',
+        }),
+      }),
+    );
+  });
+
+  it('does not send duplicate queued group command success notices on replay', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    jest.spyOn(service, 'applyManualSystemBan').mockResolvedValue({
+      ok: true,
+      action: 'BAN',
+      userId: 'user-2',
+      muteDurationHours: null,
+      muteExpiresAt: null,
+      message: 'Пользователь забанен.',
+    });
+
+    const job = {
+      kind: 'manual_group_moderation_command' as const,
+      jobId: 'job-command-notice-1',
+      sourceChatId: 'chat-1',
+      commandBotId: 'bot-2',
+      targetUserId: 'user-2',
+      targetSenderName: 'Нарушитель',
+      targetMessageId: 'mid-target-1',
+      commandMessageId: 'mid-command-1',
+      actor: {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatId: 'chat-1',
+        chatTitle: 'Chat 1',
+      },
+      action: 'BAN' as const,
+      muteDurationHours: null,
+      deleteBotMessagesEnabled: true,
+      deleteBotMessagesDelayMinutes: 3,
+    };
+
+    await service.processManualModerationFanoutJob(job);
+    await service.processManualModerationFanoutJob(job);
+
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(prisma.manualModerationFanoutLedgerEntry.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          operationKey: expect.stringContaining('COMMAND_NOTICE_SUCCESS'),
+        }),
+        data: expect.objectContaining({
+          status: 'SUCCEEDED',
+        }),
+      }),
+    );
   });
 
   it('processes queued local manual ban cleanup without running cross-chat fanout', async () => {

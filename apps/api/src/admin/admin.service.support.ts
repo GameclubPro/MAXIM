@@ -233,6 +233,7 @@ export type ManualModerationExecutionOptions = {
   targetDisplayNameHint?: string | null;
   allowTargetDisplayNameRemoteLookup?: boolean;
   fanoutAllChats?: boolean;
+  fanoutLedgerJobId?: string | null;
 };
 export type ResolveManualModerationActionBotAssignmentOptions = {
   preferredBotId?: string | null;

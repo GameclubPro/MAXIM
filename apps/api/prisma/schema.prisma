@@ -186,6 +186,15 @@ enum ChannelSuggestionAdminDeliveryStatus {
   AMBIGUOUS
 }
 
+enum ManualModerationFanoutLedgerStatus {
+  IN_PROGRESS
+  SUCCEEDED
+  SKIPPED
+  AMBIGUOUS
+  FAILED_RETRYABLE
+  FAILED_TERMINAL
+}
+
 enum ManagedAutopostRuleStatus {
   ACTIVE
   PAUSED
@@ -1362,6 +1371,43 @@ model ChannelSuggestionAdminDelivery {
   @@index([auditLogId, status], map: "channel_suggestion_admin_deliveries_audit_status_idx")
   @@index([status, lockedAt], map: "channel_suggestion_admin_deliveries_status_locked_idx")
   @@map("channel_suggestion_admin_deliveries")
+}
+
+model ManualModerationFanoutLedgerEntry {
+  id                String                             @id @default(cuid())
+  operationKey      String                             @unique @map("operation_key")
+  jobId             String?                            @map("job_id")
+  rootIntentKey     String?                            @map("root_intent_key")
+  sourceKind        String                             @map("source_kind")
+  operation         String
+  sourceChatId      String                             @map("source_chat_id")
+  targetChatId      String                             @map("target_chat_id")
+  targetUserId      String                             @map("target_user_id")
+  actorUserId       String                             @map("actor_user_id")
+  logicalAction     String                             @map("logical_action")
+  executionMode     String?                            @map("execution_mode")
+  botId             String?                            @map("bot_id")
+  status            ManualModerationFanoutLedgerStatus @default(IN_PROGRESS)
+  attemptCount      Int                                @default(0) @map("attempt_count")
+  moderationEventId String?                            @map("moderation_event_id")
+  auditLogId        String?                            @map("audit_log_id")
+  remoteMessageId   String?                            @map("remote_message_id")
+  lastError         String?                            @map("last_error")
+  lastStatusCode    Int?                               @map("last_status_code")
+  lastErrorCode     String?                            @map("last_error_code")
+  metadata          Json?
+  terminal          Boolean                            @default(false)
+  lockedAt          DateTime?                          @map("locked_at")
+  lockToken         String?                            @map("lock_token")
+  createdAt         DateTime                           @default(now()) @map("created_at")
+  updatedAt         DateTime                           @updatedAt @map("updated_at")
+
+  @@index([status, lockedAt], map: "manual_mod_fanout_ledger_status_locked_idx")
+  @@index([sourceChatId, targetUserId, createdAt], map: "manual_mod_fanout_ledger_source_user_created_idx")
+  @@index([targetChatId, targetUserId, logicalAction, createdAt], map: "manual_mod_fanout_ledger_target_action_created_idx")
+  @@index([jobId, operation, targetChatId], map: "manual_mod_fanout_ledger_job_operation_target_idx")
+  @@index([rootIntentKey, operation, targetChatId], map: "manual_mod_fanout_ledger_root_operation_target_idx")
+  @@map("manual_moderation_fanout_ledger")
 }
 
 model ChannelAutoPostAttachMarker {
