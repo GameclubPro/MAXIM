@@ -18,6 +18,7 @@ BRANCH="${1:-main}"
 PRE_PULL_HEAD=""
 PUBLIC_HEALTH_URL="${MAXIM_VPS_PUBLIC_URL:-${MAXIM_PUBLIC_HEALTH_URL:-https://major-maksimov.ru}}"
 PUBLIC_HEALTH_URL="${PUBLIC_HEALTH_URL%/}"
+DEPLOY_LOCK_DIR="${MAXIM_DEPLOY_LOCK_DIR:-/tmp/maxim-main-deploy.lock}"
 
 if [[ $# -ge 2 ]]; then
   SERVICES=("${@:2}")
@@ -88,6 +89,47 @@ WARNING: miniapp-static serves legacy https://maxim.play-team.ru/app/.
 Routine production mini app deploys should target miniapp-major-static for https://major-maksimov.ru/app/.
 Continue only if you intentionally need the legacy support static container.
 EOF
+}
+
+acquire_deploy_lock() {
+  local existing_pid
+
+  if mkdir "$DEPLOY_LOCK_DIR" 2>/dev/null; then
+    printf '%s\n' "$$" >"$DEPLOY_LOCK_DIR/pid"
+    trap release_deploy_lock EXIT
+    return 0
+  fi
+
+  existing_pid="$(cat "$DEPLOY_LOCK_DIR/pid" 2>/dev/null || true)"
+  if [[ "$existing_pid" == "$$" ]]; then
+    trap release_deploy_lock EXIT
+    return 0
+  fi
+
+  if [[ "$existing_pid" =~ ^[0-9]+$ ]] && kill -0 "$existing_pid" 2>/dev/null; then
+    echo "Another main deploy is already running (pid=$existing_pid)." >&2
+    return 1
+  fi
+
+  echo "Removing stale main deploy lock: $DEPLOY_LOCK_DIR" >&2
+  rm -rf "$DEPLOY_LOCK_DIR"
+  if mkdir "$DEPLOY_LOCK_DIR" 2>/dev/null; then
+    printf '%s\n' "$$" >"$DEPLOY_LOCK_DIR/pid"
+    trap release_deploy_lock EXIT
+    return 0
+  fi
+
+  echo "Failed to acquire main deploy lock: $DEPLOY_LOCK_DIR" >&2
+  return 1
+}
+
+release_deploy_lock() {
+  local existing_pid
+
+  existing_pid="$(cat "$DEPLOY_LOCK_DIR/pid" 2>/dev/null || true)"
+  if [[ "$existing_pid" == "$$" ]]; then
+    rm -rf "$DEPLOY_LOCK_DIR"
+  fi
 }
 
 has_pulled_changes() {
@@ -385,6 +427,7 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
+acquire_deploy_lock
 sync_branch
 reexec_if_current_script_changed
 ensure_compose_env

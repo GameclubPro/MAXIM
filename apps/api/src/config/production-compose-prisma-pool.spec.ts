@@ -87,6 +87,19 @@ describe('production deploy script guards', () => {
     );
   });
 
+  it('serializes main deploys and keeps API recreate waves one-at-a-time', () => {
+    const script = readRepoFile('infra/scripts/vps-pull-build-up.sh');
+    const lockCall = lineCallIndex(script, 'acquire_deploy_lock');
+
+    expect(script).toContain('DEPLOY_LOCK_DIR="${MAXIM_DEPLOY_LOCK_DIR:-/tmp/maxim-main-deploy.lock}"');
+    expect(script).toContain('Another main deploy is already running');
+    expect(lockCall).toBeLessThan(lineCallIndex(script, 'sync_branch'));
+    expect(lockCall).toBeLessThan(indexOfRequired(script, 'docker compose "${COMPOSE_FILES[@]}" build'));
+    expect(lockCall).toBeLessThan(lineCallIndex(script, 'recreate_service_wave "worker" \\'));
+    expect(script).toContain('batch_size="${MAXIM_DEPLOY_API_RECREATE_BATCH_SIZE:-1}"');
+    expect(script).toContain('batch_delay_sec="${MAXIM_DEPLOY_API_RECREATE_BATCH_DELAY_SEC:-5}"');
+  });
+
   it('prepares scale Redis named volume before stopping conflicting stacks', () => {
     const script = readRepoFile('infra/scripts/vps-pull-build-up-scale.sh');
 
