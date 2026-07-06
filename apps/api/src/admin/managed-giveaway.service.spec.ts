@@ -6,6 +6,7 @@ import {
   ManagedGiveawayStatus,
   ManagedGiveawayWinnerStatus,
 } from '../prisma/prisma-client';
+import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import {
   ManagedGiveawayMembershipLookupUnavailableError,
@@ -99,6 +100,38 @@ function createMaxClientMock() {
     sendMessageImmediateToUser: jest.fn(),
     editMessageInlineKeyboard: jest.fn(),
   };
+}
+
+function expectManagedGiveawaySendOptions(overrides: Record<string, unknown> = {}) {
+  return expect.objectContaining({
+    trafficClass: 'interactive',
+    actionHealthLane: 'interactive',
+    sourceTag: MAX_API_SOURCE_TAGS.MANAGED_GIVEAWAY,
+    timeoutMs: 12000,
+    ...overrides,
+  });
+}
+
+function expectManagedGiveawayBackgroundSendOptions(overrides: Record<string, unknown> = {}) {
+  return expect.objectContaining({
+    trafficClass: 'background',
+    actionHealthLane: 'background',
+    sourceTag: MAX_API_SOURCE_TAGS.GIVEAWAY_DRAW_BACKGROUND,
+    timeoutMs: 12000,
+    ...overrides,
+  });
+}
+
+function expectManagedGiveawayBackgroundMembershipOptions(
+  overrides: Record<string, unknown> = {},
+) {
+  return expect.objectContaining({
+    trafficClass: 'background',
+    actionHealthLane: 'background',
+    sourceTag: MAX_API_SOURCE_TAGS.GIVEAWAY_DRAW_BACKGROUND,
+    timeoutMs: 5000,
+    ...overrides,
+  });
 }
 
 function createManagedEntityAccessLossMock() {
@@ -700,6 +733,7 @@ describe('ManagedGiveawayService', () => {
       expect.objectContaining({
         buttons: [[expect.objectContaining({ text: 'Участвовать · 1' })]],
       }),
+      expectManagedGiveawaySendOptions(),
     );
   });
 
@@ -753,7 +787,7 @@ describe('ManagedGiveawayService', () => {
       expect.objectContaining({
         buttons: [[expect.objectContaining({ text: 'Участвовать · 1' })]],
       }),
-      { botId: 'publication-author-bot' },
+      expectManagedGiveawaySendOptions({ botId: 'publication-author-bot' }),
     );
   });
 
@@ -801,6 +835,7 @@ describe('ManagedGiveawayService', () => {
       expect.objectContaining({
         buttons: [[expect.objectContaining({ text: 'Участвовать · 0' })]],
       }),
+      expectManagedGiveawaySendOptions(),
     );
   });
 
@@ -849,6 +884,7 @@ describe('ManagedGiveawayService', () => {
       expect.not.objectContaining({
         textFormat: expect.any(String),
       }),
+      expectManagedGiveawaySendOptions(),
     );
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
       'source-1',
@@ -857,6 +893,7 @@ describe('ManagedGiveawayService', () => {
       expect.objectContaining({
         buttons: [[expect.objectContaining({ text: 'Участвовать · 1' })]],
       }),
+      expectManagedGiveawaySendOptions(),
     );
   });
 
@@ -1085,6 +1122,7 @@ describe('ManagedGiveawayService', () => {
         },
         buttons: [[expect.objectContaining({ text: 'Проверить результаты' })]],
       }),
+      expectManagedGiveawaySendOptions(),
     );
     expect(prisma.managedGiveaway.update).toHaveBeenCalledWith({
       where: { id: 'giveaway-1' },
@@ -1135,7 +1173,7 @@ describe('ManagedGiveawayService', () => {
           mid: 'publication-1',
         },
       }),
-      { botId: 'publication-author-bot' },
+      expectManagedGiveawaySendOptions({ botId: 'publication-author-bot' }),
     );
     expect(prisma.managedGiveaway.update).toHaveBeenCalledWith({
       where: { id: 'giveaway-1' },
@@ -1313,6 +1351,7 @@ describe('ManagedGiveawayService', () => {
         textFormat: 'html',
         buttons: [[expect.objectContaining({ text: 'Участвовать · 0' })]],
       }),
+      expectManagedGiveawaySendOptions(),
     );
     expect(prisma.managedGiveaway.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1427,6 +1466,7 @@ describe('ManagedGiveawayService', () => {
         textFormat: 'html',
         buttons: [[expect.objectContaining({ text: 'Участвовать · 0' })]],
       }),
+      expectManagedGiveawaySendOptions(),
     );
   });
 
@@ -1497,7 +1537,7 @@ describe('ManagedGiveawayService', () => {
           ],
         ],
       }),
-      { botId: 'id613002203036_4_bot' },
+      expectManagedGiveawaySendOptions({ botId: 'id613002203036_4_bot' }),
     );
     expect(prisma.managedGiveaway.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1588,7 +1628,7 @@ describe('ManagedGiveawayService', () => {
           ],
         ],
       }),
-      { botId: 'id613002203036_4_bot' },
+      expectManagedGiveawaySendOptions({ botId: 'id613002203036_4_bot' }),
     );
   });
 
@@ -1679,6 +1719,7 @@ describe('ManagedGiveawayService', () => {
       expect.objectContaining({
         textFormat: 'markdown',
       }),
+      expectManagedGiveawaySendOptions(),
     );
   });
 
@@ -1714,7 +1755,7 @@ describe('ManagedGiveawayService', () => {
           mid: 'publication-1',
         },
       }),
-      { botId: 'results-author-bot' },
+      expectManagedGiveawaySendOptions({ botId: 'results-author-bot' }),
     );
   });
 
@@ -1755,6 +1796,7 @@ describe('ManagedGiveawayService', () => {
           ],
         ],
       }),
+      expectManagedGiveawaySendOptions(),
     );
   });
 
@@ -1811,7 +1853,7 @@ describe('ManagedGiveawayService', () => {
           ],
         ],
       }),
-      { botId: '888000_bot' },
+      expectManagedGiveawaySendOptions({ botId: '888000_bot' }),
     );
   });
 

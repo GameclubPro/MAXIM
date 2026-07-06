@@ -103,6 +103,11 @@ const GIVEAWAY_RUNNER_LOOKUP_DEFER_AFTER_FAILURE_COUNT = 4;
 const GIVEAWAY_RUNNER_LOOKUP_DEFER_MS = 30 * 60_000;
 const GIVEAWAY_RUNNER_LOOKUP_TERMINAL_DEFER_MS = 2 * 60 * 60_000;
 const GIVEAWAY_RUNNER_THROTTLE_LOG_INTERVAL_MS = 60_000;
+const MANAGED_GIVEAWAY_METADATA_TIMEOUT_MS = 2_500;
+const MANAGED_GIVEAWAY_SEND_TIMEOUT_MS = 12_000;
+const MANAGED_GIVEAWAY_UPLOAD_TIMEOUT_MS = 30_000;
+const MANAGED_GIVEAWAY_MEMBERSHIP_TIMEOUT_MS = 3_000;
+const MANAGED_GIVEAWAY_BACKGROUND_MEMBERSHIP_TIMEOUT_MS = 5_000;
 const MANAGED_GIVEAWAY_INCLUDE = {
   prizes: {
     orderBy: { position: 'asc' },
@@ -146,6 +151,40 @@ type GiveawayEligibilityCheckOptions = {
   allowStaleMembershipOnError?: boolean;
   failedChannelId?: string;
 };
+type GiveawayMaxApiOptionsKind = 'metadata' | 'send' | 'upload' | 'membership';
+
+function buildManagedGiveawayMaxApiOptions(
+  source: GiveawayActionSource,
+  kind: GiveawayMaxApiOptionsKind,
+  botId?: string | null,
+) {
+  const isRunner = source === 'runner';
+  const timeoutMs =
+    kind === 'metadata'
+      ? MANAGED_GIVEAWAY_METADATA_TIMEOUT_MS
+      : kind === 'upload'
+        ? MANAGED_GIVEAWAY_UPLOAD_TIMEOUT_MS
+        : kind === 'membership'
+          ? isRunner
+            ? MANAGED_GIVEAWAY_BACKGROUND_MEMBERSHIP_TIMEOUT_MS
+            : MANAGED_GIVEAWAY_MEMBERSHIP_TIMEOUT_MS
+          : MANAGED_GIVEAWAY_SEND_TIMEOUT_MS;
+
+  return {
+    ...(botId ? { botId } : {}),
+    trafficClass: (isRunner ? 'background' : 'interactive') as 'background' | 'interactive',
+    actionHealthLane:
+      kind === 'metadata' || (kind === 'membership' && !isRunner)
+        ? ('background' as const)
+        : isRunner
+          ? ('background' as const)
+          : ('interactive' as const),
+    sourceTag: isRunner
+      ? MAX_API_SOURCE_TAGS.GIVEAWAY_DRAW_BACKGROUND
+      : MAX_API_SOURCE_TAGS.MANAGED_GIVEAWAY,
+    timeoutMs,
+  };
+}
 
 export class ManagedGiveawayMembershipLookupUnavailableError extends Error {
   constructor(
@@ -308,7 +347,7 @@ export class ManagedGiveawayService {
     await this.assertAdminEntityAccess(sourceChatId, user, entityType);
 
     const giveaway = await this.findGiveawayForSource(sourceChatId, giveawayId, entityType);
-    await this.editGiveawayPublicationIfNeeded(giveaway, giveaway.status);
+    await this.editGiveawayPublicationIfNeeded(giveaway, giveaway.status, source);
     await this.writeAuditLog(sourceChatId, user.userId, 'REFRESH_GIVEAWAY_PUBLICATION', {
       giveawayId,
       entityType,
@@ -430,7 +469,7 @@ export class ManagedGiveawayService {
     let maxSendAccepted = false;
     try {
       const publicationButton = await this.buildGiveawayEntryButton(giveaway);
-      const imagePayload = await this.uploadGiveawayImage(giveaway, publicationBotId);
+      const imagePayload = await this.uploadGiveawayImage(giveaway, publicationBotId, source);
       const publicationTextPayload = this.buildFormattedGiveawayTextPayload(
         this.buildGiveawayPublicationText(giveaway),
       );
@@ -447,12 +486,13 @@ export class ManagedGiveawayService {
             sourceChatId,
             publicationTextPayload.text,
             publicationOptions,
-            { botId: publicationBotId },
+            buildManagedGiveawayMaxApiOptions(source, 'send', publicationBotId),
           )
         : await this.maxClient.sendMessageImmediateWithResolvedLink(
             sourceChatId,
             publicationTextPayload.text,
             publicationOptions,
+            buildManagedGiveawayMaxApiOptions(source, 'send'),
           );
       maxSendAccepted = true;
 
@@ -609,12 +649,14 @@ export class ManagedGiveawayService {
       });
     });
 
-    await this.editGiveawayPublicationIfNeeded(updated, ManagedGiveawayStatus.COMPLETED);
-    await this.republishGiveawayResults(updated);
+    await this.editGiveawayPublicationIfNeeded(updated, ManagedGiveawayStatus.COMPLETED, source);
+    await this.republishGiveawayResults(updated, source);
     const refreshed = await this.findGiveawayById(updated.id);
-    await this.sendWinnerDirectMessages(refreshed, [
-      this.buildWinnerNotificationKey(nextEntry.entry.id, winner.prizeId),
-    ]);
+    await this.sendWinnerDirectMessages(
+      refreshed,
+      [this.buildWinnerNotificationKey(nextEntry.entry.id, winner.prizeId)],
+      source,
+    );
     await this.writeAuditLog(sourceChatId, user.userId, 'REROLL_GIVEAWAY_WINNER', {
       giveawayId,
       winnerId: winner.id,
@@ -673,8 +715,8 @@ export class ManagedGiveawayService {
       include: MANAGED_GIVEAWAY_INCLUDE,
     });
 
-    await this.editGiveawayPublicationIfNeeded(refreshed, ManagedGiveawayStatus.COMPLETED);
-    await this.republishGiveawayResults(refreshed);
+    await this.editGiveawayPublicationIfNeeded(refreshed, ManagedGiveawayStatus.COMPLETED, source);
+    await this.republishGiveawayResults(refreshed, source);
 
     return managedGiveawayDetailsSchema.parse(this.mapGiveawayDetails(refreshed));
   }
@@ -710,7 +752,7 @@ export class ManagedGiveawayService {
       include: MANAGED_GIVEAWAY_INCLUDE,
     });
 
-    await this.editGiveawayPublicationIfNeeded(updated, ManagedGiveawayStatus.CANCELED);
+    await this.editGiveawayPublicationIfNeeded(updated, ManagedGiveawayStatus.CANCELED, source);
     await this.writeAuditLog(sourceChatId, user.userId, 'CANCEL_GIVEAWAY', {
       giveawayId,
       entityType,
@@ -839,7 +881,7 @@ export class ManagedGiveawayService {
     }
 
     const latest = await this.findGiveawayById(refreshed.id);
-    await this.editGiveawayPublicationIfNeeded(latest, ManagedGiveawayStatus.ACTIVE);
+    await this.editGiveawayPublicationIfNeeded(latest, ManagedGiveawayStatus.ACTIVE, 'miniapp');
     const claimBotId = await this.resolveGiveawayParticipantClaimBotId(latest.sourceChatId);
     return managedGiveawayParticipantStateSchema.parse(
       this.mapParticipantState(latest, user.userId, claimBotId),
@@ -919,8 +961,8 @@ export class ManagedGiveawayService {
       include: MANAGED_GIVEAWAY_INCLUDE,
     });
 
-    await this.editGiveawayPublicationIfNeeded(refreshed, ManagedGiveawayStatus.COMPLETED);
-    await this.republishGiveawayResults(refreshed);
+    await this.editGiveawayPublicationIfNeeded(refreshed, ManagedGiveawayStatus.COMPLETED, source);
+    await this.republishGiveawayResults(refreshed, source);
     const prizeDisplayTitleById = this.buildPrizeDisplayTitleById(refreshed.prizes);
 
     return claimManagedGiveawayResponseSchema.parse({
@@ -1810,6 +1852,7 @@ export class ManagedGiveawayService {
       'imageEnabled' | 'imageBase64' | 'imageMimeType' | 'imageFileName'
     >,
     botId?: string,
+    source: GiveawayActionSource = 'miniapp',
   ): Promise<Record<string, unknown> | undefined> {
     if (!giveaway.imageEnabled) {
       return undefined;
@@ -1822,12 +1865,13 @@ export class ManagedGiveawayService {
             imageBuffer,
             this.resolveImageFileName(giveaway.imageFileName, giveaway.imageMimeType),
             giveaway.imageMimeType,
-            { botId },
+            buildManagedGiveawayMaxApiOptions(source, 'upload', botId),
           )
         : await this.maxClient.uploadImage(
             imageBuffer,
             this.resolveImageFileName(giveaway.imageFileName, giveaway.imageMimeType),
             giveaway.imageMimeType,
+            buildManagedGiveawayMaxApiOptions(source, 'upload'),
           );
     } catch (error: unknown) {
       this.logger.warn(
@@ -2139,6 +2183,7 @@ export class ManagedGiveawayService {
   private async sendWinnerDirectMessages(
     giveaway: PersistedGiveawayWithRelations,
     targetWinnerKeys: string[],
+    source: GiveawayActionSource = 'miniapp',
   ): Promise<void> {
     const targetKeys = new Set(targetWinnerKeys);
     if (targetKeys.size === 0) {
@@ -2162,10 +2207,15 @@ export class ManagedGiveawayService {
         );
         if (notificationBotId) {
           await this.maxClient.sendMessageImmediateToUser(winner.entry.userId, text, options, {
-            botId: notificationBotId,
+            ...buildManagedGiveawayMaxApiOptions(source, 'send', notificationBotId),
           });
         } else {
-          await this.maxClient.sendMessageImmediateToUser(winner.entry.userId, text, options);
+          await this.maxClient.sendMessageImmediateToUser(
+            winner.entry.userId,
+            text,
+            options,
+            buildManagedGiveawayMaxApiOptions(source, 'send'),
+          );
         }
       } catch (error: unknown) {
         this.logger.warn(
@@ -2184,6 +2234,7 @@ export class ManagedGiveawayService {
   private async editGiveawayPublicationIfNeeded(
     giveaway: PersistedGiveawayWithRelations,
     status: ManagedGiveawayStatus,
+    source: GiveawayActionSource = 'miniapp',
   ): Promise<void> {
     const messageId = giveaway.publicationMessageId?.trim() ?? '';
     if (!messageId) {
@@ -2204,7 +2255,7 @@ export class ManagedGiveawayService {
             messageId,
             null,
             options,
-            { botId: publicationBotId },
+            buildManagedGiveawayMaxApiOptions(source, 'send', publicationBotId),
           );
         } else {
           await this.maxClient.editMessageInlineKeyboard(
@@ -2212,6 +2263,7 @@ export class ManagedGiveawayService {
             messageId,
             null,
             options,
+            buildManagedGiveawayMaxApiOptions(source, 'send'),
           );
         }
         return;
@@ -2226,7 +2278,7 @@ export class ManagedGiveawayService {
             messageId,
             null,
             options,
-            { botId: publicationBotId },
+            buildManagedGiveawayMaxApiOptions(source, 'send', publicationBotId),
           );
         } else {
           await this.maxClient.editMessageInlineKeyboard(
@@ -2234,6 +2286,7 @@ export class ManagedGiveawayService {
             messageId,
             null,
             options,
+            buildManagedGiveawayMaxApiOptions(source, 'send'),
           );
         }
         return;
@@ -2247,7 +2300,7 @@ export class ManagedGiveawayService {
           messageId,
           null,
           options,
-          { botId: publicationBotId },
+          buildManagedGiveawayMaxApiOptions(source, 'send', publicationBotId),
         );
       } else {
         await this.maxClient.editMessageInlineKeyboard(
@@ -2255,6 +2308,7 @@ export class ManagedGiveawayService {
           messageId,
           null,
           options,
+          buildManagedGiveawayMaxApiOptions(source, 'send'),
         );
       }
     } catch (error: unknown) {
@@ -2277,7 +2331,10 @@ export class ManagedGiveawayService {
     }
   }
 
-  private async republishGiveawayResults(giveaway: PersistedGiveawayWithRelations): Promise<void> {
+  private async republishGiveawayResults(
+    giveaway: PersistedGiveawayWithRelations,
+    source: GiveawayActionSource = 'miniapp',
+  ): Promise<void> {
     const publicationBotId =
       this.normalizeNonEmptyString(giveaway.publicationBotId) ??
       (await this.resolveGiveawayPublicationBotId(giveaway.sourceChatId));
@@ -2318,12 +2375,13 @@ export class ManagedGiveawayService {
               giveaway.sourceChatId,
               resultsTextPayload.text,
               resultOptions,
-              { botId: resultsBotId },
+              buildManagedGiveawayMaxApiOptions(source, 'send', resultsBotId),
             )
           : await this.maxClient.sendMessageImmediateWithResolvedLink(
               giveaway.sourceChatId,
               resultsTextPayload.text,
               resultOptions,
+              buildManagedGiveawayMaxApiOptions(source, 'send'),
             );
         maxSendAccepted = true;
         await this.prisma.managedGiveaway.update({
@@ -2375,7 +2433,7 @@ export class ManagedGiveawayService {
           giveaway.resultsMessageId,
           resultsTextPayload.text,
           resultOptions,
-          { botId: resultsBotId },
+          buildManagedGiveawayMaxApiOptions(source, 'send', resultsBotId),
         );
       } else {
         await this.maxClient.editMessageInlineKeyboard(
@@ -2383,6 +2441,7 @@ export class ManagedGiveawayService {
           giveaway.resultsMessageId,
           resultsTextPayload.text,
           resultOptions,
+          buildManagedGiveawayMaxApiOptions(source, 'send'),
         );
       }
     } catch (error: unknown) {
@@ -2509,9 +2568,11 @@ export class ManagedGiveawayService {
     }
 
     try {
+      const fallbackLookupSource: GiveawayActionSource =
+        options.lookupPolicy === 'giveaway_draw_background' ? 'runner' : 'miniapp';
       const sourceBotId = lookupBotIdByChannelId.get(giveaway.sourceChatId) ?? null;
       const isMember = await this.maxClient.hasChatMember(giveaway.sourceChatId, userId, {
-        ...(sourceBotId ? { botId: sourceBotId } : {}),
+        ...buildManagedGiveawayMaxApiOptions(fallbackLookupSource, 'membership', sourceBotId),
       });
       if (!isMember) {
         missingChannelIds.push(giveaway.sourceChatId);
@@ -2520,7 +2581,7 @@ export class ManagedGiveawayService {
       for (const channelId of additionalRequiredChannels) {
         const botId = lookupBotIdByChannelId.get(channelId) ?? null;
         const hasAdditionalSubscription = await this.maxClient.hasChatMember(channelId, userId, {
-          ...(botId ? { botId } : {}),
+          ...buildManagedGiveawayMaxApiOptions(fallbackLookupSource, 'membership', botId),
         });
         if (!hasAdditionalSubscription) {
           missingChannelIds.push(channelId);
@@ -2740,7 +2801,12 @@ export class ManagedGiveawayService {
       const results: Array<[string, GiveawayEligibilityResult]> = await Promise.all(
         entries.map(async (entry) => [
           entry.userId,
-          await this.evaluateGiveawayEligibility(giveaway, entry.userId),
+          await this.evaluateGiveawayEligibility(giveaway, entry.userId, {
+            forceFreshMembership: true,
+            lookupPolicy:
+              source === 'runner' ? 'giveaway_draw_background' : 'giveaway_draw_interactive',
+            allowStaleMembershipOnError: source === 'runner',
+          }),
         ]),
       );
       return new Map<string, GiveawayEligibilityResult>(results);
@@ -2823,7 +2889,7 @@ export class ManagedGiveawayService {
       include: MANAGED_GIVEAWAY_INCLUDE,
     });
 
-    await this.editGiveawayPublicationIfNeeded(updated, ManagedGiveawayStatus.ACTIVE);
+    await this.editGiveawayPublicationIfNeeded(updated, ManagedGiveawayStatus.ACTIVE, 'runner');
   }
 
   private async processDueManagedGiveaway(
@@ -2862,7 +2928,7 @@ export class ManagedGiveawayService {
           return;
         }
         const updated = await this.findGiveawayById(giveaway.id);
-        await this.editGiveawayPublicationIfNeeded(updated, ManagedGiveawayStatus.ACTIVE);
+        await this.editGiveawayPublicationIfNeeded(updated, ManagedGiveawayStatus.ACTIVE, 'runner');
         await this.clearManagedGiveawayRunnerRetryState(giveaway.id);
         return;
       }
@@ -3198,8 +3264,12 @@ export class ManagedGiveawayService {
       }
       try {
         const giveaway = await this.findGiveawayById(giveawayId);
-        await this.editGiveawayPublicationIfNeeded(giveaway, ManagedGiveawayStatus.COMPLETED);
-        await this.republishGiveawayResults(giveaway);
+        await this.editGiveawayPublicationIfNeeded(
+          giveaway,
+          ManagedGiveawayStatus.COMPLETED,
+          'runner',
+        );
+        await this.republishGiveawayResults(giveaway, 'runner');
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -3429,14 +3499,15 @@ export class ManagedGiveawayService {
       throw error;
     }
 
-    await this.editGiveawayPublicationIfNeeded(completed, ManagedGiveawayStatus.COMPLETED);
-    await this.republishGiveawayResults(completed);
+    await this.editGiveawayPublicationIfNeeded(completed, ManagedGiveawayStatus.COMPLETED, source);
+    await this.republishGiveawayResults(completed, source);
     const refreshed = await this.findGiveawayById(completed.id);
     await this.sendWinnerDirectMessages(
       refreshed,
       winnersToCreate.map((row) =>
         this.buildWinnerNotificationKey(row.rankedEntry.entry.id, row.prize.id),
       ),
+      source,
     );
     await this.writeAuditLog(
       giveaway.sourceChatId,
@@ -3485,7 +3556,10 @@ export class ManagedGiveawayService {
     }
 
     try {
-      const remote = await this.maxClient.getChatTitle(chatId);
+      const remote = await this.maxClient.getChatTitle(
+        chatId,
+        buildManagedGiveawayMaxApiOptions('miniapp', 'metadata'),
+      );
       if (remote?.trim()) {
         return remote.trim();
       }
@@ -3501,7 +3575,10 @@ export class ManagedGiveawayService {
 
   private async resolveChatLink(chatId: string): Promise<string | null> {
     try {
-      const snapshot = await this.maxClient.getChatSnapshot(chatId);
+      const snapshot = await this.maxClient.getChatSnapshot(
+        chatId,
+        buildManagedGiveawayMaxApiOptions('miniapp', 'metadata'),
+      );
       return snapshot.link ?? null;
     } catch (error: unknown) {
       this.logger.warn(

@@ -139,6 +139,37 @@ function createBareAdminServiceForCatalogTests() {
   return service;
 }
 
+function expectChatRulesReadOptions(overrides: Record<string, unknown> = {}) {
+  return expect.objectContaining({
+    trafficClass: 'interactive',
+    actionHealthLane: 'background',
+    sourceTag: MAX_API_SOURCE_TAGS.CHAT_RULES,
+    timeoutMs: 2500,
+    ...overrides,
+  });
+}
+
+function expectChatRulesSendOptions(overrides: Record<string, unknown> = {}) {
+  return expect.objectContaining({
+    trafficClass: 'interactive',
+    actionHealthLane: 'interactive',
+    sourceTag: MAX_API_SOURCE_TAGS.CHAT_RULES,
+    timeoutMs: 12000,
+    ...overrides,
+  });
+}
+
+function expectChatRulesDeleteOptions(overrides: Record<string, unknown> = {}) {
+  return expect.objectContaining({
+    immediate: true,
+    trafficClass: 'interactive',
+    actionHealthLane: 'interactive',
+    sourceTag: MAX_API_SOURCE_TAGS.CHAT_RULES,
+    timeoutMs: 12000,
+    ...overrides,
+  });
+}
+
 function createPrismaMock() {
   const defaultManagedBroadcast = {
     id: 'broadcast-1',
@@ -32333,7 +32364,10 @@ describe('AdminService chat rules', () => {
       chatTitle: null,
     });
 
-    expect(maxClient.resolveMessageLink).toHaveBeenCalledWith('mid-rules-9');
+    expect(maxClient.resolveMessageLink).toHaveBeenCalledWith(
+      'mid-rules-9',
+      expectChatRulesReadOptions(),
+    );
     expect(prisma.chatRules.update).toHaveBeenCalledWith({
       where: { chatId: 'chat-1' },
       data: {
@@ -32658,6 +32692,7 @@ describe('AdminService chat rules', () => {
       {
         textFormat: 'markdown',
       },
+      expectChatRulesSendOptions(),
     );
     expect(prisma.chatRules.update).toHaveBeenCalledWith({
       where: { chatId: 'chat-1' },
@@ -32755,6 +32790,7 @@ describe('AdminService chat rules', () => {
       {
         textFormat: 'markdown',
       },
+      expectChatRulesSendOptions(),
     );
     expect(prisma.chatRules.update).toHaveBeenCalledWith({
       where: { chatId: 'chat-1' },
@@ -32855,6 +32891,7 @@ describe('AdminService chat rules', () => {
       {
         textFormat: 'markdown',
       },
+      expectChatRulesSendOptions(),
     );
   });
 
@@ -32913,6 +32950,7 @@ describe('AdminService chat rules', () => {
       {
         textFormat: 'markdown',
       },
+      expectChatRulesSendOptions(),
     );
   });
 
@@ -32973,7 +33011,7 @@ describe('AdminService chat rules', () => {
         textFormat: 'markdown',
         buttons: [[{ text: 'Подробнее', type: 'link', url: 'https://max.ru/help/rules' }]],
       },
-      { botId: 'chat-bot-2' },
+      expectChatRulesSendOptions({ botId: 'chat-bot-2' }),
     );
   });
 
@@ -33040,6 +33078,7 @@ describe('AdminService chat rules', () => {
       {
         textFormat: 'markdown',
       },
+      expectChatRulesSendOptions(),
     );
   });
 
@@ -33124,6 +33163,7 @@ describe('AdminService chat rules', () => {
       {
         textFormat: 'markdown',
       },
+      expectChatRulesSendOptions(),
     );
   });
 
@@ -33197,7 +33237,7 @@ describe('AdminService chat rules', () => {
           [{ text: 'Сайт', type: 'link', url: 'https://example.com/rules' }],
         ],
       },
-      { botId: 'chat-bot-2' },
+      expectChatRulesSendOptions({ botId: 'chat-bot-2' }),
     );
   });
 
@@ -33253,10 +33293,11 @@ describe('AdminService chat rules', () => {
       chatTitle: null,
     });
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-rules-old-1', {
-      immediate: true,
-      botId: 'old-rules-bot',
-    });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'mid-rules-old-1',
+      expectChatRulesDeleteOptions({ botId: 'old-rules-bot' }),
+    );
     expect(prisma.chatRules.update).toHaveBeenCalledWith({
       where: { chatId: 'chat-1' },
       data: expect.objectContaining({
@@ -33454,10 +33495,11 @@ describe('AdminService chat rules', () => {
       chatTitle: null,
     });
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-rules-4', {
-      immediate: true,
-      botId: 'rules-author-bot',
-    });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'mid-rules-4',
+      expectChatRulesDeleteOptions({ botId: 'rules-author-bot' }),
+    );
     expect(prisma.chatRules.update).toHaveBeenCalledWith({
       where: { chatId: 'chat-1' },
       data: {

@@ -28,6 +28,27 @@ describe('WebhookService', () => {
       ) {
         return 'id613002203036_4_bot';
       }
+      if (
+        normalized === 'bot-1' ||
+        normalized === 'bot-1-contact' ||
+        normalized === '1001'
+      ) {
+        return 'bot-1';
+      }
+      if (
+        normalized === 'bot-5' ||
+        normalized === 'bot-5-contact' ||
+        normalized === '5005'
+      ) {
+        return 'bot-5';
+      }
+      if (
+        normalized === 'id613002203036_5_bot' ||
+        normalized === '613002203036_5' ||
+        normalized === '214634784'
+      ) {
+        return 'id613002203036_5_bot';
+      }
       return null;
     }),
   };
@@ -1261,6 +1282,75 @@ describe('WebhookService', () => {
     );
   });
 
+  it('resolves bot_removed for a later extra bot from the raw removed user identity', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-4bb' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    maxBotLinkService.markChatBotRemoved.mockResolvedValueOnce('bot-1');
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-bot-removed-cross-bot-5',
+          type: 'bot_removed',
+          botId: 'bot-1',
+          message: {
+            messageId: 'bot_removed:u-bot-removed-cross-bot-5',
+            chatId: '-73729721862152',
+            chatTitle: 'Shared N-way chat',
+            entityType: 'chat',
+            senderId: '5005',
+            senderName: 'Bot Five',
+            text: '',
+            createdAt: new Date('2026-05-10T02:12:01.411Z').toISOString(),
+          },
+          raw: {
+            update_type: 'bot_removed',
+            chat_id: -73729721862152,
+            user: {
+              id: 'bot-5-contact',
+              user_id: '5005',
+              username: 'bot-5',
+              name: 'Bot Five',
+              is_bot: true,
+            },
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(maxBotLinkService.markChatBotRemoved).toHaveBeenCalledTimes(1);
+    expect(maxBotLinkService.markChatBotRemoved).toHaveBeenCalledWith({
+      chatId: '-73729721862152',
+      title: 'Shared N-way chat',
+      entityType: 'CHAT',
+      botId: 'bot-5',
+    });
+    expect(prisma.webhookEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          botId: 'bot-1',
+          normalizedPayload: expect.objectContaining({
+            botId: 'bot-1',
+            executionOwnerBotId: 'bot-1',
+          }),
+        }),
+      }),
+    );
+  });
+
   it('does not fall back to the receiving bot when bot_removed payload is ambiguous', async () => {
     const prisma = {
       webhookEvent: {
@@ -2160,6 +2250,104 @@ describe('WebhookService', () => {
         data: expect.objectContaining({
           normalizedPayload: expect.objectContaining({
             executionOwnerBotId: 'id613002203036_4_bot',
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('fails over a stale stored primary to the incoming fifth bot with access', async () => {
+    const checkedAt = new Date().toISOString();
+    const membershipSnapshots = new Map([
+      [
+        'bot-1',
+        {
+          permissionsSnapshot: {
+            checkedAt,
+            isAdmin: false,
+            isOwner: false,
+            permissions: [],
+          },
+        },
+      ],
+      [
+        'bot-5',
+        {
+          permissionsSnapshot: {
+            checkedAt,
+            isAdmin: true,
+            isOwner: false,
+            permissions: ['delete_messages'],
+          },
+        },
+      ],
+    ]);
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-6ab' }),
+        updateMany: jest.fn(),
+      },
+      chatBotMembership: {
+        findUnique: jest.fn(
+          async (args: { where: { chatId_botId: { chatId: string; botId: string } } }) =>
+            membershipSnapshots.get(args.where.chatId_botId.botId) ?? null,
+        ),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    maxBotLinkService.getStoredChatPrimaryBotId.mockResolvedValueOnce('bot-1');
+    maxBotLinkService.bindChatToBot.mockResolvedValueOnce('bot-5');
+
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-owner-stored-bot-5',
+          type: 'message_created',
+          botId: 'bot-5',
+          message: {
+            messageId: 'mid-owner-stored-bot-5',
+            chatId: '-100125',
+            chatTitle: 'Shared five-bot chat',
+            senderId: 'user-5',
+            text: 'hello',
+            createdAt: new Date('2026-03-31T20:00:05.000Z').toISOString(),
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(maxBotLinkService.getStoredChatPrimaryBotId).toHaveBeenCalledWith('-100125');
+    expect(prisma.chatBotMembership.findUnique.mock.calls.map(([args]) => args.where.chatId_botId))
+      .toEqual([
+        { chatId: '-100125', botId: 'bot-1' },
+        { chatId: '-100125', botId: 'bot-5' },
+      ]);
+    expect(maxBotLinkService.bindChatToBot).toHaveBeenCalledTimes(1);
+    expect(maxBotLinkService.bindChatToBot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-100125',
+        botId: 'bot-5',
+        allowReassign: true,
+      }),
+    );
+    expect(maxBotLinkService.observeStoredChatBotWebhook).not.toHaveBeenCalled();
+    expect(prisma.webhookEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          botId: 'bot-5',
+          normalizedPayload: expect.objectContaining({
+            botId: 'bot-5',
+            executionOwnerBotId: 'bot-5',
           }),
         }),
       }),

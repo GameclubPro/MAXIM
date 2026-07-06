@@ -19,6 +19,7 @@ import type {
   MaxPublishedMessage,
   MaxSendMessageOptions,
 } from '../max/max-client.service';
+import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
 import type { ChatRules as PersistedChatRules } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 import { normalizeLegacyProfileButtonUrl } from './admin-profile-links';
@@ -37,6 +38,47 @@ type ChatRulesFormattedPublication = {
   text: string;
   textFormat: MaxSendMessageOptions['textFormat'];
 };
+
+const CHAT_RULES_LINK_TIMEOUT_MS = 2_500;
+const CHAT_RULES_SEND_TIMEOUT_MS = 12_000;
+const CHAT_RULES_UPLOAD_TIMEOUT_MS = 30_000;
+
+function buildChatRulesReadOptions(botId?: string) {
+  return {
+    ...(botId ? { botId } : {}),
+    trafficClass: 'interactive' as const,
+    actionHealthLane: 'background' as const,
+    sourceTag: MAX_API_SOURCE_TAGS.CHAT_RULES,
+    timeoutMs: CHAT_RULES_LINK_TIMEOUT_MS,
+  };
+}
+
+function buildChatRulesSendOptions(botId?: string) {
+  return {
+    ...(botId ? { botId } : {}),
+    trafficClass: 'interactive' as const,
+    actionHealthLane: 'interactive' as const,
+    sourceTag: MAX_API_SOURCE_TAGS.CHAT_RULES,
+    timeoutMs: CHAT_RULES_SEND_TIMEOUT_MS,
+  };
+}
+
+function buildChatRulesUploadOptions(botId?: string) {
+  return {
+    ...(botId ? { botId } : {}),
+    trafficClass: 'interactive' as const,
+    actionHealthLane: 'interactive' as const,
+    sourceTag: MAX_API_SOURCE_TAGS.CHAT_RULES,
+    timeoutMs: CHAT_RULES_UPLOAD_TIMEOUT_MS,
+  };
+}
+
+function buildChatRulesDeleteOptions(botId?: string) {
+  return {
+    immediate: true,
+    ...buildChatRulesSendOptions(botId),
+  };
+}
 
 export function decodeRulesImageBase64(value: string): Buffer {
   const normalized = value.trim().replace(/^data:[^;]+;base64,/, '');
@@ -374,9 +416,10 @@ export async function hydratePublishedRulesUrl(params: {
   let resolvedUrl: string | null = null;
   try {
     resolvedUrl = normalizePublishedRulesUrl(
-      botId
-        ? await params.maxClient.resolveMessageLink(params.rules.publishedMessageId, { botId })
-        : await params.maxClient.resolveMessageLink(params.rules.publishedMessageId),
+      await params.maxClient.resolveMessageLink(
+        params.rules.publishedMessageId,
+        buildChatRulesReadOptions(botId),
+      ),
     );
   } catch (error: unknown) {
     params.logger.warn(
@@ -470,12 +513,13 @@ async function publishChatRulesMessageWithRetry(params: {
             params.chatId,
             params.text,
             params.options,
-            { botId: params.botId },
+            buildChatRulesSendOptions(params.botId),
           )
         : await params.maxClient.sendMessageImmediateWithResolvedLink(
             params.chatId,
             params.text,
             params.options,
+            buildChatRulesSendOptions(),
           );
     } catch (error: unknown) {
       lastError = error;
@@ -553,12 +597,13 @@ export async function publishChatRules(params: {
             imageBuffer,
             resolveRulesImageFileName(rules.imageFileName, imageMimeType),
             imageMimeType,
-            { botId: resolvedBotId },
+            buildChatRulesUploadOptions(resolvedBotId),
           )
         : await params.maxClient.uploadImage(
             imageBuffer,
             resolveRulesImageFileName(rules.imageFileName, imageMimeType),
             imageMimeType,
+            buildChatRulesUploadOptions(),
           );
     } catch (error: unknown) {
       params.logger.warn(
@@ -605,7 +650,7 @@ export async function publishChatRules(params: {
       await params.maxClient.deleteMessage(
         params.chatId,
         previousPublishedMessageId,
-        deleteBotId ? { immediate: true, botId: deleteBotId } : { immediate: true },
+        buildChatRulesDeleteOptions(deleteBotId),
       );
     } catch (error: unknown) {
       if (!isMaxMessageMissingError(error)) {
@@ -708,7 +753,7 @@ export async function resetPublishedChatRules(params: {
       await params.maxClient.deleteMessage(
         params.chatId,
         publishedMessageId,
-        deleteBotId ? { immediate: true, botId: deleteBotId } : { immediate: true },
+        buildChatRulesDeleteOptions(deleteBotId),
       );
     } catch (error: unknown) {
       if (!isMaxMessageMissingError(error)) {

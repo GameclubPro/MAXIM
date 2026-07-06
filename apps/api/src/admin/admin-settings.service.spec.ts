@@ -1,4 +1,5 @@
 import { channelSettingsSchema, chatSettingsSchema } from '@maxim/contracts';
+import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
 import { AdminSettingsService } from './admin-settings.service';
 
 const user = {
@@ -1380,7 +1381,16 @@ describe('AdminSettingsService chat rules', () => {
     expect(legacyAdminService.resolveChatSettingsReadBotAssignmentData).toHaveBeenCalledWith(
       'chat-1',
     );
-    expect(maxClient.resolveMessageLink).toHaveBeenCalledWith('message-1', { botId: 'bot-1' });
+    expect(maxClient.resolveMessageLink).toHaveBeenCalledWith(
+      'message-1',
+      expect.objectContaining({
+        botId: 'bot-1',
+        trafficClass: 'interactive',
+        actionHealthLane: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.CHAT_RULES,
+        timeoutMs: 2500,
+      }),
+    );
     expect(prisma.chatRules.update).toHaveBeenCalledWith({
       where: { chatId: 'chat-1' },
       data: {
@@ -1409,6 +1419,10 @@ describe('AdminSettingsService chat rules', () => {
 
     expect(maxClient.resolveMessageLink).toHaveBeenCalledWith('message-1', {
       botId: 'rules-author-bot',
+      trafficClass: 'interactive',
+      actionHealthLane: 'background',
+      sourceTag: MAX_API_SOURCE_TAGS.CHAT_RULES,
+      timeoutMs: 2500,
     });
   });
 
@@ -1457,7 +1471,13 @@ describe('AdminSettingsService chat rules', () => {
         textFormat: 'markdown',
         buttons: [[{ type: 'link', text: 'Подробнее', url: 'https://example.com/rules' }]],
       },
-      { botId: 'bot-1' },
+      expect.objectContaining({
+        botId: 'bot-1',
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: MAX_API_SOURCE_TAGS.CHAT_RULES,
+        timeoutMs: 12000,
+      }),
     );
     expect(prisma.chatRules.update).toHaveBeenCalledWith({
       where: { chatId: 'chat-1' },
@@ -1506,7 +1526,16 @@ describe('AdminSettingsService chat rules', () => {
 
     expect(result.url).toBe('https://max.ru/chats/chat-1/message/2');
     expect(legacyAdminService.resolveChatRulesActionBotId).toHaveBeenCalledWith('chat-1');
-    expect(maxClient.resolveMessageLink).toHaveBeenCalledWith('message-2', { botId: 'bot-1' });
+    expect(maxClient.resolveMessageLink).toHaveBeenCalledWith(
+      'message-2',
+      expect.objectContaining({
+        botId: 'bot-1',
+        trafficClass: 'interactive',
+        actionHealthLane: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.CHAT_RULES,
+        timeoutMs: 2500,
+      }),
+    );
   });
 
   it('resets published rules without routing through legacy resetPublishedRules', async () => {
@@ -1540,6 +1569,10 @@ describe('AdminSettingsService chat rules', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'message-1', {
       immediate: true,
       botId: 'bot-1',
+      trafficClass: 'interactive',
+      actionHealthLane: 'interactive',
+      sourceTag: MAX_API_SOURCE_TAGS.CHAT_RULES,
+      timeoutMs: 12000,
     });
     expect(prisma.chatRules.update).toHaveBeenCalledWith({
       where: { chatId: 'chat-1' },

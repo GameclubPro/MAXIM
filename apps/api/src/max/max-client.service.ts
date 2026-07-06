@@ -306,6 +306,8 @@ export const MAX_API_SOURCE_TAGS = {
   PARTICIPANT_CLEANUP: 'participant_cleanup',
   SETTINGS_BOT_PROFILE: 'settings_bot_profile',
   MANAGED_HANDSHAKE: 'managed_handshake',
+  CHAT_RULES: 'chat_rules',
+  MANAGED_GIVEAWAY: 'managed_giveaway',
   GIVEAWAY_DRAW_BACKGROUND: 'giveaway_draw_background',
   MANAGED_BROADCAST: 'managed_broadcast',
   CHANNEL_AUTO_POST: 'channel_auto_post',

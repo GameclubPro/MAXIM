@@ -820,6 +820,61 @@ describe('WebhookOutboxService', () => {
     );
   });
 
+  it('skips N-way mirrored standby message_created events before BullMQ and enqueues only the owner', async () => {
+    const chatId = '-100123';
+    const ownerBotId = 'bot-1';
+    const botIds = ['bot-1', 'bot-2', 'bot-3', 'bot-4', 'bot-5', 'bot-6'];
+    const ownerEventId = 'evt-mirrored-bot-1';
+    const standbyEventIds = botIds.slice(1).map((botId) => `evt-mirrored-${botId}`);
+    const ownerQueueName = resolveDefaultWebhookQueueNameForChatId(chatId);
+    const { service, prisma, queues } = createService({
+      configOverrides: {
+        ENQUEUE_CONCURRENCY: 1,
+      },
+      findManyResult: botIds.map((botId, index) => ({
+        id: `evt-mirrored-${botId}`,
+        enqueueAttempts: 0,
+        botId,
+        createdAt: new Date(`2026-03-24T00:00:0${index}.000Z`),
+        normalizedPayload: {
+          type: 'message_created',
+          botId,
+          executionOwnerBotId: ownerBotId,
+          message: {
+            chatId,
+            messageId: `mid-mirrored-${index}`,
+          },
+        },
+      })),
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    const defaultQueueAdds = DEFAULT_WEBHOOK_QUEUE_NAMES.flatMap((queueName) =>
+      queues[queueName].add.mock.calls.map((call) => call[1].webhookEventId),
+    );
+    const processedIds = prisma.webhookEvent.updateMany.mock.calls
+      .filter(([args]) => args.data.status === WebhookStatus.PROCESSED)
+      .map(([args]) => args.where.id)
+      .sort();
+    const queuedIds = prisma.webhookEvent.updateMany.mock.calls
+      .filter(([args]) => args.data.status === WebhookStatus.QUEUED)
+      .map(([args]) => args.where.id)
+      .sort();
+
+    expect(defaultQueueAdds).toEqual([ownerEventId]);
+    expect(queues[ownerQueueName].add).toHaveBeenCalledWith(
+      'process-webhook-event',
+      { webhookEventId: ownerEventId },
+      expect.objectContaining({
+        jobId: ownerEventId,
+        priority: 5,
+      }),
+    );
+    expect(processedIds).toEqual(standbyEventIds.sort());
+    expect(queuedIds).toEqual([ownerEventId]);
+  });
+
   it('skips standby shared-chat message_edited events before they enter BullMQ', async () => {
     const { service, prisma, queues } = createService({
       findManyResult: [
