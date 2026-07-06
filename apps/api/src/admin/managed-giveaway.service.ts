@@ -463,6 +463,7 @@ export class ManagedGiveawayService {
           actorUserId: user.userId,
           status: nextStatus,
           publicationMessageId: publication.messageId,
+          publicationBotId: publicationBotId ?? null,
           publicationUrl: publication.url,
           publishedAt,
           lockedAt: null,
@@ -475,6 +476,7 @@ export class ManagedGiveawayService {
         entityType,
         status: nextStatus,
         publicationMessageId: publication.messageId,
+        publicationBotId: publicationBotId ?? null,
         publicationUrl: publication.url,
         source,
       });
@@ -2190,7 +2192,9 @@ export class ManagedGiveawayService {
 
     let publicationBotId: string | undefined;
     try {
-      publicationBotId = await this.resolveGiveawayPublicationBotId(giveaway.sourceChatId);
+      publicationBotId =
+        this.normalizeNonEmptyString(giveaway.publicationBotId) ??
+        (await this.resolveGiveawayPublicationBotId(giveaway.sourceChatId));
       if (status === ManagedGiveawayStatus.CANCELED) {
         const button = await this.buildGiveawayOpenButton(giveaway);
         const options = button ? { buttons: [[button]] } : undefined;
@@ -2274,7 +2278,10 @@ export class ManagedGiveawayService {
   }
 
   private async republishGiveawayResults(giveaway: PersistedGiveawayWithRelations): Promise<void> {
-    const publicationBotId = await this.resolveGiveawayPublicationBotId(giveaway.sourceChatId);
+    const publicationBotId =
+      this.normalizeNonEmptyString(giveaway.publicationBotId) ??
+      (await this.resolveGiveawayPublicationBotId(giveaway.sourceChatId));
+    const resultsBotId = this.normalizeNonEmptyString(giveaway.resultsBotId) ?? publicationBotId;
     const resultsTextPayload = this.buildGiveawayResultsTextPayload(giveaway);
     const resultOptions = this.mergeMessageOptionsWithTextFormat(
       await this.buildGiveawayResultsMessageOptions(giveaway),
@@ -2306,12 +2313,12 @@ export class ManagedGiveawayService {
       let maxSendAccepted = false;
       try {
         maxSendAttempted = true;
-        const result = publicationBotId
+        const result = resultsBotId
           ? await this.maxClient.sendMessageImmediateWithResolvedLink(
               giveaway.sourceChatId,
               resultsTextPayload.text,
               resultOptions,
-              { botId: publicationBotId },
+              { botId: resultsBotId },
             )
           : await this.maxClient.sendMessageImmediateWithResolvedLink(
               giveaway.sourceChatId,
@@ -2323,6 +2330,7 @@ export class ManagedGiveawayService {
           where: { id: giveaway.id },
           data: {
             resultsMessageId: result.messageId,
+            resultsBotId: resultsBotId ?? null,
             resultsUrl: result.url,
             lockedAt: null,
           },
@@ -2350,7 +2358,7 @@ export class ManagedGiveawayService {
           });
           await this.recordManagedGiveawayMaxAccessLoss({
             giveaway,
-            botId: publicationBotId ?? null,
+            botId: resultsBotId ?? null,
             source: 'managed_giveaway:results',
             operation: 'send',
             error,
@@ -2361,13 +2369,13 @@ export class ManagedGiveawayService {
     }
 
     try {
-      if (publicationBotId) {
+      if (resultsBotId) {
         await this.maxClient.editMessageInlineKeyboard(
           giveaway.sourceChatId,
           giveaway.resultsMessageId,
           resultsTextPayload.text,
           resultOptions,
-          { botId: publicationBotId },
+          { botId: resultsBotId },
         );
       } else {
         await this.maxClient.editMessageInlineKeyboard(
@@ -2387,7 +2395,7 @@ export class ManagedGiveawayService {
       );
       await this.recordManagedGiveawayMaxAccessLoss({
         giveaway,
-        botId: publicationBotId ?? null,
+        botId: resultsBotId ?? null,
         source: 'managed_giveaway:results',
         operation: 'edit',
         error,

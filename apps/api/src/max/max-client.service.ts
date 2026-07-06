@@ -577,6 +577,7 @@ export class MaxClientService implements OnModuleDestroy {
   ): Promise<MaxPublishedMessage> {
     const attachments = this.buildMessageAttachments(options);
     const messageLink = this.buildMessageLinkData(options?.messageLink);
+    const timeoutMs = this.normalizeTimeoutMs(requestOptions.timeoutMs);
     const sendResponse = await this.executeMutation(
       chatId,
       async () => {
@@ -590,6 +591,7 @@ export class MaxClientService implements OnModuleDestroy {
             ...(messageLink ? { link: messageLink } : {}),
             ...(attachments.length > 0 ? { attachments } : {}),
           },
+          ...(timeoutMs ? { timeout: timeoutMs } : {}),
         });
       },
       requestOptions,
@@ -616,6 +618,7 @@ export class MaxClientService implements OnModuleDestroy {
   ): Promise<MaxPublishedMessage> {
     const attachments = this.buildMessageAttachments(options);
     const messageLink = this.buildMessageLinkData(options?.messageLink);
+    const timeoutMs = this.normalizeTimeoutMs(requestOptions.timeoutMs);
     const sendResponse = await this.executeMutation(
       `user:${userId}`,
       async () => {
@@ -629,6 +632,7 @@ export class MaxClientService implements OnModuleDestroy {
             ...(messageLink ? { link: messageLink } : {}),
             ...(attachments.length > 0 ? { attachments } : {}),
           },
+          ...(timeoutMs ? { timeout: timeoutMs } : {}),
         });
       },
       requestOptions,
@@ -1453,6 +1457,7 @@ export class MaxClientService implements OnModuleDestroy {
                   message_id: action.messageId,
                   chat_id: action.chatId,
                 },
+                ...(mutationOptions.timeoutMs ? { timeout: mutationOptions.timeoutMs } : {}),
               });
             },
             mutationOptions,
@@ -1491,10 +1496,7 @@ export class MaxClientService implements OnModuleDestroy {
                   chatId: action.chatId,
                   messageId: sentMessageId,
                 },
-                {
-                  delayMs: autoDeleteDelayMs,
-                  botId: bot.id,
-                },
+                this.buildAutoDeleteDispatchOptions(action, bot.id, autoDeleteDelayMs),
               );
             } catch (error: unknown) {
               this.logger.warn(
@@ -3431,6 +3433,7 @@ export class MaxClientService implements OnModuleDestroy {
       options?.ignoreFailureMetricStatuses,
     );
     const sourceTag = this.normalizeMetricSourceTag(options?.sourceTag ?? payload.sourceTag);
+    const timeoutMs = this.normalizeTimeoutMs(options?.timeoutMs);
     const scheduledJobId =
       delayMs > 0
         ? this.buildScheduledMemberActionJobId(
@@ -3455,9 +3458,7 @@ export class MaxClientService implements OnModuleDestroy {
       ...(options?.trafficClass ? { trafficClass: options.trafficClass } : {}),
       ...(options?.actionHealthLane ? { actionHealthLane: options.actionHealthLane } : {}),
       ...(sourceTag ? { sourceTag } : {}),
-      ...(typeof options?.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
-        ? { timeoutMs: Math.max(1, Math.trunc(options.timeoutMs)) }
-        : {}),
+      ...(timeoutMs ? { timeoutMs } : {}),
       ...(payload.actionType === 'SEND_MESSAGE' && autoDeleteDelayMs > 0
         ? { autoDeleteDelayMs }
         : {}),
@@ -4606,12 +4607,15 @@ export class MaxClientService implements OnModuleDestroy {
       ignoreFailureMetricStatuses: this.normalizeFailureMetricStatuses(
         options.ignoreFailureMetricStatuses,
       ),
-      timeoutMs:
-        typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
-          ? Math.max(1, Math.trunc(options.timeoutMs))
-          : undefined,
+      timeoutMs: this.normalizeTimeoutMs(options.timeoutMs),
       botId: this.readTrimmedString(options.botId) ?? undefined,
     };
+  }
+
+  private normalizeTimeoutMs(value: number | null | undefined): number | undefined {
+    return typeof value === 'number' && Number.isFinite(value)
+      ? Math.max(1, Math.trunc(value))
+      : undefined;
   }
 
   private shouldIgnoreActionHealthFailure(
@@ -4647,13 +4651,32 @@ export class MaxClientService implements OnModuleDestroy {
       trafficClass: action.trafficClass,
       actionHealthLane: action.actionHealthLane,
       sourceTag: this.normalizeMetricSourceTag(action.sourceTag) ?? undefined,
-      timeoutMs:
-        typeof action.timeoutMs === 'number' && Number.isFinite(action.timeoutMs)
-          ? Math.max(1, Math.trunc(action.timeoutMs))
-          : undefined,
+      timeoutMs: this.normalizeTimeoutMs(action.timeoutMs),
       ignoreFailureMetricStatuses: this.normalizeFailureMetricStatuses(
         action.ignoreFailureMetricStatuses,
       ),
+    };
+  }
+
+  private buildAutoDeleteDispatchOptions(
+    action: MaxActionJob,
+    botId: string,
+    delayMs: number,
+  ): MaxActionDispatchOptions {
+    const sourceTag = this.normalizeMetricSourceTag(action.sourceTag);
+    const timeoutMs = this.normalizeTimeoutMs(action.timeoutMs);
+    const ignoreFailureMetricStatuses = this.normalizeFailureMetricStatuses(
+      action.ignoreFailureMetricStatuses,
+    );
+
+    return {
+      delayMs,
+      botId,
+      ...(action.trafficClass ? { trafficClass: action.trafficClass } : {}),
+      ...(action.actionHealthLane ? { actionHealthLane: action.actionHealthLane } : {}),
+      ...(sourceTag ? { sourceTag } : {}),
+      ...(timeoutMs ? { timeoutMs } : {}),
+      ...(ignoreFailureMetricStatuses ? { ignoreFailureMetricStatuses } : {}),
     };
   }
 
@@ -4677,6 +4700,7 @@ export class MaxClientService implements OnModuleDestroy {
               ...(messageLink ? { link: messageLink } : {}),
               ...(attachments.length > 0 ? { attachments } : {}),
             },
+            ...(mutationOptions.timeoutMs ? { timeout: mutationOptions.timeoutMs } : {}),
           });
         },
         mutationOptions,

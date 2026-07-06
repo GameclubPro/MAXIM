@@ -28,6 +28,41 @@ type MutableMembership = {
   lastWebhookAt: Date | null;
 };
 
+const ROUTE_MATRIX_BOT_IDS = [
+  'id613002203036_bot',
+  'id613002203036_4_bot',
+  'id613002203036_5_bot',
+  'id613070470872_5_bot',
+  'id613070470872_6_bot',
+  'id613070470872_9_bot',
+] as const;
+
+function createActiveMembership(
+  chatId: string,
+  botId: string,
+  index: number,
+  overrides: Partial<MutableMembership> = {},
+): MutableMembership {
+  const timestamp = new Date(Date.UTC(2026, 2, 31, 0, 0, index));
+  return {
+    chatId,
+    botId,
+    role: index === 0 ? ChatBotMembershipRole.PRIMARY : ChatBotMembershipRole.STANDBY,
+    status: ChatBotMembershipStatus.ACTIVE,
+    permissionsSnapshot: {
+      checkedAt: timestamp.toISOString(),
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['read_all_messages', 'write', 'delete_messages', 'add_remove_members'],
+    },
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    lastSeenAt: timestamp,
+    lastWebhookAt: timestamp,
+    ...overrides,
+  };
+}
+
 function createServiceFixture() {
   const chats = new Map<string, MutableChat>();
   const memberships: MutableMembership[] = [];
@@ -192,11 +227,11 @@ function createServiceFixture() {
     },
   };
 
-  const bots = [
-    { id: 'id613002203036_bot', token: 'token-1', state: 'active' },
-    { id: 'id613002203036_4_bot', token: 'token-2', state: 'active' },
-    { id: 'id613002203036_5_bot', token: 'token-3', state: 'active' },
-  ];
+  const bots = ROUTE_MATRIX_BOT_IDS.map((id, index) => ({
+    id,
+    token: `token-${index + 1}`,
+    state: 'active',
+  }));
   const botRegistry = {
     getBotById: jest.fn((botId?: string | null) => bots.find((bot) => bot.id === botId) ?? null),
     getDefaultBot: jest.fn(() => bots[0]),
@@ -224,6 +259,46 @@ describe('MaxBotLinkService', () => {
   afterEach(() => {
     jest.useRealTimers();
   });
+
+  it.each([1, 2, 3, 6])(
+    'keeps deterministic send and moderation routes when %i bot(s) are active in one chat',
+    async (botCount) => {
+      const fixture = createServiceFixture();
+      const chatId = `chat-route-matrix-${botCount}`;
+      const botIds = ROUTE_MATRIX_BOT_IDS.slice(0, botCount);
+      const primaryBotId = botIds[0];
+      if (!primaryBotId) {
+        throw new Error('Route matrix needs at least one bot');
+      }
+      fixture.chats.set(chatId, {
+        id: chatId,
+        title: `Matrix chat ${botCount}`,
+        botId: primaryBotId,
+        primaryBotId,
+        entityType: ChatEntityType.CHAT,
+      });
+      fixture.memberships.push(
+        ...botIds.map((botId, index) => createActiveMembership(chatId, botId, index)),
+      );
+
+      const sendRoute = await fixture.service.resolveBotRoute({
+        purpose: 'send_message',
+        chatId,
+      });
+      const moderationRoute = await fixture.service.resolveBotRoute({
+        purpose: 'moderation_action',
+        chatId,
+        action: 'delete_message',
+      });
+
+      expect(sendRoute.botId).toBe(primaryBotId);
+      expect(sendRoute.primaryBotId).toBe(primaryBotId);
+      expect(sendRoute.candidateBotIds).toEqual(botIds);
+      expect(moderationRoute.botId).toBe(primaryBotId);
+      expect(moderationRoute.primaryBotId).toBe(primaryBotId);
+      expect(moderationRoute.candidateBotIds).toEqual(botIds);
+    },
+  );
 
   it('promotes an active standby bot to primary when the current primary bot is removed', async () => {
     const fixture = createServiceFixture();

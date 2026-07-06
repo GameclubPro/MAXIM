@@ -216,9 +216,11 @@ function createGiveaway(overrides: Record<string, unknown> = {}) {
     status: ManagedGiveawayStatus.ACTIVE,
     requiredChannelIds: ['extra-1'],
     publicationMessageId: null,
+    publicationBotId: null,
     publicationUrl: null,
     publishedAt: null,
     resultsMessageId: null,
+    resultsBotId: null,
     resultsUrl: null,
     drawSeed: null,
     drawnAt: null,
@@ -701,6 +703,60 @@ describe('ManagedGiveawayService', () => {
     );
   });
 
+  it('uses the persisted publication bot when refreshing an existing giveaway post', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-21T10:12:15.000Z'));
+
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const maxBotLinkService = createMaxBotLinkMock({ resolvedBotId: 'current-route-bot' });
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    const initial = createGiveaway({
+      description: 'Текст публикации',
+      publicationMessageId: 'publication-1',
+      publicationBotId: 'publication-author-bot',
+      entries: [],
+    });
+    const savedEntry = createEntry({
+      eligibilityState: GiveawayEligibilityState.VERIFIED,
+      eligibilityReason: null,
+      missingChannelIds: [],
+    });
+    const latest = createGiveaway({
+      description: 'Текст публикации',
+      publicationMessageId: 'publication-1',
+      publicationBotId: 'publication-author-bot',
+      entries: [savedEntry],
+    });
+
+    prisma.managedGiveaway.findUnique
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(latest);
+    prisma.managedGiveawayEntry.upsert.mockResolvedValue(savedEntry);
+    maxClient.hasChatMember.mockResolvedValueOnce(true).mockResolvedValueOnce(true);
+
+    await service.enterGiveaway('giveaway-1', user);
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'source-1',
+      'publication-1',
+      null,
+      expect.objectContaining({
+        buttons: [[expect.objectContaining({ text: 'Участвовать · 1' })]],
+      }),
+      { botId: 'publication-author-bot' },
+    );
+  });
+
   it('does not count rejected entries in the published giveaway button', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-21T10:12:30.000Z'));
 
@@ -1034,6 +1090,58 @@ describe('ManagedGiveawayService', () => {
       where: { id: 'giveaway-1' },
       data: {
         resultsMessageId: 'results-1',
+        resultsBotId: null,
+        resultsUrl: 'https://max.ru/channels/source-1/messages/results-1',
+        lockedAt: null,
+      },
+    });
+  });
+
+  it('stores and uses the persisted publication bot when publishing giveaway results', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const maxBotLinkService = createMaxBotLinkMock({ resolvedBotId: 'current-route-bot' });
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    const giveaway = createGiveaway({
+      status: ManagedGiveawayStatus.COMPLETED,
+      publicationMessageId: 'publication-1',
+      publicationBotId: 'publication-author-bot',
+      publicationUrl: 'https://max.ru/channels/source-1/messages/publication-1',
+      winners: [createWinner({ status: ManagedGiveawayWinnerStatus.CLAIMED })],
+    });
+
+    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+      messageId: 'results-1',
+      url: 'https://max.ru/channels/source-1/messages/results-1',
+    });
+
+    await (service as any).republishGiveawayResults(giveaway);
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'source-1',
+      expect.stringContaining('🏆 Победитель:'),
+      expect.objectContaining({
+        messageLink: {
+          type: 'reply',
+          mid: 'publication-1',
+        },
+      }),
+      { botId: 'publication-author-bot' },
+    );
+    expect(prisma.managedGiveaway.update).toHaveBeenCalledWith({
+      where: { id: 'giveaway-1' },
+      data: {
+        resultsMessageId: 'results-1',
+        resultsBotId: 'publication-author-bot',
         resultsUrl: 'https://max.ru/channels/source-1/messages/results-1',
         lockedAt: null,
       },
@@ -1391,6 +1499,15 @@ describe('ManagedGiveawayService', () => {
       }),
       { botId: 'id613002203036_4_bot' },
     );
+    expect(prisma.managedGiveaway.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'giveaway-1' },
+        data: expect.objectContaining({
+          publicationMessageId: 'publication-1',
+          publicationBotId: 'id613002203036_4_bot',
+        }),
+      }),
+    );
   });
 
   it('uses the unified read route for giveaway publication sends when available', async () => {
@@ -1581,6 +1698,7 @@ describe('ManagedGiveawayService', () => {
         status: ManagedGiveawayStatus.COMPLETED,
         publicationMessageId: 'publication-1',
         resultsMessageId: 'results-1',
+        resultsBotId: 'results-author-bot',
         winners: [createWinner({ status: ManagedGiveawayWinnerStatus.CLAIMED })],
       }),
     );
@@ -1596,6 +1714,7 @@ describe('ManagedGiveawayService', () => {
           mid: 'publication-1',
         },
       }),
+      { botId: 'results-author-bot' },
     );
   });
 

@@ -404,6 +404,40 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('passes timeout override to queued delete message jobs', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            success: true,
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await service.executeActionJob({
+      actionType: 'DELETE_MESSAGE',
+      chatId: 'chat-1',
+      messageId: 'mid-delete-timeout-1',
+      timeoutMs: 1_234,
+      attempt: 1,
+      idempotencyKey: 'delete-timeout',
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'delete',
+        url: 'https://platform-api2.max.ru/messages',
+        timeout: 1_234,
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('marks ambiguous queued SEND_MESSAGE transport timeouts as unrecoverable', async () => {
     const timeoutError = Object.assign(new Error('timeout of 1500ms exceeded'), {
       code: 'ECONNABORTED',
@@ -427,6 +461,116 @@ describe('MaxClientService inline keyboard guardrails', () => {
       expect.objectContaining({
         method: 'post',
         url: 'https://platform-api2.max.ru/messages',
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('inherits queued send dispatch context when scheduling auto-delete', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            mid: 'mid-sent-1',
+          },
+        }),
+      ),
+    };
+    const actionQueue = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(null),
+    };
+    const service = createService(httpService, {}, actionQueue);
+
+    await service.executeActionJob({
+      actionType: 'SEND_MESSAGE',
+      chatId: 'chat-1',
+      text: 'hello',
+      botId: '777000_bot',
+      trafficClass: 'background',
+      actionHealthLane: 'background',
+      sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
+      timeoutMs: 1_234,
+      autoDeleteDelayMs: 60_000,
+      ignoreFailureMetricStatuses: [404],
+      attempt: 1,
+      idempotencyKey: 'send-auto-delete-context',
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api2.max.ru/messages',
+        timeout: 1_234,
+      }),
+    );
+    expect(actionQueue.add).toHaveBeenCalledWith(
+      'execute-max-action',
+      expect.objectContaining({
+        actionType: 'DELETE_MESSAGE',
+        chatId: 'chat-1',
+        messageId: 'mid-sent-1',
+        botId: '777000_bot',
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
+        timeoutMs: 1_234,
+        ignoreFailureMetricStatuses: [404],
+      }),
+      expect.objectContaining({
+        delay: 60_000,
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('inherits immediate send dispatch context when scheduling auto-delete', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            mid: 'mid-immediate-1',
+          },
+        }),
+      ),
+    };
+    const actionQueue = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(null),
+    };
+    const service = createService(httpService, {}, actionQueue);
+
+    await service.sendMessage('chat-1', 'hello', undefined, {
+      immediate: true,
+      autoDeleteDelayMs: 30_000,
+      trafficClass: 'background',
+      actionHealthLane: 'background',
+      sourceTag: MAX_API_SOURCE_TAGS.MODERATION_NOTICE,
+      timeoutMs: 2_345,
+      ignoreFailureMetricStatuses: [404],
+      botId: '777000_bot',
+    });
+
+    expect(actionQueue.add).toHaveBeenCalledWith(
+      'execute-max-action',
+      expect.objectContaining({
+        actionType: 'DELETE_MESSAGE',
+        chatId: 'chat-1',
+        messageId: 'mid-immediate-1',
+        botId: '777000_bot',
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.MODERATION_NOTICE,
+        timeoutMs: 2_345,
+        ignoreFailureMetricStatuses: [404],
+      }),
+      expect.objectContaining({
+        delay: 30_000,
       }),
     );
 
@@ -2040,6 +2184,62 @@ describe('MaxClientService inline keyboard guardrails', () => {
       expect.objectContaining({
         botId: '777000_bot',
         trafficClass: 'critical',
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('passes timeout override to immediate chat message sends', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            mid: 'mid-timeout-chat-1',
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await service.sendMessageImmediateWithId('chat-1', 'Сообщение', undefined, {
+      timeoutMs: 1_234,
+    });
+
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api2.max.ru/messages',
+        timeout: 1_234,
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('passes timeout override to immediate private message sends', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            mid: 'mid-timeout-private-1',
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await service.sendMessageImmediateToUser('user-1', 'Сообщение', undefined, {
+      timeoutMs: 2_345,
+    });
+
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api2.max.ru/messages',
+        timeout: 2_345,
       }),
     );
 

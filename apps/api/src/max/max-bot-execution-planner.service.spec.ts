@@ -274,6 +274,98 @@ describe('MaxBotExecutionPlannerService', () => {
     ).toBe(true);
   });
 
+  it('keeps all six active bots visible when every standby is enabled for assist', async () => {
+    const fixture = createFixture();
+    const extraBots = [
+      {
+        id: 'id613070470872_5_bot',
+        label: 'Майор Максимов 6',
+        state: 'active',
+        speechPersona: 'male',
+        characterName: 'Майор Максимов 6',
+      },
+      {
+        id: 'id613070470872_6_bot',
+        label: 'Майор Максимова 7',
+        state: 'active',
+        speechPersona: 'female',
+        characterName: 'Майор Максимова 7',
+      },
+      {
+        id: 'id613070470872_9_bot',
+        label: 'Майор Максимов 9',
+        state: 'active',
+        speechPersona: 'male',
+        characterName: 'Майор Максимов 9',
+      },
+    ];
+    fixture.bots.push(...extraBots);
+    fixture.memberships.push(
+      ...extraBots.map((bot, index) => {
+        const timestamp = new Date(Date.UTC(2026, 2, 31, 0, 0, index + 3));
+        return {
+          chatId: 'chat-1',
+          botId: bot.id,
+          role: ChatBotMembershipRole.STANDBY,
+          status: ChatBotMembershipStatus.ACTIVE,
+          capabilities: [],
+          permissionsSnapshot: null,
+          lastSeenAt: timestamp,
+          lastWebhookAt: timestamp,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        };
+      }),
+    );
+
+    let plan = await fixture.service.setPartnerAssist({
+      chatId: 'chat-1',
+      entityType: 'chat',
+      botId: 'id613002203036_4_bot',
+      enabled: true,
+    });
+    for (const botId of [
+      'id613002203036_5_bot',
+      'id613070470872_5_bot',
+      'id613070470872_6_bot',
+      'id613070470872_9_bot',
+    ]) {
+      plan = await fixture.service.setPartnerAssist({
+        chatId: 'chat-1',
+        entityType: 'chat',
+        botId,
+        enabled: true,
+      });
+    }
+
+    expect(plan.assignedBots).toHaveLength(6);
+    expect(plan.assignedBots.map((bot) => bot.botId)).toEqual(
+      expect.arrayContaining([
+        'id613002203036_bot',
+        'id613002203036_4_bot',
+        'id613002203036_5_bot',
+        'id613070470872_5_bot',
+        'id613070470872_6_bot',
+        'id613070470872_9_bot',
+      ]),
+    );
+    expect(plan.partnerBotIds).toHaveLength(5);
+    expect(plan.partnerBotIds).toEqual(
+      expect.arrayContaining([
+        'id613002203036_4_bot',
+        'id613002203036_5_bot',
+        'id613070470872_5_bot',
+        'id613070470872_6_bot',
+        'id613070470872_9_bot',
+      ]),
+    );
+    expect(
+      plan.assignedBots
+        .filter((bot) => plan.partnerBotIds.includes(bot.botId))
+        .every((bot) => bot.capabilities.includes('suggestion_delivery')),
+    ).toBe(true);
+  });
+
   it('transfers owner role to another active bot and updates the cached binding', async () => {
     const fixture = createFixture();
 

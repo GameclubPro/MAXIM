@@ -215,6 +215,11 @@ export function normalizePublishedRulesUrl(value: string | null | undefined): st
   }
 }
 
+function normalizeOptionalBotId(value: string | null | undefined): string | undefined {
+  const normalized = typeof value === 'string' ? value.trim() : '';
+  return normalized || undefined;
+}
+
 export function extractMaxApiErrorMessage(error: unknown): string {
   const responseData = (error as { response?: { data?: unknown } })?.response?.data;
   if (!responseData || typeof responseData !== 'object') {
@@ -352,9 +357,9 @@ export async function hydratePublishedRulesUrl(params: {
     };
   }
 
-  let botId: string | undefined;
+  let botId = normalizeOptionalBotId(params.rules.publishedBotId);
   try {
-    botId = await params.resolveBotId?.();
+    botId ??= normalizeOptionalBotId(await params.resolveBotId?.());
   } catch (error: unknown) {
     params.logger.warn(
       {
@@ -521,13 +526,14 @@ export async function publishChatRules(params: {
     chatId: params.chatId,
   });
   const previousPublishedMessageId = rules.publishedMessageId?.trim() || null;
+  const previousPublishedBotId = normalizeOptionalBotId(rules.publishedBotId);
   const autofilledText =
     rules.autoTextEnabled && !rules.text.trim() ? await params.buildAutofilledText() : null;
   const messageText = (autofilledText ?? rules.text).trim();
   if (!messageText) {
     throw new BadRequestException('Сначала заполните текст правил.');
   }
-  const resolvedBotId = await params.resolveBotId();
+  const resolvedBotId = normalizeOptionalBotId(await params.resolveBotId());
 
   let imagePayload: Record<string, unknown> | undefined;
   if (rules.imageBase64.trim()) {
@@ -594,11 +600,12 @@ export async function publishChatRules(params: {
   }
 
   if (previousPublishedMessageId && previousPublishedMessageId !== published.messageId) {
+    const deleteBotId = previousPublishedBotId ?? resolvedBotId;
     try {
       await params.maxClient.deleteMessage(
         params.chatId,
         previousPublishedMessageId,
-        resolvedBotId ? { immediate: true, botId: resolvedBotId } : { immediate: true },
+        deleteBotId ? { immediate: true, botId: deleteBotId } : { immediate: true },
       );
     } catch (error: unknown) {
       if (!isMaxMessageMissingError(error)) {
@@ -621,6 +628,7 @@ export async function publishChatRules(params: {
     data: {
       ...(autofilledText !== null ? { text: autofilledText } : {}),
       publishedMessageId: published.messageId,
+      publishedBotId: resolvedBotId ?? null,
       publishedUrl: published.url,
       publishedAt,
     },
@@ -633,6 +641,7 @@ export async function publishChatRules(params: {
       action: 'PUBLISH_CHAT_RULES',
       payload: {
         messageId: published.messageId,
+        botId: resolvedBotId ?? null,
         url: published.url,
         publishedAt: publishedAt.toISOString(),
         buttonEnabled: rules.buttonEnabled,
@@ -657,6 +666,7 @@ export async function publishChatRules(params: {
       ...rules,
       ...(autofilledText !== null ? { text: autofilledText } : {}),
       publishedMessageId: published.messageId,
+      publishedBotId: resolvedBotId ?? null,
       publishedUrl: published.url,
       publishedAt,
     },
@@ -690,14 +700,15 @@ export async function resetPublishedChatRules(params: {
     chatId: params.chatId,
   });
   const publishedMessageId = rules.publishedMessageId?.trim() ?? '';
-  const resolvedBotId = await params.resolveBotId();
+  const resolvedBotId = normalizeOptionalBotId(await params.resolveBotId());
+  const deleteBotId = normalizeOptionalBotId(rules.publishedBotId) ?? resolvedBotId;
 
   if (publishedMessageId) {
     try {
       await params.maxClient.deleteMessage(
         params.chatId,
         publishedMessageId,
-        resolvedBotId ? { immediate: true, botId: resolvedBotId } : { immediate: true },
+        deleteBotId ? { immediate: true, botId: deleteBotId } : { immediate: true },
       );
     } catch (error: unknown) {
       if (!isMaxMessageMissingError(error)) {
@@ -713,6 +724,7 @@ export async function resetPublishedChatRules(params: {
     where: { chatId: params.chatId },
     data: {
       publishedMessageId: null,
+      publishedBotId: null,
       publishedUrl: null,
       publishedAt: null,
     },
@@ -726,6 +738,7 @@ export async function resetPublishedChatRules(params: {
       payload: {
         deletedPost: Boolean(publishedMessageId),
         messageId: publishedMessageId || null,
+        botId: deleteBotId ?? null,
         source: params.source,
       },
     },

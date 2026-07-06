@@ -33215,6 +33215,7 @@ describe('AdminService chat rules', () => {
       buttonUrl: '',
       buttonText: 'Открыть',
       publishedMessageId: 'mid-rules-old-1',
+      publishedBotId: 'old-rules-bot',
       publishedUrl: 'https://max.ru/chats/chat-1/message/101',
       publishedAt: new Date('2026-03-09T08:00:00.000Z'),
       createdAt: new Date('2026-03-09T07:00:00.000Z'),
@@ -33254,7 +33255,15 @@ describe('AdminService chat rules', () => {
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-rules-old-1', {
       immediate: true,
-      botId: 'chat-bot-2',
+      botId: 'old-rules-bot',
+    });
+    expect(prisma.chatRules.update).toHaveBeenCalledWith({
+      where: { chatId: 'chat-1' },
+      data: expect.objectContaining({
+        publishedMessageId: 'mid-rules-new-2',
+        publishedBotId: 'chat-bot-2',
+        publishedUrl: 'https://max.ru/chats/chat-1/message/202',
+      }),
     });
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -33396,6 +33405,7 @@ describe('AdminService chat rules', () => {
       buttonUrl: '',
       buttonText: 'Открыть',
       publishedMessageId: 'mid-rules-4',
+      publishedBotId: 'rules-author-bot',
       publishedUrl: 'https://max.ru/chats/chat-1/message/654',
       publishedAt: new Date('2026-03-09T11:00:00.000Z'),
       createdAt: new Date('2026-03-09T09:00:00.000Z'),
@@ -33413,6 +33423,7 @@ describe('AdminService chat rules', () => {
       buttonUrl: '',
       buttonText: 'Открыть',
       publishedMessageId: null,
+      publishedBotId: null,
       publishedUrl: null,
       publishedAt: null,
       createdAt: new Date('2026-03-09T09:00:00.000Z'),
@@ -33445,12 +33456,13 @@ describe('AdminService chat rules', () => {
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-rules-4', {
       immediate: true,
-      botId: 'chat-bot-2',
+      botId: 'rules-author-bot',
     });
     expect(prisma.chatRules.update).toHaveBeenCalledWith({
       where: { chatId: 'chat-1' },
       data: {
         publishedMessageId: null,
+        publishedBotId: null,
         publishedUrl: null,
         publishedAt: null,
       },

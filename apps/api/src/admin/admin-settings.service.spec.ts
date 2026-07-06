@@ -30,6 +30,7 @@ function createPersistedChatRules(overrides: Record<string, unknown> = {}) {
     adminContactButtonEnabled: false,
     adminContactButtonUrl: '',
     publishedMessageId: null,
+    publishedBotId: null,
     publishedUrl: null,
     publishedAt: null,
     createdAt: new Date('2026-03-09T09:00:00.000Z'),
@@ -1389,6 +1390,28 @@ describe('AdminSettingsService chat rules', () => {
     expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-1');
   });
 
+  it('hydrates a published rules URL through the persisted publication bot first', async () => {
+    const { maxClient, service } = createService({
+      botAssignmentData: {
+        botId: 'current-route-bot',
+        primaryBotId: 'current-route-bot',
+      },
+      persistedRules: createPersistedChatRules({
+        publishedMessageId: 'message-1',
+        publishedBotId: 'rules-author-bot',
+        publishedUrl: '',
+        publishedAt: new Date('2026-03-09T09:30:00.000Z'),
+      }),
+      resolvedRulesUrl: 'https://max.ru/chats/chat-1/message/1',
+    });
+
+    await service.getRules('chat-1', user as never);
+
+    expect(maxClient.resolveMessageLink).toHaveBeenCalledWith('message-1', {
+      botId: 'rules-author-bot',
+    });
+  });
+
   it('publishes rules without routing through legacy publishRules', async () => {
     const { chatContextCache, legacyAdminService, maxClient, prisma, service } = createService({
       botAssignmentData: {
@@ -1440,6 +1463,7 @@ describe('AdminSettingsService chat rules', () => {
       where: { chatId: 'chat-1' },
       data: expect.objectContaining({
         publishedMessageId: 'message-2',
+        publishedBotId: 'bot-1',
         publishedUrl: 'https://max.ru/chats/chat-1/message/2',
         publishedAt: expect.any(Date),
       }),
@@ -1521,6 +1545,7 @@ describe('AdminSettingsService chat rules', () => {
       where: { chatId: 'chat-1' },
       data: {
         publishedMessageId: null,
+        publishedBotId: null,
         publishedUrl: null,
         publishedAt: null,
       },
@@ -1533,6 +1558,7 @@ describe('AdminSettingsService chat rules', () => {
         payload: {
           deletedPost: true,
           messageId: 'message-1',
+          botId: 'bot-1',
           source: 'miniapp',
         },
       },
