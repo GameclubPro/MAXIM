@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { managedEntityBotCapabilitySchema } from './managed-entities.js';
 
 export const queueCountersSchema = z.object({
   waiting: z.number().int().min(0),
@@ -252,12 +253,7 @@ export const webhookSubscriptionSnapshotSchema = z.object({
 });
 export type WebhookSubscriptionSnapshot = z.infer<typeof webhookSubscriptionSnapshotSchema>;
 
-export const systemBotLifecycleStateSchema = z.enum([
-  'active',
-  'draining',
-  'dormant',
-  'disabled',
-]);
+export const systemBotLifecycleStateSchema = z.enum(['active', 'draining', 'dormant', 'disabled']);
 export type SystemBotLifecycleState = z.infer<typeof systemBotLifecycleStateSchema>;
 
 export const systemBotEntityTypeSchema = z.enum(['chat', 'channel']);
@@ -292,9 +288,7 @@ export const systemBotManagedEntityStatsSchema = z.object({
   standby: systemBotEntityCountSchema,
   assist: systemBotEntityCountSchema,
 });
-export type SystemBotManagedEntityStats = z.infer<
-  typeof systemBotManagedEntityStatsSchema
->;
+export type SystemBotManagedEntityStats = z.infer<typeof systemBotManagedEntityStatsSchema>;
 
 export const systemBotAccessStatsSchema = z.object({
   lost: z.number().int().min(0),
@@ -387,6 +381,191 @@ export const systemBotsSnapshotSchema = z.object({
   bots: z.array(systemBotSummarySchema),
 });
 export type SystemBotsSnapshot = z.infer<typeof systemBotsSnapshotSchema>;
+
+export const systemBotRoutePurposeSchema = z.enum([
+  'default',
+  'read',
+  'send_message',
+  'member_access',
+  'moderation_action',
+  'capability',
+]);
+export type SystemBotRoutePurpose = z.infer<typeof systemBotRoutePurposeSchema>;
+
+export const systemBotRouteModerationActionSchema = z.enum(['delete_message', 'moderate_member']);
+export type SystemBotRouteModerationAction = z.infer<typeof systemBotRouteModerationActionSchema>;
+
+export const systemBotRouteReasonSchema = z.enum([
+  'explicit',
+  'chat_cache',
+  'chat_primary',
+  'context',
+  'default',
+  'primary_confirmed',
+  'alternate_confirmed',
+  'primary_soft',
+  'alternate_soft',
+  'primary_fallback',
+  'alternate_fallback',
+]);
+export type SystemBotRouteReason = z.infer<typeof systemBotRouteReasonSchema>;
+
+export const systemBotRouteBotSchema = z.object({
+  botId: z.string(),
+  label: z.string(),
+  lifecycleState: systemBotLifecycleStateSchema,
+  adminVisible: z.boolean(),
+  isDefault: z.boolean(),
+});
+export type SystemBotRouteBot = z.infer<typeof systemBotRouteBotSchema>;
+
+export const systemBotPermissionsSummarySchema = z.object({
+  checkedAt: z.string().datetime().nullable(),
+  isAdmin: z.boolean(),
+  isOwner: z.boolean(),
+  permissions: z.array(z.string()),
+});
+export type SystemBotPermissionsSummary = z.infer<typeof systemBotPermissionsSummarySchema>;
+
+export const systemBotRouteMembershipSchema = z.object({
+  botId: z.string(),
+  label: z.string().nullable(),
+  configured: z.boolean(),
+  lifecycleState: systemBotLifecycleStateSchema.nullable(),
+  operational: z.boolean(),
+  discoverable: z.boolean(),
+  executable: z.boolean(),
+  role: systemBotMembershipRoleSchema,
+  status: systemBotMembershipStatusSchema,
+  botAccessState: systemBotAccessStateSchema,
+  capabilities: z.array(managedEntityBotCapabilitySchema),
+  permissionsSummary: systemBotPermissionsSummarySchema.nullable(),
+  botAccessCheckedAt: z.string().datetime().nullable(),
+  botAccessExpiresAt: z.string().datetime().nullable(),
+  botAccessSource: z.string().nullable(),
+  botAccessLastErrorCode: z.string().nullable(),
+  lastSeenAt: z.string().datetime().nullable(),
+  lastWebhookAt: z.string().datetime().nullable(),
+  issues: z.array(z.string()),
+});
+export type SystemBotRouteMembership = z.infer<typeof systemBotRouteMembershipSchema>;
+
+export const systemBotRoutePreviewRouteSchema = z.object({
+  purpose: systemBotRoutePurposeSchema,
+  action: systemBotRouteModerationActionSchema.nullable(),
+  capability: managedEntityBotCapabilitySchema.nullable(),
+  chatId: z.string().nullable(),
+  primaryBotId: z.string().nullable(),
+  botId: z.string().nullable(),
+  candidateBotIds: z.array(z.string()),
+  reason: systemBotRouteReasonSchema.nullable(),
+  selectedBot: systemBotRouteBotSchema.nullable(),
+  candidateBots: z.array(systemBotRouteBotSchema),
+});
+export type SystemBotRoutePreviewRoute = z.infer<typeof systemBotRoutePreviewRouteSchema>;
+
+export const systemBotRoutePreviewResponseSchema = z.object({
+  generatedAt: z.string().datetime(),
+  query: z.object({
+    chatId: z.string(),
+    purpose: z.union([z.literal('all'), systemBotRoutePurposeSchema]),
+    action: systemBotRouteModerationActionSchema.nullable(),
+    capability: managedEntityBotCapabilitySchema.nullable(),
+    fallbackToPrimary: z.boolean(),
+    botId: z.string().nullable(),
+  }),
+  chat: z.object({
+    exists: z.boolean(),
+    chatId: z.string(),
+    title: z.string().nullable(),
+    entityType: systemBotEntityTypeSchema.nullable(),
+    catalogKind: z.string().nullable(),
+    storedPrimaryBotId: z.string().nullable(),
+    legacyBotId: z.string().nullable(),
+  }),
+  routes: z.array(systemBotRoutePreviewRouteSchema),
+  memberships: z.array(systemBotRouteMembershipSchema),
+  warnings: z.array(z.string()),
+});
+export type SystemBotRoutePreviewResponse = z.infer<typeof systemBotRoutePreviewResponseSchema>;
+
+export const systemBotMembershipAuditKindSchema = z.enum([
+  'denied-active-primary',
+  'stored-primary-denied-alternate-eligible',
+  'stale-permissions-snapshot',
+  'capabilities-on-denied-bot',
+  'suspicious-row',
+]);
+export type SystemBotMembershipAuditKind = z.infer<typeof systemBotMembershipAuditKindSchema>;
+
+export const systemBotMembershipAuditSeveritySchema = z.enum(['info', 'warning', 'critical']);
+export type SystemBotMembershipAuditSeverity = z.infer<
+  typeof systemBotMembershipAuditSeveritySchema
+>;
+
+export const systemBotMembershipAuditSummarySchema = z.object({
+  auditedEntities: z.number().int().min(0),
+  activeMemberships: z.number().int().min(0),
+  deniedActivePrimary: z.number().int().min(0),
+  storedPrimaryDeniedAlternateEligible: z.number().int().min(0),
+  stalePermissionsSnapshot: z.number().int().min(0),
+  capabilitiesOnDeniedBot: z.number().int().min(0),
+  suspiciousRows: z.number().int().min(0),
+  warningCount: z.number().int().min(0),
+  criticalCount: z.number().int().min(0),
+});
+export type SystemBotMembershipAuditSummary = z.infer<typeof systemBotMembershipAuditSummarySchema>;
+
+export const systemBotMembershipAuditBotSummarySchema = z.object({
+  botId: z.string(),
+  label: z.string().nullable(),
+  deniedPrimary: z.number().int().min(0),
+  staleSnapshots: z.number().int().min(0),
+  deniedCapabilities: z.number().int().min(0),
+  alternateEligibleFor: z.number().int().min(0),
+});
+export type SystemBotMembershipAuditBotSummary = z.infer<
+  typeof systemBotMembershipAuditBotSummarySchema
+>;
+
+export const systemBotMembershipAuditSampleSchema = z.object({
+  kind: systemBotMembershipAuditKindSchema,
+  severity: systemBotMembershipAuditSeveritySchema,
+  chatId: z.string(),
+  title: z.string(),
+  entityType: systemBotEntityTypeSchema,
+  catalogKind: z.string(),
+  botId: z.string().nullable(),
+  botLabel: z.string().nullable(),
+  primaryBotId: z.string().nullable(),
+  suggestedPrimaryBotId: z.string().nullable(),
+  alternateBotIds: z.array(z.string()),
+  membershipRole: systemBotMembershipRoleSchema.nullable(),
+  membershipStatus: systemBotMembershipStatusSchema.nullable(),
+  botAccessState: systemBotAccessStateSchema.nullable(),
+  permissionsState: z.enum(['missing', 'fresh', 'stale', 'denied']),
+  permissionsCheckedAt: z.string().datetime().nullable(),
+  botAccessCheckedAt: z.string().datetime().nullable(),
+  botAccessExpiresAt: z.string().datetime().nullable(),
+  botAccessSource: z.string().nullable(),
+  botAccessLastErrorCode: z.string().nullable(),
+  capabilities: z.array(managedEntityBotCapabilitySchema),
+  evidenceFresh: z.boolean(),
+  reason: z.string(),
+});
+export type SystemBotMembershipAuditSample = z.infer<typeof systemBotMembershipAuditSampleSchema>;
+
+export const systemBotMembershipAuditSchema = z.object({
+  generatedAt: z.string().datetime(),
+  config: z.object({
+    snapshotFreshMs: z.number().int().min(0),
+    sampleLimit: z.number().int().min(1),
+  }),
+  summary: systemBotMembershipAuditSummarySchema,
+  byBot: z.array(systemBotMembershipAuditBotSummarySchema),
+  samples: z.array(systemBotMembershipAuditSampleSchema),
+});
+export type SystemBotMembershipAudit = z.infer<typeof systemBotMembershipAuditSchema>;
 
 export const systemDashboardSummarySchema = z.object({
   status: systemDashboardStatusSchema,
@@ -632,9 +811,7 @@ export const systemDashboardSpammerSurfacesSchema = z.object({
   windowSec: z.number().int().positive(),
   timings: z.array(systemDashboardSpammerSurfaceTimingSchema),
 });
-export type SystemDashboardSpammerSurfaces = z.infer<
-  typeof systemDashboardSpammerSurfacesSchema
->;
+export type SystemDashboardSpammerSurfaces = z.infer<typeof systemDashboardSpammerSurfacesSchema>;
 
 export const systemDashboardSpammerReadModelSchema = z.object({
   windowSec: z.number().int().positive(),
@@ -672,9 +849,7 @@ export const systemDashboardSpammerReadModelSchema = z.object({
     lastFailureAt: z.string().datetime().nullable(),
   }),
 });
-export type SystemDashboardSpammerReadModel = z.infer<
-  typeof systemDashboardSpammerReadModelSchema
->;
+export type SystemDashboardSpammerReadModel = z.infer<typeof systemDashboardSpammerReadModelSchema>;
 
 export const systemDashboardWebhookSloStatusSchema = z.enum(['healthy', 'warning', 'critical']);
 export type SystemDashboardWebhookSloStatus = z.infer<typeof systemDashboardWebhookSloStatusSchema>;

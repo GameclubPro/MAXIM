@@ -34,6 +34,87 @@ const maxApiMetricsQuerySchema = z.object({
     .max(6 * 60 * 60)
     .optional(),
 });
+const routePreviewQueryValue = (value: unknown) => (Array.isArray(value) ? value[0] : value);
+const routePreviewBooleanSchema = z.preprocess((value) => {
+  const raw = routePreviewQueryValue(value);
+  if (raw === undefined) {
+    return true;
+  }
+  if (raw === true || raw === false) {
+    return raw;
+  }
+  if (typeof raw !== 'string') {
+    return raw;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+    return true;
+  }
+  if (['0', 'false', 'no', 'off'].includes(normalized)) {
+    return false;
+  }
+  return raw;
+}, z.boolean());
+const optionalRoutePreviewStringSchema = z.preprocess(
+  (value) => routePreviewQueryValue(value),
+  z.string().trim().min(1).optional(),
+);
+const systemBotRoutePreviewQuerySchema = z.object({
+  chatId: z.preprocess((value) => routePreviewQueryValue(value), z.string().trim().min(1)),
+  purpose: z
+    .preprocess(
+      (value) => routePreviewQueryValue(value),
+      z
+        .enum([
+          'all',
+          'default',
+          'read',
+          'send_message',
+          'member_access',
+          'moderation_action',
+          'capability',
+        ])
+        .optional(),
+    )
+    .default('all'),
+  action: z
+    .preprocess(
+      (value) => routePreviewQueryValue(value),
+      z.enum(['delete_message', 'moderate_member']).optional(),
+    )
+    .optional(),
+  capability: z
+    .preprocess(
+      (value) => routePreviewQueryValue(value),
+      z
+        .enum([
+          'background_scans',
+          'channel_stats',
+          'suggestion_delivery',
+          'membership_prewarm',
+          'access_prewarm',
+        ])
+        .optional(),
+    )
+    .optional(),
+  fallbackToPrimary: routePreviewBooleanSchema.default(true),
+  botId: optionalRoutePreviewStringSchema,
+});
+const systemBotMembershipAuditQuerySchema = z.object({
+  sampleLimit: z
+    .preprocess((value) => routePreviewQueryValue(value), z.coerce.number().int().min(1).max(200))
+    .optional(),
+  snapshotFreshMs: z
+    .preprocess(
+      (value) => routePreviewQueryValue(value),
+      z.coerce
+        .number()
+        .int()
+        .min(60_000)
+        .max(30 * 24 * 60 * 60 * 1_000),
+    )
+    .optional(),
+});
 
 @Controller('v1/system')
 @UseGuards(InitDataGuard)
@@ -84,6 +165,33 @@ export class SystemController {
   async getBots(@CurrentUser() user: AuthUser) {
     this.assertSystemAdmin(user);
     return this.systemBotsService.getSnapshot();
+  }
+
+  @Get('bots/routes/preview')
+  async getBotRoutePreview(@CurrentUser() user: AuthUser, @Query() query: unknown) {
+    this.assertSystemAdmin(user);
+    const parsed = systemBotRoutePreviewQuerySchema.safeParse(query);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+    return this.systemBotsService.getRoutePreview({
+      chatId: parsed.data.chatId,
+      purpose: parsed.data.purpose,
+      action: parsed.data.action ?? null,
+      capability: parsed.data.capability ?? null,
+      fallbackToPrimary: parsed.data.fallbackToPrimary,
+      botId: parsed.data.botId ?? null,
+    });
+  }
+
+  @Get('bots/audit')
+  async getBotMembershipAudit(@CurrentUser() user: AuthUser, @Query() query: unknown) {
+    this.assertSystemAdmin(user);
+    const parsed = systemBotMembershipAuditQuerySchema.safeParse(query);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+    return this.systemBotsService.getMembershipAudit(parsed.data);
   }
 
   @Get('mode')

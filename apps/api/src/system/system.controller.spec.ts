@@ -1,4 +1,4 @@
-import { ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
 import { SystemController } from './system.controller';
 
@@ -50,5 +50,87 @@ describe('SystemController', () => {
       mode: 'normal',
     });
     expect(getEffectiveSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('parses route preview query and delegates to the system bots service', async () => {
+    const getRoutePreview = jest.fn().mockResolvedValue({ ok: true });
+    const controller = new SystemController(
+      { getSnapshot: jest.fn() } as never,
+      { getEffectiveSnapshot: jest.fn() } as never,
+      { getSnapshot: jest.fn() } as never,
+      { getSourceSnapshot: jest.fn() } as never,
+      { getSnapshot: jest.fn(), getRoutePreview } as never,
+      createConfigMock({
+        NODE_ENV: 'production',
+        SYSTEM_ADMIN_USER_IDS: '100',
+      }),
+    );
+
+    await expect(
+      controller.getBotRoutePreview({ userId: '100' } as never, {
+        chatId: ' chat-1 ',
+        purpose: 'send_message',
+        fallbackToPrimary: 'false',
+      }),
+    ).resolves.toEqual({ ok: true });
+
+    expect(getRoutePreview).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      purpose: 'send_message',
+      action: null,
+      capability: null,
+      fallbackToPrimary: false,
+      botId: null,
+    });
+  });
+
+  it('rejects invalid route preview query before delegating', async () => {
+    const getRoutePreview = jest.fn();
+    const controller = new SystemController(
+      { getSnapshot: jest.fn() } as never,
+      { getEffectiveSnapshot: jest.fn() } as never,
+      { getSnapshot: jest.fn() } as never,
+      { getSourceSnapshot: jest.fn() } as never,
+      { getSnapshot: jest.fn(), getRoutePreview } as never,
+      createConfigMock({
+        NODE_ENV: 'production',
+        SYSTEM_ADMIN_USER_IDS: '100',
+      }),
+    );
+
+    await expect(
+      controller.getBotRoutePreview({ userId: '100' } as never, {
+        chatId: 'chat-1',
+        fallbackToPrimary: 'definitely',
+      }),
+    ).rejects.toThrow(BadRequestException);
+    expect(getRoutePreview).not.toHaveBeenCalled();
+  });
+
+  it('parses audit query and delegates to the system bots service', async () => {
+    const getMembershipAudit = jest.fn().mockResolvedValue({ ok: true });
+    const controller = new SystemController(
+      { getSnapshot: jest.fn() } as never,
+      { getEffectiveSnapshot: jest.fn() } as never,
+      { getSnapshot: jest.fn() } as never,
+      { getSourceSnapshot: jest.fn() } as never,
+      { getSnapshot: jest.fn(), getMembershipAudit } as never,
+      createConfigMock({
+        NODE_ENV: 'production',
+        SYSTEM_ADMIN_USER_IDS: '100',
+      }),
+    );
+
+    await expect(
+      controller.getBotMembershipAudit({ userId: '100' } as never, {
+        sampleLimit: '7',
+        snapshotFreshMs: '3600000',
+      }),
+    ).resolves.toEqual({ ok: true });
+
+    expect(getMembershipAudit).toHaveBeenCalledWith({
+      sampleLimit: 7,
+      snapshotFreshMs: 3_600_000,
+    });
   });
 });

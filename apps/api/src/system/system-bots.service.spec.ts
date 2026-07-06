@@ -249,6 +249,7 @@ describe('SystemBotsService', () => {
     const service = new SystemBotsService(
       prisma as never,
       { getAllBots: jest.fn(() => bots) } as never,
+      { resolveBotRoute: jest.fn() } as never,
       queueMetricsService as never,
       webhookSubscriptionStatusService as never,
       maxApiMetricsService as never,
@@ -351,5 +352,274 @@ describe('SystemBotsService', () => {
       { windowSec: 60 },
     );
     expect(queryRaw).toHaveBeenCalledTimes(2);
+  });
+
+  it('builds a read-only route preview with route and membership diagnostics', async () => {
+    const bots = [
+      createBot('bot-1', { isDefault: true }),
+      createBot('bot-2'),
+      createBot('bot-3', { state: 'draining' }),
+    ];
+    const botRegistry = {
+      getAllBots: jest.fn(() => bots),
+      getDefaultBot: jest.fn(() => bots[0]),
+      getBotById: jest.fn(
+        (botId: string | null | undefined) => bots.find((bot) => bot.id === botId) ?? null,
+      ),
+    };
+    const resolveBotRoute = jest.fn(async (request: { purpose: string; capability?: string }) => ({
+      purpose: 'capability',
+      chatId: 'chat-1',
+      primaryBotId: 'bot-1',
+      botId: 'bot-2',
+      candidateBotIds: ['bot-2', 'bot-1'],
+      reason: 'alternate_confirmed',
+      capability: request.capability ?? 'suggestion_delivery',
+    }));
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Shared chat',
+          entityType: ChatEntityType.CHAT,
+          catalogKind: ChatCatalogKind.MANAGED,
+          primaryBotId: 'bot-1',
+          botId: 'bot-1',
+          botMemberships: [
+            {
+              botId: 'bot-1',
+              role: ChatBotMembershipRole.PRIMARY,
+              status: ChatBotMembershipStatus.ACTIVE,
+              capabilities: [],
+              permissionsSnapshot: {
+                checkedAt: generatedAt,
+                isAdmin: true,
+                isOwner: false,
+                permissions: ['write'],
+              },
+              botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+              botAccessCheckedAt: new Date(generatedAt),
+              botAccessExpiresAt: new Date('2026-07-06T10:15:00.000Z'),
+              botAccessSource: 'test',
+              botAccessLastErrorCode: null,
+              lastSeenAt: new Date(generatedAt),
+              lastWebhookAt: null,
+            },
+            {
+              botId: 'bot-2',
+              role: ChatBotMembershipRole.STANDBY,
+              status: ChatBotMembershipStatus.ACTIVE,
+              capabilities: ['suggestion_delivery'],
+              permissionsSnapshot: {
+                checkedAt: generatedAt,
+                isAdmin: true,
+                isOwner: false,
+                permissions: ['write'],
+              },
+              botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+              botAccessCheckedAt: new Date(generatedAt),
+              botAccessExpiresAt: new Date('2026-07-06T10:15:00.000Z'),
+              botAccessSource: 'test',
+              botAccessLastErrorCode: null,
+              lastSeenAt: new Date(generatedAt),
+              lastWebhookAt: null,
+            },
+          ],
+        }),
+      },
+    };
+    const service = new SystemBotsService(
+      prisma as never,
+      botRegistry as never,
+      { resolveBotRoute } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    const preview = await service.getRoutePreview({
+      chatId: 'chat-1',
+      purpose: 'capability',
+      capability: 'suggestion_delivery',
+      fallbackToPrimary: false,
+    });
+
+    expect(resolveBotRoute).toHaveBeenCalledWith({
+      purpose: 'capability',
+      chatId: 'chat-1',
+      capability: 'suggestion_delivery',
+      fallbackToPrimary: false,
+    });
+    expect(preview.chat).toMatchObject({
+      exists: true,
+      chatId: 'chat-1',
+      entityType: 'chat',
+      storedPrimaryBotId: 'bot-1',
+    });
+    expect(preview.routes).toEqual([
+      expect.objectContaining({
+        purpose: 'capability',
+        capability: 'suggestion_delivery',
+        botId: 'bot-2',
+        candidateBotIds: ['bot-2', 'bot-1'],
+        selectedBot: expect.objectContaining({ botId: 'bot-2', lifecycleState: 'active' }),
+      }),
+    ]);
+    expect(preview.memberships).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          botId: 'bot-2',
+          capabilities: ['suggestion_delivery'],
+          executable: true,
+          issues: [],
+        }),
+      ]),
+    );
+  });
+
+  it('audits denied primaries, eligible alternates, and denied assist capabilities', async () => {
+    const fresh = new Date().toISOString();
+    const bots = [createBot('bot-1', { isDefault: true }), createBot('bot-2'), createBot('bot-3')];
+    const botRegistry = {
+      getAllBots: jest.fn(() => bots),
+      getDefaultBot: jest.fn(() => bots[0]),
+      getBotById: jest.fn(
+        (botId: string | null | undefined) => bots.find((bot) => bot.id === botId) ?? null,
+      ),
+    };
+    const primaryAdmin = {
+      botId: 'bot-1',
+      role: ChatBotMembershipRole.PRIMARY,
+      status: ChatBotMembershipStatus.ACTIVE,
+      capabilities: [],
+      permissionsSnapshot: {
+        checkedAt: fresh,
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+      },
+      botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+      botAccessCheckedAt: new Date(fresh),
+      botAccessExpiresAt: new Date(Date.now() + 60_000),
+      botAccessSource: 'test',
+      botAccessLastErrorCode: null,
+      lastSeenAt: new Date(fresh),
+      lastWebhookAt: null,
+    };
+    const prisma = {
+      chat: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'chat-denied-primary',
+            title: 'Denied primary',
+            entityType: ChatEntityType.CHAT,
+            catalogKind: ChatCatalogKind.MANAGED,
+            primaryBotId: 'bot-1',
+            botId: 'bot-1',
+            botMemberships: [
+              {
+                ...primaryAdmin,
+                permissionsSnapshot: {
+                  checkedAt: fresh,
+                  isAdmin: false,
+                  isOwner: false,
+                  permissions: [],
+                },
+                botAccessState: ChatBotAccessState.DENIED,
+              },
+              {
+                botId: 'bot-2',
+                role: ChatBotMembershipRole.STANDBY,
+                status: ChatBotMembershipStatus.ACTIVE,
+                capabilities: [],
+                permissionsSnapshot: {
+                  checkedAt: fresh,
+                  isAdmin: true,
+                  isOwner: false,
+                  permissions: ['write', 'add_remove_members'],
+                },
+                botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+                botAccessCheckedAt: new Date(fresh),
+                botAccessExpiresAt: new Date(Date.now() + 60_000),
+                botAccessSource: 'test',
+                botAccessLastErrorCode: null,
+                lastSeenAt: new Date(fresh),
+                lastWebhookAt: null,
+              },
+            ],
+          },
+          {
+            id: 'chat-denied-assist',
+            title: 'Denied assist',
+            entityType: ChatEntityType.CHANNEL,
+            catalogKind: ChatCatalogKind.MANAGED,
+            primaryBotId: 'bot-1',
+            botId: 'bot-1',
+            botMemberships: [
+              primaryAdmin,
+              {
+                botId: 'bot-3',
+                role: ChatBotMembershipRole.STANDBY,
+                status: ChatBotMembershipStatus.ACTIVE,
+                capabilities: ['suggestion_delivery'],
+                permissionsSnapshot: {
+                  checkedAt: fresh,
+                  isAdmin: false,
+                  isOwner: false,
+                  permissions: [],
+                },
+                botAccessState: ChatBotAccessState.DENIED,
+                botAccessCheckedAt: new Date(fresh),
+                botAccessExpiresAt: new Date(Date.now() + 60_000),
+                botAccessSource: 'test',
+                botAccessLastErrorCode: null,
+                lastSeenAt: new Date(fresh),
+                lastWebhookAt: null,
+              },
+            ],
+          },
+        ]),
+      },
+    };
+    const service = new SystemBotsService(
+      prisma as never,
+      botRegistry as never,
+      { resolveBotRoute: jest.fn() } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    const audit = await service.getMembershipAudit({ sampleLimit: 10 });
+
+    expect(audit.summary).toMatchObject({
+      auditedEntities: 2,
+      activeMemberships: 4,
+      deniedActivePrimary: 1,
+      storedPrimaryDeniedAlternateEligible: 1,
+      capabilitiesOnDeniedBot: 1,
+      criticalCount: 3,
+    });
+    expect(audit.byBot).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ botId: 'bot-1', deniedPrimary: 1 }),
+        expect.objectContaining({ botId: 'bot-2', alternateEligibleFor: 1 }),
+        expect.objectContaining({ botId: 'bot-3', deniedCapabilities: 1 }),
+      ]),
+    );
+    expect(audit.samples).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'stored-primary-denied-alternate-eligible',
+          suggestedPrimaryBotId: 'bot-2',
+          alternateBotIds: ['bot-2'],
+        }),
+        expect.objectContaining({
+          kind: 'capabilities-on-denied-bot',
+          botId: 'bot-3',
+          capabilities: ['suggestion_delivery'],
+        }),
+      ]),
+    );
   });
 });
