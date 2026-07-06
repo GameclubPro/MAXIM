@@ -138,6 +138,10 @@ import {
   type ChannelStatsResponse,
 } from '@maxim/contracts/channel-stats';
 import {
+  systemBotsSnapshotSchema,
+  type SystemBotsSnapshot,
+} from '@maxim/contracts/system';
+import {
   PREVIEW_CHANNEL_ID,
   PREVIEW_CHANNEL_TITLE,
   PREVIEW_CHAT_ID,
@@ -441,12 +445,41 @@ function buildPreviewSystemDashboard(state: PreviewState): SystemDashboardRespon
       failed: 0,
       completed: 960,
     },
+    webhookJoin: {
+      waiting: 0,
+      active: 0,
+      delayed: 0,
+      failed: 0,
+      completed: 0,
+    },
+    webhookJoinShards: {},
     webhookDefault: {
       waiting: inDegrade ? 5 : 1,
       active: inDegrade ? 2 : 0,
       delayed: 0,
       failed: 0,
       completed: 1224,
+    },
+    webhookDefaultShards: {
+      'moderation-default-0': {
+        waiting: inDegrade ? 5 : 1,
+        active: inDegrade ? 2 : 0,
+        delayed: 0,
+        failed: 0,
+        completed: 1224,
+      },
+    },
+    webhookDefaultWorkerGroups: {
+      'api-moderation-realtime-b': {
+        queues: ['moderation-default-0'],
+        counters: {
+          waiting: inDegrade ? 5 : 1,
+          active: inDegrade ? 2 : 0,
+          delayed: 0,
+          failed: 0,
+          completed: 1224,
+        },
+      },
     },
     webhookBackground: {
       waiting: inDegrade ? 2 : 0,
@@ -519,7 +552,28 @@ function buildPreviewSystemDashboard(state: PreviewState): SystemDashboardRespon
         oldestLagSec: inDegrade ? 41 : 0,
       },
     },
+    userFacingWebhookEvents: {
+      received: {
+        count: inDegrade ? 2 : 0,
+        oldestEventId: inDegrade ? 'preview-user-facing-received-1' : null,
+        oldestCreatedAt: inDegrade ? generatedAt : null,
+        oldestLagSec: inDegrade ? 3.2 : 0,
+      },
+      queued: {
+        count: inDegrade ? 2 : 0,
+        oldestEventId: inDegrade ? 'preview-user-facing-queued-1' : null,
+        oldestCreatedAt: inDegrade ? generatedAt : null,
+        oldestLagSec: inDegrade ? 5.4 : 0,
+      },
+      failed: {
+        count: inDegrade ? 1 : 0,
+        oldestEventId: inDegrade ? 'preview-user-facing-failed-1' : null,
+        oldestCreatedAt: inDegrade ? generatedAt : null,
+        oldestLagSec: inDegrade ? 12 : 0,
+      },
+    },
     actionHealth: mode.action,
+    webhookDynamicLeases: null,
     bots: {
       [PREVIEW_PRIMARY_BOT_ID]: {
         webhookEvents: {
@@ -542,6 +596,26 @@ function buildPreviewSystemDashboard(state: PreviewState): SystemDashboardRespon
             oldestLagSec: inDegrade ? 41 : 0,
           },
         },
+        userFacingWebhookEvents: {
+          received: {
+            count: inDegrade ? 2 : 0,
+            oldestEventId: inDegrade ? 'preview-user-facing-received-1' : null,
+            oldestCreatedAt: inDegrade ? generatedAt : null,
+            oldestLagSec: inDegrade ? 3.2 : 0,
+          },
+          queued: {
+            count: inDegrade ? 2 : 0,
+            oldestEventId: inDegrade ? 'preview-user-facing-queued-1' : null,
+            oldestCreatedAt: inDegrade ? generatedAt : null,
+            oldestLagSec: inDegrade ? 5.4 : 0,
+          },
+          failed: {
+            count: inDegrade ? 1 : 0,
+            oldestEventId: inDegrade ? 'preview-user-facing-failed-1' : null,
+            oldestCreatedAt: inDegrade ? generatedAt : null,
+            oldestLagSec: inDegrade ? 12 : 0,
+          },
+        },
         queuedByQueue: {
           'webhook-critical': 0,
           'webhook-default': inDegrade ? 4 : 0,
@@ -555,6 +629,13 @@ function buildPreviewSystemDashboard(state: PreviewState): SystemDashboardRespon
         oldestReceivedCreatedAt: inDegrade ? generatedAt : null,
         oldestReceivedLagSec: inDegrade ? 6.1 : 0,
         effectiveLagSec: inDegrade ? 11.4 : 0,
+        userFacingOldestQueuedEventId: inDegrade ? 'preview-user-facing-queued-1' : null,
+        userFacingOldestQueuedCreatedAt: inDegrade ? generatedAt : null,
+        userFacingOldestQueuedLagSec: inDegrade ? 5.4 : 0,
+        userFacingOldestReceivedEventId: inDegrade ? 'preview-user-facing-received-1' : null,
+        userFacingOldestReceivedCreatedAt: inDegrade ? generatedAt : null,
+        userFacingOldestReceivedLagSec: inDegrade ? 3.2 : 0,
+        userFacingEffectiveLagSec: inDegrade ? 5.4 : 0,
       },
     },
     oldestQueuedEventId: inDegrade ? 'preview-queued-1' : null,
@@ -564,6 +645,13 @@ function buildPreviewSystemDashboard(state: PreviewState): SystemDashboardRespon
     oldestReceivedCreatedAt: inDegrade ? generatedAt : null,
     oldestReceivedLagSec: inDegrade ? 6.1 : 0,
     effectiveLagSec: inDegrade ? 11.4 : 0,
+    userFacingOldestQueuedEventId: inDegrade ? 'preview-user-facing-queued-1' : null,
+    userFacingOldestQueuedCreatedAt: inDegrade ? generatedAt : null,
+    userFacingOldestQueuedLagSec: inDegrade ? 5.4 : 0,
+    userFacingOldestReceivedEventId: inDegrade ? 'preview-user-facing-received-1' : null,
+    userFacingOldestReceivedCreatedAt: inDegrade ? generatedAt : null,
+    userFacingOldestReceivedLagSec: inDegrade ? 3.2 : 0,
+    userFacingEffectiveLagSec: inDegrade ? 5.4 : 0,
     generatedAt,
   };
   const alerts = inDegrade
@@ -845,6 +933,223 @@ function buildPreviewSystemDashboard(state: PreviewState): SystemDashboardRespon
       generatedAt,
     },
   };
+}
+
+function buildPreviewSystemBots(state: PreviewState): SystemBotsSnapshot {
+  const dashboard = buildPreviewSystemDashboard(state);
+  const generatedAt = dashboard.summary.generatedAt;
+  const inDegrade = dashboard.mode.mode === 'degrade';
+  const primaryQueue = dashboard.queues.bots[PREVIEW_PRIMARY_BOT_ID] ?? null;
+  const primaryWebhook = dashboard.webhookSubscription.bots[PREVIEW_PRIMARY_BOT_ID] ?? null;
+  const standbyBotId = '777001_bot';
+  const dormantBotId = '777002_bot';
+  const assistTotal =
+    (state.chatPartnerAssistEnabled ? 3 : 0) + (state.channelPartnerAssistEnabled ? 1 : 0);
+  const problemSamples = inDegrade
+    ? [
+        {
+          chatId: PREVIEW_CHANNEL_ID,
+          title: PREVIEW_CHANNEL_TITLE,
+          entityType: 'channel' as const,
+          kind: 'stale-access' as const,
+          botRole: 'standby' as const,
+          membershipStatus: 'active' as const,
+          botAccessState: 'stale' as const,
+          primaryBotId: PREVIEW_PRIMARY_BOT_ID,
+          checkedAt: generatedAt,
+          lastSeenAt: generatedAt,
+          lastWebhookAt: generatedAt,
+          updatedAt: generatedAt,
+        },
+      ]
+    : [];
+
+  return systemBotsSnapshotSchema.parse({
+    generatedAt,
+    summary: {
+      total: 3,
+      adminVisible: 3,
+      active: 2,
+      draining: 0,
+      dormant: 1,
+      disabled: 0,
+      webhookWarningBotCount: inDegrade ? 1 : 0,
+      problemBotCount: inDegrade ? 1 : 0,
+      primaryEntities: {
+        total: 37,
+        chats: 33,
+        channels: 4,
+      },
+      standbyEntities: {
+        total: 12,
+        chats: 10,
+        channels: 2,
+      },
+      assistEntities: {
+        total: assistTotal,
+        chats: state.chatPartnerAssistEnabled ? 3 : 0,
+        channels: state.channelPartnerAssistEnabled ? 1 : 0,
+      },
+      lostAccess: 0,
+      staleAccess: inDegrade ? 1 : 0,
+      deniedAccess: 0,
+    },
+    bots: [
+      {
+        botId: PREVIEW_PRIMARY_BOT_ID,
+        label: 'Майор Максимов',
+        characterName: 'Майор Максимов',
+        lifecycleState: 'active',
+        adminVisible: true,
+        isDefault: true,
+        contactId: '777000',
+        webhook: primaryWebhook,
+        operationalDiagnostics: primaryWebhook?.operationalDiagnostics ?? null,
+        queue: primaryQueue,
+        maxApiLoad: {
+          windowSec: 60,
+          totalRequests: inDegrade ? 18 : 4,
+          avgRps: inDegrade ? 0.3 : 0.067,
+          peakRps: inDegrade ? 4 : 1,
+          avgLoad: inDegrade ? 0.18 : 0.04,
+          peakLoad: inDegrade ? 0.42 : 0.08,
+          smoothedLoad: inDegrade ? 0.24 : 0.05,
+          background: {
+            totalRequests: inDegrade ? 6 : 1,
+            avgRps: inDegrade ? 0.1 : 0.017,
+            peakRps: inDegrade ? 2 : 1,
+          },
+        },
+        entities: {
+          primary: {
+            total: 37,
+            chats: 33,
+            channels: 4,
+          },
+          standby: {
+            total: 0,
+            chats: 0,
+            channels: 0,
+          },
+          assist: {
+            total: 0,
+            chats: 0,
+            channels: 0,
+          },
+        },
+        access: {
+          lost: 0,
+          stale: 0,
+          denied: 0,
+          unknown: 0,
+          removedAfterLoss: 0,
+        },
+        problemSamples: [],
+      },
+      {
+        botId: standbyBotId,
+        label: 'Максимов-2',
+        characterName: 'Максимов-2',
+        lifecycleState: 'active',
+        adminVisible: true,
+        isDefault: false,
+        contactId: '777001',
+        webhook: null,
+        operationalDiagnostics: null,
+        queue: null,
+        maxApiLoad: {
+          windowSec: 60,
+          totalRequests: inDegrade ? 9 : 2,
+          avgRps: inDegrade ? 0.15 : 0.033,
+          peakRps: inDegrade ? 2 : 1,
+          avgLoad: inDegrade ? 0.11 : 0.02,
+          peakLoad: inDegrade ? 0.24 : 0.04,
+          smoothedLoad: inDegrade ? 0.14 : 0.03,
+          background: {
+            totalRequests: inDegrade ? 7 : 2,
+            avgRps: inDegrade ? 0.117 : 0.033,
+            peakRps: inDegrade ? 2 : 1,
+          },
+        },
+        entities: {
+          primary: {
+            total: 0,
+            chats: 0,
+            channels: 0,
+          },
+          standby: {
+            total: 12,
+            chats: 10,
+            channels: 2,
+          },
+          assist: {
+            total: assistTotal,
+            chats: state.chatPartnerAssistEnabled ? 3 : 0,
+            channels: state.channelPartnerAssistEnabled ? 1 : 0,
+          },
+        },
+        access: {
+          lost: 0,
+          stale: inDegrade ? 1 : 0,
+          denied: 0,
+          unknown: 1,
+          removedAfterLoss: 0,
+        },
+        problemSamples,
+      },
+      {
+        botId: dormantBotId,
+        label: 'Максимов-3',
+        characterName: 'Максимов-3',
+        lifecycleState: 'dormant',
+        adminVisible: true,
+        isDefault: false,
+        contactId: '777002',
+        webhook: null,
+        operationalDiagnostics: null,
+        queue: null,
+        maxApiLoad: {
+          windowSec: 60,
+          totalRequests: 0,
+          avgRps: 0,
+          peakRps: 0,
+          avgLoad: 0,
+          peakLoad: 0,
+          smoothedLoad: 0,
+          background: {
+            totalRequests: 0,
+            avgRps: 0,
+            peakRps: 0,
+          },
+        },
+        entities: {
+          primary: {
+            total: 0,
+            chats: 0,
+            channels: 0,
+          },
+          standby: {
+            total: 0,
+            chats: 0,
+            channels: 0,
+          },
+          assist: {
+            total: 0,
+            chats: 0,
+            channels: 0,
+          },
+        },
+        access: {
+          lost: 0,
+          stale: 0,
+          denied: 0,
+          unknown: 0,
+          removedAfterLoss: 0,
+        },
+        problemSamples: [],
+      },
+    ],
+  });
 }
 
 function buildAuthorBadge(value: string | null | undefined): string {
@@ -6615,6 +6920,10 @@ export function createPreviewApiTransport(): ApiTransport {
 
       if (url.pathname === '/system/dashboard' && method === 'GET') {
         return systemDashboardResponseSchema.parse(buildPreviewSystemDashboard(state));
+      }
+
+      if (url.pathname === '/system/bots' && method === 'GET') {
+        return systemBotsSnapshotSchema.parse(buildPreviewSystemBots(state));
       }
 
       if (url.pathname === '/system/mode' && method === 'POST') {

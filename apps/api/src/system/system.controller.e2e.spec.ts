@@ -7,6 +7,7 @@ import { InitDataService } from '../auth/init-data.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { QueueMetricsService } from './queue-metrics.service';
 import { MaxApiMetricsService } from './max-api-metrics.service';
+import { SystemBotsService } from './system-bots.service';
 import { SystemController } from './system.controller';
 import { SystemDashboardService } from './system-dashboard.service';
 import { SystemModeService } from './system-mode.service';
@@ -83,6 +84,10 @@ describe('SystemController auth e2e', () => {
         {
           provide: MaxApiMetricsService,
           useValue: { getSourceSnapshot },
+        },
+        {
+          provide: SystemBotsService,
+          useValue: { getSnapshot: jest.fn() },
         },
       ],
     }).compile();

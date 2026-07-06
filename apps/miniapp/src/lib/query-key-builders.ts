@@ -1,4 +1,5 @@
 export const systemDashboardQueryKey = ['system-dashboard'] as const;
+export const systemBotsQueryKey = ['system-bots'] as const;
 
 export const logsDashboardQueryKey = (
   chatId: string,

@@ -1,4 +1,5 @@
 import {
+  systemBotsSnapshotSchema,
   systemCanaryStateSchema,
   systemQueueGroupHealthSchema,
   systemRollbackReadinessSchema,
@@ -13,6 +14,7 @@ import type {
   SystemDashboardSpammerReadModel,
   SystemDashboardSpammerSurfaces,
   SystemDashboardWebhookSlo,
+  SystemBotsSnapshot,
   SystemModeSnapshot,
   SystemQueueGroupHealth,
   SystemRollbackReadiness,
@@ -825,12 +827,25 @@ function parseBotQueueMetricsSnapshot(value: unknown) {
     throw new Error('Invalid bot queue metrics');
   }
 
+  const userFacingWebhookEvents = isRecord(value.userFacingWebhookEvents)
+    ? {
+        received: parseWebhookStatusMetrics(value.userFacingWebhookEvents.received),
+        queued: parseWebhookStatusMetrics(value.userFacingWebhookEvents.queued),
+        failed: parseWebhookStatusMetrics(value.userFacingWebhookEvents.failed),
+      }
+    : {
+        received: parseWebhookStatusMetrics(value.webhookEvents.received),
+        queued: parseWebhookStatusMetrics(value.webhookEvents.queued),
+        failed: parseWebhookStatusMetrics(value.webhookEvents.failed),
+      };
+
   return {
     webhookEvents: {
       received: parseWebhookStatusMetrics(value.webhookEvents.received),
       queued: parseWebhookStatusMetrics(value.webhookEvents.queued),
       failed: parseWebhookStatusMetrics(value.webhookEvents.failed),
     },
+    userFacingWebhookEvents,
     queuedByQueue: Object.fromEntries(
       Object.entries(value.queuedByQueue).map(([queueName, count]) => [
         queueName,
@@ -849,6 +864,30 @@ function parseBotQueueMetricsSnapshot(value: unknown) {
       typeof value.oldestReceivedCreatedAt === 'string' ? value.oldestReceivedCreatedAt : null,
     oldestReceivedLagSec: value.oldestReceivedLagSec,
     effectiveLagSec: value.effectiveLagSec,
+    userFacingOldestQueuedEventId:
+      typeof value.userFacingOldestQueuedEventId === 'string'
+        ? value.userFacingOldestQueuedEventId
+        : null,
+    userFacingOldestQueuedCreatedAt:
+      typeof value.userFacingOldestQueuedCreatedAt === 'string'
+        ? value.userFacingOldestQueuedCreatedAt
+        : null,
+    userFacingOldestQueuedLagSec:
+      typeof value.userFacingOldestQueuedLagSec === 'number' ? value.userFacingOldestQueuedLagSec : 0,
+    userFacingOldestReceivedEventId:
+      typeof value.userFacingOldestReceivedEventId === 'string'
+        ? value.userFacingOldestReceivedEventId
+        : null,
+    userFacingOldestReceivedCreatedAt:
+      typeof value.userFacingOldestReceivedCreatedAt === 'string'
+        ? value.userFacingOldestReceivedCreatedAt
+        : null,
+    userFacingOldestReceivedLagSec:
+      typeof value.userFacingOldestReceivedLagSec === 'number'
+        ? value.userFacingOldestReceivedLagSec
+        : 0,
+    userFacingEffectiveLagSec:
+      typeof value.userFacingEffectiveLagSec === 'number' ? value.userFacingEffectiveLagSec : 0,
   };
 }
 
@@ -1083,7 +1122,34 @@ function parseSystemDashboardResponse(value: unknown): SystemDashboardResponse {
     queues: {
       moderation: parseQueueCounters(queues.moderation),
       webhookCritical: parseQueueCounters(queues.webhookCritical),
+      webhookJoin: parseQueueCounters(queues.webhookJoin),
+      webhookJoinShards: Object.fromEntries(
+        Object.entries(isRecord(queues.webhookJoinShards) ? queues.webhookJoinShards : {}).map(
+          ([queueName, counters]) => [queueName, parseQueueCounters(counters)],
+        ),
+      ),
       webhookDefault: parseQueueCounters(queues.webhookDefault),
+      webhookDefaultShards: Object.fromEntries(
+        Object.entries(
+          isRecord(queues.webhookDefaultShards) ? queues.webhookDefaultShards : {},
+        ).map(([queueName, counters]) => [queueName, parseQueueCounters(counters)]),
+      ),
+      webhookDefaultWorkerGroups: Object.fromEntries(
+        Object.entries(
+          isRecord(queues.webhookDefaultWorkerGroups) ? queues.webhookDefaultWorkerGroups : {},
+        ).map(([groupName, rawGroup]) => {
+          const group = isRecord(rawGroup) ? rawGroup : {};
+          return [
+            groupName,
+            {
+              queues: Array.isArray(group.queues)
+                ? group.queues.filter((item): item is string => typeof item === 'string')
+                : [],
+              counters: parseQueueCounters(group.counters),
+            },
+          ];
+        }),
+      ),
       webhookBackground: parseQueueCounters(queues.webhookBackground),
       webhookLegacy: parseQueueCounters(queues.webhookLegacy),
       actions: parseQueueCounters(queues.actions),
@@ -1098,7 +1164,19 @@ function parseSystemDashboardResponse(value: unknown): SystemDashboardResponse {
         queued: parseWebhookStatusMetrics(queues.webhookEvents.queued),
         failed: parseWebhookStatusMetrics(queues.webhookEvents.failed),
       },
+      userFacingWebhookEvents: isRecord(queues.userFacingWebhookEvents)
+        ? {
+            received: parseWebhookStatusMetrics(queues.userFacingWebhookEvents.received),
+            queued: parseWebhookStatusMetrics(queues.userFacingWebhookEvents.queued),
+            failed: parseWebhookStatusMetrics(queues.userFacingWebhookEvents.failed),
+          }
+        : {
+            received: parseWebhookStatusMetrics(queues.webhookEvents.received),
+            queued: parseWebhookStatusMetrics(queues.webhookEvents.queued),
+            failed: parseWebhookStatusMetrics(queues.webhookEvents.failed),
+          },
       actionHealth: parseActionHealthSnapshot(queues.actionHealth),
+      webhookDynamicLeases: queues.webhookDynamicLeases ?? null,
       bots: Object.fromEntries(
         Object.entries(isRecord(queues.bots) ? queues.bots : {}).map(([botId, snapshot]) => [
           botId,
@@ -1116,6 +1194,32 @@ function parseSystemDashboardResponse(value: unknown): SystemDashboardResponse {
         typeof queues.oldestReceivedCreatedAt === 'string' ? queues.oldestReceivedCreatedAt : null,
       oldestReceivedLagSec: queues.oldestReceivedLagSec,
       effectiveLagSec: queues.effectiveLagSec,
+      userFacingOldestQueuedEventId:
+        typeof queues.userFacingOldestQueuedEventId === 'string'
+          ? queues.userFacingOldestQueuedEventId
+          : null,
+      userFacingOldestQueuedCreatedAt:
+        typeof queues.userFacingOldestQueuedCreatedAt === 'string'
+          ? queues.userFacingOldestQueuedCreatedAt
+          : null,
+      userFacingOldestQueuedLagSec:
+        typeof queues.userFacingOldestQueuedLagSec === 'number'
+          ? queues.userFacingOldestQueuedLagSec
+          : 0,
+      userFacingOldestReceivedEventId:
+        typeof queues.userFacingOldestReceivedEventId === 'string'
+          ? queues.userFacingOldestReceivedEventId
+          : null,
+      userFacingOldestReceivedCreatedAt:
+        typeof queues.userFacingOldestReceivedCreatedAt === 'string'
+          ? queues.userFacingOldestReceivedCreatedAt
+          : null,
+      userFacingOldestReceivedLagSec:
+        typeof queues.userFacingOldestReceivedLagSec === 'number'
+          ? queues.userFacingOldestReceivedLagSec
+          : 0,
+      userFacingEffectiveLagSec:
+        typeof queues.userFacingEffectiveLagSec === 'number' ? queues.userFacingEffectiveLagSec : 0,
       generatedAt: queues.generatedAt,
     },
     mode: parseSystemModeSnapshot(value.mode),
@@ -1157,6 +1261,11 @@ function parseSystemDashboardResponse(value: unknown): SystemDashboardResponse {
 export async function getSystemDashboard(api: ApiTransport): Promise<SystemDashboardResponse> {
   const response = await api.request('/system/dashboard');
   return parseSystemDashboardResponse(response);
+}
+
+export async function getSystemBots(api: ApiTransport): Promise<SystemBotsSnapshot> {
+  const response = await api.request('/system/bots');
+  return parseContractValue(systemBotsSnapshotSchema, response, 'system bots snapshot');
 }
 
 export async function setSystemMode(

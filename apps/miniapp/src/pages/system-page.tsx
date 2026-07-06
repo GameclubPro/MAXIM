@@ -4,7 +4,7 @@ import { SegmentedControl } from '../components/ui/segmented-control';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import { describeApiError } from '../lib/api-error';
-import { getSystemDashboard, setSystemMode } from '../lib/api/system-client';
+import { getSystemBots, getSystemDashboard, setSystemMode } from '../lib/api/system-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { queryKeys } from '../lib/query-keys';
 import '../styles/system-page.css';
@@ -210,6 +210,17 @@ function formatBotIssue(code: string): string {
   return labels[code] ?? code;
 }
 
+function formatBotProblemKind(kind: string): string {
+  const labels: Record<string, string> = {
+    'lost-access': 'access lost',
+    'stale-access': 'stale access',
+    'denied-access': 'access denied',
+    'removed-after-loss': 'removed after loss',
+  };
+
+  return labels[kind] ?? kind;
+}
+
 export function SystemPage({ api }: { api: ApiTransport }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
@@ -220,10 +231,18 @@ export function SystemPage({ api }: { api: ApiTransport }) {
     refetchInterval: 5_000,
     retry: 1,
   });
+  const botsQuery = useQuery({
+    queryKey: queryKeys.systemBots,
+    queryFn: () => getSystemBots(api),
+    staleTime: 5_000,
+    refetchInterval: 5_000,
+    retry: 1,
+  });
   const modeMutation = useMutation({
     mutationFn: (mode: SystemModeSelection) => setSystemMode(api, mode),
     onSuccess: async (_, mode) => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.systemDashboard });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.systemBots });
       pushToast({
         tone: 'success',
         title: 'Режим обновлён',
@@ -334,34 +353,57 @@ export function SystemPage({ api }: { api: ApiTransport }) {
     dashboard.ownership.anomalies.recoverableLegacyOnly +
     dashboard.ownership.anomalies.recoverableFromMemberships;
   const webhookOperationalDiagnostics = dashboard.webhookSubscription.operationalDiagnostics;
-  const botRows = Array.from(
-    new Set([
-      ...Object.keys(dashboard.webhookSubscription.bots),
-      ...Object.keys(dashboard.queues.bots),
-    ]),
-  )
-    .map((botId) => {
-      const webhook = dashboard.webhookSubscription.bots[botId];
-      const queues = dashboard.queues.bots[botId];
-      const operationalDiagnostics = webhook?.operationalDiagnostics;
+  const botFleet = botsQuery.data;
+  const botRows = (botFleet
+    ? botFleet.bots
+    : Array.from(
+        new Set([
+          ...Object.keys(dashboard.webhookSubscription.bots),
+          ...Object.keys(dashboard.queues.bots),
+        ]),
+      ).map((botId) => {
+        const webhook = dashboard.webhookSubscription.bots[botId];
+        const queue = dashboard.queues.bots[botId];
+        const operationalDiagnostics = webhook?.operationalDiagnostics;
 
-      return {
-        botId,
-        webhook,
-        queues,
-        operationalDiagnostics,
-        issueCodes: operationalDiagnostics?.issueCodes ?? [],
-        queuedWork: sumNumericRecord(queues?.queuedByQueue),
-        failedEvents: queues?.webhookEvents.failed.count ?? 0,
-        receivedEvents: queues?.webhookEvents.received.count ?? 0,
-        effectiveLagSec: queues?.effectiveLagSec ?? 0,
-      };
-    })
+        return {
+          botId,
+          label: botId,
+          characterName: botId,
+          lifecycleState: operationalDiagnostics?.lifecycleState ?? 'unknown',
+          adminVisible: true,
+          isDefault: false,
+          contactId: null,
+          webhook,
+          operationalDiagnostics,
+          queue,
+          maxApiLoad: null,
+          entities: null,
+          access: null,
+          problemSamples: [],
+        };
+      })
+  )
+    .map((bot) => ({
+      ...bot,
+      issueCodes: bot.operationalDiagnostics?.issueCodes ?? [],
+      queuedWork: sumNumericRecord(bot.queue?.queuedByQueue),
+      failedEvents: bot.queue?.webhookEvents.failed.count ?? 0,
+      receivedEvents: bot.queue?.webhookEvents.received.count ?? 0,
+      effectiveLagSec: bot.queue?.effectiveLagSec ?? 0,
+      accessProblemCount:
+        (bot.access?.lost ?? 0) + (bot.access?.stale ?? 0) + (bot.access?.denied ?? 0),
+    }))
     .sort((left, right) => {
       const statusDiff =
         webhookStatusRank(right.webhook?.status) - webhookStatusRank(left.webhook?.status);
       if (statusDiff !== 0) {
         return statusDiff;
+      }
+
+      const accessDiff = right.accessProblemCount - left.accessProblemCount;
+      if (accessDiff !== 0) {
+        return accessDiff;
       }
 
       const failedDiff = right.failedEvents - left.failedEvents;
@@ -387,10 +429,13 @@ export function SystemPage({ api }: { api: ApiTransport }) {
           <button
             type="button"
             className="button button--ghost system-hero__refresh"
-            onClick={() => dashboardQuery.refetch()}
-            disabled={dashboardQuery.isFetching}
+            onClick={() => {
+              void dashboardQuery.refetch();
+              void botsQuery.refetch();
+            }}
+            disabled={dashboardQuery.isFetching || botsQuery.isFetching}
           >
-            {dashboardQuery.isFetching ? 'Обновляем…' : 'Обновить'}
+            {dashboardQuery.isFetching || botsQuery.isFetching ? 'Обновляем…' : 'Обновить'}
           </button>
         </div>
         <div className="system-hero__main">
@@ -749,45 +794,65 @@ export function SystemPage({ api }: { api: ApiTransport }) {
             <p>Операционный срез по multi-bot ownership, webhook и per-bot очередям.</p>
           </div>
           <span className={webhookStatusChipClass(dashboard.webhookSubscription.status)}>
-            {dashboard.webhookSubscription.botCount} webhook bots
+            {botFleet?.summary.total ?? dashboard.webhookSubscription.botCount} bots
           </span>
         </div>
+        {botsQuery.error ? (
+          <p className="system-panel__hint">
+            Fleet snapshot временно недоступен; показан fallback из dashboard.
+          </p>
+        ) : null}
         <div className="system-bot-overview-grid">
           <article className="system-runtime-card">
             <span>Lifecycle</span>
             <strong>
-              {dashboard.ownership.bots.active}/{dashboard.ownership.bots.configured} active
+              {botFleet?.summary.active ?? dashboard.ownership.bots.active}/
+              {botFleet?.summary.total ?? dashboard.ownership.bots.configured} active
             </strong>
             <small>
-              visible {dashboard.ownership.bots.adminVisible} · draining{' '}
-              {dashboard.ownership.bots.draining} · dormant {dashboard.ownership.bots.dormant} ·
-              disabled {dashboard.ownership.bots.disabled}
+              visible {botFleet?.summary.adminVisible ?? dashboard.ownership.bots.adminVisible} ·
+              draining {botFleet?.summary.draining ?? dashboard.ownership.bots.draining} · dormant{' '}
+              {botFleet?.summary.dormant ?? dashboard.ownership.bots.dormant} · disabled{' '}
+              {botFleet?.summary.disabled ?? dashboard.ownership.bots.disabled}
             </small>
           </article>
           <article className="system-runtime-card">
-            <span>Ownership coverage</span>
-            <strong>{formatPercent(dashboard.ownership.entities.total.coverageRatio)}</strong>
+            <span>Primary ownership</span>
+            <strong>
+              {botFleet
+                ? botFleet.summary.primaryEntities.total
+                : dashboard.ownership.entities.total.withPrimary}
+            </strong>
             <small>
-              {dashboard.ownership.entities.total.withPrimary}/
-              {dashboard.ownership.entities.total.total} entities ·{' '}
-              {dashboard.ownership.entities.total.withoutPrimary} without primary
+              {botFleet
+                ? `${botFleet.summary.primaryEntities.chats} chats · ${botFleet.summary.primaryEntities.channels} channels`
+                : `${formatPercent(dashboard.ownership.entities.total.coverageRatio)} coverage · ${dashboard.ownership.entities.total.withoutPrimary} without primary`}
             </small>
           </article>
           <article className="system-runtime-card">
-            <span>Anomalies</span>
-            <strong>{ownershipAnomalyCount}</strong>
+            <span>Standby / assist</span>
+            <strong>
+              {botFleet
+                ? `${botFleet.summary.standbyEntities.total}/${botFleet.summary.assistEntities.total}`
+                : ownershipAnomalyCount}
+            </strong>
             <small>
-              recoverable {recoverableOwnershipCount} · shared chats{' '}
-              {dashboard.ownership.anomalies.sharedChats}
+              {botFleet
+                ? `${botFleet.summary.standbyEntities.chats} chat standby · ${botFleet.summary.assistEntities.channels} channel assist`
+                : `recoverable ${recoverableOwnershipCount} · shared chats ${dashboard.ownership.anomalies.sharedChats}`}
             </small>
           </article>
           <article className="system-runtime-card">
-            <span>Webhook warnings</span>
-            <strong>{webhookOperationalDiagnostics?.warningBotCount ?? 0}</strong>
+            <span>Warnings</span>
+            <strong>
+              {botFleet
+                ? botFleet.summary.problemBotCount
+                : (webhookOperationalDiagnostics?.warningBotCount ?? 0)}
+            </strong>
             <small>
-              no memberships{' '}
-              {webhookOperationalDiagnostics?.noActiveMembershipBotIds.length ?? 0} · no incoming{' '}
-              {webhookOperationalDiagnostics?.noIncomingWebhookBotIds.length ?? 0}
+              {botFleet
+                ? `lost ${botFleet.summary.lostAccess} · stale ${botFleet.summary.staleAccess} · denied ${botFleet.summary.deniedAccess}`
+                : `no memberships ${webhookOperationalDiagnostics?.noActiveMembershipBotIds.length ?? 0} · no incoming ${webhookOperationalDiagnostics?.noIncomingWebhookBotIds.length ?? 0}`}
             </small>
           </article>
         </div>
@@ -797,10 +862,13 @@ export function SystemPage({ api }: { api: ApiTransport }) {
               <article key={row.botId} className="system-bot-card">
                 <div className="system-bot-card__head">
                   <div>
-                    <strong>{row.botId}</strong>
+                    <strong>{row.label}</strong>
                     <small>
-                      {row.operationalDiagnostics?.lifecycleState ?? 'state n/a'} · memberships{' '}
-                      {row.operationalDiagnostics?.activeMemberships ?? 0}
+                      {row.botId} · {row.lifecycleState}
+                      {row.isDefault ? ' · default' : ''}
+                      {row.operationalDiagnostics
+                        ? ` · memberships ${row.operationalDiagnostics.activeMemberships}`
+                        : ''}
                     </small>
                   </div>
                   <span className={webhookStatusChipClass(row.webhook?.status)}>
@@ -808,16 +876,37 @@ export function SystemPage({ api }: { api: ApiTransport }) {
                   </span>
                 </div>
                 <div className="system-bot-card__metrics">
-                  <span>{row.receivedEvents} received</span>
-                  <span>{row.queuedWork} queued</span>
-                  <span>{row.failedEvents} failed</span>
-                  <span>{formatLag(row.effectiveLagSec)} lag</span>
+                  <span>
+                    primary {row.entities?.primary.total ?? 'n/a'} · standby{' '}
+                    {row.entities?.standby.total ?? 'n/a'}
+                  </span>
+                  <span>
+                    assist {row.entities?.assist.total ?? 'n/a'} · access{' '}
+                    {row.accessProblemCount}
+                  </span>
+                  <span>
+                    MAX {row.maxApiLoad ? formatPercent(row.maxApiLoad.smoothedLoad) : 'n/a'} ·{' '}
+                    {row.maxApiLoad?.totalRequests ?? 0} req
+                  </span>
+                  <span>
+                    {row.queuedWork} queued · {formatLag(row.effectiveLagSec)} lag
+                  </span>
                 </div>
-                {row.issueCodes.length > 0 || row.webhook?.lastError ? (
+                {row.issueCodes.length > 0 ||
+                row.webhook?.lastError ||
+                row.problemSamples.length > 0 ? (
                   <div className="system-chip-list system-chip-list--compact">
                     {row.issueCodes.map((issue) => (
                       <span key={`${row.botId}:${issue}`} className="chip chip--warning">
                         {formatBotIssue(issue)}
+                      </span>
+                    ))}
+                    {row.problemSamples.slice(0, 3).map((sample) => (
+                      <span
+                        key={`${row.botId}:${sample.chatId}:${sample.kind}`}
+                        className="chip chip--warning"
+                      >
+                        {formatBotProblemKind(sample.kind)} · {sample.title}
                       </span>
                     ))}
                     {row.webhook?.lastError ? (

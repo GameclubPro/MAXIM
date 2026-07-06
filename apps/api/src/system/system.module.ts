@@ -11,6 +11,7 @@ import { MiniappBootTraceService } from './miniapp-boot-trace.service';
 import { MiniappMutationTunnelController } from './miniapp-mutation-tunnel.controller';
 import { AUXILIARY_QUEUE_NAMES, QueueMetricsService } from './queue-metrics.service';
 import { RuntimeDiagnosticsService } from './runtime-diagnostics.service';
+import { SystemBotsService } from './system-bots.service';
 import { SystemController } from './system.controller';
 import { SystemDashboardService } from './system-dashboard.service';
 import { SystemModeService } from './system-mode.service';
@@ -34,6 +35,7 @@ import { WebhookSubscriptionStatusService } from './webhook-subscription-status.
     MiniappBootTraceService,
     RuntimeDiagnosticsService,
     BackgroundRuntimeGovernorService,
+    SystemBotsService,
     SystemModeService,
     SystemDashboardService,
     WebhookDynamicLeaseStatusService,
@@ -46,6 +48,7 @@ import { WebhookSubscriptionStatusService } from './webhook-subscription-status.
     MaxApiMetricsService,
     RuntimeDiagnosticsService,
     BackgroundRuntimeGovernorService,
+    SystemBotsService,
     SystemModeService,
     SystemDashboardService,
     WebhookDynamicLeaseStatusService,

@@ -29,6 +29,50 @@ export const actionHealthSnapshotSchema = z.object({
 });
 export type ActionHealthSnapshot = z.infer<typeof actionHealthSnapshotSchema>;
 
+const emptyWebhookStatusMetrics = {
+  count: 0,
+  oldestEventId: null,
+  oldestCreatedAt: null,
+  oldestLagSec: 0,
+};
+
+export const botQueueMetricsSnapshotSchema = z.object({
+  webhookEvents: z.object({
+    received: webhookStatusMetricsSchema,
+    queued: webhookStatusMetricsSchema,
+    failed: webhookStatusMetricsSchema,
+  }),
+  userFacingWebhookEvents: z
+    .object({
+      received: webhookStatusMetricsSchema,
+      queued: webhookStatusMetricsSchema,
+      failed: webhookStatusMetricsSchema,
+    })
+    .optional()
+    .default({
+      received: emptyWebhookStatusMetrics,
+      queued: emptyWebhookStatusMetrics,
+      failed: emptyWebhookStatusMetrics,
+    }),
+  queuedByQueue: z.record(z.string(), z.number().int().min(0)),
+  actionHealth: actionHealthSnapshotSchema,
+  oldestQueuedEventId: z.string().nullable(),
+  oldestQueuedCreatedAt: z.string().datetime().nullable(),
+  oldestQueuedLagSec: z.number().min(0),
+  oldestReceivedEventId: z.string().nullable(),
+  oldestReceivedCreatedAt: z.string().datetime().nullable(),
+  oldestReceivedLagSec: z.number().min(0),
+  effectiveLagSec: z.number().min(0),
+  userFacingOldestQueuedEventId: z.string().nullable().optional().default(null),
+  userFacingOldestQueuedCreatedAt: z.string().datetime().nullable().optional().default(null),
+  userFacingOldestQueuedLagSec: z.number().min(0).optional().default(0),
+  userFacingOldestReceivedEventId: z.string().nullable().optional().default(null),
+  userFacingOldestReceivedCreatedAt: z.string().datetime().nullable().optional().default(null),
+  userFacingOldestReceivedLagSec: z.number().min(0).optional().default(0),
+  userFacingEffectiveLagSec: z.number().min(0).optional().default(0),
+});
+export type BotQueueMetricsSnapshot = z.infer<typeof botQueueMetricsSnapshotSchema>;
+
 export const systemModeSchema = z.enum(['normal', 'degrade']);
 export type SystemMode = z.infer<typeof systemModeSchema>;
 
@@ -49,7 +93,26 @@ export type SystemModeSnapshot = z.infer<typeof systemModeSnapshotSchema>;
 export const queueMetricsSnapshotSchema = z.object({
   moderation: queueCountersSchema,
   webhookCritical: queueCountersSchema,
+  webhookJoin: queueCountersSchema.optional().default({
+    waiting: 0,
+    active: 0,
+    delayed: 0,
+    failed: 0,
+    completed: 0,
+  }),
+  webhookJoinShards: z.record(z.string(), queueCountersSchema).optional().default({}),
   webhookDefault: queueCountersSchema,
+  webhookDefaultShards: z.record(z.string(), queueCountersSchema).optional().default({}),
+  webhookDefaultWorkerGroups: z
+    .record(
+      z.string(),
+      z.object({
+        queues: z.array(z.string()),
+        counters: queueCountersSchema,
+      }),
+    )
+    .optional()
+    .default({}),
   webhookBackground: queueCountersSchema,
   webhookLegacy: queueCountersSchema,
   actions: queueCountersSchema,
@@ -66,26 +129,21 @@ export const queueMetricsSnapshotSchema = z.object({
     queued: webhookStatusMetricsSchema,
     failed: webhookStatusMetricsSchema,
   }),
-  actionHealth: actionHealthSnapshotSchema,
-  bots: z.record(
-    z.string(),
-    z.object({
-      webhookEvents: z.object({
-        received: webhookStatusMetricsSchema,
-        queued: webhookStatusMetricsSchema,
-        failed: webhookStatusMetricsSchema,
-      }),
-      queuedByQueue: z.record(z.string(), z.number().int().min(0)),
-      actionHealth: actionHealthSnapshotSchema,
-      oldestQueuedEventId: z.string().nullable(),
-      oldestQueuedCreatedAt: z.string().datetime().nullable(),
-      oldestQueuedLagSec: z.number().min(0),
-      oldestReceivedEventId: z.string().nullable(),
-      oldestReceivedCreatedAt: z.string().datetime().nullable(),
-      oldestReceivedLagSec: z.number().min(0),
-      effectiveLagSec: z.number().min(0),
+  userFacingWebhookEvents: z
+    .object({
+      received: webhookStatusMetricsSchema,
+      queued: webhookStatusMetricsSchema,
+      failed: webhookStatusMetricsSchema,
+    })
+    .optional()
+    .default({
+      received: emptyWebhookStatusMetrics,
+      queued: emptyWebhookStatusMetrics,
+      failed: emptyWebhookStatusMetrics,
     }),
-  ),
+  actionHealth: actionHealthSnapshotSchema,
+  webhookDynamicLeases: z.unknown().nullable().optional().default(null),
+  bots: z.record(z.string(), botQueueMetricsSnapshotSchema),
   oldestQueuedEventId: z.string().nullable(),
   oldestQueuedCreatedAt: z.string().datetime().nullable(),
   oldestQueuedLagSec: z.number().min(0),
@@ -93,6 +151,13 @@ export const queueMetricsSnapshotSchema = z.object({
   oldestReceivedCreatedAt: z.string().datetime().nullable(),
   oldestReceivedLagSec: z.number().min(0),
   effectiveLagSec: z.number().min(0),
+  userFacingOldestQueuedEventId: z.string().nullable().optional().default(null),
+  userFacingOldestQueuedCreatedAt: z.string().datetime().nullable().optional().default(null),
+  userFacingOldestQueuedLagSec: z.number().min(0).optional().default(0),
+  userFacingOldestReceivedEventId: z.string().nullable().optional().default(null),
+  userFacingOldestReceivedCreatedAt: z.string().datetime().nullable().optional().default(null),
+  userFacingOldestReceivedLagSec: z.number().min(0).optional().default(0),
+  userFacingEffectiveLagSec: z.number().min(0).optional().default(0),
   generatedAt: z.string().datetime(),
 });
 export type QueueMetricsSnapshot = z.infer<typeof queueMetricsSnapshotSchema>;
@@ -186,6 +251,142 @@ export const webhookSubscriptionSnapshotSchema = z.object({
   operationalDiagnostics: webhookSubscriptionOperationalDiagnosticsSchema.optional(),
 });
 export type WebhookSubscriptionSnapshot = z.infer<typeof webhookSubscriptionSnapshotSchema>;
+
+export const systemBotLifecycleStateSchema = z.enum([
+  'active',
+  'draining',
+  'dormant',
+  'disabled',
+]);
+export type SystemBotLifecycleState = z.infer<typeof systemBotLifecycleStateSchema>;
+
+export const systemBotEntityTypeSchema = z.enum(['chat', 'channel']);
+export type SystemBotEntityType = z.infer<typeof systemBotEntityTypeSchema>;
+
+export const systemBotMembershipRoleSchema = z.enum(['primary', 'standby']);
+export type SystemBotMembershipRole = z.infer<typeof systemBotMembershipRoleSchema>;
+
+export const systemBotMembershipStatusSchema = z.enum(['active', 'removed']);
+export type SystemBotMembershipStatus = z.infer<typeof systemBotMembershipStatusSchema>;
+
+export const systemBotAccessStateSchema = z.enum([
+  'unknown',
+  'confirmed_owner',
+  'confirmed_admin',
+  'confirmed_member',
+  'denied',
+  'lost',
+  'stale',
+]);
+export type SystemBotAccessState = z.infer<typeof systemBotAccessStateSchema>;
+
+export const systemBotEntityCountSchema = z.object({
+  total: z.number().int().min(0),
+  chats: z.number().int().min(0),
+  channels: z.number().int().min(0),
+});
+export type SystemBotEntityCount = z.infer<typeof systemBotEntityCountSchema>;
+
+export const systemBotManagedEntityStatsSchema = z.object({
+  primary: systemBotEntityCountSchema,
+  standby: systemBotEntityCountSchema,
+  assist: systemBotEntityCountSchema,
+});
+export type SystemBotManagedEntityStats = z.infer<
+  typeof systemBotManagedEntityStatsSchema
+>;
+
+export const systemBotAccessStatsSchema = z.object({
+  lost: z.number().int().min(0),
+  stale: z.number().int().min(0),
+  denied: z.number().int().min(0),
+  unknown: z.number().int().min(0),
+  removedAfterLoss: z.number().int().min(0),
+});
+export type SystemBotAccessStats = z.infer<typeof systemBotAccessStatsSchema>;
+
+export const systemBotMaxApiLoadSchema = z.object({
+  windowSec: z.number().int().min(1),
+  totalRequests: z.number().int().min(0),
+  avgRps: z.number().min(0),
+  peakRps: z.number().int().min(0),
+  avgLoad: z.number().min(0).max(1),
+  peakLoad: z.number().min(0).max(1),
+  smoothedLoad: z.number().min(0).max(1),
+  background: z.object({
+    totalRequests: z.number().int().min(0),
+    avgRps: z.number().min(0),
+    peakRps: z.number().int().min(0),
+  }),
+});
+export type SystemBotMaxApiLoad = z.infer<typeof systemBotMaxApiLoadSchema>;
+
+export const systemBotProblemKindSchema = z.enum([
+  'lost-access',
+  'stale-access',
+  'denied-access',
+  'removed-after-loss',
+]);
+export type SystemBotProblemKind = z.infer<typeof systemBotProblemKindSchema>;
+
+export const systemBotProblemSampleSchema = z.object({
+  chatId: z.string(),
+  title: z.string(),
+  entityType: systemBotEntityTypeSchema,
+  kind: systemBotProblemKindSchema,
+  botRole: systemBotMembershipRoleSchema,
+  membershipStatus: systemBotMembershipStatusSchema,
+  botAccessState: systemBotAccessStateSchema,
+  primaryBotId: z.string().nullable(),
+  checkedAt: z.string().datetime().nullable(),
+  lastSeenAt: z.string().datetime().nullable(),
+  lastWebhookAt: z.string().datetime().nullable(),
+  updatedAt: z.string().datetime(),
+});
+export type SystemBotProblemSample = z.infer<typeof systemBotProblemSampleSchema>;
+
+export const systemBotSummarySchema = z.object({
+  botId: z.string(),
+  label: z.string(),
+  characterName: z.string(),
+  lifecycleState: systemBotLifecycleStateSchema,
+  adminVisible: z.boolean(),
+  isDefault: z.boolean(),
+  contactId: z.string().nullable(),
+  webhook: botWebhookSubscriptionSnapshotSchema.nullable(),
+  operationalDiagnostics: botWebhookOperationalDiagnosticsSchema.nullable(),
+  queue: botQueueMetricsSnapshotSchema.nullable(),
+  maxApiLoad: systemBotMaxApiLoadSchema,
+  entities: systemBotManagedEntityStatsSchema,
+  access: systemBotAccessStatsSchema,
+  problemSamples: z.array(systemBotProblemSampleSchema),
+});
+export type SystemBotSummary = z.infer<typeof systemBotSummarySchema>;
+
+export const systemBotFleetSummarySchema = z.object({
+  total: z.number().int().min(0),
+  adminVisible: z.number().int().min(0),
+  active: z.number().int().min(0),
+  draining: z.number().int().min(0),
+  dormant: z.number().int().min(0),
+  disabled: z.number().int().min(0),
+  webhookWarningBotCount: z.number().int().min(0),
+  problemBotCount: z.number().int().min(0),
+  primaryEntities: systemBotEntityCountSchema,
+  standbyEntities: systemBotEntityCountSchema,
+  assistEntities: systemBotEntityCountSchema,
+  lostAccess: z.number().int().min(0),
+  staleAccess: z.number().int().min(0),
+  deniedAccess: z.number().int().min(0),
+});
+export type SystemBotFleetSummary = z.infer<typeof systemBotFleetSummarySchema>;
+
+export const systemBotsSnapshotSchema = z.object({
+  generatedAt: z.string().datetime(),
+  summary: systemBotFleetSummarySchema,
+  bots: z.array(systemBotSummarySchema),
+});
+export type SystemBotsSnapshot = z.infer<typeof systemBotsSnapshotSchema>;
 
 export const systemDashboardSummarySchema = z.object({
   status: systemDashboardStatusSchema,

@@ -2,6 +2,7 @@ import {
   channelStatsQueryKey,
   logsDashboardQueryKey,
   managedEntityOnboardingDiagnosticsQueryKey,
+  systemBotsQueryKey,
   systemDashboardQueryKey,
 } from './query-key-builders';
 
@@ -9,11 +10,13 @@ export {
   channelStatsQueryKey,
   logsDashboardQueryKey,
   managedEntityOnboardingDiagnosticsQueryKey,
+  systemBotsQueryKey,
   systemDashboardQueryKey,
 } from './query-key-builders';
 
 export const queryKeys = {
   systemDashboard: systemDashboardQueryKey,
+  systemBots: systemBotsQueryKey,
 
   logsDashboard: logsDashboardQueryKey,
   globalSpammerReviewQueue: (chatId: string | null | undefined, ...scope: readonly unknown[]) =>

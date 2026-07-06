@@ -19,6 +19,7 @@ import {
   type SystemAccessConfig,
 } from './system-access.util';
 import { MaxApiMetricsService } from './max-api-metrics.service';
+import { SystemBotsService } from './system-bots.service';
 import { SystemDashboardService } from './system-dashboard.service';
 import { SystemModeService } from './system-mode.service';
 
@@ -44,6 +45,7 @@ export class SystemController {
     private readonly systemModeService: SystemModeService,
     private readonly systemDashboardService: SystemDashboardService,
     private readonly maxApiMetricsService: MaxApiMetricsService,
+    private readonly systemBotsService: SystemBotsService,
     configService: ConfigService,
   ) {
     this.systemAccessConfig = readSystemAccessConfig(configService);
@@ -76,6 +78,12 @@ export class SystemController {
   async getDashboard(@CurrentUser() user: AuthUser) {
     this.assertSystemAdmin(user);
     return this.systemDashboardService.getSnapshot();
+  }
+
+  @Get('bots')
+  async getBots(@CurrentUser() user: AuthUser) {
+    this.assertSystemAdmin(user);
+    return this.systemBotsService.getSnapshot();
   }
 
   @Get('mode')

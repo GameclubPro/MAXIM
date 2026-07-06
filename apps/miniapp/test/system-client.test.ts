@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { getSystemDashboard } from '../src/lib/api/system-client';
+import { getSystemBots, getSystemDashboard } from '../src/lib/api/system-client';
 import type { ApiTransport } from '../src/lib/api/transport';
 
 const generatedAt = '2026-07-06T10:00:00.000Z';
@@ -203,6 +203,70 @@ function createApi(payload: unknown): ApiTransport {
   };
 }
 
+function createSystemBotsResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    generatedAt,
+    summary: {
+      total: 1,
+      adminVisible: 1,
+      active: 1,
+      draining: 0,
+      dormant: 0,
+      disabled: 0,
+      webhookWarningBotCount: 0,
+      problemBotCount: 0,
+      primaryEntities: { total: 1, chats: 1, channels: 0 },
+      standbyEntities: { total: 0, chats: 0, channels: 0 },
+      assistEntities: { total: 0, chats: 0, channels: 0 },
+      lostAccess: 0,
+      staleAccess: 0,
+      deniedAccess: 0,
+    },
+    bots: [
+      {
+        botId: 'bot-1',
+        label: 'Major',
+        characterName: 'Major',
+        lifecycleState: 'active',
+        adminVisible: true,
+        isDefault: true,
+        contactId: '100',
+        webhook: null,
+        operationalDiagnostics: null,
+        queue: null,
+        maxApiLoad: {
+          windowSec: 60,
+          totalRequests: 0,
+          avgRps: 0,
+          peakRps: 0,
+          avgLoad: 0,
+          peakLoad: 0,
+          smoothedLoad: 0,
+          background: {
+            totalRequests: 0,
+            avgRps: 0,
+            peakRps: 0,
+          },
+        },
+        entities: {
+          primary: { total: 1, chats: 1, channels: 0 },
+          standby: { total: 0, chats: 0, channels: 0 },
+          assist: { total: 0, chats: 0, channels: 0 },
+        },
+        access: {
+          lost: 0,
+          stale: 0,
+          denied: 0,
+          unknown: 0,
+          removedAfterLoss: 0,
+        },
+        problemSamples: [],
+      },
+    ],
+    ...overrides,
+  };
+}
+
 test('parses runtime dashboard fields through contract schemas', async () => {
   const dashboard = await getSystemDashboard(createApi(createDashboardResponse()));
 
@@ -221,4 +285,25 @@ test('rejects invalid runtime dashboard enum values', async () => {
   });
 
   await assert.rejects(() => getSystemDashboard(createApi(payload)), /Invalid system runtime profile/u);
+});
+
+test('parses system bots snapshot through contract schema', async () => {
+  const snapshot = await getSystemBots(createApi(createSystemBotsResponse()));
+
+  assert.equal(snapshot.summary.total, 1);
+  assert.equal(snapshot.bots[0]?.botId, 'bot-1');
+  assert.equal(snapshot.bots[0]?.lifecycleState, 'active');
+});
+
+test('rejects invalid system bots lifecycle state', async () => {
+  const payload = createSystemBotsResponse({
+    bots: [
+      {
+        ...(createSystemBotsResponse().bots[0] as Record<string, unknown>),
+        lifecycleState: 'retired',
+      },
+    ],
+  });
+
+  await assert.rejects(() => getSystemBots(createApi(payload)), /Invalid system bots snapshot/u);
 });
