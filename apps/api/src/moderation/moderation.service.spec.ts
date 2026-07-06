@@ -8368,6 +8368,81 @@ describe('ModerationService', () => {
     }
   });
 
+  it('keeps accepted close notice state when event persistence fails after MAX accepted it', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-30T20:12:10.000Z'));
+    try {
+      const prisma = {
+        chatSettings: {
+          findUnique: jest.fn().mockResolvedValue({
+            ...createSettings({
+              nightModeEnabled: true,
+              nightModeStartTimeMinutes: 23 * 60,
+              nightModeEndTimeMinutes: 8 * 60,
+              nightModeTimezone: 'Europe/Moscow',
+              nightModeBotMessageEnabled: true,
+              nightModeBotMessageText: '',
+              nightModeOpenMessageEnabled: true,
+            }),
+            chat: {
+              rules: null,
+            },
+          }),
+        },
+        moderationEvent: {
+          findFirst: jest.fn().mockResolvedValue(null),
+          create: jest.fn().mockRejectedValue(new Error('database is temporarily unavailable')),
+        },
+      };
+      const maxClient = {
+        sendMessageImmediateWithId: jest.fn().mockResolvedValue({
+          messageId: 'night-close-accepted-1',
+          url: null,
+        }),
+        deleteMessage: jest.fn(),
+      };
+      const redisCounter = createRedisCounterMock();
+      const maxBotLinkService = {
+        resolveBotRoute: jest.fn().mockResolvedValue({ botId: 'bot-1' }),
+      };
+      const service = new ModerationService(
+        prisma as never,
+        {} as never,
+        {} as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        { get: jest.fn().mockReturnValue('bot-1') } as never,
+        redisCounter as never,
+        undefined,
+        undefined,
+        undefined,
+        maxBotLinkService as never,
+      );
+      const job = {
+        chatId: 'chat-1',
+        transition: 'close' as const,
+        scheduledFor: '2026-05-30T20:00:00.000Z',
+        sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+      };
+
+      await expect(service.processNightModeTransitionJob(job)).rejects.toThrow(
+        'event persistence failed',
+      );
+      expect(redisCounter.setStringWithTtl).toHaveBeenCalledWith(
+        'night-mode-transition-state:v1:chat-1',
+        expect.stringContaining('"closeNoticeMessageId":"night-close-accepted-1"'),
+        expect.any(Number),
+      );
+
+      await expect(service.processNightModeTransitionJob(job)).resolves.toEqual({
+        shouldEnqueueNext: true,
+      });
+      expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('repairs a closed transition state that missed its close notice', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-30T20:12:10.000Z'));
     try {

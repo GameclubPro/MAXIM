@@ -30,6 +30,7 @@ import {
   NightModeTransitionEventService,
   type NightModeTransitionEventParams,
 } from './night-mode-transition-event.service';
+import { NightModeTransitionNoticeEventPersistenceError } from './night-mode-transition-notice-persistence-error';
 
 export type NightModeTransitionDeliveryOperation =
   | 'send-close-notice'
@@ -119,7 +120,7 @@ export class NightModeTransitionDeliveryService {
       throw error;
     }
 
-    await this.createEvent({
+    await this.createEventAfterAcceptedNotice({
       chatId: settings.chatId,
       messageId: sent.messageId,
       ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
@@ -179,7 +180,7 @@ export class NightModeTransitionDeliveryService {
       throw error;
     }
 
-    await this.createEvent({
+    await this.createEventAfterAcceptedNotice({
       chatId: settings.chatId,
       messageId: sent.messageId,
       ruleCode: 'NIGHT_MODE_OPEN_NOTICE',
@@ -193,6 +194,26 @@ export class NightModeTransitionDeliveryService {
 
   private async createEvent(params: NightModeTransitionEventParams): Promise<void> {
     await this.nightModeTransitionEventService.createTransitionEvent(params);
+  }
+
+  private async createEventAfterAcceptedNotice(
+    params: NightModeTransitionEventParams,
+  ): Promise<void> {
+    try {
+      await this.createEvent(params);
+    } catch (error: unknown) {
+      const messageId = params.messageId?.trim() ?? '';
+      if (messageId) {
+        throw new NightModeTransitionNoticeEventPersistenceError(
+          {
+            ...params,
+            messageId,
+          },
+          error,
+        );
+      }
+      throw error;
+    }
   }
 
   async deleteClosedNotice(

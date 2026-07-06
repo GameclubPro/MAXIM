@@ -17,6 +17,11 @@ import {
   NIGHT_MODE_TRANSITION_STATE_TTL_SEC,
   type NightModeTransitionState,
 } from './moderation.service.support';
+import {
+  isNightModeTransitionNoticeEventPersistenceError,
+  type NightModeTransitionNoticeEventPersistenceError,
+  type NightModeTransitionNoticeRuleCode,
+} from './night-mode-transition-notice-persistence-error';
 import { RedisCounterService } from './redis-counter.service';
 
 export type NightModeTransitionNoticeResult = NightModeTransitionProcessResult & {
@@ -220,7 +225,11 @@ export class NightModeTransitionRuntimeService {
           settings.nightModeBotMessageEnabled &&
           !closeNoticeMessageId
         ) {
-          const noticeResult = await hooks.sendClosedNotice(settings, snapshot);
+          const noticeResult = await this.sendClosedNoticeAndCaptureAcceptedState(
+            settings,
+            snapshot,
+            hooks,
+          );
           if (!noticeResult.shouldEnqueueNext) {
             return noticeResult;
           }
@@ -256,7 +265,11 @@ export class NightModeTransitionRuntimeService {
         settings.nightModeOpenMessageEnabled &&
         !transitionAlreadyRecorded
       ) {
-        const noticeResult = await hooks.sendOpenedNotice(settings, snapshot);
+        const noticeResult = await this.sendOpenedNoticeAndCaptureAcceptedState(
+          settings,
+          snapshot,
+          hooks,
+        );
         if (!noticeResult.shouldEnqueueNext) {
           return noticeResult;
         }
@@ -324,6 +337,81 @@ export class NightModeTransitionRuntimeService {
     });
     const messageId = event?.messageId?.trim() ?? '';
     return messageId ? messageId : null;
+  }
+
+  private async sendClosedNoticeAndCaptureAcceptedState(
+    settings: NightModeTransitionRuntimeSettings,
+    snapshot: NightModeTransitionSnapshot,
+    hooks: NightModeTransitionRuntimeHooks,
+  ): Promise<NightModeTransitionNoticeResult> {
+    try {
+      return await hooks.sendClosedNotice(settings, snapshot);
+    } catch (error: unknown) {
+      if (
+        this.isAcceptedNoticeForSnapshot(
+          error,
+          settings.chatId,
+          snapshot,
+          'NIGHT_MODE_CLOSE_NOTICE',
+        )
+      ) {
+        await this.writeNightModeTransitionState(settings.chatId, {
+          status: 'closed',
+          sessionKey: snapshot.sessionKey,
+          closeNoticeMessageId: error.details.messageId,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+      throw error;
+    }
+  }
+
+  private async sendOpenedNoticeAndCaptureAcceptedState(
+    settings: NightModeTransitionRuntimeSettings,
+    snapshot: NightModeTransitionSnapshot,
+    hooks: NightModeTransitionRuntimeHooks,
+  ): Promise<NightModeTransitionProcessResult> {
+    try {
+      return await hooks.sendOpenedNotice(settings, snapshot);
+    } catch (error: unknown) {
+      if (
+        this.isAcceptedNoticeForSnapshot(
+          error,
+          settings.chatId,
+          snapshot,
+          'NIGHT_MODE_OPEN_NOTICE',
+        )
+      ) {
+        await this.writeNightModeTransitionState(settings.chatId, {
+          status: 'open',
+          sessionKey: snapshot.sessionKey,
+          closeNoticeMessageId: null,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+      throw error;
+    }
+  }
+
+  private isAcceptedNoticeForSnapshot(
+    error: unknown,
+    chatId: string,
+    snapshot: NightModeTransitionSnapshot,
+    ruleCode: NightModeTransitionNoticeRuleCode,
+  ): error is NightModeTransitionNoticeEventPersistenceError {
+    const acceptedError = this.asAcceptedNoticePersistenceError(error);
+    return (
+      acceptedError !== null &&
+      acceptedError.details.chatId === chatId &&
+      acceptedError.details.ruleCode === ruleCode &&
+      acceptedError.details.sessionKey === snapshot.sessionKey
+    );
+  }
+
+  private asAcceptedNoticePersistenceError(
+    error: unknown,
+  ): NightModeTransitionNoticeEventPersistenceError | null {
+    return isNightModeTransitionNoticeEventPersistenceError(error) ? error : null;
   }
 
   private async readNightModeTransitionState(

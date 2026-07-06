@@ -1,5 +1,6 @@
 import { NightModeTransitionDeliveryService } from './night-mode-transition-delivery.service';
 import type { NightModeTransitionDeliveryAdapters } from './night-mode-transition-delivery.service';
+import { NightModeTransitionNoticeEventPersistenceError } from './night-mode-transition-notice-persistence-error';
 import type { NightModeTransitionRuntimeSettings } from './night-mode-transition-runtime.service';
 
 function createMaxApiError(status: number, message: string, code?: string): Error {
@@ -134,6 +135,52 @@ describe('NightModeTransitionDeliveryService', () => {
       startMinutes: 23 * 60,
       endMinutes: 8 * 60,
     });
+  });
+
+  it('keeps the accepted close notice id when event persistence fails after send', async () => {
+    const maxClient = {
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({ messageId: 'msg-close-1' }),
+      deleteMessage: jest.fn(),
+    };
+    const botSpeechMediaService = {
+      resolveMedia: jest.fn().mockReturnValue(null),
+      withMediaOptions: jest.fn(async (options) => options),
+    };
+    const eventError = new Error('database is temporarily unavailable');
+    const eventService = {
+      createTransitionEvent: jest.fn().mockRejectedValue(eventError),
+    };
+    const service = new NightModeTransitionDeliveryService(
+      maxClient as never,
+      botSpeechMediaService as never,
+      eventService as never,
+    );
+
+    const result = service.sendClosedNotice(
+      createSettings(),
+      {
+        startMinutes: 23 * 60,
+        endMinutes: 8 * 60,
+        timezone: 'Europe/Moscow',
+        sessionKey: 'session-1',
+      },
+      createAdapters(),
+    );
+
+    await expect(result).rejects.toBeInstanceOf(NightModeTransitionNoticeEventPersistenceError);
+    await expect(result).rejects.toMatchObject({
+      name: 'NightModeTransitionNoticeEventPersistenceError',
+      details: {
+        chatId: 'chat-1',
+        messageId: 'msg-close-1',
+        ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
+        sessionKey: 'session-1',
+        timezone: 'Europe/Moscow',
+        startMinutes: 23 * 60,
+        endMinutes: 8 * 60,
+      },
+    });
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
   });
 
   it('sends an opened notice and creates an open event', async () => {
