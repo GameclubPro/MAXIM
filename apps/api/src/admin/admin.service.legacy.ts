@@ -6855,6 +6855,7 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const publishedAt = new Date();
+    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
     const updatedRules = await this.prisma.chatRules.update({
       where: { chatId },
       data: {
@@ -6867,10 +6868,10 @@ export class AdminService implements OnModuleDestroy {
         publishedMessageId: sourceMessageId ?? null,
         publishedUrl: sourceMessageUrl,
         publishedAt,
+        publishedBotId: resolvedBotId ?? null,
       },
     });
 
-    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
     await this.prisma.chat.upsert({
       where: { id: chatId },
       create: {
@@ -6912,6 +6913,7 @@ export class AdminService implements OnModuleDestroy {
           copiedText: normalizedSourceText !== null,
           textLength: normalizedSourceText?.length ?? 0,
           rulesAttachViolationsEnabled: true,
+          botId: resolvedBotId ?? null,
           source,
         },
       },
@@ -9324,6 +9326,7 @@ export class AdminService implements OnModuleDestroy {
               targetUserId,
               actor: user,
               rootIntentKey: options.fanoutLedgerJobId ?? null,
+              botId: resolvedBotId ?? null,
               muteDurationHours,
               muteExpiresAt,
               mutePermanent,
@@ -10332,7 +10335,6 @@ export class AdminService implements OnModuleDestroy {
     if (sourceResult.mode === 'removed') {
       await this.runManualBanSourceCleanup(job.sourceChatId, job.targetUserId, actor.userId, {
         logMessage: 'Failed to clean source chat messages after developer super ban',
-        botId: job.commandBotId ?? undefined,
       });
     }
 
@@ -10726,6 +10728,7 @@ export class AdminService implements OnModuleDestroy {
           targetUserId: job.targetUserId,
           actorUserId: job.actor.userId,
           logMessage: 'Failed to run deferred recent message cleanup after manual mute',
+          botId: job.botId ?? undefined,
         });
       }
       const result = await this.applyManualMuteFanout({
@@ -11091,6 +11094,8 @@ export class AdminService implements OnModuleDestroy {
     const options: MaxActionDispatchOptions = {
       immediate: true,
       trafficClass: 'interactive',
+      actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+      sourceTag: MAX_API_SOURCE_TAGS.MODERATION_NOTICE,
     };
     if (params.botId) {
       options.botId = params.botId;
@@ -11157,6 +11162,7 @@ export class AdminService implements OnModuleDestroy {
     targetUserId: string;
     actor: AuthUser;
     rootIntentKey?: string | null;
+    botId?: string | null;
     muteDurationHours: number | null;
     muteExpiresAt: Date | null;
     mutePermanent: boolean;
@@ -11337,6 +11343,7 @@ export class AdminService implements OnModuleDestroy {
     muteExpiresAt: Date | null;
     mutePermanent: boolean;
     source: ManualModerationFanoutSource;
+    botId?: string | null;
   }): AdminManualMuteFanoutJob {
     return {
       kind: 'manual_mute_fanout',
@@ -11350,6 +11357,7 @@ export class AdminService implements OnModuleDestroy {
       sourceChatId: params.sourceChatId,
       targetUserId: params.targetUserId,
       cleanupSourceChatMessages: params.cleanupSourceChatMessages,
+      botId: params.botId ?? null,
       actor: {
         userId: params.actor.userId,
         username: params.actor.username ?? null,

@@ -97,6 +97,7 @@ type ProblemSampleRow = {
 
 const BOT_PROBLEM_SAMPLE_LIMIT = 5;
 const BOT_AUDIT_DEFAULT_SAMPLE_LIMIT = 25;
+const BOT_AUDIT_TYPE_SIGNAL_RECENT_MS = 7 * 24 * 60 * 60 * 1_000;
 const BOT_ROUTE_PREVIEW_CAPABILITIES: readonly ManagedEntityBotCapability[] = [
   'background_scans',
   'channel_stats',
@@ -151,6 +152,22 @@ type RoutePreviewMembershipRow = {
 };
 
 type AuditChatRow = RoutePreviewChatRow;
+
+type AuditEntityTypeSignal = {
+  chatId: string;
+  entityType: ChatEntityType;
+  source: 'managed_bot_chat_catalog' | 'managed_entity_local_activity';
+  sourceDetail: string | null;
+  botId: string | null;
+  at: Date | string;
+};
+
+type AuditEntityTypeMismatch = {
+  observedEntityType: ChatEntityType;
+  sourceLabels: string[];
+  botIds: string[];
+  latestAt: string;
+};
 
 type AuditIssueInput = {
   kind: SystemBotMembershipAuditKind;
@@ -377,10 +394,12 @@ export class SystemBotsService {
       storedPrimaryDeniedAlternateEligible: 0,
       stalePermissionsSnapshot: 0,
       capabilitiesOnDeniedBot: 0,
+      typeMismatch: 0,
       suspiciousRows: 0,
       warningCount: 0,
       criticalCount: 0,
     };
+    const typeSignalsByChat = await this.readAuditEntityTypeSignals(chats, nowMs);
     const samples: SystemBotMembershipAuditSample[] = [];
     const byBot = new Map<string, SystemBotMembershipAuditBotSummary>();
     const ensureBotSummary = (botId: string): SystemBotMembershipAuditBotSummary => {
@@ -436,6 +455,9 @@ export class SystemBotsService {
             ensureBotSummary(issue.membership.botId).deniedCapabilities += 1;
           }
           break;
+        case 'type-mismatch':
+          summary.typeMismatch += 1;
+          break;
         case 'suspicious-row':
           summary.suspiciousRows += 1;
           break;
@@ -479,6 +501,24 @@ export class SystemBotsService {
           chat,
           membership: activeMemberships[0] ?? null,
           reason: 'Managed chat has a positive private-direct MAX chat id.',
+        });
+      }
+
+      const typeMismatch = this.resolveAuditEntityTypeMismatch(
+        chat,
+        typeSignalsByChat.get(chat.id) ?? [],
+      );
+      if (typeMismatch) {
+        addIssue({
+          kind: 'type-mismatch',
+          severity: 'warning',
+          chat,
+          membership: activeMemberships.find((membership) =>
+            typeMismatch.botIds.includes(membership.botId),
+          ),
+          alternateBotIds: typeMismatch.botIds,
+          reason: `Stored entity type ${this.mapEntityType(chat.entityType)} disagrees with recent ${typeMismatch.sourceLabels.join(', ')} signal(s): ${this.mapEntityType(typeMismatch.observedEntityType)} at ${typeMismatch.latestAt}.`,
+          evidenceFresh: true,
         });
       }
 
@@ -672,6 +712,190 @@ export class SystemBotsService {
         },
       },
     });
+  }
+
+  private async readAuditEntityTypeSignals(
+    chats: readonly AuditChatRow[],
+    nowMs: number,
+  ): Promise<Map<string, AuditEntityTypeSignal[]>> {
+    const chatIds = chats.map((chat) => chat.id);
+    if (chatIds.length === 0) {
+      return new Map();
+    }
+
+    const since = new Date(nowMs - BOT_AUDIT_TYPE_SIGNAL_RECENT_MS);
+    const prismaWithSignals = this.prisma as PrismaService & {
+      managedBotChatCatalog?: {
+        findMany?: (args: {
+          where: {
+            chatId: { in: string[] };
+            status: string;
+            lastSeenAt: { gte: Date };
+          };
+          select: {
+            chatId: true;
+            entityType: true;
+            botId: true;
+            source: true;
+            lastSeenAt: true;
+          };
+          orderBy: Array<{ chatId?: 'asc'; lastSeenAt?: 'desc' }>;
+        }) => Promise<
+          Array<{
+            chatId: string;
+            entityType: ChatEntityType;
+            botId: string;
+            source: string | null;
+            lastSeenAt: Date;
+          }>
+        >;
+      };
+      managedEntityLocalActivity?: {
+        findMany?: (args: {
+          where: {
+            chatId: { in: string[] };
+            lastEventAt: { gte: Date };
+          };
+          select: {
+            chatId: true;
+            entityType: true;
+            botId: true;
+            sourceEventType: true;
+            lastEventAt: true;
+          };
+          orderBy: Array<{ chatId?: 'asc'; lastEventAt?: 'desc' }>;
+        }) => Promise<
+          Array<{
+            chatId: string;
+            entityType: ChatEntityType;
+            botId: string | null;
+            sourceEventType: string;
+            lastEventAt: Date;
+          }>
+        >;
+      };
+    };
+    const [catalogRows, activityRows] = await Promise.all([
+      prismaWithSignals.managedBotChatCatalog?.findMany?.({
+        where: {
+          chatId: { in: chatIds },
+          status: 'ACTIVE',
+          lastSeenAt: { gte: since },
+        },
+        select: {
+          chatId: true,
+          entityType: true,
+          botId: true,
+          source: true,
+          lastSeenAt: true,
+        },
+        orderBy: [{ chatId: 'asc' }, { lastSeenAt: 'desc' }],
+      }) ?? Promise.resolve([]),
+      prismaWithSignals.managedEntityLocalActivity?.findMany?.({
+        where: {
+          chatId: { in: chatIds },
+          lastEventAt: { gte: since },
+        },
+        select: {
+          chatId: true,
+          entityType: true,
+          botId: true,
+          sourceEventType: true,
+          lastEventAt: true,
+        },
+        orderBy: [{ chatId: 'asc' }, { lastEventAt: 'desc' }],
+      }) ?? Promise.resolve([]),
+    ]);
+
+    const signals = new Map<string, AuditEntityTypeSignal[]>();
+    const pushSignal = (signal: AuditEntityTypeSignal) => {
+      const existing = signals.get(signal.chatId) ?? [];
+      existing.push(signal);
+      signals.set(signal.chatId, existing);
+    };
+
+    for (const row of catalogRows) {
+      pushSignal({
+        chatId: row.chatId,
+        entityType: row.entityType,
+        source: 'managed_bot_chat_catalog',
+        sourceDetail: row.source,
+        botId: row.botId,
+        at: row.lastSeenAt,
+      });
+    }
+    for (const row of activityRows) {
+      pushSignal({
+        chatId: row.chatId,
+        entityType: row.entityType,
+        source: 'managed_entity_local_activity',
+        sourceDetail: row.sourceEventType,
+        botId: row.botId,
+        at: row.lastEventAt,
+      });
+    }
+
+    return signals;
+  }
+
+  private resolveAuditEntityTypeMismatch(
+    chat: AuditChatRow,
+    signals: readonly AuditEntityTypeSignal[],
+  ): AuditEntityTypeMismatch | null {
+    if (signals.length === 0) {
+      return null;
+    }
+
+    const sortedSignals = [...signals].sort(
+      (left, right) => this.readTimeMs(right.at) - this.readTimeMs(left.at),
+    );
+    const mismatchedSignals = sortedSignals.filter(
+      (signal) => signal.entityType !== chat.entityType,
+    );
+    if (mismatchedSignals.length === 0) {
+      return null;
+    }
+
+    const latestMismatch = mismatchedSignals[0]!;
+    const latestMatchingSignal = sortedSignals.find(
+      (signal) => signal.entityType === chat.entityType,
+    );
+    if (
+      latestMatchingSignal &&
+      this.readTimeMs(latestMatchingSignal.at) >= this.readTimeMs(latestMismatch.at)
+    ) {
+      return null;
+    }
+
+    const corroboratingSignals = mismatchedSignals.filter(
+      (signal) => signal.entityType === latestMismatch.entityType,
+    );
+    const hasActiveCatalogSignal = corroboratingSignals.some(
+      (signal) => signal.source === 'managed_bot_chat_catalog',
+    );
+    const distinctSourceCount = new Set(corroboratingSignals.map((signal) => signal.source)).size;
+    if (!hasActiveCatalogSignal && distinctSourceCount < 2 && corroboratingSignals.length < 2) {
+      return null;
+    }
+
+    return {
+      observedEntityType: latestMismatch.entityType,
+      sourceLabels: Array.from(
+        new Set(
+          corroboratingSignals.map((signal) =>
+            signal.sourceDetail ? `${signal.source}:${signal.sourceDetail}` : signal.source,
+          ),
+        ),
+      ),
+      botIds: Array.from(
+        new Set(
+          corroboratingSignals
+            .map((signal) => signal.botId?.trim() ?? '')
+            .filter((botId) => botId.length > 0),
+        ),
+      ),
+      latestAt: this.toIsoString(latestMismatch.at),
+    };
   }
 
   private async readAuditChats(): Promise<AuditChatRow[]> {
@@ -1371,6 +1595,11 @@ export class SystemBotsService {
 
   private toIsoString(value: Date | string): string {
     return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+  }
+
+  private readTimeMs(value: Date | string): number {
+    const timestamp = value instanceof Date ? value.getTime() : Date.parse(value);
+    return Number.isFinite(timestamp) ? timestamp : 0;
   }
 
   private toNumber(value: bigint | number): number {

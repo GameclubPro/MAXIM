@@ -1,6 +1,15 @@
 import type { MaxUpdate } from '@maxim/contracts';
 import { ModerationService } from './moderation.service';
 
+function expectChannelAutoPostOptions(overrides: Record<string, unknown> = {}) {
+  return expect.objectContaining({
+    trafficClass: 'background',
+    actionHealthLane: 'background',
+    sourceTag: 'channel_auto_post',
+    ...overrides,
+  });
+}
+
 function createChannelPostUpdate(): MaxUpdate {
   return {
     updateId: 'upd-channel-1',
@@ -246,7 +255,7 @@ describe('ModerationService channel auto post buttons', () => {
           ],
         ],
       }),
-      undefined,
+      expectChannelAutoPostOptions(),
     );
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -480,7 +489,7 @@ describe('ModerationService channel auto post buttons', () => {
           ],
         ],
       }),
-      undefined,
+      expectChannelAutoPostOptions(),
     );
   });
 
@@ -554,13 +563,16 @@ describe('ModerationService channel auto post buttons', () => {
           [expect.objectContaining({ text: 'Предложить пост' })],
         ],
       }),
-      undefined,
+      expectChannelAutoPostOptions(),
     );
     expect(maxClient.deleteMessage).toHaveBeenCalledWith(
       'channel-1',
       'mid-channel-forward-no-sender-1',
       {
         immediate: true,
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: 'channel_auto_post',
       },
     );
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
@@ -647,13 +659,16 @@ describe('ModerationService channel auto post buttons', () => {
           [expect.objectContaining({ text: 'Предложить пост' })],
         ],
       }),
-      undefined,
+      expectChannelAutoPostOptions(),
     );
     expect(maxClient.deleteMessage).toHaveBeenCalledWith(
       'channel-1',
       'mid-channel-forward-rich-no-sender-1',
       {
         immediate: true,
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: 'channel_auto_post',
       },
     );
   });
@@ -721,7 +736,7 @@ describe('ModerationService channel auto post buttons', () => {
           [expect.objectContaining({ text: '📰 Предложить пост' })],
         ],
       }),
-      undefined,
+      expectChannelAutoPostOptions(),
     );
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1031,7 +1046,7 @@ describe('ModerationService channel auto post buttons', () => {
       expect.objectContaining({
         buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0' })]],
       }),
-      undefined,
+      expectChannelAutoPostOptions(),
     );
   });
 
@@ -1103,7 +1118,7 @@ describe('ModerationService channel auto post buttons', () => {
           ],
         ],
       }),
-      undefined,
+      expectChannelAutoPostOptions(),
     );
   });
 
@@ -2507,9 +2522,9 @@ describe('ModerationService channel auto post buttons', () => {
     await (service as any).processChannelAutoPostButtons();
 
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
-    expect((service as any).channelAutoPostScanState.get('channel-1').latestMessageIdsAtTimestamp).toEqual(
-      [],
-    );
+    expect(
+      (service as any).channelAutoPostScanState.get('channel-1').latestMessageIdsAtTimestamp,
+    ).toEqual([]);
     expect(markerRows.get('channel-1:mid-retry-1')).toEqual(
       expect.objectContaining({
         status: 'IN_PROGRESS',
@@ -2670,9 +2685,9 @@ describe('ModerationService channel auto post buttons', () => {
         },
       }),
     );
-    expect((service as any).channelAutoPostScanState.get('channel-1').latestMessageIdsAtTimestamp).toEqual(
-      [],
-    );
+    expect(
+      (service as any).channelAutoPostScanState.get('channel-1').latestMessageIdsAtTimestamp,
+    ).toEqual([]);
   });
 
   it('keeps the durable marker retryable when audit persistence fails after delivery', async () => {

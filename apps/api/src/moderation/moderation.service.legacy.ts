@@ -13670,17 +13670,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const { chatId, messageId, text, textFormat, linkType, managedChannel, source, senderId } =
       params;
     const autoAttachBotId = await this.resolveAutoAttachBotId(chatId, source);
-    const mutationRequestOptions =
-      source === 'poll'
-        ? ({
-            trafficClass: 'background',
-            actionHealthLane: 'background',
-            sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
-            ...(autoAttachBotId ? { botId: autoAttachBotId } : {}),
-          } as const)
-        : autoAttachBotId
-          ? ({ botId: autoAttachBotId } as const)
-          : undefined;
+    const mutationRequestOptions = {
+      trafficClass: 'background',
+      actionHealthLane: 'background',
+      sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+      ...(autoAttachBotId ? { botId: autoAttachBotId } : {}),
+    } as const;
     const { includeCommentsButton, includeSuggestButton } = this.resolveChannelAutoPostButtons(
       managedChannel.channelSettings,
     );
@@ -14423,7 +14418,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }): Promise<void> {
     const { chatId, messageId, text, senderId, senderIsAdmin, update } = params;
     const autoAttachBotId = await this.resolveAutoAttachBotId(chatId, 'webhook');
-    const mutationRequestOptions = autoAttachBotId ? { botId: autoAttachBotId } : undefined;
+    const mutationRequestOptions = {
+      trafficClass: 'background',
+      actionHealthLane: 'background',
+      sourceTag: MAX_API_SOURCE_TAGS.COMMENT_NOTIFICATION,
+      ...(autoAttachBotId ? { botId: autoAttachBotId } : {}),
+    } as const;
 
     if (this.messageHasInlineKeyboard(update)) {
       return;

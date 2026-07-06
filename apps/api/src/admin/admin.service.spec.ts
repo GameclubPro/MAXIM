@@ -7060,6 +7060,96 @@ describe('AdminService.applyManualModerationAction', () => {
     expect(maxClient.getChatMemberAccess).not.toHaveBeenCalled();
   });
 
+  it('continues manual ban candidate probing until the sixth bot has add_remove_members', async () => {
+    const prisma = createPrismaMock();
+    const candidateBotIds = ['bot-1', 'bot-2', 'bot-3', 'bot-4', 'bot-5', 'bot-6'];
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest
+        .fn()
+        .mockImplementation(async (_chatId: string, options?: { botId?: string }) => {
+          const botId = options?.botId ?? 'bot-1';
+          return {
+            userId: botId,
+            isAdmin: true,
+            isOwner: false,
+            permissions: botId === 'bot-6' ? ['add_remove_members'] : ['read_all_messages'],
+          };
+        }),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'user-3',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      banMember: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const maxBotLinkService = {
+      getBotTokenSync: jest.fn().mockReturnValue('test-max-bot-token'),
+      getValidationTokens: jest.fn().mockReturnValue(['test-max-bot-token']),
+      resolveBotRoutes: jest
+        .fn()
+        .mockImplementation(async (request: { chatId: string; action: string }) => ({
+          purpose: 'moderation_action',
+          chatId: request.chatId,
+          primaryBotId: 'bot-1',
+          botId: 'bot-1',
+          candidateBotIds,
+          reason: 'primary_soft',
+          action: request.action,
+        })),
+    };
+    const maxBotRegistry = {
+      getBotById: jest.fn((botId?: string | null) => (botId ? { id: botId } : null)),
+      getActionableBots: jest.fn().mockReturnValue(candidateBotIds.map((id) => ({ id }))),
+      getDiscoveryBots: jest.fn().mockReturnValue([]),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+      maxBotRegistry as never,
+    );
+
+    await service.applyManualModerationAction(
+      'chat-1',
+      'user-3',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { action: 'BAN' },
+    );
+
+    const probedBotIds = maxClient.getCurrentChatMemberAccess.mock.calls
+      .map((call) => (call[1] as { botId?: string } | undefined)?.botId)
+      .filter((botId): botId is string => Boolean(botId));
+    expect(probedBotIds.slice(0, 6)).toEqual(candidateBotIds);
+    expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith(
+      'chat-1',
+      'user-3',
+      expect.objectContaining({ botId: 'bot-6' }),
+    );
+    expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-3', {
+      botId: 'bot-6',
+    });
+    expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-3', {
+      immediate: true,
+      botId: 'bot-6',
+    });
+  });
+
   it('routes manual unban through a member-moderation-capable standby bot', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
@@ -9159,7 +9249,6 @@ describe('AdminService.applyManualSystemBan', () => {
     });
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-source-2', {
       immediate: true,
-      botId: 'command-bot',
     });
     expect(prisma.chat.count).not.toHaveBeenCalled();
     expect(prisma.managedBotChatCatalog.findMany).not.toHaveBeenCalled();
@@ -9472,6 +9561,8 @@ describe('AdminService.applyManualSystemBan', () => {
       {
         immediate: true,
         trafficClass: 'interactive',
+        actionHealthLane: 'background',
+        sourceTag: 'moderation_notice',
         autoDeleteDelayMs: 3 * 60 * 1000,
         botId: 'bot-2',
       },
@@ -9582,6 +9673,8 @@ describe('AdminService.applyManualSystemBan', () => {
       {
         immediate: true,
         trafficClass: 'interactive',
+        actionHealthLane: 'background',
+        sourceTag: 'moderation_notice',
         autoDeleteDelayMs: 3 * 60 * 1000,
         botId: 'bot-2',
       },
@@ -9803,6 +9896,8 @@ describe('AdminService.applyManualSystemBan', () => {
       {
         immediate: true,
         trafficClass: 'interactive',
+        actionHealthLane: 'background',
+        sourceTag: 'moderation_notice',
         autoDeleteDelayMs: 3 * 60 * 1000,
       },
     );
@@ -9848,6 +9943,7 @@ describe('AdminService.applyManualSystemBan', () => {
       sourceChatId: 'chat-1',
       targetUserId: 'user-2',
       cleanupSourceChatMessages: true,
+      botId: 'stored-cleanup-bot',
       actor: {
         userId: 'admin-1',
         username: null,
@@ -9862,7 +9958,7 @@ describe('AdminService.applyManualSystemBan', () => {
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-source-1', {
       immediate: true,
-      botId: 'bot-1',
+      botId: 'stored-cleanup-bot',
     });
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -32793,6 +32889,9 @@ describe('AdminService chat rules', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
+    jest
+      .spyOn(service as any, 'resolveManualActionBotAssignment')
+      .mockResolvedValue('rules-author-bot');
 
     const result = await service.adoptChatRulesFromMessage(
       'chat-1',
@@ -32819,6 +32918,7 @@ describe('AdminService chat rules', () => {
         autoTextEnabled: false,
         publishedMessageId: 'mid-rules-source-1',
         publishedUrl: 'https://max.ru/chats/chat-1/message/321',
+        publishedBotId: 'rules-author-bot',
       }),
     });
     expect(prisma.chat.upsert).toHaveBeenCalledWith(
@@ -32848,6 +32948,7 @@ describe('AdminService chat rules', () => {
           url: 'https://max.ru/chats/chat-1/message/321',
           copiedText: true,
           rulesAttachViolationsEnabled: true,
+          botId: 'rules-author-bot',
           source: 'group_command',
         }),
       }),

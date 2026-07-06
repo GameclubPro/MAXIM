@@ -49,6 +49,7 @@ function createPrismaMock() {
       findUniqueOrThrow: jest.fn(),
       update: jest.fn(),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      delete: jest.fn(),
     },
     managedGiveawayEntry: {
       upsert: jest.fn(),
@@ -99,6 +100,7 @@ function createMaxClientMock() {
     sendMessageImmediateWithResolvedLink: jest.fn(),
     sendMessageImmediateToUser: jest.fn(),
     editMessageInlineKeyboard: jest.fn(),
+    deleteMessage: jest.fn(),
   };
 }
 
@@ -122,9 +124,7 @@ function expectManagedGiveawayBackgroundSendOptions(overrides: Record<string, un
   });
 }
 
-function expectManagedGiveawayBackgroundMembershipOptions(
-  overrides: Record<string, unknown> = {},
-) {
+function expectManagedGiveawayBackgroundMembershipOptions(overrides: Record<string, unknown> = {}) {
   return expect.objectContaining({
     trafficClass: 'background',
     actionHealthLane: 'background',
@@ -370,6 +370,96 @@ describe('ManagedGiveawayService', () => {
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('deletes published giveaway messages with their persisted author bots before removing the giveaway', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      { getChannelSettings: jest.fn().mockResolvedValue({}) } as never,
+      createConfigMock() as never,
+    );
+
+    prisma.managedGiveaway.findFirst.mockResolvedValue(
+      createGiveaway({
+        status: ManagedGiveawayStatus.COMPLETED,
+        publicationMessageId: 'publication-1',
+        publicationBotId: 'publication-author-bot',
+        resultsMessageId: 'results-1',
+        resultsBotId: 'results-author-bot',
+      }),
+    );
+    prisma.managedGiveaway.delete.mockResolvedValue(createGiveaway());
+    maxClient.deleteMessage.mockResolvedValue(undefined);
+
+    await service.deleteManagedGiveaway('source-1', 'giveaway-1', user as never, 'channel');
+
+    expect(maxClient.deleteMessage).toHaveBeenNthCalledWith(
+      1,
+      'source-1',
+      'publication-1',
+      expectManagedGiveawaySendOptions({
+        immediate: true,
+        botId: 'publication-author-bot',
+      }),
+    );
+    expect(maxClient.deleteMessage).toHaveBeenNthCalledWith(
+      2,
+      'source-1',
+      'results-1',
+      expectManagedGiveawaySendOptions({
+        immediate: true,
+        botId: 'results-author-bot',
+      }),
+    );
+    expect(prisma.managedGiveaway.delete).toHaveBeenCalledWith({
+      where: { id: 'giveaway-1' },
+    });
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: 'DELETE_GIVEAWAY',
+        }),
+      }),
+    );
+  });
+
+  it('treats already missing giveaway publication messages as deleted', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const managedEntityAccessLossService = createManagedEntityAccessLossMock();
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      { getChannelSettings: jest.fn().mockResolvedValue({}) } as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      managedEntityAccessLossService as never,
+    );
+
+    prisma.managedGiveaway.findFirst.mockResolvedValue(
+      createGiveaway({
+        status: ManagedGiveawayStatus.CANCELED,
+        publicationMessageId: 'publication-missing-1',
+        publicationBotId: 'publication-author-bot',
+      }),
+    );
+    prisma.managedGiveaway.delete.mockResolvedValue(createGiveaway());
+    maxClient.deleteMessage.mockRejectedValueOnce(
+      createMaxApiError(404, 'message not found', 'message.not.found'),
+    );
+
+    await service.deleteManagedGiveaway('source-1', 'giveaway-1', user as never, 'channel');
+
+    expect(prisma.managedGiveaway.delete).toHaveBeenCalledWith({
+      where: { id: 'giveaway-1' },
+    });
+    expect(managedEntityAccessLossService.recordIfManagedEntityAccessLost).not.toHaveBeenCalled();
   });
 
   it('stores repeated prize titles as unique winner slots', async () => {

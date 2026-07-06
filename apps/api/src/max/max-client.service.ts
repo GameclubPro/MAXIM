@@ -685,6 +685,7 @@ export class MaxClientService implements OnModuleDestroy {
     payload: MaxCustomMessagePayload,
     requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = {},
   ): Promise<Record<string, unknown>> {
+    const normalizedRequestOptions = this.normalizeReadRequestOptions(requestOptions);
     const attachments = Array.isArray(payload.attachments)
       ? payload.attachments
           .map((attachment) => this.normalizeCustomMessageAttachment(attachment))
@@ -692,6 +693,7 @@ export class MaxClientService implements OnModuleDestroy {
       : [];
     const messageLink = this.buildMessageLinkData(payload.messageLink);
     const hasText = typeof payload.text === 'string';
+    const timeoutMs = this.normalizeTimeoutMs(normalizedRequestOptions.timeoutMs);
 
     if (!hasText && attachments.length === 0) {
       throw new Error('MAX custom message payload is empty');
@@ -710,9 +712,10 @@ export class MaxClientService implements OnModuleDestroy {
             ...(messageLink ? { link: messageLink } : {}),
             ...(attachments.length > 0 ? { attachments } : {}),
           },
+          ...(timeoutMs ? { timeout: timeoutMs } : {}),
         });
       },
-      requestOptions,
+      normalizedRequestOptions,
     );
   }
 
@@ -926,6 +929,7 @@ export class MaxClientService implements OnModuleDestroy {
     options?: Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'debugContext'>,
     requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = {},
   ): Promise<MaxPublishedMessage | null> {
+    const normalizedRequestOptions = this.normalizeReadRequestOptions(requestOptions);
     const attachments = this.buildMessageAttachments(options);
     const messageLink = this.buildMessageLinkData({
       type: 'reply',
@@ -935,6 +939,7 @@ export class MaxClientService implements OnModuleDestroy {
       return null;
     }
 
+    const timeoutMs = this.normalizeTimeoutMs(normalizedRequestOptions.timeoutMs);
     const sendResponse = await this.executeMutation(
       chatId,
       async () => {
@@ -947,9 +952,10 @@ export class MaxClientService implements OnModuleDestroy {
             link: messageLink,
             attachments,
           },
+          ...(timeoutMs ? { timeout: timeoutMs } : {}),
         });
       },
-      requestOptions,
+      normalizedRequestOptions,
     );
 
     const replyMessageId = this.extractMessageIdFromSendResponse(sendResponse);

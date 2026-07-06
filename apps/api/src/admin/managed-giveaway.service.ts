@@ -76,7 +76,10 @@ import {
 } from '../max/max-bot-link.service';
 import { normalizeMembershipAccessSnapshot } from '../max/max-bot-access-policy.util';
 import { collectActiveManagedEntityBotMembershipIdsByChat } from '../max/managed-entity-bot-access.util';
-import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
+import {
+  classifyMaxTerminalChatActionError,
+  ManagedEntityAccessLossService,
+} from '../max/managed-entity-access-loss.service';
 import { isAmbiguousMaxSendError } from '../max/max-send-ambiguity.util';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -151,7 +154,7 @@ type GiveawayEligibilityCheckOptions = {
   allowStaleMembershipOnError?: boolean;
   failedChannelId?: string;
 };
-type GiveawayMaxApiOptionsKind = 'metadata' | 'send' | 'upload' | 'membership';
+type GiveawayMaxApiOptionsKind = 'metadata' | 'send' | 'upload' | 'membership' | 'delete';
 
 function buildManagedGiveawayMaxApiOptions(
   source: GiveawayActionSource,
@@ -779,6 +782,8 @@ export class ManagedGiveawayService {
       throw new BadRequestException('Удалять можно только завершённый или отменённый розыгрыш.');
     }
 
+    await this.deleteGiveawayPublishedMessages(giveaway, source);
+
     await this.prisma.managedGiveaway.delete({
       where: { id: giveaway.id },
     });
@@ -789,6 +794,85 @@ export class ManagedGiveawayService {
       source,
       status: giveaway.status,
     });
+  }
+
+  private async deleteGiveawayPublishedMessages(
+    giveaway: PersistedGiveawayWithRelations,
+    source: GiveawayActionSource,
+  ): Promise<void> {
+    const messages = this.collectGiveawayPublishedMessages(giveaway);
+    for (const message of messages) {
+      try {
+        await this.maxClient.deleteMessage(giveaway.sourceChatId, message.messageId, {
+          immediate: true,
+          ...buildManagedGiveawayMaxApiOptions(source, 'delete', message.botId),
+        });
+      } catch (error: unknown) {
+        const classification = classifyMaxTerminalChatActionError(error);
+        if (classification?.kind === 'message_not_found') {
+          this.logger.debug(
+            {
+              giveawayId: giveaway.id,
+              messageId: message.messageId,
+              kind: message.kind,
+              botId: message.botId,
+            },
+            'Managed giveaway published message was already missing during delete',
+          );
+          continue;
+        }
+
+        await this.recordManagedGiveawayMaxAccessLoss({
+          giveaway,
+          botId: message.botId ?? null,
+          source: `managed_giveaway:${message.kind}:delete`,
+          operation: 'delete',
+          error,
+        });
+        this.logger.warn(
+          {
+            giveawayId: giveaway.id,
+            messageId: message.messageId,
+            kind: message.kind,
+            botId: message.botId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to delete managed giveaway published message',
+        );
+        throw new BadRequestException(
+          'Не удалось удалить опубликованные сообщения розыгрыша в MAX. Повторите позже или проверьте права бота.',
+        );
+      }
+    }
+  }
+
+  private collectGiveawayPublishedMessages(
+    giveaway: PersistedGiveawayWithRelations,
+  ): Array<{ kind: 'publication' | 'results'; messageId: string; botId: string | null }> {
+    const messages: Array<{
+      kind: 'publication' | 'results';
+      messageId: string;
+      botId: string | null;
+    }> = [];
+    const seenMessageIds = new Set<string>();
+    const publicationBotId = this.normalizeNonEmptyString(giveaway.publicationBotId);
+    const resultsBotId = this.normalizeNonEmptyString(giveaway.resultsBotId) ?? publicationBotId;
+    const push = (
+      kind: 'publication' | 'results',
+      messageId: string | null,
+      botId: string | null,
+    ) => {
+      const normalizedMessageId = this.normalizeNonEmptyString(messageId);
+      if (!normalizedMessageId || seenMessageIds.has(normalizedMessageId)) {
+        return;
+      }
+      seenMessageIds.add(normalizedMessageId);
+      messages.push({ kind, messageId: normalizedMessageId, botId });
+    };
+
+    push('publication', giveaway.publicationMessageId, publicationBotId ?? null);
+    push('results', giveaway.resultsMessageId, resultsBotId ?? null);
+    return messages;
   }
 
   async resolveManagedGiveawayRequiredChannel(
@@ -2466,7 +2550,7 @@ export class ManagedGiveawayService {
     giveaway: PersistedGiveawayWithRelations;
     botId: string | null;
     source: string;
-    operation: 'send' | 'edit';
+    operation: 'send' | 'edit' | 'delete';
     error: unknown;
   }): Promise<void> {
     try {

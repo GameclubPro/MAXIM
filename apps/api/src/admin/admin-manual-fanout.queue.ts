@@ -23,6 +23,7 @@ export type AdminManualMuteFanoutJob = QueueJobEnvelope<
     sourceChatId: string;
     targetUserId: string;
     cleanupSourceChatMessages?: boolean;
+    botId?: string | null;
     actor: AdminManualFanoutActor;
     muteDurationHours: number | null;
     muteExpiresAt: string | null;

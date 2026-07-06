@@ -164,10 +164,17 @@ describe('ModerationService chat comment buttons', () => {
           action: 'replace-admin-message-with-bot-copy',
         },
       }),
-      undefined,
+      expect.objectContaining({
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: 'comment_notification',
+      }),
     );
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-admin-1', {
       immediate: true,
+      trafficClass: 'background',
+      actionHealthLane: 'background',
+      sourceTag: 'comment_notification',
     });
     expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
@@ -218,7 +225,11 @@ describe('ModerationService chat comment buttons', () => {
       expect.objectContaining({
         buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0', type: 'link' })]],
       }),
-      undefined,
+      expect.objectContaining({
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: 'comment_notification',
+      }),
     );
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({

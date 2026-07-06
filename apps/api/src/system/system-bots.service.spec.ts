@@ -622,4 +622,101 @@ describe('SystemBotsService', () => {
       ]),
     );
   });
+
+  it('audits recent entity type mismatches from catalog and local activity signals', async () => {
+    const fresh = new Date().toISOString();
+    const bots = [createBot('bot-1', { isDefault: true })];
+    const botRegistry = {
+      getAllBots: jest.fn(() => bots),
+      getDefaultBot: jest.fn(() => bots[0]),
+      getBotById: jest.fn(
+        (botId: string | null | undefined) => bots.find((bot) => bot.id === botId) ?? null,
+      ),
+    };
+    const prisma = {
+      chat: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'entity-type-drift-1',
+            title: 'Entity drift',
+            entityType: ChatEntityType.CHAT,
+            catalogKind: ChatCatalogKind.MANAGED,
+            primaryBotId: 'bot-1',
+            botId: 'bot-1',
+            botMemberships: [
+              {
+                botId: 'bot-1',
+                role: ChatBotMembershipRole.PRIMARY,
+                status: ChatBotMembershipStatus.ACTIVE,
+                capabilities: [],
+                permissionsSnapshot: {
+                  checkedAt: fresh,
+                  isAdmin: true,
+                  isOwner: false,
+                  permissions: ['write'],
+                },
+                botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+                botAccessCheckedAt: new Date(fresh),
+                botAccessExpiresAt: new Date(Date.now() + 60_000),
+                botAccessSource: 'test',
+                botAccessLastErrorCode: null,
+                lastSeenAt: new Date(fresh),
+                lastWebhookAt: null,
+              },
+            ],
+          },
+        ]),
+      },
+      managedBotChatCatalog: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: 'entity-type-drift-1',
+            entityType: ChatEntityType.CHANNEL,
+            botId: 'bot-1',
+            source: 'webhook_catalog',
+            lastSeenAt: new Date(fresh),
+          },
+        ]),
+      },
+      managedEntityLocalActivity: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: 'entity-type-drift-1',
+            entityType: ChatEntityType.CHANNEL,
+            botId: 'bot-1',
+            sourceEventType: 'message_created',
+            lastEventAt: new Date(fresh),
+          },
+        ]),
+      },
+    };
+    const service = new SystemBotsService(
+      prisma as never,
+      botRegistry as never,
+      { resolveBotRoute: jest.fn() } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    const audit = await service.getMembershipAudit({ sampleLimit: 10 });
+
+    expect(audit.summary).toMatchObject({
+      auditedEntities: 1,
+      typeMismatch: 1,
+      suspiciousRows: 0,
+      warningCount: 1,
+    });
+    expect(audit.samples).toEqual([
+      expect.objectContaining({
+        kind: 'type-mismatch',
+        chatId: 'entity-type-drift-1',
+        entityType: 'chat',
+        botId: 'bot-1',
+        alternateBotIds: ['bot-1'],
+        evidenceFresh: true,
+        reason: expect.stringContaining('channel'),
+      }),
+    ]);
+  });
 });

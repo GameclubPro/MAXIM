@@ -494,6 +494,7 @@ export const systemBotMembershipAuditKindSchema = z.enum([
   'stored-primary-denied-alternate-eligible',
   'stale-permissions-snapshot',
   'capabilities-on-denied-bot',
+  'type-mismatch',
   'suspicious-row',
 ]);
 export type SystemBotMembershipAuditKind = z.infer<typeof systemBotMembershipAuditKindSchema>;
@@ -510,6 +511,7 @@ export const systemBotMembershipAuditSummarySchema = z.object({
   storedPrimaryDeniedAlternateEligible: z.number().int().min(0),
   stalePermissionsSnapshot: z.number().int().min(0),
   capabilitiesOnDeniedBot: z.number().int().min(0),
+  typeMismatch: z.number().int().min(0),
   suspiciousRows: z.number().int().min(0),
   warningCount: z.number().int().min(0),
   criticalCount: z.number().int().min(0),

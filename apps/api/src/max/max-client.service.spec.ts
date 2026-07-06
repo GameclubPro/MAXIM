@@ -2246,6 +2246,79 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('passes timeout override to immediate custom message sends', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            mid: 'mid-timeout-custom-1',
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await service.sendCustomMessageImmediate(
+      'chat-1',
+      {
+        text: 'Сообщение',
+      },
+      {
+        timeoutMs: 3_456,
+      },
+    );
+
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api2.max.ru/messages',
+        timeout: 3_456,
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('passes timeout override to immediate reply-with-keyboard sends', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            mid: 'mid-timeout-reply-1',
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await service.sendMessageReplyWithInlineKeyboard(
+      'chat-1',
+      'mid-source-1',
+      'Ответ',
+      {
+        button: {
+          text: 'Открыть',
+          url: 'https://max.ru/777000_bot?start=test',
+        },
+      },
+      {
+        timeoutMs: 4_567,
+      },
+    );
+
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api2.max.ru/messages',
+        timeout: 4_567,
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('keeps successful send result when follow-up link resolution fails', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(
@@ -4839,9 +4912,7 @@ describe('MaxClientService delayed member actions', () => {
     };
     const service = createServiceWithQueue(queue, actionLedgerService);
 
-    await expect(service.banMember('chat-1', 'user-1')).rejects.toBeInstanceOf(
-      UnrecoverableError,
-    );
+    await expect(service.banMember('chat-1', 'user-1')).rejects.toBeInstanceOf(UnrecoverableError);
 
     expect(queue.getJob).not.toHaveBeenCalled();
     expect(queue.add).not.toHaveBeenCalled();
@@ -4913,9 +4984,7 @@ describe('MaxClientService delayed member actions', () => {
     };
     const service = createServiceWithQueue(queue);
 
-    await expect(service.banMember('chat-1', 'user-1')).rejects.toBeInstanceOf(
-      UnrecoverableError,
-    );
+    await expect(service.banMember('chat-1', 'user-1')).rejects.toBeInstanceOf(UnrecoverableError);
 
     expect(queue.getJob).toHaveBeenCalledTimes(1);
     expect(failedJob.getState).toHaveBeenCalledTimes(1);
