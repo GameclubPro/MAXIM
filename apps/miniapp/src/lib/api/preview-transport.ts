@@ -268,7 +268,8 @@ function buildPreviewAssignedBots(
       speechPersona: 'male',
       characterName: 'Рэкс',
       avatarUrl: buildPreviewAvatarDataUrl('Рэкс', '#39c58f', '#178a68'),
-      capabilities: [],
+      capabilities:
+        assistEnabled && primaryBotId !== PREVIEW_REX_BOT_ID ? ['access_prewarm'] : [],
       permissionsSummary: {
         checkedAt: new Date().toISOString(),
         isAdmin: true,
@@ -330,6 +331,17 @@ function buildPreviewSharedMode(assistEnabled: boolean): 'shared-assist' | 'shar
   return assistEnabled ? 'shared-assist' : 'shared-standby';
 }
 
+function buildPreviewPartnerBotIds(assignedBots: ChatSummary['assignedBots']): string[] {
+  const activePartners = assignedBots.filter(
+    (bot) =>
+      bot.role !== 'primary' &&
+      bot.membershipStatus === 'active' &&
+      bot.lifecycleState === 'active',
+  );
+  const assistPartners = activePartners.filter((bot) => bot.capabilities.length > 0);
+  return (assistPartners.length > 0 ? assistPartners : activePartners).map((bot) => bot.botId);
+}
+
 function buildPreviewBotExecutionPlan(
   state: PreviewState,
   entityType: 'chat' | 'channel',
@@ -339,8 +351,8 @@ function buildPreviewBotExecutionPlan(
   const assistEnabled =
     entityType === 'chat' ? state.chatPartnerAssistEnabled : state.channelPartnerAssistEnabled;
   const assignedBots = buildPreviewAssignedBots({ primaryBotId, assistEnabled });
-  const partnerBotId = assignedBots.find((bot) => bot.role !== 'primary')?.botId ?? null;
-  const partnerBotIds = partnerBotId ? [partnerBotId] : [];
+  const partnerBotIds = buildPreviewPartnerBotIds(assignedBots);
+  const partnerBotId = partnerBotIds[0] ?? null;
 
   return managedEntityBotExecutionPlanSchema.parse({
     chatId,
