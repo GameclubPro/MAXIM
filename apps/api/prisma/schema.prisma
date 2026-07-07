@@ -139,6 +139,12 @@ enum ChannelAutoPostAttachStatus {
   SKIPPED
 }
 
+enum ChatAutoCommentAttachStatus {
+  IN_PROGRESS
+  SUCCEEDED
+  SKIPPED
+}
+
 enum ManagedGiveawayStatus {
   DRAFT
   SCHEDULED
@@ -260,6 +266,7 @@ model Chat {
   events                          ModerationEvent[]
   auditLogs                       AuditLog[]
   channelAutoPostAttachMarkers    ChannelAutoPostAttachMarker[]
+  chatAutoCommentAttachMarkers    ChatAutoCommentAttachMarker[]
   channelAudienceSnapshots        ChannelAudienceSnapshot[]
   channelPosts                    ChannelPost[]
   channelStatsSyncState           ChannelStatsSyncState?
@@ -1480,6 +1487,33 @@ model ChannelAutoPostAttachMarker {
   @@index([status, lockedAt], map: "channel_auto_post_attach_markers_status_locked_at_idx")
   @@index([chatId, updatedAt(sort: Desc)], map: "channel_auto_post_attach_markers_chat_updated_idx")
   @@map("channel_auto_post_attach_markers")
+}
+
+model ChatAutoCommentAttachMarker {
+  id                   String                      @id @default(cuid())
+  chatId               String                      @map("chat_id")
+  messageId            String                      @map("message_id")
+  status               ChatAutoCommentAttachStatus @default(IN_PROGRESS)
+  lockToken            String?                     @map("lock_token")
+  lockedAt             DateTime?                   @map("locked_at")
+  botId                String?                     @map("bot_id")
+  source               String
+  deliveryMode         String?                     @map("delivery_mode")
+  replacementMessageId String?                     @map("replacement_message_id")
+  replyMessageId       String?                     @map("reply_message_id")
+  publishedUrl         String?                     @map("published_url")
+  originalDeleted      Boolean                     @default(false) @map("original_deleted")
+  lastError            String?                     @map("last_error")
+  lastStatusCode       Int?                        @map("last_status_code")
+  createdAt            DateTime                    @default(now()) @map("created_at")
+  updatedAt            DateTime                    @updatedAt @map("updated_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@unique([chatId, messageId], map: "chat_auto_comment_attach_markers_chat_message_key")
+  @@index([status, lockedAt], map: "chat_auto_comment_attach_markers_status_locked_at_idx")
+  @@index([chatId, updatedAt(sort: Desc)], map: "chat_auto_comment_attach_markers_chat_updated_idx")
+  @@map("chat_auto_comment_attach_markers")
 }
 
 model SupportRequest {

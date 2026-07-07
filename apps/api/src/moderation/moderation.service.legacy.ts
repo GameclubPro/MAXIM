@@ -402,13 +402,31 @@ type ChannelAutoPostAttachClaim =
       status: 'done' | 'in_progress';
     };
 
+type ChatAutoCommentAttachStatus = 'IN_PROGRESS' | 'SUCCEEDED' | 'SKIPPED';
+
+type ChatAutoCommentAttachClaim =
+  | {
+      status: 'claimed';
+      lockToken: string;
+    }
+  | {
+      status: 'done' | 'in_progress';
+    };
+
 const CHANNEL_AUTO_POST_ATTACH_STATUS = {
   IN_PROGRESS: 'IN_PROGRESS',
   SUCCEEDED: 'SUCCEEDED',
   SKIPPED: 'SKIPPED',
 } as const satisfies Record<string, ChannelAutoPostAttachStatus>;
 
+const CHAT_AUTO_COMMENT_ATTACH_STATUS = {
+  IN_PROGRESS: 'IN_PROGRESS',
+  SUCCEEDED: 'SUCCEEDED',
+  SKIPPED: 'SKIPPED',
+} as const satisfies Record<string, ChatAutoCommentAttachStatus>;
+
 const CHANNEL_AUTO_POST_ATTACH_LOCK_TTL_MS = 2 * 60_000;
+const CHAT_AUTO_COMMENT_ATTACH_LOCK_TTL_MS = 2 * 60_000;
 
 @Injectable()
 export class ModerationService implements OnModuleInit, OnModuleDestroy {
@@ -14304,6 +14322,225 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  private getChatAutoCommentAttachMarkerDelegate(): {
+    findUnique?: (args: unknown) => Promise<{
+      status: ChatAutoCommentAttachStatus;
+      lockedAt: Date | null;
+    } | null>;
+    create?: (args: unknown) => Promise<unknown>;
+    updateMany?: (args: unknown) => Promise<{ count: number }>;
+  } | null {
+    return (
+      (this.prisma as unknown as {
+        chatAutoCommentAttachMarker?: {
+          findUnique?: (args: unknown) => Promise<{
+            status: ChatAutoCommentAttachStatus;
+            lockedAt: Date | null;
+          } | null>;
+          create?: (args: unknown) => Promise<unknown>;
+          updateMany?: (args: unknown) => Promise<{ count: number }>;
+        };
+      }).chatAutoCommentAttachMarker ?? null
+    );
+  }
+
+  private async claimChatAutoCommentAttachMarker(params: {
+    chatId: string;
+    messageId: string;
+    source: 'webhook';
+    botId: string | null;
+  }): Promise<ChatAutoCommentAttachClaim> {
+    if (await this.hasCompletedChatAutoCommentAttachMarker(params.chatId, params.messageId)) {
+      return { status: 'done' };
+    }
+
+    const delegate = this.getChatAutoCommentAttachMarkerDelegate();
+    const lockToken = randomUUID();
+    const now = new Date();
+    if (!delegate?.findUnique || !delegate.create || !delegate.updateMany) {
+      return { status: 'claimed', lockToken };
+    }
+
+    const existing = await delegate.findUnique({
+      where: {
+        chatId_messageId: {
+          chatId: params.chatId,
+          messageId: params.messageId,
+        },
+      },
+      select: {
+        status: true,
+        lockedAt: true,
+      },
+    });
+
+    if (
+      existing?.status === CHAT_AUTO_COMMENT_ATTACH_STATUS.SUCCEEDED ||
+      existing?.status === CHAT_AUTO_COMMENT_ATTACH_STATUS.SKIPPED
+    ) {
+      return { status: 'done' };
+    }
+
+    if (!existing) {
+      try {
+        await delegate.create({
+          data: {
+            chatId: params.chatId,
+            messageId: params.messageId,
+            status: CHAT_AUTO_COMMENT_ATTACH_STATUS.IN_PROGRESS,
+            lockToken,
+            lockedAt: now,
+            source: params.source,
+            botId: params.botId,
+          },
+        });
+        return { status: 'claimed', lockToken };
+      } catch (error: unknown) {
+        if (!this.isPrismaKnownError(error, 'P2002')) {
+          throw error;
+        }
+      }
+    }
+
+    const staleLockedBefore = new Date(Date.now() - CHAT_AUTO_COMMENT_ATTACH_LOCK_TTL_MS);
+    const claimed = await delegate.updateMany({
+      where: {
+        chatId: params.chatId,
+        messageId: params.messageId,
+        status: CHAT_AUTO_COMMENT_ATTACH_STATUS.IN_PROGRESS,
+        OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockedBefore } }],
+      },
+      data: {
+        lockToken,
+        lockedAt: now,
+        source: params.source,
+        botId: params.botId,
+      },
+    });
+
+    return claimed.count > 0 ? { status: 'claimed', lockToken } : { status: 'in_progress' };
+  }
+
+  private async hasCompletedChatAutoCommentAttachMarker(
+    chatId: string,
+    messageId: string,
+  ): Promise<boolean> {
+    const delegate = this.getChatAutoCommentAttachMarkerDelegate();
+    if (delegate?.findUnique) {
+      const marker = await delegate.findUnique({
+        where: {
+          chatId_messageId: {
+            chatId,
+            messageId,
+          },
+        },
+        select: {
+          status: true,
+          lockedAt: true,
+        },
+      });
+      if (
+        marker?.status === CHAT_AUTO_COMMENT_ATTACH_STATUS.SUCCEEDED ||
+        marker?.status === CHAT_AUTO_COMMENT_ATTACH_STATUS.SKIPPED
+      ) {
+        return true;
+      }
+    }
+
+    const alreadyAttached = await this.prisma.auditLog.findFirst({
+      where: {
+        chatId,
+        action: CHAT_DIALOG_AUTO_ATTACH_ACTION,
+        payload: {
+          path: ['messageId'],
+          equals: messageId,
+        },
+      },
+      select: {
+        id: true,
+      },
+    });
+    return Boolean(alreadyAttached);
+  }
+
+  private async completeChatAutoCommentAttachMarker(params: {
+    chatId: string;
+    messageId: string;
+    lockToken: string;
+    status:
+      | typeof CHAT_AUTO_COMMENT_ATTACH_STATUS.SUCCEEDED
+      | typeof CHAT_AUTO_COMMENT_ATTACH_STATUS.SKIPPED;
+    source: 'webhook';
+    botId: string | null;
+    deliveryMode: string | null;
+    replacementMessageId?: string | null;
+    replyMessageId?: string | null;
+    publishedUrl?: string | null;
+    originalDeleted: boolean;
+    lastError: string | null;
+    lastStatusCode: number | null;
+  }): Promise<void> {
+    const delegate = this.getChatAutoCommentAttachMarkerDelegate();
+    if (!delegate?.updateMany) {
+      return;
+    }
+
+    await delegate.updateMany({
+      where: {
+        chatId: params.chatId,
+        messageId: params.messageId,
+        lockToken: params.lockToken,
+        status: CHAT_AUTO_COMMENT_ATTACH_STATUS.IN_PROGRESS,
+      },
+      data: {
+        status: params.status,
+        lockToken: null,
+        lockedAt: null,
+        source: params.source,
+        botId: params.botId,
+        deliveryMode: params.deliveryMode,
+        replacementMessageId: params.replacementMessageId ?? null,
+        replyMessageId: params.replyMessageId ?? null,
+        publishedUrl: params.publishedUrl ?? null,
+        originalDeleted: params.originalDeleted,
+        lastError: params.lastError,
+        lastStatusCode: params.lastStatusCode,
+      },
+    });
+  }
+
+  private async releaseChatAutoCommentAttachMarker(params: {
+    chatId: string;
+    messageId: string;
+    lockToken: string;
+    source: 'webhook';
+    botId: string | null;
+    lastError: string | null;
+    lastStatusCode: number | null;
+  }): Promise<void> {
+    const delegate = this.getChatAutoCommentAttachMarkerDelegate();
+    if (!delegate?.updateMany) {
+      return;
+    }
+
+    await delegate.updateMany({
+      where: {
+        chatId: params.chatId,
+        messageId: params.messageId,
+        lockToken: params.lockToken,
+        status: CHAT_AUTO_COMMENT_ATTACH_STATUS.IN_PROGRESS,
+      },
+      data: {
+        lockToken: null,
+        lockedAt: null,
+        source: params.source,
+        botId: params.botId,
+        lastError: params.lastError,
+        lastStatusCode: params.lastStatusCode,
+      },
+    });
+  }
+
   private async recordChannelAutoPostTerminalSkip(params: {
     chatId: string;
     messageId: string;
@@ -14563,20 +14800,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const alreadyAttached = await this.prisma.auditLog.findFirst({
-      where: {
-        chatId,
-        action: CHAT_DIALOG_AUTO_ATTACH_ACTION,
-        payload: {
-          path: ['messageId'],
-          equals: messageId,
-        },
-      },
-      select: {
-        id: true,
-      },
+    const claim = await this.claimChatAutoCommentAttachMarker({
+      chatId,
+      messageId,
+      source: 'webhook',
+      botId: autoAttachBotId,
     });
-    if (alreadyAttached) {
+    if (claim.status === 'done' || claim.status === 'in_progress') {
+      return;
+    }
+    if (claim.status !== 'claimed') {
       return;
     }
 
@@ -14629,8 +14862,29 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             },
             'Failed to publish bot copy for admin chat message; skipping retry',
           );
+          await this.completeChatAutoCommentAttachMarker({
+            chatId,
+            messageId,
+            lockToken: claim.lockToken,
+            status: CHAT_AUTO_COMMENT_ATTACH_STATUS.SKIPPED,
+            source: 'webhook',
+            botId: autoAttachBotId,
+            deliveryMode: 'replace_with_bot_message',
+            originalDeleted: false,
+            lastError: this.extractErrorSummary(error),
+            lastStatusCode: status,
+          });
           return;
         }
+        await this.releaseChatAutoCommentAttachMarker({
+          chatId,
+          messageId,
+          lockToken: claim.lockToken,
+          source: 'webhook',
+          botId: autoAttachBotId,
+          lastError: this.extractErrorSummary(error),
+          lastStatusCode: status,
+        });
         throw error;
       }
 
@@ -14652,6 +14906,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           'Failed to delete original admin chat message after bot copy publish',
         );
       }
+
+      await this.completeChatAutoCommentAttachMarker({
+        chatId,
+        messageId,
+        lockToken: claim.lockToken,
+        status: CHAT_AUTO_COMMENT_ATTACH_STATUS.SUCCEEDED,
+        source: 'webhook',
+        botId: autoAttachBotId,
+        deliveryMode,
+        replacementMessageId,
+        publishedUrl,
+        originalDeleted,
+        lastError: null,
+        lastStatusCode: null,
+      });
 
       await this.prisma.auditLog.create({
         data: {
@@ -14726,14 +14995,60 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               },
               'Failed to send fallback chat comments reply; skipping retry',
             );
+            await this.completeChatAutoCommentAttachMarker({
+              chatId,
+              messageId,
+              lockToken: claim.lockToken,
+              status: CHAT_AUTO_COMMENT_ATTACH_STATUS.SKIPPED,
+              source: 'webhook',
+              botId: autoAttachBotId,
+              deliveryMode: 'reply_message',
+              originalDeleted: false,
+              lastError: this.extractErrorSummary(fallbackError),
+              lastStatusCode: fallbackStatus,
+            });
             return;
           }
+          await this.releaseChatAutoCommentAttachMarker({
+            chatId,
+            messageId,
+            lockToken: claim.lockToken,
+            source: 'webhook',
+            botId: autoAttachBotId,
+            lastError: this.extractErrorSummary(fallbackError),
+            lastStatusCode: fallbackStatus,
+          });
           throw fallbackError;
         }
       } else {
+        await this.releaseChatAutoCommentAttachMarker({
+          chatId,
+          messageId,
+          lockToken: claim.lockToken,
+          source: 'webhook',
+          botId: autoAttachBotId,
+          lastError: this.extractErrorSummary(error),
+          lastStatusCode: status,
+        });
         throw error;
       }
     }
+
+    await this.completeChatAutoCommentAttachMarker({
+      chatId,
+      messageId,
+      lockToken: claim.lockToken,
+      status: CHAT_AUTO_COMMENT_ATTACH_STATUS.SUCCEEDED,
+      source: 'webhook',
+      botId: autoAttachBotId,
+      deliveryMode,
+      replacementMessageId,
+      replyMessageId,
+      publishedUrl,
+      originalDeleted,
+      lastError: null,
+      lastStatusCode: null,
+    });
 
     await this.prisma.auditLog.create({
       data: {

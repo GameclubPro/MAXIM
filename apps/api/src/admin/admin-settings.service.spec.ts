@@ -222,6 +222,9 @@ function createService(
     resolveChannelEngagementActionBotId: jest
       .fn()
       .mockResolvedValue(options.botAssignmentData?.botId),
+    resolveChannelEngagementEditBotId: jest
+      .fn()
+      .mockResolvedValue(options.botAssignmentData?.botId),
     buildChannelEngagementDialogArtifacts: jest.fn().mockImplementation((params) => ({
       commentsUrl: `https://max.ru/${params.chatId}/comments/${params.threadId}`,
       suggestPayload: `cds-${params.chatId}-${params.threadId}`,
@@ -950,6 +953,55 @@ describe('AdminSettingsService chat rules', () => {
           suggestionEntryMode: 'BOT',
           botId: 'bot-1',
         }),
+      },
+    });
+  });
+
+  it('uses the edit-capable bot when updating a legacy channel engagement post without a stored bot id', async () => {
+    const { legacyAdminService, maxClient, prisma, service } = createService({
+      persistedChannelSettings: createPersistedChannelSettings({
+        chatId: 'channel-1',
+        engagementPublishedMessageId: 'message-old',
+        engagementPublishedBotId: null,
+        engagementPublishedThreadId: 'thread-existing',
+        engagementPublishedAt: new Date('2026-03-20T09:00:00.000Z'),
+        postSuggestionsEntryMode: 'BOT',
+      }),
+    });
+    legacyAdminService.resolveChannelEngagementActionBotId.mockResolvedValue('send-bot');
+    legacyAdminService.resolveChannelEngagementEditBotId.mockResolvedValue('edit-bot');
+
+    const result = await service.publishChannelEngagementMessage('channel-1', user as never, {
+      text: 'Обновленный пост.',
+      commentsButtonText: 'Комментарии',
+      suggestButtonText: 'Предложить',
+    });
+
+    expect(result).toMatchObject({
+      chatId: 'channel-1',
+      sent: true,
+      messageId: 'message-old',
+      updatedExisting: true,
+    });
+    expect(legacyAdminService.resolveChannelEngagementActionBotId).not.toHaveBeenCalled();
+    expect(legacyAdminService.resolveChannelEngagementEditBotId).toHaveBeenCalledWith(
+      'channel-1',
+    );
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'message-old',
+      'Обновленный пост.',
+      expect.any(Object),
+      expect.objectContaining({ botId: 'edit-bot' }),
+    );
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(prisma.channelSettings.update).toHaveBeenCalledWith({
+      where: { chatId: 'channel-1' },
+      data: {
+        engagementPublishedMessageId: 'message-old',
+        engagementPublishedBotId: 'edit-bot',
+        engagementPublishedThreadId: 'thread-existing',
+        engagementPublishedAt: new Date('2026-03-20T09:00:00.000Z'),
       },
     });
   });

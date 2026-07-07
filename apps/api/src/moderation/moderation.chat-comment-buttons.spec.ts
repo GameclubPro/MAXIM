@@ -62,9 +62,119 @@ function createConfigMock() {
   };
 }
 
+type MockChatAutoCommentAttachMarkerRow = {
+  chatId: string;
+  messageId: string;
+  status: 'IN_PROGRESS' | 'SUCCEEDED' | 'SKIPPED';
+  lockToken: string | null;
+  lockedAt: Date | null;
+  botId: string | null;
+  source: string;
+  deliveryMode: string | null;
+  replacementMessageId: string | null;
+  replyMessageId: string | null;
+  publishedUrl: string | null;
+  originalDeleted: boolean;
+  lastError: string | null;
+  lastStatusCode: number | null;
+};
+
+function createChatAutoCommentAttachMarkerMock() {
+  const rows = new Map<string, MockChatAutoCommentAttachMarkerRow>();
+  const keyOf = (chatId: string, messageId: string) => `${chatId}:${messageId}`;
+  const readKey = (args: unknown) => {
+    const data = args as {
+      where?: { chatId_messageId?: { chatId?: string; messageId?: string } };
+    };
+    const chatId = data.where?.chatId_messageId?.chatId ?? '';
+    const messageId = data.where?.chatId_messageId?.messageId ?? '';
+    return keyOf(chatId, messageId);
+  };
+
+  return {
+    rows,
+    delegate: {
+      findUnique: jest.fn(async (args: unknown) => {
+        const row = rows.get(readKey(args));
+        return row ? { status: row.status, lockedAt: row.lockedAt } : null;
+      }),
+      create: jest.fn(async (args: unknown) => {
+        const data = (args as {
+          data: Pick<
+            MockChatAutoCommentAttachMarkerRow,
+            'chatId' | 'messageId' | 'status' | 'lockToken' | 'lockedAt' | 'botId' | 'source'
+          >;
+        }).data;
+        const key = keyOf(data.chatId, data.messageId);
+        if (rows.has(key)) {
+          throw { code: 'P2002', message: 'Unique constraint failed' };
+        }
+        const row: MockChatAutoCommentAttachMarkerRow = {
+          ...data,
+          deliveryMode: null,
+          replacementMessageId: null,
+          replyMessageId: null,
+          publishedUrl: null,
+          originalDeleted: false,
+          lastError: null,
+          lastStatusCode: null,
+        };
+        rows.set(key, row);
+        return { id: key, ...row };
+      }),
+      updateMany: jest.fn(async (args: unknown) => {
+        const data = args as {
+          where?: {
+            chatId?: string;
+            messageId?: string;
+            status?: 'IN_PROGRESS' | 'SUCCEEDED' | 'SKIPPED';
+            lockToken?: string;
+            OR?: Array<{ lockedAt?: null | { lt?: Date } }>;
+          };
+          data?: Partial<MockChatAutoCommentAttachMarkerRow>;
+        };
+        const chatId = data.where?.chatId ?? '';
+        const messageId = data.where?.messageId ?? '';
+        const row = rows.get(keyOf(chatId, messageId));
+        if (!row) {
+          return { count: 0 };
+        }
+        if (data.where?.status && row.status !== data.where.status) {
+          return { count: 0 };
+        }
+        if (data.where?.lockToken && row.lockToken !== data.where.lockToken) {
+          return { count: 0 };
+        }
+        if (data.where?.OR) {
+          const matchesLockFilter = data.where.OR.some((condition) => {
+            if (condition.lockedAt === null) {
+              return row.lockedAt === null;
+            }
+            const lt = condition.lockedAt?.lt;
+            return Boolean(lt && row.lockedAt && row.lockedAt < lt);
+          });
+          if (!matchesLockFilter) {
+            return { count: 0 };
+          }
+        }
+        rows.set(keyOf(chatId, messageId), {
+          ...row,
+          ...data.data,
+        });
+        return { count: 1 };
+      }),
+    },
+  };
+}
+
 function createService(
   settingsOverrides: Record<string, unknown>,
   adminUserIds: string[] = ['admin-1'],
+  options?: {
+    chatAutoCommentAttachMarker?: ReturnType<
+      typeof createChatAutoCommentAttachMarkerMock
+    >['delegate'];
+  },
 ) {
   const prisma = {
     chat: {
@@ -88,6 +198,9 @@ function createService(
       findFirst: jest.fn().mockResolvedValue(null),
       create: jest.fn(),
     },
+    ...(options?.chatAutoCommentAttachMarker
+      ? { chatAutoCommentAttachMarker: options.chatAutoCommentAttachMarker }
+      : {}),
   };
   const ruleEngine = {
     detect: jest.fn().mockResolvedValue({
@@ -243,6 +356,61 @@ describe('ModerationService chat comment buttons', () => {
         }),
       }),
     );
+  });
+
+  it('does not publish a duplicate bot copy while the same admin message is already being processed', async () => {
+    const markerMock = createChatAutoCommentAttachMarkerMock();
+    const { prisma, maxClient, service } = createService(
+      {
+        commentsEnabled: true,
+        commentsAdminsEnabled: true,
+        commentsAllEnabled: false,
+        commentsChatBroadcastsEnabled: false,
+      },
+      ['admin-1'],
+      { chatAutoCommentAttachMarker: markerMock.delegate },
+    );
+    let releaseSend!: (value: { messageId: string; url: string }) => void;
+    const sendReleased = new Promise<{ messageId: string; url: string }>((resolve) => {
+      releaseSend = resolve;
+    });
+    let markSendStarted!: () => void;
+    const sendStarted = new Promise<void>((resolve) => {
+      markSendStarted = resolve;
+    });
+    maxClient.sendMessageCopyWithInlineKeyboard.mockImplementation(async () => {
+      markSendStarted();
+      return sendReleased;
+    });
+    const update = createChatMessageUpdate({
+      senderId: 'admin-1',
+      senderName: 'Админ',
+      messageId: 'mid-admin-race',
+      text: 'Пост админа без дубля',
+    });
+
+    const first = service.handleUpdate(update);
+    await sendStarted;
+    const second = service.handleUpdate(update);
+    await second;
+
+    expect(maxClient.sendMessageCopyWithInlineKeyboard).toHaveBeenCalledTimes(1);
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+
+    releaseSend({
+      messageId: 'mid-bot-copy-race',
+      url: 'https://max.ru/chats/chat-1/message/bot-copy-race',
+    });
+    await first;
+
+    expect(maxClient.sendMessageCopyWithInlineKeyboard).toHaveBeenCalledTimes(1);
+    expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
+    expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
+    expect(markerMock.rows.get('chat-1:mid-admin-race')).toMatchObject({
+      status: 'SUCCEEDED',
+      replacementMessageId: 'mid-bot-copy-race',
+      originalDeleted: true,
+    });
   });
 
   it('does not attach the comments button to a regular message when only the legacy all toggle is enabled', async () => {

@@ -355,6 +355,7 @@ export class AdminSettingsService {
       actorUserId: user.userId,
       body,
       resolveBotId: () => this.legacyAdminService.resolveChannelEngagementActionBotId(chatId),
+      resolveEditBotId: () => this.legacyAdminService.resolveChannelEngagementEditBotId(chatId),
       buildDialogArtifacts: (params) =>
         this.legacyAdminService.buildChannelEngagementDialogArtifacts(params),
     });
