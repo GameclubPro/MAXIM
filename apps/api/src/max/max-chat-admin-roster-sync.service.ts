@@ -36,6 +36,7 @@ const CHAT_ADMIN_ROSTER_SYNC_DEFAULT_PRIORITY = 10;
 const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_PRIORITY = 1;
 const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_MEMBERSHIP_CHURN_PRIORITY = 2;
 const CHAT_ADMIN_ROSTER_SYNC_SOURCE_BACKOFF_MS = 10_000;
+const CHAT_ADMIN_ROSTER_SYNC_SOURCE_BACKOFF_JITTER_MS = 5_000;
 const CHAT_ADMIN_ROSTER_SYNC_TERMINAL_BOT_BACKOFF_MS = 5 * 60 * 1_000;
 const MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC = 7 * 24 * 60 * 60;
 const MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_PATCH_CONCURRENCY = 8;
@@ -54,6 +55,16 @@ type ResolvedRosterCandidates = {
 class PendingBotAdminGrantError extends Error {
   constructor(readonly chatId: string) {
     super(`Bot admin access for chat ${chatId} is still propagating`);
+  }
+}
+
+export class MaxChatAdminRosterSyncSourceBackoffError extends Error {
+  constructor(
+    readonly chatId: string,
+    readonly delayMs: number,
+  ) {
+    super('MAX API managed_refresh source backoff active');
+    this.name = 'MaxChatAdminRosterSyncSourceBackoffError';
   }
 }
 
@@ -293,8 +304,12 @@ export class MaxChatAdminRosterSyncService {
     let skippedDueToTerminalBackoff = false;
 
     for (const botId of candidateBotIds) {
-      if (this.isManagedRefreshSourceBackoffActive()) {
-        throw new Error('MAX API managed_refresh source backoff active');
+      const sourceBackoffDelayMs = this.resolveManagedRefreshSourceBackoffDelayMs(normalized);
+      if (sourceBackoffDelayMs > 0) {
+        throw new MaxChatAdminRosterSyncSourceBackoffError(
+          normalized.chatId,
+          sourceBackoffDelayMs,
+        );
       }
 
       if (
@@ -340,7 +355,10 @@ export class MaxChatAdminRosterSyncService {
 
         if (this.isRateLimitPressureError(error)) {
           this.markManagedRefreshSourceBackoff();
-          throw error;
+          throw new MaxChatAdminRosterSyncSourceBackoffError(
+            normalized.chatId,
+            this.resolveManagedRefreshSourceBackoffDelayMs(normalized),
+          );
         }
 
         recoverableError ??= error;
@@ -1700,6 +1718,24 @@ export class MaxChatAdminRosterSyncService {
       this.managedRefreshSourceBackoffUntilMs,
       now + CHAT_ADMIN_ROSTER_SYNC_SOURCE_BACKOFF_MS,
     );
+  }
+
+  private resolveManagedRefreshSourceBackoffDelayMs(
+    job: Pick<MaxChatAdminRosterSyncJob, 'chatId'>,
+    now = Date.now(),
+  ): number {
+    if (!this.isManagedRefreshSourceBackoffActive(now)) {
+      return 0;
+    }
+
+    return (
+      Math.max(1, this.managedRefreshSourceBackoffUntilMs - now) +
+      this.resolveSourceBackoffJitterMs(job)
+    );
+  }
+
+  private resolveSourceBackoffJitterMs(job: Pick<MaxChatAdminRosterSyncJob, 'chatId'>): number {
+    return this.hashModulo(job.chatId, CHAT_ADMIN_ROSTER_SYNC_SOURCE_BACKOFF_JITTER_MS + 1);
   }
 
   private isTerminalBotBackoffActive(chatId: string, botId: string, now = Date.now()): boolean {

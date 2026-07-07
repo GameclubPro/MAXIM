@@ -107,6 +107,38 @@ function createServiceFixture() {
         });
         return chats.get(data.id);
       }),
+      createMany: jest.fn(
+        async ({
+          data,
+          skipDuplicates,
+        }: {
+          data: MutableChat | MutableChat[];
+          skipDuplicates?: boolean;
+        }) => {
+          const rows = Array.isArray(data) ? data : [data];
+          let count = 0;
+          for (const row of rows) {
+            if (chats.has(row.id)) {
+              if (skipDuplicates) {
+                continue;
+              }
+              const error = new Error('Unique constraint failed');
+              (error as Error & { code?: string }).code = 'P2002';
+              throw error;
+            }
+            chats.set(row.id, {
+              id: row.id,
+              title: row.title,
+              botId: row.botId ?? null,
+              primaryBotId: row.primaryBotId ?? null,
+              entityType: row.entityType,
+              catalogKind: row.catalogKind,
+            });
+            count += 1;
+          }
+          return { count };
+        },
+      ),
       update: jest.fn(
         async ({ where, data }: { where: { id: string }; data: Partial<MutableChat> }) => {
           const existing = chats.get(where.id);
@@ -258,6 +290,97 @@ describe('MaxBotLinkService', () => {
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('binds a new chat through a duplicate-safe insert instead of a noisy create', async () => {
+    const fixture = createServiceFixture();
+
+    await expect(
+      fixture.service.bindChatToBot({
+        chatId: 'chat-bind-1',
+        title: 'Bound chat',
+        entityType: ChatEntityType.CHAT,
+        botId: 'id613002203036_4_bot',
+      }),
+    ).resolves.toBe('id613002203036_4_bot');
+
+    expect(fixture.prisma.chat.create).not.toHaveBeenCalled();
+    expect(fixture.prisma.chat.createMany).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        id: 'chat-bind-1',
+        title: 'Bound chat',
+        botId: 'id613002203036_4_bot',
+        primaryBotId: 'id613002203036_4_bot',
+        entityType: ChatEntityType.CHAT,
+        catalogKind: ChatCatalogKind.MANAGED,
+      }),
+      skipDuplicates: true,
+    });
+    expect(fixture.prisma.chat.update).not.toHaveBeenCalled();
+    expect(fixture.chats.get('chat-bind-1')).toEqual(
+      expect.objectContaining({
+        botId: 'id613002203036_4_bot',
+        primaryBotId: 'id613002203036_4_bot',
+      }),
+    );
+    expect(fixture.memberships).toContainEqual(
+      expect.objectContaining({
+        chatId: 'chat-bind-1',
+        botId: 'id613002203036_4_bot',
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        lastWebhookAt: expect.any(Date),
+      }),
+    );
+  });
+
+  it('keeps the stored primary bot when a duplicate-safe bind observes another bot', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-bind-2', {
+      id: 'chat-bind-2',
+      title: 'Stored chat',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+      entityType: ChatEntityType.CHAT,
+      catalogKind: ChatCatalogKind.MANAGED,
+    });
+
+    await expect(
+      fixture.service.bindChatToBot({
+        chatId: 'chat-bind-2',
+        title: 'Updated stored chat',
+        entityType: ChatEntityType.CHAT,
+        botId: 'id613002203036_4_bot',
+      }),
+    ).resolves.toBe('id613002203036_bot');
+
+    expect(fixture.prisma.chat.create).not.toHaveBeenCalled();
+    expect(fixture.prisma.chat.update).toHaveBeenCalledWith({
+      where: { id: 'chat-bind-2' },
+      data: expect.objectContaining({
+        title: 'Updated stored chat',
+        botId: 'id613002203036_bot',
+        primaryBotId: 'id613002203036_bot',
+        entityType: ChatEntityType.CHAT,
+        catalogKind: ChatCatalogKind.MANAGED,
+      }),
+    });
+    expect(fixture.memberships).toContainEqual(
+      expect.objectContaining({
+        chatId: 'chat-bind-2',
+        botId: 'id613002203036_4_bot',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+      }),
+    );
+    expect(fixture.memberships).toContainEqual(
+      expect.objectContaining({
+        chatId: 'chat-bind-2',
+        botId: 'id613002203036_bot',
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+      }),
+    );
   });
 
   it.each([1, 2, 3, 6])(

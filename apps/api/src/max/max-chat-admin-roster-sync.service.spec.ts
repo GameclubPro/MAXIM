@@ -1,4 +1,7 @@
-import { MaxChatAdminRosterSyncService } from './max-chat-admin-roster-sync.service';
+import {
+  MaxChatAdminRosterSyncService,
+  MaxChatAdminRosterSyncSourceBackoffError,
+} from './max-chat-admin-roster-sync.service';
 
 describe('MaxChatAdminRosterSyncService', () => {
   function createService() {
@@ -665,7 +668,7 @@ describe('MaxChatAdminRosterSyncService', () => {
     expect(chatContextCache.replaceChatAdminUsers).toHaveBeenCalledTimes(1);
   });
 
-  it('applies a short managed_refresh source backoff after source limit pressure', async () => {
+  it('surfaces managed_refresh source pressure as a delayed backoff instead of a failure', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:00:00.000Z'));
     const { service, maxClient, maxBotLinkService } = createService();
     maxClient.getCurrentChatMemberAccess.mockRejectedValue(
@@ -680,7 +683,10 @@ describe('MaxChatAdminRosterSyncService', () => {
           title: 'Busy chat',
           entityType: 'chat',
         }),
-      ).rejects.toThrow('source limit exceeded');
+      ).rejects.toMatchObject({
+        chatId: '-100131',
+        delayMs: expect.any(Number),
+      });
       await expect(
         service.processJob({
           chatId: '-100132',
@@ -688,7 +694,7 @@ describe('MaxChatAdminRosterSyncService', () => {
           title: 'Another busy chat',
           entityType: 'chat',
         }),
-      ).rejects.toThrow('source backoff active');
+      ).rejects.toBeInstanceOf(MaxChatAdminRosterSyncSourceBackoffError);
     } finally {
       jest.useRealTimers();
     }

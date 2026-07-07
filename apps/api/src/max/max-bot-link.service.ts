@@ -533,17 +533,19 @@ export class MaxBotLinkService {
     });
     const now = new Date();
 
-    try {
-      await this.prisma.chat.create({
-        data: {
-          id: chatId,
-          title,
-          botId,
-          primaryBotId: botId,
-          ...(entityType ? { entityType } : {}),
-          catalogKind,
-        },
-      });
+    const created = await this.prisma.chat.createMany({
+      data: {
+        id: chatId,
+        title,
+        botId,
+        primaryBotId: botId,
+        ...(entityType ? { entityType } : {}),
+        catalogKind,
+      },
+      skipDuplicates: true,
+    });
+
+    if (created.count > 0) {
       await this.upsertChatBotMembership(chatId, botId, {
         role: ChatBotMembershipRole.PRIMARY,
         status: ChatBotMembershipStatus.ACTIVE,
@@ -552,10 +554,6 @@ export class MaxBotLinkService {
       });
       this.rememberChatBotBinding(chatId, botId);
       return botId;
-    } catch (error: unknown) {
-      if (!this.isPrismaKnownError(error, 'P2002')) {
-        throw error;
-      }
     }
 
     const existing = await this.prisma.chat.findUnique({
