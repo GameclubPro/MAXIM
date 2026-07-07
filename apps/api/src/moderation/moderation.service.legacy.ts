@@ -14103,6 +14103,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       lockedAt: Date | null;
     } | null>;
     create?: (args: unknown) => Promise<unknown>;
+    createMany?: (args: unknown) => Promise<{ count: number }>;
     update?: (args: unknown) => Promise<unknown>;
     updateMany?: (args: unknown) => Promise<{ count: number }>;
   } | null {
@@ -14114,6 +14115,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             lockedAt: Date | null;
           } | null>;
           create?: (args: unknown) => Promise<unknown>;
+          createMany?: (args: unknown) => Promise<{ count: number }>;
           update?: (args: unknown) => Promise<unknown>;
           updateMany?: (args: unknown) => Promise<{ count: number }>;
         };
@@ -14135,7 +14137,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const delegate = this.getChannelAutoPostAttachMarkerDelegate();
     const lockToken = randomUUID();
     const now = new Date();
-    if (!delegate?.findUnique || !delegate.create || !delegate.updateMany) {
+    if (
+      !delegate?.findUnique ||
+      (!delegate.create && !delegate.createMany) ||
+      !delegate.updateMany
+    ) {
       return { status: 'claimed', lockToken };
     }
 
@@ -14160,23 +14166,34 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (!existing) {
-      try {
-        await delegate.create({
-          data: {
-            chatId: params.chatId,
-            messageId: params.messageId,
-            status: CHANNEL_AUTO_POST_ATTACH_STATUS.IN_PROGRESS,
-            lockToken,
-            lockedAt: now,
-            source: params.source,
-            botId: params.botId,
-            linkType: params.linkType,
-          },
+      const createData = {
+        chatId: params.chatId,
+        messageId: params.messageId,
+        status: CHANNEL_AUTO_POST_ATTACH_STATUS.IN_PROGRESS,
+        lockToken,
+        lockedAt: now,
+        source: params.source,
+        botId: params.botId,
+        linkType: params.linkType,
+      };
+      if (delegate.createMany) {
+        const created = await delegate.createMany({
+          data: [createData],
+          skipDuplicates: true,
         });
-        return { status: 'claimed', lockToken };
-      } catch (error: unknown) {
-        if (!this.isPrismaKnownError(error, 'P2002')) {
-          throw error;
+        if (created.count > 0) {
+          return { status: 'claimed', lockToken };
+        }
+      } else if (delegate.create) {
+        try {
+          await delegate.create({
+            data: createData,
+          });
+          return { status: 'claimed', lockToken };
+        } catch (error: unknown) {
+          if (!this.isPrismaKnownError(error, 'P2002')) {
+            throw error;
+          }
         }
       }
     }
@@ -14329,6 +14346,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       lockedAt: Date | null;
     } | null>;
     create?: (args: unknown) => Promise<unknown>;
+    createMany?: (args: unknown) => Promise<{ count: number }>;
     updateMany?: (args: unknown) => Promise<{ count: number }>;
   } | null {
     return (
@@ -14339,6 +14357,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             lockedAt: Date | null;
           } | null>;
           create?: (args: unknown) => Promise<unknown>;
+          createMany?: (args: unknown) => Promise<{ count: number }>;
           updateMany?: (args: unknown) => Promise<{ count: number }>;
         };
       }).chatAutoCommentAttachMarker ?? null
@@ -14358,7 +14377,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const delegate = this.getChatAutoCommentAttachMarkerDelegate();
     const lockToken = randomUUID();
     const now = new Date();
-    if (!delegate?.findUnique || !delegate.create || !delegate.updateMany) {
+    if (
+      !delegate?.findUnique ||
+      (!delegate.create && !delegate.createMany) ||
+      !delegate.updateMany
+    ) {
       return { status: 'claimed', lockToken };
     }
 
@@ -14383,22 +14406,33 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (!existing) {
-      try {
-        await delegate.create({
-          data: {
-            chatId: params.chatId,
-            messageId: params.messageId,
-            status: CHAT_AUTO_COMMENT_ATTACH_STATUS.IN_PROGRESS,
-            lockToken,
-            lockedAt: now,
-            source: params.source,
-            botId: params.botId,
-          },
+      const createData = {
+        chatId: params.chatId,
+        messageId: params.messageId,
+        status: CHAT_AUTO_COMMENT_ATTACH_STATUS.IN_PROGRESS,
+        lockToken,
+        lockedAt: now,
+        source: params.source,
+        botId: params.botId,
+      };
+      if (delegate.createMany) {
+        const created = await delegate.createMany({
+          data: [createData],
+          skipDuplicates: true,
         });
-        return { status: 'claimed', lockToken };
-      } catch (error: unknown) {
-        if (!this.isPrismaKnownError(error, 'P2002')) {
-          throw error;
+        if (created.count > 0) {
+          return { status: 'claimed', lockToken };
+        }
+      } else if (delegate.create) {
+        try {
+          await delegate.create({
+            data: createData,
+          });
+          return { status: 'claimed', lockToken };
+        } catch (error: unknown) {
+          if (!this.isPrismaKnownError(error, 'P2002')) {
+            throw error;
+          }
         }
       }
     }

@@ -21009,14 +21009,21 @@ export class AdminService implements OnModuleDestroy {
       this.managedEntitiesRefreshBackoffUntilMs.delete(key);
     }
 
+    let persistedActive = false;
     try {
-      return (
-        memoryActive ||
-        (await this.chatContextCache.isManagedEntitiesRefreshBackoffActive(userId, entityType))
+      persistedActive = await this.chatContextCache.isManagedEntitiesRefreshBackoffActive(
+        userId,
+        entityType,
       );
     } catch {
-      return memoryActive;
+      persistedActive = false;
     }
+
+    return (
+      memoryActive ||
+      persistedActive ||
+      (await this.getManagedRefreshSourceBackoffRemainingMs()) > 0
+    );
   }
 
   private buildManagedEntitiesRefreshCooldownKey(
@@ -21085,10 +21092,33 @@ export class AdminService implements OnModuleDestroy {
         Math.max(1, Math.ceil(backoffMs / 1000)),
       );
     } catch {
+      // Keep the in-process guard even when Redis is briefly unavailable.
+    }
+
+    try {
+      await this.chatContextCache.activateManagedRefreshSourceBackoff?.(
+        Math.max(1, Math.ceil(backoffMs / 1000)),
+      );
+    } catch {
       return backoffMs;
     }
 
     return backoffMs;
+  }
+
+  private async getManagedRefreshSourceBackoffRemainingMs(): Promise<number> {
+    try {
+      const remainingMs = await this.chatContextCache.getManagedRefreshSourceBackoffRemainingMs?.();
+      if (typeof remainingMs === 'number' && remainingMs > 0) {
+        return remainingMs;
+      }
+
+      return (await this.chatContextCache.isManagedRefreshSourceBackoffActive?.())
+        ? MANAGED_ENTITIES_REFRESH_BACKOFF_MS
+        : 0;
+    } catch {
+      return 0;
+    }
   }
 
   private async getManagedEntitiesRefreshBackoffRemainingMs(
@@ -21108,9 +21138,13 @@ export class AdminService implements OnModuleDestroy {
           userId,
           entityType,
         )) ?? 0;
-      return Math.max(memoryRemainingMs, persistedRemainingMs);
+      return Math.max(
+        memoryRemainingMs,
+        persistedRemainingMs,
+        await this.getManagedRefreshSourceBackoffRemainingMs(),
+      );
     } catch {
-      return memoryRemainingMs;
+      return Math.max(memoryRemainingMs, await this.getManagedRefreshSourceBackoffRemainingMs());
     }
   }
 

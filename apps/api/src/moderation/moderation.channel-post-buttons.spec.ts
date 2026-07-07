@@ -2590,6 +2590,67 @@ describe('ModerationService channel auto post buttons', () => {
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
+  it('claims channel auto-post markers with skipDuplicates to avoid unique constraint noise', async () => {
+    const markerDelegate = {
+      findUnique: jest.fn().mockResolvedValue(null),
+      createMany: jest
+        .fn()
+        .mockResolvedValueOnce({ count: 1 })
+        .mockResolvedValueOnce({ count: 0 }),
+      create: jest.fn(),
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+    };
+    const service = new ModerationService(
+      {
+        auditLog: { findFirst: jest.fn().mockResolvedValue(null) },
+        channelAutoPostAttachMarker: markerDelegate,
+      } as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      { editMessageInlineKeyboard: jest.fn() } as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
+    );
+
+    await expect(
+      (service as any).claimChannelAutoPostAttachMarker({
+        chatId: 'channel-1',
+        messageId: 'mid-post-race',
+        source: 'webhook',
+        botId: 'bot-1',
+        linkType: 'comments',
+      }),
+    ).resolves.toEqual({ status: 'claimed', lockToken: expect.any(String) });
+    await expect(
+      (service as any).claimChannelAutoPostAttachMarker({
+        chatId: 'channel-1',
+        messageId: 'mid-post-race',
+        source: 'webhook',
+        botId: 'bot-1',
+        linkType: 'comments',
+      }),
+    ).resolves.toEqual({ status: 'in_progress' });
+
+    expect(markerDelegate.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          chatId: 'channel-1',
+          messageId: 'mid-post-race',
+          status: 'IN_PROGRESS',
+          source: 'webhook',
+          botId: 'bot-1',
+          linkType: 'comments',
+        }),
+      ],
+      skipDuplicates: true,
+    });
+    expect(markerDelegate.create).not.toHaveBeenCalled();
+  });
+
   it('stops the poll scan at an in-progress auto-attach marker', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-30T03:00:00.000Z'));
 

@@ -1639,6 +1639,9 @@ function createChatContextCacheMock(overrides: Record<string, unknown> = {}) {
     isManagedEntitiesRefreshBackoffActive: jest.fn().mockResolvedValue(false),
     getManagedEntitiesRefreshBackoffRemainingMs: jest.fn().mockResolvedValue(0),
     activateManagedEntitiesRefreshBackoff: jest.fn().mockResolvedValue(undefined),
+    isManagedRefreshSourceBackoffActive: jest.fn().mockResolvedValue(false),
+    getManagedRefreshSourceBackoffRemainingMs: jest.fn().mockResolvedValue(0),
+    activateManagedRefreshSourceBackoff: jest.fn().mockResolvedValue(undefined),
     getManagedEntitiesRefreshCursor: jest
       .fn()
       .mockImplementation(
@@ -20536,6 +20539,42 @@ describe('AdminService.listChats', () => {
       'channel',
       60,
     );
+    expect(chatContextCache.activateManagedRefreshSourceBackoff).toHaveBeenCalledWith(60);
+  });
+
+  it('skips background header hydration while shared managed_refresh source backoff is active', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatSnapshot: jest.fn(),
+    };
+    const chatContextCache = createChatContextCacheMock({
+      getManagedEntityHeader: jest.fn().mockResolvedValue(null),
+      getManagedRefreshSourceBackoffRemainingMs: jest.fn().mockResolvedValue(30_000),
+    });
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await (service as any).runManagedEntityHeaderHydration(
+      'admin-1',
+      'channel',
+      'admin-1:channel',
+      [
+        createChatSummaryFixture({
+          id: 'channel-1',
+          title: 'Кэш канала',
+          createdAt: '2026-03-02T10:00:00.000Z',
+          entityType: 'channel',
+        }),
+      ],
+    );
+
+    expect(chatContextCache.getManagedRefreshSourceBackoffRemainingMs).toHaveBeenCalled();
+    expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
   });
 
   it('hydrates assigned bot avatars for managed entity headers and caches fresh misses', async () => {

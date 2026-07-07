@@ -122,6 +122,35 @@ function createChatAutoCommentAttachMarkerMock() {
         rows.set(key, row);
         return { id: key, ...row };
       }),
+      createMany: jest.fn(async (args: unknown) => {
+        const data = (args as {
+          data: Array<
+            Pick<
+              MockChatAutoCommentAttachMarkerRow,
+              'chatId' | 'messageId' | 'status' | 'lockToken' | 'lockedAt' | 'botId' | 'source'
+            >
+          >;
+        }).data;
+        let count = 0;
+        for (const entry of data) {
+          const key = keyOf(entry.chatId, entry.messageId);
+          if (rows.has(key)) {
+            continue;
+          }
+          rows.set(key, {
+            ...entry,
+            deliveryMode: null,
+            replacementMessageId: null,
+            replyMessageId: null,
+            publishedUrl: null,
+            originalDeleted: false,
+            lastError: null,
+            lastStatusCode: null,
+          });
+          count += 1;
+        }
+        return { count };
+      }),
       updateMany: jest.fn(async (args: unknown) => {
         const data = args as {
           where?: {
@@ -411,6 +440,59 @@ describe('ModerationService chat comment buttons', () => {
       replacementMessageId: 'mid-bot-copy-race',
       originalDeleted: true,
     });
+  });
+
+  it('claims chat auto-comment markers with skipDuplicates to avoid unique constraint noise', async () => {
+    const delegate = {
+      findUnique: jest.fn().mockResolvedValue(null),
+      createMany: jest
+        .fn()
+        .mockResolvedValueOnce({ count: 1 })
+        .mockResolvedValueOnce({ count: 0 }),
+      create: jest.fn(),
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+    };
+    const { service } = createService(
+      {
+        commentsEnabled: true,
+        commentsAdminsEnabled: true,
+        commentsAllEnabled: false,
+        commentsChatBroadcastsEnabled: false,
+      },
+      ['admin-1'],
+      { chatAutoCommentAttachMarker: delegate as never },
+    );
+
+    await expect(
+      (service as any).claimChatAutoCommentAttachMarker({
+        chatId: 'chat-1',
+        messageId: 'mid-admin-race',
+        source: 'webhook',
+        botId: 'bot-1',
+      }),
+    ).resolves.toEqual({ status: 'claimed', lockToken: expect.any(String) });
+    await expect(
+      (service as any).claimChatAutoCommentAttachMarker({
+        chatId: 'chat-1',
+        messageId: 'mid-admin-race',
+        source: 'webhook',
+        botId: 'bot-1',
+      }),
+    ).resolves.toEqual({ status: 'in_progress' });
+
+    expect(delegate.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          chatId: 'chat-1',
+          messageId: 'mid-admin-race',
+          status: 'IN_PROGRESS',
+          source: 'webhook',
+          botId: 'bot-1',
+        }),
+      ],
+      skipDuplicates: true,
+    });
+    expect(delegate.create).not.toHaveBeenCalled();
   });
 
   it('does not attach the comments button to a regular message when only the legacy all toggle is enabled', async () => {
