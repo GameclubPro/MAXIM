@@ -15010,6 +15010,172 @@ describe('ModerationService', () => {
     expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
   });
 
+  it('deduplicates mirrored multi-bot active-mute deletes with a persisted message claim', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings(),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'manual-mute-1',
+          createdAt: new Date(Date.now() - 5 * 60 * 1000),
+          action: SanctionAction.MUTE,
+          ruleCode: 'MANUAL_MUTE',
+          metadata: { mutePermanent: true },
+        }),
+        create: jest.fn(),
+      },
+      moderationViolationMessageClaim: {
+        createMany: jest
+          .fn()
+          .mockResolvedValueOnce({ count: 1 })
+          .mockResolvedValueOnce({ count: 0 }),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+      getChatMembersAccess: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'user-1',
+            {
+              userId: 'user-1',
+              isAdmin: false,
+              isOwner: false,
+              permissions: [],
+            },
+          ],
+        ]),
+      ),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate({ ...createUpdate(), updateId: 'upd-owner-muted-1', botId: 'bot-1' });
+    await service.handleUpdate({ ...createUpdate(), updateId: 'upd-standby-muted-1', botId: 'bot-2' });
+
+    expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledTimes(2);
+    expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          messageId: 'msg-1',
+          ruleCode: 'MUTE_ACTIVE_DELETE',
+          updateType: 'message_action',
+        }),
+      ],
+      skipDuplicates: true,
+    });
+    expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
+    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('deduplicates mirrored multi-bot night-mode deletes with a persisted message claim', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            nightModeEnabled: true,
+            nightModeStartTimeMinutes: 0,
+            nightModeEndTimeMinutes: 0,
+            nightModeBotMessageEnabled: false,
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      moderationViolationMessageClaim: {
+        createMany: jest
+          .fn()
+          .mockResolvedValueOnce({ count: 1 })
+          .mockResolvedValueOnce({ count: 0 }),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+      getChatMembersAccess: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'user-1',
+            {
+              userId: 'user-1',
+              isAdmin: false,
+              isOwner: false,
+              permissions: [],
+            },
+          ],
+        ]),
+      ),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate({ ...createUpdate(), updateId: 'upd-owner-night-1', botId: 'bot-1' });
+    await service.handleUpdate({ ...createUpdate(), updateId: 'upd-standby-night-1', botId: 'bot-2' });
+
+    expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledTimes(2);
+    expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          messageId: 'msg-1',
+          ruleCode: 'NIGHT_MODE_DELETE',
+          updateType: 'message_action',
+        }),
+      ],
+      skipDuplicates: true,
+    });
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
+    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
+  });
+
   it('treats persisted message claim unique conflicts as duplicate multi-bot deliveries', async () => {
     const prisma = {
       chat: {
@@ -19652,6 +19818,76 @@ describe('ModerationService', () => {
           },
         }),
       );
+    });
+
+    it('deduplicates mirrored multi-bot required-subscription enforcement with a persisted message claim', async () => {
+      const prisma = {
+        ...createPrismaForRequiredSubscription({
+          requiredSubscriptionEnabled: true,
+          requiredSubscriptionChannelIds: ['channel-1'],
+          requiredSubscriptionBotMessageEnabled: true,
+        }),
+        moderationViolationMessageClaim: {
+          createMany: jest
+            .fn()
+            .mockResolvedValueOnce({ count: 1 })
+            .mockResolvedValueOnce({ count: 0 }),
+        },
+      };
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const maxClient = {
+        hasChatMember: jest.fn().mockResolvedValue(false),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+      );
+
+      await service.handleUpdate({
+        ...createUpdate(),
+        updateId: 'upd-owner-required-subscription-1',
+        botId: 'bot-1',
+      });
+      await service.handleUpdate({
+        ...createUpdate(),
+        updateId: 'upd-standby-required-subscription-1',
+        botId: 'bot-2',
+      });
+
+      expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledTimes(2);
+      expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledWith({
+        data: [
+          expect.objectContaining({
+            chatId: 'chat-1',
+            userId: 'user-1',
+            messageId: 'msg-1',
+            ruleCode: 'REQUIRED_SUBSCRIPTION',
+            updateType: 'message_action',
+          }),
+        ],
+        skipDuplicates: true,
+      });
+      expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      expect(prisma.violation.create).toHaveBeenCalledTimes(1);
+      expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
+      expect(ruleEngine.detect).not.toHaveBeenCalled();
     });
 
     it('renders markdown-heavy required subscription templates as html without visible markers', async () => {

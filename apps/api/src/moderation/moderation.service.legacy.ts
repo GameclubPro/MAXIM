@@ -2807,6 +2807,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
     let messageDeleted = false;
 
+    const claimed = await this.claimMessageScopedModerationAction({
+      chatId,
+      userId,
+      messageId,
+      ruleCode: 'DUPLICATE',
+    });
+    if (!claimed) {
+      return;
+    }
+
     if (canDeleteMessage) {
       try {
         this.markWebhookHotPathStage(hotPathProfile, 'duplicate-delete');
@@ -3005,6 +3015,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const messageAgeMs = Date.now() - new Date(createdAt).getTime();
     const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
     let messageDeleted = false;
+
+    const claimed = await this.claimMessageScopedModerationAction({
+      chatId,
+      userId,
+      messageId,
+      ruleCode: 'DUPLICATE_HIT',
+    });
+    if (!claimed) {
+      return;
+    }
 
     if (canDeleteMessage) {
       try {
@@ -5333,6 +5353,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }));
   }
 
+  private async claimMessageScopedModerationAction(params: {
+    chatId: string;
+    userId: string;
+    messageId?: string | null;
+    ruleCode: string;
+  }): Promise<boolean> {
+    return this.claimMessageViolationProcessing({
+      ...params,
+      updateType: 'message_action',
+    });
+  }
+
   private buildMessageViolationProcessingClaimKey(params: {
     chatId: string;
     userId: string;
@@ -5501,8 +5533,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           ruleCode: string;
           operator: Operator;
         };
-        select: { id: true };
-      }) => Promise<{ id: string } | null>;
+        select: { id: true; userId: true; messageId: true; ruleCode: true };
+      }) => Promise<{ id: string; userId?: string; messageId?: string; ruleCode?: string } | null>;
     };
 
     if (typeof moderationEventModel.findFirst !== 'function') {
@@ -5518,9 +5550,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           ruleCode: params.ruleCode,
           operator: Operator.BOT,
         },
-        select: { id: true },
+        select: { id: true, userId: true, messageId: true, ruleCode: true },
       });
-      return Boolean(existing);
+      if (!existing) {
+        return false;
+      }
+
+      return (
+        (existing.userId === undefined || existing.userId === params.userId) &&
+        (existing.messageId === undefined || existing.messageId === params.messageId) &&
+        (existing.ruleCode === undefined || existing.ruleCode === params.ruleCode)
+      );
     } catch (error: unknown) {
       this.logger.debug(
         {
@@ -6438,6 +6478,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    const claimed = await this.claimMessageScopedModerationAction({
+      chatId,
+      userId,
+      messageId,
+      ruleCode: 'MUTE_ACTIVE_DELETE',
+    });
+    if (!claimed) {
+      return;
+    }
+
     try {
       if (await this.deleteMessageImmediately(chatId, messageId)) {
         await this.createBotModerationEvent({
@@ -6491,6 +6541,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
         'Skipped bot-account moderation for configured MAX bot user',
       );
+      return;
+    }
+
+    const claimed = await this.claimMessageScopedModerationAction({
+      chatId,
+      userId,
+      messageId,
+      ruleCode: 'BOT_ACCOUNT_KICK',
+    });
+    if (!claimed) {
       return;
     }
 
@@ -6549,6 +6609,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }) {
     const { chatId, userId, messageId, text, delayMinutes } = params;
     const safeDelayMinutes = normalizeDeleteBotMessagesDelayMinutes(delayMinutes);
+
+    const claimed = await this.claimMessageScopedModerationAction({
+      chatId,
+      userId,
+      messageId,
+      ruleCode: 'BOT_MESSAGE_AUTO_DELETE',
+    });
+    if (!claimed) {
+      return;
+    }
 
     try {
       const scheduled = await this.deleteMessageImmediately(chatId, messageId, {
@@ -6688,6 +6758,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     for (const userId of botUserIds) {
       if (this.isKnownRuntimeBotUserId(userId)) {
+        continue;
+      }
+
+      const claimed = await this.claimMessageScopedModerationAction({
+        chatId,
+        userId,
+        messageId,
+        ruleCode: 'BOT_ACCOUNT_KICK',
+      });
+      if (!claimed) {
         continue;
       }
 
@@ -7023,6 +7103,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
 
+    const claimed = await this.claimMessageScopedModerationAction({
+      chatId,
+      userId,
+      messageId,
+      ruleCode: 'GLOBAL_SPAMMER_KICK',
+    });
+    if (!claimed) {
+      return true;
+    }
+
     try {
       await this.deleteMessageImmediately(chatId, messageId);
     } catch (error: unknown) {
@@ -7043,6 +7133,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       messageId,
       text,
       reason: 'Sender exists in global spammer registry',
+      claimAlreadyAcquired: true,
     });
     return true;
   }
@@ -7056,6 +7147,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const { chatId, userId, messageId, text } = params;
     if (this.isKnownRuntimeBotUserId(userId)) {
       return false;
+    }
+
+    const claimed = await this.claimMessageScopedModerationAction({
+      chatId,
+      userId,
+      messageId,
+      ruleCode: 'LOCAL_ADMIN_BLOCK',
+    });
+    if (!claimed) {
+      return true;
     }
 
     try {
@@ -7079,6 +7180,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       text,
       reason: 'Local admin block for this admin scope',
       ruleCode: 'LOCAL_ADMIN_BLOCK',
+      claimAlreadyAcquired: true,
     });
   }
 
@@ -7187,10 +7289,31 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     text: string;
     reason: string;
     ruleCode?: string;
+    claimAlreadyAcquired?: boolean;
   }): Promise<boolean> {
-    const { chatId, userId, messageId, text, reason, ruleCode = 'GLOBAL_SPAMMER_KICK' } = params;
+    const {
+      chatId,
+      userId,
+      messageId,
+      text,
+      reason,
+      ruleCode = 'GLOBAL_SPAMMER_KICK',
+      claimAlreadyAcquired = false,
+    } = params;
     if (this.isKnownRuntimeBotUserId(userId)) {
       return false;
+    }
+
+    if (!claimAlreadyAcquired) {
+      const claimed = await this.claimMessageScopedModerationAction({
+        chatId,
+        userId,
+        messageId,
+        ruleCode,
+      });
+      if (!claimed) {
+        return true;
+      }
     }
 
     try {
@@ -7509,6 +7632,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    const claimed = await this.claimMessageScopedModerationAction({
+      chatId,
+      userId,
+      messageId,
+      ruleCode: 'GLOBAL_SPAMMER_KICK',
+    });
+    if (!claimed) {
+      return;
+    }
+
     try {
       await this.deleteMessageImmediately(chatId, messageId);
     } catch (error: unknown) {
@@ -7529,6 +7662,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       messageId,
       text,
       reason,
+      claimAlreadyAcquired: true,
     });
   }
 
@@ -8602,6 +8736,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
 
     if (canDeleteMessage) {
+      const claimed = await this.claimMessageScopedModerationAction({
+        chatId,
+        userId,
+        messageId,
+        ruleCode: 'NIGHT_MODE_DELETE',
+      });
+      if (!claimed) {
+        return;
+      }
+
       try {
         const messageDeleted = await this.deleteMessageImmediately(chatId, messageId);
         if (!messageDeleted) {
@@ -8677,6 +8821,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
 
     if (canDeleteMessage) {
+      const claimed = await this.claimMessageScopedModerationAction({
+        chatId,
+        userId,
+        messageId,
+        ruleCode: 'MANUAL_GROUP_CLOSE_DELETE',
+      });
+      if (!claimed) {
+        return;
+      }
+
       try {
         if (await this.deleteMessageImmediately(chatId, messageId)) {
           await this.createBotModerationEvent({
@@ -8811,6 +8965,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         'Required subscription violation arrived too late to delete message',
       );
       return false;
+    }
+
+    const claimed = await this.claimMessageScopedModerationAction({
+      chatId: params.chatId,
+      userId: params.userId,
+      messageId: params.messageId,
+      ruleCode: REQUIRED_SUBSCRIPTION_RULE_CODE,
+    });
+    if (!claimed) {
+      return true;
     }
 
     const messageDeleted = await this.deleteMessageImmediately(params.chatId, params.messageId);
@@ -9226,6 +9390,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         'Invitation access violation arrived too late to delete message',
       );
       return false;
+    }
+
+    const claimed = await this.claimMessageScopedModerationAction({
+      chatId: params.chatId,
+      userId: params.userId,
+      messageId: params.messageId,
+      ruleCode: INVITATION_ACCESS_RULE_CODE,
+    });
+    if (!claimed) {
+      return true;
     }
 
     const messageDeleted = await this.deleteMessageImmediately(params.chatId, params.messageId);
