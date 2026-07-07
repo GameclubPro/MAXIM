@@ -33,6 +33,7 @@ import {
   syncMaxNativeEnvironment,
 } from './lib/max-bridge';
 import { PUBLIC_ROUTER_BASENAME } from './lib/public-config';
+import { isPublicLegalPathnameFromWindow } from './lib/public-legal-route';
 import {
   LazyChannelDialogPage,
   LazyChannelSuggestDialogPage,
@@ -55,6 +56,9 @@ const HASH_ROUTER_ENABLED =
   typeof __MAXIM_ROUTER_MODE__ === 'string' && __MAXIM_ROUTER_MODE__ === 'hash';
 const AppRouter = HASH_ROUTER_ENABLED ? HashRouter : Router;
 const ROUTER_BASENAME = HASH_ROUTER_ENABLED ? '' : PUBLIC_ROUTER_BASENAME;
+const ROUTER_MODE = HASH_ROUTER_ENABLED ? 'hash' : 'browser';
+const NATIVE_ENVIRONMENT_SYNC_POLL_INTERVAL_MS = 150;
+const NATIVE_ENVIRONMENT_SYNC_POLL_DURATION_MS = 8_000;
 
 migrateHashRouterLegacyPathFromWindow();
 
@@ -140,31 +144,46 @@ function buildWindowPathForRoute(pathname: string): string {
   return pathname === '/' ? `${PUBLIC_ROUTER_BASENAME}/` : `${PUBLIC_ROUTER_BASENAME}${pathname}`;
 }
 
-function resolveRouterPathnameFromWindow(): string {
-  if (typeof window === 'undefined') {
-    return '/';
-  }
-
-  if (HASH_ROUTER_ENABLED) {
-    const hashRoute = window.location.hash.replace(/^#/u, '') || '/';
-    const parsedHashRoute = parseRoute(hashRoute);
-    return parsedHashRoute?.pathname || '/';
-  }
-
-  const pathname = window.location.pathname || '/';
-  if (
-    PUBLIC_ROUTER_BASENAME &&
-    (pathname === PUBLIC_ROUTER_BASENAME || pathname.startsWith(`${PUBLIC_ROUTER_BASENAME}/`))
-  ) {
-    const stripped = pathname.slice(PUBLIC_ROUTER_BASENAME.length);
-    return stripped || '/';
-  }
-
-  return pathname;
+function isPublicLegalPathname(): boolean {
+  return isPublicLegalPathnameFromWindow(ROUTER_MODE);
 }
 
-function isPublicLegalPathname(): boolean {
-  return /^\/legal\/(?:agreement|privacy)\/?$/u.test(resolveRouterPathnameFromWindow());
+type AppMaxWebAppBridge = NonNullable<Window['MAX']>['WebApp'];
+
+function readBridgeRuntimeSignature(bridge: AppMaxWebAppBridge | undefined): string {
+  if (!bridge) {
+    return 'none';
+  }
+
+  const unsafeKeys = [
+    ...Object.keys(bridge.initDataUnsafe ?? {}),
+    ...Object.keys(bridge.init_data_unsafe ?? {}),
+  ]
+    .sort()
+    .join(',');
+
+  return [
+    'bridge',
+    typeof bridge.version === 'string' ? bridge.version : '',
+    typeof bridge.platform === 'string' ? bridge.platform : '',
+    typeof bridge.initData === 'string' && bridge.initData.trim() ? 'initData' : '',
+    typeof bridge.init_data === 'string' && bridge.init_data.trim() ? 'init_data' : '',
+    unsafeKeys,
+  ].join('|');
+}
+
+function readMaxNativeEnvironmentSignature(initData: string | null): string {
+  if (typeof window === 'undefined') {
+    return initData ? 'init' : 'empty';
+  }
+
+  const maxBridge = window.MAX?.WebApp;
+  const legacyBridge = window.WebApp;
+  const bridgeKind = maxBridge ? 'max' : legacyBridge ? 'legacy' : 'none';
+  const bridgeSignature = readBridgeRuntimeSignature(maxBridge ?? legacyBridge);
+  const hasInitData = Boolean((initData ?? '').trim() || getInitData());
+
+  return `${bridgeKind}|${bridgeSignature}|${hasInitData ? 'init' : 'empty'}`;
 }
 
 function applyInitialLaunchRoute(targetRoute: string): void {
@@ -303,6 +322,9 @@ export function App() {
   const [previewRuntime, setPreviewRuntime] = useState<PreviewRuntime | null>(null);
   const preparedLaunchRouteRef = useRef<string | null>(null);
   const nativeReadyCalledRef = useRef(false);
+  const [nativeEnvironmentSignature, setNativeEnvironmentSignature] = useState(() =>
+    readMaxNativeEnvironmentSignature(getInitData()),
+  );
 
   useEffect(() => {
     if (initData) {
@@ -311,7 +333,65 @@ export function App() {
     }
 
     traceMiniappBoot('init_data_waiting', undefined, { once: true });
-    return waitForInitData(setInitData);
+    return waitForInitData((nextInitData) => {
+      setInitData(nextInitData);
+      setNativeEnvironmentSignature(readMaxNativeEnvironmentSignature(nextInitData));
+    });
+  }, [initData]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+
+    let stopped = false;
+    let pollIntervalId: ReturnType<typeof window.setInterval> | null = null;
+    let pollTimeoutId: ReturnType<typeof window.setTimeout> | null = null;
+
+    const stopPolling = () => {
+      if (pollIntervalId !== null) {
+        window.clearInterval(pollIntervalId);
+        pollIntervalId = null;
+      }
+      if (pollTimeoutId !== null) {
+        window.clearTimeout(pollTimeoutId);
+        pollTimeoutId = null;
+      }
+    };
+
+    const refreshNativeEnvironmentSignature = () => {
+      if (stopped) {
+        return;
+      }
+
+      setNativeEnvironmentSignature((currentSignature) => {
+        const nextSignature = readMaxNativeEnvironmentSignature(initData);
+        return nextSignature === currentSignature ? currentSignature : nextSignature;
+      });
+    };
+
+    refreshNativeEnvironmentSignature();
+    pollIntervalId = window.setInterval(
+      refreshNativeEnvironmentSignature,
+      NATIVE_ENVIRONMENT_SYNC_POLL_INTERVAL_MS,
+    );
+    pollTimeoutId = window.setTimeout(stopPolling, NATIVE_ENVIRONMENT_SYNC_POLL_DURATION_MS);
+    window.addEventListener('load', refreshNativeEnvironmentSignature, { passive: true });
+    window.addEventListener('hashchange', refreshNativeEnvironmentSignature, { passive: true });
+    document.addEventListener('visibilitychange', refreshNativeEnvironmentSignature);
+    const maxBridgeScript = document.querySelector<HTMLScriptElement>(
+      'script[src*="st.max.ru/js/max-web-app.js"]',
+    );
+    maxBridgeScript?.addEventListener('load', refreshNativeEnvironmentSignature);
+
+    return () => {
+      stopped = true;
+      stopPolling();
+      window.removeEventListener('load', refreshNativeEnvironmentSignature);
+      window.removeEventListener('hashchange', refreshNativeEnvironmentSignature);
+      document.removeEventListener('visibilitychange', refreshNativeEnvironmentSignature);
+      maxBridgeScript?.removeEventListener('load', refreshNativeEnvironmentSignature);
+    };
   }, [initData]);
 
   useEffect(() => {
@@ -331,7 +411,7 @@ export function App() {
       { once: true },
     );
     return cleanup;
-  }, [preview.device, preview.enabled]);
+  }, [nativeEnvironmentSignature, preview.device, preview.enabled]);
 
   useEffect(() => {
     if (!initData) {

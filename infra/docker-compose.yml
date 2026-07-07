@@ -14,7 +14,7 @@ services:
     shm_size: 512m
     environment:
       POSTGRES_USER: maxim
-      POSTGRES_PASSWORD: maxim
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-maxim}
       POSTGRES_DB: maxim
     volumes:
       - postgres_data:/var/lib/postgresql/data

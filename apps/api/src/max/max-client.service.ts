@@ -124,6 +124,7 @@ type MaxMessageMarkup = {
 const MAX_CHAT_POST_LINK_BASE_URL = 'https://max.ru';
 const DEFAULT_SUCCESS_FALSE_STATUS = 200;
 const MAX_UPLOAD_BINARY_TIMEOUT_MS = 30_000;
+const MAX_UPLOAD_FILENAME_MAX_LENGTH = 180;
 const MAX_LIST_BOT_CHATS_UNSUPPORTED_IN_PRODUCTION =
   'MAX API GET /chats is not supported in production; use webhook/subscription managed chat catalog instead. See https://dev.max.ru/docs-api/methods/GET/chats';
 
@@ -1330,9 +1331,10 @@ export class MaxClientService implements OnModuleDestroy {
         throw new Error('MAX upload URL is missing');
       }
 
+      const safeFileName = this.normalizeUploadFileName(fileName, uploadType);
       const form = new FormData();
       form.append('data', data, {
-        filename: fileName,
+        filename: safeFileName,
         contentType: mimeType,
       });
       const uploadResult = await this.requestAbsolute<Record<string, unknown>>('post', uploadUrl, {
@@ -1358,6 +1360,33 @@ export class MaxClientService implements OnModuleDestroy {
 
       throw new Error('MAX upload payload is missing');
     });
+  }
+
+  private normalizeUploadFileName(
+    fileName: string | null | undefined,
+    uploadType: MaxMediaAttachmentType,
+  ): string {
+    const fallback =
+      uploadType === 'image' ? 'upload.jpg' : uploadType === 'video' ? 'upload.mp4' : 'upload.bin';
+    const raw = typeof fileName === 'string' ? fileName.normalize('NFC').trim() : '';
+    if (!raw) {
+      return fallback;
+    }
+
+    const withoutPath = raw.split(/[\\/]+/u).pop()?.trim() ?? '';
+    const sanitized = withoutPath
+      .replace(/[^\p{L}\p{N}._ -]+/gu, '_')
+      .replace(/_+/gu, '_')
+      .replace(/\s+/gu, ' ')
+      .replace(/[. ]+$/u, '')
+      .slice(0, MAX_UPLOAD_FILENAME_MAX_LENGTH)
+      .trim();
+
+    if (!sanitized || sanitized === '.' || sanitized === '..') {
+      return fallback;
+    }
+
+    return sanitized;
   }
 
   async kickMember(chatId: string, userId: string, options?: MaxActionDispatchOptions) {

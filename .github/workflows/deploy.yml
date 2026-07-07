@@ -7,6 +7,11 @@ on:
         description: Git branch to deploy
         required: true
         default: main
+      allow_non_main:
+        description: Explicitly allow deploying a non-main branch to production
+        required: false
+        default: false
+        type: boolean
       services:
         description: Space-separated service names. Leave empty to deploy the default production set.
         required: false
@@ -45,6 +50,7 @@ jobs:
 
       - name: Deploy on VPS
         env:
+          ALLOW_NON_MAIN_DEPLOY: ${{ inputs.allow_non_main }}
           DEPLOY_BRANCH: ${{ inputs.branch }}
           DEPLOY_SERVICES: ${{ inputs.services }}
           VPS_HOST: ${{ secrets.VPS_HOST }}
@@ -55,6 +61,22 @@ jobs:
           if [[ -z "$VPS_HOST" || -z "$VPS_PATH" || -z "$VPS_USER" ]]; then
             echo "Missing one of the required VPS secrets: VPS_HOST, VPS_PATH, VPS_USER."
             exit 1
+          fi
+
+          if [[ ! "$DEPLOY_BRANCH" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] ||
+             [[ "$DEPLOY_BRANCH" == *..* ]] ||
+             [[ "$DEPLOY_BRANCH" == *//* ]] ||
+             [[ "$DEPLOY_BRANCH" == */ ]] ||
+             [[ "$DEPLOY_BRANCH" == *. ]] ||
+             [[ "$DEPLOY_BRANCH" == *.lock ]] ||
+             [[ "$DEPLOY_BRANCH" == *"@{"* ]]; then
+            echo "Refusing unsafe deploy branch name: $DEPLOY_BRANCH"
+            exit 2
+          fi
+
+          if [[ "$DEPLOY_BRANCH" != "main" && "$ALLOW_NON_MAIN_DEPLOY" != "true" ]]; then
+            echo "Production deploys default to main. Set allow_non_main=true to deploy '$DEPLOY_BRANCH'."
+            exit 2
           fi
 
           SSH_OPTS=(
@@ -74,5 +96,8 @@ jobs:
           fi
 
           printf -v remote_command "%q " "${remote_args[@]}"
+          if [[ "$DEPLOY_BRANCH" != "main" ]]; then
+            remote_command="MAXIM_ALLOW_NON_MAIN_DEPLOY=1 $remote_command"
+          fi
           ssh "${SSH_OPTS[@]}" "$VPS_USER@$VPS_HOST" \
             "cd $(printf '%q' "$VPS_PATH") && $remote_command"

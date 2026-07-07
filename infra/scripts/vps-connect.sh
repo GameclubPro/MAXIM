@@ -240,9 +240,19 @@ open_shell() {
 
 deploy_main() {
   local branch="${1:-main}"
+  local remote_command
   shift || true
 
-  remote_exec "$(shell_quote_args ./infra/scripts/vps-pull-build-up.sh "$branch" "$@")"
+  remote_command="$(shell_quote_args ./infra/scripts/vps-pull-build-up.sh "$branch" "$@")"
+  if [[ "$branch" != "main" ]]; then
+    case "${MAXIM_ALLOW_NON_MAIN_DEPLOY:-0}" in
+      1|true|TRUE|yes|YES)
+        remote_command="MAXIM_ALLOW_NON_MAIN_DEPLOY=1 $remote_command"
+        ;;
+    esac
+  fi
+
+  remote_exec "$remote_command"
 }
 
 deploy_scale() {

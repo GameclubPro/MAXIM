@@ -5,6 +5,7 @@ import {
   getSystemBots,
   getSystemDashboard,
 } from '../src/lib/api/system-client';
+import { systemDashboardResponseSchema } from '@maxim/contracts/system';
 import type { ApiTransport } from '../src/lib/api/transport';
 
 const generatedAt = '2026-07-06T10:00:00.000Z';
@@ -369,6 +370,70 @@ test('parses runtime dashboard fields through contract schemas', async () => {
   assert.equal(dashboard.canaryState?.status, 'disabled');
   assert.equal(dashboard.rollbackReadiness?.status, 'ready');
   assert.equal(dashboard.queueGroupHealth?.status, 'healthy');
+});
+
+test('preserves failed webhook active and stale metrics from the API', async () => {
+  const base = createDashboardResponse();
+  const dashboard = await getSystemDashboard(
+    createApi({
+      ...base,
+      queues: {
+        ...(base.queues as Record<string, unknown>),
+        webhookEvents: {
+          received: webhookMetrics(),
+          queued: webhookMetrics(),
+          failed: {
+            ...webhookMetrics(),
+            count: 7,
+            activeCount: 2,
+            staleCount: 5,
+            activeWindowSec: 21600,
+          },
+        },
+        userFacingWebhookEvents: {
+          received: webhookMetrics(),
+          queued: webhookMetrics(),
+          failed: {
+            ...webhookMetrics(),
+            count: 3,
+            activeCount: 1,
+            staleCount: 2,
+            activeWindowSec: 21600,
+          },
+        },
+      },
+    }),
+  );
+
+  assert.equal(dashboard.queues.webhookEvents.failed.activeCount, 2);
+  assert.equal(dashboard.queues.webhookEvents.failed.staleCount, 5);
+  assert.equal(dashboard.queues.webhookEvents.failed.activeWindowSec, 21600);
+  assert.equal(dashboard.queues.userFacingWebhookEvents.failed.activeCount, 1);
+});
+
+test('contract schema preserves failed webhook active and stale metrics', () => {
+  const parsed = systemDashboardResponseSchema.parse(
+    createDashboardResponse({
+      queues: {
+        ...createDashboardResponse().queues,
+        webhookEvents: {
+          received: webhookMetrics(),
+          queued: webhookMetrics(),
+          failed: {
+            ...webhookMetrics(),
+            count: 7,
+            activeCount: 2,
+            staleCount: 5,
+            activeWindowSec: 21600,
+          },
+        },
+      },
+    }),
+  );
+
+  assert.equal(parsed.queues.webhookEvents.failed.activeCount, 2);
+  assert.equal(parsed.queues.webhookEvents.failed.staleCount, 5);
+  assert.equal(parsed.queues.webhookEvents.failed.activeWindowSec, 21600);
 });
 
 test('rejects invalid runtime dashboard enum values', async () => {

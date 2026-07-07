@@ -1678,7 +1678,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('persists hot-path timeout stage details in webhook errorMessage for production diagnostics', async () => {
+  it('marks hot-path timeout webhooks as fail-open processed while detached work continues', async () => {
     const update = {
       ...createUpdate(),
       message: {
@@ -1702,31 +1702,41 @@ describe('ModerationService', () => {
       { resolveAction: jest.fn() } as never,
       {} as never,
     );
-    const timeoutError = (service as any).createWebhookHotPathTimeoutError({
-      webhookEventId: 'event-timeout-1',
-      update,
-      activeBotId: 'id613002203036_bot',
-      timeoutMs: 10_000,
-      timeoutContext: {
-        latestStage: 'required-subscription',
-        elapsedMs: 10_079,
-      },
-    });
-    jest.spyOn(service, 'handleUpdate').mockRejectedValue(timeoutError);
-
-    await expect(service.processWebhookEvent('event-timeout-1')).rejects.toThrow(
-      'Webhook user-facing hot path timed out after 10000ms for message_created',
+    (service as any).webhookUserFacingTimeoutMs = 10;
+    jest.spyOn(service, 'handleUpdate').mockImplementation(
+      () =>
+        new Promise<void>(() => {
+          // Intentionally never resolves: the watchdog must release the webhook processor.
+        }),
     );
+    const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((
+      callback: TimerHandler,
+    ) => {
+      if (typeof callback === 'function') {
+        callback();
+      }
+      return {
+        unref() {
+          return this;
+        },
+      } as unknown as NodeJS.Timeout;
+    }) as unknown as typeof setTimeout);
 
-    expect(prisma.webhookEvent.update).toHaveBeenCalledWith({
-      where: { id: 'event-timeout-1' },
-      data: expect.objectContaining({
-        status: 'FAILED',
-        errorMessage:
-          'Webhook user-facing hot path timed out after 10000ms for message_created [latestStage=required-subscription, elapsedMs=10079, chatId=-chat-42, activeBotId=id613002203036_bot]',
-        nextEnqueueAt: null,
-      }),
-    });
+    try {
+      await expect(service.processWebhookEvent('event-timeout-1')).resolves.toBeUndefined();
+
+      expect(prisma.webhookEvent.update).toHaveBeenCalledWith({
+        where: { id: 'event-timeout-1' },
+        data: expect.objectContaining({
+          status: 'PROCESSED',
+          errorMessage: null,
+          nextEnqueueAt: null,
+          processedAt: expect.any(Date),
+        }),
+      });
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
   });
 
   it('does not put a chat into hot-timeout backoff when only violation follow-up times out', () => {
@@ -1787,7 +1797,7 @@ describe('ModerationService', () => {
     expect((service as any).isWebhookHotTimeoutChatBackoffActive('-chat-1')).toBe(true);
   });
 
-  it('fails open for stuck user-facing message_created events instead of re-enqueueing them forever', async () => {
+  it('detaches stuck user-facing message_created events instead of re-enqueueing them forever', async () => {
     const update = {
       ...createUpdate(),
       message: {
@@ -1820,29 +1830,31 @@ describe('ModerationService', () => {
       } as unknown as NodeJS.Timeout;
     }) as unknown as typeof setTimeout);
 
-    await expect(
-      (service as any).executeWebhookUpdateWithGuard(
-        'event-3',
-        update,
-        null,
-        () =>
-          new Promise<void>(() => {
-            // Intentionally never resolves.
-          }),
-      ),
-    ).rejects.toThrow('Webhook user-facing hot path timed out after 10ms for message_created');
-    expect(
-      (service as any).isTerminalWebhookProcessingError(
-        (service as any).createWebhookHotPathTimeoutError({
-          webhookEventId: 'event-3',
+    try {
+      await expect(
+        (service as any).executeWebhookUpdateWithGuard(
+          'event-3',
           update,
-          activeBotId: null,
-          timeoutMs: 10,
-        }),
-      ),
-    ).toBe(true);
-
-    setTimeoutSpy.mockRestore();
+          null,
+          () =>
+            new Promise<void>(() => {
+              // Intentionally never resolves.
+            }),
+        ),
+      ).resolves.toBeUndefined();
+      expect(
+        (service as any).isTerminalWebhookProcessingError(
+          (service as any).createWebhookHotPathTimeoutError({
+            webhookEventId: 'event-3',
+            update,
+            activeBotId: null,
+            timeoutMs: 10,
+          }),
+        ),
+      ).toBe(false);
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
   });
 
   it('detaches violation follow-up timeouts after the destructive action boundary', async () => {
@@ -2140,29 +2152,31 @@ describe('ModerationService', () => {
       } as unknown as NodeJS.Timeout;
     }) as unknown as typeof setTimeout);
 
-    await expect(
-      (service as any).executeWebhookUpdateWithGuard(
-        'event-callback-1',
-        update,
-        null,
-        () =>
-          new Promise<void>(() => {
-            // Intentionally never resolves.
-          }),
-      ),
-    ).rejects.toThrow('Webhook user-facing hot path timed out after 10ms for message_callback');
-    expect(
-      (service as any).isTerminalWebhookProcessingError(
-        (service as any).createWebhookHotPathTimeoutError({
-          webhookEventId: 'event-callback-1',
+    try {
+      await expect(
+        (service as any).executeWebhookUpdateWithGuard(
+          'event-callback-1',
           update,
-          activeBotId: null,
-          timeoutMs: 10,
-        }),
-      ),
-    ).toBe(true);
-
-    setTimeoutSpy.mockRestore();
+          null,
+          () =>
+            new Promise<void>(() => {
+              // Intentionally never resolves.
+            }),
+        ),
+      ).resolves.toBeUndefined();
+      expect(
+        (service as any).isTerminalWebhookProcessingError(
+          (service as any).createWebhookHotPathTimeoutError({
+            webhookEventId: 'event-callback-1',
+            update,
+            activeBotId: null,
+            timeoutMs: 10,
+          }),
+        ),
+      ).toBe(false);
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
   });
 
   it('clears the user-facing watchdog after a successful hot-path completion', async () => {

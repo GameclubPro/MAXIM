@@ -204,7 +204,55 @@ test('syncMaxNativeEnvironment avoids double bottom safe area when native viewpo
   assert.equal(style.values.get('--app-viewport-height'), '810px');
   assert.equal(style.values.get('--app-visual-viewport-bottom'), '34px');
   assert.equal(style.values.get('--app-keyboard-overlap'), '34px');
-  assert.equal((globalThis.document.documentElement.dataset as Record<string, string>).maxClient, 'native');
+  assert.equal(
+    (globalThis.document.documentElement.dataset as Record<string, string>).maxClient,
+    'native',
+  );
+});
+
+test('syncMaxNativeEnvironment can promote a late bridge from browser to native', () => {
+  const assignedUrls: string[] = [];
+  setMockWindow(null, assignedUrls);
+
+  const style = createMockStyle();
+  Object.assign(globalThis, {
+    document: {
+      documentElement: {
+        dataset: {},
+        style,
+      },
+    },
+  });
+  globalThis.window.innerWidth = 390;
+  globalThis.window.innerHeight = 844;
+  globalThis.window.addEventListener = () => undefined;
+  globalThis.window.removeEventListener = () => undefined;
+
+  const cleanupBrowser = syncMaxNativeEnvironment();
+  cleanupBrowser();
+  assert.equal(
+    (globalThis.document.documentElement.dataset as Record<string, string>).maxClient,
+    'browser',
+  );
+
+  globalThis.window.MAX = {
+    WebApp: {
+      platform: 'android',
+      initData: 'query_id=abc&hash=def',
+    },
+  };
+
+  const cleanupNative = syncMaxNativeEnvironment();
+  cleanupNative();
+
+  assert.equal(
+    (globalThis.document.documentElement.dataset as Record<string, string>).maxClient,
+    'native',
+  );
+  assert.equal(
+    (globalThis.document.documentElement.dataset as Record<string, string>).maxPlatform,
+    'android',
+  );
 });
 
 test('openMaxBotLink falls back to location assign when bridge is unavailable', () => {

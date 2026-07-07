@@ -1,9 +1,29 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { parse as parseYaml } from 'yaml';
 import {
   DEFAULT_WEBHOOK_WORKER_GROUP_QUEUES,
+  RUNTIME_SERVICE_NAMES,
   RUNTIME_SERVICE_PROFILES,
   resolveRuntimeServiceProfile,
 } from './runtime-topology';
+import { getEnabledModerationProcessorQueues } from './moderation-runtime';
 import { APP_ROLES, normalizeAppRole } from './app-role';
+
+type ComposeService = {
+  environment?: Record<string, unknown>;
+};
+
+type ComposeFile = {
+  services?: Record<string, ComposeService>;
+};
+
+function readComposeApiServices(fileName: string): Record<string, ComposeService> {
+  const composePath = resolve(__dirname, '../../../../infra', fileName);
+  const compose = parseYaml(readFileSync(composePath, 'utf8')) as ComposeFile;
+
+  return compose.services ?? {};
+}
 
 describe('runtime-topology', () => {
   it('normalizes app roles from the shared role registry', () => {
@@ -83,4 +103,34 @@ describe('runtime-topology', () => {
       service: { serviceName: 'api-moderation-critical' },
     });
   });
+
+  it.each(['docker-compose.yml', 'docker-compose.scale.yml'])(
+    'keeps %s API service names and moderation queues aligned with typed topology',
+    (fileName) => {
+      const services = readComposeApiServices(fileName);
+
+      for (const serviceName of RUNTIME_SERVICE_NAMES.filter((name) => name !== 'api-all')) {
+        const service = services[serviceName];
+        expect(service).toBeDefined();
+
+        const environment = service?.environment ?? {};
+        expect(environment.APP_SERVICE_NAME).toBe(serviceName);
+
+        const profile = RUNTIME_SERVICE_PROFILES[serviceName];
+        expect(resolveRuntimeServiceProfile(environment).service.serviceName).toBe(serviceName);
+
+        if (profile.capabilities.moderationEnabled) {
+          const rawEnabledQueues =
+            typeof environment.MODERATION_ENABLED_QUEUES === 'string'
+              ? environment.MODERATION_ENABLED_QUEUES
+              : undefined;
+          expect(
+            getEnabledModerationProcessorQueues(rawEnabledQueues),
+          ).toEqual(new Set(profile.moderationQueues));
+        } else {
+          expect(environment.MODERATION_ENABLED_QUEUES).toBeUndefined();
+        }
+      }
+    },
+  );
 });

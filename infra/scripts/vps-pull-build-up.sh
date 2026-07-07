@@ -64,6 +64,59 @@ has_requested_api_service() {
   return 1
 }
 
+is_enabled() {
+  case "${1:-0}" in
+    1|true|TRUE|yes|YES)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+validate_deploy_branch() {
+  if [[ -z "$BRANCH" ]]; then
+    echo "Deploy branch must not be empty." >&2
+    exit 2
+  fi
+
+  if [[ ! "$BRANCH" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] ||
+     [[ "$BRANCH" == *..* ]] ||
+     [[ "$BRANCH" == *//* ]] ||
+     [[ "$BRANCH" == */ ]] ||
+     [[ "$BRANCH" == *. ]] ||
+     [[ "$BRANCH" == *.lock ]] ||
+     [[ "$BRANCH" == *"@{"* ]]; then
+    echo "Refusing unsafe deploy branch name: $BRANCH" >&2
+    exit 2
+  fi
+
+  if ! git check-ref-format --branch "$BRANCH" >/dev/null 2>&1; then
+    echo "Refusing invalid git branch name: $BRANCH" >&2
+    exit 2
+  fi
+}
+
+require_production_branch_confirmation() {
+  validate_deploy_branch
+
+  if [[ "$BRANCH" == "main" ]]; then
+    return 0
+  fi
+
+  if is_enabled "${MAXIM_ALLOW_NON_MAIN_DEPLOY:-0}"; then
+    echo "WARNING: deploying non-main branch to production by explicit request: $BRANCH" >&2
+    return 0
+  fi
+
+  cat >&2 <<EOF
+Refusing production deploy from non-main branch: $BRANCH
+Production deploys default to main. Set MAXIM_ALLOW_NON_MAIN_DEPLOY=1 only when this non-main deploy is intentional.
+EOF
+  exit 2
+}
+
 ensure_service_requested_if_down() {
   local service="$1"
 
@@ -206,6 +259,17 @@ ensure_compose_env() {
   echo "Missing /var/www/Chat_bot/.env and no running API container is available for restore."
   echo "Create .env manually, then rerun the deploy."
   return 1
+}
+
+warn_postgres_password_fallback() {
+  if [[ -f .env ]] && grep -Eq '^[[:space:]]*POSTGRES_PASSWORD=.+$' .env; then
+    return 0
+  fi
+
+  cat >&2 <<'EOF'
+WARNING: POSTGRES_PASSWORD is not set in .env; docker compose will use the legacy compatibility fallback.
+Set POSTGRES_PASSWORD to the current database password before intentionally recreating postgres.
+EOF
 }
 
 sync_branch() {
@@ -427,10 +491,12 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
+require_production_branch_confirmation
 acquire_deploy_lock
 sync_branch
 reexec_if_current_script_changed
 ensure_compose_env
+warn_postgres_password_fallback
 stop_conflicting_stacks
 warn_legacy_miniapp_static_target
 ensure_service_requested_if_down "miniapp-major-static"

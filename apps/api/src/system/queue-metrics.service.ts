@@ -11,6 +11,7 @@ import { ADMIN_SUPER_BAN_QUEUE } from '../admin/admin-super-ban.queue';
 import { VK_PARSING_PUBLISH_QUEUE, VK_PARSING_SYNC_QUEUE } from '../admin/vk-parsing.queue';
 import { MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE } from '../max/max-chat-admin-roster-sync.queue';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
+import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from '../max/max-webhook-subscription.constants';
 import { GLOBAL_SPAMMER_DENORM_QUEUE } from '../moderation/global-spammer-denorm.queue';
 import { NIGHT_MODE_TRANSITION_QUEUE } from '../moderation/night-mode-transition.queue';
 import {
@@ -193,12 +194,7 @@ const EMPTY_WEBHOOK_STATUS_METRICS: WebhookStatusMetrics = {
   oldestLagSec: 0,
 };
 const ACTIVE_FAILED_WEBHOOK_WINDOW_SEC = 6 * 60 * 60;
-const USER_FACING_WEBHOOK_TYPES = [
-  'message_created',
-  'message_callback',
-  'bot_started',
-  'bot_added',
-] as const;
+const USER_FACING_WEBHOOK_TYPES = MAX_REQUIRED_WEBHOOK_UPDATE_TYPES;
 
 @Injectable()
 export class QueueMetricsService {

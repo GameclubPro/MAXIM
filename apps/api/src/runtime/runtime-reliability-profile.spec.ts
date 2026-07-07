@@ -106,6 +106,19 @@ describe('runtime reliability queue group health', () => {
     );
   });
 
+  it('labels the legacy webhook group with the actual BullMQ queue name', () => {
+    const health = buildSystemQueueGroupHealth(queueSnapshot());
+
+    expect(health.groups).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'webhook-legacy',
+          queues: ['moderation'],
+        }),
+      ]),
+    );
+  });
+
   it('marks auxiliary queues critical when waiting backlog reaches the threshold', () => {
     const health = buildSystemQueueGroupHealth(
       queueSnapshot({

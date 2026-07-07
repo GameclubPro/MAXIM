@@ -12,10 +12,14 @@ INTERVAL_SEC="${2:-${MAXIM_MONITOR_INTERVAL_SEC:-300}}"
 TAIL_LINES="${MAXIM_MONITOR_LOG_TAIL_LINES:-300}"
 LOG_FILE="${MAXIM_MONITOR_LOG:-/tmp/maxim-vps-readonly-monitor-$(date +%Y%m%d%H%M%S).log}"
 PUBLIC_URL="${MAXIM_VPS_PUBLIC_URL:-https://major-maksimov.ru}"
+ADMIN_PUBLIC_URL="${MAXIM_ADMIN_PUBLIC_URL:-https://admin.major-maksimov.ru}"
 SIGNAL_WINDOW_MIN="${MAXIM_MONITOR_SIGNAL_WINDOW_MIN:-30}"
 PUBLIC_URL="${PUBLIC_URL%/}"
+ADMIN_PUBLIC_URL="${ADMIN_PUBLIC_URL%/}"
 
 SERVICES=("${MAXIM_PRODUCTION_API_SERVICES[@]}")
+STATIC_SERVICES=("miniapp-major-static" "admin-static")
+LOG_SERVICES=("${SERVICES[@]}" "${STATIC_SERVICES[@]}")
 
 is_positive_integer() {
   [[ "$1" =~ ^[1-9][0-9]*$ ]]
@@ -60,7 +64,7 @@ scan_service_logs() {
   local service_args
   local remote_command
 
-  printf -v service_args '%q ' "${SERVICES[@]}"
+  printf -v service_args '%q ' "${LOG_SERVICES[@]}"
   remote_command=$(cat <<REMOTE
 services=($service_args)
 for service in "\${services[@]}"; do
@@ -76,6 +80,130 @@ REMOTE
 )
 
   ./infra/scripts/vps-connect.sh exec "$remote_command"
+}
+
+summarize_static_services() {
+  local service_args
+  local remote_command
+
+  printf -v service_args '%q ' "${STATIC_SERVICES[@]}"
+  remote_command=$(cat <<REMOTE
+services=($service_args)
+for service in "\${services[@]}"; do
+  echo "-- \${service} --"
+  docker compose --env-file .env -p infra -f infra/docker-compose.yml ps "\$service" || true
+  ids=\$(docker compose --env-file .env -p infra -f infra/docker-compose.yml ps -q "\$service" 2>/dev/null || true)
+  if [[ -z "\$ids" ]]; then
+    echo "WARN: no container found for \$service"
+    continue
+  fi
+
+  docker inspect --format '{{.Name}}\trestarts={{.RestartCount}}\tstatus={{.State.Status}}\tstarted={{.State.StartedAt}}{{if .State.Health}}\thealth={{.State.Health.Status}}{{else}}\thealth=none{{end}}' \$ids
+  docker compose --env-file .env -p infra -f infra/docker-compose.yml logs --since "${INTERVAL_SEC}s" --tail "$TAIL_LINES" "\$service" 2>/dev/null |
+    grep -Eai '(^|[^[:alnum:]_])(error|warn|exception|failed|502|503|504|upstream|permission|denied)([^[:alnum:]_]|$)' |
+    sed -E \
+      -e "s#(https?://[^\"[:space:]]*)\\?[^\"[:space:]#]*#\\1?[redacted]#g" \
+      -e "s#((^|[[:space:]\":=])/(app|api)/[^\"[:space:]]*)\\?[^\"[:space:]#]*#\\1?[redacted]#g" |
+    tail -40 || true
+done
+REMOTE
+)
+
+  ./infra/scripts/vps-connect.sh exec "$remote_command"
+}
+
+summarize_public_app_assets() {
+  local html
+  local asset_lines
+  local kind
+  local url
+
+  html="$(curl -fsSL --max-time 15 "$PUBLIC_URL/app/")"
+  asset_lines="$(
+    APP_HTML="$html" PUBLIC_URL="$PUBLIC_URL" node <<'NODE'
+const html = process.env.APP_HTML ?? '';
+const publicUrl = (process.env.PUBLIC_URL ?? 'https://major-maksimov.ru').replace(/\/+$/, '');
+const base = new URL('/app/', `${publicUrl}/`);
+
+function attr(tag, name) {
+  const match = tag.match(new RegExp(`\\b${name}\\s*=\\s*(['"])(.*?)\\1`, 'i'));
+  return match?.[2] ?? '';
+}
+
+function absolute(value) {
+  if (!value) {
+    return '';
+  }
+  try {
+    return new URL(value, base).toString();
+  } catch {
+    return '';
+  }
+}
+
+const firstJs = (html.match(/<script\b[^>]*>/gi) ?? [])
+  .map((tag) => absolute(attr(tag, 'src')))
+  .find(Boolean);
+const firstCss = (html.match(/<link\b[^>]*>/gi) ?? [])
+  .map((tag) => ({ href: absolute(attr(tag, 'href')), rel: attr(tag, 'rel') }))
+  .find((link) => link.href && /\bstylesheet\b/i.test(link.rel))?.href;
+
+if (firstJs) {
+  console.log(`js\t${firstJs}`);
+} else {
+  console.log('WARN\tmissing first JS asset in /app/ HTML');
+}
+if (firstCss) {
+  console.log(`css\t${firstCss}`);
+} else {
+  console.log('WARN\tmissing first CSS asset in /app/ HTML');
+}
+NODE
+  )"
+
+  while IFS=$'\t' read -r kind url; do
+    [[ -n "$kind" ]] || continue
+    if [[ "$kind" == "WARN" ]]; then
+      echo "WARN: $url"
+      continue
+    fi
+
+    curl -fsSIL --max-time 15 -o /dev/null \
+      -w "$kind %{http_code} %{content_type} %{url_effective}\n" \
+      "$url"
+  done <<<"$asset_lines"
+}
+
+summarize_public_access_guards() {
+  local failed=0
+  local path
+  local status
+  local url
+
+  for path in /api/v1/safety-desk /api/v1/support-requests; do
+    url="$PUBLIC_URL$path"
+    status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$url" 2>/dev/null || true)"
+    status="${status:-000}"
+    echo "public $path status=$status"
+    case "$status" in
+      401|403|404)
+        ;;
+      *)
+        echo "WARN: public $path is not denied"
+        failed=1
+        ;;
+    esac
+  done
+
+  status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$ADMIN_PUBLIC_URL/" 2>/dev/null || true)"
+  status="${status:-000}"
+  echo "admin unauth / status=$status"
+  if [[ "$status" != "401" ]]; then
+    echo "WARN: admin root without credentials should return 401"
+    failed=1
+  fi
+
+  return "$failed"
 }
 
 summarize_local_ready_health() {
@@ -291,11 +419,14 @@ sample_once() {
   run_step real-chat-signals summarize_real_chat_signals
   run_step bullmq-state summarize_bullmq_state
   run_step ps ./infra/scripts/vps-connect.sh ps
+  run_step static-services summarize_static_services
   run_step restart-counts ./infra/scripts/vps-connect.sh exec \
     'ids=$(docker ps -q --filter label=com.docker.compose.project=infra); docker inspect --format "{{.Name}}\t{{.RestartCount}}\t{{.State.Status}}\t{{.State.StartedAt}}" $ids'
   run_step log-scan scan_service_logs
   run_step public-app curl -fsS --max-time 15 -o /dev/null -w 'app %{http_code} %{time_total}\n' \
     "$PUBLIC_URL/app/"
+  run_step public-app-assets summarize_public_app_assets
+  run_step public-access-guards summarize_public_access_guards
 }
 
 run_monitor() {

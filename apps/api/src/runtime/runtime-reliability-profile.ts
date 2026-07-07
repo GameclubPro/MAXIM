@@ -16,6 +16,7 @@ import {
 } from './moderation-runtime';
 import { resolveRuntimeServiceProfile, type RuntimeRoleCapabilities } from './runtime-topology';
 import type { QueueCounters, QueueMetricsSnapshot } from '../system/queue-metrics.service';
+import { LEGACY_WEBHOOK_QUEUE } from '../webhook/webhook-queues';
 
 export const DEFAULT_WEBHOOK_P95_TARGET_MS = 400;
 const QUEUE_GROUP_WAITING_WARNING = 1;
@@ -68,7 +69,7 @@ export function buildSystemQueueGroupHealth(queues: QueueMetricsSnapshot): Syste
       buildQueueGroup(groupName, group.queues, group.counters),
     ),
     buildQueueGroup('webhook-background', ['moderation-background'], queues.webhookBackground),
-    buildQueueGroup('webhook-legacy', ['moderation-legacy'], queues.webhookLegacy),
+    buildQueueGroup('webhook-legacy', [LEGACY_WEBHOOK_QUEUE], queues.webhookLegacy),
     buildQueueGroup('actions', ['moderation-actions'], queues.actions),
     buildQueueGroup('spammer-denorm', ['global-spammer-denorm'], queues.globalSpammerDenorm),
     ...Object.entries(queues.auxiliaryQueues ?? {}).map(([queueName, counters]) =>

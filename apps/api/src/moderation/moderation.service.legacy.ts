@@ -16343,7 +16343,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private isTerminalWebhookProcessingError(error: unknown): boolean {
     const timeoutMarker = (error as { webhookHotPathTimeout?: unknown })?.webhookHotPathTimeout;
     if (timeoutMarker === true) {
-      return true;
+      return false;
     }
 
     const status = this.extractStatusCode(error);
@@ -16360,8 +16360,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return (
       message.includes('bot is not a chat member') ||
       message.includes('not accessible') ||
-      message.includes('chat not found') ||
-      message.includes('webhook user-facing hot path timed out')
+      message.includes('chat not found')
     );
   }
 
@@ -16440,10 +16439,31 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           failOpen: true,
         });
         const successBoundaryReached = timeoutContext?.successBoundaryReached === true;
-        if (
-          successBoundaryReached &&
-          WEBHOOK_HOT_TIMEOUT_BACKOFF_SUPPRESSED_STAGES.has(latestStage)
-        ) {
+        const backoffSuppressedStage =
+          WEBHOOK_HOT_TIMEOUT_BACKOFF_SUPPRESSED_STAGES.has(latestStage);
+        taskPromise.catch((followUpError: unknown) => {
+          void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+            stage: successBoundaryReached ? 'follow_up_failed' : 'detached_hot_path_failed',
+            outcome: 'timeout',
+            failOpen: true,
+          });
+          this.logger.warn(
+            {
+              webhookEventId,
+              updateType: this.readLowerString(update.type),
+              chatId: this.extractWebhookHotPathChatId(update),
+              activeBotId,
+              latestStage,
+              successBoundaryStage: timeoutContext?.successBoundaryStage,
+              err: followUpError instanceof Error ? followUpError.message : String(followUpError),
+            },
+            successBoundaryReached
+              ? 'Deferred webhook follow-up failed after the user-facing success boundary'
+              : 'Detached webhook hot path failed after the watchdog timeout',
+          );
+        });
+
+        if (successBoundaryReached && backoffSuppressedStage) {
           void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
             stage: `${latestStage}.deferred`,
             outcome: 'skip',
@@ -16453,25 +16473,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             stage: 'follow_up_deferred',
             outcome: 'skip',
             failOpen: true,
-          });
-          taskPromise.catch((followUpError: unknown) => {
-            void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
-              stage: 'follow_up_failed',
-              outcome: 'timeout',
-              failOpen: true,
-            });
-            this.logger.warn(
-              {
-                webhookEventId,
-                updateType: this.readLowerString(update.type),
-                chatId: this.extractWebhookHotPathChatId(update),
-                activeBotId,
-                latestStage,
-                successBoundaryStage: timeoutContext?.successBoundaryStage,
-                err: followUpError instanceof Error ? followUpError.message : String(followUpError),
-              },
-              'Deferred webhook follow-up failed after the user-facing success boundary',
-            );
           });
           this.logger.warn(
             {
@@ -16487,6 +16488,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           );
           return;
         }
+        this.logger.warn(
+          {
+            webhookEventId,
+            updateType: this.readLowerString(update.type),
+            chatId: this.extractWebhookHotPathChatId(update),
+            activeBotId,
+            latestStage,
+            successBoundaryReached,
+            timeoutMs,
+          },
+          'Detached webhook hot path after the watchdog timeout; treating the webhook as fail-open',
+        );
+        return;
       }
       throw error;
     } finally {

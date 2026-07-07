@@ -26,6 +26,7 @@ import {
   type SupportRequestQueueResponse,
 } from '@maxim/contracts';
 import { useEffect, useMemo, useState } from 'react';
+import { readJsonResponse } from './api-response';
 
 type DeskView = 'review' | 'support';
 type RiskLevel = 'low' | 'medium' | 'high' | 'blocked';
@@ -1096,65 +1097,6 @@ async function postSupportDecision(
     },
   );
   return supportRequestDecisionResponseSchema.parse(await readJsonResponse(response));
-}
-
-async function readJsonResponse(response: Response): Promise<unknown> {
-  const text = await response.text();
-  const payload = parseJsonPayload(text);
-  if (!response.ok) {
-    throw new Error(readApiErrorMessage(payload, response.status));
-  }
-
-  return payload;
-}
-
-function readApiErrorMessage(payload: unknown, status: number): string {
-  if (typeof payload === 'object' && payload !== null) {
-    const record = payload as Record<string, unknown>;
-    const message = formatApiErrorValue(record.message);
-    if (message) {
-      return message;
-    }
-
-    const error = formatApiErrorValue(record.error);
-    if (error) {
-      return error;
-    }
-  }
-
-  return `Ошибка API: ${status}`;
-}
-
-function formatApiErrorValue(value: unknown): string {
-  if (typeof value === 'string' && value.trim().length > 0) {
-    return value.trim();
-  }
-
-  if (Array.isArray(value)) {
-    return value.map(formatApiErrorValue).filter(Boolean).join('; ');
-  }
-
-  if (typeof value === 'object' && value !== null) {
-    const formatted = Object.values(value as Record<string, unknown>)
-      .map(formatApiErrorValue)
-      .filter(Boolean)
-      .join('; ');
-    return formatted;
-  }
-
-  return '';
-}
-
-function parseJsonPayload(text: string): unknown {
-  if (!text) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    throw new Error('Safety Desk API недоступен или вернул некорректный ответ.');
-  }
 }
 
 function mapQueueItem(item: SafetyDeskQueueItem): ModerationItem {

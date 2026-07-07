@@ -16,6 +16,9 @@ export const webhookStatusMetricsSchema = z.object({
   oldestEventId: z.string().nullable(),
   oldestCreatedAt: z.string().datetime().nullable(),
   oldestLagSec: z.number().min(0),
+  activeCount: z.number().int().min(0).optional(),
+  staleCount: z.number().int().min(0).optional(),
+  activeWindowSec: z.number().int().min(0).optional(),
 });
 export type WebhookStatusMetrics = z.infer<typeof webhookStatusMetricsSchema>;
 

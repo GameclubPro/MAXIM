@@ -2842,6 +2842,48 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('sanitizes multipart upload filenames before passing them to form-data', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            data: {
+              url: 'https://upload.max.ru/image-1',
+              token: 'image-upload-token-1',
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            data: {
+              token: 'image-binary-token-1',
+            },
+          }),
+        ),
+    };
+    const service = createService(httpService);
+
+    await service.uploadImage(
+      Buffer.from('image-binary'),
+      '../evil\r\nContent-Disposition: form-data; name="x".jpg',
+      'image/jpeg',
+    );
+
+    const uploadRequest = httpService.request.mock.calls[1]?.[0] as {
+      data?: { getBuffer?: () => Buffer };
+    };
+    const multipartBody = uploadRequest.data?.getBuffer?.().toString('utf8') ?? '';
+
+    expect(multipartBody).toContain(
+      'filename="evil_Content-Disposition_ form-data_ name_x_.jpg"',
+    );
+    expect(multipartBody).not.toContain('filename="../evil');
+    expect(multipartBody).not.toContain('\r\nContent-Disposition: form-data; name="x"');
+
+    await service.onModuleDestroy();
+  });
+
   it('keeps bot auth on /uploads but omits it from the returned multipart upload URL', async () => {
     const httpService = {
       request: jest

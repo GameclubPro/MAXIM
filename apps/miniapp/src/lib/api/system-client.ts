@@ -703,6 +703,11 @@ function parseWebhookStatusMetrics(value: unknown) {
     oldestEventId: value.oldestEventId ?? null,
     oldestCreatedAt: value.oldestCreatedAt ?? null,
     oldestLagSec: value.oldestLagSec,
+    ...(typeof value.activeCount === 'number' ? { activeCount: value.activeCount } : {}),
+    ...(typeof value.staleCount === 'number' ? { staleCount: value.staleCount } : {}),
+    ...(typeof value.activeWindowSec === 'number'
+      ? { activeWindowSec: value.activeWindowSec }
+      : {}),
   };
 }
 

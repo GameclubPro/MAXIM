@@ -1,6 +1,7 @@
 import { WebhookStatus } from '../prisma/prisma-client';
 import { getQueueToken } from '@nestjs/bullmq';
 import { AUXILIARY_QUEUE_NAMES, QueueMetricsService } from './queue-metrics.service';
+import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from '../max/max-webhook-subscription.constants';
 import { DEFAULT_WEBHOOK_QUEUE_NAMES } from '../webhook/webhook-queues';
 
 function createQueueMock(counts: {
@@ -480,8 +481,15 @@ describe('QueueMetricsService', () => {
       const sqlQuery = query as { sql?: string; strings?: readonly string[] };
       return sqlQuery.sql ?? sqlQuery.strings?.join('') ?? String(query);
     });
+    const queryValues = rawQuery.mock.calls.flatMap(([query]) => {
+      const sqlQuery = query as { values?: readonly unknown[] };
+      return Array.isArray(sqlQuery.values) ? sqlQuery.values : [];
+    });
 
     expect(queryTexts.some((text) => text.includes('FROM filtered'))).toBe(true);
+    for (const updateType of MAX_REQUIRED_WEBHOOK_UPDATE_TYPES) {
+      expect(queryValues).toContain(updateType);
+    }
   });
 
   it('aggregates default worker group counters by dynamic lease actual owner when available', async () => {

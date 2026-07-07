@@ -110,6 +110,25 @@ test('prefers bridge start_param over URL fallback when signed initData has no l
   assert.equal(resolveLaunchRoute('query_id=test&hash=ok'), '/chat/bridge/events');
 });
 
+test('prefers MAX bridge start_param over legacy WebApp fallback', () => {
+  assignWindow('https://maxim.play-team.ru/app/', {
+    WebApp: {
+      initDataUnsafe: {
+        start_param: encodeRouteStartParam('/chat/legacy/events'),
+      },
+    },
+    MAX: {
+      WebApp: {
+        initDataUnsafe: {
+          start_param: encodeRouteStartParam('/chat/max/events'),
+        },
+      },
+    },
+  });
+
+  assert.equal(resolveLaunchRoute('query_id=test&hash=ok'), '/chat/max/events');
+});
+
 test('resolves channel stats route from startapp payload', () => {
   assignWindow(
     `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(

@@ -48,6 +48,17 @@ ensure_compose_env() {
   exit 1
 }
 
+warn_postgres_password_fallback() {
+  if [[ -f .env ]] && grep -Eq '^[[:space:]]*POSTGRES_PASSWORD=.+$' .env; then
+    return 0
+  fi
+
+  cat >&2 <<'EOF'
+WARNING: POSTGRES_PASSWORD is not set in .env; docker compose will use the legacy compatibility fallback.
+Set POSTGRES_PASSWORD to the current database password before intentionally recreating postgres.
+EOF
+}
+
 require_legacy_deploy_confirmation() {
   case "${MAXIM_ALLOW_LEGACY_DEPLOY:-0}" in
     1|true|TRUE|yes|YES)
@@ -66,6 +77,7 @@ EOF
 require_legacy_deploy_confirmation
 
 ensure_compose_env
+warn_postgres_password_fallback
 
 if [[ $# -gt 0 ]]; then
   SERVICES=("$@")

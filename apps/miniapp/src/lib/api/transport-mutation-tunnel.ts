@@ -6,6 +6,7 @@ import {
   encodeBase64UrlBytes,
   encodeBase64UrlUtf8,
 } from './transport-mutation-tunnel-path';
+import { isMutationTunnelPreferredHost } from './transport-mutation-tunnel-hosts';
 
 const COMPRESSED_TUNNEL_BODY_THRESHOLD = 1024;
 const CHUNKED_TUNNEL_CHUNK_BYTES = 4_200;
@@ -42,9 +43,7 @@ async function encodeGzipBody(value: string): Promise<string | null> {
   }
 
   try {
-    const compressed = new Blob([value])
-      .stream()
-      .pipeThrough(new CompressionStream('gzip'));
+    const compressed = new Blob([value]).stream().pipeThrough(new CompressionStream('gzip'));
     const buffer = await new Response(compressed).arrayBuffer();
     return encodeBase64UrlBytes(new Uint8Array(buffer));
   } catch {
@@ -69,9 +68,7 @@ export async function buildMutationTunnelPath(
   if (typeof init.body === 'string' && init.body) {
     const body = encodeBase64UrlUtf8(init.body);
     const bodyGzip =
-      init.body.length >= COMPRESSED_TUNNEL_BODY_THRESHOLD
-        ? await encodeGzipBody(init.body)
-        : null;
+      init.body.length >= COMPRESSED_TUNNEL_BODY_THRESHOLD ? await encodeGzipBody(init.body) : null;
 
     if (bodyGzip && bodyGzip.length < body.length) {
       params.set('bodyGzip', bodyGzip);
@@ -213,9 +210,11 @@ export async function fetchMutationWithTunnelFallback(
 
   let lastError: unknown;
   for (const apiBase of attemptBases) {
+    const isLastAttempt = apiBase === attemptBases.at(-1);
+    const shouldTryTunnelOnAttempt = !isLastAttempt || isMutationTunnelPreferredHost(apiBase);
     try {
       const result = await fetchWithTimeout(apiBase, path, authInitData, init);
-      if (result.response.status === 405 && apiBase !== attemptBases.at(-1)) {
+      if (result.response.status === 405 && shouldTryTunnelOnAttempt) {
         const tunnelResult = await tryMutationTunnel(apiBase);
         if (tunnelResult) {
           return tunnelResult;
@@ -232,7 +231,7 @@ export async function fetchMutationWithTunnelFallback(
       }
 
       lastError = error;
-      if (apiBase !== attemptBases.at(-1)) {
+      if (shouldTryTunnelOnAttempt) {
         try {
           const tunnelResult = await tryMutationTunnel(apiBase);
           if (tunnelResult) {

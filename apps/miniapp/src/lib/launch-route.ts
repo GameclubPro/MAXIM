@@ -52,7 +52,9 @@ function readSearchParam(source: string, names: readonly string[]): string {
   }
 
   const queryIndex = normalized.indexOf('?');
-  return queryIndex >= 0 ? readSearchParamFromNormalizedSource(normalized.slice(queryIndex + 1), names) : '';
+  return queryIndex >= 0
+    ? readSearchParamFromNormalizedSource(normalized.slice(queryIndex + 1), names)
+    : '';
 }
 
 function readSearchParamFromNormalizedSource(source: string, names: readonly string[]): string {
@@ -70,21 +72,20 @@ function readSearchParamFromNormalizedSource(source: string, names: readonly str
 function readStartParamFromLocation(): string {
   const names = ['WebAppStartParam', 'startapp', 'startApp', 'start_param', 'startParam'];
   return (
-    readSearchParam(window.location.search, names) ||
-    readSearchParam(window.location.hash, names)
+    readSearchParam(window.location.search, names) || readSearchParam(window.location.hash, names)
   );
 }
 
 function readStartParamFromBridge(): string {
   const candidates = [
-    window.WebApp?.initDataUnsafe?.start_param,
-    window.WebApp?.init_data_unsafe?.start_param,
-    window.WebApp?.startParam,
-    window.WebApp?.start_param,
     window.MAX?.WebApp?.initDataUnsafe?.start_param,
     window.MAX?.WebApp?.init_data_unsafe?.start_param,
     window.MAX?.WebApp?.startParam,
     window.MAX?.WebApp?.start_param,
+    window.WebApp?.initDataUnsafe?.start_param,
+    window.WebApp?.init_data_unsafe?.start_param,
+    window.WebApp?.startParam,
+    window.WebApp?.start_param,
   ];
 
   for (const candidate of candidates) {

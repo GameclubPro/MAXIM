@@ -249,9 +249,10 @@ test('gives the primary API base a head start for idempotent requests', async ()
   const result = await api.request('/chats');
 
   assert.deepEqual(result, [{ id: 'chat-1' }]);
-  assert.deepEqual(calls.map((call) => String(call.input)), [
-    'https://major-maksimov.ru/api/v1/chats',
-  ]);
+  assert.deepEqual(
+    calls.map((call) => String(call.input)),
+    ['https://major-maksimov.ru/api/v1/chats'],
+  );
 });
 
 test('does not let a hedged fallback 401 beat a successful primary idempotent request', async () => {
@@ -291,10 +292,10 @@ test('does not let a hedged fallback 401 beat a successful primary idempotent re
     const result = await api.request('/chats');
 
     assert.deepEqual(result, [{ id: 'chat-1' }]);
-    assert.deepEqual(calls.map((call) => String(call.input)), [
-      'https://major-maksimov.ru/api/v1/chats',
-      'https://api-cdn.flex-craft.ru/api/v1/chats',
-    ]);
+    assert.deepEqual(
+      calls.map((call) => String(call.input)),
+      ['https://major-maksimov.ru/api/v1/chats', 'https://api-cdn.flex-craft.ru/api/v1/chats'],
+    );
   } finally {
     globalThis.setTimeout = originalSetTimeout;
   }
@@ -336,10 +337,10 @@ test('keeps the primary HTTP failure when all idempotent API bases fail', async 
     });
 
     await assert.rejects(() => api.request('/chats'), /Сервис временно недоступен/u);
-    assert.deepEqual(calls.map((call) => String(call.input)), [
-      'https://major-maksimov.ru/api/v1/chats',
-      'https://api-cdn.flex-craft.ru/api/v1/chats',
-    ]);
+    assert.deepEqual(
+      calls.map((call) => String(call.input)),
+      ['https://major-maksimov.ru/api/v1/chats', 'https://api-cdn.flex-craft.ru/api/v1/chats'],
+    );
   } finally {
     globalThis.setTimeout = originalSetTimeout;
   }
@@ -562,6 +563,50 @@ test('falls back to the next API base when mutation tunneling is rejected too', 
       'https://api-cdn.flex-craft.ru/api/v1/chats/chat-1/settings',
       'https://api-cdn.flex-craft.ru/api/v1/_mutation-tunnel',
       'https://major-maksimov.ru/api/v1/chats/chat-1/settings',
+    ],
+  );
+});
+
+test('tries the mutation tunnel when the preferred tunnel host is the last fallback', async () => {
+  const calls: FetchCall[] = [];
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    const url = String(input);
+    if (url.startsWith('https://api-cdn.flex-craft.ru/api/v1/_mutation-tunnel')) {
+      return createResponse({
+        ok: true,
+        status: 204,
+        text: '',
+        contentType: null,
+      });
+    }
+
+    return createResponse({
+      ok: false,
+      status: 405,
+      text: 'Method Not Allowed',
+      contentType: 'text/html',
+    });
+  }) as typeof fetch;
+
+  const api = createApiTransport('auth_date=1&hash=first', {
+    apiBases: ['https://major-maksimov.ru/api/v1', 'https://api-cdn.flex-craft.ru/api/v1'],
+  });
+
+  const result = await api.request('/chats/chat-1/settings', {
+    method: 'PUT',
+    body: JSON.stringify({ antiSpamEnabled: true }),
+  });
+
+  assert.equal(result, null);
+  assert.deepEqual(
+    calls.map((call) => new URL(String(call.input)).origin + new URL(String(call.input)).pathname),
+    [
+      'https://major-maksimov.ru/api/v1/chats/chat-1/settings',
+      'https://major-maksimov.ru/api/v1/_mutation-tunnel',
+      'https://api-cdn.flex-craft.ru/api/v1/chats/chat-1/settings',
+      'https://api-cdn.flex-craft.ru/api/v1/_mutation-tunnel',
     ],
   );
 });
