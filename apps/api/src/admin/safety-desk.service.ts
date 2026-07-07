@@ -1,4 +1,5 @@
 import {
+  safetyDeskApproveAllRequestSchema,
   safetyDeskDecisionRequestSchema,
   safetyDeskDecisionResponseSchema,
   safetyDeskQueueResponseSchema,
@@ -98,12 +99,13 @@ export class SafetyDeskService {
     actorUserId: string | null,
     body: unknown,
   ): Promise<SafetyDeskDecisionResponse> {
-    const parsed = safetyDeskDecisionRequestSchema.safeParse(body ?? {});
+    const parsed = safetyDeskApproveAllRequestSchema.safeParse(body ?? {});
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
 
-    const candidates = (await this.loadReviewPosts()).filter((post) =>
+    const itemIds = [...new Set(parsed.data.itemIds)];
+    const candidates = (await this.loadReviewPosts({ itemIds })).filter((post) =>
       this.isApprovableItem(this.mapReviewPost(post)),
     );
     let approved = 0;
@@ -121,7 +123,7 @@ export class SafetyDeskService {
     return safetyDeskDecisionResponseSchema.parse({
       item: null,
       queue: await this.getQueue(),
-      message: this.buildApproveAllMessage(approved, failed, candidates.length),
+      message: this.buildApproveAllMessage(approved, failed, candidates.length, itemIds.length),
     });
   }
 
@@ -208,9 +210,10 @@ export class SafetyDeskService {
     });
   }
 
-  private async loadReviewPosts(): Promise<ReviewPostRow[]> {
+  private async loadReviewPosts(options: { itemIds?: string[] } = {}): Promise<ReviewPostRow[]> {
     const posts = await this.prisma.vkParsingPost.findMany({
       where: {
+        ...(options.itemIds ? { id: { in: options.itemIds } } : {}),
         status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
         publishCancelledAt: null,
         skippedAt: null,
@@ -232,7 +235,7 @@ export class SafetyDeskService {
         source: true,
       },
       orderBy: [{ vkPublishedAt: 'desc' }, { createdAt: 'desc' }],
-      take: 100,
+      take: options.itemIds ? Math.max(1, options.itemIds.length) : 100,
     });
 
     return posts.filter((post) => this.hasPublishableContent(post));
@@ -602,14 +605,27 @@ export class SafetyDeskService {
     };
   }
 
-  private buildApproveAllMessage(approved: number, failed: number, total: number): string {
-    if (total === 0) {
-      return 'Нет материалов, доступных для массового одобрения.';
+  private buildApproveAllMessage(
+    approved: number,
+    failed: number,
+    eligible: number,
+    requested: number,
+  ): string {
+    const unavailable = Math.max(0, requested - eligible);
+    const unavailableSuffix =
+      unavailable > 0 ? ` Уже недоступно или заблокировано: ${unavailable}.` : '';
+    if (eligible === 0) {
+      return unavailable > 0
+        ? `Выбранные материалы уже недоступны для массового одобрения.${unavailableSuffix}`
+        : 'Нет материалов, доступных для массового одобрения.';
     }
     if (failed > 0) {
-      return `Одобрено ${approved} из ${total}. Не удалось опубликовать: ${failed}.`;
+      return `Одобрено ${approved} из ${eligible}. Не удалось опубликовать: ${failed}.${unavailableSuffix}`;
     }
-    return `Одобрено и опубликовано материалов: ${approved}.`;
+    if (approved === 0) {
+      return 'Нет материалов, доступных для массового одобрения.';
+    }
+    return `Одобрено и опубликовано материалов: ${approved}.${unavailableSuffix}`;
   }
 
   private readStringArray(value: Prisma.JsonValue | unknown): string[] {

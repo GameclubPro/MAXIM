@@ -335,6 +335,286 @@ describe('SystemDashboardService', () => {
     });
   });
 
+  it('surfaces delivery ledger risks as operator warnings without automatic retries', async () => {
+    const service = new SystemDashboardService(
+      {
+        getSnapshot: jest.fn().mockResolvedValue(createHealthyQueueSnapshot()),
+      } as never,
+      {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue({
+          mode: 'normal',
+          source: 'auto',
+          reason: 'system healthy',
+          updatedAt: '2026-03-29T12:00:00.000Z',
+          manualMode: null,
+          queueLagSec: 0,
+          action: {
+            windowSec: 60,
+            total: 12,
+            success: 12,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+        }),
+      } as never,
+      createConfigMock({ QUEUE_LAG_DEGRADE_SEC: 10 }),
+      {
+        getSnapshot: jest.fn().mockResolvedValue(createWebhookSubscriptionSnapshot()),
+      } as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        $queryRaw: jest
+          .fn()
+          .mockResolvedValueOnce([
+            {
+              activeSources: 12,
+              sourceFailureCount: 0,
+              circuitOpenSources: 0,
+            },
+          ])
+          .mockResolvedValueOnce([
+            {
+              recentMediaChecks: 10,
+              recentMediaFailures: 0,
+            },
+          ])
+          .mockResolvedValueOnce([
+            {
+              publishBacklog: 0,
+              oldestPublishBacklogAgeSec: 0,
+            },
+          ])
+          .mockResolvedValueOnce([
+            {
+              actionAmbiguous: 1,
+              actionStaleInProgress: 29,
+              actionStaleRetryable: 8,
+              actionOldestRiskAgeSec: 86_400,
+            },
+          ])
+          .mockResolvedValueOnce([
+            {
+              suggestionAmbiguous: 0,
+              suggestionTerminalFailed: 229,
+              suggestionStaleSending: 0,
+              suggestionRiskSuggestions: 12,
+              suggestionOldestRiskAgeSec: 172_800,
+            },
+          ]),
+      } as never,
+    );
+
+    await expect(service.getSnapshot()).resolves.toMatchObject({
+      summary: { status: 'warning' },
+      alerts: [
+        expect.objectContaining({
+          code: 'delivery-ledger-risk',
+          level: 'warning',
+          detail: expect.stringContaining('stale in-progress 29'),
+          recommendedAction: expect.stringContaining('не ретрайте автоматически'),
+        }),
+      ],
+    });
+  });
+
+  it('keeps a healthy dashboard clean when delivery ledger risk aggregates are empty', async () => {
+    const service = new SystemDashboardService(
+      {
+        getSnapshot: jest.fn().mockResolvedValue(createHealthyQueueSnapshot()),
+      } as never,
+      {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue({
+          mode: 'normal',
+          source: 'auto',
+          reason: 'system healthy',
+          updatedAt: '2026-03-29T12:00:00.000Z',
+          manualMode: null,
+          queueLagSec: 0,
+          action: {
+            windowSec: 60,
+            total: 12,
+            success: 12,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+        }),
+      } as never,
+      createConfigMock({ QUEUE_LAG_DEGRADE_SEC: 10 }),
+      {
+        getSnapshot: jest.fn().mockResolvedValue(createWebhookSubscriptionSnapshot()),
+      } as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        $queryRaw: jest
+          .fn()
+          .mockResolvedValueOnce([
+            {
+              activeSources: 12,
+              sourceFailureCount: 0,
+              circuitOpenSources: 0,
+            },
+          ])
+          .mockResolvedValueOnce([
+            {
+              recentMediaChecks: 10,
+              recentMediaFailures: 0,
+            },
+          ])
+          .mockResolvedValueOnce([
+            {
+              publishBacklog: 0,
+              oldestPublishBacklogAgeSec: 0,
+            },
+          ])
+          .mockResolvedValueOnce([
+            {
+              actionAmbiguous: 0,
+              actionStaleInProgress: 0,
+              actionStaleRetryable: 0,
+              actionOldestRiskAgeSec: 0,
+            },
+          ])
+          .mockResolvedValueOnce([
+            {
+              suggestionAmbiguous: 0,
+              suggestionTerminalFailed: 0,
+              suggestionStaleSending: 0,
+              suggestionRiskSuggestions: 0,
+              suggestionOldestRiskAgeSec: 0,
+            },
+          ]),
+      } as never,
+    );
+
+    await expect(service.getSnapshot()).resolves.toMatchObject({
+      summary: { status: 'healthy' },
+      alerts: [],
+    });
+  });
+
+  it('surfaces slow webhook hot path completions before they become timeouts', async () => {
+    const service = new SystemDashboardService(
+      {
+        getSnapshot: jest.fn().mockResolvedValue(createHealthyQueueSnapshot()),
+      } as never,
+      {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue({
+          mode: 'normal',
+          source: 'auto',
+          reason: 'system healthy',
+          updatedAt: '2026-03-29T12:00:00.000Z',
+          manualMode: null,
+          queueLagSec: 0,
+          action: {
+            windowSec: 60,
+            total: 12,
+            success: 12,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+        }),
+      } as never,
+      createConfigMock({ QUEUE_LAG_DEGRADE_SEC: 10 }),
+      {
+        getSnapshot: jest.fn().mockResolvedValue(createWebhookSubscriptionSnapshot()),
+      } as never,
+      undefined,
+      {
+        recordQueueLagSnapshot: jest.fn().mockResolvedValue(undefined),
+        getDashboardSnapshot: jest.fn().mockResolvedValue({
+          burst: {
+            active: false,
+            peakLagSec: 0,
+            peakBotId: null,
+            startedAt: null,
+            lastRecoveredAt: null,
+            sampleAgeMs: 1000,
+          },
+          hotPath: {
+            windowSec: 900,
+            failOpenCount: 0,
+            stages: [
+              {
+                stage: 'user-facing-total',
+                count: 2,
+                slowCount: 2,
+                timeoutCount: 0,
+                skipCount: 0,
+                failOpenCount: 0,
+                avgElapsedMs: 7100,
+                maxElapsedMs: 8032,
+                lastObservedAt: '2026-03-29T12:00:00.000Z',
+              },
+            ],
+          },
+          hotChats: { windowSec: 1800, items: [] },
+          membershipLookup: {
+            windowSec: 900,
+            hotChannels: 0,
+            backoffActiveChats: 0,
+            transientIssues: 0,
+            terminalIssues: 0,
+            hotChannelsSample: [],
+            backoffSample: [],
+            issueSample: [],
+          },
+          problemChats: { windowSec: 3600, items: [] },
+          spammerSurfaces: { windowSec: 900, timings: [] },
+          spammerReadModel: {
+            windowSec: 900,
+            profileReads: { hits: 0, misses: 0, stale: 0, fallbacks: 0, hitRate: 1 },
+            shadow: {
+              compared: 0,
+              matched: 0,
+              mismatched: 0,
+              scoreDrift: 0,
+              scoreDriftRate: 0,
+              mismatchRate: 0,
+            },
+            profileWrites: { success: 0, failure: 0 },
+            denormJobs: {
+              enqueued: 0,
+              enqueueFailed: 0,
+              fastPathEnqueued: 0,
+              fastPathFallbacks: 0,
+              fastPathReplayed: 0,
+              fastPathReplayMissing: 0,
+              processed: 0,
+              failed: 0,
+              avgAgeMs: 0,
+              maxAgeMs: 0,
+              lastSuccessAt: null,
+              lastFailureAt: null,
+            },
+          },
+        }),
+      } as never,
+    );
+
+    await expect(service.getSnapshot()).resolves.toMatchObject({
+      summary: { status: 'warning' },
+      alerts: [
+        expect.objectContaining({
+          code: 'webhook-hot-path-slow',
+          level: 'warning',
+          detail: expect.stringContaining('user-facing-total'),
+        }),
+      ],
+    });
+  });
+
   it('does not raise a failed-webhooks alert for stale historical FAILED tails without recent failures', async () => {
     const service = new SystemDashboardService(
       {

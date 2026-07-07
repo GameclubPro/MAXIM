@@ -3283,6 +3283,12 @@ export const safetyDeskDecisionRequestSchema = z.object({
 });
 export type SafetyDeskDecisionRequest = z.infer<typeof safetyDeskDecisionRequestSchema>;
 
+export const safetyDeskApproveAllRequestSchema = z.object({
+  itemIds: z.array(z.string().trim().min(1)).min(1).max(100),
+  reason: z.string().trim().max(500).optional(),
+});
+export type SafetyDeskApproveAllRequest = z.infer<typeof safetyDeskApproveAllRequestSchema>;
+
 export const safetyDeskDecisionResponseSchema = z.object({
   item: safetyDeskQueueItemSchema.nullable().default(null),
   queue: safetyDeskQueueResponseSchema,

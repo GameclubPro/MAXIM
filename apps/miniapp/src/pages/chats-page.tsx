@@ -82,6 +82,7 @@ import {
   buildManagedEntitiesSettledMarker,
   useManagedEntitiesVisibilityRefresh,
 } from '../lib/use-managed-entities-visibility-refresh';
+import { readLocalMirrorItem, writeLocalMirrorItem } from '../lib/native-storage';
 import { useVisualViewportOverlayStyle } from '../lib/use-visual-viewport-overlay-style';
 import {
   preloadChannelSettingsPage,
@@ -792,7 +793,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
 
     favoriteMigrationAttemptedRef.current = true;
     const migrationKey = buildHomeEntityFavoritesMigrationKey(favoriteStorageScope);
-    if (window.localStorage.getItem(migrationKey) === '1') {
+    if (readLocalMirrorItem(migrationKey) === '1') {
       return;
     }
 
@@ -803,14 +804,14 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       ...legacyFavorites.channel.important.map((id) => ({ entityType: 'channel' as const, id })),
     ];
     if (legacyItems.length === 0) {
-      window.localStorage.setItem(migrationKey, '1');
+      writeLocalMirrorItem(migrationKey, '1');
       return;
     }
 
     const nextFavorites = mergeHomeEntityFavorites(homeEntityFavorites, legacyFavorites);
     setHomeEntityFavorites(nextFavorites);
     saveHomeEntityFavorites(favoriteStorageScope, nextFavorites);
-    window.localStorage.setItem(migrationKey, '1');
+    writeLocalMirrorItem(migrationKey, '1');
 
     void Promise.allSettled(
       legacyItems.map((item) =>

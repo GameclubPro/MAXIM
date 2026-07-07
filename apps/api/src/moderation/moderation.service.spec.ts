@@ -1857,6 +1857,79 @@ describe('ModerationService', () => {
     }
   });
 
+  it('records total user-facing duration for slow webhook completions', async () => {
+    const update = {
+      ...createUpdate(),
+      message: {
+        ...createUpdate().message,
+        chatId: '-chat-1',
+      },
+    };
+    const runtimeDiagnosticsService = {
+      recordHotPathStageOutcome: jest.fn(),
+      recordHotPathProfile: jest.fn(),
+    };
+    const service = new ModerationService(
+      {} as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn((key: string) =>
+          key === 'WEBHOOK_USER_FACING_TIMEOUT_MS' ? 10_000 : undefined,
+        ),
+      } as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      runtimeDiagnosticsService as never,
+    );
+    (service as any).webhookUserFacingTimeoutMs = 10_000;
+    let nowCalls = 0;
+    const dateNowSpy = jest.spyOn(Date, 'now').mockImplementation(() => {
+      nowCalls += 1;
+      return nowCalls === 1 ? 0 : 6_000;
+    });
+
+    try {
+      await (service as any).executeWebhookUpdateWithGuard(
+        'event-slow',
+        update,
+        null,
+        async () => undefined,
+        () => ({
+          latestStage: 'admin-command',
+          stageDurations: {
+            'admin-command': 0,
+          },
+        }),
+      );
+    } finally {
+      dateNowSpy.mockRestore();
+    }
+
+    expect(runtimeDiagnosticsService.recordHotPathProfile).toHaveBeenCalledWith({
+      snapshot: expect.objectContaining({
+        latestStage: 'admin-command',
+      }),
+    });
+    expect(runtimeDiagnosticsService.recordHotPathProfile).toHaveBeenCalledWith({
+      snapshot: {
+        latestStage: 'user-facing-total',
+        stageDurations: {
+          'user-facing-total': 6_000,
+        },
+      },
+    });
+  });
+
   it('detaches violation follow-up timeouts after the destructive action boundary', async () => {
     const update = {
       ...createUpdate(),

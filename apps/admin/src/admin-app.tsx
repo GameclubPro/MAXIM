@@ -27,6 +27,7 @@ import {
 } from '@maxim/contracts';
 import { useEffect, useMemo, useState } from 'react';
 import { readJsonResponse } from './api-response';
+import { readSessionStorageItem, writeSessionStorageItem } from './safe-storage';
 
 type DeskView = 'review' | 'support';
 type RiskLevel = 'low' | 'medium' | 'high' | 'blocked';
@@ -107,7 +108,7 @@ const emptySupportMetrics: SupportMetrics = {
 
 export function AdminApp() {
   const [unlocked, setUnlocked] = useState(
-    () => isAccessCodeConfigured && sessionStorage.getItem('maxim-admin') === '1',
+    () => isAccessCodeConfigured && readSessionStorageItem('maxim-admin') === '1',
   );
   const [code, setCode] = useState('');
   const [view, setView] = useState<DeskView>('review');
@@ -169,6 +170,13 @@ export function AdminApp() {
   const selectedItem = visibleItems.find((item) => item.id === selectedId) ?? visibleItems[0];
   const selectedSupportItem =
     visibleSupportItems.find((item) => item.id === supportSelectedId) ?? visibleSupportItems[0];
+  const isReviewScopeFiltered = filter !== 'all' || query.trim().length > 0;
+  const visibleReviewItems = useMemo(
+    () =>
+      visibleItems.filter((item) => item.status === 'review' && !getApproveBlockReason(item)),
+    [visibleItems],
+  );
+  const bulkReviewCount = visibleReviewItems.length;
 
   function unlock() {
     if (!isAccessCodeConfigured) {
@@ -177,7 +185,7 @@ export function AdminApp() {
     }
 
     if (code.trim() === accessCode) {
-      sessionStorage.setItem('maxim-admin', '1');
+      writeSessionStorageItem('maxim-admin', '1');
       setUnlocked(true);
       setNotice('Загружаю живую очередь проверки');
       return;
@@ -189,13 +197,34 @@ export function AdminApp() {
   async function refreshQueue(successMessage = 'Очередь обновлена с сервера') {
     setLoading(true);
     try {
-      const [queueResponse, supportResponse] = await Promise.all([
+      const [queueResult, supportResult] = await Promise.allSettled([
         fetchQueue(),
         fetchSupportQueue(),
       ]);
-      applyQueueResponse(queueResponse);
-      applySupportQueueResponse(supportResponse);
-      setNotice(successMessage);
+      if (queueResult.status === 'fulfilled') {
+        applyQueueResponse(queueResult.value);
+      }
+      if (supportResult.status === 'fulfilled') {
+        applySupportQueueResponse(supportResult.value);
+      }
+
+      if (queueResult.status === 'fulfilled' && supportResult.status === 'fulfilled') {
+        setNotice(successMessage);
+        return;
+      }
+
+      const errors = [queueResult, supportResult]
+        .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+        .map((result) => readErrorMessage(result.reason));
+      const loaded = [
+        queueResult.status === 'fulfilled' ? 'публикации' : null,
+        supportResult.status === 'fulfilled' ? 'обращения' : null,
+      ].filter(Boolean);
+      setNotice(
+        loaded.length > 0
+          ? `Частично обновлено: ${loaded.join(', ')}. ${errors.join('; ')}`
+          : errors.join('; '),
+      );
     } catch (error) {
       setNotice(readErrorMessage(error));
     } finally {
@@ -230,20 +259,24 @@ export function AdminApp() {
   }
 
   async function approveAllVisible() {
-    const reviewCount = metrics.review;
+    const reviewCount = bulkReviewCount;
     if (reviewCount === 0) {
       setNotice('Нет материалов для массового одобрения');
       return;
     }
 
-    if (!window.confirm(`Одобрить всю очередь проверки? Материалов: ${reviewCount}.`)) {
+    const itemIds = visibleReviewItems.map((item) => item.id);
+    const scopeLabel = isReviewScopeFiltered
+      ? 'видимые материалы'
+      : 'загруженную очередь проверки';
+    if (!window.confirm(`Одобрить ${scopeLabel}? Материалов: ${reviewCount}.`)) {
       return;
     }
 
     setBulkBusy(true);
-    setNotice('Одобряю материалы из очереди');
+    setNotice(isReviewScopeFiltered ? 'Одобряю видимые материалы' : 'Одобряю материалы из очереди');
     try {
-      const response = await postApproveAll();
+      const response = await postApproveAll(itemIds);
       applyQueueResponse(response.queue);
       setNotice(response.message);
     } catch (error) {
@@ -404,7 +437,7 @@ export function AdminApp() {
             <button
               className="primary-action"
               type="button"
-              disabled={loading || bulkBusy || metrics.review === 0}
+              disabled={loading || bulkBusy || bulkReviewCount === 0}
               onClick={() => void approveAllVisible()}
             >
               <Check width={18} height={18} />
@@ -1067,7 +1100,7 @@ async function postDecision(
   return safetyDeskDecisionResponseSchema.parse(await readJsonResponse(response));
 }
 
-async function postApproveAll(): Promise<SafetyDeskDecisionResponse> {
+async function postApproveAll(itemIds: string[]): Promise<SafetyDeskDecisionResponse> {
   const response = await fetch(`${safetyDeskApiBase}/queue/approve-all`, {
     method: 'POST',
     credentials: 'same-origin',
@@ -1075,7 +1108,7 @@ async function postApproveAll(): Promise<SafetyDeskDecisionResponse> {
       Accept: 'application/json',
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({}),
+    body: JSON.stringify({ itemIds }),
   });
   return safetyDeskDecisionResponseSchema.parse(await readJsonResponse(response));
 }

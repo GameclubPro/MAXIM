@@ -38,6 +38,10 @@ const VK_PARSING_HEALTH_WINDOW_MIN = 30;
 const VK_PARSING_SOURCE_FAILURE_WARNING_COUNT = 3;
 const VK_PARSING_MEDIA_FAILURE_WARNING_RATIO = 0.2;
 const VK_PARSING_PUBLISH_BACKLOG_WARNING_SEC = 10 * 60;
+const DELIVERY_LEDGER_STALE_ACTION_MS = 15 * 60_000;
+const DELIVERY_LEDGER_STALE_SUGGESTION_SENDING_MS = 2 * 60_000;
+const HOT_PATH_SLOW_WARNING_COUNT = 3;
+const HOT_PATH_SLOW_WARNING_MAX_MS = 5_000;
 
 type VkParsingGuardSnapshot = {
   checkedAt: string;
@@ -50,6 +54,19 @@ type VkParsingGuardSnapshot = {
   recentMediaFailureRatio: number;
   publishBacklog: number;
   oldestPublishBacklogAgeSec: number;
+};
+
+type DeliveryLedgerRiskSnapshot = {
+  checkedAt: string;
+  actionAmbiguous: number;
+  actionStaleInProgress: number;
+  actionStaleRetryable: number;
+  actionOldestRiskAgeSec: number;
+  suggestionAmbiguous: number;
+  suggestionTerminalFailed: number;
+  suggestionStaleSending: number;
+  suggestionRiskSuggestions: number;
+  suggestionOldestRiskAgeSec: number;
 };
 
 @Injectable()
@@ -103,7 +120,10 @@ export class SystemDashboardService {
       this.backgroundRuntimeGovernorService?.getDashboardBudgetSummary(),
       this.webhookSloService?.getSnapshot(),
     ]);
-    const vkParsingGuard = await this.loadVkParsingGuardSnapshot();
+    const [vkParsingGuard, deliveryLedgerRisk] = await Promise.all([
+      this.loadVkParsingGuardSnapshot(),
+      this.loadDeliveryLedgerRiskSnapshot(),
+    ]);
     const alerts: SystemDashboardAlert[] = [];
     const queueLagSec = queues.userFacingEffectiveLagSec ?? queues.effectiveLagSec;
     const failedCount = this.readActiveFailedCount(queues.webhookEvents.failed);
@@ -114,6 +134,7 @@ export class SystemDashboardService {
     const stabilizing = this.isStabilizing(mode, queueLagSec);
     const hotPathTimeoutCount =
       runtimeDiagnostics?.hotPath.stages.reduce((sum, stage) => sum + stage.timeoutCount, 0) ?? 0;
+    const hotPathSlowWarning = this.hasHotPathSlowWarning(runtimeDiagnostics?.hotPath);
 
     if (mode.source === 'manual') {
       alerts.push({
@@ -245,9 +266,9 @@ export class SystemDashboardService {
       alerts.push(problemChatsAlert);
     }
 
-    const hotPathTimeoutAlert = this.buildHotPathTimeoutAlert(runtimeDiagnostics?.hotPath);
-    if (hotPathTimeoutAlert) {
-      alerts.push(hotPathTimeoutAlert);
+    const hotPathAlert = this.buildHotPathAlert(runtimeDiagnostics?.hotPath);
+    if (hotPathAlert) {
+      alerts.push(hotPathAlert);
     }
 
     const webhookSloAlert = this.buildWebhookSloAlert(webhookSlo);
@@ -258,6 +279,11 @@ export class SystemDashboardService {
     const vkParsingAlert = this.buildVkParsingHealthAlert(vkParsingGuard);
     if (vkParsingAlert) {
       alerts.push(vkParsingAlert);
+    }
+
+    const deliveryLedgerAlert = this.buildDeliveryLedgerRiskAlert(deliveryLedgerRisk);
+    if (deliveryLedgerAlert) {
+      alerts.push(deliveryLedgerAlert);
     }
 
     const status = this.resolveStatus({
@@ -275,8 +301,10 @@ export class SystemDashboardService {
         false,
       hotPathTimeoutCritical: hotPathTimeoutCount >= 10,
       hotPathTimeoutWarning: hotPathTimeoutCount > 0,
+      hotPathSlowWarning,
       webhookSloStatus: webhookSlo?.status ?? null,
       vkParsingWarning: vkParsingAlert !== null,
+      deliveryLedgerWarning: deliveryLedgerAlert !== null,
     });
     const queueGroupHealth = buildSystemQueueGroupHealth(queues);
     const runtimeProfile = buildSystemRuntimeProfile(
@@ -353,8 +381,10 @@ export class SystemDashboardService {
     problemChatsWarning?: boolean;
     hotPathTimeoutCritical?: boolean;
     hotPathTimeoutWarning?: boolean;
+    hotPathSlowWarning?: boolean;
     webhookSloStatus?: WebhookSloSnapshot['status'] | null;
     vkParsingWarning?: boolean;
+    deliveryLedgerWarning?: boolean;
   }): SystemDashboardStatus {
     if (
       input.mode === 'degrade' ||
@@ -377,8 +407,10 @@ export class SystemDashboardService {
       input.webhookSubscriptionStatus === 'warning' ||
       input.problemChatsWarning === true ||
       input.hotPathTimeoutWarning === true ||
+      input.hotPathSlowWarning === true ||
       input.webhookSloStatus === 'warning' ||
-      input.vkParsingWarning === true
+      input.vkParsingWarning === true ||
+      input.deliveryLedgerWarning === true
     ) {
       return 'warning';
     }
@@ -606,29 +638,58 @@ export class SystemDashboardService {
     };
   }
 
-  private buildHotPathTimeoutAlert(
+  private buildHotPathAlert(
     hotPath:
       | Awaited<ReturnType<RuntimeDiagnosticsService['getDashboardSnapshot']>>['hotPath']
       | undefined,
   ): SystemDashboardAlert | null {
     const stages = hotPath?.stages ?? [];
-    const top = stages.find((stage) => stage.timeoutCount > 0);
-    if (!top) {
+    const topTimeout = stages.find((stage) => stage.timeoutCount > 0);
+    const totalTimeouts = stages.reduce((sum, stage) => sum + stage.timeoutCount, 0);
+    if (topTimeout) {
+      return {
+        code: 'webhook-hot-path-timeouts',
+        level: totalTimeouts >= 10 ? 'critical' : 'warning',
+        title:
+          totalTimeouts >= 10
+            ? 'Webhook hot path регулярно упирается в watchdog'
+            : 'Есть timeout в webhook hot path',
+        detail: `${totalTimeouts} timeout за окно ${hotPath?.windowSec ?? 0} сек. Топ-стадия: ${topTimeout.stage}, max ${topTimeout.maxElapsedMs} мс.`,
+        recommendedAction:
+          'Уберите синхронный MAX API или тяжёлую работу из этой стадии; для group/admin actions используйте очередь.',
+      };
+    }
+
+    const topSlow = stages.find(
+      (stage) =>
+        stage.slowCount >= HOT_PATH_SLOW_WARNING_COUNT ||
+        stage.maxElapsedMs >= HOT_PATH_SLOW_WARNING_MAX_MS,
+    );
+    if (!topSlow) {
       return null;
     }
 
-    const totalTimeouts = stages.reduce((sum, stage) => sum + stage.timeoutCount, 0);
+    const totalSlow = stages.reduce((sum, stage) => sum + stage.slowCount, 0);
     return {
-      code: 'webhook-hot-path-timeouts',
-      level: totalTimeouts >= 10 ? 'critical' : 'warning',
-      title:
-        totalTimeouts >= 10
-          ? 'Webhook hot path регулярно упирается в watchdog'
-          : 'Есть timeout в webhook hot path',
-      detail: `${totalTimeouts} timeout за окно ${hotPath?.windowSec ?? 0} сек. Топ-стадия: ${top.stage}, max ${top.maxElapsedMs} мс.`,
+      code: 'webhook-hot-path-slow',
+      level: 'warning',
+      title: 'Webhook hot path близко к watchdog',
+      detail: `${totalSlow} slow completions за окно ${hotPath?.windowSec ?? 0} сек. Топ-стадия: ${topSlow.stage}, max ${topSlow.maxElapsedMs} мс.`,
       recommendedAction:
-        'Уберите синхронный MAX API или тяжёлую работу из этой стадии; для group/admin actions используйте очередь.',
+        'Перенесите синхронную работу из user-facing webhook path в очереди или сократите MAX/API ожидания до появления timeout.',
     };
+  }
+
+  private hasHotPathSlowWarning(
+    hotPath:
+      | Awaited<ReturnType<RuntimeDiagnosticsService['getDashboardSnapshot']>>['hotPath']
+      | undefined,
+  ): boolean {
+    return (hotPath?.stages ?? []).some(
+      (stage) =>
+        stage.slowCount >= HOT_PATH_SLOW_WARNING_COUNT ||
+        stage.maxElapsedMs >= HOT_PATH_SLOW_WARNING_MAX_MS,
+    );
   }
 
   private buildWebhookSloAlert(
@@ -770,6 +831,131 @@ export class SystemDashboardService {
       detail: details.join('; '),
       recommendedAction:
         'Откройте VK diagnostics: проверьте noisy sources, media failures и publish backlog. Readiness при этом остаётся зелёной.',
+    };
+  }
+
+  private async loadDeliveryLedgerRiskSnapshot(): Promise<DeliveryLedgerRiskSnapshot | null> {
+    if (!this.prisma) {
+      return null;
+    }
+
+    const checkedAt = new Date();
+    const staleActionSince = new Date(checkedAt.getTime() - DELIVERY_LEDGER_STALE_ACTION_MS);
+    const staleSuggestionSendingSince = new Date(
+      checkedAt.getTime() - DELIVERY_LEDGER_STALE_SUGGESTION_SENDING_MS,
+    );
+    try {
+      const [actionRows, suggestionRows] = await Promise.all([
+        this.prisma.$queryRaw<Array<Record<string, unknown>>>`
+          select
+            count(*) filter (where status = 'AMBIGUOUS')::int as "actionAmbiguous",
+            count(*) filter (
+              where status = 'IN_PROGRESS'
+                and updated_at < ${staleActionSince}
+            )::int as "actionStaleInProgress",
+            count(*) filter (
+              where status = 'FAILED_RETRYABLE'
+                and terminal = false
+                and updated_at < ${staleActionSince}
+            )::int as "actionStaleRetryable",
+            extract(epoch from (now() - min(updated_at) filter (
+              where status = 'AMBIGUOUS'
+                 or (status = 'IN_PROGRESS' and updated_at < ${staleActionSince})
+                 or (
+                   status = 'FAILED_RETRYABLE'
+                   and terminal = false
+                   and updated_at < ${staleActionSince}
+                 )
+            )))::int as "actionOldestRiskAgeSec"
+          from max_action_ledger
+          where status = 'AMBIGUOUS'
+             or (status = 'IN_PROGRESS' and updated_at < ${staleActionSince})
+             or (
+               status = 'FAILED_RETRYABLE'
+               and terminal = false
+               and updated_at < ${staleActionSince}
+             )
+        `,
+        this.prisma.$queryRaw<Array<Record<string, unknown>>>`
+          select
+            count(*) filter (where d.status = 'AMBIGUOUS')::int as "suggestionAmbiguous",
+            count(*) filter (
+              where d.status = 'FAILED'
+                and d.terminal = true
+            )::int as "suggestionTerminalFailed",
+            count(*) filter (
+              where d.status = 'SENDING'
+                and d.locked_at < ${staleSuggestionSendingSince}
+            )::int as "suggestionStaleSending",
+            count(distinct d.audit_log_id)::int as "suggestionRiskSuggestions",
+            extract(epoch from (now() - min(coalesce(d.locked_at, d.updated_at))))::int
+              as "suggestionOldestRiskAgeSec"
+          from channel_suggestion_admin_deliveries d
+          join audit_logs a on a.id = d.audit_log_id
+          where a.action = 'CHANNEL_DIALOG_SUGGESTION'
+            and coalesce(nullif(a.payload->>'reviewStatus', ''), 'pending') = 'pending'
+            and (
+              d.status = 'AMBIGUOUS'
+              or (d.status = 'FAILED' and d.terminal = true)
+              or (d.status = 'SENDING' and d.locked_at < ${staleSuggestionSendingSince})
+            )
+        `,
+      ]);
+      const action = actionRows[0] ?? {};
+      const suggestion = suggestionRows[0] ?? {};
+
+      return {
+        checkedAt: checkedAt.toISOString(),
+        actionAmbiguous: this.readNumber(action.actionAmbiguous),
+        actionStaleInProgress: this.readNumber(action.actionStaleInProgress),
+        actionStaleRetryable: this.readNumber(action.actionStaleRetryable),
+        actionOldestRiskAgeSec: this.readNumber(action.actionOldestRiskAgeSec),
+        suggestionAmbiguous: this.readNumber(suggestion.suggestionAmbiguous),
+        suggestionTerminalFailed: this.readNumber(suggestion.suggestionTerminalFailed),
+        suggestionStaleSending: this.readNumber(suggestion.suggestionStaleSending),
+        suggestionRiskSuggestions: this.readNumber(suggestion.suggestionRiskSuggestions),
+        suggestionOldestRiskAgeSec: this.readNumber(suggestion.suggestionOldestRiskAgeSec),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private buildDeliveryLedgerRiskAlert(
+    snapshot: DeliveryLedgerRiskSnapshot | null,
+  ): SystemDashboardAlert | null {
+    if (!snapshot) {
+      return null;
+    }
+
+    const actionRisk =
+      snapshot.actionAmbiguous +
+      snapshot.actionStaleInProgress +
+      snapshot.actionStaleRetryable;
+    const suggestionRisk =
+      snapshot.suggestionAmbiguous +
+      snapshot.suggestionTerminalFailed +
+      snapshot.suggestionStaleSending;
+    if (actionRisk === 0 && suggestionRisk === 0) {
+      return null;
+    }
+
+    const details = [
+      actionRisk > 0
+        ? `MAX action ledger: ambiguous ${snapshot.actionAmbiguous}, stale in-progress ${snapshot.actionStaleInProgress}, stale retryable ${snapshot.actionStaleRetryable}, oldest ${snapshot.actionOldestRiskAgeSec} сек`
+        : null,
+      suggestionRisk > 0
+        ? `suggestion delivery: ambiguous ${snapshot.suggestionAmbiguous}, terminal failed ${snapshot.suggestionTerminalFailed}, stale sending ${snapshot.suggestionStaleSending}, suggestions ${snapshot.suggestionRiskSuggestions}, oldest ${snapshot.suggestionOldestRiskAgeSec} сек`
+        : null,
+    ].filter((item): item is string => item !== null);
+
+    return {
+      code: 'delivery-ledger-risk',
+      level: 'warning',
+      title: 'Есть хвост доставок, требующий ручной сверки',
+      detail: details.join('; '),
+      recommendedAction:
+        'Сверьте MAX/логи/remoteMessageId перед любыми повторами. Ambiguous send/delete/member actions не ретрайте автоматически.',
     };
   }
 

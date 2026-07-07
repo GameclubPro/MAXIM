@@ -281,7 +281,9 @@ describe('SafetyDeskService', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]);
 
-    const result = await service.approveAllReviewItems('maxim', {});
+    const result = await service.approveAllReviewItems('maxim', {
+      itemIds: [' post-1 ', 'post-1', 'post-2'],
+    });
 
     expect(vkPublishService.publishPost).toHaveBeenCalledTimes(2);
     expect(vkPublishService.publishPost).toHaveBeenNthCalledWith(
@@ -298,9 +300,79 @@ describe('SafetyDeskService', () => {
       'safety-desk-owner',
       expect.objectContaining({ text: 'Второй пост' }),
     );
+    expect(prisma.vkParsingPost.findMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({ id: { in: ['post-1', 'post-2'] } }),
+        take: 2,
+      }),
+    );
     expect(prisma.auditLog.create).toHaveBeenCalledTimes(2);
     expect(result.message).toContain('2');
     expect(result.queue.summary.review).toBe(0);
+  });
+
+  it('rejects bulk approval without an explicit item scope', async () => {
+    const { prisma, service, vkPublishService } = createFixture();
+
+    await expect(service.approveAllReviewItems('maxim', {})).rejects.toThrow(
+      BadRequestException,
+    );
+    await expect(service.approveAllReviewItems('maxim', { itemIds: [] })).rejects.toThrow(
+      BadRequestException,
+    );
+
+    expect(prisma.vkParsingPost.findMany).not.toHaveBeenCalled();
+    expect(vkPublishService.publishPost).not.toHaveBeenCalled();
+  });
+
+  it('does not publish items outside the requested bulk approval scope', async () => {
+    const { prisma, service, vkPublishService } = createFixture();
+    prisma.vkParsingPost.findMany.mockResolvedValueOnce([createReviewPost({ id: 'post-2' })]);
+
+    await service.approveAllReviewItems('maxim', { itemIds: ['post-2'] });
+
+    expect(vkPublishService.publishPost).toHaveBeenCalledTimes(1);
+    expect(vkPublishService.publishPost).toHaveBeenCalledWith(
+      'channel-1',
+      'post-2',
+      'safety-desk-owner',
+      expect.any(Object),
+    );
+    expect(prisma.vkParsingPost.findMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({ id: { in: ['post-2'] } }),
+        take: 1,
+      }),
+    );
+  });
+
+  it('skips blocked or stale items inside a scoped bulk approval request', async () => {
+    const { prisma, service, vkPublishService } = createFixture();
+    const postOne = createReviewPost({ id: 'post-1', text: 'Можно публиковать' });
+    const blockedPost = createReviewPost({
+      id: 'post-blocked',
+      text: 'Медиа конфликт',
+      photoUrls: ['https://cdn.example.com/photo.jpg'],
+      videoUrls: ['https://vkvd.example/video-720.mp4'],
+    });
+    prisma.vkParsingPost.findMany
+      .mockResolvedValueOnce([postOne, blockedPost])
+      .mockResolvedValueOnce([]);
+
+    const result = await service.approveAllReviewItems('maxim', {
+      itemIds: ['post-1', 'post-blocked', 'post-stale'],
+    });
+
+    expect(vkPublishService.publishPost).toHaveBeenCalledTimes(1);
+    expect(vkPublishService.publishPost).toHaveBeenCalledWith(
+      'channel-1',
+      'post-1',
+      'safety-desk-owner',
+      expect.any(Object),
+    );
+    expect(result.message).toContain('Уже недоступно или заблокировано: 2');
   });
 
   it('rejects a review item without sending anything to MAX', async () => {

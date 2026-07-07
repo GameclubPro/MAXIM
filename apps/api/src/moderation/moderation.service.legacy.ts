@@ -16408,6 +16408,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         });
       }
       if (durationMs >= WEBHOOK_USER_FACING_SLOW_LOG_THRESHOLD_MS) {
+        void this.runtimeDiagnosticsService?.recordHotPathProfile({
+          snapshot: {
+            latestStage: 'user-facing-total',
+            stageDurations: {
+              'user-facing-total': durationMs,
+            },
+          },
+        });
         this.logger.warn(
           {
             webhookEventId,
