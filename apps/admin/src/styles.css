@@ -79,6 +79,17 @@ button:disabled {
   letter-spacing: 0;
 }
 
+.auth-alert {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #fecdd3;
+  border-radius: 8px;
+  color: #9f1239;
+  background: #fff1f2;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
 .auth-field {
   display: grid;
   gap: 7px;

@@ -14,7 +14,7 @@
   - `apps/admin`: closed React/Vite Safety Desk for owner-side moderation review; not a MAX mini app.
   - `packages/contracts`: shared Zod/API contracts. Contract changes normally require matching API, mini app, tests, and typechecks.
 - Keep `packages/contracts` subpath exports, root `tsconfig.base.json` paths, and `apps/api/jest.config.cjs` mappers in sync so API Jest resolves ESM contract sources correctly.
-- Production API uses one shared API image split by `APP_ROLE`; `api-ingress` is the public API role, `api-admin` is the local admin/API role, and moderation/action/enqueue roles process queues.
+- Production API uses one shared API image split by `APP_ROLE`; nginx routes public health/webhooks to `api-ingress`, public `/api/v1/` and local admin/API traffic to `api-admin`, and moderation/action/enqueue roles process queues.
 - Split API services also declare `APP_SERVICE_NAME`; keep the typed service/queue topology in `apps/api/src/runtime/runtime-topology.ts` aligned with compose service env.
 - Production mini app is served under `/app/`.
 - Production Safety Desk is served on `https://admin.major-maksimov.ru/` through nginx Basic Auth and `admin-static` on `127.0.0.1:3004`.

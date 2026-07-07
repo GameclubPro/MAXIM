@@ -86,7 +86,9 @@ type SupportTicket = {
   closedAt: string;
 };
 
-const accessCode = import.meta.env.VITE_ADMIN_ACCESS_CODE || 'maxim-local';
+const configuredAccessCode = import.meta.env.VITE_ADMIN_ACCESS_CODE?.trim() ?? '';
+const accessCode = configuredAccessCode || (import.meta.env.DEV ? 'maxim-local' : '');
+const isAccessCodeConfigured = accessCode.length > 0;
 const safetyDeskApiBase = '/api/v1/safety-desk';
 const supportRequestsApiBase = '/api/v1/support-requests';
 
@@ -103,7 +105,9 @@ const emptySupportMetrics: SupportMetrics = {
 };
 
 export function AdminApp() {
-  const [unlocked, setUnlocked] = useState(() => sessionStorage.getItem('maxim-admin') === '1');
+  const [unlocked, setUnlocked] = useState(
+    () => isAccessCodeConfigured && sessionStorage.getItem('maxim-admin') === '1',
+  );
   const [code, setCode] = useState('');
   const [view, setView] = useState<DeskView>('review');
   const [filter, setFilter] = useState<'all' | QueueStatus>('all');
@@ -166,11 +170,19 @@ export function AdminApp() {
     visibleSupportItems.find((item) => item.id === supportSelectedId) ?? visibleSupportItems[0];
 
   function unlock() {
+    if (!isAccessCodeConfigured) {
+      setNotice('Код доступа не настроен');
+      return;
+    }
+
     if (code.trim() === accessCode) {
       sessionStorage.setItem('maxim-admin', '1');
       setUnlocked(true);
       setNotice('Загружаю живую очередь проверки');
+      return;
     }
+
+    setNotice('Неверный код доступа');
   }
 
   async function refreshQueue(successMessage = 'Очередь обновлена с сервера') {
@@ -313,6 +325,11 @@ export function AdminApp() {
             <Lock width={24} height={24} />
           </div>
           <h1 id="auth-title">Safety Desk</h1>
+          {!isAccessCodeConfigured && (
+            <p className="auth-alert" role="alert">
+              Код доступа не настроен.
+            </p>
+          )}
           <label className="auth-field">
             <span>Код доступа</span>
             <input
@@ -326,9 +343,15 @@ export function AdminApp() {
               type="password"
               autoComplete="current-password"
               placeholder="Введите код"
+              disabled={!isAccessCodeConfigured}
             />
           </label>
-          <button className="primary-action" type="button" onClick={unlock}>
+          <button
+            className="primary-action"
+            type="button"
+            disabled={!isAccessCodeConfigured}
+            onClick={unlock}
+          >
             <Check width={18} height={18} />
             Войти
           </button>

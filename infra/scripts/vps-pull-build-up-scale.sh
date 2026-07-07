@@ -111,15 +111,15 @@ has_pulled_changes() {
 }
 
 diff_in_paths() {
+  local status=0
+
   if ! has_pulled_changes; then
     return 1
   fi
 
-  if git diff --quiet "$PRE_PULL_HEAD" HEAD -- "$@" >/dev/null 2>&1; then
-    return 1
-  fi
-
-  case $? in
+  git diff --quiet "$PRE_PULL_HEAD" HEAD -- "$@" >/dev/null 2>&1 || status=$?
+  case "$status" in
+    0) return 1 ;;
     1) return 0 ;;
     *) return 1 ;;
   esac
