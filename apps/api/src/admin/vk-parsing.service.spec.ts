@@ -1434,6 +1434,61 @@ describe('VkParsingService', () => {
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
   });
 
+  it('does not queue newly imported VK posts while source autopublish is paused', async () => {
+    const { service, prisma, publishQueue } = createFixture();
+    const source = createSource({
+      lastSuccessAt: new Date('2026-05-25T09:30:00.000Z'),
+      autoPublishPausedAt: new Date('2026-05-25T09:45:00.000Z'),
+      autoPublishPausedReason: 'max.access_lost',
+    });
+    const post = createPostRow({
+      source,
+      text: 'Пост из остановленного источника',
+    });
+    prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    prisma.vkParsingPost.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([post]);
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      id: 'settings-1',
+      chatId: 'channel-1',
+      autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date('2026-05-25T09:00:00.000Z'),
+      stripLinksEnabled: false,
+      skipAdsEnabled: false,
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+    });
+    global.fetch = jest.fn().mockResolvedValue(
+      createJsonFetchResponse({
+        response: {
+          items: [
+            {
+              owner_id: -36819802,
+              id: 101,
+              date: 1_779_708_000,
+              text: 'Пост из остановленного источника',
+            },
+          ],
+          groups: [],
+        },
+      }),
+    ) as unknown as typeof fetch;
+
+    await service.processSyncSourceJob('source-1', 'scheduled');
+
+    expect(prisma.vkParsingPost.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: 'post-1' }),
+        data: expect.objectContaining({
+          publishQueuedAt: expect.any(Date),
+        }),
+      }),
+    );
+    expect(publishQueue.add).not.toHaveBeenCalled();
+  });
+
   it('does not queue newly imported VK posts published before autopublish was enabled', async () => {
     const { service, prisma, publishQueue } = createFixture();
     const source = createSource({ lastSuccessAt: new Date('2026-05-25T09:30:00.000Z') });

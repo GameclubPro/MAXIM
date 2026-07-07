@@ -1280,6 +1280,7 @@ export class VkPublishService {
       post.source.status !== VK_SOURCE_STATUS_ACTIVE ||
       post.source.importEnabled === false ||
       post.source.autoPublishEnabled === false ||
+      post.source.autoPublishPausedAt !== null ||
       post.source.publishMode === VK_SOURCE_PUBLISH_MODE_REVIEW
     ) {
       return false;
