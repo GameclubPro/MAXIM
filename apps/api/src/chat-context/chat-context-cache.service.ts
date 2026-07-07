@@ -622,6 +622,11 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     return typeof raw === 'string' && raw.length > 0;
   }
 
+  async getManagedRefreshSourceBackoffRemainingMs(): Promise<number> {
+    const ttlMs = await this.redis.pttl(ChatContextCacheService.managedRefreshSourceBackoffKey());
+    return ttlMs > 0 ? ttlMs : 0;
+  }
+
   async activateManagedRefreshSourceBackoff(ttlSec: number): Promise<void> {
     await this.redis.set(
       ChatContextCacheService.managedRefreshSourceBackoffKey(),

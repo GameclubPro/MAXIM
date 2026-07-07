@@ -1095,6 +1095,9 @@ describe('ChatContextCacheService', () => {
 
     redisInstance.get.mockResolvedValueOnce('1');
     await expect(service.isManagedRefreshSourceBackoffActive()).resolves.toBe(true);
+
+    redisInstance.pttl.mockResolvedValueOnce(12_000);
+    await expect(service.getManagedRefreshSourceBackoffRemainingMs()).resolves.toBe(12_000);
   });
 
   it('stores managed giveaway runner retry state in redis', async () => {

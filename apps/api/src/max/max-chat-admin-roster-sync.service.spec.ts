@@ -54,6 +54,9 @@ describe('MaxChatAdminRosterSyncService', () => {
       getManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue(null),
       setManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue(undefined),
       clearManagedEntitiesRecentBootstrapForChat: jest.fn().mockResolvedValue(undefined),
+      isManagedRefreshSourceBackoffActive: jest.fn().mockResolvedValue(false),
+      getManagedRefreshSourceBackoffRemainingMs: jest.fn().mockResolvedValue(0),
+      activateManagedRefreshSourceBackoff: jest.fn().mockResolvedValue(undefined),
     };
     const queue = {
       getJob: jest.fn().mockResolvedValue(null),
@@ -670,7 +673,7 @@ describe('MaxChatAdminRosterSyncService', () => {
 
   it('surfaces managed_refresh source pressure as a delayed backoff instead of a failure', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:00:00.000Z'));
-    const { service, maxClient, maxBotLinkService } = createService();
+    const { service, maxClient, maxBotLinkService, chatContextCache } = createService();
     maxClient.getCurrentChatMemberAccess.mockRejectedValue(
       new Error('MAX API managed_refresh source limit exceeded for bot bot-1'),
     );
@@ -701,6 +704,27 @@ describe('MaxChatAdminRosterSyncService', () => {
 
     expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
     expect(maxBotLinkService.bindDiscoveredChatBots).toHaveBeenCalledTimes(2);
+    expect(chatContextCache.activateManagedRefreshSourceBackoff).toHaveBeenCalledWith(10);
+  });
+
+  it('uses shared managed_refresh source backoff before making another MAX request', async () => {
+    const { service, maxClient, chatContextCache } = createService();
+    chatContextCache.getManagedRefreshSourceBackoffRemainingMs.mockResolvedValue(7_000);
+
+    await expect(
+      service.processJob({
+        chatId: '-100133',
+        botIds: ['bot-1'],
+        title: 'Busy shared chat',
+        entityType: 'chat',
+      }),
+    ).rejects.toMatchObject({
+      chatId: '-100133',
+      delayMs: expect.any(Number),
+    });
+
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
   });
 
   it('retries a fresh webhook bot_added sync while bot admin rights are still propagating', async () => {

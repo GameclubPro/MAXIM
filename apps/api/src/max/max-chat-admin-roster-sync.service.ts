@@ -304,7 +304,7 @@ export class MaxChatAdminRosterSyncService {
     let skippedDueToTerminalBackoff = false;
 
     for (const botId of candidateBotIds) {
-      const sourceBackoffDelayMs = this.resolveManagedRefreshSourceBackoffDelayMs(normalized);
+      const sourceBackoffDelayMs = await this.resolveManagedRefreshSourceBackoffDelayMs(normalized);
       if (sourceBackoffDelayMs > 0) {
         throw new MaxChatAdminRosterSyncSourceBackoffError(
           normalized.chatId,
@@ -354,10 +354,10 @@ export class MaxChatAdminRosterSyncService {
         }
 
         if (this.isRateLimitPressureError(error)) {
-          this.markManagedRefreshSourceBackoff();
+          await this.markManagedRefreshSourceBackoff();
           throw new MaxChatAdminRosterSyncSourceBackoffError(
             normalized.chatId,
-            this.resolveManagedRefreshSourceBackoffDelayMs(normalized),
+            await this.resolveManagedRefreshSourceBackoffDelayMs(normalized),
           );
         }
 
@@ -1704,7 +1704,7 @@ export class MaxChatAdminRosterSyncService {
     );
   }
 
-  private isManagedRefreshSourceBackoffActive(now = Date.now()): boolean {
+  private isLocalManagedRefreshSourceBackoffActive(now = Date.now()): boolean {
     if (this.managedRefreshSourceBackoffUntilMs <= now) {
       this.managedRefreshSourceBackoffUntilMs = 0;
       return false;
@@ -1713,25 +1713,56 @@ export class MaxChatAdminRosterSyncService {
     return true;
   }
 
-  private markManagedRefreshSourceBackoff(now = Date.now()): void {
+  private async markManagedRefreshSourceBackoff(now = Date.now()): Promise<void> {
     this.managedRefreshSourceBackoffUntilMs = Math.max(
       this.managedRefreshSourceBackoffUntilMs,
       now + CHAT_ADMIN_ROSTER_SYNC_SOURCE_BACKOFF_MS,
     );
+
+    try {
+      await this.chatContextCache.activateManagedRefreshSourceBackoff(
+        Math.ceil(CHAT_ADMIN_ROSTER_SYNC_SOURCE_BACKOFF_MS / 1_000),
+      );
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to store shared chat admin roster managed_refresh backoff marker',
+      );
+    }
   }
 
-  private resolveManagedRefreshSourceBackoffDelayMs(
+  private async resolveManagedRefreshSourceBackoffDelayMs(
     job: Pick<MaxChatAdminRosterSyncJob, 'chatId'>,
     now = Date.now(),
-  ): number {
-    if (!this.isManagedRefreshSourceBackoffActive(now)) {
-      return 0;
+  ): Promise<number> {
+    const localRemainingMs = this.isLocalManagedRefreshSourceBackoffActive(now)
+      ? Math.max(1, this.managedRefreshSourceBackoffUntilMs - now)
+      : 0;
+    let sharedRemainingMs = 0;
+    try {
+      const getRemainingMs = (
+        this.chatContextCache as ChatContextCacheService & {
+          getManagedRefreshSourceBackoffRemainingMs?: () => Promise<number>;
+        }
+      ).getManagedRefreshSourceBackoffRemainingMs;
+      if (typeof getRemainingMs === 'function') {
+        sharedRemainingMs = await getRemainingMs.call(this.chatContextCache);
+      } else if (await this.chatContextCache.isManagedRefreshSourceBackoffActive()) {
+        sharedRemainingMs = CHAT_ADMIN_ROSTER_SYNC_SOURCE_BACKOFF_MS;
+      }
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to read shared chat admin roster managed_refresh backoff marker',
+      );
     }
 
-    return (
-      Math.max(1, this.managedRefreshSourceBackoffUntilMs - now) +
-      this.resolveSourceBackoffJitterMs(job)
-    );
+    const remainingMs = Math.max(localRemainingMs, sharedRemainingMs);
+    return remainingMs > 0 ? remainingMs + this.resolveSourceBackoffJitterMs(job) : 0;
   }
 
   private resolveSourceBackoffJitterMs(job: Pick<MaxChatAdminRosterSyncJob, 'chatId'>): number {
