@@ -839,6 +839,36 @@ describe('ChatContextCacheService', () => {
     await expect(service.getAdminAccess('chat-1', 'user-1')).resolves.toBe('bot_denied');
   });
 
+  it('stores chat admin lookup backoff markers in redis with ttl', async () => {
+    const config = {
+      getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),
+    };
+
+    const service = new ChatContextCacheService(
+      {} as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+    const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
+      set: jest.Mock;
+      pttl: jest.Mock;
+    };
+
+    await service.activateAdminLookupBackoff(' chat-1 ', 30);
+    expect(redisInstance.set).toHaveBeenCalledWith(
+      ChatContextCacheService.adminLookupBackoffKey('chat-1'),
+      '1',
+      'EX',
+      30,
+    );
+
+    redisInstance.pttl.mockResolvedValueOnce(12_000);
+    await expect(service.getAdminLookupBackoffRemainingMs(' chat-1 ')).resolves.toBe(12_000);
+    expect(redisInstance.pttl).toHaveBeenCalledWith(
+      ChatContextCacheService.adminLookupBackoffKey('chat-1'),
+    );
+  });
+
   it('reads admin access decisions in batch with a single redis roundtrip', async () => {
     const config = {
       getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),

@@ -352,6 +352,14 @@ export class ModerationAccessService {
       return staleCached;
     }
 
+    const sharedBackoffRemainingMs = await this.getSharedChatAdminLookupBackoffRemainingMs(chatId);
+    if (sharedBackoffRemainingMs > 0) {
+      const sharedBackoffUntilMs = Date.now() + sharedBackoffRemainingMs;
+      this.chatAdminChatBackoffUntilMs.set(chatId, sharedBackoffUntilMs);
+      this.chatAdminLookupBackoffUntilMs.set(cacheKey, sharedBackoffUntilMs);
+      return staleCached;
+    }
+
     const inFlight = this.chatAdminLookupInFlight.get(cacheKey);
     if (inFlight) {
       return inFlight;
@@ -382,6 +390,10 @@ export class ModerationAccessService {
         if ((this.chatAdminLookupBackoffUntilMs.get(cacheKey) ?? 0) < softBackoffUntilMs) {
           this.chatAdminLookupBackoffUntilMs.set(cacheKey, softBackoffUntilMs);
         }
+        void this.activateSharedChatAdminLookupBackoff(
+          chatId,
+          CHAT_ADMIN_SOFT_TIMEOUT_BACKOFF_MS,
+        );
         return null;
       },
     });
@@ -676,6 +688,7 @@ export class ModerationAccessService {
         for (const lookup of lookups) {
           this.chatAdminLookupBackoffUntilMs.set(lookup.cacheKey, backoffUntilMs);
         }
+        void this.activateSharedChatAdminLookupBackoff(chatId, CHAT_ADMIN_LOOKUP_BACKOFF_MS);
       }
 
       this.logger.warn(
@@ -690,6 +703,26 @@ export class ModerationAccessService {
       for (const lookup of lookups) {
         lookup.resolve(lookup.staleCached);
       }
+    }
+  }
+
+  private async getSharedChatAdminLookupBackoffRemainingMs(chatId: string): Promise<number> {
+    try {
+      const remainingMs = await this.chatContextCache?.getAdminLookupBackoffRemainingMs?.(chatId);
+      return typeof remainingMs === 'number' && remainingMs > 0 ? remainingMs : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  private async activateSharedChatAdminLookupBackoff(chatId: string, ttlMs: number): Promise<void> {
+    try {
+      await this.chatContextCache?.activateAdminLookupBackoff?.(
+        chatId,
+        Math.max(1, Math.ceil(ttlMs / 1_000)),
+      );
+    } catch {
+      return;
     }
   }
 

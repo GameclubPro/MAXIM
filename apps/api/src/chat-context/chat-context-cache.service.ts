@@ -137,6 +137,10 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     return `chat:admin-access:v2:${chatId}:${userId}`;
   }
 
+  static adminLookupBackoffKey(chatId: string): string {
+    return `chat:admin-lookup-backoff:v1:${chatId}`;
+  }
+
   static managedEntityHeaderKey(chatId: string, entityType: ManagedEntityType): string {
     return `chat:managed-header:v1:${entityType}:${chatId}`;
   }
@@ -333,6 +337,36 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
       state,
       'EX',
       this.resolveAdminAccessTtlSec(state),
+    );
+  }
+
+  async getAdminLookupBackoffRemainingMs(chatId: string): Promise<number> {
+    const normalizedChatId = chatId.trim();
+    if (!normalizedChatId) {
+      return 0;
+    }
+
+    const ttlMs = await this.runRedisReadWithin(
+      this.redis
+        .pttl(ChatContextCacheService.adminLookupBackoffKey(normalizedChatId))
+        .catch(() => 0),
+      ChatContextCacheService.ADMIN_ACCESS_REDIS_READ_TIMEOUT_MS,
+    );
+    return typeof ttlMs === 'number' && ttlMs > 0 ? ttlMs : 0;
+  }
+
+  async activateAdminLookupBackoff(chatId: string, ttlSec: number): Promise<void> {
+    const normalizedChatId = chatId.trim();
+    const normalizedTtlSec = Math.max(1, Math.ceil(ttlSec));
+    if (!normalizedChatId) {
+      return;
+    }
+
+    await this.redis.set(
+      ChatContextCacheService.adminLookupBackoffKey(normalizedChatId),
+      '1',
+      'EX',
+      normalizedTtlSec,
     );
   }
 

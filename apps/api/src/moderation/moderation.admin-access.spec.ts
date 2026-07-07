@@ -404,6 +404,60 @@ describe('ModerationService chat admin access lookups', () => {
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
   });
 
+  it('shares remote admin lookup backoff between service instances', async () => {
+    const deniedError = Object.assign(new Error('Request failed with status code 403'), {
+      response: {
+        status: 403,
+        data: {
+          message: 'Request failed with status code 403',
+        },
+      },
+    });
+    let sharedBackoffRemainingMs = 0;
+    const chatContextCache = {
+      getAdminAccessBatch: jest.fn().mockResolvedValue(new Map()),
+      getAdminAccess: jest.fn(),
+      setAdminAccess: jest.fn().mockResolvedValue(undefined),
+      activateAdminLookupBackoff: jest
+        .fn()
+        .mockImplementation(async (_chatId: string, ttlSec: number) => {
+          sharedBackoffRemainingMs = ttlSec * 1_000;
+        }),
+      getAdminLookupBackoffRemainingMs: jest
+        .fn()
+        .mockImplementation(async () => sharedBackoffRemainingMs),
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+    const maxClient = {
+      getChatMembersAccess: jest.fn().mockRejectedValue(deniedError),
+      getCurrentChatMemberAccess: jest.fn(),
+    };
+    const createService = () =>
+      new ModerationService(
+        {} as never,
+        {} as never,
+        {} as never,
+        maxClient as never,
+        chatContextCache as never,
+      ) as unknown as {
+        getRemoteChatAdminAccess: (
+          chatId: string,
+          userId: string,
+        ) => Promise<'granted' | 'user_denied' | null>;
+      };
+
+    await expect(createService().getRemoteChatAdminAccess('chat-denied', 'user-1')).resolves.toBe(
+      null,
+    );
+    await expect(createService().getRemoteChatAdminAccess('chat-denied', 'user-1')).resolves.toBe(
+      null,
+    );
+
+    expect(chatContextCache.activateAdminLookupBackoff).toHaveBeenCalledWith('chat-denied', 30);
+    expect(chatContextCache.getAdminLookupBackoffRemainingMs).toHaveBeenCalled();
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+  });
+
   it('batches concurrent global spammer exemption lookups within the same admin scope', async () => {
     const prisma = {
       adminGlobalSpammerExemption: {
