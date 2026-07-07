@@ -20,6 +20,7 @@ import {
 } from '@maxim/contracts';
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   Logger,
   ServiceUnavailableException,
@@ -731,15 +732,17 @@ export class ManagedAutopostService {
           ruleId,
           reason,
           err: message,
+          retry: !this.isTerminalMaterializationError(error, message),
         },
         'Failed to materialize autopost rule',
       );
       if (claimedRevision !== null) {
+        const shouldRetry = !this.isTerminalMaterializationError(error, message);
         await this.prisma.managedAutopostRule.updateMany({
           where: { id: ruleId, revision: claimedRevision, lockToken },
           data: {
             status: ManagedAutopostRuleStatus.ERROR,
-            nextMaterializeAt: new Date(Date.now() + AUTOSCHEDULE_RETRY_MS),
+            nextMaterializeAt: shouldRetry ? new Date(Date.now() + AUTOSCHEDULE_RETRY_MS) : null,
             lastError: message,
             lockedAt: null,
             lockToken: null,
@@ -1444,6 +1447,21 @@ export class ManagedAutopostService {
       }
     }
     return error instanceof Error && error.message.trim() ? error.message : String(error);
+  }
+
+  private isTerminalMaterializationError(error: unknown, message: string): boolean {
+    if (error instanceof ForbiddenException) {
+      return true;
+    }
+
+    const normalized = message.toLowerCase();
+    return (
+      normalized.includes('не является администратором') ||
+      normalized.includes('должен быть администратором') ||
+      normalized.includes('больше не состоит') ||
+      normalized.includes('not an administrator') ||
+      normalized.includes('forbidden')
+    );
   }
 
   private async resolveBackgroundDecision(

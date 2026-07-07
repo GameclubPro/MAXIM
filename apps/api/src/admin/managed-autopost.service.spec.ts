@@ -1,4 +1,8 @@
-import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ManagedAutopostService } from './managed-autopost.service';
 import {
   ChatEntityType,
@@ -419,6 +423,68 @@ describe('ManagedAutopostService', () => {
         }),
         data: expect.objectContaining({
           status: ManagedAutopostRuleStatus.ACTIVE,
+          lockedAt: null,
+          lockToken: null,
+        }),
+      }),
+    );
+  });
+
+  it('does not retry terminal permission failures during materialization', async () => {
+    const scheduledAt = new Date(Date.now() + 5 * 60_000);
+    const rule = {
+      id: 'rule-1',
+      sourceChatId: 'chat-1',
+      entityType: ChatEntityType.CHAT,
+      actorUserId: 'admin-1',
+      status: ManagedAutopostRuleStatus.ACTIVE,
+      revision: 7,
+      payload: payload({ scheduledSlots: [scheduledAt.toISOString()] }),
+    };
+    const { service, prisma, managedBroadcastService } = createService({
+      managedBroadcastService: {
+        sendBroadcast: jest
+          .fn()
+          .mockRejectedValue(
+            new ForbiddenException('Пользователь не является администратором чата.'),
+          ),
+      },
+    });
+    prisma.managedAutopostRule.updateMany.mockResolvedValue({ count: 1 });
+    prisma.managedAutopostRule.findUnique.mockResolvedValue(rule);
+    prisma.managedAutopostRule.findFirst.mockResolvedValue({
+      ...rule,
+      lockedAt: new Date(),
+      lockToken: 'claimed-lock',
+    });
+    prisma.managedAutopostMaterialization.findFirst.mockResolvedValue(null);
+    prisma.managedAutopostMaterialization.findMany.mockResolvedValue([]);
+    prisma.managedAutopostMaterialization.create.mockResolvedValue({ id: 'ledger-1' });
+    prisma.managedAutopostMaterialization.update.mockResolvedValue({});
+    prisma.managedAutopostMaterialization.updateMany.mockResolvedValue({ count: 0 });
+
+    await (
+      service as unknown as {
+        materializeRule: (
+          ruleId: string,
+          reason: 'scheduled',
+          staleLockBefore: Date,
+        ) => Promise<void>;
+      }
+    ).materializeRule('rule-1', 'scheduled', new Date(Date.now() - 60_000));
+
+    expect(managedBroadcastService.sendBroadcast).toHaveBeenCalled();
+    expect(prisma.managedAutopostRule.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: 'rule-1',
+          revision: 7,
+          lockToken: expect.any(String),
+        }),
+        data: expect.objectContaining({
+          status: ManagedAutopostRuleStatus.ERROR,
+          nextMaterializeAt: null,
+          lastError: 'Пользователь не является администратором чата.',
           lockedAt: null,
           lockToken: null,
         }),
