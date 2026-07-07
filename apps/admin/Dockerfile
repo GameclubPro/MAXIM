@@ -20,7 +20,7 @@ COPY tsconfig.base.json ./
 COPY packages/contracts packages/contracts
 COPY apps/admin apps/admin
 
-RUN test -n "$VITE_ADMIN_ACCESS_CODE" && test "$VITE_ADMIN_ACCESS_CODE" != "change-me"
+RUN node -e 'const code = process.env.VITE_ADMIN_ACCESS_CODE; if (!code || code === "change-me") process.exit(1)'
 RUN npm run build --workspace @maxim/admin
 
 FROM nginx:1.27-alpine AS runtime
