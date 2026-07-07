@@ -170,6 +170,31 @@ function expectChatRulesDeleteOptions(overrides: Record<string, unknown> = {}) {
   });
 }
 
+function createAdminMaxBotLinkMock(overrides: Record<string, unknown> = {}) {
+  return {
+    getBotTokenSync: jest.fn().mockReturnValue('test-max-bot-token'),
+    getValidationTokens: jest.fn().mockReturnValue(['test-max-bot-token']),
+    resolveBotId: jest.fn().mockResolvedValue('777000_bot'),
+    resolveBotIdForRead: jest.fn().mockResolvedValue('777000_bot'),
+    resolveBotIdForSend: jest.fn().mockResolvedValue('777000_bot'),
+    resolveBotRoute: jest.fn(),
+    resolveContactIdSync: jest.fn().mockReturnValue(null),
+    buildEntryMiniappStartUrlSync: jest.fn(
+      (startParam: string) =>
+        `https://max.ru/entry-bot?startapp=${encodeURIComponent(startParam)}`,
+    ),
+    buildMiniappStartUrlSync: jest.fn(
+      (startParam: string, botId?: string | null) =>
+        `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?startapp=${encodeURIComponent(startParam)}`,
+    ),
+    buildBotStartUrlSync: jest.fn(
+      (startPayload: string, botId?: string | null) =>
+        `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?start=${encodeURIComponent(startPayload)}`,
+    ),
+    ...overrides,
+  };
+}
+
 function createPrismaMock() {
   const defaultManagedBroadcast = {
     id: 'broadcast-1',
@@ -29552,6 +29577,101 @@ describe('AdminService.sendBroadcast', () => {
     );
   });
 
+  it('routes managed broadcast delivery through the active alternate instead of a stale primary', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      primaryBotId: 'draining-primary-bot',
+      botId: 'draining-primary-bot',
+    });
+    const deliveries = wireManagedBroadcastDeliveryStore(prisma);
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({
+        messageId: 'mid-broadcast-active-alternate-1',
+        url: null,
+      }),
+    };
+    const maxBotLinkService = createAdminMaxBotLinkMock({
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: 'chat-1',
+        primaryBotId: 'draining-primary-bot',
+        botId: 'active-alternate-bot',
+        candidateBotIds: ['active-alternate-bot'],
+        reason: 'alternate_confirmed',
+      }),
+      resolveBotIdForSend: jest.fn().mockResolvedValue('draining-primary-bot'),
+      resolveBotId: jest.fn().mockResolvedValue('draining-primary-bot'),
+    });
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    const result = await service.sendBroadcast(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: 'Маршрут через активного бота',
+        textFormat: 'plain',
+        targetMode: 'current',
+        targetChatIds: ['chat-1'],
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+      },
+    );
+
+    expect(result.sentChats).toBe(1);
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledWith({
+      purpose: 'send_message',
+      chatId: 'chat-1',
+    });
+    expect(maxBotLinkService.resolveBotIdForSend).not.toHaveBeenCalled();
+    expect(maxBotLinkService.resolveBotId).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      'chat-1',
+      'Маршрут через активного бота',
+      undefined,
+      expect.objectContaining({
+        botId: 'active-alternate-bot',
+        sourceTag: 'managed_broadcast',
+      }),
+    );
+    expect(deliveries[0]).toEqual(
+      expect.objectContaining({
+        targetChatId: 'chat-1',
+        botId: 'active-alternate-bot',
+        status: 'SENT',
+        remoteMessageId: 'mid-broadcast-active-alternate-1',
+      }),
+    );
+  });
+
   it('sends a chat broadcast only to selected chats and dedupes target ids', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
 
@@ -39447,16 +39567,30 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         .fn()
         .mockResolvedValue({ messageId: 'mid-new-engagement-1', url: null }),
     };
+    const maxBotLinkService = createAdminMaxBotLinkMock({
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: 'channel-1',
+        primaryBotId: 'channel-bot-2',
+        botId: 'channel-bot-5',
+        candidateBotIds: ['channel-bot-5', 'channel-bot-2'],
+        reason: 'alternate_confirmed',
+      }),
+      resolveBotIdForSend: jest.fn().mockResolvedValue('channel-bot-2'),
+      resolveBotId: jest.fn().mockResolvedValue('channel-bot-2'),
+    });
 
     const service = new AdminService(
       prisma as never,
       maxClient as never,
       createChatContextCacheMock() as never,
       createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
     );
-    jest
-      .spyOn(service as any, 'resolveChannelEngagementActionBotId')
-      .mockResolvedValue('channel-bot-5');
 
     const result = await service.publishChannelEngagementMessage(
       'channel-1',
@@ -39496,6 +39630,12 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
       }),
     );
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledWith({
+      purpose: 'send_message',
+      chatId: 'channel-1',
+    });
+    expect(maxBotLinkService.resolveBotIdForSend).not.toHaveBeenCalled();
+    expect(maxBotLinkService.resolveBotId).not.toHaveBeenCalled();
     expect(prisma.channelSettings.update).toHaveBeenCalledWith({
       where: { chatId: 'channel-1' },
       data: {
@@ -39518,6 +39658,210 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       messageId: 'mid-new-engagement-1',
       updatedExisting: false,
     });
+  });
+
+  it('edits legacy channel engagement through a delete-capable route instead of a write-only send bot', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.upsert.mockResolvedValue({
+      chatId: 'channel-1',
+      engagementPublishedMessageId: 'mid-legacy-engagement-1',
+      engagementPublishedBotId: null,
+      engagementPublishedThreadId: 'thread-legacy-1',
+      engagementPublishedAt: new Date('2026-03-10T12:00:00.000Z'),
+      postSuggestionsEntryMode: 'BOT',
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      sendMessageImmediateWithResolvedLink: jest.fn(),
+    };
+    const maxBotLinkService = createAdminMaxBotLinkMock({
+      resolveBotRoute: jest.fn().mockImplementation(async (request: { purpose: string }) => {
+        if (request.purpose === 'moderation_action') {
+          return {
+            purpose: 'moderation_action',
+            chatId: 'channel-1',
+            primaryBotId: 'write-only-bot',
+            botId: 'edit-delete-standby-bot',
+            candidateBotIds: ['edit-delete-standby-bot'],
+            reason: 'alternate_confirmed',
+            action: 'delete_message',
+          };
+        }
+
+        return {
+          purpose: 'send_message',
+          chatId: 'channel-1',
+          primaryBotId: 'write-only-bot',
+          botId: 'write-only-bot',
+          candidateBotIds: ['write-only-bot'],
+          reason: 'primary_confirmed',
+        };
+      }),
+      resolveBotIdForSend: jest.fn().mockResolvedValue('write-only-bot'),
+      resolveBotId: jest.fn().mockResolvedValue('write-only-bot'),
+    });
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    const result = await service.publishChannelEngagementMessage(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: 'Обновленный текст legacy-поста.',
+        commentsButtonText: 'Комментарии',
+        suggestButtonText: 'Предложить пост',
+      },
+    );
+
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledWith({
+      purpose: 'moderation_action',
+      chatId: 'channel-1',
+      action: 'delete_message',
+      fallbackToPrimary: true,
+    });
+    expect(maxBotLinkService.resolveBotRoute).not.toHaveBeenCalledWith({
+      purpose: 'send_message',
+      chatId: 'channel-1',
+    });
+    expect(maxBotLinkService.resolveBotIdForSend).not.toHaveBeenCalled();
+    expect(maxBotLinkService.resolveBotId).not.toHaveBeenCalled();
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-legacy-engagement-1',
+      'Обновленный текст legacy-поста.',
+      expect.objectContaining({
+        buttons: expect.any(Array),
+      }),
+      expect.objectContaining({
+        botId: 'edit-delete-standby-bot',
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+      }),
+    );
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(prisma.channelSettings.update).toHaveBeenCalledWith({
+      where: { chatId: 'channel-1' },
+      data: {
+        engagementPublishedMessageId: 'mid-legacy-engagement-1',
+        engagementPublishedBotId: 'edit-delete-standby-bot',
+        engagementPublishedThreadId: 'thread-legacy-1',
+        engagementPublishedAt: new Date('2026-03-10T12:00:00.000Z'),
+      },
+    });
+    expect(result).toMatchObject({
+      messageId: 'mid-legacy-engagement-1',
+      updatedExisting: true,
+    });
+  });
+
+  it('does not edit legacy channel engagement through the default bot when no edit route is executable', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.upsert.mockResolvedValue({
+      chatId: 'channel-1',
+      engagementPublishedMessageId: 'mid-legacy-engagement-denied-1',
+      engagementPublishedBotId: null,
+      engagementPublishedThreadId: 'thread-legacy-denied-1',
+      engagementPublishedAt: new Date('2026-03-10T12:00:00.000Z'),
+      postSuggestionsEntryMode: 'BOT',
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      editMessageInlineKeyboard: jest.fn(),
+      sendMessageImmediateWithResolvedLink: jest.fn(),
+    };
+    const maxBotLinkService = createAdminMaxBotLinkMock({
+      resolveBotRoute: jest.fn().mockImplementation(async (request: { purpose: string }) => {
+        if (request.purpose === 'moderation_action') {
+          return {
+            purpose: 'moderation_action',
+            chatId: 'channel-1',
+            primaryBotId: 'write-only-bot',
+            botId: null,
+            candidateBotIds: [],
+            reason: null,
+            action: 'delete_message',
+          };
+        }
+
+        return {
+          purpose: 'send_message',
+          chatId: 'channel-1',
+          primaryBotId: 'write-only-bot',
+          botId: 'write-only-bot',
+          candidateBotIds: ['write-only-bot'],
+          reason: 'primary_confirmed',
+        };
+      }),
+      resolveBotIdForSend: jest.fn().mockResolvedValue('write-only-bot'),
+      resolveBotId: jest.fn().mockResolvedValue('write-only-bot'),
+    });
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.publishChannelEngagementMessage(
+        'channel-1',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        {
+          text: 'Этот legacy-пост нельзя безопасно обновить.',
+          commentsButtonText: 'Комментарии',
+          suggestButtonText: 'Предложить пост',
+        },
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledWith({
+      purpose: 'moderation_action',
+      chatId: 'channel-1',
+      action: 'delete_message',
+      fallbackToPrimary: true,
+    });
+    expect(maxBotLinkService.resolveBotRoute).not.toHaveBeenCalledWith({
+      purpose: 'send_message',
+      chatId: 'channel-1',
+    });
+    expect(maxBotLinkService.resolveBotIdForSend).not.toHaveBeenCalled();
+    expect(maxBotLinkService.resolveBotId).not.toHaveBeenCalled();
+    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
   });
 
   it('rejects empty channel comments without attachments and stores uploaded attachments', async () => {

@@ -151,6 +151,75 @@ describe('ModerationService shared chat ownership', () => {
     });
   });
 
+  it('skips owner-stamped standby updates while the owner failed delivery is retryable', async () => {
+    const prisma = {
+      webhookEvent: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'owner-retryable-failed-event' }),
+      },
+    };
+    const maxBotContextService = {
+      getActiveBotId: jest.fn().mockReturnValue('bot-2'),
+    };
+    const maxBotLinkService = {
+      getChatExecutionBinding: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+      maxBotContextService as never,
+    );
+    const update = {
+      ...createGroupMessageUpdate('message_created', 'bot-2'),
+      executionOwnerBotId: 'bot-1',
+    } as MaxUpdate & { executionOwnerBotId: string };
+
+    await expect(
+      (
+        service as unknown as {
+          resolveSharedChatExecutionGuard: (
+            update: MaxUpdate,
+            chatId: string,
+          ) => Promise<{
+            mode: 'allow' | 'skip' | 'blocked-join-check-only';
+            activeBotId: string | null;
+            primaryBotId: string | null;
+            assignedBotIds: string[];
+            reason?: string;
+          }>;
+        }
+      ).resolveSharedChatExecutionGuard(update, '-100123'),
+    ).resolves.toEqual({
+      mode: 'skip',
+      activeBotId: 'bot-2',
+      primaryBotId: 'bot-1',
+      assignedBotIds: ['bot-1'],
+      reason: 'non-primary-bot',
+    });
+    expect(prisma.webhookEvent.findFirst).toHaveBeenCalledWith({
+      where: {
+        dedupKey: 'bot-1:upd-message_created-1',
+        botId: 'bot-1',
+        OR: [
+          { status: { in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED, WebhookStatus.PROCESSED] } },
+          { status: WebhookStatus.FAILED, nextEnqueueAt: { not: null } },
+        ],
+      },
+      select: {
+        id: true,
+      },
+    });
+  });
+
   it('processes owner-stamped standby updates as recovery when owner delivery is absent', async () => {
     const prisma = {
       webhookEvent: {
@@ -206,6 +275,77 @@ describe('ModerationService shared chat ownership', () => {
       assignedBotIds: ['bot-1', 'bot-2'],
       requiresExecutionLock: true,
       lockScope: 'chat',
+    });
+  });
+
+  it('processes owner-stamped standby updates as recovery when owner failure is terminal', async () => {
+    const prisma = {
+      webhookEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+    };
+    const maxBotContextService = {
+      getActiveBotId: jest.fn().mockReturnValue('bot-2'),
+    };
+    const maxBotLinkService = {
+      getChatExecutionBinding: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+      maxBotContextService as never,
+    );
+    const update = {
+      ...createGroupMessageUpdate('message_created', 'bot-2'),
+      executionOwnerBotId: 'bot-1',
+    } as MaxUpdate & { executionOwnerBotId: string };
+
+    await expect(
+      (
+        service as unknown as {
+          resolveSharedChatExecutionGuard: (
+            update: MaxUpdate,
+            chatId: string,
+          ) => Promise<{
+            mode: 'allow' | 'skip' | 'blocked-join-check-only';
+            activeBotId: string | null;
+            primaryBotId: string | null;
+            assignedBotIds: string[];
+            requiresExecutionLock?: boolean;
+            lockScope?: 'owner' | 'chat';
+          }>;
+        }
+      ).resolveSharedChatExecutionGuard(update, '-100123'),
+    ).resolves.toEqual({
+      mode: 'allow',
+      activeBotId: 'bot-2',
+      primaryBotId: 'bot-1',
+      assignedBotIds: ['bot-1', 'bot-2'],
+      requiresExecutionLock: true,
+      lockScope: 'chat',
+    });
+    expect(prisma.webhookEvent.findFirst).toHaveBeenCalledWith({
+      where: {
+        dedupKey: 'bot-1:upd-message_created-1',
+        botId: 'bot-1',
+        OR: [
+          { status: { in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED, WebhookStatus.PROCESSED] } },
+          { status: WebhookStatus.FAILED, nextEnqueueAt: { not: null } },
+        ],
+      },
+      select: {
+        id: true,
+      },
     });
   });
 

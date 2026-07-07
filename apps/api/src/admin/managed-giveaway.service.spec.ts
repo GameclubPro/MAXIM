@@ -1625,7 +1625,7 @@ describe('ManagedGiveawayService', () => {
     );
   });
 
-  it('uses the unified send route for giveaway publication sends when available', async () => {
+  it('uses the active unified send route for giveaway publication instead of a stale primary', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-21T12:36:00.000Z'));
 
     const prisma = createPrismaMock();
@@ -1635,16 +1635,25 @@ describe('ManagedGiveawayService', () => {
       getChannelSettings: jest.fn().mockResolvedValue({}),
       getSettings: jest.fn().mockResolvedValue({}),
     };
+    prisma.chat.findUnique.mockResolvedValue({
+      primaryBotId: 'draining-primary-bot',
+      botId: 'draining-primary-bot',
+    });
     const maxBotLinkService = {
-      ...createMaxBotLinkMock(),
+      ...createMaxBotLinkMock({
+        resolvedBotId: 'active-giveaway-bot',
+        entryBotId: 'active-giveaway-bot',
+      }),
       resolveBotRoute: jest.fn().mockResolvedValue({
         purpose: 'send_message',
         chatId: 'source-route-1',
-        primaryBotId: 'id613002203036_4_bot',
-        botId: 'id613002203036_4_bot',
-        candidateBotIds: ['id613002203036_4_bot'],
-        reason: 'primary_confirmed',
+        primaryBotId: 'draining-primary-bot',
+        botId: 'active-giveaway-bot',
+        candidateBotIds: ['active-giveaway-bot'],
+        reason: 'alternate_confirmed',
       }),
+      resolveBotIdForSend: jest.fn().mockResolvedValue('draining-primary-bot'),
+      resolveBotId: jest.fn().mockResolvedValue('draining-primary-bot'),
     };
     const service = new ManagedGiveawayService(
       prisma as never,
@@ -1700,12 +1709,12 @@ describe('ManagedGiveawayService', () => {
             expect.objectContaining({
               type: 'link',
               text: 'Участвовать · 0',
-              url: expect.stringContaining('https://max.ru/id613002203036_4_bot?startapp=gg-'),
+              url: expect.stringContaining('https://max.ru/active-giveaway-bot?startapp=gg-'),
             }),
           ],
         ],
       }),
-      expectManagedGiveawaySendOptions({ botId: 'id613002203036_4_bot' }),
+      expectManagedGiveawaySendOptions({ botId: 'active-giveaway-bot' }),
     );
   });
 

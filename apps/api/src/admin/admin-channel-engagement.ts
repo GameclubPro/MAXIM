@@ -54,6 +54,7 @@ export async function publishChannelEngagementMessage(params: {
   actorUserId: string;
   body: unknown;
   resolveBotId: () => Promise<string | undefined> | string | undefined;
+  resolveEditBotId?: () => Promise<string | undefined> | string | undefined;
   buildDialogArtifacts: (
     params: BuildChannelEngagementDialogArtifactsParams,
   ) => ChannelEngagementDialogArtifacts;
@@ -79,7 +80,26 @@ export async function publishChannelEngagementMessage(params: {
       postSuggestionsEntryMode: true,
     },
   });
-  const resolvedBotId = await params.resolveBotId();
+  let sendBotIdResolved = false;
+  let resolvedSendBotId: string | undefined;
+  const resolveSendBotId = async () => {
+    if (!sendBotIdResolved) {
+      resolvedSendBotId = await params.resolveBotId();
+      sendBotIdResolved = true;
+    }
+    return resolvedSendBotId;
+  };
+  let editBotIdResolved = false;
+  let resolvedEditBotId: string | undefined;
+  const resolveEditBotId = async () => {
+    if (!editBotIdResolved) {
+      resolvedEditBotId = params.resolveEditBotId
+        ? await params.resolveEditBotId()
+        : await resolveSendBotId();
+      editBotIdResolved = true;
+    }
+    return resolvedEditBotId;
+  };
 
   const existingPublishedMessageId = persistedSettings.engagementPublishedMessageId?.trim() ?? '';
   const existingPublishedBotId = persistedSettings.engagementPublishedBotId?.trim() || undefined;
@@ -105,7 +125,9 @@ export async function publishChannelEngagementMessage(params: {
     return { ...artifacts, buttons };
   };
 
-  let authorBotId = existingPublishedBotId ?? resolvedBotId;
+  let authorBotId =
+    existingPublishedBotId ??
+    (existingPublishedMessageId ? await resolveEditBotId() : await resolveSendBotId());
   let { buttons, commentsUrl, suggestPayload, suggestUrl } = buildArtifactsForBot(authorBotId);
   const buildRequestOptions = (botId: string | undefined) => ({
     ...CHANNEL_ENGAGEMENT_MAX_API_OPTIONS,
@@ -141,7 +163,7 @@ export async function publishChannelEngagementMessage(params: {
 
       recreatedFromMessageId = messageId;
       messageId = '';
-      authorBotId = resolvedBotId;
+      authorBotId = await resolveSendBotId();
       ({ buttons, commentsUrl, suggestPayload, suggestUrl } = buildArtifactsForBot(authorBotId));
     }
   }

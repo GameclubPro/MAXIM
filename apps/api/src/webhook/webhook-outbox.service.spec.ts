@@ -959,6 +959,96 @@ describe('WebhookOutboxService', () => {
     );
   });
 
+  it('skips standby shared-chat events while the owner failed delivery is retryable', async () => {
+    const chatId = '-100123';
+    const retryAt = new Date(Date.now() + 15_000);
+    const { service, prisma, queues } = createService({
+      findManyResult: [
+        {
+          id: 'evt-owner-retryable-failed',
+          status: WebhookStatus.FAILED,
+          enqueueAttempts: 1,
+          botId: 'id613002203036_bot',
+          nextEnqueueAt: retryAt,
+          normalizedPayload: {
+            updateId: 'u-owner-retryable-failed',
+            type: 'message_created',
+            botId: 'id613002203036_bot',
+            executionOwnerBotId: 'id613002203036_bot',
+            message: { chatId },
+          },
+        },
+        {
+          id: 'evt-standby-owner-retryable',
+          enqueueAttempts: 0,
+          botId: 'id613002203036_4_bot',
+          normalizedPayload: {
+            updateId: 'u-owner-retryable-failed',
+            type: 'message_created',
+            botId: 'id613002203036_4_bot',
+            executionOwnerBotId: 'id613002203036_bot',
+            message: { chatId },
+          },
+        },
+      ],
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    const queuedIds = DEFAULT_WEBHOOK_QUEUE_NAMES.flatMap((queueName) =>
+      queues[queueName].add.mock.calls.map((call) => call[1].webhookEventId),
+    );
+    const processedIds = prisma.webhookEvent.updateMany.mock.calls
+      .filter(([args]) => args.data.status === WebhookStatus.PROCESSED)
+      .map(([args]) => args.where.id);
+
+    expect(queuedIds).toEqual([]);
+    expect(processedIds).toContain('evt-standby-owner-retryable');
+  });
+
+  it('enqueues standby shared-chat events when the owner failed delivery is terminal', async () => {
+    const chatId = '-100123';
+    const queueName = resolveDefaultWebhookQueueNameForChatId(chatId);
+    const { service, queues } = createService({
+      findManyResult: [
+        {
+          id: 'evt-owner-terminal-failed',
+          status: WebhookStatus.FAILED,
+          enqueueAttempts: 120,
+          botId: 'id613002203036_bot',
+          nextEnqueueAt: null,
+          normalizedPayload: {
+            updateId: 'u-owner-terminal-failed',
+            type: 'message_created',
+            botId: 'id613002203036_bot',
+            executionOwnerBotId: 'id613002203036_bot',
+            message: { chatId },
+          },
+        },
+        {
+          id: 'evt-standby-owner-terminal',
+          enqueueAttempts: 0,
+          botId: 'id613002203036_4_bot',
+          normalizedPayload: {
+            updateId: 'u-owner-terminal-failed',
+            type: 'message_created',
+            botId: 'id613002203036_4_bot',
+            executionOwnerBotId: 'id613002203036_bot',
+            message: { chatId },
+          },
+        },
+      ],
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    expect(queues[queueName].add).toHaveBeenCalledWith(
+      'process-webhook-event',
+      { webhookEventId: 'evt-standby-owner-terminal' },
+      expect.objectContaining({ jobId: 'evt-standby-owner-terminal' }),
+    );
+  });
+
   it('skips N-way mirrored standby message_created events before BullMQ and enqueues only the owner', async () => {
     const chatId = '-100123';
     const ownerBotId = 'bot-1';
@@ -1085,6 +1175,43 @@ describe('WebhookOutboxService', () => {
         data: expect.objectContaining({
           status: WebhookStatus.QUEUED,
           queueName,
+        }),
+      }),
+    );
+  });
+
+  it('enqueues standby-only shared-chat user_removed events as recovery deliveries', async () => {
+    const chatId = '-100123';
+    const { service, prisma, queues } = createService({
+      findManyResult: [
+        {
+          id: 'evt-standby-user-removed',
+          enqueueAttempts: 0,
+          botId: 'id613002203036_4_bot',
+          normalizedPayload: {
+            updateId: 'u-standby-user-removed-only',
+            type: 'user_removed',
+            botId: 'id613002203036_4_bot',
+            executionOwnerBotId: 'id613002203036_bot',
+            user: { chatId },
+            chatId,
+          },
+        },
+      ],
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    expect(queues.backgroundQueue.add).toHaveBeenCalledWith(
+      'process-webhook-event',
+      { webhookEventId: 'evt-standby-user-removed' },
+      expect.objectContaining({ jobId: 'evt-standby-user-removed' }),
+    );
+    expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: WebhookStatus.QUEUED,
+          queueName: 'moderation-background',
         }),
       }),
     );

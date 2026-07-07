@@ -10603,7 +10603,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
 
-    this.logger.warn(
+    this.logger.debug(
       {
         updateId,
         updateType: this.readLowerString(update.type),

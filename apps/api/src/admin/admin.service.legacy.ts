@@ -7037,6 +7037,7 @@ export class AdminService implements OnModuleDestroy {
       actorUserId: user.userId,
       body,
       resolveBotId: () => this.resolveChannelEngagementActionBotId(chatId),
+      resolveEditBotId: () => this.resolveChannelEngagementEditBotId(chatId),
       buildDialogArtifacts: (params) => this.buildChannelEngagementDialogArtifacts(params),
     });
   }
@@ -13775,6 +13776,25 @@ export class AdminService implements OnModuleDestroy {
 
   async resolveChannelEngagementActionBotId(chatId: string): Promise<string | undefined> {
     return this.resolveSendActionBotAssignment(chatId, ChatEntityType.CHANNEL);
+  }
+
+  async resolveChannelEngagementEditBotId(chatId: string): Promise<string | undefined> {
+    const route = await this.resolveUnifiedBotRoute({
+      purpose: 'moderation_action',
+      chatId,
+      action: 'delete_message',
+      fallbackToPrimary: true,
+    });
+    if (route) {
+      if (route.botId) {
+        return route.botId;
+      }
+      throw new ForbiddenException(
+        'Не найден бот MAX с подтвержденным правом обновить опубликованный пост канала.',
+      );
+    }
+
+    return this.resolveManualModerationActionBotAssignment(chatId, 'delete_message');
   }
 
   normalizeChatSettingsForApply(sourceChatId: string, settings: ChatSettings): ChatSettings {
