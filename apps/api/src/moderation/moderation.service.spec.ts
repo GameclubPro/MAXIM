@@ -14842,6 +14842,86 @@ describe('ModerationService', () => {
     });
   });
 
+  it('deduplicates mirrored multi-bot link violation deliveries by message id', async () => {
+    const redisCounter = createRedisCounterMock();
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            linkBotMessageEnabled: true,
+            linkWarnEnabled: true,
+            linkMuteEnabled: true,
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+        count: jest.fn().mockResolvedValue(1),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [{ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: 'Link detected' }],
+      }),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      redisCounter as never,
+    );
+
+    await service.handleUpdate({
+      ...createUpdate(),
+      updateId: 'upd-owner-link-1',
+      botId: 'bot-1',
+    });
+    await service.handleUpdate({
+      ...createUpdate(),
+      updateId: 'upd-standby-link-1',
+      botId: 'bot-2',
+    });
+
+    expect(ruleEngine.detect).toHaveBeenCalledTimes(2);
+    expect(prisma.violation.create).toHaveBeenCalledTimes(1);
+    expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+      'chat-1',
+      majorExplanation('Алексей', 'снято с линии', 'в этом чате ссылки не проходят, без ссылок'),
+    );
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
+    expect(redisCounter.incrementOncePerMemberWithTtl).toHaveBeenCalledWith(
+      expect.stringContaining('moderation:violation-message:v1:chat-1:LINK_BLOCKED'),
+      expect.stringContaining('moderation:violation-message:v1:chat-1:LINK_BLOCKED:msg:'),
+      8 * 24 * 60 * 60,
+    );
+  });
+
   it('sends link explanation with inline button when button toggle is enabled', async () => {
     const prisma = {
       chat: {

@@ -810,6 +810,65 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       },
     });
 
+    if (ownerEvent) {
+      return true;
+    }
+
+    return this.hasMatchingOwnerWebhookMessageEvent(event, payload, ownerBotId);
+  }
+
+  private async hasMatchingOwnerWebhookMessageEvent(
+    event: WebhookEnqueueCandidate,
+    payload: Record<string, unknown>,
+    ownerBotId: string,
+  ): Promise<boolean> {
+    const updateType = this.readLowerString(payload.type);
+    if (updateType !== 'message_created' && updateType !== 'message_edited') {
+      return false;
+    }
+
+    const message =
+      payload.message && typeof payload.message === 'object'
+        ? (payload.message as Record<string, unknown>)
+        : null;
+    const chatId = this.readTrimmedString(message?.chatId);
+    const messageId = this.readTrimmedString(message?.messageId);
+    if (!chatId || !messageId) {
+      return false;
+    }
+
+    const ownerEvent = await this.prisma.webhookEvent.findFirst({
+      where: {
+        id: { not: event.id },
+        botId: ownerBotId,
+        normalizedPayload: {
+          path: ['type'],
+          equals: updateType,
+        },
+        AND: [
+          {
+            normalizedPayload: {
+              path: ['message', 'chatId'],
+              equals: chatId,
+            },
+          },
+          {
+            normalizedPayload: {
+              path: ['message', 'messageId'],
+              equals: messageId,
+            },
+          },
+        ],
+        OR: [
+          { status: { in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED, WebhookStatus.PROCESSED] } },
+          { status: WebhookStatus.FAILED, nextEnqueueAt: { not: null } },
+        ],
+      },
+      select: {
+        id: true,
+      },
+    });
+
     return Boolean(ownerEvent);
   }
 

@@ -98,6 +98,43 @@ function matchesScalarFilter<T>(value: T | null, filter: unknown): boolean {
   return value === filter;
 }
 
+function readJsonPath(value: unknown, path: readonly unknown[]): unknown {
+  let current = value;
+  for (const part of path) {
+    if (
+      !current ||
+      typeof current !== 'object' ||
+      Array.isArray(current) ||
+      typeof part !== 'string'
+    ) {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
+}
+
+function matchesJsonFilter(value: unknown, filter: unknown): boolean {
+  if (filter === undefined) {
+    return true;
+  }
+
+  if (!filter || typeof filter !== 'object') {
+    return value === filter;
+  }
+
+  const row = filter as { path?: unknown; equals?: unknown };
+  if (Array.isArray(row.path)) {
+    return readJsonPath(value, row.path) === row.equals;
+  }
+
+  if ('equals' in row) {
+    return value === row.equals;
+  }
+
+  return true;
+}
+
 function matchesWebhookEventWhere(
   row: MockWebhookEventRow,
   where: Record<string, unknown> | undefined,
@@ -141,6 +178,10 @@ function matchesWebhookEventWhere(
   }
 
   if (!matchesScalarFilter(row.queueName, where.queueName)) {
+    return false;
+  }
+
+  if (!matchesJsonFilter(row.normalizedPayload, where.normalizedPayload)) {
     return false;
   }
 
@@ -1103,6 +1144,71 @@ describe('WebhookOutboxService', () => {
     );
     expect(processedIds).toEqual(standbyEventIds.sort());
     expect(queuedIds).toEqual([ownerEventId]);
+  });
+
+  it('skips mirrored standby message_created events by message id when bot update ids differ', async () => {
+    const chatId = '-100123';
+    const messageId = 'mid-shared-link-1';
+    const ownerBotId = 'bot-1';
+    const standbyBotId = 'bot-2';
+    const ownerQueueName = resolveDefaultWebhookQueueNameForChatId(chatId);
+    const { service, prisma, queues } = createService({
+      findManyResult: [
+        {
+          id: 'evt-owner-distinct-update',
+          enqueueAttempts: 0,
+          botId: ownerBotId,
+          normalizedPayload: {
+            updateId: 'u-owner-distinct',
+            type: 'message_created',
+            botId: ownerBotId,
+            executionOwnerBotId: ownerBotId,
+            message: {
+              chatId,
+              messageId,
+            },
+          },
+        },
+        {
+          id: 'evt-standby-distinct-update',
+          enqueueAttempts: 0,
+          botId: standbyBotId,
+          normalizedPayload: {
+            updateId: 'u-standby-distinct',
+            type: 'message_created',
+            botId: standbyBotId,
+            executionOwnerBotId: ownerBotId,
+            message: {
+              chatId,
+              messageId,
+            },
+          },
+        },
+      ],
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    const defaultQueueAdds = DEFAULT_WEBHOOK_QUEUE_NAMES.flatMap((queueName) =>
+      queues[queueName].add.mock.calls.map((call) => call[1].webhookEventId),
+    );
+    const processedIds = prisma.webhookEvent.updateMany.mock.calls
+      .filter(([args]) => args.data.status === WebhookStatus.PROCESSED)
+      .map(([args]) => args.where.id)
+      .sort();
+    const queuedIds = prisma.webhookEvent.updateMany.mock.calls
+      .filter(([args]) => args.data.status === WebhookStatus.QUEUED)
+      .map(([args]) => args.where.id)
+      .sort();
+
+    expect(defaultQueueAdds).toEqual(['evt-owner-distinct-update']);
+    expect(queues[ownerQueueName].add).toHaveBeenCalledWith(
+      'process-webhook-event',
+      { webhookEventId: 'evt-owner-distinct-update' },
+      expect.objectContaining({ jobId: 'evt-owner-distinct-update' }),
+    );
+    expect(processedIds).toEqual(['evt-standby-distinct-update']);
+    expect(queuedIds).toEqual(['evt-owner-distinct-update']);
   });
 
   it('enqueues standby-only shared-chat message_edited events as recovery deliveries', async () => {

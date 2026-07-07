@@ -427,6 +427,7 @@ const CHAT_AUTO_COMMENT_ATTACH_STATUS = {
 
 const CHANNEL_AUTO_POST_ATTACH_LOCK_TTL_MS = 2 * 60_000;
 const CHAT_AUTO_COMMENT_ATTACH_LOCK_TTL_MS = 2 * 60_000;
+const VIOLATION_MESSAGE_PROCESSING_TTL_SEC = 8 * 24 * 60 * 60;
 
 @Injectable()
 export class ModerationService implements OnModuleInit, OnModuleDestroy {
@@ -1782,6 +1783,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           : true;
       const isCommercialReviewOnly =
         topViolation.ruleCode === 'COMMERCIAL_AD' && !commercialRecordable;
+      const violationClaimed = await this.claimMessageViolationProcessing({
+        chatId,
+        userId: senderId,
+        messageId,
+        ruleCode: topViolation.ruleCode,
+        updateType,
+      });
+      if (!violationClaimed) {
+        this.markWebhookHotPathSuccessBoundary(hotPathProfile, 'violation-dedup');
+        return;
+      }
 
       if (!isCommercialReviewOnly) {
         this.markWebhookHotPathStage(hotPathProfile, 'violation-record');
@@ -1875,6 +1887,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                 chatId,
                 senderId,
                 settings.linkEscalationWindowHours,
+                { messageId, updateType },
               )
             : null;
         const isPhoneNumberHit = topViolation.ruleCode === 'PHONE_NUMBER_BLOCKED';
@@ -1936,19 +1949,29 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             )
           : null;
         const textFilterViolationCount24h = isTextFilterHit
-          ? await this.countRecentTextFilterViolations(chatId, senderId, topViolation.ruleCode)
+          ? await this.countRecentTextFilterViolations(chatId, senderId, topViolation.ruleCode, {
+              messageId,
+              updateType,
+            })
           : null;
         const topicFilterViolationCount24h = isTopicFilterHit
-          ? await this.countRecentTopicFilterViolations(chatId, senderId, topViolation.ruleCode)
+          ? await this.countRecentTopicFilterViolations(chatId, senderId, topViolation.ruleCode, {
+              messageId,
+              updateType,
+            })
           : null;
         const messageLimitsViolationCount12h = isMessageLimitsHit
-          ? await this.countRecentMessageLimitsViolations(chatId, senderId, topViolation.ruleCode)
+          ? await this.countRecentMessageLimitsViolations(chatId, senderId, topViolation.ruleCode, {
+              messageId,
+              updateType,
+            })
           : null;
         const phoneNumbersViolationCount = isPhoneNumberHit
           ? await this.countRecentPhoneNumberViolations(
               chatId,
               senderId,
               settings.phoneNumbersEscalationWindowHours,
+              { messageId, updateType },
             )
           : null;
         const sendChatBotMessage = async (
@@ -5153,6 +5176,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string;
     ruleKey: string;
     windowMs: number;
+    messageId?: string | null;
+    updateType?: string | null;
     loadCount: () => Promise<number>;
   }): Promise<number> {
     const windowSec = Math.max(1, Math.ceil(params.windowMs / 1_000));
@@ -5160,6 +5185,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const redisCounter = this.redisCounter as Partial<RedisCounterService> | undefined;
     const getString = redisCounter?.getString;
     const incrementWithTtl = redisCounter?.incrementWithTtl;
+    const incrementOncePerMemberWithTtl = redisCounter?.incrementOncePerMemberWithTtl;
     const setStringWithTtl = redisCounter?.setStringWithTtl;
     if (!this.redisCounter || !getString || !incrementWithTtl || !setStringWithTtl) {
       return this.normalizeRecentViolationCount(await params.loadCount());
@@ -5171,10 +5197,24 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       ruleKey: params.ruleKey,
       windowSec,
     });
+    const memberKey = this.buildModerationEscalationCounterMemberKey({
+      counterKey,
+      messageId: params.messageId,
+      updateType: params.updateType,
+    });
 
     try {
       const cachedValue = await getString.call(this.redisCounter, counterKey);
       if (cachedValue !== null) {
+        if (memberKey && incrementOncePerMemberWithTtl) {
+          const result = await incrementOncePerMemberWithTtl.call(
+            this.redisCounter,
+            counterKey,
+            memberKey,
+            ttlSec,
+          );
+          return this.normalizeRecentViolationCount(result.count);
+        }
         return this.normalizeRecentViolationCount(
           await incrementWithTtl.call(this.redisCounter, counterKey, ttlSec),
         );
@@ -5195,6 +5235,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const persistedCount = this.normalizeRecentViolationCount(await params.loadCount());
     try {
       await setStringWithTtl.call(this.redisCounter, counterKey, String(persistedCount), ttlSec);
+      if (memberKey) {
+        await setStringWithTtl.call(this.redisCounter, memberKey, '1', ttlSec);
+      }
     } catch (error: unknown) {
       this.logger.debug(
         {
@@ -5210,6 +5253,141 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return persistedCount;
   }
 
+  private async claimMessageViolationProcessing(params: {
+    chatId: string;
+    userId: string;
+    messageId?: string | null;
+    ruleCode: string;
+    updateType?: string | null;
+  }): Promise<boolean> {
+    const messageId = params.messageId?.trim();
+    if (!messageId) {
+      return true;
+    }
+
+    const updateType = params.updateType?.trim().toLowerCase() || 'message';
+    const semanticHash = createHash('sha256')
+      .update(`${params.chatId}:${params.userId}:${messageId}:${params.ruleCode}:${updateType}`)
+      .digest('hex')
+      .slice(0, 32);
+    const counterKey = `moderation:violation-message:v1:${params.chatId}:${params.ruleCode}`;
+    const memberKey = `${counterKey}:msg:${semanticHash}`;
+    const incrementOncePerMemberWithTtl = (
+      this.redisCounter as Partial<RedisCounterService> | undefined
+    )?.incrementOncePerMemberWithTtl;
+
+    if (this.redisCounter && incrementOncePerMemberWithTtl) {
+      try {
+        const result = await incrementOncePerMemberWithTtl.call(
+          this.redisCounter,
+          counterKey,
+          memberKey,
+          VIOLATION_MESSAGE_PROCESSING_TTL_SEC,
+        );
+        if (!result.inserted) {
+          this.logger.debug(
+            {
+              chatId: params.chatId,
+              userId: params.userId,
+              messageId,
+              ruleCode: params.ruleCode,
+              updateType,
+            },
+            'Skipped duplicate moderation violation follow-up for already processed message',
+          );
+        }
+        return result.inserted;
+      } catch (error: unknown) {
+        this.logger.debug(
+          {
+            chatId: params.chatId,
+            userId: params.userId,
+            messageId,
+            ruleCode: params.ruleCode,
+            updateType,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to claim moderation violation message marker; falling back to persisted events',
+        );
+      }
+    }
+
+    return !(await this.hasPersistedBotModerationEventForMessageViolation({
+      chatId: params.chatId,
+      userId: params.userId,
+      messageId,
+      ruleCode: params.ruleCode,
+    }));
+  }
+
+  private async hasPersistedBotModerationEventForMessageViolation(params: {
+    chatId: string;
+    userId: string;
+    messageId: string;
+    ruleCode: string;
+  }): Promise<boolean> {
+    const moderationEventModel = this.prisma.moderationEvent as unknown as {
+      findFirst?: (args: {
+        where: {
+          chatId: string;
+          userId: string;
+          messageId: string;
+          ruleCode: string;
+          operator: Operator;
+        };
+        select: { id: true };
+      }) => Promise<{ id: string } | null>;
+    };
+
+    if (typeof moderationEventModel.findFirst !== 'function') {
+      return false;
+    }
+
+    try {
+      const existing = await moderationEventModel.findFirst({
+        where: {
+          chatId: params.chatId,
+          userId: params.userId,
+          messageId: params.messageId,
+          ruleCode: params.ruleCode,
+          operator: Operator.BOT,
+        },
+        select: { id: true },
+      });
+      return Boolean(existing);
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId: params.chatId,
+          userId: params.userId,
+          messageId: params.messageId,
+          ruleCode: params.ruleCode,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to inspect persisted moderation event for duplicate violation message',
+      );
+      return false;
+    }
+  }
+
+  private buildModerationEscalationCounterMemberKey(params: {
+    counterKey: string;
+    messageId?: string | null;
+    updateType?: string | null;
+  }): string | null {
+    const messageId = params.messageId?.trim();
+    if (!messageId) {
+      return null;
+    }
+
+    const updateType = params.updateType?.trim().toLowerCase() || 'message';
+    const hash = createHash('sha256')
+      .update(`${updateType}:${messageId}`)
+      .digest('hex')
+      .slice(0, 24);
+    return `${params.counterKey}:msg:${hash}`;
+  }
+
   private normalizeRecentViolationCount(value: number): number {
     return Number.isInteger(value) && value > 0 ? value : 1;
   }
@@ -5218,6 +5396,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     userId: string,
     windowHours: number,
+    context: { messageId?: string | null; updateType?: string | null } = {},
   ): Promise<number> {
     const windowMs =
       this.normalizeEscalationWindowHours(windowHours, LINK_ESCALATION_WINDOW_HOURS) *
@@ -5229,6 +5408,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       userId,
       ruleKey: 'LINK_BLOCKED',
       windowMs,
+      messageId: context.messageId,
+      updateType: context.updateType,
       loadCount: async () => {
         const violationModel = this.prisma.violation as unknown as {
           count?: (args: {
@@ -5264,6 +5445,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     userId: string,
     windowHours: number,
+    context: { messageId?: string | null; updateType?: string | null } = {},
   ): Promise<number> {
     const windowMs =
       this.normalizeEscalationWindowHours(windowHours, MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS) *
@@ -5275,6 +5457,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       userId,
       ruleKey: 'PHONE_NUMBER_BLOCKED',
       windowMs,
+      messageId: context.messageId,
+      updateType: context.updateType,
       loadCount: async () => {
         const violationModel = this.prisma.violation as unknown as {
           count?: (args: {
@@ -5396,6 +5580,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     userId: string,
     ruleCode: string,
+    context: { messageId?: string | null; updateType?: string | null } = {},
   ): Promise<number> {
     const windowMs = TEXT_FILTER_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000;
     const ruleCodeFilter =
@@ -5409,6 +5594,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       userId,
       ruleKey,
       windowMs,
+      messageId: context.messageId,
+      updateType: context.updateType,
       loadCount: async () => {
         const violationModel = this.prisma.violation as unknown as {
           count?: (args: {
@@ -5444,6 +5631,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     userId: string,
     ruleCode: string,
+    context: { messageId?: string | null; updateType?: string | null } = {},
   ): Promise<number> {
     const windowMs = TOPIC_FILTER_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000;
     return this.countRecentViolationsWithEscalationCounter({
@@ -5451,6 +5639,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       userId,
       ruleKey: ruleCode,
       windowMs,
+      messageId: context.messageId,
+      updateType: context.updateType,
       loadCount: async () => {
         const violationModel = this.prisma.violation as unknown as {
           count?: (args: {
@@ -5486,6 +5676,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     userId: string,
     ruleCode: string,
+    context: { messageId?: string | null; updateType?: string | null } = {},
   ): Promise<number> {
     const windowMs = MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000;
     return this.countRecentViolationsWithEscalationCounter({
@@ -5493,6 +5684,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       userId,
       ruleKey: ruleCode,
       windowMs,
+      messageId: context.messageId,
+      updateType: context.updateType,
       loadCount: async () => {
         const violationModel = this.prisma.violation as unknown as {
           count?: (args: {
@@ -10664,7 +10857,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const messageId = update.message?.messageId?.trim() ?? '';
     const callbackId = this.extractCallbackId(update)?.trim() ?? '';
     const updateType = this.readLowerString(update.type);
-    const discriminator = updateId || callbackId || messageId || `${updateType}:${chatId}`;
+    const discriminator =
+      (updateType === 'message_created' || updateType === 'message_edited') && messageId
+        ? `${updateType}:${messageId}`
+        : updateId || callbackId || messageId || `${updateType}:${chatId}`;
     if (guard.lockScope === 'chat') {
       return `shared-chat-execution:v2:chat:${chatId}:${discriminator}`;
     }
