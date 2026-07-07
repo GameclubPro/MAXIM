@@ -6,6 +6,14 @@ describe('WebhookService', () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     await new Promise<void>((resolve) => setImmediate(resolve));
   };
+  const extractSqlText = (query: unknown): string => {
+    const strings = (query as { strings?: unknown[] } | null)?.strings;
+    return Array.isArray(strings) ? strings.map(String).join(' ') : String(query);
+  };
+  const extractSqlValues = (query: unknown): unknown[] => {
+    const values = (query as { values?: unknown[] } | null)?.values;
+    return Array.isArray(values) ? values : [];
+  };
 
   const maxBotLinkService = {
     bindChatToBot: jest.fn().mockResolvedValue(undefined),
@@ -871,6 +879,79 @@ describe('WebhookService', () => {
         }),
       }),
     );
+  });
+
+  it('uses an atomic SQL upsert for managed-entities activity on real Prisma clients', async () => {
+    const eventAt = new Date('2026-04-06T00:03:00.000Z');
+    const prisma = {
+      $executeRaw: jest.fn().mockResolvedValue(1),
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-managed-raw-upsert' }),
+        updateMany: jest.fn(),
+      },
+      managedEntityLocalActivity: {
+        updateMany: jest.fn(),
+        create: jest.fn(),
+        upsert: jest.fn(),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-managed-raw-upsert-1',
+          type: 'message_created',
+          botId: 'id613002203036_bot',
+          message: {
+            messageId: 'mid-managed-raw-upsert-1',
+            chatId: '-100201',
+            chatTitle: 'Новый чат',
+            entityType: 'channel',
+            senderId: 'user-raw',
+            senderName: 'Пользователь',
+            text: 'hello',
+            createdAt: eventAt.toISOString(),
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    await flushDeferredWebhookWork();
+
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(prisma.managedEntityLocalActivity.updateMany).not.toHaveBeenCalled();
+    expect(prisma.managedEntityLocalActivity.create).not.toHaveBeenCalled();
+    expect(prisma.managedEntityLocalActivity.upsert).not.toHaveBeenCalled();
+
+    const rawQuery = prisma.$executeRaw.mock.calls[0]?.[0];
+    const sql = extractSqlText(rawQuery).replace(/\s+/g, ' ');
+    expect(sql).toContain('INSERT INTO managed_entity_local_activities');
+    expect(sql).toContain('ON CONFLICT (user_id, chat_id) DO UPDATE SET');
+    expect(sql).toContain(
+      'chat_title = COALESCE(EXCLUDED.chat_title, managed_entity_local_activities.chat_title)',
+    );
+    expect(sql).toContain(
+      'WHERE managed_entity_local_activities.last_event_at < EXCLUDED.last_event_at',
+    );
+    expect(extractSqlValues(rawQuery)).toEqual([
+      'user-raw',
+      '-100201',
+      'CHANNEL',
+      'Новый чат',
+      'message_created',
+      'id613002203036_bot',
+      eventAt,
+    ]);
   });
 
   it('persists managed-entities activity for chat_title_changed updates', async () => {

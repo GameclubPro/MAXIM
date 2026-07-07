@@ -220,21 +220,60 @@ summarize_bullmq_state() {
 
   remote_command=$(cat <<'REMOTE'
 queues=(
-  webhook-events
-  max-actions
+  moderation
+  moderation-critical
+  moderation-join-0
+  moderation-join-1
+  moderation-join-2
+  moderation-join-3
+  moderation-default-0
+  moderation-default-1
+  moderation-default-2
+  moderation-default-3
+  moderation-default-4
+  moderation-default-5
+  moderation-default-6
+  moderation-default-7
+  moderation-default-8
+  moderation-default-9
+  moderation-default-10
+  moderation-default-11
+  moderation-default-12
+  moderation-default-13
+  moderation-default-14
+  moderation-default-15
+  moderation-background
+  moderation-actions
   night-mode-transitions
   managed-broadcast
-  managed-entities-refresh
-  chat-admin-roster-sync
-  suggestion-delivery
-  manual-fanout
+  admin-managed-entities-refresh
+  max-chat-admin-roster-sync
+  admin-suggestion-delivery
+  admin-manual-fanout
+  admin-super-ban
+  vk-parsing-sync
+  vk-parsing-publish
 )
 docker compose --env-file .env -p infra -f infra/docker-compose.yml exec -T redis sh -lc '
+redis_count() {
+  key="$1"
+  type="$(redis-cli --raw type "$key" 2>/dev/null || true)"
+  case "$type" in
+    none) printf "0\n" ;;
+    list) redis-cli --raw llen "$key" ;;
+    zset) redis-cli --raw zcard "$key" ;;
+    set) redis-cli --raw scard "$key" ;;
+    stream) redis-cli --raw xlen "$key" ;;
+    hash) redis-cli --raw hlen "$key" ;;
+    string) redis-cli --raw strlen "$key" ;;
+    *) printf "unsupported:%s\n" "$type" ;;
+  esac
+}
 for q in "$@"; do
-  printf "%s wait=" "$q"; redis-cli --raw llen "bull:$q:wait"
-  printf "%s active=" "$q"; redis-cli --raw llen "bull:$q:active"
-  printf "%s failed=" "$q"; redis-cli --raw llen "bull:$q:failed"
-  printf "%s delayed=" "$q"; redis-cli --raw zcard "bull:$q:delayed"
+  printf "%s wait=" "$q"; redis_count "bull:$q:wait"
+  printf "%s active=" "$q"; redis_count "bull:$q:active"
+  printf "%s failed=" "$q"; redis_count "bull:$q:failed"
+  printf "%s delayed=" "$q"; redis_count "bull:$q:delayed"
 done
 ' sh "${queues[@]}"
 REMOTE

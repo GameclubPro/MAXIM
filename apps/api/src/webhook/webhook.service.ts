@@ -50,6 +50,20 @@ type MembershipActivityEventModel = {
   }) => Promise<unknown>;
 };
 
+type ManagedEntityLocalActivityProjection = {
+  userId: string;
+  chatId: string;
+  entityType: ChatEntityType;
+  chatTitle?: string | null;
+  sourceEventType: string;
+  botId?: string | null;
+  lastEventAt: Date;
+};
+
+type ManagedEntityLocalActivityRawClient = {
+  $executeRaw?: (query: Prisma.Sql) => Promise<unknown>;
+};
+
 type ExecutionOwnerFailoverRecheckParams = {
   update: MaxUpdate;
   chatId: string;
@@ -884,6 +898,7 @@ export class WebhookService {
     const writes: Promise<unknown>[] = [];
 
     const managedProjection = this.buildManagedEntityLocalActivityProjection(update);
+    const rawClient = this.prisma as ManagedEntityLocalActivityRawClient;
     const managedModel = (
       this.prisma as PrismaService & {
         managedEntityLocalActivity?: {
@@ -941,7 +956,14 @@ export class WebhookService {
         };
       }
     ).managedEntityLocalActivity;
-    if (
+    if (managedProjection && typeof rawClient.$executeRaw === 'function') {
+      writes.push(
+        this.upsertManagedEntityLocalActivity(
+          rawClient as Required<ManagedEntityLocalActivityRawClient>,
+          managedProjection,
+        ),
+      );
+    } else if (
       managedProjection &&
       typeof managedModel?.updateMany === 'function' &&
       typeof managedModel?.create === 'function'
@@ -1044,6 +1066,44 @@ export class WebhookService {
     return typeof model?.createMany === 'function'
       ? { createMany: model.createMany.bind(model) }
       : null;
+  }
+
+  private async upsertManagedEntityLocalActivity(
+    rawClient: Required<ManagedEntityLocalActivityRawClient>,
+    projection: ManagedEntityLocalActivityProjection,
+  ): Promise<void> {
+    await rawClient.$executeRaw(Prisma.sql`
+      INSERT INTO managed_entity_local_activities (
+        user_id,
+        chat_id,
+        entity_type,
+        chat_title,
+        source_event_type,
+        bot_id,
+        last_event_at,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        ${projection.userId},
+        ${projection.chatId},
+        ${projection.entityType}::"ChatEntityType",
+        ${projection.chatTitle ?? null},
+        ${projection.sourceEventType},
+        ${projection.botId ?? null},
+        ${projection.lastEventAt},
+        CURRENT_TIMESTAMP,
+        CURRENT_TIMESTAMP
+      )
+      ON CONFLICT (user_id, chat_id) DO UPDATE SET
+        entity_type = EXCLUDED.entity_type,
+        chat_title = COALESCE(EXCLUDED.chat_title, managed_entity_local_activities.chat_title),
+        source_event_type = EXCLUDED.source_event_type,
+        bot_id = EXCLUDED.bot_id,
+        last_event_at = EXCLUDED.last_event_at,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE managed_entity_local_activities.last_event_at < EXCLUDED.last_event_at
+    `);
   }
 
   private async persistMembershipActivityProjection(update: MaxUpdate): Promise<void> {
