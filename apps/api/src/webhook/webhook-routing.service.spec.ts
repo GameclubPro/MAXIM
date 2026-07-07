@@ -96,7 +96,7 @@ function buildWorkerGroupSnapshot(
 }
 
 function createService(params?: {
-  pendingCount?: bigint | number;
+  hasPending?: boolean;
   queueSnapshot?: {
     webhookDefaultShards: Record<string, { waiting: number; active: number; delayed: number }>;
     webhookDefaultWorkerGroups: Record<
@@ -107,7 +107,7 @@ function createService(params?: {
   config?: Partial<Record<string, number>>;
 }) {
   const prisma = {
-    $queryRaw: jest.fn().mockResolvedValue([{ pending_count: params?.pendingCount ?? 0 }]),
+    $queryRaw: jest.fn().mockResolvedValue([{ has_pending: params?.hasPending ?? false }]),
   };
   const queueMetricsService = {
     getWebhookDefaultShardSnapshot: jest.fn().mockResolvedValue(
@@ -129,6 +129,20 @@ function createService(params?: {
     prisma,
     queueMetricsService,
   };
+}
+
+function readSqlText(value: unknown): string {
+  const sql = value as { sql?: unknown; text?: unknown; strings?: unknown };
+  if (typeof sql.sql === 'string') {
+    return sql.sql;
+  }
+  if (typeof sql.text === 'string') {
+    return sql.text;
+  }
+  if (Array.isArray(sql.strings)) {
+    return sql.strings.join('?');
+  }
+  return String(value);
 }
 
 describe('WebhookRoutingService', () => {
@@ -167,6 +181,20 @@ describe('WebhookRoutingService', () => {
 
     expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
     expect(queueMetricsService.getWebhookDefaultShardSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('checks outstanding chat work with an existence query instead of a full count', async () => {
+    const { service, prisma } = createService();
+
+    await service.resolveQueueName('evt-exists-shape', {
+      type: 'message_created',
+      message: { chatId: 'chat-exists-shape' },
+    });
+
+    const sqlText = readSqlText(prisma.$queryRaw.mock.calls[0]?.[0]).replace(/\s+/gu, ' ');
+    expect(sqlText).toContain('SELECT EXISTS');
+    expect(sqlText).toContain('LIMIT 1');
+    expect(sqlText).not.toMatch(/COUNT\s*\(\s*\*\s*\)/iu);
   });
 
   it('routes managed entity Старт commands to critical without adaptive chat routing', async () => {
@@ -282,7 +310,7 @@ describe('WebhookRoutingService', () => {
       }),
     ).resolves.toBe('moderation-default-7');
 
-    prisma.$queryRaw.mockResolvedValueOnce([{ pending_count: 0 }]);
+    prisma.$queryRaw.mockResolvedValueOnce([{ has_pending: false }]);
     queueMetricsService.getWebhookDefaultShardSnapshot.mockResolvedValueOnce({
       webhookDefaultShards: secondSnapshot,
       webhookDefaultWorkerGroups: buildWorkerGroupSnapshot({
@@ -328,7 +356,7 @@ describe('WebhookRoutingService', () => {
       }),
     ).resolves.toBe('moderation-default-7');
 
-    prisma.$queryRaw.mockResolvedValueOnce([{ pending_count: 2 }]);
+    prisma.$queryRaw.mockResolvedValueOnce([{ has_pending: true }]);
     jest.advanceTimersByTime(5_001);
 
     await expect(
@@ -425,7 +453,7 @@ describe('WebhookRoutingService', () => {
       }),
     ).resolves.toBe('moderation-default-7');
 
-    prisma.$queryRaw.mockResolvedValueOnce([{ pending_count: 0 }]);
+    prisma.$queryRaw.mockResolvedValueOnce([{ has_pending: false }]);
     queueMetricsService.getWebhookDefaultShardSnapshot.mockResolvedValueOnce({
       webhookDefaultShards: secondSnapshot,
       webhookDefaultWorkerGroups: buildWorkerGroupSnapshot({

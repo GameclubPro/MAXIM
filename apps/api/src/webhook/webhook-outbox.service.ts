@@ -950,8 +950,13 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       const moderationCutoff = new Date(
         Date.now() - this.moderationRetentionDays * 24 * 60 * 60 * 1_000,
       );
-      const [webhookDeleted, failedWebhookDeleted, moderationDeleted, violationsDeleted] =
-        await Promise.all([
+      const [
+        webhookDeleted,
+        failedWebhookDeleted,
+        moderationDeleted,
+        violationsDeleted,
+        violationMessageClaimsDeleted,
+      ] = await Promise.all([
           this.prisma.webhookEvent.deleteMany({
             where: {
               createdAt: { lt: webhookCutoff },
@@ -971,6 +976,9 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
           this.prisma.violation.deleteMany({
             where: { createdAt: { lt: moderationCutoff } },
           }),
+          this.prisma.moderationViolationMessageClaim.deleteMany({
+            where: { createdAt: { lt: moderationCutoff } },
+          }),
         ]);
 
       this.logger.log(
@@ -979,6 +987,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
           failedWebhookEvents: failedWebhookDeleted.count,
           moderationEvents: moderationDeleted.count,
           violations: violationsDeleted.count,
+          violationMessageClaims: violationMessageClaimsDeleted.count,
           webhookRetentionDays: this.webhookRetentionDays,
           webhookFailedRetentionHours: this.webhookFailedRetentionHours,
           moderationRetentionDays: this.moderationRetentionDays,

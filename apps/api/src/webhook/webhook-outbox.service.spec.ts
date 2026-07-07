@@ -252,6 +252,9 @@ function createService(params?: {
     violation: {
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
+    moderationViolationMessageClaim: {
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
   };
 
   const createQueue = (
@@ -719,6 +722,11 @@ describe('WebhookOutboxService', () => {
         nextEnqueueAt: null,
       },
     });
+    expect(prisma.moderationViolationMessageClaim.deleteMany).toHaveBeenCalledWith({
+      where: {
+        createdAt: { lt: expect.any(Date) },
+      },
+    });
   });
 
   it('assigns highest BullMQ priority to callback events', async () => {
@@ -1103,6 +1111,20 @@ describe('WebhookOutboxService', () => {
     );
     expect(processedIds).toEqual(standbyEventIds.sort());
     expect(queuedIds).toEqual([ownerEventId]);
+    expect(prisma.webhookEvent.findFirst).toHaveBeenCalledTimes(5);
+    for (const [args] of prisma.webhookEvent.findFirst.mock.calls) {
+      expect(args.where).toEqual(
+        expect.objectContaining({
+          id: { not: expect.stringMatching(/^evt-mirrored-bot-[2-6]$/u) },
+          botId: ownerBotId,
+          dedupKey: `${ownerBotId}:u-mirrored-message`,
+        }),
+      );
+      const queryShape = JSON.stringify(args.where);
+      expect(queryShape).not.toContain('normalizedPayload');
+      expect(queryShape).not.toContain('rawPayload');
+      expect(queryShape).not.toContain('path');
+    }
   });
 
   it('enqueues standby-only shared-chat message_edited events as recovery deliveries', async () => {

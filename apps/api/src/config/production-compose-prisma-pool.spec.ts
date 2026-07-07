@@ -53,6 +53,16 @@ describe('production compose Prisma pool caps', () => {
       expect(readEnvNumber(adminBlock, 'MANAGED_ENTITIES_READ_PRISMA_PG_POOL_MAX')).toBe(6);
     });
 
+    it('keeps webhook outbox enqueue work owned by the enqueue role only', () => {
+      for (const service of Object.keys(API_SERVICE_POOL_CAPS)) {
+        const block = readServiceBlock(compose, service);
+        const appRole = readEnvString(block, 'APP_ROLE');
+
+        expect(appRole).not.toBe('all');
+        expect(appRole === 'enqueue').toBe(service === 'api-enqueue');
+      }
+    });
+
     it('persists Redis /data on an explicit named volume', () => {
       const redisBlock = readServiceBlock(compose, 'redis');
       const volumesBlock = readTopLevelVolumesBlock(compose);
@@ -162,6 +172,18 @@ function readEnvNumber(serviceBlock: string, key: string): number {
   }
 
   return Number(match[1]);
+}
+
+function readEnvString(serviceBlock: string, key: string): string {
+  const match = serviceBlock.match(
+    new RegExp(`^\\s{6}${escapeRegExp(key)}:\\s*'?([^'\\n]+)'?\\s*$`, 'mu'),
+  );
+
+  if (!match?.[1]) {
+    throw new Error(`Missing compose env ${key}`);
+  }
+
+  return match[1].trim();
 }
 
 function readShellArray(script: string, variableName: string): string[] {

@@ -431,32 +431,29 @@ export class WebhookRoutingService {
     botId: string | null,
     webhookEventId: string,
   ): Promise<boolean> {
-    const rows = await this.prisma.$queryRaw<Array<{ pending_count?: bigint | number }>>(
+    const rows = await this.prisma.$queryRaw<Array<{ has_pending?: boolean }>>(
       Prisma.sql`
-        SELECT COUNT(*)::bigint AS pending_count
-        FROM webhook_events
-        WHERE id <> ${webhookEventId}
-          AND COALESCE(bot_id, '') = ${botId ?? ''}
-          AND status = ANY(ARRAY['RECEIVED', 'QUEUED']::"WebhookStatus"[])
-          AND LOWER(
-            COALESCE(
-              NULLIF(BTRIM(normalized_payload->>'type'), ''),
-              NULLIF(BTRIM(normalized_payload->>'update_type'), '')
-            )
-          ) = ANY(ARRAY['message_created', 'message_edited'])
-          AND COALESCE(
-            NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), ''),
-            NULLIF(BTRIM(normalized_payload->>'chatId'), '')
-          ) = ${chatId}
+        SELECT EXISTS (
+          SELECT 1
+          FROM webhook_events
+          WHERE id <> ${webhookEventId}
+            AND COALESCE(bot_id, '') = ${botId ?? ''}
+            AND status = ANY(ARRAY['RECEIVED', 'QUEUED']::"WebhookStatus"[])
+            AND LOWER(
+              COALESCE(
+                NULLIF(BTRIM(normalized_payload->>'type'), ''),
+                NULLIF(BTRIM(normalized_payload->>'update_type'), '')
+              )
+            ) = ANY(ARRAY['message_created', 'message_edited'])
+            AND COALESCE(
+              NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), ''),
+              NULLIF(BTRIM(normalized_payload->>'chatId'), '')
+            ) = ${chatId}
+          LIMIT 1
+        ) AS has_pending
       `,
     );
-    const pendingCount = rows[0]?.pending_count;
-
-    if (typeof pendingCount === 'bigint') {
-      return pendingCount > 0n;
-    }
-
-    return typeof pendingCount === 'number' ? pendingCount > 0 : false;
+    return rows[0]?.has_pending === true;
   }
 
   private buildAssignmentKey(chatId: string, botId: string | null): string {

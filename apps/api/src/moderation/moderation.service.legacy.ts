@@ -5266,50 +5266,63 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const updateType = params.updateType?.trim().toLowerCase() || 'message';
-    const semanticHash = createHash('sha256')
-      .update(`${params.chatId}:${params.userId}:${messageId}:${params.ruleCode}:${updateType}`)
-      .digest('hex')
-      .slice(0, 32);
-    const counterKey = `moderation:violation-message:v1:${params.chatId}:${params.ruleCode}`;
-    const memberKey = `${counterKey}:msg:${semanticHash}`;
-    const incrementOncePerMemberWithTtl = (
-      this.redisCounter as Partial<RedisCounterService> | undefined
-    )?.incrementOncePerMemberWithTtl;
+    const claimKey = this.buildMessageViolationProcessingClaimKey({
+      chatId: params.chatId,
+      userId: params.userId,
+      messageId,
+      ruleCode: params.ruleCode,
+      updateType,
+    });
 
-    if (this.redisCounter && incrementOncePerMemberWithTtl) {
-      try {
-        const result = await incrementOncePerMemberWithTtl.call(
-          this.redisCounter,
-          counterKey,
-          memberKey,
-          VIOLATION_MESSAGE_PROCESSING_TTL_SEC,
-        );
-        if (!result.inserted) {
-          this.logger.debug(
-            {
-              chatId: params.chatId,
-              userId: params.userId,
-              messageId,
-              ruleCode: params.ruleCode,
-              updateType,
-            },
-            'Skipped duplicate moderation violation follow-up for already processed message',
-          );
-        }
-        return result.inserted;
-      } catch (error: unknown) {
-        this.logger.debug(
-          {
-            chatId: params.chatId,
-            userId: params.userId,
-            messageId,
-            ruleCode: params.ruleCode,
-            updateType,
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Failed to claim moderation violation message marker; falling back to persisted events',
-        );
-      }
+    const persistedClaim = await this.claimPersistedMessageViolationProcessing({
+      ...params,
+      messageId,
+      updateType,
+      dedupeKey: claimKey.dedupeKey,
+    });
+    if (persistedClaim === 'duplicate') {
+      this.logSkippedDuplicateMessageViolation({
+        chatId: params.chatId,
+        userId: params.userId,
+        messageId,
+        ruleCode: params.ruleCode,
+        updateType,
+      });
+      return false;
+    }
+    if (persistedClaim === 'claimed') {
+      await this.markRedisMessageViolationProcessing(claimKey, {
+        chatId: params.chatId,
+        userId: params.userId,
+        messageId,
+        ruleCode: params.ruleCode,
+        updateType,
+      });
+      return true;
+    }
+
+    const redisClaim = await this.markRedisMessageViolationProcessing(claimKey, {
+      chatId: params.chatId,
+      userId: params.userId,
+      messageId,
+      ruleCode: params.ruleCode,
+      updateType,
+    });
+    if (redisClaim !== null) {
+      return redisClaim;
+    }
+    if (persistedClaim === 'unavailable') {
+      this.logger.warn(
+        {
+          chatId: params.chatId,
+          userId: params.userId,
+          messageId,
+          ruleCode: params.ruleCode,
+          updateType,
+        },
+        'Skipped moderation violation follow-up because message claim storage is unavailable',
+      );
+      return false;
     }
 
     return !(await this.hasPersistedBotModerationEventForMessageViolation({
@@ -5318,6 +5331,159 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       messageId,
       ruleCode: params.ruleCode,
     }));
+  }
+
+  private buildMessageViolationProcessingClaimKey(params: {
+    chatId: string;
+    userId: string;
+    messageId: string;
+    ruleCode: string;
+    updateType: string;
+  }): { dedupeKey: string; counterKey: string; memberKey: string } {
+    const semanticHash = createHash('sha256')
+      .update(
+        `${params.chatId}:${params.userId}:${params.messageId}:${params.ruleCode}:${params.updateType}`,
+      )
+      .digest('hex');
+    const counterKey = `moderation:violation-message:v1:${params.chatId}:${params.ruleCode}`;
+    return {
+      dedupeKey: `v1:${semanticHash}`,
+      counterKey,
+      memberKey: `${counterKey}:msg:${semanticHash.slice(0, 32)}`,
+    };
+  }
+
+  private async claimPersistedMessageViolationProcessing(params: {
+    chatId: string;
+    userId: string;
+    messageId: string;
+    ruleCode: string;
+    updateType: string;
+    dedupeKey: string;
+  }): Promise<'claimed' | 'duplicate' | 'unavailable' | 'unsupported'> {
+    const claimModel = (
+      this.prisma as unknown as {
+        moderationViolationMessageClaim?: {
+          create?: (args: {
+            data: {
+              dedupeKey: string;
+              chatId: string;
+              userId: string;
+              messageId: string;
+              ruleCode: string;
+              updateType: string;
+            };
+          }) => Promise<unknown>;
+          createMany?: (args: {
+            data: Array<{
+              dedupeKey: string;
+              chatId: string;
+              userId: string;
+              messageId: string;
+              ruleCode: string;
+              updateType: string;
+            }>;
+            skipDuplicates?: boolean;
+          }) => Promise<{ count: number }>;
+        };
+      }
+    ).moderationViolationMessageClaim;
+    if (!claimModel?.create && !claimModel?.createMany) {
+      return 'unsupported';
+    }
+
+    const data = {
+      dedupeKey: params.dedupeKey,
+      chatId: params.chatId,
+      userId: params.userId,
+      messageId: params.messageId,
+      ruleCode: params.ruleCode,
+      updateType: params.updateType,
+    };
+
+    try {
+      if (claimModel.createMany) {
+        const created = await claimModel.createMany({
+          data: [data],
+          skipDuplicates: true,
+        });
+        return created.count > 0 ? 'claimed' : 'duplicate';
+      }
+
+      await claimModel.create!({ data });
+      return 'claimed';
+    } catch (error: unknown) {
+      if (this.isPrismaKnownError(error, 'P2002')) {
+        return 'duplicate';
+      }
+
+      this.logger.warn(
+        {
+          chatId: params.chatId,
+          userId: params.userId,
+          messageId: params.messageId,
+          ruleCode: params.ruleCode,
+          updateType: params.updateType,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to claim persisted moderation violation message marker',
+      );
+      return 'unavailable';
+    }
+  }
+
+  private async markRedisMessageViolationProcessing(
+    claimKey: { counterKey: string; memberKey: string },
+    context: {
+      chatId: string;
+      userId: string;
+      messageId: string;
+      ruleCode: string;
+      updateType: string;
+    },
+  ): Promise<boolean | null> {
+    const incrementOncePerMemberWithTtl = (
+      this.redisCounter as Partial<RedisCounterService> | undefined
+    )?.incrementOncePerMemberWithTtl;
+
+    if (!this.redisCounter || !incrementOncePerMemberWithTtl) {
+      return null;
+    }
+
+    try {
+      const result = await incrementOncePerMemberWithTtl.call(
+        this.redisCounter,
+        claimKey.counterKey,
+        claimKey.memberKey,
+        VIOLATION_MESSAGE_PROCESSING_TTL_SEC,
+      );
+      if (!result.inserted) {
+        this.logSkippedDuplicateMessageViolation(context);
+      }
+      return result.inserted;
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          ...context,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to claim Redis moderation violation message marker',
+      );
+      return null;
+    }
+  }
+
+  private logSkippedDuplicateMessageViolation(params: {
+    chatId: string;
+    userId: string;
+    messageId: string;
+    ruleCode: string;
+    updateType: string;
+  }) {
+    this.logger.debug(
+      params,
+      'Skipped duplicate moderation violation follow-up for already processed message',
+    );
   }
 
   private async hasPersistedBotModerationEventForMessageViolation(params: {

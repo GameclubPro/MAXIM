@@ -264,6 +264,7 @@ model Chat {
   domains                         DomainAllowlist[]
   violations                      Violation[]
   events                          ModerationEvent[]
+  violationMessageClaims          ModerationViolationMessageClaim[]
   auditLogs                       AuditLog[]
   channelAutoPostAttachMarkers    ChannelAutoPostAttachMarker[]
   chatAutoCommentAttachMarkers    ChatAutoCommentAttachMarker[]
@@ -1169,6 +1170,23 @@ model ModerationEvent {
   @@index([chatId, userId, createdAt])
   @@index([chatId, userId, action, createdAt(sort: Desc)])
   @@map("moderation_events")
+}
+
+model ModerationViolationMessageClaim {
+  id         String   @id @default(cuid())
+  dedupeKey  String   @unique @map("dedupe_key")
+  chatId     String   @map("chat_id")
+  userId     String   @map("user_id")
+  messageId  String   @map("message_id")
+  ruleCode   String   @map("rule_code")
+  updateType String   @map("update_type")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@index([chatId, userId, createdAt], map: "moderation_violation_message_claims_chat_user_created_idx")
+  @@index([createdAt], map: "moderation_violation_message_claims_created_at_idx")
+  @@map("moderation_violation_message_claims")
 }
 
 model WebhookEvent {
