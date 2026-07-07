@@ -668,7 +668,9 @@ export class ModerationAccessService {
       }
     } catch (error: unknown) {
       const transient = this.isTransientMaxApiLookupError(error);
-      if (transient) {
+      const denied = this.isDeniedMaxApiLookupError(error);
+      const shouldBackoff = transient || denied;
+      if (shouldBackoff) {
         const backoffUntilMs = Date.now() + CHAT_ADMIN_LOOKUP_BACKOFF_MS;
         this.chatAdminChatBackoffUntilMs.set(chatId, backoffUntilMs);
         for (const lookup of lookups) {
@@ -680,7 +682,7 @@ export class ModerationAccessService {
         {
           chatId,
           userIds: lookups.map((lookup) => lookup.userId),
-          backoffMs: transient ? CHAT_ADMIN_LOOKUP_BACKOFF_MS : 0,
+          backoffMs: shouldBackoff ? CHAT_ADMIN_LOOKUP_BACKOFF_MS : 0,
           error: error instanceof Error ? error.message : 'Unknown error',
         },
         'Failed to resolve chat admins for moderation bypass',
@@ -948,6 +950,11 @@ export class ModerationAccessService {
 
   private isTransientMaxApiLookupError(error: unknown): boolean {
     return this.isMaxApiThrottleError(error) || this.isMaxApiTimeoutError(error);
+  }
+
+  private isDeniedMaxApiLookupError(error: unknown): boolean {
+    const status = this.extractStatusCode(error);
+    return status === 403 || status === 404;
   }
 
   private isMaxApiThrottleError(error: unknown): boolean {

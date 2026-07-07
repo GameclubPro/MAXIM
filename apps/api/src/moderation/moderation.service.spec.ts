@@ -18044,6 +18044,7 @@ describe('ModerationService', () => {
 
         expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith('chat-1', {
           botId: 'id613002203036_4_bot',
+          bypassCache: true,
           trafficClass: 'background',
           actionHealthLane: 'background',
           timeoutMs: 1_500,
@@ -18424,12 +18425,14 @@ describe('ModerationService', () => {
         ]);
         expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith('chat-1', {
           botId: 'id613002203036_bot',
+          bypassCache: true,
           trafficClass: 'background',
           actionHealthLane: 'background',
           timeoutMs: 1_500,
         });
         expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith('chat-1', {
           botId: 'id613002203036_4_bot',
+          bypassCache: true,
           trafficClass: 'background',
           actionHealthLane: 'background',
           timeoutMs: 1_500,

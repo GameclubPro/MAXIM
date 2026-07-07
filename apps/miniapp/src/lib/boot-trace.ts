@@ -317,16 +317,25 @@ export function traceMiniappBoot(
   }
 
   const elapsedMs = Math.max(0, Date.now() - startedAtMs);
-  const payload = {
+  const payload: Record<string, unknown> = {
     phase,
     sessionId,
     sequence: ++sequence,
     elapsedMs,
-    route: getCurrentRoute(),
-    platform: getBridgePlatform(),
-    ua: typeof navigator === 'undefined' ? null : navigator.userAgent.slice(0, 220),
     details: sanitizeDetails(details),
   };
+  const route = getCurrentRoute();
+  const platform = getBridgePlatform();
+  const ua = typeof navigator === 'undefined' ? null : navigator.userAgent.slice(0, 220);
+  if (route) {
+    payload.route = route;
+  }
+  if (platform) {
+    payload.platform = platform;
+  }
+  if (ua) {
+    payload.ua = ua;
+  }
 
   const request = buildTraceRequest(payload);
   if (!request) {

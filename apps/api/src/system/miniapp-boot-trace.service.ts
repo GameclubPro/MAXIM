@@ -34,13 +34,13 @@ const sensitiveKeyFragments = [
 const miniappBootTraceBodySchema = z
   .object({
     phase: z.string().trim().min(1).max(MAX_PHASE_LENGTH),
-    sessionId: z.string().trim().min(1).max(MAX_SESSION_ID_LENGTH).optional(),
-    sequence: z.number().int().min(1).max(10_000).optional(),
-    route: z.string().trim().min(1).max(MAX_ROUTE_LENGTH).optional(),
-    url: z.string().trim().min(1).max(MAX_URL_LENGTH).optional(),
-    elapsedMs: z.number().finite().min(0).max(MAX_ELAPSED_MS).optional(),
-    ua: z.string().trim().min(1).max(MAX_UA_LENGTH).optional(),
-    platform: z.string().trim().min(1).max(MAX_PLATFORM_LENGTH).optional(),
+    sessionId: z.string().trim().min(1).max(MAX_SESSION_ID_LENGTH).nullish(),
+    sequence: z.number().int().min(1).max(10_000).nullish(),
+    route: z.string().trim().min(1).max(MAX_ROUTE_LENGTH).nullish(),
+    url: z.string().trim().min(1).max(MAX_URL_LENGTH).nullish(),
+    elapsedMs: z.number().finite().min(0).max(MAX_ELAPSED_MS).nullish(),
+    ua: z.string().trim().min(1).max(MAX_UA_LENGTH).nullish(),
+    platform: z.string().trim().min(1).max(MAX_PLATFORM_LENGTH).nullish(),
     details: z.unknown().optional(),
   })
   .strip();
@@ -85,10 +85,10 @@ export function parseMiniappBootTracePayload(payload: unknown): MiniappBootTrace
   assignSanitized(trace, 'ua', parsed.data.ua, MAX_UA_LENGTH);
   assignSanitized(trace, 'platform', parsed.data.platform, MAX_PLATFORM_LENGTH);
 
-  if (parsed.data.elapsedMs !== undefined) {
+  if (parsed.data.elapsedMs != null) {
     trace.elapsedMs = parsed.data.elapsedMs;
   }
-  if (parsed.data.sequence !== undefined) {
+  if (parsed.data.sequence != null) {
     trace.sequence = parsed.data.sequence;
   }
   if (parsed.data.details !== undefined) {
@@ -101,10 +101,10 @@ export function parseMiniappBootTracePayload(payload: unknown): MiniappBootTrace
 function assignSanitized<K extends keyof MiniappBootTraceLogPayload>(
   target: MiniappBootTraceLogPayload,
   key: K,
-  value: string | undefined,
+  value: string | null | undefined,
   maxLength: number,
 ) {
-  if (value !== undefined) {
+  if (value != null) {
     target[key] = sanitizeText(value, maxLength) as MiniappBootTraceLogPayload[K];
   }
 }

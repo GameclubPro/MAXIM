@@ -172,7 +172,10 @@ export class WebhookService {
     const rawPayload = shouldKeepRawPayload ? (update.raw ?? {}) : {};
 
     try {
-      await this.persistEvent(update, sourceIp, rawPayload);
+      const persisted = await this.persistEvent(update, sourceIp, rawPayload);
+      if (!persisted) {
+        return this.acceptDuplicateWebhookEvent(update);
+      }
       await this.stageManagedEntityPendingBootstrap(update);
       this.schedulePendingExecutionOwnerFailoverRecheck(bindingSync.pendingExecutionOwnerRecheck);
       this.deferBotAddedStartHint(update);
@@ -190,7 +193,10 @@ export class WebhookService {
         const sanitizedRawPayload = this.sanitizeForJsonStorage(rawPayload);
 
         try {
-          await this.persistEvent(sanitizedUpdate, sourceIp, sanitizedRawPayload);
+          const persisted = await this.persistEvent(sanitizedUpdate, sourceIp, sanitizedRawPayload);
+          if (!persisted) {
+            return this.acceptDuplicateWebhookEvent(sanitizedUpdate);
+          }
           await this.stageManagedEntityPendingBootstrap(sanitizedUpdate);
           this.schedulePendingExecutionOwnerFailoverRecheck(
             bindingSync.pendingExecutionOwnerRecheck,
@@ -323,10 +329,10 @@ export class WebhookService {
     update: MaxUpdate,
     sourceIp: string | null,
     rawPayload: Prisma.InputJsonValue,
-  ) {
+  ): Promise<boolean> {
     const storageRawPayload = this.sanitizeForJsonStorage(rawPayload);
     const storageNormalizedPayload = this.sanitizeForJsonStorage(update);
-    const webhookEventData = {
+    const webhookEventData: Prisma.WebhookEventCreateManyInput = {
       dedupKey: this.buildWebhookDedupKey(update),
       ...(update.botId ? { botId: update.botId } : {}),
       sourceIp: sourceIp ?? undefined,
@@ -336,6 +342,7 @@ export class WebhookService {
     };
     const membershipProjections = this.buildMembershipActivityProjections(update);
     const membershipModel = this.getMembershipActivityEventModel();
+    const webhookEventCreateMany = this.getWebhookEventCreateMany();
 
     if (membershipProjections.length > 0 && membershipModel) {
       const transaction = (
@@ -343,7 +350,22 @@ export class WebhookService {
           $transaction?: (promises: Promise<unknown>[]) => Promise<unknown>;
         }
       ).$transaction;
-      if (typeof transaction === 'function') {
+      if (typeof transaction === 'function' && webhookEventCreateMany) {
+        const [webhookInsertResult] = (await transaction.call(this.prisma, [
+          webhookEventCreateMany.call(this.prisma.webhookEvent, {
+            data: [webhookEventData],
+            skipDuplicates: true,
+          }),
+          membershipModel.createMany({
+            data: membershipProjections,
+            skipDuplicates: true,
+          }),
+        ])) as unknown[];
+        const inserted = this.readCreateManyCount(webhookInsertResult) > 0;
+        if (!inserted) {
+          return false;
+        }
+      } else if (typeof transaction === 'function') {
         await transaction.call(this.prisma, [
           this.prisma.webhookEvent.create({
             data: webhookEventData,
@@ -354,9 +376,10 @@ export class WebhookService {
           }),
         ]);
       } else {
-        await this.prisma.webhookEvent.create({
-          data: webhookEventData,
-        });
+        const inserted = await this.createWebhookEventSkippingDuplicates(webhookEventData);
+        if (!inserted) {
+          return false;
+        }
         await membershipModel.createMany({
           data: membershipProjections,
           skipDuplicates: true,
@@ -367,17 +390,61 @@ export class WebhookService {
         'admin read model refresh',
         update,
       );
-      return;
+      return true;
     }
 
-    await this.prisma.webhookEvent.create({
-      data: webhookEventData,
-    });
+    const inserted = await this.createWebhookEventSkippingDuplicates(webhookEventData);
+    if (!inserted) {
+      return false;
+    }
     this.deferBackgroundTask(
       () => this.persistAdminReadModels(update),
       'admin read model refresh',
       update,
     );
+    return true;
+  }
+
+  private async createWebhookEventSkippingDuplicates(
+    data: Prisma.WebhookEventCreateManyInput,
+  ): Promise<boolean> {
+    const createMany = this.getWebhookEventCreateMany();
+    if (createMany) {
+      const result = await createMany.call(this.prisma.webhookEvent, {
+        data: [data],
+        skipDuplicates: true,
+      });
+      return this.readCreateManyCount(result) > 0;
+    }
+
+    await this.prisma.webhookEvent.create({
+      data,
+    });
+    return true;
+  }
+
+  private getWebhookEventCreateMany():
+    | ((
+        args: {
+          data: Prisma.WebhookEventCreateManyInput[];
+          skipDuplicates?: boolean;
+        },
+      ) => Promise<unknown>)
+    | null {
+    const createMany = (
+      this.prisma.webhookEvent as unknown as {
+        createMany?: (args: {
+          data: Prisma.WebhookEventCreateManyInput[];
+          skipDuplicates?: boolean;
+        }) => Promise<unknown>;
+      }
+    ).createMany;
+    return typeof createMany === 'function' ? createMany : null;
+  }
+
+  private readCreateManyCount(result: unknown): number {
+    const count = (result as { count?: unknown })?.count;
+    return typeof count === 'number' ? count : 0;
   }
 
   private async stageManagedEntityPendingBootstrap(update: MaxUpdate): Promise<void> {

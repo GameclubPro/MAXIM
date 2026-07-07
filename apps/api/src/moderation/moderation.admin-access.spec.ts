@@ -368,6 +368,42 @@ describe('ModerationService chat admin access lookups', () => {
     expect(maxClient.getChatMembersAccess).not.toHaveBeenCalled();
   });
 
+  it('backs off remote admin lookups after denied MAX responses', async () => {
+    const deniedError = Object.assign(new Error('Request failed with status code 403'), {
+      response: {
+        status: 403,
+        data: {
+          message: 'Request failed with status code 403',
+        },
+      },
+    });
+    const maxClient = {
+      getChatMembersAccess: jest.fn().mockRejectedValue(deniedError),
+      getCurrentChatMemberAccess: jest.fn(),
+    };
+    const service = new ModerationService(
+      {} as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+    );
+    const accessService = service as unknown as {
+      getRemoteChatAdminAccess: (
+        chatId: string,
+        userId: string,
+      ) => Promise<'granted' | 'user_denied' | null>;
+    };
+
+    await expect(accessService.getRemoteChatAdminAccess('chat-denied', 'user-1')).resolves.toBe(
+      null,
+    );
+    await expect(accessService.getRemoteChatAdminAccess('chat-denied', 'user-1')).resolves.toBe(
+      null,
+    );
+
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+  });
+
   it('batches concurrent global spammer exemption lookups within the same admin scope', async () => {
     const prisma = {
       adminGlobalSpammerExemption: {

@@ -114,6 +114,21 @@ describe('parseMiniappBootTracePayload', () => {
     ).toEqual({ phase: 'ready' });
   });
 
+  it('ignores null optional top-level fields from early mini app boot clients', () => {
+    expect(
+      parseMiniappBootTracePayload({
+        phase: 'index_loaded',
+        sessionId: null,
+        sequence: null,
+        route: null,
+        url: null,
+        elapsedMs: null,
+        ua: null,
+        platform: null,
+      }),
+    ).toEqual({ phase: 'index_loaded' });
+  });
+
   it('rejects oversized details', () => {
     expect(() =>
       parseMiniappBootTracePayload({

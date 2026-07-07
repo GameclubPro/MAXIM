@@ -11819,6 +11819,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         try {
           const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
             botId,
+            bypassCache: true,
             trafficClass: 'background',
             actionHealthLane: 'background',
             timeoutMs: MODERATION_ACTION_PERMISSION_REFRESH_TIMEOUT_MS,

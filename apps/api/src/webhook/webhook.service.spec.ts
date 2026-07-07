@@ -377,6 +377,46 @@ describe('WebhookService', () => {
     expect(prisma.webhookEvent.updateMany).not.toHaveBeenCalled();
   });
 
+  it('accepts duplicate events from skip-duplicates inserts without raising a database error', async () => {
+    const prisma = {
+      webhookEvent: {
+        createMany: jest.fn().mockResolvedValue({ count: 0 }),
+        create: jest.fn(),
+        updateMany: jest.fn(),
+      },
+    };
+
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+    const result = await service.ingest(
+      {
+        updateId: 'u-skip-duplicate',
+        type: 'message',
+      },
+      '127.0.0.1',
+    );
+
+    expect(result).toEqual({ accepted: true, duplicate: true });
+    expect(prisma.webhookEvent.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          dedupKey: 'u-skip-duplicate',
+          status: 'RECEIVED',
+        }),
+      ],
+      skipDuplicates: true,
+    });
+    expect(prisma.webhookEvent.create).not.toHaveBeenCalled();
+    expect(prisma.webhookEvent.updateMany).not.toHaveBeenCalled();
+  });
+
   it('retries webhook storage with sanitized payload when Prisma rejects malformed JSON input', async () => {
     const prisma = {
       webhookEvent: {
