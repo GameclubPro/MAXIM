@@ -84,6 +84,8 @@ REMOTE
 echo "Verifying public route split headers..."
 curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/api/health/live | grep -i '^x-maxim-ingress: webhook'
 curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/api/v1/system/metrics/queues | grep -i '^x-maxim-ingress: admin'
+curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/api/v1/safety-desk/queue | grep -Ei '^HTTP/[0-9.]+ 404'
+curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/api/v1/support-requests/queue | grep -Ei '^HTTP/[0-9.]+ 404'
 
 if [[ "${MAXIM_VERIFY_LEGACY_PLAY_TEAM_APP:-0}" == "1" ]]; then
   echo "Verifying legacy play-team app security headers..."

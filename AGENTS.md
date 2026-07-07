@@ -43,7 +43,7 @@
 - Rebuild only changed services. In practice that is usually `miniapp-static` and/or the shared API image.
 - `https://major-maksimov.ru/app/` is served by `miniapp-major-static`; `miniapp-static` serves `https://maxim.play-team.ru/app/`. For routine mini app production deploys while Major is primary, deploy `miniapp-major-static`.
 - For closed admin/Safety Desk changes, deploy `admin-static`. It is intentionally built without Docker cache during VPS deploys so the Vite-baked `ADMIN_ACCESS_CODE` from `/var/www/Chat_bot/.env` is refreshed; do not print that code. Server Basic Auth password is stored on the VPS at `/root/maxim-admin-basic-auth-password.txt`.
-- Closed Safety Desk API calls use same-origin `https://admin.major-maksimov.ru/api/v1/safety-desk/...`, proxied by `infra/nginx/admin.major-maksimov.ru.conf` to `api-admin`; apply that nginx config separately with `./infra/scripts/vps-apply-major-admin-site.sh maxim-vps` when changing the route.
+- Closed Safety Desk/support API calls use same-origin `https://admin.major-maksimov.ru/api/v1/...`, proxied by `infra/nginx/admin.major-maksimov.ru.conf` to `api-admin`; the API guard requires admin nginx `X-Forwarded-Host` plus Basic Auth `X-Remote-User`, and public nginx sites must keep `/api/v1/safety-desk` and `/api/v1/support-requests` denied before the generic `/api/v1/` proxy. Apply the admin nginx config separately with `./infra/scripts/vps-apply-major-admin-site.sh maxim-vps` when changing that route.
 - If shared API code or `packages/contracts` changed, recreate every prod API role that uses that image:
   - `api-ingress`
   - `api-admin`

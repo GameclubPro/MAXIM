@@ -55,7 +55,8 @@ curl -fsS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/app/ | grep 
 curl -fsS --max-time 15 https://major-maksimov.ru/app/ | grep -F 'https://major-maksimov.ru/app/' >/dev/null
 curl -fsS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/ios-canary/ping.txt | grep -Ei '^HTTP/[0-9.]+ 200'
 curl -fsS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/health/live | grep -i '^x-maxim-ingress: webhook'
-curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/safety-desk/queue | grep -i '^x-maxim-ingress: admin'
+curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/safety-desk/queue | grep -Ei '^HTTP/[0-9.]+ 404'
+curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/support-requests/queue | grep -Ei '^HTTP/[0-9.]+ 404'
 
 echo "Verifying app.major-maksimov.ru canonical redirect..."
 curl -fsS --max-time 15 -D - -o /dev/null https://app.major-maksimov.ru/app/ | grep -i '^location: https://major-maksimov.ru/app/'
