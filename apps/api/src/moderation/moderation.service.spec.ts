@@ -18446,6 +18446,128 @@ describe('ModerationService', () => {
         );
         expect(maxChatAdminRosterSyncService.scheduleChatAdminRosterSync).not.toHaveBeenCalled();
       });
+
+      it('sends ban notice with the bot that won moderation fallback', async () => {
+        const prisma = {
+          chat: {
+            findUnique: jest.fn().mockResolvedValue({
+              entityType: ChatEntityType.CHAT,
+              primaryBotId: 'id613002203036_bot',
+              botId: 'id613002203036_bot',
+              botMemberships: [
+                { botId: 'id613002203036_bot', status: 'ACTIVE' },
+                { botId: 'id613002203036_4_bot', status: 'ACTIVE' },
+              ],
+            }),
+          },
+          chatBotMembership: {
+            updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          },
+        };
+        const terminalError = createMaxApiError(
+          403,
+          'Request failed with status code 403',
+          'chat.denied',
+        );
+        const maxClient = {
+          banMember: jest
+            .fn()
+            .mockImplementation(
+              async (_chatId: string, _userId: string, options?: { botId?: string }) => {
+                if (options?.botId === 'id613002203036_bot') {
+                  throw terminalError;
+                }
+              },
+            ),
+          sendMessage: jest.fn().mockResolvedValue({ messageId: 'notice-1' }),
+          getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+            userId: '613002203036_4',
+            isAdmin: true,
+            isOwner: false,
+            permissions: ['add_remove_members', 'write'],
+          }),
+        };
+        const maxBotLinkService = {
+          resolveBotIdsForModerationAction: jest
+            .fn()
+            .mockResolvedValueOnce(['id613002203036_bot'])
+            .mockResolvedValueOnce(['id613002203036_bot', 'id613002203036_4_bot']),
+          getResolvedBotSync: jest.fn((botId?: string | null) => ({
+            id: botId ?? 'id613002203036_bot',
+          })),
+        };
+        const managedEntityAccessLossService = {
+          recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue({
+            classification: {
+              kind: 'managed_entity_access_lost',
+              reason: 'bot_denied',
+              statusCode: 403,
+              code: 'chat.denied',
+              message: 'request failed with status code 403',
+            },
+            reason: 'bot_denied',
+            recorded: {
+              chatId: 'chat-1',
+            },
+          }),
+        };
+        const service = new ModerationService(
+          prisma as never,
+          {} as never,
+          {} as never,
+          maxClient as never,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          maxBotLinkService as never,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          managedEntityAccessLossService as never,
+        );
+
+        await (service as any).applySanctionAction({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          action: SanctionAction.BAN,
+          userLabel: userMention('Нарушитель'),
+          messageId: 'message-1',
+          muteDurationHours: 1,
+          deleteBotMessagesEnabled: true,
+          deleteBotMessagesDelayMinutes: 3,
+          botSpeechStyle: null,
+          trackAsGlobalSpammer: false,
+        });
+
+        expect(maxClient.banMember).toHaveBeenCalledWith(
+          'chat-1',
+          'user-1',
+          expect.objectContaining({ botId: 'id613002203036_bot' }),
+        );
+        expect(maxClient.banMember).toHaveBeenCalledWith(
+          'chat-1',
+          'user-1',
+          expect.objectContaining({ botId: 'id613002203036_4_bot' }),
+        );
+        expect(maxClient.sendMessage).toHaveBeenCalledWith(
+          'chat-1',
+          expect.any(String),
+          expect.objectContaining({
+            textFormat: 'markdown',
+          }),
+          expect.objectContaining({
+            botId: 'id613002203036_4_bot',
+            sourceTag: 'moderation_notice',
+          }),
+        );
+      });
     });
 
     it('passes message through when the user is subscribed to all required channels', async () => {

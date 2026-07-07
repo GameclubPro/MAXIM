@@ -7,6 +7,16 @@ import {
   type ManagedEntityAccessLossOperation,
 } from './managed-entity-access-loss.service';
 
+type TerminalManagedEntityOutcome =
+  | {
+      kind: 'failed';
+      error: UnrecoverableError;
+    }
+  | {
+      kind: 'skipped';
+      reason: string;
+    };
+
 @Injectable()
 export class MaxActionDispatchService {
   private readonly logger = new Logger(MaxActionDispatchService.name);
@@ -26,26 +36,34 @@ export class MaxActionDispatchService {
       await this.maxClient.executeActionJob(job);
       await this.recordLedgerSucceeded(job);
     } catch (error: unknown) {
-      if (await this.handleTerminalManagedEntityError(job, error)) {
-        await this.recordLedgerSkipped(job, this.extractErrorMessage(error));
+      const terminalManagedEntityOutcome = await this.resolveTerminalManagedEntityOutcome(
+        job,
+        error,
+      );
+      if (terminalManagedEntityOutcome?.kind === 'skipped') {
+        await this.recordLedgerSkipped(job, terminalManagedEntityOutcome.reason);
         return;
+      }
+      if (terminalManagedEntityOutcome?.kind === 'failed') {
+        await this.recordLedgerFailed(job, terminalManagedEntityOutcome.error);
+        throw terminalManagedEntityOutcome.error;
       }
       await this.recordLedgerFailed(job, error);
       throw error;
     }
   }
 
-  private async handleTerminalManagedEntityError(
+  private async resolveTerminalManagedEntityOutcome(
     job: MaxActionJob,
     error: unknown,
-  ): Promise<boolean> {
+  ): Promise<TerminalManagedEntityOutcome | null> {
     if (!this.managedEntityAccessLossService) {
-      return false;
+      return null;
     }
 
     const operation = this.resolveAccessLossOperation(job);
     if (!operation) {
-      return false;
+      return null;
     }
 
     const result = await this.managedEntityAccessLossService.recordIfManagedEntityAccessLost({
@@ -57,7 +75,7 @@ export class MaxActionDispatchService {
     });
 
     if (!result) {
-      return false;
+      return null;
     }
 
     if (result.classification.kind === 'message_not_found' && job.actionType === 'DELETE_MESSAGE') {
@@ -70,16 +88,20 @@ export class MaxActionDispatchService {
         },
         'Skipped queued MAX delete for already missing message',
       );
-      return true;
+      return {
+        kind: 'skipped',
+        reason: this.extractErrorMessage(error),
+      };
     }
 
     if (result.reason) {
-      throw new UnrecoverableError(
-        `MAX ${job.actionType} cannot be retried for chat ${job.chatId}: ${result.reason}`,
-      );
+      return {
+        kind: 'failed',
+        error: this.createTerminalManagedEntityError(job, result.reason, error),
+      };
     }
 
-    return false;
+    return null;
   }
 
   private resolveAccessLossOperation(job: MaxActionJob): ManagedEntityAccessLossOperation | null {
@@ -145,6 +167,25 @@ export class MaxActionDispatchService {
         'Failed to record failed MAX action ledger outcome',
       );
     }
+  }
+
+  private createTerminalManagedEntityError(
+    job: MaxActionJob,
+    reason: string,
+    error: unknown,
+  ): UnrecoverableError {
+    const terminalError = new UnrecoverableError(
+      `MAX ${job.actionType} cannot be retried for chat ${job.chatId}: ${reason}`,
+    );
+    const response = (error as { response?: unknown })?.response;
+    if (response !== undefined) {
+      (terminalError as UnrecoverableError & { response?: unknown }).response = response;
+    }
+    const code = (error as { code?: unknown })?.code;
+    if (code !== undefined) {
+      (terminalError as UnrecoverableError & { code?: unknown }).code = code;
+    }
+    return terminalError;
   }
 
   private extractErrorMessage(error: unknown): string {

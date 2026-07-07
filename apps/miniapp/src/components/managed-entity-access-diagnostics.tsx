@@ -28,7 +28,7 @@ export function ManagedEntityAccessDiagnosticsBanner({
 
   const lostBots = diagnostics.lostBots;
   const lostCount = lostBots.length;
-  const pluralBot = formatBotCount(lostCount);
+  const headline = formatManagedEntityAccessLossHeadline(diagnostics, entityLabel);
 
   return (
     <section className="managed-access-alert" aria-live="polite">
@@ -36,9 +36,7 @@ export function ManagedEntityAccessDiagnosticsBanner({
         <span className="managed-access-alert__kicker">
           {lostCount > 1 ? 'Боты потеряли доступ' : 'Бот потерял доступ'}
         </span>
-        <strong>
-          {pluralBot} · {entityLabel} недоступен
-        </strong>
+        <strong>{headline}</strong>
         <ul className="managed-access-alert__bots" aria-label="Причины потери доступа">
           {lostBots.map((item, index) => (
             <li key={`${item.botId ?? 'unknown'}:${item.reason}:${item.detectedAt}:${index}`}>
@@ -67,6 +65,24 @@ export function ManagedEntityAccessDiagnosticsBanner({
       </button>
     </section>
   );
+}
+
+export function formatManagedEntityAccessLossHeadline(
+  diagnostics: Pick<ManagedEntityAccessDiagnostics, 'activeBotCount' | 'lostBots'>,
+  entityLabel: 'чат' | 'канал',
+): string {
+  const lostBotLabel = formatBotCount(diagnostics.lostBots.length);
+  const activeBotCount = Math.max(0, diagnostics.activeBotCount ?? 0);
+  if (activeBotCount > 0) {
+    return `${lostBotLabel} · ${formatActiveBotAccess(activeBotCount)}`;
+  }
+
+  return `${lostBotLabel} · ${entityLabel} недоступен`;
+}
+
+function formatActiveBotAccess(count: number): string {
+  const botLabel = formatBotCount(count);
+  return count === 1 ? `${botLabel} продолжает работать` : `${botLabel} продолжают работать`;
 }
 
 function formatLostBotIdentity(

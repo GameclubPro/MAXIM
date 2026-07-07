@@ -19541,20 +19541,27 @@ export class AdminService implements OnModuleDestroy {
     return null;
   }
 
-  private async resolveBotAssignment(chatId: string): Promise<string | undefined> {
+  private async resolveBotAssignmentRouteAware(chatId: string): Promise<{
+    botId: string | undefined;
+    routeResolved: boolean;
+  }> {
     const route = await this.resolveUnifiedBotRoute({
       purpose: 'read',
       chatId,
     });
-    if (route?.botId) {
-      return route.botId;
+    if (route) {
+      return { botId: route.botId ?? undefined, routeResolved: true };
     }
 
-    return (
+    const legacyBotId =
       (await this.maxBotLinkService?.resolveBotIdForRead?.({ chatId })) ??
       (await this.maxBotLinkService?.resolveBotId?.({ chatId })) ??
-      undefined
-    );
+      undefined;
+    return { botId: legacyBotId, routeResolved: false };
+  }
+
+  private async resolveBotAssignment(chatId: string): Promise<string | undefined> {
+    return (await this.resolveBotAssignmentRouteAware(chatId)).botId;
   }
 
   private async resolveChatBotIdForRead(chatId: string): Promise<string | undefined> {
@@ -19563,9 +19570,12 @@ export class AdminService implements OnModuleDestroy {
       return undefined;
     }
 
-    const routedBotId = await this.resolveBotAssignment(normalizedChatId);
-    if (routedBotId) {
-      return routedBotId;
+    const routed = await this.resolveBotAssignmentRouteAware(normalizedChatId);
+    if (routed.botId) {
+      return routed.botId;
+    }
+    if (routed.routeResolved) {
+      return undefined;
     }
 
     const persisted = await this.prisma.chat.findUnique({
@@ -20176,32 +20186,42 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
-  private async resolveDeliveryBotAssignment(chatId: string): Promise<string | undefined> {
+  private async resolveDeliveryBotAssignmentRouteAware(chatId: string): Promise<{
+    botId: string | undefined;
+    routeResolved: boolean;
+  }> {
     const normalizedChatId = chatId.trim();
     if (!normalizedChatId) {
-      return undefined;
+      return { botId: undefined, routeResolved: false };
     }
 
     const route = await this.resolveUnifiedBotRoute({
       purpose: 'send_message',
       chatId: normalizedChatId,
     });
-    if (route?.botId) {
-      return route.botId;
+    if (route) {
+      return { botId: route.botId ?? undefined, routeResolved: true };
     }
 
     const sendBotId = await this.maxBotLinkService?.resolveBotIdForSend?.({
       chatId: normalizedChatId,
     });
     if (sendBotId) {
-      return sendBotId;
+      return { botId: sendBotId, routeResolved: false };
     }
 
     const persisted = await this.prisma.chat.findUnique({
       where: { id: normalizedChatId },
       select: { primaryBotId: true, botId: true },
     });
-    return this.readTrimmedString(persisted?.primaryBotId ?? persisted?.botId) ?? undefined;
+    return {
+      botId: this.readTrimmedString(persisted?.primaryBotId ?? persisted?.botId) ?? undefined,
+      routeResolved: false,
+    };
+  }
+
+  private async resolveDeliveryBotAssignment(chatId: string): Promise<string | undefined> {
+    return (await this.resolveDeliveryBotAssignmentRouteAware(chatId)).botId;
   }
 
   private async resolveSendActionBotAssignment(
@@ -20213,9 +20233,12 @@ export class AdminService implements OnModuleDestroy {
       return undefined;
     }
 
-    const resolvedBotId = await this.resolveDeliveryBotAssignment(normalizedChatId);
-    if (resolvedBotId) {
-      return resolvedBotId;
+    const deliveryAssignment = await this.resolveDeliveryBotAssignmentRouteAware(normalizedChatId);
+    if (deliveryAssignment.botId) {
+      return deliveryAssignment.botId;
+    }
+    if (deliveryAssignment.routeResolved) {
+      return undefined;
     }
 
     return this.resolveManualActionBotAssignment(normalizedChatId, entityType);
@@ -20231,8 +20254,8 @@ export class AdminService implements OnModuleDestroy {
       capability,
       fallbackToPrimary: true,
     });
-    if (route?.botId) {
-      return route.botId;
+    if (route) {
+      return route.botId ?? undefined;
     }
 
     return (

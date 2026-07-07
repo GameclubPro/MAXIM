@@ -1709,6 +1709,85 @@ describe('ManagedGiveawayService', () => {
     );
   });
 
+  it('does not fall back to a persisted source bot when the giveaway send route has no executable bot', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({ primaryBotId: 'draining-bot', botId: 'draining-bot' });
+    const maxBotLinkService = {
+      ...createMaxBotLinkMock(),
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: 'source-draining-1',
+        primaryBotId: null,
+        botId: null,
+        candidateBotIds: [],
+        reason: null,
+      }),
+      resolveBotIdForSend: jest.fn().mockResolvedValue('draining-bot'),
+      resolveBotId: jest.fn().mockResolvedValue('draining-bot'),
+    };
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      createMaxClientMock() as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      (service as any).resolveGiveawayPublicationBotId('source-draining-1'),
+    ).resolves.toBeUndefined();
+
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledWith({
+      purpose: 'send_message',
+      chatId: 'source-draining-1',
+      fallbackToPrimary: true,
+    });
+    expect(maxBotLinkService.resolveBotIdForSend).not.toHaveBeenCalled();
+    expect(maxBotLinkService.resolveBotId).not.toHaveBeenCalled();
+    expect(prisma.chat.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('does not fall back to a persisted membership lookup bot when the read route has no safe bot', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({ primaryBotId: 'dormant-bot', botId: 'dormant-bot' });
+    const maxBotLinkService = {
+      ...createMaxBotLinkMock(),
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'read',
+        chatId: 'required-dormant-1',
+        primaryBotId: null,
+        botId: null,
+        candidateBotIds: [],
+        reason: null,
+      }),
+      resolveBotIdForRead: jest.fn().mockResolvedValue('dormant-bot'),
+      resolveBotId: jest.fn().mockResolvedValue('dormant-bot'),
+    };
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      createMaxClientMock() as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      (service as any).resolveGiveawayMembershipLookupBotId('required-dormant-1'),
+    ).resolves.toBeNull();
+
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledWith({
+      purpose: 'read',
+      chatId: 'required-dormant-1',
+    });
+    expect(maxBotLinkService.resolveBotIdForRead).not.toHaveBeenCalled();
+    expect(maxBotLinkService.resolveBotId).not.toHaveBeenCalled();
+    expect(prisma.chat.findUnique).not.toHaveBeenCalled();
+  });
+
   it('exposes winner name in public results immediately after draw', () => {
     const service = new ManagedGiveawayService(
       createPrismaMock() as never,

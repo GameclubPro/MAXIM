@@ -143,6 +143,67 @@ describe('MaxActionDispatchService', () => {
     });
   });
 
+  it('records terminal queued access loss in the ledger before stopping BullMQ retries', async () => {
+    const error = createMaxApiError(403, 'chat denied', 'chat.denied');
+    const maxClient = {
+      executeActionJob: jest.fn().mockRejectedValue(error),
+    };
+    const managedEntityAccessLossService = {
+      recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue({
+        classification: {
+          kind: 'managed_entity_access_lost',
+          reason: 'bot_denied',
+          statusCode: 403,
+          code: 'chat.denied',
+          message: 'chat denied',
+        },
+        reason: 'bot_denied',
+        recorded: null,
+      } satisfies RecordManagedEntityAccessLostFromErrorResult),
+    };
+    const actionLedgerService = {
+      recordStarted: jest.fn().mockResolvedValue(undefined),
+      recordSucceeded: jest.fn().mockResolvedValue(undefined),
+      recordSkipped: jest.fn().mockResolvedValue(undefined),
+      recordFailed: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      managedEntityAccessLossService as never,
+      actionLedgerService as never,
+    );
+    const job = {
+      actionType: 'SEND_MESSAGE',
+      chatId: 'chat-1',
+      botId: 'bot-1',
+      text: 'hello',
+      attempt: 1,
+      idempotencyKey: 'job-send-denied-ledger',
+      createdAt: '2026-05-16T20:00:00.000Z',
+    } as MaxActionJob;
+
+    const thrown = await service.execute(job).then(
+      () => null,
+      (executeError: unknown) => executeError,
+    );
+
+    expect(thrown).toBeInstanceOf(UnrecoverableError);
+    expect(thrown).toHaveProperty(
+      'message',
+      'MAX SEND_MESSAGE cannot be retried for chat chat-1: bot_denied',
+    );
+    expect(actionLedgerService.recordStarted).toHaveBeenCalledWith(job);
+    expect(actionLedgerService.recordFailed).toHaveBeenCalledWith(job, thrown);
+    expect(actionLedgerService.recordFailed.mock.invocationCallOrder[0]).toBeGreaterThan(
+      actionLedgerService.recordStarted.mock.invocationCallOrder[0],
+    );
+    expect(actionLedgerService.recordSkipped).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordSucceeded).not.toHaveBeenCalled();
+    expect((thrown as { response?: unknown }).response).toBe(
+      (error as { response?: unknown }).response,
+    );
+  });
+
   it('treats queued delete message.not.found as idempotent success', async () => {
     const error = createMaxApiError(404, 'message not found', 'message.not.found');
     const maxClient = {

@@ -3858,35 +3858,49 @@ export class ManagedGiveawayService {
     });
   }
 
-  private async resolveReadBotAssignment(chatId: string): Promise<string | undefined> {
+  private async resolveReadBotAssignmentRouteAware(chatId: string): Promise<{
+    botId: string | undefined;
+    routeResolved: boolean;
+  }> {
     const route = await this.resolveReadBotRoute(chatId);
-    if (route?.botId) {
-      return route.botId;
+    if (route) {
+      return { botId: route.botId ?? undefined, routeResolved: true };
     }
 
-    return (
+    const legacyBotId =
       (await this.maxBotLinkService?.resolveBotIdForRead?.({
         chatId,
       })) ??
       (await this.maxBotLinkService?.resolveBotId({ chatId })) ??
-      undefined
-    );
+      undefined;
+    return { botId: legacyBotId, routeResolved: false };
   }
 
-  private async resolveSendBotAssignment(chatId: string): Promise<string | undefined> {
+  private async resolveReadBotAssignment(chatId: string): Promise<string | undefined> {
+    return (await this.resolveReadBotAssignmentRouteAware(chatId)).botId;
+  }
+
+  private async resolveSendBotAssignmentRouteAware(chatId: string): Promise<{
+    botId: string | undefined;
+    routeResolved: boolean;
+  }> {
     const route = await this.resolveSendBotRoute(chatId);
-    if (route?.botId) {
-      return route.botId;
+    if (route) {
+      return { botId: route.botId ?? undefined, routeResolved: true };
     }
 
-    return (
+    const legacyBotId =
       (await this.maxBotLinkService?.resolveBotIdForSend?.({
         chatId,
         fallbackToPrimary: true,
       })) ??
       (await this.maxBotLinkService?.resolveBotId({ chatId })) ??
-      undefined
-    );
+      undefined;
+    return { botId: legacyBotId, routeResolved: false };
+  }
+
+  private async resolveSendBotAssignment(chatId: string): Promise<string | undefined> {
+    return (await this.resolveSendBotAssignmentRouteAware(chatId)).botId;
   }
 
   private async resolveGiveawayMembershipLookupBotIds(
@@ -3915,9 +3929,12 @@ export class ManagedGiveawayService {
 
   private async resolveGiveawayMembershipLookupBotId(chatId: string): Promise<string | null> {
     try {
-      const assignedBotId = await this.resolveReadBotAssignment(chatId);
-      if (assignedBotId?.trim()) {
-        return assignedBotId.trim();
+      const assigned = await this.resolveReadBotAssignmentRouteAware(chatId);
+      if (assigned.botId?.trim()) {
+        return assigned.botId.trim();
+      }
+      if (assigned.routeResolved) {
+        return null;
       }
     } catch (error: unknown) {
       this.logger.warn(
@@ -3955,14 +3972,21 @@ export class ManagedGiveawayService {
     return botId || null;
   }
 
-  private async resolveGiveawayButtonBotId(sourceChatId: string): Promise<string | null> {
+  private async resolveGiveawayButtonBotAssignment(sourceChatId: string): Promise<{
+    botId: string | null;
+    routeResolved: boolean;
+  }> {
     const normalizedSourceChatId = sourceChatId.trim();
     if (!normalizedSourceChatId || !this.maxBotLinkService) {
-      return null;
+      return { botId: null, routeResolved: false };
     }
 
     try {
-      return (await this.resolveSendBotAssignment(normalizedSourceChatId)) ?? null;
+      const resolved = await this.resolveSendBotAssignmentRouteAware(normalizedSourceChatId);
+      return {
+        botId: resolved.botId ?? null,
+        routeResolved: resolved.routeResolved,
+      };
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -3971,14 +3995,22 @@ export class ManagedGiveawayService {
         },
         'Failed to resolve giveaway button bot id',
       );
-      return null;
+      return { botId: null, routeResolved: false };
     }
   }
 
+  private async resolveGiveawayButtonBotId(sourceChatId: string): Promise<string | null> {
+    return (await this.resolveGiveawayButtonBotAssignment(sourceChatId)).botId;
+  }
+
   private async resolveGiveawayPublicationBotId(sourceChatId: string): Promise<string | undefined> {
-    const resolvedBotId = await this.resolveGiveawayButtonBotId(sourceChatId);
-    if (resolvedBotId) {
-      return resolvedBotId;
+    const normalizedSourceChatId = sourceChatId.trim();
+    const buttonAssignment = await this.resolveGiveawayButtonBotAssignment(normalizedSourceChatId);
+    if (buttonAssignment.botId) {
+      return buttonAssignment.botId;
+    }
+    if (buttonAssignment.routeResolved) {
+      return undefined;
     }
 
     const persisted = await this.prisma.chat.findUnique({

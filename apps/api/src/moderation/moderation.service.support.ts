@@ -174,7 +174,7 @@ export type InvitationAccessProgressDelegate = {
 export type ChannelDialogType = 'comments' | 'suggest';
 
 export type ModerationActionAttemptResult =
-  | { status: 'success' }
+  | { status: 'success'; botId: string | null }
   | { status: 'no_candidates' }
   | { status: 'backoff_blocked' }
   | {
@@ -182,6 +182,11 @@ export type ModerationActionAttemptResult =
       attemptedBotIds: string[];
       error: unknown;
     };
+
+export type ModerationActionExecutionResult = {
+  ok: boolean;
+  botId: string | null;
+};
 
 export type AdminForwardedModerationCommand =
   | {

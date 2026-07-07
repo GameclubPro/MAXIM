@@ -330,6 +330,7 @@ import {
   type InvitationAccessProgressDelegate,
   type ChannelDialogType,
   type ModerationActionAttemptResult,
+  type ModerationActionExecutionResult,
   type AdminForwardedModerationCommand,
   type GlobalSpammerTrackingResult,
   type PrivateControlCommand,
@@ -3976,9 +3977,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
     }
 
-    let memberBanned = false;
+    let banResult: ModerationActionExecutionResult = { ok: false, botId: null };
     try {
-      memberBanned = await this.banMemberImmediately(chatId, userId);
+      banResult = await this.banMemberImmediatelyWithResult(chatId, userId);
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -3991,7 +3992,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
     }
 
-    if (!memberBanned) {
+    if (!banResult.ok) {
       return;
     }
 
@@ -4005,6 +4006,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       botMessageOptions,
       sanctionNoticeText,
       botSpeechStyle,
+      botId: banResult.botId ?? undefined,
     });
   }
 
@@ -4072,6 +4074,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string,
     options?: Omit<MaxActionDispatchOptions, 'immediate'>,
   ): Promise<boolean> {
+    return (await this.banMemberImmediatelyWithResult(chatId, userId, options)).ok;
+  }
+
+  private async banMemberImmediatelyWithResult(
+    chatId: string,
+    userId: string,
+    options?: Omit<MaxActionDispatchOptions, 'immediate'>,
+  ): Promise<ModerationActionExecutionResult> {
     if (this.isKnownRuntimeBotUserId(userId)) {
       this.logger.warn(
         {
@@ -4080,10 +4090,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
         'Skipped ban for configured MAX bot user',
       );
-      return false;
+      return { ok: false, botId: null };
     }
 
-    return this.executeModerationActionWithFallback({
+    return this.executeModerationActionWithFallbackResult({
       chatId,
       action: 'moderate_member',
       userId,
@@ -4113,6 +4123,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     botMessageOptions?: MaxSendMessageOptions;
     sanctionNoticeText?: string;
     botSpeechStyle: BotSpeechStyle | null;
+    botId?: string;
   }) {
     const {
       chatId,
@@ -4125,12 +4136,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       botMessageOptions,
       sanctionNoticeText,
       botSpeechStyle,
+      botId,
     } = params;
     const noticeText =
       sanctionNoticeText ?? this.buildMuteNotice(userLabel, muteDurationHours, botSpeechStyle);
     try {
       await this.sendBotMessageWithOptionalAutoDelete({
         chatId,
+        botId,
         text: noticeText,
         messageOptions: botMessageOptions,
         deleteBotMessagesEnabled,
@@ -4159,6 +4172,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     botMessageOptions?: MaxSendMessageOptions;
     sanctionNoticeText?: string;
     botSpeechStyle: BotSpeechStyle | null;
+    botId?: string;
   }) {
     const {
       chatId,
@@ -4170,6 +4184,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       botMessageOptions,
       sanctionNoticeText,
       botSpeechStyle,
+      botId,
     } = params;
 
     const noticeText =
@@ -4177,6 +4192,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     try {
       await this.sendBotMessageWithOptionalAutoDelete({
         chatId,
+        botId,
         text: noticeText,
         messageOptions: botMessageOptions,
         deleteBotMessagesEnabled,
@@ -11433,12 +11449,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId?: string;
     operation: (botId?: string) => Promise<void>;
   }): Promise<boolean> {
+    return (await this.executeModerationActionWithFallbackResult(params)).ok;
+  }
+
+  private async executeModerationActionWithFallbackResult(params: {
+    chatId: string;
+    action: 'delete_message' | 'moderate_member';
+    explicitBotId?: string | null;
+    messageId?: string;
+    userId?: string;
+    operation: (botId?: string) => Promise<void>;
+  }): Promise<ModerationActionExecutionResult> {
     let attempt = await this.attemptModerationActionWithCandidateBots(
       params,
       await this.resolveModerationActionBotIds(params),
     );
     if (attempt.status === 'success') {
-      return true;
+      return { ok: true, botId: attempt.botId };
     }
 
     if (!params.explicitBotId && attempt.status === 'no_candidates') {
@@ -11452,7 +11479,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           refreshedCandidateBotIds,
         );
         if (attempt.status === 'success') {
-          return true;
+          return { ok: true, botId: attempt.botId };
         }
       }
     }
@@ -11475,7 +11502,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           refreshedCandidateBotIds,
         );
         if (retryAttempt.status === 'success') {
-          return true;
+          return { ok: true, botId: retryAttempt.botId };
         }
         if (retryAttempt.status === 'terminal_error') {
           attempt = {
@@ -11499,7 +11526,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         attemptedBotIds: attempt.attemptedBotIds,
         error: attempt.error,
       });
-      return false;
+      return { ok: false, botId: null };
     }
 
     if (attempt.status === 'backoff_blocked') {
@@ -11520,7 +11547,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       messageId: params.messageId,
       userId: params.userId,
     });
-    return false;
+    return { ok: false, botId: null };
   }
 
   private async attemptModerationActionWithCandidateBots(
@@ -11564,7 +11591,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         if (candidateBotId) {
           await this.clearModerationActionBotBackoff(params.chatId, params.action, candidateBotId);
         }
-        return { status: 'success' };
+        return { status: 'success', botId: candidateBotId ?? null };
       } catch (error: unknown) {
         if (!this.isTerminalModerationActionPermissionError(error)) {
           throw error;

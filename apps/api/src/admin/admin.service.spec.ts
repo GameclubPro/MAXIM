@@ -7925,7 +7925,9 @@ describe('AdminService.applyManualModerationAction', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
-    (service as any).resolveBotAssignment = jest.fn().mockResolvedValue('bot-2');
+    (service as any).resolveBotAssignmentRouteAware = jest
+      .fn()
+      .mockResolvedValue({ botId: 'bot-2', routeResolved: true });
 
     await service.applyManualModerationAction(
       'chat-1',
@@ -8189,6 +8191,48 @@ describe('AdminService.applyManualModerationAction', () => {
     expect(prisma.chat.findUnique).not.toHaveBeenCalled();
   });
 
+  it('does not fall back to a persisted read bot when the route resolver has no safe bot', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({ primaryBotId: 'dormant-bot', botId: 'dormant-bot' });
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'read',
+        chatId: 'chat-1',
+        primaryBotId: null,
+        botId: null,
+        candidateBotIds: [],
+        reason: null,
+      }),
+      resolveBotIdForRead: jest.fn().mockResolvedValue('dormant-bot'),
+      resolveBotId: jest.fn().mockResolvedValue('dormant-bot'),
+    };
+    const maxBotRegistry = {
+      getBotById: jest.fn((botId?: string | null) => (botId ? { id: botId } : null)),
+    };
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+      maxBotRegistry as never,
+    );
+
+    await expect((service as any).resolveChatBotIdForRead('chat-1')).resolves.toBeUndefined();
+
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledWith({
+      purpose: 'read',
+      chatId: 'chat-1',
+    });
+    expect(maxBotLinkService.resolveBotIdForRead).not.toHaveBeenCalled();
+    expect(maxBotLinkService.resolveBotId).not.toHaveBeenCalled();
+    expect(prisma.chat.findUnique).not.toHaveBeenCalled();
+  });
+
   it('uses the channel send route for engagement publication actions', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
@@ -8230,6 +8274,55 @@ describe('AdminService.applyManualModerationAction', () => {
     });
     expect(maxBotLinkService.bindChatToBot).not.toHaveBeenCalled();
     expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+  });
+
+  it('does not fall back to a persisted send bot when the send route has no executable bot', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({ primaryBotId: 'draining-bot', botId: 'draining-bot' });
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn(),
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: 'channel-1',
+        primaryBotId: null,
+        botId: null,
+        candidateBotIds: [],
+        reason: null,
+      }),
+      resolveBotIdForSend: jest.fn().mockResolvedValue('draining-bot'),
+      resolveBotId: jest.fn().mockResolvedValue('draining-bot'),
+      bindChatToBot: jest.fn().mockResolvedValue('draining-bot'),
+    };
+    const maxBotRegistry = {
+      getBotById: jest.fn((botId?: string | null) => (botId ? { id: botId } : null)),
+      getActionableBots: jest.fn().mockReturnValue([{ id: 'draining-bot' }]),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+      maxBotRegistry as never,
+    );
+
+    await expect(service.resolveChannelEngagementActionBotId('channel-1')).resolves.toBeUndefined();
+
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledWith({
+      purpose: 'send_message',
+      chatId: 'channel-1',
+    });
+    expect(maxBotLinkService.resolveBotIdForSend).not.toHaveBeenCalled();
+    expect(maxBotLinkService.resolveBotId).not.toHaveBeenCalled();
+    expect(maxBotLinkService.bindChatToBot).not.toHaveBeenCalled();
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(prisma.chat.findUnique).not.toHaveBeenCalled();
   });
 
   it('releases active block without re-adding a member who is already in chat', async () => {
