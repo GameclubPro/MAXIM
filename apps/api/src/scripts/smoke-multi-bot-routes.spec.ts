@@ -25,7 +25,25 @@ describe('smoke-multi-bot-routes', () => {
 
     expect(result.status).toBe('PASS');
     expect(result.scenarios.map((scenario) => scenario.name)).toEqual(
-      expect.arrayContaining(['matrix-1', 'matrix-2', 'matrix-3', 'matrix-6']),
+      expect.arrayContaining([
+        'matrix-1',
+        'matrix-2',
+        'matrix-3',
+        'matrix-6',
+        'channel-delete-permission',
+      ]),
+    );
+    expect(
+      result.scenarios
+        .find((scenario) => scenario.name === 'channel-delete-permission')
+        ?.routes.find(
+          (route) => route.purpose === 'moderation_action' && route.action === 'delete_message',
+        ),
+    ).toEqual(
+      expect.objectContaining({
+        botId: 'id613002203036_4_bot',
+        candidateBotIds: ['id613002203036_4_bot'],
+      }),
     );
     expect(result.assertions.every((assertion) => assertion.pass)).toBe(true);
     expect(renderText(result)).toContain('Multi-bot route smoke: PASS');

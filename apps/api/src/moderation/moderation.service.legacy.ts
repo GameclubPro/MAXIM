@@ -4026,7 +4026,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           timeoutMs: MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
           ...(options ?? {}),
           ...(botId ? { botId } : {}),
-          immediate: true,
+          ...(options?.delayMs ? {} : { immediate: true }),
         });
       },
     });
@@ -5657,6 +5657,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }): Promise<boolean> {
     const { update, chatId, chatTitle, senderId, senderName, messageId, settings, superBanOnly } =
       params;
+    const commandBotId = this.readExecutionOwnerBotId(update);
     const directText = extractDirectIncomingMessageText(update);
     let command: AdminForwardedModerationCommand | null;
     try {
@@ -5664,6 +5665,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     } catch (error: unknown) {
       await this.sendGroupAdminCommandNotice({
         chatId,
+        botId: commandBotId,
         settings,
         text: this.extractGroupAdminCommandErrorMessage(error),
       });
@@ -5699,6 +5701,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (command.action === 'SUPER_BAN' && !manualBridge.isSuperBanDeveloperUserId(senderId)) {
       await this.sendGroupAdminCommandNotice({
         chatId,
+        botId: commandBotId,
         settings,
         text: 'Команда `супер бан` доступна только разработчику бота.',
       });
@@ -5719,6 +5722,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       if (uniqueSources.length !== 1) {
         await this.sendGroupAdminCommandNotice({
           chatId,
+          botId: commandBotId,
           settings,
           text: `Перешлите или ответьте на одно сообщение из этого чата и добавьте команду ${rulesCommandHelpText}.`,
         });
@@ -5729,6 +5733,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       if (sourceMessage.chatId !== chatId) {
         await this.sendGroupAdminCommandNotice({
           chatId,
+          botId: commandBotId,
           settings,
           text: `Команда ${rulesCommandHelpText} работает только для сообщений из этого чата.`,
         });
@@ -5750,6 +5755,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         await this.deleteAdminCommandMessage(chatId, messageId);
         await this.sendGroupAdminCommandNotice({
           chatId,
+          botId: commandBotId,
           settings,
           text: 'Правила привязаны к этому сообщению. Кнопка «Правила» в нарушениях включена.',
         });
@@ -5766,6 +5772,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
         await this.sendGroupAdminCommandNotice({
           chatId,
+          botId: commandBotId,
           settings,
           text: `Не удалось сохранить правила: ${this.escapeMaxMarkdownText(
             this.extractGroupAdminCommandErrorMessage(error),
@@ -5793,6 +5800,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         await this.deleteAdminCommandMessage(chatId, messageId);
         await this.sendGroupAdminCommandNotice({
           chatId,
+          botId: commandBotId,
           settings,
           text: result.message,
         });
@@ -5809,6 +5817,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
         await this.sendGroupAdminCommandNotice({
           chatId,
+          botId: commandBotId,
           settings,
           text: `Не удалось выполнить команду: ${this.escapeMaxMarkdownText(
             this.extractGroupAdminCommandErrorMessage(error),
@@ -5843,6 +5852,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (targets.length === 0) {
       await this.sendGroupAdminCommandNotice({
         chatId,
+        botId: commandBotId,
         settings,
         text: `Ответьте на сообщение из этого чата или перешлите его и добавьте команду ${commandHelpText}.`,
       });
@@ -5853,6 +5863,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (uniqueTargets.length !== 1) {
       await this.sendGroupAdminCommandNotice({
         chatId,
+        botId: commandBotId,
         settings,
         text: `Перешлите или ответьте на одно сообщение из этого чата и добавьте команду ${commandHelpText}.`,
       });
@@ -5863,15 +5874,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (target.chatId !== chatId) {
       await this.sendGroupAdminCommandNotice({
         chatId,
+        botId: commandBotId,
         settings,
         text: `Команда ${commandHelpText} работает только для сообщений из этого чата.`,
       });
       return true;
     }
 
-    let commandBotId: string | null = null;
     try {
-      commandBotId = this.readExecutionOwnerBotId(update);
       const queued =
         command.action === 'SUPER_BAN'
           ? await manualBridge.enqueueDeveloperSuperBanCommand({
@@ -5954,7 +5964,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private async deleteAdminCommandMessage(chatId: string, messageId: string): Promise<void> {
     try {
-      await this.maxClient.deleteMessage(chatId, messageId, { immediate: true });
+      await this.deleteMessageImmediately(chatId, messageId);
     } catch (error: unknown) {
       this.logger.debug(
         {
@@ -6148,9 +6158,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const safeDelayMinutes = normalizeDeleteBotMessagesDelayMinutes(delayMinutes);
 
     try {
-      await this.maxClient.deleteMessage(chatId, messageId, {
+      const scheduled = await this.deleteMessageImmediately(chatId, messageId, {
         delayMs: safeDelayMinutes * 60 * 1000,
       });
+      if (!scheduled) {
+        return;
+      }
       await this.createBotModerationEvent({
         data: {
           chatId,

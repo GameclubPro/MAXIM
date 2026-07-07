@@ -9279,6 +9279,128 @@ describe('AdminService.applyManualSystemBan', () => {
     );
   });
 
+  it('uses a delete-capable bot for developer super ban command cleanup after action reroute', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw.mockResolvedValueOnce([{ active_membership_count: 7 }]);
+    const candidateBotIds = ['command-bot', 'bot-3', 'bot-4', 'bot-5', 'bot-6'];
+    const maxClient = {
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+      getCurrentChatMemberAccess: jest
+        .fn()
+        .mockImplementation(async (_chatId: string, options?: { botId?: string }) => {
+          const botId = options?.botId ?? 'command-bot';
+          return {
+            userId: botId,
+            isAdmin: botId !== 'command-bot',
+            isOwner: false,
+            permissions: botId === 'bot-6' ? ['delete_messages'] : ['read_all_messages'],
+          };
+        }),
+    };
+    const redisCounter = {
+      setStringWithTtl: jest.fn().mockResolvedValue(undefined),
+    };
+    const globalSpammerIntelligence = {
+      recordDeveloperForcedGlobalBlacklist: jest.fn().mockResolvedValue({ outcome: 'registry' }),
+    };
+    const maxBotLinkService = {
+      getBotTokenSync: jest.fn().mockReturnValue('test-max-bot-token'),
+      getValidationTokens: jest.fn().mockReturnValue(['test-max-bot-token']),
+      resolveBotRoute: jest.fn().mockImplementation(async (request: { chatId: string }) => ({
+        purpose: 'send_message',
+        chatId: request.chatId,
+        primaryBotId: 'command-bot',
+        botId: 'bot-5',
+        candidateBotIds: ['bot-5'],
+        reason: 'alternate_confirmed',
+      })),
+      resolveBotRoutes: jest
+        .fn()
+        .mockImplementation(async (request: { chatId: string; action: string }) => ({
+          purpose: 'moderation_action',
+          chatId: request.chatId,
+          primaryBotId: 'command-bot',
+          botId: 'command-bot',
+          candidateBotIds,
+          reason: 'primary_soft',
+          action: request.action,
+        })),
+    };
+    const maxBotRegistry = {
+      getBotById: jest.fn((botId?: string | null) => (botId ? { id: botId } : null)),
+      getActionableBots: jest.fn().mockReturnValue(candidateBotIds.map((id) => ({ id }))),
+      getDiscoveryBots: jest.fn().mockReturnValue([]),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      redisCounter as never,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+      maxBotRegistry as never,
+    );
+    (service as unknown as { globalSpammerIntelligence: unknown }).globalSpammerIntelligence =
+      globalSpammerIntelligence;
+    jest
+      .spyOn(service as any, 'applyDeveloperSuperBanSourceChat')
+      .mockResolvedValue({ affected: true, mode: 'removed' });
+    jest.spyOn(service as any, 'runManualBanSourceCleanup').mockResolvedValue({
+      candidateMessageIds: [],
+      deletedMessageIds: [],
+      failedMessageIds: [],
+    });
+
+    await service.processDeveloperSuperBanJob({
+      kind: 'developer_super_ban',
+      jobId: 'developer-super-ban-job-cleanup-bot',
+      sourceChatId: 'chat-1',
+      commandBotId: 'command-bot',
+      targetUserId: 'user-2',
+      targetSenderName: 'Нарушитель',
+      targetMessageId: 'mid-target-1',
+      commandMessageId: 'mid-command-1',
+      actor: {
+        userId: '98315271',
+        username: null,
+        displayName: 'Разработчик',
+        chatId: 'chat-1',
+        chatTitle: 'Chat 1',
+      },
+      deleteBotMessagesEnabled: true,
+      deleteBotMessagesDelayMinutes: 3,
+    });
+
+    const probedBotIds = maxClient.getCurrentChatMemberAccess.mock.calls
+      .map((call) => (call[1] as { botId?: string } | undefined)?.botId)
+      .filter((botId): botId is string => Boolean(botId));
+    expect(Array.from(new Set(probedBotIds))).toEqual(candidateBotIds);
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-target-1', {
+      immediate: true,
+      trafficClass: 'interactive',
+      botId: 'bot-6',
+    });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-command-1', {
+      immediate: true,
+      trafficClass: 'interactive',
+      botId: 'bot-6',
+    });
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      expect.stringContaining('заблокирован в 7 чатах по решению разработчика бота'),
+      { textFormat: 'markdown' },
+      expect.objectContaining({
+        immediate: true,
+        botId: 'bot-5',
+      }),
+    );
+  });
+
   it('records source-chat no-rights fallback without inspecting managed-chat fanout', async () => {
     const prisma = createPrismaMock();
     prisma.$queryRaw.mockResolvedValueOnce([{ active_membership_count: 3 }]);
@@ -9569,6 +9691,120 @@ describe('AdminService.applyManualSystemBan', () => {
     );
   });
 
+  it('uses a delete-capable bot for queued group command message cleanup after action reroute', async () => {
+    const prisma = createPrismaMock();
+    const candidateBotIds = ['bot-2', 'bot-3', 'bot-4', 'bot-5', 'bot-6'];
+    const maxClient = {
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+      getCurrentChatMemberAccess: jest
+        .fn()
+        .mockImplementation(async (_chatId: string, options?: { botId?: string }) => {
+          const botId = options?.botId ?? 'bot-2';
+          return {
+            userId: botId,
+            isAdmin: botId !== 'bot-2',
+            isOwner: false,
+            permissions: botId === 'bot-6' ? ['delete_messages'] : ['read_all_messages'],
+          };
+        }),
+    };
+    const maxBotLinkService = {
+      getBotTokenSync: jest.fn().mockReturnValue('test-max-bot-token'),
+      getValidationTokens: jest.fn().mockReturnValue(['test-max-bot-token']),
+      resolveBotRoute: jest.fn().mockImplementation(async (request: { chatId: string }) => ({
+        purpose: 'send_message',
+        chatId: request.chatId,
+        primaryBotId: 'bot-2',
+        botId: 'bot-5',
+        candidateBotIds: ['bot-5'],
+        reason: 'alternate_confirmed',
+      })),
+      resolveBotRoutes: jest
+        .fn()
+        .mockImplementation(async (request: { chatId: string; action: string }) => ({
+          purpose: 'moderation_action',
+          chatId: request.chatId,
+          primaryBotId: 'bot-2',
+          botId: 'bot-2',
+          candidateBotIds,
+          reason: 'primary_soft',
+          action: request.action,
+        })),
+    };
+    const maxBotRegistry = {
+      getBotById: jest.fn((botId?: string | null) => (botId ? { id: botId } : null)),
+      getActionableBots: jest.fn().mockReturnValue(candidateBotIds.map((id) => ({ id }))),
+      getDiscoveryBots: jest.fn().mockReturnValue([]),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+      maxBotRegistry as never,
+    );
+    jest.spyOn(service, 'applyManualSystemBan').mockResolvedValue({
+      ok: true,
+      action: 'BAN',
+      userId: 'user-2',
+      muteDurationHours: null,
+      muteExpiresAt: null,
+      message: 'Пользователь забанен.',
+    });
+
+    await service.processManualModerationFanoutJob({
+      kind: 'manual_group_moderation_command',
+      jobId: 'job-command-1',
+      sourceChatId: 'chat-1',
+      commandBotId: 'bot-2',
+      targetUserId: 'user-2',
+      targetSenderName: 'Нарушитель',
+      targetMessageId: 'mid-target-1',
+      commandMessageId: 'mid-command-1',
+      actor: {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatId: 'chat-1',
+        chatTitle: 'Chat 1',
+      },
+      action: 'BAN',
+      muteDurationHours: null,
+      deleteBotMessagesEnabled: true,
+      deleteBotMessagesDelayMinutes: 3,
+    });
+
+    const probedBotIds = maxClient.getCurrentChatMemberAccess.mock.calls
+      .map((call) => (call[1] as { botId?: string } | undefined)?.botId)
+      .filter((botId): botId is string => Boolean(botId));
+    expect(Array.from(new Set(probedBotIds))).toEqual(candidateBotIds);
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-target-1', {
+      immediate: true,
+      trafficClass: 'interactive',
+      botId: 'bot-6',
+    });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-command-1', {
+      immediate: true,
+      trafficClass: 'interactive',
+      botId: 'bot-6',
+    });
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Пользователь [Нарушитель](max://user/user-2) забанен.',
+      { textFormat: 'markdown' },
+      expect.objectContaining({
+        immediate: true,
+        botId: 'bot-5',
+      }),
+    );
+  });
+
   it('reports queued group ban commands as removal when MAX cannot block the chat', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
@@ -9625,11 +9861,21 @@ describe('AdminService.applyManualSystemBan', () => {
     );
   });
 
-  it('uses the command bot for queued group command failure notices', async () => {
+  it('uses the routed send bot for queued group command failure notices', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
       deleteMessage: jest.fn(),
       sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockImplementation(async (request: { chatId: string }) => ({
+        purpose: 'send_message',
+        chatId: request.chatId,
+        primaryBotId: 'bot-2',
+        botId: 'bot-5',
+        candidateBotIds: ['bot-5'],
+        reason: 'alternate_confirmed',
+      })),
     };
 
     const service = new AdminService(
@@ -9637,6 +9883,11 @@ describe('AdminService.applyManualSystemBan', () => {
       maxClient as never,
       createChatContextCacheMock() as never,
       createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
     );
     jest
       .spyOn(service, 'applyManualSystemBan')
@@ -9676,7 +9927,7 @@ describe('AdminService.applyManualSystemBan', () => {
         actionHealthLane: 'background',
         sourceTag: 'moderation_notice',
         autoDeleteDelayMs: 3 * 60 * 1000,
-        botId: 'bot-2',
+        botId: 'bot-5',
       },
     );
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();

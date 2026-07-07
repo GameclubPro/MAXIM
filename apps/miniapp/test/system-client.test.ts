@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { getSystemBots, getSystemDashboard } from '../src/lib/api/system-client';
+import {
+  getSystemBotRoutePreview,
+  getSystemBots,
+  getSystemDashboard,
+} from '../src/lib/api/system-client';
 import type { ApiTransport } from '../src/lib/api/transport';
 
 const generatedAt = '2026-07-06T10:00:00.000Z';
@@ -203,6 +207,16 @@ function createApi(payload: unknown): ApiTransport {
   };
 }
 
+function createRecordingApi(payload: unknown, paths: string[]): ApiTransport {
+  return {
+    request: async (path) => {
+      paths.push(path);
+      return payload;
+    },
+    requestKeepalive: () => undefined,
+  };
+}
+
 function createSystemBotsResponse(overrides: Record<string, unknown> = {}) {
   return {
     generatedAt,
@@ -267,6 +281,87 @@ function createSystemBotsResponse(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function createSystemBotRoutePreviewResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    generatedAt,
+    query: {
+      chatId: 'chat-1',
+      purpose: 'send_message',
+      action: null,
+      capability: null,
+      fallbackToPrimary: false,
+      botId: null,
+    },
+    chat: {
+      exists: true,
+      chatId: 'chat-1',
+      title: 'Ops Chat',
+      entityType: 'chat',
+      catalogKind: 'MANAGED',
+      storedPrimaryBotId: 'bot-1',
+      legacyBotId: null,
+    },
+    routes: [
+      {
+        purpose: 'send_message',
+        action: null,
+        capability: null,
+        chatId: 'chat-1',
+        primaryBotId: 'bot-1',
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1'],
+        reason: 'primary_confirmed',
+        selectedBot: {
+          botId: 'bot-1',
+          label: 'Major',
+          lifecycleState: 'active',
+          adminVisible: true,
+          isDefault: true,
+        },
+        candidateBots: [
+          {
+            botId: 'bot-1',
+            label: 'Major',
+            lifecycleState: 'active',
+            adminVisible: true,
+            isDefault: true,
+          },
+        ],
+      },
+    ],
+    memberships: [
+      {
+        botId: 'bot-1',
+        label: 'Major',
+        configured: true,
+        lifecycleState: 'active',
+        operational: true,
+        discoverable: true,
+        executable: true,
+        role: 'primary',
+        status: 'active',
+        botAccessState: 'confirmed_admin',
+        capabilities: ['access_prewarm'],
+        permissionsSummary: {
+          checkedAt: generatedAt,
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['write'],
+        },
+        botAccessCheckedAt: generatedAt,
+        botAccessExpiresAt: null,
+        botAccessSource: 'snapshot',
+        botAccessLastErrorCode: null,
+        lastSeenAt: generatedAt,
+        lastWebhookAt: generatedAt,
+        issues: [],
+      },
+    ],
+    warnings: [],
+    ...overrides,
+  };
+}
+
 test('parses runtime dashboard fields through contract schemas', async () => {
   const dashboard = await getSystemDashboard(createApi(createDashboardResponse()));
 
@@ -306,4 +401,25 @@ test('rejects invalid system bots lifecycle state', async () => {
   });
 
   await assert.rejects(() => getSystemBots(createApi(payload)), /Invalid system bots snapshot/u);
+});
+
+test('fetches and parses system bot route preview through contract schema', async () => {
+  const paths: string[] = [];
+  const preview = await getSystemBotRoutePreview(
+    createRecordingApi(createSystemBotRoutePreviewResponse(), paths),
+    {
+      chatId: 'chat-1',
+      purpose: 'send_message',
+      action: null,
+      capability: null,
+      fallbackToPrimary: false,
+    },
+  );
+
+  assert.equal(
+    paths[0],
+    '/system/bots/routes/preview?chatId=chat-1&purpose=send_message&fallbackToPrimary=false',
+  );
+  assert.equal(preview.routes[0]?.selectedBot?.botId, 'bot-1');
+  assert.equal(preview.memberships[0]?.botAccessState, 'confirmed_admin');
 });

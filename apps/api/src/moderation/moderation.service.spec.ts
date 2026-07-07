@@ -269,29 +269,30 @@ function createModerationServiceWithManualBridge(params: {
   sanctionService: unknown;
   maxClient: unknown;
   manualBridge: unknown;
+  maxBotLinkService?: unknown;
 }) {
   return new ModerationService(
     params.prisma as never,
     params.ruleEngine as never,
     params.sanctionService as never,
     params.maxClient as never,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
+    undefined, // chatContextCache
+    undefined, // systemModeService
+    undefined, // configService
+    undefined, // redisCounter
+    undefined, // privateControlService
+    undefined, // adminDialogLinkService
+    undefined, // membershipLookupService
+    params.maxBotLinkService as never,
+    undefined, // maxBotContextService
+    undefined, // queueMetricsService
+    undefined, // backgroundRuntimeGovernorService
+    undefined, // runtimeDiagnosticsService
+    undefined, // maxChatAdminRosterSyncService
+    undefined, // globalSpammerIntelligence
+    undefined, // managedEntityAccessLossService
+    undefined, // injectedModerationAccessService
+    undefined, // injectedNightModeTransitionRuntime
     params.manualBridge as never,
   );
 }
@@ -2780,13 +2781,142 @@ describe('ModerationService', () => {
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(prisma.violation.create).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-bot-1', {
-      delayMs: 2 * 60 * 1000,
-    });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'msg-bot-1',
+      expect.objectContaining({
+        delayMs: 2 * 60 * 1000,
+        trafficClass: 'critical',
+        actionHealthLane: 'critical',
+        sourceTag: 'moderation_delete',
+        timeoutMs: MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
+      }),
+    );
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        userId: 'bot-1',
+        messageId: 'msg-bot-1',
+        ruleCode: 'BOT_MESSAGE_AUTO_DELETE',
+        action: SanctionAction.DELETE_MESSAGE,
+      }),
+    });
+  });
+
+  it('routes delayed own-bot auto-delete through a delete-capable fallback bot', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            removeBotsFromGroupEnabled: false,
+            deleteBotMessagesEnabled: true,
+            deleteBotMessagesDelayMinutes: 2,
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      globalSpammer: {
+        upsert: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const terminalDeleteError = {
+      response: {
+        status: 403,
+        data: { code: 'chat.denied', message: 'bot cannot delete messages' },
+      },
+    };
+    const maxClient = {
+      deleteMessage: jest
+        .fn()
+        .mockImplementation(
+          async (_chatId: string, _messageId: string, options?: { botId?: string }) => {
+            if (options?.botId === 'bot-2') {
+              throw terminalDeleteError;
+            }
+          },
+        ),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const maxBotLinkService = {
+      resolveBotRoutes: jest.fn().mockResolvedValue({
+        purpose: 'moderation_action',
+        chatId: 'chat-1',
+        primaryBotId: 'bot-2',
+        botId: 'bot-2',
+        candidateBotIds: ['bot-2', 'bot-6'],
+        reason: 'primary_soft',
+        action: 'delete_message',
+      }),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn().mockReturnValue('bot-1'),
+      } as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await service.handleUpdate(createBotAuthoredUpdate());
+
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'msg-bot-1',
+      expect.objectContaining({
+        delayMs: 2 * 60 * 1000,
+        botId: 'bot-2',
+        trafficClass: 'critical',
+        actionHealthLane: 'critical',
+        sourceTag: 'moderation_delete',
+      }),
+    );
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'msg-bot-1',
+      expect.objectContaining({
+        delayMs: 2 * 60 * 1000,
+        botId: 'bot-6',
+        trafficClass: 'critical',
+        actionHealthLane: 'critical',
+        sourceTag: 'moderation_delete',
+      }),
+    );
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         chatId: 'chat-1',
@@ -2947,9 +3077,17 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createBotAuthoredUpdate());
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-bot-1', {
-      delayMs: 2 * 60 * 1000,
-    });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'msg-bot-1',
+      expect.objectContaining({
+        delayMs: 2 * 60 * 1000,
+        trafficClass: 'critical',
+        actionHealthLane: 'critical',
+        sourceTag: 'moderation_delete',
+        timeoutMs: MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
+      }),
+    );
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
   });
@@ -3012,9 +3150,17 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createOwnBotUpdateWithoutBotFlags());
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-own-bot-no-flags-1', {
-      delayMs: 2 * 60 * 1000,
-    });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'msg-own-bot-no-flags-1',
+      expect.objectContaining({
+        delayMs: 2 * 60 * 1000,
+        trafficClass: 'critical',
+        actionHealthLane: 'critical',
+        sourceTag: 'moderation_delete',
+        timeoutMs: MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
+      }),
+    );
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
   });
@@ -3077,9 +3223,17 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createOwnBotUpdateWithoutBotFlags());
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-own-bot-no-flags-1', {
-      delayMs: 30_000,
-    });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'msg-own-bot-no-flags-1',
+      expect.objectContaining({
+        delayMs: 30_000,
+        trafficClass: 'critical',
+        actionHealthLane: 'critical',
+        sourceTag: 'moderation_delete',
+        timeoutMs: MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
+      }),
+    );
   });
 
   it('does not auto-delete tracked greeting message from own bot', async () => {
@@ -10002,7 +10156,9 @@ describe('ModerationService', () => {
       manualBridge: adminService,
     });
 
-    await service.handleUpdate(createAdminReplyModerationUpdate('super ban'));
+    const update = createAdminReplyModerationUpdate('super ban');
+    (update as MaxUpdate & { executionOwnerBotId: string }).executionOwnerBotId = 'bot-4';
+    await service.handleUpdate(update);
 
     expect(adminService.enqueueDeveloperSuperBanCommand).not.toHaveBeenCalled();
     expect(adminService.enqueueManualGroupModerationCommand).not.toHaveBeenCalled();
@@ -10010,7 +10166,7 @@ describe('ModerationService', () => {
       'chat-1',
       'Команда `супер бан` доступна только разработчику бота.',
       { textFormat: 'markdown' },
-      expect.objectContaining({ immediate: true }),
+      expect.objectContaining({ immediate: true, botId: 'bot-4' }),
     );
   });
 
@@ -10449,9 +10605,17 @@ describe('ModerationService', () => {
     );
     expect(adminService.enqueueManualGroupModerationCommand).not.toHaveBeenCalled();
     expect(adminService.applyManualOpenChatCommand).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-admin-silence-1', {
-      immediate: true,
-    });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'msg-admin-silence-1',
+      expect.objectContaining({
+        immediate: true,
+        trafficClass: 'critical',
+        actionHealthLane: 'critical',
+        sourceTag: 'moderation_delete',
+        timeoutMs: MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
+      }),
+    );
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Тишина включена на 12 ч.',
@@ -10461,6 +10625,121 @@ describe('ModerationService', () => {
         immediate: true,
       }),
     );
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+  });
+
+  it('routes forwarded admin command cleanup through a delete-capable fallback bot', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings(),
+          domains: [],
+          admins: [{ userId: 'admin-1' }],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const terminalDeleteError = {
+      response: {
+        status: 403,
+        data: { code: 'chat.denied', message: 'bot cannot delete command message' },
+      },
+    };
+    const maxClient = {
+      deleteMessage: jest
+        .fn()
+        .mockImplementation(
+          async (_chatId: string, _messageId: string, options?: { botId?: string }) => {
+            if (options?.botId === 'bot-2') {
+              throw terminalDeleteError;
+            }
+          },
+        ),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const maxBotLinkService = {
+      resolveBotRoutes: jest.fn().mockResolvedValue({
+        purpose: 'moderation_action',
+        chatId: 'chat-1',
+        primaryBotId: 'bot-2',
+        botId: 'bot-2',
+        candidateBotIds: ['bot-2', 'bot-6'],
+        reason: 'primary_soft',
+        action: 'delete_message',
+      }),
+    };
+    const adminService = {
+      enqueueManualGroupModerationCommand: jest.fn(),
+      applyManualChatSilenceCommand: jest.fn().mockResolvedValue({
+        ok: true,
+        message: 'Тишина включена на 12 ч.',
+        durationHours: 12,
+        until: '2026-06-20T15:00:00.000Z',
+      }),
+      applyManualOpenChatCommand: jest.fn(),
+    };
+
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine,
+      sanctionService,
+      maxClient,
+      manualBridge: adminService,
+      maxBotLinkService,
+    });
+
+    const baseUpdate = createUpdate();
+    await service.handleUpdate({
+      ...baseUpdate,
+      message: {
+        ...baseUpdate.message!,
+        messageId: 'msg-admin-silence-1',
+        senderId: 'admin-1',
+        text: 'тишина 12',
+      },
+    });
+
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'msg-admin-silence-1',
+      expect.objectContaining({
+        immediate: true,
+        botId: 'bot-2',
+        sourceTag: 'moderation_delete',
+      }),
+    );
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'msg-admin-silence-1',
+      expect.objectContaining({
+        immediate: true,
+        botId: 'bot-6',
+        sourceTag: 'moderation_delete',
+      }),
+    );
+    expect(adminService.applyManualChatSilenceCommand).toHaveBeenCalled();
     expect(ruleEngine.detect).not.toHaveBeenCalled();
   });
 
@@ -10540,9 +10819,17 @@ describe('ModerationService', () => {
     );
     expect(adminService.applyManualChatSilenceCommand).not.toHaveBeenCalled();
     expect(adminService.enqueueManualGroupModerationCommand).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-admin-open-chat-1', {
-      immediate: true,
-    });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'msg-admin-open-chat-1',
+      expect.objectContaining({
+        immediate: true,
+        trafficClass: 'critical',
+        actionHealthLane: 'critical',
+        sourceTag: 'moderation_delete',
+        timeoutMs: MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
+      }),
+    );
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Чат открыт.',
@@ -10829,9 +11116,17 @@ describe('ModerationService', () => {
       },
       'group_command',
     );
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-admin-forward-rules-1', {
-      immediate: true,
-    });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'msg-admin-forward-rules-1',
+      expect.objectContaining({
+        immediate: true,
+        trafficClass: 'critical',
+        actionHealthLane: 'critical',
+        sourceTag: 'moderation_delete',
+        timeoutMs: MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
+      }),
+    );
     const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
     expect(
       sentTexts.some((text) =>
@@ -10919,9 +11214,17 @@ describe('ModerationService', () => {
       'group_command',
     );
     expect(ruleEngine.detect).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-admin-forward-rules-1', {
-      immediate: true,
-    });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'msg-admin-forward-rules-1',
+      expect.objectContaining({
+        immediate: true,
+        trafficClass: 'critical',
+        actionHealthLane: 'critical',
+        sourceTag: 'moderation_delete',
+        timeoutMs: MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
+      }),
+    );
   });
 
   it('rejects duration suffix for the group ban command', async () => {

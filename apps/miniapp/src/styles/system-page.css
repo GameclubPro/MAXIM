@@ -372,6 +372,183 @@
   margin-top: 0;
 }
 
+.system-route-preview {
+  display: grid;
+  gap: 12px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(83, 126, 176, 0.16);
+}
+
+.system-route-preview__head,
+.system-route-preview__summary,
+.system-route-preview__row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.system-route-preview__head {
+  flex-wrap: wrap;
+}
+
+.system-route-preview__head > div,
+.system-route-preview__field,
+.system-route-preview__block,
+.system-route-preview__row > div {
+  min-width: 0;
+}
+
+.system-route-preview__head h3,
+.system-route-preview__block h4 {
+  margin: 0;
+}
+
+.system-route-preview__head p,
+.system-route-preview__block p {
+  margin: 4px 0 0;
+  color: var(--text-secondary);
+}
+
+.system-route-preview__form {
+  display: grid;
+  grid-template-columns:
+    minmax(160px, 1.4fr) repeat(3, minmax(128px, 1fr)) minmax(148px, 0.9fr)
+    auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.system-route-preview__field {
+  display: grid;
+  gap: 5px;
+}
+
+.system-route-preview__field > span {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+
+.system-route-preview__input {
+  width: 100%;
+  min-height: 38px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(83, 126, 176, 0.2);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.system-route-preview__input:focus {
+  border-color: rgba(49, 123, 201, 0.45);
+  outline: 2px solid rgba(65, 173, 255, 0.18);
+  outline-offset: 1px;
+}
+
+.system-route-preview__toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 38px;
+  padding: 7px 10px;
+  border: 1px solid rgba(83, 126, 176, 0.16);
+  border-radius: 10px;
+  background: rgba(239, 246, 255, 0.62);
+}
+
+.system-route-preview__toggle span {
+  display: grid;
+  gap: 1px;
+}
+
+.system-route-preview__toggle strong,
+.system-route-preview__toggle small {
+  line-height: 1.15;
+}
+
+.system-route-preview__toggle small {
+  color: var(--text-secondary);
+}
+
+.system-route-preview__submit {
+  min-height: 38px;
+  white-space: nowrap;
+}
+
+.system-route-preview__result {
+  display: grid;
+  gap: 10px;
+}
+
+.system-route-preview__summary {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
+.system-route-preview__columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.system-route-preview__block {
+  display: grid;
+  gap: 8px;
+}
+
+.system-route-preview__block h4 {
+  font-size: 0.86rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+
+.system-route-preview__rows {
+  display: grid;
+  gap: 7px;
+}
+
+.system-route-preview__row {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(83, 126, 176, 0.13);
+  border-radius: 10px;
+  background: rgba(247, 251, 255, 0.78);
+}
+
+.system-route-preview__row strong,
+.system-route-preview__row small {
+  display: block;
+}
+
+.system-route-preview__row strong {
+  overflow-wrap: anywhere;
+}
+
+.system-route-preview__row small,
+.system-route-preview__row > span {
+  color: var(--text-secondary);
+}
+
+.system-route-preview__row > span {
+  max-width: 44%;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.system-route-preview__issues {
+  display: flex;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .system-subscription-meta small {
   display: block;
   color: var(--text-secondary);
@@ -480,6 +657,24 @@
   .system-data-list__meta {
     justify-items: start;
     text-align: left;
+  }
+
+  .system-route-preview__form,
+  .system-route-preview__columns {
+    grid-template-columns: 1fr;
+  }
+
+  .system-route-preview__row {
+    flex-direction: column;
+  }
+
+  .system-route-preview__row > span {
+    max-width: none;
+    text-align: left;
+  }
+
+  .system-route-preview__submit {
+    width: 100%;
   }
 
   .system-bot-card__head {

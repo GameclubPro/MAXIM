@@ -33,12 +33,30 @@ describe('SystemController auth e2e', () => {
   let app: NestFastifyApplication;
   const botToken = 'test-bot-token';
   const getSourceSnapshot = jest.fn();
+  const getRoutePreview = jest.fn();
+  const getMembershipAudit = jest.fn();
 
   beforeEach(async () => {
     getSourceSnapshot.mockReset().mockResolvedValue({
       generatedAt: '2026-04-01T18:10:00.000Z',
       windowSec: 120,
       overall: { totalRequests: 3 },
+    });
+    getRoutePreview.mockReset().mockResolvedValue({
+      generatedAt: '2026-04-01T18:11:00.000Z',
+      query: {
+        chatId: 'chat-1',
+        purpose: 'send_message',
+        action: null,
+        capability: null,
+        fallbackToPrimary: false,
+        botId: null,
+      },
+      routes: [{ purpose: 'send_message', botId: 'bot-2' }],
+    });
+    getMembershipAudit.mockReset().mockResolvedValue({
+      generatedAt: '2026-04-01T18:12:00.000Z',
+      summary: { criticalCount: 0 },
     });
 
     const moduleRef = await Test.createTestingModule({
@@ -87,7 +105,11 @@ describe('SystemController auth e2e', () => {
         },
         {
           provide: SystemBotsService,
-          useValue: { getSnapshot: jest.fn() },
+          useValue: {
+            getSnapshot: jest.fn(),
+            getRoutePreview,
+            getMembershipAudit,
+          },
         },
       ],
     }).compile();
@@ -129,5 +151,61 @@ describe('SystemController auth e2e', () => {
     });
 
     expect(getSourceSnapshot).toHaveBeenCalledWith({ windowSec: 120 });
+  });
+
+  it('returns a bot route preview for an authenticated system admin', async () => {
+    const initData = createSignedInitData(botToken, '100', Math.floor(Date.now() / 1_000));
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v1/system/bots/routes/preview?chatId=chat-1&purpose=send_message&fallbackToPrimary=false',
+      headers: {
+        authorization: `InitData ${initData}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      generatedAt: '2026-04-01T18:11:00.000Z',
+      query: {
+        chatId: 'chat-1',
+        purpose: 'send_message',
+        action: null,
+        capability: null,
+        fallbackToPrimary: false,
+        botId: null,
+      },
+      routes: [{ purpose: 'send_message', botId: 'bot-2' }],
+    });
+    expect(getRoutePreview).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      purpose: 'send_message',
+      action: null,
+      capability: null,
+      fallbackToPrimary: false,
+      botId: null,
+    });
+  });
+
+  it('returns a bot membership audit for an authenticated system admin', async () => {
+    const initData = createSignedInitData(botToken, '100', Math.floor(Date.now() / 1_000));
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v1/system/bots/audit?sampleLimit=5&snapshotFreshMs=60000',
+      headers: {
+        authorization: `InitData ${initData}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      generatedAt: '2026-04-01T18:12:00.000Z',
+      summary: { criticalCount: 0 },
+    });
+    expect(getMembershipAudit).toHaveBeenCalledWith({
+      sampleLimit: 5,
+      snapshotFreshMs: 60_000,
+    });
   });
 });

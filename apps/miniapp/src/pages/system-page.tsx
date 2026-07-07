@@ -1,22 +1,68 @@
+import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { ManagedEntityBotCapability } from '@maxim/contracts/managed-entities';
+import type {
+  SystemBotRouteModerationAction,
+  SystemBotRoutePurpose,
+} from '@maxim/contracts/system';
 import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl } from '../components/ui/segmented-control';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import { describeApiError } from '../lib/api-error';
-import { getSystemBots, getSystemDashboard, setSystemMode } from '../lib/api/system-client';
+import {
+  getSystemBotRoutePreview,
+  type SystemBotRoutePreviewQuery,
+  getSystemBots,
+  getSystemDashboard,
+  setSystemMode,
+} from '../lib/api/system-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { queryKeys } from '../lib/query-keys';
 import '../styles/system-page.css';
 
 type SystemModeSelection = 'auto' | 'normal' | 'degrade';
 type WebhookSubscriptionStatus = 'healthy' | 'warning' | 'critical' | 'disabled';
+type RoutePreviewPurposeSelection = 'all' | SystemBotRoutePurpose;
+type RoutePreviewActionSelection = '' | SystemBotRouteModerationAction;
+type RoutePreviewCapabilitySelection = '' | ManagedEntityBotCapability;
 
 const SYSTEM_MODE_OPTIONS = [
   { value: 'auto', label: 'Auto' },
   { value: 'normal', label: 'Normal' },
   { value: 'degrade', label: 'Degrade' },
 ] as const;
+const ROUTE_PREVIEW_PURPOSE_OPTIONS: readonly {
+  value: RoutePreviewPurposeSelection;
+  label: string;
+}[] = [
+  { value: 'all', label: 'All routes' },
+  { value: 'default', label: 'Default' },
+  { value: 'read', label: 'Read' },
+  { value: 'send_message', label: 'Send' },
+  { value: 'member_access', label: 'Member access' },
+  { value: 'moderation_action', label: 'Moderation' },
+  { value: 'capability', label: 'Capability' },
+];
+const ROUTE_PREVIEW_ACTION_OPTIONS: readonly {
+  value: RoutePreviewActionSelection;
+  label: string;
+}[] = [
+  { value: '', label: 'All actions' },
+  { value: 'delete_message', label: 'Delete message' },
+  { value: 'moderate_member', label: 'Moderate member' },
+];
+const ROUTE_PREVIEW_CAPABILITY_OPTIONS: readonly {
+  value: RoutePreviewCapabilitySelection;
+  label: string;
+}[] = [
+  { value: '', label: 'All capabilities' },
+  { value: 'background_scans', label: 'Background scans' },
+  { value: 'channel_stats', label: 'Channel stats' },
+  { value: 'suggestion_delivery', label: 'Suggestion delivery' },
+  { value: 'membership_prewarm', label: 'Membership prewarm' },
+  { value: 'access_prewarm', label: 'Access prewarm' },
+];
 
 function formatPercent(value: number): string {
   return `${(value * 100).toFixed(value === 0 ? 0 : value < 0.1 ? 2 : 1)}%`;
@@ -221,9 +267,64 @@ function formatBotProblemKind(kind: string): string {
   return labels[kind] ?? kind;
 }
 
+function formatRoutePreviewPurpose(purpose: string): string {
+  const labels: Record<string, string> = {
+    default: 'default',
+    read: 'read',
+    send_message: 'send',
+    member_access: 'member access',
+    moderation_action: 'moderation',
+    capability: 'capability',
+  };
+
+  return labels[purpose] ?? purpose;
+}
+
+function formatRoutePreviewRouteName(route: {
+  purpose: string;
+  action: string | null;
+  capability: string | null;
+}): string {
+  if (route.action) {
+    return `${formatRoutePreviewPurpose(route.purpose)} · ${route.action}`;
+  }
+  if (route.capability) {
+    return `${formatRoutePreviewPurpose(route.purpose)} · ${route.capability}`;
+  }
+
+  return formatRoutePreviewPurpose(route.purpose);
+}
+
+function formatRoutePreviewBotLabel(bot: { botId: string; label: string } | null): string {
+  if (!bot) {
+    return 'no route';
+  }
+
+  return bot.label === bot.botId ? bot.botId : `${bot.label} · ${bot.botId}`;
+}
+
+function compactList(values: readonly string[], limit = 4): string {
+  if (values.length === 0) {
+    return 'none';
+  }
+
+  const visible = values.slice(0, limit);
+  const suffix = values.length > visible.length ? ` +${values.length - visible.length}` : '';
+  return `${visible.join(', ')}${suffix}`;
+}
+
 export function SystemPage({ api }: { api: ApiTransport }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
+  const [routePreviewChatId, setRoutePreviewChatId] = useState('');
+  const [routePreviewPurpose, setRoutePreviewPurpose] =
+    useState<RoutePreviewPurposeSelection>('all');
+  const [routePreviewAction, setRoutePreviewAction] = useState<RoutePreviewActionSelection>('');
+  const [routePreviewCapability, setRoutePreviewCapability] =
+    useState<RoutePreviewCapabilitySelection>('');
+  const [routePreviewAllowFallback, setRoutePreviewAllowFallback] = useState(true);
+  const [routePreviewParams, setRoutePreviewParams] =
+    useState<SystemBotRoutePreviewQuery | null>(null);
   const dashboardQuery = useQuery({
     queryKey: queryKeys.systemDashboard,
     queryFn: () => getSystemDashboard(api),
@@ -236,6 +337,28 @@ export function SystemPage({ api }: { api: ApiTransport }) {
     queryFn: () => getSystemBots(api),
     staleTime: 5_000,
     refetchInterval: 5_000,
+    retry: 1,
+  });
+  const routePreviewQueryKey = routePreviewParams
+    ? queryKeys.systemBotRoutePreview(
+        routePreviewParams.chatId,
+        routePreviewParams.purpose,
+        routePreviewParams.action ?? null,
+        routePreviewParams.capability ?? null,
+        routePreviewParams.fallbackToPrimary,
+      )
+    : queryKeys.systemBotRoutePreview('', 'all', null, null, true);
+  const routePreviewQuery = useQuery({
+    queryKey: routePreviewQueryKey,
+    queryFn: () => {
+      if (!routePreviewParams) {
+        throw new Error('Route preview query is not ready');
+      }
+
+      return getSystemBotRoutePreview(api, routePreviewParams);
+    },
+    enabled: Boolean(routePreviewParams),
+    staleTime: 0,
     retry: 1,
   });
   const modeMutation = useMutation({
@@ -260,6 +383,37 @@ export function SystemPage({ api }: { api: ApiTransport }) {
       });
     },
   });
+  const requestRoutePreview = () => {
+    const chatId = routePreviewChatId.trim();
+    if (!chatId) {
+      pushToast({
+        tone: 'info',
+        title: 'Укажите chatId',
+        description: 'Route preview нужен конкретный чат или канал.',
+      });
+      return;
+    }
+
+    const nextParams: SystemBotRoutePreviewQuery = {
+      chatId,
+      purpose: routePreviewPurpose,
+      action: routePreviewAction || null,
+      capability: routePreviewCapability || null,
+      fallbackToPrimary: routePreviewAllowFallback,
+    };
+
+    setRoutePreviewParams(nextParams);
+    if (
+      routePreviewParams &&
+      routePreviewParams.chatId === nextParams.chatId &&
+      routePreviewParams.purpose === nextParams.purpose &&
+      routePreviewParams.action === nextParams.action &&
+      routePreviewParams.capability === nextParams.capability &&
+      routePreviewParams.fallbackToPrimary === nextParams.fallbackToPrimary
+    ) {
+      void routePreviewQuery.refetch();
+    }
+  };
 
   if (dashboardQuery.isLoading) {
     return (
@@ -856,6 +1010,208 @@ export function SystemPage({ api }: { api: ApiTransport }) {
             </small>
           </article>
         </div>
+        <section className="system-route-preview" aria-label="Превью маршрута бота">
+          <div className="system-route-preview__head">
+            <div>
+              <h3>Route preview</h3>
+              <p>Read-only проверка выбора route, кандидатов и membership-состояния.</p>
+            </div>
+            <span className="chip">
+              {routePreviewQuery.data
+                ? `${routePreviewQuery.data.routes.length} routes`
+                : 'operator tool'}
+            </span>
+          </div>
+          <form
+            className="system-route-preview__form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              requestRoutePreview();
+            }}
+          >
+            <label className="system-route-preview__field system-route-preview__field--wide">
+              <span>chatId</span>
+              <input
+                value={routePreviewChatId}
+                onChange={(event) => setRoutePreviewChatId(event.target.value)}
+                placeholder="chat-123 или -100..."
+                className="system-route-preview__input"
+                inputMode="text"
+              />
+            </label>
+            <label className="system-route-preview__field">
+              <span>purpose</span>
+              <select
+                value={routePreviewPurpose}
+                onChange={(event) =>
+                  setRoutePreviewPurpose(event.target.value as RoutePreviewPurposeSelection)
+                }
+                className="system-route-preview__input"
+              >
+                {ROUTE_PREVIEW_PURPOSE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="system-route-preview__field">
+              <span>action</span>
+              <select
+                value={routePreviewAction}
+                onChange={(event) =>
+                  setRoutePreviewAction(event.target.value as RoutePreviewActionSelection)
+                }
+                className="system-route-preview__input"
+              >
+                {ROUTE_PREVIEW_ACTION_OPTIONS.map((option) => (
+                  <option key={option.value || 'all'} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="system-route-preview__field">
+              <span>capability</span>
+              <select
+                value={routePreviewCapability}
+                onChange={(event) =>
+                  setRoutePreviewCapability(event.target.value as RoutePreviewCapabilitySelection)
+                }
+                className="system-route-preview__input"
+              >
+                {ROUTE_PREVIEW_CAPABILITY_OPTIONS.map((option) => (
+                  <option key={option.value || 'all'} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="system-route-preview__toggle">
+              <span>
+                <strong>allowFallback</strong>
+                <small>{routePreviewAllowFallback ? 'primary fallback on' : 'strict route'}</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={routePreviewAllowFallback}
+                onChange={(event) => setRoutePreviewAllowFallback(event.target.checked)}
+              />
+            </label>
+            <button
+              type="submit"
+              className="button button--accent system-route-preview__submit"
+              disabled={routePreviewQuery.isFetching}
+            >
+              {routePreviewQuery.isFetching ? 'Проверяем…' : 'Проверить'}
+            </button>
+          </form>
+          {routePreviewQuery.error ? (
+            <p className="system-subscription-error">
+              {describeApiError(routePreviewQuery.error, 'Route preview недоступен.')}
+            </p>
+          ) : null}
+          {routePreviewQuery.data ? (
+            <div className="system-route-preview__result">
+              <div className="system-route-preview__summary">
+                <span
+                  className={routePreviewQuery.data.chat.exists ? 'chip' : 'chip chip--warning'}
+                >
+                  {routePreviewQuery.data.chat.exists ? 'catalog hit' : 'catalog miss'}
+                </span>
+                <span className="chip">
+                  primary {routePreviewQuery.data.chat.storedPrimaryBotId ?? 'n/a'}
+                </span>
+                <span className="chip">
+                  {routePreviewQuery.data.chat.entityType ?? 'entity n/a'}
+                  {routePreviewQuery.data.chat.title
+                    ? ` · ${routePreviewQuery.data.chat.title}`
+                    : ''}
+                </span>
+                <span className="chip">at {formatTime(routePreviewQuery.data.generatedAt)}</span>
+              </div>
+              {routePreviewQuery.data.warnings.length > 0 ? (
+                <div className="system-chip-list system-chip-list--compact">
+                  {routePreviewQuery.data.warnings.map((warning) => (
+                    <span key={warning} className="chip chip--warning">
+                      {warning}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              <div className="system-route-preview__columns">
+                <div className="system-route-preview__block">
+                  <h4>Routes</h4>
+                  <div className="system-route-preview__rows">
+                    {routePreviewQuery.data.routes.map((route) => (
+                      <div
+                        key={`${route.purpose}:${route.action ?? '-'}:${route.capability ?? '-'}`}
+                        className="system-route-preview__row"
+                      >
+                        <div>
+                          <strong>{formatRoutePreviewRouteName(route)}</strong>
+                          <small>
+                            selected {formatRoutePreviewBotLabel(route.selectedBot)} · reason{' '}
+                            {route.reason ?? 'n/a'}
+                          </small>
+                        </div>
+                        <span>
+                          candidates{' '}
+                          {route.candidateBots.length > 0
+                            ? compactList(route.candidateBots.map((bot) => bot.label || bot.botId))
+                            : compactList(route.candidateBotIds)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className="system-route-preview__block">
+                  <h4>Memberships</h4>
+                  {routePreviewQuery.data.memberships.length > 0 ? (
+                    <div className="system-route-preview__rows">
+                      {routePreviewQuery.data.memberships.map((membership) => (
+                        <div key={membership.botId} className="system-route-preview__row">
+                          <div>
+                            <strong>{membership.label ?? membership.botId}</strong>
+                            <small>
+                              {membership.role} · {membership.status} · {membership.botAccessState}
+                            </small>
+                          </div>
+                          <span>
+                            {membership.executable ? 'exec' : 'no exec'} ·{' '}
+                            {membership.discoverable ? 'discover' : 'hidden'} · issues{' '}
+                            {membership.issues.length}
+                          </span>
+                          {membership.issues.length > 0 ? (
+                            <div className="system-route-preview__issues">
+                              {membership.issues.slice(0, 4).map((issue) => (
+                                <span
+                                  key={`${membership.botId}:${issue}`}
+                                  className="chip chip--warning"
+                                >
+                                  {issue}
+                                </span>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="system-panel__hint">
+                      Membership rows для этого chatId не найдены.
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <p className="system-panel__hint">
+              Введите chatId и нажмите проверку, чтобы увидеть фактический route resolver без
+              backend side effects.
+            </p>
+          )}
+        </section>
         {botRows.length > 0 ? (
           <div className="system-bot-list">
             {botRows.map((row) => (

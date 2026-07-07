@@ -32,6 +32,7 @@ type QueueSet = {
 
 type MockWebhookEventRow = {
   id: string;
+  dedupKey: string | null;
   status: WebhookStatus;
   botId: string | null;
   queueName: string | null;
@@ -42,6 +43,22 @@ type MockWebhookEventRow = {
   processedAt: Date | null;
   normalizedPayload: unknown;
 };
+
+function resolveTestWebhookDedupKey(payload: unknown, rowBotId: string | null): string | null {
+  const value = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null;
+  if (!value) {
+    return null;
+  }
+  const updateId = typeof value.updateId === 'string' ? value.updateId.trim() : '';
+  if (!updateId) {
+    return null;
+  }
+  const botId =
+    typeof value.botId === 'string' && value.botId.trim().length > 0
+      ? value.botId.trim()
+      : (rowBotId ?? '').trim();
+  return botId ? `${botId}:${updateId}` : updateId;
+}
 
 function matchesDateFilter(value: Date | null, filter: unknown): boolean {
   if (!(filter && typeof filter === 'object')) {
@@ -72,6 +89,10 @@ function matchesScalarFilter<T>(value: T | null, filter: unknown): boolean {
 
   if (filter && typeof filter === 'object' && 'not' in (filter as Record<string, unknown>)) {
     return value !== ((filter as { not?: T | null }).not ?? null);
+  }
+
+  if (filter && typeof filter === 'object' && Array.isArray((filter as { in?: unknown }).in)) {
+    return (filter as { in: unknown[] }).in.includes(value);
   }
 
   return value === filter;
@@ -107,6 +128,18 @@ function matchesWebhookEventWhere(
     return false;
   }
 
+  if (!matchesScalarFilter(row.id, where.id)) {
+    return false;
+  }
+
+  if (!matchesScalarFilter(row.dedupKey, where.dedupKey)) {
+    return false;
+  }
+
+  if (!matchesScalarFilter(row.botId, where.botId)) {
+    return false;
+  }
+
   if (!matchesScalarFilter(row.queueName, where.queueName)) {
     return false;
   }
@@ -133,6 +166,7 @@ function matchesWebhookEventWhere(
 function createService(params?: {
   findManyResult?: Array<{
     id: string;
+    dedupKey?: string | null;
     status?: WebhookStatus;
     botId?: string | null;
     queueName?: string | null;
@@ -155,6 +189,10 @@ function createService(params?: {
 }) {
   const webhookRows: MockWebhookEventRow[] = (params?.findManyResult ?? []).map((item) => ({
     ...item,
+    dedupKey:
+      item.dedupKey ??
+      resolveTestWebhookDedupKey(item.normalizedPayload, item.botId ?? null) ??
+      null,
     status: item.status ?? WebhookStatus.RECEIVED,
     botId: item.botId ?? null,
     queueName: item.queueName ?? null,
@@ -174,6 +212,11 @@ function createService(params?: {
             .filter((row) => matchesWebhookEventWhere(row, args?.where))
             .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime())
             .slice(0, args?.take ?? Number.POSITIVE_INFINITY),
+        ),
+      findFirst: jest
+        .fn()
+        .mockImplementation(async (args?: { where?: Record<string, unknown> }) =>
+          webhookRows.find((row) => matchesWebhookEventWhere(row, args?.where)) ?? null,
         ),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
@@ -790,7 +833,9 @@ describe('WebhookOutboxService', () => {
     expect(new Set([queueForChatA, queueForChatB]).size).toBeGreaterThan(1);
   });
 
-  it('skips standby shared-chat message_created events before they enter BullMQ', async () => {
+  it('enqueues standby-only shared-chat message_created events as recovery deliveries', async () => {
+    const chatId = '-100123';
+    const queueName = resolveDefaultWebhookQueueNameForChatId(chatId);
     const { service, prisma, queues } = createService({
       findManyResult: [
         {
@@ -798,10 +843,11 @@ describe('WebhookOutboxService', () => {
           enqueueAttempts: 0,
           botId: 'id613002203036_4_bot',
           normalizedPayload: {
+            updateId: 'u-standby-message-only',
             type: 'message_created',
             botId: 'id613002203036_4_bot',
             executionOwnerBotId: 'id613002203036_bot',
-            message: { chatId: '-100123' },
+            message: { chatId },
           },
         },
       ],
@@ -809,12 +855,16 @@ describe('WebhookOutboxService', () => {
 
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
 
-    expect(queues['moderation-default-0'].add).not.toHaveBeenCalled();
+    expect(queues[queueName].add).toHaveBeenCalledWith(
+      'process-webhook-event',
+      { webhookEventId: 'evt-standby-message' },
+      expect.objectContaining({ jobId: 'evt-standby-message' }),
+    );
     expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          status: WebhookStatus.PROCESSED,
-          queueName: null,
+          status: WebhookStatus.QUEUED,
+          queueName,
         }),
       }),
     );
@@ -837,6 +887,7 @@ describe('WebhookOutboxService', () => {
         botId,
         createdAt: new Date(`2026-03-24T00:00:0${index}.000Z`),
         normalizedPayload: {
+          updateId: 'u-mirrored-message',
           type: 'message_created',
           botId,
           executionOwnerBotId: ownerBotId,
@@ -875,7 +926,9 @@ describe('WebhookOutboxService', () => {
     expect(queuedIds).toEqual([ownerEventId]);
   });
 
-  it('skips standby shared-chat message_edited events before they enter BullMQ', async () => {
+  it('enqueues standby-only shared-chat message_edited events as recovery deliveries', async () => {
+    const chatId = '-100123';
+    const queueName = resolveDefaultWebhookQueueNameForChatId(chatId);
     const { service, prisma, queues } = createService({
       findManyResult: [
         {
@@ -883,10 +936,11 @@ describe('WebhookOutboxService', () => {
           enqueueAttempts: 0,
           botId: 'id613002203036_4_bot',
           normalizedPayload: {
+            updateId: 'u-standby-edited-only',
             type: 'message_edited',
             botId: 'id613002203036_4_bot',
             executionOwnerBotId: 'id613002203036_bot',
-            message: { chatId: '-100123' },
+            message: { chatId },
           },
         },
       ],
@@ -894,18 +948,24 @@ describe('WebhookOutboxService', () => {
 
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
 
-    expect(queues['moderation-default-0'].add).not.toHaveBeenCalled();
+    expect(queues[queueName].add).toHaveBeenCalledWith(
+      'process-webhook-event',
+      { webhookEventId: 'evt-standby-edited-message' },
+      expect.objectContaining({ jobId: 'evt-standby-edited-message' }),
+    );
     expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          status: WebhookStatus.PROCESSED,
-          queueName: null,
+          status: WebhookStatus.QUEUED,
+          queueName,
         }),
       }),
     );
   });
 
-  it('skips standby shared-chat user_added events before they enter BullMQ', async () => {
+  it('enqueues standby-only shared-chat user_added events as recovery deliveries', async () => {
+    const chatId = '-100123';
+    const queueName = resolveJoinWebhookQueueNameForChatId(chatId);
     const { service, prisma, queues } = createService({
       findManyResult: [
         {
@@ -913,11 +973,12 @@ describe('WebhookOutboxService', () => {
           enqueueAttempts: 0,
           botId: 'id613002203036_4_bot',
           normalizedPayload: {
+            updateId: 'u-standby-user-added-only',
             type: 'user_added',
             botId: 'id613002203036_4_bot',
             executionOwnerBotId: 'id613002203036_bot',
-            user: { chatId: '-100123' },
-            chatId: '-100123',
+            user: { chatId },
+            chatId,
           },
         },
       ],
@@ -925,14 +986,16 @@ describe('WebhookOutboxService', () => {
 
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
 
-    for (const queueName of JOIN_WEBHOOK_QUEUE_NAMES) {
-      expect(queues[queueName].add).not.toHaveBeenCalled();
-    }
+    expect(queues[queueName].add).toHaveBeenCalledWith(
+      'process-webhook-event',
+      { webhookEventId: 'evt-standby-user-added' },
+      expect.objectContaining({ jobId: 'evt-standby-user-added' }),
+    );
     expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          status: WebhookStatus.PROCESSED,
-          queueName: null,
+          status: WebhookStatus.QUEUED,
+          queueName,
         }),
       }),
     );
@@ -947,12 +1010,27 @@ describe('WebhookOutboxService', () => {
     const { service, prisma, queues } = createService({
       findManyResult: [
         {
+          id: 'evt-owner-processed',
+          enqueueAttempts: 0,
+          status: WebhookStatus.PROCESSED,
+          processedAt: new Date('2026-03-24T00:00:02.000Z'),
+          botId: 'id613002203036_bot',
+          normalizedPayload: {
+            updateId: 'u-standby-queued',
+            type: 'message_created',
+            botId: 'id613002203036_bot',
+            executionOwnerBotId: 'id613002203036_bot',
+            message: { chatId: '-100123' },
+          },
+        },
+        {
           id: 'evt-standby-queued',
           enqueueAttempts: 2,
           status: WebhookStatus.QUEUED,
           queueName: 'moderation-default-0',
           botId: 'id613002203036_4_bot',
           normalizedPayload: {
+            updateId: 'u-standby-queued',
             type: 'message_created',
             botId: 'id613002203036_4_bot',
             executionOwnerBotId: 'id613002203036_bot',

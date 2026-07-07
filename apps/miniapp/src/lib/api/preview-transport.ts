@@ -138,6 +138,7 @@ import {
   type ChannelStatsResponse,
 } from '@maxim/contracts/channel-stats';
 import {
+  systemBotRoutePreviewResponseSchema,
   systemBotsSnapshotSchema,
   type SystemBotsSnapshot,
 } from '@maxim/contracts/system';
@@ -1149,6 +1150,149 @@ function buildPreviewSystemBots(state: PreviewState): SystemBotsSnapshot {
         problemSamples: [],
       },
     ],
+  });
+}
+
+function buildPreviewSystemBotRoutePreview(state: PreviewState, url: URL) {
+  const dashboard = buildPreviewSystemDashboard(state);
+  const generatedAt = dashboard.summary.generatedAt;
+  const chatId = url.searchParams.get('chatId')?.trim() || PREVIEW_CHAT_ID;
+  const purpose = url.searchParams.get('purpose')?.trim() || 'all';
+  const action = url.searchParams.get('action')?.trim() || null;
+  const capability = url.searchParams.get('capability')?.trim() || null;
+  const fallbackToPrimary = url.searchParams.get('fallbackToPrimary') !== 'false';
+  const botId = url.searchParams.get('botId')?.trim() || null;
+  const chatExists = chatId === PREVIEW_CHAT_ID || chatId === PREVIEW_CHANNEL_ID;
+  const chatTitle =
+    chatId === PREVIEW_CHANNEL_ID
+      ? PREVIEW_CHANNEL_TITLE
+      : chatId === PREVIEW_CHAT_ID
+        ? PREVIEW_CHAT_TITLE
+        : null;
+  const entityType = chatId === PREVIEW_CHANNEL_ID ? 'channel' : chatExists ? 'chat' : null;
+  const botById = new Map(PREVIEW_BOT_FIXTURES.map((fixture) => [fixture.botId, fixture]));
+  const selectedBot = botById.get(botId ?? PREVIEW_STANDBY_BOT_ID) ?? botById.get(PREVIEW_STANDBY_BOT_ID)!;
+  const routeBot = (fixture: PreviewBotFixture) => ({
+    botId: fixture.botId,
+    label: fixture.label,
+    lifecycleState: fixture.botId === PREVIEW_REX_BOT_ID ? 'dormant' : 'active',
+    adminVisible: true,
+    isDefault: fixture.botId === PREVIEW_PRIMARY_BOT_ID,
+  });
+  const routeCandidates = [selectedBot, botById.get(PREVIEW_PRIMARY_BOT_ID)!].filter(
+    (fixture, index, fixtures) =>
+      fixtures.findIndex((candidate) => candidate.botId === fixture.botId) === index,
+  );
+  const allRoutes = [
+    {
+      purpose: 'send_message',
+      action: null,
+      capability: null,
+      chatId,
+      primaryBotId: PREVIEW_PRIMARY_BOT_ID,
+      botId: selectedBot.botId,
+      candidateBotIds: routeCandidates.map((fixture) => fixture.botId),
+      reason:
+        selectedBot.botId === PREVIEW_PRIMARY_BOT_ID
+          ? 'primary_confirmed'
+          : 'alternate_confirmed',
+      selectedBot: routeBot(selectedBot),
+      candidateBots: routeCandidates.map(routeBot),
+    },
+    {
+      purpose: 'moderation_action',
+      action: 'delete_message',
+      capability: null,
+      chatId,
+      primaryBotId: PREVIEW_PRIMARY_BOT_ID,
+      botId: PREVIEW_EDITOR_BOT_ID,
+      candidateBotIds: [PREVIEW_EDITOR_BOT_ID, PREVIEW_STANDBY_BOT_ID],
+      reason: 'alternate_confirmed',
+      selectedBot: routeBot(botById.get(PREVIEW_EDITOR_BOT_ID)!),
+      candidateBots: [PREVIEW_EDITOR_BOT_ID, PREVIEW_STANDBY_BOT_ID].map((id) =>
+        routeBot(botById.get(id)!),
+      ),
+    },
+    {
+      purpose: 'capability',
+      action: null,
+      capability: 'membership_prewarm',
+      chatId,
+      primaryBotId: PREVIEW_PRIMARY_BOT_ID,
+      botId: PREVIEW_STANDBY_BOT_ID,
+      candidateBotIds: [PREVIEW_STANDBY_BOT_ID, PREVIEW_SCOUT_BOT_ID],
+      reason: 'alternate_confirmed',
+      selectedBot: routeBot(botById.get(PREVIEW_STANDBY_BOT_ID)!),
+      candidateBots: [PREVIEW_STANDBY_BOT_ID, PREVIEW_SCOUT_BOT_ID].map((id) =>
+        routeBot(botById.get(id)!),
+      ),
+    },
+  ];
+  const routes = allRoutes.filter((route) => {
+    if (purpose !== 'all' && route.purpose !== purpose) {
+      return false;
+    }
+    if (action && route.action !== action) {
+      return false;
+    }
+    if (capability && route.capability !== capability) {
+      return false;
+    }
+    return true;
+  });
+  const memberships = PREVIEW_BOT_FIXTURES.map((fixture) => {
+    const isPrimary = fixture.botId === PREVIEW_PRIMARY_BOT_ID;
+    const isDormant = fixture.botId === PREVIEW_REX_BOT_ID;
+    return {
+      botId: fixture.botId,
+      label: fixture.label,
+      configured: true,
+      lifecycleState: isDormant ? 'dormant' : 'active',
+      operational: !isDormant,
+      discoverable: !isDormant,
+      executable: !isDormant,
+      role: isPrimary ? 'primary' : 'standby',
+      status: 'active',
+      botAccessState: isPrimary ? 'confirmed_owner' : isDormant ? 'stale' : 'confirmed_admin',
+      capabilities: fixture.assistCapabilities,
+      permissionsSummary: {
+        checkedAt: generatedAt,
+        isAdmin: true,
+        isOwner: isPrimary,
+        permissions: isPrimary ? ['all'] : fixture.standbyPermissions,
+      },
+      botAccessCheckedAt: generatedAt,
+      botAccessExpiresAt: null,
+      botAccessSource: 'preview',
+      botAccessLastErrorCode: isDormant ? 'preview.stale' : null,
+      lastSeenAt: generatedAt,
+      lastWebhookAt: isDormant ? null : generatedAt,
+      issues: isDormant ? ['stale-access', 'not-executable'] : [],
+    };
+  });
+
+  return systemBotRoutePreviewResponseSchema.parse({
+    generatedAt,
+    query: {
+      chatId,
+      purpose,
+      action,
+      capability,
+      fallbackToPrimary,
+      botId,
+    },
+    chat: {
+      exists: chatExists,
+      chatId,
+      title: chatTitle,
+      entityType,
+      catalogKind: chatExists ? 'MANAGED' : null,
+      storedPrimaryBotId: chatExists ? PREVIEW_PRIMARY_BOT_ID : null,
+      legacyBotId: null,
+    },
+    routes,
+    memberships,
+    warnings: chatExists ? [] : ['chat-not-found-in-preview-catalog'],
   });
 }
 
@@ -6924,6 +7068,10 @@ export function createPreviewApiTransport(): ApiTransport {
 
       if (url.pathname === '/system/bots' && method === 'GET') {
         return systemBotsSnapshotSchema.parse(buildPreviewSystemBots(state));
+      }
+
+      if (url.pathname === '/system/bots/routes/preview' && method === 'GET') {
+        return buildPreviewSystemBotRoutePreview(state, url);
       }
 
       if (url.pathname === '/system/mode' && method === 'POST') {

@@ -10306,9 +10306,13 @@ export class AdminService implements OnModuleDestroy {
     }
 
     if (this.isKnownRuntimeBotUserId(job.targetUserId)) {
+      const noticeBotId = await this.resolveManualGroupCommandNoticeBotId(
+        job.sourceChatId,
+        job.commandBotId,
+      );
       await this.sendManualGroupCommandNotice({
         chatId: job.sourceChatId,
-        botId: job.commandBotId ?? undefined,
+        botId: noticeBotId,
         text: 'Супер бан не применяется к настроенным ботам MAX.',
         deleteBotMessagesEnabled: job.deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes: job.deleteBotMessagesDelayMinutes,
@@ -10338,9 +10342,13 @@ export class AdminService implements OnModuleDestroy {
       });
     }
 
-    await this.deleteManualGroupCommandTargetMessage(job);
+    const cleanupBotId = await this.resolveManualGroupCommandCleanupBotId(
+      job.sourceChatId,
+      job.commandBotId,
+    );
+    await this.deleteManualGroupCommandTargetMessage(job, { botId: cleanupBotId });
     await this.deleteManualGroupCommandMessage(job.sourceChatId, job.commandMessageId, {
-      botId: job.commandBotId ?? undefined,
+      botId: cleanupBotId,
     });
 
     const estimatedManagedChatCount = await this.estimateDeveloperSuperBanManagedChatCount({
@@ -10354,9 +10362,13 @@ export class AdminService implements OnModuleDestroy {
     const estimatedChatCount = Math.max(1, estimatedManagedChatCount ?? 1);
     const estimatedChatCountText =
       estimatedChatCount === 1 ? `${estimatedChatCount} чате` : `${estimatedChatCount} чатах`;
+    const noticeBotId = await this.resolveManualGroupCommandNoticeBotId(
+      job.sourceChatId,
+      job.commandBotId,
+    );
     await this.sendManualGroupCommandNotice({
       chatId: job.sourceChatId,
-      botId: job.commandBotId ?? undefined,
+      botId: noticeBotId,
       text: `Пользователь ${targetLabel} заблокирован в ${estimatedChatCountText} по решению разработчика бота.`,
       deleteBotMessagesEnabled: job.deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes: job.deleteBotMessagesDelayMinutes,
@@ -10864,9 +10876,13 @@ export class AdminService implements OnModuleDestroy {
 
       const failedActionLabel =
         job.action === 'BAN' ? (job.fanoutAllChats === true ? 'Бан!' : 'бан') : 'мут';
+      const noticeBotId = await this.resolveManualGroupCommandNoticeBotId(
+        job.sourceChatId,
+        job.commandBotId,
+      );
       await this.sendManualGroupCommandNotice({
         chatId: job.sourceChatId,
-        botId: job.commandBotId ?? undefined,
+        botId: noticeBotId,
         ledger: {
           jobId: job.jobId,
           operation: 'COMMAND_NOTICE_FAILURE',
@@ -10884,18 +10900,26 @@ export class AdminService implements OnModuleDestroy {
       return;
     }
 
-    await this.deleteManualGroupCommandTargetMessage(job);
+    const cleanupBotId = await this.resolveManualGroupCommandCleanupBotId(
+      job.sourceChatId,
+      job.commandBotId,
+    );
+    await this.deleteManualGroupCommandTargetMessage(job, { botId: cleanupBotId });
     await this.deleteManualGroupCommandMessage(job.sourceChatId, job.commandMessageId, {
-      botId: job.commandBotId ?? undefined,
+      botId: cleanupBotId,
     });
 
     const targetLabel = this.formatManualGroupCommandUserLabel(
       job.targetSenderName,
       job.targetUserId,
     );
+    const noticeBotId = await this.resolveManualGroupCommandNoticeBotId(
+      job.sourceChatId,
+      job.commandBotId,
+    );
     await this.sendManualGroupCommandNotice({
       chatId: job.sourceChatId,
-      botId: job.commandBotId ?? undefined,
+      botId: noticeBotId,
       ledger: {
         jobId: job.jobId,
         operation: 'COMMAND_NOTICE_SUCCESS',
@@ -10954,12 +10978,15 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
-  private async deleteManualGroupCommandTargetMessage(job: {
-    sourceChatId: string;
-    commandBotId?: string | null;
-    targetUserId: string;
-    targetMessageId?: string | null;
-  }): Promise<void> {
+  private async deleteManualGroupCommandTargetMessage(
+    job: {
+      sourceChatId: string;
+      commandBotId?: string | null;
+      targetUserId: string;
+      targetMessageId?: string | null;
+    },
+    options: { botId?: string } = {},
+  ): Promise<void> {
     if (!job.targetMessageId) {
       return;
     }
@@ -10968,7 +10995,7 @@ export class AdminService implements OnModuleDestroy {
       await this.maxClient.deleteMessage(job.sourceChatId, job.targetMessageId, {
         immediate: true,
         trafficClass: 'interactive',
-        ...(job.commandBotId ? { botId: job.commandBotId } : {}),
+        ...(options.botId ? { botId: options.botId } : {}),
       });
     } catch (error: unknown) {
       this.logger.debug(
@@ -10980,6 +11007,50 @@ export class AdminService implements OnModuleDestroy {
         },
         'Failed to delete handled queued group admin command target message',
       );
+    }
+  }
+
+  private async resolveManualGroupCommandCleanupBotId(
+    chatId: string,
+    preferredBotId?: string | null,
+  ): Promise<string | undefined> {
+    try {
+      return await this.resolveManualModerationActionBotAssignment(chatId, 'delete_message', {
+        preferredBotId: preferredBotId ?? null,
+      });
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          preferredBotId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve queued group command cleanup bot',
+      );
+      return this.normalizeManualModerationBotId(preferredBotId) ?? undefined;
+    }
+  }
+
+  private async resolveManualGroupCommandNoticeBotId(
+    chatId: string,
+    preferredBotId?: string | null,
+  ): Promise<string | undefined> {
+    try {
+      return (
+        (await this.resolveDeliveryBotAssignment(chatId)) ??
+        this.normalizeManualModerationBotId(preferredBotId) ??
+        undefined
+      );
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          preferredBotId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve queued group command notice bot',
+      );
+      return this.normalizeManualModerationBotId(preferredBotId) ?? undefined;
     }
   }
 

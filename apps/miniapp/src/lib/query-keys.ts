@@ -2,6 +2,7 @@ import {
   channelStatsQueryKey,
   logsDashboardQueryKey,
   managedEntityOnboardingDiagnosticsQueryKey,
+  systemBotRoutePreviewQueryKey,
   systemBotsQueryKey,
   systemDashboardQueryKey,
 } from './query-key-builders';
@@ -10,6 +11,7 @@ export {
   channelStatsQueryKey,
   logsDashboardQueryKey,
   managedEntityOnboardingDiagnosticsQueryKey,
+  systemBotRoutePreviewQueryKey,
   systemBotsQueryKey,
   systemDashboardQueryKey,
 } from './query-key-builders';
@@ -17,6 +19,7 @@ export {
 export const queryKeys = {
   systemDashboard: systemDashboardQueryKey,
   systemBots: systemBotsQueryKey,
+  systemBotRoutePreview: systemBotRoutePreviewQueryKey,
 
   logsDashboard: logsDashboardQueryKey,
   globalSpammerReviewQueue: (chatId: string | null | undefined, ...scope: readonly unknown[]) =>

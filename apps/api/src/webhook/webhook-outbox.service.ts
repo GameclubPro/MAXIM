@@ -742,6 +742,9 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     if (!this.isStandbySharedChatEvent(event)) {
       return false;
     }
+    if (!(await this.hasMatchingOwnerWebhookEvent(event))) {
+      return false;
+    }
 
     const existingJob = await this.findExistingJob(event.id, queueName);
     if (existingJob) {
@@ -768,6 +771,39 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
 
     await this.markSkippedSharedStandbyEvent(event.id);
     return true;
+  }
+
+  private async hasMatchingOwnerWebhookEvent(event: WebhookEnqueueCandidate): Promise<boolean> {
+    const payload =
+      event.normalizedPayload && typeof event.normalizedPayload === 'object'
+        ? (event.normalizedPayload as Record<string, unknown>)
+        : null;
+    if (!payload) {
+      return false;
+    }
+
+    const ownerBotId = this.readTrimmedString(payload.executionOwnerBotId);
+    const updateId = this.readTrimmedString(payload.updateId);
+    if (!ownerBotId || !updateId) {
+      return false;
+    }
+
+    const ownerEvent = await this.prisma.webhookEvent.findFirst({
+      where: {
+        id: { not: event.id },
+        dedupKey: `${ownerBotId}:${updateId}`,
+        botId: ownerBotId,
+        OR: [
+          { status: { in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED, WebhookStatus.PROCESSED] } },
+          { status: WebhookStatus.FAILED, nextEnqueueAt: { not: null } },
+        ],
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    return Boolean(ownerEvent);
   }
 
   private isStandbySharedChatEvent(event: WebhookEnqueueCandidate): boolean {

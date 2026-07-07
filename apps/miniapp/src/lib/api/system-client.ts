@@ -1,10 +1,12 @@
 import {
+  systemBotRoutePreviewResponseSchema,
   systemBotsSnapshotSchema,
   systemCanaryStateSchema,
   systemQueueGroupHealthSchema,
   systemRollbackReadinessSchema,
   systemRuntimeProfileSchema,
 } from '@maxim/contracts/system';
+import type { ManagedEntityBotCapability } from '@maxim/contracts/managed-entities';
 import type {
   BotOwnershipFoundationSnapshot,
   BotWebhookSubscriptionSnapshot,
@@ -15,6 +17,9 @@ import type {
   SystemDashboardSpammerSurfaces,
   SystemDashboardWebhookSlo,
   SystemBotsSnapshot,
+  SystemBotRouteModerationAction,
+  SystemBotRoutePreviewResponse,
+  SystemBotRoutePurpose,
   SystemModeSnapshot,
   SystemQueueGroupHealth,
   SystemRollbackReadiness,
@@ -25,6 +30,15 @@ import type { ApiTransport } from './transport';
 
 type ContractParser<T> = {
   parse(value: unknown): T;
+};
+
+export type SystemBotRoutePreviewQuery = {
+  chatId: string;
+  purpose: 'all' | SystemBotRoutePurpose;
+  action?: SystemBotRouteModerationAction | null;
+  capability?: ManagedEntityBotCapability | null;
+  fallbackToPrimary: boolean;
+  botId?: string | null;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1266,6 +1280,34 @@ export async function getSystemDashboard(api: ApiTransport): Promise<SystemDashb
 export async function getSystemBots(api: ApiTransport): Promise<SystemBotsSnapshot> {
   const response = await api.request('/system/bots');
   return parseContractValue(systemBotsSnapshotSchema, response, 'system bots snapshot');
+}
+
+export async function getSystemBotRoutePreview(
+  api: ApiTransport,
+  query: SystemBotRoutePreviewQuery,
+): Promise<SystemBotRoutePreviewResponse> {
+  const params = new URLSearchParams({
+    chatId: query.chatId,
+    purpose: query.purpose,
+    fallbackToPrimary: query.fallbackToPrimary ? 'true' : 'false',
+  });
+
+  if (query.action) {
+    params.set('action', query.action);
+  }
+  if (query.capability) {
+    params.set('capability', query.capability);
+  }
+  if (query.botId) {
+    params.set('botId', query.botId);
+  }
+
+  const response = await api.request(`/system/bots/routes/preview?${params.toString()}`);
+  return parseContractValue(
+    systemBotRoutePreviewResponseSchema,
+    response,
+    'system bot route preview',
+  );
 }
 
 export async function setSystemMode(

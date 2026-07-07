@@ -125,6 +125,7 @@ export async function runFixtureSmoke(): Promise<SmokeResult> {
     scenarios.push(await runMatrixScenario(botCount));
   }
   scenarios.push(await runDeniedPrimaryScenario());
+  scenarios.push(await runChannelDeletePermissionScenario());
   scenarios.push(await runDrainingScenario());
 
   return buildResult('fixture', scenarios);
@@ -197,6 +198,53 @@ async function runDeniedPrimaryScenario(): Promise<SmokeScenario> {
     name: 'denied-primary',
     chatId,
     botCount: 3,
+    routes,
+    assertions,
+    warnings: [],
+  };
+}
+
+async function runChannelDeletePermissionScenario(): Promise<SmokeScenario> {
+  const chatId = 'channel-delete-permission';
+  const fixture = createFixture([
+    {
+      id: chatId,
+      title: 'Channel delete permission',
+      entityType: ChatEntityType.CHANNEL,
+      primaryBotId: ROUTE_MATRIX_BOT_IDS[0],
+      botId: ROUTE_MATRIX_BOT_IDS[0],
+      botMemberships: [
+        createMembership(chatId, ROUTE_MATRIX_BOT_IDS[0], 'primary', {
+          permissionsSnapshot: writeOnlySnapshot(),
+        }),
+        createMembership(chatId, ROUTE_MATRIX_BOT_IDS[1], 'standby', {
+          permissionsSnapshot: deleteOnlySnapshot(),
+        }),
+      ],
+    },
+  ]);
+  const routes = await resolveRouteSet(fixture.service, chatId);
+  const deleteRoute = findRoute(routes, 'moderation_action', 'delete_message');
+  const assertions = [
+    expectRouteBot(
+      routes,
+      'moderation_action',
+      'delete_message',
+      null,
+      ROUTE_MATRIX_BOT_IDS[1],
+    ),
+    assert(
+      'channel-delete-permission',
+      'channel write-only primary is not a delete candidate',
+      deleteRoute?.candidateBotIds.includes(ROUTE_MATRIX_BOT_IDS[0]) === false,
+      false,
+      deleteRoute?.candidateBotIds.includes(ROUTE_MATRIX_BOT_IDS[0]),
+    ),
+  ];
+  return {
+    name: 'channel-delete-permission',
+    chatId,
+    botCount: 2,
     routes,
     assertions,
     warnings: [],
@@ -359,6 +407,24 @@ function deniedSnapshot() {
     isAdmin: false,
     isOwner: false,
     permissions: [],
+  };
+}
+
+function writeOnlySnapshot() {
+  return {
+    checkedAt: '2026-07-06T10:00:00.000Z',
+    isAdmin: true,
+    isOwner: false,
+    permissions: ['write'],
+  };
+}
+
+function deleteOnlySnapshot() {
+  return {
+    checkedAt: '2026-07-06T10:00:00.000Z',
+    isAdmin: true,
+    isOwner: false,
+    permissions: ['delete_messages'],
   };
 }
 
