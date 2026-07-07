@@ -26,10 +26,13 @@
 - CDN/app2 mini app delivery is paused. Hard rule for routine mini app work: no CDN/app2/Object Storage deploys, publishes, smokes, fallback plans, or checklist items. Treat `https://major-maksimov.ru/app/` as the only production mini app deploy/smoke target.
 - After every completed task, do a short self-learning pass before handoff:
   - fix small issues revealed by the work while the context is still fresh, if they are clearly in scope and low risk
-  - add or update `AGENTS.md` only with durable, repo-verified knowledge that will speed future work or prevent repeated mistakes
+  - add or update `AGENTS.md` only with durable, repo-verified, useful knowledge that will speed future work or prevent repeated mistakes
   - prefer stable commands, service names, deploy rules, product invariants, integration quirks, and validation shortcuts
-  - do not record one-off failures, guesses, temporary production state, secrets, personal notes, or details already obvious from nearby code
-  - if a lesson is too specific to the changed code, encode it as a test, type, helper, or code comment instead of an agent note
+  - do not record noise, guesses, temporary observations, one-off command output, secrets, personal notes, or details already obvious from nearby code
+  - if a lesson is too specific to the changed code, encode it as a test, type, helper, or code comment flag instead of an agent note
+  - use code comment flags only for important invariants or sensitive edit zones; prefix new flags with `FLAG:` so future agents know to pause before editing that block
+  - before changing a flagged block, read the flag and think through the invariant twice
+  - do not delete existing flags incidentally; remove or rewrite them only as an intentional improvement when the old comment is obsolete or misleading
 - Prefer repo scripts over long manual sequences:
   - local push: `./infra/scripts/local-commit-push.sh "<message>" main`
   - local VPS deploy wrapper: `./infra/scripts/vps-connect.sh deploy main [services...]`
@@ -234,6 +237,7 @@
 - Keep primary-bot access scoring centralized in `apps/api/src/max/max-bot-access-policy.util.ts`; routing and ownership repair should share it instead of duplicating permissions-snapshot scoring.
 - Multi-bot UI, diagnostics, and tests should stay list-oriented. Avoid copy, caps, or assumptions that only one extra/standby bot exists.
 - Multi-bot lifecycle policy lives in `apps/api/src/max/max-bot-state.util.ts`: `active` bots may execute actions, assist, and primary promotion; `draining` bots stay usable for webhooks/read/discovery only; `dormant`/`disabled` bots should not be selected for routes.
+- `GET /v1/system/bots` is a read-only fleet snapshot for system admins. Keep it on local sources only: configured bot registry, cached webhook/queue/MAX API metrics, and Prisma aggregates with the same managed-entity filter as ownership foundation; do not add live MAX access checks or execution-planner refreshes there.
 - Webhook event `dedupKey` values must stay bot-scoped (`botId:updateId`) so the same MAX update delivered to several bot webhooks cannot discard the owner bot delivery. Dedupe logical side effects downstream by message/update semantics instead.
 - Configured runtime bots are moderation-immune: do not kick/ban/mute/delete their messages, do not add them to global spammer observations/registry, and use `MaxBotRegistryService.isKnownBotUserId` / existing wrappers for bot-user checks instead of ad hoc ID comparisons.
 - Managed entities are aggregated per unique chat or channel. Do not duplicate cards per bot.

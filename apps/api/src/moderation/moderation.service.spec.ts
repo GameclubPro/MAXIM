@@ -15176,6 +15176,85 @@ describe('ModerationService', () => {
     expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
   });
 
+  it('deduplicates mirrored multi-bot manual group close deletes with a persisted message claim', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            nightModeForceCloseEnabled: true,
+            nightModeForceCloseForever: true,
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      moderationViolationMessageClaim: {
+        createMany: jest
+          .fn()
+          .mockResolvedValueOnce({ count: 1 })
+          .mockResolvedValueOnce({ count: 0 }),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+      getChatMembersAccess: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate({
+      ...createUpdate(),
+      updateId: 'upd-owner-manual-close-1',
+      botId: 'bot-1',
+    });
+    await service.handleUpdate({
+      ...createUpdate(),
+      updateId: 'upd-standby-manual-close-1',
+      botId: 'bot-2',
+    });
+
+    expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledTimes(2);
+    expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          messageId: 'msg-1',
+          ruleCode: 'MANUAL_GROUP_CLOSE_DELETE',
+          updateType: 'message_action',
+        }),
+      ],
+      skipDuplicates: true,
+    });
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
+    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
+  });
+
   it('treats persisted message claim unique conflicts as duplicate multi-bot deliveries', async () => {
     const prisma = {
       chat: {
