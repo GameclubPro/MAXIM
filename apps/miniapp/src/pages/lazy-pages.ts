@@ -9,7 +9,6 @@ import {
   preloadGiveawayPage,
   preloadLegalPage,
   preloadSettingsPage,
-  preloadSystemPage,
 } from './page-preloads';
 export {
   preloadChannelDialogPage,
@@ -20,7 +19,6 @@ export {
   preloadGiveawayPage,
   preloadLegalPage,
   preloadSettingsPage,
-  preloadSystemPage,
 } from './page-preloads';
 
 type RoutedPageProps = {
@@ -108,7 +106,6 @@ export const LazyChannelSuggestDialogPage = lazyPage<RoutedPageProps>(
 );
 export const LazyEventsPage = lazyPage<RoutedPageProps>(preloadEventsPage, 'EventsPage');
 export const LazyGiveawayPage = lazyPage<RoutedPageProps>(preloadGiveawayPage, 'GiveawayPage');
-export const LazySystemPage = lazyPage<RoutedPageProps>(preloadSystemPage, 'SystemPage');
 export const LazyLegalAgreementPage = lazyPage<Record<string, never>>(
   preloadLegalPage,
   'LegalAgreementPage',

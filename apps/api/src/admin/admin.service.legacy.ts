@@ -13774,7 +13774,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   async resolveChannelEngagementActionBotId(chatId: string): Promise<string | undefined> {
-    return this.resolveManualActionBotAssignment(chatId, ChatEntityType.CHANNEL);
+    return this.resolveSendActionBotAssignment(chatId, ChatEntityType.CHANNEL);
   }
 
   normalizeChatSettingsForApply(sourceChatId: string, settings: ChatSettings): ChatSettings {
@@ -20202,6 +20202,23 @@ export class AdminService implements OnModuleDestroy {
       select: { primaryBotId: true, botId: true },
     });
     return this.readTrimmedString(persisted?.primaryBotId ?? persisted?.botId) ?? undefined;
+  }
+
+  private async resolveSendActionBotAssignment(
+    chatId: string,
+    entityType: ChatEntityType = ChatEntityType.CHAT,
+  ): Promise<string | undefined> {
+    const normalizedChatId = chatId.trim();
+    if (!normalizedChatId) {
+      return undefined;
+    }
+
+    const resolvedBotId = await this.resolveDeliveryBotAssignment(normalizedChatId);
+    if (resolvedBotId) {
+      return resolvedBotId;
+    }
+
+    return this.resolveManualActionBotAssignment(normalizedChatId, entityType);
   }
 
   private async resolveAssistBotAssignment(

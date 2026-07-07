@@ -114,26 +114,6 @@ function expectManagedGiveawaySendOptions(overrides: Record<string, unknown> = {
   });
 }
 
-function expectManagedGiveawayBackgroundSendOptions(overrides: Record<string, unknown> = {}) {
-  return expect.objectContaining({
-    trafficClass: 'background',
-    actionHealthLane: 'background',
-    sourceTag: MAX_API_SOURCE_TAGS.GIVEAWAY_DRAW_BACKGROUND,
-    timeoutMs: 12000,
-    ...overrides,
-  });
-}
-
-function expectManagedGiveawayBackgroundMembershipOptions(overrides: Record<string, unknown> = {}) {
-  return expect.objectContaining({
-    trafficClass: 'background',
-    actionHealthLane: 'background',
-    sourceTag: MAX_API_SOURCE_TAGS.GIVEAWAY_DRAW_BACKGROUND,
-    timeoutMs: 5000,
-    ...overrides,
-  });
-}
-
 function createManagedEntityAccessLossMock() {
   return {
     recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue(null),
@@ -157,6 +137,7 @@ function createMaxBotLinkMock(
     getBotTokenSync: jest.fn().mockReturnValue(token),
     getValidationTokens: jest.fn().mockReturnValue([token]),
     resolveBotIdForRead: jest.fn().mockResolvedValue(resolvedBotId),
+    resolveBotIdForSend: jest.fn().mockResolvedValue(resolvedBotId),
     resolveBotId: jest.fn().mockResolvedValue(resolvedBotId),
     resolveContactIdSync: jest.fn((botId?: string | null) =>
       botId === resolvedBotId || botId == null ? contactId : null,
@@ -1607,7 +1588,11 @@ describe('ManagedGiveawayService', () => {
 
     await service.publishManagedGiveaway('source-1', 'giveaway-1', user as never, 'channel');
 
-    expect(maxBotLinkService.resolveBotIdForRead).toHaveBeenCalledWith({ chatId: 'source-1' });
+    expect(maxBotLinkService.resolveBotIdForSend).toHaveBeenCalledWith({
+      chatId: 'source-1',
+      fallbackToPrimary: true,
+    });
+    expect(maxBotLinkService.resolveBotIdForRead).not.toHaveBeenCalled();
     expect(maxBotLinkService.buildEntryMiniappStartUrlSync).toHaveBeenCalledWith(
       expect.stringMatching(/^gg-/u),
     );
@@ -1640,7 +1625,7 @@ describe('ManagedGiveawayService', () => {
     );
   });
 
-  it('uses the unified read route for giveaway publication sends when available', async () => {
+  it('uses the unified send route for giveaway publication sends when available', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-21T12:36:00.000Z'));
 
     const prisma = createPrismaMock();
@@ -1653,7 +1638,7 @@ describe('ManagedGiveawayService', () => {
     const maxBotLinkService = {
       ...createMaxBotLinkMock(),
       resolveBotRoute: jest.fn().mockResolvedValue({
-        purpose: 'read',
+        purpose: 'send_message',
         chatId: 'source-route-1',
         primaryBotId: 'id613002203036_4_bot',
         botId: 'id613002203036_4_bot',
@@ -1696,10 +1681,12 @@ describe('ManagedGiveawayService', () => {
     await service.publishManagedGiveaway('source-route-1', 'giveaway-1', user as never, 'channel');
 
     expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledWith({
-      purpose: 'read',
+      purpose: 'send_message',
       chatId: 'source-route-1',
+      fallbackToPrimary: true,
     });
     expect(maxBotLinkService.resolveBotIdForRead).not.toHaveBeenCalled();
+    expect(maxBotLinkService.resolveBotIdForSend).not.toHaveBeenCalled();
     expect(maxBotLinkService.buildEntryMiniappStartUrlSync).toHaveBeenCalledWith(
       expect.stringMatching(/^gg-/u),
     );

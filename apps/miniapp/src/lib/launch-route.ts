@@ -203,10 +203,6 @@ function normalizeRouteLaunchPath(value: string): string | null {
       return '/';
     }
 
-    if (pathname === '/system' && !parsed.search) {
-      return pathname;
-    }
-
     if (/^\/chat\/[^/?#]+\/events$/u.test(pathname) && !parsed.search) {
       return pathname;
     }

@@ -44,7 +44,6 @@ import {
   LazyLegalAgreementPage,
   LazyPrivacyPolicyPage,
   LazySettingsPage,
-  LazySystemPage,
 } from './pages/lazy-pages';
 
 const LazyAutopostsPage = lazy(async () => {
@@ -272,7 +271,6 @@ function AppRoutes({
               element={<LazyChannelSuggestDialogPage api={apiClient} />}
             />
             <Route path="/chat/:chatId/events" element={<LazyEventsPage api={apiClient} />} />
-            <Route path="/system" element={<LazySystemPage api={apiClient} />} />
             <Route path="/giveaways/:giveawayId" element={<LazyGiveawayPage api={apiClient} />} />
             <Route path="/legal/agreement" element={<LazyLegalAgreementPage />} />
             <Route path="/legal/privacy" element={<LazyPrivacyPolicyPage />} />

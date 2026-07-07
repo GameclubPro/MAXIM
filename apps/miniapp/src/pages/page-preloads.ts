@@ -5,5 +5,4 @@ export const preloadChannelDialogPage = () => import('./channel-dialog-page');
 export const preloadChannelSuggestDialogPage = () => import('./channel-suggest-dialog-page');
 export const preloadEventsPage = () => import('./events-page');
 export const preloadGiveawayPage = () => import('./giveaway-page');
-export const preloadSystemPage = () => import('./system-page');
 export const preloadLegalPage = () => import('./legal-page');

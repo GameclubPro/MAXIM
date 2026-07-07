@@ -109,13 +109,6 @@ function BottomNavIcon({ name }: { name: BottomNavIconName }) {
 }
 
 function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
-  if (pathname === '/system') {
-    return {
-      title: 'Операционный центр',
-      subtitle: 'Состояние webhook, очередей и MAX-лимитов в одном экране.',
-    };
-  }
-
   if (pathname.startsWith('/legal/')) {
     return {
       title: 'Правовые документы',
@@ -303,13 +296,11 @@ export function Shell() {
   const shouldCloseMiniAppOnBack = shouldCloseDialogOnBack || isGiveawayRoute;
   const isSettingsRoute = location.pathname.includes('/settings');
   const isEventsRoute = location.pathname.includes('/events');
-  const isSystemRoute = location.pathname === '/system';
   const isAutopostsRoute = location.pathname === '/autoposts';
   const isChannelStatsRoute =
     location.pathname.includes('/channel/') && location.pathname.includes('/stats');
   const hasTopbar =
     !isChatsRoute &&
-    !isSystemRoute &&
     !isAutopostsRoute &&
     !isSettingsRoute &&
     !isEventsRoute &&

@@ -3839,6 +3839,25 @@ export class ManagedGiveawayService {
     });
   }
 
+  private async resolveSendBotRoute(chatId: string): Promise<MaxBotRoute | null> {
+    if (!this.maxBotLinkService) {
+      return null;
+    }
+
+    const routeResolver = this.maxBotLinkService as unknown as {
+      resolveBotRoute?: (request: MaxBotRouteRequest) => Promise<MaxBotRoute>;
+    };
+    if (typeof routeResolver.resolveBotRoute !== 'function') {
+      return null;
+    }
+
+    return routeResolver.resolveBotRoute({
+      purpose: 'send_message',
+      chatId,
+      fallbackToPrimary: true,
+    });
+  }
+
   private async resolveReadBotAssignment(chatId: string): Promise<string | undefined> {
     const route = await this.resolveReadBotRoute(chatId);
     if (route?.botId) {
@@ -3848,6 +3867,22 @@ export class ManagedGiveawayService {
     return (
       (await this.maxBotLinkService?.resolveBotIdForRead?.({
         chatId,
+      })) ??
+      (await this.maxBotLinkService?.resolveBotId({ chatId })) ??
+      undefined
+    );
+  }
+
+  private async resolveSendBotAssignment(chatId: string): Promise<string | undefined> {
+    const route = await this.resolveSendBotRoute(chatId);
+    if (route?.botId) {
+      return route.botId;
+    }
+
+    return (
+      (await this.maxBotLinkService?.resolveBotIdForSend?.({
+        chatId,
+        fallbackToPrimary: true,
       })) ??
       (await this.maxBotLinkService?.resolveBotId({ chatId })) ??
       undefined
@@ -3927,7 +3962,7 @@ export class ManagedGiveawayService {
     }
 
     try {
-      return (await this.resolveReadBotAssignment(normalizedSourceChatId)) ?? null;
+      return (await this.resolveSendBotAssignment(normalizedSourceChatId)) ?? null;
     } catch (error: unknown) {
       this.logger.warn(
         {

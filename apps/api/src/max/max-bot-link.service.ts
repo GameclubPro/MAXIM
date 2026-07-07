@@ -651,9 +651,29 @@ export class MaxBotLinkService {
         membership.status === ChatBotMembershipStatus.ACTIVE &&
         Boolean(this.resolveOperationalBotId(membership.botId)),
     );
+    const activeExecutableMemberships = activeKnownMemberships.filter((membership) =>
+      Boolean(this.resolveExecutableBotId(membership.botId)),
+    );
+    const accessEligibleActiveExecutableMemberships = activeExecutableMemberships.filter(
+      (membership) => !membershipExplicitlyLacksAccess(membership.permissionsSnapshot),
+    );
     const accessEligibleActiveKnownMemberships = activeKnownMemberships.filter(
       (membership) => !membershipExplicitlyLacksAccess(membership.permissionsSnapshot),
     );
+    const rawStoredExecutableBotId =
+      this.resolveExecutableBotId(chat?.primaryBotId ?? null) ??
+      this.resolveExecutableBotId(chat?.botId ?? null);
+    const storedExecutableMembership = rawStoredExecutableBotId
+      ? (activeExecutableMemberships.find(
+          (membership) => membership.botId === rawStoredExecutableBotId,
+        ) ?? null)
+      : null;
+    const storedExecutableBotId =
+      rawStoredExecutableBotId &&
+      (!storedExecutableMembership ||
+        !membershipExplicitlyLacksAccess(storedExecutableMembership.permissionsSnapshot))
+        ? rawStoredExecutableBotId
+        : null;
     const storedOperationalBotId = this.resolveOperationalBotId(
       chat?.primaryBotId ?? chat?.botId ?? null,
     );
@@ -667,7 +687,18 @@ export class MaxBotLinkService {
         !membershipExplicitlyLacksAccess(storedOperationalMembership.permissionsSnapshot))
         ? storedOperationalBotId
         : null;
+    const executablePrimaryBotId =
+      resolvePreferredPrimaryBotId(storedExecutableBotId, activeExecutableMemberships, {
+        requireFreshSnapshotForPromotion: true,
+      }) ??
+      storedExecutableBotId ??
+      accessEligibleActiveExecutableMemberships.find(
+        (membership) => membership.role === ChatBotMembershipRole.PRIMARY,
+      )?.botId ??
+      accessEligibleActiveExecutableMemberships[0]?.botId ??
+      null;
     const primaryBotId =
+      executablePrimaryBotId ??
       resolvePreferredPrimaryBotId(storedAccessEligibleBotId, activeKnownMemberships, {
         requireFreshSnapshotForPromotion: true,
       }) ??

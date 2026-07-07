@@ -766,6 +766,107 @@ describe('MaxBotLinkService', () => {
     );
   });
 
+  it('uses an active executable standby instead of a draining stored primary for execution binding', async () => {
+    const fixture = createServiceFixture();
+    const drainingPrimaryBot = fixture.bots.find((bot) => bot.id === 'id613002203036_bot');
+    if (!drainingPrimaryBot) {
+      throw new Error('primary bot fixture missing');
+    }
+    drainingPrimaryBot.state = 'draining';
+    fixture.chats.set('chat-draining-execution-owner', {
+      id: 'chat-draining-execution-owner',
+      title: 'Shared chat with draining owner',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push(
+      createActiveMembership('chat-draining-execution-owner', 'id613002203036_bot', 0, {
+        permissionsSnapshot: {
+          checkedAt: '2026-05-09T10:04:00.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages', 'write', 'delete_messages', 'add_remove_members'],
+        },
+      }),
+      createActiveMembership('chat-draining-execution-owner', 'id613002203036_4_bot', 1, {
+        permissionsSnapshot: {
+          checkedAt: '2026-05-09T10:04:01.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages', 'write', 'delete_messages', 'add_remove_members'],
+        },
+      }),
+    );
+
+    const standbyBinding = await fixture.service.getChatExecutionBinding({
+      chatId: 'chat-draining-execution-owner',
+      activeBotId: 'id613002203036_4_bot',
+    });
+    const drainingBinding = await fixture.service.getChatExecutionBinding({
+      chatId: 'chat-draining-execution-owner',
+      activeBotId: 'id613002203036_bot',
+    });
+
+    expect(standbyBinding).toEqual(
+      expect.objectContaining({
+        activeBotId: 'id613002203036_4_bot',
+        primaryBotId: 'id613002203036_4_bot',
+        activeMembershipStatus: ChatBotMembershipStatus.ACTIVE,
+        assignedBotIds: ['id613002203036_bot', 'id613002203036_4_bot'],
+        shouldHandleGroupUpdate: true,
+      }),
+    );
+    expect(drainingBinding).toEqual(
+      expect.objectContaining({
+        activeBotId: 'id613002203036_bot',
+        primaryBotId: 'id613002203036_4_bot',
+        activeMembershipStatus: ChatBotMembershipStatus.ACTIVE,
+        assignedBotIds: ['id613002203036_bot', 'id613002203036_4_bot'],
+        shouldHandleGroupUpdate: false,
+      }),
+    );
+  });
+
+  it('keeps the operational fallback for execution binding when no executable candidate exists', async () => {
+    const fixture = createServiceFixture();
+    const drainingPrimaryBot = fixture.bots.find((bot) => bot.id === 'id613002203036_bot');
+    if (!drainingPrimaryBot) {
+      throw new Error('primary bot fixture missing');
+    }
+    drainingPrimaryBot.state = 'draining';
+    fixture.chats.set('chat-draining-execution-fallback', {
+      id: 'chat-draining-execution-fallback',
+      title: 'Shared chat with no executable owner',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push(
+      createActiveMembership('chat-draining-execution-fallback', 'id613002203036_bot', 0, {
+        permissionsSnapshot: {
+          checkedAt: '2026-05-09T10:04:00.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages', 'write'],
+        },
+      }),
+    );
+
+    await expect(
+      fixture.service.getChatExecutionBinding({
+        chatId: 'chat-draining-execution-fallback',
+        activeBotId: 'id613002203036_bot',
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        activeBotId: 'id613002203036_bot',
+        primaryBotId: 'id613002203036_bot',
+        activeMembershipStatus: ChatBotMembershipStatus.ACTIVE,
+        assignedBotIds: ['id613002203036_bot'],
+        shouldHandleGroupUpdate: true,
+      }),
+    );
+  });
+
   it('derives a deterministic owner from active memberships when chat primary is missing', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('chat-2', {

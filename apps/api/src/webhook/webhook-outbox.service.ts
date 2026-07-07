@@ -534,7 +534,9 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         },
       );
 
-      await this.markQueued(webhookEventId, true, true, queueName);
+      await this.markQueued(webhookEventId, true, true, queueName, {
+        allowFailed: event.status === WebhookStatus.FAILED,
+      });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       if (this.isAlreadyExistsError(message)) {
@@ -589,6 +591,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         false,
         event.status !== WebhookStatus.QUEUED,
         job.queueName,
+        { allowFailed: event.status === WebhookStatus.FAILED },
       );
       return;
     }
@@ -612,7 +615,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
 
     try {
       await job.retry();
-      await this.markQueued(webhookEventId, true, true, job.queueName);
+      await this.markQueued(webhookEventId, true, true, job.queueName, { allowFailed: true });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       await this.markFailedWithBackoff(
@@ -628,7 +631,11 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     incrementAttempts: boolean,
     touchQueuedAt: boolean,
     queueName?: string | null,
+    options?: { allowFailed?: boolean },
   ) {
+    const enqueueableStatuses = options?.allowFailed
+      ? [WebhookStatus.RECEIVED, WebhookStatus.FAILED, WebhookStatus.QUEUED]
+      : [WebhookStatus.RECEIVED, WebhookStatus.QUEUED];
     const data: {
       status: WebhookStatus;
       queuedAt?: Date;
@@ -656,7 +663,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     await this.prisma.webhookEvent.updateMany({
       where: {
         id: webhookEventId,
-        status: { in: [WebhookStatus.RECEIVED, WebhookStatus.FAILED, WebhookStatus.QUEUED] },
+        status: { in: enqueueableStatuses },
       },
       data,
     });

@@ -8189,32 +8189,19 @@ describe('AdminService.applyManualModerationAction', () => {
     expect(prisma.chat.findUnique).not.toHaveBeenCalled();
   });
 
-  it('repairs channel manual action bindings as channels when the persisted bot lost access', async () => {
+  it('uses the channel send route for engagement publication actions', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
-      getCurrentChatMemberAccess: jest
-        .fn()
-        .mockResolvedValueOnce({
-          userId: 'bot-1-user',
-          isAdmin: false,
-          isOwner: false,
-          permissions: [],
-        })
-        .mockResolvedValueOnce({
-          userId: 'bot-2-user',
-          isAdmin: true,
-          isOwner: false,
-          permissions: ['write'],
-        }),
+      getCurrentChatMemberAccess: jest.fn(),
     };
     const maxBotLinkService = {
       resolveBotRoute: jest.fn().mockResolvedValue({
-        purpose: 'read',
+        purpose: 'send_message',
         chatId: 'channel-1',
         primaryBotId: 'bot-1',
-        botId: 'bot-1',
-        candidateBotIds: ['bot-1'],
-        reason: 'chat_primary',
+        botId: 'bot-2',
+        candidateBotIds: ['bot-2', 'bot-1'],
+        reason: 'alternate_confirmed',
       }),
       bindChatToBot: jest.fn().mockResolvedValue('bot-2'),
     };
@@ -8237,11 +8224,12 @@ describe('AdminService.applyManualModerationAction', () => {
 
     await expect(service.resolveChannelEngagementActionBotId('channel-1')).resolves.toBe('bot-2');
 
-    expect(maxBotLinkService.bindChatToBot).toHaveBeenCalledWith({
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledWith({
+      purpose: 'send_message',
       chatId: 'channel-1',
-      entityType: 'CHANNEL',
-      botId: 'bot-2',
     });
+    expect(maxBotLinkService.bindChatToBot).not.toHaveBeenCalled();
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
   });
 
   it('releases active block without re-adding a member who is already in chat', async () => {

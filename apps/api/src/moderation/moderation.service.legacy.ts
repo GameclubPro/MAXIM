@@ -10442,6 +10442,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         };
       }
 
+      if (
+        await this.shouldProcessStandbySharedChatUpdateAsRecovery(
+          update,
+          activeBotId,
+          executionOwnerBotId,
+        )
+      ) {
+        return {
+          mode: 'allow',
+          activeBotId,
+          primaryBotId: executionOwnerBotId,
+          assignedBotIds: Array.from(new Set([executionOwnerBotId, activeBotId])),
+          requiresExecutionLock: true,
+          lockScope: 'chat',
+        };
+      }
+
       const updateType = this.readLowerString(update.type);
       if (updateType === 'bot_added' && this.blockedJoinChatIds.has(chatId)) {
         return {
@@ -10530,6 +10547,56 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       assignedBotIds: executionBinding.assignedBotIds,
       reason,
     };
+  }
+
+  private async shouldProcessStandbySharedChatUpdateAsRecovery(
+    update: MaxUpdate,
+    activeBotId: string,
+    executionOwnerBotId: string,
+  ): Promise<boolean> {
+    const updateId = this.readString(update.updateId);
+    if (!updateId) {
+      return false;
+    }
+
+    const webhookEventClient = (
+      this.prisma as unknown as {
+        webhookEvent?: {
+          findFirst?: PrismaService['webhookEvent']['findFirst'];
+        };
+      }
+    ).webhookEvent;
+    if (typeof webhookEventClient?.findFirst !== 'function') {
+      return false;
+    }
+
+    const ownerEvent = await webhookEventClient.findFirst({
+      where: {
+        dedupKey: `${executionOwnerBotId}:${updateId}`,
+        botId: executionOwnerBotId,
+        OR: [
+          { status: { in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED, WebhookStatus.PROCESSED] } },
+          { status: WebhookStatus.FAILED, nextEnqueueAt: { not: null } },
+        ],
+      },
+      select: {
+        id: true,
+      },
+    });
+    if (ownerEvent) {
+      return false;
+    }
+
+    this.logger.warn(
+      {
+        updateId,
+        updateType: this.readLowerString(update.type),
+        activeBotId,
+        executionOwnerBotId,
+      },
+      'Processing standby shared chat webhook event because owner delivery is absent or terminal',
+    );
+    return true;
   }
 
   private logSharedChatExecutionSkip(
@@ -11293,6 +11360,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       chatId,
       source,
     );
+  }
+
+  private async resolveAutoAttachMutationBotId(params: {
+    chatId: string;
+    source: 'webhook' | 'poll';
+    action: 'delete_message' | 'moderate_member';
+  }): Promise<string | null> {
+    const actionCandidates = await this.resolveModerationActionBotIds({
+      chatId: params.chatId,
+      action: params.action,
+    });
+    const selectedActionBotId = actionCandidates.find(
+      (botId): botId is string => typeof botId === 'string' && botId.trim().length > 0,
+    );
+    if (selectedActionBotId) {
+      return selectedActionBotId.trim();
+    }
+
+    return this.resolveAutoAttachBotId(params.chatId, params.source);
   }
 
   private async recordChannelAutoPostAccessLossIfTerminal(params: {
@@ -13682,7 +13768,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }): Promise<ChannelAutoPostAttachOutcome> {
     const { chatId, messageId, text, textFormat, linkType, managedChannel, source, senderId } =
       params;
-    const autoAttachBotId = await this.resolveAutoAttachBotId(chatId, source);
+    const autoAttachBotId = await this.resolveAutoAttachMutationBotId({
+      chatId,
+      source,
+      action: 'delete_message',
+    });
     const mutationRequestOptions = {
       trafficClass: 'background',
       actionHealthLane: 'background',
@@ -14430,7 +14520,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     update: MaxUpdate;
   }): Promise<void> {
     const { chatId, messageId, text, senderId, senderIsAdmin, update } = params;
-    const autoAttachBotId = await this.resolveAutoAttachBotId(chatId, 'webhook');
+    const autoAttachBotId = await this.resolveAutoAttachMutationBotId({
+      chatId,
+      source: 'webhook',
+      action: 'delete_message',
+    });
     const mutationRequestOptions = {
       trafficClass: 'background',
       actionHealthLane: 'background',

@@ -129,11 +129,6 @@ function limitFavoriteLabelInput(value: string): string {
   return Array.from(value).slice(0, HOME_ENTITY_FAVORITE_LABEL_MAX_LENGTH).join('');
 }
 
-const LazySystemEntryCard = lazy(async () => {
-  const module = await import('../components/system-entry-card');
-  return { default: module.SystemEntryCard };
-});
-
 const LazyChatOnboardingSection = lazy(async () => {
   const module = await import('../components/chat-onboarding-section');
   return { default: module.ChatOnboardingSection };
@@ -329,7 +324,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const [query, setQuery] = useState('');
-  const [canAccessSystem, setCanAccessSystem] = useState(false);
   const [currentUserId, setCurrentUserId] = useState<string | null>(() => getInitDataUserId());
   const virtualListViewportRef = useRef<HTMLElement | null>(null);
   const [virtualListScrollTop, setVirtualListScrollTop] = useState(0);
@@ -837,14 +831,9 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       .then((me) => {
         if (!controller.signal.aborted) {
           setCurrentUserId(me.userId);
-          setCanAccessSystem(me.canAccessSystem === true);
         }
       })
-      .catch(() => {
-        if (!controller.signal.aborted) {
-          setCanAccessSystem(false);
-        }
-      });
+      .catch(() => undefined);
 
     return () => controller.abort();
   }, [api]);
@@ -1027,7 +1016,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const tabLabel = activeTab === 'chat' ? 'Чаты' : 'Каналы';
   const searchLabel = activeTab === 'chat' ? 'Поиск чата' : 'Поиск канала';
   const searchPlaceholder = 'Поиск';
-  const showSystemCard = canAccessSystem;
   const refreshButtonLabel = isFetching ? 'Обновление уже идет' : 'Обновить';
 
   function renderEntityCard(entity: ManagedHomeEntity, index: number) {
@@ -1628,12 +1616,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             filteredEntities.map((entity, index) => renderEntityCard(entity, index))
           )}
         </section>
-      ) : null}
-
-      {showSystemCard ? (
-        <Suspense fallback={null}>
-          <LazySystemEntryCard api={api} />
-        </Suspense>
       ) : null}
     </div>
   );

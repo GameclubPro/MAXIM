@@ -631,13 +631,6 @@ const scenarios = [
     },
   },
   {
-    name: 'system',
-    path: '/system',
-    beforeShot: async (page) => {
-      await page.waitForTimeout(500);
-    },
-  },
-  {
     name: 'legal-agreement',
     path: '/legal/agreement',
     beforeShot: async (page) => {

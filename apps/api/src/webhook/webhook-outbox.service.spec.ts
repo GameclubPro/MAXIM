@@ -163,6 +163,24 @@ function matchesWebhookEventWhere(
   return true;
 }
 
+function createStatusAwareUpdateManyMock(
+  eventId: string,
+  readStatus: () => WebhookStatus,
+  writeStatus: (status: WebhookStatus) => void,
+) {
+  return async (args?: { where?: Record<string, unknown>; data?: { status?: WebhookStatus } }) => {
+    const matched =
+      matchesScalarFilter(eventId, args?.where?.id) &&
+      matchesScalarFilter(readStatus(), args?.where?.status);
+
+    if (matched && args?.data?.status) {
+      writeStatus(args.data.status);
+    }
+
+    return { count: matched ? 1 : 0 };
+  };
+}
+
 function createService(params?: {
   findManyResult?: Array<{
     id: string;
@@ -488,6 +506,41 @@ describe('WebhookOutboxService', () => {
     expect(queues['moderation-default-0'].add).not.toHaveBeenCalled();
   });
 
+  it('does not let ordinary enqueue mark a freshly failed event as queued', async () => {
+    const chatId = 'race-chat';
+    const queueName = resolveDefaultWebhookQueueNameForChatId(chatId);
+    let storedStatus: WebhookStatus = WebhookStatus.RECEIVED;
+    const { service, prisma, queues } = createService({
+      findManyResult: [
+        {
+          id: 'evt-failed-after-add',
+          status: WebhookStatus.RECEIVED,
+          enqueueAttempts: 0,
+          normalizedPayload: { type: 'message_created', message: { chatId } },
+        },
+      ],
+    });
+    queues[queueName].add.mockImplementation(async () => {
+      storedStatus = WebhookStatus.FAILED;
+    });
+    prisma.webhookEvent.updateMany.mockImplementation(
+      createStatusAwareUpdateManyMock(
+        'evt-failed-after-add',
+        () => storedStatus,
+        (status) => {
+          storedStatus = status;
+        },
+      ),
+    );
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    expect(queues[queueName].add).toHaveBeenCalledTimes(1);
+    const updateArg = prisma.webhookEvent.updateMany.mock.calls[0][0];
+    expect(updateArg.where.status.in).not.toContain(WebhookStatus.FAILED);
+    expect(storedStatus).toBe(WebhookStatus.FAILED);
+  });
+
   it('retries existing failed job and increments attempts once', async () => {
     const job: JobMock = {
       getState: jest.fn().mockResolvedValue('failed'),
@@ -506,6 +559,42 @@ describe('WebhookOutboxService', () => {
     const updateArg = prisma.webhookEvent.updateMany.mock.calls[0][0];
     expect(updateArg.data.status).toBe(WebhookStatus.QUEUED);
     expect(updateArg.data.enqueueAttempts).toEqual({ increment: 1 });
+  });
+
+  it('allows explicit failed job retry to mark a failed event queued', async () => {
+    const job: JobMock = {
+      getState: jest.fn().mockResolvedValue('failed'),
+      retry: jest.fn().mockResolvedValue(undefined),
+      remove: jest.fn().mockResolvedValue(undefined),
+    };
+    let storedStatus: WebhookStatus = WebhookStatus.FAILED;
+    const { service, prisma } = createService({
+      findManyResult: [
+        {
+          id: 'evt-explicit-failed-retry',
+          status: WebhookStatus.FAILED,
+          enqueueAttempts: 5,
+          nextEnqueueAt: new Date(Date.now() - 1_000),
+        },
+      ],
+      defaultJob: job,
+    });
+    prisma.webhookEvent.updateMany.mockImplementation(
+      createStatusAwareUpdateManyMock(
+        'evt-explicit-failed-retry',
+        () => storedStatus,
+        (status) => {
+          storedStatus = status;
+        },
+      ),
+    );
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    expect(job.retry).toHaveBeenCalledTimes(1);
+    const updateArg = prisma.webhookEvent.updateMany.mock.calls[0][0];
+    expect(updateArg.where.status.in).toContain(WebhookStatus.FAILED);
+    expect(storedStatus).toBe(WebhookStatus.QUEUED);
   });
 
   it('retries an existing failed job before attempting duplicate add', async () => {
