@@ -17,6 +17,10 @@ type TerminalManagedEntityOutcome =
       reason: string;
     };
 
+type MaxActionDispatchExecutionOptions = {
+  finalAttempt?: boolean;
+};
+
 @Injectable()
 export class MaxActionDispatchService {
   private readonly logger = new Logger(MaxActionDispatchService.name);
@@ -29,7 +33,7 @@ export class MaxActionDispatchService {
     private readonly actionLedgerService?: MaxActionLedgerService,
   ) {}
 
-  async execute(job: MaxActionJob): Promise<void> {
+  async execute(job: MaxActionJob, options: MaxActionDispatchExecutionOptions = {}): Promise<void> {
     await this.actionLedgerService?.recordStarted(job);
 
     try {
@@ -48,7 +52,9 @@ export class MaxActionDispatchService {
         await this.recordLedgerFailed(job, terminalManagedEntityOutcome.error);
         throw terminalManagedEntityOutcome.error;
       }
-      await this.recordLedgerFailed(job, error);
+      await this.recordLedgerFailed(job, error, {
+        exhausted: options.finalAttempt === true,
+      });
       throw error;
     }
   }
@@ -152,9 +158,17 @@ export class MaxActionDispatchService {
     }
   }
 
-  private async recordLedgerFailed(job: MaxActionJob, error: unknown): Promise<void> {
+  private async recordLedgerFailed(
+    job: MaxActionJob,
+    error: unknown,
+    options: { exhausted?: boolean } = {},
+  ): Promise<void> {
     try {
-      await this.actionLedgerService?.recordFailed(job, error);
+      if (options.exhausted === undefined) {
+        await this.actionLedgerService?.recordFailed(job, error);
+      } else {
+        await this.actionLedgerService?.recordFailed(job, error, options);
+      }
     } catch (ledgerError: unknown) {
       this.logger.warn(
         {

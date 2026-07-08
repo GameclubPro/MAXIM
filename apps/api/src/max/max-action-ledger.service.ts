@@ -24,6 +24,10 @@ type MaxActionLedgerMutation = {
   incrementAttempt?: boolean;
 };
 
+type MaxActionLedgerFailureOptions = {
+  exhausted?: boolean;
+};
+
 @Injectable()
 export class MaxActionLedgerService {
   constructor(private readonly prisma: PrismaService) {}
@@ -106,14 +110,20 @@ export class MaxActionLedgerService {
     });
   }
 
-  async recordFailed(job: MaxActionJob, error: unknown): Promise<void> {
+  async recordFailed(
+    job: MaxActionJob,
+    error: unknown,
+    options: MaxActionLedgerFailureOptions = {},
+  ): Promise<void> {
     const ambiguous = this.isAmbiguousFailure(error);
-    const terminal = ambiguous || error instanceof UnrecoverableError;
+    const terminal = ambiguous || error instanceof UnrecoverableError || options.exhausted === true;
     await this.upsert(job, {
       status: ambiguous
         ? MaxActionLedgerStatus.AMBIGUOUS
         : terminal
-          ? MaxActionLedgerStatus.FAILED_TERMINAL
+          ? error instanceof UnrecoverableError
+            ? MaxActionLedgerStatus.FAILED_TERMINAL
+            : MaxActionLedgerStatus.FAILED_RETRYABLE
           : MaxActionLedgerStatus.FAILED_RETRYABLE,
       ambiguous,
       terminal,

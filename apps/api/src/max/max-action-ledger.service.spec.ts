@@ -145,6 +145,19 @@ describe('MaxActionLedgerService', () => {
         },
       },
     });
+    await service.recordFailed(
+      createJob({ idempotencyKey: 'job-retryable-exhausted' }),
+      {
+        response: {
+          status: 500,
+          data: {
+            code: 'server.failure',
+            message: 'server failure',
+          },
+        },
+      },
+      { exhausted: true },
+    );
 
     expect(prisma.maxActionLedgerEntry.upsert).toHaveBeenNthCalledWith(
       1,
@@ -165,6 +178,19 @@ describe('MaxActionLedgerService', () => {
           terminal: false,
           lastStatusCode: 500,
           lastErrorCode: 'server.failure',
+        }),
+      }),
+    );
+    expect(prisma.maxActionLedgerEntry.upsert).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        create: expect.objectContaining({
+          status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+          ambiguous: false,
+          terminal: true,
+          lastStatusCode: 500,
+          lastErrorCode: 'server.failure',
+          completedAt: expect.any(Date),
         }),
       }),
     );

@@ -347,7 +347,47 @@ describe('MaxActionDispatchService', () => {
     await expect(service.execute(job)).rejects.toBe(error);
 
     expect(actionLedgerService.recordStarted).toHaveBeenCalledWith(job);
-    expect(actionLedgerService.recordFailed).toHaveBeenCalledWith(job, error);
+    expect(actionLedgerService.recordFailed).toHaveBeenCalledWith(job, error, {
+      exhausted: false,
+    });
+    expect(actionLedgerService.recordSucceeded).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordSkipped).not.toHaveBeenCalled();
+  });
+
+  it('marks final retryable queued action failures as exhausted in the ledger', async () => {
+    const error = createMaxApiError(500, 'server failure');
+    const maxClient = {
+      executeActionJob: jest.fn().mockRejectedValue(error),
+    };
+    const managedEntityAccessLossService = {
+      recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue(null),
+    };
+    const actionLedgerService = {
+      recordStarted: jest.fn().mockResolvedValue(undefined),
+      recordSucceeded: jest.fn().mockResolvedValue(undefined),
+      recordSkipped: jest.fn().mockResolvedValue(undefined),
+      recordFailed: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      managedEntityAccessLossService as never,
+      actionLedgerService as never,
+    );
+    const job = {
+      actionType: 'SEND_MESSAGE',
+      chatId: 'chat-1',
+      text: 'hello',
+      attempt: 5,
+      idempotencyKey: 'job-send-500-final-ledger',
+      createdAt: '2026-05-16T20:00:00.000Z',
+    } as MaxActionJob;
+
+    await expect(service.execute(job, { finalAttempt: true })).rejects.toBe(error);
+
+    expect(actionLedgerService.recordStarted).toHaveBeenCalledWith(job);
+    expect(actionLedgerService.recordFailed).toHaveBeenCalledWith(job, error, {
+      exhausted: true,
+    });
     expect(actionLedgerService.recordSucceeded).not.toHaveBeenCalled();
     expect(actionLedgerService.recordSkipped).not.toHaveBeenCalled();
   });
