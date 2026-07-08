@@ -428,7 +428,6 @@ const CHAT_AUTO_COMMENT_ATTACH_STATUS = {
 const CHANNEL_AUTO_POST_ATTACH_LOCK_TTL_MS = 2 * 60_000;
 const CHAT_AUTO_COMMENT_ATTACH_LOCK_TTL_MS = 2 * 60_000;
 const VIOLATION_MESSAGE_PROCESSING_TTL_SEC = 8 * 24 * 60 * 60;
-const GREETING_MESSAGE_DEDUPE_BUCKET_MS = 5 * 60_000;
 
 @Injectable()
 export class ModerationService implements OnModuleInit, OnModuleDestroy {
@@ -6762,10 +6761,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         continue;
       }
 
-      const claimed = await this.claimMessageScopedModerationAction({
+      const claimed = await this.claimServiceMemberActionDelivery({
         chatId,
         userId,
-        messageId,
+        update,
         ruleCode: 'BOT_ACCOUNT_KICK',
       });
       if (!claimed) {
@@ -6809,42 +6808,41 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return [...kickedUserIds];
   }
 
-  private async claimServiceGreetingDelivery(params: {
+  private async claimServiceMemberActionDelivery(params: {
     chatId: string;
     userId: string;
     update: MaxUpdate;
+    ruleCode: string;
+    updateType?: string | null;
   }): Promise<boolean> {
     return this.claimMessageViolationProcessing({
       chatId: params.chatId,
       userId: params.userId,
-      messageId: this.buildServiceGreetingClaimMessageId(params),
-      ruleCode: 'GREETING_MESSAGE',
-      updateType: 'user_added',
+      messageId: this.buildServiceMemberActionClaimMessageId(params),
+      ruleCode: params.ruleCode,
+      updateType: params.updateType ?? this.readLowerString(params.update.type) ?? 'service_member',
     });
   }
 
-  private buildServiceGreetingClaimMessageId(params: {
+  private buildServiceMemberActionClaimMessageId(params: {
     chatId: string;
     userId: string;
     update: MaxUpdate;
+    ruleCode: string;
   }): string {
-    const bucketIso = this.resolveServiceGreetingEventBucketIso(params.update);
+    const eventAtIso = this.resolveServiceMemberActionEventIso(params.update);
     const semanticHash = createHash('sha256')
-      .update(`${params.chatId}:${params.userId}:${bucketIso}`)
+      .update(`${params.chatId}:${params.userId}:${params.ruleCode}:${eventAtIso}`)
       .digest('hex')
       .slice(0, 32);
-    return `greeting:user_added:${semanticHash}:${bucketIso}`;
+    return `service-member:${semanticHash}:${eventAtIso}`;
   }
 
-  private resolveServiceGreetingEventBucketIso(update: MaxUpdate): string {
-    const timestampMs = this.resolveServiceGreetingEventTimestampMs(update);
-    const bucketMs =
-      Math.floor(timestampMs / GREETING_MESSAGE_DEDUPE_BUCKET_MS) *
-      GREETING_MESSAGE_DEDUPE_BUCKET_MS;
-    return new Date(bucketMs).toISOString();
+  private resolveServiceMemberActionEventIso(update: MaxUpdate): string {
+    return new Date(this.resolveServiceMemberActionTimestampMs(update)).toISOString();
   }
 
-  private resolveServiceGreetingEventTimestampMs(update: MaxUpdate): number {
+  private resolveServiceMemberActionTimestampMs(update: MaxUpdate): number {
     const raw = this.asRecord(update.raw);
     const rawMessage = this.asRecord(raw?.message);
     const data = this.asRecord(raw?.data);
@@ -6874,7 +6872,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     ];
 
     for (const candidate of candidates) {
-      const timestampMs = this.parseServiceGreetingTimestampMs(candidate);
+      const timestampMs = this.parseServiceMemberActionTimestampMs(candidate);
       if (timestampMs !== null) {
         return timestampMs;
       }
@@ -6883,7 +6881,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return Date.now();
   }
 
-  private parseServiceGreetingTimestampMs(value: unknown): number | null {
+  private parseServiceMemberActionTimestampMs(value: unknown): number | null {
     const parsed =
       value instanceof Date
         ? value.getTime()
@@ -6967,10 +6965,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     for (const member of joinedMembers) {
       if (
-        !(await this.claimServiceGreetingDelivery({
+        !(await this.claimServiceMemberActionDelivery({
           chatId,
           userId: member.userId,
           update,
+          ruleCode: 'GREETING_MESSAGE',
+          updateType: 'user_added',
         }))
       ) {
         continue;
@@ -7314,6 +7314,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       if (localAdminDecisions.get(userId) !== 'BLOCK') {
         continue;
       }
+      const claimed = await this.claimServiceMemberActionDelivery({
+        chatId,
+        userId,
+        update,
+        ruleCode: 'LOCAL_ADMIN_BLOCK',
+      });
+      if (!claimed) {
+        kickedUserIds.push(userId);
+        continue;
+      }
       const enforced = await this.kickAndLogKnownSpammerEvent({
         chatId,
         userId,
@@ -7321,6 +7331,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         text,
         reason: 'Member joined via service event and has a local admin block',
         ruleCode: 'LOCAL_ADMIN_BLOCK',
+        claimAlreadyAcquired: true,
       });
       if (enforced) {
         kickedUserIds.push(userId);
@@ -7352,6 +7363,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         continue;
       }
       const adminExempt = localAdminDecisions.get(row.userId) === 'ALLOW';
+      const claimed = await this.claimServiceMemberActionDelivery({
+        chatId,
+        userId: row.userId,
+        update,
+        ruleCode: 'GLOBAL_SPAMMER_KICK',
+      });
+      if (!claimed) {
+        kickedUserIds.push(row.userId);
+        continue;
+      }
       if (this.globalSpammerIntelligence) {
         const decision = await this.globalSpammerIntelligence.evaluatePolicy({
           chatId,
@@ -7375,6 +7396,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         text,
         reason: 'Member joined via service event and exists in global spammer registry',
         ruleCode: 'GLOBAL_SPAMMER_KICK',
+        claimAlreadyAcquired: true,
       });
       if (enforced) {
         kickedUserIds.push(row.userId);
