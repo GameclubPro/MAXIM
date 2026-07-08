@@ -5085,11 +5085,17 @@ export class AdminManagedBroadcastRuntime {
   private buildManagedBroadcastAutoRetryableFailureWhere(): Prisma.ManagedBroadcastDeliveryWhereInput[] {
     return [
       { lastError: null },
+      { lastError: { contains: 'timeout', mode: 'insensitive' } },
       { lastError: { contains: 'rate limit exceeded', mode: 'insensitive' } },
+      { lastError: { contains: 'circuit breaker', mode: 'insensitive' } },
       { lastError: { contains: 'attachment.not.ready', mode: 'insensitive' } },
       { lastError: { contains: 'not ready', mode: 'insensitive' } },
       { lastError: { contains: 'temporarily unavailable', mode: 'insensitive' } },
       { lastError: { contains: 'service unavailable', mode: 'insensitive' } },
+      { lastError: { contains: 'socket hang up', mode: 'insensitive' } },
+      { lastError: { contains: 'econnaborted', mode: 'insensitive' } },
+      { lastError: { contains: 'econnreset', mode: 'insensitive' } },
+      { lastError: { contains: 'network error', mode: 'insensitive' } },
       { lastError: { contains: 'too many requests', mode: 'insensitive' } },
       { lastError: { contains: 'Не удалось загрузить фото', mode: 'insensitive' } },
       { lastError: { contains: '429', mode: 'insensitive' } },
@@ -5103,11 +5109,17 @@ export class AdminManagedBroadcastRuntime {
     }
 
     return (
+      normalized.includes('timeout') ||
       normalized.includes('rate limit exceeded') ||
+      normalized.includes('circuit breaker') ||
       normalized.includes('attachment.not.ready') ||
       normalized.includes('not ready') ||
       normalized.includes('temporarily unavailable') ||
       normalized.includes('service unavailable') ||
+      normalized.includes('socket hang up') ||
+      normalized.includes('econnaborted') ||
+      normalized.includes('econnreset') ||
+      normalized.includes('network error') ||
       normalized.includes('too many requests') ||
       normalized.includes('не удалось загрузить фото') ||
       normalized.includes('429')
