@@ -428,6 +428,8 @@ const CHAT_AUTO_COMMENT_ATTACH_STATUS = {
 const CHANNEL_AUTO_POST_ATTACH_LOCK_TTL_MS = 2 * 60_000;
 const CHAT_AUTO_COMMENT_ATTACH_LOCK_TTL_MS = 2 * 60_000;
 const VIOLATION_MESSAGE_PROCESSING_TTL_SEC = 8 * 24 * 60 * 60;
+const SERVICE_MEMBER_ACTION_TIMESTAMP_GRANULARITY_MS = 1_000;
+const GREETING_MESSAGE_DEDUPE_WINDOW_MS = 10 * 60_000;
 
 @Injectable()
 export class ModerationService implements OnModuleInit, OnModuleDestroy {
@@ -6814,6 +6816,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     update: MaxUpdate;
     ruleCode: string;
     updateType?: string | null;
+    dedupeWindowMs?: number;
   }): Promise<boolean> {
     return this.claimMessageViolationProcessing({
       chatId: params.chatId,
@@ -6829,8 +6832,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string;
     update: MaxUpdate;
     ruleCode: string;
+    dedupeWindowMs?: number;
   }): string {
-    const eventAtIso = this.resolveServiceMemberActionEventIso(params.update);
+    const eventAtIso = this.resolveServiceMemberActionEventIso(
+      params.update,
+      params.dedupeWindowMs,
+    );
     const semanticHash = createHash('sha256')
       .update(`${params.chatId}:${params.userId}:${params.ruleCode}:${eventAtIso}`)
       .digest('hex')
@@ -6838,8 +6845,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return `service-member:${semanticHash}:${eventAtIso}`;
   }
 
-  private resolveServiceMemberActionEventIso(update: MaxUpdate): string {
-    return new Date(this.resolveServiceMemberActionTimestampMs(update)).toISOString();
+  private resolveServiceMemberActionEventIso(update: MaxUpdate, dedupeWindowMs?: number): string {
+    const timestampMs = this.resolveServiceMemberActionTimestampMs(update);
+    const granularityMs =
+      typeof dedupeWindowMs === 'number' && Number.isFinite(dedupeWindowMs) && dedupeWindowMs > 0
+        ? Math.trunc(dedupeWindowMs)
+        : SERVICE_MEMBER_ACTION_TIMESTAMP_GRANULARITY_MS;
+    return new Date(Math.floor(timestampMs / granularityMs) * granularityMs).toISOString();
   }
 
   private resolveServiceMemberActionTimestampMs(update: MaxUpdate): number {
@@ -6971,6 +6983,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           update,
           ruleCode: 'GREETING_MESSAGE',
           updateType: 'user_added',
+          dedupeWindowMs: GREETING_MESSAGE_DEDUPE_WINDOW_MS,
         }))
       ) {
         continue;

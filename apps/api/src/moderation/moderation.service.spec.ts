@@ -4735,40 +4735,47 @@ describe('ModerationService', () => {
       sanctionService as never,
       maxClient as never,
     );
-    const createdAt = '2026-04-06T01:00:15.000Z';
-    const createDeliveredJoinUpdate = (botId: string, updateId: string): MaxUpdate => ({
-      ...createServiceBotJoinedUpdate(),
-      updateId,
-      botId,
-      message: {
-        ...createServiceBotJoinedUpdate().message!,
-        messageId: `msg-service-bot-join-${botId}`,
-        createdAt,
-      },
-      raw: {
+    const createdAtMs = new Date('2026-04-06T01:00:15.123Z').getTime();
+    const createDeliveredJoinUpdate = (
+      botId: string,
+      updateId: string,
+      offsetMs: number,
+    ): MaxUpdate => {
+      const createdAt = new Date(createdAtMs + offsetMs).toISOString();
+      return {
+        ...createServiceBotJoinedUpdate(),
+        updateId,
+        botId,
         message: {
-          sender: {
-            id: 'service-1',
-            type: 'service',
-            is_service: true,
-          },
-          timestamp: new Date(createdAt).getTime(),
-          body: {
-            new_members: [
-              {
-                user_id: 'bot-joined-1',
-                type: 'bot',
-                is_bot: true,
-              },
-            ],
+          ...createServiceBotJoinedUpdate().message!,
+          messageId: `msg-service-bot-join-${botId}`,
+          createdAt,
+        },
+        raw: {
+          message: {
+            sender: {
+              id: 'service-1',
+              type: 'service',
+              is_service: true,
+            },
+            timestamp: new Date(createdAt).getTime(),
+            body: {
+              new_members: [
+                {
+                  user_id: 'bot-joined-1',
+                  type: 'bot',
+                  is_bot: true,
+                },
+              ],
+            },
           },
         },
-      },
-    });
+      };
+    };
 
-    await service.handleUpdate(createDeliveredJoinUpdate('bot-1', 'upd-service-bot-join-bot-1'));
-    await service.handleUpdate(createDeliveredJoinUpdate('bot-2', 'upd-service-bot-join-bot-2'));
-    await service.handleUpdate(createDeliveredJoinUpdate('bot-3', 'upd-service-bot-join-bot-3'));
+    await service.handleUpdate(createDeliveredJoinUpdate('bot-1', 'upd-service-bot-join-bot-1', 0));
+    await service.handleUpdate(createDeliveredJoinUpdate('bot-2', 'upd-service-bot-join-bot-2', 1));
+    await service.handleUpdate(createDeliveredJoinUpdate('bot-3', 'upd-service-bot-join-bot-3', 2));
 
     expect(maxClient.kickMember).toHaveBeenCalledTimes(1);
     expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
@@ -5593,34 +5600,41 @@ describe('ModerationService', () => {
       sanctionService as never,
       maxClient as never,
     );
-    const createdAt = '2026-04-06T01:00:15.000Z';
-    const createDeliveredJoinUpdate = (botId: string, updateId: string): MaxUpdate => ({
-      updateId,
-      type: 'user_added',
-      botId,
-      message: {
-        messageId: `user_added:${updateId}`,
-        chatId: 'chat-1',
-        senderId: 'user-added-1',
-        senderName: 'Новый участник user_added',
-        text: '',
-        createdAt,
-      },
-      raw: {
-        update_type: 'user_added',
-        chat_id: 'chat-1',
-        user: {
-          user_id: 'user-added-1',
-          type: 'user',
-          display_name: 'Новый участник user_added',
+    const createdAtMs = new Date('2026-04-06T01:00:15.123Z').getTime();
+    const createDeliveredJoinUpdate = (
+      botId: string,
+      updateId: string,
+      offsetMs: number,
+    ): MaxUpdate => {
+      const createdAt = new Date(createdAtMs + offsetMs).toISOString();
+      return {
+        updateId,
+        type: 'user_added',
+        botId,
+        message: {
+          messageId: `user_added:${updateId}`,
+          chatId: 'chat-1',
+          senderId: 'user-added-1',
+          senderName: 'Новый участник user_added',
+          text: '',
+          createdAt,
         },
-        timestamp: new Date(createdAt).getTime(),
-      },
-    });
+        raw: {
+          update_type: 'user_added',
+          chat_id: 'chat-1',
+          user: {
+            user_id: 'user-added-1',
+            type: 'user',
+            display_name: 'Новый участник user_added',
+          },
+          timestamp: new Date(createdAt).getTime(),
+        },
+      };
+    };
 
-    await service.handleUpdate(createDeliveredJoinUpdate('bot-1', 'upd-user-added-bot-1'));
-    await service.handleUpdate(createDeliveredJoinUpdate('bot-2', 'upd-user-added-bot-2'));
-    await service.handleUpdate(createDeliveredJoinUpdate('bot-3', 'upd-user-added-bot-3'));
+    await service.handleUpdate(createDeliveredJoinUpdate('bot-1', 'upd-user-added-bot-1', 0));
+    await service.handleUpdate(createDeliveredJoinUpdate('bot-2', 'upd-user-added-bot-2', 1));
+    await service.handleUpdate(createDeliveredJoinUpdate('bot-3', 'upd-user-added-bot-3', 2));
 
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
@@ -7403,40 +7417,47 @@ describe('ModerationService', () => {
       sanctionService as never,
       maxClient as never,
     );
-    const createdAt = '2026-04-06T01:00:15.000Z';
-    const createDeliveredJoinUpdate = (botId: string, updateId: string): MaxUpdate => ({
-      ...createServiceUserJoinedUpdate(),
-      updateId,
-      botId,
-      message: {
-        ...createServiceUserJoinedUpdate().message!,
-        messageId: `msg-service-user-join-${botId}`,
-        createdAt,
-      },
-      raw: {
+    const createdAtMs = new Date('2026-04-06T01:00:15.123Z').getTime();
+    const createDeliveredJoinUpdate = (
+      botId: string,
+      updateId: string,
+      offsetMs: number,
+    ): MaxUpdate => {
+      const createdAt = new Date(createdAtMs + offsetMs).toISOString();
+      return {
+        ...createServiceUserJoinedUpdate(),
+        updateId,
+        botId,
         message: {
-          sender: {
-            id: 'service-1',
-            type: 'service',
-            is_service: true,
-          },
-          timestamp: new Date(createdAt).getTime(),
-          body: {
-            new_members: [
-              {
-                user_id: 'user-black-2',
-                type: 'user',
-                display_name: 'Новый участник',
-              },
-            ],
+          ...createServiceUserJoinedUpdate().message!,
+          messageId: `msg-service-user-join-${botId}`,
+          createdAt,
+        },
+        raw: {
+          message: {
+            sender: {
+              id: 'service-1',
+              type: 'service',
+              is_service: true,
+            },
+            timestamp: new Date(createdAt).getTime(),
+            body: {
+              new_members: [
+                {
+                  user_id: 'user-black-2',
+                  type: 'user',
+                  display_name: 'Новый участник',
+                },
+              ],
+            },
           },
         },
-      },
-    });
+      };
+    };
 
-    await service.handleUpdate(createDeliveredJoinUpdate('bot-1', 'upd-service-user-join-bot-1'));
-    await service.handleUpdate(createDeliveredJoinUpdate('bot-2', 'upd-service-user-join-bot-2'));
-    await service.handleUpdate(createDeliveredJoinUpdate('bot-3', 'upd-service-user-join-bot-3'));
+    await service.handleUpdate(createDeliveredJoinUpdate('bot-1', 'upd-service-user-join-bot-1', 0));
+    await service.handleUpdate(createDeliveredJoinUpdate('bot-2', 'upd-service-user-join-bot-2', 1));
+    await service.handleUpdate(createDeliveredJoinUpdate('bot-3', 'upd-service-user-join-bot-3', 2));
 
     expect(maxClient.kickMember).toHaveBeenCalledTimes(1);
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
