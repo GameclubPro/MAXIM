@@ -428,6 +428,7 @@ const CHAT_AUTO_COMMENT_ATTACH_STATUS = {
 const CHANNEL_AUTO_POST_ATTACH_LOCK_TTL_MS = 2 * 60_000;
 const CHAT_AUTO_COMMENT_ATTACH_LOCK_TTL_MS = 2 * 60_000;
 const VIOLATION_MESSAGE_PROCESSING_TTL_SEC = 8 * 24 * 60 * 60;
+const GREETING_MESSAGE_DEDUPE_BUCKET_MS = 5 * 60_000;
 
 @Injectable()
 export class ModerationService implements OnModuleInit, OnModuleDestroy {
@@ -6808,6 +6809,97 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return [...kickedUserIds];
   }
 
+  private async claimServiceGreetingDelivery(params: {
+    chatId: string;
+    userId: string;
+    update: MaxUpdate;
+  }): Promise<boolean> {
+    return this.claimMessageViolationProcessing({
+      chatId: params.chatId,
+      userId: params.userId,
+      messageId: this.buildServiceGreetingClaimMessageId(params),
+      ruleCode: 'GREETING_MESSAGE',
+      updateType: 'user_added',
+    });
+  }
+
+  private buildServiceGreetingClaimMessageId(params: {
+    chatId: string;
+    userId: string;
+    update: MaxUpdate;
+  }): string {
+    const bucketIso = this.resolveServiceGreetingEventBucketIso(params.update);
+    const semanticHash = createHash('sha256')
+      .update(`${params.chatId}:${params.userId}:${bucketIso}`)
+      .digest('hex')
+      .slice(0, 32);
+    return `greeting:user_added:${semanticHash}:${bucketIso}`;
+  }
+
+  private resolveServiceGreetingEventBucketIso(update: MaxUpdate): string {
+    const timestampMs = this.resolveServiceGreetingEventTimestampMs(update);
+    const bucketMs =
+      Math.floor(timestampMs / GREETING_MESSAGE_DEDUPE_BUCKET_MS) *
+      GREETING_MESSAGE_DEDUPE_BUCKET_MS;
+    return new Date(bucketMs).toISOString();
+  }
+
+  private resolveServiceGreetingEventTimestampMs(update: MaxUpdate): number {
+    const raw = this.asRecord(update.raw);
+    const rawMessage = this.asRecord(raw?.message);
+    const data = this.asRecord(raw?.data);
+    const dataMessage = this.asRecord(data?.message);
+    const event = this.asRecord(raw?.event);
+    const eventMessage = this.asRecord(event?.message);
+    const candidates = [
+      update.message?.createdAt,
+      rawMessage?.timestamp,
+      rawMessage?.created_at,
+      rawMessage?.createdAt,
+      dataMessage?.timestamp,
+      dataMessage?.created_at,
+      dataMessage?.createdAt,
+      eventMessage?.timestamp,
+      eventMessage?.created_at,
+      eventMessage?.createdAt,
+      raw?.timestamp,
+      raw?.created_at,
+      raw?.createdAt,
+      data?.timestamp,
+      data?.created_at,
+      data?.createdAt,
+      event?.timestamp,
+      event?.created_at,
+      event?.createdAt,
+    ];
+
+    for (const candidate of candidates) {
+      const timestampMs = this.parseServiceGreetingTimestampMs(candidate);
+      if (timestampMs !== null) {
+        return timestampMs;
+      }
+    }
+
+    return Date.now();
+  }
+
+  private parseServiceGreetingTimestampMs(value: unknown): number | null {
+    const parsed =
+      value instanceof Date
+        ? value.getTime()
+        : typeof value === 'number'
+          ? value
+          : typeof value === 'string' && value.trim().length > 0
+            ? Date.parse(value)
+            : Number.NaN;
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return null;
+    }
+
+    const timestampMs = parsed < 10_000_000_000 ? parsed * 1000 : parsed;
+    return Math.trunc(timestampMs);
+  }
+
   private async handleServiceGreetingEvent(params: {
     chatId: string;
     messageId: string;
@@ -6874,6 +6966,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
 
     for (const member of joinedMembers) {
+      if (
+        !(await this.claimServiceGreetingDelivery({
+          chatId,
+          userId: member.userId,
+          update,
+        }))
+      ) {
+        continue;
+      }
+
       const greetingMessage = this.buildGreetingMessage(
         member.userLabel,
         greetingBotMessageText,

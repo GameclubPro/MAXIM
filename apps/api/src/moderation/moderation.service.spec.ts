@@ -5434,6 +5434,105 @@ describe('ModerationService', () => {
     });
   });
 
+  it('dedupes greeting messages for the same joined user across multiple bot deliveries', async () => {
+    const claimedKeys = new Set<string>();
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            greetingEnabled: true,
+            greetingBotMessageEnabled: true,
+            greetingBotMessageText: 'Добро пожаловать, {user}! {greeting}.',
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      moderationViolationMessageClaim: {
+        createMany: jest.fn(async (args: { data: Array<{ dedupeKey: string }> }) => {
+          const dedupeKey = args.data[0]?.dedupeKey;
+          if (!dedupeKey || claimedKeys.has(dedupeKey)) {
+            return { count: 0 };
+          }
+
+          claimedKeys.add(dedupeKey);
+          return { count: 1 };
+        }),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+    const createdAt = '2026-04-06T01:00:15.000Z';
+    const createDeliveredJoinUpdate = (botId: string, updateId: string): MaxUpdate => ({
+      updateId,
+      type: 'user_added',
+      botId,
+      message: {
+        messageId: `user_added:${updateId}`,
+        chatId: 'chat-1',
+        senderId: 'user-added-1',
+        senderName: 'Новый участник user_added',
+        text: '',
+        createdAt,
+      },
+      raw: {
+        update_type: 'user_added',
+        chat_id: 'chat-1',
+        user: {
+          user_id: 'user-added-1',
+          type: 'user',
+          display_name: 'Новый участник user_added',
+        },
+        timestamp: new Date(createdAt).getTime(),
+      },
+    });
+
+    await service.handleUpdate(createDeliveredJoinUpdate('bot-1', 'upd-user-added-bot-1'));
+    await service.handleUpdate(createDeliveredJoinUpdate('bot-2', 'upd-user-added-bot-2'));
+    await service.handleUpdate(createDeliveredJoinUpdate('bot-3', 'upd-user-added-bot-3'));
+
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
+    expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledTimes(3);
+    expect(
+      new Set(
+        prisma.moderationViolationMessageClaim.createMany.mock.calls.map(
+          ([args]) => args.data[0]?.dedupeKey,
+        ),
+      ).size,
+    ).toBe(1);
+  });
+
   it('does not track invitation access progress while the invite gate is disabled', async () => {
     const progressRows = new Map<string, { invitedUserIds: string[]; completedAt: Date | null }>();
     const prismaRef: { current: unknown } = { current: null };
