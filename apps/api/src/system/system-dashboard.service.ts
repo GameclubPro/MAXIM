@@ -39,6 +39,7 @@ const VK_PARSING_SOURCE_FAILURE_WARNING_COUNT = 3;
 const VK_PARSING_MEDIA_FAILURE_WARNING_RATIO = 0.2;
 const VK_PARSING_PUBLISH_BACKLOG_WARNING_SEC = 10 * 60;
 const DELIVERY_LEDGER_STALE_ACTION_MS = 15 * 60_000;
+const DELIVERY_LEDGER_STALE_BROADCAST_SENDING_MS = 15 * 60_000;
 const DELIVERY_LEDGER_STALE_SUGGESTION_SENDING_MS = 2 * 60_000;
 const HOT_PATH_SLOW_WARNING_COUNT = 3;
 const HOT_PATH_SLOW_WARNING_MAX_MS = 5_000;
@@ -62,6 +63,10 @@ type DeliveryLedgerRiskSnapshot = {
   actionStaleInProgress: number;
   actionStaleRetryable: number;
   actionOldestRiskAgeSec: number;
+  broadcastAmbiguous: number;
+  broadcastStaleSending: number;
+  broadcastRiskBroadcasts: number;
+  broadcastOldestRiskAgeSec: number;
   suggestionAmbiguous: number;
   suggestionTerminalFailed: number;
   suggestionStaleSending: number;
@@ -841,11 +846,14 @@ export class SystemDashboardService {
 
     const checkedAt = new Date();
     const staleActionSince = new Date(checkedAt.getTime() - DELIVERY_LEDGER_STALE_ACTION_MS);
+    const staleBroadcastSendingSince = new Date(
+      checkedAt.getTime() - DELIVERY_LEDGER_STALE_BROADCAST_SENDING_MS,
+    );
     const staleSuggestionSendingSince = new Date(
       checkedAt.getTime() - DELIVERY_LEDGER_STALE_SUGGESTION_SENDING_MS,
     );
     try {
-      const [actionRows, suggestionRows] = await Promise.all([
+      const [actionRows, broadcastRows, suggestionRows] = await Promise.all([
         this.prisma.$queryRaw<Array<Record<string, unknown>>>`
           select
             count(*) filter (where status = 'AMBIGUOUS')::int as "actionAmbiguous",
@@ -878,6 +886,20 @@ export class SystemDashboardService {
         `,
         this.prisma.$queryRaw<Array<Record<string, unknown>>>`
           select
+            count(*) filter (where status = 'AMBIGUOUS')::int as "broadcastAmbiguous",
+            count(*) filter (
+              where status = 'SENDING'
+                and locked_at < ${staleBroadcastSendingSince}
+            )::int as "broadcastStaleSending",
+            count(distinct broadcast_id)::int as "broadcastRiskBroadcasts",
+            extract(epoch from (now() - min(coalesce(locked_at, updated_at))))::int
+              as "broadcastOldestRiskAgeSec"
+          from managed_broadcast_deliveries
+          where status = 'AMBIGUOUS'
+             or (status = 'SENDING' and locked_at < ${staleBroadcastSendingSince})
+        `,
+        this.prisma.$queryRaw<Array<Record<string, unknown>>>`
+          select
             count(*) filter (where d.status = 'AMBIGUOUS')::int as "suggestionAmbiguous",
             count(*) filter (
               where d.status = 'FAILED'
@@ -902,6 +924,7 @@ export class SystemDashboardService {
         `,
       ]);
       const action = actionRows[0] ?? {};
+      const broadcast = broadcastRows[0] ?? {};
       const suggestion = suggestionRows[0] ?? {};
 
       return {
@@ -910,6 +933,10 @@ export class SystemDashboardService {
         actionStaleInProgress: this.readNumber(action.actionStaleInProgress),
         actionStaleRetryable: this.readNumber(action.actionStaleRetryable),
         actionOldestRiskAgeSec: this.readNumber(action.actionOldestRiskAgeSec),
+        broadcastAmbiguous: this.readNumber(broadcast.broadcastAmbiguous),
+        broadcastStaleSending: this.readNumber(broadcast.broadcastStaleSending),
+        broadcastRiskBroadcasts: this.readNumber(broadcast.broadcastRiskBroadcasts),
+        broadcastOldestRiskAgeSec: this.readNumber(broadcast.broadcastOldestRiskAgeSec),
         suggestionAmbiguous: this.readNumber(suggestion.suggestionAmbiguous),
         suggestionTerminalFailed: this.readNumber(suggestion.suggestionTerminalFailed),
         suggestionStaleSending: this.readNumber(suggestion.suggestionStaleSending),
@@ -932,17 +959,21 @@ export class SystemDashboardService {
       snapshot.actionAmbiguous +
       snapshot.actionStaleInProgress +
       snapshot.actionStaleRetryable;
+    const broadcastRisk = snapshot.broadcastAmbiguous + snapshot.broadcastStaleSending;
     const suggestionRisk =
       snapshot.suggestionAmbiguous +
       snapshot.suggestionTerminalFailed +
       snapshot.suggestionStaleSending;
-    if (actionRisk === 0 && suggestionRisk === 0) {
+    if (actionRisk === 0 && broadcastRisk === 0 && suggestionRisk === 0) {
       return null;
     }
 
     const details = [
       actionRisk > 0
         ? `MAX action ledger: ambiguous ${snapshot.actionAmbiguous}, stale in-progress ${snapshot.actionStaleInProgress}, stale retryable ${snapshot.actionStaleRetryable}, oldest ${snapshot.actionOldestRiskAgeSec} сек`
+        : null,
+      broadcastRisk > 0
+        ? `managed broadcast delivery: ambiguous ${snapshot.broadcastAmbiguous}, stale sending ${snapshot.broadcastStaleSending}, broadcasts ${snapshot.broadcastRiskBroadcasts}, oldest ${snapshot.broadcastOldestRiskAgeSec} сек`
         : null,
       suggestionRisk > 0
         ? `suggestion delivery: ambiguous ${snapshot.suggestionAmbiguous}, terminal failed ${snapshot.suggestionTerminalFailed}, stale sending ${snapshot.suggestionStaleSending}, suggestions ${snapshot.suggestionRiskSuggestions}, oldest ${snapshot.suggestionOldestRiskAgeSec} сек`
@@ -955,7 +986,7 @@ export class SystemDashboardService {
       title: 'Есть хвост доставок, требующий ручной сверки',
       detail: details.join('; '),
       recommendedAction:
-        'Сверьте MAX/логи/remoteMessageId перед любыми повторами. Ambiguous send/delete/member actions не ретрайте автоматически.',
+        'Сверьте MAX/логи/remoteMessageId перед любыми повторами. Ambiguous send/delete/member actions и managed broadcast deliveries не ретрайте автоматически.',
     };
   }
 

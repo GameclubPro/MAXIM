@@ -121,6 +121,7 @@ const VK_SOURCE_PUBLISH_MODE_REVIEW = 'REVIEW';
 const VK_PUBLISH_JOB_NAME = 'publish-vk-post';
 const SAFETY_DESK_ACTOR_USER_ID = 'safety-desk-owner';
 const VK_PARSING_SYSTEM_ACTOR_USER_ID = 'vk-parsing-autopost';
+const MAX_SEND_AMBIGUOUS_ERROR_PREFIX = '[max.send_ambiguous]';
 const VK_PARSING_SCHEDULE_STEP_MS = 15 * 60_000;
 const VK_PARSING_MAX_SCHEDULE_LOOKAHEAD_STEPS = (8 * 24 * 60) / 15;
 const VK_VIDEO_MAX_BYTES = 250 * 1024 * 1024;
@@ -989,13 +990,19 @@ export class VkPublishService {
     } catch (error) {
       const classified = classifyVkParsingPublishError(error);
       const formattedError = formatVkParsingClassifiedErrorMessage(classified);
+      const ambiguousMaxSend = maxSendAttempted && isAmbiguousMaxSendError(error);
       const ambiguousAutopublishSend =
-        params.auto && maxSendAttempted && isAmbiguousMaxSendError(error);
-      const persistedError = ambiguousAutopublishSend
-        ? `[max.send_ambiguous] ${formattedError}. Delivery may have been accepted by MAX; autopublish retry is quarantined for manual verification.`.slice(
-            0,
-            500,
-          )
+        params.auto && ambiguousMaxSend;
+      const ambiguousSafetyDeskSend =
+        params.actorUserId === SAFETY_DESK_ACTOR_USER_ID && ambiguousMaxSend;
+      const persistedError = ambiguousMaxSend
+        ? `${MAX_SEND_AMBIGUOUS_ERROR_PREFIX} ${formattedError}. Delivery may have been accepted by MAX; ${
+            ambiguousAutopublishSend
+              ? 'autopublish retry is quarantined for manual verification.'
+              : ambiguousSafetyDeskSend
+                ? 'Safety Desk retry is blocked until manual verification.'
+                : 'manual retry requires verification before resending.'
+          }`.slice(0, 500)
         : formattedError;
       const accessLossResult =
         await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost?.({

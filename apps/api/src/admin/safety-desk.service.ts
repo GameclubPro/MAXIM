@@ -37,6 +37,7 @@ const VK_POST_STATUS_UNAVAILABLE = 'UNAVAILABLE';
 const VK_POST_STATUS_SKIPPED = 'SKIPPED';
 const SAFETY_DESK_AUDIT_PREFIX = 'SAFETY_DESK_';
 const SAFETY_DESK_TRUSTED_DOMAIN_ROOTS = ['max.ru', 'vk.ru', 'vk.com'];
+const MAX_SEND_AMBIGUOUS_ERROR_PREFIX = '[max.send_ambiguous]';
 const SAFETY_DESK_BLOCKED_APPROVE_MESSAGE =
   'Этот материал нельзя опубликовать автоматически: есть неподдерживаемые вложения или после фильтрации не осталось текста, фото или ссылок.';
 
@@ -175,6 +176,11 @@ export class SafetyDeskService {
     actorUserId: string | null,
   ): Promise<SafetyDeskDecisionResponse> {
     const post = await this.findReviewPostOrThrow(itemId, { includeCancelled: true });
+    if (this.hasAmbiguousMaxSendError(post.lastError)) {
+      throw new BadRequestException(
+        'MAX мог уже принять эту публикацию. Сначала сверьте сообщение в MAX вручную; повторная отправка через Safety Desk заблокирована.',
+      );
+    }
     const updated = await this.prisma.vkParsingPost.updateMany({
       where: {
         ...this.buildReviewPostWhere(post.id, { includeCancelled: true }),
@@ -433,6 +439,10 @@ export class SafetyDeskService {
     }
 
     return `Этот материал нельзя опубликовать автоматически: ${blockedReasons.join('; ')}.`;
+  }
+
+  private hasAmbiguousMaxSendError(lastError: string | null): boolean {
+    return lastError?.trim().startsWith(MAX_SEND_AMBIGUOUS_ERROR_PREFIX) === true;
   }
 
   private resolveRisk(

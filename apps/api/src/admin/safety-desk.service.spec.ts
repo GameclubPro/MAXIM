@@ -454,4 +454,22 @@ describe('SafetyDeskService', () => {
     });
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
+
+  it('blocks recheck after an ambiguous MAX send from Safety Desk', async () => {
+    const { prisma, service } = createFixture();
+    prisma.vkParsingPost.findFirst.mockResolvedValue(
+      createReviewPost({
+        status: 'FAILED',
+        lastError:
+          '[max.send_ambiguous] request timed out. Delivery may have been accepted by MAX.',
+      }),
+    );
+
+    await expect(service.recheckItem('post-1', 'maxim')).rejects.toThrow(
+      'MAX мог уже принять эту публикацию',
+    );
+
+    expect(prisma.vkParsingPost.updateMany).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
 });

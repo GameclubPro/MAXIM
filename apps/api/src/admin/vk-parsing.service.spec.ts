@@ -2039,6 +2039,52 @@ describe('VkParsingService', () => {
     expect(publishQueue.add).not.toHaveBeenCalled();
   });
 
+  it('quarantines Safety Desk manual publish after an ambiguous MAX send timeout', async () => {
+    const { publishService, prisma, maxClient } = createFixture();
+    const source = createSource({ publishMode: 'REVIEW' });
+    const post = createPostRow({
+      source,
+      text: 'Материал Safety Desk',
+      photoUrls: [],
+      linkUrls: [],
+    });
+    const timeoutError = new Error('request timed out before response body arrived');
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    maxClient.sendMessageImmediateWithResolvedLink.mockRejectedValue(timeoutError);
+
+    await expect(
+      publishService.publishPost('channel-1', 'post-1', 'safety-desk-owner', {
+        text: 'Материал Safety Desk',
+        photoUrls: [],
+        linkUrls: [],
+      }),
+    ).rejects.toBe(timeoutError);
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: 'post-1' }),
+        data: expect.objectContaining({
+          status: 'FAILED',
+          lastError: expect.stringContaining('[max.send_ambiguous]'),
+          publishQueuedAt: null,
+          publishScheduledAt: null,
+          publishIdempotencyKey: null,
+          publishReason: null,
+          publishLockedAt: null,
+        }),
+      }),
+    );
+    const failureData = prisma.vkParsingPost.updateMany.mock.calls.at(-1)?.[0]?.data as Record<
+      string,
+      unknown
+    >;
+    expect(failureData.lastError).toEqual(
+      expect.stringContaining('Safety Desk retry is blocked'),
+    );
+  });
+
   it('defers VK autopublish jobs while the runtime governor reports pressure', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-25T10:00:00.000Z'));
     try {

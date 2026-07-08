@@ -399,6 +399,14 @@ describe('SystemDashboardService', () => {
           ])
           .mockResolvedValueOnce([
             {
+              broadcastAmbiguous: 3,
+              broadcastStaleSending: 1,
+              broadcastRiskBroadcasts: 2,
+              broadcastOldestRiskAgeSec: 3_600,
+            },
+          ])
+          .mockResolvedValueOnce([
+            {
               suggestionAmbiguous: 0,
               suggestionTerminalFailed: 229,
               suggestionStaleSending: 0,
@@ -409,17 +417,16 @@ describe('SystemDashboardService', () => {
       } as never,
     );
 
-    await expect(service.getSnapshot()).resolves.toMatchObject({
-      summary: { status: 'warning' },
-      alerts: [
-        expect.objectContaining({
-          code: 'delivery-ledger-risk',
-          level: 'warning',
-          detail: expect.stringContaining('stale in-progress 29'),
-          recommendedAction: expect.stringContaining('не ретрайте автоматически'),
-        }),
-      ],
+    const snapshot = await service.getSnapshot();
+    const alert = snapshot.alerts.find((alert) => alert.code === 'delivery-ledger-risk');
+
+    expect(snapshot.summary.status).toBe('warning');
+    expect(alert).toMatchObject({
+      level: 'warning',
+      detail: expect.stringContaining('stale in-progress 29'),
+      recommendedAction: expect.stringContaining('не ретрайте автоматически'),
     });
+    expect(alert?.detail).toContain('managed broadcast delivery: ambiguous 3');
   });
 
   it('keeps a healthy dashboard clean when delivery ledger risk aggregates are empty', async () => {
@@ -482,6 +489,14 @@ describe('SystemDashboardService', () => {
               actionStaleInProgress: 0,
               actionStaleRetryable: 0,
               actionOldestRiskAgeSec: 0,
+            },
+          ])
+          .mockResolvedValueOnce([
+            {
+              broadcastAmbiguous: 0,
+              broadcastStaleSending: 0,
+              broadcastRiskBroadcasts: 0,
+              broadcastOldestRiskAgeSec: 0,
             },
           ])
           .mockResolvedValueOnce([
