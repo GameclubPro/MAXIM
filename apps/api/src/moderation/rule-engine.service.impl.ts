@@ -105,6 +105,22 @@ const PROFANITY_CANINE_STRONG_CONTEXT_MARKERS = [
   'питомник',
   'родословн',
 ];
+const PROFANITY_CANINE_LISTING_CONTEXT_MARKERS = [
+  'ищет дом',
+  'ищут дом',
+  'в добрые руки',
+  'отдам',
+  'отдается',
+  'отдаётся',
+  'продам',
+  'пристро',
+  'потерял',
+  'найден',
+  'самка',
+  'кобел',
+  'кобель',
+  'порода',
+];
 const PROFANITY_REACH_TYPO_CONTEXT_MARKERS = [
   'охват',
   'подписчик',
@@ -163,6 +179,18 @@ const PROFANITY_LIVESTOCK_STRONG_CONTEXT_MARKERS = [
   'хозяйств',
   'ветеринар',
   'привит',
+];
+const PROFANITY_LIVESTOCK_LISTING_CONTEXT_MARKERS = [
+  'продам',
+  'продается',
+  'продаётся',
+  'куплю',
+  'хозяйств',
+  'ферм',
+  'крс',
+  'поголов',
+  'скотн',
+  'животновод',
 ];
 const PROFANITY_PARASITE_FORMS = new Set(['гнида', 'гниды', 'гниде', 'гниду', 'гнидой', 'гнидою']);
 const PROFANITY_PARASITE_CONTEXT_MARKERS = [
@@ -300,6 +328,29 @@ const PROFANITY_PROPER_NAME_CONTEXT_MARKERS = [
   'аутхор',
   'coach',
   'соасх',
+];
+const PROFANITY_PROPER_NAME_STANDALONE_CONTEXT_MARKERS = [
+  ...PROFANITY_PROPER_NAME_CONTEXT_MARKERS,
+  'пришел',
+  'пришла',
+  'пришли',
+  'подтвердил',
+  'подтвердила',
+  'подтвердили',
+  'заказ',
+  'заявк',
+  'документ',
+  'регистрац',
+  'перенес',
+  'перенесла',
+  'оставил',
+  'оставила',
+  'отправил',
+  'отправила',
+  'указан',
+  'указана',
+  'подписал',
+  'подписала',
 ];
 const PROFANITY_BOTANY_AND_PLACE_FORMS = new Set([
   'лох',
@@ -474,17 +525,26 @@ const PROFANITY_LATIN_CULTURAL_NAME_FORMS = new Set([
   'mande',
   'mandu',
 ]);
+const PROFANITY_CYRILLIC_CULTURAL_NAME_FORMS = new Set(['суки', 'манда', 'манду', 'манди']);
 const PROFANITY_LATIN_CULTURAL_NAME_CONTEXT_MARKERS = [
   'sushi',
+  'суши',
   'сусхи',
   'roll',
+  'ролл',
   'tokyo',
+  'токио',
+  'токуо',
   'japan',
+  'япони',
+  'йапан',
   'bali',
+  'бали',
   'hotel',
   'хотел',
   'house',
   'хоусе',
+  'хаус',
   'cafe',
   'restaurant',
   'кафе',
@@ -714,6 +774,15 @@ const PROFANITY_NEUTRAL_MODIFIER_NOUNS = new Set([
   'ответ',
   'угол',
   'уголок',
+  'карандаш',
+  'карандаша',
+  'карандашом',
+  'лезвие',
+  'лезвия',
+  'нож',
+  'ножа',
+  'маркер',
+  'фломастер',
   'инструмент',
   'предмет',
   'вариант',
@@ -871,6 +940,19 @@ const PROFANITY_SIZE_RANGE_NOTATION_PATTERN =
   /(?:^|[^\p{L}\p{N}])(?:р\.?\s*)?(?:2[0-9]|3[0-9]|4[0-9]|5[0-2])\s*[/-]\s*(?:2[0-9]|3[0-9]|4[0-9]|5[0-2])\s*(?:р\.?|разм(?:ер)?\.?)?(?=$|[^\p{L}\p{N}])/iu;
 const PROFANITY_HORSEPOWER_NOTATION_PATTERN =
   /(?:^|[^\p{L}\p{N}])\d{1,3}(?:[,.]\d{1,2})?\s*(?:л\.?\s*с\.?|лс)(?=$|[^\p{L}\p{N}])/iu;
+const PROFANITY_CODE_CONTEXT_MARKERS = [
+  'код',
+  'артикул',
+  'номер',
+  'заявк',
+  'таблиц',
+  'строк',
+  'поле',
+  'форм',
+  'маркировк',
+  'модель',
+  'серия',
+];
 
 @Injectable()
 export class RuleEngineService {
@@ -1182,7 +1264,17 @@ export class RuleEngineService {
         if (
           this.isContextualProfanityException(normalizedCandidate, normalizedContext) ||
           this.matchesJoinedNotationException(normalizedCandidate, normalizedContext, candidate) ||
-          this.matchesProperNameCapitalizationException(normalizedCandidate, text, candidate) ||
+          this.matchesProperNameCapitalizationException(
+            normalizedCandidate,
+            normalizedContext,
+            text,
+            candidate,
+          ) ||
+          this.matchesUppercaseCodeProfanityException(
+            normalizedCandidate,
+            normalizedContext,
+            candidate,
+          ) ||
           this.matchesNumericNotationProfanityException(
             normalizedCandidate,
             normalizedContext,
@@ -1265,6 +1357,12 @@ export class RuleEngineService {
 
     return (
       this.matchesProfanityReachTypoException(token, normalizedContext) ||
+      this.matchesSafeListingContextException(
+        token,
+        normalizedContext,
+        PROFANITY_CANINE_FEMALE_FORMS,
+        PROFANITY_CANINE_LISTING_CONTEXT_MARKERS,
+      ) ||
       this.matchesProfanityContextException(
         token,
         normalizedContext,
@@ -1284,6 +1382,12 @@ export class RuleEngineService {
         PROFANITY_LIVESTOCK_FORMS,
         PROFANITY_LIVESTOCK_STRONG_CONTEXT_MARKERS,
         1,
+      ) ||
+      this.matchesSafeListingContextException(
+        token,
+        normalizedContext,
+        PROFANITY_LIVESTOCK_FORMS,
+        PROFANITY_LIVESTOCK_LISTING_CONTEXT_MARKERS,
       ) ||
       this.matchesProfanityContextException(
         token,
@@ -1344,13 +1448,7 @@ export class RuleEngineService {
         PROFANITY_CLINICAL_CONTEXT_MARKERS,
         1,
       ) ||
-      this.matchesProfanityContextException(
-        token,
-        normalizedContext,
-        PROFANITY_COMPLETION_FORMS,
-        PROFANITY_COMPLETION_CONTEXT_MARKERS,
-        2,
-      ) ||
+      this.matchesCompletionContextException(token, normalizedContext) ||
       this.matchesProfanityContextException(
         token,
         normalizedContext,
@@ -1364,8 +1462,89 @@ export class RuleEngineService {
         PROFANITY_LATIN_CULTURAL_NAME_FORMS,
         PROFANITY_LATIN_CULTURAL_NAME_CONTEXT_MARKERS,
         1,
+      ) ||
+      this.matchesCyrillicCulturalNameException(token, normalizedContext)
+    );
+  }
+
+  private matchesCyrillicCulturalNameException(token: string, normalizedContext: string): boolean {
+    return (
+      !this.hasUnsafeProfanityContextAroundToken(token, normalizedContext) &&
+      this.matchesProfanityContextException(
+        token,
+        normalizedContext,
+        PROFANITY_CYRILLIC_CULTURAL_NAME_FORMS,
+        PROFANITY_LATIN_CULTURAL_NAME_CONTEXT_MARKERS,
+        2,
       )
     );
+  }
+
+  private matchesSafeListingContextException(
+    token: string,
+    normalizedContext: string,
+    forms: ReadonlySet<string>,
+    markers: readonly string[],
+  ): boolean {
+    return (
+      forms.has(token) &&
+      !this.hasUnsafeProfanityContextAroundToken(token, normalizedContext) &&
+      this.hasNormalizedContextMarker(normalizedContext, markers)
+    );
+  }
+
+  private matchesCompletionContextException(token: string, normalizedContext: string): boolean {
+    return (
+      PROFANITY_COMPLETION_FORMS.has(token) &&
+      !this.hasUnsafeProfanityContextAroundToken(token, normalizedContext) &&
+      this.hasNormalizedContextMarker(normalizedContext, PROFANITY_COMPLETION_CONTEXT_MARKERS)
+    );
+  }
+
+  private hasUnsafeProfanityContextAroundToken(token: string, normalizedContext: string): boolean {
+    const tokens = normalizedContext
+      .replace(/[^\p{L}\p{N}-]+/gu, ' ')
+      .split(/\s+/u)
+      .filter(Boolean);
+
+    for (let index = 0; index < tokens.length; index += 1) {
+      if (tokens[index] !== token) {
+        continue;
+      }
+
+      if (
+        this.hasDirectAddressBeforeTarget(tokens, index) ||
+        this.hasDirectAddressAfterTarget(tokens, index) ||
+        this.hasDemonstrativeHostileTarget(tokens, index) ||
+        this.hasHostileCommandAfterTarget(tokens, index)
+      ) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private hasDirectAddressAroundContextToken(token: string, normalizedContext: string): boolean {
+    const tokens = normalizedContext
+      .replace(/[^\p{L}\p{N}-]+/gu, ' ')
+      .split(/\s+/u)
+      .filter(Boolean);
+
+    for (let index = 0; index < tokens.length; index += 1) {
+      if (tokens[index] !== token) {
+        continue;
+      }
+
+      if (
+        this.hasDirectAddressBeforeTarget(tokens, index) ||
+        this.hasDirectAddressAfterTarget(tokens, index)
+      ) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private matchesProfanityContextException(
@@ -1457,6 +1636,7 @@ export class RuleEngineService {
 
   private matchesProperNameCapitalizationException(
     token: string,
+    normalizedContext: string,
     rawText: string,
     candidate: ProfanityCandidate,
   ): boolean {
@@ -1473,7 +1653,34 @@ export class RuleEngineService {
     const previousWord = before.match(/[\p{L}][\p{L}-]*\s*$/u)?.[0]?.trim() ?? '';
     const nextWord = after.match(/^\s*[\p{L}][\p{L}-]*/u)?.[0]?.trim() ?? '';
 
-    return this.isCapitalizedCyrillicName(previousWord) || this.isCapitalizedCyrillicName(nextWord);
+    if (this.isCapitalizedCyrillicName(previousWord) || this.isCapitalizedCyrillicName(nextWord)) {
+      return true;
+    }
+
+    const rawValue = candidate.rawValue ?? '';
+    return (
+      this.isCapitalizedCyrillicName(rawValue) &&
+      !this.hasDirectAddressAroundContextToken(token, normalizedContext) &&
+      this.hasNormalizedContextMarker(
+        normalizedContext,
+        PROFANITY_PROPER_NAME_STANDALONE_CONTEXT_MARKERS,
+      )
+    );
+  }
+
+  private matchesUppercaseCodeProfanityException(
+    token: string,
+    normalizedContext: string,
+    candidate: ProfanityCandidate,
+  ): boolean {
+    const rawValue = candidate.rawValue ?? '';
+    return (
+      !candidate.joined &&
+      token === 'пздц' &&
+      /^[A-ZА-ЯЁІЇЄҐ]{3,6}$/u.test(rawValue) &&
+      !this.hasUnsafeProfanityContextAroundToken(token, normalizedContext) &&
+      this.hasNormalizedContextMarker(normalizedContext, PROFANITY_CODE_CONTEXT_MARKERS)
+    );
   }
 
   private matchesNumericNotationProfanityException(
@@ -1531,8 +1738,14 @@ export class RuleEngineService {
   }
 
   private isHorsepowerProfanityCandidate(candidate: ProfanityCandidate): boolean {
-    const rawValue = candidate.rawValue ?? candidate.value;
-    return candidate.joined && /^\d{1,4}(?:л|лс)$/iu.test(rawValue);
+    const rawValue = (candidate.rawValue ?? candidate.value).replace(
+      /^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu,
+      '',
+    );
+    return (
+      (candidate.joined && /^\d{1,4}(?:л|лс)$/iu.test(rawValue)) ||
+      /^\d{1,3}(?:[,.]\d{1,2})?\s*(?:л\.?\s*с\.?|лс)$/iu.test(rawValue)
+    );
   }
 
   private hasNormalizedContextMarker(
