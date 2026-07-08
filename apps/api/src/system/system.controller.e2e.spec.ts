@@ -34,6 +34,7 @@ describe('SystemController auth e2e', () => {
   const botToken = 'test-bot-token';
   const getSourceSnapshot = jest.fn();
   const getRoutePreview = jest.fn();
+  const getRouteAudit = jest.fn();
   const getMembershipAudit = jest.fn();
 
   beforeEach(async () => {
@@ -53,6 +54,13 @@ describe('SystemController auth e2e', () => {
         botId: null,
       },
       routes: [{ purpose: 'send_message', botId: 'bot-2' }],
+    });
+    getRouteAudit.mockReset().mockResolvedValue({
+      generatedAt: '2026-04-01T18:11:30.000Z',
+      summary: {
+        auditedEntities: 2,
+        emptyCandidates: 0,
+      },
     });
     getMembershipAudit.mockReset().mockResolvedValue({
       generatedAt: '2026-04-01T18:12:00.000Z',
@@ -108,6 +116,7 @@ describe('SystemController auth e2e', () => {
           useValue: {
             getSnapshot: jest.fn(),
             getRoutePreview,
+            getRouteAudit,
             getMembershipAudit,
           },
         },
@@ -184,6 +193,31 @@ describe('SystemController auth e2e', () => {
       capability: null,
       fallbackToPrimary: false,
       botId: null,
+    });
+  });
+
+  it('returns a bot route audit for an authenticated system admin', async () => {
+    const initData = createSignedInitData(botToken, '100', Math.floor(Date.now() / 1_000));
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v1/system/bots/routes/audit?sampleLimit=7&includeCovered=false',
+      headers: {
+        authorization: `InitData ${initData}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      generatedAt: '2026-04-01T18:11:30.000Z',
+      summary: {
+        auditedEntities: 2,
+        emptyCandidates: 0,
+      },
+    });
+    expect(getRouteAudit).toHaveBeenCalledWith({
+      sampleLimit: 7,
+      includeCovered: false,
     });
   });
 

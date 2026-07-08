@@ -477,6 +477,144 @@ describe('SystemBotsService', () => {
     );
   });
 
+  it('audits moderation routes without flagging covered multi-bot fallbacks as failures', async () => {
+    const fresh = new Date().toISOString();
+    const bots = [createBot('bot-1', { isDefault: true }), createBot('bot-2')];
+    const botRegistry = {
+      getAllBots: jest.fn(() => bots),
+      getDefaultBot: jest.fn(() => bots[0]),
+      getBotById: jest.fn(
+        (botId: string | null | undefined) => bots.find((bot) => bot.id === botId) ?? null,
+      ),
+    };
+    const sharedMemberships = [
+      {
+        botId: 'bot-1',
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        capabilities: [],
+        permissionsSnapshot: {
+          checkedAt: fresh,
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages'],
+        },
+        botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+        botAccessCheckedAt: new Date(fresh),
+        botAccessExpiresAt: new Date(Date.now() + 60_000),
+        botAccessSource: 'test',
+        botAccessLastErrorCode: null,
+        lastSeenAt: new Date(fresh),
+        lastWebhookAt: null,
+      },
+      {
+        botId: 'bot-2',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        capabilities: [],
+        permissionsSnapshot: {
+          checkedAt: fresh,
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['delete_messages', 'add_remove_members'],
+        },
+        botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+        botAccessCheckedAt: new Date(fresh),
+        botAccessExpiresAt: new Date(Date.now() + 60_000),
+        botAccessSource: 'test',
+        botAccessLastErrorCode: null,
+        lastSeenAt: new Date(fresh),
+        lastWebhookAt: null,
+      },
+    ];
+    const prisma = {
+      chat: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'chat-covered',
+            title: 'Covered chat',
+            entityType: ChatEntityType.CHAT,
+            catalogKind: ChatCatalogKind.MANAGED,
+            primaryBotId: 'bot-1',
+            botId: 'bot-1',
+            botMemberships: sharedMemberships,
+          },
+          {
+            id: 'chat-empty',
+            title: 'Empty route chat',
+            entityType: ChatEntityType.CHAT,
+            catalogKind: ChatCatalogKind.MANAGED,
+            primaryBotId: 'bot-1',
+            botId: 'bot-1',
+            botMemberships: [sharedMemberships[0]],
+          },
+        ]),
+      },
+    };
+    const resolveBotRoutes = jest.fn(
+      async (request: { chatId: string; action: 'delete_message' | 'moderate_member' }) => {
+        if (request.chatId === 'chat-covered') {
+          return {
+            purpose: 'moderation_action',
+            chatId: request.chatId,
+            primaryBotId: 'bot-1',
+            botId: 'bot-2',
+            candidateBotIds: ['bot-2'],
+            reason: 'alternate_confirmed',
+            action: request.action,
+          };
+        }
+
+        return {
+          purpose: 'moderation_action',
+          chatId: request.chatId,
+          primaryBotId: 'bot-1',
+          botId: null,
+          candidateBotIds: [],
+          reason: null,
+          action: request.action,
+        };
+      },
+    );
+    const service = new SystemBotsService(
+      prisma as never,
+      botRegistry as never,
+      { resolveBotRoutes } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    const audit = await service.getRouteAudit({ sampleLimit: 10 });
+
+    expect(audit.summary).toMatchObject({
+      auditedEntities: 2,
+      auditedRoutes: 4,
+      routesWithCandidate: 2,
+      coveredByAlternate: 2,
+      emptyCandidates: 2,
+      criticalCount: 2,
+    });
+    expect(audit.samples).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          chatId: 'chat-covered',
+          classification: 'covered-by-alternate',
+          severity: 'info',
+          selectedBotId: 'bot-2',
+          primaryBotId: 'bot-1',
+          candidateBotIds: ['bot-2'],
+        }),
+        expect.objectContaining({
+          chatId: 'chat-empty',
+          classification: 'empty-candidates',
+          severity: 'critical',
+          activeExecutableBotIds: ['bot-1'],
+        }),
+      ]),
+    );
+  });
+
   it('audits denied primaries, eligible alternates, and denied assist capabilities', async () => {
     const fresh = new Date().toISOString();
     const bots = [createBot('bot-1', { isDefault: true }), createBot('bot-2'), createBot('bot-3')];

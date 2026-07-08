@@ -100,6 +100,12 @@ const systemBotRoutePreviewQuerySchema = z.object({
   fallbackToPrimary: routePreviewBooleanSchema.default(true),
   botId: optionalRoutePreviewStringSchema,
 });
+const systemBotRouteAuditQuerySchema = z.object({
+  sampleLimit: z
+    .preprocess((value) => routePreviewQueryValue(value), z.coerce.number().int().min(1).max(500))
+    .optional(),
+  includeCovered: routePreviewBooleanSchema.default(true),
+});
 const systemBotMembershipAuditQuerySchema = z.object({
   sampleLimit: z
     .preprocess((value) => routePreviewQueryValue(value), z.coerce.number().int().min(1).max(200))
@@ -165,6 +171,16 @@ export class SystemController {
   async getBots(@CurrentUser() user: AuthUser) {
     this.assertSystemAdmin(user);
     return this.systemBotsService.getSnapshot();
+  }
+
+  @Get('bots/routes/audit')
+  async getBotRouteAudit(@CurrentUser() user: AuthUser, @Query() query: unknown) {
+    this.assertSystemAdmin(user);
+    const parsed = systemBotRouteAuditQuerySchema.safeParse(query);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+    return this.systemBotsService.getRouteAudit(parsed.data);
   }
 
   @Get('bots/routes/preview')

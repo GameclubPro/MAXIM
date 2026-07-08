@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import {
   systemBotMembershipAuditSchema,
+  systemBotRouteAuditSchema,
   systemBotRoutePreviewResponseSchema,
   systemBotsSnapshotSchema,
   type BotQueueMetricsSnapshot,
@@ -20,6 +21,11 @@ import {
   type SystemBotMembershipStatus,
   type SystemBotProblemKind,
   type SystemBotProblemSample,
+  type SystemBotRouteAudit,
+  type SystemBotRouteAuditActionSummary,
+  type SystemBotRouteAuditClassification,
+  type SystemBotRouteAuditSample,
+  type SystemBotRouteAuditSeverity,
   type SystemBotRouteMembership,
   type SystemBotRouteModerationAction,
   type SystemBotRoutePreviewResponse,
@@ -97,6 +103,7 @@ type ProblemSampleRow = {
 
 const BOT_PROBLEM_SAMPLE_LIMIT = 5;
 const BOT_AUDIT_DEFAULT_SAMPLE_LIMIT = 25;
+const BOT_ROUTE_AUDIT_DEFAULT_SAMPLE_LIMIT = 50;
 const BOT_AUDIT_TYPE_SIGNAL_RECENT_MS = 7 * 24 * 60 * 60 * 1_000;
 const BOT_ROUTE_PREVIEW_CAPABILITIES: readonly ManagedEntityBotCapability[] = [
   'background_scans',
@@ -122,6 +129,11 @@ export type SystemBotRoutePreviewParams = {
 export type SystemBotMembershipAuditOptions = {
   sampleLimit?: number;
   snapshotFreshMs?: number;
+};
+
+export type SystemBotRouteAuditOptions = {
+  sampleLimit?: number;
+  includeCovered?: boolean;
 };
 
 type RoutePreviewChatRow = {
@@ -178,6 +190,19 @@ type AuditIssueInput = {
   alternateBotIds?: string[];
   reason: string;
   evidenceFresh?: boolean;
+};
+
+type SystemBotRouteAuditSummaryBuilder = {
+  auditedEntities: number;
+  auditedRoutes: number;
+  routesWithCandidate: number;
+  selectedPrimary: number;
+  coveredByAlternate: number;
+  emptyCandidates: number;
+  noActiveExecutableBot: number;
+  warningCount: number;
+  criticalCount: number;
+  byAction: SystemBotRouteAuditActionSummary[];
 };
 
 @Injectable()
@@ -677,6 +702,91 @@ export class SystemBotsService {
     return parsed;
   }
 
+  async getRouteAudit(options: SystemBotRouteAuditOptions = {}): Promise<SystemBotRouteAudit> {
+    const generatedAt = new Date().toISOString();
+    const nowMs = Date.parse(generatedAt);
+    const sampleLimit =
+      typeof options.sampleLimit === 'number' && Number.isFinite(options.sampleLimit)
+        ? Math.max(1, Math.trunc(options.sampleLimit))
+        : BOT_ROUTE_AUDIT_DEFAULT_SAMPLE_LIMIT;
+    const includeCovered = options.includeCovered !== false;
+    const chats = await this.readAuditChats();
+    const summary = this.createRouteAuditSummary(chats.length);
+    const problemSamples: SystemBotRouteAuditSample[] = [];
+    const coveredSamples: SystemBotRouteAuditSample[] = [];
+    const pushSample = (sample: SystemBotRouteAuditSample) => {
+      if (sample.classification === 'covered-by-alternate') {
+        if (includeCovered && coveredSamples.length < sampleLimit) {
+          coveredSamples.push(sample);
+        }
+        return;
+      }
+
+      if (problemSamples.length < sampleLimit) {
+        problemSamples.push(sample);
+      }
+    };
+
+    for (const chat of chats) {
+      const routes = await Promise.all(
+        BOT_ROUTE_PREVIEW_MODERATION_ACTIONS.map((action) =>
+          this.botLinkService.resolveBotRoutes({
+            purpose: 'moderation_action',
+            chatId: chat.id,
+            action,
+            fallbackToPrimary: true,
+          }),
+        ),
+      );
+
+      for (const [index, route] of routes.entries()) {
+        const action = BOT_ROUTE_PREVIEW_MODERATION_ACTIONS[index] ?? 'delete_message';
+        const actionSummary = summary.byAction.find((entry) => entry.action === action);
+        if (!actionSummary) {
+          continue;
+        }
+
+        const activeExecutableBotIds = this.readActiveExecutableBotIds(chat);
+        const classification = this.classifyRouteAudit(route, activeExecutableBotIds);
+        const severity = this.resolveRouteAuditSeverity(classification);
+        this.incrementRouteAuditSummary(summary, actionSummary, classification, severity);
+
+        if (classification === 'selected-primary') {
+          continue;
+        }
+
+        pushSample(
+          this.mapRouteAuditSample({
+            chat,
+            route,
+            action,
+            activeExecutableBotIds,
+            classification,
+            severity,
+            nowMs,
+          }),
+        );
+      }
+    }
+
+    const samples = [
+      ...problemSamples,
+      ...coveredSamples.slice(0, Math.max(0, sampleLimit - problemSamples.length)),
+    ];
+
+    const parsed = systemBotRouteAuditSchema.parse({
+      generatedAt,
+      config: {
+        sampleLimit,
+        includeCovered,
+      },
+      summary,
+      samples,
+    });
+
+    return parsed;
+  }
+
   private async readRoutePreviewChat(chatId: string): Promise<RoutePreviewChatRow | null> {
     if (!chatId) {
       return null;
@@ -937,6 +1047,183 @@ export class SystemBotsService {
         },
       },
     });
+  }
+
+  private createRouteAuditSummary(auditedEntities: number): SystemBotRouteAuditSummaryBuilder {
+    const byAction = BOT_ROUTE_PREVIEW_MODERATION_ACTIONS.map((action) => ({
+      action,
+      auditedRoutes: 0,
+      routesWithCandidate: 0,
+      selectedPrimary: 0,
+      coveredByAlternate: 0,
+      emptyCandidates: 0,
+      noActiveExecutableBot: 0,
+    })) satisfies SystemBotRouteAuditActionSummary[];
+
+    return {
+      auditedEntities,
+      auditedRoutes: 0,
+      routesWithCandidate: 0,
+      selectedPrimary: 0,
+      coveredByAlternate: 0,
+      emptyCandidates: 0,
+      noActiveExecutableBot: 0,
+      warningCount: 0,
+      criticalCount: 0,
+      byAction,
+    };
+  }
+
+  private incrementRouteAuditSummary(
+    summary: SystemBotRouteAuditSummaryBuilder,
+    actionSummary: SystemBotRouteAuditActionSummary,
+    classification: SystemBotRouteAuditClassification,
+    severity: SystemBotRouteAuditSeverity,
+  ): void {
+    summary.auditedRoutes += 1;
+    actionSummary.auditedRoutes += 1;
+
+    if (classification === 'selected-primary' || classification === 'covered-by-alternate') {
+      summary.routesWithCandidate += 1;
+      actionSummary.routesWithCandidate += 1;
+    }
+    if (classification === 'selected-primary') {
+      summary.selectedPrimary += 1;
+      actionSummary.selectedPrimary += 1;
+    } else if (classification === 'covered-by-alternate') {
+      summary.coveredByAlternate += 1;
+      actionSummary.coveredByAlternate += 1;
+    } else if (classification === 'empty-candidates') {
+      summary.emptyCandidates += 1;
+      actionSummary.emptyCandidates += 1;
+    } else if (classification === 'no-active-executable-bot') {
+      summary.noActiveExecutableBot += 1;
+      actionSummary.noActiveExecutableBot += 1;
+    }
+
+    if (severity === 'warning') {
+      summary.warningCount += 1;
+    } else if (severity === 'critical') {
+      summary.criticalCount += 1;
+    }
+  }
+
+  private classifyRouteAudit(
+    route: MaxBotRoute,
+    activeExecutableBotIds: readonly string[],
+  ): SystemBotRouteAuditClassification {
+    if (route.candidateBotIds.length === 0) {
+      return activeExecutableBotIds.length === 0
+        ? 'no-active-executable-bot'
+        : 'empty-candidates';
+    }
+
+    return route.botId && route.botId === route.primaryBotId
+      ? 'selected-primary'
+      : 'covered-by-alternate';
+  }
+
+  private resolveRouteAuditSeverity(
+    classification: SystemBotRouteAuditClassification,
+  ): SystemBotRouteAuditSeverity {
+    switch (classification) {
+      case 'empty-candidates':
+      case 'no-active-executable-bot':
+        return 'critical';
+      case 'covered-by-alternate':
+      case 'selected-primary':
+        return 'info';
+    }
+  }
+
+  private mapRouteAuditSample(params: {
+    chat: AuditChatRow;
+    route: MaxBotRoute;
+    action: SystemBotRouteModerationAction;
+    activeExecutableBotIds: string[];
+    classification: SystemBotRouteAuditClassification;
+    severity: SystemBotRouteAuditSeverity;
+    nowMs: number;
+  }): SystemBotRouteAuditSample {
+    const { chat, route, action, activeExecutableBotIds, classification, severity, nowMs } =
+      params;
+    const deniedOrLostBotIds: string[] = [];
+    const deniedPermissionsBotIds: string[] = [];
+    const stalePermissionsBotIds: string[] = [];
+    const missingPermissionsBotIds: string[] = [];
+
+    for (const membership of chat.botMemberships) {
+      if (membership.status !== ChatBotMembershipStatus.ACTIVE) {
+        continue;
+      }
+
+      const snapshot = normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
+      if (
+        membership.botAccessState === ChatBotAccessState.DENIED ||
+        membership.botAccessState === ChatBotAccessState.LOST
+      ) {
+        deniedOrLostBotIds.push(membership.botId);
+      }
+      if (membershipExplicitlyLacksAccess(membership.permissionsSnapshot)) {
+        deniedPermissionsBotIds.push(membership.botId);
+      } else if (!snapshot) {
+        missingPermissionsBotIds.push(membership.botId);
+      } else if (
+        !isFreshMembershipAccessSnapshot(snapshot, {
+          nowMs,
+          freshMs: DEFAULT_PRIMARY_ACCESS_SNAPSHOT_FRESH_MS,
+        })
+      ) {
+        stalePermissionsBotIds.push(membership.botId);
+      }
+    }
+
+    return {
+      severity,
+      classification,
+      chatId: chat.id,
+      title: chat.title,
+      entityType: this.mapEntityType(chat.entityType),
+      catalogKind: chat.catalogKind,
+      action,
+      primaryBotId: route.primaryBotId,
+      selectedBotId: route.botId,
+      candidateBotIds: route.candidateBotIds,
+      activeExecutableBotIds,
+      deniedOrLostBotIds,
+      deniedPermissionsBotIds,
+      stalePermissionsBotIds,
+      missingPermissionsBotIds,
+      reason: this.buildRouteAuditReason(classification, action),
+    };
+  }
+
+  private buildRouteAuditReason(
+    classification: SystemBotRouteAuditClassification,
+    action: SystemBotRouteModerationAction,
+  ): string {
+    switch (classification) {
+      case 'selected-primary':
+        return `Primary bot is selected for ${action}.`;
+      case 'covered-by-alternate':
+        return `Route is covered by an alternate bot for ${action}; a weak or denied primary is not a failure while this candidate exists.`;
+      case 'empty-candidates':
+        return `No active executable bot is currently selected for ${action}; candidates may lack the required action permission, be action-limited, or be under recent 403/backoff.`;
+      case 'no-active-executable-bot':
+        return `No active executable runtime bot is available for ${action}.`;
+    }
+  }
+
+  private readActiveExecutableBotIds(chat: AuditChatRow): string[] {
+    return chat.botMemberships
+      .filter((membership) => {
+        if (membership.status !== ChatBotMembershipStatus.ACTIVE) {
+          return false;
+        }
+        const bot = this.botRegistry.getBotById(membership.botId);
+        return Boolean(bot && canExecuteActionsForBotState(bot.state));
+      })
+      .map((membership) => membership.botId);
   }
 
   private buildRoutePreviewRequests(params: {

@@ -492,6 +492,77 @@ export const systemBotRoutePreviewResponseSchema = z.object({
 });
 export type SystemBotRoutePreviewResponse = z.infer<typeof systemBotRoutePreviewResponseSchema>;
 
+export const systemBotRouteAuditClassificationSchema = z.enum([
+  'selected-primary',
+  'covered-by-alternate',
+  'empty-candidates',
+  'no-active-executable-bot',
+]);
+export type SystemBotRouteAuditClassification = z.infer<
+  typeof systemBotRouteAuditClassificationSchema
+>;
+
+export const systemBotRouteAuditSeveritySchema = z.enum(['info', 'warning', 'critical']);
+export type SystemBotRouteAuditSeverity = z.infer<typeof systemBotRouteAuditSeveritySchema>;
+
+export const systemBotRouteAuditActionSummarySchema = z.object({
+  action: systemBotRouteModerationActionSchema,
+  auditedRoutes: z.number().int().min(0),
+  routesWithCandidate: z.number().int().min(0),
+  selectedPrimary: z.number().int().min(0),
+  coveredByAlternate: z.number().int().min(0),
+  emptyCandidates: z.number().int().min(0),
+  noActiveExecutableBot: z.number().int().min(0),
+});
+export type SystemBotRouteAuditActionSummary = z.infer<
+  typeof systemBotRouteAuditActionSummarySchema
+>;
+
+export const systemBotRouteAuditSummarySchema = z.object({
+  auditedEntities: z.number().int().min(0),
+  auditedRoutes: z.number().int().min(0),
+  routesWithCandidate: z.number().int().min(0),
+  selectedPrimary: z.number().int().min(0),
+  coveredByAlternate: z.number().int().min(0),
+  emptyCandidates: z.number().int().min(0),
+  noActiveExecutableBot: z.number().int().min(0),
+  warningCount: z.number().int().min(0),
+  criticalCount: z.number().int().min(0),
+  byAction: z.array(systemBotRouteAuditActionSummarySchema),
+});
+export type SystemBotRouteAuditSummary = z.infer<typeof systemBotRouteAuditSummarySchema>;
+
+export const systemBotRouteAuditSampleSchema = z.object({
+  severity: systemBotRouteAuditSeveritySchema,
+  classification: systemBotRouteAuditClassificationSchema,
+  chatId: z.string(),
+  title: z.string(),
+  entityType: systemBotEntityTypeSchema,
+  catalogKind: z.string(),
+  action: systemBotRouteModerationActionSchema,
+  primaryBotId: z.string().nullable(),
+  selectedBotId: z.string().nullable(),
+  candidateBotIds: z.array(z.string()),
+  activeExecutableBotIds: z.array(z.string()),
+  deniedOrLostBotIds: z.array(z.string()),
+  deniedPermissionsBotIds: z.array(z.string()),
+  stalePermissionsBotIds: z.array(z.string()),
+  missingPermissionsBotIds: z.array(z.string()),
+  reason: z.string(),
+});
+export type SystemBotRouteAuditSample = z.infer<typeof systemBotRouteAuditSampleSchema>;
+
+export const systemBotRouteAuditSchema = z.object({
+  generatedAt: z.string().datetime(),
+  config: z.object({
+    sampleLimit: z.number().int().min(1),
+    includeCovered: z.boolean(),
+  }),
+  summary: systemBotRouteAuditSummarySchema,
+  samples: z.array(systemBotRouteAuditSampleSchema),
+});
+export type SystemBotRouteAudit = z.infer<typeof systemBotRouteAuditSchema>;
+
 export const systemBotMembershipAuditKindSchema = z.enum([
   'denied-active-primary',
   'stored-primary-denied-alternate-eligible',

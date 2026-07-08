@@ -417,13 +417,70 @@ redis_count() {
     *) printf "unsupported:%s\n" "$type" ;;
   esac
 }
+now_ms="$(($(date +%s) * 1000))"
+due_score="$((now_ms * 4096 + 4095))"
 for q in "$@"; do
   printf "%s wait=" "$q"; redis_count "bull:$q:wait"
   printf "%s active=" "$q"; redis_count "bull:$q:active"
   printf "%s failed=" "$q"; redis_count "bull:$q:failed"
   printf "%s delayed=" "$q"; redis_count "bull:$q:delayed"
+  printf "%s dueNow=" "$q"; redis-cli --raw zcount "bull:$q:delayed" -inf "$due_score" 2>/dev/null || printf "0\n"
 done
 ' sh "${queues[@]}"
+REMOTE
+)
+
+  ./infra/scripts/vps-connect.sh exec "$remote_command"
+}
+
+summarize_runtime_pressure() {
+  local remote_command
+
+  remote_command=$(cat <<'REMOTE'
+echo "uptime"
+uptime || true
+echo "memory"
+free -m || true
+echo "disk"
+df -h / /var/lib/docker 2>/dev/null || df -h / || true
+echo "docker_stats"
+docker stats --no-stream --format '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.BlockIO}}' 2>/dev/null |
+  grep -E '^infra-(api|postgres|redis|miniapp|admin)' |
+  sort || true
+if command -v iostat >/dev/null 2>&1; then
+  echo "iostat"
+  iostat -x 1 2 | tail -40 || true
+fi
+REMOTE
+)
+
+  ./infra/scripts/vps-connect.sh exec "$remote_command"
+}
+
+summarize_log_signal_counts() {
+  local service_args
+  local remote_command
+
+  printf -v service_args '%q ' "${LOG_SERVICES[@]}"
+  remote_command=$(cat <<REMOTE
+services=($service_args)
+printf "service\\tlevel40_50\\trate_limit\\tskipped_perm\\taccess_loss\\tstatus403\\ttimeout\\tgovernor\\tslow\\tledger\\tpg_warn\\n"
+for service in "\${services[@]}"; do
+  logs=\$(docker compose --env-file .env -p infra -f infra/docker-compose.yml logs --since "${SIGNAL_WINDOW_MIN}m" --tail "$TAIL_LINES" "\$service" 2>/dev/null || true)
+  count() { printf "%s" "\$logs" | grep -Eci "\$1" || true; }
+  printf "%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n" \\
+    "\$service" \\
+    "\$(count '"level":(40|50)')" \\
+    "\$(count 'rate limit|rate_limit|429')" \\
+    "\$(count 'no active bot has the required MAX permissions|Skipped moderation action')" \\
+    "\$(count 'ManagedEntityAccessLossService|chat_not_found|chat.denied|BOT_DENIED|access loss')" \\
+    "\$(count 'status code 403|"statusCode":403')" \\
+    "\$(count 'ETIMEDOUT|timeout|timed out|ECONN')" \\
+    "\$(count 'BackgroundRuntimeGovernor|governor|pause|slow path')" \\
+    "\$(count 'slow|Slow')" \\
+    "\$(count 'Failed to record successful MAX action ledger outcome|delivery-ledger-risk|ambiguous MAX')" \\
+    "\$(count 'client.query\\(\\) on a client that has already been checked out')"
+done
 REMOTE
 )
 
@@ -438,10 +495,12 @@ sample_once() {
   run_step semantic-health summarize_local_ready_health
   run_step real-chat-signals summarize_real_chat_signals
   run_step bullmq-state summarize_bullmq_state
+  run_step runtime-pressure summarize_runtime_pressure
   run_step ps ./infra/scripts/vps-connect.sh ps
   run_step static-services summarize_static_services
   run_step restart-counts ./infra/scripts/vps-connect.sh exec \
     'ids=$(docker ps -q --filter label=com.docker.compose.project=infra); docker inspect --format "{{.Name}}\t{{.RestartCount}}\t{{.State.Status}}\t{{.State.StartedAt}}" $ids'
+  run_step log-signal-counts summarize_log_signal_counts
   run_step log-scan scan_service_logs
   run_step public-app curl -fsS --max-time 15 -o /dev/null -w 'app %{http_code} %{time_total}\n' \
     "$PUBLIC_URL/app/"

@@ -235,6 +235,7 @@
 
 - Multi-bot chat ownership is modeled as `Chat.primaryBotId` plus `ChatBotMembership`. Treat `Chat.botId` as transitional compatibility only.
 - Keep primary-bot access scoring centralized in `apps/api/src/max/max-bot-access-policy.util.ts`; routing and ownership repair should share it instead of duplicating permissions-snapshot scoring.
+- In multi-bot permission audits, do not treat a weak/denied primary or a bot without rights as a chat failure when another active executable bot has the required rights. One confirmed eligible bot is enough; investigate only cases where the route candidate list is empty, every candidate is denied/action-limited, or fresh 403/backoff prevents the eligible bot from being used.
 - Multi-bot UI, diagnostics, and tests should stay list-oriented. Avoid copy, caps, or assumptions that only one extra/standby bot exists.
 - Multi-bot lifecycle policy lives in `apps/api/src/max/max-bot-state.util.ts`: `active` bots may execute actions, assist, and primary promotion; `draining` bots stay usable for webhooks/read/discovery only; `dormant`/`disabled` bots should not be selected for routes.
 - `GET /v1/system/bots` is a read-only fleet snapshot for system admins. Keep it on local sources only: configured bot registry, cached webhook/queue/MAX API metrics, and Prisma aggregates with the same managed-entity filter as ownership foundation; do not add live MAX access checks or execution-planner refreshes there.
