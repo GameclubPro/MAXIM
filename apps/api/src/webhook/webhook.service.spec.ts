@@ -1263,7 +1263,7 @@ describe('WebhookService', () => {
           senderId: 'user-88',
           senderName: 'Ольга',
           text: '',
-          createdAt: new Date('2026-04-06T01:00:00.000Z').toISOString(),
+          createdAt: new Date('2026-04-06T01:00:00.001Z').toISOString(),
         },
         membership: {
           action: 'added',
@@ -3021,6 +3021,74 @@ describe('WebhookService', () => {
       'id613070470872_5_bot',
       'id613070470872_6_bot',
     ]);
+  });
+
+  it('sends one Старт hint for mirrored bot_added deliveries of the same added bot', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-7-mirrored-bot-hint' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    const maxClient = {
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({ messageId: 'hint-1', url: null }),
+    };
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+      undefined,
+      maxClient as never,
+    );
+    const baseUpdate = {
+      updateId: 'u-bot-added-mirrored-hint-1',
+      type: 'bot_added',
+      botId: 'id613070470872_5_bot',
+      message: {
+        messageId: 'bot_added:u-bot-added-mirrored-hint-1',
+        chatId: '-100132',
+        chatTitle: 'Чат с зеркальной доставкой',
+        entityType: 'chat',
+        senderId: 'id613070470872_5_bot',
+        text: '',
+        createdAt: new Date('2026-04-03T12:05:00.000Z').toISOString(),
+      },
+      membership: {
+        action: 'added',
+        memberUserIds: ['id613070470872_5_bot'],
+      },
+    };
+
+    await expect(service.ingest(baseUpdate as never, '127.0.0.1')).resolves.toEqual({
+      accepted: true,
+      duplicate: false,
+    });
+    await expect(
+      service.ingest(
+        {
+          ...baseUpdate,
+          updateId: 'u-bot-added-mirrored-hint-2',
+          botId: 'id613070470872_6_bot',
+          message: {
+            ...baseUpdate.message,
+            messageId: 'bot_added:u-bot-added-mirrored-hint-2',
+          },
+        } as never,
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({
+      accepted: true,
+      duplicate: false,
+    });
+    await flushDeferredWebhookWork();
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessageImmediateWithId.mock.calls[0]?.[3]?.botId).toBe(
+      'id613070470872_5_bot',
+    );
   });
 
   it('uses channel wording in the Старт hint after channel bot_added webhooks', async () => {

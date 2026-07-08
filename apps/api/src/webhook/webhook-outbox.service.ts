@@ -23,6 +23,7 @@ import {
   WEBHOOK_QUEUE_CRITICAL,
 } from './webhook-queues';
 import { WebhookRoutingService } from './webhook-routing.service';
+import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 
 const ANY_WEBHOOK_QUEUE_NAMES = new Set<string>(ALL_WEBHOOK_QUEUE_NAMES);
 const USER_FACING_STALE_QUEUED_REPAIR_MS = 20_000;
@@ -31,6 +32,8 @@ const PRIORITY_SELECTION_WINDOW_MULTIPLIER = 3;
 const MAX_PRIORITY_SELECTION_WINDOW = 1_000;
 const MANUAL_CLOSE_PRIORITY_CACHE_TTL_MS = 5_000;
 const MANUAL_CLOSE_PRIORITY_CACHE_PRUNE_THRESHOLD = 4_096;
+const SHARED_CHAT_OWNER_EVENT_LOOKUP_WINDOW_MS = 15 * 60_000;
+const SHARED_CHAT_OWNER_EVENT_LOOKUP_LIMIT = 100;
 const WEBHOOK_FAILED_JOB_RETENTION = {
   age: 7 * 24 * 60 * 60,
   count: 5_000,
@@ -791,26 +794,59 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
 
     const ownerBotId = this.readTrimmedString(payload.executionOwnerBotId);
     const updateId = this.readTrimmedString(payload.updateId);
-    if (!ownerBotId || !updateId) {
+    if (!ownerBotId) {
       return false;
     }
 
-    const ownerEvent = await this.prisma.webhookEvent.findFirst({
+    if (updateId) {
+      const ownerEvent = await this.prisma.webhookEvent.findFirst({
+        where: {
+          id: { not: event.id },
+          dedupKey: `${ownerBotId}:${updateId}`,
+          botId: ownerBotId,
+          OR: [
+            { status: { in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED, WebhookStatus.PROCESSED] } },
+            { status: WebhookStatus.FAILED, nextEnqueueAt: { not: null } },
+          ],
+        },
+        select: {
+          id: true,
+        },
+      });
+      if (ownerEvent) {
+        return true;
+      }
+    }
+
+    const semanticKey = buildWebhookSemanticEventKey(payload);
+    if (!semanticKey) {
+      return false;
+    }
+
+    const ownerEvents = await this.prisma.webhookEvent.findMany({
       where: {
         id: { not: event.id },
-        dedupKey: `${ownerBotId}:${updateId}`,
         botId: ownerBotId,
+        createdAt: {
+          gte: new Date(event.createdAt.getTime() - SHARED_CHAT_OWNER_EVENT_LOOKUP_WINDOW_MS),
+          lte: new Date(event.createdAt.getTime() + SHARED_CHAT_OWNER_EVENT_LOOKUP_WINDOW_MS),
+        },
         OR: [
           { status: { in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED, WebhookStatus.PROCESSED] } },
           { status: WebhookStatus.FAILED, nextEnqueueAt: { not: null } },
         ],
       },
+      orderBy: { createdAt: 'desc' },
+      take: SHARED_CHAT_OWNER_EVENT_LOOKUP_LIMIT,
       select: {
         id: true,
+        normalizedPayload: true,
       },
     });
 
-    return Boolean(ownerEvent);
+    return ownerEvents.some(
+      (ownerEvent) => buildWebhookSemanticEventKey(ownerEvent.normalizedPayload) === semanticKey,
+    );
   }
 
   private isStandbySharedChatEvent(event: WebhookEnqueueCandidate): boolean {
@@ -826,6 +862,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     if (
       updateType !== 'message_created' &&
       updateType !== 'message_edited' &&
+      updateType !== 'message_callback' &&
       updateType !== 'user_added' &&
       updateType !== 'user_removed'
     ) {

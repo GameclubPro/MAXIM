@@ -91,6 +91,7 @@ import { moderationBackgroundTasksEnabled } from '../runtime/moderation-runtime'
 import { QueueMetricsService } from '../system/queue-metrics.service';
 import { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
+import { buildWebhookSemanticEventKey } from '../webhook/webhook-semantic-event-key';
 import {
   SystemModeService,
   isSystemModeRecoveryWindow,
@@ -429,7 +430,10 @@ const CHANNEL_AUTO_POST_ATTACH_LOCK_TTL_MS = 2 * 60_000;
 const CHAT_AUTO_COMMENT_ATTACH_LOCK_TTL_MS = 2 * 60_000;
 const VIOLATION_MESSAGE_PROCESSING_TTL_SEC = 8 * 24 * 60 * 60;
 const SERVICE_MEMBER_ACTION_TIMESTAMP_GRANULARITY_MS = 1_000;
+const SERVICE_MEMBER_ACTION_DEDUPE_WINDOW_MS = 30_000;
 const GREETING_MESSAGE_DEDUPE_WINDOW_MS = 10 * 60_000;
+const SHARED_CHAT_OWNER_EVENT_LOOKUP_WINDOW_MS = 15 * 60_000;
+const SHARED_CHAT_OWNER_EVENT_LOOKUP_LIMIT = 100;
 
 @Injectable()
 export class ModerationService implements OnModuleInit, OnModuleDestroy {
@@ -6473,6 +6477,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
 
     if (!canDeleteMessage) {
+      const claimed = await this.claimMessageScopedModerationAction({
+        chatId,
+        userId,
+        messageId,
+        ruleCode: 'MUTE_ACTIVE_DELETE',
+      });
+      if (!claimed) {
+        return;
+      }
+
       await this.maxClient.notifyModerators(
         chatId,
         `Сообщение от ${userId} попало под активный мут, но старше 24 часов и не может быть удалено`,
@@ -6818,13 +6832,104 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     updateType?: string | null;
     dedupeWindowMs?: number;
   }): Promise<boolean> {
+    const updateType =
+      params.updateType ??
+      (this.resolveServiceMemberActionUserIds(params.update).length > 0
+        ? 'service_member'
+        : this.readLowerString(params.update.type)) ??
+      'service_member';
+    const windowClaim = await this.claimServiceMemberActionWindow({
+      chatId: params.chatId,
+      userId: params.userId,
+      ruleCode: params.ruleCode,
+      updateType,
+      dedupeWindowMs: params.dedupeWindowMs ?? SERVICE_MEMBER_ACTION_DEDUPE_WINDOW_MS,
+    });
+    if (windowClaim === false) {
+      return false;
+    }
+
     return this.claimMessageViolationProcessing({
       chatId: params.chatId,
       userId: params.userId,
       messageId: this.buildServiceMemberActionClaimMessageId(params),
       ruleCode: params.ruleCode,
-      updateType: params.updateType ?? this.readLowerString(params.update.type) ?? 'service_member',
+      updateType,
     });
+  }
+
+  private async claimServiceMemberActionWindow(params: {
+    chatId: string;
+    userId: string;
+    ruleCode: string;
+    updateType: string;
+    dedupeWindowMs: number;
+  }): Promise<boolean | null> {
+    if (!Number.isFinite(params.dedupeWindowMs) || params.dedupeWindowMs <= 0) {
+      return null;
+    }
+
+    const incrementOncePerMemberWithTtl = (
+      this.redisCounter as Partial<RedisCounterService> | undefined
+    )?.incrementOncePerMemberWithTtl;
+    if (!this.redisCounter || !incrementOncePerMemberWithTtl) {
+      return null;
+    }
+
+    const semanticHash = createHash('sha256')
+      .update(`${params.chatId}:${params.userId}:${params.ruleCode}:${params.updateType}`)
+      .digest('hex')
+      .slice(0, 32);
+    const counterKey = `moderation:service-member-action-window:v1:${params.ruleCode}:${params.updateType}`;
+    const memberKey = `${counterKey}:${semanticHash}`;
+    const ttlSec = Math.max(1, Math.ceil(params.dedupeWindowMs / 1_000));
+
+    try {
+      const result = await incrementOncePerMemberWithTtl.call(
+        this.redisCounter,
+        counterKey,
+        memberKey,
+        ttlSec,
+      );
+      if (!result.inserted) {
+        this.logger.debug(
+          {
+            chatId: params.chatId,
+            userId: params.userId,
+            ruleCode: params.ruleCode,
+            updateType: params.updateType,
+          },
+          'Skipped duplicate service member action within dedupe window',
+        );
+      }
+      return result.inserted;
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId: params.chatId,
+          userId: params.userId,
+          ruleCode: params.ruleCode,
+          updateType: params.updateType,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to claim Redis service member action dedupe window',
+      );
+      return null;
+    }
+  }
+
+  private resolveServiceMemberActionUserIds(update: MaxUpdate): string[] {
+    const userIds = new Set<string>();
+    for (const userId of update.membership?.memberUserIds ?? []) {
+      const normalized = userId.trim();
+      if (normalized) {
+        userIds.add(normalized);
+      }
+    }
+    for (const userId of this.extractServiceMemberUserIds(update)) {
+      userIds.add(userId);
+    }
+    return [...userIds].sort();
   }
 
   private buildServiceMemberActionClaimMessageId(params: {
@@ -6832,12 +6937,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string;
     update: MaxUpdate;
     ruleCode: string;
-    dedupeWindowMs?: number;
   }): string {
-    const eventAtIso = this.resolveServiceMemberActionEventIso(
-      params.update,
-      params.dedupeWindowMs,
-    );
+    const eventAtIso = this.resolveServiceMemberActionEventIso(params.update);
     const semanticHash = createHash('sha256')
       .update(`${params.chatId}:${params.userId}:${params.ruleCode}:${eventAtIso}`)
       .digest('hex')
@@ -6845,13 +6946,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return `service-member:${semanticHash}:${eventAtIso}`;
   }
 
-  private resolveServiceMemberActionEventIso(update: MaxUpdate, dedupeWindowMs?: number): string {
+  private resolveServiceMemberActionEventIso(update: MaxUpdate): string {
     const timestampMs = this.resolveServiceMemberActionTimestampMs(update);
-    const granularityMs =
-      typeof dedupeWindowMs === 'number' && Number.isFinite(dedupeWindowMs) && dedupeWindowMs > 0
-        ? Math.trunc(dedupeWindowMs)
-        : SERVICE_MEMBER_ACTION_TIMESTAMP_GRANULARITY_MS;
-    return new Date(Math.floor(timestampMs / granularityMs) * granularityMs).toISOString();
+    return new Date(
+      Math.floor(timestampMs / SERVICE_MEMBER_ACTION_TIMESTAMP_GRANULARITY_MS) *
+        SERVICE_MEMBER_ACTION_TIMESTAMP_GRANULARITY_MS,
+    ).toISOString();
   }
 
   private resolveServiceMemberActionTimestampMs(update: MaxUpdate): number {
@@ -11267,6 +11367,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       this.prisma as unknown as {
         webhookEvent?: {
           findFirst?: PrismaService['webhookEvent']['findFirst'];
+          findMany?: PrismaService['webhookEvent']['findMany'];
         };
       }
     ).webhookEvent;
@@ -11291,6 +11392,52 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
 
+    const semanticKey = buildWebhookSemanticEventKey(update);
+    if (semanticKey && typeof webhookEventClient.findMany === 'function') {
+      const currentEvent = await webhookEventClient.findFirst({
+        where: {
+          dedupKey: this.buildWebhookDedupKeyForActiveBot(update, activeBotId),
+          botId: activeBotId,
+        },
+        select: {
+          createdAt: true,
+        },
+      });
+      const currentCreatedAt =
+        currentEvent && 'createdAt' in currentEvent && currentEvent.createdAt instanceof Date
+          ? currentEvent.createdAt
+          : new Date();
+      const ownerEvents = await webhookEventClient.findMany({
+        where: {
+          botId: executionOwnerBotId,
+          createdAt: {
+            gte: new Date(
+              currentCreatedAt.getTime() - SHARED_CHAT_OWNER_EVENT_LOOKUP_WINDOW_MS,
+            ),
+            lte: new Date(
+              currentCreatedAt.getTime() + SHARED_CHAT_OWNER_EVENT_LOOKUP_WINDOW_MS,
+            ),
+          },
+          OR: [
+            { status: { in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED, WebhookStatus.PROCESSED] } },
+            { status: WebhookStatus.FAILED, nextEnqueueAt: { not: null } },
+          ],
+        },
+        orderBy: { createdAt: 'desc' },
+        take: SHARED_CHAT_OWNER_EVENT_LOOKUP_LIMIT,
+        select: {
+          normalizedPayload: true,
+        },
+      });
+      if (
+        ownerEvents.some(
+          (event) => buildWebhookSemanticEventKey(event.normalizedPayload) === semanticKey,
+        )
+      ) {
+        return false;
+      }
+    }
+
     this.logger.debug(
       {
         updateId,
@@ -11301,6 +11448,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       'Processing standby shared chat webhook event because owner delivery is absent or terminal',
     );
     return true;
+  }
+
+  private buildWebhookDedupKeyForActiveBot(update: MaxUpdate, activeBotId: string): string {
+    const updateId = String(update.updateId ?? '').trim();
+    return activeBotId ? `${activeBotId}:${updateId}` : updateId;
   }
 
   private logSharedChatExecutionSkip(
@@ -11334,10 +11486,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const messageId = update.message?.messageId?.trim() ?? '';
     const callbackId = this.extractCallbackId(update)?.trim() ?? '';
     const updateType = this.readLowerString(update.type);
+    const semanticKey = buildWebhookSemanticEventKey(update);
     const discriminator =
-      (updateType === 'message_created' || updateType === 'message_edited') && messageId
+      semanticKey ??
+      ((updateType === 'message_created' || updateType === 'message_edited') && messageId
         ? `${updateType}:${messageId}`
-        : updateId || callbackId || messageId || `${updateType}:${chatId}`;
+        : updateId || callbackId || messageId || `${updateType}:${chatId}`);
     if (guard.lockScope === 'chat') {
       return `shared-chat-execution:v2:chat:${chatId}:${discriminator}`;
     }

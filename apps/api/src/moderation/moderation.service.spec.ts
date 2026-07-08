@@ -4729,13 +4729,18 @@ describe('ModerationService', () => {
       banMember: jest.fn(),
       notifyModerators: jest.fn(),
     };
+    const redisCounter = createRedisCounterMock();
     const service = new ModerationService(
       prisma as never,
       ruleEngine as never,
       sanctionService as never,
       maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      redisCounter as never,
     );
-    const createdAtMs = new Date('2026-04-06T01:00:15.123Z').getTime();
+    const createdAtMs = new Date('2026-04-06T01:09:59.999Z').getTime();
     const createDeliveredJoinUpdate = (
       botId: string,
       updateId: string,
@@ -4779,14 +4784,15 @@ describe('ModerationService', () => {
 
     expect(maxClient.kickMember).toHaveBeenCalledTimes(1);
     expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
-    expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledTimes(3);
-    expect(
-      new Set(
-        prisma.moderationViolationMessageClaim.createMany.mock.calls.map(
-          ([args]) => args.data[0]?.dedupeKey,
+    expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledTimes(1);
+    const windowClaimCalls = redisCounter.incrementOncePerMemberWithTtl.mock.calls.filter(
+      ([counterKey]) =>
+        String(counterKey).startsWith(
+          'moderation:service-member-action-window:v1:BOT_ACCOUNT_KICK:service_member',
         ),
-      ).size,
-    ).toBe(1);
+    );
+    expect(windowClaimCalls).toHaveLength(3);
+    expect(new Set(windowClaimCalls.map(([, memberKey]) => memberKey)).size).toBe(1);
   });
 
   it('sends greeting message for joined human members when greeting is enabled', async () => {
@@ -5594,13 +5600,18 @@ describe('ModerationService', () => {
       banMember: jest.fn(),
       notifyModerators: jest.fn(),
     };
+    const redisCounter = createRedisCounterMock();
     const service = new ModerationService(
       prisma as never,
       ruleEngine as never,
       sanctionService as never,
       maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      redisCounter as never,
     );
-    const createdAtMs = new Date('2026-04-06T01:00:15.123Z').getTime();
+    const createdAtMs = new Date('2026-04-06T01:09:59.999Z').getTime();
     const createDeliveredJoinUpdate = (
       botId: string,
       updateId: string,
@@ -5638,14 +5649,15 @@ describe('ModerationService', () => {
 
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
-    expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledTimes(3);
-    expect(
-      new Set(
-        prisma.moderationViolationMessageClaim.createMany.mock.calls.map(
-          ([args]) => args.data[0]?.dedupeKey,
+    expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledTimes(1);
+    const windowClaimCalls = redisCounter.incrementOncePerMemberWithTtl.mock.calls.filter(
+      ([counterKey]) =>
+        String(counterKey).startsWith(
+          'moderation:service-member-action-window:v1:GREETING_MESSAGE:user_added',
         ),
-      ).size,
-    ).toBe(1);
+    );
+    expect(windowClaimCalls).toHaveLength(3);
+    expect(new Set(windowClaimCalls.map(([, memberKey]) => memberKey)).size).toBe(1);
   });
 
   it('does not track invitation access progress while the invite gate is disabled', async () => {
@@ -7690,6 +7702,94 @@ describe('ModerationService', () => {
         action: SanctionAction.DELETE_MESSAGE,
       }),
     });
+  });
+
+  it('deduplicates mirrored active-mute old-message moderator notifications', async () => {
+    const claimedKeys = new Set<string>();
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings(),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'ban-1',
+          createdAt: new Date(Date.now() - 5 * 60 * 1000),
+          action: SanctionAction.BAN,
+          ruleCode: 'DUPLICATE_BAN',
+          metadata: { banDurationHours: 6 },
+        }),
+        create: jest.fn(),
+      },
+      moderationViolationMessageClaim: {
+        createMany: jest.fn(async (args: { data: Array<{ dedupeKey: string }> }) => {
+          const dedupeKey = args.data[0]?.dedupeKey;
+          if (!dedupeKey || claimedKeys.has(dedupeKey)) {
+            return { count: 0 };
+          }
+
+          claimedKeys.add(dedupeKey);
+          return { count: 1 };
+        }),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+      getChatMembersAccess: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'user-1',
+            {
+              userId: 'user-1',
+              isAdmin: false,
+              isOwner: false,
+              permissions: [],
+            },
+          ],
+        ]),
+      ),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createOldUpdate());
+    await service.handleUpdate({
+      ...createOldUpdate(),
+      updateId: 'upd-old-standby-1',
+      botId: 'bot-2',
+    });
+
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.notifyModerators).toHaveBeenCalledTimes(1);
+    expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledTimes(2);
+    expect(claimedKeys.size).toBe(1);
   });
 
   it('keeps deleting messages for a permanent manual mute until it is lifted', async () => {

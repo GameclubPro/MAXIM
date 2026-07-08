@@ -74,6 +74,10 @@ function matchesDateFilter(value: Date | null, filter: unknown): boolean {
   if (lte instanceof Date && rowMs > lte.getTime()) {
     return false;
   }
+  const gte = (filter as { gte?: Date }).gte;
+  if (gte instanceof Date && rowMs < gte.getTime()) {
+    return false;
+  }
 
   return true;
 }
@@ -1012,6 +1016,57 @@ describe('WebhookOutboxService', () => {
 
     expect(queuedIds).toEqual([]);
     expect(processedIds).toContain('evt-standby-owner-retryable');
+  });
+
+  it('skips standby shared-chat events with different update ids when the owner has the same message', async () => {
+    const chatId = '-100123';
+    const { service, prisma, queues } = createService({
+      findManyResult: [
+        {
+          id: 'evt-owner-same-message',
+          status: WebhookStatus.QUEUED,
+          enqueueAttempts: 0,
+          botId: 'id613002203036_bot',
+          normalizedPayload: {
+            updateId: 'u-owner-same-message',
+            type: 'message_created',
+            botId: 'id613002203036_bot',
+            executionOwnerBotId: 'id613002203036_bot',
+            message: {
+              chatId,
+              messageId: 'mid-shared-semantic-1',
+            },
+          },
+        },
+        {
+          id: 'evt-standby-same-message',
+          enqueueAttempts: 0,
+          botId: 'id613002203036_4_bot',
+          normalizedPayload: {
+            updateId: 'u-standby-same-message',
+            type: 'message_created',
+            botId: 'id613002203036_4_bot',
+            executionOwnerBotId: 'id613002203036_bot',
+            message: {
+              chatId,
+              messageId: 'mid-shared-semantic-1',
+            },
+          },
+        },
+      ],
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    const queuedIds = DEFAULT_WEBHOOK_QUEUE_NAMES.flatMap((queueName) =>
+      queues[queueName].add.mock.calls.map((call) => call[1].webhookEventId),
+    );
+    const processedIds = prisma.webhookEvent.updateMany.mock.calls
+      .filter(([args]) => args.data.status === WebhookStatus.PROCESSED)
+      .map(([args]) => args.where.id);
+
+    expect(queuedIds).toEqual(['evt-owner-same-message']);
+    expect(processedIds).toContain('evt-standby-same-message');
   });
 
   it('enqueues standby shared-chat events when the owner failed delivery is terminal', async () => {

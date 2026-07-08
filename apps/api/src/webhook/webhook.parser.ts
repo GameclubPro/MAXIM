@@ -776,17 +776,29 @@ export class WebhookParser {
     ];
 
     for (const value of candidates) {
-      if (typeof value !== 'string' && typeof value !== 'number' && !(value instanceof Date)) {
-        continue;
-      }
-
-      const date = new Date(value);
-      if (!Number.isNaN(date.getTime())) {
-        return date.toISOString();
+      const timestampMs = this.parseWebhookTimestampMs(value);
+      if (timestampMs !== null) {
+        return new Date(timestampMs).toISOString();
       }
     }
 
     return new Date().toISOString();
+  }
+
+  private parseWebhookTimestampMs(value: unknown): number | null {
+    const parsed =
+      value instanceof Date
+        ? value.getTime()
+        : typeof value === 'number'
+          ? value
+          : typeof value === 'string' && value.trim().length > 0
+            ? Date.parse(value)
+            : Number.NaN;
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return null;
+    }
+
+    return Math.trunc(parsed < 10_000_000_000 ? parsed * 1_000 : parsed);
   }
 
   private extractChatTitle(

@@ -766,6 +766,21 @@ describe('WebhookParser', () => {
     });
   });
 
+  it('parses MAX Unix-second timestamps as seconds, not milliseconds', () => {
+    const parsed = parser.parse({
+      update_id: 'upd-user-added-seconds',
+      update_type: 'user_added',
+      chat_id: -123456789,
+      user: {
+        user_id: 888,
+        first_name: 'Иван',
+      },
+      timestamp: 1772249118,
+    });
+
+    expect(parsed.message?.createdAt).toBe('2026-02-28T03:25:18.000Z');
+  });
+
   it('keeps inviter id for user_added updates', () => {
     const parsed = parser.parse({
       update_id: 'upd-user-added-inviter-1',

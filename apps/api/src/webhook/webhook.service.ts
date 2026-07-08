@@ -99,6 +99,7 @@ const BOT_ADDED_START_HINT_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const BOT_SELF_ACCESS_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const MANAGED_ENTITIES_PENDING_BOOTSTRAP_TTL_SEC = 15 * 60;
 const WEBHOOK_LEGACY_DEDUP_COMPAT_WINDOW_MS = 24 * 60 * 60 * 1_000;
+const MEMBERSHIP_ACTIVITY_TIMESTAMP_GRANULARITY_MS = 1_000;
 const MANAGED_ENTITY_ACTIVITY_UPDATE_TYPES = new Set([
   'message_created',
   'message_edited',
@@ -525,6 +526,7 @@ export class WebhookService {
 
     const chatId = update.message?.chatId?.trim() ?? '';
     const botId = update.botId?.trim() ?? '';
+    const addedBotId = this.resolveBotAddedMemberBotId(update);
     const entityType = this.readWebhookChatEntityType(update);
     if (
       !chatId ||
@@ -534,8 +536,15 @@ export class WebhookService {
     ) {
       return;
     }
+    if (addedBotId && addedBotId !== botId) {
+      return;
+    }
 
-    const backoffKey = this.buildBotAddedStartHintBackoffKey(chatId, entityType, botId);
+    const backoffKey = this.buildBotAddedStartHintBackoffKey(
+      chatId,
+      entityType,
+      addedBotId ?? botId,
+    );
     const now = Date.now();
     const blockedUntil = this.botAddedStartHintBackoffUntilMs.get(backoffKey) ?? 0;
     if (blockedUntil > now) {
@@ -639,6 +648,15 @@ export class WebhookService {
     botId: string,
   ): string {
     return `${botId}:${chatId}:${entityType}`;
+  }
+
+  private resolveBotAddedMemberBotId(update: MaxUpdate): string | null {
+    if (update.type.trim().toLowerCase() !== 'bot_added') {
+      return null;
+    }
+
+    const memberBotId = update.membership?.memberUserIds?.find((userId) => userId.trim().length > 0);
+    return memberBotId?.trim() || null;
   }
 
   private isExpectedBotAddedStartHintSendFailure(error: unknown): boolean {
@@ -1454,7 +1472,20 @@ export class WebhookService {
     userId: string | null,
     eventAt: Date,
   ): string {
-    return `membership:${eventType}:${chatId}:${userId ?? ''}:${eventAt.toISOString()}`;
+    const dedupeEventAt = this.normalizeMembershipActivityDedupeEventAt(eventAt);
+    return `membership:${eventType}:${chatId}:${userId ?? ''}:${dedupeEventAt.toISOString()}`;
+  }
+
+  private normalizeMembershipActivityDedupeEventAt(eventAt: Date): Date {
+    const timestampMs = eventAt.getTime();
+    if (!Number.isFinite(timestampMs) || timestampMs <= 0) {
+      return eventAt;
+    }
+
+    return new Date(
+      Math.floor(timestampMs / MEMBERSHIP_ACTIVITY_TIMESTAMP_GRANULARITY_MS) *
+        MEMBERSHIP_ACTIVITY_TIMESTAMP_GRANULARITY_MS,
+    );
   }
 
   private async getBotSelfModerationAccessState(
