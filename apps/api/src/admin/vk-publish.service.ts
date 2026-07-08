@@ -122,6 +122,8 @@ const VK_PUBLISH_JOB_NAME = 'publish-vk-post';
 const SAFETY_DESK_ACTOR_USER_ID = 'safety-desk-owner';
 const VK_PARSING_SYSTEM_ACTOR_USER_ID = 'vk-parsing-autopost';
 const MAX_SEND_AMBIGUOUS_ERROR_PREFIX = '[max.send_ambiguous]';
+const MAX_SEND_AMBIGUOUS_RETRY_BLOCK_MESSAGE =
+  'MAX мог уже принять эту публикацию. Сначала сверьте сообщение в MAX вручную; повторная отправка заблокирована.';
 const VK_PARSING_SCHEDULE_STEP_MS = 15 * 60_000;
 const VK_PARSING_MAX_SCHEDULE_LOOKAHEAD_STEPS = (8 * 24 * 60) / 15;
 const VK_VIDEO_MAX_BYTES = 250 * 1024 * 1024;
@@ -272,6 +274,7 @@ export class VkPublishService {
     if (post.status === VK_POST_STATUS_PUBLISHED) {
       throw new BadRequestException('Этот VK-пост уже опубликован.');
     }
+    this.assertNoAmbiguousMaxSendQuarantine(post);
     this.assertReviewSourceOwnerAction(post, actorUserId);
 
     const storedPhotoUrls = this.readStringArray(post.photoUrls);
@@ -338,6 +341,7 @@ export class VkPublishService {
     if (post.status === VK_POST_STATUS_UNAVAILABLE) {
       throw new BadRequestException('VK-пост недоступен в исходном источнике.');
     }
+    this.assertNoAmbiguousMaxSendQuarantine(post);
     this.assertReviewSourceOwnerAction(post, null);
 
     const queued = await this.enqueuePostPublish(post, 'manual-retry');
@@ -358,6 +362,7 @@ export class VkPublishService {
     actorUserId: string,
   ): Promise<RetryVkParsingPostResult> {
     const post = await this.findSchedulablePost(chatId, postId);
+    this.assertNoAmbiguousMaxSendQuarantine(post);
     this.assertReviewSourceOwnerAction(post, actorUserId);
     const scheduledAt = new Date(scheduledAtIso);
     if (!Number.isFinite(scheduledAt.getTime())) {
@@ -430,6 +435,7 @@ export class VkPublishService {
     actorUserId: string,
   ): Promise<RetryVkParsingPostResult> {
     const post = await this.findSchedulablePost(chatId, postId);
+    this.assertNoAmbiguousMaxSendQuarantine(post);
     this.assertReviewSourceOwnerAction(post, actorUserId);
     const queued = await this.enqueuePostPublish(post, 'manual-retry', new Date());
     await this.writeAuditLog(chatId, actorUserId, 'VK_PARSING_PUBLISH_NOW', {
@@ -1146,6 +1152,7 @@ export class VkPublishService {
     reason: VkParsingPublishReason,
     scheduledAt: Date = new Date(),
   ): Promise<number> {
+    this.assertNoAmbiguousMaxSendQuarantine(post);
     const idempotencyKey = this.buildPublishIdempotencyKey(post, scheduledAt);
     const now = new Date();
     const queued = await this.prisma.vkParsingPost.updateMany({
@@ -1175,6 +1182,14 @@ export class VkPublishService {
     await this.addPublishJob(post, reason, idempotencyKey, now, scheduledAt);
 
     return 1;
+  }
+
+  private assertNoAmbiguousMaxSendQuarantine(
+    post: Pick<VkParsingPostWithSource, 'lastError'>,
+  ): void {
+    if (post.lastError?.trim().startsWith(MAX_SEND_AMBIGUOUS_ERROR_PREFIX) === true) {
+      throw new BadRequestException(MAX_SEND_AMBIGUOUS_RETRY_BLOCK_MESSAGE);
+    }
   }
 
   private async addPublishJob(

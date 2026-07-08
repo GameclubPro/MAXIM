@@ -30,6 +30,9 @@ const VK_PARSING_AVAILABLE_CAPABILITY: VkParsingCapability = {
   reasonCode: null,
   reason: null,
 };
+const MAX_SEND_AMBIGUOUS_ERROR_PREFIX = '[max.send_ambiguous]';
+const MAX_SEND_AMBIGUOUS_DRAFT_BLOCK_MESSAGE =
+  'MAX мог уже принять эту публикацию. Сначала сверьте сообщение в MAX вручную; сохранение черновика заблокировано.';
 
 @Injectable()
 export class VkParsingService {
@@ -225,6 +228,9 @@ export class VkParsingService {
     }
     if (post.status === 'PUBLISHED' || post.status === 'UNAVAILABLE' || post.status === 'SKIPPED') {
       throw new BadRequestException('Этот пост уже нельзя вернуть на модерацию.');
+    }
+    if (post.lastError?.trim().startsWith(MAX_SEND_AMBIGUOUS_ERROR_PREFIX) === true) {
+      throw new BadRequestException(MAX_SEND_AMBIGUOUS_DRAFT_BLOCK_MESSAGE);
     }
 
     const storedPhotoUrls = this.readStringArray(post.photoUrls);

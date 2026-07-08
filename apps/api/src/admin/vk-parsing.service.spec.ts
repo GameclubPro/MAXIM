@@ -4346,6 +4346,44 @@ describe('VkParsingService', () => {
     expect(prisma.vkParsingPost.update).not.toHaveBeenCalled();
   });
 
+  it('blocks every manual VK resend path after an ambiguous MAX send timeout', async () => {
+    const { publishService, prisma, maxClient, publishQueue } = createFixture();
+    const source = createSource();
+    const post = createPostRow({
+      source,
+      status: 'FAILED',
+      lastError:
+        '[max.send_ambiguous] request timed out. Delivery may have been accepted by MAX.',
+    });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+
+    const actions = [
+      () =>
+        publishService.publishPost('channel-1', 'post-1', '98315271', {
+          text: 'Повтор',
+          photoUrls: [],
+          linkUrls: [],
+        }),
+      () => publishService.retryPost('channel-1', 'post-1'),
+      () =>
+        publishService.schedulePost(
+          'channel-1',
+          'post-1',
+          '2026-05-25T11:00:00.000Z',
+          '98315271',
+        ),
+      () => publishService.publishPostNow('channel-1', 'post-1', '98315271'),
+    ];
+
+    for (const action of actions) {
+      await expect(action()).rejects.toThrow('MAX мог уже принять эту публикацию');
+    }
+
+    expect(prisma.vkParsingPost.updateMany).not.toHaveBeenCalled();
+    expect(publishQueue.add).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+  });
+
   it('keeps review-mode VK sources out of ordinary manual publish actions', async () => {
     const { service, prisma, maxClient } = createFixture();
     const source = createSource({ publishMode: 'REVIEW' });
@@ -4403,6 +4441,30 @@ describe('VkParsingService', () => {
         lastError: null,
       }),
     });
+  });
+
+  it('does not clear an ambiguous Safety Desk send marker when saving a review draft', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const source = createSource({ publishMode: 'REVIEW' });
+    const post = createPostRow({
+      source,
+      text: 'Черновик до правки',
+      status: 'FAILED',
+      lastError:
+        '[max.send_ambiguous] request timed out. Delivery may have been accepted by MAX.',
+    });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+
+    await expect(
+      service.updateReviewPostDraft('channel-1', 'post-1', { userId: '98315271' } as never, {
+        text: 'Черновик после правки',
+        photoUrls: [],
+        linkUrls: [],
+      }),
+    ).rejects.toThrow('MAX мог уже принять эту публикацию');
+
+    expect(prisma.vkParsingPost.updateMany).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
   });
 
   it('does not clear review-mode VK publish metadata when the draft changed concurrently', async () => {
