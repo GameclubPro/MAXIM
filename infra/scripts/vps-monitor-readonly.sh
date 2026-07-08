@@ -207,12 +207,16 @@ summarize_public_access_guards() {
 }
 
 summarize_local_ready_health() {
+  local admin_ready_json
   local ready_json
 
   ready_json="$(./infra/scripts/vps-connect.sh exec 'curl -fsS --max-time 15 http://127.0.0.1:3001/api/health/ready')"
-  READY_JSON="$ready_json" node <<'NODE'
+  admin_ready_json="$(./infra/scripts/vps-connect.sh exec 'curl -fsS --max-time 15 http://127.0.0.1:3002/api/health/ready')"
+  READY_JSON="$ready_json" ADMIN_READY_JSON="$admin_ready_json" node <<'NODE'
 const payload = process.env.READY_JSON ?? '';
 const ready = JSON.parse(payload);
+const adminPayload = process.env.ADMIN_READY_JSON ?? '';
+const adminReady = JSON.parse(adminPayload);
 const queueLag = ready.checks?.queueLag ?? {};
 const systemMode = ready.systemMode ?? {};
 const bots = Object.entries(ready.bots ?? {});
@@ -225,6 +229,9 @@ const summary = {
   queueLagSec: Number(systemMode.queueLagSec ?? queueLag.effectiveLagSec ?? 0),
   database: ready.checks?.database === true,
   redis: ready.checks?.redis === true,
+  adminReady: adminReady.ok === true,
+  adminDatabase: adminReady.checks?.database === true,
+  adminRedis: adminReady.checks?.redis === true,
   softWarning: queueLag.softWarning === true,
   softWarningCode: queueLag.softWarningCode ?? null,
   rawOk: queueLag.rawOk !== false,
@@ -239,6 +246,9 @@ console.log(
     `queueLagSec=${summary.queueLagSec}`,
     `db=${summary.database}`,
     `redis=${summary.redis}`,
+    `apiAdminReady=${summary.adminReady}`,
+    `apiAdminDb=${summary.adminDatabase}`,
+    `apiAdminRedis=${summary.adminRedis}`,
     `softWarning=${summary.softWarning}`,
     `rawOk=${summary.rawOk}`,
     `bots=${summary.bots}`,
@@ -256,6 +266,9 @@ if (!summary.database) {
 if (!summary.redis) {
   warnings.push('redis check is not true');
 }
+if (!summary.adminReady || !summary.adminDatabase || !summary.adminRedis) {
+  warnings.push('api-admin ready check failed');
+}
 if (summary.softWarning) {
   warnings.push(`queue lag soft warning: ${summary.softWarningCode ?? 'unknown'}`);
 }
@@ -265,7 +278,14 @@ if (!summary.rawOk) {
 for (const warning of warnings) {
   console.log(`WARN: ${warning}`);
 }
-if (!summary.ok || !summary.database || !summary.redis) {
+if (
+  !summary.ok ||
+  !summary.database ||
+  !summary.redis ||
+  !summary.adminReady ||
+  !summary.adminDatabase ||
+  !summary.adminRedis
+) {
   process.exitCode = 1;
 }
 NODE

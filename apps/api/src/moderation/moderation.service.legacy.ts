@@ -44,7 +44,7 @@ import {
   type ChannelSettings as PersistedChannelSettings,
   type ChatSettings,
 } from '../prisma/prisma-client';
-import type { Job } from 'bullmq';
+import { UnrecoverableError, type Job } from 'bullmq';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import {
   MAX_API_SOURCE_TAGS,
@@ -16341,6 +16341,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private isTerminalWebhookProcessingError(error: unknown): boolean {
+    if (error instanceof UnrecoverableError) {
+      return true;
+    }
+
     const timeoutMarker = (error as { webhookHotPathTimeout?: unknown })?.webhookHotPathTimeout;
     if (timeoutMarker === true) {
       return false;

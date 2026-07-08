@@ -177,6 +177,13 @@ describe('MaxClientService inline keyboard guardrails', () => {
     httpService: { request?: jest.Mock } = {},
     configOverrides: Partial<Record<string, string>> = {},
     actionQueue?: { add: jest.Mock; getJob: jest.Mock },
+    actionLedgerService?: {
+      isIrreversibleAction?: jest.Mock;
+      assertCanEnqueue?: jest.Mock;
+      recordStarted?: jest.Mock;
+      recordSucceeded?: jest.Mock;
+      recordFailed?: jest.Mock;
+    },
   ) {
     const configService = {
       getOrThrow: jest.fn((key: string) => {
@@ -261,6 +268,8 @@ describe('MaxClientService inline keyboard guardrails', () => {
       botRegistry as never,
       botContext as never,
       actionQueue as never,
+      undefined,
+      actionLedgerService as never,
     );
   }
 
@@ -685,6 +694,97 @@ describe('MaxClientService inline keyboard guardrails', () => {
       await service.onModuleDestroy();
     },
   );
+
+  it('records successful immediate irreversible actions in the durable ledger', async () => {
+    const httpService = {
+      request: jest.fn(() => of({ data: {} })),
+    };
+    const actionLedgerService = {
+      isIrreversibleAction: jest.fn().mockReturnValue(true),
+      assertCanEnqueue: jest.fn().mockResolvedValue(undefined),
+      recordStarted: jest.fn().mockResolvedValue(undefined),
+      recordSucceeded: jest.fn().mockResolvedValue(undefined),
+      recordFailed: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = createService(httpService, {}, undefined, actionLedgerService);
+
+    await service.banMember('chat-1', 'user-1', { immediate: true });
+
+    const job = actionLedgerService.recordStarted.mock.calls[0][0];
+    expect(job).toEqual(
+      expect.objectContaining({
+        actionType: 'BAN_MEMBER',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        idempotencyKey: expect.stringMatching(/^max-action__logical__/),
+      }),
+    );
+    expect(actionLedgerService.assertCanEnqueue).toHaveBeenCalledWith(job);
+    expect(actionLedgerService.recordSucceeded).toHaveBeenCalledWith(job);
+    expect(actionLedgerService.recordFailed).not.toHaveBeenCalled();
+    expect(actionLedgerService.assertCanEnqueue.mock.invocationCallOrder[0]).toBeLessThan(
+      actionLedgerService.recordStarted.mock.invocationCallOrder[0],
+    );
+    expect(actionLedgerService.recordStarted.mock.invocationCallOrder[0]).toBeLessThan(
+      httpService.request.mock.invocationCallOrder[0],
+    );
+    expect(httpService.request.mock.invocationCallOrder[0]).toBeLessThan(
+      actionLedgerService.recordSucceeded.mock.invocationCallOrder[0],
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('quarantines ambiguous immediate irreversible actions before later retries reach MAX', async () => {
+    const timeoutError = Object.assign(new Error('timeout exceeded when trying to connect'), {
+      code: 'ETIMEDOUT',
+    });
+    const manualReviewError = new UnrecoverableError('manual review required');
+    const httpService = {
+      request: jest.fn(() => throwError(() => timeoutError)),
+    };
+    const actionLedgerService = {
+      isIrreversibleAction: jest.fn().mockReturnValue(true),
+      assertCanEnqueue: jest.fn().mockResolvedValue(undefined),
+      recordStarted: jest.fn().mockResolvedValue(undefined),
+      recordSucceeded: jest.fn().mockResolvedValue(undefined),
+      recordFailed: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = createService(httpService, {}, undefined, actionLedgerService);
+
+    await expect(service.kickMember('chat-1', 'user-1', { immediate: true })).rejects.toBeInstanceOf(
+      UnrecoverableError,
+    );
+
+    const job = actionLedgerService.recordStarted.mock.calls[0][0];
+    expect(job).toEqual(
+      expect.objectContaining({
+        actionType: 'KICK_MEMBER',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        idempotencyKey: expect.stringMatching(/^max-action__logical__/),
+      }),
+    );
+    expect(actionLedgerService.recordFailed).toHaveBeenCalledWith(
+      job,
+      expect.any(UnrecoverableError),
+    );
+    expect(actionLedgerService.recordSucceeded).not.toHaveBeenCalled();
+
+    httpService.request.mockClear();
+    actionLedgerService.recordStarted.mockClear();
+    actionLedgerService.recordFailed.mockClear();
+    actionLedgerService.assertCanEnqueue.mockRejectedValueOnce(manualReviewError);
+
+    await expect(service.kickMember('chat-1', 'user-1', { immediate: true })).rejects.toBe(
+      manualReviewError,
+    );
+    expect(httpService.request).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordStarted).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordFailed).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
 
   it('keeps queued SEND_MESSAGE HTTP failures retryable', async () => {
     const statusError = {

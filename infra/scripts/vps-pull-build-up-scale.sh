@@ -9,6 +9,8 @@ ORIGINAL_ARGS=("$@")
 
 # shellcheck source=infra/scripts/lib/deploy-topology.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"
+# shellcheck source=infra/scripts/lib/deploy-lock.sh
+source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
 
 SCALE_PROJECT_NAME="infra-scale"
 MAIN_PROJECT_NAME="infra"
@@ -484,6 +486,7 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 require_scale_deploy_confirmation
+acquire_deploy_lock
 sync_branch
 reexec_if_current_script_changed
 ensure_compose_env

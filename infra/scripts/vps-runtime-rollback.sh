@@ -6,8 +6,11 @@ cd "$ROOT_DIR"
 
 # shellcheck source=infra/scripts/lib/deploy-topology.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"
+# shellcheck source=infra/scripts/lib/deploy-lock.sh
+source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
 
 COMPOSE_FILES=(--env-file ".env" -p infra -f "infra/docker-compose.yml")
+SCALE_COMPOSE_FILES=(-p infra-scale -f "infra/docker-compose.scale.yml")
 ROLLBACK_REF="${1:-}"
 PUBLIC_HEALTH_URL="${MAXIM_VPS_PUBLIC_URL:-${MAXIM_PUBLIC_HEALTH_URL:-https://major-maksimov.ru}}"
 PUBLIC_HEALTH_URL="${PUBLIC_HEALTH_URL%/}"
@@ -112,6 +115,18 @@ ensure_compose_env() {
   exit 1
 }
 
+stop_conflicting_scale_stack() {
+  local running_services
+
+  running_services="$(docker compose "${SCALE_COMPOSE_FILES[@]}" ps --status running --services 2>/dev/null || true)"
+  if [[ -z "$running_services" ]]; then
+    return 0
+  fi
+
+  echo "Stopping conflicting infra-scale stack before runtime rollback."
+  docker compose "${SCALE_COMPOSE_FILES[@]}" down --remove-orphans
+}
+
 read_target_prisma_migrations() {
   git ls-tree -r --name-only "$ROLLBACK_REF" -- apps/api/prisma/migrations \
     | sed -n 's#^apps/api/prisma/migrations/\([^/][^/]*\)/migration\.sql$#\1#p' \
@@ -169,7 +184,9 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
+acquire_deploy_lock
 ensure_compose_env
+stop_conflicting_scale_stack
 CURRENT_HEAD="$(git rev-parse --short HEAD)"
 TARGET_HEAD="$(git rev-parse --short "$ROLLBACK_REF")"
 

@@ -99,10 +99,14 @@ describe('production deploy script guards', () => {
 
   it('serializes main deploys and keeps API recreate waves one-at-a-time', () => {
     const script = readRepoFile('infra/scripts/vps-pull-build-up.sh');
+    const lockHelper = readRepoFile('infra/scripts/lib/deploy-lock.sh');
     const lockCall = lineCallIndex(script, 'acquire_deploy_lock');
 
-    expect(script).toContain('DEPLOY_LOCK_DIR="${MAXIM_DEPLOY_LOCK_DIR:-/tmp/maxim-main-deploy.lock}"');
-    expect(script).toContain('Another main deploy is already running');
+    expect(script).toContain('source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"');
+    expect(lockHelper).toContain(
+      'DEPLOY_LOCK_DIR="${MAXIM_DEPLOY_LOCK_DIR:-/tmp/maxim-main-deploy.lock}"',
+    );
+    expect(lockHelper).toContain('Another runtime deploy or rollback is already running');
     expect(lockCall).toBeLessThan(lineCallIndex(script, 'sync_branch'));
     expect(lockCall).toBeLessThan(indexOfRequired(script, 'docker compose "${COMPOSE_FILES[@]}" build'));
     expect(lockCall).toBeLessThan(lineCallIndex(script, 'recreate_service_wave "worker" \\'));
@@ -113,10 +117,14 @@ describe('production deploy script guards', () => {
   it('prepares scale Redis named volume before stopping conflicting stacks', () => {
     const script = readRepoFile('infra/scripts/vps-pull-build-up-scale.sh');
 
+    expect(script).toContain('source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"');
     expect(script).toContain('SCALE_REDIS_VOLUME="${SCALE_PROJECT_NAME}_redis_data"');
     expect(script).toContain('MAXIM_ALLOW_EMPTY_SCALE_REDIS_DATA');
     expect(script).toContain('redis-cli SAVE');
     expect(script).toContain('docker volume create "$target_volume"');
+    expect(lineCallIndex(script, 'acquire_deploy_lock')).toBeLessThan(
+      lineCallIndex(script, 'sync_branch'),
+    );
     expect(lineCallIndex(script, 'prepare_scale_redis_named_volume')).toBeLessThan(
       lineCallIndex(script, 'stop_conflicting_stacks'),
     );
@@ -125,8 +133,15 @@ describe('production deploy script guards', () => {
   it('checks rollback Prisma migration compatibility before switching git refs', () => {
     const script = readRepoFile('infra/scripts/vps-runtime-rollback.sh');
 
+    expect(script).toContain('source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"');
     expect(script).toContain('apps/api/prisma/migrations');
     expect(script).toContain('_prisma_migrations');
+    expect(lineCallIndex(script, 'acquire_deploy_lock')).toBeLessThan(
+      lineCallIndex(script, 'stop_conflicting_scale_stack'),
+    );
+    expect(lineCallIndex(script, 'stop_conflicting_scale_stack')).toBeLessThan(
+      indexOfRequired(script, 'git switch --detach "$ROLLBACK_REF"'),
+    );
     expect(lineCallIndex(script, 'ensure_rollback_migrations_compatible')).toBeLessThan(
       indexOfRequired(script, 'git switch --detach "$ROLLBACK_REF"'),
     );

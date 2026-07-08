@@ -40,6 +40,60 @@ describe('SafetyDeskAdminGuard', () => {
     expect(guard.canActivate(createContext(createAdminHeaders()))).toBe(true);
   });
 
+  it('allows the closed admin host with a same-origin Origin header', () => {
+    const guard = createGuard({ allowedHosts: 'admin.major-maksimov.ru' });
+
+    expect(
+      guard.canActivate(
+        createContext({
+          ...createAdminHeaders(),
+          origin: 'https://admin.major-maksimov.ru',
+          'sec-fetch-site': 'same-origin',
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects the closed admin host with a cross-origin Origin header', () => {
+    const guard = createGuard({ allowedHosts: 'admin.major-maksimov.ru' });
+
+    expect(() =>
+      guard.canActivate(
+        createContext({
+          ...createAdminHeaders(),
+          origin: 'https://evil.test',
+        }),
+      ),
+    ).toThrow(ForbiddenException);
+  });
+
+  it('rejects the closed admin host with cross-site fetch metadata', () => {
+    const guard = createGuard({ allowedHosts: 'admin.major-maksimov.ru' });
+
+    expect(() =>
+      guard.canActivate(
+        createContext({
+          ...createAdminHeaders(),
+          origin: 'https://admin.major-maksimov.ru',
+          'sec-fetch-site': 'cross-site',
+        }),
+      ),
+    ).toThrow(ForbiddenException);
+  });
+
+  it('rejects non-https production admin origins', () => {
+    const guard = createGuard({ allowedHosts: 'admin.major-maksimov.ru' });
+
+    expect(() =>
+      guard.canActivate(
+        createContext({
+          ...createAdminHeaders(),
+          origin: 'http://admin.major-maksimov.ru',
+        }),
+      ),
+    ).toThrow(ForbiddenException);
+  });
+
   it('rejects the public app host', () => {
     const guard = createGuard({ allowedHosts: 'admin.major-maksimov.ru' });
 

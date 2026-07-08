@@ -3510,7 +3510,7 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     if (immediate) {
-      await this.executeActionJob(job);
+      await this.executeImmediateActionJob(job);
       return;
     }
 
@@ -3588,6 +3588,45 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     await this.executeActionJob(job);
+  }
+
+  private async executeImmediateActionJob(job: MaxActionJob): Promise<void> {
+    if (!this.actionLedgerService?.isIrreversibleAction(job.actionType)) {
+      await this.executeActionJob(job);
+      return;
+    }
+
+    await this.actionLedgerService.assertCanEnqueue(job);
+    await this.actionLedgerService.recordStarted(job);
+    try {
+      await this.executeActionJob(job);
+    } catch (error: unknown) {
+      await this.actionLedgerService.recordFailed(job, error).catch((ledgerError: unknown) => {
+        this.logger.warn(
+          {
+            actionType: job.actionType,
+            chatId: job.chatId,
+            botId: job.botId,
+            error: this.extractErrorMessage(ledgerError),
+            originalError: this.extractErrorMessage(error),
+          },
+          'Failed to record immediate MAX action failure in durable ledger',
+        );
+      });
+      throw error;
+    }
+
+    await this.actionLedgerService.recordSucceeded(job).catch((ledgerError: unknown) => {
+      this.logger.warn(
+        {
+          actionType: job.actionType,
+          chatId: job.chatId,
+          botId: job.botId,
+          error: this.extractErrorMessage(ledgerError),
+        },
+        'Failed to record immediate MAX action success in durable ledger',
+      );
+    });
   }
 
   private buildScheduledMemberActionJobId(

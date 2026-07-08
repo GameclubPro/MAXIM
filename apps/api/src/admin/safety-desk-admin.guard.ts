@@ -20,7 +20,8 @@ export class SafetyDeskAdminGuard implements CanActivate {
         host &&
         forwardedHost &&
         host === forwardedHost &&
-        this.isAllowedHost(host)
+        this.isAllowedHost(host) &&
+        this.isAllowedAdminRequestOrigin(request.headers)
       ) {
         return true;
       }
@@ -33,6 +34,28 @@ export class SafetyDeskAdminGuard implements CanActivate {
     }
 
     throw new ForbiddenException('Safety Desk доступен только через закрытый admin-хост.');
+  }
+
+  private isAllowedAdminRequestOrigin(
+    headers: Record<string, string | string[] | undefined>,
+  ): boolean {
+    const fetchSite = this.readHeader(headers['sec-fetch-site'])?.trim().toLowerCase() ?? '';
+
+    if (fetchSite === 'cross-site') {
+      return false;
+    }
+
+    const origin = this.readHeader(headers.origin)?.trim();
+    if (!origin) {
+      return true;
+    }
+
+    const originHost = this.normalizeOriginHost(origin);
+    if (!originHost) {
+      return false;
+    }
+
+    return this.isAllowedHost(originHost);
   }
 
   private isAllowedHost(value: string): boolean {
@@ -65,6 +88,20 @@ export class SafetyDeskAdminGuard implements CanActivate {
     }
 
     return value ?? null;
+  }
+
+  private normalizeOriginHost(value: string): string {
+    try {
+      const url = new URL(value);
+
+      if (this.isProduction() && url.protocol !== 'https:') {
+        return '';
+      }
+
+      return this.normalizeHost(url.host);
+    } catch {
+      return '';
+    }
   }
 
   private normalizeHost(value: string | null): string {

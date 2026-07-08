@@ -57,6 +57,7 @@ import { useToast } from '../components/ui/toast';
 import {
   cancelChannelManagedBroadcast,
   clearChannelBroadcastHandoffState,
+  createBroadcastRequestId,
   createChannelManagedAutopostRule,
   deleteChannelManagedAutopostRule,
   getChannelBroadcastComposerClientResetState,
@@ -2728,12 +2729,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
   function buildBroadcastPublishPayload(params: {
     keepVideoMedia: boolean;
+    requestId?: string;
     videoSource: BroadcastVideoSource | null;
   }): SendBroadcastPayload {
     return {
       text: normalizedBroadcastText,
       textFormat: 'markdown',
       ...buildBroadcastPublishBasePayload(),
+      ...(params.requestId ? { requestId: params.requestId } : {}),
       replaceConflictingSlots: false,
       imageEnabled: broadcastImageEnabled,
       imageBase64: broadcastImageEnabled ? broadcastImageBase64 : '',
@@ -2921,6 +2924,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     const payload = buildBroadcastPublishPayload({
       keepVideoMedia: Boolean(keepVideoMedia),
       videoSource: videoSource ?? null,
+      requestId: createBroadcastRequestId(),
     });
 
     setPendingBroadcastPublishReview({

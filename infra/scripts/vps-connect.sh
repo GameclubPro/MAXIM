@@ -281,7 +281,7 @@ rollback_runtime() {
 }
 
 health() {
-  remote_exec 'curl -fsS --max-time 15 http://127.0.0.1:3001/api/health/live && printf "\n" && curl -fsS --max-time 15 http://127.0.0.1:3001/api/health/ready && printf "\n"'
+  remote_exec 'curl -fsS --max-time 15 http://127.0.0.1:3001/api/health/live && printf "\n" && curl -fsS --max-time 15 http://127.0.0.1:3001/api/health/ready && printf "\n" && curl -fsS --max-time 15 http://127.0.0.1:3002/api/health/live && printf "\n" && curl -fsS --max-time 15 http://127.0.0.1:3002/api/health/ready && printf "\n"'
   curl -fsS --max-time 15 "$MAXIM_VPS_PUBLIC_URL/api/health/live"
   printf '\n'
 }
