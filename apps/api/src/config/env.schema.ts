@@ -288,7 +288,7 @@ const envSchema = z.object({
   KARAVAN_STOREFRONT_RELAY_ENABLED: envBoolean(false),
   KARAVAN_API_BASE_URL: z.string().url().optional(),
   KARAVAN_INTEGRATION_TOKEN: z.string().min(16).optional(),
-  KARAVAN_STOREFRONT_LOOKUP_TIMEOUT_MS: z.coerce.number().int().positive().default(1_000),
+  KARAVAN_STOREFRONT_LOOKUP_TIMEOUT_MS: z.coerce.number().int().positive().default(3_000),
   KARAVAN_STOREFRONT_CACHE_TTL_SEC: z.coerce.number().int().min(1).max(3600).default(120),
   KARAVAN_STOREFRONT_RELAY_LOCK_TTL_SEC: z.coerce.number().int().min(60).max(86_400).default(3600),
   BACKGROUND_WORK_SOFT_PAUSE_QUEUE_LAG_SEC: z.coerce.number().int().positive().default(5),

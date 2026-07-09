@@ -47,7 +47,7 @@ type CacheEntry = {
   response: LookupResponse;
 };
 
-const DEFAULT_LOOKUP_TIMEOUT_MS = 1_000;
+const DEFAULT_LOOKUP_TIMEOUT_MS = 3_000;
 const DEFAULT_CACHE_TTL_SEC = 120;
 const DEFAULT_RELAY_LOCK_TTL_SEC = 3_600;
 const RELAY_LOCK_PREFIX = 'karavan-storefront-relay:v1';
@@ -64,7 +64,7 @@ export class KaravanStorefrontRelayService {
   private readonly cacheTtlSec: number;
   private readonly relayLockTtlSec: number;
   private readonly cache = new Map<string, CacheEntry>();
-  private readonly inFlightLookups = new Map<string, Promise<LookupResponse>>();
+  private readonly inFlightLookups = new Map<string, Promise<LookupResponse | null>>();
 
   constructor(
     private readonly maxClient: MaxClientService,
@@ -107,6 +107,9 @@ export class KaravanStorefrontRelayService {
     }
 
     const store = await this.lookupStorefront(context.senderId);
+    if (store === undefined) {
+      return 'failed';
+    }
     if (!store) {
       return 'noop';
     }
@@ -161,7 +164,7 @@ export class KaravanStorefrontRelayService {
   }
 
   private isEligibleContext(context: RelayContext): boolean {
-    if (context.updateType !== 'message_created') {
+    if (context.updateType !== 'message_created' && context.updateType !== 'message_edited') {
       return false;
     }
     if (!context.messageId?.trim()) {
@@ -202,7 +205,7 @@ export class KaravanStorefrontRelayService {
     return String(value);
   }
 
-  private async lookupStorefront(maxUserId: string): Promise<LookupStore | null> {
+  private async lookupStorefront(maxUserId: string): Promise<LookupStore | null | undefined> {
     const normalizedMaxUserId = maxUserId.trim();
     const cached = this.cache.get(normalizedMaxUserId);
     if (cached && cached.expiresAtMs > Date.now()) {
@@ -212,6 +215,9 @@ export class KaravanStorefrontRelayService {
     const existing = this.inFlightLookups.get(normalizedMaxUserId);
     if (existing) {
       const response = await existing;
+      if (!response) {
+        return undefined;
+      }
       return response.exists ? response.store : null;
     }
 
@@ -224,7 +230,7 @@ export class KaravanStorefrontRelayService {
           },
           'Karavan storefront lookup failed open',
         );
-        return { exists: false, store: null };
+        return null;
       })
       .finally(() => {
         this.inFlightLookups.delete(normalizedMaxUserId);
@@ -232,6 +238,9 @@ export class KaravanStorefrontRelayService {
 
     this.inFlightLookups.set(normalizedMaxUserId, lookup);
     const response = await lookup;
+    if (!response) {
+      return undefined;
+    }
     this.cache.set(normalizedMaxUserId, {
       expiresAtMs: Date.now() + this.cacheTtlSec * 1_000,
       response,

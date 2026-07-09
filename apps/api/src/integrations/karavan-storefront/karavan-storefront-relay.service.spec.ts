@@ -211,6 +211,66 @@ describe('KaravanStorefrontRelayService', () => {
     }
   });
 
+  it('retries a failed lookup on a later dollar-prefixed message edit', async () => {
+    const fixture = createService();
+    fixture.fetchMock
+      .mockRejectedValueOnce(new Error('lookup timeout'))
+      .mockResolvedValueOnce({
+        ok: true,
+        json: jest.fn().mockResolvedValue({
+          exists: true,
+          store: {
+            id: 'store-2',
+            slug: 'del-yarn',
+            name: 'ДЭЛЬ',
+            sellerAccountId: 'seller-2',
+            url: 'https://max.ru/se13381675_1_bot?startapp=s_del-yarn__r_seller-2',
+            inviteUrl: 'https://api2.major-maksimov.ru/karavan/api/v1/public/stores/del-yarn/invite',
+          },
+        }),
+      });
+
+    try {
+      await expect(fixture.service.handleMessageCreated(baseContext)).resolves.toBe('failed');
+      await expect(
+        fixture.service.handleMessageCreated({
+          ...baseContext,
+          updateType: 'message_edited',
+        }),
+      ).resolves.toBe('handled');
+
+      expect(fixture.fetchMock).toHaveBeenCalledTimes(2);
+      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+        'chat-1',
+        expect.objectContaining({
+          attachments: [
+            {
+              type: 'inline_keyboard',
+              payload: {
+                buttons: [
+                  [
+                    {
+                      type: 'link',
+                      text: 'Открыть витрину',
+                      url: 'https://max.ru/se13381675_1_bot?startapp=s_del-yarn__r_seller-2',
+                    },
+                  ],
+                ],
+              },
+            },
+          ],
+        }),
+        expect.objectContaining({
+          immediate: true,
+          trafficClass: 'interactive',
+        }),
+      );
+    } finally {
+      fixture.restore();
+    }
+  });
+
   it('does not add a button when the sender has no public storefront', async () => {
     const fixture = createService({
       fetchResponse: {
