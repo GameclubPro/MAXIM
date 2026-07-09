@@ -9,6 +9,7 @@ import { extractUrlsFromText as extractTextUrls } from '../common/url-text.util'
 type AllowlistMatchers = {
   exactLinks: Set<string>;
   domains: Set<string>;
+  wwwRootDomains: Set<string>;
 };
 
 export type AllowlistLinkMatcher = (value: string) => boolean;
@@ -97,6 +98,7 @@ export function createAllowlistLinkMatcher(allowlist: readonly string[]): Allowl
 function buildAllowlistMatchers(allowlist: readonly string[]): AllowlistMatchers {
   const exactLinks = new Set<string>();
   const domains = new Set<string>();
+  const wwwRootDomains = new Set<string>();
 
   for (const entry of allowlist) {
     const parsed = parseStoredAllowlistEntry(entry);
@@ -106,13 +108,17 @@ function buildAllowlistMatchers(allowlist: readonly string[]): AllowlistMatchers
 
     if (parsed.matchType === 'DOMAIN') {
       domains.add(parsed.domain);
+      const rootDomain = stripLeadingWwwDomain(parsed.domain);
+      if (rootDomain !== parsed.domain) {
+        wwwRootDomains.add(rootDomain);
+      }
       continue;
     }
 
     exactLinks.add(parsed.domain);
   }
 
-  return { exactLinks, domains };
+  return { exactLinks, domains, wwwRootDomains };
 }
 
 function resolveDetectedLinks(
@@ -164,6 +170,10 @@ function isAllowlistedLink(
     return true;
   }
 
+  if (match.normalizedDomain && matchers.wwwRootDomains.has(match.normalizedDomain)) {
+    return true;
+  }
+
   if (match.normalizedDomain) {
     for (const domain of matchers.domains) {
       if (match.normalizedDomain.endsWith(`.${domain}`)) {
@@ -173,6 +183,10 @@ function isAllowlistedLink(
   }
 
   return false;
+}
+
+function stripLeadingWwwDomain(domain: string): string {
+  return domain.toLowerCase().startsWith('www.') ? domain.slice(4) : domain;
 }
 
 function isBareBrandMentionForAllowedLink(

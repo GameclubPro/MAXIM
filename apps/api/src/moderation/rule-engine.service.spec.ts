@@ -514,6 +514,24 @@ describe('RuleEngineService', () => {
     expect(blocked.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
   });
 
+  it('allows root-domain links when a domain rule was saved with a www prefix', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'смотри https://ozon.ru/product/123',
+      settings: buildSettings({
+        messageLimitsBlockedDomains: ['ozon.ru'],
+      }),
+      domainAllowlist: ['domain:www.ozon.ru'],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
+    expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_BLOCKED_DOMAIN')).toBe(
+      false,
+    );
+  });
+
   it('does not apply blocked-domain limits to links covered by a domain allowlist rule', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
