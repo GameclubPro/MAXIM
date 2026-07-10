@@ -213,6 +213,12 @@ curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/system
 channels_headers="$(curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/channels)"
 grep -Ei '^HTTP/[0-9.]+ 401' <<<"$channels_headers"
 grep -i '^x-maxim-ingress: admin' <<<"$channels_headers"
+channels_trailing_headers="$(curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/channels/)"
+grep -Ei '^HTTP/[0-9.]+ 401' <<<"$channels_trailing_headers"
+grep -i '^x-maxim-ingress: admin' <<<"$channels_trailing_headers"
+chats_trailing_headers="$(curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/chats/)"
+grep -Ei '^HTTP/[0-9.]+ 401' <<<"$chats_trailing_headers"
+grep -i '^x-maxim-ingress: admin' <<<"$chats_trailing_headers"
 curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/safety-desk/queue | grep -Ei '^HTTP/[0-9.]+ 404'
 curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/support-requests/queue | grep -Ei '^HTTP/[0-9.]+ 404'
 karavan_sse_headers="$(

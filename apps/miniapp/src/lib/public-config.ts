@@ -17,11 +17,11 @@ export function normalizeApiBase(value: string | undefined): string {
     return DEFAULT_API_BASE;
   }
 
-  if (/^(?:https?:)?\/\//iu.test(trimmed)) {
-    return trimmed;
-  }
+  const normalized = /^(?:https?:)?\/\//iu.test(trimmed)
+    ? trimmed
+    : (trimmed.startsWith('/') ? trimmed : `/${trimmed}`);
 
-  return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  return normalized.replace(/\/+$/u, '') || '/';
 }
 
 export function normalizeApiFallbackBases(value: string | undefined): string[] {
