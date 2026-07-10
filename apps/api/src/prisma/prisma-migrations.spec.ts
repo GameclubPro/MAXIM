@@ -15,6 +15,10 @@ function readMigration(name: string): string {
   return readFileSync(resolve(__dirname, '../../prisma/migrations', name, 'migration.sql'), 'utf8');
 }
 
+function readSchema(): string {
+  return readFileSync(resolve(__dirname, '../../prisma/schema.prisma'), 'utf8');
+}
+
 describe('Prisma migrations', () => {
   it('keeps the local display-name webhook lookup index aligned with the runtime SQL', () => {
     const migration = readMigration('20260707152000_optimize_local_display_name_lookup');
@@ -36,5 +40,82 @@ describe('Prisma migrations', () => {
     for (const eventType of LOCAL_DISPLAY_NAME_EVENTS) {
       expect(compact).toContain(`'${eventType}'`);
     }
+  });
+
+  it('adds the publication domain without destructively rewriting legacy broadcasts', () => {
+    const schema = readSchema();
+    const migration = readMigration('20260710142000_publication_domain_foundation');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+
+    for (const model of [
+      'Publication',
+      'PublicationMutationRecord',
+      'PublicationContentRevision',
+      'PublicationAsset',
+      'PublicationContentAsset',
+      'PublicationTarget',
+      'PublicationSchedule',
+      'PublicationOccurrence',
+    ]) {
+      expect(schema).toContain(`model ${model} {`);
+    }
+
+    expect(schema).toContain('enum PublicationAudienceSelection {');
+    expect(schema).toContain('enum PublicationAudienceMode {');
+    expect(schema).toContain('enum PublicationScheduleMode {');
+    expect(schema).toContain(
+      '@@unique([actorUserId, sha256], map: "publication_assets_actor_sha256_key")',
+    );
+    expect(schema).not.toContain('@unique(map: "publication_assets_sha256_key")');
+    expect(compact).toContain(
+      `CREATE TYPE "PublicationScheduleMode" AS ENUM ('NOW', 'ONCE', 'SLOTS', 'RECURRENCE')`,
+    );
+    expect(compact).toContain(
+      `CREATE UNIQUE INDEX "publications_actor_request_key" ON "publications"("actor_user_id", "request_id")`,
+    );
+    expect(compact).toContain(
+      `CREATE UNIQUE INDEX "publication_mutation_records_actor_request_key" ON "publication_mutation_records"("actor_user_id", "request_id")`,
+    );
+    expect(compact).toContain(
+      `CONSTRAINT "publication_assets_actor_user_id_check" CHECK (BTRIM("actor_user_id") <> '')`,
+    );
+    expect(compact).toContain(
+      `CREATE UNIQUE INDEX "publication_assets_actor_sha256_key" ON "publication_assets"("actor_user_id", "sha256")`,
+    );
+    expect(compact).not.toContain(
+      `CREATE UNIQUE INDEX "publication_assets_sha256_key" ON "publication_assets"("sha256")`,
+    );
+    expect(compact).toContain(
+      `CREATE UNIQUE INDEX "publication_occurrences_publication_revision_slot_key" ON "publication_occurrences"("publication_id", "schedule_revision", "scheduled_at")`,
+    );
+    expect(compact).toContain(
+      `CREATE INDEX "publications_actor_lifecycle_updated_idx" ON "publications"("actor_user_id", "lifecycle", "updated_at" DESC, "id" DESC)`,
+    );
+    expect(compact).toContain(
+      `CREATE INDEX "publication_occurrences_publication_scheduled_id_idx" ON "publication_occurrences"("publication_id", "scheduled_at" DESC, "id" DESC)`,
+    );
+    expect(compact).toContain(
+      `ADD COLUMN "publication_occurrence_id" TEXT, ADD COLUMN "publication_content_revision_id" TEXT`,
+    );
+    expect(compact).toContain(
+      `CREATE UNIQUE INDEX "managed_broadcasts_pub_occurrence_entity_key" ON "managed_broadcasts"("publication_occurrence_id", "entity_type")`,
+    );
+    expect(compact).toContain(
+      `ALTER TABLE "managed_broadcast_deliveries" ADD COLUMN "publication_occurrence_id" TEXT`,
+    );
+    expect(compact).toContain(
+      `CREATE INDEX "managed_broadcast_deliveries_pub_occurrence_created_id_idx" ON "managed_broadcast_deliveries"("publication_occurrence_id", "created_at" DESC, "id" DESC)`,
+    );
+    expect(compact).toContain(
+      `CONSTRAINT "managed_broadcasts_publication_occurrence_id_fkey" FOREIGN KEY ("publication_occurrence_id") REFERENCES "publication_occurrences"("id") ON DELETE CASCADE ON UPDATE CASCADE`,
+    );
+    expect(compact).toContain(
+      `CONSTRAINT "managed_broadcast_deliveries_publication_occurrence_id_fkey" FOREIGN KEY ("publication_occurrence_id") REFERENCES "publication_occurrences"("id") ON DELETE CASCADE ON UPDATE CASCADE`,
+    );
+    expect(compact).toContain(
+      `CONSTRAINT "publication_assets_payload_check" CHECK ( ("bytes" IS NOT NULL OR "durable_payload" IS NOT NULL)`,
+    );
+    expect(migration).not.toMatch(/\bDROP\s+(?:TABLE|COLUMN|TYPE)\b/i);
+    expect(migration).not.toMatch(/\b(?:TRUNCATE\s+TABLE|DELETE\s+FROM)\b/i);
   });
 });

@@ -125,7 +125,7 @@
   backdrop-filter: blur(18px) saturate(150%);
   -webkit-backdrop-filter: blur(18px) saturate(150%);
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 3px;
   isolation: isolate;
   z-index: 20;
@@ -202,12 +202,14 @@ body.settings-drilldown-open .bottom-nav {
   min-width: 0;
   width: 100%;
   max-width: 100%;
-  font-size: 0.68rem;
+  overflow: hidden;
+  font-size: 0.55rem;
   line-height: 1.05;
   letter-spacing: 0;
   text-align: center;
-  overflow-wrap: anywhere;
-  white-space: normal;
+  overflow-wrap: normal;
+  text-overflow: clip;
+  white-space: nowrap;
 }
 
 .bottom-nav__item.is-active {
@@ -448,7 +450,7 @@ body.settings-drilldown-open .bottom-nav {
 
   .bottom-nav {
     bottom: calc(var(--bottom-nav-edge-inset) + var(--space-3));
-    width: min(calc(100% - (var(--space-5) * 2)), 520px);
+    width: min(calc(100% - (var(--space-5) * 2)), 600px);
   }
 
   .shell-topbar__content h2 {
@@ -554,10 +556,11 @@ body.settings-drilldown-open .bottom-nav {
   .bottom-nav__item {
     min-height: 54px;
     border-radius: 16px;
+    padding-inline: 0;
   }
 
   .bottom-nav__label {
-    font-size: 0.6rem;
+    font-size: 0.5rem;
     overflow-wrap: normal;
     white-space: nowrap;
   }

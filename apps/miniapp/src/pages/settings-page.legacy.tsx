@@ -4012,8 +4012,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       (section === 'requiredSubscription' && focusSection === 'requiredSubscription')
     ) {
       const nextSearchParams = new URLSearchParams(location.search);
-      nextSearchParams.delete('focus');
-      nextSearchParams.delete('handoff');
+      ['focus', 'handoff', 'workspace'].forEach((key) => nextSearchParams.delete(key));
       navigate(
         {
           pathname: location.pathname,

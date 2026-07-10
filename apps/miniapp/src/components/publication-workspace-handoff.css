@@ -1,0 +1,25 @@
+@layer components {
+  .publication-workspace-handoff {
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    border: 1px solid var(--publication-handoff-border);
+    border-radius: 12px;
+    background: var(--publication-handoff-bg);
+    color: var(--publication-handoff-ink);
+    font-size: 0.78rem;
+    font-weight: 850;
+    text-decoration: none;
+  }
+
+  .publication-workspace-handoff svg {
+    width: 17px;
+    height: 17px;
+  }
+
+  .publication-workspace-handoff:active {
+    transform: translateY(1px);
+  }
+}

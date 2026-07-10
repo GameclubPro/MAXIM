@@ -1454,6 +1454,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       const nextSearchParams = new URLSearchParams(location.search);
       nextSearchParams.delete('focus');
       nextSearchParams.delete('handoff');
+      nextSearchParams.delete('workspace');
       navigate(
         {
           pathname: location.pathname,

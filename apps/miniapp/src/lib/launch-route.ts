@@ -20,6 +20,7 @@ const CHANNEL_SETTINGS_FOCUS = new Set([
   'postSuggestions',
   'vkParsing',
 ]);
+const PUBLICATIONS_VIEWS = new Set(['plan', 'schedules', 'history']);
 
 type ChannelDialogLaunchPayload = {
   v: 1;
@@ -205,6 +206,17 @@ function normalizeRouteLaunchPath(value: string): string | null {
       return '/';
     }
 
+    if (pathname === '/autoposts') {
+      parsed.pathname = '/publications';
+    }
+
+    if (parsed.pathname === '/publications') {
+      if (!hasAllowedPublicationsSearchParams(parsed)) {
+        return null;
+      }
+      return `${parsed.pathname}${parsed.search}`;
+    }
+
     if (/^\/chat\/[^/?#]+\/events$/u.test(pathname) && !parsed.search) {
       return pathname;
     }
@@ -233,11 +245,43 @@ function normalizeRouteLaunchPath(value: string): string | null {
   }
 }
 
+function hasAllowedPublicationsSearchParams(parsed: URL): boolean {
+  for (const [key, value] of parsed.searchParams.entries()) {
+    if (key === 'view') {
+      if (!PUBLICATIONS_VIEWS.has(value)) {
+        return false;
+      }
+      continue;
+    }
+    if (key === 'compose') {
+      if (value !== '1') {
+        return false;
+      }
+      continue;
+    }
+    if (key === 'entityType' || key === 'sourceType') {
+      if (value !== 'chat' && value !== 'channel') {
+        return false;
+      }
+      continue;
+    }
+    if (key === 'entityId' || key === 'sourceId') {
+      if (!value.trim()) {
+        return false;
+      }
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
 function hasAllowedSearchParams(parsed: URL, allowedFocus: Set<string>): boolean {
   const focusValues = parsed.searchParams.getAll('focus');
   const handoffValues = parsed.searchParams.getAll('handoff');
+  const workspaceValues = parsed.searchParams.getAll('workspace');
 
-  if (focusValues.length > 1 || handoffValues.length > 1) {
+  if (focusValues.length > 1 || handoffValues.length > 1 || workspaceValues.length > 1) {
     return false;
   }
 
@@ -256,10 +300,17 @@ function hasAllowedSearchParams(parsed: URL, allowedFocus: Set<string>): boolean
       continue;
     }
 
+    if (key === 'workspace') {
+      if (value !== 'autoposts') {
+        return false;
+      }
+      continue;
+    }
+
     return false;
   }
 
-  return true;
+  return workspaceValues.length === 0 || focusValues[0] === 'broadcast';
 }
 
 function parseMiniappRouteStartParam(value: string): string | null {

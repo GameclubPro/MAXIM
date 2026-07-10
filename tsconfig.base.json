@@ -20,6 +20,7 @@
       "@maxim/contracts/managed-entities": ["packages/contracts/src/managed-entities.ts"],
       "@maxim/contracts/manual-moderation": ["packages/contracts/src/manual-moderation.ts"],
       "@maxim/contracts/poll": ["packages/contracts/src/poll.ts"],
+      "@maxim/contracts/publication": ["packages/contracts/src/publication.ts"],
       "@maxim/contracts/settings": ["packages/contracts/src/settings.ts"],
       "@maxim/contracts/system": ["packages/contracts/src/system.ts"]
     }

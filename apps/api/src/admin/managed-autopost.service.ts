@@ -30,6 +30,7 @@ import {
   ChatEntityType,
   ManagedAutopostMaterializationStatus,
   ManagedAutopostRuleStatus,
+  ManagedBroadcastDeliveryStatus,
   ManagedBroadcastStatus,
   Prisma,
   type ManagedAutopostRule as PersistedManagedAutopostRule,
@@ -41,7 +42,11 @@ import { BackgroundRuntimeGovernorService } from '../system/background-runtime-g
 import { isSystemModeRecoveryWindow, SystemModeService } from '../system/system-mode.service';
 import { ManagedBroadcastService } from './managed-broadcast.service';
 import { ManagedEntitiesService } from './managed-entities.service';
-import { mapManagedEntityTypeToChatEntityType } from './admin.service.support';
+import {
+  BROADCAST_CALENDAR_SLOT_MINUTES,
+  BROADCAST_MAX_DELAY_MS,
+  mapManagedEntityTypeToChatEntityType,
+} from './admin.service.support';
 import { isPrismaKnownError } from './admin-legacy-utils';
 
 const AUTOSCHEDULE_HORIZON_DAYS = 14;
@@ -61,6 +66,13 @@ type MaterializableRuleStatus =
 
 type ManagedAutopostRuleWithCount = PersistedManagedAutopostRule & {
   _count?: { materializations?: number };
+  deliveryRollup?: ManagedAutopostDeliveryRollup;
+};
+
+type ManagedAutopostDeliveryRollup = {
+  hasFailure: boolean;
+  hasAmbiguousDelivery: boolean;
+  lastError: string;
 };
 
 type HubSourceBundle = {
@@ -220,7 +232,8 @@ export class ManagedAutopostService {
       include: { _count: { select: { materializations: true } } },
     });
 
-    return rows
+    const rowsWithDeliveryRollups = await this.attachDeliveryRollups(rows);
+    return rowsWithDeliveryRollups
       .map((row) => this.mapHubRuleSummary(row, this.fromPrismaEntityType(row.entityType), sources))
       .filter((rule): rule is ManagedAutopostHubRuleSummary => rule !== null);
   }
@@ -321,7 +334,8 @@ export class ManagedAutopostService {
       include: { _count: { select: { materializations: true } } },
     });
 
-    return rows.map((row) => this.mapRuleSummary(row, entityType));
+    const rowsWithDeliveryRollups = await this.attachDeliveryRollups(rows);
+    return rowsWithDeliveryRollups.map((row) => this.mapRuleSummary(row, entityType));
   }
 
   private async loadHubSourceBundle(user: AuthUser): Promise<HubSourceBundle> {
@@ -416,7 +430,8 @@ export class ManagedAutopostService {
       throw new BadRequestException('Автопост не найден.');
     }
 
-    return this.mapRuleDetails(row, entityType);
+    const [rowWithDeliveryRollup] = await this.attachDeliveryRollups([row]);
+    return this.mapRuleDetails(rowWithDeliveryRollup ?? row, entityType);
   }
 
   private async createRuleForEntity(
@@ -527,7 +542,7 @@ export class ManagedAutopostService {
       nextStatus === ManagedAutopostRuleStatus.DISABLED ||
       payloadChanged;
     const editLockToken = requiresFutureCancellation
-      ? await this.claimRuleEditLock(existing.id)
+      ? await this.claimRuleEditLock(existing)
       : null;
 
     try {
@@ -542,6 +557,8 @@ export class ManagedAutopostService {
             ? { id: existing.id, lockToken: editLockToken }
             : {
                 id: existing.id,
+                revision: existing.revision,
+                updatedAt: existing.updatedAt,
                 OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
               },
           data,
@@ -591,7 +608,7 @@ export class ManagedAutopostService {
   ): Promise<ManagedAutopostRuleDetails> {
     const existing = await this.getPersistedRule(sourceChatId, ruleId, entityType);
     this.assertRuleEditable(existing);
-    const editLockToken = await this.claimRuleEditLock(existing.id);
+    const editLockToken = await this.claimRuleEditLock(existing);
 
     try {
       await this.cancelFutureMaterializedBroadcasts(existing.id, user, entityType);
@@ -860,6 +877,29 @@ export class ManagedAutopostService {
       throw error;
     }
 
+    const stillClaimed = await this.prisma.managedAutopostRule.findFirst({
+      where: {
+        id: ruleId,
+        revision,
+        lockToken,
+        status: { in: [ManagedAutopostRuleStatus.ACTIVE, ManagedAutopostRuleStatus.ERROR] },
+      },
+      select: { id: true },
+    });
+    if (!stillClaimed) {
+      await this.prisma.managedAutopostMaterialization.updateMany({
+        where: {
+          id: ledgerId,
+          status: ManagedAutopostMaterializationStatus.PENDING,
+        },
+        data: {
+          status: ManagedAutopostMaterializationStatus.CANCELED,
+          lastError: 'Правило остановлено до создания отправки.',
+        },
+      });
+      return false;
+    }
+
     const broadcastPayload: SendBroadcastRequest = {
       ...payload,
       requestId,
@@ -896,6 +936,28 @@ export class ManagedAutopostService {
       if (!result.scheduleId) {
         throw new Error('Материализация автопоста не создала расписание.');
       }
+
+      const renewedClaim = await this.prisma.managedAutopostRule.updateMany({
+        where: {
+          id: ruleId,
+          revision,
+          lockToken,
+          status: { in: [ManagedAutopostRuleStatus.ACTIVE, ManagedAutopostRuleStatus.ERROR] },
+        },
+        data: { lockedAt: new Date() },
+      });
+      if (renewedClaim.count === 0) {
+        await this.cancelStaleCreatedBroadcast({
+          ledgerId,
+          requestId,
+          broadcastId: result.scheduleId,
+          sourceChatId: currentRule.sourceChatId,
+          actorUserId: currentRule.actorUserId,
+          entityType,
+        });
+        return false;
+      }
+
       await this.prisma.managedAutopostMaterialization.update({
         where: { id: ledgerId },
         data: {
@@ -916,6 +978,168 @@ export class ManagedAutopostService {
       });
       throw error;
     }
+  }
+
+  private async cancelStaleCreatedBroadcast(params: {
+    ledgerId: string;
+    requestId: string;
+    broadcastId: string;
+    sourceChatId: string;
+    actorUserId: string;
+    entityType: ManagedEntityType;
+  }): Promise<void> {
+    const entityType = mapManagedEntityTypeToChatEntityType(params.entityType);
+    const lastError = 'Правило изменилось во время создания отправки.';
+
+    await this.prisma.$transaction(async (tx) => {
+      const ownership = await tx.managedBroadcastIdempotencyRecord.findFirst({
+        where: {
+          requestId: params.requestId,
+          sourceChatId: params.sourceChatId,
+          entityType,
+          actorUserId: params.actorUserId,
+          source: 'autopost_rule',
+          broadcastId: params.broadcastId,
+        },
+        select: { id: true },
+      });
+      const broadcast = await tx.managedBroadcast.findFirst({
+        where: {
+          id: params.broadcastId,
+          sourceChatId: params.sourceChatId,
+          entityType,
+          actorUserId: params.actorUserId,
+          publicationOccurrenceId: null,
+        },
+        select: { id: true, status: true },
+      });
+      if (!ownership || !broadcast) {
+        throw new ServiceUnavailableException(
+          'Не удалось безопасно снять устаревшую отправку автопоста.',
+        );
+      }
+
+      const attemptedDelivery = await tx.managedBroadcastDelivery.findFirst({
+        where: {
+          broadcastId: params.broadcastId,
+          OR: [
+            { attemptCount: { gt: 0 } },
+            {
+              status: {
+                in: [
+                  ManagedBroadcastDeliveryStatus.SENDING,
+                  ManagedBroadcastDeliveryStatus.SENT,
+                  ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+                ],
+              },
+            },
+            { remoteMessageId: { not: null } },
+            { legacySentWithoutRemoteId: true },
+          ],
+        },
+        select: { id: true },
+      });
+      if (attemptedDelivery) {
+        throw new ServiceUnavailableException(
+          'Устаревшая отправка уже начала доставку и требует ручной проверки.',
+        );
+      }
+
+      if (broadcast.status !== ManagedBroadcastStatus.CANCELED) {
+        const canceled = await tx.managedBroadcast.updateMany({
+          where: {
+            id: params.broadcastId,
+            sourceChatId: params.sourceChatId,
+            entityType,
+            actorUserId: params.actorUserId,
+            publicationOccurrenceId: null,
+            status: {
+              in: [
+                ManagedBroadcastStatus.ACTIVE,
+                ManagedBroadcastStatus.PARTIAL,
+                ManagedBroadcastStatus.FAILED,
+              ],
+            },
+            sentCount: 0,
+            lockedAt: null,
+            lockToken: null,
+            deliveries: {
+              none: {
+                OR: [
+                  { attemptCount: { gt: 0 } },
+                  {
+                    status: {
+                      in: [
+                        ManagedBroadcastDeliveryStatus.SENDING,
+                        ManagedBroadcastDeliveryStatus.SENT,
+                        ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+                      ],
+                    },
+                  },
+                  { remoteMessageId: { not: null } },
+                  { legacySentWithoutRemoteId: true },
+                ],
+              },
+            },
+          },
+          data: {
+            status: ManagedBroadcastStatus.CANCELED,
+            nextSendAt: null,
+            lockedAt: null,
+            lockToken: null,
+            lastError,
+          },
+        });
+        if (canceled.count === 0) {
+          throw new ServiceUnavailableException(
+            'Устаревшая отправка уже обрабатывается и требует ручной проверки.',
+          );
+        }
+      }
+
+      await tx.managedBroadcastDelivery.updateMany({
+        where: {
+          broadcastId: params.broadcastId,
+          status: {
+            in: [
+              ManagedBroadcastDeliveryStatus.PENDING,
+              ManagedBroadcastDeliveryStatus.FAILED,
+              ManagedBroadcastDeliveryStatus.CANCELED,
+            ],
+          },
+        },
+        data: {
+          status: ManagedBroadcastDeliveryStatus.CANCELED,
+          lockedAt: null,
+          lockToken: null,
+          lastError,
+        },
+      });
+      await tx.managedBroadcastCalendarReservation.deleteMany({
+        where: { broadcastId: params.broadcastId },
+      });
+      await tx.managedBroadcastOccurrence.deleteMany({
+        where: { broadcastId: params.broadcastId },
+      });
+
+      const ledger = await tx.managedAutopostMaterialization.updateMany({
+        where: {
+          id: params.ledgerId,
+          requestId: params.requestId,
+          status: ManagedAutopostMaterializationStatus.PENDING,
+        },
+        data: {
+          broadcastId: params.broadcastId,
+          status: ManagedAutopostMaterializationStatus.CANCELED,
+          lastError,
+        },
+      });
+      if (ledger.count === 0) {
+        throw new ServiceUnavailableException(
+          'Материализация автопоста уже обрабатывается другим процессом.',
+        );
+      }
+    });
   }
 
   private async cancelFutureMaterializedBroadcasts(
@@ -1003,12 +1227,16 @@ export class ManagedAutopostService {
     return row;
   }
 
-  private async claimRuleEditLock(ruleId: string): Promise<string> {
+  private async claimRuleEditLock(
+    rule: Pick<PersistedManagedAutopostRule, 'id' | 'revision' | 'updatedAt'>,
+  ): Promise<string> {
     const lockToken = `edit_${randomUUID()}`;
     const staleLockBefore = new Date(Date.now() - AUTOSCHEDULE_LOCK_STALE_MS);
     const result = await this.prisma.managedAutopostRule.updateMany({
       where: {
-        id: ruleId,
+        id: rule.id,
+        revision: rule.revision,
+        updatedAt: rule.updatedAt,
         OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
       },
       data: {
@@ -1076,10 +1304,17 @@ export class ManagedAutopostService {
 
   private assertAutopostSlots(payload: ManagedAutopostPayload): void {
     const now = Date.now();
+    const scheduleTimezone = payload.scheduleTimezone.trim();
+    this.assertAutopostScheduleTimezone(scheduleTimezone);
     const slots = payload.scheduledSlots
       .map((value) => new Date(value))
       .filter((slot) => Number.isFinite(slot.getTime()))
       .sort((left, right) => left.getTime() - right.getTime());
+
+    if (slots.some((slot) => !this.isAutopostCalendarSlotOnStep(slot, scheduleTimezone))) {
+      throw new BadRequestException('Слоты должны быть кратны 30 минутам.');
+    }
+
     const nextSlot = slots.find((slot) => slot.getTime() > now);
     if (!nextSlot) {
       throw new BadRequestException('Добавьте будущее время.');
@@ -1087,6 +1322,39 @@ export class ManagedAutopostService {
     if (nextSlot.getTime() - now < AUTOSCHEDULE_MIN_RULE_SLOT_DELAY_MS) {
       throw new BadRequestException('Ближайшее время должно быть минимум через 2 минуты.');
     }
+    if (slots.some((slot) => slot.getTime() - now > BROADCAST_MAX_DELAY_MS)) {
+      throw new BadRequestException('Планирование календаря доступно максимум на 31 день.');
+    }
+  }
+
+  private assertAutopostScheduleTimezone(value: string): void {
+    try {
+      Intl.DateTimeFormat('ru-RU', { timeZone: value }).format(new Date());
+    } catch {
+      throw new BadRequestException('Некорректный часовой пояс.');
+    }
+  }
+
+  private isAutopostCalendarSlotOnStep(value: Date, timeZone: string): boolean {
+    const parts = Intl.DateTimeFormat('en-US', {
+      timeZone,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).formatToParts(value);
+    const readPart = (type: string): number =>
+      Number(parts.find((part) => part.type === type)?.value ?? '');
+    const minute = readPart('minute');
+    const second = readPart('second');
+
+    return (
+      Number.isFinite(minute) &&
+      Number.isFinite(second) &&
+      minute % BROADCAST_CALENDAR_SLOT_MINUTES === 0 &&
+      second === 0 &&
+      value.getMilliseconds() === 0
+    );
   }
 
   private selectMaterializationSlots(payload: ManagedAutopostPayload): Date[] {
@@ -1205,16 +1473,90 @@ export class ManagedAutopostService {
     return managedAutopostPayloadSchema.parse(value);
   }
 
+  private async attachDeliveryRollups<T extends ManagedAutopostRuleWithCount>(
+    rows: T[],
+  ): Promise<T[]> {
+    if (rows.length === 0) {
+      return rows;
+    }
+
+    const rowsById = new Map(rows.map((row) => [row.id, row]));
+    const materializations = await this.prisma.managedAutopostMaterialization.findMany({
+      where: {
+        ruleId: { in: rows.map((row) => row.id) },
+        status: ManagedAutopostMaterializationStatus.CREATED,
+        broadcastId: { not: null },
+      },
+      select: {
+        ruleId: true,
+        revision: true,
+        broadcast: {
+          select: {
+            status: true,
+            lastError: true,
+            deliveries: {
+              where: { status: ManagedBroadcastDeliveryStatus.AMBIGUOUS },
+              select: { id: true },
+              take: 1,
+            },
+          },
+        },
+      },
+    });
+    const rollups = new Map<string, ManagedAutopostDeliveryRollup>();
+
+    for (const materialization of materializations) {
+      const rule = rowsById.get(materialization.ruleId);
+      const broadcast = materialization.broadcast;
+      if (!rule || materialization.revision !== rule.revision || !broadcast) {
+        continue;
+      }
+
+      const hasAmbiguousDelivery = broadcast.deliveries.length > 0;
+      const hasFailedStatus =
+        broadcast.status === ManagedBroadcastStatus.FAILED ||
+        broadcast.status === ManagedBroadcastStatus.PARTIAL;
+      if (!hasAmbiguousDelivery && !hasFailedStatus) {
+        continue;
+      }
+
+      const existing = rollups.get(rule.id);
+      const lastError = hasAmbiguousDelivery
+        ? 'Есть неоднозначная доставка после таймаута MAX. Проверьте публикацию вручную.'
+        : broadcast.lastError?.trim() ||
+          (broadcast.status === ManagedBroadcastStatus.PARTIAL
+            ? 'Публикация доставлена не всем получателям.'
+            : 'Не удалось доставить публикацию.');
+      rollups.set(rule.id, {
+        hasFailure: true,
+        hasAmbiguousDelivery: existing?.hasAmbiguousDelivery === true || hasAmbiguousDelivery,
+        lastError:
+          existing?.hasAmbiguousDelivery === true && !hasAmbiguousDelivery
+            ? existing.lastError
+            : lastError,
+      });
+    }
+
+    return rows.map((row) => {
+      const deliveryRollup = rollups.get(row.id);
+      return deliveryRollup ? ({ ...row, deliveryRollup } as T) : row;
+    });
+  }
+
   private mapRuleSummary(
     row: ManagedAutopostRuleWithCount,
     entityType: ManagedEntityType,
   ): ManagedAutopostRuleSummary {
     const payload = this.parsePayload(row.payload);
+    const deliveryFailureVisible =
+      row.deliveryRollup?.hasFailure === true &&
+      row.status !== ManagedAutopostRuleStatus.PAUSED &&
+      row.status !== ManagedAutopostRuleStatus.DISABLED;
     return managedAutopostRuleSummarySchema.parse({
       id: row.id,
       sourceChatId: row.sourceChatId,
       entityType,
-      status: row.status,
+      status: deliveryFailureVisible ? ManagedAutopostRuleStatus.ERROR : row.status,
       title: row.title,
       textPreview: this.resolveTextPreview(payload),
       textLength: payload.text.length,
@@ -1233,7 +1575,11 @@ export class ManagedAutopostService {
       revision: row.revision,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
-      lastError: row.lastError && row.lastError.trim() ? row.lastError : null,
+      lastError: deliveryFailureVisible
+        ? row.deliveryRollup?.lastError
+        : row.lastError && row.lastError.trim()
+          ? row.lastError
+          : null,
     });
   }
 

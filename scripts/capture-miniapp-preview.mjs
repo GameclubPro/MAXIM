@@ -63,6 +63,36 @@ const scenarios = [
     },
   },
   {
+    name: 'publications',
+    path: '/publications',
+    beforeShot: async (page) => {
+      await page.locator('.publications-page').waitFor({ state: 'visible' });
+      await page.waitForTimeout(600);
+    },
+  },
+  {
+    name: 'publications-legacy',
+    path: '/publications',
+    beforeShot: async (page) => {
+      await page.locator('.legacy-autoposts > summary').click();
+      await page.locator('.legacy-autoposts[open]').waitFor({ state: 'visible' });
+      await page.waitForTimeout(250);
+    },
+  },
+  {
+    name: 'publications-compose',
+    path: '/publications',
+    searchParams: {
+      compose: '1',
+      entityType: 'chat',
+      entityId: 'preview-chat',
+    },
+    beforeShot: async (page) => {
+      await page.locator('.publications-editor').waitFor({ state: 'visible' });
+      await page.waitForTimeout(600);
+    },
+  },
+  {
     name: 'events-moderation',
     path: '/chat/preview-chat/events',
   },

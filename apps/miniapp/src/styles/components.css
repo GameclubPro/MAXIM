@@ -1492,16 +1492,16 @@
 
 @media (max-width: 430px) {
   .bottom-nav__item {
-    padding-inline: 1px;
+    padding-inline: 0;
   }
 
   .bottom-nav__label {
-    font-size: 0.58rem;
+    font-size: 0.5rem;
   }
 }
 
 @media (max-width: 360px) {
   .bottom-nav__label {
-    font-size: 0.54rem;
+    font-size: 0.5rem;
   }
 }

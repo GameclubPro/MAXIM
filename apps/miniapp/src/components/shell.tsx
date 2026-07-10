@@ -26,7 +26,7 @@ type ScreenInfo = {
   subtitle?: string;
 };
 
-type BottomNavIconName = 'chats' | 'channels' | 'settings' | 'events';
+type BottomNavIconName = 'chats' | 'channels' | 'publications' | 'settings' | 'events';
 
 function BottomNavIcon({ name }: { name: BottomNavIconName }) {
   if (name === 'chats') {
@@ -88,6 +88,24 @@ function BottomNavIcon({ name }: { name: BottomNavIconName }) {
     );
   }
 
+  if (name === 'publications') {
+    return (
+      <svg
+        viewBox="0 0 24 24"
+        className="bottom-nav__icon-svg"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.85"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <path d="M4.2 5.2 20 12 4.2 18.8 6.4 12 4.2 5.2Z" />
+        <path d="M6.4 12H20" />
+      </svg>
+    );
+  }
+
   return (
     <svg
       viewBox="0 0 24 24"
@@ -123,9 +141,9 @@ function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
     };
   }
 
-  if (pathname === '/autoposts') {
+  if (pathname === '/publications' || pathname === '/autoposts') {
     return {
-      title: 'Автопосты',
+      title: 'Публикации',
     };
   }
 
@@ -282,7 +300,7 @@ export function Shell() {
       ? `/channel/${resolvedChatId}/stats?section=events`
       : `/chat/${resolvedChatId}/events?section=activity`
     : '';
-  const activityNavLabel = 'Статистика';
+  const activityNavLabel = 'Сводка';
   const isChatsListRoute = isChatsRoute && selectedRootEntityType === 'chat';
   const isChannelsListRoute = isChatsRoute && selectedRootEntityType === 'channel';
   const isGiveawayRoute = location.pathname.includes('/giveaways/');
@@ -296,12 +314,13 @@ export function Shell() {
   const shouldCloseMiniAppOnBack = shouldCloseDialogOnBack || isGiveawayRoute;
   const isSettingsRoute = location.pathname.includes('/settings');
   const isEventsRoute = location.pathname.includes('/events');
-  const isAutopostsRoute = location.pathname === '/autoposts';
+  const isPublicationsRoute =
+    location.pathname === '/publications' || location.pathname === '/autoposts';
   const isChannelStatsRoute =
     location.pathname.includes('/channel/') && location.pathname.includes('/stats');
   const hasTopbar =
     !isChatsRoute &&
-    !isAutopostsRoute &&
+    !isPublicationsRoute &&
     !isSettingsRoute &&
     !isEventsRoute &&
     !isDialogRoute &&
@@ -404,6 +423,16 @@ export function Shell() {
             </span>
             <span className="bottom-nav__label">Каналы</span>
           </Link>
+
+          <NavLink
+            to="/publications"
+            className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}
+          >
+            <span className="bottom-nav__icon" aria-hidden>
+              <BottomNavIcon name="publications" />
+            </span>
+            <span className="bottom-nav__label">Посты</span>
+          </NavLink>
 
           {resolvedChatId ? (
             <NavLink

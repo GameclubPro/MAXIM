@@ -12,6 +12,7 @@ type BroadcastPublishBarProps = {
   issues?: BroadcastPublishIssueAction[];
   busy?: boolean;
   testLabel: string;
+  compactTestLabel?: string;
   testAriaLabel: string;
   testDisabled: boolean;
   secondaryLabel?: string;
@@ -29,6 +30,7 @@ export function BroadcastPublishBar({
   issues = [],
   busy = false,
   testLabel,
+  compactTestLabel,
   testAriaLabel,
   testDisabled,
   secondaryLabel,
@@ -78,7 +80,12 @@ export function BroadcastPublishBar({
         title={testAriaLabel}
       >
         <TestGlyph aria-hidden focusable="false" />
-        <span>{testLabel}</span>
+        <span className={cn(compactTestLabel && 'broadcast-publish-bar__test-label--regular')}>
+          {testLabel}
+        </span>
+        {compactTestLabel ? (
+          <span className="broadcast-publish-bar__test-label--compact">{compactTestLabel}</span>
+        ) : null}
       </button>
 
       {showSecondary ? (

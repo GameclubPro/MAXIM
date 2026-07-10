@@ -7,7 +7,10 @@ import {
 } from '@maxim/contracts';
 import { Injectable } from '@nestjs/common';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
-import { AdminManagedBroadcastRuntime, type AdminActionSource } from './admin-managed-broadcast-runtime';
+import {
+  AdminManagedBroadcastRuntime,
+  type AdminActionSource,
+} from './admin-managed-broadcast-runtime';
 
 type AdminReadBypassOptions = {
   skipAdminCheck?: boolean;
@@ -50,6 +53,22 @@ export class ManagedBroadcastService {
     body: unknown,
   ): Promise<SendBroadcastTestResult> {
     return this.runtime.sendChannelBroadcastTest(sourceChatId, user, body);
+  }
+
+  sendPublicationBroadcastTest(
+    sourceChatId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<SendBroadcastTestResult> {
+    return this.runtime.sendPublicationBroadcastTest(sourceChatId, user, body);
+  }
+
+  sendPublicationChannelBroadcastTest(
+    sourceChatId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<SendBroadcastTestResult> {
+    return this.runtime.sendPublicationChannelBroadcastTest(sourceChatId, user, body);
   }
 
   listManagedBroadcasts(

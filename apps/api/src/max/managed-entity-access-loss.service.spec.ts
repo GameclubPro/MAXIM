@@ -2,7 +2,13 @@ import {
   ChatBotAccessState,
   ChatBotMembershipStatus,
   ChatEntityType,
+  ManagedAutopostRuleStatus,
+  ManagedBroadcastDeliveryStatus,
+  ManagedBroadcastStatus,
   ManagedEntityAccessState,
+  PublicationLifecycle,
+  PublicationOccurrenceStatus,
+  PublicationScheduleStatus,
 } from '../prisma/prisma-client';
 import {
   ManagedEntityAccessLossService,
@@ -189,12 +195,23 @@ describe('ManagedEntityAccessLossService', () => {
         findFirst: jest.fn(),
       },
       managedBroadcast: {
+        findMany: jest.fn().mockResolvedValue([{ id: 'publication-broadcast-1' }]),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       managedBroadcastDelivery: {
         updateMany: jest.fn().mockResolvedValue({ count: 3 }),
       },
       managedBroadcastOccurrence: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      managedAutopostRule: {
+        updateMany: jest.fn().mockResolvedValue({ count: 2 }),
+      },
+      publication: {
+        findMany: jest.fn().mockResolvedValue([{ id: 'publication-1' }]),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      publicationSchedule: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       vkParsingPost: {
@@ -283,6 +300,42 @@ describe('ManagedEntityAccessLossService', () => {
       'chat',
     );
     expect(nightModeTransitionScheduler.clearChatJobs).toHaveBeenCalledWith('chat-1');
+    expect(prisma.managedAutopostRule.updateMany).toHaveBeenCalledWith({
+      where: {
+        sourceChatId: 'chat-1',
+        status: {
+          in: [ManagedAutopostRuleStatus.ACTIVE, ManagedAutopostRuleStatus.ERROR],
+        },
+      },
+      data: expect.objectContaining({
+        status: ManagedAutopostRuleStatus.PAUSED,
+        nextMaterializeAt: null,
+        lockedAt: null,
+        lockToken: null,
+      }),
+    });
+    expect(prisma.publicationSchedule.updateMany).toHaveBeenCalledWith({
+      where: {
+        publicationId: { in: ['publication-1'] },
+        status: {
+          in: [PublicationScheduleStatus.ACTIVE, PublicationScheduleStatus.ERROR],
+        },
+      },
+      data: expect.objectContaining({
+        status: PublicationScheduleStatus.PAUSED,
+        nextMaterializeAt: null,
+      }),
+    });
+    expect(prisma.publication.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ['publication-1'] } },
+      data: { lifecycle: PublicationLifecycle.PAUSED },
+    });
+    expect(prisma.managedBroadcast.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: { in: ['publication-broadcast-1'] } },
+        data: expect.objectContaining({ status: 'CANCELED', nextSendAt: null }),
+      }),
+    );
     expect(rosterSyncQueue.getJob).toHaveBeenCalledWith('chat-admin-roster-sync__chat-1');
     expect(rosterSyncJob.remove).toHaveBeenCalledTimes(1);
     expect(prisma.vkParsingSource.updateMany).toHaveBeenCalledWith(
@@ -294,6 +347,92 @@ describe('ManagedEntityAccessLossService', () => {
         }),
       }),
     );
+  });
+
+  it('cancels every chat and channel execution envelope linked to an affected publication', async () => {
+    const prisma = {
+      publication: {
+        findMany: jest.fn().mockResolvedValue([{ id: 'publication-1' }]),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      publicationSchedule: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      managedBroadcast: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([{ id: 'broadcast-chat' }, { id: 'broadcast-channel' }]),
+        updateMany: jest.fn().mockResolvedValue({ count: 2 }),
+      },
+      managedBroadcastDelivery: {
+        updateMany: jest.fn().mockResolvedValue({ count: 2 }),
+      },
+      managedBroadcastCalendarReservation: {
+        deleteMany: jest.fn().mockResolvedValue({ count: 2 }),
+      },
+      publicationOccurrence: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const service = new ManagedEntityAccessLossService(prisma as never, {} as never, {} as never);
+
+    await (service as any).pauseManagedPublications({
+      chatId: 'chat-1',
+      reason: 'bot_denied',
+      source: 'unit-test',
+    });
+
+    const allEnvelopeIds = { in: ['broadcast-chat', 'broadcast-channel'] };
+    expect(prisma.managedBroadcastDelivery.updateMany).toHaveBeenCalledWith({
+      where: {
+        broadcastId: allEnvelopeIds,
+        status: {
+          in: [
+            ManagedBroadcastDeliveryStatus.PENDING,
+            ManagedBroadcastDeliveryStatus.SENDING,
+            ManagedBroadcastDeliveryStatus.FAILED,
+          ],
+        },
+      },
+      data: expect.objectContaining({
+        status: ManagedBroadcastDeliveryStatus.CANCELED,
+        lockedAt: null,
+        lockToken: null,
+      }),
+    });
+    expect(prisma.managedBroadcast.updateMany).toHaveBeenCalledWith({
+      where: { id: allEnvelopeIds },
+      data: expect.objectContaining({
+        status: ManagedBroadcastStatus.CANCELED,
+        nextSendAt: null,
+      }),
+    });
+    expect(prisma.publicationOccurrence.updateMany).toHaveBeenCalledWith({
+      where: {
+        publicationId: { in: ['publication-1'] },
+        scheduledAt: { gte: expect.any(Date) },
+        status: {
+          in: [PublicationOccurrenceStatus.SCHEDULED, PublicationOccurrenceStatus.IN_PROGRESS],
+        },
+        deliveries: {
+          none: {
+            OR: [
+              { attemptCount: { gt: 0 } },
+              {
+                status: {
+                  in: [
+                    ManagedBroadcastDeliveryStatus.SENDING,
+                    ManagedBroadcastDeliveryStatus.SENT,
+                    ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      },
+      data: { status: PublicationOccurrenceStatus.SCHEDULED },
+    });
   });
 
   it('keeps runtime work when a promoted replacement bot has confirmed access', async () => {

@@ -41,6 +41,11 @@ import { ManagedEntitiesService } from './managed-entities.service';
 import { ManagedGiveawayRunnerService } from './managed-giveaway-runner.service';
 import { ManagedGiveawayService } from './managed-giveaway.service';
 import { ManagedPollService } from './managed-poll.service';
+import { PublicationController } from './publication.controller';
+import { PublicationContentService } from './publication-content.service';
+import { PublicationPresenterService } from './publication-presenter.service';
+import { PublicationRunnerService } from './publication-runner.service';
+import { PublicationService } from './publication.service';
 import { AdminService } from './admin.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 import { VkParsingPublishProcessor } from './vk-parsing-publish.processor';
@@ -88,6 +93,7 @@ import { SupportRequestsService } from './support-requests.service';
     AdminGiveawayController,
     AdminPollController,
     AdminManualModerationController,
+    PublicationController,
     SafetyDeskController,
     SupportRequestsController,
   ],
@@ -114,6 +120,10 @@ import { SupportRequestsService } from './support-requests.service';
     ManagedBroadcastRunnerService,
     ManagedGiveawayService,
     ManagedPollService,
+    PublicationContentService,
+    PublicationPresenterService,
+    PublicationService,
+    PublicationRunnerService,
     ManagedGiveawayRunnerService,
     VkParsingRateLimitService,
     VkApiClientService,
@@ -150,6 +160,7 @@ import { SupportRequestsService } from './support-requests.service';
     ManagedEntitiesDiscoveryService,
     ManagedGiveawayService,
     ManagedPollService,
+    PublicationService,
     VkParsingRateLimitService,
     VkApiClientService,
     VkParsingAccessService,

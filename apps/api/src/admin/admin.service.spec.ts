@@ -955,6 +955,9 @@ function createPrismaMock() {
       createMany: jest.fn().mockResolvedValue({ count: 0 }),
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
+    publicationOccurrence: {
+      findMany: jest.fn().mockResolvedValue([]),
+    },
     managedBroadcastIdempotencyRecord: {
       create: jest.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) => ({
         id: 'broadcast-idempotency-1',

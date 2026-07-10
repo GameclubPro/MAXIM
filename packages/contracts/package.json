@@ -50,6 +50,10 @@
       "types": "./dist/poll.d.ts",
       "default": "./dist/poll.js"
     },
+    "./publication": {
+      "types": "./dist/publication.d.ts",
+      "default": "./dist/publication.js"
+    },
     "./system": {
       "types": "./dist/system.d.ts",
       "default": "./dist/system.js"

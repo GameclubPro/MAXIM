@@ -55,8 +55,10 @@ const STARTUP_JS_BUDGET_GZIP =
 // plus target-aware broadcast calendar availability and named audience previews
 // plus schema-level calendar/cycle compatibility guards for legacy broadcast drafts
 // add a small amount of legitimate lazy-loaded logic.
-// The standalone autopost hub reuses settings broadcast/autopost chunks, changing Vite factoring.
-const AUTOPOSTS_SHARED_SETTINGS_JS_ALLOWANCE_GZIP = 1024;
+// The unified publications workspace keeps the legacy settings broadcast screens available during
+// migration while sharing publication contracts and media-composer code across both lazy routes.
+// Vite factors that compatibility surface into settings even though publications stays lazy.
+const PUBLICATIONS_SHARED_SETTINGS_JS_ALLOWANCE_GZIP = 3 * 1024;
 // The standalone public suggestion route uses a focused dialog entry. Vite can factor the
 // channel-dialog contract schemas into a shared chunk that settings already reaches through root
 // contracts; keep the budget adjustment narrow while preserving the route split.
@@ -67,7 +69,7 @@ const ACCESSIBLE_DIALOG_FOCUS_SETTINGS_JS_ALLOWANCE_GZIP = 768;
 const SETTINGS_JS_BUDGET_GZIP =
   108 * 1024 +
   21 * 1024 +
-  AUTOPOSTS_SHARED_SETTINGS_JS_ALLOWANCE_GZIP +
+  PUBLICATIONS_SHARED_SETTINGS_JS_ALLOWANCE_GZIP +
   SUGGEST_ROUTE_SHARED_SETTINGS_JS_ALLOWANCE_GZIP +
   ACCESSIBLE_DIALOG_FOCUS_SETTINGS_JS_ALLOWANCE_GZIP;
 // Startup CSS was effectively at the ceiling already, so widen it modestly instead of

@@ -8,9 +8,18 @@ import {
   ChatEntityType,
   ManagedAutopostMaterializationStatus,
   ManagedAutopostRuleStatus,
+  ManagedBroadcastStatus,
 } from '../prisma/prisma-client';
 
-const futureSlot = () => new Date(Date.now() + 5 * 60_000).toISOString();
+const futureSlot = () => {
+  const slot = new Date(Date.now() + 60 * 60_000);
+  slot.setUTCSeconds(0, 0);
+  slot.setUTCMinutes(slot.getUTCMinutes() < 30 ? 30 : 0);
+  if (slot.getTime() - Date.now() < 2 * 60_000) {
+    slot.setUTCHours(slot.getUTCHours() + 1);
+  }
+  return slot.toISOString();
+};
 const payload = (overrides: Record<string, unknown> = {}) => ({
   text: 'Новости',
   textFormat: 'markdown',
@@ -70,9 +79,26 @@ describe('ManagedAutopostService', () => {
       managedAutopostMaterialization: {
         create: jest.fn(),
         findFirst: jest.fn(),
-        findMany: jest.fn(),
+        findMany: jest.fn().mockResolvedValue([]),
         update: jest.fn(),
         updateMany: jest.fn(),
+      },
+      managedBroadcast: {
+        findFirst: jest.fn(),
+        updateMany: jest.fn(),
+      },
+      managedBroadcastDelivery: {
+        findFirst: jest.fn(),
+        updateMany: jest.fn(),
+      },
+      managedBroadcastCalendarReservation: {
+        deleteMany: jest.fn(),
+      },
+      managedBroadcastOccurrence: {
+        deleteMany: jest.fn(),
+      },
+      managedBroadcastIdempotencyRecord: {
+        findFirst: jest.fn(),
       },
       auditLog: {
         create: jest.fn().mockResolvedValue({}),
@@ -239,6 +265,86 @@ describe('ManagedAutopostService', () => {
     );
   });
 
+  it('rolls a partial child broadcast up into the rule summary', async () => {
+    const rule = persistedRule();
+    const { service, prisma } = createService();
+    prisma.managedAutopostRule.findMany.mockResolvedValue([rule]);
+    prisma.managedAutopostMaterialization.findMany.mockResolvedValue([
+      {
+        ruleId: 'rule-1',
+        revision: 1,
+        broadcast: {
+          status: 'PARTIAL',
+          lastError: 'Один чат недоступен.',
+          deliveries: [],
+        },
+      },
+    ]);
+
+    await expect(service.listChatAutopostRules('chat-1', user)).resolves.toEqual([
+      expect.objectContaining({
+        id: 'rule-1',
+        status: ManagedAutopostRuleStatus.ERROR,
+        lastError: 'Один чат недоступен.',
+      }),
+    ]);
+  });
+
+  it('surfaces ambiguous child delivery without overriding a paused rule', async () => {
+    const rule = persistedRule({
+      status: ManagedAutopostRuleStatus.PAUSED,
+      lastError: 'Остановлено из-за потери доступа.',
+    });
+    const { service, prisma } = createService();
+    prisma.managedAutopostRule.findMany.mockResolvedValue([rule]);
+    prisma.managedAutopostMaterialization.findMany.mockResolvedValue([
+      {
+        ruleId: 'rule-1',
+        revision: 1,
+        broadcast: {
+          status: 'ACTIVE',
+          lastError: null,
+          deliveries: [{ id: 'delivery-1' }],
+        },
+      },
+    ]);
+
+    await expect(service.listChatAutopostRules('chat-1', user)).resolves.toEqual([
+      expect.objectContaining({
+        id: 'rule-1',
+        status: ManagedAutopostRuleStatus.PAUSED,
+        lastError: 'Остановлено из-за потери доступа.',
+      }),
+    ]);
+  });
+
+  it('surfaces ambiguous child delivery as an actionable rule error', async () => {
+    const rule = persistedRule();
+    const { service, prisma } = createService();
+    prisma.managedAutopostRule.findMany.mockResolvedValue([rule]);
+    prisma.managedAutopostMaterialization.findMany.mockResolvedValue([
+      {
+        ruleId: 'rule-1',
+        revision: 1,
+        broadcast: {
+          status: 'ACTIVE',
+          lastError: null,
+          deliveries: [{ id: 'delivery-1' }],
+        },
+      },
+    ]);
+
+    const [summary] = await service.listChatAutopostRules('chat-1', user);
+
+    expect(summary).toEqual(
+      expect.objectContaining({
+        id: 'rule-1',
+        status: ManagedAutopostRuleStatus.ERROR,
+        lastError: expect.stringContaining('Проверьте публикацию вручную'),
+      }),
+    );
+  });
+
   it('creates a hub channel rule through the channel source', async () => {
     const created = persistedRule({
       sourceChatId: 'channel-1',
@@ -330,6 +436,73 @@ describe('ManagedAutopostService', () => {
     expect(managedBroadcastService.sendBroadcast).not.toHaveBeenCalled();
   });
 
+  it('rejects create when a calendar slot is off the local 30-minute step', async () => {
+    const invalidSlot = new Date(Date.now() + 60 * 60_000);
+    invalidSlot.setUTCMinutes(15, 0, 0);
+    const { service, prisma } = createService();
+
+    await expect(
+      service.createChatAutopostRule('chat-1', user, {
+        payload: payload({ scheduledSlots: [invalidSlot.toISOString()] }),
+      }),
+    ).rejects.toThrow('Слоты должны быть кратны 30 минутам.');
+
+    expect(prisma.managedAutopostRule.create).not.toHaveBeenCalled();
+  });
+
+  it('validates the calendar step in the configured timezone', async () => {
+    const kathmanduSlot = new Date(Date.now() + 2 * 60 * 60_000);
+    kathmanduSlot.setUTCMinutes(15, 0, 0);
+    const created = persistedRule({
+      payload: payload({
+        scheduleTimezone: 'Asia/Kathmandu',
+        scheduledSlots: [kathmanduSlot.toISOString()],
+      }),
+    });
+    const { service, prisma } = createService();
+    prisma.managedAutopostRule.create.mockResolvedValue(created);
+    prisma.managedAutopostRule.findFirst.mockResolvedValue(created);
+
+    await expect(
+      service.createChatAutopostRule('chat-1', user, {
+        payload: payload({
+          scheduleTimezone: 'Asia/Kathmandu',
+          scheduledSlots: [kathmanduSlot.toISOString()],
+        }),
+      }),
+    ).resolves.toEqual(expect.objectContaining({ id: 'rule-1' }));
+  });
+
+  it('rejects create when any future calendar slot exceeds 31 days', async () => {
+    const distantSlot = new Date(Date.now() + 32 * 24 * 60 * 60_000);
+    distantSlot.setUTCMinutes(0, 0, 0);
+    const { service, prisma } = createService();
+
+    await expect(
+      service.createChatAutopostRule('chat-1', user, {
+        payload: payload({ scheduledSlots: [futureSlot(), distantSlot.toISOString()] }),
+      }),
+    ).rejects.toThrow('Планирование календаря доступно максимум на 31 день.');
+
+    expect(prisma.managedAutopostRule.create).not.toHaveBeenCalled();
+  });
+
+  it('applies calendar slot validation when updating a rule payload', async () => {
+    const invalidSlot = new Date(Date.now() + 60 * 60_000);
+    invalidSlot.setUTCMinutes(15, 0, 0);
+    const existing = persistedRule();
+    const { service, prisma } = createService();
+    prisma.managedAutopostRule.findFirst.mockResolvedValue(existing);
+
+    await expect(
+      service.updateChatAutopostRule('chat-1', 'rule-1', user, {
+        payload: payload({ scheduledSlots: [invalidSlot.toISOString()] }),
+      }),
+    ).rejects.toThrow('Слоты должны быть кратны 30 минутам.');
+
+    expect(prisma.managedAutopostRule.updateMany).not.toHaveBeenCalled();
+  });
+
   it('retries failed materialization with the same request id', async () => {
     const scheduledAt = new Date(Date.now() + 5 * 60_000);
     const failedLedger = {
@@ -350,6 +523,7 @@ describe('ManagedAutopostService', () => {
     };
     const { service, prisma, managedBroadcastService } = createService();
     prisma.managedAutopostRule.findFirst.mockResolvedValue(rule);
+    prisma.managedAutopostRule.updateMany.mockResolvedValue({ count: 1 });
     prisma.managedAutopostMaterialization.findFirst.mockResolvedValue(failedLedger);
     prisma.managedAutopostMaterialization.updateMany.mockResolvedValue({ count: 1 });
     prisma.managedAutopostMaterialization.update.mockResolvedValue({});
@@ -374,6 +548,215 @@ describe('ManagedAutopostService', () => {
       expect.objectContaining({ userId: 'admin-1' }),
       expect.objectContaining({ requestId: 'ap_rule_1' }),
       'autopost_rule',
+    );
+  });
+
+  it.each([
+    {
+      entityType: 'chat' as const,
+      sourceChatId: 'chat-1',
+      sendMethod: 'sendBroadcast' as const,
+      broadcastStatus: ManagedBroadcastStatus.ACTIVE,
+    },
+    {
+      entityType: 'channel' as const,
+      sourceChatId: 'channel-1',
+      sendMethod: 'sendChannelBroadcast' as const,
+      broadcastStatus: ManagedBroadcastStatus.CANCELED,
+    },
+  ])(
+    'cancels a created $entityType broadcast in the database when the rule claim becomes stale',
+    async ({ entityType, sourceChatId, sendMethod, broadcastStatus }) => {
+      const scheduledAt = new Date(Date.now() + 5 * 60_000);
+      const rule = {
+        id: 'rule-1',
+        sourceChatId,
+        entityType: entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT,
+        actorUserId: 'admin-1',
+        status: ManagedAutopostRuleStatus.ACTIVE,
+        revision: 1,
+        lockedAt: new Date(),
+        lockToken: 'lock-1',
+      };
+      const { service, prisma, managedBroadcastService } = createService({
+        managedBroadcastService: {
+          cancelManagedBroadcast: jest
+            .fn()
+            .mockRejectedValue(new ForbiddenException('Доступ потерян.')),
+          cancelChannelManagedBroadcast: jest
+            .fn()
+            .mockRejectedValue(new ForbiddenException('Доступ потерян.')),
+        },
+      });
+      prisma.managedAutopostRule.findFirst.mockResolvedValue(rule);
+      prisma.managedAutopostRule.updateMany.mockResolvedValue({ count: 0 });
+      prisma.managedAutopostMaterialization.findFirst.mockResolvedValue(null);
+      prisma.managedAutopostMaterialization.create.mockResolvedValue({ id: 'ledger-1' });
+      prisma.managedAutopostMaterialization.updateMany.mockResolvedValue({ count: 1 });
+      prisma.managedAutopostMaterialization.update.mockResolvedValue({});
+      prisma.managedBroadcastIdempotencyRecord.findFirst.mockResolvedValue({ id: 'request-1' });
+      prisma.managedBroadcast.findFirst.mockResolvedValue({
+        id: 'broadcast-1',
+        status: broadcastStatus,
+      });
+      prisma.managedBroadcastDelivery.findFirst.mockResolvedValue(null);
+      prisma.managedBroadcast.updateMany.mockResolvedValue({ count: 1 });
+      prisma.managedBroadcastDelivery.updateMany.mockResolvedValue({ count: 1 });
+      prisma.managedBroadcastCalendarReservation.deleteMany.mockResolvedValue({ count: 1 });
+      prisma.managedBroadcastOccurrence.deleteMany.mockResolvedValue({ count: 1 });
+
+      const materialized = await (
+        service as unknown as {
+          materializeSlot: (
+            ruleId: string,
+            revision: number,
+            lockToken: string,
+            payload: AutopostPayloadInput,
+            entityType: 'chat' | 'channel',
+            scheduledAt: Date,
+          ) => Promise<boolean>;
+        }
+      ).materializeSlot('rule-1', 1, 'lock-1', payload(), entityType, scheduledAt);
+
+      expect(materialized).toBe(false);
+      expect(managedBroadcastService[sendMethod]).toHaveBeenCalledWith(
+        sourceChatId,
+        expect.objectContaining({ userId: 'admin-1' }),
+        expect.any(Object),
+        'autopost_rule',
+      );
+      expect(prisma.managedAutopostRule.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'rule-1',
+          revision: 1,
+          lockToken: 'lock-1',
+          status: {
+            in: [ManagedAutopostRuleStatus.ACTIVE, ManagedAutopostRuleStatus.ERROR],
+          },
+        },
+        data: { lockedAt: expect.any(Date) },
+      });
+      expect(managedBroadcastService.cancelManagedBroadcast).not.toHaveBeenCalled();
+      expect(managedBroadcastService.cancelChannelManagedBroadcast).not.toHaveBeenCalled();
+      expect(prisma.managedBroadcastIdempotencyRecord.findFirst).toHaveBeenCalledWith({
+        where: expect.objectContaining({
+          requestId: expect.stringMatching(/^ap_rule-1_1_/u),
+          sourceChatId,
+          entityType: rule.entityType,
+          actorUserId: 'admin-1',
+          source: 'autopost_rule',
+          broadcastId: 'broadcast-1',
+        }),
+        select: { id: true },
+      });
+      if (broadcastStatus === ManagedBroadcastStatus.CANCELED) {
+        expect(prisma.managedBroadcast.updateMany).not.toHaveBeenCalled();
+      } else {
+        expect(prisma.managedBroadcast.updateMany).toHaveBeenCalledWith({
+          where: expect.objectContaining({
+            id: 'broadcast-1',
+            sourceChatId,
+            entityType: rule.entityType,
+            actorUserId: 'admin-1',
+            publicationOccurrenceId: null,
+            lockedAt: null,
+            lockToken: null,
+          }),
+          data: {
+            status: ManagedBroadcastStatus.CANCELED,
+            nextSendAt: null,
+            lockedAt: null,
+            lockToken: null,
+            lastError: 'Правило изменилось во время создания отправки.',
+          },
+        });
+      }
+      expect(prisma.managedAutopostMaterialization.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'ledger-1',
+          requestId: expect.stringMatching(/^ap_rule-1_1_/u),
+          status: ManagedAutopostMaterializationStatus.PENDING,
+        },
+        data: {
+          broadcastId: 'broadcast-1',
+          status: ManagedAutopostMaterializationStatus.CANCELED,
+          lastError: 'Правило изменилось во время создания отправки.',
+        },
+      });
+      expect(prisma.managedAutopostMaterialization.update).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: ManagedAutopostMaterializationStatus.CREATED,
+          }),
+        }),
+      );
+    },
+  );
+
+  it('cancels a pending materialization when the rule is paused before broadcast creation', async () => {
+    const scheduledAt = new Date(Date.now() + 5 * 60_000);
+    const rule = {
+      id: 'rule-1',
+      sourceChatId: 'chat-1',
+      entityType: ChatEntityType.CHAT,
+      actorUserId: 'admin-1',
+      status: ManagedAutopostRuleStatus.ACTIVE,
+      revision: 1,
+      lockedAt: new Date(),
+      lockToken: 'lock-1',
+    };
+    const { service, prisma, managedBroadcastService } = createService();
+    prisma.managedAutopostRule.findFirst.mockResolvedValueOnce(rule).mockResolvedValueOnce(null);
+    prisma.managedAutopostMaterialization.findFirst.mockResolvedValue(null);
+    prisma.managedAutopostMaterialization.create.mockResolvedValue({ id: 'ledger-1' });
+    prisma.managedAutopostMaterialization.updateMany.mockResolvedValue({ count: 1 });
+
+    const materialized = await (
+      service as unknown as {
+        materializeSlot: (
+          ruleId: string,
+          revision: number,
+          lockToken: string,
+          payload: AutopostPayloadInput,
+          entityType: 'chat',
+          scheduledAt: Date,
+        ) => Promise<boolean>;
+      }
+    ).materializeSlot('rule-1', 1, 'lock-1', payload(), 'chat', scheduledAt);
+
+    expect(materialized).toBe(false);
+    expect(managedBroadcastService.sendBroadcast).not.toHaveBeenCalled();
+    expect(prisma.managedAutopostMaterialization.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'ledger-1',
+        status: ManagedAutopostMaterializationStatus.PENDING,
+      },
+      data: {
+        status: ManagedAutopostMaterializationStatus.CANCELED,
+        lastError: 'Правило остановлено до создания отправки.',
+      },
+    });
+  });
+
+  it('rejects a stale concurrent rule update', async () => {
+    const existing = persistedRule();
+    const { service, prisma } = createService();
+    prisma.managedAutopostRule.findFirst.mockResolvedValue(existing);
+    prisma.managedAutopostMaterialization.findMany.mockResolvedValue([]);
+    prisma.managedAutopostRule.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(
+      service.updateChatAutopostRule('chat-1', 'rule-1', user, { title: 'Новое название' }),
+    ).rejects.toThrow('Автопост обновляется. Повторите позже.');
+
+    expect(prisma.managedAutopostRule.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: 'rule-1',
+          revision: existing.revision,
+          updatedAt: existing.updatedAt,
+        }),
+      }),
     );
   });
 

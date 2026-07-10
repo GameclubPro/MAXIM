@@ -6,9 +6,15 @@ import {
   ChatBotAccessState,
   ChatBotMembershipStatus,
   ChatEntityType,
+  ManagedAutopostRuleStatus,
   ManagedBroadcastDeliveryStatus,
   ManagedBroadcastStatus,
   ManagedEntityAccessState,
+  PublicationAudienceMode,
+  PublicationAudienceSelection,
+  PublicationLifecycle,
+  PublicationOccurrenceStatus,
+  PublicationScheduleStatus,
   type Prisma,
 } from '../prisma/prisma-client';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
@@ -251,6 +257,9 @@ export class ManagedEntityAccessLossService {
       removedRosterSyncJobs: null,
     };
 
+    // Stop rule materializers before canceling their already-created broadcasts.
+    await this.pauseManagedAutopostRules(params);
+    await this.pauseManagedPublications(params);
     await Promise.all([
       this.clearNightModeJobs(params.chatId, cleanup),
       this.cancelManagedBroadcastRuntime(params, cleanup),
@@ -259,6 +268,170 @@ export class ManagedEntityAccessLossService {
     ]);
 
     return cleanup;
+  }
+
+  private async pauseManagedAutopostRules(params: {
+    chatId: string;
+    reason: ManagedEntityAccessLossReason;
+    source: string;
+  }): Promise<void> {
+    if (typeof this.prisma.managedAutopostRule?.updateMany !== 'function') {
+      return;
+    }
+
+    await this.prisma.managedAutopostRule.updateMany({
+      where: {
+        sourceChatId: params.chatId,
+        status: {
+          in: [ManagedAutopostRuleStatus.ACTIVE, ManagedAutopostRuleStatus.ERROR],
+        },
+      },
+      data: {
+        status: ManagedAutopostRuleStatus.PAUSED,
+        nextMaterializeAt: null,
+        lockedAt: null,
+        lockToken: null,
+        lastError: this.buildCleanupReasonMessage(params),
+      },
+    });
+  }
+
+  private async pauseManagedPublications(params: {
+    chatId: string;
+    reason: ManagedEntityAccessLossReason;
+    source: string;
+  }): Promise<void> {
+    if (
+      typeof this.prisma.publication?.findMany !== 'function' ||
+      typeof this.prisma.publication?.updateMany !== 'function' ||
+      typeof this.prisma.publicationSchedule?.updateMany !== 'function'
+    ) {
+      return;
+    }
+
+    const affectedPublicationWhere = {
+      lifecycle: { in: [PublicationLifecycle.ACTIVE, PublicationLifecycle.ERROR] },
+      targets: { some: { targetChatId: params.chatId } },
+      OR: [
+        { audienceMode: PublicationAudienceMode.SNAPSHOT },
+        { audienceSelection: PublicationAudienceSelection.SELECTED },
+      ],
+    };
+    const lastError = this.buildCleanupReasonMessage(params);
+    const affected = await this.prisma.publication.findMany({
+      where: affectedPublicationWhere,
+      select: { id: true },
+    });
+    const publicationIds = affected.map((publication) => publication.id);
+    if (publicationIds.length === 0) {
+      return;
+    }
+
+    await this.prisma.publicationSchedule.updateMany({
+      where: {
+        publicationId: { in: publicationIds },
+        status: {
+          in: [PublicationScheduleStatus.ACTIVE, PublicationScheduleStatus.ERROR],
+        },
+      },
+      data: {
+        status: PublicationScheduleStatus.PAUSED,
+        nextMaterializeAt: null,
+        lastError,
+      },
+    });
+    await this.prisma.publication.updateMany({
+      where: { id: { in: publicationIds } },
+      data: { lifecycle: PublicationLifecycle.PAUSED },
+    });
+
+    if (typeof this.prisma.managedBroadcast?.findMany !== 'function') {
+      return;
+    }
+    const broadcasts = await this.prisma.managedBroadcast.findMany({
+      where: {
+        publicationOccurrence: { is: { publicationId: { in: publicationIds } } },
+        status: {
+          in: [
+            ManagedBroadcastStatus.ACTIVE,
+            ManagedBroadcastStatus.PARTIAL,
+            ManagedBroadcastStatus.FAILED,
+          ],
+        },
+      },
+      select: { id: true },
+    });
+    const broadcastIds = broadcasts.map((broadcast) => broadcast.id);
+    if (broadcastIds.length === 0) {
+      return;
+    }
+    const now = new Date();
+    await Promise.all([
+      this.prisma.managedBroadcastDelivery.updateMany({
+        where: {
+          broadcastId: { in: broadcastIds },
+          status: {
+            in: [
+              ManagedBroadcastDeliveryStatus.PENDING,
+              ManagedBroadcastDeliveryStatus.SENDING,
+              ManagedBroadcastDeliveryStatus.FAILED,
+            ],
+          },
+        },
+        data: {
+          status: ManagedBroadcastDeliveryStatus.CANCELED,
+          lockedAt: null,
+          lockToken: null,
+          lastError,
+        },
+      }),
+      this.prisma.managedBroadcast.updateMany({
+        where: { id: { in: broadcastIds } },
+        data: {
+          status: ManagedBroadcastStatus.CANCELED,
+          nextSendAt: null,
+          lockedAt: null,
+          lockToken: null,
+          lastError,
+        },
+      }),
+      typeof this.prisma.managedBroadcastCalendarReservation?.deleteMany === 'function'
+        ? this.prisma.managedBroadcastCalendarReservation.deleteMany({
+            where: { broadcastId: { in: broadcastIds } },
+          })
+        : Promise.resolve(null),
+      typeof this.prisma.publicationOccurrence?.updateMany === 'function'
+        ? this.prisma.publicationOccurrence.updateMany({
+            where: {
+              publicationId: { in: publicationIds },
+              scheduledAt: { gte: now },
+              status: {
+                in: [
+                  PublicationOccurrenceStatus.SCHEDULED,
+                  PublicationOccurrenceStatus.IN_PROGRESS,
+                ],
+              },
+              deliveries: {
+                none: {
+                  OR: [
+                    { attemptCount: { gt: 0 } },
+                    {
+                      status: {
+                        in: [
+                          ManagedBroadcastDeliveryStatus.SENDING,
+                          ManagedBroadcastDeliveryStatus.SENT,
+                          ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+                        ],
+                      },
+                    },
+                  ],
+                },
+              },
+            },
+            data: { status: PublicationOccurrenceStatus.SCHEDULED },
+          })
+        : Promise.resolve(null),
+    ]);
   }
 
   private createEmptyCleanupResult(): ManagedEntityAccessLossCleanupResult {
@@ -460,8 +633,8 @@ export class ManagedEntityAccessLossService {
     const snapshot = normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
     return Boolean(
       snapshot &&
-        isFreshMembershipAccessSnapshot(snapshot, { nowMs: now.getTime() }) &&
-        (snapshot.isAdmin || snapshot.isOwner),
+      isFreshMembershipAccessSnapshot(snapshot, { nowMs: now.getTime() }) &&
+      (snapshot.isAdmin || snapshot.isOwner),
     );
   }
 
@@ -489,11 +662,7 @@ export class ManagedEntityAccessLossService {
 
   private isFutureDate(value: Date | string | null | undefined, now: Date): boolean {
     const timestamp =
-      value instanceof Date
-        ? value.getTime()
-        : typeof value === 'string'
-          ? Date.parse(value)
-          : NaN;
+      value instanceof Date ? value.getTime() : typeof value === 'string' ? Date.parse(value) : NaN;
     return Number.isFinite(timestamp) && timestamp > now.getTime();
   }
 

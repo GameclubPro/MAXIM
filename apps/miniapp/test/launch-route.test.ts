@@ -149,6 +149,26 @@ test('resolves channel polls settings focus from startapp payload', () => {
   assert.equal(resolveLaunchRoute(''), '/channel/-68085832859751/settings?focus=polls');
 });
 
+test('resolves legacy autopost workspaces only inside broadcast settings', () => {
+  assignWindow(
+    `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(
+      encodeRouteStartParam('/chat/-68085832859751/settings?focus=broadcast&workspace=autoposts'),
+    )}`,
+  );
+
+  assert.equal(
+    resolveLaunchRoute(''),
+    '/chat/-68085832859751/settings?focus=broadcast&workspace=autoposts',
+  );
+
+  assignWindow(
+    `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(
+      encodeRouteStartParam('/channel/-68085832859751/settings?focus=polls&workspace=autoposts'),
+    )}`,
+  );
+  assert.equal(resolveLaunchRoute(''), null);
+});
+
 test('resolves startapp from hash-route query parameters', () => {
   assignWindow(
     `https://maxim.play-team.ru/app/#/?startapp=${encodeURIComponent(
@@ -189,4 +209,37 @@ test('normalizes legacy /chats launcher route to root', () => {
   );
 
   assert.equal(resolveLaunchRoute(''), '/');
+});
+
+test('resolves the publications workspace with compose target parameters', () => {
+  assignWindow(
+    `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(
+      encodeRouteStartParam('/publications?compose=1&entityType=channel&entityId=-68085832859751'),
+    )}`,
+  );
+
+  assert.equal(
+    resolveLaunchRoute(''),
+    '/publications?compose=1&entityType=channel&entityId=-68085832859751',
+  );
+});
+
+test('normalizes legacy autopost launcher routes to publications', () => {
+  assignWindow(
+    `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(
+      encodeRouteStartParam('/autoposts?view=history'),
+    )}`,
+  );
+
+  assert.equal(resolveLaunchRoute(''), '/publications?view=history');
+});
+
+test('rejects unsupported publications launcher parameters', () => {
+  assignWindow(
+    `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(
+      encodeRouteStartParam('/publications?admin=1'),
+    )}`,
+  );
+
+  assert.equal(resolveLaunchRoute(''), null);
 });

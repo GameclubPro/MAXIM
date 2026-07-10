@@ -47,10 +47,15 @@ import {
   LazySettingsPage,
 } from './pages/lazy-pages';
 
-const LazyAutopostsPage = lazy(async () => {
-  const module = await import('./pages/autoposts-page');
-  return { default: module.AutopostsPage };
+const LazyPublicationsPage = lazy(async () => {
+  const module = await import('./pages/publications-page');
+  return { default: module.PublicationsPage };
 });
+
+function LegacyAutopostsRedirect() {
+  const location = useLocation();
+  return <Navigate to={`/publications${location.search}`} replace />;
+}
 
 const HASH_ROUTER_ENABLED =
   typeof __MAXIM_ROUTER_MODE__ === 'string' && __MAXIM_ROUTER_MODE__ === 'hash';
@@ -267,7 +272,8 @@ function AppRoutes({
         <Routes>
           <Route element={<Shell />}>
             <Route path="/" element={<LazyChatsPage api={apiClient} />} />
-            <Route path="/autoposts" element={<LazyAutopostsPage api={apiClient} />} />
+            <Route path="/publications" element={<LazyPublicationsPage api={apiClient} />} />
+            <Route path="/autoposts" element={<LegacyAutopostsRedirect />} />
             <Route path="/chat/:chatId/settings" element={<LazySettingsPage api={apiClient} />} />
             <Route
               path="/channel/:chatId/settings"

@@ -2,7 +2,10 @@ import type {
   BroadcastHistoryCounts,
   BroadcastHistoryFilter,
 } from '../lib/broadcast-history-filters';
+import { resolveRequestedBroadcastWorkspace } from '../features/publications/legacy-autoposts';
 import { useEffect, useRef } from 'react';
+import { useLocation, useParams } from 'react-router-dom';
+import { PublicationWorkspaceHandoff } from './publication-workspace-handoff';
 import { SegmentedControl } from './ui/segmented-control';
 import { ResetIcon } from './ui/reset-icon';
 import './managed-broadcast-history-card.css';
@@ -94,37 +97,56 @@ export function BroadcastWorkspaceChrome({
   onChange,
   onReset,
 }: BroadcastWorkspaceChromeProps) {
-  if (!showTabs && !showReset) {
-    return null;
-  }
-
+  const { chatId = '' } = useParams();
+  const location = useLocation();
+  const appliedWorkspaceSearchRef = useRef('');
+  const entityType = location.pathname.startsWith('/channel/') ? 'channel' : 'chat';
   const effectiveResetLabel = resetPending ? 'Сбрасываем' : resetLabel;
 
-  return (
-    <div className="broadcast-studio-shell__topbar broadcast-studio-screen__nav">
-      {showTabs ? (
-        <BroadcastWorkspaceTabs
-          value={value}
-          autopostCount={autopostCount}
-          historyCount={historyCount}
-          disabled={disabled}
-          onChange={onChange}
-        />
-      ) : null}
+  useEffect(() => {
+    const requestedWorkspace = resolveRequestedBroadcastWorkspace(location.search);
+    const workspaceSignature = `${chatId}:${location.search}`;
+    if (requestedWorkspace !== 'autoposts') {
+      appliedWorkspaceSearchRef.current = '';
+      return;
+    }
+    if (!showTabs || appliedWorkspaceSearchRef.current === workspaceSignature) {
+      return;
+    }
+    appliedWorkspaceSearchRef.current = workspaceSignature;
+    onChange('autoposts');
+  }, [chatId, location.search, onChange, showTabs]);
 
-      {showReset ? (
-        <button
-          type="button"
-          className="broadcast-shell-reset"
-          onClick={onReset}
-          disabled={disabled}
-          aria-label={effectiveResetLabel}
-          title={effectiveResetLabel}
-        >
-          <ResetIcon />
-        </button>
+  return (
+    <>
+      {chatId ? <PublicationWorkspaceHandoff entityType={entityType} entityId={chatId} /> : null}
+      {showTabs || showReset ? (
+        <div className="broadcast-studio-shell__topbar broadcast-studio-screen__nav">
+          {showTabs ? (
+            <BroadcastWorkspaceTabs
+              value={value}
+              autopostCount={autopostCount}
+              historyCount={historyCount}
+              disabled={disabled}
+              onChange={onChange}
+            />
+          ) : null}
+
+          {showReset ? (
+            <button
+              type="button"
+              className="broadcast-shell-reset"
+              onClick={onReset}
+              disabled={disabled}
+              aria-label={effectiveResetLabel}
+              title={effectiveResetLabel}
+            >
+              <ResetIcon />
+            </button>
+          ) : null}
+        </div>
       ) : null}
-    </div>
+    </>
   );
 }
 

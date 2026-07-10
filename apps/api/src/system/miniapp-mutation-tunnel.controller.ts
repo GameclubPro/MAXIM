@@ -122,6 +122,26 @@ const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
   },
   { method: 'DELETE', pattern: new RegExp(`^/autopost-rules/${ENTITY_ID_SEGMENT}$`) },
 
+  { method: 'POST', pattern: /^\/publications(?:\/test)?$/u },
+  {
+    method: 'PUT',
+    pattern: new RegExp(`^/publications/${ENTITY_ID_SEGMENT}$`),
+  },
+  {
+    method: 'DELETE',
+    pattern: new RegExp(`^/publications/${ENTITY_ID_SEGMENT}$`),
+  },
+  {
+    method: 'POST',
+    pattern: new RegExp(`^/publications/${ENTITY_ID_SEGMENT}/(pause|resume|cancel)$`),
+  },
+  {
+    method: 'POST',
+    pattern: new RegExp(
+      `^/publications/${ENTITY_ID_SEGMENT}/occurrences/${ENTITY_ID_SEGMENT}/(retry|resolve-ambiguous)$`,
+    ),
+  },
+
   { method: 'POST', pattern: new RegExp(`^/(chats|channels)/${ENTITY_ID_SEGMENT}/giveaways$`) },
   {
     method: 'POST',

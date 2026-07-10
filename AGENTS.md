@@ -100,7 +100,9 @@
 - Direct mini app CSS imports from TS/TSX must be fully wrapped in an explicit `@layer` block; `apps/miniapp/src/styles.css` is the only global CSS entrypoint and must keep imports as `@import ... layer(...)`. Use `npm run check:miniapp-css` for the focused guard.
 - For Android MAX WebView file pickers, use a real transparent `<input type="file">` overlay on the tapped control; hidden 1px inputs plus programmatic `click()`/`showPicker()` can fail to open the picker.
 - For time-only mini app inputs, use shared `TimeField` instead of native `<input type="time">`; Android MAX WebViews can hide native picker action buttons.
-- Chat and channel broadcast/autoposting compose screens share components but keep page-level footer/validation copy in `apps/miniapp/src/pages/settings-page.legacy.tsx` and `apps/miniapp/src/pages/channel-settings-page.tsx`; keep those labels synchronized.
+- `/publications` is the ordinary chat/channel publishing workspace; chat and channel settings are compatibility/handoff surfaces, while VK parsing remains a separate flow.
+- Publication list search, entity/status filters, and the schedules view are server-side and cursor-bound; do not auto-fetch every page for client-side filtering.
+- Managed broadcast rows with `publicationOccurrenceId != null` are Publication execution envelopes. Keep them hidden from legacy broadcast/autopost read, mutation, calendar-overwrite, and retry APIs; new code should use the Publication domain instead.
 - Chat settings section apply targets must fail safe to the current chat. Keep `applySettingsTargetSchema`, mini app apply-target defaults, and preview transport defaults aligned on `current`; applying a section to all chats must require an explicit `mode: 'all'`.
 - Keep home-card statistics prefetch imports lazy. Static importing events/stats API clients into `chats-page.tsx` counts against the startup JS budget.
 - Keep mini app chat/channel statistics routes off heavy shared chunks: stats API clients should import `@maxim/contracts` types only, and stats pages should use focused route CSS instead of `lazy-pages.css`.

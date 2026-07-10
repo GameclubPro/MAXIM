@@ -238,6 +238,58 @@ enum ManagedAutopostMaterializationStatus {
   CANCELED
 }
 
+enum PublicationLifecycle {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELED
+  ERROR
+}
+
+enum PublicationAudienceSelection {
+  SELECTED
+  ALL_CHATS
+  ALL_CHANNELS
+  ALL_MANAGED
+}
+
+enum PublicationAudienceMode {
+  SNAPSHOT
+  DYNAMIC
+}
+
+enum PublicationContentFormat {
+  PLAIN
+  MARKDOWN
+}
+
+enum PublicationScheduleMode {
+  NOW
+  ONCE
+  SLOTS
+  RECURRENCE
+}
+
+enum PublicationScheduleStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELED
+  ERROR
+}
+
+enum PublicationOccurrenceStatus {
+  SCHEDULED
+  IN_PROGRESS
+  SENT
+  PARTIAL
+  FAILED
+  AMBIGUOUS
+  CANCELED
+}
+
 enum ManagedEntityFavoriteType {
   IMPORTANT
   WATCH
@@ -284,6 +336,7 @@ model Chat {
   channelStatsSyncState           ChannelStatsSyncState?
   managedBroadcasts               ManagedBroadcast[]
   managedAutopostRules            ManagedAutopostRule[]
+  publicationTargets              PublicationTarget[]
   managedGiveaways                ManagedGiveaway[]
   managedPolls                    ManagedPoll[]
   vkParsingSettings               VkParsingSettings?
@@ -1657,6 +1710,170 @@ model SupportRequest {
   @@map("support_requests")
 }
 
+model Publication {
+  id                         String                       @id @default(cuid())
+  actorUserId                String                       @map("actor_user_id")
+  requestId                  String                       @map("request_id")
+  title                      String                       @default("")
+  lifecycle                  PublicationLifecycle         @default(DRAFT)
+  audienceSelection          PublicationAudienceSelection @default(SELECTED) @map("audience_selection")
+  audienceMode               PublicationAudienceMode      @default(SNAPSHOT) @map("audience_mode")
+  canonicalContentRevisionId String?                      @unique(map: "publications_canonical_content_revision_key") @map("canonical_content_revision_id")
+  legacyBroadcastId          String?                      @unique(map: "publications_legacy_broadcast_key") @map("legacy_broadcast_id")
+  legacyAutopostRuleId       String?                      @unique(map: "publications_legacy_autopost_rule_key") @map("legacy_autopost_rule_id")
+  version                    Int                          @default(1)
+  createdAt                  DateTime                     @default(now()) @map("created_at")
+  updatedAt                  DateTime                     @updatedAt @map("updated_at")
+
+  canonicalContentRevision PublicationContentRevision?  @relation("PublicationCanonicalContentRevision", fields: [canonicalContentRevisionId], references: [id], onDelete: SetNull)
+  legacyBroadcast          ManagedBroadcast?            @relation("PublicationLegacyBroadcast", fields: [legacyBroadcastId], references: [id], onDelete: SetNull)
+  legacyAutopostRule       ManagedAutopostRule?         @relation("PublicationLegacyAutopostRule", fields: [legacyAutopostRuleId], references: [id], onDelete: SetNull)
+  contentRevisions         PublicationContentRevision[] @relation("PublicationContentRevisions")
+  targets                  PublicationTarget[]
+  schedule                 PublicationSchedule?
+  occurrences              PublicationOccurrence[]
+  mutationRecords          PublicationMutationRecord[]
+
+  @@unique([actorUserId, requestId], map: "publications_actor_request_key")
+  @@index([actorUserId, lifecycle, updatedAt(sort: Desc), id(sort: Desc)], map: "publications_actor_lifecycle_updated_idx")
+  @@index([lifecycle, updatedAt(sort: Desc)], map: "publications_lifecycle_updated_idx")
+  @@map("publications")
+}
+
+model PublicationMutationRecord {
+  id               String   @id @default(cuid())
+  actorUserId      String   @map("actor_user_id")
+  requestId        String   @map("request_id")
+  requestHash      String   @map("request_hash")
+  publicationId    String   @map("publication_id")
+  resultingVersion Int      @map("resulting_version")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  publication Publication @relation(fields: [publicationId], references: [id], onDelete: Cascade)
+
+  @@unique([actorUserId, requestId], map: "publication_mutation_records_actor_request_key")
+  @@index([publicationId, createdAt(sort: Desc)], map: "publication_mutation_records_publication_created_idx")
+  @@map("publication_mutation_records")
+}
+
+model PublicationContentRevision {
+  id            String                   @id @default(cuid())
+  publicationId String                   @map("publication_id")
+  revision      Int
+  text          String                   @default("")
+  textFormat    PublicationContentFormat @default(PLAIN) @map("text_format")
+  buttons       Json                     @default("[]")
+  createdAt     DateTime                 @default(now()) @map("created_at")
+
+  publication             Publication               @relation("PublicationContentRevisions", fields: [publicationId], references: [id], onDelete: Cascade)
+  canonicalForPublication Publication?              @relation("PublicationCanonicalContentRevision")
+  assets                  PublicationContentAsset[]
+  occurrences             PublicationOccurrence[]
+  executionBroadcasts     ManagedBroadcast[]        @relation("PublicationContentRevisionExecutionBroadcasts")
+
+  @@unique([publicationId, revision], map: "publication_content_revisions_publication_revision_key")
+  @@index([publicationId, createdAt(sort: Desc)], map: "publication_content_revisions_publication_created_idx")
+  @@map("publication_content_revisions")
+}
+
+model PublicationAsset {
+  id             String   @id @default(cuid())
+  actorUserId    String   @map("actor_user_id")
+  sha256         String
+  mimeType       String   @map("mime_type")
+  fileName       String   @default("") @map("file_name")
+  sizeBytes      Int      @map("size_bytes")
+  bytes          Bytes?
+  durablePayload Json?    @map("durable_payload")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  contentLinks PublicationContentAsset[]
+
+  @@unique([actorUserId, sha256], map: "publication_assets_actor_sha256_key")
+  @@index([mimeType, createdAt(sort: Desc)], map: "publication_assets_mime_created_idx")
+  @@map("publication_assets")
+}
+
+model PublicationContentAsset {
+  contentRevisionId String @map("content_revision_id")
+  assetId           String @map("asset_id")
+  position          Int
+
+  contentRevision PublicationContentRevision @relation(fields: [contentRevisionId], references: [id], onDelete: Cascade)
+  asset           PublicationAsset           @relation(fields: [assetId], references: [id], onDelete: Restrict)
+
+  @@id([contentRevisionId, assetId], map: "publication_content_assets_pkey")
+  @@unique([contentRevisionId, position], map: "publication_content_assets_revision_position_key")
+  @@index([assetId], map: "publication_content_assets_asset_id_idx")
+  @@map("publication_content_assets")
+}
+
+model PublicationTarget {
+  id            String         @id @default(cuid())
+  publicationId String         @map("publication_id")
+  targetChatId  String         @map("target_chat_id")
+  entityType    ChatEntityType @map("entity_type")
+  position      Int
+  createdAt     DateTime       @default(now()) @map("created_at")
+
+  publication Publication @relation(fields: [publicationId], references: [id], onDelete: Cascade)
+  chat        Chat        @relation(fields: [targetChatId], references: [id], onDelete: Restrict)
+
+  @@unique([publicationId, targetChatId], map: "publication_targets_publication_target_key")
+  @@unique([publicationId, position], map: "publication_targets_publication_position_key")
+  @@index([targetChatId, entityType], map: "publication_targets_target_type_idx")
+  @@map("publication_targets")
+}
+
+model PublicationSchedule {
+  id                 String                    @id @default(cuid())
+  publicationId      String                    @unique(map: "publication_schedules_publication_id_key") @map("publication_id")
+  mode               PublicationScheduleMode
+  timezone           String                    @default("Europe/Moscow")
+  rule               Json                      @default("{}")
+  revision           Int                       @default(1)
+  status             PublicationScheduleStatus @default(DRAFT)
+  nextMaterializeAt  DateTime?                 @map("next_materialize_at")
+  lastMaterializedAt DateTime?                 @map("last_materialized_at")
+  lastError          String?                   @map("last_error")
+  createdAt          DateTime                  @default(now()) @map("created_at")
+  updatedAt          DateTime                  @updatedAt @map("updated_at")
+
+  publication Publication             @relation(fields: [publicationId], references: [id], onDelete: Cascade)
+  occurrences PublicationOccurrence[]
+
+  @@index([status, nextMaterializeAt], map: "publication_schedules_status_next_materialize_idx")
+  @@map("publication_schedules")
+}
+
+model PublicationOccurrence {
+  id                String                      @id @default(cuid())
+  publicationId     String                      @map("publication_id")
+  scheduleId        String                      @map("schedule_id")
+  contentRevisionId String                      @map("content_revision_id")
+  scheduleRevision  Int                         @map("schedule_revision")
+  scheduledAt       DateTime                    @map("scheduled_at")
+  status            PublicationOccurrenceStatus @default(SCHEDULED)
+  legacyBroadcastId String?                     @map("legacy_broadcast_id")
+  createdAt         DateTime                    @default(now()) @map("created_at")
+  updatedAt         DateTime                    @updatedAt @map("updated_at")
+
+  publication      Publication                @relation(fields: [publicationId], references: [id], onDelete: Cascade)
+  schedule         PublicationSchedule        @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  contentRevision  PublicationContentRevision @relation(fields: [contentRevisionId], references: [id], onDelete: Restrict)
+  legacyBroadcast  ManagedBroadcast?          @relation("PublicationOccurrenceLegacyBroadcast", fields: [legacyBroadcastId], references: [id], onDelete: SetNull)
+  legacyBroadcasts ManagedBroadcast[]         @relation("PublicationOccurrenceExecutionBroadcasts")
+  deliveries       ManagedBroadcastDelivery[]
+
+  @@unique([publicationId, scheduleRevision, scheduledAt], map: "publication_occurrences_publication_revision_slot_key")
+  @@index([scheduleId, scheduleRevision], map: "publication_occurrences_schedule_revision_idx")
+  @@index([contentRevisionId], map: "publication_occurrences_content_revision_idx")
+  @@index([legacyBroadcastId], map: "publication_occurrences_legacy_broadcast_idx")
+  @@index([status, scheduledAt], map: "publication_occurrences_status_scheduled_idx")
+  @@index([publicationId, scheduledAt(sort: Desc), id(sort: Desc)], map: "publication_occurrences_publication_scheduled_id_idx")
+  @@map("publication_occurrences")
+}
+
 model ManagedBroadcast {
   id               String                 @id @default(cuid())
   sourceChatId     String                 @map("source_chat_id")
@@ -1689,6 +1906,8 @@ model ManagedBroadcast {
   lastError        String?                @map("last_error")
   lockedAt         DateTime?              @map("locked_at")
   lockToken        String?                @map("lock_token")
+  publicationOccurrenceId String?         @map("publication_occurrence_id")
+  publicationContentRevisionId String?                @map("publication_content_revision_id")
   createdAt        DateTime               @default(now()) @map("created_at")
   updatedAt        DateTime               @updatedAt @map("updated_at")
 
@@ -1698,9 +1917,15 @@ model ManagedBroadcast {
   calendarReservations ManagedBroadcastCalendarReservation[]
   idempotencyRecords ManagedBroadcastIdempotencyRecord[]
   autopostMaterializations ManagedAutopostMaterialization[]
+  legacyPublication Publication? @relation("PublicationLegacyBroadcast")
+  legacyPublicationOccurrences PublicationOccurrence[] @relation("PublicationOccurrenceLegacyBroadcast")
+  publicationOccurrence PublicationOccurrence? @relation("PublicationOccurrenceExecutionBroadcasts", fields: [publicationOccurrenceId], references: [id], onDelete: Cascade)
+  publicationContentRevision PublicationContentRevision? @relation("PublicationContentRevisionExecutionBroadcasts", fields: [publicationContentRevisionId], references: [id], onDelete: SetNull)
 
   @@index([sourceChatId, status, nextSendAt], map: "managed_broadcasts_source_chat_id_status_next_send_at_idx")
   @@index([status, nextSendAt], map: "managed_broadcasts_status_next_send_at_idx")
+  @@unique([publicationOccurrenceId, entityType], map: "managed_broadcasts_pub_occurrence_entity_key")
+  @@index([publicationContentRevisionId], map: "managed_broadcasts_pub_content_revision_idx")
   @@map("managed_broadcasts")
 }
 
@@ -1723,6 +1948,7 @@ model ManagedAutopostRule {
 
   chat             Chat                             @relation(fields: [sourceChatId], references: [id], onDelete: Cascade)
   materializations ManagedAutopostMaterialization[]
+  legacyPublication Publication? @relation("PublicationLegacyAutopostRule")
 
   @@index([sourceChatId, entityType, status, updatedAt(sort: Desc)], map: "managed_autopost_rules_source_status_updated_idx")
   @@index([status, nextMaterializeAt], map: "managed_autopost_rules_status_next_materialize_idx")
@@ -1785,14 +2011,17 @@ model ManagedBroadcastDelivery {
   sentAt          DateTime?                      @map("sent_at")
   lockedAt        DateTime?                      @map("locked_at")
   lockToken       String?                        @map("lock_token")
+  publicationOccurrenceId String?                @map("publication_occurrence_id")
   createdAt       DateTime                       @default(now()) @map("created_at")
   updatedAt       DateTime                       @updatedAt @map("updated_at")
 
   broadcast ManagedBroadcast @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
+  publicationOccurrence PublicationOccurrence? @relation(fields: [publicationOccurrenceId], references: [id], onDelete: Cascade)
 
   @@unique([broadcastId, occurrenceIndex, targetChatId], map: "managed_broadcast_deliveries_broadcast_occurrence_target_key")
   @@index([broadcastId, occurrenceIndex, status], map: "managed_broadcast_deliveries_broadcast_occurrence_status_idx")
   @@index([status, lockedAt], map: "managed_broadcast_deliveries_status_locked_at_idx")
+  @@index([publicationOccurrenceId, createdAt(sort: Desc), id(sort: Desc)], map: "managed_broadcast_deliveries_pub_occurrence_created_id_idx")
   @@map("managed_broadcast_deliveries")
 }
 
