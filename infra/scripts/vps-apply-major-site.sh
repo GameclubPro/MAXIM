@@ -210,6 +210,9 @@ grep -Ei '^HTTP/[0-9.]+ 200' <<<"$major_live_headers"
 grep -i '^x-maxim-ingress: webhook' <<<"$major_live_headers"
 curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/health/ready | grep -Ei '^HTTP/[0-9.]+ 404'
 curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/system/metrics/queues | grep -i '^x-maxim-ingress: admin'
+channels_headers="$(curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/channels)"
+grep -Ei '^HTTP/[0-9.]+ 401' <<<"$channels_headers"
+grep -i '^x-maxim-ingress: admin' <<<"$channels_headers"
 curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/safety-desk/queue | grep -Ei '^HTTP/[0-9.]+ 404'
 curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/support-requests/queue | grep -Ei '^HTTP/[0-9.]+ 404'
 karavan_sse_headers="$(
