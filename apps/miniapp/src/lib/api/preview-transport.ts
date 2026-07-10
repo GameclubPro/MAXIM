@@ -3661,7 +3661,10 @@ function createInitialState(): PreviewState {
     managedPollDetailsSchema.parse({
       id: 'poll-channel-active',
       channelId: PREVIEW_CHANNEL_ID,
-      question: 'Какой формат встреч добавить в августе?',
+      question: '**Какой формат встреч** добавить в августе?',
+      questionFormat: 'markdown',
+      images: [],
+      imageCount: 0,
       status: 'ACTIVE',
       visibility: 'OPEN',
       totalVotes: 24,
@@ -3686,6 +3689,9 @@ function createInitialState(): PreviewState {
       id: 'poll-channel-closed',
       channelId: PREVIEW_CHANNEL_ID,
       question: 'Какая тема для подборки полезнее?',
+      questionFormat: 'plain',
+      images: [],
+      imageCount: 0,
       status: 'CLOSED',
       visibility: 'ANONYMOUS',
       totalVotes: 61,
@@ -6897,6 +6903,9 @@ async function handleChannelRequest(
         id: pollId,
         channelId,
         question: payload.question,
+        questionFormat: payload.questionFormat,
+        images: payload.images,
+        imageCount: payload.images.length,
         status: 'DRAFT',
         visibility: payload.visibility,
         totalVotes: 0,
@@ -7047,6 +7056,8 @@ async function handleChannelRequest(
         throw new Error('Опубликованный опрос нельзя изменить.');
       }
       const payload = updateManagedPollRequestSchema.parse(parseJsonBody(init));
+      const questionFormat = payload.questionFormat ?? poll.questionFormat;
+      const images = payload.images ?? poll.images;
       const optionIds = new Set(poll.options.map((option) => option.id));
       if (payload.options.some((option) => option.id && !optionIds.has(option.id))) {
         throw new Error('Вариант ответа больше не существует.');
@@ -7054,6 +7065,9 @@ async function handleChannelRequest(
       const updated = managedPollDetailsSchema.parse({
         ...poll,
         question: payload.question,
+        questionFormat,
+        images,
+        imageCount: images.length,
         visibility: payload.visibility,
         options: payload.options.map((option, index) => ({
           id: option.id ?? `${poll.id}-option-${index + 1}`,

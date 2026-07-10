@@ -1,9 +1,11 @@
 import {
   MANAGED_POLL_OPTION_MAX_LENGTH,
+  type ManagedPollQuestionFormat,
   type ManagedPollStatus,
-  type ManagedPollVisibility,
 } from '@maxim/contracts/poll';
 import type { MaxMessageButton } from '../max/max-client.service';
+import { renderSupportedMarkdownAsHtml } from './max-markdown.util';
+import { escapeHtmlPreservingWhitespace } from './max-text-markup.util';
 
 export const MANAGED_POLL_CALLBACK_PREFIX = 'poll';
 const MANAGED_POLL_CALLBACK_VERSION = 'v2';
@@ -45,22 +47,30 @@ export function buildManagedPollOptionResults(
 
 export function buildManagedPollMessageText(params: {
   question: string;
+  questionFormat?: ManagedPollQuestionFormat;
   options: readonly ManagedPollOptionResult[];
   status: ManagedPollStatus;
-  visibility: ManagedPollVisibility;
   totalVotes: number;
 }): string {
+  const useHtml = params.questionFormat === 'markdown';
+  const renderPlainSegment = (value: string) =>
+    useHtml ? escapeHtmlPreservingWhitespace(value) : value;
   const title = params.status === 'CLOSED' ? 'Опрос завершён' : 'Опрос';
-  const lines = [title, '', params.question.trim()];
+  const question = useHtml
+    ? renderSupportedMarkdownAsHtml(params.question.trim(), { blockMode: 'raw' })
+    : params.question.trim();
+  const lines = [renderPlainSegment(title), '', question];
 
   if (params.status === 'CLOSED') {
     lines.push('');
     for (const [index, option] of params.options.entries()) {
-      lines.push(`${index + 1}. ${option.text} — ${option.votes} · ${option.percent}%`);
+      lines.push(
+        `${index + 1}. ${renderPlainSegment(option.text)} — ${option.votes} · ${option.percent}%`,
+      );
     }
   }
 
-  lines.push('', buildManagedPollMeta(params.totalVotes, params.visibility));
+  lines.push('', buildManagedPollMeta(params.totalVotes));
   return lines.join('\n');
 }
 
@@ -108,9 +118,8 @@ export function parseManagedPollCallbackPayload(
   return idPattern.test(pollId) && idPattern.test(optionId) ? { pollId, optionId } : null;
 }
 
-function buildManagedPollMeta(totalVotes: number, visibility: ManagedPollVisibility): string {
-  const visibilityLabel = visibility === 'ANONYMOUS' ? 'Анонимный' : 'Открытый';
-  return `${formatManagedPollVoteCount(totalVotes)} · ${visibilityLabel}`;
+function buildManagedPollMeta(totalVotes: number): string {
+  return formatManagedPollVoteCount(totalVotes);
 }
 
 function formatManagedPollVoteCount(value: number): string {

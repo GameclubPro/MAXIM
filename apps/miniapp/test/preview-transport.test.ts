@@ -5,6 +5,7 @@ import {
   closeChannelManagedPoll,
   createChannelManagedPoll,
   deleteChannelManagedPoll,
+  getChannelManagedPoll,
   getChannelManagedPollVoters,
   getChannelManagedPolls,
   publishChannelManagedPoll,
@@ -59,8 +60,16 @@ test('preview channel polls support history, voters, and draft lifecycle', async
   await closeChannelManagedPoll(api, 'preview-channel', 'poll-channel-active');
 
   const created = await createChannelManagedPoll(api, 'preview-channel', {
-    question: 'Какой день удобнее?',
+    question: '**Какой день** удобнее?',
+    questionFormat: 'markdown',
     visibility: 'ANONYMOUS',
+    images: [
+      {
+        base64: 'cHJldmlldy1wb2xsLWltYWdl',
+        mimeType: 'image/jpeg',
+        fileName: 'poll.jpg',
+      },
+    ],
     options: [
       { id: 'client-option-1', text: 'Пятница' },
       { id: 'client-option-2', text: 'Суббота' },
@@ -71,13 +80,36 @@ test('preview channel polls support history, voters, and draft lifecycle', async
     created.options.some((option) => option.id.startsWith('client-option-')),
     false,
   );
+  assert.equal(created.questionFormat, 'markdown');
+  assert.equal(created.images.length, 1);
+
+  const createdSummary = (await getChannelManagedPolls(api, 'preview-channel')).items.find(
+    (poll) => poll.id === created.id,
+  );
+  assert.equal(createdSummary?.imageCount, 1);
+  assert.equal('images' in (createdSummary ?? {}), false);
+
+  const createdDetails = await getChannelManagedPoll(api, 'preview-channel', created.id);
+  assert.deepEqual(createdDetails.images, created.images);
+
+  const legacyUpdated = await updateChannelManagedPoll(api, 'preview-channel', created.id, {
+    question: 'Когда встречаемся?',
+    visibility: 'ANONYMOUS',
+    options: created.options.map((option) => ({ id: option.id, text: option.text })),
+  });
+  assert.equal(legacyUpdated.questionFormat, 'markdown');
+  assert.deepEqual(legacyUpdated.images, created.images);
 
   const updated = await updateChannelManagedPoll(api, 'preview-channel', created.id, {
     question: 'Когда встречаемся?',
+    questionFormat: 'plain',
     visibility: 'OPEN',
+    images: [],
     options: created.options.map((option) => ({ id: option.id, text: option.text })),
   });
   assert.equal(updated.visibility, 'OPEN');
+  assert.equal(updated.questionFormat, 'plain');
+  assert.equal(updated.imageCount, 0);
 
   const published = await publishChannelManagedPoll(api, 'preview-channel', created.id);
   assert.equal(published.status, 'ACTIVE');

@@ -647,6 +647,9 @@ model ManagedPoll {
   chatId               String                @map("chat_id")
   actorUserId          String                @map("actor_user_id")
   question             String
+  questionFormat       String                @default("plain") @map("question_format")
+  imageCount           Int                   @default(0) @map("image_count")
+  images               Json                  @default("[]")
   status               ManagedPollStatus     @default(DRAFT)
   visibility           ManagedPollVisibility @default(ANONYMOUS)
   identitySalt         String                @map("identity_salt")

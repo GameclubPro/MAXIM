@@ -3,6 +3,7 @@ import {
   MANAGED_POLL_MIN_OPTIONS,
   MANAGED_POLL_OPTION_MAX_LENGTH,
   MANAGED_POLL_QUESTION_MAX_LENGTH,
+  managedPollSummarySchema,
   type CreateManagedPollRequest,
   type ManagedPollDetails,
   type ManagedPollListResponse,
@@ -10,6 +11,7 @@ import {
   type ManagedPollVoter,
   type ManagedPollVisibility,
 } from '@maxim/contracts/poll';
+import type { BroadcastImage } from '@maxim/contracts';
 import {
   useInfiniteQuery,
   useMutation,
@@ -18,6 +20,7 @@ import {
 } from '@tanstack/react-query';
 import {
   CheckCircle,
+  Camera,
   EditPencil,
   Eye,
   NavArrowLeft,
@@ -39,10 +42,12 @@ import {
   type RefObject,
 } from 'react';
 import { describeApiError } from '../lib/api-error';
+import { stripSupportedMarkdownToPlainText } from '../lib/max-markdown';
 import {
   closeChannelManagedPoll,
   createChannelManagedPoll,
   deleteChannelManagedPoll,
+  getChannelManagedPoll,
   getChannelManagedPollVoters,
   getChannelManagedPolls,
   publishChannelManagedPoll,
@@ -55,6 +60,8 @@ import { channelPollQueryKeys } from '../lib/channel-poll-query-keys';
 import { openMaxBotLink } from '../lib/max-bridge';
 import { useNativeBackHandler } from '../lib/native-back';
 import { ActionConfirmSheet } from './ui/action-confirm-sheet';
+import { BroadcastContentComposer } from './broadcast-content-composer';
+import { MaxMarkdownPreview } from './max-markdown-preview';
 import { SegmentedControl } from './ui/segmented-control';
 import { SkeletonCard } from './ui/skeleton';
 import { StatusState } from './ui/status-state';
@@ -72,6 +79,9 @@ type PollDraftOption = {
 type PollEditorDraft = {
   pollId: string | null;
   question: string;
+  questionFormat: 'plain' | 'markdown';
+  images: BroadcastImage[];
+  imageRevision: number;
   visibility: ManagedPollVisibility;
   options: PollDraftOption[];
 };
@@ -99,6 +109,7 @@ type ManagedPollWorkspaceProps = {
 };
 
 let nextPollOptionKey = 1;
+let nextPollImageRevision = 1;
 
 function createOptionKey(): string {
   const key = `poll-option-${nextPollOptionKey}`;
@@ -106,10 +117,19 @@ function createOptionKey(): string {
   return key;
 }
 
+function createImageRevision(): number {
+  const revision = nextPollImageRevision;
+  nextPollImageRevision += 1;
+  return revision;
+}
+
 function createEmptyDraft(): PollEditorDraft {
   return {
     pollId: null,
     question: '',
+    questionFormat: 'plain',
+    images: [],
+    imageRevision: createImageRevision(),
     visibility: 'ANONYMOUS',
     options: Array.from({ length: MANAGED_POLL_MIN_OPTIONS }, () => ({
       key: createOptionKey(),
@@ -118,10 +138,13 @@ function createEmptyDraft(): PollEditorDraft {
   };
 }
 
-function toEditorDraft(poll: ManagedPollSummary): PollEditorDraft {
+function toEditorDraft(poll: ManagedPollDetails): PollEditorDraft {
   return {
     pollId: poll.id,
     question: poll.question,
+    questionFormat: poll.questionFormat,
+    images: poll.images.map((image) => ({ ...image })),
+    imageRevision: createImageRevision(),
     visibility: poll.visibility,
     options: [...poll.options]
       .sort((left, right) => left.position - right.position)
@@ -136,6 +159,8 @@ function toEditorDraft(poll: ManagedPollSummary): PollEditorDraft {
 function buildPollPayload(draft: PollEditorDraft): CreateManagedPollRequest {
   return {
     question: draft.question.trim(),
+    questionFormat: draft.questionFormat,
+    images: draft.images,
     visibility: draft.visibility,
     options: draft.options.map((option) => ({
       ...(option.id ? { id: option.id } : {}),
@@ -145,7 +170,20 @@ function buildPollPayload(draft: PollEditorDraft): CreateManagedPollRequest {
 }
 
 function buildDraftKey(draft: PollEditorDraft | null): string {
-  return draft ? JSON.stringify(buildPollPayload(draft)) : '';
+  if (!draft) {
+    return '';
+  }
+
+  return JSON.stringify({
+    question: draft.question.trim(),
+    questionFormat: draft.questionFormat,
+    visibility: draft.visibility,
+    options: draft.options.map((option) => ({
+      ...(option.id ? { id: option.id } : {}),
+      text: option.text.trim(),
+    })),
+    imageRevision: draft.imageRevision,
+  });
 }
 
 function normalizeOptionText(value: string): string {
@@ -154,10 +192,14 @@ function normalizeOptionText(value: string): string {
 
 function validateDraft(draft: PollEditorDraft): PollValidationErrors {
   const errors: PollValidationErrors = { question: '', options: {} };
-  const question = draft.question.trim();
+  const sourceQuestion = draft.question.trim();
+  const question =
+    draft.questionFormat === 'markdown'
+      ? stripSupportedMarkdownToPlainText(sourceQuestion).trim()
+      : sourceQuestion;
   if (!question) {
     errors.question = 'Введите вопрос.';
-  } else if (question.length > MANAGED_POLL_QUESTION_MAX_LENGTH) {
+  } else if (sourceQuestion.length > MANAGED_POLL_QUESTION_MAX_LENGTH) {
     errors.question = `Максимум ${MANAGED_POLL_QUESTION_MAX_LENGTH} символов.`;
   }
 
@@ -210,6 +252,7 @@ function upsertPoll(
   current: InfiniteData<ManagedPollListResponse, string | null> | undefined,
   poll: ManagedPollDetails,
 ): InfiniteData<ManagedPollListResponse, string | null> {
+  const summary = managedPollSummarySchema.parse(poll);
   const pages = current?.pages ?? [{ items: [], nextCursor: null }];
   let found = false;
   const nextPages = pages.map((page) => ({
@@ -219,13 +262,13 @@ function upsertPoll(
         return item;
       }
       found = true;
-      return poll;
+      return summary;
     }),
   }));
   if (!found) {
     nextPages[0] = {
       ...(nextPages[0] ?? { nextCursor: null }),
-      items: [poll, ...(nextPages[0]?.items ?? [])],
+      items: [summary, ...(nextPages[0]?.items ?? [])],
     };
   }
   return {
@@ -450,7 +493,20 @@ function PollResultCard({
         <span className="managed-poll-item__date">{date}</span>
       </header>
 
-      <h3>{poll.question}</h3>
+      <h3 className="managed-poll-item__question">
+        {poll.questionFormat === 'markdown' ? (
+          <MaxMarkdownPreview value={poll.question} />
+        ) : (
+          poll.question
+        )}
+      </h3>
+
+      {poll.imageCount > 0 ? (
+        <span className="managed-poll-item__media-count" aria-label={`Фото: ${poll.imageCount}`}>
+          <Camera aria-hidden />
+          {poll.imageCount}
+        </span>
+      ) : null}
 
       {showResults ? (
         <div className="managed-poll-results" aria-label="Результаты опроса">
@@ -575,6 +631,8 @@ function PollEditor({
   questionRef,
   optionRefs,
   onChange,
+  onImagePreparationChange,
+  onImageError,
   onBack,
   onSave,
   onPublish,
@@ -582,9 +640,11 @@ function PollEditor({
   draft: PollEditorDraft;
   errors: PollValidationErrors;
   busy: boolean;
-  questionRef: RefObject<HTMLTextAreaElement | null>;
+  questionRef: RefObject<HTMLDivElement | null>;
   optionRefs: RefObject<Map<string, HTMLInputElement>>;
   onChange: (draft: PollEditorDraft) => void;
+  onImagePreparationChange: (preparing: boolean) => void;
+  onImageError: (message: string) => void;
   onBack: () => void;
   onSave: () => void;
   onPublish: () => void;
@@ -630,30 +690,36 @@ function PollEditor({
       </header>
 
       <div className="managed-poll-editor__section">
-        <label className={errors.question ? 'is-error' : undefined}>
+        <div
+          ref={questionRef}
+          className={`managed-poll-editor__question${errors.question ? ' is-error' : ''}`}
+        >
           <span className="managed-poll-editor__label-row">
             <strong>Вопрос</strong>
             <small>
               {draft.question.length}/{MANAGED_POLL_QUESTION_MAX_LENGTH}
             </small>
           </span>
-          <textarea
-            ref={questionRef}
-            rows={3}
-            value={draft.question}
+          <BroadcastContentComposer
+            className="managed-poll-editor__composer"
+            text={draft.question}
             maxLength={MANAGED_POLL_QUESTION_MAX_LENGTH}
-            placeholder="Ваш вопрос"
-            aria-invalid={Boolean(errors.question)}
-            aria-describedby={errors.question ? 'managed-poll-question-error' : undefined}
-            onChange={(event) => onChange({ ...draft, question: event.target.value })}
+            images={draft.images}
+            messageAriaLabel="Вопрос опроса"
+            textPlaceholder="Ваш вопрос"
+            textAriaLabel="Вопрос опроса"
             disabled={busy}
+            textError={errors.question}
+            onTextChange={(question) =>
+              onChange({ ...draft, question, questionFormat: 'markdown' })
+            }
+            onImagesChange={(images) =>
+              onChange({ ...draft, images, imageRevision: createImageRevision() })
+            }
+            onImagePreparationChange={onImagePreparationChange}
+            onError={onImageError}
           />
-          {errors.question ? (
-            <small id="managed-poll-question-error" className="managed-poll-editor__error">
-              {errors.question}
-            </small>
-          ) : null}
-        </label>
+        </div>
 
         <label className="managed-poll-editor__privacy">
           <span>
@@ -785,9 +851,10 @@ export const ManagedPollWorkspace = forwardRef<
     question: '',
     options: {},
   });
+  const [imagesPreparing, setImagesPreparing] = useState(false);
   const [confirmState, setConfirmState] = useState<PollConfirmState | null>(null);
   const [votersPollId, setVotersPollId] = useState<string | null>(null);
-  const questionRef = useRef<HTMLTextAreaElement | null>(null);
+  const questionRef = useRef<HTMLDivElement | null>(null);
   const optionRefs = useRef(new Map<string, HTMLInputElement>());
   const publishSavedPollRef = useRef<ManagedPollDetails | null>(null);
   const listQueryKey = channelPollQueryKeys.list(channelId);
@@ -846,6 +913,25 @@ export const ManagedPollWorkspace = forwardRef<
     },
     [api, channelId],
   );
+
+  const openPollMutation = useMutation({
+    mutationFn: (pollId: string) => getChannelManagedPoll(api, channelId, pollId),
+    onSuccess: (poll) => {
+      applyPoll(poll);
+      const nextDraft = toEditorDraft(poll);
+      setDraft(nextDraft);
+      setSavedDraft(nextDraft);
+      setValidationErrors({ question: '', options: {} });
+      setImagesPreparing(false);
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось открыть черновик',
+        description: describeApiError(error, 'Повторите позже.'),
+      });
+    },
+  });
 
   const saveMutation = useMutation({
     mutationFn: persistDraft,
@@ -1006,6 +1092,8 @@ export const ManagedPollWorkspace = forwardRef<
   });
 
   const isBusy =
+    imagesPreparing ||
+    openPollMutation.isPending ||
     saveMutation.isPending ||
     publishMutation.isPending ||
     closeMutation.isPending ||
@@ -1017,6 +1105,7 @@ export const ManagedPollWorkspace = forwardRef<
     setDraft(null);
     setSavedDraft(null);
     setValidationErrors({ question: '', options: {} });
+    setImagesPreparing(false);
   }, []);
 
   const requestEditorClose = useCallback(() => {
@@ -1082,18 +1171,18 @@ export const ManagedPollWorkspace = forwardRef<
     setDraft(nextDraft);
     setSavedDraft(nextDraft);
     setValidationErrors({ question: '', options: {} });
+    setImagesPreparing(false);
   };
 
   const startEditingPoll = (poll: ManagedPollSummary) => {
-    const nextDraft = toEditorDraft(poll);
-    setDraft(nextDraft);
-    setSavedDraft(nextDraft);
-    setValidationErrors({ question: '', options: {} });
+    if (!openPollMutation.isPending) {
+      openPollMutation.mutate(poll.id);
+    }
   };
 
   const focusFirstError = (errors: PollValidationErrors) => {
     const target = errors.question
-      ? questionRef.current
+      ? questionRef.current?.querySelector<HTMLElement>('[contenteditable="true"]')
       : draft?.options.find((option) => errors.options[option.key])
         ? optionRefs.current.get(
             draft.options.find((option) => errors.options[option.key])?.key ?? '',
@@ -1161,6 +1250,18 @@ export const ManagedPollWorkspace = forwardRef<
       : confirmState && 'poll' in confirmState
         ? confirmState.poll.question
         : (draft?.question ?? '');
+  const confirmQuestionFormat =
+    confirmState?.kind === 'publish'
+      ? confirmState.draft.questionFormat
+      : confirmState && 'poll' in confirmState
+        ? confirmState.poll.questionFormat
+        : (draft?.questionFormat ?? 'plain');
+  const confirmQuestionPreview =
+    confirmQuestionFormat === 'markdown' ? (
+      <MaxMarkdownPreview value={confirmQuestion} />
+    ) : (
+      confirmQuestion
+    );
 
   if (draft) {
     return (
@@ -1172,6 +1273,14 @@ export const ManagedPollWorkspace = forwardRef<
           questionRef={questionRef}
           optionRefs={optionRefs}
           onChange={updateDraft}
+          onImagePreparationChange={setImagesPreparing}
+          onImageError={(message) =>
+            pushToast({
+              tone: 'danger',
+              title: 'Фото не добавлено',
+              description: message,
+            })
+          }
           onBack={requestEditorClose}
           onSave={handleSave}
           onPublish={handlePublish}
@@ -1193,7 +1302,7 @@ export const ManagedPollWorkspace = forwardRef<
                 ? 'Черновик будет удалён.'
                 : 'Изменения не сохранятся.'
           }
-          previewTitle={confirmQuestion}
+          previewTitle={confirmQuestionPreview}
           previewMeta={
             confirmState?.kind === 'publish'
               ? `${confirmState.draft.options.length} вариантов · ${
@@ -1348,7 +1457,7 @@ export const ManagedPollWorkspace = forwardRef<
               ? 'Черновик будет разблокирован.'
               : 'Черновик будет удалён.'
         }
-        previewTitle={confirmQuestion}
+        previewTitle={confirmQuestionPreview}
         confirmLabel={
           confirmState?.kind === 'close'
             ? 'Закрыть'

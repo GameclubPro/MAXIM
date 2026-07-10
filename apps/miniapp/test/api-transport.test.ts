@@ -166,6 +166,35 @@ test('aborts hanging requests after the configured timeout', async () => {
   }
 });
 
+test('honors a request-specific timeout without forwarding it to fetch', async () => {
+  const calls: FetchCall[] = [];
+  const timeoutValues: number[] = [];
+  const originalSetTimeout = globalThis.setTimeout;
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    return createResponse({ ok: true, status: 204, text: '', contentType: null });
+  }) as typeof fetch;
+  globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+    timeoutValues.push(Number(timeout));
+    return originalSetTimeout(handler, timeout, ...args);
+  }) as typeof setTimeout;
+
+  try {
+    const api = createApiTransport('auth_date=1&hash=first');
+
+    await api.request('/channels/channel-1/polls/poll-1/publish', {
+      method: 'POST',
+      timeoutMs: 123_456,
+    });
+
+    assert.equal(timeoutValues.includes(123_456), true);
+    assert.equal('timeoutMs' in (calls[0].init ?? {}), false);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
+
 test('uses the first reachable API base for idempotent requests', async () => {
   const calls: FetchCall[] = [];
 

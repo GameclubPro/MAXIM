@@ -304,6 +304,198 @@ describe('ManagedPollService vote persistence', () => {
   });
 });
 
+describe('ManagedPollService image callback rendering', () => {
+  it('acknowledges an image poll callback and uses the direct renderer', async () => {
+    const maxClient = { answerCallback: jest.fn().mockResolvedValue(undefined) };
+    const service = new ManagedPollService(
+      {} as never,
+      maxClient as never,
+      {} as never,
+      {} as never,
+    );
+    jest.spyOn(service as any, 'recordVote').mockResolvedValue({
+      kind: 'recorded',
+      changed: true,
+      pollId: 'poll-1',
+      needsRender: true,
+    });
+    jest.spyOn(service as any, 'loadPollAggregate').mockResolvedValue({
+      id: 'poll-1',
+      publicationBotId: 'bot-1',
+      renderRevision: 1,
+      imageCount: 1,
+      images: [],
+    });
+    const render = jest.spyOn(service as any, 'renderPollPublication').mockResolvedValue(true);
+
+    await expect(
+      service.tryHandleCallback({
+        updateId: 'update-1',
+        botId: 'bot-1',
+        message: { chatId: 'channel-1', messageId: 'message-1' },
+        raw: {
+          callback: {
+            callback_id: 'callback-1',
+            payload: 'poll|v2|poll-1|option-1',
+            user: { user_id: 'user-1' },
+          },
+        },
+      } as never),
+    ).resolves.toBe(true);
+
+    expect(maxClient.answerCallback).toHaveBeenCalledWith(
+      'callback-1',
+      'Голос учтён',
+      undefined,
+      expect.objectContaining({ botId: 'bot-1' }),
+    );
+    expect(render).toHaveBeenCalledWith('channel-1', 'poll-1', 'vote-media');
+  });
+
+  it('keeps raw poll images out of callback rendering reads', async () => {
+    const now = new Date();
+    const findFirst = jest.fn().mockResolvedValue({
+      id: 'poll-1',
+      chatId: 'channel-1',
+      actorUserId: 'admin-1',
+      question: 'Вопрос',
+      questionFormat: 'plain',
+      imageCount: 1,
+      status: ManagedPollStatus.ACTIVE,
+      visibility: ManagedPollVisibility.ANONYMOUS,
+      identitySalt: '12345678901234567890123456789012',
+      renderRevision: 1,
+      renderedRevision: 0,
+      publicationMessageId: 'message-1',
+      publicationBotId: 'bot-1',
+      publicationUrl: null,
+      publishedAt: now,
+      closedAt: null,
+      lockedAt: null,
+      lockToken: null,
+      lastError: null,
+      lastRenderError: null,
+      createdAt: now,
+      updatedAt: now,
+      options: [
+        { id: 'option-1', pollId: 'poll-1', position: 0, text: 'Да' },
+        { id: 'option-2', pollId: 'poll-1', position: 1, text: 'Нет' },
+      ],
+    });
+    const service = new ManagedPollService(
+      {
+        managedPoll: { findFirst },
+        managedPollVote: { groupBy: jest.fn().mockResolvedValue([]) },
+      } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    await (service as any).loadPollAggregate('channel-1', 'poll-1');
+
+    const select = findFirst.mock.calls[0]?.[0]?.select;
+    expect(select).toEqual(expect.objectContaining({ imageCount: true }));
+    expect(select).not.toHaveProperty('images');
+  });
+});
+
+describe('ManagedPollService draft editing', () => {
+  it('preserves rich content when an older client omits new update fields', async () => {
+    const now = new Date();
+    const images = [
+      {
+        base64: Buffer.from('draft-image').toString('base64'),
+        mimeType: 'image/jpeg',
+        fileName: 'draft.jpg',
+      },
+    ];
+    const poll = {
+      id: 'poll-1',
+      chatId: 'channel-1',
+      actorUserId: 'admin-1',
+      question: '**Старый вопрос**',
+      questionFormat: 'markdown',
+      imageCount: 1,
+      images,
+      status: ManagedPollStatus.DRAFT,
+      visibility: ManagedPollVisibility.ANONYMOUS,
+      identitySalt: POLL_IDENTITY_SALT,
+      renderRevision: 0,
+      renderedRevision: 0,
+      publicationMessageId: null,
+      publicationBotId: null,
+      publicationUrl: null,
+      publishedAt: null,
+      closedAt: null,
+      lockedAt: null,
+      lockToken: null,
+      lastError: null,
+      lastRenderError: null,
+      createdAt: now,
+      updatedAt: now,
+      options: [
+        {
+          id: 'option-1',
+          pollId: 'poll-1',
+          position: 0,
+          text: 'Да',
+          createdAt: now,
+          updatedAt: now,
+        },
+        {
+          id: 'option-2',
+          pollId: 'poll-1',
+          position: 1,
+          text: 'Нет',
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    };
+    const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([{ id: poll.id }]),
+      managedPoll: {
+        findFirst: jest.fn().mockResolvedValue(poll),
+        update: jest.fn().mockResolvedValue(poll),
+        findUniqueOrThrow: jest.fn().mockResolvedValue(poll),
+      },
+      managedPollOption: {
+        deleteMany: jest.fn().mockResolvedValue({ count: 2 }),
+        createMany: jest.fn().mockResolvedValue({ count: 2 }),
+      },
+      auditLog: { create: jest.fn().mockResolvedValue({ id: 'audit-1' }) },
+    };
+    const service = new ManagedPollService(
+      {
+        $transaction: jest.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      } as never,
+      {} as never,
+      { assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined) } as never,
+      { invalidate: jest.fn().mockResolvedValue(undefined) } as never,
+    );
+
+    await service.updateChannelPoll('channel-1', 'poll-1', { userId: 'admin-1' } as never, {
+      question: 'Новый вопрос',
+      visibility: 'ANONYMOUS',
+      options: [
+        { id: 'option-1', text: 'Да' },
+        { id: 'option-2', text: 'Нет' },
+      ],
+    });
+
+    expect(tx.managedPoll.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          questionFormat: 'markdown',
+          imageCount: 1,
+          images,
+        }),
+      }),
+    );
+  });
+});
+
 describe('ManagedPollService render serialization', () => {
   it('defers rendering instead of using an unsafe local lock when Redis fails', async () => {
     const redisCounter = {
@@ -484,13 +676,22 @@ describe('ManagedPollService publication', () => {
         { id: 'new-2', pollId: 'poll-1', position: 1, text: 'Новый 2' },
       ],
     };
+    const managedPoll = {
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      update: jest.fn().mockResolvedValue(claimedPoll),
+    };
+    const auditLog = { create: jest.fn().mockResolvedValue({ id: 'audit-1' }) };
     const prisma = {
-      managedPoll: {
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-        update: jest.fn().mockResolvedValue(claimedPoll),
-      },
-      auditLog: { create: jest.fn().mockResolvedValue({ id: 'audit-1' }) },
-      $transaction: jest.fn(async (operations: Promise<unknown>[]) => Promise.all(operations)),
+      managedPoll,
+      auditLog,
+      $transaction: jest.fn(
+        async (
+          callback: (client: {
+            managedPoll: typeof managedPoll;
+            auditLog: typeof auditLog;
+          }) => unknown,
+        ) => callback({ managedPoll, auditLog }),
+      ),
     };
     const maxClient = {
       sendMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
@@ -530,6 +731,252 @@ describe('ManagedPollService publication', () => {
     expect(maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0]?.[1]).not.toContain(
       'Старый вопрос',
     );
+    expect(managedPoll.updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: 'poll-1',
+          lockToken: expect.any(String),
+          status: ManagedPollStatus.DRAFT,
+        }),
+      }),
+    );
+  });
+
+  it('uploads poll images and publishes a Markdown question as HTML', async () => {
+    const draft = {
+      id: 'poll-1',
+      chatId: 'channel-1',
+      actorUserId: 'admin-1',
+      question: '**Новый вопрос**',
+      questionFormat: 'markdown',
+      imageCount: 1,
+      images: [
+        {
+          base64: `data:image/jpeg;base64,${Buffer.from('poll-image').toString('base64')}`,
+          mimeType: 'image/jpeg',
+          fileName: 'poll.jpg',
+        },
+      ],
+      status: ManagedPollStatus.DRAFT,
+      visibility: ManagedPollVisibility.ANONYMOUS,
+      identitySalt: '12345678901234567890123456789012',
+      renderRevision: 0,
+      renderedRevision: 0,
+      publicationMessageId: null,
+      publicationBotId: null,
+      publicationUrl: null,
+      publishedAt: null,
+      closedAt: null,
+      lockedAt: null,
+      lockToken: null,
+      lastError: null,
+      lastRenderError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      options: [
+        { id: 'option-1', pollId: 'poll-1', position: 0, text: 'Первый' },
+        { id: 'option-2', pollId: 'poll-1', position: 1, text: 'Второй' },
+      ],
+    };
+    const managedPoll = {
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      update: jest.fn().mockResolvedValue(draft),
+    };
+    const auditLog = { create: jest.fn().mockResolvedValue({ id: 'audit-1' }) };
+    const prisma = {
+      managedPoll,
+      auditLog,
+      $transaction: jest.fn(
+        async (
+          callback: (client: {
+            managedPoll: typeof managedPoll;
+            auditLog: typeof auditLog;
+          }) => unknown,
+        ) => callback({ managedPoll, auditLog }),
+      ),
+    };
+    const maxClient = {
+      uploadImage: jest.fn().mockResolvedValue({ token: 'poll-image-token' }),
+      sendMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
+        messageId: 'message-1',
+        url: 'https://max.ru/channel/message-1',
+      }),
+    };
+    const adminService = {
+      assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined),
+      resolveChannelPollBotId: jest.fn().mockResolvedValue('bot-1'),
+    };
+    const service = new ManagedPollService(
+      prisma as never,
+      maxClient as never,
+      adminService as never,
+      { invalidate: jest.fn().mockResolvedValue(undefined) } as never,
+    );
+    jest.spyOn(service as any, 'findPoll').mockResolvedValue(draft);
+    jest.spyOn(service as any, 'readPollDetails').mockResolvedValue({ id: 'poll-1' });
+
+    await service.publishChannelPoll('channel-1', 'poll-1', { userId: 'admin-1' } as never);
+
+    expect(maxClient.uploadImage).toHaveBeenCalledWith(
+      Buffer.from('poll-image'),
+      'poll.jpg',
+      'image/jpeg',
+      expect.objectContaining({
+        botId: 'bot-1',
+        sourceTag: 'managed_poll',
+      }),
+    );
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'channel-1',
+      expect.stringContaining('<strong>Новый вопрос</strong>'),
+      expect.objectContaining({
+        textFormat: 'html',
+        imagePayload: { token: 'poll-image-token' },
+      }),
+      expect.objectContaining({ botId: 'bot-1' }),
+    );
+    expect(managedPoll.updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ images: [] }) }),
+    );
+  });
+
+  it('builds gallery attachments from multiple uploaded poll images', async () => {
+    const maxClient = {
+      uploadImage: jest
+        .fn()
+        .mockResolvedValueOnce({ token: 'first-image' })
+        .mockResolvedValueOnce({ token: 'second-image' }),
+    };
+    const service = new ManagedPollService(
+      {} as never,
+      maxClient as never,
+      {} as never,
+      {} as never,
+    );
+
+    await expect(
+      (service as any).resolvePollPublicationMedia(
+        [
+          {
+            base64: Buffer.from('first').toString('base64'),
+            mimeType: 'image/png',
+            fileName: 'first.png',
+          },
+          {
+            base64: Buffer.from('second').toString('base64'),
+            mimeType: 'image/webp',
+            fileName: 'second.webp',
+          },
+        ],
+        'bot-1',
+      ),
+    ).resolves.toEqual({
+      attachments: [
+        { type: 'image', payload: { token: 'first-image' } },
+        { type: 'image', payload: { token: 'second-image' } },
+      ],
+    });
+  });
+
+  it('renews a publication claim while media is being prepared', async () => {
+    jest.useFakeTimers();
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const service = new ManagedPollService(
+      { managedPoll: { updateMany } } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    try {
+      const claim = (service as any).startPublicationClaimHeartbeat('poll-1', 'claim-1');
+
+      await jest.advanceTimersByTimeAsync(15_000);
+
+      await expect(claim.stop()).resolves.toBe(true);
+      expect(updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'poll-1',
+          lockToken: 'claim-1',
+          status: ManagedPollStatus.DRAFT,
+        },
+        data: { lockedAt: expect.any(Date) },
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('fails closed when a publication claim cannot be renewed', async () => {
+    const service = new ManagedPollService(
+      {
+        managedPoll: {
+          updateMany: jest.fn().mockRejectedValue(new Error('database unavailable')),
+        },
+      } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    const claim = (service as any).startPublicationClaimHeartbeat('poll-1', 'claim-1');
+
+    await expect(claim.renew()).resolves.toBe(false);
+    await expect(claim.stop()).resolves.toBe(false);
+  });
+
+  it('retries a deterministic attachment-not-ready rejection after image upload', async () => {
+    const maxClient = {
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockRejectedValueOnce({
+          response: { status: 400, data: { code: 'attachment.not.ready' } },
+        })
+        .mockResolvedValueOnce({ messageId: 'message-1', url: null }),
+    };
+    const service = new ManagedPollService(
+      {} as never,
+      maxClient as never,
+      {} as never,
+      {} as never,
+    );
+    jest.spyOn(service as any, 'delay').mockResolvedValue(undefined);
+
+    await expect(
+      (service as any).sendPollPublicationWithRetry(
+        'channel-1',
+        'Опрос',
+        { imagePayload: { token: 'poll-image-token' } },
+        'bot-1',
+      ),
+    ).resolves.toEqual({ messageId: 'message-1', url: null });
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry an ambiguous media publication failure', async () => {
+    const maxClient = {
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockRejectedValue({ response: { status: 504, data: { message: 'gateway timeout' } } }),
+    };
+    const service = new ManagedPollService(
+      {} as never,
+      maxClient as never,
+      {} as never,
+      {} as never,
+    );
+    jest.spyOn(service as any, 'delay').mockResolvedValue(undefined);
+
+    await expect(
+      (service as any).sendPollPublicationWithRetry(
+        'channel-1',
+        'Опрос',
+        { imagePayload: { token: 'poll-image-token' } },
+        'bot-1',
+      ),
+    ).rejects.toMatchObject({ response: { status: 504 } });
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
   });
 
   it('keeps an ambiguous publication claimed until the channel is checked', async () => {
@@ -561,10 +1008,7 @@ describe('ManagedPollService publication', () => {
     };
     const prisma = {
       managedPoll: {
-        updateMany: jest
-          .fn()
-          .mockResolvedValueOnce({ count: 1 })
-          .mockResolvedValueOnce({ count: 1 }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
     };
     const maxClient = {
@@ -591,7 +1035,7 @@ describe('ManagedPollService publication', () => {
     ).rejects.toThrow('MAX мог принять публикацию. Проверьте канал перед повтором.');
 
     expect(prisma.managedPoll.updateMany).toHaveBeenNthCalledWith(
-      2,
+      3,
       expect.objectContaining({
         where: expect.objectContaining({ id: 'poll-1', lockToken: expect.any(String) }),
         data: { lastError: 'Публикация требует ручной проверки.' },
@@ -821,6 +1265,15 @@ describe('ManagedPollService admin reads', () => {
       chatId: 'channel-1',
       actorUserId: 'admin-1',
       question: `Вопрос ${id}`,
+      questionFormat: 'markdown',
+      imageCount: 1,
+      images: [
+        {
+          base64: Buffer.from(`image-${id}`).toString('base64'),
+          mimeType: 'image/jpeg',
+          fileName: `${id}.jpg`,
+        },
+      ],
       status: ManagedPollStatus.CLOSED,
       visibility: ManagedPollVisibility.ANONYMOUS,
       identitySalt: '12345678901234567890123456789012',
@@ -855,16 +1308,100 @@ describe('ManagedPollService admin reads', () => {
       {} as never,
     );
 
-    await expect(
-      service.listChannelPolls('channel-1', { userId: 'admin-1' } as never, { limit: '2' }),
-    ).resolves.toMatchObject({
+    const response = await service.listChannelPolls('channel-1', { userId: 'admin-1' } as never, {
+      limit: '2',
+    });
+
+    expect(response).toMatchObject({
       items: [{ id: 'poll-3' }, { id: 'poll-2' }],
       nextCursor: 'poll-2',
     });
-    expect(prisma.managedPoll.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 3 }));
+    expect(response.items[0]).toEqual(
+      expect.objectContaining({ questionFormat: 'markdown', imageCount: 1 }),
+    );
+    expect(response.items[0]).not.toHaveProperty('images');
+    expect(prisma.managedPoll.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        take: 3,
+        select: expect.objectContaining({ imageCount: true }),
+      }),
+    );
+    expect(prisma.managedPoll.findMany.mock.calls[0]?.[0]?.select).not.toHaveProperty('images');
     expect(prisma.managedPollVote.groupBy).toHaveBeenCalledWith(
       expect.objectContaining({ where: { pollId: { in: ['poll-3', 'poll-2'] } } }),
     );
+  });
+
+  it('returns saved images only from poll details', async () => {
+    const now = new Date();
+    const images = [
+      {
+        base64: Buffer.from('detail-image').toString('base64'),
+        mimeType: 'image/png',
+        fileName: 'detail.png',
+      },
+    ];
+    const poll = {
+      id: 'poll-1',
+      chatId: 'channel-1',
+      actorUserId: 'admin-1',
+      question: 'Вопрос',
+      questionFormat: 'markdown',
+      imageCount: 1,
+      images,
+      status: ManagedPollStatus.DRAFT,
+      visibility: ManagedPollVisibility.ANONYMOUS,
+      identitySalt: '12345678901234567890123456789012',
+      renderRevision: 0,
+      renderedRevision: 0,
+      publicationMessageId: null,
+      publicationBotId: null,
+      publicationUrl: null,
+      publishedAt: null,
+      closedAt: null,
+      lockedAt: null,
+      lockToken: null,
+      lastError: null,
+      lastRenderError: null,
+      createdAt: now,
+      updatedAt: now,
+      options: [
+        {
+          id: 'option-1',
+          pollId: 'poll-1',
+          position: 0,
+          text: 'Да',
+          createdAt: now,
+          updatedAt: now,
+        },
+        {
+          id: 'option-2',
+          pollId: 'poll-1',
+          position: 1,
+          text: 'Нет',
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    };
+    const prisma = {
+      managedPoll: { findFirst: jest.fn().mockResolvedValue(poll) },
+      managedPollVote: { groupBy: jest.fn().mockResolvedValue([]) },
+    };
+    const service = new ManagedPollService(
+      prisma as never,
+      {} as never,
+      { assertManagedEntityReadAccess: jest.fn().mockResolvedValue(undefined) } as never,
+      {} as never,
+    );
+
+    await expect(
+      service.getChannelPoll('channel-1', 'poll-1', { userId: 'admin-1' } as never),
+    ).resolves.toMatchObject({
+      questionFormat: 'markdown',
+      imageCount: 1,
+      images,
+    });
   });
 
   it('does not expose voters for an anonymous poll', async () => {

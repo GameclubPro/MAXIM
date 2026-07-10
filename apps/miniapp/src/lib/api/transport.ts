@@ -7,11 +7,14 @@ const INIT_DATA_REFRESH_WAIT_MS = 1_000;
 const INIT_DATA_REFRESH_POLL_INTERVAL_MS = 50;
 const API_REQUEST_TIMEOUT_MS = 25_000;
 const API_FALLBACKS_ENABLED =
-  typeof __MAXIM_API_FALLBACKS_ENABLED__ === 'boolean'
-    ? __MAXIM_API_FALLBACKS_ENABLED__
-    : true;
+  typeof __MAXIM_API_FALLBACKS_ENABLED__ === 'boolean' ? __MAXIM_API_FALLBACKS_ENABLED__ : true;
+
+export type ApiRequestInit = RequestInit & {
+  timeoutMs?: number;
+};
+
 export type ApiTransport = {
-  request: (path: string, init?: RequestInit) => Promise<unknown>;
+  request: (path: string, init?: ApiRequestInit) => Promise<unknown>;
   requestKeepalive: (path: string, init?: RequestInit) => void;
 };
 
@@ -100,28 +103,33 @@ export function createApiTransport(
     apiBase: string,
     path: string,
     authInitData: string,
-    init: RequestInit = {},
+    init: ApiRequestInit = {},
   ): Promise<FetchAttemptResult> => {
+    const { timeoutMs: requestedTimeoutMs, ...fetchInit } = init;
+    const timeoutMs =
+      typeof requestedTimeoutMs === 'number' && Number.isFinite(requestedTimeoutMs)
+        ? Math.max(1, Math.trunc(requestedTimeoutMs))
+        : API_REQUEST_TIMEOUT_MS;
     const controller = new AbortController();
     let timedOut = false;
     const abortFromCaller = () => controller.abort();
     const timeoutId = globalThis.setTimeout(() => {
       timedOut = true;
       controller.abort();
-    }, API_REQUEST_TIMEOUT_MS);
-    if (init.signal) {
-      if (init.signal.aborted) {
+    }, timeoutMs);
+    if (fetchInit.signal) {
+      if (fetchInit.signal.aborted) {
         abortFromCaller();
       } else {
-        init.signal.addEventListener('abort', abortFromCaller, { once: true });
+        fetchInit.signal.addEventListener('abort', abortFromCaller, { once: true });
       }
     }
 
     try {
       const response = await fetch(`${apiBase}${path}`, {
-        ...init,
+        ...fetchInit,
         signal: controller.signal,
-        headers: buildHeaders(authInitData, init),
+        headers: buildHeaders(authInitData, fetchInit),
       });
       return { apiBase, response };
     } catch (error: unknown) {
@@ -134,7 +142,7 @@ export function createApiTransport(
         throw new Error('Сервис не отвечает. Повторите.');
       }
 
-      if (init.signal?.aborted) {
+      if (fetchInit.signal?.aborted) {
         throw error;
       }
 
@@ -146,13 +154,13 @@ export function createApiTransport(
       throw new Error('Нет связи с сервисом. Повторите.');
     } finally {
       globalThis.clearTimeout(timeoutId);
-      init.signal?.removeEventListener('abort', abortFromCaller);
+      fetchInit.signal?.removeEventListener('abort', abortFromCaller);
     }
   };
   const fetchWithFallback = async (
     path: string,
     authInitData: string,
-    init: RequestInit = {},
+    init: ApiRequestInit = {},
   ): Promise<FetchAttemptResult> => {
     const attemptBases = resolveAttemptBases();
     const method = (init.method ?? 'GET').toUpperCase();

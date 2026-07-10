@@ -12,6 +12,8 @@ import {
 } from '@maxim/contracts/poll';
 import type { ApiTransport } from './transport';
 
+export const MANAGED_POLL_MUTATION_TIMEOUT_MS = 10 * 60_000;
+
 function resolveChannelPollsBase(channelId: string): string {
   return `/channels/${encodeURIComponent(channelId)}/polls`;
 }
@@ -44,6 +46,7 @@ export async function createChannelManagedPoll(
   const response = await api.request(resolveChannelPollsBase(channelId), {
     method: 'POST',
     body: JSON.stringify(requestBody),
+    timeoutMs: MANAGED_POLL_MUTATION_TIMEOUT_MS,
   });
   return managedPollDetailsSchema.parse(response);
 }
@@ -73,6 +76,7 @@ export async function updateChannelManagedPoll(
     {
       method: 'PUT',
       body: JSON.stringify(requestBody),
+      timeoutMs: MANAGED_POLL_MUTATION_TIMEOUT_MS,
     },
   );
   return managedPollDetailsSchema.parse(response);
@@ -85,7 +89,7 @@ export async function publishChannelManagedPoll(
 ): Promise<ManagedPollDetails> {
   const response = await api.request(
     `${resolveChannelPollsBase(channelId)}/${encodeURIComponent(pollId)}/publish`,
-    { method: 'POST' },
+    { method: 'POST', timeoutMs: MANAGED_POLL_MUTATION_TIMEOUT_MS },
   );
   return managedPollDetailsSchema.parse(response);
 }

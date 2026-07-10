@@ -1,6 +1,7 @@
 import {
   createManagedPollRequestSchema,
   managedPollDetailsSchema,
+  managedPollImagesSchema,
   managedPollListQuerySchema,
   managedPollListResponseSchema,
   managedPollSummarySchema,
@@ -8,7 +9,9 @@ import {
   managedPollVotersResponseSchema,
   updateManagedPollRequestSchema,
   type ManagedPollDetails,
+  type ManagedPollImage,
   type ManagedPollListResponse,
+  type ManagedPollQuestionFormat,
   type ManagedPollVotersResponse,
 } from '@maxim/contracts/poll';
 import {
@@ -28,7 +31,12 @@ import {
   buildManagedPollOptionResults,
   parseManagedPollCallbackPayload,
 } from '../common/managed-poll.util';
-import { MAX_API_SOURCE_TAGS, MaxClientService } from '../max/max-client.service';
+import {
+  MAX_API_SOURCE_TAGS,
+  MaxClientService,
+  type MaxAttachmentPayload,
+  type MaxSendMessageOptions,
+} from '../max/max-client.service';
 import { isAmbiguousMaxSendError } from '../max/max-send-ambiguity.util';
 import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
 import { RedisCounterService } from '../moderation/redis-counter.service';
@@ -44,11 +52,23 @@ import { PrismaService } from '../prisma/prisma.service';
 import type { MaxUpdate } from '@maxim/contracts';
 import { extractMaxApiErrorMessage } from './admin-chat-rules';
 import { isPrismaKnownError } from './admin-legacy-utils';
+import {
+  decodeBroadcastImageBase64,
+  resolveBroadcastImageFileName,
+  resolveManagedBroadcastSendRetryDelayMs,
+  resolveManagedBroadcastUploadRetryDelayMs,
+} from './admin-managed-broadcast-media';
 import { AdminService } from './admin.service';
+import {
+  BROADCAST_IMAGE_MAX_BYTES,
+  BROADCAST_IMAGES_TOTAL_MAX_BYTES,
+} from './admin.service.support';
 
 const MANAGED_POLL_SEND_TIMEOUT_MS = 12_000;
 const MANAGED_POLL_EDIT_TIMEOUT_MS = 8_000;
+const MANAGED_POLL_UPLOAD_TIMEOUT_MS = 30_000;
 const MANAGED_POLL_PUBLICATION_CLAIM_TTL_MS = 60_000;
+const MANAGED_POLL_PUBLICATION_CLAIM_HEARTBEAT_MS = 15_000;
 const MANAGED_POLL_RENDER_LOCK_TTL_MS = 120_000;
 const MANAGED_POLL_RENDER_LOCK_HEARTBEAT_MS = 30_000;
 const MANAGED_POLL_RENDER_LOCK_WAIT_MS = 4_000;
@@ -58,7 +78,42 @@ const MANAGED_POLL_RENDER_REPAIR_DELAY_MS = 250;
 const MANAGED_POLL_RECENT_EVENT_HASH_LIMIT = 16;
 const MANAGED_POLL_AMBIGUOUS_PUBLICATION_ERROR = 'Публикация требует ручной проверки.';
 
+const MANAGED_POLL_LIST_SELECT = {
+  id: true,
+  chatId: true,
+  question: true,
+  questionFormat: true,
+  imageCount: true,
+  status: true,
+  visibility: true,
+  renderRevision: true,
+  renderedRevision: true,
+  publicationMessageId: true,
+  publicationUrl: true,
+  publishedAt: true,
+  closedAt: true,
+  lockedAt: true,
+  lastError: true,
+  lastRenderError: true,
+  createdAt: true,
+  updatedAt: true,
+  options: { orderBy: { position: 'asc' } },
+} satisfies Prisma.ManagedPollSelect;
+
+const MANAGED_POLL_HOT_PATH_SELECT = {
+  ...MANAGED_POLL_LIST_SELECT,
+  actorUserId: true,
+  identitySalt: true,
+  publicationBotId: true,
+  lockToken: true,
+} satisfies Prisma.ManagedPollSelect;
+
 type PollWithOptions = ManagedPoll & { options: ManagedPollOption[] };
+type PollListItem = Prisma.ManagedPollGetPayload<{ select: typeof MANAGED_POLL_LIST_SELECT }>;
+type PollHotPathItem = Prisma.ManagedPollGetPayload<{
+  select: typeof MANAGED_POLL_HOT_PATH_SELECT;
+}>;
+type PollPublicationMedia = Pick<MaxSendMessageOptions, 'imagePayload' | 'attachments'>;
 type PollCallbackUser = {
   userId: string;
   displayName: string | null;
@@ -102,7 +157,7 @@ export class ManagedPollService {
     }
     const polls = await this.prisma.managedPoll.findMany({
       where: { chatId },
-      include: { options: { orderBy: { position: 'asc' } } },
+      select: MANAGED_POLL_LIST_SELECT,
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       ...(parsed.data.cursor ? { cursor: { id: parsed.data.cursor }, skip: 1 } : {}),
       take: parsed.data.limit + 1,
@@ -165,7 +220,10 @@ export class ManagedPollService {
             chat: { connect: { id: chatId } },
             actorUserId: user.userId,
             question: parsed.data.question,
+            questionFormat: parsed.data.questionFormat,
             visibility: parsed.data.visibility,
+            imageCount: parsed.data.images.length,
+            images: parsed.data.images as Prisma.InputJsonValue,
             identitySalt: randomUUID().replace(/-/gu, ''),
             options: {
               create: parsed.data.options.map((option, position) => ({
@@ -183,7 +241,9 @@ export class ManagedPollService {
             action: 'CREATE_CHANNEL_POLL',
             payload: {
               pollId: poll.id,
+              questionFormat: poll.questionFormat,
               visibility: poll.visibility,
+              imageCount: parsed.data.images.length,
               optionsCount: poll.options.length,
             },
           },
@@ -191,7 +251,7 @@ export class ManagedPollService {
         return poll;
       });
       await this.chatContextCache.invalidate(chatId);
-      return managedPollDetailsSchema.parse(this.mapPoll(created, new Map()));
+      return managedPollDetailsSchema.parse(this.mapPoll(created, new Map(), true));
     } catch (error: unknown) {
       if (error instanceof ConflictException) {
         throw error;
@@ -227,6 +287,9 @@ export class ManagedPollService {
       if (poll.status !== ManagedPollStatus.DRAFT || poll.lockedAt) {
         throw new BadRequestException('Опубликованный опрос нельзя изменить.');
       }
+      const questionFormat =
+        parsed.data.questionFormat ?? this.normalizeQuestionFormat(poll.questionFormat);
+      const images = parsed.data.images ?? this.readPollImages(poll.images);
 
       const knownOptionIds = new Set(poll.options.map((option) => option.id));
       for (const option of parsed.data.options) {
@@ -249,7 +312,10 @@ export class ManagedPollService {
         data: {
           actorUserId: user.userId,
           question: parsed.data.question,
+          questionFormat,
           visibility: parsed.data.visibility,
+          imageCount: images.length,
+          images: images as Prisma.InputJsonValue,
           lastError: null,
           lastRenderError: null,
         },
@@ -261,7 +327,9 @@ export class ManagedPollService {
           action: 'UPDATE_CHANNEL_POLL',
           payload: {
             pollId,
+            questionFormat,
             visibility: parsed.data.visibility,
+            imageCount: images.length,
             optionsCount: parsed.data.options.length,
           },
         },
@@ -272,7 +340,7 @@ export class ManagedPollService {
       });
     });
     await this.chatContextCache.invalidate(chatId);
-    return managedPollDetailsSchema.parse(this.mapPoll(updated, new Map()));
+    return managedPollDetailsSchema.parse(this.mapPoll(updated, new Map(), true));
   }
 
   async deleteChannelPoll(chatId: string, pollId: string, user: AuthUser): Promise<{ ok: true }> {
@@ -334,6 +402,7 @@ export class ManagedPollService {
       throw new ConflictException('Публикация уже выполняется.');
     }
 
+    const claimHeartbeat = this.startPublicationClaimHeartbeat(poll.id, lockToken);
     let attempted = false;
     let accepted = false;
     try {
@@ -341,26 +410,44 @@ export class ManagedPollService {
       const result = buildManagedPollOptionResults(publicationPoll.options, new Map());
       const text = buildManagedPollMessageText({
         question: publicationPoll.question,
+        questionFormat: this.normalizeQuestionFormat(publicationPoll.questionFormat),
         options: result.options,
         status: 'ACTIVE',
-        visibility: publicationPoll.visibility,
         totalVotes: 0,
       });
+      const textFormat = this.resolveQuestionTextFormat(publicationPoll.questionFormat);
+      const media = await this.resolvePollPublicationMedia(
+        this.readPollImages(publicationPoll.images),
+        publicationBotId,
+      );
+      const messageOptions: MaxSendMessageOptions = {
+        ...(textFormat ? { textFormat } : {}),
+        buttons: buildManagedPollButtons(publicationPoll.id, result.options),
+        ...media,
+        debugContext: { screen: 'managed-poll', action: 'publish' },
+      };
+      if (!(await claimHeartbeat.renew())) {
+        throw new ConflictException('Публикация опроса была сброшена. Проверьте канал.');
+      }
       attempted = true;
-      const published = await this.maxClient.sendMessageImmediateWithResolvedLink(
+      const published = await this.sendPollPublicationWithRetry(
         chatId,
         text,
-        {
-          buttons: buildManagedPollButtons(publicationPoll.id, result.options),
-          debugContext: { screen: 'managed-poll', action: 'publish' },
-        },
-        this.buildMaxOptions(publicationBotId, MANAGED_POLL_SEND_TIMEOUT_MS),
+        messageOptions,
+        publicationBotId,
       );
       accepted = true;
+      if (!(await claimHeartbeat.stop())) {
+        throw new ConflictException('Публикация опроса была сброшена. Проверьте канал.');
+      }
       const publishedAt = new Date();
-      await this.prisma.$transaction([
-        this.prisma.managedPoll.update({
-          where: { id: poll.id },
+      await this.prisma.$transaction(async (tx) => {
+        const promoted = await tx.managedPoll.updateMany({
+          where: {
+            id: poll.id,
+            lockToken,
+            status: ManagedPollStatus.DRAFT,
+          },
           data: {
             actorUserId: user.userId,
             status: ManagedPollStatus.ACTIVE,
@@ -369,29 +456,36 @@ export class ManagedPollService {
             publicationUrl: published.url,
             publishedAt,
             renderedRevision: publicationPoll.renderRevision,
+            images: [],
             lockedAt: null,
             lockToken: null,
             lastError: null,
             lastRenderError: null,
           },
-        }),
-        this.prisma.auditLog.create({
+        });
+        if (promoted.count === 0) {
+          throw new ConflictException('Публикация опроса была сброшена. Проверьте канал.');
+        }
+        await tx.auditLog.create({
           data: {
             chatId,
             actorUserId: user.userId,
             action: 'PUBLISH_CHANNEL_POLL',
             payload: {
               pollId: poll.id,
+              questionFormat: this.normalizeQuestionFormat(publicationPoll.questionFormat),
               visibility: publicationPoll.visibility,
+              imageCount: this.readPollImages(publicationPoll.images).length,
               optionsCount: publicationPoll.options.length,
               publicationMessageId: published.messageId,
             },
           },
-        }),
-      ]);
+        });
+      });
       await this.chatContextCache.invalidate(chatId);
       return this.readPollDetails(chatId, poll.id);
     } catch (error: unknown) {
+      await claimHeartbeat.stop();
       const ambiguous = accepted || (attempted && isAmbiguousMaxSendError(error));
       const message = extractMaxApiErrorMessage(error) || this.formatError(error);
       const released = await this.prisma.managedPoll.updateMany({
@@ -427,6 +521,8 @@ export class ManagedPollService {
           ? 'MAX мог принять публикацию. Проверьте канал перед повтором.'
           : message || 'Не удалось опубликовать опрос.',
       );
+    } finally {
+      await claimHeartbeat.stop();
     }
   }
 
@@ -650,6 +746,11 @@ export class ManagedPollService {
         await this.renderPollPublication(chatId, poll.id, 'vote-without-callback');
         return;
       }
+      if (poll.imageCount > 0) {
+        await this.answerCallback(callbackId, notification, poll.publicationBotId ?? update.botId);
+        await this.renderPollPublication(chatId, poll.id, 'vote-media');
+        return;
+      }
       const messageEdit = this.buildCallbackMessageEdit(poll);
       try {
         await this.maxClient.answerCallback(callbackId, notification, messageEdit, {
@@ -721,7 +822,7 @@ export class ManagedPollService {
       await this.lockPollRow(tx, params.pollId);
       let poll = await tx.managedPoll.findUnique({
         where: { id: params.pollId },
-        include: { options: true },
+        select: MANAGED_POLL_HOT_PATH_SELECT,
       });
       if (!poll || poll.chatId !== params.chatId) {
         return { kind: 'stale' };
@@ -751,6 +852,7 @@ export class ManagedPollService {
             status: ManagedPollStatus.ACTIVE,
             publicationMessageId: params.messageId,
             publishedAt,
+            images: [],
             lockedAt: null,
             lockToken: null,
             lastError: null,
@@ -887,18 +989,22 @@ export class ManagedPollService {
       }
       const text = buildManagedPollMessageText({
         question: poll.question,
+        questionFormat: this.normalizeQuestionFormat(poll.questionFormat),
         options: poll.resultOptions,
         status: poll.status,
-        visibility: poll.visibility,
         totalVotes: poll.totalVotes,
       });
+      const textFormat = this.resolveQuestionTextFormat(poll.questionFormat);
       const options =
         poll.status === ManagedPollStatus.ACTIVE
           ? {
+              ...(textFormat ? { textFormat } : {}),
               buttons: buildManagedPollButtons(poll.id, poll.resultOptions),
               debugContext: { screen: 'managed-poll', action },
             }
-          : undefined;
+          : textFormat
+            ? { textFormat }
+            : undefined;
       const botId =
         poll.publicationBotId ?? (await this.adminService.resolveChannelPollBotId(chatId));
       try {
@@ -940,18 +1046,24 @@ export class ManagedPollService {
   ) {
     const text = buildManagedPollMessageText({
       question: poll.question,
+      questionFormat: this.normalizeQuestionFormat(poll.questionFormat),
       options: poll.resultOptions,
       status: poll.status,
-      visibility: poll.visibility,
       totalVotes: poll.totalVotes,
     });
+    const textFormat = this.resolveQuestionTextFormat(poll.questionFormat);
     return {
       text,
-      ...(poll.status === ManagedPollStatus.ACTIVE
+      ...(poll.status === ManagedPollStatus.ACTIVE || textFormat
         ? {
             options: {
-              buttons: buildManagedPollButtons(poll.id, poll.resultOptions),
-              debugContext: { screen: 'managed-poll', action: 'vote' },
+              ...(textFormat ? { textFormat } : {}),
+              ...(poll.status === ManagedPollStatus.ACTIVE
+                ? {
+                    buttons: buildManagedPollButtons(poll.id, poll.resultOptions),
+                    debugContext: { screen: 'managed-poll', action: 'vote' },
+                  }
+                : {}),
             },
           }
         : {}),
@@ -959,20 +1071,25 @@ export class ManagedPollService {
   }
 
   private async loadPollAggregate(chatId: string, pollId: string) {
-    const poll = await this.findPoll(chatId, pollId);
+    const poll = await this.findPollForHotPath(chatId, pollId);
     const counts = await this.loadVoteCounts([poll.id]);
-    const mapped = this.mapPoll(poll, counts);
+    const result = buildManagedPollOptionResults(
+      poll.options,
+      new Map(
+        poll.options.map((option) => [option.id, counts.get(`${poll.id}:${option.id}`) ?? 0]),
+      ),
+    );
     return {
       ...poll,
-      totalVotes: mapped.totalVotes,
-      resultOptions: mapped.options,
+      totalVotes: result.totalVotes,
+      resultOptions: result.options,
     };
   }
 
   private async readPollDetails(chatId: string, pollId: string): Promise<ManagedPollDetails> {
     const poll = await this.findPoll(chatId, pollId);
     const counts = await this.loadVoteCounts([poll.id]);
-    const details = managedPollDetailsSchema.parse(this.mapPoll(poll, counts));
+    const details = managedPollDetailsSchema.parse(this.mapPoll(poll, counts, true));
     if (
       poll.publicationMessageId &&
       !poll.lastRenderError &&
@@ -988,6 +1105,17 @@ export class ManagedPollService {
     const poll = await this.prisma.managedPoll.findFirst({
       where: { id: pollId, chatId },
       include: { options: { orderBy: { position: 'asc' } } },
+    });
+    if (!poll) {
+      throw new NotFoundException('Опрос не найден.');
+    }
+    return poll;
+  }
+
+  private async findPollForHotPath(chatId: string, pollId: string): Promise<PollHotPathItem> {
+    const poll = await this.prisma.managedPoll.findFirst({
+      where: { id: pollId, chatId },
+      select: MANAGED_POLL_HOT_PATH_SELECT,
     });
     if (!poll) {
       throw new NotFoundException('Опрос не найден.');
@@ -1011,20 +1139,28 @@ export class ManagedPollService {
     return counts;
   }
 
-  private mapPoll(poll: PollWithOptions, counts: ReadonlyMap<string, number>) {
+  private mapPoll(
+    poll: PollWithOptions | PollListItem,
+    counts: ReadonlyMap<string, number>,
+    includeImages = false,
+  ) {
     const optionCounts = new Map(
       poll.options.map((option) => [option.id, counts.get(`${poll.id}:${option.id}`) ?? 0]),
     );
     const result = buildManagedPollOptionResults(poll.options, optionCounts);
     const publicationNeedsReview = this.publicationNeedsReview(poll);
+    const images = includeImages && 'images' in poll ? this.readPollImages(poll.images) : [];
     return {
       id: poll.id,
       channelId: poll.chatId,
       question: poll.question,
+      questionFormat: this.normalizeQuestionFormat(poll.questionFormat),
       status: poll.status,
       visibility: poll.visibility,
+      imageCount: poll.imageCount,
       totalVotes: result.totalVotes,
       options: result.options,
+      ...(includeImages ? { images } : {}),
       publicationMessageId: poll.publicationMessageId,
       publicationUrl: poll.publicationUrl,
       publicationPending: Boolean(poll.lockedAt) && !publicationNeedsReview,
@@ -1037,6 +1173,184 @@ export class ManagedPollService {
       updatedAt: poll.updatedAt.toISOString(),
       lastError: poll.lastError,
       lastRenderError: poll.lastRenderError,
+    };
+  }
+
+  private normalizeQuestionFormat(value: unknown): ManagedPollQuestionFormat {
+    return value === 'markdown' ? 'markdown' : 'plain';
+  }
+
+  private resolveQuestionTextFormat(
+    questionFormat: unknown,
+  ): MaxSendMessageOptions['textFormat'] | undefined {
+    return this.normalizeQuestionFormat(questionFormat) === 'markdown' ? 'html' : undefined;
+  }
+
+  private readPollImages(value: unknown): ManagedPollImage[] {
+    const parsed = managedPollImagesSchema.safeParse(value);
+    return parsed.success ? parsed.data : [];
+  }
+
+  private async resolvePollPublicationMedia(
+    images: readonly ManagedPollImage[],
+    botId: string | null | undefined,
+  ): Promise<PollPublicationMedia> {
+    const preparedImages = images.map((image) => ({
+      image,
+      mimeType: image.mimeType.trim().toLowerCase(),
+      buffer: this.validatePollImage(image),
+    }));
+    const totalBytes = preparedImages.reduce((total, image) => total + image.buffer.length, 0);
+    if (totalBytes > BROADCAST_IMAGES_TOTAL_MAX_BYTES) {
+      throw new BadRequestException('Суммарный размер фото слишком большой.');
+    }
+
+    const payloads: Record<string, unknown>[] = [];
+    for (const prepared of preparedImages) {
+      payloads.push(
+        await this.uploadPollImage(prepared.image, prepared.buffer, prepared.mimeType, botId),
+      );
+    }
+
+    if (payloads.length === 1) {
+      return { imagePayload: payloads[0] };
+    }
+    if (payloads.length > 1) {
+      return {
+        attachments: payloads.map((payload): MaxAttachmentPayload => ({ type: 'image', payload })),
+      };
+    }
+    return {};
+  }
+
+  private validatePollImage(image: ManagedPollImage): Buffer {
+    const mimeType = image.mimeType.trim().toLowerCase();
+    if (!mimeType.startsWith('image/')) {
+      throw new BadRequestException('Поддерживаются только изображения.');
+    }
+
+    let buffer: Buffer;
+    try {
+      buffer = decodeBroadcastImageBase64(image.base64);
+    } catch {
+      throw new BadRequestException('Не удалось прочитать фото.');
+    }
+    if (buffer.length > BROADCAST_IMAGE_MAX_BYTES) {
+      throw new BadRequestException('Фото слишком большое. Попробуйте другое изображение.');
+    }
+    return buffer;
+  }
+
+  private async uploadPollImage(
+    image: ManagedPollImage,
+    buffer: Buffer,
+    mimeType: string,
+    botId: string | null | undefined,
+  ): Promise<Record<string, unknown>> {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await this.maxClient.uploadImage(
+          buffer,
+          resolveBroadcastImageFileName(image.fileName, mimeType),
+          mimeType,
+          this.buildMaxOptions(botId, MANAGED_POLL_UPLOAD_TIMEOUT_MS),
+        );
+      } catch (error: unknown) {
+        const retryDelayMs = resolveManagedBroadcastUploadRetryDelayMs(error, attempt);
+        if (retryDelayMs === null) {
+          throw error;
+        }
+        await this.delay(retryDelayMs);
+      }
+    }
+  }
+
+  private async sendPollPublicationWithRetry(
+    chatId: string,
+    text: string,
+    options: MaxSendMessageOptions,
+    botId: string | null | undefined,
+  ) {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await this.maxClient.sendMessageImmediateWithResolvedLink(
+          chatId,
+          text,
+          options,
+          this.buildMaxOptions(botId, MANAGED_POLL_SEND_TIMEOUT_MS),
+        );
+      } catch (error: unknown) {
+        if (isAmbiguousMaxSendError(error)) {
+          throw error;
+        }
+        const retryDelayMs = resolveManagedBroadcastSendRetryDelayMs(error, attempt, options);
+        if (retryDelayMs === null) {
+          throw error;
+        }
+        await this.delay(retryDelayMs);
+      }
+    }
+  }
+
+  private startPublicationClaimHeartbeat(
+    pollId: string,
+    lockToken: string,
+  ): {
+    renew: () => Promise<boolean>;
+    stop: () => Promise<boolean>;
+  } {
+    let stopped = false;
+    let claimStillOwned = true;
+    let refreshChain = Promise.resolve();
+    const renew = (): Promise<boolean> => {
+      if (stopped || !claimStillOwned) {
+        return Promise.resolve(claimStillOwned);
+      }
+      refreshChain = refreshChain
+        .then(async () => {
+          if (!claimStillOwned) {
+            return;
+          }
+          const refreshed = await this.prisma.managedPoll.updateMany({
+            where: {
+              id: pollId,
+              lockToken,
+              status: ManagedPollStatus.DRAFT,
+            },
+            data: { lockedAt: new Date() },
+          });
+          if (refreshed.count === 0) {
+            claimStillOwned = false;
+            this.logger.warn(
+              { pollId },
+              'Managed poll publication claim was lost while media was being prepared',
+            );
+          }
+        })
+        .catch((error: unknown) => {
+          claimStillOwned = false;
+          this.logger.warn(
+            { pollId, err: this.formatError(error) },
+            'Managed poll publication claim could not be renewed',
+          );
+        });
+      return refreshChain.then(() => claimStillOwned);
+    };
+    const timer = setInterval(() => {
+      void renew();
+    }, MANAGED_POLL_PUBLICATION_CLAIM_HEARTBEAT_MS);
+    timer.unref?.();
+
+    return {
+      renew,
+      stop: async () => {
+        if (!stopped) {
+          stopped = true;
+          clearInterval(timer);
+        }
+        await refreshChain;
+        return claimStillOwned;
+      },
     };
   }
 
