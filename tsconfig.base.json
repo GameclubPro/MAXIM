@@ -19,6 +19,7 @@
       "@maxim/contracts/giveaway": ["packages/contracts/src/giveaway.ts"],
       "@maxim/contracts/managed-entities": ["packages/contracts/src/managed-entities.ts"],
       "@maxim/contracts/manual-moderation": ["packages/contracts/src/manual-moderation.ts"],
+      "@maxim/contracts/poll": ["packages/contracts/src/poll.ts"],
       "@maxim/contracts/settings": ["packages/contracts/src/settings.ts"],
       "@maxim/contracts/system": ["packages/contracts/src/system.ts"]
     }

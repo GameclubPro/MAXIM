@@ -73,6 +73,7 @@ import {
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
 import { AdminDialogLinkService } from '../admin/admin-dialog-link.service';
 import { ManualModerationService } from '../admin/manual-moderation.service';
+import { ManagedPollService } from '../admin/managed-poll.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
   appendAdminContactMarkdownLink as appendAdminContactMarkdownLinkText,
@@ -572,6 +573,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     private readonly injectedNightModeTransitionEventService?: NightModeTransitionEventService,
     @Optional()
     private readonly karavanStorefrontRelayService?: KaravanStorefrontRelayService,
+    @Optional()
+    private readonly managedPollService?: ManagedPollService,
   ) {
     this.maxBotToken = this.normalizeSecret(configService?.get<string>('MAX_BOT_TOKEN'));
     this.ownBotUserId = this.normalizeOwnBotUserId(configService?.get<string>('MAX_BOT_ID'));
@@ -928,6 +931,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const serviceMembersEvent = this.extractServiceMemberUserIds(update).length > 0;
 
     const { chatId, chatTitle, senderId, senderName, text, createdAt, messageId } = update.message;
+    if (this.managedPollService && (await this.managedPollService.tryHandleCallback(update))) {
+      return;
+    }
     const sharedChatExecutionGuard = await this.resolveSharedChatExecutionGuard(update, chatId);
     if (sharedChatExecutionGuard.mode === 'blocked-join-check-only') {
       if (await this.handleBlockedBotJoin(update, chatId)) {

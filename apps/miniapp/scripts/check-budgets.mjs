@@ -24,12 +24,15 @@ const KEEPALIVE_MUTATION_TUNNEL_STARTUP_JS_ALLOWANCE_GZIP = 512;
 // Home cards preserve primary/assigned bot metadata so 1-6 bot ownership state survives
 // diff refreshes and required-subscription pickers without reloading settings screens.
 const MULTIBOT_HOME_METADATA_STARTUP_JS_ALLOWANCE_GZIP = 512;
+// Channel poll deep links add one validated settings focus value to the startup route parser.
+const CHANNEL_POLLS_ROUTE_STARTUP_JS_ALLOWANCE_GZIP = 128;
 const STARTUP_JS_BUDGET_GZIP =
   113 * 1024 +
   HASH_ROUTER_STARTUP_JS_ALLOWANCE_GZIP +
   AUTOPOSTS_ROUTE_STARTUP_JS_ALLOWANCE_GZIP +
   KEEPALIVE_MUTATION_TUNNEL_STARTUP_JS_ALLOWANCE_GZIP +
-  MULTIBOT_HOME_METADATA_STARTUP_JS_ALLOWANCE_GZIP;
+  MULTIBOT_HOME_METADATA_STARTUP_JS_ALLOWANCE_GZIP +
+  CHANNEL_POLLS_ROUTE_STARTUP_JS_ALLOWANCE_GZIP;
 // Settings remains lazy-loaded, but richer giveaway, rules, and broadcast editors,
 // shared drilldown UI reuse, the compact required-subscription timer card,
 // the per-day broadcast agenda sheet, and the compact managed-broadcast
@@ -58,11 +61,15 @@ const AUTOPOSTS_SHARED_SETTINGS_JS_ALLOWANCE_GZIP = 1024;
 // channel-dialog contract schemas into a shared chunk that settings already reaches through root
 // contracts; keep the budget adjustment narrow while preserving the route split.
 const SUGGEST_ROUTE_SHARED_SETTINGS_JS_ALLOWANCE_GZIP = 1024;
+// Shared settings dialogs keep keyboard focus inside nested sheets and restore it to a stable
+// parent control when the action removes its trigger. Keep the accessibility allowance narrow.
+const ACCESSIBLE_DIALOG_FOCUS_SETTINGS_JS_ALLOWANCE_GZIP = 768;
 const SETTINGS_JS_BUDGET_GZIP =
   108 * 1024 +
   21 * 1024 +
   AUTOPOSTS_SHARED_SETTINGS_JS_ALLOWANCE_GZIP +
-  SUGGEST_ROUTE_SHARED_SETTINGS_JS_ALLOWANCE_GZIP;
+  SUGGEST_ROUTE_SHARED_SETTINGS_JS_ALLOWANCE_GZIP +
+  ACCESSIBLE_DIALOG_FOCUS_SETTINGS_JS_ALLOWANCE_GZIP;
 // Startup CSS was effectively at the ceiling already, so widen it modestly instead of
 // forcing cosmetic regressions into the home surface and shared mobile shell.
 const STARTUP_CSS_BUDGET_GZIP = 42 * 1024;

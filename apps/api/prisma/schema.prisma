@@ -133,6 +133,17 @@ enum ChannelSuggestionEntryMode {
   MINIAPP
 }
 
+enum ManagedPollStatus {
+  DRAFT
+  ACTIVE
+  CLOSED
+}
+
+enum ManagedPollVisibility {
+  ANONYMOUS
+  OPEN
+}
+
 enum ChannelAutoPostAttachStatus {
   IN_PROGRESS
   SUCCEEDED
@@ -274,6 +285,7 @@ model Chat {
   managedBroadcasts               ManagedBroadcast[]
   managedAutopostRules            ManagedAutopostRule[]
   managedGiveaways                ManagedGiveaway[]
+  managedPolls                    ManagedPoll[]
   vkParsingSettings               VkParsingSettings?
   vkParsingSources                VkParsingSource[]
   vkParsingPosts                  VkParsingPost[]
@@ -627,6 +639,93 @@ model ChannelSettings {
   chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
 
   @@map("channel_settings")
+}
+
+/// FLAG: The poll migration permits only one DRAFT or ACTIVE poll per chat via a partial unique index.
+model ManagedPoll {
+  id                   String                @id @default(cuid())
+  chatId               String                @map("chat_id")
+  actorUserId          String                @map("actor_user_id")
+  question             String
+  status               ManagedPollStatus     @default(DRAFT)
+  visibility           ManagedPollVisibility @default(ANONYMOUS)
+  identitySalt         String                @map("identity_salt")
+  renderRevision       Int                   @default(0) @map("render_revision")
+  renderedRevision     Int                   @default(0) @map("rendered_revision")
+  publicationMessageId String?               @map("publication_message_id")
+  publicationBotId     String?               @map("publication_bot_id")
+  publicationUrl       String?               @map("publication_url")
+  publishedAt          DateTime?             @map("published_at")
+  closedAt             DateTime?             @map("closed_at")
+  lockedAt             DateTime?             @map("locked_at")
+  lockToken            String?               @map("lock_token")
+  lastError            String?               @map("last_error")
+  lastRenderError      String?               @map("last_render_error")
+  createdAt            DateTime              @default(now()) @map("created_at")
+  updatedAt            DateTime              @updatedAt @map("updated_at")
+
+  chat    Chat                @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  options ManagedPollOption[]
+  voters  ManagedPollVoter[]
+  votes   ManagedPollVote[]
+
+  @@index([chatId, status, createdAt(sort: Desc)], map: "managed_polls_chat_status_created_at_idx")
+  @@index([chatId, createdAt(sort: Desc)], map: "managed_polls_chat_created_at_idx")
+  @@index([status, lockedAt], map: "managed_polls_status_locked_at_idx")
+  @@map("managed_polls")
+}
+
+model ManagedPollOption {
+  id        String   @id @default(cuid())
+  pollId    String   @map("poll_id")
+  position  Int
+  text      String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  poll  ManagedPoll       @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  votes ManagedPollVote[]
+
+  @@unique([pollId, id], map: "managed_poll_options_poll_id_id_key")
+  @@unique([pollId, position], map: "managed_poll_options_poll_id_position_key")
+  @@map("managed_poll_options")
+}
+
+model ManagedPollVoter {
+  id                String    @id @default(cuid())
+  pollId            String    @map("poll_id")
+  identityHash      String    @map("identity_hash")
+  userId            String?   @map("user_id")
+  displayName       String?   @map("display_name")
+  username          String?
+  lastEventAt       DateTime? @map("last_event_at")
+  recentEventHashes String[]  @default([]) @map("recent_event_hashes")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  poll ManagedPoll      @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  vote ManagedPollVote?
+
+  @@unique([pollId, id], map: "managed_poll_voters_poll_id_id_key")
+  @@unique([pollId, identityHash], map: "managed_poll_voters_poll_id_identity_hash_key")
+  @@map("managed_poll_voters")
+}
+
+model ManagedPollVote {
+  id        String   @id @default(cuid())
+  pollId    String   @map("poll_id")
+  voterId   String   @map("voter_id")
+  optionId  String   @map("option_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  poll   ManagedPoll       @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  voter  ManagedPollVoter  @relation(fields: [pollId, voterId], references: [pollId, id], onDelete: Cascade)
+  option ManagedPollOption @relation(fields: [pollId, optionId], references: [pollId, id], onDelete: Cascade)
+
+  @@unique([pollId, voterId], map: "managed_poll_votes_poll_id_voter_id_key")
+  @@index([pollId, optionId], map: "managed_poll_votes_poll_id_option_id_idx")
+  @@map("managed_poll_votes")
 }
 
 model ChatAdminAllowlist {

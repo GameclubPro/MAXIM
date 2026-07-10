@@ -1,6 +1,7 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '../../lib/cn';
+import { useDialogFocusTrap } from '../../lib/dialog-focus';
 import { useNativeBackHandler } from '../../lib/native-back';
 import { useKeyboardOpen } from '../../lib/use-keyboard-open';
 
@@ -120,7 +121,9 @@ export function SettingsDrilldownPanel({
 }: SettingsDrilldownPanelProps) {
   const backdropRef = useRef<HTMLButtonElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const panelRef = useRef<HTMLElement | null>(null);
   const isKeyboardOpen = useKeyboardOpen(120, open);
+  useDialogFocusTrap(open, panelRef, closeButtonRef);
 
   useNativeBackHandler(
     () => {
@@ -149,7 +152,9 @@ export function SettingsDrilldownPanel({
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        event.preventDefault();
         onClose();
+        return;
       }
     };
 
@@ -207,9 +212,11 @@ export function SettingsDrilldownPanel({
         type="button"
         className="settings-drilldown__backdrop"
         aria-label="Закрыть панель"
+        tabIndex={-1}
       />
 
       <section
+        ref={panelRef}
         className={cn(
           'settings-drilldown__panel',
           `settings-drilldown__panel--tone-${tone}`,
@@ -219,6 +226,7 @@ export function SettingsDrilldownPanel({
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={summaryId}
+        tabIndex={-1}
       >
         <header className="settings-drilldown__header">
           <div className="settings-drilldown__title-wrap">

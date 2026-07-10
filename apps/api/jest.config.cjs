@@ -13,6 +13,7 @@ module.exports = {
       '<rootDir>/../../packages/contracts/src/managed-entities.ts',
     '^@maxim/contracts/manual-moderation$':
       '<rootDir>/../../packages/contracts/src/manual-moderation.ts',
+    '^@maxim/contracts/poll$': '<rootDir>/../../packages/contracts/src/poll.ts',
     '^@maxim/contracts/settings$': '<rootDir>/../../packages/contracts/src/settings.ts',
     '^@maxim/contracts/system$': '<rootDir>/../../packages/contracts/src/system.ts',
     '^(\\.{1,2}/.*)\\.js$': '$1',

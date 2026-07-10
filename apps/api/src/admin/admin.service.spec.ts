@@ -8304,6 +8304,51 @@ describe('AdminService.applyManualModerationAction', () => {
     expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
   });
 
+  it('selects one bot that can both send and edit a channel poll', async () => {
+    const prisma = createPrismaMock();
+    const maxBotLinkService = {
+      resolveBotIdForChannelPoll: jest.fn().mockResolvedValue('both-bot'),
+    };
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await expect(service.resolveChannelPollBotId('channel-1')).resolves.toBe('both-bot');
+    expect(maxBotLinkService.resolveBotIdForChannelPoll).toHaveBeenCalledWith({
+      chatId: 'channel-1',
+    });
+  });
+
+  it('rejects split send and edit bots for a channel poll', async () => {
+    const prisma = createPrismaMock();
+    const maxBotLinkService = {
+      resolveBotIdForChannelPoll: jest.fn().mockResolvedValue(null),
+    };
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await expect(service.resolveChannelPollBotId('channel-1')).rejects.toThrow(
+      'Не найден бот MAX, который может опубликовать и обновлять опрос в канале.',
+    );
+  });
+
   it('does not fall back to a persisted send bot when the send route has no executable bot', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({ primaryBotId: 'draining-bot', botId: 'draining-bot' });

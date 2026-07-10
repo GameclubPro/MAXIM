@@ -11,6 +11,7 @@ import {
   type SendBroadcastResult,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { StatsUpSquare } from 'iconoir-react';
 import '../styles/settings-drilldown-core.css';
 import '../styles/settings-native-controls.css';
 import '../styles/settings-home-compact.css';
@@ -35,6 +36,7 @@ import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import type { BroadcastSchedulePlannerSelectionState } from '../components/broadcast-schedule-planner';
 import { BroadcastDraftCard } from '../components/broadcast-draft-card';
 import { BroadcastPublishBar } from '../components/broadcast-publish-bar';
+import type { ManagedPollWorkspaceHandle } from '../components/managed-poll-workspace';
 import {
   BroadcastHistoryFilterTabs,
   BroadcastWorkspaceChrome,
@@ -181,6 +183,7 @@ type ChannelSettingsSectionKey =
   | 'postSuggestions'
   | 'vkParsing'
   | 'broadcast'
+  | 'polls'
   | 'giveaway';
 type ChannelSettingsHintKey =
   | 'commentsEnabled'
@@ -233,6 +236,7 @@ const INITIAL_EXPANDED_CHANNEL_SECTIONS: Record<ChannelSettingsSectionKey, boole
   postSuggestions: false,
   vkParsing: false,
   broadcast: false,
+  polls: false,
   giveaway: false,
 };
 const EMPTY_BROADCAST_PLANNER_STATE: BroadcastSchedulePlannerSelectionState = {
@@ -292,6 +296,11 @@ const LazyManagedEntityAccessDiagnosticsBanner = lazy(() =>
 const LazyManagedGiveawayCard = lazy(() =>
   import('../components/managed-giveaway-card').then((module) => ({
     default: module.ManagedGiveawayCard,
+  })),
+);
+const LazyManagedPollWorkspace = lazy(() =>
+  import('../components/managed-poll-workspace').then((module) => ({
+    default: module.ManagedPollWorkspace,
   })),
 );
 
@@ -932,6 +941,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const latestNormalizedDraftRef = useRef<ChannelSettings | null>(null);
   const latestDraftKeyRef = useRef('');
   const isDirtyRef = useRef(false);
+  const pollWorkspaceRef = useRef<ManagedPollWorkspaceHandle | null>(null);
   const [expandedSections, setExpandedSections] = useState<
     Record<ChannelSettingsSectionKey, boolean>
   >(INITIAL_EXPANDED_CHANNEL_SECTIONS);
@@ -1050,6 +1060,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       focusSection !== 'broadcast' &&
       focusSection !== 'comments' &&
       focusSection !== 'giveaway' &&
+      focusSection !== 'polls' &&
       focusSection !== 'postSuggestions' &&
       focusSection !== 'vkParsing'
     ) {
@@ -1064,9 +1075,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           ? { postSuggestions: true }
           : focusSection === 'vkParsing'
             ? { vkParsing: true }
-            : focusSection === 'giveaway'
-              ? { giveaway: true }
-              : { broadcast: true }),
+            : focusSection === 'polls'
+              ? { polls: true }
+              : focusSection === 'giveaway'
+                ? { giveaway: true }
+                : { broadcast: true }),
     }));
   }, [focusSection]);
 
@@ -1435,6 +1448,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       (section === 'comments' && focusSection === 'comments') ||
       (section === 'postSuggestions' && focusSection === 'postSuggestions') ||
       (section === 'vkParsing' && focusSection === 'vkParsing') ||
+      (section === 'polls' && focusSection === 'polls') ||
       (section === 'giveaway' && focusSection === 'giveaway')
     ) {
       const nextSearchParams = new URLSearchParams(location.search);
@@ -1452,6 +1466,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setExpandedSections((current) =>
       current[section] ? INITIAL_EXPANDED_CHANNEL_SECTIONS : current,
     );
+  }
+
+  function requestPollsSectionClose() {
+    if (pollWorkspaceRef.current) {
+      pollWorkspaceRef.current.requestClose();
+      return;
+    }
+    closeSection('polls');
   }
 
   const normalizedDraft = useMemo(
@@ -3771,6 +3793,51 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           </div>
         </SettingsDrilldownPanel>
       </GlassCard>
+
+      {chatId ? (
+        <GlassCard className="channel-settings-card" elevated>
+          <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+            <SettingsSectionToggle
+              title="Опросы"
+              summary=""
+              status="Голоса"
+              icon={<StatsUpSquare aria-hidden focusable="false" />}
+              tone="mint"
+              open={expandedSections.polls}
+              controls="channel-settings-polls"
+              onClick={() => toggleSection('polls')}
+            />
+          </div>
+
+          <SettingsDrilldownPanel
+            id="channel-settings-polls"
+            open={expandedSections.polls}
+            title="Опросы"
+            variant="screen"
+            tone="mint"
+            className="settings-drilldown__panel--campaign settings-drilldown__panel--polls"
+            onClose={requestPollsSectionClose}
+          >
+            <div
+              id="channel-settings-polls"
+              className={cn('settings-section__collapse', expandedSections.polls && 'is-open')}
+            >
+              {expandedSections.polls ? (
+                <div className="settings-section__collapse-inner">
+                  <Suspense fallback={<SkeletonCard lines={4} />}>
+                    <LazyManagedPollWorkspace
+                      ref={pollWorkspaceRef}
+                      api={api}
+                      channelId={chatId}
+                      onClosePanel={() => closeSection('polls')}
+                    />
+                  </Suspense>
+                </div>
+              ) : null}
+            </div>
+          </SettingsDrilldownPanel>
+        </GlassCard>
+      ) : null}
 
       {chatId ? (
         <GlassCard className="channel-settings-card" elevated>

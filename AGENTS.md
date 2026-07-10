@@ -203,6 +203,10 @@
 - VK parsing imports at most one direct HTTPS `video.files.mp4_*` URL per VK post. If `wall.get` omits direct video files, enrich the attachment through `video.get` before marking it unsupported. Do not scrape VK `player`, accept `external`/HLS as a video file, or mix photos and video in one MAX publish payload; when a supported video is present, publish video and drop photos from that post's publishable media set.
 - When creating or reconciling webhook subscriptions, treat `POST /subscriptions` as the transport source of truth: public HTTPS on port 443, trusted full-chain TLS, HTTP 200 within 30 seconds, and `X-Max-Bot-Api-Secret` validation when a `secret` is configured.
 - Keep required webhook event coverage aligned with `apps/api/src/max/max-webhook-subscription.constants.ts`; current product flows depend on `message_created`, `message_edited`, `message_callback`, `user_added`, `user_removed`, `bot_added`, `bot_removed`, `bot_started`, and `chat_title_changed`.
+- MAX Bot API has no native poll publication endpoint; managed channel polls use callback-button
+  messages. Keep callback replay dedupe bounded and per-poll pseudonymous. For `ANONYMOUS` polls,
+  store only the identity hash needed for revoting/dedupe, keep raw/profile identity fields null,
+  and never expose voter lists through poll APIs.
 - When users format text in the MAX client, treat formatting as `message.body.markup`, not as literal markdown typed by the user. Preserve or reconstruct formatting from `markup` when importing, editing, or republishing text.
 - Treat MAX `markup.from` and `markup.length` as JavaScript string offsets for the original text. Do not remap them through `Array.from(...)` or code-point indexing, especially on emoji-rich text.
 - For `max://user/<id>` mentions, use the user's resolved display name, including `first_name + last_name` when MAX sends split fields. Username-only or first-name-only labels can render as plain text in MAX clients.

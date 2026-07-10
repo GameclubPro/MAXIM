@@ -139,6 +139,16 @@ test('resolves channel stats route from startapp payload', () => {
   assert.equal(resolveLaunchRoute(''), '/channel/-68085832859751/stats');
 });
 
+test('resolves channel polls settings focus from startapp payload', () => {
+  assignWindow(
+    `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(
+      encodeRouteStartParam('/channel/-68085832859751/settings?focus=polls'),
+    )}`,
+  );
+
+  assert.equal(resolveLaunchRoute(''), '/channel/-68085832859751/settings?focus=polls');
+});
+
 test('resolves startapp from hash-route query parameters', () => {
   assignWindow(
     `https://maxim.play-team.ru/app/#/?startapp=${encodeURIComponent(

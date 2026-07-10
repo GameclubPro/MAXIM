@@ -23,6 +23,7 @@ import { AdminBroadcastController } from './admin-broadcast.controller';
 import { AdminDialogController } from './admin-dialog.controller';
 import { AdminGiveawayController } from './admin-giveaway.controller';
 import { AdminManualModerationController } from './admin-manual-moderation.controller';
+import { AdminPollController } from './admin-poll.controller';
 import { AdminDialogLinkService } from './admin-dialog-link.service';
 import { AdminSettingsService } from './admin-settings.service';
 import { AdminManagedEntitiesController } from './admin-managed-entities.controller';
@@ -39,6 +40,7 @@ import { ManagedEntitiesDiscoveryService } from './managed-entities-discovery.se
 import { ManagedEntitiesService } from './managed-entities.service';
 import { ManagedGiveawayRunnerService } from './managed-giveaway-runner.service';
 import { ManagedGiveawayService } from './managed-giveaway.service';
+import { ManagedPollService } from './managed-poll.service';
 import { AdminService } from './admin.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 import { VkParsingPublishProcessor } from './vk-parsing-publish.processor';
@@ -84,6 +86,7 @@ import { SupportRequestsService } from './support-requests.service';
     AdminVkParsingController,
     AdminDialogController,
     AdminGiveawayController,
+    AdminPollController,
     AdminManualModerationController,
     SafetyDeskController,
     SupportRequestsController,
@@ -110,6 +113,7 @@ import { SupportRequestsService } from './support-requests.service';
     ManagedEntitiesDiscoveryService,
     ManagedBroadcastRunnerService,
     ManagedGiveawayService,
+    ManagedPollService,
     ManagedGiveawayRunnerService,
     VkParsingRateLimitService,
     VkApiClientService,
@@ -145,6 +149,7 @@ import { SupportRequestsService } from './support-requests.service';
     ManagedEntitiesService,
     ManagedEntitiesDiscoveryService,
     ManagedGiveawayService,
+    ManagedPollService,
     VkParsingRateLimitService,
     VkApiClientService,
     VkParsingAccessService,

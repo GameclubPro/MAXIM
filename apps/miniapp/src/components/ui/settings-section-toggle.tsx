@@ -1,3 +1,4 @@
+import type { ReactElement } from 'react';
 import { cn } from '../../lib/cn';
 import './settings-section-toggle.css';
 
@@ -26,7 +27,7 @@ type SettingsSectionToggleProps = {
   title: string;
   summary?: string;
   status?: string;
-  icon: SettingsSectionIconName;
+  icon: SettingsSectionIconName | ReactElement;
   tone: SettingsSectionTone;
   open: boolean;
   controls: string;
@@ -417,7 +418,7 @@ export function SettingsSectionToggle({
       onClick={onClick}
     >
       <span className={cn('settings-section__icon-badge', `is-${tone}`)} aria-hidden>
-        <SettingsSectionIcon name={icon} />
+        {typeof icon === 'string' ? <SettingsSectionIcon name={icon} /> : icon}
       </span>
 
       <span className="settings-section__toggle-main">

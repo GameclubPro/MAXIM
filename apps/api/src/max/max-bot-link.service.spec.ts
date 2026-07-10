@@ -1556,6 +1556,109 @@ describe('MaxBotLinkService', () => {
     });
   });
 
+  it('does not treat channel admin status without write permission as send access', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('channel-send-no-write', {
+      id: 'channel-send-no-write',
+      title: 'Read-only channel',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+      entityType: 'CHANNEL',
+    });
+    fixture.memberships.push({
+      chatId: 'channel-send-no-write',
+      botId: 'id613002203036_bot',
+      role: ChatBotMembershipRole.PRIMARY,
+      status: ChatBotMembershipStatus.ACTIVE,
+      permissionsSnapshot: {
+        checkedAt: '2026-03-30T10:00:00.000Z',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['edit'],
+      },
+      createdAt: new Date('2026-03-30T10:00:00.000Z'),
+      updatedAt: new Date('2026-03-30T10:00:00.000Z'),
+      lastSeenAt: new Date('2026-03-30T10:00:00.000Z'),
+      lastWebhookAt: new Date('2026-03-30T10:00:00.000Z'),
+    });
+
+    await expect(
+      fixture.service.resolveBotRoute({
+        purpose: 'send_message',
+        chatId: 'channel-send-no-write',
+        fallbackToPrimary: false,
+      }),
+    ).resolves.toMatchObject({ botId: null, candidateBotIds: [] });
+  });
+
+  it('selects a channel poll bot only with confirmed write and edit permissions', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('channel-poll-route', {
+      id: 'channel-poll-route',
+      title: 'Poll channel',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+      entityType: 'CHANNEL',
+    });
+    fixture.memberships.push(
+      createActiveMembership('channel-poll-route', 'id613002203036_bot', 0, {
+        role: ChatBotMembershipRole.PRIMARY,
+        permissionsSnapshot: {
+          checkedAt: '2026-07-10T10:00:00.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['write'],
+        },
+      }),
+      createActiveMembership('channel-poll-route', 'id613002203036_4_bot', 1, {
+        permissionsSnapshot: {
+          checkedAt: '2026-07-10T10:00:01.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['write', 'edit'],
+        },
+      }),
+    );
+
+    await expect(
+      fixture.service.resolveBotIdForChannelPoll({ chatId: 'channel-poll-route' }),
+    ).resolves.toBe('id613002203036_4_bot');
+  });
+
+  it('rejects split or unknown channel poll permissions', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('channel-poll-split', {
+      id: 'channel-poll-split',
+      title: 'Split poll channel',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+      entityType: 'CHANNEL',
+    });
+    fixture.memberships.push(
+      createActiveMembership('channel-poll-split', 'id613002203036_bot', 0, {
+        role: ChatBotMembershipRole.PRIMARY,
+        permissionsSnapshot: {
+          checkedAt: '2026-07-10T10:00:00.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['write'],
+        },
+      }),
+      createActiveMembership('channel-poll-split', 'id613002203036_4_bot', 1, {
+        permissionsSnapshot: {
+          checkedAt: '2026-07-10T10:00:01.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['edit'],
+        },
+      }),
+    );
+
+    await expect(
+      fixture.service.resolveBotIdForChannelPoll({ chatId: 'channel-poll-split' }),
+    ).resolves.toBeNull();
+  });
+
   it('keeps an explicit denied stored primary out of route fallbacks', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('chat-denied-primary-fallbacks', {
@@ -1773,6 +1876,76 @@ describe('MaxBotLinkService', () => {
       fixture.service.resolveBotIdForModerationAction({
         chatId: 'channel-write-only',
         action: 'delete_message',
+        fallbackToPrimary: false,
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it('requires an explicit MAX edit permission for channel post edits', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('channel-edit', {
+      id: 'channel-edit',
+      title: 'Editable channel',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+      entityType: 'CHANNEL',
+    });
+    fixture.memberships.push({
+      chatId: 'channel-edit',
+      botId: 'id613002203036_bot',
+      role: ChatBotMembershipRole.PRIMARY,
+      status: ChatBotMembershipStatus.ACTIVE,
+      permissionsSnapshot: {
+        checkedAt: '2026-04-06T21:00:00.000Z',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write', 'edit'],
+      },
+      createdAt: new Date('2026-04-06T21:00:00.000Z'),
+      updatedAt: new Date('2026-04-06T21:00:00.000Z'),
+      lastSeenAt: new Date('2026-04-06T21:00:00.000Z'),
+      lastWebhookAt: new Date('2026-04-06T21:00:00.000Z'),
+    });
+
+    await expect(
+      fixture.service.resolveBotIdForModerationAction({
+        chatId: 'channel-edit',
+        action: 'edit_message',
+        fallbackToPrimary: false,
+      }),
+    ).resolves.toBe('id613002203036_bot');
+  });
+
+  it('does not use channel write permission as edit permission', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('channel-no-edit', {
+      id: 'channel-no-edit',
+      title: 'Write-only channel',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+      entityType: 'CHANNEL',
+    });
+    fixture.memberships.push({
+      chatId: 'channel-no-edit',
+      botId: 'id613002203036_bot',
+      role: ChatBotMembershipRole.PRIMARY,
+      status: ChatBotMembershipStatus.ACTIVE,
+      permissionsSnapshot: {
+        checkedAt: '2026-04-06T21:00:00.000Z',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+      },
+      createdAt: new Date('2026-04-06T21:00:00.000Z'),
+      updatedAt: new Date('2026-04-06T21:00:00.000Z'),
+      lastSeenAt: new Date('2026-04-06T21:00:00.000Z'),
+      lastWebhookAt: new Date('2026-04-06T21:00:00.000Z'),
+    });
+
+    await expect(
+      fixture.service.resolveBotIdForModerationAction({
+        chatId: 'channel-no-edit',
+        action: 'edit_message',
         fallbackToPrimary: false,
       }),
     ).resolves.toBeNull();

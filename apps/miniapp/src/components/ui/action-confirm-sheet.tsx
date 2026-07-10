@@ -1,6 +1,7 @@
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '../../lib/cn';
+import { useDialogFocusTrap } from '../../lib/dialog-focus';
 import { useNativeBackHandler } from '../../lib/native-back';
 import './action-confirm-sheet.css';
 
@@ -49,6 +50,22 @@ export function ActionConfirmSheet({
   onClose,
   onConfirm,
 }: ActionConfirmSheetProps) {
+  const panelRef = useRef<HTMLElement | null>(null);
+  const cancelButtonRef = useRef<HTMLButtonElement | null>(null);
+  useDialogFocusTrap(open, panelRef, cancelButtonRef);
+  useEffect(() => {
+    if (!open || !isBusy) {
+      return undefined;
+    }
+
+    const focusFrame = window.requestAnimationFrame(() => {
+      const panel = panelRef.current;
+      if (panel && !panel.contains(document.activeElement)) {
+        panel.focus();
+      }
+    });
+    return () => window.cancelAnimationFrame(focusFrame);
+  }, [isBusy, open]);
   useNativeBackHandler(
     () => {
       if (isBusy) {
@@ -71,7 +88,10 @@ export function ActionConfirmSheet({
     const previousDocumentOverflow = documentElement.style.overflow;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !isBusy) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
         onClose();
+        return;
       }
     };
 
@@ -110,6 +130,7 @@ export function ActionConfirmSheet({
     ) : null;
   const cancelButton = (
     <button
+      ref={cancelButtonRef}
       type="button"
       className="action-confirm-sheet__button action-confirm-sheet__button--ghost"
       onClick={onClose}
@@ -142,14 +163,17 @@ export function ActionConfirmSheet({
         aria-label="Закрыть подтверждение"
         onClick={onClose}
         disabled={isBusy}
+        tabIndex={-1}
       />
 
       <section
+        ref={panelRef}
         className={cn('action-confirm-sheet__panel', `action-confirm-sheet__panel--${tone}`)}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={summaryId}
+        tabIndex={-1}
       >
         <div className="action-confirm-sheet__grabber" aria-hidden />
 

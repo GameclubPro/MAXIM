@@ -12337,6 +12337,43 @@ describe('ModerationService', () => {
     expect(maxBotLinkService.getChatExecutionBinding).not.toHaveBeenCalled();
   });
 
+  it('handles managed poll callbacks before the shared chat owner guard', async () => {
+    const managedPollService = {
+      tryHandleCallback: jest.fn().mockResolvedValue(true),
+    };
+    const service = new ModerationService(
+      {} as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+    );
+    (service as any).managedPollService = managedPollService;
+    const resolveSharedChatExecutionGuard = jest.fn().mockResolvedValue({ mode: 'skip' });
+    (service as any).resolveSharedChatExecutionGuard = resolveSharedChatExecutionGuard;
+    const baseUpdate = createGroupRulesCallbackUpdate({ botId: 'poll-publisher-bot' });
+    const update = {
+      ...baseUpdate,
+      message: {
+        ...baseUpdate.message!,
+        chatId: 'channel-1',
+        messageId: 'poll-message-1',
+      },
+      raw: {
+        ...baseUpdate.raw,
+        callback: {
+          callback_id: 'poll-callback-1',
+          payload: 'poll|v2|poll-1|option-1',
+          user: { user_id: 'poll-voter-1' },
+        },
+      },
+    } satisfies MaxUpdate;
+
+    await service.handleUpdate(update);
+
+    expect(managedPollService.tryHandleCallback).toHaveBeenCalledWith(update);
+    expect(resolveSharedChatExecutionGuard).not.toHaveBeenCalled();
+  });
+
   it('annotates bot moderation events with the active bot id when multi-bot context is available', () => {
     const maxBotContextService = {
       getActiveBotId: jest.fn().mockReturnValue('id613002203036_4_bot'),

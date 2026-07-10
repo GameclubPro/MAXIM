@@ -1167,7 +1167,6 @@ describe('MaxClientService inline keyboard guardrails', () => {
         method: 'put',
         url: 'https://platform-api2.max.ru/messages',
         params: {
-          chat_id: 'chat-1',
           message_id: 'mid-edit-1',
         },
         data: expect.objectContaining({
@@ -1724,7 +1723,6 @@ describe('MaxClientService inline keyboard guardrails', () => {
         method: 'put',
         url: 'https://platform-api2.max.ru/messages',
         params: {
-          chat_id: 'chat-1',
           message_id: 'mid-edit-markup-1',
         },
         data: expect.objectContaining({
@@ -1961,7 +1959,6 @@ describe('MaxClientService inline keyboard guardrails', () => {
         method: 'put',
         url: 'https://platform-api2.max.ru/messages',
         params: {
-          chat_id: 'chat-1',
           message_id: 'mid-edit-fallback-1',
         },
         data: {
@@ -2022,7 +2019,6 @@ describe('MaxClientService inline keyboard guardrails', () => {
         method: 'put',
         url: 'https://platform-api2.max.ru/messages',
         params: {
-          chat_id: 'chat-1',
           message_id: 'mid-edit-html-1',
         },
         data: expect.objectContaining({
@@ -2085,7 +2081,6 @@ describe('MaxClientService inline keyboard guardrails', () => {
         method: 'put',
         url: 'https://platform-api2.max.ru/messages',
         params: {
-          chat_id: 'chat-1',
           message_id: 'mid-edit-forward-1',
         },
         data: {

@@ -13797,6 +13797,23 @@ export class AdminService implements OnModuleDestroy {
     return this.resolveManualModerationActionBotAssignment(chatId, 'delete_message');
   }
 
+  async resolveChannelPollBotId(chatId: string): Promise<string | undefined> {
+    const resolver = this.maxBotLinkService as unknown as {
+      resolveBotIdForChannelPoll?: (params: { chatId: string }) => Promise<string | null>;
+    };
+    if (typeof resolver?.resolveBotIdForChannelPoll !== 'function') {
+      throw new ServiceUnavailableException('Маршрутизация бота для опроса временно недоступна.');
+    }
+
+    const botId = await resolver.resolveBotIdForChannelPoll({ chatId });
+    if (botId) {
+      return botId;
+    }
+    throw new ForbiddenException(
+      'Не найден бот MAX, который может опубликовать и обновлять опрос в канале.',
+    );
+  }
+
   normalizeChatSettingsForApply(sourceChatId: string, settings: ChatSettings): ChatSettings {
     return normalizeChatSettings(settings, undefined, sourceChatId);
   }

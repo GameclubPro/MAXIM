@@ -46,6 +46,10 @@
       "types": "./dist/giveaway.d.ts",
       "default": "./dist/giveaway.js"
     },
+    "./poll": {
+      "types": "./dist/poll.d.ts",
+      "default": "./dist/poll.js"
+    },
     "./system": {
       "types": "./dist/system.d.ts",
       "default": "./dist/system.js"

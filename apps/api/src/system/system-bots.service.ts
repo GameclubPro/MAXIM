@@ -1326,7 +1326,10 @@ export class SystemBotsService {
   private mapRoutePreviewRoute(route: MaxBotRoute): SystemBotRoutePreviewRoute {
     return {
       purpose: route.purpose,
-      action: route.purpose === 'moderation_action' ? route.action : null,
+      action:
+        route.purpose === 'moderation_action' && route.action !== 'edit_message'
+          ? route.action
+          : null,
       capability: route.purpose === 'capability' ? route.capability : null,
       chatId: route.chatId,
       primaryBotId: route.primaryBotId,

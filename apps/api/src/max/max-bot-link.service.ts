@@ -38,6 +38,18 @@ const DELETE_MESSAGE_PERMISSION_ALIASES = new Set([
   'can_post_edit_delete_message',
   'can_post_edit_delete_messages',
 ]);
+const EDIT_MESSAGE_PERMISSION_ALIASES = new Set([
+  'edit',
+  'edit_message',
+  'edit_messages',
+  'can_edit_message',
+  'can_edit_messages',
+  'post_edit_delete_message',
+  'post_edit_delete_messages',
+  'can_post_edit_delete_message',
+  'can_post_edit_delete_messages',
+]);
+const WRITE_MESSAGE_PERMISSION_ALIASES = new Set(['write', 'can_write']);
 const CHAT_DELETE_MESSAGE_PERMISSION_ALIASES = new Set([
   ...DELETE_MESSAGE_PERMISSION_ALIASES,
   'write',
@@ -59,7 +71,7 @@ const MODERATE_MEMBER_PERMISSION_ALIASES = new Set([
   'can_delete_members',
 ]);
 
-type ModerationActionPermission = 'delete_message' | 'moderate_member';
+type ModerationActionPermission = 'delete_message' | 'edit_message' | 'moderate_member';
 
 type ChatBotBindingCacheEntry = {
   botId: string;
@@ -120,7 +132,7 @@ export type MaxBotRoute =
       botId: string | null;
       candidateBotIds: string[];
       reason: MaxBotRouteReason | null;
-      action: 'delete_message' | 'moderate_member';
+      action: ModerationActionPermission;
     }
   | {
       purpose: 'capability';
@@ -150,7 +162,7 @@ export type MaxBotRouteRequest =
   | {
       purpose: 'moderation_action';
       chatId: string;
-      action: 'delete_message' | 'moderate_member';
+      action: ModerationActionPermission;
       fallbackToPrimary?: boolean;
     }
   | {
@@ -323,6 +335,30 @@ export class MaxBotLinkService {
       fallbackToPrimary: params.fallbackToPrimary,
     });
     return route.botId;
+  }
+
+  async resolveBotIdForChannelPoll(params: { chatId: string }): Promise<string | null> {
+    const normalizedChatId = params.chatId.trim();
+    if (!normalizedChatId) {
+      return null;
+    }
+
+    const state = await this.loadChatRouteState(normalizedChatId);
+    if (!state) {
+      return null;
+    }
+    const eligible = state.activeActionableMemberships.filter((membership) => {
+      const snapshot = normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
+      return (
+        this.hasConfirmedSendMessageAccess(snapshot, ChatEntityType.CHANNEL) &&
+        this.hasModerationActionPermission(snapshot, 'edit_message', ChatEntityType.CHANNEL)
+      );
+    });
+    return (
+      eligible.find((membership) => membership.botId === state.primaryBotId)?.botId ??
+      eligible[0]?.botId ??
+      null
+    );
   }
 
   async getStoredChatPrimaryBotId(chatId: string | null | undefined): Promise<string | null> {
@@ -1607,7 +1643,7 @@ export class MaxBotLinkService {
     const primarySnapshot = normalizeMembershipAccessSnapshot(
       primaryMembership?.permissionsSnapshot,
     );
-    if (this.hasConfirmedSendMessageAccess(primarySnapshot)) {
+    if (this.hasConfirmedSendMessageAccess(primarySnapshot, state.entityType)) {
       pushCandidate(primaryMembership?.botId);
     }
 
@@ -1620,7 +1656,7 @@ export class MaxBotLinkService {
       .filter(
         (candidate) =>
           candidate.membership.botId !== state.primaryBotId &&
-          this.hasConfirmedSendMessageAccess(candidate.snapshot),
+          this.hasConfirmedSendMessageAccess(candidate.snapshot, state.entityType),
       )
       .sort((left, right) => {
         const leftScore = left.snapshot?.isOwner ? 2 : 1;
@@ -1636,7 +1672,10 @@ export class MaxBotLinkService {
 
     if (
       primaryMembership &&
-      !this.membershipExplicitlyLacksSendMessageAccess(primaryMembership.permissionsSnapshot)
+      !this.membershipExplicitlyLacksSendMessageAccess(
+        primaryMembership.permissionsSnapshot,
+        state.entityType,
+      )
     ) {
       pushCandidate(primaryMembership.botId);
     }
@@ -1644,7 +1683,10 @@ export class MaxBotLinkService {
     for (const membership of state.activeActionableMemberships) {
       if (
         membership.botId === state.primaryBotId ||
-        this.membershipExplicitlyLacksSendMessageAccess(membership.permissionsSnapshot)
+        this.membershipExplicitlyLacksSendMessageAccess(
+          membership.permissionsSnapshot,
+          state.entityType,
+        )
       ) {
         continue;
       }
@@ -1662,7 +1704,10 @@ export class MaxBotLinkService {
           state.activeActionableMemberships.find((item) => item.botId === normalizedBotId) ?? null;
         if (
           membership &&
-          this.membershipExplicitlyLacksSendMessageAccess(membership.permissionsSnapshot)
+          this.membershipExplicitlyLacksSendMessageAccess(
+            membership.permissionsSnapshot,
+            state.entityType,
+          )
         ) {
           return;
         }
@@ -1730,6 +1775,7 @@ export class MaxBotLinkService {
       state.activeActionableMemberships.find((item) => item.botId === botId) ?? null;
     const hasConfirmedAccess = this.hasConfirmedSendMessageAccess(
       normalizeMembershipAccessSnapshot(membership?.permissionsSnapshot),
+      state.entityType,
     );
 
     if (botId === state.primaryBotId) {
@@ -1930,16 +1976,40 @@ export class MaxBotLinkService {
     );
   }
 
-  private hasConfirmedSendMessageAccess(snapshot: MembershipAccessSnapshot | null): boolean {
+  private hasConfirmedSendMessageAccess(
+    snapshot: MembershipAccessSnapshot | null,
+    entityType: ChatEntityType | null,
+  ): boolean {
     if (!snapshot) {
       return false;
     }
-    return snapshot.isOwner || snapshot.isAdmin;
+    if (snapshot.isOwner) {
+      return true;
+    }
+    if (entityType !== ChatEntityType.CHANNEL) {
+      return snapshot.isAdmin;
+    }
+    return snapshot.permissions.some((permission) =>
+      WRITE_MESSAGE_PERMISSION_ALIASES.has(normalizePermissionName(permission)),
+    );
   }
 
-  private membershipExplicitlyLacksSendMessageAccess(value: unknown): boolean {
+  private membershipExplicitlyLacksSendMessageAccess(
+    value: unknown,
+    entityType: ChatEntityType | null,
+  ): boolean {
     const snapshot = normalizeMembershipAccessSnapshot(value);
-    return Boolean(snapshot && !this.hasConfirmedSendMessageAccess(snapshot));
+    if (!snapshot) {
+      return false;
+    }
+    if (
+      entityType === ChatEntityType.CHANNEL &&
+      snapshot.isAdmin &&
+      snapshot.permissions.length === 0
+    ) {
+      return false;
+    }
+    return !this.hasConfirmedSendMessageAccess(snapshot, entityType);
   }
 
   private membershipExplicitlyLacksModerationAction(
@@ -1999,6 +2069,10 @@ export class MaxBotLinkService {
           ? CHAT_DELETE_MESSAGE_PERMISSION_ALIASES
           : DELETE_MESSAGE_PERMISSION_ALIASES;
       return aliases.has(normalized);
+    }
+
+    if (action === 'edit_message') {
+      return EDIT_MESSAGE_PERMISSION_ALIASES.has(normalized);
     }
 
     return MODERATE_MEMBER_PERMISSION_ALIASES.has(normalized);

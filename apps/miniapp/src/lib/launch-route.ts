@@ -16,6 +16,7 @@ const CHANNEL_SETTINGS_FOCUS = new Set([
   'broadcast',
   'comments',
   'giveaway',
+  'polls',
   'postSuggestions',
   'vkParsing',
 ]);

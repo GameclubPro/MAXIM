@@ -143,6 +143,17 @@ import {
   type SystemBotsSnapshot,
 } from '@maxim/contracts/system';
 import {
+  createManagedPollRequestSchema,
+  managedPollDetailsSchema,
+  managedPollListQuerySchema,
+  managedPollListResponseSchema,
+  managedPollVotersQuerySchema,
+  managedPollVotersResponseSchema,
+  updateManagedPollRequestSchema,
+  type ManagedPollDetails,
+  type ManagedPollVoter,
+} from '@maxim/contracts/poll';
+import {
   PREVIEW_CHANNEL_ID,
   PREVIEW_CHANNEL_TITLE,
   PREVIEW_CHAT_ID,
@@ -173,6 +184,8 @@ type PreviewState = {
   spammerReviewCandidates: GlobalSpammerReviewCandidate[];
   channelHeaderParticipantsCount: number;
   channelSettings: ChannelSettings;
+  channelPolls: ManagedPollDetails[];
+  channelPollVoters: ManagedPollVoter[];
   channelGiveaways: ManagedGiveawayDetails[];
   channelActivity: MembershipActivityItem[];
   chatVkParsing: VkParsingFeed;
@@ -1171,7 +1184,8 @@ function buildPreviewSystemBotRoutePreview(state: PreviewState, url: URL) {
         : null;
   const entityType = chatId === PREVIEW_CHANNEL_ID ? 'channel' : chatExists ? 'chat' : null;
   const botById = new Map(PREVIEW_BOT_FIXTURES.map((fixture) => [fixture.botId, fixture]));
-  const selectedBot = botById.get(botId ?? PREVIEW_STANDBY_BOT_ID) ?? botById.get(PREVIEW_STANDBY_BOT_ID)!;
+  const selectedBot =
+    botById.get(botId ?? PREVIEW_STANDBY_BOT_ID) ?? botById.get(PREVIEW_STANDBY_BOT_ID)!;
   const routeBot = (fixture: PreviewBotFixture) => ({
     botId: fixture.botId,
     label: fixture.label,
@@ -1193,9 +1207,7 @@ function buildPreviewSystemBotRoutePreview(state: PreviewState, url: URL) {
       botId: selectedBot.botId,
       candidateBotIds: routeCandidates.map((fixture) => fixture.botId),
       reason:
-        selectedBot.botId === PREVIEW_PRIMARY_BOT_ID
-          ? 'primary_confirmed'
-          : 'alternate_confirmed',
+        selectedBot.botId === PREVIEW_PRIMARY_BOT_ID ? 'primary_confirmed' : 'alternate_confirmed',
       selectedBot: routeBot(selectedBot),
       candidateBots: routeCandidates.map(routeBot),
     },
@@ -3645,6 +3657,84 @@ function createInitialState(): PreviewState {
     engagementMessageText: 'Есть идея или обратная связь? Выберите действие ниже.',
     autoPostButtonsMode: 'BOTH',
   });
+  const channelPolls = [
+    managedPollDetailsSchema.parse({
+      id: 'poll-channel-active',
+      channelId: PREVIEW_CHANNEL_ID,
+      question: 'Какой формат встреч добавить в августе?',
+      status: 'ACTIVE',
+      visibility: 'OPEN',
+      totalVotes: 24,
+      options: [
+        { id: 'poll-active-option-1', position: 0, text: 'Лекции', votes: 10, percent: 42 },
+        { id: 'poll-active-option-2', position: 1, text: 'Практикумы', votes: 8, percent: 33 },
+        { id: 'poll-active-option-3', position: 2, text: 'Экскурсии', votes: 6, percent: 25 },
+      ],
+      publicationPending: false,
+      publicationNeedsReview: false,
+      renderRepairNeeded: false,
+      publicationUrl: 'https://max.ru/channels/yuzhnoe-news',
+      publicationMessageId: 'poll-preview-message-active',
+      publishedAt: addHours(now, -8).toISOString(),
+      closedAt: null,
+      createdAt: addHours(now, -10).toISOString(),
+      updatedAt: addHours(now, -1).toISOString(),
+      lastError: null,
+      lastRenderError: null,
+    }),
+    managedPollDetailsSchema.parse({
+      id: 'poll-channel-closed',
+      channelId: PREVIEW_CHANNEL_ID,
+      question: 'Какая тема для подборки полезнее?',
+      status: 'CLOSED',
+      visibility: 'ANONYMOUS',
+      totalVotes: 61,
+      options: [
+        { id: 'poll-closed-option-1', position: 0, text: 'События района', votes: 31, percent: 51 },
+        {
+          id: 'poll-closed-option-2',
+          position: 1,
+          text: 'Городские сервисы',
+          votes: 18,
+          percent: 29,
+        },
+        {
+          id: 'poll-closed-option-3',
+          position: 2,
+          text: 'Истории соседей',
+          votes: 12,
+          percent: 20,
+        },
+      ],
+      publicationPending: false,
+      publicationNeedsReview: false,
+      renderRepairNeeded: true,
+      publicationUrl: 'https://max.ru/channels/yuzhnoe-news',
+      publicationMessageId: 'poll-preview-message-closed',
+      publishedAt: addDays(now, -7).toISOString(),
+      closedAt: addDays(now, -5).toISOString(),
+      createdAt: addDays(now, -8).toISOString(),
+      updatedAt: addDays(now, -5).toISOString(),
+      lastError: null,
+      lastRenderError: 'Preview render repair required',
+    }),
+  ];
+  const channelPollVoters = [
+    ['poll-voter-1', 'poll-active-option-1', 'Анна Петрова', 'anna_pet'],
+    ['poll-voter-2', 'poll-active-option-1', 'Максим Орлов', 'max_orlov'],
+    ['poll-voter-3', 'poll-active-option-2', 'Елена', 'elena_city'],
+    ['poll-voter-4', 'poll-active-option-2', 'Илья Соколов', 'ilya_s'],
+    ['poll-voter-5', 'poll-active-option-3', 'Марина Волкова', 'marina_v'],
+  ].map(([id, optionId, displayName, username], index) => ({
+    id: id ?? `poll-voter-${index + 1}`,
+    pollId: 'poll-channel-active',
+    optionId: optionId ?? 'poll-active-option-1',
+    userId: `preview-poll-user-${index + 1}`,
+    displayName: displayName ?? null,
+    username: username ?? null,
+    votedAt: addHours(now, -(index + 1)).toISOString(),
+    updatedAt: addHours(now, -(index + 1)).toISOString(),
+  })) satisfies ManagedPollVoter[];
   const channelGiveaways = [
     managedGiveawayDetailsSchema.parse({
       id: 'giveaway-channel-1',
@@ -4051,6 +4141,8 @@ function createInitialState(): PreviewState {
     channelDialogs,
     channelDialogThreads: {},
     channelSettings,
+    channelPolls,
+    channelPollVoters,
     channelBroadcasts,
     channelGiveaways,
     channelActivity: createActivityItems(
@@ -6769,6 +6861,223 @@ async function handleChannelRequest(
 
   if (tail[0] === 'engagement-publish' && method === 'POST') {
     return createPublishEngagementResult(channelId);
+  }
+
+  if (tail[0] === 'polls' && tail.length === 1) {
+    if (method === 'GET') {
+      const query = managedPollListQuerySchema.parse({
+        cursor: url.searchParams.get('cursor') ?? undefined,
+        limit: url.searchParams.get('limit') ?? undefined,
+      });
+      const polls = [...state.channelPolls].sort(
+        (left, right) =>
+          new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime() ||
+          right.id.localeCompare(left.id),
+      );
+      const cursorIndex = query.cursor ? polls.findIndex((poll) => poll.id === query.cursor) : -1;
+      const page = polls.slice(cursorIndex + 1, cursorIndex + 1 + query.limit);
+      const lastPoll = page.at(-1);
+      const lastIndex = lastPoll ? polls.findIndex((poll) => poll.id === lastPoll.id) : -1;
+      return cloneJson(
+        managedPollListResponseSchema.parse({
+          items: page,
+          nextCursor: lastPoll && lastIndex < polls.length - 1 ? lastPoll.id : null,
+        }),
+      );
+    }
+
+    if (method === 'POST') {
+      if (state.channelPolls.some((poll) => poll.status !== 'CLOSED')) {
+        throw new Error('Сначала завершите текущий опрос.');
+      }
+      const payload = createManagedPollRequestSchema.parse(parseJsonBody(init));
+      const nowIso = new Date().toISOString();
+      const pollId = `poll-preview-${Date.now()}`;
+      const created = managedPollDetailsSchema.parse({
+        id: pollId,
+        channelId,
+        question: payload.question,
+        status: 'DRAFT',
+        visibility: payload.visibility,
+        totalVotes: 0,
+        options: payload.options.map((option, index) => ({
+          id: `${pollId}-option-${index + 1}`,
+          position: index,
+          text: option.text,
+          votes: 0,
+          percent: 0,
+        })),
+        publicationPending: false,
+        publicationNeedsReview: false,
+        renderRepairNeeded: false,
+        publicationUrl: null,
+        publicationMessageId: null,
+        publishedAt: null,
+        closedAt: null,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+        lastError: null,
+        lastRenderError: null,
+      });
+      state.channelPolls = [created, ...state.channelPolls];
+      return cloneJson(created);
+    }
+  }
+
+  if (tail[0] === 'polls' && tail[1] && tail[2] === 'voters' && method === 'GET') {
+    const poll = state.channelPolls.find((item) => item.id === tail[1]);
+    if (!poll) {
+      throw new Error(`Preview poll not found: ${tail[1]}`);
+    }
+    if (poll.visibility !== 'OPEN') {
+      throw new Error('Анонимный опрос не раскрывает участников.');
+    }
+
+    const query = managedPollVotersQuerySchema.parse({
+      cursor: url.searchParams.get('cursor') ?? undefined,
+      limit: url.searchParams.get('limit') ?? undefined,
+    });
+    const items = state.channelPollVoters.filter((voter) => voter.pollId === poll.id);
+    const cursorIndex = query.cursor ? items.findIndex((voter) => voter.id === query.cursor) : -1;
+    const page = items.slice(cursorIndex + 1, cursorIndex + 1 + query.limit);
+    const lastItem = page.at(-1);
+    const lastIndex = lastItem ? items.findIndex((voter) => voter.id === lastItem.id) : -1;
+    return managedPollVotersResponseSchema.parse({
+      items: page,
+      nextCursor: lastItem && lastIndex < items.length - 1 ? lastItem.id : null,
+    });
+  }
+
+  if (tail[0] === 'polls' && tail[1] && tail[2] === 'publish' && method === 'POST') {
+    const poll = state.channelPolls.find((item) => item.id === tail[1]);
+    if (!poll) {
+      throw new Error(`Preview poll not found: ${tail[1]}`);
+    }
+    if (poll.status !== 'DRAFT' || poll.publicationPending) {
+      throw new Error('Опубликовать можно только свободный черновик.');
+    }
+    const published = managedPollDetailsSchema.parse({
+      ...poll,
+      status: 'ACTIVE',
+      publicationPending: false,
+      publicationNeedsReview: false,
+      renderRepairNeeded: false,
+      publicationUrl: 'https://max.ru/channels/yuzhnoe-news',
+      publicationMessageId: `poll-preview-message-${Date.now()}`,
+      publishedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    state.channelPolls = state.channelPolls.map((item) =>
+      item.id === published.id ? published : item,
+    );
+    return cloneJson(published);
+  }
+
+  if (tail[0] === 'polls' && tail[1] && tail[2] === 'close' && method === 'POST') {
+    const poll = state.channelPolls.find((item) => item.id === tail[1]);
+    if (!poll) {
+      throw new Error(`Preview poll not found: ${tail[1]}`);
+    }
+    if (poll.status === 'DRAFT') {
+      throw new Error('Черновик ещё не опубликован.');
+    }
+    const closed = managedPollDetailsSchema.parse({
+      ...poll,
+      status: 'CLOSED',
+      renderRepairNeeded: false,
+      lastRenderError: null,
+      closedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    state.channelPolls = state.channelPolls.map((item) => (item.id === closed.id ? closed : item));
+    return cloneJson(closed);
+  }
+
+  if (tail[0] === 'polls' && tail[1] && tail[2] === 'refresh' && method === 'POST') {
+    const poll = state.channelPolls.find((item) => item.id === tail[1]);
+    if (!poll) {
+      throw new Error(`Preview poll not found: ${tail[1]}`);
+    }
+    if (poll.status === 'DRAFT') {
+      throw new Error('Черновик ещё не опубликован.');
+    }
+    const refreshed = managedPollDetailsSchema.parse({
+      ...poll,
+      renderRepairNeeded: false,
+      lastRenderError: null,
+      updatedAt: new Date().toISOString(),
+    });
+    state.channelPolls = state.channelPolls.map((item) =>
+      item.id === refreshed.id ? refreshed : item,
+    );
+    return cloneJson(refreshed);
+  }
+
+  if (tail[0] === 'polls' && tail[1] && tail[2] === 'reset-publication' && method === 'POST') {
+    const poll = state.channelPolls.find((item) => item.id === tail[1]);
+    if (!poll) {
+      throw new Error(`Preview poll not found: ${tail[1]}`);
+    }
+    if (!poll.publicationNeedsReview) {
+      throw new Error('Публикация не требует сброса.');
+    }
+    const reset = managedPollDetailsSchema.parse({
+      ...poll,
+      publicationPending: false,
+      publicationNeedsReview: false,
+      lastError: null,
+      updatedAt: new Date().toISOString(),
+    });
+    state.channelPolls = state.channelPolls.map((item) => (item.id === reset.id ? reset : item));
+    return cloneJson(reset);
+  }
+
+  if (tail[0] === 'polls' && tail[1] && tail.length === 2) {
+    const poll = state.channelPolls.find((item) => item.id === tail[1]);
+    if (!poll) {
+      throw new Error(`Preview poll not found: ${tail[1]}`);
+    }
+
+    if (method === 'GET') {
+      return cloneJson(poll);
+    }
+
+    if (method === 'PUT') {
+      if (poll.status !== 'DRAFT' || poll.publicationPending) {
+        throw new Error('Опубликованный опрос нельзя изменить.');
+      }
+      const payload = updateManagedPollRequestSchema.parse(parseJsonBody(init));
+      const optionIds = new Set(poll.options.map((option) => option.id));
+      if (payload.options.some((option) => option.id && !optionIds.has(option.id))) {
+        throw new Error('Вариант ответа больше не существует.');
+      }
+      const updated = managedPollDetailsSchema.parse({
+        ...poll,
+        question: payload.question,
+        visibility: payload.visibility,
+        options: payload.options.map((option, index) => ({
+          id: option.id ?? `${poll.id}-option-${index + 1}`,
+          position: index,
+          text: option.text,
+          votes: 0,
+          percent: 0,
+        })),
+        totalVotes: 0,
+        updatedAt: new Date().toISOString(),
+      });
+      state.channelPolls = state.channelPolls.map((item) =>
+        item.id === updated.id ? updated : item,
+      );
+      return cloneJson(updated);
+    }
+
+    if (method === 'DELETE') {
+      if (poll.status !== 'DRAFT') {
+        throw new Error('Удалить можно только черновик.');
+      }
+      state.channelPolls = state.channelPolls.filter((item) => item.id !== poll.id);
+      return null;
+    }
   }
 
   if (tail[0] === 'giveaways' && tail.length === 1) {

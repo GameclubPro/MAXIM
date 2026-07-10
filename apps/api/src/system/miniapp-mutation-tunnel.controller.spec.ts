@@ -204,6 +204,13 @@ describe('MiniappMutationTunnelController', () => {
     ['POST', '/autopost-rules'],
     ['PUT', '/autopost-rules/rule-1'],
     ['DELETE', '/autopost-rules/rule-1'],
+    ['POST', '/channels/channel-1/polls'],
+    ['PUT', '/channels/channel-1/polls/poll-1'],
+    ['DELETE', '/channels/channel-1/polls/poll-1'],
+    ['POST', '/channels/channel-1/polls/poll-1/publish'],
+    ['POST', '/channels/channel-1/polls/poll-1/close'],
+    ['POST', '/channels/channel-1/polls/poll-1/refresh'],
+    ['POST', '/channels/channel-1/polls/poll-1/reset-publication'],
   ])('allows managed broadcast %s %s through the mutation tunnel', async (method, path) => {
     const controller = new MiniappMutationTunnelController();
     const reply = createReply();

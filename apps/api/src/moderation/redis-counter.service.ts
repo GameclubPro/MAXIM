@@ -44,6 +44,13 @@ local size = redis.call('SCARD', KEYS[1])
 return {added, size}
 `;
 
+const RENEW_LOCK_SCRIPT = `
+if redis.call('get', KEYS[1]) == ARGV[1] then
+  return redis.call('pexpire', KEYS[1], ARGV[2])
+end
+return 0
+`;
+
 @Injectable()
 export class RedisCounterService implements OnModuleDestroy {
   private readonly redis: Redis;
@@ -188,5 +195,20 @@ export class RedisCounterService implements OnModuleDestroy {
       key,
       token,
     );
+  }
+
+  async renewLock(key: string, token: string, ttlMs: number): Promise<boolean> {
+    if (!key.trim() || !token.trim() || !Number.isFinite(ttlMs) || ttlMs <= 0) {
+      return false;
+    }
+
+    const renewed = await this.redis.eval(
+      RENEW_LOCK_SCRIPT,
+      1,
+      key,
+      token,
+      String(Math.trunc(ttlMs)),
+    );
+    return Number(renewed) > 0;
   }
 }
