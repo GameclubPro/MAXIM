@@ -63,6 +63,20 @@
   min-width: 0;
 }
 
+.broadcast-content-composer__tool.has-label {
+  width: auto;
+  min-width: 34px;
+  gap: 6px;
+  padding-inline: 9px;
+}
+
+.broadcast-content-composer__tool-label {
+  font-size: 0.7rem;
+  font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+}
+
 .broadcast-message-card__media-frame {
   position: relative;
   min-width: 0;

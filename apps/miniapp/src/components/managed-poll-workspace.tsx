@@ -708,6 +708,7 @@ function PollEditor({
             messageAriaLabel="Вопрос опроса"
             textPlaceholder="Ваш вопрос"
             textAriaLabel="Вопрос опроса"
+            showToolLabels
             disabled={busy}
             textError={errors.question}
             onTextChange={(question) =>

@@ -57,6 +57,7 @@ type BroadcastContentComposerProps = {
   messageAriaLabel?: string;
   textPlaceholder?: string;
   textAriaLabel?: string;
+  showToolLabels?: boolean;
   onTextChange: (value: string) => void;
   onImageChange?: (image: BroadcastContentComposerImage) => void;
   onImagesChange?: (images: BroadcastImage[]) => void;
@@ -85,6 +86,7 @@ export function BroadcastContentComposer({
   messageAriaLabel = 'Сообщение автопостинга',
   textPlaceholder = 'Текст',
   textAriaLabel = textPlaceholder,
+  showToolLabels = false,
   onTextChange,
   onImageChange,
   onImagesChange,
@@ -406,6 +408,7 @@ export function BroadcastContentComposer({
                 className={cn(
                   'broadcast-content-composer__tool',
                   'broadcast-content-composer__tool--format',
+                  showToolLabels && 'has-label',
                   formatToolsOpen && 'is-active',
                 )}
                 onClick={() => setFormatToolsOpen((current) => !current)}
@@ -415,12 +418,16 @@ export function BroadcastContentComposer({
                 title="Форматирование"
               >
                 A
+                {showToolLabels ? (
+                  <span className="broadcast-content-composer__tool-label">Формат</span>
+                ) : null}
               </button>
               {useNativeTapFileInput ? (
                 <label
                   className={cn(
                     'broadcast-content-composer__tool',
                     'broadcast-content-composer__tool--native-file',
+                    showToolLabels && 'has-label',
                     imagePreviewItems.length > 0 && 'is-active',
                     (isBusy || imagePreviewItems.length >= maxImageCount) && 'is-disabled',
                   )}
@@ -429,6 +436,9 @@ export function BroadcastContentComposer({
                   aria-disabled={isBusy || imagePreviewItems.length >= maxImageCount}
                 >
                   <IconoirCamera aria-hidden focusable="false" />
+                  {showToolLabels ? (
+                    <span className="broadcast-content-composer__tool-label">Фото</span>
+                  ) : null}
                   <input
                     ref={imageInputRef}
                     className="broadcast-content-composer__file-input broadcast-content-composer__file-input--native"
@@ -446,6 +456,7 @@ export function BroadcastContentComposer({
                     type="button"
                     className={cn(
                       'broadcast-content-composer__tool',
+                      showToolLabels && 'has-label',
                       imagePreviewItems.length > 0 && 'is-active',
                     )}
                     onClick={() => openFileInputPicker(imageInputRef.current)}
@@ -454,6 +465,9 @@ export function BroadcastContentComposer({
                     title={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
                   >
                     <IconoirCamera aria-hidden focusable="false" />
+                    {showToolLabels ? (
+                      <span className="broadcast-content-composer__tool-label">Фото</span>
+                    ) : null}
                   </button>
                   <input
                     ref={imageInputRef}
