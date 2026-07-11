@@ -1,4 +1,10 @@
 import type { ConfigService } from '@nestjs/config';
+import {
+  MAX_ACTION_BACKGROUND_QUEUE,
+  MAX_ACTION_CRITICAL_QUEUE,
+  MAX_ACTION_INTERACTIVE_QUEUE,
+  MAX_ACTION_LEGACY_QUEUE,
+} from '../max/max-action.queue';
 import { SystemDashboardService } from './system-dashboard.service';
 
 function createConfigMock(values: Partial<Record<string, number>> = {}): ConfigService {
@@ -1411,6 +1417,7 @@ describe('SystemDashboardService', () => {
             noPrimary: 26,
             recoverableLegacyOnly: 2,
             recoverableFromMemberships: 1,
+            noEligibleBot: 0,
             unbound: 23,
             primaryBotUnknown: 0,
             legacyBotUnknown: 0,
@@ -1423,6 +1430,11 @@ describe('SystemDashboardService', () => {
             enabled: true,
             activeOnThisRole: true,
             intervalMs: 300_000,
+            rebalanceMode: 'shadow',
+            rebalanceCanaryPercent: 1,
+            rebalanceMaxMovesPerRun: 25,
+            recommendedMoves: 18,
+            lastAppliedMoves: 0,
             lastRunAt: '2026-03-31T00:10:00.000Z',
             lastSuccessAt: '2026-03-31T00:10:00.000Z',
             lastError: null,
@@ -1531,6 +1543,18 @@ describe('SystemDashboardService', () => {
       oldestUnprocessedLagSec: 0,
       oldestUnprocessedEventId: null,
       lastProcessedAt: '2026-03-31T00:10:00.000Z',
+      ingress: {
+        available: true,
+        targetMs: 2_000,
+        attemptedReceipts: 13,
+        persistedReceipts: 12,
+        failedReceipts: 1,
+        sampledReceipts: 12,
+        p95LatencyMs: 1_500,
+        p99LatencyMs: 2_000,
+        underTargetRatio: 1,
+        bots: {},
+      },
       enqueue: {
         targetMs: 1_000,
         sampledEvents: 12,
@@ -1540,6 +1564,11 @@ describe('SystemDashboardService', () => {
         oldestPendingLagSec: 7.5,
         oldestPendingEventId: 'evt-pending-enqueue',
         lastQueuedAt: '2026-03-31T00:09:59.000Z',
+      },
+      canonicalExecution: {
+        receipts: 12,
+        executionClaims: 7,
+        claimsPerReceiptRatio: 0.583,
       },
       generatedAt: '2026-03-31T00:10:00.000Z',
     };
@@ -1586,13 +1615,23 @@ describe('SystemDashboardService', () => {
         expect.objectContaining({
           code: 'webhook-slo',
           level: 'warning',
-          detail: expect.stringContaining('enqueue p95 1800 мс'),
+          detail: expect.stringMatching(
+            /ingress available.*enqueue p95 1800 мс.*receipts\/EXECUTION claims 12\/7/u,
+          ),
         }),
       ]),
       webhookSlo: {
         enqueue: {
           p95LatencyMs: 1_800,
           oldestPendingEventId: 'evt-pending-enqueue',
+        },
+        ingress: {
+          p99LatencyMs: 2_000,
+          failedReceipts: 1,
+        },
+        canonicalExecution: {
+          receipts: 12,
+          executionClaims: 7,
         },
       },
       slo: {
@@ -1602,6 +1641,161 @@ describe('SystemDashboardService', () => {
         },
       },
     });
+  });
+
+  it('raises an explicit critical alert when the action ledger watchdog quarantines an action', () => {
+    const service = new SystemDashboardService(
+      {} as never,
+      {} as never,
+      createConfigMock({ QUEUE_LAG_DEGRADE_SEC: 10 }),
+    );
+    const subject = service as unknown as {
+      buildActionLedgerWatchdogAlert: (snapshot: unknown) => {
+        code: string;
+        level: string;
+        detail: string;
+      } | null;
+      resolveStatus: (input: Record<string, unknown>) => string;
+    };
+
+    const alert = subject.buildActionLedgerWatchdogAlert({
+      enabled: true,
+      activeOnThisRole: true,
+      staleAfterSec: 300,
+      intervalSec: 60,
+      lastRunAt: '2026-07-11T00:00:00.000Z',
+      lastSuccessAt: '2026-07-11T00:00:01.000Z',
+      lastError: null,
+      lastRunReason: 'scheduled',
+      staleCount: 1,
+      staleEnqueuedCount: 0,
+      staleInProgressCount: 1,
+      oldestStaleAgeSec: 601,
+      lastScannedCount: 1,
+      lastReconciledCount: 1,
+      lastQuarantinedCount: 1,
+      lastTerminalFailedCount: 0,
+      lastRecoveredSucceededCount: 0,
+      lastDeferredCount: 0,
+      lastConflictCount: 0,
+      lastScanTruncated: false,
+      generatedAt: '2026-07-11T00:00:02.000Z',
+    });
+
+    expect(alert).toEqual(
+      expect.objectContaining({
+        code: 'action-ledger-watchdog-quarantine',
+        level: 'critical',
+        detail: expect.stringContaining('quarantined 1'),
+      }),
+    );
+    expect(
+      subject.resolveStatus({
+        mode: 'normal',
+        queueLagSec: 0,
+        failedCount: 0,
+        criticalRate: 0,
+        errorRate: 0,
+        webhookSubscriptionStatus: 'healthy',
+        actionLedgerWatchdogCritical: true,
+      }),
+    ).toBe('critical');
+  });
+
+  it('raises a critical alert for a sustained critical action lane backlog', () => {
+    const service = new SystemDashboardService(
+      {} as never,
+      {} as never,
+      createConfigMock({ QUEUE_LAG_DEGRADE_SEC: 10 }),
+    );
+    const subject = service as unknown as {
+      buildActionQueueLaneAlert: (snapshot: unknown) => {
+        code: string;
+        level: string;
+        detail: string;
+      } | null;
+      resolveStatus: (input: Record<string, unknown>) => string;
+    };
+    const counters = {
+      prioritized: 0,
+      active: 0,
+      delayed: 0,
+      failed: 0,
+      completed: 0,
+    };
+
+    const alert = subject.buildActionQueueLaneAlert({
+      [MAX_ACTION_LEGACY_QUEUE]: { ...counters, waiting: 0 },
+      [MAX_ACTION_CRITICAL_QUEUE]: { ...counters, waiting: 6 },
+      [MAX_ACTION_INTERACTIVE_QUEUE]: { ...counters, waiting: 2 },
+      [MAX_ACTION_BACKGROUND_QUEUE]: { ...counters, waiting: 20 },
+    });
+
+    expect(alert).toEqual(
+      expect.objectContaining({
+        code: 'action-queue-critical-backlog',
+        level: 'critical',
+        detail: expect.stringContaining('critical 6'),
+      }),
+    );
+    expect(
+      subject.resolveStatus({
+        mode: 'normal',
+        queueLagSec: 0,
+        failedCount: 0,
+        criticalRate: 0,
+        errorRate: 0,
+        webhookSubscriptionStatus: 'healthy',
+        actionQueueLaneCritical: true,
+      }),
+    ).toBe('critical');
+  });
+
+  it('reports watchdog errors as warning alerts', () => {
+    const service = new SystemDashboardService(
+      {} as never,
+      {} as never,
+      createConfigMock({ QUEUE_LAG_DEGRADE_SEC: 10 }),
+    );
+    const alert = (
+      service as unknown as {
+        buildActionLedgerWatchdogAlert: (snapshot: unknown) => {
+          code: string;
+          level: string;
+          detail: string;
+        } | null;
+      }
+    ).buildActionLedgerWatchdogAlert({
+      enabled: true,
+      activeOnThisRole: true,
+      staleAfterSec: 300,
+      intervalSec: 60,
+      lastRunAt: '2026-07-11T00:00:00.000Z',
+      lastSuccessAt: null,
+      lastError: 'redis unavailable',
+      lastRunReason: 'scheduled',
+      staleCount: 0,
+      staleEnqueuedCount: 0,
+      staleInProgressCount: 0,
+      oldestStaleAgeSec: 0,
+      lastScannedCount: 0,
+      lastReconciledCount: 0,
+      lastQuarantinedCount: 0,
+      lastTerminalFailedCount: 0,
+      lastRecoveredSucceededCount: 0,
+      lastDeferredCount: 0,
+      lastConflictCount: 0,
+      lastScanTruncated: false,
+      generatedAt: '2026-07-11T00:00:02.000Z',
+    });
+
+    expect(alert).toEqual(
+      expect.objectContaining({
+        code: 'action-ledger-watchdog',
+        level: 'warning',
+        detail: expect.stringContaining('redis unavailable'),
+      }),
+    );
   });
 
   it('does not treat primary bots without admin rights as ownership blockers', () => {
@@ -1634,6 +1828,7 @@ describe('SystemDashboardService', () => {
         noPrimary: 0,
         recoverableLegacyOnly: 0,
         recoverableFromMemberships: 0,
+        noEligibleBot: 0,
         unbound: 0,
         primaryBotUnknown: 0,
         legacyBotUnknown: 0,
@@ -1646,6 +1841,11 @@ describe('SystemDashboardService', () => {
         enabled: true,
         activeOnThisRole: true,
         intervalMs: 300_000,
+        rebalanceMode: 'shadow',
+        rebalanceCanaryPercent: 1,
+        rebalanceMaxMovesPerRun: 25,
+        recommendedMoves: 0,
+        lastAppliedMoves: 0,
         lastRunAt: '2026-03-31T00:10:00.000Z',
         lastSuccessAt: '2026-03-31T00:10:00.000Z',
         lastError: null,

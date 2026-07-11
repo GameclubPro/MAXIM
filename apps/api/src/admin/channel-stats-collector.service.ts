@@ -14,7 +14,7 @@ import {
   type MaxBotRoute,
   type MaxBotRouteRequest,
 } from '../max/max-bot-link.service';
-import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from '../max/max-webhook-subscription.constants';
+import { resolveRequiredWebhookUpdateTypes } from '../max/max-webhook-subscription.constants';
 import { PrismaService } from '../prisma/prisma.service';
 import { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
 import {
@@ -85,6 +85,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
   private readonly startupSyncMaxPages: number;
   private readonly endpointSyncMaxPages: number;
   private readonly syncIntervalMs: number;
+  private readonly requiredWebhookUpdateTypes: readonly string[];
   private timer: NodeJS.Timeout | null = null;
   private startupTimer: NodeJS.Timeout | null = null;
   private scheduledCatchUpStartupTimer: NodeJS.Timeout | null = null;
@@ -146,6 +147,9 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       ),
     );
     this.syncIntervalMs = CHANNEL_STATS_SYNC_INTERVAL_MS;
+    this.requiredWebhookUpdateTypes = resolveRequiredWebhookUpdateTypes(
+      configService.get<string>('MAX_EXTENDED_WEBHOOK_LIFECYCLE_MODE', 'shadow'),
+    );
   }
 
   onModuleInit() {
@@ -536,9 +540,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     await this.syncScheduledViews(viewsCandidates, audienceResult.syncedAudienceAtByChatId);
   }
 
-  private async syncScheduledAudienceCatchUp(
-    channels: ChannelScheduledSyncCandidate[],
-  ): Promise<{
+  private async syncScheduledAudienceCatchUp(channels: ChannelScheduledSyncCandidate[]): Promise<{
     throttled: boolean;
     syncedAudienceAtByChatId: Map<string, Date>;
   }> {
@@ -991,7 +993,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       'channel-stats:webhook-subscriptions',
       CHANNEL_STATS_SUBSCRIPTIONS_LOCK_TTL_MS,
       async () => {
-        await this.maxClient.ensureWebhookSubscription([...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES], {
+        await this.maxClient.ensureWebhookSubscription([...this.requiredWebhookUpdateTypes], {
           trafficClass: 'background',
           sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
         });

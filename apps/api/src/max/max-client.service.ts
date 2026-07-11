@@ -2,21 +2,37 @@ import { HttpService } from '@nestjs/axios';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { UnrecoverableError, type Queue } from 'bullmq';
+import { UnrecoverableError, type Job, type Queue } from 'bullmq';
 import FormData from 'form-data';
 import { createHash, randomUUID } from 'node:crypto';
 import { firstValueFrom } from 'rxjs';
 import Redis from 'ioredis';
+import { isPrivateDirectChatId } from '../common/chat-id.util';
 import type { QueueJobEnvelope, QueueRetryPolicyName } from '../common/queue-job-envelope';
 import { ActionHealthService, type ActionHealthLane } from '../system/action-health.service';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import { MaxBotContextService } from './max-bot-context.service';
+import {
+  MaxBotLinkService,
+  type MaxBotRoute,
+  type MaxBotRouteRequest,
+} from './max-bot-link.service';
 import { MaxBotRegistryService, type MaxBotDefinition } from './max-bot-registry.service';
 import type { MaxBotLifecycleState } from './max-bot-config.util';
 import { canExecuteActionsForBotState } from './max-bot-state.util';
 import { normalizeMaxInlineKeyboardButtons } from './max-inline-keyboard-layout';
-import { isAmbiguousMaxMutationError } from './max-send-ambiguity.util';
-import { MaxActionLedgerService } from './max-action-ledger.service';
+import { isAmbiguousMaxMutationError, isAmbiguousMaxSendError } from './max-send-ambiguity.util';
+import {
+  markMaxSendDispatchLedgerFinalized,
+  MaxActionLedgerService,
+} from './max-action-ledger.service';
+import {
+  MAX_ACTION_BACKGROUND_QUEUE,
+  MAX_ACTION_CRITICAL_QUEUE,
+  MAX_ACTION_INTERACTIVE_QUEUE,
+  MAX_ACTION_LEGACY_QUEUE,
+  resolveMaxActionQueueName,
+} from './max-action.queue';
 
 export type MaxBotChat = {
   chatId: string;
@@ -144,6 +160,41 @@ class MaxApiRequestRejectedError extends Error {
   }
 }
 
+export class MaxApiCircuitOpenError extends Error {
+  readonly code = 'MAX_API_CIRCUIT_OPEN';
+  readonly preDispatch = true;
+
+  constructor(
+    readonly botId: string,
+    readonly retryAfterMs: number,
+  ) {
+    super('MAX API circuit breaker is open');
+    this.name = 'MaxApiCircuitOpenError';
+  }
+}
+
+export function isMaxApiCircuitOpenError(error: unknown): error is MaxApiCircuitOpenError {
+  return (
+    error instanceof MaxApiCircuitOpenError ||
+    (Boolean(error) &&
+      typeof error === 'object' &&
+      (error as { code?: unknown }).code === 'MAX_API_CIRCUIT_OPEN' &&
+      (error as { preDispatch?: unknown }).preDispatch === true)
+  );
+}
+
+class MaxApiInternalRateLimitError extends Error {
+  readonly code = 'MAX_API_INTERNAL_RATE_LIMIT';
+
+  constructor(
+    message: string,
+    readonly retryAfterMs: number,
+  ) {
+    super(message);
+    this.name = 'MaxApiInternalRateLimitError';
+  }
+}
+
 export type MaxButtonIntent = 'default' | 'positive' | 'negative';
 
 export type MaxLinkButton = {
@@ -246,11 +297,36 @@ export type MaxActionType =
   | 'UNBAN_MEMBER'
   | 'NOTIFY_MODERATORS';
 
+export type MaxActionRoutingMetadata = {
+  purpose:
+    | Extract<MaxBotRouteRequest['purpose'], 'send_message' | 'moderation_action'>
+    | 'channel_poll';
+  primaryBotId?: string | null;
+  reason?: string | null;
+  action?: 'delete_message' | 'moderate_member';
+  routingVersion?: number | null;
+};
+
+export type MaxActionLedgerContextValue =
+  | string
+  | number
+  | boolean
+  | null
+  | MaxActionLedgerContextValue[]
+  | { [key: string]: MaxActionLedgerContextValue };
+
+export type MaxActionLedgerContext = {
+  [key: string]: MaxActionLedgerContextValue;
+};
+
 export type MaxActionJob = QueueJobEnvelope<
   {
     actionType: MaxActionType;
     chatId: string;
     botId?: string;
+    candidateBotIds?: string[];
+    routing?: MaxActionRoutingMetadata;
+    attemptedBotIds?: string[];
     trafficClass?: MaxApiTrafficClass;
     actionHealthLane?: ActionHealthLane;
     sourceTag?: string;
@@ -259,6 +335,7 @@ export type MaxActionJob = QueueJobEnvelope<
     userId?: string;
     text?: string;
     options?: MaxSendMessageOptions;
+    ledgerContext?: MaxActionLedgerContext;
     autoDeleteDelayMs?: number;
     ignoreFailureMetricStatuses?: number[];
     attempt: number;
@@ -275,8 +352,8 @@ export type MaxActionDispatchOptions = {
   immediate?: boolean;
   autoDeleteDelayMs?: number;
   /**
-   * Caller-provided logical dedupe key. It is normalized and scoped by bot/action
-   * before being used as a BullMQ job id.
+   * Caller-provided logical dedupe key. Routed actions are scoped by action only;
+   * explicitly bot-bound actions retain the legacy bot/action scope.
    */
   idempotencyKey?: string | null;
   trafficClass?: MaxApiTrafficClass;
@@ -285,6 +362,8 @@ export type MaxActionDispatchOptions = {
   timeoutMs?: number;
   ignoreFailureMetricStatuses?: readonly number[];
   botId?: string;
+  candidateBotIds?: readonly string[];
+  routing?: MaxActionRoutingMetadata;
 };
 
 type MaxApiRequestOptions = {
@@ -295,6 +374,7 @@ type MaxApiRequestOptions = {
   ignoreFailureMetricStatuses?: readonly number[];
   timeoutMs?: number;
   botId?: string;
+  forceUpsert?: boolean;
 };
 
 export const MAX_API_SOURCE_TAGS = {
@@ -342,40 +422,147 @@ const MAX_API_LIST_BOT_CHATS_PAGE_SAFETY_CAP = 10_000;
 const MAX_API_CHAT_ADMIN_MEMBERS_PAGE_SAFETY_CAP = 10_000;
 const MAX_API_RATE_LIMIT_SLOT_TTL_MS = 2_000;
 const MAX_API_SOURCE_METRICS_TTL_SEC = 6 * 60 * 60;
-const MAX_ACTION_FAILED_JOB_RETENTION = {
-  age: 7 * 24 * 60 * 60,
-  count: 1_000,
-} as const;
+const MAX_API_RATE_LIMIT_OUTCOME_KEY_PREFIX = 'maxapi:rate-limit:v1';
+const MAX_API_RATE_LIMIT_LOG_COALESCE_MS = 60_000;
+const MAX_API_CIRCUIT_KEY_PREFIX = 'maxapi:circuit:v1';
+const DEFAULT_MAX_API_CIRCUIT_HALF_OPEN_PROBE_SEC = 60;
+const DEFAULT_MAX_ACTION_FAILED_RETENTION_AGE_SEC = 7 * 24 * 60 * 60;
+const DEFAULT_MAX_ACTION_FAILED_RETENTION_COUNT = 1_000;
 const MAX_API_RATE_LIMIT_RESERVATION_SCRIPT = `
-local ttlMs = tonumber(ARGV[#ARGV])
+-- MAX_API_GCRA_RESERVE_V1
+local time = redis.call('TIME')
+local nowMs = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
+local ttlFloorMs = tonumber(ARGV[#ARGV])
 local keyCount = #KEYS
+local nextTats = {}
+local nextTtls = {}
 
 for index = 1, keyCount do
   local limit = tonumber(ARGV[index])
-  local count = tonumber(redis.call('GET', KEYS[index]) or '0')
-  if count >= limit then
-    local ttl = redis.call('PTTL', KEYS[index])
-    if ttl == nil or ttl < 1 then
-      ttl = ttlMs
-    end
-    return {0, index, ttl}
+  local intervalMs = 1000 / limit
+  local burstToleranceMs = (limit - 1) * intervalMs
+  local storedTat = tonumber(redis.call('GET', KEYS[index]) or tostring(nowMs))
+  local tat = math.max(storedTat, nowMs)
+  local allowAtMs = tat - burstToleranceMs
+  if nowMs < allowAtMs then
+    return {0, index, math.max(1, math.ceil(allowAtMs - nowMs))}
   end
+  local nextTat = tat + intervalMs
+  nextTats[index] = nextTat
+  nextTtls[index] = math.max(
+    ttlFloorMs,
+    math.ceil(nextTat - nowMs + burstToleranceMs + intervalMs)
+  )
 end
 
 for index = 1, keyCount do
-  local nextCount = redis.call('INCR', KEYS[index])
-  if nextCount == 1 then
-    redis.call('PEXPIRE', KEYS[index], ttlMs)
-  else
-    local ttl = redis.call('PTTL', KEYS[index])
-    if ttl == nil or ttl < 1 then
-      redis.call('PEXPIRE', KEYS[index], ttlMs)
-    end
-  end
+  redis.call('SET', KEYS[index], tostring(nextTats[index]), 'PX', nextTtls[index])
 end
 
 return {1, 0, 0}
 `;
+
+const MAX_API_CIRCUIT_ACQUIRE_SCRIPT = `
+-- MAX_API_CIRCUIT_ACQUIRE_V1
+local time = redis.call('TIME')
+local nowMs = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
+local threshold = tonumber(ARGV[1])
+local windowMs = tonumber(ARGV[2])
+local openMs = tonumber(ARGV[3])
+local probeTtlMs = tonumber(ARGV[4])
+local stateTtlMs = tonumber(ARGV[5])
+local probeToken = ARGV[6]
+local openUntilMs = tonumber(redis.call('GET', KEYS[2]) or '0')
+
+if openUntilMs > nowMs then
+  return {0, 0, math.max(1, math.ceil(openUntilMs - nowMs))}
+end
+
+local retained = {}
+local failuresRaw = redis.call('GET', KEYS[1]) or ''
+for value in string.gmatch(failuresRaw, '[^,]+') do
+  local observedAtMs = tonumber(value)
+  if observedAtMs ~= nil and observedAtMs >= nowMs - windowMs then
+    table.insert(retained, observedAtMs)
+  end
+end
+
+if #retained > 0 then
+  redis.call('SET', KEYS[1], table.concat(retained, ','), 'PX', stateTtlMs)
+else
+  redis.call('DEL', KEYS[1])
+end
+
+if openUntilMs > 0 then
+  local acquired = redis.call('SET', KEYS[3], probeToken, 'NX', 'PX', probeTtlMs)
+  if acquired then
+    return {1, 1, 0}
+  end
+  local probeTtl = redis.call('PTTL', KEYS[3])
+  return {0, 0, math.max(1, probeTtl)}
+end
+
+if #retained >= threshold then
+  local nextOpenUntilMs = nowMs + openMs
+  redis.call('SET', KEYS[2], tostring(nextOpenUntilMs), 'PX', stateTtlMs)
+  redis.call('DEL', KEYS[3])
+  return {0, 0, openMs}
+end
+
+return {1, 0, 0}
+`;
+
+const MAX_API_CIRCUIT_FAILURE_SCRIPT = `
+-- MAX_API_CIRCUIT_FAILURE_V1
+local time = redis.call('TIME')
+local nowMs = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
+local threshold = tonumber(ARGV[1])
+local windowMs = tonumber(ARGV[2])
+local openMs = tonumber(ARGV[3])
+local stateTtlMs = tonumber(ARGV[4])
+local forceOpen = tonumber(ARGV[5]) == 1
+local retained = {}
+local failuresRaw = redis.call('GET', KEYS[1]) or ''
+
+for value in string.gmatch(failuresRaw, '[^,]+') do
+  local observedAtMs = tonumber(value)
+  if observedAtMs ~= nil and observedAtMs >= nowMs - windowMs then
+    table.insert(retained, observedAtMs)
+  end
+end
+table.insert(retained, nowMs)
+redis.call('SET', KEYS[1], table.concat(retained, ','), 'PX', stateTtlMs)
+
+local openUntilMs = tonumber(redis.call('GET', KEYS[2]) or '0')
+if forceOpen or #retained >= threshold then
+  openUntilMs = nowMs + openMs
+  redis.call('SET', KEYS[2], tostring(openUntilMs), 'PX', stateTtlMs)
+  redis.call('DEL', KEYS[3])
+end
+
+return {#retained, openUntilMs}
+`;
+
+const MAX_API_CIRCUIT_CLOSE_SCRIPT = `
+-- MAX_API_CIRCUIT_CLOSE_V1
+if redis.call('GET', KEYS[3]) == ARGV[1] then
+  redis.call('DEL', KEYS[1], KEYS[2], KEYS[3])
+  return 1
+end
+return 0
+`;
+
+const MAX_API_CIRCUIT_RELEASE_PROBE_SCRIPT = `
+-- MAX_API_CIRCUIT_RELEASE_PROBE_V1
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+`;
+
+type MaxApiCircuitPermit = {
+  halfOpenProbeToken: string | null;
+};
 
 @Injectable()
 export class MaxClientService implements OnModuleDestroy {
@@ -398,15 +585,16 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly rateLimitRetryFloorMs: number;
   private readonly listBotChatsCacheTtlSec: number;
   private readonly chatSnapshotCacheTtlSec: number;
+  private readonly actionFailedJobRetention: { age: number; count: number };
   private readonly isProduction: boolean;
   private readonly circuitFailureThreshold: number;
   private readonly circuitWindowSec: number;
   private readonly circuitOpenSec: number;
+  private readonly circuitHalfOpenProbeSec: number;
   private readonly limiterRedis: Redis;
-  private readonly criticalFailuresMsByBot = new Map<string, number[]>();
   private readonly pendingTimeouts = new Set<NodeJS.Timeout>();
   private readonly keyedActionTimeouts = new Map<string, NodeJS.Timeout>();
-  private readonly circuitOpenUntilMsByBot = new Map<string, number>();
+  private readonly rateLimitLogAtMsByKey = new Map<string, number>();
   private readonly listBotChatsInFlight = new Map<string, Promise<MaxBotChat[]>>();
   private readonly currentChatMemberAccessInFlight = new Map<
     string,
@@ -425,12 +613,23 @@ export class MaxClientService implements OnModuleDestroy {
     private readonly botRegistry: MaxBotRegistryService,
     private readonly botContext: MaxBotContextService,
     @Optional()
-    @InjectQueue('moderation-actions')
+    @InjectQueue(MAX_ACTION_LEGACY_QUEUE)
     private readonly actionQueue?: Queue<MaxActionJob>,
     @Optional()
     private readonly runtimeDiagnosticsService?: RuntimeDiagnosticsService,
     @Optional()
     private readonly actionLedgerService?: MaxActionLedgerService,
+    @Optional()
+    private readonly maxBotLinkService?: MaxBotLinkService,
+    @Optional()
+    @InjectQueue(MAX_ACTION_CRITICAL_QUEUE)
+    private readonly criticalActionQueue?: Queue<MaxActionJob>,
+    @Optional()
+    @InjectQueue(MAX_ACTION_INTERACTIVE_QUEUE)
+    private readonly interactiveActionQueue?: Queue<MaxActionJob>,
+    @Optional()
+    @InjectQueue(MAX_ACTION_BACKGROUND_QUEUE)
+    private readonly backgroundActionQueue?: Queue<MaxActionJob>,
   ) {
     this.baseUrl = configService.getOrThrow<string>('MAX_API_BASE_URL');
     this.isProduction =
@@ -513,12 +712,26 @@ export class MaxClientService implements OnModuleDestroy {
       DEFAULT_MAX_API_CHAT_SNAPSHOT_CACHE_SEC,
       0,
     );
+    this.actionFailedJobRetention = {
+      age: this.readConfigInt(
+        configService.get('MAX_ACTION_FAILED_RETENTION_AGE_SEC'),
+        DEFAULT_MAX_ACTION_FAILED_RETENTION_AGE_SEC,
+      ),
+      count: this.readConfigInt(
+        configService.get('MAX_ACTION_FAILED_RETENTION_COUNT'),
+        DEFAULT_MAX_ACTION_FAILED_RETENTION_COUNT,
+      ),
+    };
     this.circuitFailureThreshold = this.readConfigInt(
       configService.get('MAX_API_CIRCUIT_FAILURE_THRESHOLD'),
       30,
     );
     this.circuitWindowSec = this.readConfigInt(configService.get('MAX_API_CIRCUIT_WINDOW_SEC'), 30);
     this.circuitOpenSec = this.readConfigInt(configService.get('MAX_API_CIRCUIT_OPEN_SEC'), 20);
+    this.circuitHalfOpenProbeSec = this.readConfigInt(
+      configService.get('MAX_API_CIRCUIT_HALF_OPEN_PROBE_SEC'),
+      DEFAULT_MAX_API_CIRCUIT_HALF_OPEN_PROBE_SEC,
+    );
     this.limiterRedis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
   }
 
@@ -1218,6 +1431,7 @@ export class MaxClientService implements OnModuleDestroy {
 
     if (
       current &&
+      options.forceUpsert !== true &&
       current.updateTypes.length === mergedUpdateTypes.length &&
       current.updateTypes.every((value, index) => value === mergedUpdateTypes[index])
     ) {
@@ -1373,7 +1587,11 @@ export class MaxClientService implements OnModuleDestroy {
       return fallback;
     }
 
-    const withoutPath = raw.split(/[\\/]+/u).pop()?.trim() ?? '';
+    const withoutPath =
+      raw
+        .split(/[\\/]+/u)
+        .pop()
+        ?.trim() ?? '';
     const sanitized = withoutPath
       .replace(/[^\p{L}\p{N}._ -]+/gu, '_')
       .replace(/_+/gu, '_')
@@ -1442,25 +1660,26 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   async cancelScheduledUnban(chatId: string, userId: string, options?: { botId?: string }) {
-    const jobId = this.buildScheduledMemberActionJobId(
-      'UNBAN_MEMBER',
-      chatId,
-      userId,
-      this.resolveBot(options?.botId).id,
-    );
-    if (!jobId) {
+    const botId = this.resolveBot(options?.botId).id;
+    const jobIds = [
+      this.buildScheduledMemberActionJobId('UNBAN_MEMBER', chatId, userId, botId),
+      this.buildScheduledMemberActionJobId('UNBAN_MEMBER', chatId, userId, botId, true),
+    ].filter((jobId): jobId is string => Boolean(jobId));
+    if (jobIds.length === 0) {
       return;
     }
 
-    const timeout = this.keyedActionTimeouts.get(jobId);
-    if (timeout) {
-      clearTimeout(timeout);
-      this.pendingTimeouts.delete(timeout);
-      this.keyedActionTimeouts.delete(jobId);
-    }
+    for (const jobId of jobIds) {
+      const timeout = this.keyedActionTimeouts.get(jobId);
+      if (timeout) {
+        clearTimeout(timeout);
+        this.pendingTimeouts.delete(timeout);
+        this.keyedActionTimeouts.delete(jobId);
+      }
 
-    if (this.dispatchEnabled && this.actionQueue) {
-      await this.removeQueuedActionJob(jobId);
+      if (this.dispatchEnabled && this.getActionQueues().length > 0) {
+        await this.removeQueuedActionJob(jobId);
+      }
     }
   }
 
@@ -1472,15 +1691,25 @@ export class MaxClientService implements OnModuleDestroy {
     });
   }
 
-  async executeActionJob(job: MaxActionJob): Promise<void> {
+  async executeActionJob(job: MaxActionJob): Promise<MaxPublishedMessage | void> {
     const action = {
       ...job,
       attempt: Number.isInteger(job.attempt) && job.attempt > 0 ? job.attempt : 1,
     };
-    const bot = this.resolveExecutableBot(action.botId, { explicit: Boolean(action.botId?.trim()) });
+    const completedSendMessageId =
+      await this.actionLedgerService?.getCompletedSendDispatch?.(action);
+    if (completedSendMessageId) {
+      return {
+        messageId: completedSendMessageId,
+        url: null,
+      };
+    }
+    const bot = this.resolveExecutableBot(action.botId, {
+      explicit: Boolean(action.botId?.trim()),
+    });
     const mutationOptions = this.buildQueuedActionMutationOptions(action, bot.id);
 
-    await this.botContext.runWithBot(bot.id, async () => {
+    return this.botContext.runWithBot(bot.id, async () => {
       switch (action.actionType) {
         case 'DELETE_MESSAGE':
           if (!action.messageId) {
@@ -1511,21 +1740,12 @@ export class MaxClientService implements OnModuleDestroy {
             attachments,
             mutationOptions,
           );
+          const sentMessageId = this.extractMessageIdFromSendResponse(sendResponse);
+          if (!sentMessageId) {
+            throw new Error('MAX SEND_MESSAGE response has no remote message id');
+          }
           const autoDeleteDelayMs = this.normalizeDelayMs(action.autoDeleteDelayMs);
           if (autoDeleteDelayMs > 0) {
-            const sentMessageId = this.extractMessageIdFromSendResponse(sendResponse);
-            if (!sentMessageId) {
-              this.logger.warn(
-                {
-                  chatId: action.chatId,
-                  autoDeleteDelayMs,
-                  sendResponse,
-                },
-                'Failed to schedule auto-delete for sent bot message: response has no message id',
-              );
-              return;
-            }
-
             try {
               await this.dispatchAction(
                 {
@@ -1547,7 +1767,12 @@ export class MaxClientService implements OnModuleDestroy {
               );
             }
           }
-          return;
+          const resolvedChatId = this.extractChatIdFromSendResponse(sendResponse);
+          return {
+            messageId: sentMessageId,
+            url: this.parseChatLink(sendResponse),
+            ...(resolvedChatId ? { chatId: resolvedChatId } : {}),
+          };
         }
 
         case 'KICK_MEMBER':
@@ -3436,7 +3661,8 @@ export class MaxClientService implements OnModuleDestroy {
         trafficClass: 'critical',
         actionHealthLane: requestOptions.actionHealthLane,
         sourceTag:
-          this.normalizeMetricSourceTag(requestOptions.sourceTag) ?? MAX_API_SOURCE_TAGS.CALLBACK_ANSWER,
+          this.normalizeMetricSourceTag(requestOptions.sourceTag) ??
+          MAX_API_SOURCE_TAGS.CALLBACK_ANSWER,
         ignoreFailureMetricStatuses: requestOptions.ignoreFailureMetricStatuses,
         timeoutMs: requestOptions.timeoutMs,
         botId: requestOptions.botId,
@@ -3460,9 +3686,42 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     const explicitBotId = options?.botId ?? payload.botId;
-    const bot = this.resolveExecutableBot(explicitBotId, {
-      explicit: Boolean(explicitBotId?.trim()),
+    const resolvedRoute =
+      !explicitBotId && !options?.candidateBotIds?.length
+        ? await this.resolveQueuedActionRoute(payload)
+        : null;
+    if (resolvedRoute && resolvedRoute.candidateBotIds.length === 0) {
+      throw new UnrecoverableError(
+        `MAX ${payload.actionType} has no eligible routed bot candidate for chat ${payload.chatId}`,
+      );
+    }
+    const explicitCandidateBotIds = this.normalizeActionCandidateBotIds(
+      options?.candidateBotIds ?? [],
+    );
+    const requestedCandidateBotIds = this.normalizeActionCandidateBotIds([
+      ...explicitCandidateBotIds,
+      ...(resolvedRoute?.candidateBotIds ?? []),
+    ]);
+    const selectedBotId =
+      this.readTrimmedString(explicitBotId) ??
+      explicitCandidateBotIds.find((botId) => {
+        const candidate = this.botRegistry.getBotById(botId);
+        return Boolean(candidate && this.canExecuteActionsForBot(candidate));
+      });
+    const bot = this.resolveExecutableBot(selectedBotId, {
+      explicit: Boolean(selectedBotId?.trim()),
     });
+    const candidateBotIds = this.normalizeActionCandidateBotIds([
+      bot.id,
+      ...requestedCandidateBotIds,
+    ]);
+    const isRoutedAction =
+      Boolean(options?.routing) ||
+      Boolean(resolvedRoute) ||
+      Boolean(options?.candidateBotIds?.length);
+    const routing =
+      options?.routing ??
+      (resolvedRoute ? this.buildActionRoutingMetadata(resolvedRoute) : undefined);
     const autoDeleteDelayMs = this.normalizeDelayMs(options?.autoDeleteDelayMs);
     const delayMs = this.normalizeDelayMs(options?.delayMs);
     const immediate = options?.immediate === true;
@@ -3478,20 +3737,23 @@ export class MaxClientService implements OnModuleDestroy {
             payload.chatId,
             payload.userId,
             bot.id,
+            isRoutedAction,
           )
         : null;
     const explicitIdempotencyKey = this.buildExplicitActionIdempotencyKey(
       options?.idempotencyKey,
       payload.actionType,
-      bot.id,
+      isRoutedAction ? null : bot.id,
     );
     const logicalIdempotencyKey =
       scheduledJobId ??
       explicitIdempotencyKey ??
-      this.buildDefaultActionIdempotencyKey(payload, bot.id);
+      this.buildDefaultActionIdempotencyKey(payload, isRoutedAction ? null : bot.id);
     const job: MaxActionJob = {
       ...payload,
       botId: bot.id,
+      ...(isRoutedAction ? { candidateBotIds } : {}),
+      ...(routing ? { routing } : {}),
       ...(options?.trafficClass ? { trafficClass: options.trafficClass } : {}),
       ...(options?.actionHealthLane ? { actionHealthLane: options.actionHealthLane } : {}),
       ...(sourceTag ? { sourceTag } : {}),
@@ -3514,22 +3776,29 @@ export class MaxClientService implements OnModuleDestroy {
       return;
     }
 
-    if (this.dispatchEnabled && this.actionQueue) {
+    let actionQueue = this.resolveActionQueue(job);
+    if (this.dispatchEnabled && actionQueue) {
       await this.actionLedgerService?.assertCanEnqueue(job);
 
       if (scheduledJobId) {
         await this.removeQueuedActionJob(scheduledJobId);
       } else if (logicalIdempotencyKey) {
-        await this.removeRetainedFailedActionJob(logicalIdempotencyKey, payload.actionType);
+        const retainedQueue = await this.removeRetainedFailedActionJob(
+          logicalIdempotencyKey,
+          payload.actionType,
+        );
+        if (retainedQueue) {
+          actionQueue = retainedQueue;
+        }
       }
 
       await this.actionLedgerService?.recordEnqueued(job);
       try {
-        await this.actionQueue.add('execute-max-action', job, {
+        await actionQueue.add('execute-max-action', job, {
           jobId: job.idempotencyKey,
           attempts: 5,
           removeOnComplete: true,
-          removeOnFail: MAX_ACTION_FAILED_JOB_RETENTION,
+          removeOnFail: this.actionFailedJobRetention,
           ...(delayMs > 0 ? { delay: delayMs } : {}),
           backoff: {
             type: 'exponential',
@@ -3590,6 +3859,77 @@ export class MaxClientService implements OnModuleDestroy {
     await this.executeActionJob(job);
   }
 
+  private async resolveQueuedActionRoute(
+    payload: Omit<MaxActionJob, 'attempt' | 'idempotencyKey' | 'createdAt'>,
+  ): Promise<MaxBotRoute | null> {
+    if (
+      !this.maxBotLinkService ||
+      !this.readTrimmedString(payload.chatId) ||
+      isPrivateDirectChatId(payload.chatId)
+    ) {
+      return null;
+    }
+
+    const request: MaxBotRouteRequest =
+      payload.actionType === 'SEND_MESSAGE' || payload.actionType === 'NOTIFY_MODERATORS'
+        ? {
+            purpose: 'send_message',
+            chatId: payload.chatId,
+            fallbackToPrimary: true,
+          }
+        : {
+            purpose: 'moderation_action',
+            chatId: payload.chatId,
+            action: payload.actionType === 'DELETE_MESSAGE' ? 'delete_message' : 'moderate_member',
+            fallbackToPrimary: true,
+          };
+
+    try {
+      return await this.maxBotLinkService.resolveBotRoute(request);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          actionType: payload.actionType,
+          chatId: payload.chatId,
+          error: this.extractErrorMessage(error),
+        },
+        'Failed to resolve routed MAX action candidates before enqueue',
+      );
+      return null;
+    }
+  }
+
+  private buildActionRoutingMetadata(route: MaxBotRoute): MaxActionRoutingMetadata | undefined {
+    if (route.purpose !== 'send_message' && route.purpose !== 'moderation_action') {
+      return undefined;
+    }
+
+    return {
+      purpose: route.purpose,
+      primaryBotId: route.primaryBotId,
+      reason: route.reason,
+      routingVersion: route.routingVersion ?? null,
+      ...(route.purpose === 'moderation_action'
+        ? {
+            action:
+              route.action === 'delete_message' || route.action === 'edit_message'
+                ? 'delete_message'
+                : 'moderate_member',
+          }
+        : {}),
+    };
+  }
+
+  private normalizeActionCandidateBotIds(values: readonly unknown[]): string[] {
+    return Array.from(
+      new Set(
+        values
+          .map((value) => (typeof value === 'string' ? value.trim() : ''))
+          .filter((value) => value.length > 0),
+      ),
+    );
+  }
+
   private async executeImmediateActionJob(job: MaxActionJob): Promise<void> {
     if (!this.actionLedgerService?.isIrreversibleAction(job.actionType)) {
       await this.executeActionJob(job);
@@ -3634,30 +3974,34 @@ export class MaxClientService implements OnModuleDestroy {
     chatId: string,
     userId: string | undefined,
     botId: string | null = null,
+    logical = false,
   ): string | null {
     if (actionType !== 'UNBAN_MEMBER' || !userId) {
       return null;
     }
 
-    return `member-action__${botId ?? this.botRegistry.getDefaultBot().id}__${actionType}__${chatId}__${userId}`;
+    return `member-action__${logical ? 'logical' : (botId ?? this.botRegistry.getDefaultBot().id)}__${actionType}__${chatId}__${userId}`;
   }
 
   private buildExplicitActionIdempotencyKey(
     value: string | null | undefined,
     actionType: MaxActionType,
-    botId: string,
+    botId: string | null,
   ): string | null {
     const normalized = this.readTrimmedString(value);
     if (!normalized) {
       return null;
     }
 
-    return this.buildActionIdempotencyKey('explicit', [botId, actionType, normalized]);
+    return this.buildActionIdempotencyKey(
+      'explicit',
+      [botId, actionType, normalized].filter(Boolean) as string[],
+    );
   }
 
   private buildDefaultActionIdempotencyKey(
     payload: Omit<MaxActionJob, 'attempt' | 'idempotencyKey' | 'createdAt'>,
-    botId: string,
+    botId: string | null,
   ): string | null {
     const chatId = this.readTrimmedString(payload.chatId);
     if (!chatId) {
@@ -3667,14 +4011,20 @@ export class MaxClientService implements OnModuleDestroy {
     if (payload.actionType === 'DELETE_MESSAGE') {
       const messageId = this.readTrimmedString(payload.messageId);
       return messageId
-        ? this.buildActionIdempotencyKey('logical', [botId, payload.actionType, chatId, messageId])
+        ? this.buildActionIdempotencyKey(
+            'logical',
+            [botId, payload.actionType, chatId, messageId].filter(Boolean) as string[],
+          )
         : null;
     }
 
     if (payload.actionType === 'KICK_MEMBER' || payload.actionType === 'BAN_MEMBER') {
       const userId = this.readTrimmedString(payload.userId);
       return userId
-        ? this.buildActionIdempotencyKey('logical', [botId, payload.actionType, chatId, userId])
+        ? this.buildActionIdempotencyKey(
+            'logical',
+            [botId, payload.actionType, chatId, userId].filter(Boolean) as string[],
+          )
         : null;
     }
 
@@ -3706,35 +4056,84 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   private async removeQueuedActionJob(jobId: string) {
-    if (!this.actionQueue) {
-      return;
-    }
-
-    const existingJob = await this.actionQueue.getJob(jobId);
-    if (!existingJob) {
-      return;
-    }
-
-    await existingJob.remove();
+    const existingJobs = await this.findActionJobs(jobId);
+    await Promise.all(existingJobs.map((job) => job.remove()));
   }
 
-  private async removeRetainedFailedActionJob(jobId: string, replacementActionType: MaxActionType) {
-    if (!this.actionQueue) {
-      return;
+  private async removeRetainedFailedActionJob(
+    jobId: string,
+    replacementActionType: MaxActionType,
+  ): Promise<Queue<MaxActionJob> | undefined> {
+    const existingEntries = await this.findActionJobEntries(jobId);
+    const failedJobs: Array<Job<MaxActionJob>> = [];
+    const retainedQueues: Array<Queue<MaxActionJob>> = [];
+    for (const entry of existingEntries) {
+      if ((await entry.job.getState()) === 'failed') {
+        failedJobs.push(entry.job);
+      } else {
+        retainedQueues.push(entry.queue);
+      }
     }
 
-    const existingJob = await this.actionQueue.getJob(jobId);
-    if (!existingJob || (await existingJob.getState()) !== 'failed') {
-      return;
-    }
-
-    if (this.isRetainedAmbiguousActionFailure(existingJob, replacementActionType)) {
+    if (
+      failedJobs.some((job) => this.isRetainedAmbiguousActionFailure(job, replacementActionType))
+    ) {
       throw new UnrecoverableError(
         `Retained ambiguous MAX ${replacementActionType} job ${jobId} requires manual review before retry`,
       );
     }
 
-    await existingJob.remove();
+    await Promise.all(failedJobs.map((job) => job.remove()));
+    return retainedQueues[0];
+  }
+
+  private resolveActionQueue(job: Pick<MaxActionJob, 'actionType' | 'trafficClass'>) {
+    const queueName = resolveMaxActionQueueName(job);
+    const laneQueue = (() => {
+      switch (queueName) {
+        case MAX_ACTION_CRITICAL_QUEUE:
+          return this.criticalActionQueue;
+        case MAX_ACTION_BACKGROUND_QUEUE:
+          return this.backgroundActionQueue;
+        case MAX_ACTION_INTERACTIVE_QUEUE:
+        default:
+          return this.interactiveActionQueue;
+      }
+    })();
+
+    return laneQueue ?? this.actionQueue;
+  }
+
+  private getActionQueues(): Array<Queue<MaxActionJob>> {
+    return Array.from(
+      new Set(
+        [
+          this.criticalActionQueue,
+          this.interactiveActionQueue,
+          this.backgroundActionQueue,
+          this.actionQueue,
+        ].filter((queue): queue is Queue<MaxActionJob> => Boolean(queue)),
+      ),
+    );
+  }
+
+  private async findActionJobs(jobId: string): Promise<Array<Job<MaxActionJob>>> {
+    return (await this.findActionJobEntries(jobId)).map((entry) => entry.job);
+  }
+
+  private async findActionJobEntries(
+    jobId: string,
+  ): Promise<Array<{ queue: Queue<MaxActionJob>; job: Job<MaxActionJob> }>> {
+    const entries = await Promise.all(
+      this.getActionQueues().map(async (queue) => ({
+        queue,
+        job: await queue.getJob(jobId),
+      })),
+    );
+    return entries.filter(
+      (entry): entry is { queue: Queue<MaxActionJob>; job: Job<MaxActionJob> } =>
+        Boolean(entry.job),
+    );
   }
 
   private isRetainedAmbiguousActionFailure(
@@ -3752,9 +4151,7 @@ export class MaxClientService implements OnModuleDestroy {
 
   private isIrreversibleQueuedActionType(actionType: MaxActionType): boolean {
     return (
-      actionType === 'SEND_MESSAGE' ||
-      actionType === 'KICK_MEMBER' ||
-      actionType === 'BAN_MEMBER'
+      actionType === 'SEND_MESSAGE' || actionType === 'KICK_MEMBER' || actionType === 'BAN_MEMBER'
     );
   }
 
@@ -4579,21 +4976,28 @@ export class MaxClientService implements OnModuleDestroy {
     const trafficClass = options.trafficClass ?? 'interactive';
     const actionHealthLane = options.actionHealthLane ?? trafficClass;
     const sourceTag = this.normalizeMetricSourceTag(options.sourceTag);
-    await this.ensureCircuitClosed(bot.id);
-    await this.reserveRateLimitSlot(
-      bot.id,
-      options.chatId ?? null,
-      trafficClass,
-      sourceTag,
-      options.timeoutMs,
-    );
+    const circuitPermit = await this.acquireCircuitPermit(bot.id);
+    try {
+      await this.reserveRateLimitSlot(
+        bot.id,
+        options.chatId ?? null,
+        trafficClass,
+        sourceTag,
+        options.timeoutMs,
+      );
+    } catch (error: unknown) {
+      await this.releaseUnusedHalfOpenProbe(bot.id, circuitPermit);
+      throw error;
+    }
 
     try {
       const result = await this.botContext.runWithBot(bot.id, () => operation());
+      await this.closeCircuitAfterSuccessfulProbe(bot.id, circuitPermit);
       this.actionHealthService.recordSuccessForLane(actionHealthLane, bot.id);
       return result;
     } catch (error: unknown) {
       if (this.shouldIgnoreActionHealthFailure(error, options)) {
+        await this.closeCircuitAfterSuccessfulProbe(bot.id, circuitPermit);
         throw error;
       }
 
@@ -4602,15 +5006,19 @@ export class MaxClientService implements OnModuleDestroy {
         typeof status === 'number' &&
         Boolean(options.ignoreFailureMetricStatuses?.includes(status));
       if (ignoreFailureMetrics) {
+        await this.closeCircuitAfterSuccessfulProbe(bot.id, circuitPermit);
         throw error;
       }
       const isCritical = status === 429 || (typeof status === 'number' && status >= 500);
       this.actionHealthService.recordFailureForLane(actionHealthLane, isCritical, bot.id);
       if (isCritical) {
-        this.registerCriticalFailure(bot.id);
+        await this.registerCriticalFailure(bot.id, circuitPermit);
+      } else {
+        await this.closeCircuitAfterSuccessfulProbe(bot.id, circuitPermit);
       }
       if (status === 429) {
-        await this.recordMaxApiProblemChat({
+        await this.recordRateLimitOutcome({
+          origin: 'external_429',
           botId: bot.id,
           chatId: options.chatId ?? null,
           trafficClass,
@@ -4714,6 +5122,10 @@ export class MaxClientService implements OnModuleDestroy {
       return false;
     }
 
+    if (typeof status === 'number') {
+      return false;
+    }
+
     const message = this.extractErrorMessage(error);
     return message.includes('rate limit exceeded') || message.includes('circuit breaker');
   }
@@ -4761,34 +5173,156 @@ export class MaxClientService implements OnModuleDestroy {
     attachments: Record<string, unknown>[],
     mutationOptions: MaxApiRequestOptions,
   ): Promise<Record<string, unknown>> {
+    const messageLink = this.buildMessageLinkData(action.options?.messageLink);
+    const sendRequest = () =>
+      this.request<Record<string, unknown>>('post', '/messages', {
+        params: {
+          chat_id: action.chatId,
+        },
+        data: {
+          text: action.text,
+          ...(action.options?.textFormat ? { format: action.options.textFormat } : {}),
+          ...(messageLink ? { link: messageLink } : {}),
+          ...(attachments.length > 0 ? { attachments } : {}),
+        },
+        ...(mutationOptions.timeoutMs ? { timeout: mutationOptions.timeoutMs } : {}),
+      });
+
+    if (!this.actionLedgerService) {
+      try {
+        return await this.executeMutation(action.chatId, sendRequest, mutationOptions);
+      } catch (error: unknown) {
+        if (isAmbiguousMaxSendError(error)) {
+          throw this.createAmbiguousQueuedMutationError(
+            `Ambiguous MAX SEND_MESSAGE transport failure for chat ${action.chatId}: ${this.extractErrorMessage(error) || 'no HTTP status'}`,
+            error,
+          );
+        }
+        throw error;
+      }
+    }
+
+    let dispatchToken: string | null = null;
     try {
       return await this.executeMutation(
         action.chatId,
         async () => {
-          const messageLink = this.buildMessageLinkData(action.options?.messageLink);
-          return this.request<Record<string, unknown>>('post', '/messages', {
-            params: {
-              chat_id: action.chatId,
-            },
-            data: {
-              text: action.text,
-              ...(action.options?.textFormat ? { format: action.options.textFormat } : {}),
-              ...(messageLink ? { link: messageLink } : {}),
-              ...(attachments.length > 0 ? { attachments } : {}),
-            },
-            ...(mutationOptions.timeoutMs ? { timeout: mutationOptions.timeoutMs } : {}),
-          });
+          const botId = this.readTrimmedString(mutationOptions.botId) ?? this.getCurrentBot().id;
+          const claim = await this.actionLedgerService!.claimSendDispatch(action, botId);
+          if (claim.kind === 'recovered') {
+            return {
+              message_id: claim.remoteMessageId,
+            };
+          }
+
+          dispatchToken = claim.dispatchToken;
+          const response = await sendRequest();
+          const remoteMessageId = this.extractMessageIdFromSendResponse(response);
+          if (!remoteMessageId) {
+            throw new Error('MAX SEND_MESSAGE response has no remote message id');
+          }
+          await this.actionLedgerService!.completeSendDispatch(
+            action,
+            claim.dispatchToken,
+            remoteMessageId,
+          );
+          return response;
         },
         mutationOptions,
       );
     } catch (error: unknown) {
-      if (this.isAmbiguousQueuedMutationTransportError(error)) {
-        throw new UnrecoverableError(
-          `Ambiguous MAX SEND_MESSAGE transport failure for chat ${action.chatId}: ${this.extractErrorMessage(error) || 'no HTTP status'}`,
-        );
+      if (!dispatchToken) {
+        throw error;
       }
-      throw error;
+
+      if (this.isDefinitiveQueuedSendRejection(error)) {
+        try {
+          await this.actionLedgerService.releaseSendDispatch(action, dispatchToken);
+        } catch (releaseError: unknown) {
+          return this.throwAmbiguousQueuedSend(
+            action,
+            dispatchToken,
+            releaseError,
+            `Ambiguous MAX SEND_MESSAGE fence release after definitive rejection for chat ${action.chatId}`,
+          );
+        }
+        if (
+          this.extractStatusCode(error) !== 429 &&
+          !this.isRetryableDefinitiveQueuedSendRejection(error)
+        ) {
+          throw this.createUnrecoverableQueuedMutationError(
+            `MAX SEND_MESSAGE received definitive HTTP ${this.extractStatusCode(error) ?? '4xx'} for chat ${action.chatId}`,
+            error,
+          );
+        }
+        throw error;
+      }
+
+      return this.throwAmbiguousQueuedSend(
+        action,
+        dispatchToken,
+        error,
+        `Ambiguous MAX SEND_MESSAGE transport failure for chat ${action.chatId}: ${this.extractErrorMessage(error) || 'no HTTP status'}`,
+      );
     }
+  }
+
+  private isDefinitiveQueuedSendRejection(error: unknown): boolean {
+    const status = this.extractStatusCode(error);
+    return typeof status === 'number' && status >= 400 && status < 500 && status !== 408;
+  }
+
+  private isRetryableDefinitiveQueuedSendRejection(error: unknown): boolean {
+    if (this.extractStatusCode(error) !== 400) {
+      return false;
+    }
+
+    const payload = (error as { response?: { data?: unknown } })?.response?.data;
+    const normalized = JSON.stringify(payload ?? '').toLowerCase();
+    return normalized.includes('attachment.not.ready') || normalized.includes('not ready');
+  }
+
+  private async throwAmbiguousQueuedSend(
+    action: MaxActionJob,
+    dispatchToken: string,
+    cause: unknown,
+    message: string,
+  ): Promise<Record<string, unknown>> {
+    const error = this.createAmbiguousQueuedMutationError(message, cause);
+    let finalized = false;
+    try {
+      const quarantined = await this.actionLedgerService?.recordAmbiguousSendDispatch(
+        action,
+        dispatchToken,
+        error,
+      );
+      if (quarantined) {
+        markMaxSendDispatchLedgerFinalized(error);
+        finalized = true;
+      }
+    } catch (ledgerError: unknown) {
+      this.logger.warn(
+        {
+          actionType: action.actionType,
+          chatId: action.chatId,
+          botId: action.botId ?? null,
+          error: this.extractErrorMessage(ledgerError),
+        },
+        'Failed to quarantine ambiguous MAX SEND_MESSAGE dispatch fence',
+      );
+    }
+
+    if (!finalized) {
+      const recoveredRemoteMessageId = await this.actionLedgerService
+        ?.getCompletedSendDispatch?.(action)
+        ?.catch(() => null);
+      if (recoveredRemoteMessageId) {
+        return {
+          message_id: recoveredRemoteMessageId,
+        };
+      }
+    }
+    throw error;
   }
 
   private async executeQueuedMemberModerationAction(
@@ -4811,8 +5345,9 @@ export class MaxClientService implements OnModuleDestroy {
       );
     } catch (error: unknown) {
       if (this.isAmbiguousQueuedMutationTransportError(error)) {
-        throw new UnrecoverableError(
+        throw this.createAmbiguousQueuedMutationError(
           `Ambiguous MAX ${action.actionType} transport failure for chat ${action.chatId} user ${action.userId}: ${this.extractErrorMessage(error) || 'no HTTP status'}`,
+          error,
         );
       }
       throw error;
@@ -4957,51 +5492,30 @@ export class MaxClientService implements OnModuleDestroy {
     const startedAtMs = Date.now();
 
     while (true) {
-      if (this.shouldApplyManagedRefreshSourceLimit(trafficClass, sourceTag)) {
-        const sourceReservation = await this.tryReserveManagedRefreshSourceSlot(botId);
-        if (!sourceReservation.ok) {
-          const elapsedMs = Date.now() - startedAtMs;
-          const remainingWaitMs = maxWaitMs - elapsedMs;
-          if (remainingWaitMs <= 0) {
-            await this.recordMaxApiProblemChat({
-              botId,
-              chatId,
-              trafficClass,
-              sourceTag,
-              reason: sourceReservation.reason,
-            });
-            throw new Error(sourceReservation.reason);
-          }
-
-          await this.sleep(
-            Math.max(
-              this.rateLimitRetryFloorMs,
-              Math.min(sourceReservation.retryAfterMs, remainingWaitMs),
-            ),
-          );
-          continue;
-        }
-      }
-
-      const reservation = await this.tryReserveRateLimitSlot(botId, chatId, trafficClass);
+      const reservation = await this.tryReserveRateLimitSlot(
+        botId,
+        chatId,
+        trafficClass,
+        sourceTag,
+      );
       if (reservation.ok) {
-        if (sourceTag) {
-          await this.recordSourceRateLimitUsage(botId, trafficClass, sourceTag);
-        }
+        await this.recordRateLimitUsage(botId, trafficClass, sourceTag);
         return;
       }
 
       const elapsedMs = Date.now() - startedAtMs;
       const remainingWaitMs = maxWaitMs - elapsedMs;
       if (remainingWaitMs <= 0) {
-        await this.recordMaxApiProblemChat({
+        await this.recordRateLimitOutcome({
+          origin: 'internal_limiter',
           botId,
           chatId,
           trafficClass,
           sourceTag,
           reason: reservation.reason,
+          retryAfterMs: reservation.retryAfterMs,
         });
-        throw new Error(reservation.reason);
+        throw new MaxApiInternalRateLimitError(reservation.reason, reservation.retryAfterMs);
       }
 
       await this.sleep(
@@ -5021,67 +5535,11 @@ export class MaxClientService implements OnModuleDestroy {
     );
   }
 
-  private async tryReserveManagedRefreshSourceSlot(botId: string): Promise<
-    | { ok: true }
-    | {
-        ok: false;
-        retryAfterMs: number;
-        reason: string;
-      }
-  > {
-    const nowSec = Math.floor(Date.now() / 1_000);
-    const keys: string[] = [];
-    const limits: string[] = [];
-    if (this.managedRefreshRpsLimit > 0) {
-      keys.push(
-        `maxapi:rps:source-limit:${botId}:${MAX_API_SOURCE_TAGS.MANAGED_REFRESH}:${nowSec}`,
-      );
-      limits.push(String(this.managedRefreshRpsLimit));
-    }
-    if (this.managedRefreshStackRpsLimit > 0) {
-      keys.push(`maxapi:rps:source-limit:stack:${MAX_API_SOURCE_TAGS.MANAGED_REFRESH}:${nowSec}`);
-      limits.push(String(this.managedRefreshStackRpsLimit));
-    }
-    if (keys.length === 0) {
-      return { ok: true };
-    }
-
-    const raw = await this.limiterRedis.eval(
-      MAX_API_RATE_LIMIT_RESERVATION_SCRIPT,
-      keys.length,
-      ...keys,
-      ...limits,
-      String(MAX_API_RATE_LIMIT_SLOT_TTL_MS),
-    );
-    const result = Array.isArray(raw) ? raw : null;
-    const ok = typeof result?.[0] === 'number' ? result[0] : Number.NaN;
-    const rejectedKeyIndex = typeof result?.[1] === 'number' ? result[1] : Number.NaN;
-    const retryAfterMs = typeof result?.[2] === 'number' ? result[2] : Number.NaN;
-
-    if (ok === 1) {
-      return { ok: true };
-    }
-
-    if (ok !== 0 || !Number.isFinite(rejectedKeyIndex)) {
-      throw new Error('Failed to execute MAX API managed_refresh source reservation script');
-    }
-
-    return {
-      ok: false,
-      retryAfterMs: Number.isFinite(retryAfterMs)
-        ? Math.max(1, Math.trunc(retryAfterMs))
-        : MAX_API_RATE_LIMIT_SLOT_TTL_MS,
-      reason:
-        Math.trunc(rejectedKeyIndex) === 1
-          ? `MAX API managed_refresh source limit exceeded for bot ${botId}`
-          : 'MAX API managed_refresh source limit exceeded across all bots',
-    };
-  }
-
   private async tryReserveRateLimitSlot(
     botId: string,
     chatId: string | null,
     trafficClass: MaxApiTrafficClass,
+    sourceTag?: string | null,
   ): Promise<
     | { ok: true }
     | {
@@ -5090,23 +5548,59 @@ export class MaxClientService implements OnModuleDestroy {
         reason: string;
       }
   > {
-    const nowSec = Math.floor(Date.now() / 1_000);
-    const keys = [
-      `maxapi:rps:global:${botId}:${nowSec}`,
-      `maxapi:rps:global:${botId}:${trafficClass}:${nowSec}`,
-      ...(chatId ? [`maxapi:rps:chat:${botId}:${chatId}:${nowSec}`] : []),
-      `maxapi:rps:stack:${nowSec}`,
-      `maxapi:rps:stack:${trafficClass}:${nowSec}`,
+    const dimensions = [
+      {
+        key: `maxapi:gcra:v1:bot:${botId}:all`,
+        limit: this.globalRpsLimit,
+        reason: `MAX API global rate limit exceeded for bot ${botId}`,
+      },
+      {
+        key: `maxapi:gcra:v1:bot:${botId}:class:${trafficClass}`,
+        limit: this.resolveTrafficClassEffectiveRpsLimit(trafficClass),
+        reason: `MAX API ${trafficClass} rate limit exceeded for bot ${botId}`,
+      },
+      ...(chatId
+        ? [
+            {
+              key: `maxapi:gcra:v1:chat:${botId}:${chatId}`,
+              limit: this.chatRpsLimit,
+              reason: `MAX API per-chat rate limit exceeded for bot ${botId} chat ${chatId}`,
+            },
+          ]
+        : []),
+      {
+        key: 'maxapi:gcra:v1:stack:all',
+        limit: this.globalRpsLimit,
+        reason: 'MAX API global rate limit exceeded across all bots',
+      },
+      {
+        key: `maxapi:gcra:v1:stack:class:${trafficClass}`,
+        limit: this.resolveTrafficClassEffectiveRpsLimit(trafficClass),
+        reason: `MAX API ${trafficClass} rate limit exceeded across all bots`,
+      },
     ];
+    if (this.shouldApplyManagedRefreshSourceLimit(trafficClass, sourceTag)) {
+      if (this.managedRefreshRpsLimit > 0) {
+        dimensions.push({
+          key: `maxapi:gcra:v1:source:${botId}:${MAX_API_SOURCE_TAGS.MANAGED_REFRESH}`,
+          limit: this.managedRefreshRpsLimit,
+          reason: `MAX API managed_refresh source limit exceeded for bot ${botId}`,
+        });
+      }
+      if (this.managedRefreshStackRpsLimit > 0) {
+        dimensions.push({
+          key: `maxapi:gcra:v1:source:stack:${MAX_API_SOURCE_TAGS.MANAGED_REFRESH}`,
+          limit: this.managedRefreshStackRpsLimit,
+          reason: 'MAX API managed_refresh source limit exceeded across all bots',
+        });
+      }
+    }
+
     const raw = await this.limiterRedis.eval(
       MAX_API_RATE_LIMIT_RESERVATION_SCRIPT,
-      keys.length,
-      ...keys,
-      String(this.globalRpsLimit),
-      String(this.resolveTrafficClassEffectiveRpsLimit(trafficClass)),
-      ...(chatId ? [String(this.chatRpsLimit)] : []),
-      String(this.globalRpsLimit),
-      String(this.resolveTrafficClassEffectiveRpsLimit(trafficClass)),
+      dimensions.length,
+      ...dimensions.map((dimension) => dimension.key),
+      ...dimensions.map((dimension) => String(dimension.limit)),
       String(MAX_API_RATE_LIMIT_SLOT_TTL_MS),
     );
     const result = Array.isArray(raw) ? raw : null;
@@ -5128,54 +5622,118 @@ export class MaxClientService implements OnModuleDestroy {
     return {
       ok: false,
       retryAfterMs: normalizedRetryAfterMs,
-      reason: this.buildRateLimitExceededMessage(
-        botId,
-        chatId,
-        trafficClass,
-        Math.trunc(rejectedKeyIndex),
-      ),
+      reason:
+        dimensions[Math.trunc(rejectedKeyIndex) - 1]?.reason ??
+        `MAX API ${trafficClass} rate limit exceeded for bot ${botId}`,
     };
   }
 
-  private async recordMaxApiProblemChat(params: {
+  private async recordRateLimitOutcome(params: {
+    origin: 'internal_limiter' | 'external_429';
     botId: string;
     chatId: string | null;
     trafficClass: MaxApiTrafficClass;
     sourceTag?: string | null;
     reason: string;
     statusCode?: number | null;
+    retryAfterMs?: number | null;
   }): Promise<void> {
+    const nowSec = Math.floor(Date.now() / 1_000);
+    const metricKeys = [
+      `${MAX_API_RATE_LIMIT_OUTCOME_KEY_PREFIX}:${params.origin}:${params.botId}:${params.trafficClass}:${nowSec}`,
+      `${MAX_API_RATE_LIMIT_OUTCOME_KEY_PREFIX}:${params.origin}:stack:${params.trafficClass}:${nowSec}`,
+    ];
+    try {
+      const pipeline = this.limiterRedis.multi();
+      for (const key of metricKeys) {
+        pipeline.incr(key).expire(key, MAX_API_SOURCE_METRICS_TTL_SEC);
+      }
+      await pipeline.exec();
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          botId: params.botId,
+          trafficClass: params.trafficClass,
+          origin: params.origin,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to record MAX API rate-limit outcome metric',
+      );
+    }
+
+    const logKey = `${params.origin}:${params.botId}:${params.trafficClass}`;
+    const nowMs = Date.now();
+    const lastLoggedAtMs = this.rateLimitLogAtMsByKey.get(logKey) ?? 0;
+    if (nowMs - lastLoggedAtMs >= MAX_API_RATE_LIMIT_LOG_COALESCE_MS) {
+      this.rateLimitLogAtMsByKey.set(logKey, nowMs);
+      this.logger.warn(
+        {
+          botId: params.botId,
+          chatId: params.chatId,
+          trafficClass: params.trafficClass,
+          sourceTag: this.normalizeMetricSourceTag(params.sourceTag),
+          origin: params.origin,
+          statusCode: params.statusCode ?? null,
+          retryAfterMs: params.retryAfterMs ?? null,
+        },
+        params.origin === 'external_429'
+          ? 'MAX API returned external HTTP 429'
+          : 'MAX API internal limiter rejected request before dispatch',
+      );
+    }
+
     const chatId = this.readTrimmedString(params.chatId);
     if (!chatId) {
       return;
     }
 
-    await this.runtimeDiagnosticsService?.recordProblemChat({
-      chatId,
-      botId: params.botId,
-      category: 'max_api_rate_limit',
-      severity: params.trafficClass === 'critical' ? 'critical' : 'warning',
-      action: this.normalizeMetricSourceTag(params.sourceTag) ?? params.trafficClass,
-      statusCode: params.statusCode ?? null,
-      reason: params.reason,
-    });
+    try {
+      await this.runtimeDiagnosticsService?.recordProblemChat({
+        chatId,
+        botId: params.botId,
+        category:
+          params.origin === 'external_429' ? 'max_api_external_429' : 'max_api_internal_limiter',
+        severity: params.trafficClass === 'critical' ? 'critical' : 'warning',
+        action: this.normalizeMetricSourceTag(params.sourceTag) ?? params.trafficClass,
+        statusCode: params.statusCode ?? null,
+        reason: params.reason,
+      });
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          botId: params.botId,
+          chatId,
+          origin: params.origin,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to record MAX API rate-limit problem chat',
+      );
+    }
   }
 
-  private async recordSourceRateLimitUsage(
+  private async recordRateLimitUsage(
     botId: string,
     trafficClass: MaxApiTrafficClass,
-    sourceTag: string,
+    sourceTag?: string | null,
   ): Promise<void> {
     const normalizedSourceTag = this.normalizeMetricSourceTag(sourceTag);
-    if (!normalizedSourceTag) {
-      return;
-    }
-
     const nowSec = Math.floor(Date.now() / 1_000);
-    const key = `maxapi:rps:source:v1:${botId}:${trafficClass}:${normalizedSourceTag}:${nowSec}`;
+    const keys = [
+      `maxapi:rps:global:${botId}:${nowSec}`,
+      `maxapi:rps:global:${botId}:${trafficClass}:${nowSec}`,
+      `maxapi:rps:stack:${nowSec}`,
+      `maxapi:rps:stack:${trafficClass}:${nowSec}`,
+      ...(normalizedSourceTag
+        ? [`maxapi:rps:source:v1:${botId}:${trafficClass}:${normalizedSourceTag}:${nowSec}`]
+        : []),
+    ];
 
     try {
-      await this.limiterRedis.multi().incr(key).expire(key, MAX_API_SOURCE_METRICS_TTL_SEC).exec();
+      const pipeline = this.limiterRedis.multi();
+      for (const key of keys) {
+        pipeline.incr(key).expire(key, MAX_API_SOURCE_METRICS_TTL_SEC);
+      }
+      await pipeline.exec();
     } catch (error: unknown) {
       this.logger.debug(
         {
@@ -5184,7 +5742,7 @@ export class MaxClientService implements OnModuleDestroy {
           sourceTag: normalizedSourceTag,
           err: error instanceof Error ? error.message : String(error),
         },
-        'Failed to record MAX API source usage metric',
+        'Failed to record MAX API usage metric',
       );
     }
   }
@@ -5232,32 +5790,6 @@ export class MaxClientService implements OnModuleDestroy {
     }
   }
 
-  private buildRateLimitExceededMessage(
-    botId: string,
-    chatId: string | null,
-    trafficClass: MaxApiTrafficClass,
-    rejectedKeyIndex: number,
-  ): string {
-    switch (rejectedKeyIndex) {
-      case 1:
-        return `MAX API global rate limit exceeded for bot ${botId}`;
-      case 2:
-        return `MAX API ${trafficClass} rate limit exceeded for bot ${botId}`;
-      case 3:
-        return chatId
-          ? `MAX API per-chat rate limit exceeded for bot ${botId} chat ${chatId}`
-          : 'MAX API global rate limit exceeded across all bots';
-      case 4:
-        return chatId
-          ? 'MAX API global rate limit exceeded across all bots'
-          : `MAX API ${trafficClass} rate limit exceeded across all bots`;
-      case 5:
-        return `MAX API ${trafficClass} rate limit exceeded across all bots`;
-      default:
-        return `MAX API ${trafficClass} rate limit exceeded for bot ${botId}`;
-    }
-  }
-
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => {
       const timeout = setTimeout(() => {
@@ -5269,43 +5801,128 @@ export class MaxClientService implements OnModuleDestroy {
     });
   }
 
-  private async ensureCircuitClosed(botId: string) {
-    const now = Date.now();
-    const openUntilMs = this.circuitOpenUntilMsByBot.get(botId) ?? 0;
-    if (now < openUntilMs) {
-      throw new Error('MAX API circuit breaker is open');
+  private async acquireCircuitPermit(botId: string): Promise<MaxApiCircuitPermit> {
+    const keys = this.buildCircuitKeys(botId);
+    const probeToken = randomUUID();
+    const raw = await this.limiterRedis.eval(
+      MAX_API_CIRCUIT_ACQUIRE_SCRIPT,
+      keys.length,
+      ...keys,
+      String(this.circuitFailureThreshold),
+      String(this.circuitWindowSec * 1_000),
+      String(this.circuitOpenSec * 1_000),
+      String(this.circuitHalfOpenProbeSec * 1_000),
+      String(this.resolveCircuitStateTtlMs()),
+      probeToken,
+    );
+    const result = Array.isArray(raw) ? raw : null;
+    const allowed = Number(result?.[0]);
+    const halfOpen = Number(result?.[1]);
+    const retryAfterMs = Number(result?.[2]);
+
+    if (allowed === 1) {
+      return {
+        halfOpenProbeToken: halfOpen === 1 ? probeToken : null,
+      };
+    }
+    if (allowed === 0) {
+      throw new MaxApiCircuitOpenError(
+        botId,
+        Number.isFinite(retryAfterMs) ? Math.max(1, Math.trunc(retryAfterMs)) : 1_000,
+      );
     }
 
-    const failures = this.getCriticalFailures(botId);
-    const windowStart = now - this.circuitWindowSec * 1_000;
-    while (failures.length > 0 && failures[0] < windowStart) {
-      failures.shift();
-    }
+    throw new Error('Failed to execute MAX API circuit acquire script');
+  }
 
-    if (failures.length >= this.circuitFailureThreshold) {
-      this.circuitOpenUntilMsByBot.set(botId, now + this.circuitOpenSec * 1_000);
-      throw new Error('MAX API circuit breaker opened due to critical failures');
+  private async registerCriticalFailure(botId: string, permit: MaxApiCircuitPermit): Promise<void> {
+    const keys = this.buildCircuitKeys(botId);
+    try {
+      await this.limiterRedis.eval(
+        MAX_API_CIRCUIT_FAILURE_SCRIPT,
+        keys.length,
+        ...keys,
+        String(this.circuitFailureThreshold),
+        String(this.circuitWindowSec * 1_000),
+        String(this.circuitOpenSec * 1_000),
+        String(this.resolveCircuitStateTtlMs()),
+        permit.halfOpenProbeToken ? '1' : '0',
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          botId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to update shared MAX API circuit after critical failure',
+      );
     }
   }
 
-  private registerCriticalFailure(botId: string, now = Date.now()) {
-    const failures = this.getCriticalFailures(botId);
-    failures.push(now);
-    const windowStart = now - this.circuitWindowSec * 1_000;
-    while (failures.length > 0 && failures[0] < windowStart) {
-      failures.shift();
+  private async closeCircuitAfterSuccessfulProbe(
+    botId: string,
+    permit: MaxApiCircuitPermit,
+  ): Promise<void> {
+    if (!permit.halfOpenProbeToken) {
+      return;
+    }
+
+    const keys = this.buildCircuitKeys(botId);
+    try {
+      await this.limiterRedis.eval(
+        MAX_API_CIRCUIT_CLOSE_SCRIPT,
+        keys.length,
+        ...keys,
+        permit.halfOpenProbeToken,
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          botId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to close shared MAX API circuit after successful half-open probe',
+      );
     }
   }
 
-  private getCriticalFailures(botId: string): number[] {
-    const existing = this.criticalFailuresMsByBot.get(botId);
-    if (existing) {
-      return existing;
+  private async releaseUnusedHalfOpenProbe(
+    botId: string,
+    permit: MaxApiCircuitPermit,
+  ): Promise<void> {
+    if (!permit.halfOpenProbeToken) {
+      return;
     }
 
-    const created: number[] = [];
-    this.criticalFailuresMsByBot.set(botId, created);
-    return created;
+    const [, , probeKey] = this.buildCircuitKeys(botId);
+    try {
+      await this.limiterRedis.eval(
+        MAX_API_CIRCUIT_RELEASE_PROBE_SCRIPT,
+        1,
+        probeKey,
+        permit.halfOpenProbeToken,
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          botId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to release unused shared MAX API half-open probe',
+      );
+    }
+  }
+
+  private buildCircuitKeys(botId: string): [string, string, string] {
+    const prefix = `${MAX_API_CIRCUIT_KEY_PREFIX}:${botId}`;
+    return [`${prefix}:failures`, `${prefix}:open-until`, `${prefix}:half-open-probe`];
+  }
+
+  private resolveCircuitStateTtlMs(): number {
+    return (
+      (this.circuitOpenSec + Math.max(this.circuitWindowSec, this.circuitHalfOpenProbeSec) + 5) *
+      1_000
+    );
   }
 
   private resolveBot(botId?: string | null): MaxBotDefinition {
@@ -5341,6 +5958,26 @@ export class MaxClientService implements OnModuleDestroy {
 
   private isAmbiguousQueuedMutationTransportError(error: unknown): boolean {
     return isAmbiguousMaxMutationError(error);
+  }
+
+  private createAmbiguousQueuedMutationError(message: string, cause: unknown): UnrecoverableError {
+    return this.createUnrecoverableQueuedMutationError(message, cause);
+  }
+
+  private createUnrecoverableQueuedMutationError(
+    message: string,
+    cause: unknown,
+  ): UnrecoverableError {
+    const error = new UnrecoverableError(message);
+    const response = (cause as { response?: unknown })?.response;
+    if (response !== undefined) {
+      (error as UnrecoverableError & { response?: unknown }).response = response;
+    }
+    const code = (cause as { code?: unknown })?.code;
+    if (code !== undefined) {
+      (error as UnrecoverableError & { code?: unknown }).code = code;
+    }
+    return error;
   }
 
   private getCurrentBot(): MaxBotDefinition {

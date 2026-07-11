@@ -1,7 +1,10 @@
 import { z } from 'zod';
 import { botSpeechPersonaSchema, type BotSpeechPersona } from '@maxim/contracts/bot-speech';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
-import { isAdminVisibleByDefaultForBotState } from './max-bot-state.util';
+import {
+  canExecuteActionsForBotState,
+  isAdminVisibleByDefaultForBotState,
+} from './max-bot-state.util';
 
 export const maxBotLifecycleStateSchema = z.enum(['active', 'dormant', 'draining', 'disabled']);
 export type MaxBotLifecycleState = z.infer<typeof maxBotLifecycleStateSchema>;
@@ -18,6 +21,7 @@ const maxAdditionalBotSchema = z.object({
   webhookHeaderSecretPrevious: z.string().trim().min(8).optional(),
   contactId: z.string().trim().regex(/^\d+$/u).optional(),
   state: maxBotLifecycleStateSchema.default('active'),
+  ownershipWeight: z.number().finite().positive().max(1_000).default(1),
   visibleInAdmin: z.boolean().optional(),
 });
 
@@ -37,6 +41,7 @@ export type ResolvedMaxBotConfig = {
   webhookHeaderSecrets: readonly string[];
   contactId: string | null;
   state: MaxBotLifecycleState;
+  ownershipWeight: number;
   visibleInAdmin: boolean;
   isDefault: boolean;
 };
@@ -105,6 +110,8 @@ export function buildResolvedMaxBotConfigs(input: {
     label?: string | null;
     characterName?: string | null;
     speechPersona?: BotSpeechPersona | null;
+    state?: MaxBotLifecycleState | null;
+    ownershipWeight?: number | null;
   };
   additionalBotsJson?: string | null;
 }): ResolvedMaxBotConfig[] {
@@ -135,8 +142,9 @@ export function buildResolvedMaxBotConfigs(input: {
       ),
       contactId:
         normalizeContactId(input.defaultBot.contactId) ?? inferContactIdFromBotId(defaultBotId),
-      state: 'active',
-      visibleInAdmin: true,
+      state: input.defaultBot.state ?? 'active',
+      ownershipWeight: normalizeOwnershipWeight(input.defaultBot.ownershipWeight),
+      visibleInAdmin: isAdminVisibleByDefaultForBotState(input.defaultBot.state ?? 'active'),
       isDefault: true,
     },
   ];
@@ -166,17 +174,58 @@ export function buildResolvedMaxBotConfigs(input: {
       ),
       contactId: normalizeContactId(bot.contactId) ?? inferContactIdFromBotId(bot.id),
       state: bot.state,
+      ownershipWeight: bot.ownershipWeight,
       visibleInAdmin: bot.visibleInAdmin ?? isAdminVisibleByDefaultForBotState(bot.state),
       isDefault: false,
     });
   }
 
+  validateResolvedMaxBotConfigs(bots);
   return bots;
+}
+
+export function resolveMaxEntryBotConfig(
+  bots: readonly ResolvedMaxBotConfig[],
+  configuredBotId: string | null | undefined,
+): ResolvedMaxBotConfig {
+  const normalizedBotId = typeof configuredBotId === 'string' ? configuredBotId.trim() : '';
+  if (normalizedBotId) {
+    const configuredBot = bots.find((bot) => bot.id === normalizedBotId) ?? null;
+    if (!configuredBot) {
+      throw new Error(
+        `MAX_ENTRY_BOT_ID must match MAX_BOT_ID or one of MAX_BOTS_JSON ids (got "${normalizedBotId}")`,
+      );
+    }
+    if (!canExecuteActionsForBotState(configuredBot.state)) {
+      throw new Error(
+        `MAX_ENTRY_BOT_ID must reference an active bot; got "${normalizedBotId}" with state "${configuredBot.state}"`,
+      );
+    }
+    return configuredBot;
+  }
+
+  const defaultBot = bots.find((bot) => bot.isDefault) ?? null;
+  if (defaultBot && canExecuteActionsForBotState(defaultBot.state)) {
+    return defaultBot;
+  }
+
+  const firstActionableBot = bots.find((bot) => canExecuteActionsForBotState(bot.state)) ?? null;
+  if (firstActionableBot) {
+    return firstActionableBot;
+  }
+
+  throw new Error('MAX bot configuration must contain at least one active actionable entry bot');
 }
 
 export function normalizeContactId(value: string | null | undefined): string | null {
   const normalized = typeof value === 'string' ? value.trim() : '';
   return normalized && /^\d+$/u.test(normalized) ? normalized : null;
+}
+
+function normalizeOwnershipWeight(value: number | null | undefined): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.min(value, 1_000)
+    : 1;
 }
 
 function normalizeBotLabel(value: string | null | undefined): string | null {
@@ -209,8 +258,7 @@ function resolveBotCharacterName(params: {
 
 export function inferContactIdFromBotId(botId: string): string | null {
   const normalized = botId.trim().replace(/^id/iu, '').replace(/_bot$/iu, '');
-  const [primary] = normalized.split('_');
-  return primary && /^\d+$/u.test(primary) ? primary : null;
+  return /^\d+$/u.test(normalized) ? normalized : null;
 }
 
 export function buildBotIdVariants(value: string | null | undefined): Set<string> {
@@ -235,4 +283,49 @@ export function buildBotIdVariants(value: string | null | undefined): Set<string
   }
 
   return variants;
+}
+
+function validateResolvedMaxBotConfigs(bots: readonly ResolvedMaxBotConfig[]): void {
+  assertUniqueCrossBotValues(bots, 'token', (bot) => bot.tokenValidationSecrets);
+  assertUniqueCrossBotValues(bots, 'webhookSecretPath', (bot) => [bot.webhookSecretPath]);
+  assertUniqueCrossBotValues(bots, 'webhookHeaderSecret', (bot) => bot.webhookHeaderSecrets);
+
+  const identityOwnerByVariant = new Map<string, string>();
+  for (const bot of bots) {
+    const variants = new Set([...buildBotIdVariants(bot.id), ...buildBotIdVariants(bot.contactId)]);
+    for (const variant of variants) {
+      const existingOwner = identityOwnerByVariant.get(variant);
+      if (existingOwner && existingOwner !== bot.id) {
+        throw new Error(
+          `MAX bot contact identity must be unique across bots "${existingOwner}" and "${bot.id}"`,
+        );
+      }
+      identityOwnerByVariant.set(variant, bot.id);
+    }
+  }
+
+  resolveMaxEntryBotConfig(bots, null);
+}
+
+function assertUniqueCrossBotValues(
+  bots: readonly ResolvedMaxBotConfig[],
+  fieldName: string,
+  readValues: (bot: ResolvedMaxBotConfig) => readonly string[],
+): void {
+  const ownerByValue = new Map<string, string>();
+  for (const bot of bots) {
+    for (const value of new Set(
+      readValues(bot)
+        .map((item) => item.trim())
+        .filter(Boolean),
+    )) {
+      const existingOwner = ownerByValue.get(value);
+      if (existingOwner && existingOwner !== bot.id) {
+        throw new Error(
+          `MAX bot ${fieldName} must be unique across bots "${existingOwner}" and "${bot.id}"`,
+        );
+      }
+      ownerByValue.set(value, bot.id);
+    }
+  }
 }

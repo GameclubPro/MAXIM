@@ -30,6 +30,18 @@ export type MaxApiRateLimitSnapshot = MaxApiTrafficSnapshot & {
 export type MaxApiBotRateLimitSnapshot = MaxApiRateLimitSnapshot;
 export type MaxApiStackRateLimitSnapshot = MaxApiRateLimitSnapshot;
 
+export type MaxApiRateLimitOutcomeCounts = {
+  internalLimiterRejects: number;
+  external429: number;
+};
+
+export type MaxApiRateLimitOutcomeSnapshot = {
+  generatedAt: string;
+  windowSec: number;
+  stack: MaxApiRateLimitOutcomeCounts;
+  bots: Record<string, MaxApiRateLimitOutcomeCounts>;
+};
+
 type SourceCounterBucket = {
   perSecond: Map<number, number>;
   trafficClassBuckets: Record<MaxApiTrafficClass, Map<number, number>>;
@@ -37,6 +49,7 @@ type SourceCounterBucket = {
 
 const MAX_API_SOURCE_METRICS_KEY_PREFIX = 'maxapi:rps:source:v1';
 const MAX_API_GLOBAL_METRICS_KEY_PREFIX = 'maxapi:rps:global';
+const MAX_API_RATE_LIMIT_OUTCOME_KEY_PREFIX = 'maxapi:rate-limit:v1';
 const DEFAULT_MAX_API_SOURCE_METRICS_WINDOW_SEC = 10 * 60;
 const MAX_API_SOURCE_METRICS_WINDOW_SEC_LIMIT = 6 * 60 * 60;
 const MAX_API_SOURCE_METRICS_SCAN_COUNT = 500;
@@ -87,6 +100,7 @@ export class MaxApiMetricsService implements OnModuleDestroy {
     const nowSec = Math.floor(Date.now() / 1_000);
     const windowSec = this.normalizeWindowSec(options.windowSec);
     const startSec = nowSec - windowSec + 1;
+    const rateLimitOutcomes = await this.getRateLimitOutcomeSnapshot({ windowSec });
     const keys = await this.scanKeys(`${MAX_API_SOURCE_METRICS_KEY_PREFIX}:*`);
     const parsedEntries = keys
       .map((key) => this.parseMetricKey(key))
@@ -104,6 +118,7 @@ export class MaxApiMetricsService implements OnModuleDestroy {
         overall: this.buildEmptyStats(windowSec),
         sources: {},
         bots: {},
+        rateLimitOutcomes,
       };
     }
 
@@ -175,6 +190,53 @@ export class MaxApiMetricsService implements OnModuleDestroy {
               ),
             },
           ]),
+      ),
+      rateLimitOutcomes,
+    };
+  }
+
+  async getRateLimitOutcomeSnapshot(
+    options: { windowSec?: number } = {},
+  ): Promise<MaxApiRateLimitOutcomeSnapshot> {
+    const nowSec = Math.floor(Date.now() / 1_000);
+    const windowSec = this.normalizeWindowSec(options.windowSec);
+    const startSec = nowSec - windowSec + 1;
+    const keys = await this.scanKeys(`${MAX_API_RATE_LIMIT_OUTCOME_KEY_PREFIX}:*`);
+    const entries = keys
+      .map((key) => this.parseRateLimitOutcomeKey(key))
+      .filter(
+        (entry): entry is NonNullable<ReturnType<typeof this.parseRateLimitOutcomeKey>> =>
+          entry !== null && entry.sec >= startSec && entry.sec <= nowSec,
+      );
+    const countsByKey = await this.readCounts(entries.map((entry) => entry.key));
+    const stack = this.createRateLimitOutcomeCounts();
+    const bots = new Map<string, MaxApiRateLimitOutcomeCounts>();
+
+    for (const entry of entries) {
+      const count = countsByKey.get(entry.key) ?? 0;
+      if (count <= 0) {
+        continue;
+      }
+      const target =
+        entry.scope === 'stack'
+          ? stack
+          : (bots.get(entry.scope) ?? this.createRateLimitOutcomeCounts());
+      if (entry.origin === 'internal_limiter') {
+        target.internalLimiterRejects += count;
+      } else {
+        target.external429 += count;
+      }
+      if (entry.scope !== 'stack') {
+        bots.set(entry.scope, target);
+      }
+    }
+
+    return {
+      generatedAt: new Date().toISOString(),
+      windowSec,
+      stack,
+      bots: Object.fromEntries(
+        [...bots.entries()].sort(([left], [right]) => left.localeCompare(right)),
       ),
     };
   }
@@ -369,6 +431,50 @@ export class MaxApiMetricsService implements OnModuleDestroy {
       trafficClass: trafficClassRaw as MaxApiTrafficClass,
       sourceTag,
       sec,
+    };
+  }
+
+  private parseRateLimitOutcomeKey(key: string): {
+    key: string;
+    origin: 'internal_limiter' | 'external_429';
+    scope: string;
+    trafficClass: MaxApiTrafficClass;
+    sec: number;
+  } | null {
+    const prefix = `${MAX_API_RATE_LIMIT_OUTCOME_KEY_PREFIX}:`;
+    if (!key.startsWith(prefix)) {
+      return null;
+    }
+
+    const [originRaw, scope, trafficClassRaw, secRaw, ...rest] = key
+      .slice(prefix.length)
+      .split(':');
+    if (
+      (originRaw !== 'internal_limiter' && originRaw !== 'external_429') ||
+      !scope ||
+      rest.length > 0 ||
+      !MAX_API_TRAFFIC_CLASSES.includes(trafficClassRaw as MaxApiTrafficClass)
+    ) {
+      return null;
+    }
+    const sec = Number.parseInt(secRaw ?? '', 10);
+    if (!Number.isFinite(sec)) {
+      return null;
+    }
+
+    return {
+      key,
+      origin: originRaw,
+      scope,
+      trafficClass: trafficClassRaw as MaxApiTrafficClass,
+      sec,
+    };
+  }
+
+  private createRateLimitOutcomeCounts(): MaxApiRateLimitOutcomeCounts {
+    return {
+      internalLimiterRejects: 0,
+      external429: 0,
     };
   }
 

@@ -126,24 +126,23 @@ describe('MaxBotRegistryService webhook base URL', () => {
     expect(service.resolveBotIdFromUserId('214634782')).toBe('id613002203036_bot');
   });
 
-  it('does not resolve ambiguous bot user id variants', () => {
-    const service = createService({
-      MAX_BOT_ID: 'id613002203036_bot',
-      MAX_BOT_CONTACT_ID: '214634782',
-      MAX_BOTS_JSON: JSON.stringify([
-        {
-          id: 'custom-secondary-bot',
-          contactId: '214634782',
-          token: 'token-secondary-123456',
-          webhookSecretPath: 'secondary-secret',
-          webhookHeaderSecret: 'secondary-header',
-          state: 'active',
-        },
-      ]),
-    });
-
-    expect(service.isKnownBotUserId('214634782')).toBe(true);
-    expect(service.resolveBotIdFromUserId('214634782')).toBeNull();
+  it('fails startup when bot contact identities are ambiguous', () => {
+    expect(() =>
+      createService({
+        MAX_BOT_ID: 'id613002203036_bot',
+        MAX_BOT_CONTACT_ID: '214634782',
+        MAX_BOTS_JSON: JSON.stringify([
+          {
+            id: 'custom-secondary-bot',
+            contactId: '214634782',
+            token: 'token-secondary-123456',
+            webhookSecretPath: 'secondary-secret',
+            webhookHeaderSecret: 'secondary-header',
+            state: 'active',
+          },
+        ]),
+      }),
+    ).toThrow(/contact identity must be unique/u);
   });
 
   it('accepts dormant bot tokens for init data without making them operational', () => {
@@ -184,9 +183,7 @@ describe('MaxBotRegistryService webhook base URL', () => {
     expect(service.getValidationTokensForBot('id613070470872_5_bot')).toEqual([
       'token-majorova-123456',
     ]);
-    expect(service.getValidationTokensForBot('id613070470872_6_bot')).toEqual([
-      'token-rex-123456',
-    ]);
+    expect(service.getValidationTokensForBot('id613070470872_6_bot')).toEqual(['token-rex-123456']);
     expect(service.getValidationTokensForBot('disabled-helper-bot')).toEqual([]);
     expect(service.getConfiguredWebhookSubscriptionTarget('id613070470872_6_bot')).toEqual({
       url: null,
@@ -198,5 +195,41 @@ describe('MaxBotRegistryService webhook base URL', () => {
     const service = createService();
 
     expect(service.getRequiredWebhookUpdateTypes()).toEqual([...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES]);
+  });
+
+  it('uses the first active additional bot as entry when the default bot is draining', () => {
+    const service = createService({
+      MAX_BOT_STATE: 'draining',
+      MAX_BOTS_JSON: JSON.stringify([
+        {
+          id: 'active-entry-bot',
+          token: 'token-entry-123456',
+          webhookSecretPath: 'entry-secret-path',
+          webhookHeaderSecret: 'entry-header-secret',
+          state: 'active',
+          ownershipWeight: 3,
+        },
+      ]),
+    });
+
+    expect(service.getDefaultBot()).toMatchObject({ state: 'draining', ownershipWeight: 1 });
+    expect(service.getEntryBot()).toMatchObject({ id: 'active-entry-bot', ownershipWeight: 3 });
+  });
+
+  it('fails startup when an explicitly configured entry bot is not active', () => {
+    expect(() =>
+      createService({
+        MAX_ENTRY_BOT_ID: 'draining-entry-bot',
+        MAX_BOTS_JSON: JSON.stringify([
+          {
+            id: 'draining-entry-bot',
+            token: 'token-entry-123456',
+            webhookSecretPath: 'entry-secret-path',
+            webhookHeaderSecret: 'entry-header-secret',
+            state: 'draining',
+          },
+        ]),
+      }),
+    ).toThrow(/must reference an active bot/u);
   });
 });

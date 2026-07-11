@@ -68,6 +68,12 @@ function createDashboardResponse(overrides: Record<string, unknown> = {}) {
       webhookBackground: queueCounters(),
       webhookLegacy: queueCounters(),
       actions: queueCounters(),
+      actionQueues: {
+        'moderation-actions': queueCounters(),
+        'max-actions-critical': { ...queueCounters(), waiting: 2 },
+        'max-actions-interactive': queueCounters(),
+        'max-actions-background': queueCounters(),
+      },
       globalSpammerDenorm: queueCounters(),
       auxiliaryQueues: {},
       webhookEvents: {
@@ -76,6 +82,29 @@ function createDashboardResponse(overrides: Record<string, unknown> = {}) {
         failed: webhookMetrics(),
       },
       actionHealth: actionHealth(),
+      actionLedgerWatchdog: {
+        enabled: true,
+        activeOnThisRole: true,
+        staleAfterSec: 300,
+        intervalSec: 60,
+        lastRunAt: generatedAt,
+        lastSuccessAt: generatedAt,
+        lastError: null,
+        lastRunReason: 'scheduled',
+        staleCount: 1,
+        staleEnqueuedCount: 0,
+        staleInProgressCount: 1,
+        oldestStaleAgeSec: 600,
+        lastScannedCount: 1,
+        lastReconciledCount: 1,
+        lastQuarantinedCount: 1,
+        lastTerminalFailedCount: 0,
+        lastRecoveredSucceededCount: 0,
+        lastDeferredCount: 0,
+        lastConflictCount: 0,
+        lastScanTruncated: false,
+        generatedAt,
+      },
       bots: {},
       oldestQueuedEventId: null,
       oldestQueuedCreatedAt: null,
@@ -126,10 +155,15 @@ function createDashboardResponse(overrides: Record<string, unknown> = {}) {
         chats: ownershipCoverage(),
         channels: ownershipCoverage(),
       },
+      routingStates: {
+        ready: 0,
+        noEligibleBot: 0,
+      },
       anomalies: {
         noPrimary: 0,
         recoverableLegacyOnly: 0,
         recoverableFromMemberships: 0,
+        noEligibleBot: 0,
         unbound: 0,
         primaryBotUnknown: 0,
         legacyBotUnknown: 0,
@@ -142,6 +176,11 @@ function createDashboardResponse(overrides: Record<string, unknown> = {}) {
         enabled: true,
         activeOnThisRole: false,
         intervalMs: 300000,
+        rebalanceMode: 'off',
+        rebalanceCanaryPercent: 0,
+        rebalanceMaxMovesPerRun: 25,
+        recommendedMoves: 0,
+        lastAppliedMoves: 0,
         lastRunAt: null,
         lastSuccessAt: null,
         lastError: null,
@@ -370,6 +409,8 @@ test('parses runtime dashboard fields through contract schemas', async () => {
   assert.equal(dashboard.canaryState?.status, 'disabled');
   assert.equal(dashboard.rollbackReadiness?.status, 'ready');
   assert.equal(dashboard.queueGroupHealth?.status, 'healthy');
+  assert.equal(dashboard.queues.actionQueues['max-actions-critical']?.waiting, 2);
+  assert.equal(dashboard.queues.actionLedgerWatchdog?.lastQuarantinedCount, 1);
 });
 
 test('preserves failed webhook active and stale metrics from the API', async () => {
@@ -444,7 +485,10 @@ test('rejects invalid runtime dashboard enum values', async () => {
     },
   });
 
-  await assert.rejects(() => getSystemDashboard(createApi(payload)), /Invalid system runtime profile/u);
+  await assert.rejects(
+    () => getSystemDashboard(createApi(payload)),
+    /Invalid system runtime profile/u,
+  );
 });
 
 test('parses system bots snapshot through contract schema', async () => {

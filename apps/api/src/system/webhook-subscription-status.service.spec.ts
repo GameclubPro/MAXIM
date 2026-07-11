@@ -1,0 +1,148 @@
+import { WebhookSubscriptionStatusService } from './webhook-subscription-status.service';
+import {
+  MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES,
+  MAX_REQUIRED_WEBHOOK_UPDATE_TYPES,
+} from '../max/max-webhook-subscription.constants';
+
+type RedisMock = {
+  get: jest.Mock<Promise<string | null>, [string]>;
+  set: jest.Mock<Promise<'OK'>, [string, string]>;
+  hgetall: jest.Mock<Promise<Record<string, string>>, [string]>;
+  eval: jest.Mock<Promise<number>, [string, number, string, string, string]>;
+  quit: jest.Mock<Promise<void>, []>;
+  strings: Map<string, string>;
+  hashes: Map<string, Record<string, string>>;
+};
+
+const redisInstances: RedisMock[] = [];
+
+jest.mock('ioredis', () => ({
+  __esModule: true,
+  default: jest.fn().mockImplementation(() => {
+    const strings = new Map<string, string>();
+    const hashes = new Map<string, Record<string, string>>();
+    const instance: RedisMock = {
+      strings,
+      hashes,
+      get: jest.fn(async (key) => strings.get(key) ?? null),
+      set: jest.fn(async (key, value) => {
+        strings.set(key, value);
+        return 'OK' as const;
+      }),
+      hgetall: jest.fn(async (key) => ({ ...(hashes.get(key) ?? {}) })),
+      eval: jest.fn(async (_script, _keyCount, key, botField, incomingValue) => {
+        const hash = { ...(hashes.get(key) ?? {}) };
+        const incoming = Number(incomingValue);
+        hash[botField] = String(Math.max(Number(hash[botField] ?? 0), incoming));
+        hash.global = String(Math.max(Number(hash.global ?? 0), incoming));
+        hashes.set(key, hash);
+        return 1;
+      }),
+      quit: jest.fn().mockResolvedValue(undefined),
+    };
+    redisInstances.push(instance);
+    return instance;
+  }),
+}));
+
+describe('WebhookSubscriptionStatusService', () => {
+  beforeEach(() => {
+    redisInstances.length = 0;
+  });
+
+  it('uses the base required event list in a pending shadow snapshot', async () => {
+    const service = new WebhookSubscriptionStatusService({
+      getOrThrow: jest.fn().mockReturnValue('redis://localhost:6379/0'),
+      get: jest.fn().mockReturnValue('shadow'),
+    } as never);
+
+    expect(service.createPendingSnapshot()).toEqual(
+      expect.objectContaining({
+        requiredUpdateTypes: [...MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES],
+        missingUpdateTypes: [...MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES],
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('uses the extended event list only after canary/on is selected', async () => {
+    const service = new WebhookSubscriptionStatusService({
+      getOrThrow: jest.fn().mockReturnValue('redis://localhost:6379/0'),
+      get: jest.fn().mockReturnValue('on'),
+    } as never);
+
+    expect(service.createPendingSnapshot()).toEqual(
+      expect.objectContaining({
+        requiredUpdateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+        missingUpdateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('atomically keeps the newest per-bot and global ingress timestamp', async () => {
+    const service = new WebhookSubscriptionStatusService({
+      getOrThrow: jest.fn().mockReturnValue('redis://localhost:6379/0'),
+    } as never);
+    const newerAt = '2026-07-10T12:00:00.456Z';
+    const olderAt = '2026-07-10T11:59:59.123Z';
+
+    await service.markIncomingWebhook('bot-1', newerAt);
+    await service.markIncomingWebhook('bot-1', olderAt);
+
+    await expect(service.getSyncState()).resolves.toEqual(
+      expect.objectContaining({
+        bots: expect.objectContaining({
+          'bot-1': expect.objectContaining({
+            lastIncomingWebhookAt: newerAt,
+          }),
+        }),
+        lastGlobalIncomingWebhookAt: newerAt,
+      }),
+    );
+    expect(redisInstances[0]?.eval).toHaveBeenCalledTimes(2);
+
+    await service.onModuleDestroy();
+  });
+
+  it('merges atomic ingress timestamps over an older reconciler snapshot', async () => {
+    const service = new WebhookSubscriptionStatusService({
+      getOrThrow: jest.fn().mockReturnValue('redis://localhost:6379/0'),
+    } as never);
+    const redis = redisInstances[0]!;
+    redis.strings.set(
+      'system:webhook-subscription:sync-state:v1',
+      JSON.stringify({
+        bots: {
+          'bot-1': {
+            configuredUrl: 'https://example.test/webhook',
+            headerSecretFingerprint: 'fingerprint',
+            updatedAt: '2026-07-10T10:00:00.000Z',
+            lastIncomingWebhookAt: '2026-07-10T10:00:00.000Z',
+            lastAutoRecreateAt: null,
+          },
+        },
+        lastGlobalIncomingWebhookAt: '2026-07-10T10:00:00.000Z',
+        lastGlobalAutoRecreateAt: null,
+      }),
+    );
+
+    await service.markIncomingWebhook('bot-1', '2026-07-10T12:00:00.789Z');
+
+    await expect(service.getSyncState()).resolves.toEqual(
+      expect.objectContaining({
+        bots: expect.objectContaining({
+          'bot-1': expect.objectContaining({
+            configuredUrl: 'https://example.test/webhook',
+            lastIncomingWebhookAt: '2026-07-10T12:00:00.789Z',
+          }),
+        }),
+        lastGlobalIncomingWebhookAt: '2026-07-10T12:00:00.789Z',
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+});

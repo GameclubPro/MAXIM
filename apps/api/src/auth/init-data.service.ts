@@ -9,11 +9,16 @@ const DEFAULT_INIT_DATA_MAX_AGE_SEC = 3_600;
 
 @Injectable()
 export class InitDataService {
-  private readonly botTokens: readonly string[];
+  private readonly validationCandidates: readonly { botId: string; token: string }[];
   private readonly maxAgeSec: number;
 
   constructor(botRegistry: MaxBotRegistryService, configService: ConfigService) {
-    this.botTokens = botRegistry.getValidationTokens();
+    this.validationCandidates = botRegistry.getAllBots().flatMap((bot) =>
+      botRegistry.getValidationTokensForBot(bot.id).map((token) => ({
+        botId: bot.id,
+        token,
+      })),
+    );
     this.maxAgeSec = configService.get<number>(
       'INIT_DATA_MAX_AGE_SEC',
       DEFAULT_INIT_DATA_MAX_AGE_SEC,
@@ -27,13 +32,8 @@ export class InitDataService {
       throw new UnauthorizedException('Invalid init data signature');
     }
 
-    const valid = this.botTokens.some((botToken) =>
-      this.isValidHexSignature(
-        receivedHash.toLowerCase(),
-        this.calculateInitDataHash(sortedPairs, botToken),
-      ),
-    );
-    if (!valid) {
+    const launchBotId = this.resolveLaunchBotId(receivedHash.toLowerCase(), sortedPairs);
+    if (!launchBotId) {
       throw new UnauthorizedException('Invalid init data signature');
     }
 
@@ -61,6 +61,7 @@ export class InitDataService {
 
     return {
       userId,
+      launchBotId,
       username: parsedUser.username ? String(parsedUser.username) : null,
       displayName: this.resolveUserDisplayName(parsedUser),
       avatarUrl: parsedUser.photo_url
@@ -76,6 +77,27 @@ export class InitDataService {
       ),
       ...(parsedChat ? parsedChat : {}),
     };
+  }
+
+  private resolveLaunchBotId(receivedHash: string, sortedPairs: string): string | null {
+    let matchedBotId: string | null = null;
+
+    for (const candidate of this.validationCandidates) {
+      const matches = this.isValidHexSignature(
+        receivedHash,
+        this.calculateInitDataHash(sortedPairs, candidate.token),
+      );
+      if (!matches) {
+        continue;
+      }
+
+      if (matchedBotId && matchedBotId !== candidate.botId) {
+        throw new UnauthorizedException('Init data signature matches multiple bots');
+      }
+      matchedBotId = candidate.botId;
+    }
+
+    return matchedBotId;
   }
 
   private parseAndPrepareInitData(raw: string): {

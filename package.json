@@ -27,7 +27,7 @@
     "emulator:miniapp:iphone": "node scripts/open-miniapp-emulator.mjs --device iphone",
     "audit:miniapp:visual": "node scripts/audit-miniapp-visual.mjs",
     "lint": "eslint .",
-    "loadtest:webhook": "node infra/scripts/loadtest-webhook-burst.mjs",
+    "loadtest:webhook": "npm exec --workspace @maxim/api -- tsx src/scripts/loadtest-webhook-ingress.ts",
     "screenshots:miniapp": "node scripts/capture-miniapp-preview.mjs",
     "typecheck": "npm run typecheck --workspace @maxim/contracts && npm run typecheck --workspace @maxim/api && npm run typecheck --workspace @maxim/miniapp && npm run typecheck --workspace @maxim/admin",
     "typecheck:admin": "npm run typecheck --workspace @maxim/admin",

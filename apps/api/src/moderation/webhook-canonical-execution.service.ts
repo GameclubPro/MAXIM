@@ -1,0 +1,280 @@
+import { Injectable, Logger } from '@nestjs/common';
+import type { MaxUpdate } from '@maxim/contracts';
+import { randomUUID } from 'node:crypto';
+
+import { Prisma, WebhookStatus, type WebhookEvent } from '../prisma/prisma-client';
+import { PrismaService } from '../prisma/prisma.service';
+import { buildWebhookSemanticEventKey } from '../webhook/webhook-semantic-event-key';
+
+const WEBHOOK_CANONICAL_BUSINESS_LEASE_MS = 5 * 60_000;
+
+type WebhookExecutionClaimRecord = {
+  id?: string;
+  webhookEventId?: string;
+  executionBotId?: string | null;
+  enforced?: boolean;
+  status?: string;
+  completedAt?: Date | null;
+  leaseToken?: string | null;
+  leaseExpiresAt?: Date | null;
+};
+
+type WebhookExecutionClaimModel = {
+  findFirst?: (args: unknown) => Promise<WebhookExecutionClaimRecord | null>;
+  findUnique?: (args: unknown) => Promise<WebhookExecutionClaimRecord | null>;
+  updateMany?: (args: unknown) => Promise<{ count?: number }>;
+};
+
+const WEBHOOK_EXECUTION_CLAIM_SELECT = {
+  id: true,
+  webhookEventId: true,
+  executionBotId: true,
+  enforced: true,
+  status: true,
+  completedAt: true,
+  leaseToken: true,
+  leaseExpiresAt: true,
+} as const;
+
+export type WebhookCanonicalExecutionContext = {
+  webhookEvent: WebhookEvent;
+  update: MaxUpdate;
+  activeBotId: string | null;
+  businessLeaseToken: string | null;
+};
+
+@Injectable()
+export class WebhookCanonicalExecutionService {
+  private readonly logger = new Logger(WebhookCanonicalExecutionService.name);
+
+  constructor(private readonly prisma: PrismaService) {}
+
+  async prepareExecution(
+    webhookEventId: string,
+    defaultBotId: string | null | undefined,
+  ): Promise<WebhookCanonicalExecutionContext | null> {
+    const webhookEvent = await this.prisma.webhookEvent.findUnique({
+      where: { id: webhookEventId },
+    });
+
+    if (!webhookEvent) {
+      return null;
+    }
+    if (
+      webhookEvent.status === WebhookStatus.DUPLICATE ||
+      webhookEvent.status === WebhookStatus.PROCESSED
+    ) {
+      return null;
+    }
+
+    const update = webhookEvent.normalizedPayload as MaxUpdate;
+    const executionClaimModel = this.executionClaimModel;
+    const semanticKey = buildWebhookSemanticEventKey(update);
+    const semanticClaim =
+      semanticKey && typeof executionClaimModel?.findUnique === 'function'
+        ? await executionClaimModel.findUnique({
+            where: {
+              kind_semanticKey: {
+                kind: 'EXECUTION',
+                semanticKey,
+              },
+            },
+            select: WEBHOOK_EXECUTION_CLAIM_SELECT,
+          })
+        : null;
+    const executionClaim =
+      semanticClaim ??
+      (typeof executionClaimModel?.findFirst === 'function'
+        ? await executionClaimModel.findFirst({
+            where: {
+              webhookEventId: webhookEvent.id,
+              kind: 'EXECUTION',
+            },
+            select: WEBHOOK_EXECUTION_CLAIM_SELECT,
+          })
+        : null);
+
+    if (
+      executionClaim?.enforced === true &&
+      executionClaim.webhookEventId &&
+      executionClaim.webhookEventId !== webhookEvent.id
+    ) {
+      this.logger.warn(
+        { webhookEventId: webhookEvent.id },
+        'Skipped active non-canonical mirrored webhook job at the worker fence',
+      );
+      return null;
+    }
+    if (
+      executionClaim?.enforced === true &&
+      executionClaim.webhookEventId === webhookEvent.id &&
+      executionClaim.status !== 'READY' &&
+      executionClaim.status !== 'COMPLETED'
+    ) {
+      throw new Error(`Canonical webhook claim is not ready for ${webhookEvent.id}`);
+    }
+    if (
+      executionClaim?.enforced === true &&
+      executionClaim.webhookEventId === webhookEvent.id &&
+      executionClaim.status === 'COMPLETED'
+    ) {
+      await this.prisma.webhookEvent.updateMany({
+        where: {
+          id: webhookEvent.id,
+          status: { not: WebhookStatus.PROCESSED },
+        },
+        data: {
+          status: WebhookStatus.PROCESSED,
+          processedAt: executionClaim.completedAt ?? new Date(),
+          errorMessage: null,
+          nextEnqueueAt: null,
+        },
+      });
+      return null;
+    }
+
+    const businessLeaseToken = await this.acquireBusinessLease({
+      webhookEventId: webhookEvent.id,
+      executionClaim,
+      executionClaimModel,
+    });
+
+    return {
+      webhookEvent,
+      update,
+      activeBotId:
+        this.normalizeBotId(executionClaim?.executionBotId) ??
+        this.normalizeBotId(webhookEvent.botId) ??
+        this.normalizeBotId(update.botId) ??
+        this.normalizeBotId(defaultBotId),
+      businessLeaseToken,
+    };
+  }
+
+  async completeExecution(context: WebhookCanonicalExecutionContext): Promise<void> {
+    const executionClaimModel = this.executionClaimModel;
+    if (typeof executionClaimModel?.updateMany === 'function') {
+      const completion = await executionClaimModel.updateMany({
+        where: {
+          webhookEventId: context.webhookEvent.id,
+          kind: 'EXECUTION',
+          ...(context.businessLeaseToken ? { leaseToken: context.businessLeaseToken } : {}),
+        },
+        data: {
+          status: 'COMPLETED',
+          completedAt: new Date(),
+          leaseToken: null,
+          leaseExpiresAt: null,
+        },
+      });
+      if (context.businessLeaseToken && completion?.count !== 1) {
+        throw new Error(
+          `Canonical webhook business lease was lost before completion for ${context.webhookEvent.id}`,
+        );
+      }
+    }
+
+    await this.prisma.webhookEvent.update({
+      where: { id: context.webhookEvent.id },
+      data: {
+        status: WebhookStatus.PROCESSED,
+        processedAt: new Date(),
+        errorMessage: null,
+        nextEnqueueAt: null,
+      },
+    });
+  }
+
+  async failExecution(
+    context: WebhookCanonicalExecutionContext,
+    params: { errorMessage: string; terminal: boolean },
+  ): Promise<void> {
+    await this.releaseBusinessLease(context);
+
+    const recoveredRawPayload =
+      context.update.raw &&
+      typeof context.update.raw === 'object' &&
+      !Array.isArray(context.update.raw)
+        ? (context.update.raw as Record<string, unknown>)
+        : null;
+    await this.prisma.webhookEvent.update({
+      where: { id: context.webhookEvent.id },
+      data: {
+        status: WebhookStatus.FAILED,
+        errorMessage: params.errorMessage,
+        nextEnqueueAt: params.terminal ? null : new Date(Date.now() + 15_000),
+        ...(recoveredRawPayload
+          ? { rawPayload: recoveredRawPayload as Prisma.InputJsonValue }
+          : {}),
+      },
+    });
+  }
+
+  private get executionClaimModel(): WebhookExecutionClaimModel | undefined {
+    return (
+      this.prisma as PrismaService & {
+        webhookExecutionClaim?: WebhookExecutionClaimModel;
+      }
+    ).webhookExecutionClaim;
+  }
+
+  private async acquireBusinessLease(params: {
+    webhookEventId: string;
+    executionClaim: WebhookExecutionClaimRecord | null;
+    executionClaimModel: WebhookExecutionClaimModel | undefined;
+  }): Promise<string | null> {
+    const { webhookEventId, executionClaim, executionClaimModel } = params;
+    if (
+      executionClaim?.enforced !== true ||
+      !executionClaim.id ||
+      executionClaim.webhookEventId !== webhookEventId ||
+      typeof executionClaimModel?.updateMany !== 'function'
+    ) {
+      return null;
+    }
+
+    const now = new Date();
+    const businessLeaseToken = randomUUID();
+    const leaseResult = await executionClaimModel.updateMany({
+      where: {
+        id: executionClaim.id,
+        status: 'READY',
+        OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lt: now } }],
+      },
+      data: {
+        leaseToken: businessLeaseToken,
+        leaseExpiresAt: new Date(now.getTime() + WEBHOOK_CANONICAL_BUSINESS_LEASE_MS),
+      },
+    });
+    if (leaseResult?.count === 0) {
+      throw new Error(`Canonical webhook business lease is busy for ${webhookEventId}`);
+    }
+    return businessLeaseToken;
+  }
+
+  private async releaseBusinessLease(context: WebhookCanonicalExecutionContext): Promise<void> {
+    const executionClaimModel = this.executionClaimModel;
+    if (!context.businessLeaseToken || typeof executionClaimModel?.updateMany !== 'function') {
+      return;
+    }
+
+    await executionClaimModel
+      .updateMany({
+        where: {
+          webhookEventId: context.webhookEvent.id,
+          kind: 'EXECUTION',
+          leaseToken: context.businessLeaseToken,
+          status: 'READY',
+        },
+        data: {
+          leaseToken: null,
+          leaseExpiresAt: null,
+        },
+      })
+      .catch(() => undefined);
+  }
+
+  private normalizeBotId(value: unknown): string | null {
+    return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+  }
+}

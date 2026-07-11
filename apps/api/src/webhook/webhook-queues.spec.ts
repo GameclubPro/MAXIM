@@ -89,7 +89,16 @@ describe('webhook-queues', () => {
 
   it('keeps critical and background events out of default shards', () => {
     expect(resolveWebhookQueueName({ type: 'message_callback' })).toBe(WEBHOOK_QUEUE_CRITICAL);
-    expect(resolveWebhookQueueName({ type: 'user_removed' })).toBe(WEBHOOK_QUEUE_BACKGROUND);
+    for (const type of [
+      'user_removed',
+      'bot_removed',
+      'bot_stopped',
+      'dialog_removed',
+      'message_removed',
+    ]) {
+      expect(resolveWebhookQueueName({ type })).toBe(WEBHOOK_QUEUE_BACKGROUND);
+      expect(resolveWebhookJobPriority({ type })).toBe(WEBHOOK_JOB_PRIORITY.membershipLeave);
+    }
   });
 
   it('routes user_added updates into deterministic join shards', () => {

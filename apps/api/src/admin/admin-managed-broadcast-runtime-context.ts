@@ -9,6 +9,7 @@ import type {
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import type { MaxClientService, MaxMessageButton } from '../max/max-client.service';
 import type { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
+import type { MaxRoutedPublicationService } from '../max/max-routed-publication.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
 import type { SystemModeSnapshot } from '../system/system-mode.service';
@@ -44,6 +45,7 @@ export type AdminManagedBroadcastRuntimeContext = {
   readonly logger: Logger;
   readonly backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService;
   readonly managedEntityAccessLossService?: ManagedEntityAccessLossService;
+  readonly maxRoutedPublicationService?: MaxRoutedPublicationService;
   managedBroadcastDegradePauseLogAtMs: number;
   resolveSystemModeSnapshot(): Promise<SystemModeSnapshot>;
   resolveDeliveryBotAssignment(chatId: string): Promise<string | undefined>;
@@ -78,6 +80,7 @@ type AdminManagedBroadcastRuntimeContextTarget = {
   logger: Logger;
   backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService;
   managedEntityAccessLossService?: ManagedEntityAccessLossService;
+  maxRoutedPublicationService?: MaxRoutedPublicationService;
   managedBroadcastDegradePauseLogAtMs: number;
   resolveSystemModeSnapshot(): Promise<SystemModeSnapshot>;
   resolveDeliveryBotAssignment(chatId: string): Promise<string | undefined>;
@@ -126,6 +129,9 @@ export function createAdminManagedBroadcastRuntimeContext(
     },
     get managedEntityAccessLossService(): ManagedEntityAccessLossService | undefined {
       return typedTarget.managedEntityAccessLossService;
+    },
+    get maxRoutedPublicationService(): MaxRoutedPublicationService | undefined {
+      return typedTarget.maxRoutedPublicationService;
     },
     get managedBroadcastDegradePauseLogAtMs(): number {
       return typedTarget.managedBroadcastDegradePauseLogAtMs;

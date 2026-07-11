@@ -38,6 +38,7 @@ import {
   Logger,
   NotFoundException,
   Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -55,9 +56,11 @@ import {
 import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,
+  type MaxActionJob,
   type MaxMessageButton,
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
+import { MaxActionLedgerService } from '../max/max-action-ledger.service';
 import {
   MaxMembershipLookupService,
   type MaxMembershipLookupIssueKind,
@@ -81,6 +84,7 @@ import {
   ManagedEntityAccessLossService,
 } from '../max/managed-entity-access-loss.service';
 import { isAmbiguousMaxSendError } from '../max/max-send-ambiguity.util';
+import { MaxRoutedPublicationService } from '../max/max-routed-publication.service';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   BackgroundRuntimeGovernorService,
@@ -147,6 +151,16 @@ type GiveawayEligibilityResult = {
   missingChannelIds: string[];
 };
 type GiveawayEntryAuditAction = 'ENTER_GIVEAWAY' | 'RECHECK_GIVEAWAY_ENTRY';
+type GiveawayRoutedSendPhase = 'publication' | 'results';
+type GiveawaySendLockReconciliation =
+  | { kind: 'blocked' }
+  | { kind: 'retryable' }
+  | {
+      kind: 'completed';
+      messageId: string;
+      botId: string;
+      url: string | null;
+    };
 type GiveawayEligibilityCheckOptions = {
   strictChannelCheck?: boolean;
   forceFreshMembership?: boolean;
@@ -225,7 +239,10 @@ export class ManagedGiveawayService {
     @Optional() private readonly membershipLookupService?: MaxMembershipLookupService,
     @Optional() private readonly maxBotLinkService?: MaxBotLinkService,
     @Optional() private readonly managedEntityAccessLossService?: ManagedEntityAccessLossService,
-    @Optional() private readonly backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService,
+    @Optional()
+    private readonly backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService,
+    @Optional() private readonly maxRoutedPublicationService?: MaxRoutedPublicationService,
+    @Optional() private readonly maxActionLedgerService?: MaxActionLedgerService,
   ) {
     this.appBaseUrl = this.normalizeAppBaseUrl(configService.get<string>('APP_BASE_URL'));
     this.explicitBotContactId = this.normalizeBotContactId(
@@ -438,21 +455,88 @@ export class ManagedGiveawayService {
     if (giveaway.status !== ManagedGiveawayStatus.DRAFT) {
       throw new BadRequestException('Публиковать можно только черновик розыгрыша.');
     }
-    if (giveaway.lockedAt) {
-      throw new BadRequestException(
-        'Публикация розыгрыша уже отправлялась и требует ручной проверки перед повтором.',
-      );
-    }
-    await this.ensureNoConcurrentManagedGiveaway(sourceChatId, entityType, giveaway.id);
-
     const now = new Date();
     const startsAt =
       giveaway.startsAt && giveaway.startsAt.getTime() > now.getTime() ? giveaway.startsAt : null;
     const nextStatus = startsAt ? ManagedGiveawayStatus.SCHEDULED : ManagedGiveawayStatus.ACTIVE;
+    const publicationSendLockKey = this.buildGiveawaySendLockKey(giveaway.id, 'publication');
+    if (giveaway.lockedAt) {
+      const reconciliation = await this.reconcileStaleGiveawaySendLock(
+        giveaway,
+        'publication',
+        source,
+      );
+      if (reconciliation.kind === 'completed') {
+        const publishedAt = new Date();
+        const recovered = await this.prisma.managedGiveaway.updateMany({
+          where: {
+            id: giveaway.id,
+            status: ManagedGiveawayStatus.DRAFT,
+            publicationMessageId: null,
+            lockedAt: giveaway.lockedAt,
+            sendLockKey: publicationSendLockKey,
+          },
+          data: {
+            actorUserId: user.userId,
+            status: nextStatus,
+            publicationMessageId: reconciliation.messageId,
+            publicationBotId: reconciliation.botId,
+            publicationUrl: reconciliation.url,
+            publishedAt,
+            lockedAt: null,
+            sendLockKey: null,
+          },
+        });
+        if (recovered.count === 0) {
+          const current = await this.findGiveawayForSource(sourceChatId, giveawayId, entityType);
+          if (current.publicationMessageId?.trim()) {
+            return managedGiveawayDetailsSchema.parse(this.mapGiveawayDetails(current));
+          }
+          throw new BadRequestException(
+            'Публикация розыгрыша уже восстанавливается. Проверьте чат перед повтором.',
+          );
+        }
+
+        const recoveredGiveaway = {
+          ...giveaway,
+          actorUserId: user.userId,
+          status: nextStatus,
+          publicationMessageId: reconciliation.messageId,
+          publicationBotId: reconciliation.botId,
+          publicationUrl: reconciliation.url,
+          publishedAt,
+          lockedAt: null,
+          sendLockKey: null,
+          updatedAt: publishedAt,
+        };
+        await this.writeAuditLog(sourceChatId, user.userId, 'PUBLISH_GIVEAWAY', {
+          giveawayId: giveaway.id,
+          entityType,
+          status: nextStatus,
+          publicationMessageId: reconciliation.messageId,
+          publicationBotId: reconciliation.botId,
+          publicationUrl: reconciliation.url,
+          recoveredFromLedger: true,
+          source,
+        });
+        await this.chatContextCache.invalidate(sourceChatId);
+        return managedGiveawayDetailsSchema.parse(this.mapGiveawayDetails(recoveredGiveaway));
+      }
+      if (reconciliation.kind !== 'retryable') {
+        throw new BadRequestException(
+          'Публикация розыгрыша уже отправлялась и требует ручной проверки перед повтором.',
+        );
+      }
+    }
+    await this.ensureNoConcurrentManagedGiveaway(sourceChatId, entityType, giveaway.id);
+
     if (!giveaway.description.trim()) {
       throw new BadRequestException('Добавьте текст розыгрыша в чат-боте перед публикацией.');
     }
-    const publicationBotId = await this.resolveGiveawayPublicationBotId(sourceChatId);
+    this.assertProductionRoutedPublicationAvailable();
+    const publicationBotId = this.maxRoutedPublicationService
+      ? undefined
+      : await this.resolveGiveawayPublicationBotId(sourceChatId);
     const publicationLockAt = new Date();
     const lock = await this.prisma.managedGiveaway.updateMany({
       where: {
@@ -460,7 +544,10 @@ export class ManagedGiveawayService {
         status: ManagedGiveawayStatus.DRAFT,
         lockedAt: null,
       },
-      data: { lockedAt: publicationLockAt },
+      data: {
+        lockedAt: publicationLockAt,
+        sendLockKey: this.maxRoutedPublicationService ? publicationSendLockKey : null,
+      },
     });
     if (lock.count === 0) {
       throw new BadRequestException(
@@ -470,33 +557,71 @@ export class ManagedGiveawayService {
 
     let maxSendAttempted = false;
     let maxSendAccepted = false;
+    let dispatchedPublicationBotId = publicationBotId ?? null;
     try {
-      const publicationButton = await this.buildGiveawayEntryButton(giveaway);
-      const imagePayload = await this.uploadGiveawayImage(giveaway, publicationBotId, source);
       const publicationTextPayload = this.buildFormattedGiveawayTextPayload(
         this.buildGiveawayPublicationText(giveaway),
       );
-      const publicationOptions = {
-        ...(publicationTextPayload.textFormat
-          ? { textFormat: publicationTextPayload.textFormat }
-          : {}),
-        ...(publicationButton ? { buttons: [[publicationButton]] } : {}),
-        ...(imagePayload ? { imagePayload } : {}),
-      } satisfies MaxSendMessageOptions;
-      maxSendAttempted = true;
-      const publication = publicationBotId
-        ? await this.maxClient.sendMessageImmediateWithResolvedLink(
-            sourceChatId,
-            publicationTextPayload.text,
-            publicationOptions,
-            buildManagedGiveawayMaxApiOptions(source, 'send', publicationBotId),
-          )
-        : await this.maxClient.sendMessageImmediateWithResolvedLink(
-            sourceChatId,
-            publicationTextPayload.text,
-            publicationOptions,
-            buildManagedGiveawayMaxApiOptions(source, 'send'),
-          );
+      const sendOptions = buildManagedGiveawayMaxApiOptions(source, 'send');
+      const publication = this.maxRoutedPublicationService
+        ? await this.maxRoutedPublicationService.publish({
+            entityId: sourceChatId,
+            logicalIdempotencyKey: publicationSendLockKey,
+            text: publicationTextPayload.text,
+            trafficClass: sendOptions.trafficClass,
+            actionHealthLane: sendOptions.actionHealthLane,
+            sourceTag: sendOptions.sourceTag,
+            timeoutMs: sendOptions.timeoutMs,
+            prepareAttempt: async ({ botId }) => {
+              const [publicationButton, imagePayload] = await Promise.all([
+                this.buildGiveawayEntryButton(giveaway, botId),
+                this.uploadGiveawayImage(giveaway, botId, source, false),
+              ]);
+              return {
+                options: {
+                  ...(publicationTextPayload.textFormat
+                    ? { textFormat: publicationTextPayload.textFormat }
+                    : {}),
+                  ...(publicationButton ? { buttons: [[publicationButton]] } : {}),
+                  ...(imagePayload ? { imagePayload } : {}),
+                },
+              };
+            },
+            onDispatchAttempt: ({ botId }) => {
+              maxSendAttempted = true;
+              dispatchedPublicationBotId = botId;
+            },
+          })
+        : await (async () => {
+            const [publicationButton, imagePayload] = await Promise.all([
+              this.buildGiveawayEntryButton(giveaway, publicationBotId),
+              this.uploadGiveawayImage(giveaway, publicationBotId, source),
+            ]);
+            const publicationOptions = {
+              ...(publicationTextPayload.textFormat
+                ? { textFormat: publicationTextPayload.textFormat }
+                : {}),
+              ...(publicationButton ? { buttons: [[publicationButton]] } : {}),
+              ...(imagePayload ? { imagePayload } : {}),
+            } satisfies MaxSendMessageOptions;
+            maxSendAttempted = true;
+            return publicationBotId
+              ? this.maxClient.sendMessageImmediateWithResolvedLink(
+                  sourceChatId,
+                  publicationTextPayload.text,
+                  publicationOptions,
+                  buildManagedGiveawayMaxApiOptions(source, 'send', publicationBotId),
+                )
+              : this.maxClient.sendMessageImmediateWithResolvedLink(
+                  sourceChatId,
+                  publicationTextPayload.text,
+                  publicationOptions,
+                  buildManagedGiveawayMaxApiOptions(source, 'send'),
+                );
+          })();
+      if ('botId' in publication && typeof publication.botId === 'string') {
+        dispatchedPublicationBotId = publication.botId;
+      }
       maxSendAccepted = true;
 
       const publishedAt = new Date();
@@ -506,10 +631,11 @@ export class ManagedGiveawayService {
           actorUserId: user.userId,
           status: nextStatus,
           publicationMessageId: publication.messageId,
-          publicationBotId: publicationBotId ?? null,
+          publicationBotId: dispatchedPublicationBotId,
           publicationUrl: publication.url,
           publishedAt,
           lockedAt: null,
+          sendLockKey: null,
         },
         include: MANAGED_GIVEAWAY_INCLUDE,
       });
@@ -519,7 +645,7 @@ export class ManagedGiveawayService {
         entityType,
         status: nextStatus,
         publicationMessageId: publication.messageId,
-        publicationBotId: publicationBotId ?? null,
+        publicationBotId: dispatchedPublicationBotId,
         publicationUrl: publication.url,
         source,
       });
@@ -544,8 +670,9 @@ export class ManagedGiveawayService {
             id: giveaway.id,
             status: ManagedGiveawayStatus.DRAFT,
             lockedAt: publicationLockAt,
+            sendLockKey: this.maxRoutedPublicationService ? publicationSendLockKey : null,
           },
-          data: { lockedAt: null },
+          data: { lockedAt: null, sendLockKey: null },
         });
       }
       throw error;
@@ -751,6 +878,7 @@ export class ManagedGiveawayService {
         status: ManagedGiveawayStatus.CANCELED,
         canceledAt,
         lockedAt: null,
+        sendLockKey: null,
       },
       include: MANAGED_GIVEAWAY_INCLUDE,
     });
@@ -1628,8 +1756,7 @@ export class ManagedGiveawayService {
   }
 
   private resolvePrizeDisplayTitle(prize: PersistedManagedGiveawayPrize): string {
-    const displayTitle =
-      typeof prize.displayTitle === 'string' ? prize.displayTitle.trim() : '';
+    const displayTitle = typeof prize.displayTitle === 'string' ? prize.displayTitle.trim() : '';
     if (displayTitle) {
       return displayTitle;
     }
@@ -1654,16 +1781,13 @@ export class ManagedGiveawayService {
     return { base, ordinal };
   }
 
-  private buildPrizeDisplayTitleById(
-    prizes: PersistedManagedGiveawayPrize[],
-  ): Map<string, string> {
+  private buildPrizeDisplayTitleById(prizes: PersistedManagedGiveawayPrize[]): Map<string, string> {
     const sortedPrizes = [...prizes].sort((left, right) => left.position - right.position);
     const titlesById = new Map<string, string>();
     const legacyGroups = new Map<string, { ids: string[]; ordinals: number[] }>();
 
     for (const prize of sortedPrizes) {
-      const explicitTitle =
-        typeof prize.displayTitle === 'string' ? prize.displayTitle.trim() : '';
+      const explicitTitle = typeof prize.displayTitle === 'string' ? prize.displayTitle.trim() : '';
       if (explicitTitle) {
         titlesById.set(prize.id, explicitTitle);
         continue;
@@ -1811,11 +1935,14 @@ export class ManagedGiveawayService {
       prizePosition: winner?.prize.position ?? null,
       prizeTitle: winner?.prize.title ?? null,
       prizeDisplayTitle: winner
-        ? (prizeDisplayTitleById.get(winner.prize.id) ?? this.resolvePrizeDisplayTitle(winner.prize))
+        ? (prizeDisplayTitleById.get(winner.prize.id) ??
+          this.resolvePrizeDisplayTitle(winner.prize))
         : null,
       canClaim,
       claimBotUrl:
-        canClaim && winner ? this.buildGiveawayClaimBotStartUrl(row.id, winner.id, claimBotId) : null,
+        canClaim && winner
+          ? this.buildGiveawayClaimBotStartUrl(row.id, winner.id, claimBotId)
+          : null,
     };
   }
 
@@ -1937,6 +2064,7 @@ export class ManagedGiveawayService {
     >,
     botId?: string,
     source: GiveawayActionSource = 'miniapp',
+    wrapUploadError = true,
   ): Promise<Record<string, unknown> | undefined> {
     if (!giveaway.imageEnabled) {
       return undefined;
@@ -1962,12 +2090,16 @@ export class ManagedGiveawayService {
         { err: error instanceof Error ? error.message : String(error) },
         'Failed to upload giveaway image',
       );
+      if (!wrapUploadError) {
+        throw error;
+      }
       throw new BadRequestException('Не удалось загрузить изображение розыгрыша.');
     }
   }
 
   private async buildGiveawayEntryButton(
     giveaway: Pick<PersistedGiveawayWithRelations, 'id' | 'sourceChatId' | 'entries'>,
+    botId?: string | null,
   ): Promise<MaxMessageButton | null> {
     return this.buildGiveawayMiniappButton(
       giveaway.sourceChatId,
@@ -1975,6 +2107,7 @@ export class ManagedGiveawayService {
       `Участвовать · ${this.formatGiveawayEntriesCount(
         this.countPublicGiveawayEntries(giveaway.entries),
       )}`,
+      botId,
     );
   }
 
@@ -1986,11 +2119,13 @@ export class ManagedGiveawayService {
 
   private async buildGiveawayResultsButton(
     giveaway: Pick<PersistedGiveawayWithRelations, 'id' | 'sourceChatId'>,
+    botId?: string | null,
   ): Promise<MaxMessageButton | null> {
     return this.buildGiveawayMiniappButton(
       giveaway.sourceChatId,
       giveaway.id,
       'Проверить результаты',
+      botId,
     );
   }
 
@@ -1998,8 +2133,9 @@ export class ManagedGiveawayService {
     sourceChatId: string,
     giveawayId: string,
     text: string,
+    botId?: string | null,
   ): Promise<MaxMessageButton | null> {
-    const botId = await this.resolveGiveawayButtonBotId(sourceChatId);
+    const resolvedBotId = botId ?? (await this.resolveGiveawayButtonBotId(sourceChatId));
     const launchUrl = this.buildGiveawayLaunchUrl(giveawayId);
 
     if (launchUrl) {
@@ -2011,7 +2147,7 @@ export class ManagedGiveawayService {
     }
 
     const webAppUrl = this.buildGiveawayDirectWebAppUrl(giveawayId);
-    const botContactId = this.resolveBotContactId(botId);
+    const botContactId = this.resolveBotContactId(resolvedBotId);
 
     if (webAppUrl && botContactId) {
       return {
@@ -2104,8 +2240,7 @@ export class ManagedGiveawayService {
       currentWinners.length > 1 &&
       currentWinners.some((winner) => {
         const title = (
-          prizeDisplayTitleById.get(winner.prize.id) ??
-          this.resolvePrizeDisplayTitle(winner.prize)
+          prizeDisplayTitleById.get(winner.prize.id) ?? this.resolvePrizeDisplayTitle(winner.prize)
         ).trim();
         return title.length > 0 && title !== `${winner.prize.position} место`;
       });
@@ -2136,8 +2271,7 @@ export class ManagedGiveawayService {
       }
 
       const prizeTitle = (
-        prizeDisplayTitleById.get(winner.prize.id) ??
-        this.resolvePrizeDisplayTitle(winner.prize)
+        prizeDisplayTitleById.get(winner.prize.id) ?? this.resolvePrizeDisplayTitle(winner.prize)
       ).trim();
       const prizeSuffix = shouldShowPrizeTitle
         ? ` — ${useRichText ? this.escapeMarkdown(prizeTitle) : prizeTitle}`
@@ -2154,8 +2288,9 @@ export class ManagedGiveawayService {
 
   private async buildGiveawayResultsMessageOptions(
     giveaway: PersistedGiveawayWithRelations,
+    botId?: string | null,
   ): Promise<MaxSendMessageOptions | undefined> {
-    const button = await this.buildGiveawayResultsButton(giveaway);
+    const button = await this.buildGiveawayResultsButton(giveaway, botId);
     const publicationMessageId = giveaway.publicationMessageId?.trim() ?? '';
 
     if (!button && !publicationMessageId) {
@@ -2415,26 +2550,205 @@ export class ManagedGiveawayService {
     }
   }
 
+  private buildGiveawaySendLockKey(giveawayId: string, phase: GiveawayRoutedSendPhase): string {
+    return `managed-giveaway:${phase}:${giveawayId}`;
+  }
+
+  private assertProductionRoutedPublicationAvailable(): void {
+    if (!this.maxRoutedPublicationService && process.env.NODE_ENV === 'production') {
+      throw new ServiceUnavailableException(
+        'Routed MAX publication service is required for production managed giveaways',
+      );
+    }
+  }
+
+  private buildGiveawaySendLedgerJob(
+    giveaway: PersistedGiveawayWithRelations,
+    phase: GiveawayRoutedSendPhase,
+    source: GiveawayActionSource,
+  ): MaxActionJob {
+    const sendOptions = buildManagedGiveawayMaxApiOptions(source, 'send');
+    return {
+      actionType: 'SEND_MESSAGE',
+      chatId: giveaway.sourceChatId,
+      trafficClass: sendOptions.trafficClass,
+      actionHealthLane: sendOptions.actionHealthLane,
+      sourceTag: sendOptions.sourceTag,
+      timeoutMs: sendOptions.timeoutMs,
+      text: ' ',
+      attempt: 1,
+      idempotencyKey: this.buildGiveawaySendLockKey(giveaway.id, phase),
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  private async reconcileStaleGiveawaySendLock(
+    giveaway: PersistedGiveawayWithRelations,
+    phase: GiveawayRoutedSendPhase,
+    source: GiveawayActionSource,
+  ): Promise<GiveawaySendLockReconciliation> {
+    const lockedAt = giveaway.lockedAt;
+    const expectedLockKey = this.buildGiveawaySendLockKey(giveaway.id, phase);
+    if (
+      !lockedAt ||
+      lockedAt.getTime() > Date.now() - GIVEAWAY_LOCK_STALE_MS ||
+      this.normalizeNonEmptyString(giveaway.sendLockKey) !== expectedLockKey ||
+      !this.maxRoutedPublicationService ||
+      !this.maxActionLedgerService
+    ) {
+      return { kind: 'blocked' };
+    }
+
+    const job = this.buildGiveawaySendLedgerJob(giveaway, phase, source);
+    let completed: Awaited<ReturnType<MaxActionLedgerService['getCompletedSendDispatchResult']>> =
+      null;
+    try {
+      completed = await this.maxActionLedgerService.getCompletedSendDispatchResult(job);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          giveawayId: giveaway.id,
+          phase,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to inspect the routed giveaway send ledger during stale-lock recovery',
+      );
+      return { kind: 'blocked' };
+    }
+
+    if (completed) {
+      const botId = this.normalizeNonEmptyString(completed.dispatchBotId);
+      if (!botId) {
+        this.logger.warn(
+          {
+            giveawayId: giveaway.id,
+            phase,
+            messageId: completed.remoteMessageId,
+          },
+          'Kept routed giveaway send quarantined because its completed ledger has no dispatch bot',
+        );
+        return { kind: 'blocked' };
+      }
+
+      let url: string | null = null;
+      try {
+        const sendOptions = buildManagedGiveawayMaxApiOptions(source, 'send', botId);
+        url = await this.maxClient.resolveMessageLink(completed.remoteMessageId, sendOptions);
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            giveawayId: giveaway.id,
+            phase,
+            messageId: completed.remoteMessageId,
+            botId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Recovered routed giveaway message id but could not hydrate its MAX link',
+        );
+      }
+      return {
+        kind: 'completed',
+        messageId: completed.remoteMessageId,
+        botId,
+        url,
+      };
+    }
+
+    try {
+      await this.maxActionLedgerService.assertCanEnqueue(job);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          giveawayId: giveaway.id,
+          phase,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Kept unresolved routed giveaway send quarantined after stale-lock inspection',
+      );
+      return { kind: 'blocked' };
+    }
+
+    const released = await this.prisma.managedGiveaway.updateMany({
+      where: {
+        id: giveaway.id,
+        lockedAt,
+        sendLockKey: expectedLockKey,
+        ...(phase === 'publication'
+          ? {
+              status: ManagedGiveawayStatus.DRAFT,
+              publicationMessageId: null,
+            }
+          : { resultsMessageId: null }),
+      },
+      data: {
+        lockedAt: null,
+        sendLockKey: null,
+      },
+    });
+    if (released.count === 0) {
+      return { kind: 'blocked' };
+    }
+
+    this.logger.log(
+      {
+        giveawayId: giveaway.id,
+        phase,
+      },
+      'Released stale routed giveaway lock before any durable send dispatch was claimed',
+    );
+    return { kind: 'retryable' };
+  }
+
   private async republishGiveawayResults(
     giveaway: PersistedGiveawayWithRelations,
     source: GiveawayActionSource = 'miniapp',
   ): Promise<void> {
-    const publicationBotId =
-      this.normalizeNonEmptyString(giveaway.publicationBotId) ??
-      (await this.resolveGiveawayPublicationBotId(giveaway.sourceChatId));
-    const resultsBotId = this.normalizeNonEmptyString(giveaway.resultsBotId) ?? publicationBotId;
     const resultsTextPayload = this.buildGiveawayResultsTextPayload(giveaway);
-    const resultOptions = this.mergeMessageOptionsWithTextFormat(
-      await this.buildGiveawayResultsMessageOptions(giveaway),
-      resultsTextPayload.textFormat,
-    );
+    const resultsSendLockKey = this.buildGiveawaySendLockKey(giveaway.id, 'results');
     if (!giveaway.resultsMessageId?.trim()) {
+      this.assertProductionRoutedPublicationAvailable();
       if (giveaway.lockedAt) {
-        this.logger.warn(
-          { giveawayId: giveaway.id, sourceChatId: giveaway.sourceChatId },
-          'Managed giveaway results send is locked for manual verification',
+        const reconciliation = await this.reconcileStaleGiveawaySendLock(
+          giveaway,
+          'results',
+          source,
         );
-        return;
+        if (reconciliation.kind === 'completed') {
+          const recovered = await this.prisma.managedGiveaway.updateMany({
+            where: {
+              id: giveaway.id,
+              resultsMessageId: null,
+              lockedAt: giveaway.lockedAt,
+              sendLockKey: resultsSendLockKey,
+            },
+            data: {
+              resultsMessageId: reconciliation.messageId,
+              resultsBotId: reconciliation.botId,
+              resultsUrl: reconciliation.url,
+              lockedAt: null,
+              sendLockKey: null,
+            },
+          });
+          if (recovered.count > 0) {
+            this.logger.log(
+              {
+                giveawayId: giveaway.id,
+                sourceChatId: giveaway.sourceChatId,
+                messageId: reconciliation.messageId,
+                botId: reconciliation.botId,
+              },
+              'Recovered managed giveaway results publication from the durable send ledger',
+            );
+          }
+          return;
+        }
+        if (reconciliation.kind !== 'retryable') {
+          this.logger.warn(
+            { giveawayId: giveaway.id, sourceChatId: giveaway.sourceChatId },
+            'Managed giveaway results send is locked for manual verification',
+          );
+          return;
+        }
       }
 
       const resultLockAt = new Date();
@@ -2444,37 +2758,79 @@ export class ManagedGiveawayService {
           resultsMessageId: null,
           lockedAt: null,
         },
-        data: { lockedAt: resultLockAt },
+        data: {
+          lockedAt: resultLockAt,
+          sendLockKey: this.maxRoutedPublicationService ? resultsSendLockKey : null,
+        },
       });
       if (lock.count === 0) {
         return;
       }
 
+      const resultsBotId = this.maxRoutedPublicationService
+        ? null
+        : (this.normalizeNonEmptyString(giveaway.resultsBotId) ??
+          this.normalizeNonEmptyString(giveaway.publicationBotId) ??
+          (await this.resolveGiveawayPublicationBotId(giveaway.sourceChatId)) ??
+          null);
       let maxSendAttempted = false;
       let maxSendAccepted = false;
+      let dispatchedResultsBotId = resultsBotId;
       try {
-        maxSendAttempted = true;
-        const result = resultsBotId
-          ? await this.maxClient.sendMessageImmediateWithResolvedLink(
-              giveaway.sourceChatId,
-              resultsTextPayload.text,
-              resultOptions,
-              buildManagedGiveawayMaxApiOptions(source, 'send', resultsBotId),
-            )
-          : await this.maxClient.sendMessageImmediateWithResolvedLink(
-              giveaway.sourceChatId,
-              resultsTextPayload.text,
-              resultOptions,
-              buildManagedGiveawayMaxApiOptions(source, 'send'),
-            );
+        const sendOptions = buildManagedGiveawayMaxApiOptions(source, 'send');
+        const result = this.maxRoutedPublicationService
+          ? await this.maxRoutedPublicationService.publish({
+              entityId: giveaway.sourceChatId,
+              logicalIdempotencyKey: resultsSendLockKey,
+              text: resultsTextPayload.text,
+              trafficClass: sendOptions.trafficClass,
+              actionHealthLane: sendOptions.actionHealthLane,
+              sourceTag: sendOptions.sourceTag,
+              timeoutMs: sendOptions.timeoutMs,
+              prepareAttempt: async ({ botId }) => {
+                const options = this.mergeMessageOptionsWithTextFormat(
+                  await this.buildGiveawayResultsMessageOptions(giveaway, botId),
+                  resultsTextPayload.textFormat,
+                );
+                return options ? { options } : {};
+              },
+              onDispatchAttempt: ({ botId }) => {
+                maxSendAttempted = true;
+                dispatchedResultsBotId = botId;
+              },
+            })
+          : await (async () => {
+              const resultOptions = this.mergeMessageOptionsWithTextFormat(
+                await this.buildGiveawayResultsMessageOptions(giveaway, resultsBotId),
+                resultsTextPayload.textFormat,
+              );
+              maxSendAttempted = true;
+              return resultsBotId
+                ? this.maxClient.sendMessageImmediateWithResolvedLink(
+                    giveaway.sourceChatId,
+                    resultsTextPayload.text,
+                    resultOptions,
+                    buildManagedGiveawayMaxApiOptions(source, 'send', resultsBotId),
+                  )
+                : this.maxClient.sendMessageImmediateWithResolvedLink(
+                    giveaway.sourceChatId,
+                    resultsTextPayload.text,
+                    resultOptions,
+                    buildManagedGiveawayMaxApiOptions(source, 'send'),
+                  );
+            })();
+        if ('botId' in result && typeof result.botId === 'string') {
+          dispatchedResultsBotId = result.botId;
+        }
         maxSendAccepted = true;
         await this.prisma.managedGiveaway.update({
           where: { id: giveaway.id },
           data: {
             resultsMessageId: result.messageId,
-            resultsBotId: resultsBotId ?? null,
+            resultsBotId: dispatchedResultsBotId,
             resultsUrl: result.url,
             lockedAt: null,
+            sendLockKey: null,
           },
         });
       } catch (error: unknown) {
@@ -2483,6 +2839,7 @@ export class ManagedGiveawayService {
         this.logger.warn(
           {
             giveawayId: giveaway.id,
+            botId: dispatchedResultsBotId,
             err: error instanceof Error ? error.message : String(error),
           },
           shouldQuarantine
@@ -2495,21 +2852,32 @@ export class ManagedGiveawayService {
               id: giveaway.id,
               resultsMessageId: null,
               lockedAt: resultLockAt,
+              sendLockKey: this.maxRoutedPublicationService ? resultsSendLockKey : null,
             },
-            data: { lockedAt: null },
+            data: { lockedAt: null, sendLockKey: null },
           });
-          await this.recordManagedGiveawayMaxAccessLoss({
-            giveaway,
-            botId: resultsBotId ?? null,
-            source: 'managed_giveaway:results',
-            operation: 'send',
-            error,
-          });
+          if (!this.maxRoutedPublicationService) {
+            await this.recordManagedGiveawayMaxAccessLoss({
+              giveaway,
+              botId: resultsBotId,
+              source: 'managed_giveaway:results',
+              operation: 'send',
+              error,
+            });
+          }
         }
       }
       return;
     }
 
+    const publicationBotId =
+      this.normalizeNonEmptyString(giveaway.publicationBotId) ??
+      (await this.resolveGiveawayPublicationBotId(giveaway.sourceChatId));
+    const resultsBotId = this.normalizeNonEmptyString(giveaway.resultsBotId) ?? publicationBotId;
+    const resultOptions = this.mergeMessageOptionsWithTextFormat(
+      await this.buildGiveawayResultsMessageOptions(giveaway, resultsBotId),
+      resultsTextPayload.textFormat,
+    );
     try {
       if (resultsBotId) {
         await this.maxClient.editMessageInlineKeyboard(
@@ -2554,15 +2922,14 @@ export class ManagedGiveawayService {
     error: unknown;
   }): Promise<void> {
     try {
-      const result =
-        await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost?.({
-          chatId: params.giveaway.sourceChatId,
-          botId: params.botId,
-          entityType: params.giveaway.entityType,
-          source: params.source,
-          operation: params.operation,
-          error: params.error,
-        });
+      const result = await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost?.({
+        chatId: params.giveaway.sourceChatId,
+        botId: params.botId,
+        entityType: params.giveaway.entityType,
+        source: params.source,
+        operation: params.operation,
+        error: params.error,
+      });
       if (result?.recorded) {
         this.logger.warn(
           {
@@ -3006,6 +3373,7 @@ export class ManagedGiveawayService {
           data: {
             status: ManagedGiveawayStatus.ACTIVE,
             lockedAt: null,
+            sendLockKey: null,
           },
         });
         if (claim.count === 0) {
@@ -3111,6 +3479,7 @@ export class ManagedGiveawayService {
       data: {
         status: ManagedGiveawayStatus.ACTIVE,
         lockedAt: null,
+        sendLockKey: null,
       },
     });
 
@@ -3120,7 +3489,7 @@ export class ManagedGiveawayService {
 
     await this.prisma.managedGiveaway.updateMany({
       where: { id: giveawayId },
-      data: { lockedAt: null },
+      data: { lockedAt: null, sendLockKey: null },
     });
   }
 
@@ -3389,6 +3758,7 @@ export class ManagedGiveawayService {
         drawSeed,
         drawnAt: now,
         lockedAt: now,
+        sendLockKey: null,
       },
     });
 
@@ -3420,6 +3790,7 @@ export class ManagedGiveawayService {
           drawSeed: resumedSeed,
           drawnAt: current.drawnAt ?? now,
           lockedAt: now,
+          sendLockKey: null,
         },
       });
 
@@ -3558,6 +3929,7 @@ export class ManagedGiveawayService {
             status: ManagedGiveawayStatus.COMPLETED,
             completedAt: now,
             lockedAt: null,
+            sendLockKey: null,
           },
         });
 
@@ -3577,6 +3949,7 @@ export class ManagedGiveawayService {
           data: {
             status: initial.status,
             lockedAt: null,
+            sendLockKey: null,
           },
         });
       }

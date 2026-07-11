@@ -165,6 +165,7 @@ import {
   resolvePrivateBroadcastDraftTargetState,
 } from './private-control-draft-normalizer';
 import { PrivateControlSessionStore } from './private-control-session.store';
+import { PrivateControlSessionBotContext } from './private-control-session-bot-context';
 import {
   compactPrivateText,
   escapePrivateMarkdown,
@@ -236,6 +237,7 @@ export class PrivateControlService {
   private readonly privateDialogSendTimeoutMs: number;
   private readonly privateControlMediaUploader: PrivateControlMediaAttachmentUploader;
   private readonly sessionStore: PrivateControlSessionStore;
+  private readonly sessionBotContext = new PrivateControlSessionBotContext();
   private readonly launcherIntroSeenUsers = new Set<string>();
   private readonly activeBroadcastPublishes = new Set<string>();
   private readonly recentBroadcastPublishes = new Map<
@@ -1595,9 +1597,9 @@ export class PrivateControlService {
             : 'Уже отменено'
           : result.status === 'review_in_progress'
             ? 'Уже обрабатывается'
-          : result.reviewStatus === 'published'
-            ? 'Пост опубликован'
-            : 'Предложка отменена',
+            : result.reviewStatus === 'published'
+              ? 'Пост опубликован'
+              : 'Предложка отменена',
     });
   }
 
@@ -5925,7 +5927,9 @@ export class PrivateControlService {
           : []),
         '',
         `Мест: ${giveaway.prizes.length}`,
-        ...(giveaway.endsAt ? [`Финиш: ${formatPrivateControlDateTimeLabel(giveaway.endsAt)}`] : []),
+        ...(giveaway.endsAt
+          ? [`Финиш: ${formatPrivateControlDateTimeLabel(giveaway.endsAt)}`]
+          : []),
         ...(giveaway.status === 'ACTIVE' ||
         giveaway.status === 'SCHEDULED' ||
         giveaway.status === 'COMPLETED'
@@ -9518,15 +9522,18 @@ export class PrivateControlService {
   }
 
   private async loadSession(userId: string): Promise<PrivateSession> {
-    return this.sessionStore.loadSession(userId);
+    return this.sessionStore.loadSession(userId, this.sessionBotContext.currentBotId());
   }
 
   private async loadSessionForDiagnostics(userId: string): Promise<PrivateSession | null> {
-    return this.sessionStore.loadSessionForDiagnostics(userId);
+    return this.sessionStore.loadSessionForDiagnostics(
+      userId,
+      this.sessionBotContext.currentBotId(),
+    );
   }
 
   private async saveSession(userId: string, session: PrivateSession): Promise<void> {
-    await this.sessionStore.saveSession(userId, session);
+    await this.sessionStore.saveSession(userId, session, this.sessionBotContext.currentBotId());
   }
 
   private createDefaultSession(): PrivateSession {
@@ -9541,7 +9548,17 @@ export class PrivateControlService {
   }
 
   private sessionKey(userId: string): string {
-    return this.sessionStore.sessionKey(userId);
+    return this.sessionStore.sessionKey(userId, this.sessionBotContext.currentBotId());
   }
 
+  protected runWithUpdateSessionBot<T>(update: MaxUpdate, operation: () => Promise<T>): Promise<T> {
+    return this.runWithSessionBot(this.readUpdateBotId(update), operation);
+  }
+
+  protected runWithSessionBot<T>(
+    botId: string | null | undefined,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    return this.sessionBotContext.run(botId, operation);
+  }
 }

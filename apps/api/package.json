@@ -20,6 +20,7 @@
     "typecheck": "npm run build --workspace @maxim/contracts && npm run prisma:generate && tsc -p tsconfig.json --noEmit",
     "test": "npm run build --workspace @maxim/contracts && npm run prisma:generate && jest --config jest.config.cjs --runInBand --detectOpenHandles",
     "test:watch": "npm run build --workspace @maxim/contracts && npm run prisma:generate && jest --config jest.config.cjs --watch",
+    "test:postgres-races": "npm run build --workspace @maxim/contracts && npm run prisma:generate && jest --config jest.config.cjs --runInBand --detectOpenHandles --runTestsByPath src/max/chat-routing-postgres-races.spec.ts",
     "prisma:generate": "prisma generate --config prisma.config.ts",
     "prisma:migrate:dev": "prisma migrate dev --config prisma.config.ts",
     "prisma:migrate:deploy": "prisma migrate deploy --config prisma.config.ts",
@@ -33,6 +34,7 @@
     "night-mode:repair-duplicate-close-notices": "sh -c 'if [ -f dist/apps/api/src/scripts/repair-duplicate-night-mode-close-notices.js ]; then exec node dist/apps/api/src/scripts/repair-duplicate-night-mode-close-notices.js \"$@\"; else exec tsx src/scripts/repair-duplicate-night-mode-close-notices.ts \"$@\"; fi' --",
     "spammers:archive-expired": "tsx src/scripts/archive-expired-global-spammers.ts",
     "multi-bot:smoke-routes": "sh -c 'if [ -f dist/apps/api/src/scripts/smoke-multi-bot-routes.js ]; then exec node dist/apps/api/src/scripts/smoke-multi-bot-routes.js \"$@\"; else exec tsx src/scripts/smoke-multi-bot-routes.ts \"$@\"; fi' --",
+    "multi-bot:repair-data": "sh -c 'if [ -f dist/apps/api/src/scripts/repair-multibot-data.js ]; then exec node dist/apps/api/src/scripts/repair-multibot-data.js \"$@\"; else exec tsx src/scripts/repair-multibot-data.ts \"$@\"; fi' --",
     "vk-parsing:diagnose": "sh -c 'if [ -f dist/apps/api/src/scripts/diagnose-vk-parsing.js ]; then exec node dist/apps/api/src/scripts/diagnose-vk-parsing.js \"$@\"; else exec tsx src/scripts/diagnose-vk-parsing.ts \"$@\"; fi' --"
   },
   "dependencies": {
@@ -49,6 +51,7 @@
     "ioredis": "^5.11.0",
     "luxon": "^3.7.2",
     "nestjs-pino": "^4.6.1",
+    "pg": "8.20.0",
     "pino-pretty": "^13.0.0",
     "prisma": "^7.8.0",
     "reflect-metadata": "^0.2.2",
@@ -59,6 +62,7 @@
     "@nestjs/testing": "^11.1.24",
     "@types/jest": "^30.0.0",
     "@types/luxon": "^3.7.1",
+    "@types/pg": "^8.20.0",
     "@types/supertest": "^6.0.3",
     "jest": "^30.4.2",
     "supertest": "^7.0.0",

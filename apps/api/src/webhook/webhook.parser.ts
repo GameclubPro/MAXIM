@@ -24,7 +24,7 @@ export class WebhookParser {
     const senderName = this.extractSenderName(message, payload);
     const chatTitle = this.extractChatTitle(message, payload);
     const messageText = this.extractMessageText(message);
-    const createdAt = this.extractCreatedAt(message, payload);
+    const eventTimestamp = this.extractEventTimestamp(type, message, payload);
     const membershipPayload = this.extractMembershipPayload(payload, type);
     const membershipChatId = this.extractMembershipChatId(membershipPayload);
     const membershipSenderId = this.extractMembershipSenderId(membershipPayload);
@@ -50,6 +50,7 @@ export class WebhookParser {
     const normalized: MaxUpdate = {
       updateId,
       ...(options.botId ? { botId: options.botId } : {}),
+      eventTimestampSource: eventTimestamp.source,
       type,
       message: hasMessage
         ? {
@@ -60,7 +61,7 @@ export class WebhookParser {
             senderId: resolvedSenderId,
             ...(resolvedSenderName ? { senderName: resolvedSenderName } : {}),
             text: messageText,
-            createdAt,
+            createdAt: eventTimestamp.value,
           }
         : undefined,
       ...(membership ? { membership } : {}),
@@ -120,6 +121,9 @@ export class WebhookParser {
       normalized === 'user_removed' ||
       normalized === 'bot_removed' ||
       normalized === 'bot_started' ||
+      normalized === 'bot_stopped' ||
+      normalized === 'dialog_removed' ||
+      normalized === 'message_removed' ||
       normalized === 'chat_title_changed'
     );
   }
@@ -554,20 +558,16 @@ export class WebhookParser {
     message: Record<string, unknown> | undefined,
     payload: Record<string, unknown>,
   ): string {
-    if (!message) {
-      return '';
-    }
-
-    const body = this.asRecord(message.body);
-    const data = this.asRecord(message.data);
-    const content = this.asRecord(message.content);
+    const body = this.asRecord(message?.body);
+    const data = this.asRecord(message?.data);
+    const content = this.asRecord(message?.content);
 
     const candidates = [
-      message.messageId,
-      message.message_id,
-      message.mid,
-      message.seq,
-      message.id,
+      message?.messageId,
+      message?.message_id,
+      message?.mid,
+      message?.seq,
+      message?.id,
       body?.mid,
       body?.seq,
       body?.message_id,
@@ -606,6 +606,7 @@ export class WebhookParser {
     const payloadChat = this.asRecord(payload.chat);
     const payloadData = this.asRecord(payload.data);
     const payloadEvent = this.asRecord(payload.event);
+    const payloadDialog = this.asRecord(payload.dialog);
     const titleChanged = this.asRecord(payload.chat_title_changed);
 
     const candidates = [
@@ -629,6 +630,11 @@ export class WebhookParser {
       payloadData?.chatId,
       payloadEvent?.chat_id,
       payloadEvent?.chatId,
+      payload.dialog_id,
+      payload.dialogId,
+      payloadDialog?.id,
+      payloadDialog?.chat_id,
+      payloadDialog?.chatId,
       titleChanged?.chat_id,
       titleChanged?.chatId,
     ];
@@ -762,27 +768,37 @@ export class WebhookParser {
     return undefined;
   }
 
-  private extractCreatedAt(
+  private extractEventTimestamp(
+    type: string,
     message: Record<string, unknown> | undefined,
     payload: Record<string, unknown>,
-  ): string {
-    const candidates = [
-      message?.createdAt,
-      message?.created_at,
-      message?.timestamp,
+  ): { value: string; source: 'payload' | 'ingress' } {
+    const data = this.asRecord(payload.data);
+    const event = this.asRecord(payload.event);
+    const eventCandidates = [
       payload.timestamp,
       payload.created_at,
       payload.createdAt,
+      data?.timestamp,
+      data?.created_at,
+      data?.createdAt,
+      event?.timestamp,
+      event?.created_at,
+      event?.createdAt,
     ];
+    const candidates =
+      type.trim().toLowerCase() === 'message_created'
+        ? [...eventCandidates, message?.createdAt, message?.created_at, message?.timestamp]
+        : eventCandidates;
 
     for (const value of candidates) {
       const timestampMs = this.parseWebhookTimestampMs(value);
       if (timestampMs !== null) {
-        return new Date(timestampMs).toISOString();
+        return { value: new Date(timestampMs).toISOString(), source: 'payload' };
       }
     }
 
-    return new Date().toISOString();
+    return { value: new Date().toISOString(), source: 'ingress' };
   }
 
   private parseWebhookTimestampMs(value: unknown): number | null {
@@ -1164,8 +1180,7 @@ export class WebhookParser {
     }
 
     const parent = parentKey.toLowerCase();
-    const isDirectShareAttachment =
-      options.allowShareAttachmentUrls === true && type === 'share';
+    const isDirectShareAttachment = options.allowShareAttachmentUrls === true && type === 'share';
     const isExplicitLinkEntity =
       type === 'link' ||
       type === 'url' ||

@@ -4,6 +4,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import {
   buildBotIdVariants,
   buildResolvedMaxBotConfigs,
+  resolveMaxEntryBotConfig,
   type ResolvedMaxBotConfig,
 } from './max-bot-config.util';
 import {
@@ -50,6 +51,8 @@ export class MaxBotRegistryService {
           'MAX_WEBHOOK_HEADER_SECRET_PREVIOUS',
         ),
         contactId: configService.get<string>('MAX_BOT_CONTACT_ID'),
+        state: configService.get<ResolvedMaxBotConfig['state']>('MAX_BOT_STATE'),
+        ownershipWeight: configService.get<number>('MAX_BOT_OWNERSHIP_WEIGHT'),
       },
       additionalBotsJson: configService.get<string>('MAX_BOTS_JSON'),
     }).map((bot) => ({
@@ -63,10 +66,7 @@ export class MaxBotRegistryService {
     const botIdByUserIdVariant = new Map<string, string>();
     const ambiguousBotUserIdVariants = new Set<string>();
     for (const bot of this.bots) {
-      for (const variant of [
-        ...buildBotIdVariants(bot.id),
-        ...buildBotIdVariants(bot.contactId),
-      ]) {
+      for (const variant of [...buildBotIdVariants(bot.id), ...buildBotIdVariants(bot.contactId)]) {
         const existingBotId = botIdByUserIdVariant.get(variant);
         if (existingBotId && existingBotId !== bot.id) {
           ambiguousBotUserIdVariants.add(variant);
@@ -218,13 +218,8 @@ export class MaxBotRegistryService {
   }
 
   private resolveEntryBot(configuredBotId: string | undefined): MaxBotDefinition {
-    const normalized = typeof configuredBotId === 'string' ? configuredBotId.trim() : '';
-    const configuredBot = normalized ? (this.botsById.get(normalized) ?? null) : null;
-    if (configuredBot && canExecuteActionsForBotState(configuredBot.state)) {
-      return configuredBot;
-    }
-
-    return this.defaultBot;
+    const resolved = resolveMaxEntryBotConfig(this.bots, configuredBotId);
+    return this.botsById.get(resolved.id) ?? this.defaultBot;
   }
 
   private buildWebhookUrl(botId: string, secretPath: string): string | null {

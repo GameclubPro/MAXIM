@@ -1004,6 +1004,9 @@ function createHarness(
     setStringWithTtl: jest.fn(async (key: string, value: string) => {
       redisStrings.set(key, value);
     }),
+    deleteKey: jest.fn(async (key: string) => (redisStrings.delete(key) ? 1 : 0)),
+    acquireLock: jest.fn().mockResolvedValue('private-session-migration-lock'),
+    releaseLock: jest.fn().mockResolvedValue(undefined),
   };
   const supportRequestsService = {
     createRequest: jest.fn().mockResolvedValue({ id: 'support-request-1' }),
@@ -2855,6 +2858,7 @@ describe('PrivateControlService', () => {
       displayName: 'Тестовый пользователь',
       chatId: chats[0].id,
       chatTitle: chats[0].title,
+      launchBotId: '888000_bot',
     };
 
     await service.handleBotStarted(createBotStartedPrivateUpdate('', { botId: '888000_bot' }));
@@ -2891,6 +2895,7 @@ describe('PrivateControlService', () => {
       displayName: 'Тестовый пользователь',
       chatId: chats[0].id,
       chatTitle: chats[0].title,
+      launchBotId: '888000_bot',
     };
     const imageMock = mockImageFetch();
 
@@ -2908,7 +2913,7 @@ describe('PrivateControlService', () => {
       maxClient.uploadImage.mockClear();
       maxClient.sendMessage.mockClear();
 
-      await service.handleUpdate(createPrivatePhotoUpdate());
+      await service.handleUpdate(createPrivatePhotoUpdate({ botId: '888000_bot' }));
     } finally {
       imageMock.restore();
     }
@@ -2955,12 +2960,9 @@ describe('PrivateControlService', () => {
 
     await service.handleBotStarted(createBotStartedPrivateUpdate('broadcast_handoff'));
 
-    expect(maxClient.uploadImage).toHaveBeenCalledWith(
-      TINY_PNG,
-      'handoff.png',
-      'image/png',
-      { botId: '888000_bot' },
-    );
+    expect(maxClient.uploadImage).toHaveBeenCalledWith(TINY_PNG, 'handoff.png', 'image/png', {
+      botId: '888000_bot',
+    });
     expect(maxClient.sendMessage).toHaveBeenLastCalledWith(
       '152517912',
       expect.any(String),

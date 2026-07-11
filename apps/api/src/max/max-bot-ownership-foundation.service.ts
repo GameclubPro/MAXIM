@@ -1,10 +1,12 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  ChatBotAccessState,
   ChatBotMembershipRole,
   ChatBotMembershipStatus,
   ChatCatalogKind,
   ChatEntityType,
+  ChatRoutingState,
   Prisma,
 } from '../prisma/prisma-client';
 import {
@@ -14,20 +16,27 @@ import {
   type BotOwnershipFoundationSnapshot,
 } from '@maxim/contracts';
 import Redis from 'ioredis';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsAdmin } from '../runtime/app-role';
 import { MaxBotLinkService } from './max-bot-link.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
 import { canExecuteActionsForBotState, createBotLifecycleStats } from './max-bot-state.util';
 import {
+  calculatePrimaryAccessScore,
+  isFreshMembershipAccessSnapshot,
   membershipExplicitlyLacksAccess,
+  normalizeMembershipAccessSnapshot,
   resolvePreferredPrimaryBotId,
 } from './max-bot-access-policy.util';
+import { resolveWeightedRendezvousOwnerBotId } from './max-bot-ownership-assignment.util';
+import type { MaxBotLifecycleState } from './max-bot-config.util';
 
 const BOT_OWNERSHIP_FOUNDATION_STATUS_KEY = 'system:bot-ownership:foundation:v1';
 const BOT_OWNERSHIP_FOUNDATION_LOCK_KEY = 'system:bot-ownership:foundation:repair-lock:v1';
 const LOCAL_CACHE_TTL_MS = 2_000;
+
+type BotOwnershipRebalanceMode = 'off' | 'shadow' | 'canary' | 'on';
 
 type RepairRuntimeState = {
   lastRunAt: string | null;
@@ -35,6 +44,12 @@ type RepairRuntimeState = {
   lastError: string | null;
   lastAppliedChanges: number;
   totalAppliedChanges: number;
+  lastAppliedMoves: number;
+};
+
+type OwnershipBotConfig = {
+  state: MaxBotLifecycleState;
+  ownershipWeight: number;
 };
 
 type ChatRecord = {
@@ -44,6 +59,8 @@ type ChatRecord = {
   botId: string | null;
   primaryBotId: string | null;
   catalogKind: ChatCatalogKind;
+  routingState: ChatRoutingState;
+  routingVersion: number;
 };
 
 type MembershipRecord = {
@@ -51,6 +68,9 @@ type MembershipRecord = {
   botId: string;
   role: ChatBotMembershipRole;
   status: ChatBotMembershipStatus;
+  botAccessState: ChatBotAccessState;
+  botAccessCheckedAt: Date | null;
+  botAccessExpiresAt: Date | null;
   permissionsSnapshot: unknown | null;
 };
 
@@ -77,12 +97,17 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
   private readonly repairIntervalMs: number;
   private readonly repairLockTtlMs: number;
   private readonly repairBatchSize: number;
+  private readonly rebalanceMode: BotOwnershipRebalanceMode;
+  private readonly rebalanceCanaryPercent: number;
+  private readonly rebalanceCanaryEntityIds: ReadonlySet<string>;
+  private readonly rebalanceMaxMovesPerRun: number;
   private readonly runtimeState: RepairRuntimeState = {
     lastRunAt: null,
     lastSuccessAt: null,
     lastError: null,
     lastAppliedChanges: 0,
     totalAppliedChanges: 0,
+    lastAppliedMoves: 0,
   };
   private timer: NodeJS.Timeout | null = null;
   private cachedSnapshot: BotOwnershipFoundationSnapshot | null = null;
@@ -100,6 +125,24 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
     this.repairIntervalMs = configService.get<number>('BOT_OWNERSHIP_REPAIR_INTERVAL_MS', 300_000);
     this.repairLockTtlMs = configService.get<number>('BOT_OWNERSHIP_REPAIR_LOCK_TTL_MS', 60_000);
     this.repairBatchSize = configService.get<number>('BOT_OWNERSHIP_REPAIR_BATCH_SIZE', 250);
+    this.rebalanceMode = configService.get<BotOwnershipRebalanceMode>(
+      'BOT_OWNERSHIP_REBALANCE_MODE',
+      'shadow',
+    );
+    this.rebalanceCanaryPercent = configService.get<number>(
+      'BOT_OWNERSHIP_REBALANCE_CANARY_PERCENT',
+      1,
+    );
+    this.rebalanceCanaryEntityIds = new Set(
+      (configService.get<string>('BOT_OWNERSHIP_REBALANCE_CANARY_ENTITY_IDS', '') ?? '')
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean),
+    );
+    this.rebalanceMaxMovesPerRun = configService.get<number>(
+      'BOT_OWNERSHIP_REBALANCE_MAX_MOVES_PER_RUN',
+      25,
+    );
     this.activeOnThisRole = this.enabled && roleRunsAdmin(getAppRole());
   }
 
@@ -190,17 +233,19 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
     }
 
     try {
-      const appliedChanges = await this.repairRecoverableOwnership();
-      this.runtimeState.lastAppliedChanges = appliedChanges;
-      this.runtimeState.totalAppliedChanges += appliedChanges;
+      const repairResult = await this.repairRecoverableOwnership();
+      this.runtimeState.lastAppliedChanges = repairResult.appliedChanges;
+      this.runtimeState.totalAppliedChanges += repairResult.appliedChanges;
+      this.runtimeState.lastAppliedMoves = repairResult.appliedMoves;
       this.runtimeState.lastSuccessAt = new Date().toISOString();
       this.runtimeState.lastError = null;
 
-      if (appliedChanges > 0) {
+      if (repairResult.appliedChanges > 0) {
         this.logger.log(
           {
             reason,
-            appliedChanges,
+            appliedChanges: repairResult.appliedChanges,
+            appliedMoves: repairResult.appliedMoves,
             totalAppliedChanges: this.runtimeState.totalAppliedChanges,
           },
           'Repaired bot ownership foundation anomalies',
@@ -222,8 +267,18 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
     }
   }
 
-  private async repairRecoverableOwnership(): Promise<number> {
-    const knownBotIds = new Set(this.botRegistry.getAllBots().map((bot) => bot.id));
+  private async repairRecoverableOwnership(): Promise<{
+    appliedChanges: number;
+    appliedMoves: number;
+  }> {
+    const configuredBots = this.botRegistry.getAllBots();
+    const knownBotIds = new Set(configuredBots.map((bot) => bot.id));
+    const botConfigs = new Map<string, OwnershipBotConfig>(
+      configuredBots.map((bot) => [
+        bot.id,
+        { state: bot.state, ownershipWeight: bot.ownershipWeight },
+      ]),
+    );
     const eligiblePrimaryBotIds = new Set(
       this.botRegistry
         .getAllBots()
@@ -239,6 +294,8 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
           botId: true,
           primaryBotId: true,
           catalogKind: true,
+          routingState: true,
+          routingVersion: true,
         },
         orderBy: { createdAt: 'asc' },
       }),
@@ -248,6 +305,9 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
           botId: true,
           role: true,
           status: true,
+          botAccessState: true,
+          botAccessCheckedAt: true,
+          botAccessExpiresAt: true,
           permissionsSnapshot: true,
         },
         orderBy: [{ updatedAt: 'desc' }, { createdAt: 'asc' }],
@@ -270,6 +330,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
       webhookRepairByChat,
     );
     let appliedChanges = 0;
+    let appliedMoves = 0;
 
     for (const chat of chats) {
       if (!this.isManagedOwnershipChat(chat)) {
@@ -281,46 +342,71 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
       }
 
       const chatMemberships = membershipsByChat.get(chat.id) ?? [];
+      const canApplyOwnershipWrite = this.shouldApplyRebalance(chat.id);
+      const canApplyRebalance =
+        appliedMoves < this.rebalanceMaxMovesPerRun && canApplyOwnershipWrite;
       const repair = this.planChatRepair(
         chat,
         chatMemberships,
         knownBotIds,
         eligiblePrimaryBotIds,
+        botConfigs,
+        canApplyRebalance,
         repairSignalsByChat.get(chat.id) ?? null,
       );
       if (!repair) {
         continue;
       }
+      const shouldApplyRoutingState = chat.routingState !== repair.nextRoutingState;
+      if (!canApplyOwnershipWrite) {
+        continue;
+      }
 
       const operations: Prisma.PrismaPromise<unknown>[] = [];
       const chatUpdateData: Prisma.ChatUpdateInput = {};
+      let plannedOwnershipMove = false;
       if (repair.nextPrimaryBotId) {
         const desiredPrimaryBotId = repair.nextPrimaryBotId;
         if (chat.primaryBotId !== desiredPrimaryBotId || chat.botId !== desiredPrimaryBotId) {
           chatUpdateData.primaryBotId = desiredPrimaryBotId;
           chatUpdateData.botId = desiredPrimaryBotId;
+          chatUpdateData.routingVersion = { increment: 1 };
+          if (chat.primaryBotId && chat.primaryBotId !== desiredPrimaryBotId) {
+            plannedOwnershipMove = true;
+          }
         }
 
         operations.push(
-          this.prisma.chatBotMembership.upsert({
+          this.prisma.chatBotMembership.updateMany({
             where: {
-              chatId_botId: {
-                chatId: chat.id,
-                botId: desiredPrimaryBotId,
-              },
-            },
-            create: {
               chatId: chat.id,
-              botId: desiredPrimaryBotId,
-              role: ChatBotMembershipRole.PRIMARY,
+              botId: { in: [desiredPrimaryBotId] },
               status: ChatBotMembershipStatus.ACTIVE,
             },
-            update: {
+            data: {
               role: ChatBotMembershipRole.PRIMARY,
-              status: ChatBotMembershipStatus.ACTIVE,
             },
           }),
         );
+
+        if (repair.activeKnownStandbyBotIds.length > 0) {
+          operations.push(
+            this.prisma.chatBotMembership.updateMany({
+              where: {
+                chatId: chat.id,
+                botId: { in: repair.activeKnownStandbyBotIds },
+                status: ChatBotMembershipStatus.ACTIVE,
+              },
+              data: {
+                role: ChatBotMembershipRole.STANDBY,
+              },
+            }),
+          );
+        }
+      } else if (repair.clearPrimary && (chat.primaryBotId || chat.botId)) {
+        chatUpdateData.primaryBotId = null;
+        chatUpdateData.botId = null;
+        chatUpdateData.routingVersion = { increment: 1 };
 
         if (repair.activeKnownStandbyBotIds.length > 0) {
           operations.push(
@@ -340,27 +426,60 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
       if (repair.nextTitle) {
         chatUpdateData.title = repair.nextTitle;
       }
+      if (operations.length > 0 && Object.keys(chatUpdateData).length === 0) {
+        chatUpdateData.routingVersion = { increment: 1 };
+      }
       if (Object.keys(chatUpdateData).length > 0) {
-        operations.unshift(
+        operations.push(
           this.prisma.chat.update({
-            where: { id: chat.id },
+            where: {
+              id: chat.id,
+              routingVersion: chat.routingVersion,
+            },
             data: chatUpdateData,
           }),
         );
       }
 
-      if (operations.length === 0) {
+      if (operations.length > 0) {
+        try {
+          await this.prisma.$transaction(operations);
+        } catch (error: unknown) {
+          if (this.isRoutingVersionConflict(error)) {
+            this.logger.debug(
+              { chatId: chat.id, routingVersion: chat.routingVersion },
+              'Skipped stale bot ownership repair after routing version changed',
+            );
+            continue;
+          }
+          throw error;
+        }
+        appliedChanges += operations.length;
+        if (plannedOwnershipMove) {
+          appliedMoves += 1;
+        }
+      }
+
+      const routingResult = shouldApplyRoutingState
+        ? await this.maxBotLinkService.reconcileChatRoutingState?.({ chatId: chat.id })
+        : null;
+      if (routingResult?.changed) {
+        appliedChanges += 1;
+      }
+      if (operations.length === 0 && !routingResult?.changed) {
         continue;
       }
 
-      await this.prisma.$transaction(operations);
-      appliedChanges += operations.length;
-      if (repair.nextPrimaryBotId) {
+      if (routingResult?.routingState === ChatRoutingState.NO_ELIGIBLE_BOT) {
+        this.maxBotLinkService.forgetChatBotBinding(chat.id);
+      } else if (repair.nextPrimaryBotId) {
         this.maxBotLinkService.rememberChatBotBinding(chat.id, repair.nextPrimaryBotId);
+      } else if (repair.clearPrimary) {
+        this.maxBotLinkService.forgetChatBotBinding(chat.id);
       }
     }
 
-    return appliedChanges;
+    return { appliedChanges, appliedMoves };
   }
 
   private planChatRepair(
@@ -368,10 +487,14 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
     memberships: readonly MembershipRecord[],
     knownBotIds: ReadonlySet<string>,
     eligiblePrimaryBotIds: ReadonlySet<string>,
+    botConfigs: ReadonlyMap<string, OwnershipBotConfig>,
+    rebalance: boolean,
     repairSignal: RepairSignal | null = null,
   ): {
     nextPrimaryBotId: string | null;
+    clearPrimary: boolean;
     nextTitle: string | null;
+    nextRoutingState: ChatRoutingState;
     activeKnownStandbyBotIds: string[];
   } | null {
     const primaryKnown = this.readKnownBotId(chat.primaryBotId, knownBotIds);
@@ -392,26 +515,54 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
       if (!botId) {
         return false;
       }
-      const membership =
-        activeKnownMemberships.find((candidate) => candidate.botId === botId) ?? null;
-      return !membership || !membershipExplicitlyLacksAccess(membership.permissionsSnapshot);
+      const membership = memberships.find((candidate) => candidate.botId === botId) ?? null;
+      if (!membership) {
+        return false;
+      }
+      if (membership.status !== ChatBotMembershipStatus.ACTIVE) {
+        return false;
+      }
+      if (this.membershipHasStructuredAccessLoss(membership)) {
+        return false;
+      }
+      if (!this.isConfirmedOwnershipMembership(membership)) {
+        return false;
+      }
+      return membership.status === ChatBotMembershipStatus.ACTIVE;
     };
     const primaryEligible = isAccessEligible(rawPrimaryEligible) ? rawPrimaryEligible : null;
+    const primaryPotential = activeKnownMemberships.some(
+      (membership) =>
+        membership.botId === rawPrimaryEligible &&
+        eligiblePrimaryBotIds.has(membership.botId) &&
+        this.isPotentialOwnershipMembership(membership),
+    );
     const legacyEligible = isAccessEligible(rawLegacyEligible) ? rawLegacyEligible : null;
     const signalEligible = isAccessEligible(rawSignalEligible) ? rawSignalEligible : null;
-    const hasIneligiblePrimary = Boolean(primaryKnown && !primaryEligible);
+    const hasIneligiblePrimary = Boolean(primaryKnown && !primaryPotential);
 
     const activeEligibleMemberships = activeKnownMemberships.filter(
       (membership) =>
         eligiblePrimaryBotIds.has(membership.botId) &&
-        !membershipExplicitlyLacksAccess(membership.permissionsSnapshot),
+        this.isConfirmedOwnershipMembership(membership),
     );
+    const activePotentialMemberships = activeKnownMemberships.filter(
+      (membership) =>
+        eligiblePrimaryBotIds.has(membership.botId) &&
+        this.isPotentialOwnershipMembership(membership),
+    );
+    const nextRoutingState =
+      activeEligibleMemberships.length > 0
+        ? ChatRoutingState.READY
+        : activePotentialMemberships.length === 0
+          ? ChatRoutingState.NO_ELIGIBLE_BOT
+          : chat.routingState;
     const activePrimaryMembership = activeEligibleMemberships.find(
       (membership) => membership.role === ChatBotMembershipRole.PRIMARY,
     );
     const hasActivePrimaryMembership =
       primaryEligible !== null &&
-      activeEligibleMemberships.some((membership) => membership.botId === primaryEligible);
+      activeKnownMemberships.some((membership) => membership.botId === primaryEligible);
     const hasRemovedPrimaryMembership =
       primaryKnown !== null &&
       memberships.some(
@@ -420,7 +571,9 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
           membership.status === ChatBotMembershipStatus.REMOVED,
       );
 
-    let nextPrimaryBotId: string | null = hasUnknownPrimary ? null : primaryEligible;
+    let nextPrimaryBotId: string | null = hasUnknownPrimary
+      ? null
+      : (primaryEligible ?? (primaryPotential ? rawPrimaryEligible : null));
     if (!chat.primaryBotId || hasUnknownPrimary || hasIneligiblePrimary) {
       if (activePrimaryMembership) {
         nextPrimaryBotId = activePrimaryMembership.botId;
@@ -444,7 +597,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
       } else if (activeEligibleMemberships[0]) {
         nextPrimaryBotId = activeEligibleMemberships[0].botId;
       } else {
-        return null;
+        nextPrimaryBotId = null;
       }
     }
 
@@ -459,21 +612,44 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
       nextPrimaryBotId = strongestAccessBotId;
     }
 
-    if (!nextPrimaryBotId && !nextTitle) {
+    if (rebalance || !nextPrimaryBotId) {
+      const rendezvousBotId = this.resolveRendezvousOwnerBotId(
+        chat.id,
+        activeEligibleMemberships,
+        botConfigs,
+      );
+      if (rendezvousBotId) {
+        nextPrimaryBotId = rendezvousBotId;
+      }
+    }
+
+    const clearPrimary = Boolean(
+      !nextPrimaryBotId &&
+      (chat.primaryBotId || chat.botId) &&
+      (hasUnknownPrimary || hasIneligiblePrimary || hasRemovedPrimaryMembership),
+    );
+    if (
+      !nextPrimaryBotId &&
+      !clearPrimary &&
+      !nextTitle &&
+      chat.routingState === nextRoutingState
+    ) {
       return null;
     }
 
-    const activeKnownStandbyBotIds = nextPrimaryBotId
-      ? activeKnownMemberships
-          .filter((membership) => membership.botId !== nextPrimaryBotId)
-          .map((membership) => membership.botId)
-      : [];
+    const activeKnownStandbyBotIds = activeKnownMemberships
+      .filter((membership) => !nextPrimaryBotId || membership.botId !== nextPrimaryBotId)
+      .map((membership) => membership.botId);
 
     const shouldRepairOwnership = Boolean(
       nextPrimaryBotId &&
       (chat.primaryBotId !== nextPrimaryBotId ||
         chat.botId !== nextPrimaryBotId ||
-        !hasActivePrimaryMembership ||
+        !activeKnownMemberships.some(
+          (membership) =>
+            membership.botId === nextPrimaryBotId &&
+            membership.role === ChatBotMembershipRole.PRIMARY,
+        ) ||
         activeKnownMemberships.some(
           (membership) =>
             membership.botId !== nextPrimaryBotId &&
@@ -486,13 +662,20 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
         )),
     );
 
-    if (!shouldRepairOwnership && !nextTitle) {
+    if (
+      !shouldRepairOwnership &&
+      !clearPrimary &&
+      !nextTitle &&
+      chat.routingState === nextRoutingState
+    ) {
       return null;
     }
 
     return {
       nextPrimaryBotId,
+      clearPrimary,
       nextTitle,
+      nextRoutingState,
       activeKnownStandbyBotIds,
     };
   }
@@ -721,6 +904,8 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
           botId: true,
           primaryBotId: true,
           catalogKind: true,
+          routingState: true,
+          routingVersion: true,
         },
       }),
       this.prisma.chatBotMembership.findMany({
@@ -729,27 +914,52 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
           botId: true,
           role: true,
           status: true,
+          botAccessState: true,
+          botAccessCheckedAt: true,
+          botAccessExpiresAt: true,
           permissionsSnapshot: true,
         },
       }),
     ]);
 
     const knownBotIds = new Set(this.botRegistry.getAllBots().map((bot) => bot.id));
+    const executableBotIds = new Set(
+      this.botRegistry
+        .getAllBots()
+        .filter((bot) => canExecuteActionsForBotState(bot.state))
+        .map((bot) => bot.id),
+    );
     const membershipsByChat = this.groupMembershipsByChat(memberships);
     const anomalies = this.createEmptyAnomalies();
     const totalCoverage = this.createCoverageAccumulator();
     const chatCoverage = this.createCoverageAccumulator();
     const channelCoverage = this.createCoverageAccumulator();
+    const routingStates = {
+      ready: 0,
+      noEligibleBot: 0,
+    };
 
     for (const chat of chats) {
       if (!this.isManagedOwnershipChat(chat)) {
         continue;
       }
 
+      if (chat.routingState === ChatRoutingState.NO_ELIGIBLE_BOT) {
+        routingStates.noEligibleBot += 1;
+      } else {
+        routingStates.ready += 1;
+      }
+
       const chatMemberships = membershipsByChat.get(chat.id) ?? [];
       const activeKnownMemberships = chatMemberships.filter(
         (membership) =>
           membership.status === ChatBotMembershipStatus.ACTIVE && knownBotIds.has(membership.botId),
+      );
+      const activeEligibleMemberships = activeKnownMemberships.filter(
+        (membership) =>
+          executableBotIds.has(membership.botId) &&
+          !this.membershipHasStructuredAccessLoss(membership) &&
+          !membershipExplicitlyLacksAccess(membership.permissionsSnapshot),
       );
       const hasActiveUnknownMembership = chatMemberships.some(
         (membership) =>
@@ -758,6 +968,25 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
       );
       const primaryKnown = this.readKnownBotId(chat.primaryBotId, knownBotIds);
       const legacyKnown = this.readKnownBotId(chat.botId, knownBotIds);
+      const isStoredBotEligible = (botId: string | null): boolean => {
+        if (!botId || !executableBotIds.has(botId)) {
+          return false;
+        }
+        const membership = chatMemberships.find((candidate) => candidate.botId === botId) ?? null;
+        return (
+          membership?.status === ChatBotMembershipStatus.ACTIVE &&
+          !this.membershipHasStructuredAccessLoss(membership) &&
+          !membershipExplicitlyLacksAccess(membership.permissionsSnapshot)
+        );
+      };
+      const legacyRouteEligible = isStoredBotEligible(legacyKnown);
+      const hasEligibleBot =
+        activeEligibleMemberships.length > 0 ||
+        isStoredBotEligible(primaryKnown) ||
+        legacyRouteEligible;
+      if (!hasEligibleBot) {
+        anomalies.noEligibleBot += 1;
+      }
       totalCoverage.total += 1;
       if (primaryKnown) {
         totalCoverage.withPrimary += 1;
@@ -784,13 +1013,15 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
       if (!chat.primaryBotId) {
         anomalies.noPrimary += 1;
 
-        if (activeKnownMemberships.length > 0) {
+        if (activeEligibleMemberships.length > 0) {
           anomalies.recoverableFromMemberships += 1;
-        } else if (legacyKnown) {
+        } else if (legacyRouteEligible) {
           anomalies.recoverableLegacyOnly += 1;
         } else if (chat.botId) {
-          anomalies.legacyBotUnknown += 1;
-        } else {
+          if (!legacyKnown) {
+            anomalies.legacyBotUnknown += 1;
+          }
+        } else if (activeKnownMemberships.length === 0) {
           anomalies.unbound += 1;
         }
       } else if (!primaryKnown) {
@@ -830,11 +1061,17 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
         chats: this.finalizeCoverage(chatCoverage),
         channels: this.finalizeCoverage(channelCoverage),
       },
+      routingStates,
       anomalies,
       repair: {
         enabled: this.enabled,
         activeOnThisRole: this.activeOnThisRole,
         intervalMs: this.repairIntervalMs,
+        rebalanceMode: this.rebalanceMode,
+        rebalanceCanaryPercent: this.rebalanceCanaryPercent,
+        rebalanceMaxMovesPerRun: this.rebalanceMaxMovesPerRun,
+        recommendedMoves: this.countRecommendedOwnershipMoves(chats, membershipsByChat),
+        lastAppliedMoves: this.runtimeState.lastAppliedMoves,
         lastRunAt: this.runtimeState.lastRunAt,
         lastSuccessAt: this.runtimeState.lastSuccessAt,
         lastError: this.runtimeState.lastError,
@@ -855,11 +1092,20 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
         chats: this.finalizeCoverage(this.createCoverageAccumulator()),
         channels: this.finalizeCoverage(this.createCoverageAccumulator()),
       },
+      routingStates: {
+        ready: 0,
+        noEligibleBot: 0,
+      },
       anomalies: this.createEmptyAnomalies(),
       repair: {
         enabled: this.enabled,
         activeOnThisRole: this.activeOnThisRole,
         intervalMs: this.repairIntervalMs,
+        rebalanceMode: this.rebalanceMode,
+        rebalanceCanaryPercent: this.rebalanceCanaryPercent,
+        rebalanceMaxMovesPerRun: this.rebalanceMaxMovesPerRun,
+        recommendedMoves: 0,
+        lastAppliedMoves: this.runtimeState.lastAppliedMoves,
         lastRunAt: this.runtimeState.lastRunAt,
         lastSuccessAt: this.runtimeState.lastSuccessAt,
         lastError,
@@ -867,6 +1113,151 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
         totalAppliedChanges: this.runtimeState.totalAppliedChanges,
       },
     };
+  }
+
+  private resolveRendezvousOwnerBotId(
+    chatId: string,
+    memberships: readonly MembershipRecord[],
+    botConfigs: ReadonlyMap<string, OwnershipBotConfig>,
+  ): string | null {
+    const scoredCandidates = memberships
+      .map((membership) => {
+        const bot = botConfigs.get(membership.botId);
+        const snapshot = normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
+        if (
+          !bot ||
+          this.membershipHasStructuredAccessLoss(membership) ||
+          !isFreshMembershipAccessSnapshot(snapshot)
+        ) {
+          return null;
+        }
+        return {
+          membership,
+          bot,
+          score: calculatePrimaryAccessScore(snapshot),
+        };
+      })
+      .filter(
+        (
+          candidate,
+        ): candidate is {
+          membership: MembershipRecord;
+          bot: OwnershipBotConfig;
+          score: number;
+        } => candidate !== null,
+      );
+    if (scoredCandidates.length === 0) {
+      return null;
+    }
+
+    const strongestScore = Math.max(...scoredCandidates.map((candidate) => candidate.score));
+    return resolveWeightedRendezvousOwnerBotId(
+      chatId,
+      scoredCandidates
+        .filter((candidate) => candidate.score === strongestScore)
+        .map((candidate) => ({
+          botId: candidate.membership.botId,
+          membershipStatus: candidate.membership.status,
+          lifecycleState: candidate.bot.state,
+          capabilityEligible: true,
+          botAccessState: candidate.membership.botAccessState,
+          permissionsSnapshot: candidate.membership.permissionsSnapshot,
+          ownershipWeight: candidate.bot.ownershipWeight,
+        })),
+    );
+  }
+
+  private countRecommendedOwnershipMoves(
+    chats: readonly ChatRecord[],
+    membershipsByChat: ReadonlyMap<string, readonly MembershipRecord[]>,
+  ): number {
+    const botConfigs = new Map<string, OwnershipBotConfig>(
+      this.botRegistry
+        .getAllBots()
+        .map((bot) => [bot.id, { state: bot.state, ownershipWeight: bot.ownershipWeight }]),
+    );
+    let recommendedMoves = 0;
+
+    for (const chat of chats) {
+      if (!this.isManagedOwnershipChat(chat)) {
+        continue;
+      }
+      const desiredBotId = this.resolveRendezvousOwnerBotId(
+        chat.id,
+        membershipsByChat.get(chat.id) ?? [],
+        botConfigs,
+      );
+      if (desiredBotId && desiredBotId !== chat.primaryBotId) {
+        recommendedMoves += 1;
+      }
+    }
+
+    return recommendedMoves;
+  }
+
+  private shouldApplyRebalance(chatId: string): boolean {
+    if (this.rebalanceMode === 'on') {
+      return true;
+    }
+    if (this.rebalanceMode !== 'canary' || this.rebalanceCanaryPercent <= 0) {
+      return false;
+    }
+    if (!this.rebalanceCanaryEntityIds.has('*') && !this.rebalanceCanaryEntityIds.has(chatId)) {
+      return false;
+    }
+    if (this.rebalanceCanaryPercent >= 100) {
+      return true;
+    }
+
+    const cohortValue = createHash('sha256').update(chatId).digest().readUInt32BE(0);
+    return (cohortValue / 0x1_0000_0000) * 100 < this.rebalanceCanaryPercent;
+  }
+
+  private membershipHasStructuredAccessLoss(
+    membership: Pick<MembershipRecord, 'botAccessState'>,
+  ): boolean {
+    return (
+      membership.botAccessState === ChatBotAccessState.DENIED ||
+      membership.botAccessState === ChatBotAccessState.LOST
+    );
+  }
+
+  private isRoutingVersionConflict(error: unknown): boolean {
+    return (error as { code?: unknown } | null)?.code === 'P2025';
+  }
+
+  private isConfirmedOwnershipMembership(membership: MembershipRecord): boolean {
+    if (
+      membership.botAccessState !== ChatBotAccessState.CONFIRMED_ADMIN &&
+      membership.botAccessState !== ChatBotAccessState.CONFIRMED_OWNER
+    ) {
+      return false;
+    }
+    if (
+      this.membershipHasStructuredAccessLoss(membership) ||
+      membershipExplicitlyLacksAccess(membership.permissionsSnapshot)
+    ) {
+      return false;
+    }
+
+    const expiresAtMs = membership.botAccessExpiresAt?.getTime() ?? Number.NaN;
+    if (Number.isFinite(expiresAtMs)) {
+      return expiresAtMs > Date.now();
+    }
+    return isFreshMembershipAccessSnapshot(
+      normalizeMembershipAccessSnapshot(membership.permissionsSnapshot),
+    );
+  }
+
+  private isPotentialOwnershipMembership(membership: MembershipRecord): boolean {
+    if (this.membershipHasStructuredAccessLoss(membership)) {
+      return false;
+    }
+    const snapshot = normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
+    return !(
+      membershipExplicitlyLacksAccess(membership.permissionsSnapshot) &&
+      isFreshMembershipAccessSnapshot(snapshot)
+    );
   }
 
   private isManagedOwnershipChat(chat: ChatRecord): boolean {
@@ -1007,6 +1398,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
       noPrimary: 0,
       recoverableLegacyOnly: 0,
       recoverableFromMemberships: 0,
+      noEligibleBot: 0,
       unbound: 0,
       primaryBotUnknown: 0,
       legacyBotUnknown: 0,

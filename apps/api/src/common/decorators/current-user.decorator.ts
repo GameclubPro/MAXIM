@@ -2,6 +2,7 @@ import { createParamDecorator, type ExecutionContext } from '@nestjs/common';
 
 export type AuthUser = {
   userId: string;
+  launchBotId?: string | null;
   username: string | null;
   displayName: string | null;
   avatarUrl?: string | null;

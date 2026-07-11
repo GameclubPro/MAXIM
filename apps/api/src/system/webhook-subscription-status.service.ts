@@ -5,11 +5,26 @@ import {
   type WebhookSubscriptionSnapshot,
 } from '@maxim/contracts/system';
 import Redis from 'ioredis';
-import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from '../max/max-webhook-subscription.constants';
+import { resolveRequiredWebhookUpdateTypes } from '../max/max-webhook-subscription.constants';
 
 const WEBHOOK_SUBSCRIPTION_STATUS_KEY = 'system:webhook-subscription:status:v1';
 const WEBHOOK_SUBSCRIPTION_SYNC_STATE_KEY = 'system:webhook-subscription:sync-state:v1';
+const WEBHOOK_SUBSCRIPTION_INGRESS_KEY = 'system:webhook-subscription:ingress:v1';
 const LOCAL_SNAPSHOT_CACHE_TTL_MS = 2_000;
+const MARK_INCOMING_WEBHOOK_LUA = `
+local key = KEYS[1]
+local botField = ARGV[1]
+local incoming = tonumber(ARGV[2]) or 0
+local currentBot = tonumber(redis.call('HGET', key, botField) or '0')
+if incoming > currentBot then
+  redis.call('HSET', key, botField, tostring(incoming))
+end
+local currentGlobal = tonumber(redis.call('HGET', key, 'global') or '0')
+if incoming > currentGlobal then
+  redis.call('HSET', key, 'global', tostring(incoming))
+end
+return 1
+`;
 
 export type WebhookSubscriptionBotSyncState = {
   configuredUrl: string | null;
@@ -29,11 +44,15 @@ export type WebhookSubscriptionSyncState = {
 export class WebhookSubscriptionStatusService implements OnModuleDestroy {
   private readonly logger = new Logger(WebhookSubscriptionStatusService.name);
   private readonly redis: Redis;
+  private readonly requiredUpdateTypes: readonly string[];
   private cachedSnapshot: WebhookSubscriptionSnapshot | null = null;
   private cachedAtMs = 0;
 
   constructor(configService: ConfigService) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
+    this.requiredUpdateTypes = resolveRequiredWebhookUpdateTypes(
+      configService.get?.<string>('MAX_EXTENDED_WEBHOOK_LIFECYCLE_MODE', 'shadow') ?? 'shadow',
+    );
   }
 
   async onModuleDestroy() {
@@ -82,9 +101,21 @@ export class WebhookSubscriptionStatusService implements OnModuleDestroy {
 
   async getSyncState(): Promise<WebhookSubscriptionSyncState | null> {
     try {
-      const raw = await this.redis.get(WEBHOOK_SUBSCRIPTION_SYNC_STATE_KEY);
+      const [raw, ingressState] = await Promise.all([
+        this.redis.get(WEBHOOK_SUBSCRIPTION_SYNC_STATE_KEY),
+        this.redis.hgetall(WEBHOOK_SUBSCRIPTION_INGRESS_KEY),
+      ]);
       if (!raw) {
-        return null;
+        return Object.keys(ingressState).length > 0
+          ? this.mergeAtomicIngressState(
+              {
+                bots: {},
+                lastGlobalIncomingWebhookAt: null,
+                lastGlobalAutoRecreateAt: null,
+              },
+              ingressState,
+            )
+          : null;
       }
 
       const parsed = JSON.parse(raw) as Partial<WebhookSubscriptionSyncState> & {
@@ -133,26 +164,32 @@ export class WebhookSubscriptionStatusService implements OnModuleDestroy {
           : {};
 
       if (Object.keys(parsedBots).length > 0) {
-        return {
-          bots: parsedBots,
-          lastGlobalIncomingWebhookAt:
-            typeof parsed.lastGlobalIncomingWebhookAt === 'string' &&
-            parsed.lastGlobalIncomingWebhookAt.trim().length > 0
-              ? parsed.lastGlobalIncomingWebhookAt
-              : null,
-          lastGlobalAutoRecreateAt:
-            typeof parsed.lastGlobalAutoRecreateAt === 'string' &&
-            parsed.lastGlobalAutoRecreateAt.trim().length > 0
-              ? parsed.lastGlobalAutoRecreateAt
-              : null,
-        };
+        return this.mergeAtomicIngressState(
+          {
+            bots: parsedBots,
+            lastGlobalIncomingWebhookAt:
+              typeof parsed.lastGlobalIncomingWebhookAt === 'string' &&
+              parsed.lastGlobalIncomingWebhookAt.trim().length > 0
+                ? parsed.lastGlobalIncomingWebhookAt
+                : null,
+            lastGlobalAutoRecreateAt:
+              typeof parsed.lastGlobalAutoRecreateAt === 'string' &&
+              parsed.lastGlobalAutoRecreateAt.trim().length > 0
+                ? parsed.lastGlobalAutoRecreateAt
+                : null,
+          },
+          ingressState,
+        );
       }
 
-      return {
-        bots: {},
-        lastGlobalIncomingWebhookAt: null,
-        lastGlobalAutoRecreateAt: null,
-      };
+      return this.mergeAtomicIngressState(
+        {
+          bots: {},
+          lastGlobalIncomingWebhookAt: null,
+          lastGlobalAutoRecreateAt: null,
+        },
+        ingressState,
+      );
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -174,27 +211,67 @@ export class WebhookSubscriptionStatusService implements OnModuleDestroy {
       return;
     }
 
-    const current = (await this.getSyncState()) ?? {
-      bots: {},
-      lastGlobalIncomingWebhookAt: null,
-      lastGlobalAutoRecreateAt: null,
-    };
-    const existingBotState = current.bots[normalizedBotId];
+    const occurredAtMs = Date.parse(occurredAt);
+    const normalizedOccurredAtMs = Number.isFinite(occurredAtMs) ? occurredAtMs : Date.now();
+    await this.redis.eval(
+      MARK_INCOMING_WEBHOOK_LUA,
+      1,
+      WEBHOOK_SUBSCRIPTION_INGRESS_KEY,
+      `bot:${normalizedBotId}`,
+      String(normalizedOccurredAtMs),
+    );
+  }
 
-    await this.writeSyncState({
-      ...current,
-      bots: {
-        ...current.bots,
-        [normalizedBotId]: {
-          configuredUrl: existingBotState?.configuredUrl ?? null,
-          headerSecretFingerprint: existingBotState?.headerSecretFingerprint ?? null,
-          updatedAt: existingBotState?.updatedAt ?? occurredAt,
-          lastIncomingWebhookAt: occurredAt,
-          lastAutoRecreateAt: existingBotState?.lastAutoRecreateAt ?? null,
-        },
-      },
-      lastGlobalIncomingWebhookAt: occurredAt,
-    });
+  private mergeAtomicIngressState(
+    state: WebhookSubscriptionSyncState,
+    ingressState: Record<string, string>,
+  ): WebhookSubscriptionSyncState {
+    const bots = { ...state.bots };
+    for (const [field, value] of Object.entries(ingressState)) {
+      if (!field.startsWith('bot:')) {
+        continue;
+      }
+      const botId = field.slice('bot:'.length).trim();
+      const occurredAt = this.parseIngressTimestamp(value);
+      if (!botId || !occurredAt) {
+        continue;
+      }
+      const existing = bots[botId];
+      bots[botId] = {
+        configuredUrl: existing?.configuredUrl ?? null,
+        headerSecretFingerprint: existing?.headerSecretFingerprint ?? null,
+        updatedAt: existing?.updatedAt ?? occurredAt,
+        lastIncomingWebhookAt: this.latestIso(existing?.lastIncomingWebhookAt ?? null, occurredAt),
+        lastAutoRecreateAt: existing?.lastAutoRecreateAt ?? null,
+      };
+    }
+
+    const globalIncomingAt = this.parseIngressTimestamp(ingressState.global);
+    return {
+      ...state,
+      bots,
+      lastGlobalIncomingWebhookAt: this.latestIso(
+        state.lastGlobalIncomingWebhookAt,
+        globalIncomingAt,
+      ),
+    };
+  }
+
+  private parseIngressTimestamp(value: string | undefined): string | null {
+    const timestampMs = Number(value);
+    return Number.isFinite(timestampMs) && timestampMs > 0
+      ? new Date(timestampMs).toISOString()
+      : null;
+  }
+
+  private latestIso(left: string | null, right: string | null): string | null {
+    if (!left) {
+      return right;
+    }
+    if (!right) {
+      return left;
+    }
+    return left.localeCompare(right) >= 0 ? left : right;
   }
 
   createPendingSnapshot(
@@ -206,9 +283,9 @@ export class WebhookSubscriptionStatusService implements OnModuleDestroy {
       url: null,
       checkedAt: null,
       reconciledAt: null,
-      requiredUpdateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+      requiredUpdateTypes: [...this.requiredUpdateTypes],
       actualUpdateTypes: [],
-      missingUpdateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+      missingUpdateTypes: [...this.requiredUpdateTypes],
       extraUpdateTypes: [],
       otherSubscriptionsCount: 0,
       lastError: null,

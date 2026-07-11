@@ -1,8 +1,10 @@
 import { ConfigService } from '@nestjs/config';
 import {
+  ChatBotAccessState,
   ChatBotMembershipRole,
   ChatBotMembershipStatus,
   ChatEntityType,
+  ChatRoutingState,
   createPrismaClient,
 } from '../prisma/prisma-client';
 import { MaxBotContextService } from '../max/max-bot-context.service';
@@ -58,6 +60,8 @@ type FixtureChat = {
   id: string;
   title: string;
   entityType: ChatEntityType;
+  routingState?: ChatRoutingState;
+  routingVersion?: number;
   primaryBotId: string | null;
   botId: string | null;
   botMemberships: FixtureMembership[];
@@ -67,6 +71,9 @@ type FixtureMembership = {
   botId: string;
   role: ChatBotMembershipRole;
   status: ChatBotMembershipStatus;
+  botAccessState: ChatBotAccessState;
+  botAccessCheckedAt: Date;
+  botAccessExpiresAt: Date;
   capabilities: string[];
   permissionsSnapshot: unknown;
 };
@@ -226,13 +233,7 @@ async function runChannelDeletePermissionScenario(): Promise<SmokeScenario> {
   const routes = await resolveRouteSet(fixture.service, chatId);
   const deleteRoute = findRoute(routes, 'moderation_action', 'delete_message');
   const assertions = [
-    expectRouteBot(
-      routes,
-      'moderation_action',
-      'delete_message',
-      null,
-      ROUTE_MATRIX_BOT_IDS[1],
-    ),
+    expectRouteBot(routes, 'moderation_action', 'delete_message', null, ROUTE_MATRIX_BOT_IDS[1]),
     assert(
       'channel-delete-permission',
       'channel write-only primary is not a delete candidate',
@@ -354,12 +355,17 @@ function createFixture(
         }
         return {
           entityType: chat.entityType,
+          routingState: chat.routingState ?? ChatRoutingState.READY,
+          routingVersion: chat.routingVersion ?? 0,
           primaryBotId: chat.primaryBotId,
           botId: chat.botId,
           botMemberships: chat.botMemberships.map((membership) => ({
             botId: membership.botId,
             role: membership.role,
             status: membership.status,
+            botAccessState: membership.botAccessState,
+            botAccessCheckedAt: membership.botAccessCheckedAt,
+            botAccessExpiresAt: membership.botAccessExpiresAt,
             capabilities: membership.capabilities,
             permissionsSnapshot: membership.permissionsSnapshot,
           })),
@@ -386,6 +392,9 @@ function createMembership(
     botId,
     role: role === 'primary' ? ChatBotMembershipRole.PRIMARY : ChatBotMembershipRole.STANDBY,
     status: ChatBotMembershipStatus.ACTIVE,
+    botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+    botAccessCheckedAt: new Date('2026-07-06T10:00:00.000Z'),
+    botAccessExpiresAt: new Date('2099-01-01T00:00:00.000Z'),
     capabilities: role === 'standby' ? ['suggestion_delivery'] : [],
     permissionsSnapshot: adminSnapshot(),
     ...overrides,
@@ -445,6 +454,7 @@ function createBotDefinition(
     webhookHeaderSecrets: [`header-${index + 1}`],
     contactId: `${id}-contact`,
     state,
+    ownershipWeight: 1,
     visibleInAdmin: state !== 'disabled',
     isDefault: index === 0,
     webhookUrl: null,

@@ -64,6 +64,130 @@ function createEventService() {
 }
 
 describe('NightModeTransitionDeliveryService', () => {
+  it('routes a scheduled close notice with a stable session key and bot-scoped media preparation', async () => {
+    const maxClient = {
+      sendMessageImmediateWithId: jest.fn(),
+      deleteMessage: jest.fn(),
+    };
+    const botSpeechMediaService = {
+      resolveMedia: jest.fn().mockReturnValue({
+        base64: 'aW1hZ2U=',
+        mimeType: 'image/png',
+        fileName: 'night.png',
+        fieldKey: 'nightModeBotMessageText',
+      }),
+      withMediaOptions: jest.fn(async (options) => ({
+        ...(options ?? {}),
+        imagePayload: { token: 'survivor-upload' },
+      })),
+    };
+    const maxRoutedPublicationService = {
+      publish: jest.fn().mockImplementation(async (request: any) => {
+        const job = { idempotencyKey: request.logicalIdempotencyKey };
+        const prepared = await request.prepareAttempt({ botId: 'bot-survivor', job });
+        expect(prepared).toEqual({
+          options: expect.objectContaining({
+            textFormat: 'markdown',
+            imagePayload: { token: 'survivor-upload' },
+          }),
+        });
+        request.onDispatchAttempt({ botId: 'bot-survivor', job: { ...job, ...prepared } });
+        return {
+          messageId: 'msg-routed-close-1',
+          url: null,
+          botId: 'bot-survivor',
+          candidateBotIds: ['bot-primary', 'bot-survivor'],
+          routingVersion: 11,
+        };
+      }),
+    };
+    const eventService = createEventService();
+    const service = new NightModeTransitionDeliveryService(
+      maxClient as never,
+      botSpeechMediaService as never,
+      eventService as never,
+      undefined,
+      maxRoutedPublicationService as never,
+    );
+    const adapters = createAdapters();
+
+    await expect(
+      service.sendClosedNotice(
+        createSettings(),
+        {
+          startMinutes: 23 * 60,
+          endMinutes: 8 * 60,
+          timezone: 'Europe/Moscow',
+          sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-07-11',
+        },
+        adapters,
+      ),
+    ).resolves.toEqual({ shouldEnqueueNext: true, messageId: 'msg-routed-close-1' });
+
+    expect(maxRoutedPublicationService.publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entityId: 'chat-1',
+        logicalIdempotencyKey:
+          'night-mode:close:chat-1:session:v1:Europe/Moscow:23:00:08:00:2026-07-11',
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: 'night_mode_transition',
+        ignoreFailureMetricStatuses: [403, 404],
+      }),
+    );
+    expect(botSpeechMediaService.withMediaOptions).toHaveBeenCalledWith(
+      expect.objectContaining({ textFormat: 'markdown' }),
+      expect.objectContaining({ fieldKey: 'nightModeBotMessageText' }),
+      { botId: 'bot-survivor', sourceTag: 'night_mode_transition' },
+    );
+    expect(adapters.resolveBotId).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+    expect(eventService.createTransitionEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'chat-1',
+        messageId: 'msg-routed-close-1',
+        sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-07-11',
+      }),
+    );
+  });
+
+  it('fails closed in production when routed publication wiring is missing', async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    const maxClient = {
+      sendMessageImmediateWithId: jest.fn(),
+      deleteMessage: jest.fn(),
+    };
+    const service = new NightModeTransitionDeliveryService(
+      maxClient as never,
+      {
+        resolveMedia: jest.fn().mockReturnValue(null),
+        withMediaOptions: jest.fn(),
+      } as never,
+      createEventService() as never,
+    );
+
+    try {
+      await expect(
+        service.sendClosedNotice(
+          createSettings(),
+          {
+            startMinutes: 23 * 60,
+            endMinutes: 8 * 60,
+            timezone: 'Europe/Moscow',
+            sessionKey: 'session-1',
+          },
+          createAdapters(),
+        ),
+      ).rejects.toThrow(
+        'Routed MAX publication service is required for production night mode notices',
+      );
+      expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+    } finally {
+      process.env.NODE_ENV = previousNodeEnv;
+    }
+  });
+
   it('sends a closed notice with markdown, background request options, media adapter, and event', async () => {
     const maxClient = {
       sendMessageImmediateWithId: jest.fn().mockResolvedValue({ messageId: 'msg-close-1' }),

@@ -15,13 +15,10 @@ import {
 } from '../system/webhook-subscription-status.service';
 import { MAX_API_SOURCE_TAGS, MaxClientService } from './max-client.service';
 import { MaxBotRegistryService, type MaxBotDefinition } from './max-bot-registry.service';
-import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from './max-webhook-subscription.constants';
+import { resolveRequiredWebhookUpdateTypes } from './max-webhook-subscription.constants';
 
 const DEFAULT_RECONCILE_INTERVAL_MS = 60 * 1_000;
 const DEFAULT_STALE_INGRESS_MS = 5 * 60 * 1_000;
-const DEFAULT_STALE_RECREATE_COOLDOWN_MS = 10 * 60 * 1_000;
-const REQUIRED_WEBHOOK_UPDATE_TYPES_SET = new Set<string>(MAX_REQUIRED_WEBHOOK_UPDATE_TYPES);
-
 type BotWebhookMembershipDiagnostics = {
   activeMemberships: number;
   lastMembershipWebhookAt: string | null;
@@ -33,7 +30,8 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
   private readonly enabled = roleRunsIngress(getAppRole());
   private readonly reconcileIntervalMs: number;
   private readonly staleIngressMs: number;
-  private readonly staleRecreateCooldownMs: number;
+  private readonly requiredUpdateTypes: readonly string[];
+  private readonly requiredUpdateTypesSet: ReadonlySet<string>;
   private timer: NodeJS.Timeout | null = null;
   private inFlight = false;
 
@@ -52,10 +50,12 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
       'MAX_WEBHOOK_STALE_INGRESS_MS',
       DEFAULT_STALE_INGRESS_MS,
     );
-    this.staleRecreateCooldownMs = configService.get<number>(
-      'MAX_WEBHOOK_STALE_RECREATE_COOLDOWN_MS',
-      DEFAULT_STALE_RECREATE_COOLDOWN_MS,
+    const extendedLifecycleMode = configService.get<string>(
+      'MAX_EXTENDED_WEBHOOK_LIFECYCLE_MODE',
+      'on',
     );
+    this.requiredUpdateTypes = resolveRequiredWebhookUpdateTypes(extendedLifecycleMode);
+    this.requiredUpdateTypesSet = new Set(this.requiredUpdateTypes);
   }
 
   async onModuleInit(): Promise<void> {
@@ -254,9 +254,9 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
           url: null,
           checkedAt,
           reconciledAt: null,
-          requiredUpdateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+          requiredUpdateTypes: [...this.requiredUpdateTypes],
           actualUpdateTypes: [],
-          missingUpdateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+          missingUpdateTypes: [...this.requiredUpdateTypes],
           extraUpdateTypes: [],
           otherSubscriptionsCount: 0,
           lastError: null,
@@ -282,12 +282,9 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
       this.maxClient.matchesConfiguredWebhookUrl(item.url, bot.id),
     );
     const actualUpdateTypes = [...(current?.updateTypes ?? [])].sort();
-    const missingUpdateTypes = MAX_REQUIRED_WEBHOOK_UPDATE_TYPES.filter(
+    const missingUpdateTypes = this.requiredUpdateTypes.filter(
       (type) => !actualUpdateTypes.includes(type),
     );
-    const otherSubscriptionsCount = existing.filter(
-      (item) => !this.maxClient.matchesConfiguredWebhookUrl(item.url, bot.id),
-    ).length;
     const previousConfiguredUrl =
       syncState?.configuredUrl && syncState.configuredUrl !== target.url
         ? syncState.configuredUrl
@@ -298,49 +295,26 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
       (!syncState?.headerSecretFingerprint ||
         syncState.headerSecretFingerprint !== headerSecretFingerprint);
     const staleIngress = this.isStaleIngress(botState.latestRecordedIncomingWebhookAt);
-    const shouldAutoRecreateStaleIngress =
-      Boolean(current) &&
-      !shouldRotateWebhookSecret &&
-      missingUpdateTypes.length === 0 &&
-      staleIngress &&
-      this.canAutoRecreateStaleIngress(syncState?.lastAutoRecreateAt ?? null);
-
     let reconciledAt: string | null = null;
-    let effectiveOtherSubscriptionsCount = otherSubscriptionsCount;
+    let subscriptionsChanged = false;
     const deletedSubscriptionUrls = new Set<string>();
     if (shouldRotateWebhookSecret && current) {
-      await this.maxClient.deleteWebhookSubscription(current.url, {
+      await this.maxClient.ensureWebhookSubscription([...this.requiredUpdateTypes], {
         trafficClass: 'background',
         botId: bot.id,
         sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
-      });
-      deletedSubscriptionUrls.add(current.url);
-      await this.maxClient.ensureWebhookSubscription([...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES], {
-        trafficClass: 'background',
-        botId: bot.id,
-        sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
+        forceUpsert: true,
       });
       reconciledAt = new Date().toISOString();
-    } else if (shouldAutoRecreateStaleIngress && current) {
-      await this.maxClient.deleteWebhookSubscription(current.url, {
-        trafficClass: 'background',
-        botId: bot.id,
-        sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
-      });
-      deletedSubscriptionUrls.add(current.url);
-      await this.maxClient.ensureWebhookSubscription([...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES], {
-        trafficClass: 'background',
-        botId: bot.id,
-        sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
-      });
-      reconciledAt = new Date().toISOString();
+      subscriptionsChanged = true;
     } else if (!current || missingUpdateTypes.length > 0) {
-      await this.maxClient.ensureWebhookSubscription([...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES], {
+      await this.maxClient.ensureWebhookSubscription([...this.requiredUpdateTypes], {
         trafficClass: 'background',
         botId: bot.id,
         sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
       });
       reconciledAt = new Date().toISOString();
+      subscriptionsChanged = true;
     }
 
     if (previousConfiguredUrl) {
@@ -353,7 +327,7 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
         });
         deletedSubscriptionUrls.add(previousConfiguredUrl);
         reconciledAt = reconciledAt ?? new Date().toISOString();
-        effectiveOtherSubscriptionsCount = Math.max(0, effectiveOtherSubscriptionsCount - 1);
+        subscriptionsChanged = true;
       }
     }
 
@@ -373,20 +347,26 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
       });
       deletedSubscriptionUrls.add(subscription.url);
       reconciledAt = reconciledAt ?? new Date().toISOString();
-      effectiveOtherSubscriptionsCount = Math.max(0, effectiveOtherSubscriptionsCount - 1);
+      subscriptionsChanged = true;
     }
 
-    const refreshedCurrent =
-      !current || missingUpdateTypes.length > 0 || shouldRotateWebhookSecret
-        ? {
-            url: target.url,
-            updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES].sort(),
-          }
-        : current;
-    const refreshedActualUpdateTypes = [...refreshedCurrent.updateTypes].sort();
+    const confirmedSubscriptions = subscriptionsChanged
+      ? await this.maxClient.listWebhookSubscriptions({
+          trafficClass: 'background',
+          botId: bot.id,
+          sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
+        })
+      : existing;
+    const refreshedCurrent = confirmedSubscriptions.find((item) =>
+      this.maxClient.matchesConfiguredWebhookUrl(item.url, bot.id),
+    );
+    const refreshedActualUpdateTypes = [...(refreshedCurrent?.updateTypes ?? [])].sort();
+    const effectiveOtherSubscriptionsCount = confirmedSubscriptions.filter(
+      (item) => !this.maxClient.matchesConfiguredWebhookUrl(item.url, bot.id),
+    ).length;
     const operationalDiagnostics = this.buildOperationalDiagnostics({
       bot,
-      hasCurrentSubscription: Boolean(refreshedCurrent.url),
+      hasCurrentSubscription: Boolean(refreshedCurrent?.url),
       latestRecordedIncomingWebhookAt: botState.latestRecordedIncomingWebhookAt,
       membershipDiagnostics: botState.membershipDiagnostics,
     });
@@ -397,15 +377,15 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
         botId: bot.id,
         status: this.resolveStatus({
           configured: true,
-          hasCurrentSubscription: Boolean(refreshedCurrent.url),
+          hasCurrentSubscription: Boolean(refreshedCurrent?.url),
           missingUpdateTypes:
             reconciledAt === null
               ? missingUpdateTypes
-              : MAX_REQUIRED_WEBHOOK_UPDATE_TYPES.filter(
+              : this.requiredUpdateTypes.filter(
                   (type) => !refreshedActualUpdateTypes.includes(type),
                 ),
           extraUpdateTypes: refreshedActualUpdateTypes.filter(
-            (type) => !REQUIRED_WEBHOOK_UPDATE_TYPES_SET.has(type),
+            (type) => !this.requiredUpdateTypesSet.has(type),
           ),
           otherSubscriptionsCount: effectiveOtherSubscriptionsCount,
           staleIngress,
@@ -415,13 +395,13 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
         url: target.maskedUrl,
         checkedAt,
         reconciledAt,
-        requiredUpdateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+        requiredUpdateTypes: [...this.requiredUpdateTypes],
         actualUpdateTypes: refreshedActualUpdateTypes,
-        missingUpdateTypes: MAX_REQUIRED_WEBHOOK_UPDATE_TYPES.filter(
+        missingUpdateTypes: this.requiredUpdateTypes.filter(
           (type) => !refreshedActualUpdateTypes.includes(type),
         ),
         extraUpdateTypes: refreshedActualUpdateTypes.filter(
-          (type) => !REQUIRED_WEBHOOK_UPDATE_TYPES_SET.has(type),
+          (type) => !this.requiredUpdateTypesSet.has(type),
         ),
         otherSubscriptionsCount: effectiveOtherSubscriptionsCount,
         lastError: null,
@@ -431,7 +411,6 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
             botId: bot.id,
             reason,
             staleIngressAt: botState.latestRecordedIncomingWebhookAt,
-            autoRecreatedAt: shouldAutoRecreateStaleIngress ? reconciledAt : null,
           }),
         ...(operationalDiagnostics ? { operationalDiagnostics } : {}),
       },
@@ -441,10 +420,7 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
         updatedAt: checkedAt,
         lastIncomingWebhookAt:
           botState.latestRecordedIncomingWebhookAt ?? syncState?.lastIncomingWebhookAt ?? null,
-        lastAutoRecreateAt:
-          shouldAutoRecreateStaleIngress && reconciledAt
-            ? reconciledAt
-            : (syncState?.lastAutoRecreateAt ?? null),
+        lastAutoRecreateAt: syncState?.lastAutoRecreateAt ?? null,
       },
     };
   }
@@ -518,14 +494,9 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
     botId: string;
     reason: 'startup' | 'scheduled';
     staleIngressAt: string | null;
-    autoRecreatedAt: string | null;
   }): string {
     if (this.isStaleIngress(params.staleIngressAt)) {
-      if (params.autoRecreatedAt) {
-        return `Свежие входящие webhook по ${params.botId} не наблюдались с ${params.staleIngressAt}; подписка была пересоздана автоматически.`;
-      }
-
-      return `Свежие входящие webhook по ${params.botId} не наблюдались с ${params.staleIngressAt}; ожидается автопересоздание после cooldown.`;
+      return `Свежие входящие webhook по ${params.botId} не наблюдались с ${params.staleIngressAt}; subscription проверена через GET и оставлена без разрыва доставки.`;
     }
 
     return params.reason === 'startup'
@@ -544,19 +515,6 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
     }
 
     return Date.now() - lastIngressAtMs >= this.staleIngressMs;
-  }
-
-  private canAutoRecreateStaleIngress(lastAutoRecreateAt: string | null): boolean {
-    if (!lastAutoRecreateAt) {
-      return true;
-    }
-
-    const lastAutoRecreateAtMs = Date.parse(lastAutoRecreateAt);
-    if (!Number.isFinite(lastAutoRecreateAtMs)) {
-      return true;
-    }
-
-    return Date.now() - lastAutoRecreateAtMs >= this.staleRecreateCooldownMs;
   }
 
   private async resolveLatestRecordedIncomingWebhookAtByBot(
@@ -690,7 +648,7 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
         reconciledAtCandidates.length > 0
           ? (reconciledAtCandidates.sort((left, right) => right.localeCompare(left))[0] ?? null)
           : null,
-      requiredUpdateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+      requiredUpdateTypes: [...this.requiredUpdateTypes],
       actualUpdateTypes: aggregateActualUpdateTypes,
       missingUpdateTypes: aggregateMissingUpdateTypes,
       extraUpdateTypes: aggregateExtraUpdateTypes,
@@ -748,9 +706,9 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
       url: null,
       checkedAt: null,
       reconciledAt: null,
-      requiredUpdateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+      requiredUpdateTypes: [...this.requiredUpdateTypes],
       actualUpdateTypes: [],
-      missingUpdateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+      missingUpdateTypes: [...this.requiredUpdateTypes],
       extraUpdateTypes: [],
       otherSubscriptionsCount: 0,
       lastError: null,

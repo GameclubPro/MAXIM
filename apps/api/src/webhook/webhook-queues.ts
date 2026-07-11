@@ -87,6 +87,9 @@ export function resolveWebhookJobPriority(
         : WEBHOOK_JOB_PRIORITY.message;
     case 'user_removed':
     case 'bot_removed':
+    case 'bot_stopped':
+    case 'dialog_removed':
+    case 'message_removed':
       return WEBHOOK_JOB_PRIORITY.membershipLeave;
     default:
       return WEBHOOK_JOB_PRIORITY.default;
@@ -103,6 +106,9 @@ export function resolveWebhookQueueName(payload: unknown): ActiveWebhookQueueNam
       return resolveJoinWebhookQueueName(payload);
     case 'user_removed':
     case 'bot_removed':
+    case 'bot_stopped':
+    case 'dialog_removed':
+    case 'message_removed':
       return WEBHOOK_QUEUE_BACKGROUND;
     case 'message_created':
       return isManagedEntityHandshakeStartCommand(payload)
@@ -199,6 +205,9 @@ function readWebhookChatId(payload: unknown): string {
     record.user_removed,
     record.bot_removed,
     record.bot_started,
+    record.bot_stopped,
+    record.dialog_removed,
+    record.message_removed,
     record.chat_title_changed,
   ];
 

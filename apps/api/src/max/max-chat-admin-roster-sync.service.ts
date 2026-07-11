@@ -41,6 +41,7 @@ const CHAT_ADMIN_ROSTER_SYNC_TERMINAL_BOT_BACKOFF_MS = 5 * 60 * 1_000;
 const MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC = 7 * 24 * 60 * 60;
 const MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_PATCH_CONCURRENCY = 8;
 const MANAGED_ENTITY_ACCESS_EDGE_GRANTED_TTL_MS = 3 * 24 * 60 * 60 * 1_000;
+const LOCAL_BACKFILL_MEMBERSHIP_PAGE_SIZE = 500;
 
 type ManagedEntityAccessRoleValue = 'OWNER' | 'ADMIN' | 'MEMBER' | 'UNKNOWN';
 type ManagedEntityAccessEdgeClient = {
@@ -226,63 +227,88 @@ export class MaxChatAdminRosterSyncService {
 
   private async loadLocalBackfillJobs(): Promise<Map<string, MaxChatAdminRosterSyncJob>> {
     const mergedByChatId = new Map<string, MaxChatAdminRosterSyncJob>();
-    const memberships = await this.prisma.chatBotMembership.findMany({
-      where: {
-        status: ChatBotMembershipStatus.ACTIVE,
-      },
-      select: {
-        botId: true,
-        lastSeenAt: true,
-        lastWebhookAt: true,
-        chat: {
-          select: {
-            id: true,
-            title: true,
-            entityType: true,
-            primaryBotId: true,
-            botId: true,
+    let cursor: { chatId: string; botId: string } | null = null;
+
+    while (true) {
+      const memberships = await this.prisma.chatBotMembership.findMany({
+        where: {
+          status: ChatBotMembershipStatus.ACTIVE,
+        },
+        select: {
+          chatId: true,
+          botId: true,
+          lastSeenAt: true,
+          lastWebhookAt: true,
+          chat: {
+            select: {
+              id: true,
+              title: true,
+              entityType: true,
+              primaryBotId: true,
+              botId: true,
+            },
           },
         },
-      },
-      orderBy: [{ lastSeenAt: 'desc' }, { updatedAt: 'desc' }],
-      take: 20_000,
-    });
-
-    for (const membership of memberships) {
-      const chatId = this.readTrimmedString(membership.chat.id);
-      if (!chatId) {
-        continue;
-      }
-      const entityType = this.fromPrismaEntityType(membership.chat.entityType);
-      if (this.isUnsupportedManagedRosterSyncChat(chatId, entityType)) {
-        continue;
-      }
-
-      const existing = mergedByChatId.get(chatId);
-      const nextBotIds = Array.from(
-        new Set(
-          [
-            ...(existing?.botIds ?? []),
-            membership.botId,
-            membership.chat.primaryBotId,
-            membership.chat.botId,
-          ]
-            .map((botId) => this.resolveDiscoveryBotId(botId))
-            .filter((botId): botId is string => Boolean(botId)),
-        ),
-      );
-      if (nextBotIds.length === 0) {
-        continue;
-      }
-
-      mergedByChatId.set(chatId, {
-        chatId,
-        botIds: nextBotIds,
-        title: existing?.title ?? this.readTrimmedString(membership.chat.title),
-        entityType: existing?.entityType ?? entityType,
-        source: 'discovery_snapshot',
-        retryUntilMs: null,
+        orderBy: [{ chatId: 'asc' }, { botId: 'asc' }],
+        take: LOCAL_BACKFILL_MEMBERSHIP_PAGE_SIZE,
+        ...(cursor
+          ? {
+              cursor: {
+                chatId_botId: cursor,
+              },
+              skip: 1,
+            }
+          : {}),
       });
+
+      for (const membership of memberships) {
+        const chatId = this.readTrimmedString(membership.chat.id);
+        if (!chatId) {
+          continue;
+        }
+        const entityType = this.fromPrismaEntityType(membership.chat.entityType);
+        if (this.isUnsupportedManagedRosterSyncChat(chatId, entityType)) {
+          continue;
+        }
+
+        const existing = mergedByChatId.get(chatId);
+        const nextBotIds = Array.from(
+          new Set(
+            [
+              ...(existing?.botIds ?? []),
+              membership.botId,
+              membership.chat.primaryBotId,
+              membership.chat.botId,
+            ]
+              .map((botId) => this.resolveDiscoveryBotId(botId))
+              .filter((botId): botId is string => Boolean(botId)),
+          ),
+        );
+        if (nextBotIds.length === 0) {
+          continue;
+        }
+
+        mergedByChatId.set(chatId, {
+          chatId,
+          botIds: nextBotIds,
+          title: existing?.title ?? this.readTrimmedString(membership.chat.title),
+          entityType: existing?.entityType ?? entityType,
+          source: 'discovery_snapshot',
+          retryUntilMs: null,
+        });
+      }
+
+      if (memberships.length < LOCAL_BACKFILL_MEMBERSHIP_PAGE_SIZE) {
+        break;
+      }
+
+      const lastMembership = memberships.at(-1);
+      const lastChatId = this.readTrimmedString(lastMembership?.chatId);
+      const lastBotId = this.readTrimmedString(lastMembership?.botId);
+      if (!lastChatId || !lastBotId) {
+        throw new Error('Managed entity membership backfill page ended without a valid cursor');
+      }
+      cursor = { chatId: lastChatId, botId: lastBotId };
     }
 
     return mergedByChatId;
@@ -299,6 +325,10 @@ export class MaxChatAdminRosterSyncService {
     const candidateResolution = await this.resolveCandidateBotIds(normalized);
     const candidateBotIds = candidateResolution.botIds;
     const deniedBotIds: string[] = [];
+    let rosterAccess: {
+      botId: string;
+      access: { isAdmin: boolean; isOwner: boolean; permissions?: readonly string[] };
+    } | null = null;
     let recoverableError: unknown = null;
     let attemptedCandidate = false;
     let skippedDueToTerminalBackoff = false;
@@ -306,10 +336,7 @@ export class MaxChatAdminRosterSyncService {
     for (const botId of candidateBotIds) {
       const sourceBackoffDelayMs = await this.resolveManagedRefreshSourceBackoffDelayMs(normalized);
       if (sourceBackoffDelayMs > 0) {
-        throw new MaxChatAdminRosterSyncSourceBackoffError(
-          normalized.chatId,
-          sourceBackoffDelayMs,
-        );
+        throw new MaxChatAdminRosterSyncSourceBackoffError(normalized.chatId, sourceBackoffDelayMs);
       }
 
       if (
@@ -334,17 +361,7 @@ export class MaxChatAdminRosterSyncService {
           continue;
         }
 
-        const adminUserIds = await this.maxClient.getChatAdminIds(
-          normalized.chatId,
-          requestOptions,
-        );
-        await this.syncAllowlist(normalized, adminUserIds, {
-          botId,
-          botRole: this.resolveManagedEntityAccessRole(access),
-        });
-        await this.markCatalogManagedAfterConfirmedRoster(normalized);
-        await this.reconcileNightModeAfterConfirmedAccess(normalized.chatId, botId);
-        return true;
+        rosterAccess ??= { botId, access };
       } catch (error: unknown) {
         if (this.isChatAccessDeniedError(error)) {
           await this.persistBotSelfAccessSnapshot(normalized, botId, null);
@@ -365,8 +382,39 @@ export class MaxChatAdminRosterSyncService {
       }
     }
 
-    if (recoverableError) {
+    await this.reconcilePrimaryAfterSelfAccessRefresh(normalized);
+
+    if (rosterAccess) {
+      const adminUserIds = await this.maxClient.getChatAdminIds(
+        normalized.chatId,
+        this.buildChatAdminRosterReadOptions(normalized, rosterAccess.botId),
+      );
+      await this.syncAllowlist(normalized, adminUserIds, {
+        botId: rosterAccess.botId,
+        botRole: this.resolveManagedEntityAccessRole(rosterAccess.access),
+      });
+      await this.markCatalogManagedAfterConfirmedRoster(normalized);
+      await this.reconcileNightModeAfterConfirmedAccess(normalized.chatId, rosterAccess.botId);
+    }
+
+    if (recoverableError && !rosterAccess) {
       throw recoverableError;
+    }
+
+    if (recoverableError && rosterAccess) {
+      this.logger.debug(
+        {
+          chatId: normalized.chatId,
+          rosterBotId: rosterAccess.botId,
+          error:
+            recoverableError instanceof Error ? recoverableError.message : String(recoverableError),
+        },
+        'Completed roster sync through a confirmed bot while another bot probe remained recoverable',
+      );
+    }
+
+    if (rosterAccess) {
+      return true;
     }
 
     if (!attemptedCandidate && skippedDueToTerminalBackoff) {
@@ -1621,6 +1669,22 @@ export class MaxChatAdminRosterSyncService {
           ...snapshot,
         },
       });
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId: job.chatId,
+          botId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to persist bot self access snapshot during chat admin roster sync',
+      );
+    }
+  }
+
+  private async reconcilePrimaryAfterSelfAccessRefresh(
+    job: Pick<MaxChatAdminRosterSyncJob, 'chatId' | 'title' | 'entityType'>,
+  ): Promise<void> {
+    try {
       await this.maxBotLinkService.reconcileChatPrimaryByAccess({
         chatId: job.chatId,
         title: job.title ?? null,
@@ -1630,10 +1694,9 @@ export class MaxChatAdminRosterSyncService {
       this.logger.debug(
         {
           chatId: job.chatId,
-          botId,
           err: error instanceof Error ? error.message : String(error),
         },
-        'Failed to persist bot self access snapshot during chat admin roster sync',
+        'Failed to reconcile primary bot after chat self-access refresh',
       );
     }
   }

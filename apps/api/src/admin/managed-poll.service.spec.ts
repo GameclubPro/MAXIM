@@ -797,20 +797,39 @@ describe('ManagedPollService publication', () => {
     };
     const maxClient = {
       uploadImage: jest.fn().mockResolvedValue({ token: 'poll-image-token' }),
-      sendMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
-        messageId: 'message-1',
-        url: 'https://max.ru/channel/message-1',
-      }),
+      sendMessageImmediateWithResolvedLink: jest.fn(),
     };
     const adminService = {
       assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined),
       resolveChannelPollBotId: jest.fn().mockResolvedValue('bot-1'),
+    };
+    const maxRoutedPublicationService = {
+      publish: jest.fn().mockImplementation(async (request: any) => {
+        const prepared = await request.prepareAttempt({ botId: 'bot-2', job: {} });
+        request.onDispatchAttempt({ botId: 'bot-2', job: { options: prepared.options } });
+        expect(prepared.options).toEqual(
+          expect.objectContaining({
+            textFormat: 'html',
+            imagePayload: { token: 'poll-image-token' },
+          }),
+        );
+        return {
+          messageId: 'message-1',
+          url: 'https://max.ru/channel/message-1',
+          botId: 'bot-2',
+          candidateBotIds: ['bot-1', 'bot-2'],
+          routingVersion: 4,
+        };
+      }),
     };
     const service = new ManagedPollService(
       prisma as never,
       maxClient as never,
       adminService as never,
       { invalidate: jest.fn().mockResolvedValue(undefined) } as never,
+      undefined,
+      undefined,
+      maxRoutedPublicationService as never,
     );
     jest.spyOn(service as any, 'findPoll').mockResolvedValue(draft);
     jest.spyOn(service as any, 'readPollDetails').mockResolvedValue({ id: 'poll-1' });
@@ -822,21 +841,24 @@ describe('ManagedPollService publication', () => {
       'poll.jpg',
       'image/jpeg',
       expect.objectContaining({
-        botId: 'bot-1',
+        botId: 'bot-2',
         sourceTag: 'managed_poll',
       }),
     );
-    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
-      'channel-1',
-      expect.stringContaining('<strong>Новый вопрос</strong>'),
+    expect(maxRoutedPublicationService.publish).toHaveBeenCalledWith(
       expect.objectContaining({
-        textFormat: 'html',
-        imagePayload: { token: 'poll-image-token' },
+        entityId: 'channel-1',
+        logicalIdempotencyKey: 'managed-poll:publish:poll-1:revision:0',
+        routePurpose: 'channel_poll',
+        text: expect.stringContaining('<strong>Новый вопрос</strong>'),
       }),
-      expect.objectContaining({ botId: 'bot-1' }),
     );
+    expect(adminService.resolveChannelPollBotId).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
     expect(managedPoll.updateMany).toHaveBeenLastCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ images: [] }) }),
+      expect.objectContaining({
+        data: expect.objectContaining({ images: [], publicationBotId: 'bot-2' }),
+      }),
     );
   });
 
@@ -944,11 +966,16 @@ describe('ManagedPollService publication', () => {
     await expect(
       (service as any).sendPollPublicationWithRetry(
         'channel-1',
+        'poll-1',
+        0,
         'Опрос',
         { imagePayload: { token: 'poll-image-token' } },
+        [],
         'bot-1',
       ),
-    ).resolves.toEqual({ messageId: 'message-1', url: null });
+    ).resolves.toEqual(
+      expect.objectContaining({ messageId: 'message-1', url: null, botId: 'bot-1' }),
+    );
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(2);
   });
@@ -970,13 +997,47 @@ describe('ManagedPollService publication', () => {
     await expect(
       (service as any).sendPollPublicationWithRetry(
         'channel-1',
+        'poll-1',
+        0,
         'Опрос',
         { imagePayload: { token: 'poll-image-token' } },
+        [],
         'bot-1',
       ),
     ).rejects.toMatchObject({ response: { status: 504 } });
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed in production when routed publication wiring is missing', async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    const maxClient = {
+      sendMessageImmediateWithResolvedLink: jest.fn(),
+    };
+    const service = new ManagedPollService(
+      {} as never,
+      maxClient as never,
+      {} as never,
+      {} as never,
+    );
+
+    try {
+      await expect(
+        (service as any).sendPollPublicationWithRetry(
+          'channel-1',
+          'poll-1',
+          0,
+          'Опрос',
+          {},
+          [],
+          'bot-1',
+        ),
+      ).rejects.toThrow('Routed MAX publication service is required for production managed polls');
+      expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    } finally {
+      process.env.NODE_ENV = previousNodeEnv;
+    }
   });
 
   it('keeps an ambiguous publication claimed until the channel is checked', async () => {

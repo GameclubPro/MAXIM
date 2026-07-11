@@ -4,6 +4,7 @@ import { MaxBotContextService } from './max-bot-context.service';
 import { MaxBotOwnershipFoundationService } from './max-bot-ownership-foundation.service';
 import { MaxBotLinkService } from './max-bot-link.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
+import { ChatRoutingReconcileService } from './chat-routing-reconcile.service';
 
 @Global()
 @Module({
@@ -13,12 +14,14 @@ import { MaxBotRegistryService } from './max-bot-registry.service';
     MaxBotContextService,
     MaxBotLinkService,
     MaxBotOwnershipFoundationService,
+    ChatRoutingReconcileService,
   ],
   exports: [
     MaxBotRegistryService,
     MaxBotContextService,
     MaxBotLinkService,
     MaxBotOwnershipFoundationService,
+    ChatRoutingReconcileService,
   ],
 })
 export class MaxBotModule {}

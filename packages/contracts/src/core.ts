@@ -3382,6 +3382,7 @@ export const maxUpdateSchema = z.object({
   updateId: z.string(),
   botId: z.string().optional(),
   executionOwnerBotId: z.string().optional(),
+  eventTimestampSource: z.enum(['payload', 'ingress']).optional(),
   type: z.string(),
   message: maxMessagePayloadSchema.optional(),
   membership: maxMembershipChangeSchema.optional(),

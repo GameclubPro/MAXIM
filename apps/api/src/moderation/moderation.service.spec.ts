@@ -8,6 +8,7 @@ import {
   buildDeveloperForcedGlobalSpammerWarmMarkerKey,
 } from './developer-forced-global-spammer-cache';
 import { ModerationService } from './moderation.service';
+import { WebhookCanonicalExecutionService } from './webhook-canonical-execution.service';
 import { RuleEngineService } from './rule-engine.service.impl';
 import {
   DEVELOPER_FORCED_GLOBAL_SPAMMER_HOT_PATH_TIMEOUT_MS,
@@ -1606,6 +1607,252 @@ function createReplyToPhotoUpdate(): MaxUpdate {
 }
 
 describe('ModerationService', () => {
+  it('does not re-run an already processed webhook event', async () => {
+    const prisma = {
+      webhookEvent: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'event-processed-1',
+          status: 'PROCESSED',
+          botId: 'bot-1',
+          normalizedPayload: createUpdate(),
+        }),
+        update: jest.fn(),
+      },
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+    );
+    const handleUpdate = jest.spyOn(service, 'handleUpdate');
+
+    await expect(service.processWebhookEvent('event-processed-1')).resolves.toBeUndefined();
+
+    expect(handleUpdate).not.toHaveBeenCalled();
+    expect(prisma.webhookEvent.update).not.toHaveBeenCalled();
+  });
+
+  it('allows only one overlapping worker to hold an enforced canonical business lease', async () => {
+    let leaseHeld = false;
+    let releaseHandleUpdate!: () => void;
+    const handleUpdateGate = new Promise<void>((resolve) => {
+      releaseHandleUpdate = resolve;
+    });
+    const update = createUpdate();
+    const prisma = {
+      webhookEvent: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'event-canonical-lease-1',
+          status: 'QUEUED',
+          botId: 'bot-1',
+          normalizedPayload: update,
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      webhookExecutionClaim: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'claim-canonical-lease-1',
+          webhookEventId: 'event-canonical-lease-1',
+          executionBotId: 'bot-1',
+          enforced: true,
+          status: 'READY',
+          leaseToken: null,
+          leaseExpiresAt: null,
+        }),
+        updateMany: jest.fn(async ({ data }: { data: Record<string, unknown> }) => {
+          if (typeof data.leaseToken === 'string') {
+            if (leaseHeld) {
+              return { count: 0 };
+            }
+            leaseHeld = true;
+            return { count: 1 };
+          }
+          if (data.status === 'COMPLETED') {
+            leaseHeld = false;
+          }
+          return { count: 1 };
+        }),
+      },
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+    );
+    const handleUpdate = jest.spyOn(service, 'handleUpdate').mockReturnValue(handleUpdateGate);
+
+    const firstWorker = service.processWebhookEvent('event-canonical-lease-1');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(handleUpdate).toHaveBeenCalledTimes(1);
+
+    await expect(service.processWebhookEvent('event-canonical-lease-1')).rejects.toThrow(
+      'Canonical webhook business lease is busy',
+    );
+    expect(handleUpdate).toHaveBeenCalledTimes(1);
+
+    releaseHandleUpdate();
+    await expect(firstWorker).resolves.toBeUndefined();
+  });
+
+  it('leases an enforced receipt-fallback claim when no semantic event key exists', async () => {
+    let leaseHeld = false;
+    const prisma = {
+      webhookEvent: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'event-fallback-lease-1',
+          status: 'QUEUED',
+          botId: 'bot-1',
+          normalizedPayload: {
+            updateId: 'fallback-without-semantic-subject',
+            type: 'unknown_update',
+            botId: 'bot-1',
+          },
+        }),
+      },
+      webhookExecutionClaim: {
+        findUnique: jest.fn(),
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'claim-fallback-lease-1',
+          webhookEventId: 'event-fallback-lease-1',
+          executionBotId: 'bot-1',
+          enforced: true,
+          status: 'READY',
+          leaseToken: null,
+          leaseExpiresAt: null,
+        }),
+        updateMany: jest.fn(async ({ data }: { data: Record<string, unknown> }) => {
+          if (typeof data.leaseToken === 'string') {
+            if (leaseHeld) {
+              return { count: 0 };
+            }
+            leaseHeld = true;
+            return { count: 1 };
+          }
+          return { count: 1 };
+        }),
+      },
+    };
+    const service = new WebhookCanonicalExecutionService(prisma as never);
+
+    const first = await service.prepareExecution('event-fallback-lease-1', null);
+    expect(first?.businessLeaseToken).toEqual(expect.any(String));
+    await expect(service.prepareExecution('event-fallback-lease-1', null)).rejects.toThrow(
+      'Canonical webhook business lease is busy',
+    );
+    expect(prisma.webhookExecutionClaim.findFirst).toHaveBeenCalledTimes(2);
+    expect(prisma.webhookExecutionClaim.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('does not mark a webhook processed after losing its canonical business lease', async () => {
+    const update = createUpdate();
+    const webhookUpdate = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      webhookEvent: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'event-canonical-lease-lost-1',
+          status: 'QUEUED',
+          botId: 'bot-1',
+          normalizedPayload: update,
+        }),
+        update: webhookUpdate,
+      },
+      webhookExecutionClaim: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'claim-canonical-lease-lost-1',
+          webhookEventId: 'event-canonical-lease-lost-1',
+          executionBotId: 'bot-1',
+          enforced: true,
+          status: 'READY',
+          leaseToken: null,
+          leaseExpiresAt: null,
+        }),
+        updateMany: jest
+          .fn()
+          .mockResolvedValueOnce({ count: 1 })
+          .mockResolvedValueOnce({ count: 0 })
+          .mockResolvedValueOnce({ count: 0 }),
+      },
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+    );
+    jest.spyOn(service, 'handleUpdate').mockResolvedValue(undefined);
+
+    await expect(service.processWebhookEvent('event-canonical-lease-lost-1')).rejects.toThrow(
+      'Canonical webhook business lease was lost before completion',
+    );
+
+    expect(webhookUpdate).toHaveBeenCalledTimes(1);
+    expect(webhookUpdate).toHaveBeenCalledWith({
+      where: { id: 'event-canonical-lease-lost-1' },
+      data: expect.objectContaining({
+        status: 'FAILED',
+      }),
+    });
+    expect(webhookUpdate).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: 'PROCESSED' }),
+      }),
+    );
+  });
+
+  it('repairs a webhook event left QUEUED after its canonical claim already completed', async () => {
+    const completedAt = new Date('2026-07-11T10:00:00.000Z');
+    const prisma = {
+      webhookEvent: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'event-canonical-completed-1',
+          status: 'QUEUED',
+          botId: 'bot-1',
+          normalizedPayload: createUpdate(),
+        }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      webhookExecutionClaim: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'claim-canonical-completed-1',
+          webhookEventId: 'event-canonical-completed-1',
+          executionBotId: 'bot-1',
+          enforced: true,
+          status: 'COMPLETED',
+          completedAt,
+          leaseToken: null,
+          leaseExpiresAt: null,
+        }),
+      },
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+    );
+    const handleUpdate = jest.spyOn(service, 'handleUpdate');
+
+    await expect(
+      service.processWebhookEvent('event-canonical-completed-1'),
+    ).resolves.toBeUndefined();
+
+    expect(handleUpdate).not.toHaveBeenCalled();
+    expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'event-canonical-completed-1',
+        status: { not: 'PROCESSED' },
+      },
+      data: {
+        status: 'PROCESSED',
+        processedAt: completedAt,
+        errorMessage: null,
+        nextEnqueueAt: null,
+      },
+    });
+  });
+
   it('does not schedule re-enqueue for terminal MAX processing errors', async () => {
     const prisma = {
       webhookEvent: {
@@ -2085,7 +2332,9 @@ describe('ModerationService', () => {
       runtimeDiagnosticsService as never,
     );
     (service as any).webhookUserFacingTimeoutMs = 10_000;
-    const debugSpy = jest.spyOn((service as any).logger, 'debug').mockImplementation(() => undefined);
+    const debugSpy = jest
+      .spyOn((service as any).logger, 'debug')
+      .mockImplementation(() => undefined);
     const task = jest.fn(
       () =>
         new Promise<void>(() => {
@@ -5824,75 +6073,78 @@ describe('ModerationService', () => {
     );
   });
 
-  it('treats chat_title_changed updates as lifecycle no-ops for moderation', async () => {
-    const prisma = {
-      chat: {
-        upsert: jest.fn(),
-      },
-      violation: {
-        create: jest.fn(),
-      },
-      moderationEvent: {
-        findFirst: jest.fn().mockResolvedValue(null),
-        create: jest.fn(),
-      },
-      webhookEvent: {
-        findUnique: jest.fn(),
-        update: jest.fn(),
-      },
-    };
-    const ruleEngine = {
-      detect: jest.fn(),
-    };
-    const sanctionService = {
-      resolveAction: jest.fn(),
-    };
-    const maxClient = {
-      deleteMessage: jest.fn(),
-      sendMessage: jest.fn(),
-      kickMember: jest.fn(),
-      banMember: jest.fn(),
-      notifyModerators: jest.fn(),
-    };
-    const systemModeService = {
-      getEffectiveSnapshot: jest.fn(),
-    };
+  it.each(['chat_title_changed', 'bot_stopped', 'dialog_removed', 'message_removed'])(
+    'treats %s updates as lifecycle no-ops for moderation',
+    async (updateType) => {
+      const prisma = {
+        chat: {
+          upsert: jest.fn(),
+        },
+        violation: {
+          create: jest.fn(),
+        },
+        moderationEvent: {
+          findFirst: jest.fn().mockResolvedValue(null),
+          create: jest.fn(),
+        },
+        webhookEvent: {
+          findUnique: jest.fn(),
+          update: jest.fn(),
+        },
+      };
+      const ruleEngine = {
+        detect: jest.fn(),
+      };
+      const sanctionService = {
+        resolveAction: jest.fn(),
+      };
+      const maxClient = {
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+      };
+      const systemModeService = {
+        getEffectiveSnapshot: jest.fn(),
+      };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-      undefined,
-      systemModeService as never,
-    );
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        sanctionService as never,
+        maxClient as never,
+        undefined,
+        systemModeService as never,
+      );
 
-    await service.handleUpdate({
-      updateId: 'upd-title-1',
-      type: 'chat_title_changed',
-      message: {
-        messageId: 'chat_title_changed:upd-title-1',
-        chatId: 'chat-1',
-        chatTitle: 'Новый заголовок',
-        senderId: 'actor-1',
-        senderName: 'Админ',
-        text: '',
-        createdAt: new Date().toISOString(),
-      },
-      raw: {},
-    });
+      await service.handleUpdate({
+        updateId: `upd-${updateType}-1`,
+        type: updateType,
+        message: {
+          messageId: `${updateType}:upd-${updateType}-1`,
+          chatId: 'chat-1',
+          chatTitle: 'Новый заголовок',
+          senderId: 'actor-1',
+          senderName: 'Админ',
+          text: '',
+          createdAt: new Date().toISOString(),
+        },
+        raw: {},
+      });
 
-    expect(systemModeService.getEffectiveSnapshot).not.toHaveBeenCalled();
-    expect(prisma.chat.upsert).not.toHaveBeenCalled();
-    expect(ruleEngine.detect).not.toHaveBeenCalled();
-    expect(prisma.violation.create).not.toHaveBeenCalled();
-    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage).not.toHaveBeenCalled();
-    expect(maxClient.kickMember).not.toHaveBeenCalled();
-    expect(maxClient.banMember).not.toHaveBeenCalled();
-    expect(maxClient.notifyModerators).not.toHaveBeenCalled();
-  });
+      expect(systemModeService.getEffectiveSnapshot).not.toHaveBeenCalled();
+      expect(prisma.chat.upsert).not.toHaveBeenCalled();
+      expect(ruleEngine.detect).not.toHaveBeenCalled();
+      expect(prisma.violation.create).not.toHaveBeenCalled();
+      expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
+      expect(maxClient.kickMember).not.toHaveBeenCalled();
+      expect(maxClient.banMember).not.toHaveBeenCalled();
+      expect(maxClient.notifyModerators).not.toHaveBeenCalled();
+    },
+  );
 
   it('skips moderation flow for user_removed update', async () => {
     const prisma = {
@@ -7467,9 +7719,15 @@ describe('ModerationService', () => {
       };
     };
 
-    await service.handleUpdate(createDeliveredJoinUpdate('bot-1', 'upd-service-user-join-bot-1', 0));
-    await service.handleUpdate(createDeliveredJoinUpdate('bot-2', 'upd-service-user-join-bot-2', 1));
-    await service.handleUpdate(createDeliveredJoinUpdate('bot-3', 'upd-service-user-join-bot-3', 2));
+    await service.handleUpdate(
+      createDeliveredJoinUpdate('bot-1', 'upd-service-user-join-bot-1', 0),
+    );
+    await service.handleUpdate(
+      createDeliveredJoinUpdate('bot-2', 'upd-service-user-join-bot-2', 1),
+    );
+    await service.handleUpdate(
+      createDeliveredJoinUpdate('bot-3', 'upd-service-user-join-bot-3', 2),
+    );
 
     expect(maxClient.kickMember).toHaveBeenCalledTimes(1);
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
@@ -8492,12 +8750,7 @@ describe('ModerationService', () => {
   });
 
   it('recognizes channel updates by normalized parser entityType', () => {
-    const service = new ModerationService(
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-    );
+    const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
     const update = {
       ...createUpdate(),
       message: {
@@ -12063,9 +12316,11 @@ describe('ModerationService', () => {
       sanctionService as never,
       maxClient as never,
     );
-    (service as unknown as {
-      karavanStorefrontRelayService: typeof karavanStorefrontRelayService;
-    }).karavanStorefrontRelayService = karavanStorefrontRelayService;
+    (
+      service as unknown as {
+        karavanStorefrontRelayService: typeof karavanStorefrontRelayService;
+      }
+    ).karavanStorefrontRelayService = karavanStorefrontRelayService;
 
     await service.handleUpdate(update);
 
@@ -13411,7 +13666,9 @@ describe('ModerationService', () => {
       runtimeDiagnosticsService as never,
     );
     (service as any).webhookUserFacingTimeoutMs = 10_000;
-    const debugSpy = jest.spyOn((service as any).logger, 'debug').mockImplementation(() => undefined);
+    const debugSpy = jest
+      .spyOn((service as any).logger, 'debug')
+      .mockImplementation(() => undefined);
     const hotPathProfile = (service as any).createWebhookHotPathProfile();
 
     try {
@@ -13544,7 +13801,9 @@ describe('ModerationService', () => {
       runtimeDiagnosticsService as never,
     );
     (service as any).webhookUserFacingTimeoutMs = 10_000;
-    const debugSpy = jest.spyOn((service as any).logger, 'debug').mockImplementation(() => undefined);
+    const debugSpy = jest
+      .spyOn((service as any).logger, 'debug')
+      .mockImplementation(() => undefined);
     const hotPathProfile = (service as any).createWebhookHotPathProfile();
 
     try {
@@ -15621,8 +15880,16 @@ describe('ModerationService', () => {
       maxClient as never,
     );
 
-    await service.handleUpdate({ ...createUpdate(), updateId: 'upd-owner-muted-1', botId: 'bot-1' });
-    await service.handleUpdate({ ...createUpdate(), updateId: 'upd-standby-muted-1', botId: 'bot-2' });
+    await service.handleUpdate({
+      ...createUpdate(),
+      updateId: 'upd-owner-muted-1',
+      botId: 'bot-1',
+    });
+    await service.handleUpdate({
+      ...createUpdate(),
+      updateId: 'upd-standby-muted-1',
+      botId: 'bot-2',
+    });
 
     expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledTimes(2);
     expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledWith({
@@ -15705,8 +15972,16 @@ describe('ModerationService', () => {
       maxClient as never,
     );
 
-    await service.handleUpdate({ ...createUpdate(), updateId: 'upd-owner-night-1', botId: 'bot-1' });
-    await service.handleUpdate({ ...createUpdate(), updateId: 'upd-standby-night-1', botId: 'bot-2' });
+    await service.handleUpdate({
+      ...createUpdate(),
+      updateId: 'upd-owner-night-1',
+      botId: 'bot-1',
+    });
+    await service.handleUpdate({
+      ...createUpdate(),
+      updateId: 'upd-standby-night-1',
+      botId: 'bot-2',
+    });
 
     expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledTimes(2);
     expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledWith({
@@ -15963,7 +16238,8 @@ describe('ModerationService', () => {
     expect(claimedKeys.size).toBe(1);
     expect(prisma.violation.create).toHaveBeenCalledTimes(1);
     const deleteMessageCalls =
-      firstMaxClient.deleteMessage.mock.calls.length + secondMaxClient.deleteMessage.mock.calls.length;
+      firstMaxClient.deleteMessage.mock.calls.length +
+      secondMaxClient.deleteMessage.mock.calls.length;
     const sendMessageCalls =
       firstMaxClient.sendMessage.mock.calls.length + secondMaxClient.sendMessage.mock.calls.length;
     expect(deleteMessageCalls).toBe(1);
@@ -19485,16 +19761,16 @@ describe('ModerationService', () => {
           await Promise.resolve();
           await Promise.resolve();
           await jest.advanceTimersByTimeAsync(MODERATION_ACTION_ACCESS_LOSS_HOT_PATH_TIMEOUT_MS);
-          expect(managedEntityAccessLossService.recordIfManagedEntityAccessLost).toHaveBeenCalledWith(
-            {
-              chatId: 'chat-1',
-              botId: 'id613002203036_bot',
-              entityType: null,
-              source: 'moderation_action:delete_message',
-              operation: 'delete',
-              error: terminalError,
-            },
-          );
+          expect(
+            managedEntityAccessLossService.recordIfManagedEntityAccessLost,
+          ).toHaveBeenCalledWith({
+            chatId: 'chat-1',
+            botId: 'id613002203036_bot',
+            entityType: null,
+            source: 'moderation_action:delete_message',
+            operation: 'delete',
+            error: terminalError,
+          });
 
           await expect(resultPromise).resolves.toBe(false);
           expect(runtimeDiagnosticsService.recordHotPathStageOutcome).toHaveBeenCalledWith({
@@ -19608,10 +19884,7 @@ describe('ModerationService', () => {
           }),
         ).resolves.toBe(true);
 
-        expect(operation.mock.calls).toEqual([
-          ['id613002203036_bot'],
-          ['id613002203036_4_bot'],
-        ]);
+        expect(operation.mock.calls).toEqual([['id613002203036_bot'], ['id613002203036_4_bot']]);
         expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith('chat-1', {
           botId: 'id613002203036_bot',
           bypassCache: true,
@@ -20220,9 +20493,7 @@ describe('ModerationService', () => {
       expect(maxClient.getChatSnapshot.mock.calls.map((call) => call[0])).toEqual(
         expectedChannelIds,
       );
-      expect(maxClient.hasChatMember.mock.calls.map((call) => call[0])).toEqual(
-        expectedChannelIds,
-      );
+      expect(maxClient.hasChatMember.mock.calls.map((call) => call[0])).toEqual(expectedChannelIds);
       expect(maxClient.hasChatMember).toHaveBeenCalledTimes(REQUIRED_SUBSCRIPTION_MAX_CHANNELS);
       expect(maxClient.deleteMessage).not.toHaveBeenCalled();
       expect(maxClient.sendMessage).not.toHaveBeenCalled();
@@ -23091,12 +23362,7 @@ describe('ModerationService participant immunity', () => {
     const prisma = {
       $queryRaw: jest.fn().mockResolvedValue([{ expires_at: null }]),
     };
-    const service = new ModerationService(
-      prisma as never,
-      {} as never,
-      {} as never,
-      {} as never,
-    );
+    const service = new ModerationService(prisma as never, {} as never, {} as never, {} as never);
 
     const consumed = await (service as any).consumeChatParticipantModerationImmunity({
       chatId: 'chat-1',

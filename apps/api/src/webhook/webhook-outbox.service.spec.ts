@@ -1,6 +1,7 @@
 import { WebhookStatus } from '../prisma/prisma-client';
 import { getQueueToken } from '@nestjs/bullmq';
 import { WebhookOutboxService } from './webhook-outbox.service';
+import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 import {
   DEFAULT_WEBHOOK_QUEUE_NAMES,
   JOIN_WEBHOOK_QUEUE_NAMES,
@@ -45,7 +46,8 @@ type MockWebhookEventRow = {
 };
 
 function resolveTestWebhookDedupKey(payload: unknown, rowBotId: string | null): string | null {
-  const value = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null;
+  const value =
+    payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null;
   if (!value) {
     return null;
   }
@@ -208,6 +210,12 @@ function createService(params?: {
   undefinedJobs?: boolean;
   configOverrides?: Partial<Record<string, number>>;
   resolvedQueueName?: string;
+  prepareResult?: {
+    canonical: boolean;
+    prepared: boolean;
+    normalizedPayload: unknown;
+    executionBotId: string | null;
+  };
 }) {
   const webhookRows: MockWebhookEventRow[] = (params?.findManyResult ?? []).map((item) => ({
     ...item,
@@ -237,8 +245,9 @@ function createService(params?: {
         ),
       findFirst: jest
         .fn()
-        .mockImplementation(async (args?: { where?: Record<string, unknown> }) =>
-          webhookRows.find((row) => matchesWebhookEventWhere(row, args?.where)) ?? null,
+        .mockImplementation(
+          async (args?: { where?: Record<string, unknown> }) =>
+            webhookRows.find((row) => matchesWebhookEventWhere(row, args?.where)) ?? null,
         ),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
@@ -322,12 +331,58 @@ function createService(params?: {
         params?.resolvedQueueName ?? resolveWebhookQueueName(payload),
     ),
   };
+  const canonicalEventBySemanticKey = new Map<string, string>();
+  for (const row of webhookRows) {
+    if (row.status === WebhookStatus.RECEIVED) {
+      continue;
+    }
+    const semanticKey = buildWebhookSemanticEventKey(row.normalizedPayload);
+    if (semanticKey && !canonicalEventBySemanticKey.has(semanticKey)) {
+      canonicalEventBySemanticKey.set(semanticKey, row.id);
+    }
+  }
+  const webhookService = {
+    preparePersistedWebhookEvent: jest.fn(async (eventId: string) => {
+      const row = webhookRows.find((candidate) => candidate.id === eventId);
+      if (params?.prepareResult) {
+        return params.prepareResult;
+      }
+      const semanticKey = buildWebhookSemanticEventKey(row?.normalizedPayload);
+      const canonicalEventId = semanticKey
+        ? canonicalEventBySemanticKey.get(semanticKey)
+        : undefined;
+      if (semanticKey && !canonicalEventId) {
+        canonicalEventBySemanticKey.set(semanticKey, eventId);
+      }
+      const canonical = !semanticKey || !canonicalEventId || canonicalEventId === eventId;
+      if (!canonical) {
+        await prisma.webhookEvent.updateMany({
+          where: { id: eventId },
+          data: {
+            status: WebhookStatus.DUPLICATE,
+          },
+        });
+      }
+      return {
+        canonical,
+        prepared: true,
+        normalizedPayload: row?.normalizedPayload ?? null,
+        executionBotId:
+          row?.normalizedPayload && typeof row.normalizedPayload === 'object'
+            ? (((row.normalizedPayload as Record<string, unknown>).executionOwnerBotId as
+                | string
+                | null) ?? null)
+            : null,
+      };
+    }),
+  };
 
   const service = new WebhookOutboxService(
     prisma as never,
     config as never,
     moduleRef as never,
     webhookRoutingService as never,
+    webhookService as never,
     criticalQueue as never,
     backgroundQueue as never,
     legacyQueue as never,
@@ -337,6 +392,7 @@ function createService(params?: {
     prisma,
     queues,
     webhookRoutingService,
+    webhookService,
   };
 }
 
@@ -948,7 +1004,7 @@ describe('WebhookOutboxService', () => {
             type: 'message_created',
             botId: 'id613002203036_4_bot',
             executionOwnerBotId: 'id613002203036_bot',
-            message: { chatId },
+            message: { chatId, messageId: 'mid-owner-retryable' },
           },
         },
       ],
@@ -987,7 +1043,7 @@ describe('WebhookOutboxService', () => {
             type: 'message_created',
             botId: 'id613002203036_bot',
             executionOwnerBotId: 'id613002203036_bot',
-            message: { chatId },
+            message: { chatId, messageId: 'mid-owner-retryable' },
           },
         },
         {
@@ -999,7 +1055,7 @@ describe('WebhookOutboxService', () => {
             type: 'message_created',
             botId: 'id613002203036_4_bot',
             executionOwnerBotId: 'id613002203036_bot',
-            message: { chatId },
+            message: { chatId, messageId: 'mid-owner-retryable' },
           },
         },
       ],
@@ -1010,12 +1066,12 @@ describe('WebhookOutboxService', () => {
     const queuedIds = DEFAULT_WEBHOOK_QUEUE_NAMES.flatMap((queueName) =>
       queues[queueName].add.mock.calls.map((call) => call[1].webhookEventId),
     );
-    const processedIds = prisma.webhookEvent.updateMany.mock.calls
-      .filter(([args]) => args.data.status === WebhookStatus.PROCESSED)
+    const duplicateIds = prisma.webhookEvent.updateMany.mock.calls
+      .filter(([args]) => args.data.status === WebhookStatus.DUPLICATE)
       .map(([args]) => args.where.id);
 
     expect(queuedIds).toEqual([]);
-    expect(processedIds).toContain('evt-standby-owner-retryable');
+    expect(duplicateIds).toContain('evt-standby-owner-retryable');
   });
 
   it('skips standby shared-chat events with different update ids when the owner has the same message', async () => {
@@ -1061,17 +1117,16 @@ describe('WebhookOutboxService', () => {
     const queuedIds = DEFAULT_WEBHOOK_QUEUE_NAMES.flatMap((queueName) =>
       queues[queueName].add.mock.calls.map((call) => call[1].webhookEventId),
     );
-    const processedIds = prisma.webhookEvent.updateMany.mock.calls
-      .filter(([args]) => args.data.status === WebhookStatus.PROCESSED)
+    const duplicateIds = prisma.webhookEvent.updateMany.mock.calls
+      .filter(([args]) => args.data.status === WebhookStatus.DUPLICATE)
       .map(([args]) => args.where.id);
 
     expect(queuedIds).toEqual(['evt-owner-same-message']);
-    expect(processedIds).toContain('evt-standby-same-message');
+    expect(duplicateIds).toContain('evt-standby-same-message');
   });
 
-  it('enqueues standby shared-chat events when the owner failed delivery is terminal', async () => {
+  it('does not execute a mirrored receipt after the canonical claim failed terminally', async () => {
     const chatId = '-100123';
-    const queueName = resolveDefaultWebhookQueueNameForChatId(chatId);
     const { service, queues } = createService({
       findManyResult: [
         {
@@ -1085,7 +1140,7 @@ describe('WebhookOutboxService', () => {
             type: 'message_created',
             botId: 'id613002203036_bot',
             executionOwnerBotId: 'id613002203036_bot',
-            message: { chatId },
+            message: { chatId, messageId: 'mid-owner-terminal' },
           },
         },
         {
@@ -1097,7 +1152,7 @@ describe('WebhookOutboxService', () => {
             type: 'message_created',
             botId: 'id613002203036_4_bot',
             executionOwnerBotId: 'id613002203036_bot',
-            message: { chatId },
+            message: { chatId, messageId: 'mid-owner-terminal' },
           },
         },
       ],
@@ -1105,11 +1160,9 @@ describe('WebhookOutboxService', () => {
 
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
 
-    expect(queues[queueName].add).toHaveBeenCalledWith(
-      'process-webhook-event',
-      { webhookEventId: 'evt-standby-owner-terminal' },
-      expect.objectContaining({ jobId: 'evt-standby-owner-terminal' }),
-    );
+    for (const queueName of DEFAULT_WEBHOOK_QUEUE_NAMES) {
+      expect(queues[queueName].add).not.toHaveBeenCalled();
+    }
   });
 
   it('skips N-way mirrored standby message_created events before BullMQ and enqueues only the owner', async () => {
@@ -1119,9 +1172,9 @@ describe('WebhookOutboxService', () => {
     const ownerEventId = 'evt-mirrored-bot-1';
     const standbyEventIds = botIds.slice(1).map((botId) => `evt-mirrored-${botId}`);
     const ownerQueueName = resolveDefaultWebhookQueueNameForChatId(chatId);
-    const { service, prisma, queues } = createService({
+    const { service, prisma, queues, webhookService } = createService({
       configOverrides: {
-        ENQUEUE_CONCURRENCY: 1,
+        ENQUEUE_CONCURRENCY: 6,
       },
       findManyResult: botIds.map((botId, index) => ({
         id: `evt-mirrored-${botId}`,
@@ -1135,10 +1188,31 @@ describe('WebhookOutboxService', () => {
           executionOwnerBotId: ownerBotId,
           message: {
             chatId,
-            messageId: `mid-mirrored-${index}`,
+            messageId: 'mid-mirrored-shared',
           },
         },
       })),
+    });
+    const prepareImplementation =
+      webhookService.preparePersistedWebhookEvent.getMockImplementation()!;
+    let activePreparations = 0;
+    let maxActivePreparations = 0;
+    let releasePreparations!: () => void;
+    const allPreparationsStarted = new Promise<void>((resolve) => {
+      releasePreparations = resolve;
+    });
+    webhookService.preparePersistedWebhookEvent.mockImplementation(async (eventId: string) => {
+      activePreparations += 1;
+      maxActivePreparations = Math.max(maxActivePreparations, activePreparations);
+      if (activePreparations === botIds.length) {
+        releasePreparations();
+      }
+      await allPreparationsStarted;
+      try {
+        return await prepareImplementation(eventId);
+      } finally {
+        activePreparations -= 1;
+      }
     });
 
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
@@ -1146,8 +1220,8 @@ describe('WebhookOutboxService', () => {
     const defaultQueueAdds = DEFAULT_WEBHOOK_QUEUE_NAMES.flatMap((queueName) =>
       queues[queueName].add.mock.calls.map((call) => call[1].webhookEventId),
     );
-    const processedIds = prisma.webhookEvent.updateMany.mock.calls
-      .filter(([args]) => args.data.status === WebhookStatus.PROCESSED)
+    const duplicateIds = prisma.webhookEvent.updateMany.mock.calls
+      .filter(([args]) => args.data.status === WebhookStatus.DUPLICATE)
       .map(([args]) => args.where.id)
       .sort();
     const queuedIds = prisma.webhookEvent.updateMany.mock.calls
@@ -1164,22 +1238,10 @@ describe('WebhookOutboxService', () => {
         priority: 5,
       }),
     );
-    expect(processedIds).toEqual(standbyEventIds.sort());
+    expect(duplicateIds).toEqual(standbyEventIds.sort());
     expect(queuedIds).toEqual([ownerEventId]);
-    expect(prisma.webhookEvent.findFirst).toHaveBeenCalledTimes(5);
-    for (const [args] of prisma.webhookEvent.findFirst.mock.calls) {
-      expect(args.where).toEqual(
-        expect.objectContaining({
-          id: { not: expect.stringMatching(/^evt-mirrored-bot-[2-6]$/u) },
-          botId: ownerBotId,
-          dedupKey: `${ownerBotId}:u-mirrored-message`,
-        }),
-      );
-      const queryShape = JSON.stringify(args.where);
-      expect(queryShape).not.toContain('normalizedPayload');
-      expect(queryShape).not.toContain('rawPayload');
-      expect(queryShape).not.toContain('path');
-    }
+    expect(prisma.webhookEvent.findFirst).not.toHaveBeenCalled();
+    expect(maxActivePreparations).toBe(6);
   });
 
   it('enqueues standby-only shared-chat message_edited events as recovery deliveries', async () => {
@@ -1305,7 +1367,7 @@ describe('WebhookOutboxService', () => {
         {
           id: 'evt-owner-processed',
           enqueueAttempts: 0,
-          status: WebhookStatus.PROCESSED,
+          status: WebhookStatus.DUPLICATE,
           processedAt: new Date('2026-03-24T00:00:02.000Z'),
           botId: 'id613002203036_bot',
           normalizedPayload: {
@@ -1313,7 +1375,7 @@ describe('WebhookOutboxService', () => {
             type: 'message_created',
             botId: 'id613002203036_bot',
             executionOwnerBotId: 'id613002203036_bot',
-            message: { chatId: '-100123' },
+            message: { chatId: '-100123', messageId: 'mid-standby-queued' },
           },
         },
         {
@@ -1327,7 +1389,7 @@ describe('WebhookOutboxService', () => {
             type: 'message_created',
             botId: 'id613002203036_4_bot',
             executionOwnerBotId: 'id613002203036_bot',
-            message: { chatId: '-100123' },
+            message: { chatId: '-100123', messageId: 'mid-standby-queued' },
           },
         },
       ],
@@ -1342,7 +1404,7 @@ describe('WebhookOutboxService', () => {
     expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          status: WebhookStatus.PROCESSED,
+          status: WebhookStatus.DUPLICATE,
         }),
       }),
     );

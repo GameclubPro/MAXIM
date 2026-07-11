@@ -1,4 +1,7 @@
-import { buildSystemQueueGroupHealth } from './runtime-reliability-profile';
+import {
+  buildSystemQueueGroupHealth,
+  buildSystemRuntimeProfile,
+} from './runtime-reliability-profile';
 import {
   AUXILIARY_QUEUE_NAMES,
   type QueueCounters,
@@ -47,6 +50,12 @@ describe('runtime reliability queue group health', () => {
       expect.arrayContaining([
         expect.objectContaining({
           name: 'actions',
+          queues: [
+            'moderation-actions',
+            'max-actions-critical',
+            'max-actions-interactive',
+            'max-actions-background',
+          ],
           failed: 8093,
           pressure: 0,
           status: 'warning',
@@ -139,6 +148,38 @@ describe('runtime reliability queue group health', () => {
           pressure: 50,
           status: 'critical',
         }),
+      ]),
+    );
+  });
+});
+
+describe('runtime reliability action queue profile', () => {
+  const previousAppRole = process.env.APP_ROLE;
+  const previousServiceName = process.env.APP_SERVICE_NAME;
+
+  afterEach(() => {
+    if (previousAppRole === undefined) {
+      delete process.env.APP_ROLE;
+    } else {
+      process.env.APP_ROLE = previousAppRole;
+    }
+    if (previousServiceName === undefined) {
+      delete process.env.APP_SERVICE_NAME;
+    } else {
+      process.env.APP_SERVICE_NAME = previousServiceName;
+    }
+  });
+
+  it('reports all split action queues for the action runtime', () => {
+    process.env.APP_ROLE = 'action';
+    process.env.APP_SERVICE_NAME = 'api-action';
+
+    expect(buildSystemRuntimeProfile().enabledQueues).toEqual(
+      expect.arrayContaining([
+        'moderation-actions',
+        'max-actions-critical',
+        'max-actions-interactive',
+        'max-actions-background',
       ]),
     );
   });

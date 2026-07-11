@@ -9,6 +9,12 @@ import type {
 } from '@maxim/contracts/system';
 import { MaxBotOwnershipFoundationService } from '../max/max-bot-ownership-foundation.service';
 import {
+  MAX_ACTION_BACKGROUND_QUEUE,
+  MAX_ACTION_CRITICAL_QUEUE,
+  MAX_ACTION_INTERACTIVE_QUEUE,
+  MAX_ACTION_LEGACY_QUEUE,
+} from '../max/max-action.queue';
+import {
   DEFAULT_WEBHOOK_P95_TARGET_MS,
   buildSystemCanaryState,
   buildSystemQueueGroupHealth,
@@ -78,6 +84,7 @@ type DeliveryLedgerRiskSnapshot = {
 export class SystemDashboardService {
   private readonly queueLagCriticalThresholdSec: number;
   private readonly webhookSloTargetMs: number;
+  private readonly actionCriticalBacklogThreshold: number;
 
   constructor(
     private readonly queueMetricsService: QueueMetricsService,
@@ -101,6 +108,8 @@ export class SystemDashboardService {
       'SYSTEM_WEBHOOK_SLO_TARGET_MS',
       DEFAULT_WEBHOOK_P95_TARGET_MS,
     );
+    this.actionCriticalBacklogThreshold =
+      Math.max(1, configService.get<number>('MAX_ACTION_CRITICAL_CONCURRENCY', 3)) * 2;
   }
 
   async getSnapshot(): Promise<SystemDashboardResponse> {
@@ -261,6 +270,11 @@ export class SystemDashboardService {
       alerts.push(ownershipRepairAlert);
     }
 
+    const ownershipRebalanceAlert = this.buildOwnershipRebalanceAlert(ownership);
+    if (ownershipRebalanceAlert) {
+      alerts.push(ownershipRebalanceAlert);
+    }
+
     const ownershipCoverageAlert = this.buildOwnershipCoverageAlert(ownership);
     if (ownershipCoverageAlert) {
       alerts.push(ownershipCoverageAlert);
@@ -286,6 +300,18 @@ export class SystemDashboardService {
       alerts.push(vkParsingAlert);
     }
 
+    const actionQueueLaneAlert = this.buildActionQueueLaneAlert(queues.actionQueues);
+    if (actionQueueLaneAlert) {
+      alerts.push(actionQueueLaneAlert);
+    }
+
+    const actionLedgerWatchdogAlert = this.buildActionLedgerWatchdogAlert(
+      queues.actionLedgerWatchdog,
+    );
+    if (actionLedgerWatchdogAlert) {
+      alerts.push(actionLedgerWatchdogAlert);
+    }
+
     const deliveryLedgerAlert = this.buildDeliveryLedgerRiskAlert(deliveryLedgerRisk);
     if (deliveryLedgerAlert) {
       alerts.push(deliveryLedgerAlert);
@@ -309,6 +335,10 @@ export class SystemDashboardService {
       hotPathSlowWarning,
       webhookSloStatus: webhookSlo?.status ?? null,
       vkParsingWarning: vkParsingAlert !== null,
+      actionQueueLaneCritical: actionQueueLaneAlert?.level === 'critical',
+      actionQueueLaneWarning: actionQueueLaneAlert?.level === 'warning',
+      actionLedgerWatchdogCritical: actionLedgerWatchdogAlert?.level === 'critical',
+      actionLedgerWatchdogWarning: actionLedgerWatchdogAlert?.level === 'warning',
       deliveryLedgerWarning: deliveryLedgerAlert !== null,
     });
     const queueGroupHealth = buildSystemQueueGroupHealth(queues);
@@ -389,6 +419,10 @@ export class SystemDashboardService {
     hotPathSlowWarning?: boolean;
     webhookSloStatus?: WebhookSloSnapshot['status'] | null;
     vkParsingWarning?: boolean;
+    actionQueueLaneCritical?: boolean;
+    actionQueueLaneWarning?: boolean;
+    actionLedgerWatchdogCritical?: boolean;
+    actionLedgerWatchdogWarning?: boolean;
     deliveryLedgerWarning?: boolean;
   }): SystemDashboardStatus {
     if (
@@ -399,6 +433,8 @@ export class SystemDashboardService {
       input.webhookSubscriptionStatus === 'critical' ||
       input.problemChatsCritical === true ||
       input.hotPathTimeoutCritical === true ||
+      input.actionQueueLaneCritical === true ||
+      input.actionLedgerWatchdogCritical === true ||
       input.webhookSloStatus === 'critical'
     ) {
       return 'critical';
@@ -415,6 +451,8 @@ export class SystemDashboardService {
       input.hotPathSlowWarning === true ||
       input.webhookSloStatus === 'warning' ||
       input.vkParsingWarning === true ||
+      input.actionQueueLaneWarning === true ||
+      input.actionLedgerWatchdogWarning === true ||
       input.deliveryLedgerWarning === true
     ) {
       return 'warning';
@@ -709,9 +747,18 @@ export class SystemDashboardService {
         ? 'n/a'
         : `${(snapshot.underTargetRatio * 100).toFixed(1)}%`;
     const enqueueUnderTarget =
-      snapshot.enqueue?.underTargetRatio === null || snapshot.enqueue?.underTargetRatio === undefined
+      snapshot.enqueue?.underTargetRatio === null ||
+      snapshot.enqueue?.underTargetRatio === undefined
         ? 'n/a'
         : `${(snapshot.enqueue.underTargetRatio * 100).toFixed(1)}%`;
+    const ingressUnderTarget =
+      snapshot.ingress.underTargetRatio === null
+        ? 'n/a'
+        : `${(snapshot.ingress.underTargetRatio * 100).toFixed(1)}%`;
+    const claimsPerReceipt =
+      snapshot.canonicalExecution.claimsPerReceiptRatio === null
+        ? 'n/a'
+        : snapshot.canonicalExecution.claimsPerReceiptRatio.toFixed(3);
     return {
       code: 'webhook-slo',
       level: snapshot.status === 'critical' ? 'critical' : 'warning',
@@ -719,9 +766,9 @@ export class SystemDashboardService {
         snapshot.status === 'critical'
           ? 'Webhook SLO просел критично'
           : 'Webhook SLO требует внимания',
-      detail: `p95 ${snapshot.p95ProcessingMs ?? 0} мс, p99 ${snapshot.p99ProcessingMs ?? 0} мс, under target ${underTarget}, failed ${snapshot.failedEvents}, oldest unprocessed ${snapshot.oldestUnprocessedLagSec.toFixed(1)} сек, enqueue p95 ${snapshot.enqueue?.p95LatencyMs ?? 0} мс, enqueue under target ${enqueueUnderTarget}, oldest pending enqueue ${snapshot.enqueue?.oldestPendingLagSec.toFixed(1) ?? '0.0'} сек.`,
+      detail: `ingress ${snapshot.ingress.available ? 'available' : 'unavailable'}, p95 ${snapshot.ingress.p95LatencyMs ?? 0} мс, p99 ${snapshot.ingress.p99LatencyMs ?? 0} мс, under target ${ingressUnderTarget}, persistence failures ${snapshot.ingress.failedReceipts}; processing p95 ${snapshot.p95ProcessingMs ?? 0} мс, p99 ${snapshot.p99ProcessingMs ?? 0} мс, under target ${underTarget}, failed ${snapshot.failedEvents}, oldest unprocessed ${snapshot.oldestUnprocessedLagSec.toFixed(1)} сек; enqueue p95 ${snapshot.enqueue?.p95LatencyMs ?? 0} мс, enqueue under target ${enqueueUnderTarget}, oldest pending enqueue ${snapshot.enqueue?.oldestPendingLagSec.toFixed(1) ?? '0.0'} сек; receipts/EXECUTION claims ${snapshot.canonicalExecution.receipts}/${snapshot.canonicalExecution.executionClaims}, claims per receipt ${claimsPerReceipt}.`,
       recommendedAction:
-        'Проверьте backlog, MAX API rate limit и последние failed webhook events до расширения фоновых задач.',
+        'Проверьте PostgreSQL receipt latency/failures, canonical claim preparation, backlog и MAX API rate limit до расширения фоновых задач.',
     };
   }
 
@@ -956,9 +1003,7 @@ export class SystemDashboardService {
     }
 
     const actionRisk =
-      snapshot.actionAmbiguous +
-      snapshot.actionStaleInProgress +
-      snapshot.actionStaleRetryable;
+      snapshot.actionAmbiguous + snapshot.actionStaleInProgress + snapshot.actionStaleRetryable;
     const broadcastRisk = snapshot.broadcastAmbiguous + snapshot.broadcastStaleSending;
     const suggestionRisk =
       snapshot.suggestionAmbiguous +
@@ -987,6 +1032,71 @@ export class SystemDashboardService {
       detail: details.join('; '),
       recommendedAction:
         'Сверьте MAX/логи/remoteMessageId перед любыми повторами. Ambiguous send/delete/member actions и managed broadcast deliveries не ретрайте автоматически.',
+    };
+  }
+
+  private buildActionQueueLaneAlert(
+    actionQueues: Awaited<ReturnType<QueueMetricsService['getSnapshot']>>['actionQueues'],
+  ): SystemDashboardAlert | null {
+    const pending = (queueName: string) => {
+      const queue = actionQueues?.[queueName as keyof typeof actionQueues];
+      return (queue?.waiting ?? 0) + (queue?.prioritized ?? 0);
+    };
+    const criticalPending = pending(MAX_ACTION_CRITICAL_QUEUE);
+    if (criticalPending === 0) {
+      return null;
+    }
+
+    const critical = criticalPending >= this.actionCriticalBacklogThreshold;
+    return {
+      code: 'action-queue-critical-backlog',
+      level: critical ? 'critical' : 'warning',
+      title: critical
+        ? 'Critical MAX actions накапливаются'
+        : 'Critical MAX actions ожидают worker',
+      detail: `pending: critical ${criticalPending}, interactive ${pending(MAX_ACTION_INTERACTIVE_QUEUE)}, background ${pending(MAX_ACTION_BACKGROUND_QUEUE)}, legacy ${pending(MAX_ACTION_LEGACY_QUEUE)}.`,
+      recommendedAction:
+        'Проверьте api-action, per-lane workers и MAX limiter/circuit. Не переносите jobs между очередями вручную.',
+    };
+  }
+
+  private buildActionLedgerWatchdogAlert(
+    snapshot: Awaited<ReturnType<QueueMetricsService['getSnapshot']>>['actionLedgerWatchdog'],
+  ): SystemDashboardAlert | null {
+    if (!snapshot) {
+      return null;
+    }
+
+    const quarantined = snapshot.lastQuarantinedCount > 0;
+    if (!snapshot.lastError && snapshot.staleCount === 0 && !quarantined) {
+      return null;
+    }
+
+    const details = [
+      `mode ${snapshot.mode}`,
+      snapshot.lastError ? `последняя ошибка: ${snapshot.lastError}` : null,
+      snapshot.staleCount > 0
+        ? `stale: ${snapshot.staleCount} (enqueued ${snapshot.staleEnqueuedCount}, in-progress ${snapshot.staleInProgressCount}), oldest ${snapshot.oldestStaleAgeSec.toFixed(1)} сек`
+        : null,
+      snapshot.lastReconciledCount > 0
+        ? `reconciled ${snapshot.lastReconciledCount}, quarantined ${snapshot.lastQuarantinedCount}, terminal failed ${snapshot.lastTerminalFailedCount}`
+        : null,
+      snapshot.lastShadowClassifiedCount > 0
+        ? `shadow classified ${snapshot.lastShadowClassifiedCount}, would quarantine ${snapshot.lastWouldQuarantineCount}, would terminal-fail ${snapshot.lastWouldTerminalFailCount}, would recover ${snapshot.lastWouldRecoverSucceededCount}`
+        : null,
+      snapshot.lastRunAt ? `last run ${snapshot.lastRunAt}` : 'watchdog ещё не запускался',
+    ].filter((item): item is string => item !== null);
+
+    return {
+      code: quarantined ? 'action-ledger-watchdog-quarantine' : 'action-ledger-watchdog',
+      level: quarantined ? 'critical' : 'warning',
+      title: quarantined
+        ? 'Action ledger содержит новый неоднозначный исход'
+        : 'Action ledger watchdog требует внимания',
+      detail: details.join('; '),
+      recommendedAction: quarantined
+        ? 'Не повторяйте действие автоматически. Сверьте MAX, логи и объект назначения до ручного решения.'
+        : 'Проверьте BullMQ action queues и состояние PostgreSQL; watchdog не создаёт повторные jobs.',
     };
   }
 
@@ -1040,10 +1150,15 @@ export class SystemDashboardService {
           coverageRatio: 1,
         },
       },
+      routingStates: {
+        ready: 0,
+        noEligibleBot: 0,
+      },
       anomalies: {
         noPrimary: 0,
         recoverableLegacyOnly: 0,
         recoverableFromMemberships: 0,
+        noEligibleBot: 0,
         unbound: 0,
         primaryBotUnknown: 0,
         legacyBotUnknown: 0,
@@ -1056,6 +1171,11 @@ export class SystemDashboardService {
         enabled: false,
         activeOnThisRole: false,
         intervalMs: 300_000,
+        rebalanceMode: 'off',
+        rebalanceCanaryPercent: 0,
+        rebalanceMaxMovesPerRun: 25,
+        recommendedMoves: 0,
+        lastAppliedMoves: 0,
         lastRunAt: null,
         lastSuccessAt: null,
         lastError: null,
@@ -1107,7 +1227,8 @@ export class SystemDashboardService {
       ownership.anomalies.primaryBotUnknown +
       ownership.anomalies.legacyBotUnknown +
       ownership.anomalies.activeMembershipBotUnknown +
-      ownership.anomalies.primaryWithoutActiveMembership;
+      ownership.anomalies.primaryWithoutActiveMembership +
+      ownership.anomalies.noEligibleBot;
     const rightsLimitedPrimaries = ownership.anomalies.primaryWithoutAdminAccess;
     const totalGaps = ownership.entities.total.withoutPrimary;
 
@@ -1126,6 +1247,9 @@ export class SystemDashboardService {
     if (ownership.anomalies.unbound > 0) {
       parts.push(`unbound ${ownership.anomalies.unbound}`);
     }
+    if (ownership.anomalies.noEligibleBot > 0) {
+      parts.push(`no eligible bot ${ownership.anomalies.noEligibleBot}`);
+    }
     if (unresolvedKnownIssues > 0) {
       parts.push(`known anomalies ${unresolvedKnownIssues}`);
     }
@@ -1142,7 +1266,30 @@ export class SystemDashboardService {
           : 'Ownership foundation ещё не доведён до полной coverage',
       detail: `${parts.join(', ')}.`,
       recommendedAction:
-        'Закройте recoverable ownership gaps и держите shared-chat rollout выключенным, пока unbound/unknown cases не станут понятными оператору. Отсутствие admin-доступа у primary-бота учитывайте как ограничение конкретного чата, а не как ownership blocker.',
+        'Закройте recoverable ownership gaps и держите shared-chat rollout выключенным, пока unbound/unknown/no-eligible cases не станут понятными оператору. Для no-eligible объектов выполните targeted access probe; не реактивируйте memberships массово.',
+    };
+  }
+
+  private buildOwnershipRebalanceAlert(
+    ownership: BotOwnershipFoundationSnapshot,
+  ): SystemDashboardAlert | null {
+    if (ownership.repair.recommendedMoves <= 0) {
+      return null;
+    }
+
+    const mode = ownership.repair.rebalanceMode;
+    return {
+      code: `ownership-rebalance-${mode}`,
+      level: 'info',
+      title:
+        mode === 'shadow'
+          ? 'Ownership rebalance работает в shadow-режиме'
+          : 'Ownership rebalance выполняется постепенно',
+      detail: `Детерминированное распределение рекомендует ${ownership.repair.recommendedMoves} перемещений; последний запуск применил ${ownership.repair.lastAppliedMoves}.`,
+      recommendedAction:
+        mode === 'shadow' || mode === 'off'
+          ? 'Сравните per-bot load и access snapshots перед включением canary.'
+          : `Контролируйте failover и duplicate-action метрики; лимит одного запуска ${ownership.repair.rebalanceMaxMovesPerRun}.`,
     };
   }
 

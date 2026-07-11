@@ -40,10 +40,10 @@ function createConfigMock(
 
 describe('InitDataService', () => {
   function createRegistryMock(previousToken?: string) {
+    const tokens = previousToken ? [botToken, previousBotToken] : [botToken];
     return {
-      getValidationTokens: jest
-        .fn()
-        .mockReturnValue(previousToken ? [botToken, previousBotToken] : [botToken]),
+      getAllBots: jest.fn().mockReturnValue([{ id: 'default-bot' }]),
+      getValidationTokensForBot: jest.fn().mockReturnValue(tokens),
     };
   }
 
@@ -64,6 +64,7 @@ describe('InitDataService', () => {
 
     const user = service.validate(params.toString());
     expect(user.userId).toBe('42');
+    expect(user.launchBotId).toBe('default-bot');
     expect(user.avatarUrl).toBe('https://cdn.max.ru/u/42/avatar.jpg');
   });
 
@@ -168,6 +169,27 @@ describe('InitDataService', () => {
 
     const user = service.validate(params.toString());
     expect(user.userId).toBe('555');
+    expect(user.launchBotId).toBe('default-bot');
+  });
+
+  it('attributes init data to the additional bot whose token signed it', () => {
+    const additionalToken = 'max-additional-bot-token-test';
+    const registry = {
+      getAllBots: jest.fn().mockReturnValue([{ id: 'default-bot' }, { id: 'additional-bot' }]),
+      getValidationTokensForBot: jest.fn((botId: string) =>
+        botId === 'additional-bot' ? [additionalToken] : [botToken],
+      ),
+    };
+    const service = new InitDataService(registry as never, createConfigMock());
+    const params = new URLSearchParams();
+    params.set('user', JSON.stringify({ id: '556' }));
+    params.set('auth_date', String(Math.floor(Date.now() / 1000)));
+    params.set('hash', sign(params, additionalToken));
+
+    expect(service.validate(params.toString())).toMatchObject({
+      userId: '556',
+      launchBotId: 'additional-bot',
+    });
   });
 
   it('accepts init data inside the default one-hour freshness window', () => {

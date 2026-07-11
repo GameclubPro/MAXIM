@@ -16,6 +16,7 @@ import {
 } from './moderation-runtime';
 import { resolveRuntimeServiceProfile, type RuntimeRoleCapabilities } from './runtime-topology';
 import type { QueueCounters, QueueMetricsSnapshot } from '../system/queue-metrics.service';
+import { MAX_ACTION_ALL_QUEUE_NAMES } from '../max/max-action.queue';
 import { LEGACY_WEBHOOK_QUEUE } from '../webhook/webhook-queues';
 
 export const DEFAULT_WEBHOOK_P95_TARGET_MS = 400;
@@ -39,6 +40,10 @@ export function buildSystemRuntimeProfile(
   const runtimeService = resolveRuntimeServiceProfile();
   const service = runtimeService.service;
   const workerGroup = getWebhookDynamicLeasesWorkerGroup();
+  const enabledQueues = new Set<string>(getEnabledModerationProcessorQueues());
+  if (service.capabilities.actionEnabled) {
+    MAX_ACTION_ALL_QUEUE_NAMES.forEach((queueName) => enabledQueues.add(queueName));
+  }
 
   return {
     appRole: service.appRole,
@@ -48,7 +53,7 @@ export function buildSystemRuntimeProfile(
     queuePriority: service.queuePriority,
     topologySource: runtimeService.source,
     ...service.capabilities,
-    enabledQueues: Array.from(getEnabledModerationProcessorQueues()).sort(),
+    enabledQueues: Array.from(enabledQueues).sort(),
     dynamicLeasesMode: getWebhookDynamicLeasesMode(),
     dynamicLeasesWorkerGroup: workerGroup,
     canaryShardIds: readCsvEnv('WEBHOOK_DYNAMIC_LEASES_CANARY_SHARDS', service.canaryShardIds),
@@ -70,7 +75,7 @@ export function buildSystemQueueGroupHealth(queues: QueueMetricsSnapshot): Syste
     ),
     buildQueueGroup('webhook-background', ['moderation-background'], queues.webhookBackground),
     buildQueueGroup('webhook-legacy', [LEGACY_WEBHOOK_QUEUE], queues.webhookLegacy),
-    buildQueueGroup('actions', ['moderation-actions'], queues.actions),
+    buildQueueGroup('actions', [...MAX_ACTION_ALL_QUEUE_NAMES], queues.actions),
     buildQueueGroup('spammer-denorm', ['global-spammer-denorm'], queues.globalSpammerDenorm),
     ...Object.entries(queues.auxiliaryQueues ?? {}).map(([queueName, counters]) =>
       buildQueueGroup(`aux:${queueName}`, [queueName], counters, { ignoreDelayedForStatus: true }),

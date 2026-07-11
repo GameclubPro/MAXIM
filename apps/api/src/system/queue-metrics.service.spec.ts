@@ -2,6 +2,12 @@ import { WebhookStatus } from '../prisma/prisma-client';
 import { getQueueToken } from '@nestjs/bullmq';
 import { AUXILIARY_QUEUE_NAMES, QueueMetricsService } from './queue-metrics.service';
 import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from '../max/max-webhook-subscription.constants';
+import {
+  MAX_ACTION_BACKGROUND_QUEUE,
+  MAX_ACTION_CRITICAL_QUEUE,
+  MAX_ACTION_INTERACTIVE_QUEUE,
+  MAX_ACTION_LEGACY_QUEUE,
+} from '../max/max-action.queue';
 import { DEFAULT_WEBHOOK_QUEUE_NAMES } from '../webhook/webhook-queues';
 
 function createQueueMock(counts: {
@@ -125,6 +131,30 @@ describe('QueueMetricsService', () => {
       ),
       [getQueueToken('admin-managed-entities-refresh')]:
         auxiliaryQueues['admin-managed-entities-refresh'],
+      [getQueueToken(MAX_ACTION_CRITICAL_QUEUE)]: createQueueMock({
+        waiting: 2,
+        prioritized: 0,
+        active: 1,
+        delayed: 0,
+        failed: 0,
+        completed: 5,
+      }),
+      [getQueueToken(MAX_ACTION_INTERACTIVE_QUEUE)]: createQueueMock({
+        waiting: 4,
+        prioritized: 1,
+        active: 0,
+        delayed: 0,
+        failed: 0,
+        completed: 6,
+      }),
+      [getQueueToken(MAX_ACTION_BACKGROUND_QUEUE)]: createQueueMock({
+        waiting: 0,
+        prioritized: 0,
+        active: 0,
+        delayed: 3,
+        failed: 1,
+        completed: 7,
+      }),
     };
     const moduleRef = {
       get: jest.fn((token: string) => queueProviders[token]),
@@ -180,6 +210,31 @@ describe('QueueMetricsService', () => {
         failed: 0,
         completed: 7,
       }) as never,
+      {
+        getSnapshot: jest.fn().mockResolvedValue({
+          enabled: true,
+          activeOnThisRole: true,
+          staleAfterSec: 300,
+          intervalSec: 60,
+          lastRunAt: '2026-07-11T00:00:00.000Z',
+          lastSuccessAt: '2026-07-11T00:00:01.000Z',
+          lastError: null,
+          lastRunReason: 'scheduled',
+          staleCount: 3,
+          staleEnqueuedCount: 2,
+          staleInProgressCount: 1,
+          oldestStaleAgeSec: 900,
+          lastScannedCount: 3,
+          lastReconciledCount: 2,
+          lastQuarantinedCount: 1,
+          lastTerminalFailedCount: 1,
+          lastRecoveredSucceededCount: 0,
+          lastDeferredCount: 1,
+          lastConflictCount: 0,
+          lastScanTruncated: false,
+          generatedAt: '2026-07-11T00:00:02.000Z',
+        }),
+      } as never,
     );
 
     const snapshot = await service.getSnapshot();
@@ -193,12 +248,46 @@ describe('QueueMetricsService', () => {
       completed: 25,
     });
     expect(snapshot.actions).toEqual({
-      waiting: 3,
-      prioritized: 0,
-      active: 1,
-      delayed: 0,
-      failed: 0,
-      completed: 11,
+      waiting: 9,
+      prioritized: 1,
+      active: 2,
+      delayed: 3,
+      failed: 1,
+      completed: 29,
+    });
+    expect(snapshot.actionQueues).toEqual({
+      [MAX_ACTION_LEGACY_QUEUE]: {
+        waiting: 3,
+        prioritized: 0,
+        active: 1,
+        delayed: 0,
+        failed: 0,
+        completed: 11,
+      },
+      [MAX_ACTION_CRITICAL_QUEUE]: {
+        waiting: 2,
+        prioritized: 0,
+        active: 1,
+        delayed: 0,
+        failed: 0,
+        completed: 5,
+      },
+      [MAX_ACTION_INTERACTIVE_QUEUE]: {
+        waiting: 4,
+        prioritized: 1,
+        active: 0,
+        delayed: 0,
+        failed: 0,
+        completed: 6,
+      },
+      [MAX_ACTION_BACKGROUND_QUEUE]: {
+        waiting: 0,
+        prioritized: 0,
+        active: 0,
+        delayed: 3,
+        failed: 1,
+        completed: 7,
+      },
     });
     expect(snapshot.globalSpammerDenorm).toEqual({
       waiting: 2,
@@ -208,6 +297,14 @@ describe('QueueMetricsService', () => {
       failed: 0,
       completed: 7,
     });
+    expect(snapshot.actionLedgerWatchdog).toEqual(
+      expect.objectContaining({
+        staleCount: 3,
+        oldestStaleAgeSec: 900,
+        lastQuarantinedCount: 1,
+        lastError: null,
+      }),
+    );
     expect(snapshot.auxiliaryQueues['admin-managed-entities-refresh']).toEqual({
       waiting: 4,
       prioritized: 0,

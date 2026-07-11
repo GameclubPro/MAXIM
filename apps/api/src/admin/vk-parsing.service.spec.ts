@@ -62,7 +62,10 @@ describe('VkParsingService', () => {
     jest.restoreAllMocks();
   });
 
-  function createFixture(config: Record<string, unknown> = {}) {
+  function createFixture(
+    config: Record<string, unknown> = {},
+    dependencies: { maxRoutedPublicationService?: { publish: jest.Mock } } = {},
+  ) {
     const prisma = {
       chat: {
         findUnique: jest.fn().mockResolvedValue({ entityType: ChatEntityType.CHANNEL }),
@@ -266,6 +269,7 @@ describe('VkParsingService', () => {
       configService as never,
       undefined,
       managedEntityAccessLossService as never,
+      dependencies.maxRoutedPublicationService as never,
     );
     const syncService = new VkSyncService(
       prisma as never,
@@ -303,6 +307,7 @@ describe('VkParsingService', () => {
       sourceService,
       syncService,
       publishService,
+      maxRoutedPublicationService: dependencies.maxRoutedPublicationService,
     };
   }
 
@@ -482,14 +487,14 @@ describe('VkParsingService', () => {
     const { service, adminService } = createFixture({ VK_SERVICE_TOKEN: '' });
     adminService.assertChatAdmin.mockRejectedValue(new Error('not admin'));
 
-    await expect(
-      service.getCapability('channel-1', { userId: 'guest' } as never),
-    ).resolves.toEqual({
-      enabled: true,
-      canUse: false,
-      reasonCode: 'ACCESS_DENIED',
-      reason: 'Недостаточно прав администратора.',
-    });
+    await expect(service.getCapability('channel-1', { userId: 'guest' } as never)).resolves.toEqual(
+      {
+        enabled: true,
+        canUse: false,
+        reasonCode: 'ACCESS_DENIED',
+        reason: 'Недостаточно прав администратора.',
+      },
+    );
   });
 
   it('fails VK parsing operations early when the VK token is missing', async () => {
@@ -926,7 +931,9 @@ describe('VkParsingService', () => {
     expect(rawValues).toContain(JSON.stringify([]));
     expect(rawValues).toContain(JSON.stringify([videoUrl]));
     expect(rawValues).toContain(JSON.stringify(['https://example.com/car']));
-    expect(rawValues).not.toContain(JSON.stringify(['https://vk.com/video_ext.php?oid=-36819802&id=42']));
+    expect(rawValues).not.toContain(
+      JSON.stringify(['https://vk.com/video_ext.php?oid=-36819802&id=42']),
+    );
   });
 
   it('hydrates VK video attachments through video.get when wall.get omits direct files', async () => {
@@ -1371,6 +1378,7 @@ describe('VkParsingService', () => {
       source,
       text: 'Продам авто https://example.com\nvk.com/club',
       linkUrls: ['https://example.com/car'],
+      publishIdempotencyKey: 'publish-key-1',
     });
     prisma.vkParsingSource.findUnique.mockResolvedValue(source);
     prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
@@ -1720,9 +1728,7 @@ describe('VkParsingService', () => {
 
     await expect(service.recoverStalePublishJobs()).resolves.toBe(1);
 
-    expect(publishQueue.getJob).toHaveBeenCalledWith(
-      'vk-parsing-publish__post-1__publish-key-1',
-    );
+    expect(publishQueue.getJob).toHaveBeenCalledWith('vk-parsing-publish__post-1__publish-key-1');
     expect(failedJob.updateData).toHaveBeenCalledWith(
       expect.objectContaining({
         postId: 'post-1',
@@ -1820,12 +1826,29 @@ describe('VkParsingService', () => {
   });
 
   it('publishes queued scheduled VK posts with link filtering enabled', async () => {
-    const { service, prisma, maxClient, adminService } = createFixture();
+    const maxRoutedPublicationService = {
+      publish: jest.fn().mockImplementation(async (request: any) => {
+        const prepared = await request.prepareAttempt({ botId: 'bot-2', job: {} });
+        request.onDispatchAttempt({ botId: 'bot-2', job: { options: prepared.options } });
+        return {
+          messageId: 'mid-1',
+          url: 'https://max.ru/channels/channel-1/message/mid-1',
+          botId: 'bot-2',
+          candidateBotIds: ['bot-1', 'bot-2'],
+          routingVersion: 5,
+        };
+      }),
+    };
+    const { service, prisma, maxClient, adminService } = createFixture(
+      {},
+      { maxRoutedPublicationService },
+    );
     const source = createSource();
     const post = createPostRow({
       source,
       text: 'Продам авто https://example.com\nvk.com/club',
       linkUrls: ['https://example.com/car'],
+      publishIdempotencyKey: 'publish-key-1',
     });
     prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
     prisma.vkParsingPost.findFirst.mockResolvedValue(post);
@@ -1847,11 +1870,6 @@ describe('VkParsingService', () => {
       publishedAtMax: new Date('2026-05-25T10:05:00.000Z'),
       autoPublishedAt: new Date('2026-05-25T10:05:00.000Z'),
     });
-    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
-      messageId: 'mid-1',
-      url: 'https://max.ru/channels/channel-1/message/mid-1',
-    });
-
     await service.processPublishPostJob({
       postId: 'post-1',
       chatId: 'channel-1',
@@ -1859,16 +1877,16 @@ describe('VkParsingService', () => {
       idempotencyKey: 'publish-key-1',
     });
 
-    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
-      'channel-1',
-      'Продам авто',
-      expect.any(Object),
-      {
-        botId: 'bot-1',
+    expect(maxRoutedPublicationService.publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entityId: 'channel-1',
+        logicalIdempotencyKey: 'vk-parsing:publish:post-1:publish-key-1',
+        text: 'Продам авто',
         trafficClass: 'background',
         sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
-      },
+      }),
     );
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
     expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ id: 'post-1' }),
@@ -1885,8 +1903,34 @@ describe('VkParsingService', () => {
       expect.objectContaining({
         actorUserId: 'vk-parsing-autopost',
         source: 'vk_parsing',
+        botId: 'bot-2',
       }),
     );
+  });
+
+  it('fails closed in production when routed VK publication wiring is missing', async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    const { publishService, maxClient } = createFixture();
+
+    try {
+      await expect(
+        (publishService as any).sendMessageWithAttachmentRetry({
+          postId: 'post-1',
+          chatId: 'channel-1',
+          logicalIdempotencyKey: 'vk-parsing:publish:post-1:publish-key-1',
+          text: 'VK publication',
+          baseOptions: {},
+          trafficClass: 'background',
+          prepareAttempt: jest.fn(),
+        }),
+      ).rejects.toThrow(
+        'Routed MAX publication service is required for production VK publications',
+      );
+      expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    } finally {
+      process.env.NODE_ENV = previousNodeEnv;
+    }
   });
 
   it('records MAX access loss and clears VK publish queue when a target chat is denied', async () => {
@@ -1900,11 +1944,7 @@ describe('VkParsingService', () => {
       publishIdempotencyKey: 'publish-key-1',
       publishReason: 'autopublish',
     });
-    const error = createMaxApiError(
-      403,
-      'Request failed with status code 403',
-      'chat.denied',
-    );
+    const error = createMaxApiError(403, 'Request failed with status code 403', 'chat.denied');
     prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
     prisma.vkParsingPost.findFirst.mockResolvedValue(post);
     prisma.vkParsingSettings.findUnique.mockResolvedValue({
@@ -2080,9 +2120,7 @@ describe('VkParsingService', () => {
       string,
       unknown
     >;
-    expect(failureData.lastError).toEqual(
-      expect.stringContaining('Safety Desk retry is blocked'),
-    );
+    expect(failureData.lastError).toEqual(expect.stringContaining('Safety Desk retry is blocked'));
   });
 
   it('defers VK autopublish jobs while the runtime governor reports pressure', async () => {
@@ -4352,8 +4390,7 @@ describe('VkParsingService', () => {
     const post = createPostRow({
       source,
       status: 'FAILED',
-      lastError:
-        '[max.send_ambiguous] request timed out. Delivery may have been accepted by MAX.',
+      lastError: '[max.send_ambiguous] request timed out. Delivery may have been accepted by MAX.',
     });
     prisma.vkParsingPost.findFirst.mockResolvedValue(post);
 
@@ -4366,12 +4403,7 @@ describe('VkParsingService', () => {
         }),
       () => publishService.retryPost('channel-1', 'post-1'),
       () =>
-        publishService.schedulePost(
-          'channel-1',
-          'post-1',
-          '2026-05-25T11:00:00.000Z',
-          '98315271',
-        ),
+        publishService.schedulePost('channel-1', 'post-1', '2026-05-25T11:00:00.000Z', '98315271'),
       () => publishService.publishPostNow('channel-1', 'post-1', '98315271'),
     ];
 
@@ -4450,8 +4482,7 @@ describe('VkParsingService', () => {
       source,
       text: 'Черновик до правки',
       status: 'FAILED',
-      lastError:
-        '[max.send_ambiguous] request timed out. Delivery may have been accepted by MAX.',
+      lastError: '[max.send_ambiguous] request timed out. Delivery may have been accepted by MAX.',
     });
     prisma.vkParsingPost.findFirst.mockResolvedValue(post);
 

@@ -6,6 +6,26 @@ import {
 import { AdminManagedBroadcastRuntime } from './admin-managed-broadcast-runtime';
 
 describe('AdminManagedBroadcastRuntime publication execution guard', () => {
+  it('fails closed before the legacy direct broadcast path can run in production', async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    const runtime = new AdminManagedBroadcastRuntime({} as never);
+
+    try {
+      await expect(
+        (runtime as any).sendManagedBroadcastViaQueue(
+          'chat-1',
+          { userId: 'admin-1' },
+          {},
+          'chat',
+          'miniapp',
+        ),
+      ).rejects.toThrow('Legacy direct managed broadcast dispatch is disabled in production');
+    } finally {
+      process.env.NODE_ENV = previousNodeEnv;
+    }
+  });
+
   it.each([PublicationLifecycle.PAUSED, PublicationLifecycle.CANCELED])(
     'deletes an unsent envelope when its publication becomes %s',
     async (lifecycle) => {

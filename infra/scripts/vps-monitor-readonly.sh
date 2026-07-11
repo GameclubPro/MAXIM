@@ -392,6 +392,9 @@ queues=(
   moderation-default-15
   moderation-background
   moderation-actions
+  max-actions-critical
+  max-actions-interactive
+  max-actions-background
   night-mode-transitions
   managed-broadcast
   admin-managed-entities-refresh
@@ -443,6 +446,20 @@ echo "memory"
 free -m || true
 echo "disk"
 df -h / /var/lib/docker 2>/dev/null || df -h / || true
+disk_path="/var/lib/docker"
+if [[ ! -d "$disk_path" ]]; then
+  disk_path="/"
+fi
+disk_used_percent="$(df -P "$disk_path" 2>/dev/null | awk 'NR == 2 { gsub(/%/, "", $5); print $5 }')"
+if [[ "$disk_used_percent" =~ ^[0-9]+$ ]]; then
+  if (( disk_used_percent >= 90 )); then
+    printf "DISK_CRITICAL path=%s used=%s%% threshold=90%%\n" "$disk_path" "$disk_used_percent"
+  elif (( disk_used_percent >= 80 )); then
+    printf "DISK_WARNING path=%s used=%s%% threshold=80%%\n" "$disk_path" "$disk_used_percent"
+  else
+    printf "DISK_OK path=%s used=%s%% warning=80%% critical=90%%\n" "$disk_path" "$disk_used_percent"
+  fi
+fi
 echo "docker_stats"
 docker stats --no-stream --format '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.BlockIO}}' 2>/dev/null |
   grep -E '^infra-(api|postgres|redis|miniapp|admin)' |

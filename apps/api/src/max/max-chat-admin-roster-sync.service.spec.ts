@@ -250,6 +250,66 @@ describe('MaxChatAdminRosterSyncService', () => {
     expect(maxBotLinkService.bindDiscoveredChatBots).not.toHaveBeenCalled();
   });
 
+  it('paginates local membership backfill past 60,000 rows without truncation', async () => {
+    const { service, prisma, maxClient, maxBotRegistry } = createService();
+    const totalMemberships = 60_001;
+    maxBotRegistry.getBotById.mockImplementation((botId?: string | null) =>
+      botId === 'bot-1' ? { id: 'bot-1', state: 'active' } : null,
+    );
+    prisma.chatBotMembership.findMany.mockImplementation(
+      async (args: { cursor?: { chatId_botId?: { botId?: string } }; take?: number }) => {
+        const cursorBotId = args.cursor?.chatId_botId?.botId ?? null;
+        const startIndex = cursorBotId
+          ? Number.parseInt(cursorBotId.replace('membership-', ''), 10) + 1
+          : 0;
+        const pageSize = Math.min(args.take ?? 500, totalMemberships - startIndex);
+        return Array.from({ length: Math.max(0, pageSize) }, (_, offset) => {
+          const index = startIndex + offset;
+          return {
+            chatId: '-100-paginated',
+            botId: `membership-${String(index).padStart(6, '0')}`,
+            lastSeenAt: new Date('2026-05-14T09:00:00.000Z'),
+            lastWebhookAt: null,
+            chat: {
+              id: '-100-paginated',
+              title: 'Paginated chat',
+              entityType: 'CHAT',
+              primaryBotId: 'bot-1',
+              botId: null,
+            },
+          };
+        });
+      },
+    );
+    maxClient.getCurrentChatMemberAccess.mockResolvedValue({
+      userId: 'bot-user-1',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['delete_messages'],
+    });
+    maxClient.getChatAdminIds.mockResolvedValue(['user-1']);
+
+    await expect(service.backfillManagedEntitiesIndex()).resolves.toEqual({
+      discoveredChats: 1,
+      syncedChats: 1,
+    });
+
+    expect(prisma.chatBotMembership.findMany).toHaveBeenCalledTimes(121);
+    expect(prisma.chatBotMembership.findMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        cursor: {
+          chatId_botId: {
+            chatId: '-100-paginated',
+            botId: 'membership-059999',
+          },
+        },
+        skip: 1,
+        take: 500,
+      }),
+    );
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+  });
+
   it('syncs admin allowlist from the first admin-capable bot', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:00:00.000Z'));
     const {
@@ -395,6 +455,51 @@ describe('MaxChatAdminRosterSyncService', () => {
       'chat',
     );
     expect(nightModeTransitionScheduler.reconcileChat).toHaveBeenCalledWith('-100123');
+  });
+
+  it('refreshes every assigned bot self-access snapshot but fetches the admin roster once', async () => {
+    const { service, prisma, maxClient, maxBotLinkService } = createService();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: '-100-shared-access',
+      title: 'Shared access chat',
+      entityType: 'CHAT',
+      primaryBotId: 'bot-1',
+      botId: 'bot-1',
+      botMemberships: [{ botId: 'bot-1' }, { botId: 'bot-2' }, { botId: 'bot-3' }],
+      createdAt: new Date('2026-04-05T10:00:00.000Z'),
+    });
+    maxClient.getCurrentChatMemberAccess.mockImplementation(
+      async (_chatId: string, options?: { botId?: string }) => ({
+        userId: `${options?.botId ?? 'unknown'}-user`,
+        isAdmin: options?.botId !== 'bot-3',
+        isOwner: false,
+        permissions: options?.botId === 'bot-3' ? [] : ['delete_messages'],
+      }),
+    );
+    maxClient.getChatAdminIds.mockResolvedValue(['user-1']);
+
+    await expect(
+      service.processJob({
+        chatId: '-100-shared-access',
+        botIds: ['bot-1'],
+        title: 'Shared access chat',
+        entityType: 'chat',
+      }),
+    ).resolves.toBe(true);
+
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(3);
+    expect(maxClient.getCurrentChatMemberAccess.mock.calls.map((call) => call[1]?.botId)).toEqual([
+      'bot-1',
+      'bot-2',
+      'bot-3',
+    ]);
+    expect(prisma.chatBotMembership.updateMany).toHaveBeenCalledTimes(3);
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith(
+      '-100-shared-access',
+      expect.objectContaining({ botId: 'bot-1' }),
+    );
+    expect(maxBotLinkService.reconcileChatPrimaryByAccess).toHaveBeenCalledTimes(1);
   });
 
   it('resolves empty job botIds from persisted active bot memberships before runtime fallback', async () => {

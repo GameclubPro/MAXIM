@@ -118,4 +118,67 @@ describe('Prisma migrations', () => {
     expect(migration).not.toMatch(/\bDROP\s+(?:TABLE|COLUMN|TYPE)\b/i);
     expect(migration).not.toMatch(/\b(?:TRUNCATE\s+TABLE|DELETE\s+FROM)\b/i);
   });
+
+  it('adds the SEND dispatch fence and quarantines legacy attempts that may have posted', () => {
+    const schema = readSchema();
+    const migration = readMigration('20260711120000_max_action_send_dispatch_fence');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+
+    expect(schema).toContain('dispatchToken');
+    expect(schema).toContain('dispatchStartedAt');
+    expect(schema).toContain('dispatchBotId');
+    expect(schema).toContain('remoteMessageId');
+    expect(compact).toContain('ADD COLUMN IF NOT EXISTS "dispatch_token" TEXT');
+    expect(compact).toContain('ADD COLUMN IF NOT EXISTS "remote_message_id" TEXT');
+    expect(compact).toContain('UPDATE "max_action_ledger" SET "status" = \'AMBIGUOUS\'');
+    expect(compact).toContain('"action_type" = \'SEND_MESSAGE\'');
+    expect(compact).toContain('"terminal" = false');
+    expect(compact).toContain('"attempt_count" > 0');
+    expect(compact).toContain('"first_attempt_at" IS NOT NULL');
+    expect(compact).toContain('"last_attempt_at" IS NOT NULL');
+    expect(compact).not.toMatch(/\b(?:TRUNCATE\s+TABLE|DELETE\s+FROM)\b/i);
+  });
+
+  it('adds a conservative persistent chat routing state fence', () => {
+    const schema = readSchema();
+    const migration = readMigration('20260711123000_chat_routing_state');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+
+    expect(schema).toContain('enum ChatRoutingState {');
+    expect(schema).toContain('routingState   ChatRoutingState @default(NO_ELIGIBLE_BOT)');
+    expect(compact).toContain(
+      `CREATE TYPE "ChatRoutingState" AS ENUM ('READY', 'NO_ELIGIBLE_BOT')`,
+    );
+    expect(schema).toContain('model ChatRoutingReconcileRequest {');
+    expect(compact).toContain('CREATE TABLE "chat_routing_reconcile_requests"');
+    expect(compact).toContain('CREATE OR REPLACE FUNCTION enqueue_chat_routing_reconcile_request');
+    expect(compact).toContain(`ALTER COLUMN "routing_state" SET DEFAULT 'NO_ELIGIBLE_BOT'`);
+    expect(compact).toContain('"lease_token" TEXT');
+    expect(compact).toContain('"lease_expires_at" TIMESTAMPTZ');
+    expect(compact).toContain('"generation" = "chat_routing_reconcile_requests"."generation" + 1');
+    expect(compact).toContain('"lease_token" = NULL, "lease_expires_at" = NULL');
+    expect(compact).toContain('AFTER INSERT OR DELETE OR UPDATE OF');
+    expect(compact).toContain('"capabilities"');
+    expect(compact).toContain('"permissions_snapshot"');
+    expect(compact).not.toContain(
+      'INSERT INTO "chat_routing_reconcile_requests" ("chat_id", "generation", "requested_at") SELECT "id", 1, CURRENT_TIMESTAMP FROM "chats"',
+    );
+    expect(compact).toContain(`OR NEW."routing_state" IS DISTINCT FROM OLD."routing_state"`);
+    expect(compact).not.toContain('FOR UPDATE');
+    expect(compact).not.toContain('UPDATE "chats" SET');
+    expect(compact).not.toMatch(/\b(?:TRUNCATE\s+TABLE|DELETE\s+FROM)\b/i);
+  });
+
+  it('adds a non-destructive routed giveaway send lock discriminator', () => {
+    const schema = readSchema();
+    const migration = readMigration('20260711130000_managed_giveaway_send_lock_key');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+
+    expect(schema).toContain('sendLockKey          String?               @map("send_lock_key")');
+    expect(compact).toContain(
+      'ALTER TABLE "managed_giveaways" ADD COLUMN IF NOT EXISTS "send_lock_key" TEXT',
+    );
+    expect(compact).not.toMatch(/\bDROP\s+(?:TABLE|COLUMN|TYPE)\b/i);
+    expect(compact).not.toMatch(/\b(?:TRUNCATE\s+TABLE|DELETE\s+FROM)\b/i);
+  });
 });

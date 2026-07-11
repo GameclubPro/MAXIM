@@ -67,9 +67,7 @@ import {
   type MaxBotRoute,
   type MaxBotRouteRequest,
 } from '../max/max-bot-link.service';
-import {
-  ManagedEntityAccessLossService,
-} from '../max/managed-entity-access-loss.service';
+import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
 import { AdminDialogLinkService } from '../admin/admin-dialog-link.service';
 import { ManualModerationService } from '../admin/manual-moderation.service';
@@ -343,9 +341,7 @@ import type {
   NightModeTransitionProcessResult,
 } from './night-mode-transition.queue';
 import type { NightModeTransitionSnapshot } from './night-mode-transition-time.util';
-import {
-  NightModeTransitionRuntimeService,
-} from './night-mode-transition-runtime.service';
+import { NightModeTransitionRuntimeService } from './night-mode-transition-runtime.service';
 import { NightModeTransitionDeliveryService } from './night-mode-transition-delivery.service';
 import {
   buildNightModeClosedNotice as buildNightModeClosedNoticeText,
@@ -365,6 +361,7 @@ import {
 } from './bot-speech-media.service';
 import { NightModeTransitionEventService } from './night-mode-transition-event.service';
 import { KaravanStorefrontRelayService } from '../integrations/karavan-storefront/karavan-storefront-relay.service';
+import { WebhookCanonicalExecutionService } from './webhook-canonical-execution.service';
 
 type ManualModerationCommandBridge = Pick<
   ManualModerationService,
@@ -435,7 +432,6 @@ const SERVICE_MEMBER_ACTION_DEDUPE_WINDOW_MS = 30_000;
 const GREETING_MESSAGE_DEDUPE_WINDOW_MS = 10 * 60_000;
 const SHARED_CHAT_OWNER_EVENT_LOOKUP_WINDOW_MS = 15 * 60_000;
 const SHARED_CHAT_OWNER_EVENT_LOOKUP_LIMIT = 100;
-
 @Injectable()
 export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly blockedDomainDetector = new MessageLimitsBlockedDomainDetector();
@@ -533,6 +529,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private nightModeTransitionDeliveryInstance: NightModeTransitionDeliveryService | null = null;
   private botSpeechMediaServiceInstance: BotSpeechMediaService | null = null;
   private nightModeTransitionEventServiceInstance: NightModeTransitionEventService | null = null;
+  private webhookCanonicalExecutionServiceInstance: WebhookCanonicalExecutionService | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -575,6 +572,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     private readonly karavanStorefrontRelayService?: KaravanStorefrontRelayService,
     @Optional()
     private readonly managedPollService?: ManagedPollService,
+    @Optional()
+    private readonly injectedWebhookCanonicalExecutionService?: WebhookCanonicalExecutionService,
   ) {
     this.maxBotToken = this.normalizeSecret(configService?.get<string>('MAX_BOT_TOKEN'));
     this.ownBotUserId = this.normalizeOwnBotUserId(configService?.get<string>('MAX_BOT_ID'));
@@ -742,6 +741,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return this.injectedManualModerationService ?? null;
   }
 
+  private get webhookCanonicalExecutionService(): WebhookCanonicalExecutionService {
+    if (this.injectedWebhookCanonicalExecutionService) {
+      return this.injectedWebhookCanonicalExecutionService;
+    }
+    if (!this.webhookCanonicalExecutionServiceInstance) {
+      this.webhookCanonicalExecutionServiceInstance = new WebhookCanonicalExecutionService(
+        this.prisma,
+      );
+    }
+    return this.webhookCanonicalExecutionServiceInstance;
+  }
+
   private isSuperBanDeveloperUserId(userId: string | null | undefined): boolean {
     const bridge = this.manualModerationCommandBridge;
     return (
@@ -836,24 +847,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   async processWebhookEvent(webhookEventId: string) {
-    const webhookEvent = await this.prisma.webhookEvent.findUnique({
-      where: { id: webhookEventId },
-    });
-
-    if (!webhookEvent) {
+    const execution = await this.webhookCanonicalExecutionService.prepareExecution(
+      webhookEventId,
+      this.maxBotLinkService?.getDefaultBotId?.(),
+    );
+    if (!execution) {
       return;
     }
 
-    const update = webhookEvent.normalizedPayload as MaxUpdate;
-    const activeBotId =
-      (typeof webhookEvent.botId === 'string' && webhookEvent.botId.trim().length > 0
-        ? webhookEvent.botId.trim()
-        : null) ??
-      (typeof update.botId === 'string' && update.botId.trim().length > 0
-        ? update.botId.trim()
-        : null) ??
-      this.maxBotLinkService?.getDefaultBotId?.() ??
-      null;
+    const { webhookEvent, update, activeBotId } = execution;
     const normalizedUpdateType = this.readLowerString(update.type);
     if (
       (normalizedUpdateType === 'message_created' || normalizedUpdateType === 'message_edited') &&
@@ -883,32 +885,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
         () => this.readWebhookHotPathProfileSnapshot(hotPathProfile),
       );
-      await this.prisma.webhookEvent.update({
-        where: { id: webhookEvent.id },
-        data: {
-          status: WebhookStatus.PROCESSED,
-          processedAt: new Date(),
-          errorMessage: null,
-          nextEnqueueAt: null,
-        },
-      });
+      await this.webhookCanonicalExecutionService.completeExecution(execution);
     } catch (error: unknown) {
-      const recoveredRawPayload =
-        update.raw && typeof update.raw === 'object' && !Array.isArray(update.raw)
-          ? (update.raw as Record<string, unknown>)
-          : null;
-      const terminalProcessingError = this.isTerminalWebhookProcessingError(error);
-
-      await this.prisma.webhookEvent.update({
-        where: { id: webhookEvent.id },
-        data: {
-          status: WebhookStatus.FAILED,
-          errorMessage: this.formatWebhookProcessingErrorMessage(error),
-          nextEnqueueAt: terminalProcessingError ? null : new Date(Date.now() + 15_000),
-          ...(recoveredRawPayload
-            ? { rawPayload: recoveredRawPayload as Prisma.InputJsonValue }
-            : {}),
-        },
+      await this.webhookCanonicalExecutionService.failExecution(execution, {
+        errorMessage: this.formatWebhookProcessingErrorMessage(error),
+        terminal: this.isTerminalWebhookProcessingError(error),
       });
       throw error;
     }
@@ -923,7 +904,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    if (this.isChatTitleChangedUpdate(update)) {
+    if (this.isLifecycleNoopUpdate(update)) {
       return;
     }
 
@@ -1776,22 +1757,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           ? this.readString(this.asRecord(topViolation.metadata)?.actionBand)
           : null;
       const commercialMetadata =
-        topViolation.ruleCode === 'COMMERCIAL_AD'
-          ? this.asRecord(topViolation.metadata)
-          : null;
+        topViolation.ruleCode === 'COMMERCIAL_AD' ? this.asRecord(topViolation.metadata) : null;
       const commercialRecordable =
         topViolation.ruleCode === 'COMMERCIAL_AD'
-          ? this.readBoolean(commercialMetadata?.recordable) ??
+          ? (this.readBoolean(commercialMetadata?.recordable) ??
             (commercialActionBand !== null &&
               commercialActionBand !== 'ALLOW' &&
-              commercialActionBand !== 'REVIEW_ONLY')
+              commercialActionBand !== 'REVIEW_ONLY'))
           : true;
       const commercialActionable =
         topViolation.ruleCode === 'COMMERCIAL_AD'
-          ? this.readBoolean(commercialMetadata?.actionable) ??
+          ? (this.readBoolean(commercialMetadata?.actionable) ??
             (commercialActionBand !== null &&
               commercialActionBand !== 'ALLOW' &&
-              commercialActionBand !== 'REVIEW_ONLY')
+              commercialActionBand !== 'REVIEW_ONLY'))
           : true;
       const isCommercialReviewOnly =
         topViolation.ruleCode === 'COMMERCIAL_AD' && !commercialRecordable;
@@ -2637,11 +2616,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     task: () => Promise<void>;
   }): Promise<void> {
     if (
-      this.shouldDetachFollowUpForBudget(
-        params.hotPathProfile,
-        params.stage,
-        params.minRemainingMs,
-      )
+      this.shouldDetachFollowUpForBudget(params.hotPathProfile, params.stage, params.minRemainingMs)
     ) {
       this.scheduleDetachedWebhookFollowUp({
         stage: params.stage,
@@ -2920,7 +2895,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
       });
 
-      if (!suppressNonEssentialMessages && duplicateBotMessageEnabled && decision.action !== 'BAN') {
+      if (
+        !suppressNonEssentialMessages &&
+        duplicateBotMessageEnabled &&
+        decision.action !== 'BAN'
+      ) {
         try {
           const explanationText = this.buildDuplicateExplanation(
             userLabel,
@@ -9232,16 +9211,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           const metadata = resolvedRequiredChannelsById.get(channelId) ?? null;
           return !metadata || !metadata.usable;
         });
-    const conservativeRequiredSubscriptionEnforcement =
-      membership.unresolvedChannelIds.length > 0;
+    const conservativeRequiredSubscriptionEnforcement = membership.unresolvedChannelIds.length > 0;
     const requiredSubscriptionChannelMetadata = {
       channelIds: requiredChannelIds,
       requiredChannelIds,
       missingChannelIds: membership.missingChannelIds,
       unresolvedChannelIds: membership.unresolvedChannelIds,
       terminalChannelIds: membership.terminalChannelIds,
-      requiredSubscriptionConservativeEnforcement:
-        conservativeRequiredSubscriptionEnforcement,
+      requiredSubscriptionConservativeEnforcement: conservativeRequiredSubscriptionEnforcement,
     };
     const missingChannels = membership.missingChannelIds
       .map((channelId) => resolvedRequiredChannelsById.get(channelId) ?? null)
@@ -10244,9 +10221,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       membershipChecks.map((item) => [item.channelId, item.resolution.membership] as const),
     );
     const terminalChannelIds = new Set(
-      membershipChecks
-        .filter((item) => item.resolution.terminal)
-        .map((item) => item.channelId),
+      membershipChecks.filter((item) => item.resolution.terminal).map((item) => item.channelId),
     );
     const unconfirmedChannelIds = membershipChecks
       .filter((item) => item.resolution.membership !== true && !item.resolution.fresh)
@@ -10320,9 +10295,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private resolveRequiredSubscriptionTerminalChannelIds(
-    channelIds: readonly string[],
-  ): string[] {
+  private resolveRequiredSubscriptionTerminalChannelIds(channelIds: readonly string[]): string[] {
     if (!this.membershipLookupService || channelIds.length === 0) {
       return [];
     }
@@ -10459,9 +10432,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return {
         membership,
         fresh: options.forceFresh === true && membership !== null,
-        terminal:
-          membership === null &&
-          this.isRequiredSubscriptionTerminalLookupIssue(channelId),
+        terminal: membership === null && this.isRequiredSubscriptionTerminalLookupIssue(channelId),
       };
     }
 
@@ -11035,8 +11006,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return this.readLowerString(update.type) === 'bot_started';
   }
 
-  private isChatTitleChangedUpdate(update: MaxUpdate): boolean {
-    return this.readLowerString(update.type) === 'chat_title_changed';
+  private isLifecycleNoopUpdate(update: MaxUpdate): boolean {
+    const normalizedType = this.readLowerString(update.type);
+    return (
+      normalizedType === 'chat_title_changed' ||
+      normalizedType === 'bot_stopped' ||
+      normalizedType === 'dialog_removed' ||
+      normalizedType === 'message_removed'
+    );
   }
 
   private isMembershipLeaveUpdate(update: MaxUpdate): boolean {
@@ -11386,7 +11363,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         dedupKey: `${executionOwnerBotId}:${updateId}`,
         botId: executionOwnerBotId,
         OR: [
-          { status: { in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED, WebhookStatus.PROCESSED] } },
+          {
+            status: { in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED, WebhookStatus.PROCESSED] },
+          },
           { status: WebhookStatus.FAILED, nextEnqueueAt: { not: null } },
         ],
       },
@@ -11417,15 +11396,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         where: {
           botId: executionOwnerBotId,
           createdAt: {
-            gte: new Date(
-              currentCreatedAt.getTime() - SHARED_CHAT_OWNER_EVENT_LOOKUP_WINDOW_MS,
-            ),
-            lte: new Date(
-              currentCreatedAt.getTime() + SHARED_CHAT_OWNER_EVENT_LOOKUP_WINDOW_MS,
-            ),
+            gte: new Date(currentCreatedAt.getTime() - SHARED_CHAT_OWNER_EVENT_LOOKUP_WINDOW_MS),
+            lte: new Date(currentCreatedAt.getTime() + SHARED_CHAT_OWNER_EVENT_LOOKUP_WINDOW_MS),
           },
           OR: [
-            { status: { in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED, WebhookStatus.PROCESSED] } },
+            {
+              status: {
+                in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED, WebhookStatus.PROCESSED],
+              },
+            },
             { status: WebhookStatus.FAILED, nextEnqueueAt: { not: null } },
           ],
         },
@@ -14941,18 +14920,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     updateMany?: (args: unknown) => Promise<{ count: number }>;
   } | null {
     return (
-      (this.prisma as unknown as {
-        channelAutoPostAttachMarker?: {
-          findUnique?: (args: unknown) => Promise<{
-            status: ChannelAutoPostAttachStatus;
-            lockedAt: Date | null;
-          } | null>;
-          create?: (args: unknown) => Promise<unknown>;
-          createMany?: (args: unknown) => Promise<{ count: number }>;
-          update?: (args: unknown) => Promise<unknown>;
-          updateMany?: (args: unknown) => Promise<{ count: number }>;
-        };
-      }).channelAutoPostAttachMarker ?? null
+      (
+        this.prisma as unknown as {
+          channelAutoPostAttachMarker?: {
+            findUnique?: (args: unknown) => Promise<{
+              status: ChannelAutoPostAttachStatus;
+              lockedAt: Date | null;
+            } | null>;
+            create?: (args: unknown) => Promise<unknown>;
+            createMany?: (args: unknown) => Promise<{ count: number }>;
+            update?: (args: unknown) => Promise<unknown>;
+            updateMany?: (args: unknown) => Promise<{ count: number }>;
+          };
+        }
+      ).channelAutoPostAttachMarker ?? null
     );
   }
 
@@ -15183,17 +15164,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     updateMany?: (args: unknown) => Promise<{ count: number }>;
   } | null {
     return (
-      (this.prisma as unknown as {
-        chatAutoCommentAttachMarker?: {
-          findUnique?: (args: unknown) => Promise<{
-            status: ChatAutoCommentAttachStatus;
-            lockedAt: Date | null;
-          } | null>;
-          create?: (args: unknown) => Promise<unknown>;
-          createMany?: (args: unknown) => Promise<{ count: number }>;
-          updateMany?: (args: unknown) => Promise<{ count: number }>;
-        };
-      }).chatAutoCommentAttachMarker ?? null
+      (
+        this.prisma as unknown as {
+          chatAutoCommentAttachMarker?: {
+            findUnique?: (args: unknown) => Promise<{
+              status: ChatAutoCommentAttachStatus;
+              lockedAt: Date | null;
+            } | null>;
+            create?: (args: unknown) => Promise<unknown>;
+            createMany?: (args: unknown) => Promise<{ count: number }>;
+            updateMany?: (args: unknown) => Promise<{ count: number }>;
+          };
+        }
+      ).chatAutoCommentAttachMarker ?? null
     );
   }
 
@@ -16276,8 +16259,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (
       recalculatedViolations.some(
         (violation) =>
-          violation.ruleCode === 'LINK_BLOCKED' ||
-          violation.ruleCode === 'MESSAGE_BLOCKED_DOMAIN',
+          violation.ruleCode === 'LINK_BLOCKED' || violation.ruleCode === 'MESSAGE_BLOCKED_DOMAIN',
       )
     ) {
       return recalculatedViolations;
@@ -16570,7 +16552,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       error instanceof Error && error.message.trim().length > 0
         ? error.message.trim()
         : typeof (error as { message?: unknown } | null)?.message === 'string'
-          ? ((error as { message: string }).message.trim() || 'Unknown error')
+          ? (error as { message: string }).message.trim() || 'Unknown error'
           : String(error ?? 'Unknown error');
     return message.slice(0, 500);
   }

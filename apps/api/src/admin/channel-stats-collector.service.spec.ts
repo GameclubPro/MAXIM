@@ -1,4 +1,5 @@
 import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
+import { MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES } from '../max/max-webhook-subscription.constants';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 
 jest.mock('ioredis', () => ({
@@ -44,6 +45,7 @@ function createConfigMock(
     startupJitterMs?: number;
     startupMaxPages?: number;
     endpointMaxPages?: number;
+    extendedLifecycleMode?: 'off' | 'shadow' | 'canary' | 'on';
   } = {},
 ) {
   return {
@@ -68,6 +70,9 @@ function createConfigMock(
       }
       if (key === 'CHANNEL_STATS_ENDPOINT_MAX_PAGES') {
         return options.endpointMaxPages ?? fallback;
+      }
+      if (key === 'MAX_EXTENDED_WEBHOOK_LIFECYCLE_MODE') {
+        return options.extendedLifecycleMode ?? fallback;
       }
       return fallback;
     }),
@@ -166,7 +171,7 @@ describe('ChannelStatsCollectorService', () => {
     });
 
     expect(maxClient.ensureWebhookSubscription).toHaveBeenCalledWith(
-      expect.any(Array),
+      [...MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES],
       expect.objectContaining({
         trafficClass: 'background',
         sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,

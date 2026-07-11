@@ -1,9 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
+  ChatBotAccessState,
   ChatCatalogKind,
   ChatBotMembershipRole,
   ChatBotMembershipStatus,
   ChatEntityType,
+  ChatRoutingState,
   Prisma,
 } from '../prisma/prisma-client';
 import type { ManagedEntityBotCapability } from '@maxim/contracts';
@@ -19,11 +21,16 @@ import {
 } from './max-bot-state.util';
 import {
   membershipExplicitlyLacksAccess,
+  isFreshMembershipAccessSnapshot,
   normalizeMembershipAccessSnapshot,
   normalizePermissionName,
   resolvePreferredPrimaryBotId,
   type MembershipAccessSnapshot,
 } from './max-bot-access-policy.util';
+import {
+  buildBotAccessSnapshotPersistence,
+  type BotAccessSnapshotInput,
+} from './bot-access-snapshot.util';
 
 const CHAT_BOT_CACHE_TTL_MS = 10 * 60 * 1_000;
 const OBSERVED_WEBHOOK_TOUCH_TTL_MS = 60 * 1_000;
@@ -87,6 +94,11 @@ export type ChatBotExecutionBinding = {
   shouldHandleGroupUpdate: boolean;
 };
 
+export type ChatRoutingStateReconcileResult = {
+  routingState: ChatRoutingState;
+  changed: boolean;
+};
+
 export type MaxBotRoutePurpose =
   | 'default'
   | 'read'
@@ -116,6 +128,7 @@ export type MaxBotRoute =
       botId: string | null;
       candidateBotIds: string[];
       reason: MaxBotRouteReason | null;
+      routingVersion?: number | null;
     }
   | {
       purpose: 'send_message';
@@ -124,6 +137,7 @@ export type MaxBotRoute =
       botId: string | null;
       candidateBotIds: string[];
       reason: MaxBotRouteReason | null;
+      routingVersion?: number | null;
     }
   | {
       purpose: 'moderation_action';
@@ -132,6 +146,7 @@ export type MaxBotRoute =
       botId: string | null;
       candidateBotIds: string[];
       reason: MaxBotRouteReason | null;
+      routingVersion?: number | null;
       action: ModerationActionPermission;
     }
   | {
@@ -141,6 +156,7 @@ export type MaxBotRoute =
       botId: string | null;
       candidateBotIds: string[];
       reason: MaxBotRouteReason | null;
+      routingVersion?: number | null;
       capability: ManagedEntityBotCapability;
     };
 
@@ -176,6 +192,9 @@ type ResolvedChatRouteMembership = {
   botId: string;
   role: ChatBotMembershipRole;
   status: ChatBotMembershipStatus;
+  botAccessState: ChatBotAccessState;
+  botAccessCheckedAt: Date | null;
+  botAccessExpiresAt: Date | null;
   permissionsSnapshot: unknown;
   capabilities: unknown;
 };
@@ -183,12 +202,20 @@ type ResolvedChatRouteMembership = {
 type ResolvedChatRouteState = {
   chatId: string;
   entityType: ChatEntityType | null;
+  routingState: ChatRoutingState;
+  hasStoredBotAssignment: boolean;
   storedPrimaryBotId: string | null;
   primaryBotId: string | null;
+  routingVersion: number;
   memberships: ResolvedChatRouteMembership[];
   activeKnownMemberships: ResolvedChatRouteMembership[];
   activeOperationalMemberships: ResolvedChatRouteMembership[];
   activeActionableMemberships: ResolvedChatRouteMembership[];
+};
+
+type ChatBotMembershipUpsertResult = {
+  active: boolean;
+  lifecycleAdvanced: boolean;
 };
 
 @Injectable()
@@ -212,14 +239,14 @@ export class MaxBotLinkService {
   }
 
   getContextOrDefaultBotId(): string {
-    return this.resolveOperationalBotId(this.botContext.getActiveBotId()) ?? this.getDefaultBotId();
+    return this.resolveExecutableBotId(this.botContext.getActiveBotId()) ?? this.getEntryBotId();
   }
 
   getResolvedBotSync(botId?: string | null): MaxBotDefinition {
     return (
       this.getOperationalBotById(botId) ??
       this.getOperationalBotById(this.botContext.getActiveBotId()) ??
-      this.botRegistry.getDefaultBot()
+      this.botRegistry.getEntryBot()
     );
   }
 
@@ -256,7 +283,7 @@ export class MaxBotLinkService {
       return contextBotId;
     }
 
-    return this.getDefaultBotId();
+    return this.getEntryBotId();
   }
 
   getValidationTokens(botId?: string | null): readonly string[] {
@@ -338,14 +365,25 @@ export class MaxBotLinkService {
   }
 
   async resolveBotIdForChannelPoll(params: { chatId: string }): Promise<string | null> {
+    return (await this.resolveBotRouteForChannelPoll(params)).botId;
+  }
+
+  async resolveBotRouteForChannelPoll(params: { chatId: string }): Promise<MaxBotRoute> {
     const normalizedChatId = params.chatId.trim();
     if (!normalizedChatId) {
-      return null;
+      return this.buildRoute({
+        purpose: 'send_message',
+        chatId: null,
+      });
     }
 
     const state = await this.loadChatRouteState(normalizedChatId);
-    if (!state) {
-      return null;
+    if (!state || state.routingState === ChatRoutingState.NO_ELIGIBLE_BOT) {
+      return this.buildRoute({
+        purpose: 'send_message',
+        chatId: normalizedChatId,
+        routingVersion: state?.routingVersion ?? null,
+      });
     }
     const eligible = state.activeActionableMemberships.filter((membership) => {
       const snapshot = normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
@@ -354,41 +392,211 @@ export class MaxBotLinkService {
         this.hasModerationActionPermission(snapshot, 'edit_message', ChatEntityType.CHANNEL)
       );
     });
-    return (
-      eligible.find((membership) => membership.botId === state.primaryBotId)?.botId ??
-      eligible[0]?.botId ??
-      null
+    const primaryBotId =
+      eligible.find((membership) => membership.botId === state.primaryBotId)?.botId ?? null;
+    const candidateBotIds = Array.from(
+      new Set([
+        ...(primaryBotId ? [primaryBotId] : []),
+        ...eligible.map((membership) => membership.botId),
+      ]),
     );
+    const selectedBotId = candidateBotIds[0] ?? null;
+    return this.buildRoute({
+      purpose: 'send_message',
+      chatId: normalizedChatId,
+      primaryBotId: state.primaryBotId,
+      botId: selectedBotId,
+      candidateBotIds,
+      reason:
+        selectedBotId === null
+          ? null
+          : selectedBotId === state.primaryBotId
+            ? 'primary_confirmed'
+            : 'alternate_confirmed',
+      routingVersion: state.routingVersion,
+    });
   }
 
-  async getStoredChatPrimaryBotId(chatId: string | null | undefined): Promise<string | null> {
+  async getStoredChatPrimaryBotId(
+    chatId: string | null | undefined,
+    options: { bypassCache?: boolean } = {},
+  ): Promise<string | null> {
     const normalizedChatId = typeof chatId === 'string' ? chatId.trim() : '';
     if (!normalizedChatId) {
       return null;
     }
 
-    const cachedBotId = this.getCachedChatBotId(normalizedChatId);
-    if (cachedBotId) {
-      return cachedBotId;
-    }
-
     const chat = await this.prisma.chat.findUnique({
       where: { id: normalizedChatId },
-      select: { primaryBotId: true, botId: true },
+      select: { primaryBotId: true, botId: true, routingState: true },
     });
+    if (chat?.routingState === ChatRoutingState.NO_ELIGIBLE_BOT) {
+      this.forgetChatBotBinding(normalizedChatId);
+      return null;
+    }
+
     const resolvedBotId =
       this.resolveOperationalBotId(chat?.primaryBotId ?? chat?.botId ?? null) ?? null;
+    if (options.bypassCache !== true) {
+      const cachedBotId = this.getCachedChatBotId(normalizedChatId);
+      if (cachedBotId === resolvedBotId) {
+        return cachedBotId;
+      }
+    }
     if (resolvedBotId) {
       this.rememberChatBotBinding(normalizedChatId, resolvedBotId);
+    } else {
+      this.forgetChatBotBinding(normalizedChatId);
     }
 
     return resolvedBotId;
+  }
+
+  async isBotAccessSnapshotStale(params: {
+    chatId: string;
+    botId: string;
+    maxAgeMs: number;
+    now?: Date;
+  }): Promise<boolean> {
+    const chatId = params.chatId.trim();
+    const botId = this.resolveOperationalBotId(params.botId);
+    if (!chatId || !botId) {
+      return true;
+    }
+
+    const membership = await this.prisma.chatBotMembership.findUnique({
+      where: {
+        chatId_botId: {
+          chatId,
+          botId,
+        },
+      },
+      select: {
+        status: true,
+        botAccessCheckedAt: true,
+      },
+    });
+    if (!membership || membership.status !== ChatBotMembershipStatus.ACTIVE) {
+      return true;
+    }
+
+    const checkedAtMs = membership.botAccessCheckedAt?.getTime() ?? Number.NaN;
+    if (!Number.isFinite(checkedAtMs)) {
+      return true;
+    }
+
+    const maxAgeMs = Math.max(0, Math.trunc(params.maxAgeMs));
+    return (params.now ?? new Date()).getTime() - checkedAtMs >= maxAgeMs;
+  }
+
+  async recordBotAccessProbe(params: {
+    chatId: string;
+    botId: string;
+    access: BotAccessSnapshotInput;
+    source: string;
+    checkedAt?: Date;
+  }): Promise<boolean> {
+    const chatId = params.chatId.trim();
+    const botId = this.resolveOperationalBotId(params.botId);
+    if (!chatId || !botId) {
+      return false;
+    }
+
+    const checkedAt = params.checkedAt ?? new Date();
+    const result = await this.prisma.chatBotMembership.updateMany({
+      where: {
+        chatId,
+        botId,
+        status: ChatBotMembershipStatus.ACTIVE,
+      },
+      data: {
+        ...buildBotAccessSnapshotPersistence(params.access, {
+          source: params.source,
+          now: checkedAt,
+        }),
+        lastSeenAt: checkedAt,
+      },
+    });
+    if (result.count > 0) {
+      await this.reconcileChatPrimaryByAccess({ chatId });
+    }
+    return result.count > 0;
+  }
+
+  async reconcileChatRoutingState(params: {
+    chatId: string;
+    forceVersionBump?: boolean;
+  }): Promise<ChatRoutingStateReconcileResult | null> {
+    return this.reconcileChatRoutingStateAttempt(
+      params.chatId,
+      2,
+      params.forceVersionBump === true,
+    );
+  }
+
+  private async reconcileChatRoutingStateAttempt(
+    rawChatId: string,
+    attemptsRemaining: number,
+    forceVersionBump: boolean,
+  ): Promise<ChatRoutingStateReconcileResult | null> {
+    const chatId = rawChatId.trim();
+    if (!chatId) {
+      return null;
+    }
+
+    const state = await this.loadChatRouteState(chatId);
+    if (!state) {
+      return null;
+    }
+    const nextRoutingState = this.resolvePersistedRoutingState(state);
+    const shouldClearStoredAssignment =
+      nextRoutingState === ChatRoutingState.NO_ELIGIBLE_BOT && state.hasStoredBotAssignment;
+    if (
+      state.routingState === nextRoutingState &&
+      !shouldClearStoredAssignment &&
+      !forceVersionBump
+    ) {
+      if (nextRoutingState === ChatRoutingState.NO_ELIGIBLE_BOT) {
+        this.forgetChatBotBinding(chatId);
+      }
+      return { routingState: nextRoutingState, changed: false };
+    }
+
+    const updated = await this.prisma.chat.updateMany({
+      where: {
+        id: chatId,
+        routingState: state.routingState,
+        routingVersion: state.routingVersion,
+      },
+      data: {
+        routingState: nextRoutingState,
+        routingVersion: { increment: 1 },
+        ...(nextRoutingState === ChatRoutingState.NO_ELIGIBLE_BOT
+          ? { botId: null, primaryBotId: null }
+          : {}),
+      },
+    });
+    if (updated.count === 0 && attemptsRemaining > 1) {
+      return this.reconcileChatRoutingStateAttempt(chatId, attemptsRemaining - 1, forceVersionBump);
+    }
+    if (updated.count === 0) {
+      if (forceVersionBump) {
+        throw new Error(`Chat ${chatId} routing state changed during forced reconciliation`);
+      }
+      return null;
+    }
+
+    if (nextRoutingState === ChatRoutingState.NO_ELIGIBLE_BOT) {
+      this.forgetChatBotBinding(chatId);
+    }
+    return { routingState: nextRoutingState, changed: true };
   }
 
   async observeStoredChatBotWebhook(params: {
     chatId: string;
     primaryBotId?: string | null;
     botId?: string | null;
+    observedAt?: Date | null;
   }): Promise<void> {
     const chatId = params.chatId.trim();
     const primaryBotId = this.resolveOperationalBotId(params.primaryBotId);
@@ -403,16 +611,29 @@ export class MaxBotLinkService {
       return;
     }
 
-    const now = new Date(nowMs);
-    await this.upsertChatBotMembership(chatId, observedBotId, {
-      role:
-        primaryBotId !== null && observedBotId !== primaryBotId
-          ? ChatBotMembershipRole.STANDBY
-          : ChatBotMembershipRole.PRIMARY,
-      status: ChatBotMembershipStatus.ACTIVE,
-      lastSeenAt: now,
-      lastWebhookAt: now,
+    const now = params.observedAt ?? new Date(nowMs);
+    const touched = await this.prisma.chatBotMembership.updateMany({
+      where: {
+        chatId,
+        botId: observedBotId,
+        status: ChatBotMembershipStatus.ACTIVE,
+      },
+      data: {
+        ...(primaryBotId
+          ? {
+              role:
+                observedBotId === primaryBotId
+                  ? ChatBotMembershipRole.PRIMARY
+                  : ChatBotMembershipRole.STANDBY,
+            }
+          : {}),
+        lastSeenAt: now,
+        lastWebhookAt: now,
+      },
     });
+    if (touched.count === 0) {
+      return;
+    }
     this.observedWebhookTouchCache.set(cacheKey, nowMs + OBSERVED_WEBHOOK_TOUCH_TTL_MS);
 
     if (primaryBotId) {
@@ -547,6 +768,10 @@ export class MaxBotLinkService {
     entityType?: ChatEntityType | null;
     botId?: string | null;
     allowReassign?: boolean;
+    lifecycleEventAt?: Date | null;
+    lifecycleEventType?: string | null;
+    lifecycleSource?: string | null;
+    preserveRemovedMembership?: boolean;
   }): Promise<string | null> {
     const chatId = params.chatId.trim();
     if (!chatId) {
@@ -575,6 +800,7 @@ export class MaxBotLinkService {
         title,
         botId,
         primaryBotId: botId,
+        routingState: ChatRoutingState.NO_ELIGIBLE_BOT,
         ...(entityType ? { entityType } : {}),
         catalogKind,
       },
@@ -582,14 +808,31 @@ export class MaxBotLinkService {
     });
 
     if (created.count > 0) {
-      await this.upsertChatBotMembership(chatId, botId, {
+      const membershipResult = await this.upsertChatBotMembership(chatId, botId, {
         role: ChatBotMembershipRole.PRIMARY,
         status: ChatBotMembershipStatus.ACTIVE,
         lastSeenAt: now,
         lastWebhookAt: explicitBotId ? now : null,
+        lifecycleEventAt: params.lifecycleEventAt,
+        lifecycleEventType: params.lifecycleEventType,
+        lifecycleSource: params.lifecycleSource,
+        allowReactivation:
+          params.lifecycleEventType === 'bot_added' || params.lifecycleSource === 'live_probe',
+        preserveRemovedMembership:
+          params.preserveRemovedMembership ??
+          (params.lifecycleEventType !== 'bot_added' && params.lifecycleSource !== 'live_probe'),
       });
+      if (membershipResult.lifecycleAdvanced && params.lifecycleEventAt) {
+        await this.markChatRoutingReadyFromLifecycleProof({
+          chatId,
+          botId,
+          lifecycleEventAt: params.lifecycleEventAt,
+          lifecycleEventType: params.lifecycleEventType ?? '',
+          lifecycleSource: params.lifecycleSource ?? '',
+        });
+      }
       this.rememberChatBotBinding(chatId, botId);
-      return botId;
+      return membershipResult.active ? botId : null;
     }
 
     const existing = await this.prisma.chat.findUnique({
@@ -613,19 +856,37 @@ export class MaxBotLinkService {
       },
     });
 
-    await this.upsertChatBotMembership(chatId, botId, {
+    const incomingMembershipResult = await this.upsertChatBotMembership(chatId, botId, {
       role:
         nextPrimaryBotId === botId ? ChatBotMembershipRole.PRIMARY : ChatBotMembershipRole.STANDBY,
       status: ChatBotMembershipStatus.ACTIVE,
       lastSeenAt: now,
       lastWebhookAt: explicitBotId ? now : null,
+      lifecycleEventAt: params.lifecycleEventAt,
+      lifecycleEventType: params.lifecycleEventType,
+      lifecycleSource: params.lifecycleSource,
+      allowReactivation:
+        params.lifecycleEventType === 'bot_added' || params.lifecycleSource === 'live_probe',
+      preserveRemovedMembership:
+        params.preserveRemovedMembership ??
+        (params.lifecycleEventType !== 'bot_added' && params.lifecycleSource !== 'live_probe'),
     });
+    if (incomingMembershipResult.lifecycleAdvanced && params.lifecycleEventAt) {
+      await this.markChatRoutingReadyFromLifecycleProof({
+        chatId,
+        botId,
+        lifecycleEventAt: params.lifecycleEventAt,
+        lifecycleEventType: params.lifecycleEventType ?? '',
+        lifecycleSource: params.lifecycleSource ?? '',
+      });
+    }
 
     if (nextPrimaryBotId && nextPrimaryBotId !== botId) {
       await this.upsertChatBotMembership(chatId, nextPrimaryBotId, {
         role: ChatBotMembershipRole.PRIMARY,
         status: ChatBotMembershipStatus.ACTIVE,
         lastSeenAt: now,
+        preserveRemovedMembership: true,
       });
 
       this.logger.debug(
@@ -638,14 +899,23 @@ export class MaxBotLinkService {
       );
     }
 
-    this.rememberChatBotBinding(chatId, nextPrimaryBotId);
-    return (
-      (await this.reconcileChatPrimaryByAccess({
-        chatId,
-        title,
-        entityType,
-      })) ?? nextPrimaryBotId
-    );
+    const reconciledPrimaryBotId =
+      nextPrimaryBotId === botId && !incomingMembershipResult.active
+        ? await this.promoteActiveChatBotMembership(chatId, title, entityType)
+        : await this.reconcileChatPrimaryByAccess({
+            chatId,
+            title,
+            entityType,
+          });
+    const resolvedPrimaryBotId =
+      reconciledPrimaryBotId ??
+      (nextPrimaryBotId !== botId || incomingMembershipResult.active ? nextPrimaryBotId : null);
+    if (resolvedPrimaryBotId) {
+      this.rememberChatBotBinding(chatId, resolvedPrimaryBotId);
+    } else {
+      this.forgetChatBotBinding(chatId);
+    }
+    return resolvedPrimaryBotId;
   }
 
   async getChatExecutionBinding(params: {
@@ -668,6 +938,7 @@ export class MaxBotLinkService {
     const chat = await this.prisma.chat.findUnique({
       where: { id: chatId },
       select: {
+        routingState: true,
         primaryBotId: true,
         botId: true,
         botMemberships: {
@@ -675,24 +946,27 @@ export class MaxBotLinkService {
             botId: true,
             role: true,
             status: true,
+            botAccessState: true,
+            botAccessCheckedAt: true,
             permissionsSnapshot: true,
           },
         },
       },
     });
+    const routeClosed = chat?.routingState === ChatRoutingState.NO_ELIGIBLE_BOT;
     const activeKnownMemberships = (chat?.botMemberships ?? []).filter(
       (membership) =>
         membership.status === ChatBotMembershipStatus.ACTIVE &&
         Boolean(this.resolveOperationalBotId(membership.botId)),
     );
-    const activeExecutableMemberships = activeKnownMemberships.filter((membership) =>
-      Boolean(this.resolveExecutableBotId(membership.botId)),
+    const activeExecutableMemberships = activeKnownMemberships.filter(
+      (membership) =>
+        Boolean(this.resolveExecutableBotId(membership.botId)) &&
+        this.isMembershipRouteAccessEligible(membership),
     );
-    const accessEligibleActiveExecutableMemberships = activeExecutableMemberships.filter(
-      (membership) => !membershipExplicitlyLacksAccess(membership.permissionsSnapshot),
-    );
-    const accessEligibleActiveKnownMemberships = activeKnownMemberships.filter(
-      (membership) => !membershipExplicitlyLacksAccess(membership.permissionsSnapshot),
+    const accessEligibleActiveExecutableMemberships = activeExecutableMemberships;
+    const accessEligibleActiveKnownMemberships = activeKnownMemberships.filter((membership) =>
+      this.isMembershipRouteAccessEligible(membership),
     );
     const rawStoredExecutableBotId =
       this.resolveExecutableBotId(chat?.primaryBotId ?? null) ??
@@ -704,8 +978,8 @@ export class MaxBotLinkService {
       : null;
     const storedExecutableBotId =
       rawStoredExecutableBotId &&
-      (!storedExecutableMembership ||
-        !membershipExplicitlyLacksAccess(storedExecutableMembership.permissionsSnapshot))
+      storedExecutableMembership &&
+      this.isMembershipRouteAccessEligible(storedExecutableMembership)
         ? rawStoredExecutableBotId
         : null;
     const storedOperationalBotId = this.resolveOperationalBotId(
@@ -717,8 +991,8 @@ export class MaxBotLinkService {
       : null;
     const storedAccessEligibleBotId =
       storedOperationalBotId &&
-      (!storedOperationalMembership ||
-        !membershipExplicitlyLacksAccess(storedOperationalMembership.permissionsSnapshot))
+      storedOperationalMembership &&
+      this.isMembershipRouteAccessEligible(storedOperationalMembership)
         ? storedOperationalBotId
         : null;
     const executablePrimaryBotId =
@@ -750,10 +1024,14 @@ export class MaxBotLinkService {
     const assignedBotIds = Array.from(
       new Set(activeKnownMemberships.map((membership) => membership.botId)),
     );
-    const shouldHandleGroupUpdate =
-      !activeBotId ||
-      !primaryBotId ||
-      (activeBotId === primaryBotId && activeMembershipStatus !== ChatBotMembershipStatus.REMOVED);
+    const shouldHandleGroupUpdate = Boolean(
+      !routeClosed &&
+      activeBotId &&
+      primaryBotId &&
+      activeBotId === primaryBotId &&
+      activeMembershipStatus === ChatBotMembershipStatus.ACTIVE &&
+      Boolean(activeMembership && this.isMembershipRouteAccessEligible(activeMembership)),
+    );
 
     return {
       chatId,
@@ -839,6 +1117,9 @@ export class MaxBotLinkService {
     lastMaxErrorCode?: string | null;
     lastMaxErrorMessage?: string | null;
     lastMaxStatusCode?: number | null;
+    lifecycleEventAt?: Date | null;
+    lifecycleEventType?: string | null;
+    lifecycleSource?: string | null;
   }): Promise<string | null> {
     const chatId = params.chatId.trim();
     const botId = this.resolveOperationalBotId(params.botId);
@@ -849,6 +1130,9 @@ export class MaxBotLinkService {
     const title = params.title?.trim() || `Chat ${chatId}`;
     const entityType = params.entityType ?? undefined;
     const now = new Date();
+    const lifecycleEventAt = params.lifecycleEventAt ?? now;
+    const lifecycleEventType = params.lifecycleEventType?.trim() || 'bot_removed';
+    const lifecycleSource = params.lifecycleSource?.trim() || 'webhook';
     const existingChat = await this.prisma.chat.findUnique({
       where: { id: chatId },
       select: {
@@ -884,6 +1168,7 @@ export class MaxBotLinkService {
       create: {
         id: chatId,
         title,
+        routingState: ChatRoutingState.NO_ELIGIBLE_BOT,
         ...(entityType ? { entityType } : {}),
         catalogKind,
       },
@@ -894,30 +1179,54 @@ export class MaxBotLinkService {
       },
     });
 
-    await this.prisma.chatBotMembership.upsert({
+    const removed = await this.prisma.chatBotMembership.updateMany({
       where: {
-        chatId_botId: {
-          chatId,
-          botId,
-        },
-      },
-      create: {
         chatId,
         botId,
-        role: ChatBotMembershipRole.STANDBY,
-        status: ChatBotMembershipStatus.REMOVED,
-        ...(accessLossSnapshot ? { permissionsSnapshot: accessLossSnapshot } : {}),
-        lastSeenAt: now,
-        lastWebhookAt: now,
+        OR: [
+          { lifecycleEventAt: null },
+          { lifecycleEventAt: { lt: lifecycleEventAt } },
+          {
+            lifecycleEventAt,
+            status: ChatBotMembershipStatus.ACTIVE,
+          },
+        ],
       },
-      update: {
+      data: {
         role: ChatBotMembershipRole.STANDBY,
         status: ChatBotMembershipStatus.REMOVED,
         ...(accessLossSnapshot ? { permissionsSnapshot: accessLossSnapshot } : {}),
-        lastSeenAt: now,
-        lastWebhookAt: now,
+        lastSeenAt: lifecycleEventAt,
+        lastWebhookAt: lifecycleEventAt,
+        lifecycleEventAt,
+        lifecycleEventType,
+        lifecycleSource,
       },
     });
+
+    if (removed.count === 0) {
+      await this.prisma.chatBotMembership.upsert({
+        where: {
+          chatId_botId: {
+            chatId,
+            botId,
+          },
+        },
+        create: {
+          chatId,
+          botId,
+          role: ChatBotMembershipRole.STANDBY,
+          status: ChatBotMembershipStatus.REMOVED,
+          ...(accessLossSnapshot ? { permissionsSnapshot: accessLossSnapshot } : {}),
+          lastSeenAt: lifecycleEventAt,
+          lastWebhookAt: lifecycleEventAt,
+          lifecycleEventAt,
+          lifecycleEventType,
+          lifecycleSource,
+        },
+        update: {},
+      });
+    }
 
     return this.promoteActiveChatBotMembership(chatId, title, entityType);
   }
@@ -967,6 +1276,7 @@ export class MaxBotLinkService {
         title,
         botId: nextPrimaryBotId,
         primaryBotId: nextPrimaryBotId,
+        routingState: ChatRoutingState.NO_ELIGIBLE_BOT,
         ...(entityType ? { entityType } : {}),
         catalogKind,
       },
@@ -986,6 +1296,10 @@ export class MaxBotLinkService {
             : ChatBotMembershipRole.STANDBY,
         status: ChatBotMembershipStatus.ACTIVE,
         lastSeenAt: now,
+        lifecycleEventAt: now,
+        lifecycleEventType: 'live_probe',
+        lifecycleSource: 'managed_discovery',
+        allowReactivation: true,
       });
     }
 
@@ -994,17 +1308,15 @@ export class MaxBotLinkService {
         role: ChatBotMembershipRole.PRIMARY,
         status: ChatBotMembershipStatus.ACTIVE,
         lastSeenAt: now,
+        preserveRemovedMembership: true,
       });
     }
 
-    this.rememberChatBotBinding(chatId, nextPrimaryBotId);
-    return (
-      (await this.reconcileChatPrimaryByAccess({
-        chatId,
-        title,
-        entityType,
-      })) ?? nextPrimaryBotId
-    );
+    return this.reconcileChatPrimaryByAccess({
+      chatId,
+      title,
+      entityType,
+    });
   }
 
   async reconcileChatPrimaryByAccess(params: {
@@ -1018,7 +1330,14 @@ export class MaxBotLinkService {
     }
 
     const state = await this.loadChatRouteState(chatId);
-    if (!state?.primaryBotId) {
+    if (!state) {
+      this.forgetChatBotBinding(chatId);
+      return null;
+    }
+
+    const nextRoutingState = this.resolvePersistedRoutingState(state);
+    if (nextRoutingState === ChatRoutingState.NO_ELIGIBLE_BOT || !state.primaryBotId) {
+      await this.reconcileChatRoutingState({ chatId });
       this.forgetChatBotBinding(chatId);
       return null;
     }
@@ -1044,6 +1363,7 @@ export class MaxBotLinkService {
 
     if (
       state.storedPrimaryBotId === nextPrimaryBotId &&
+      state.routingState === nextRoutingState &&
       roleAlreadyConsistent &&
       !title &&
       !entityType
@@ -1058,6 +1378,7 @@ export class MaxBotLinkService {
         ...(title ? { title } : {}),
         botId: nextPrimaryBotId,
         primaryBotId: nextPrimaryBotId,
+        routingState: nextRoutingState,
         ...(entityType ? { entityType } : {}),
       },
     });
@@ -1091,6 +1412,16 @@ export class MaxBotLinkService {
     botId?: string | null;
   }): Promise<MaxBotRoute> {
     const chatId = typeof params.chatId === 'string' ? params.chatId.trim() : '';
+    const state = chatId ? await this.loadChatRouteState(chatId) : null;
+    if (state?.routingState === ChatRoutingState.NO_ELIGIBLE_BOT) {
+      this.forgetChatBotBinding(chatId);
+      return this.buildRoute({
+        purpose: 'default',
+        chatId,
+        routingVersion: state.routingVersion,
+      });
+    }
+
     const explicitBot = this.getOperationalBotById(params.botId);
     if (explicitBot) {
       return this.buildRoute({
@@ -1103,7 +1434,6 @@ export class MaxBotLinkService {
     }
 
     if (chatId) {
-      const state = await this.loadChatRouteState(chatId);
       if (state?.primaryBotId) {
         this.rememberChatBotBinding(chatId, state.primaryBotId);
         return this.buildRoute({
@@ -1153,7 +1483,7 @@ export class MaxBotLinkService {
       });
     }
 
-    const defaultBotId = this.getDefaultBotId();
+    const defaultBotId = this.getEntryBotId();
     return this.buildRoute({
       purpose: 'default',
       chatId,
@@ -1181,6 +1511,7 @@ export class MaxBotLinkService {
         botId: memberAccessRoute.botId,
         candidateBotIds: memberAccessRoute.candidateBotIds,
         reason: memberAccessRoute.reason,
+        routingVersion: memberAccessRoute.routingVersion ?? null,
       });
     }
 
@@ -1192,6 +1523,7 @@ export class MaxBotLinkService {
       botId: defaultRoute.botId,
       candidateBotIds: defaultRoute.candidateBotIds,
       reason: defaultRoute.reason,
+      routingVersion: defaultRoute.routingVersion ?? null,
     });
   }
 
@@ -1209,6 +1541,13 @@ export class MaxBotLinkService {
       return this.buildRoute({
         purpose: 'member_access',
         chatId: normalizedChatId,
+      });
+    }
+    if (state.routingState === ChatRoutingState.NO_ELIGIBLE_BOT) {
+      return this.buildRoute({
+        purpose: 'member_access',
+        chatId: normalizedChatId,
+        routingVersion: state.routingVersion,
       });
     }
 
@@ -1329,10 +1668,11 @@ export class MaxBotLinkService {
     }
 
     const state = await this.loadChatRouteState(normalizedChatId);
-    if (!state) {
+    if (!state || state.routingState === ChatRoutingState.NO_ELIGIBLE_BOT) {
       return this.buildRoute({
         purpose: 'send_message',
         chatId: normalizedChatId,
+        routingVersion: state?.routingVersion ?? null,
       });
     }
 
@@ -1348,6 +1688,7 @@ export class MaxBotLinkService {
       botId: selectedBotId,
       candidateBotIds,
       reason: selectedBotId ? this.resolveSendMessageRouteReason(state, selectedBotId) : null,
+      routingVersion: state.routingVersion,
     });
   }
 
@@ -1366,13 +1707,14 @@ export class MaxBotLinkService {
     }
 
     const state = await this.loadChatRouteState(normalizedChatId);
-    const candidateBotIds = state
-      ? this.buildModerationActionCandidateBotIdsFromState(
-          state,
-          action,
-          fallbackToPrimary !== false,
-        )
-      : [];
+    const candidateBotIds =
+      state?.routingState === ChatRoutingState.READY
+        ? this.buildModerationActionCandidateBotIdsFromState(
+            state,
+            action,
+            fallbackToPrimary !== false,
+          )
+        : [];
     const selectedBotId = candidateBotIds[0] ?? null;
 
     return this.buildRoute({
@@ -1381,6 +1723,7 @@ export class MaxBotLinkService {
       primaryBotId: state?.primaryBotId ?? null,
       botId: selectedBotId,
       candidateBotIds,
+      routingVersion: state?.routingVersion ?? null,
       reason:
         state && selectedBotId
           ? this.resolveModerationActionRouteReason(state, selectedBotId, action)
@@ -1404,10 +1747,11 @@ export class MaxBotLinkService {
     }
 
     const state = await this.loadChatRouteState(normalizedChatId);
-    if (!state) {
+    if (!state || state.routingState === ChatRoutingState.NO_ELIGIBLE_BOT) {
       return this.buildRoute({
         purpose: 'capability',
         chatId: normalizedChatId,
+        routingVersion: state?.routingVersion ?? null,
         capability,
       });
     }
@@ -1423,6 +1767,7 @@ export class MaxBotLinkService {
         purpose: 'capability',
         chatId: normalizedChatId,
         primaryBotId: state.primaryBotId,
+        routingVersion: state.routingVersion,
         capability,
       });
     }
@@ -1431,6 +1776,7 @@ export class MaxBotLinkService {
       purpose: 'capability',
       chatId: normalizedChatId,
       primaryBotId: state.primaryBotId,
+      routingVersion: state.routingVersion,
       botId: selectedBotId,
       candidateBotIds,
       reason: selectedBotId === state.primaryBotId ? 'primary_fallback' : 'alternate_confirmed',
@@ -1448,6 +1794,8 @@ export class MaxBotLinkService {
       where: { id: normalizedChatId },
       select: {
         entityType: true,
+        routingState: true,
+        routingVersion: true,
         primaryBotId: true,
         botId: true,
         botMemberships: {
@@ -1455,6 +1803,9 @@ export class MaxBotLinkService {
             botId: true,
             role: true,
             status: true,
+            botAccessState: true,
+            botAccessCheckedAt: true,
+            botAccessExpiresAt: true,
             permissionsSnapshot: true,
             capabilities: true,
           },
@@ -1480,11 +1831,13 @@ export class MaxBotLinkService {
     });
     const activeActionableMemberships = activeKnownMemberships.filter((membership) => {
       const bot = this.botRegistry.getBotById(membership.botId);
-      return Boolean(bot && canExecuteActionsForBotState(bot.state));
+      return Boolean(
+        bot &&
+        canExecuteActionsForBotState(bot.state) &&
+        this.isMembershipRouteAccessEligible(membership),
+      );
     });
-    const accessEligibleActiveActionableMemberships = activeActionableMemberships.filter(
-      (membership) => !membershipExplicitlyLacksAccess(membership.permissionsSnapshot),
-    );
+    const accessEligibleActiveActionableMemberships = activeActionableMemberships;
     const storedPrimaryBotId = this.resolveOperationalBotId(chat.primaryBotId ?? null);
     const rawStoredExecutableBotId =
       this.resolveExecutableBotId(chat.primaryBotId ?? null) ??
@@ -1496,8 +1849,8 @@ export class MaxBotLinkService {
       : null;
     const storedExecutableBotId =
       rawStoredExecutableBotId &&
-      (!storedExecutableMembership ||
-        !membershipExplicitlyLacksAccess(storedExecutableMembership.permissionsSnapshot))
+      storedExecutableMembership &&
+      this.isMembershipRouteAccessEligible(storedExecutableMembership)
         ? rawStoredExecutableBotId
         : null;
     const preferredPrimaryBotId =
@@ -1511,12 +1864,18 @@ export class MaxBotLinkService {
       accessEligibleActiveActionableMemberships[0]?.botId ??
       null;
     const primaryBotId = preferredPrimaryBotId;
+    if (chat.routingState === ChatRoutingState.NO_ELIGIBLE_BOT) {
+      this.forgetChatBotBinding(normalizedChatId);
+    }
 
     return {
       chatId: normalizedChatId,
       entityType: chat.entityType ?? null,
+      routingState: chat.routingState,
+      hasStoredBotAssignment: Boolean(chat.primaryBotId || chat.botId),
       storedPrimaryBotId,
       primaryBotId,
+      routingVersion: chat.routingVersion,
       memberships,
       activeKnownMemberships,
       activeOperationalMemberships,
@@ -1619,6 +1978,40 @@ export class MaxBotLinkService {
     }
 
     return candidateBotIds;
+  }
+
+  private resolvePersistedRoutingState(state: ResolvedChatRouteState): ChatRoutingState {
+    if (
+      state.activeActionableMemberships.some((membership) =>
+        this.isMembershipConfirmedRoutingEligible(membership),
+      )
+    ) {
+      return ChatRoutingState.READY;
+    }
+    if (state.activeActionableMemberships.length === 0) {
+      return ChatRoutingState.NO_ELIGIBLE_BOT;
+    }
+    return state.routingState;
+  }
+
+  private isMembershipConfirmedRoutingEligible(membership: ResolvedChatRouteMembership): boolean {
+    if (!this.isMembershipRouteAccessEligible(membership)) {
+      return false;
+    }
+    if (
+      membership.botAccessState !== ChatBotAccessState.CONFIRMED_ADMIN &&
+      membership.botAccessState !== ChatBotAccessState.CONFIRMED_OWNER
+    ) {
+      return false;
+    }
+
+    const expiresAtMs = membership.botAccessExpiresAt?.getTime() ?? Number.NaN;
+    if (Number.isFinite(expiresAtMs)) {
+      return expiresAtMs > Date.now();
+    }
+    return isFreshMembershipAccessSnapshot(
+      normalizeMembershipAccessSnapshot(membership.permissionsSnapshot),
+    );
   }
 
   private buildSendMessageCandidateBotIdsFromState(
@@ -1840,6 +2233,7 @@ export class MaxBotLinkService {
     botId?: string | null;
     candidateBotIds?: Array<string | null | undefined>;
     reason?: MaxBotRouteReason | null;
+    routingVersion?: number | null;
     action?: ModerationActionPermission;
     capability?: ManagedEntityBotCapability;
   }): MaxBotRoute {
@@ -1873,6 +2267,7 @@ export class MaxBotLinkService {
       botId,
       candidateBotIds,
       reason: routeReason,
+      ...(params.routingVersion !== undefined ? { routingVersion: params.routingVersion } : {}),
     };
 
     if (params.purpose === 'moderation_action') {
@@ -2090,6 +2485,8 @@ export class MaxBotLinkService {
         botId: true,
         role: true,
         status: true,
+        botAccessState: true,
+        botAccessCheckedAt: true,
         permissionsSnapshot: true,
       },
     });
@@ -2097,7 +2494,8 @@ export class MaxBotLinkService {
     const activeMemberships = memberships.filter(
       (membership) =>
         membership.status === ChatBotMembershipStatus.ACTIVE &&
-        this.resolveExecutableBotId(membership.botId),
+        this.resolveExecutableBotId(membership.botId) &&
+        this.isMembershipRouteAccessEligible(membership),
     );
     const accessEligibleActiveMemberships = activeMemberships.filter(
       (membership) => !membershipExplicitlyLacksAccess(membership.permissionsSnapshot),
@@ -2118,6 +2516,7 @@ export class MaxBotLinkService {
         title,
         botId: nextPrimaryBotId,
         primaryBotId: nextPrimaryBotId,
+        routingState: nextPrimaryBotId ? ChatRoutingState.READY : ChatRoutingState.NO_ELIGIBLE_BOT,
         ...(entityType ? { entityType } : {}),
       },
     });
@@ -2159,8 +2558,13 @@ export class MaxBotLinkService {
       status: ChatBotMembershipStatus;
       lastSeenAt?: Date | null;
       lastWebhookAt?: Date | null;
+      lifecycleEventAt?: Date | null;
+      lifecycleEventType?: string | null;
+      lifecycleSource?: string | null;
+      allowReactivation?: boolean;
+      preserveRemovedMembership?: boolean;
     },
-  ): Promise<void> {
+  ): Promise<ChatBotMembershipUpsertResult> {
     const isActiveOperational =
       params.status === ChatBotMembershipStatus.ACTIVE &&
       Boolean(this.resolveOperationalBotId(botId));
@@ -2171,11 +2575,118 @@ export class MaxBotLinkService {
         : params.status;
     const nextRole = isActiveOperational ? params.role : ChatBotMembershipRole.STANDBY;
 
-    if (nextStatus === ChatBotMembershipStatus.ACTIVE) {
-      await this.clearRemovedChatBotAccessLossSnapshot(chatId, botId);
+    const lifecycleEventAt = params.lifecycleEventAt ?? null;
+    const lifecycleEventType = params.lifecycleEventType?.trim() || null;
+    const lifecycleSource = params.lifecycleSource?.trim() || null;
+
+    if (
+      nextStatus === ChatBotMembershipStatus.ACTIVE &&
+      lifecycleEventAt &&
+      lifecycleEventType &&
+      params.allowReactivation === true
+    ) {
+      const existing = await this.prisma.chatBotMembership.findUnique({
+        where: { chatId_botId: { chatId, botId } },
+        select: { id: true },
+      });
+      const updated = await this.prisma.chatBotMembership.updateMany({
+        where: {
+          chatId,
+          botId,
+          OR: [{ lifecycleEventAt: null }, { lifecycleEventAt: { lt: lifecycleEventAt } }],
+        },
+        data: {
+          role: nextRole,
+          status: ChatBotMembershipStatus.ACTIVE,
+          ...(lifecycleSource === 'live_probe'
+            ? {}
+            : {
+                permissionsSnapshot: Prisma.JsonNull,
+                botAccessState: ChatBotAccessState.UNKNOWN,
+                botAccessCheckedAt: null,
+                botAccessExpiresAt: null,
+                botAccessSource: lifecycleSource,
+                botAccessLastErrorCode: null,
+              }),
+          lastSeenAt: params.lastSeenAt ?? lifecycleEventAt,
+          lastWebhookAt: params.lastWebhookAt ?? lifecycleEventAt,
+          lifecycleEventAt,
+          lifecycleEventType,
+          lifecycleSource,
+        },
+      });
+      if (updated.count > 0) {
+        return { active: true, lifecycleAdvanced: true };
+      }
+
+      const membership = await this.prisma.chatBotMembership.upsert({
+        where: {
+          chatId_botId: {
+            chatId,
+            botId,
+          },
+        },
+        create: {
+          chatId,
+          botId,
+          role: nextRole,
+          status: ChatBotMembershipStatus.ACTIVE,
+          lastSeenAt: params.lastSeenAt ?? lifecycleEventAt,
+          lastWebhookAt: params.lastWebhookAt ?? lifecycleEventAt,
+          lifecycleEventAt,
+          lifecycleEventType,
+          lifecycleSource,
+        },
+        update: {},
+      });
+      const active = membership.status === ChatBotMembershipStatus.ACTIVE;
+      return { active, lifecycleAdvanced: active && !existing };
     }
 
-    await this.prisma.chatBotMembership.upsert({
+    if (
+      nextStatus === ChatBotMembershipStatus.ACTIVE &&
+      params.preserveRemovedMembership === true
+    ) {
+      const touched = await this.prisma.chatBotMembership.updateMany({
+        where: {
+          chatId,
+          botId,
+          status: ChatBotMembershipStatus.ACTIVE,
+        },
+        data: {
+          role: nextRole,
+          ...(params.lastSeenAt ? { lastSeenAt: params.lastSeenAt } : {}),
+          ...(params.lastWebhookAt ? { lastWebhookAt: params.lastWebhookAt } : {}),
+        },
+      });
+      if (touched.count > 0) {
+        return { active: true, lifecycleAdvanced: false };
+      }
+
+      const membership = await this.prisma.chatBotMembership.upsert({
+        where: {
+          chatId_botId: {
+            chatId,
+            botId,
+          },
+        },
+        create: {
+          chatId,
+          botId,
+          role: nextRole,
+          status: ChatBotMembershipStatus.ACTIVE,
+          ...(params.lastSeenAt ? { lastSeenAt: params.lastSeenAt } : {}),
+          ...(params.lastWebhookAt ? { lastWebhookAt: params.lastWebhookAt } : {}),
+        },
+        update: {},
+      });
+      return {
+        active: membership.status === ChatBotMembershipStatus.ACTIVE,
+        lifecycleAdvanced: false,
+      };
+    }
+
+    const membership = await this.prisma.chatBotMembership.upsert({
       where: {
         chatId_botId: {
           chatId,
@@ -2189,12 +2700,63 @@ export class MaxBotLinkService {
         status: nextStatus,
         ...(params.lastSeenAt ? { lastSeenAt: params.lastSeenAt } : {}),
         ...(params.lastWebhookAt ? { lastWebhookAt: params.lastWebhookAt } : {}),
+        ...(lifecycleEventAt ? { lifecycleEventAt } : {}),
+        ...(lifecycleEventType ? { lifecycleEventType } : {}),
+        ...(lifecycleSource ? { lifecycleSource } : {}),
       },
       update: {
         role: nextRole,
         status: nextStatus,
         ...(params.lastSeenAt ? { lastSeenAt: params.lastSeenAt } : {}),
         ...(params.lastWebhookAt ? { lastWebhookAt: params.lastWebhookAt } : {}),
+        ...(lifecycleEventAt ? { lifecycleEventAt } : {}),
+        ...(lifecycleEventType ? { lifecycleEventType } : {}),
+        ...(lifecycleSource ? { lifecycleSource } : {}),
+      },
+    });
+    return {
+      active: membership.status === ChatBotMembershipStatus.ACTIVE,
+      lifecycleAdvanced: false,
+    };
+  }
+
+  private async markChatRoutingReadyFromLifecycleProof(params: {
+    chatId: string;
+    botId: string;
+    lifecycleEventAt: Date;
+    lifecycleEventType: string;
+    lifecycleSource: string;
+  }): Promise<void> {
+    const liveProbe =
+      params.lifecycleEventType === 'live_probe' && params.lifecycleSource === 'live_probe';
+    if (!liveProbe && params.lifecycleEventType !== 'bot_added') {
+      return;
+    }
+    await this.prisma.chat.updateMany({
+      where: {
+        id: params.chatId,
+        routingState: { not: ChatRoutingState.READY },
+        botMemberships: {
+          some: {
+            botId: params.botId,
+            status: ChatBotMembershipStatus.ACTIVE,
+            lifecycleEventAt: params.lifecycleEventAt,
+            lifecycleEventType: params.lifecycleEventType,
+            botAccessState: liveProbe
+              ? { in: [ChatBotAccessState.CONFIRMED_ADMIN, ChatBotAccessState.CONFIRMED_OWNER] }
+              : { notIn: [ChatBotAccessState.DENIED, ChatBotAccessState.LOST] },
+            ...(liveProbe
+              ? {
+                  botAccessCheckedAt: { gte: params.lifecycleEventAt },
+                  botAccessExpiresAt: { gt: params.lifecycleEventAt },
+                }
+              : {}),
+          },
+        },
+      },
+      data: {
+        routingState: ChatRoutingState.READY,
+        routingVersion: { increment: 1 },
       },
     });
   }
@@ -2208,19 +2770,13 @@ export class MaxBotLinkService {
     return this.getOperationalBotById(botId)?.id ?? null;
   }
 
-  private async clearRemovedChatBotAccessLossSnapshot(
-    chatId: string,
-    botId: string,
-  ): Promise<void> {
-    await this.prisma.chatBotMembership.updateMany({
-      where: {
-        chatId,
-        botId,
-        status: ChatBotMembershipStatus.REMOVED,
-      },
-      data: {
-        permissionsSnapshot: Prisma.JsonNull,
-      },
-    });
+  private isMembershipRouteAccessEligible(
+    membership: Pick<ResolvedChatRouteMembership, 'botAccessState' | 'permissionsSnapshot'>,
+  ): boolean {
+    return (
+      membership.botAccessState !== ChatBotAccessState.DENIED &&
+      membership.botAccessState !== ChatBotAccessState.LOST &&
+      !membershipExplicitlyLacksAccess(membership.permissionsSnapshot)
+    );
   }
 }

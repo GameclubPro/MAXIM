@@ -4,6 +4,7 @@ import {
   ChatBotMembershipRole,
   ChatBotMembershipStatus,
   ChatEntityType,
+  ChatRoutingState,
   Prisma,
 } from '../prisma/prisma-client';
 import type {
@@ -644,14 +645,6 @@ export class MaxBotExecutionPlannerService {
     entityType: ManagedEntityType;
   }): Promise<void> {
     await this.prisma.$transaction([
-      this.prisma.chat.update({
-        where: { id: params.chatId },
-        data: {
-          botId: params.botId,
-          primaryBotId: params.botId,
-          entityType: this.toPrismaEntityType(params.entityType),
-        },
-      }),
       this.prisma.chatBotMembership.updateMany({
         where: {
           chatId: params.chatId,
@@ -669,6 +662,15 @@ export class MaxBotExecutionPlannerService {
         },
         data: {
           role: ChatBotMembershipRole.PRIMARY,
+        },
+      }),
+      this.prisma.chat.update({
+        where: { id: params.chatId },
+        data: {
+          botId: params.botId,
+          primaryBotId: params.botId,
+          routingState: ChatRoutingState.READY,
+          entityType: this.toPrismaEntityType(params.entityType),
         },
       }),
     ]);

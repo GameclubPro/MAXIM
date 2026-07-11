@@ -166,6 +166,41 @@ describe('WebhookParser', () => {
 
     expect(parsed.message?.chatId).toBe('-100777');
     expect(parsed.message?.entityType).toBe('channel');
+    expect(parsed.eventTimestampSource).toBe('payload');
+  });
+
+  it('marks locally synthesized lifecycle timestamps as ingress-only evidence', () => {
+    const parsed = parser.parse({
+      update_type: 'bot_added',
+      chat_id: '-100778',
+      user: { user_id: 'bot-contact-1', is_bot: true },
+    });
+
+    expect(parsed.eventTimestampSource).toBe('ingress');
+    expect(parsed.message?.createdAt).toEqual(expect.any(String));
+  });
+
+  it('uses the update timestamp rather than the original message timestamp for edits', () => {
+    const parsed = parser.parse({
+      type: 'message_edited',
+      timestamp: '2026-07-10T14:00:00.456Z',
+      message: {
+        timestamp: '2026-07-10T13:50:00.123Z',
+        body: {
+          mid: 'mid-edited-1',
+          text: 'edited text',
+        },
+        recipient: {
+          chat_id: '-100123',
+        },
+        sender: {
+          user_id: 'user-1',
+        },
+      },
+    });
+
+    expect(parsed.eventTimestampSource).toBe('payload');
+    expect(parsed.message?.createdAt).toBe('2026-07-10T14:00:00.456Z');
   });
 
   it('extracts text from nested body.text when message.text is missing', () => {

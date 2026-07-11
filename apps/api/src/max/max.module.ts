@@ -8,13 +8,20 @@ import { SystemModule } from '../system/system.module';
 import { ManagedEntityAccessLossService } from './managed-entity-access-loss.service';
 import { MaxActionDispatchService } from './max-action-dispatch.service';
 import { MaxActionLedgerService } from './max-action-ledger.service';
-import { MaxActionProcessor } from './max-action.processor';
+import {
+  MaxActionBackgroundProcessor,
+  MaxActionCriticalProcessor,
+  MaxActionInteractiveProcessor,
+  MaxActionProcessor,
+} from './max-action.processor';
+import { MAX_ACTION_ALL_QUEUE_NAMES } from './max-action.queue';
 import { MaxChatAdminRosterSyncProcessor } from './max-chat-admin-roster-sync.processor';
 import { MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE } from './max-chat-admin-roster-sync.queue';
 import { MaxChatAdminRosterSyncService } from './max-chat-admin-roster-sync.service';
 import { MaxBotExecutionPlannerService } from './max-bot-execution-planner.service';
 import { MaxClientService } from './max-client.service';
 import { MaxMembershipLookupService } from './max-membership-lookup.service';
+import { MaxRoutedPublicationService } from './max-routed-publication.service';
 import { MaxWebhookSubscriptionReconcilerService } from './max-webhook-subscription-reconciler.service';
 import { ManagedEntityAccessWriter } from './managed-entity-access-writer.service';
 import { ManagedEntityHandshakeService } from './managed-entity-handshake.service';
@@ -28,12 +35,20 @@ const maxProviders = [
   MaxChatAdminRosterSyncService,
   MaxBotExecutionPlannerService,
   MaxMembershipLookupService,
+  MaxRoutedPublicationService,
   MaxWebhookSubscriptionReconcilerService,
   ManagedEntityAccessLossService,
   ManagedEntityAccessWriter,
   ManagedEntityHandshakeOutcomeService,
   ManagedEntityHandshakeService,
-  ...(roleRunsAction(getAppRole()) ? [MaxActionProcessor] : []),
+  ...(roleRunsAction(getAppRole())
+    ? [
+        MaxActionProcessor,
+        MaxActionCriticalProcessor,
+        MaxActionInteractiveProcessor,
+        MaxActionBackgroundProcessor,
+      ]
+    : []),
   ...(roleRunsAction(getAppRole()) ? [MaxChatAdminRosterSyncProcessor] : []),
 ];
 
@@ -47,7 +62,7 @@ const maxProviders = [
     MaxBotModule,
     ChatContextModule,
     NightModeTransitionModule,
-    BullModule.registerQueue({ name: 'moderation-actions' }),
+    BullModule.registerQueue(...MAX_ACTION_ALL_QUEUE_NAMES.map((name) => ({ name }))),
     BullModule.registerQueue({ name: MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE }),
   ],
   providers: maxProviders,
@@ -58,6 +73,7 @@ const maxProviders = [
     MaxChatAdminRosterSyncService,
     MaxBotExecutionPlannerService,
     MaxMembershipLookupService,
+    MaxRoutedPublicationService,
     MaxWebhookSubscriptionReconcilerService,
     ManagedEntityAccessLossService,
     ManagedEntityAccessWriter,

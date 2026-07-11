@@ -211,6 +211,7 @@
   store only the identity hash needed for revoting/dedupe, keep raw/profile identity fields null,
   and never expose voter lists through poll APIs.
 - When users format text in the MAX client, treat formatting as `message.body.markup`, not as literal markdown typed by the user. Preserve or reconstruct formatting from `markup` when importing, editing, or republishing text.
+- For webhook ordering and semantic dedupe, treat MAX `Update.timestamp` as the event/edit time; `Message.timestamp` is the message creation time and must not identify successive edits.
 - Treat MAX `markup.from` and `markup.length` as JavaScript string offsets for the original text. Do not remap them through `Array.from(...)` or code-point indexing, especially on emoji-rich text.
 - For `max://user/<id>` mentions, use the user's resolved display name, including `first_name + last_name` when MAX sends split fields. Username-only or first-name-only labels can render as plain text in MAX clients.
 - For admin contact links, prefer a direct HTTP(S) `profileUrl` when MAX provides one. For profile handoff URLs with a saved display label, render `Связь с админом: [Display Name](max://user/<id>)`; without a label, fall back to the HTTP(S) handoff URL because MAX can render arbitrary-label user mentions as plain text.

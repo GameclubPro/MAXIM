@@ -76,6 +76,49 @@ is_enabled() {
   esac
 }
 
+check_deploy_disk_capacity() {
+  local target_percent="${MAXIM_DEPLOY_DISK_TARGET_PERCENT:-${MAXIM_DEPLOY_DISK_WARN_PERCENT:-80}}"
+  local critical_percent="${MAXIM_DEPLOY_DISK_CRITICAL_PERCENT:-${MAXIM_DEPLOY_DISK_MAX_PERCENT:-90}}"
+  local disk_path="/var/lib/docker"
+  local used_percent
+
+  validate_nonnegative_int "MAXIM_DEPLOY_DISK_TARGET_PERCENT" "$target_percent"
+  validate_nonnegative_int "MAXIM_DEPLOY_DISK_CRITICAL_PERCENT" "$critical_percent"
+  if [[ "$target_percent" -ge "$critical_percent" ]] || [[ "$critical_percent" -gt 100 ]]; then
+    echo "Disk thresholds must satisfy target < critical <= 100." >&2
+    exit 1
+  fi
+
+  if [[ ! -d "$disk_path" ]]; then
+    disk_path="/"
+  fi
+  used_percent="$(df -P "$disk_path" | awk 'NR == 2 { gsub(/%/, "", $5); print $5 }')"
+  if [[ ! "$used_percent" =~ ^[0-9]+$ ]]; then
+    echo "Failed to read disk utilization for $disk_path." >&2
+    exit 1
+  fi
+
+  echo "Deploy disk preflight: path=$disk_path used=${used_percent}% target=${target_percent}% critical=${critical_percent}%"
+  if [[ "$used_percent" -ge "$target_percent" ]] && ! is_enabled "${MAXIM_ALLOW_CRITICAL_DISK_DEPLOY:-0}"; then
+    local severity="above the deploy target"
+    if [[ "$used_percent" -ge "$critical_percent" ]]; then
+      severity="critical"
+    fi
+    cat >&2 <<EOF
+Refusing to build with ${severity} disk utilization (${used_percent}%).
+Run infra/scripts/vps-docker-space-reclaim.sh after reviewing its inventory.
+This guard never prunes Docker volumes. Set MAXIM_ALLOW_CRITICAL_DISK_DEPLOY=1 only for an explicit emergency deploy.
+EOF
+    exit 1
+  fi
+
+  if [[ "$used_percent" -ge "$critical_percent" ]]; then
+    echo "CRITICAL: deploy host disk utilization is ${used_percent}%." >&2
+  elif [[ "$used_percent" -ge "$target_percent" ]]; then
+    echo "WARNING: deploy host disk utilization is ${used_percent}%." >&2
+  fi
+}
+
 validate_deploy_branch() {
   if [[ -z "$BRANCH" ]]; then
     echo "Deploy branch must not be empty." >&2
@@ -457,6 +500,7 @@ sync_branch
 reexec_if_current_script_changed
 ensure_compose_env
 warn_postgres_password_fallback
+check_deploy_disk_capacity
 stop_conflicting_stacks
 warn_legacy_miniapp_static_target
 ensure_service_requested_if_down "miniapp-major-static"

@@ -49,11 +49,13 @@ export class ManagedEntityAccessWriter {
       entityType: context.prismaEntityType,
     });
 
-    const catalog = (this.prisma as PrismaService & {
-      managedBotChatCatalog?: {
-        upsert?: (args: unknown) => Promise<unknown>;
-      };
-    }).managedBotChatCatalog;
+    const catalog = (
+      this.prisma as PrismaService & {
+        managedBotChatCatalog?: {
+          upsert?: (args: unknown) => Promise<unknown>;
+        };
+      }
+    ).managedBotChatCatalog;
     if (typeof catalog?.upsert === 'function') {
       const now = new Date();
       await catalog.upsert({
@@ -237,6 +239,11 @@ export class ManagedEntityAccessWriter {
         },
       }),
     ]);
+    await this.maxBotLinkService.reconcileChatPrimaryByAccess?.({
+      chatId: context.chatId,
+      title: context.title,
+      entityType: context.prismaEntityType,
+    });
 
     await Promise.all([
       this.chatContextCache.setAdminAccess(context.chatId, context.senderId, 'granted'),
@@ -257,7 +264,7 @@ export class ManagedEntityAccessWriter {
     const nowIso = new Date().toISOString();
     const items = [
       summary,
-      ...((existing?.items ?? []).filter((item) => item.id.trim() !== context.chatId)),
+      ...(existing?.items ?? []).filter((item) => item.id.trim() !== context.chatId),
     ];
     const snapshot: ManagedEntitiesPublishedSnapshot = {
       version: `handshake:${context.chatId}:${Date.now()}`,
@@ -290,9 +297,7 @@ export class ManagedEntityAccessWriter {
   }
 
   private buildItemsHash(items: readonly ChatSummary[]): string {
-    return Buffer.from(
-      JSON.stringify(items.map((item) => [item.entityType, item.id, item.title])),
-    )
+    return Buffer.from(JSON.stringify(items.map((item) => [item.entityType, item.id, item.title])))
       .toString('base64url')
       .slice(0, 64);
   }

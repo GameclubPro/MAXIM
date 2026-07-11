@@ -95,6 +95,15 @@ describe('MaxApiMetricsService', () => {
       windowSec: expectedWindowSec,
       windowStartAt: new Date((nowSec - expectedWindowSec + 1) * 1_000).toISOString(),
       windowEndAt: new Date(nowSec * 1_000).toISOString(),
+      rateLimitOutcomes: {
+        generatedAt: expect.any(String),
+        windowSec: expectedWindowSec,
+        stack: {
+          internalLimiterRejects: 0,
+          external429: 0,
+        },
+        bots: {},
+      },
       overall: {
         totalRequests: 16,
         avgRps: avg(16),
@@ -365,6 +374,41 @@ describe('MaxApiMetricsService', () => {
               },
             },
           },
+        },
+      },
+    });
+
+    await service.onModuleDestroy();
+  });
+
+  it('aggregates internal limiter rejects and external 429s for stack and bots', async () => {
+    const service = new MaxApiMetricsService(createConfigMock() as never);
+    const store = redisStores[0]!;
+    const nowSec = Math.floor(Date.now() / 1_000);
+
+    store.set(`maxapi:rate-limit:v1:internal_limiter:bot-a:critical:${nowSec}`, '3');
+    store.set(`maxapi:rate-limit:v1:external_429:bot-a:interactive:${nowSec - 1}`, '2');
+    store.set(`maxapi:rate-limit:v1:external_429:bot-b:background:${nowSec}`, '4');
+    store.set(`maxapi:rate-limit:v1:internal_limiter:stack:critical:${nowSec}`, '3');
+    store.set(`maxapi:rate-limit:v1:external_429:stack:interactive:${nowSec - 1}`, '2');
+    store.set(`maxapi:rate-limit:v1:external_429:stack:background:${nowSec}`, '4');
+    store.set(`maxapi:rate-limit:v1:external_429:stack:critical:${nowSec - 1_000}`, '99');
+
+    await expect(service.getRateLimitOutcomeSnapshot({ windowSec: 10 })).resolves.toEqual({
+      generatedAt: expect.any(String),
+      windowSec: 60,
+      stack: {
+        internalLimiterRejects: 3,
+        external429: 6,
+      },
+      bots: {
+        'bot-a': {
+          internalLimiterRejects: 3,
+          external429: 2,
+        },
+        'bot-b': {
+          internalLimiterRejects: 0,
+          external429: 4,
         },
       },
     });

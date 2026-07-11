@@ -1,5 +1,8 @@
 import { UnrecoverableError } from 'bullmq';
-import { MaxActionLedgerService } from './max-action-ledger.service';
+import {
+  markMaxSendDispatchLedgerFinalized,
+  MaxActionLedgerService,
+} from './max-action-ledger.service';
 import { MaxActionLedgerStatus } from '../prisma/prisma-client';
 import type { MaxActionJob } from './max-client.service';
 
@@ -21,6 +24,7 @@ function createService(row: unknown = null) {
     maxActionLedgerEntry: {
       findUnique: jest.fn().mockResolvedValue(row),
       upsert: jest.fn().mockResolvedValue(undefined),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
   };
   return {
@@ -70,6 +74,21 @@ describe('MaxActionLedgerService', () => {
     expect(prisma.maxActionLedgerEntry.findUnique).not.toHaveBeenCalled();
   });
 
+  it('blocks terminal SEND_MESSAGE rows that have no recoverable remote message id', async () => {
+    const { service } = createService({
+      status: MaxActionLedgerStatus.FAILED_TERMINAL,
+      ambiguous: false,
+      terminal: true,
+      dispatchToken: null,
+      dispatchStartedAt: null,
+      remoteMessageId: null,
+    });
+
+    await expect(service.assertCanEnqueue(createJob())).rejects.toThrow(
+      'has no recoverable remote message id',
+    );
+  });
+
   it('records enqueue metadata without storing message text', async () => {
     const { service, prisma } = createService();
     const job = createJob({
@@ -77,6 +96,14 @@ describe('MaxActionLedgerService', () => {
       trafficClass: 'critical',
       actionHealthLane: 'background',
       autoDeleteDelayMs: 60_000,
+      candidateBotIds: ['bot-1', 'bot-2'],
+      attemptedBotIds: ['bot-1'],
+      routing: {
+        purpose: 'send_message',
+        primaryBotId: 'bot-1',
+        reason: 'primary_confirmed',
+        routingVersion: 3,
+      },
     });
 
     await service.recordEnqueued(job);
@@ -92,14 +119,33 @@ describe('MaxActionLedgerService', () => {
           chatId: 'chat-1',
           botId: 'bot-1',
           sourceTag: 'interactive',
-          status: MaxActionLedgerStatus.ENQUEUED,
-          ambiguous: false,
-          terminal: false,
           metadata: expect.objectContaining({
             hasText: true,
             textLength: 5,
             autoDeleteDelayMs: 60_000,
+            candidateBotIds: ['bot-1', 'bot-2'],
+            attemptedBotIds: ['bot-1'],
+            routing: expect.objectContaining({
+              purpose: 'send_message',
+              routingVersion: 3,
+            }),
           }),
+        }),
+        update: {},
+      }),
+    );
+    expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          jobId: 'job-1',
+          dispatchToken: null,
+          remoteMessageId: null,
+        }),
+        data: expect.objectContaining({
+          status: MaxActionLedgerStatus.ENQUEUED,
+          ambiguous: false,
+          terminal: false,
+          enqueuedAt: expect.any(Date),
         }),
       }),
     );
@@ -113,18 +159,252 @@ describe('MaxActionLedgerService', () => {
 
     await service.recordStarted(job);
 
-    expect(prisma.maxActionLedgerEntry.upsert).toHaveBeenCalledWith(
+    expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        create: expect.objectContaining({
-          attemptCount: 3,
-          status: MaxActionLedgerStatus.IN_PROGRESS,
+        where: expect.objectContaining({
+          jobId: 'job-1',
+          dispatchToken: null,
+          remoteMessageId: null,
         }),
-        update: expect.objectContaining({
+        data: expect.objectContaining({
           attemptCount: {
             increment: 1,
           },
           status: MaxActionLedgerStatus.IN_PROGRESS,
         }),
+      }),
+    );
+  });
+
+  it('persists prepared domain context before the SEND dispatch fence is claimed', async () => {
+    const { service, prisma } = createService();
+    const job = createJob({
+      ledgerContext: {
+        managedBroadcast: {
+          commentDialogReference: {
+            entityType: 'channel',
+            threadId: 'thread-1',
+            includeCommentsButton: true,
+          },
+        },
+      },
+    });
+
+    await service.recordPrepared(job);
+
+    expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        jobId: 'job-1',
+        dispatchToken: null,
+        dispatchStartedAt: null,
+        remoteMessageId: null,
+        terminal: false,
+      }),
+      data: expect.objectContaining({
+        metadata: expect.objectContaining({
+          ledgerContext: job.ledgerContext,
+        }),
+      }),
+    });
+  });
+
+  it('claims the first SEND_MESSAGE dispatch with an atomic token fence', async () => {
+    const { service, prisma } = createService();
+
+    const claim = await service.claimSendDispatch(createJob(), 'bot-1');
+
+    expect(claim).toEqual({
+      kind: 'claimed',
+      dispatchToken: expect.any(String),
+    });
+    expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith({
+      where: {
+        jobId: 'job-1',
+        dispatchToken: null,
+        dispatchStartedAt: null,
+        dispatchBotId: null,
+        remoteMessageId: null,
+        ambiguous: false,
+        terminal: false,
+      },
+      data: {
+        dispatchToken: expect.any(String),
+        dispatchStartedAt: expect.any(Date),
+        dispatchBotId: 'bot-1',
+      },
+    });
+  });
+
+  it('quarantines an unresolved prior SEND_MESSAGE dispatch instead of claiming again', async () => {
+    const { service, prisma } = createService({
+      status: MaxActionLedgerStatus.IN_PROGRESS,
+      ambiguous: false,
+      terminal: false,
+      dispatchToken: 'prior-token',
+      dispatchStartedAt: new Date('2026-07-11T09:00:00.000Z'),
+      dispatchBotId: 'bot-1',
+      remoteMessageId: null,
+    });
+    prisma.maxActionLedgerEntry.updateMany
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 1 });
+
+    await expect(service.claimSendDispatch(createJob(), 'bot-2')).rejects.toMatchObject({
+      name: 'UnrecoverableError',
+      maxSendDispatchLedgerFinalized: true,
+    });
+    expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: {
+          jobId: 'job-1',
+          dispatchToken: 'prior-token',
+          remoteMessageId: null,
+        },
+        data: expect.objectContaining({
+          status: MaxActionLedgerStatus.AMBIGUOUS,
+          ambiguous: true,
+          terminal: true,
+        }),
+      }),
+    );
+  });
+
+  it('recovers a persisted remote message id without taking another dispatch claim', async () => {
+    const { service, prisma } = createService({
+      status: MaxActionLedgerStatus.SUCCEEDED,
+      ambiguous: false,
+      terminal: true,
+      dispatchToken: 'completed-token',
+      dispatchStartedAt: new Date('2026-07-11T09:00:00.000Z'),
+      dispatchBotId: 'bot-1',
+      remoteMessageId: 'mid-remote-1',
+    });
+    prisma.maxActionLedgerEntry.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    await expect(service.claimSendDispatch(createJob(), 'bot-2')).resolves.toEqual({
+      kind: 'recovered',
+      remoteMessageId: 'mid-remote-1',
+    });
+    expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers the bot that actually authored a completed survivor dispatch', async () => {
+    const { service } = createService({
+      status: MaxActionLedgerStatus.SUCCEEDED,
+      ambiguous: false,
+      terminal: true,
+      dispatchToken: 'completed-token',
+      dispatchStartedAt: new Date('2026-07-11T09:00:00.000Z'),
+      dispatchBotId: 'bot-2',
+      remoteMessageId: 'mid-survivor-1',
+    });
+
+    await expect(service.getCompletedSendDispatchResult(createJob())).resolves.toEqual({
+      remoteMessageId: 'mid-survivor-1',
+      dispatchBotId: 'bot-2',
+    });
+  });
+
+  it('persists the remote message id and terminal success using token CAS', async () => {
+    const { service, prisma } = createService();
+
+    await service.completeSendDispatch(createJob(), 'dispatch-token', 'mid-remote-1');
+
+    expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith({
+      where: {
+        jobId: 'job-1',
+        dispatchToken: 'dispatch-token',
+        remoteMessageId: null,
+      },
+      data: expect.objectContaining({
+        remoteMessageId: 'mid-remote-1',
+        status: MaxActionLedgerStatus.SUCCEEDED,
+        ambiguous: false,
+        terminal: true,
+        completedAt: expect.any(Date),
+      }),
+    });
+  });
+
+  it('recovers success when the completion write committed but its database acknowledgement was lost', async () => {
+    const { service, prisma } = createService({
+      status: MaxActionLedgerStatus.SUCCEEDED,
+      ambiguous: false,
+      terminal: true,
+      dispatchToken: 'dispatch-token',
+      dispatchStartedAt: new Date('2026-07-11T09:00:00.000Z'),
+      dispatchBotId: 'bot-1',
+      remoteMessageId: 'mid-remote-1',
+    });
+    prisma.maxActionLedgerEntry.updateMany.mockRejectedValueOnce(
+      new Error('database response lost after commit'),
+    );
+
+    await expect(
+      service.completeSendDispatch(createJob(), 'dispatch-token', 'mid-remote-1'),
+    ).resolves.toBeUndefined();
+  });
+
+  it('releases only the matching unresolved dispatch token after a definitive rejection', async () => {
+    const { service, prisma } = createService();
+
+    await service.releaseSendDispatch(createJob(), 'dispatch-token');
+
+    expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith({
+      where: {
+        jobId: 'job-1',
+        dispatchToken: 'dispatch-token',
+        remoteMessageId: null,
+      },
+      data: expect.objectContaining({
+        dispatchToken: null,
+        dispatchStartedAt: null,
+        dispatchBotId: null,
+        status: MaxActionLedgerStatus.IN_PROGRESS,
+        ambiguous: false,
+        terminal: false,
+      }),
+    });
+  });
+
+  it('does not overwrite a SEND_MESSAGE outcome already finalized by the dispatch fence', async () => {
+    const { service, prisma } = createService();
+    const error = markMaxSendDispatchLedgerFinalized(
+      new UnrecoverableError('Ambiguous MAX SEND_MESSAGE transport failure'),
+    );
+
+    await service.recordFailed(createJob(), error);
+
+    expect(prisma.maxActionLedgerEntry.upsert).not.toHaveBeenCalled();
+    expect(prisma.maxActionLedgerEntry.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('keeps a persisted SEND_MESSAGE success monotonic when a later failure is recorded', async () => {
+    const { service, prisma } = createService({
+      status: MaxActionLedgerStatus.SUCCEEDED,
+      ambiguous: false,
+      terminal: true,
+      remoteMessageId: 'mid-remote-1',
+    });
+    prisma.maxActionLedgerEntry.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    await service.recordFailed(
+      createJob(),
+      new UnrecoverableError('Ambiguous MAX SEND_MESSAGE transport failure'),
+    );
+
+    expect(prisma.maxActionLedgerEntry.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: {},
+      }),
+    );
+    expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          jobId: 'job-1',
+          remoteMessageId: null,
+        },
       }),
     );
   });

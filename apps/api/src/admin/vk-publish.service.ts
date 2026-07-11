@@ -18,6 +18,7 @@ import {
   Logger,
   NotFoundException,
   Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
@@ -32,6 +33,10 @@ import {
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
 import { isAmbiguousMaxSendError } from '../max/max-send-ambiguity.util';
+import {
+  MaxRoutedPublicationService,
+  type MaxRoutedPublicationResult,
+} from '../max/max-routed-publication.service';
 import { ChatEntityType, Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -154,6 +159,8 @@ export class VkPublishService {
     private readonly backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService,
     @Optional()
     private readonly managedEntityAccessLossService?: ManagedEntityAccessLossService,
+    @Optional()
+    private readonly maxRoutedPublicationService?: MaxRoutedPublicationService,
   ) {
     this.queueBatchSize = configService.get<number>('VK_PARSING_QUEUE_BATCH_SIZE') ?? 100;
     this.publishLeaseTtlMs =
@@ -823,87 +830,103 @@ export class VkPublishService {
     const storedPhotoUrls = this.readStringArray(post.photoUrls);
     const storedVideoUrls = this.readStringArray(post.videoUrls);
     const storedLinkUrls = this.readStringArray(post.linkUrls);
-    const botId = await this.maxBotLinkService.resolveBotIdForSend({ chatId: post.chatId });
-    if (!botId) {
-      throw new Error('No bot with send access is available for VK publish');
-    }
     const entityType = await this.accessService.resolvePublicationEntityType(post.chatId);
-    const requestOptions = {
-      botId,
-      trafficClass: params.trafficClass,
-      sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
-    };
-    const options: MaxSendMessageOptions = {
+    const baseOptions: MaxSendMessageOptions = {
       debugContext: {
         screen: 'vk_parsing',
         action: params.debugAction,
       },
     };
+    const engagementContextByBotId = new Map<
+      string,
+      Awaited<ReturnType<AdminService['buildChannelPublicationEngagementContext']>>
+    >();
+    const photoMediaByUrl = this.resolvePhotoMediaIdentityMap({
+      attachments: post.attachments,
+      raw: post.raw,
+      text: post.text,
+    });
+    const videoMediaByUrl = this.resolveVideoMediaIdentityMap({
+      attachments: post.attachments,
+      raw: post.raw,
+      text: post.text,
+    });
 
     let maxSendAttempted = false;
+    let attemptedBotId: string | null = null;
     try {
-      let engagementContext: Awaited<
-        ReturnType<AdminService['buildChannelPublicationEngagementContext']>
-      > | null = null;
-      if (entityType === ChatEntityType.CHANNEL) {
-        engagementContext = await this.adminService.buildChannelPublicationEngagementContext(
-          post.chatId,
-          botId,
-        );
-        if (engagementContext.buttons.length > 0) {
-          options.buttons = engagementContext.buttons;
-        }
-      }
+      const result = await this.sendMessageWithAttachmentRetry({
+        postId: post.id,
+        chatId: post.chatId,
+        logicalIdempotencyKey: this.buildMaxPublicationIdempotencyKey(post, payload),
+        text: payload.text,
+        baseOptions,
+        trafficClass: params.trafficClass,
+        prepareAttempt: async (botId) => {
+          const requestOptions = {
+            botId,
+            trafficClass: params.trafficClass,
+            sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+          };
+          const options: MaxSendMessageOptions = { ...baseOptions };
+          if (entityType === ChatEntityType.CHANNEL) {
+            const engagementContext =
+              await this.adminService.buildChannelPublicationEngagementContext(post.chatId, botId);
+            engagementContextByBotId.set(botId, engagementContext);
+            if (engagementContext.buttons.length > 0) {
+              options.buttons = engagementContext.buttons;
+            }
+          }
 
-      const photoMediaByUrl = this.resolvePhotoMediaIdentityMap({
-        attachments: post.attachments,
-        raw: post.raw,
-        text: post.text,
-      });
-      if (payload.videoUrls.length > 0) {
-        const videoMediaByUrl = this.resolveVideoMediaIdentityMap({
-          attachments: post.attachments,
-          raw: post.raw,
-          text: post.text,
-        });
-        const videoPayload = await this.downloadAndUploadVideo(
-          payload.videoUrls[0]!,
-          requestOptions,
-          videoMediaByUrl.get(payload.videoUrls[0]!) ?? null,
-        );
-        options.attachments = [{ type: 'video', payload: videoPayload }];
-      } else {
-        const imagePayloads = await this.downloadAndUploadImages(
-          payload.photoUrls,
-          requestOptions,
-          {
-            allowPartialFailures: params.auto,
-            canPublishWithoutPhotos: payload.text.trim().length > 0 || payload.linkUrls.length > 0,
-          },
-          photoMediaByUrl,
-        );
+          if (payload.videoUrls.length > 0) {
+            const videoPayload = await this.downloadAndUploadVideo(
+              payload.videoUrls[0]!,
+              requestOptions,
+              videoMediaByUrl.get(payload.videoUrls[0]!) ?? null,
+            );
+            options.attachments = [{ type: 'video', payload: videoPayload }];
+          } else {
+            const imagePayloads = await this.downloadAndUploadImages(
+              payload.photoUrls,
+              requestOptions,
+              {
+                allowPartialFailures: params.auto,
+                canPublishWithoutPhotos:
+                  payload.text.trim().length > 0 || payload.linkUrls.length > 0,
+              },
+              photoMediaByUrl,
+            );
 
-        if (imagePayloads.length === 1) {
-          options.imagePayload = imagePayloads[0];
-        } else if (imagePayloads.length > 1) {
-          options.attachments = imagePayloads.map(
-            (payload): MaxAttachmentPayload => ({
-              type: 'image',
-              payload,
-            }),
-          );
-        }
-      }
-
-      const result = await this.sendMessageWithAttachmentRetry(
-        post.chatId,
-        payload.text,
-        options,
-        requestOptions,
-        () => {
+            if (imagePayloads.length === 1) {
+              options.imagePayload = imagePayloads[0];
+            } else if (imagePayloads.length > 1) {
+              options.attachments = imagePayloads.map(
+                (attachmentPayload): MaxAttachmentPayload => ({
+                  type: 'image',
+                  payload: attachmentPayload,
+                }),
+              );
+            }
+          }
+          return options;
+        },
+        onAttempt: (botId) => {
+          attemptedBotId = botId;
           maxSendAttempted = true;
         },
-      );
+      });
+      const engagementContext = engagementContextByBotId.get(result.botId) ?? null;
+      if (!engagementContext && entityType === ChatEntityType.CHANNEL) {
+        this.logger.warn(
+          {
+            postId: post.id,
+            chatId: post.chatId,
+            botId: result.botId,
+            messageId: result.messageId,
+          },
+          'Skipped VK engagement binding recovery because the exact sent thread context was not persisted',
+        );
+      }
       if (engagementContext) {
         await this.recordChannelPublicationEngagementSafely({
           chatId: post.chatId,
@@ -912,7 +935,7 @@ export class VkPublishService {
           text: payload.text,
           publishedUrl: result.url,
           engagementContext,
-          botId,
+          botId: result.botId,
         });
       }
       const publishedAtMax = new Date();
@@ -997,8 +1020,7 @@ export class VkPublishService {
       const classified = classifyVkParsingPublishError(error);
       const formattedError = formatVkParsingClassifiedErrorMessage(classified);
       const ambiguousMaxSend = maxSendAttempted && isAmbiguousMaxSendError(error);
-      const ambiguousAutopublishSend =
-        params.auto && ambiguousMaxSend;
+      const ambiguousAutopublishSend = params.auto && ambiguousMaxSend;
       const ambiguousSafetyDeskSend =
         params.actorUserId === SAFETY_DESK_ACTOR_USER_ID && ambiguousMaxSend;
       const persistedError = ambiguousMaxSend
@@ -1010,15 +1032,23 @@ export class VkPublishService {
                 : 'manual retry requires verification before resending.'
           }`.slice(0, 500)
         : formattedError;
+      const routedAccessLossRecorded =
+        Boolean(error) &&
+        typeof error === 'object' &&
+        (error as { maxManagedEntityAccessLossRecorded?: unknown })
+          .maxManagedEntityAccessLossRecorded === true;
       const accessLossResult =
-        await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost?.({
-          chatId: post.chatId,
-          botId,
-          entityType,
-          source: 'vk_parsing:publish',
-          operation: 'send',
-          error,
-        });
+        routedAccessLossRecorded || !maxSendAttempted
+          ? null
+          : await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost?.({
+              chatId: post.chatId,
+              botId: attemptedBotId,
+              entityType,
+              source: 'vk_parsing:publish',
+              operation: 'send',
+              error,
+            });
+      const accessLossRecorded = routedAccessLossRecorded || Boolean(accessLossResult?.recorded);
       const failed = await this.prisma.vkParsingPost.updateMany({
         where: {
           id: post.id,
@@ -1044,7 +1074,7 @@ export class VkPublishService {
                 publishIdempotencyKey: null,
                 publishReason: null,
               }),
-          ...(accessLossResult?.recorded
+          ...(accessLossRecorded
             ? {
                 publishQueuedAt: null,
                 publishScheduledAt: null,
@@ -1098,27 +1128,65 @@ export class VkPublishService {
     }
   }
 
-  private async sendMessageWithAttachmentRetry(
-    chatId: string,
-    text: string,
-    options: MaxSendMessageOptions,
-    requestOptions: {
-      botId?: string;
-      trafficClass: MaxApiTrafficClass;
-      sourceTag: string;
-    },
-    onAttempt?: () => void,
-  ): Promise<Awaited<ReturnType<MaxClientService['sendMessageImmediateWithResolvedLink']>>> {
+  private async sendMessageWithAttachmentRetry(params: {
+    postId: string;
+    chatId: string;
+    logicalIdempotencyKey: string;
+    text: string;
+    baseOptions: MaxSendMessageOptions;
+    trafficClass: MaxApiTrafficClass;
+    prepareAttempt: (botId: string) => Promise<MaxSendMessageOptions>;
+    onAttempt?: (botId: string) => void;
+  }): Promise<MaxRoutedPublicationResult> {
+    if (!this.maxRoutedPublicationService && process.env.NODE_ENV === 'production') {
+      throw new ServiceUnavailableException(
+        'Routed MAX publication service is required for production VK publications',
+      );
+    }
     let lastError: unknown = null;
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {
-        onAttempt?.();
-        return await this.maxClient.sendMessageImmediateWithResolvedLink(
-          chatId,
-          text || ' ',
+        if (this.maxRoutedPublicationService) {
+          return await this.maxRoutedPublicationService.publish({
+            entityId: params.chatId,
+            logicalIdempotencyKey: params.logicalIdempotencyKey,
+            text: params.text || ' ',
+            options: params.baseOptions,
+            trafficClass: params.trafficClass,
+            sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+            prepareAttempt: async ({ botId }) => ({
+              options: await params.prepareAttempt(botId),
+            }),
+            onDispatchAttempt: ({ botId }) => {
+              params.onAttempt?.(botId);
+            },
+          });
+        }
+
+        const botId = await this.maxBotLinkService.resolveBotIdForSend({
+          chatId: params.chatId,
+        });
+        if (!botId) {
+          throw new Error('No bot with send access is available for VK publish');
+        }
+        const options = await params.prepareAttempt(botId);
+        params.onAttempt?.(botId);
+        const published = await this.maxClient.sendMessageImmediateWithResolvedLink(
+          params.chatId,
+          params.text || ' ',
           options,
-          requestOptions,
+          {
+            botId,
+            trafficClass: params.trafficClass,
+            sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+          },
         );
+        return {
+          ...published,
+          botId,
+          candidateBotIds: [botId],
+          routingVersion: null,
+        };
       } catch (error) {
         lastError = error;
         if (!isMaxAttachmentNotReadyError(error) || attempt >= 3) {
@@ -1207,15 +1275,11 @@ export class VkPublishService {
       return recovered;
     }
 
-    await this.publishQueue.add(
-      VK_PUBLISH_JOB_NAME,
-      job,
-      {
-        jobId,
-        delay,
-        ...VK_PARSING_PUBLISH_RETRY_POLICY,
-      },
-    );
+    await this.publishQueue.add(VK_PUBLISH_JOB_NAME, job, {
+      jobId,
+      delay,
+      ...VK_PARSING_PUBLISH_RETRY_POLICY,
+    });
     return true;
   }
 
@@ -1608,7 +1672,9 @@ export class VkPublishService {
       post.source.publishMode === VK_SOURCE_PUBLISH_MODE_REVIEW &&
       actorUserId !== SAFETY_DESK_ACTOR_USER_ID
     ) {
-      throw new BadRequestException('Публикация этого источника доступна только через Safety Desk.');
+      throw new BadRequestException(
+        'Публикация этого источника доступна только через Safety Desk.',
+      );
     }
   }
 
@@ -1835,6 +1901,26 @@ export class VkPublishService {
       .slice(0, 32);
   }
 
+  private buildMaxPublicationIdempotencyKey(
+    post: VkParsingPostWithSource,
+    payload: PreparedVkPublishPayload,
+  ): string {
+    const intentKey =
+      post.publishIdempotencyKey?.trim() ||
+      createHash('sha256')
+        .update(
+          JSON.stringify({
+            text: payload.text,
+            photoUrls: payload.photoUrls,
+            videoUrls: payload.videoUrls,
+            linkUrls: payload.linkUrls,
+          }),
+        )
+        .digest('hex')
+        .slice(0, 32);
+    return `vk-parsing:publish:${post.id}:${intentKey}`;
+  }
+
   private async downloadAndUploadImages(
     photoUrls: string[],
     requestOptions: {
@@ -2000,9 +2086,7 @@ export class VkPublishService {
   }
 
   private resolveVideoCandidateUrls(primaryUrl: string, candidateUrls: string[]): string[] {
-    return [
-      ...new Set([primaryUrl, ...candidateUrls].map((url) => url.trim()).filter(Boolean)),
-    ];
+    return [...new Set([primaryUrl, ...candidateUrls].map((url) => url.trim()).filter(Boolean))];
   }
 
   private shouldTryNextVideoCandidate(error: unknown): boolean {
@@ -2010,9 +2094,7 @@ export class VkPublishService {
   }
 
   private resolvePhotoCandidateUrls(primaryUrl: string, candidateUrls: string[]): string[] {
-    return [
-      ...new Set([primaryUrl, ...candidateUrls].map((url) => url.trim()).filter(Boolean)),
-    ];
+    return [...new Set([primaryUrl, ...candidateUrls].map((url) => url.trim()).filter(Boolean))];
   }
 
   private shouldTryNextPhotoCandidate(error: unknown): boolean {
@@ -2056,7 +2138,10 @@ export class VkPublishService {
     if (cached?.status === VK_MEDIA_STATUS_READY && this.readUploadPayload(cached)) {
       return cached;
     }
-    if (cached?.status === VK_MEDIA_STATUS_FAILED && this.canReuseFailedVideoPreflightCache(cached)) {
+    if (
+      cached?.status === VK_MEDIA_STATUS_FAILED &&
+      this.canReuseFailedVideoPreflightCache(cached)
+    ) {
       return cached;
     }
 
@@ -2223,10 +2308,7 @@ export class VkPublishService {
     return token || null;
   }
 
-  private async downloadImage(
-    imageUrl: string,
-    index: number,
-  ): Promise<VkParsingDownloadedMedia> {
+  private async downloadImage(imageUrl: string, index: number): Promise<VkParsingDownloadedMedia> {
     const parsed = new URL(imageUrl);
     if (parsed.protocol !== 'https:') {
       throw new BadRequestException('Фото VK должно быть доступно по HTTPS.');
@@ -2391,7 +2473,11 @@ export class VkPublishService {
 
   private hasExplicitUnsupportedVideoMimeType(value: string | null): boolean {
     const mimeType = (value ?? '').split(';')[0]!.trim().toLowerCase();
-    return Boolean(mimeType) && mimeType !== 'application/octet-stream' && !mimeType.startsWith('binary/');
+    return (
+      Boolean(mimeType) &&
+      mimeType !== 'application/octet-stream' &&
+      !mimeType.startsWith('binary/')
+    );
   }
 
   private readStrictContentLength(headers: Headers): number | null {
@@ -2510,10 +2596,7 @@ export class VkPublishService {
       },
     });
     if (updated.count === 0) {
-      this.logger.warn(
-        { postId, reason },
-        'VK parsing post disappeared before skip persistence',
-      );
+      this.logger.warn({ postId, reason }, 'VK parsing post disappeared before skip persistence');
     }
   }
 
@@ -2644,9 +2727,7 @@ export class VkPublishService {
     return hasUnsupportedVideo ? [postUrl] : [];
   }
 
-  private readUnsupportedAttachments(
-    value: Prisma.JsonValue | unknown,
-  ): Array<{ type: string }> {
+  private readUnsupportedAttachments(value: Prisma.JsonValue | unknown): Array<{ type: string }> {
     if (!Array.isArray(value)) {
       return [];
     }

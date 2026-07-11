@@ -1,6 +1,13 @@
-import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  Logger,
+  Optional,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
+import { WebhookIngressMetricsService } from '../system/webhook-ingress-metrics.service';
 import { WebhookSubscriptionStatusService } from '../system/webhook-subscription-status.service';
 import { WebhookParser } from './webhook.parser';
 import { WebhookRateLimitService } from './webhook-rate-limit.service';
@@ -29,6 +36,7 @@ export class WebhookIngestionService {
     private readonly webhookService: WebhookService,
     private readonly webhookRateLimitService: WebhookRateLimitService,
     private readonly webhookSubscriptionStatusService: WebhookSubscriptionStatusService,
+    @Optional() private readonly webhookIngressMetricsService?: WebhookIngressMetricsService,
   ) {}
 
   async ingest(
@@ -45,22 +53,33 @@ export class WebhookIngestionService {
       throw new ForbiddenException('Invalid webhook bot signature');
     }
 
-    this.markIncomingWebhookAsync(bot.id);
-
     const ip = request.ip;
-    const allowed = await this.webhookRateLimitService.isAllowed(ip);
-    if (!allowed) {
-      this.logger.warn(
+    const update = this.parser.parse(payload, { botId: bot.id });
+    const receiptPersistenceStartedAtMs = Date.now();
+    let result: Awaited<ReturnType<WebhookService['storeReceipt']>>;
+    try {
+      result = await this.webhookService.storeReceipt(update, ip);
+    } catch (error: unknown) {
+      this.recordReceiptPersistenceAsync({
+        botId: bot.id,
+        outcome: 'failed',
+        latencyMs: Date.now() - receiptPersistenceStartedAtMs,
+      });
+      this.logger.error(
         {
           botId: bot.id,
-          ip,
+          err: error instanceof Error ? error.message : String(error),
         },
-        'Webhook ingress rate limit exceeded after signature validation; accepting event to avoid MAX delivery retries',
+        'Failed to persist webhook receipt; requesting MAX redelivery',
       );
+      throw new ServiceUnavailableException('Webhook receipt storage unavailable');
     }
-
-    const update = this.parser.parse(payload, { botId: bot.id });
-    const result = await this.webhookService.ingest(update, ip);
+    this.recordReceiptPersistenceAsync({
+      botId: bot.id,
+      outcome: 'persisted',
+      latencyMs: Date.now() - receiptPersistenceStartedAtMs,
+    });
+    this.runPostReceiptIngressAccounting(bot.id, ip);
 
     return {
       ok: true,
@@ -85,5 +104,45 @@ export class WebhookIngestionService {
           'Failed to persist incoming webhook status asynchronously',
         );
       });
+  }
+
+  private runPostReceiptIngressAccounting(botId: string, ip: string): void {
+    this.markIncomingWebhookAsync(botId);
+    void this.webhookRateLimitService
+      .isAllowed(ip)
+      .then((allowed) => {
+        if (allowed) {
+          return;
+        }
+        this.logger.warn(
+          {
+            botId,
+            ip,
+          },
+          'Webhook ingress rate limit exceeded after durable receipt; event remains accepted',
+        );
+      })
+      .catch((error: unknown) => {
+        this.logger.warn(
+          {
+            botId,
+            ip,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to account webhook ingress rate after durable receipt',
+        );
+      });
+  }
+
+  private recordReceiptPersistenceAsync(
+    metric: Parameters<WebhookIngressMetricsService['recordReceiptPersistence']>[0],
+  ): void {
+    const metricsService = this.webhookIngressMetricsService;
+    if (!metricsService) {
+      return;
+    }
+    setImmediate(() => {
+      void metricsService.recordReceiptPersistence(metric).catch(() => undefined);
+    });
   }
 }

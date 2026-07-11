@@ -24,6 +24,7 @@ export function isAmbiguousMaxMutationError(error: unknown): boolean {
   const message = error instanceof Error && error.message.trim() ? error.message : String(error);
   const normalized = message.toLowerCase();
   return (
+    normalized.includes('ambiguous max') ||
     normalized.includes('timeout') ||
     normalized.includes('timed out') ||
     normalized.includes('terminated') ||
@@ -36,5 +37,10 @@ export function isAmbiguousMaxMutationError(error: unknown): boolean {
 }
 
 export function isAmbiguousMaxSendError(error: unknown): boolean {
+  const status = (error as { response?: { status?: number } })?.response?.status;
+  if (typeof status === 'number' && status >= 500 && status <= 599) {
+    return true;
+  }
+
   return isAmbiguousMaxMutationError(error);
 }

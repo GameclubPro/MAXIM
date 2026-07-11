@@ -1,4 +1,4 @@
-import { Injectable, Logger, Optional } from '@nestjs/common';
+import { Injectable, Logger, Optional, ServiceUnavailableException } from '@nestjs/common';
 import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,
@@ -10,6 +10,7 @@ import {
   classifyMaxTerminalChatActionError,
   resolveManagedEntityAccessLossReason,
 } from '../max/managed-entity-access-loss.service';
+import { MaxRoutedPublicationService } from '../max/max-routed-publication.service';
 import {
   buildNightModeClosedNotice,
   buildNightModeOpenedNotice,
@@ -62,14 +63,14 @@ export class NightModeTransitionDeliveryService {
     private readonly nightModeTransitionEventService: NightModeTransitionEventService,
     @Optional()
     private readonly managedEntityAccessLossService?: ManagedEntityAccessLossService,
+    @Optional()
+    private readonly maxRoutedPublicationService?: MaxRoutedPublicationService,
   ) {}
 
   createHooks(adapters: NightModeTransitionDeliveryAdapters): NightModeTransitionRuntimeHooks {
     return {
-      sendClosedNotice: (settings, snapshot) =>
-        this.sendClosedNotice(settings, snapshot, adapters),
-      sendOpenedNotice: (settings, snapshot) =>
-        this.sendOpenedNotice(settings, snapshot, adapters),
+      sendClosedNotice: (settings, snapshot) => this.sendClosedNotice(settings, snapshot, adapters),
+      sendOpenedNotice: (settings, snapshot) => this.sendOpenedNotice(settings, snapshot, adapters),
       deleteClosedNotice: (chatId, messageId) =>
         this.deleteClosedNotice(chatId, messageId, adapters),
     };
@@ -89,25 +90,30 @@ export class NightModeTransitionDeliveryService {
       activeBotSpeechProfile: adapters.getActiveBotSpeechProfile(),
     });
     const messageOptions = adapters.buildClosedNoticeOptions(settings);
-    const botId = await adapters.resolveBotId(settings.chatId);
-    const messageOptionsWithMedia = await this.botSpeechMediaService.withMediaOptions(
-      messageOptions ?? undefined,
-      this.botSpeechMediaService.resolveMedia(settings, 'nightModeBotMessageText'),
-      { botId, sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION },
-    );
 
     let sent: { messageId: string | null };
+    let attemptedBotId: string | null = null;
     try {
-      sent = await this.maxClient.sendMessageImmediateWithId(
-        settings.chatId,
+      sent = await this.sendNotice({
+        chatId: settings.chatId,
+        logicalIdempotencyKey: this.buildNoticeIdempotencyKey(
+          'close',
+          settings.chatId,
+          snapshot.sessionKey,
+        ),
         messageText,
-        this.withMarkdownMessageOptions(messageOptionsWithMedia ?? null),
-        this.buildRequestOptions(botId),
-      );
+        messageOptions,
+        mediaSettings: settings,
+        mediaFieldKey: 'nightModeBotMessageText',
+        adapters,
+        onDispatchAttempt: (botId) => {
+          attemptedBotId = botId;
+        },
+      });
     } catch (error: unknown) {
       const terminalResult = await this.handleTerminalError({
         chatId: settings.chatId,
-        botId,
+        botId: attemptedBotId,
         operation: 'send-close-notice',
         error,
       });
@@ -152,25 +158,29 @@ export class NightModeTransitionDeliveryService {
       botSpeechStyle: settings.botSpeechStyle,
       activeBotSpeechProfile: adapters.getActiveBotSpeechProfile(),
     });
-    const botId = await adapters.resolveBotId(settings.chatId);
-    const messageOptions = await this.botSpeechMediaService.withMediaOptions(
-      undefined,
-      this.botSpeechMediaService.resolveMedia(settings, 'nightModeOpenMessageText'),
-      { botId, sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION },
-    );
-
     let sent: { messageId: string | null };
+    let attemptedBotId: string | null = null;
     try {
-      sent = await this.maxClient.sendMessageImmediateWithId(
-        settings.chatId,
+      sent = await this.sendNotice({
+        chatId: settings.chatId,
+        logicalIdempotencyKey: this.buildNoticeIdempotencyKey(
+          'open',
+          settings.chatId,
+          snapshot.sessionKey,
+        ),
         messageText,
-        this.withMarkdownMessageOptions(messageOptions ?? null),
-        this.buildRequestOptions(botId),
-      );
+        messageOptions: undefined,
+        mediaSettings: settings,
+        mediaFieldKey: 'nightModeOpenMessageText',
+        adapters,
+        onDispatchAttempt: (botId) => {
+          attemptedBotId = botId;
+        },
+      });
     } catch (error: unknown) {
       const terminalResult = await this.handleTerminalError({
         chatId: settings.chatId,
-        botId,
+        botId: attemptedBotId,
         operation: 'send-open-notice',
         error,
       });
@@ -190,6 +200,71 @@ export class NightModeTransitionDeliveryService {
       endMinutes: snapshot.endMinutes,
     });
     return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
+  }
+
+  private async sendNotice(params: {
+    chatId: string;
+    logicalIdempotencyKey: string;
+    messageText: string;
+    messageOptions: MaxSendMessageOptions | null | undefined;
+    mediaSettings: { botSpeechMedia?: unknown };
+    mediaFieldKey: 'nightModeBotMessageText' | 'nightModeOpenMessageText';
+    adapters: NightModeTransitionDeliveryAdapters;
+    onDispatchAttempt: (botId: string | null) => void;
+  }): Promise<{ messageId: string | null }> {
+    const baseOptions = this.withMarkdownMessageOptions(params.messageOptions ?? null);
+    const media = this.botSpeechMediaService.resolveMedia(
+      params.mediaSettings,
+      params.mediaFieldKey,
+    );
+    if (!this.maxRoutedPublicationService && process.env.NODE_ENV === 'production') {
+      throw new ServiceUnavailableException(
+        'Routed MAX publication service is required for production night mode notices',
+      );
+    }
+    if (this.maxRoutedPublicationService) {
+      return this.maxRoutedPublicationService.publish({
+        entityId: params.chatId,
+        logicalIdempotencyKey: params.logicalIdempotencyKey,
+        text: params.messageText,
+        options: baseOptions,
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION,
+        ignoreFailureMetricStatuses: [403, 404],
+        prepareAttempt: async ({ botId }) => ({
+          options: await this.botSpeechMediaService.withMediaOptions(baseOptions, media, {
+            botId,
+            sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION,
+          }),
+        }),
+        onDispatchAttempt: ({ botId }) => {
+          params.onDispatchAttempt(botId);
+        },
+      });
+    }
+
+    const botId = await params.adapters.resolveBotId(params.chatId);
+    params.onDispatchAttempt(botId);
+    const messageOptionsWithMedia = await this.botSpeechMediaService.withMediaOptions(
+      baseOptions,
+      media,
+      { botId, sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION },
+    );
+    return this.maxClient.sendMessageImmediateWithId(
+      params.chatId,
+      params.messageText,
+      messageOptionsWithMedia,
+      this.buildRequestOptions(botId),
+    );
+  }
+
+  private buildNoticeIdempotencyKey(
+    transition: 'close' | 'open',
+    chatId: string,
+    sessionKey: string,
+  ): string {
+    return `night-mode:${transition}:${chatId}:session:${sessionKey}`;
   }
 
   private async createEvent(params: NightModeTransitionEventParams): Promise<void> {

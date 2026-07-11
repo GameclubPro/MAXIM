@@ -21,6 +21,7 @@ import {
   Logger,
   NotFoundException,
   Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
@@ -38,6 +39,10 @@ import {
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
 import { isAmbiguousMaxSendError } from '../max/max-send-ambiguity.util';
+import {
+  MaxRoutedPublicationService,
+  type MaxRoutedPublicationResult,
+} from '../max/max-routed-publication.service';
 import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
 import { RedisCounterService } from '../moderation/redis-counter.service';
 import {
@@ -143,6 +148,7 @@ export class ManagedPollService {
     private readonly chatContextCache: ChatContextCacheService,
     @Optional() private readonly managedEntityAccessLossService?: ManagedEntityAccessLossService,
     @Optional() private readonly redisCounter?: RedisCounterService,
+    @Optional() private readonly maxRoutedPublicationService?: MaxRoutedPublicationService,
   ) {}
 
   async listChannelPolls(
@@ -386,7 +392,9 @@ export class ManagedPollService {
       );
     }
 
-    const publicationBotId = await this.adminService.resolveChannelPollBotId(chatId);
+    const publicationBotId = this.maxRoutedPublicationService
+      ? null
+      : await this.adminService.resolveChannelPollBotId(chatId);
     const lockToken = randomUUID();
     const lockedAt = new Date();
     const lock = await this.prisma.managedPoll.updateMany({
@@ -405,6 +413,7 @@ export class ManagedPollService {
     const claimHeartbeat = this.startPublicationClaimHeartbeat(poll.id, lockToken);
     let attempted = false;
     let accepted = false;
+    let attemptedPublicationBotId = publicationBotId;
     try {
       const publicationPoll = await this.findPoll(chatId, poll.id);
       const result = buildManagedPollOptionResults(publicationPoll.options, new Map());
@@ -416,25 +425,26 @@ export class ManagedPollService {
         totalVotes: 0,
       });
       const textFormat = this.resolveQuestionTextFormat(publicationPoll.questionFormat);
-      const media = await this.resolvePollPublicationMedia(
-        this.readPollImages(publicationPoll.images),
-        publicationBotId,
-      );
       const messageOptions: MaxSendMessageOptions = {
         ...(textFormat ? { textFormat } : {}),
         buttons: buildManagedPollButtons(publicationPoll.id, result.options),
-        ...media,
         debugContext: { screen: 'managed-poll', action: 'publish' },
       };
       if (!(await claimHeartbeat.renew())) {
         throw new ConflictException('Публикация опроса была сброшена. Проверьте канал.');
       }
-      attempted = true;
       const published = await this.sendPollPublicationWithRetry(
         chatId,
+        publicationPoll.id,
+        publicationPoll.renderRevision,
         text,
         messageOptions,
+        this.readPollImages(publicationPoll.images),
         publicationBotId,
+        (botId) => {
+          attempted = true;
+          attemptedPublicationBotId = botId;
+        },
       );
       accepted = true;
       if (!(await claimHeartbeat.stop())) {
@@ -452,7 +462,7 @@ export class ManagedPollService {
             actorUserId: user.userId,
             status: ManagedPollStatus.ACTIVE,
             publicationMessageId: published.messageId,
-            publicationBotId: publicationBotId ?? null,
+            publicationBotId: published.botId,
             publicationUrl: published.url,
             publishedAt,
             renderedRevision: publicationPoll.renderRevision,
@@ -514,7 +524,7 @@ export class ManagedPollService {
         }
       }
       if (attempted && !ambiguous) {
-        await this.recordAccessLoss(poll, publicationBotId ?? null, 'send', error);
+        await this.recordAccessLoss(poll, attemptedPublicationBotId ?? null, 'send', error);
       }
       throw new BadRequestException(
         ambiguous
@@ -1267,18 +1277,66 @@ export class ManagedPollService {
 
   private async sendPollPublicationWithRetry(
     chatId: string,
+    pollId: string,
+    renderRevision: number,
     text: string,
     options: MaxSendMessageOptions,
+    images: readonly ManagedPollImage[],
     botId: string | null | undefined,
-  ) {
+    onAttemptBotId?: (botId: string) => void,
+  ): Promise<MaxRoutedPublicationResult> {
+    if (!this.maxRoutedPublicationService && process.env.NODE_ENV === 'production') {
+      throw new ServiceUnavailableException(
+        'Routed MAX publication service is required for production managed polls',
+      );
+    }
+    const fallbackMedia = this.maxRoutedPublicationService
+      ? null
+      : await this.resolvePollPublicationMedia(images, botId);
     for (let attempt = 1; ; attempt += 1) {
       try {
-        return await this.maxClient.sendMessageImmediateWithResolvedLink(
+        if (this.maxRoutedPublicationService) {
+          return await this.maxRoutedPublicationService.publish({
+            entityId: chatId,
+            logicalIdempotencyKey: `managed-poll:publish:${pollId}:revision:${renderRevision}`,
+            routePurpose: 'channel_poll',
+            text,
+            options,
+            trafficClass: 'interactive',
+            sourceTag: MAX_API_SOURCE_TAGS.MANAGED_POLL,
+            timeoutMs: MANAGED_POLL_SEND_TIMEOUT_MS,
+            prepareAttempt: async ({ botId: routedBotId }) => ({
+              options: {
+                ...options,
+                ...(await this.resolvePollPublicationMedia(images, routedBotId)),
+              },
+            }),
+            onDispatchAttempt: ({ botId: routedBotId }) => {
+              onAttemptBotId?.(routedBotId);
+            },
+          });
+        }
+
+        const resolvedBotId = botId?.trim() ?? '';
+        if (!resolvedBotId) {
+          throw new Error('No bot with send/edit access is available for managed poll publish');
+        }
+        onAttemptBotId?.(resolvedBotId);
+        const published = await this.maxClient.sendMessageImmediateWithResolvedLink(
           chatId,
           text,
-          options,
-          this.buildMaxOptions(botId, MANAGED_POLL_SEND_TIMEOUT_MS),
+          {
+            ...options,
+            ...(fallbackMedia ?? {}),
+          },
+          this.buildMaxOptions(resolvedBotId, MANAGED_POLL_SEND_TIMEOUT_MS),
         );
+        return {
+          ...published,
+          botId: resolvedBotId,
+          candidateBotIds: [resolvedBotId],
+          routingVersion: null,
+        };
       } catch (error: unknown) {
         if (isAmbiguousMaxSendError(error)) {
           throw error;

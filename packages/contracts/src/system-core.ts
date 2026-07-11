@@ -77,6 +77,38 @@ export const botQueueMetricsSnapshotSchema = z.object({
 });
 export type BotQueueMetricsSnapshot = z.infer<typeof botQueueMetricsSnapshotSchema>;
 
+export const maxActionLedgerWatchdogSnapshotSchema = z.object({
+  enabled: z.boolean(),
+  activeOnThisRole: z.boolean(),
+  mode: z.enum(['off', 'shadow', 'canary', 'on']).optional().default('shadow'),
+  canaryPercent: z.number().min(0).max(100).optional().default(1),
+  canaryEntityIds: z.array(z.string()).optional().default([]),
+  staleAfterSec: z.number().int().positive(),
+  intervalSec: z.number().int().positive(),
+  lastRunAt: z.string().datetime().nullable(),
+  lastSuccessAt: z.string().datetime().nullable(),
+  lastError: z.string().nullable(),
+  lastRunReason: z.enum(['startup', 'scheduled', 'manual']).nullable(),
+  staleCount: z.number().int().min(0),
+  staleEnqueuedCount: z.number().int().min(0),
+  staleInProgressCount: z.number().int().min(0),
+  oldestStaleAgeSec: z.number().min(0),
+  lastScannedCount: z.number().int().min(0),
+  lastReconciledCount: z.number().int().min(0),
+  lastQuarantinedCount: z.number().int().min(0),
+  lastTerminalFailedCount: z.number().int().min(0),
+  lastRecoveredSucceededCount: z.number().int().min(0),
+  lastDeferredCount: z.number().int().min(0),
+  lastConflictCount: z.number().int().min(0),
+  lastShadowClassifiedCount: z.number().int().min(0).optional().default(0),
+  lastWouldQuarantineCount: z.number().int().min(0).optional().default(0),
+  lastWouldTerminalFailCount: z.number().int().min(0).optional().default(0),
+  lastWouldRecoverSucceededCount: z.number().int().min(0).optional().default(0),
+  lastScanTruncated: z.boolean(),
+  generatedAt: z.string().datetime(),
+});
+export type MaxActionLedgerWatchdogSnapshot = z.infer<typeof maxActionLedgerWatchdogSnapshotSchema>;
+
 export const systemModeSchema = z.enum(['normal', 'degrade']);
 export type SystemMode = z.infer<typeof systemModeSchema>;
 
@@ -120,6 +152,7 @@ export const queueMetricsSnapshotSchema = z.object({
   webhookBackground: queueCountersSchema,
   webhookLegacy: queueCountersSchema,
   actions: queueCountersSchema,
+  actionQueues: z.record(z.string(), queueCountersSchema).optional().default({}),
   globalSpammerDenorm: queueCountersSchema.optional().default({
     waiting: 0,
     active: 0,
@@ -146,6 +179,7 @@ export const queueMetricsSnapshotSchema = z.object({
       failed: emptyWebhookStatusMetrics,
     }),
   actionHealth: actionHealthSnapshotSchema,
+  actionLedgerWatchdog: maxActionLedgerWatchdogSnapshotSchema.nullable().optional().default(null),
   webhookDynamicLeases: z.unknown().nullable().optional().default(null),
   bots: z.record(z.string(), botQueueMetricsSnapshotSchema),
   oldestQueuedEventId: z.string().nullable(),
@@ -674,6 +708,7 @@ export const botOwnershipAnomaliesSchema = z.object({
   noPrimary: z.number().int().min(0),
   recoverableLegacyOnly: z.number().int().min(0),
   recoverableFromMemberships: z.number().int().min(0),
+  noEligibleBot: z.number().int().min(0),
   unbound: z.number().int().min(0),
   primaryBotUnknown: z.number().int().min(0),
   legacyBotUnknown: z.number().int().min(0),
@@ -684,10 +719,24 @@ export const botOwnershipAnomaliesSchema = z.object({
 });
 export type BotOwnershipAnomalies = z.infer<typeof botOwnershipAnomaliesSchema>;
 
+export const chatRoutingStateSchema = z.enum(['READY', 'NO_ELIGIBLE_BOT']);
+export type ChatRoutingState = z.infer<typeof chatRoutingStateSchema>;
+
+export const botOwnershipRoutingStatesSchema = z.object({
+  ready: z.number().int().min(0),
+  noEligibleBot: z.number().int().min(0),
+});
+export type BotOwnershipRoutingStates = z.infer<typeof botOwnershipRoutingStatesSchema>;
+
 export const botOwnershipRepairSnapshotSchema = z.object({
   enabled: z.boolean(),
   activeOnThisRole: z.boolean(),
   intervalMs: z.number().int().positive(),
+  rebalanceMode: z.enum(['off', 'shadow', 'canary', 'on']),
+  rebalanceCanaryPercent: z.number().min(0).max(100),
+  rebalanceMaxMovesPerRun: z.number().int().positive(),
+  recommendedMoves: z.number().int().min(0),
+  lastAppliedMoves: z.number().int().min(0),
   lastRunAt: z.string().datetime().nullable(),
   lastSuccessAt: z.string().datetime().nullable(),
   lastError: z.string().nullable(),
@@ -704,6 +753,7 @@ export const botOwnershipFoundationSnapshotSchema = z.object({
     chats: botOwnershipCoverageSchema,
     channels: botOwnershipCoverageSchema,
   }),
+  routingStates: botOwnershipRoutingStatesSchema.optional(),
   anomalies: botOwnershipAnomaliesSchema,
   repair: botOwnershipRepairSnapshotSchema,
 });
@@ -944,6 +994,40 @@ export type SystemDashboardWebhookEnqueueSlo = z.infer<
   typeof systemDashboardWebhookEnqueueSloSchema
 >;
 
+export const systemDashboardWebhookIngressBotMetricsSchema = z.object({
+  attemptedReceipts: z.number().int().min(0),
+  persistedReceipts: z.number().int().min(0),
+  failedReceipts: z.number().int().min(0),
+});
+export type SystemDashboardWebhookIngressBotMetrics = z.infer<
+  typeof systemDashboardWebhookIngressBotMetricsSchema
+>;
+
+export const systemDashboardWebhookIngressSloSchema = z.object({
+  available: z.boolean(),
+  targetMs: z.number().int().positive(),
+  attemptedReceipts: z.number().int().min(0),
+  persistedReceipts: z.number().int().min(0),
+  failedReceipts: z.number().int().min(0),
+  sampledReceipts: z.number().int().min(0),
+  p95LatencyMs: z.number().min(0).nullable(),
+  p99LatencyMs: z.number().min(0).nullable(),
+  underTargetRatio: z.number().min(0).max(1).nullable(),
+  bots: z.record(z.string(), systemDashboardWebhookIngressBotMetricsSchema),
+});
+export type SystemDashboardWebhookIngressSlo = z.infer<
+  typeof systemDashboardWebhookIngressSloSchema
+>;
+
+export const systemDashboardWebhookCanonicalExecutionSloSchema = z.object({
+  receipts: z.number().int().min(0),
+  executionClaims: z.number().int().min(0),
+  claimsPerReceiptRatio: z.number().min(0).nullable(),
+});
+export type SystemDashboardWebhookCanonicalExecutionSlo = z.infer<
+  typeof systemDashboardWebhookCanonicalExecutionSloSchema
+>;
+
 export const systemDashboardWebhookSloSchema = z.object({
   status: systemDashboardWebhookSloStatusSchema,
   windowSec: z.number().int().positive(),
@@ -958,7 +1042,9 @@ export const systemDashboardWebhookSloSchema = z.object({
   oldestUnprocessedLagSec: z.number().min(0),
   oldestUnprocessedEventId: z.string().nullable(),
   lastProcessedAt: z.string().datetime().nullable(),
+  ingress: systemDashboardWebhookIngressSloSchema.optional(),
   enqueue: systemDashboardWebhookEnqueueSloSchema.optional(),
+  canonicalExecution: systemDashboardWebhookCanonicalExecutionSloSchema.optional(),
   generatedAt: z.string().datetime(),
 });
 export type SystemDashboardWebhookSlo = z.infer<typeof systemDashboardWebhookSloSchema>;

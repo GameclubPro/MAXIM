@@ -23,7 +23,7 @@ import {
   WEBHOOK_QUEUE_CRITICAL,
 } from './webhook-queues';
 import { WebhookRoutingService } from './webhook-routing.service';
-import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
+import { WebhookService } from './webhook.service';
 
 const ANY_WEBHOOK_QUEUE_NAMES = new Set<string>(ALL_WEBHOOK_QUEUE_NAMES);
 const USER_FACING_STALE_QUEUED_REPAIR_MS = 20_000;
@@ -32,8 +32,6 @@ const PRIORITY_SELECTION_WINDOW_MULTIPLIER = 3;
 const MAX_PRIORITY_SELECTION_WINDOW = 1_000;
 const MANUAL_CLOSE_PRIORITY_CACHE_TTL_MS = 5_000;
 const MANUAL_CLOSE_PRIORITY_CACHE_PRUNE_THRESHOLD = 4_096;
-const SHARED_CHAT_OWNER_EVENT_LOOKUP_WINDOW_MS = 15 * 60_000;
-const SHARED_CHAT_OWNER_EVENT_LOOKUP_LIMIT = 100;
 const WEBHOOK_FAILED_JOB_RETENTION = {
   age: 7 * 24 * 60 * 60,
   count: 5_000,
@@ -88,6 +86,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     private readonly configService: ConfigService,
     private readonly moduleRef: ModuleRef,
     private readonly webhookRoutingService: WebhookRoutingService,
+    private readonly webhookService: WebhookService,
     @InjectQueue(WEBHOOK_QUEUE_CRITICAL)
     private readonly criticalQueue: Queue<ProcessWebhookJob>,
     @InjectQueue(WEBHOOK_QUEUE_BACKGROUND)
@@ -471,6 +470,10 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
           return;
         }
 
+        if (!(await this.prepareCandidateForCanonicalExecution(event))) {
+          continue;
+        }
+
         const queueName = await this.webhookRoutingService.resolveQueueName(
           event.id,
           event.normalizedPayload,
@@ -499,10 +502,6 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     const { id: webhookEventId, enqueueAttempts } = event;
     if (enqueueAttempts >= this.maxEnqueueAttempts) {
       await this.markExhausted(webhookEventId, enqueueAttempts);
-      return;
-    }
-
-    if (await this.trySkipStandbySharedChatMessage(event, queueName)) {
       return;
     }
 
@@ -549,6 +548,55 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
 
       await this.markFailedWithBackoff(webhookEventId, enqueueAttempts, message);
     }
+  }
+
+  private async prepareCandidateForCanonicalExecution(
+    event: WebhookEnqueueCandidate,
+  ): Promise<boolean> {
+    try {
+      const prepared = await this.webhookService.preparePersistedWebhookEvent(event.id);
+      if (!prepared.canonical) {
+        await this.removeNonCanonicalQueuedJob(event);
+        return false;
+      }
+      if (!prepared.prepared) {
+        return false;
+      }
+      event.normalizedPayload = prepared.normalizedPayload;
+      return true;
+    } catch (error: unknown) {
+      await this.markFailedWithBackoff(
+        event.id,
+        event.enqueueAttempts,
+        `Webhook preparation failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return false;
+    }
+  }
+
+  private async removeNonCanonicalQueuedJob(event: WebhookEnqueueCandidate): Promise<void> {
+    const existingJob = await this.findExistingJob(
+      event.id,
+      typeof event.queueName === 'string' && ANY_WEBHOOK_QUEUE_NAMES.has(event.queueName)
+        ? (event.queueName as AnyWebhookQueueName)
+        : undefined,
+    );
+    if (!existingJob) {
+      return;
+    }
+
+    const state = await existingJob.job.getState();
+    if (state === 'active') {
+      this.logger.warn(
+        {
+          webhookEventId: event.id,
+          queueName: existingJob.queueName,
+        },
+        'Non-canonical mirrored webhook job is already active',
+      );
+      return;
+    }
+    await existingJob.job.remove();
   }
 
   private async handleAlreadyExists(
@@ -745,176 +793,6 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  private async trySkipStandbySharedChatMessage(
-    event: WebhookEnqueueCandidate,
-    queueName: AnyWebhookQueueName,
-  ): Promise<boolean> {
-    if (!this.isStandbySharedChatEvent(event)) {
-      return false;
-    }
-    if (!(await this.hasMatchingOwnerWebhookEvent(event))) {
-      return false;
-    }
-
-    const existingJob = await this.findExistingJob(event.id, queueName);
-    if (existingJob) {
-      const state = await existingJob.job.getState();
-      if (state === 'active') {
-        return false;
-      }
-
-      try {
-        await existingJob.job.remove();
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
-            webhookEventId: event.id,
-            queueName: existingJob.queueName,
-            state,
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Failed to remove queued standby shared chat webhook job before skipping it',
-        );
-        return false;
-      }
-    }
-
-    await this.markSkippedSharedStandbyEvent(event.id);
-    return true;
-  }
-
-  private async hasMatchingOwnerWebhookEvent(event: WebhookEnqueueCandidate): Promise<boolean> {
-    const payload =
-      event.normalizedPayload && typeof event.normalizedPayload === 'object'
-        ? (event.normalizedPayload as Record<string, unknown>)
-        : null;
-    if (!payload) {
-      return false;
-    }
-
-    const ownerBotId = this.readTrimmedString(payload.executionOwnerBotId);
-    const updateId = this.readTrimmedString(payload.updateId);
-    if (!ownerBotId) {
-      return false;
-    }
-
-    if (updateId) {
-      const ownerEvent = await this.prisma.webhookEvent.findFirst({
-        where: {
-          id: { not: event.id },
-          dedupKey: `${ownerBotId}:${updateId}`,
-          botId: ownerBotId,
-          OR: [
-            { status: { in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED, WebhookStatus.PROCESSED] } },
-            { status: WebhookStatus.FAILED, nextEnqueueAt: { not: null } },
-          ],
-        },
-        select: {
-          id: true,
-        },
-      });
-      if (ownerEvent) {
-        return true;
-      }
-    }
-
-    const semanticKey = buildWebhookSemanticEventKey(payload);
-    if (!semanticKey) {
-      return false;
-    }
-
-    const ownerEvents = await this.prisma.webhookEvent.findMany({
-      where: {
-        id: { not: event.id },
-        botId: ownerBotId,
-        createdAt: {
-          gte: new Date(event.createdAt.getTime() - SHARED_CHAT_OWNER_EVENT_LOOKUP_WINDOW_MS),
-          lte: new Date(event.createdAt.getTime() + SHARED_CHAT_OWNER_EVENT_LOOKUP_WINDOW_MS),
-        },
-        OR: [
-          { status: { in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED, WebhookStatus.PROCESSED] } },
-          { status: WebhookStatus.FAILED, nextEnqueueAt: { not: null } },
-        ],
-      },
-      orderBy: { createdAt: 'desc' },
-      take: SHARED_CHAT_OWNER_EVENT_LOOKUP_LIMIT,
-      select: {
-        id: true,
-        normalizedPayload: true,
-      },
-    });
-
-    return ownerEvents.some(
-      (ownerEvent) => buildWebhookSemanticEventKey(ownerEvent.normalizedPayload) === semanticKey,
-    );
-  }
-
-  private isStandbySharedChatEvent(event: WebhookEnqueueCandidate): boolean {
-    const payload =
-      event.normalizedPayload && typeof event.normalizedPayload === 'object'
-        ? (event.normalizedPayload as Record<string, unknown>)
-        : null;
-    if (!payload) {
-      return false;
-    }
-
-    const updateType = this.readLowerString(payload.type);
-    if (
-      updateType !== 'message_created' &&
-      updateType !== 'message_edited' &&
-      updateType !== 'message_callback' &&
-      updateType !== 'user_added' &&
-      updateType !== 'user_removed'
-    ) {
-      return false;
-    }
-
-    const ownerBotId = this.readTrimmedString(payload.executionOwnerBotId);
-    const activeBotId =
-      this.readTrimmedString(event.botId) ?? this.readTrimmedString(payload.botId);
-    if (!ownerBotId || !activeBotId || ownerBotId === activeBotId) {
-      return false;
-    }
-
-    const message =
-      payload.message && typeof payload.message === 'object'
-        ? (payload.message as Record<string, unknown>)
-        : null;
-    const joinedUser =
-      payload.user && typeof payload.user === 'object'
-        ? (payload.user as Record<string, unknown>)
-        : null;
-    const chatId =
-      this.readTrimmedString(message?.chatId) ??
-      this.readTrimmedString(payload.chatId) ??
-      this.readTrimmedString(joinedUser?.chatId);
-    return Boolean(chatId && chatId.startsWith('-'));
-  }
-
-  private async markSkippedSharedStandbyEvent(webhookEventId: string) {
-    await this.prisma.webhookEvent.updateMany({
-      where: {
-        id: webhookEventId,
-        status: { in: [WebhookStatus.RECEIVED, WebhookStatus.FAILED, WebhookStatus.QUEUED] },
-      },
-      data: {
-        status: WebhookStatus.PROCESSED,
-        processedAt: new Date(),
-        queueName: null,
-        nextEnqueueAt: null,
-        errorMessage: null,
-      },
-    });
-  }
-
-  private readTrimmedString(value: unknown): string | null {
-    return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
-  }
-
-  private readLowerString(value: unknown): string | null {
-    return typeof value === 'string' && value.trim().length > 0 ? value.trim().toLowerCase() : null;
-  }
-
   private isAlreadyExistsError(message: string): boolean {
     return message.toLowerCase().includes('already exists');
   }
@@ -994,29 +872,29 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         violationsDeleted,
         violationMessageClaimsDeleted,
       ] = await Promise.all([
-          this.prisma.webhookEvent.deleteMany({
-            where: {
-              createdAt: { lt: webhookCutoff },
-              status: { in: [WebhookStatus.PROCESSED, WebhookStatus.DUPLICATE] },
-            },
-          }),
-          this.prisma.webhookEvent.deleteMany({
-            where: {
-              createdAt: { lt: failedWebhookCutoff },
-              status: WebhookStatus.FAILED,
-              nextEnqueueAt: null,
-            },
-          }),
-          this.prisma.moderationEvent.deleteMany({
-            where: { createdAt: { lt: moderationCutoff } },
-          }),
-          this.prisma.violation.deleteMany({
-            where: { createdAt: { lt: moderationCutoff } },
-          }),
-          this.prisma.moderationViolationMessageClaim.deleteMany({
-            where: { createdAt: { lt: moderationCutoff } },
-          }),
-        ]);
+        this.prisma.webhookEvent.deleteMany({
+          where: {
+            createdAt: { lt: webhookCutoff },
+            status: { in: [WebhookStatus.PROCESSED, WebhookStatus.DUPLICATE] },
+          },
+        }),
+        this.prisma.webhookEvent.deleteMany({
+          where: {
+            createdAt: { lt: failedWebhookCutoff },
+            status: WebhookStatus.FAILED,
+            nextEnqueueAt: null,
+          },
+        }),
+        this.prisma.moderationEvent.deleteMany({
+          where: { createdAt: { lt: moderationCutoff } },
+        }),
+        this.prisma.violation.deleteMany({
+          where: { createdAt: { lt: moderationCutoff } },
+        }),
+        this.prisma.moderationViolationMessageClaim.deleteMany({
+          where: { createdAt: { lt: moderationCutoff } },
+        }),
+      ]);
 
       this.logger.log(
         {

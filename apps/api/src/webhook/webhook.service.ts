@@ -1,10 +1,12 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { ChatSummary, MaxUpdate } from '@maxim/contracts';
+import { randomUUID } from 'node:crypto';
 import {
   ChatEntityType,
   ManagedEntityAccessState,
   Prisma,
+  WebhookExecutionClaimStatus,
   WebhookStatus,
 } from '../prisma/prisma-client';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
@@ -25,10 +27,45 @@ import {
   MANAGED_ENTITY_HANDSHAKE_START_BUTTON_TEXT,
 } from '../max/managed-entity-handshake.service';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  buildWebhookSemanticEventKey,
+  readWebhookEventTimestamp,
+} from './webhook-semantic-event-key';
+import {
+  normalizeWebhookCanonicalCanaryPercent,
+  normalizeWebhookCanonicalExecutionMode,
+  shouldEnforceCanonicalWebhookExecution,
+  type WebhookCanonicalExecutionMode,
+} from './webhook-canonical-execution-mode';
 
 type WebhookIngestResult = {
   accepted: boolean;
   duplicate: boolean;
+};
+
+export type WebhookReceiptResult = WebhookIngestResult & {
+  webhookEventId: string | null;
+};
+
+export type PreparedWebhookExecution = {
+  canonical: boolean;
+  prepared: boolean;
+  normalizedPayload: unknown;
+  executionBotId: string | null;
+  enforced: boolean;
+};
+
+type WebhookExecutionClaimRow = {
+  id: string;
+  kind: string;
+  semanticKey: string;
+  webhookEventId: string;
+  executionBotId: string | null;
+  enforced: boolean;
+  status: WebhookExecutionClaimStatus;
+  leaseToken: string | null;
+  leaseExpiresAt: Date | null;
+  preparedAt: Date | null;
 };
 
 type MembershipActivityProjection = {
@@ -92,13 +129,15 @@ const BOT_SELF_ACCESS_BACKOFF_MS = 30 * 1_000;
 const BOT_SELF_ACCESS_TIMEOUT_MS = 900;
 const BOT_SELF_ACCESS_SNAPSHOT_MAX_AGE_MS = 15 * 60 * 1_000;
 const EXECUTION_OWNER_ASYNC_RECHECK_BACKOFF_MS = 30 * 1_000;
-const BOT_ADDED_START_HINT_BACKOFF_MS = 5 * 60 * 1_000;
-const BOT_ADDED_START_HINT_FAILURE_BACKOFF_MS = 30 * 1_000;
 const BOT_ADDED_START_HINT_SEND_TIMEOUT_MS = 1_500;
 const BOT_ADDED_START_HINT_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const BOT_SELF_ACCESS_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const MANAGED_ENTITIES_PENDING_BOOTSTRAP_TTL_SEC = 15 * 60;
 const WEBHOOK_LEGACY_DEDUP_COMPAT_WINDOW_MS = 24 * 60 * 60 * 1_000;
+const WEBHOOK_PREPARATION_LEASE_MS = 30_000;
+const MANAGED_ENTITY_ONBOARDING_EPOCH_MS = 15 * 60_000;
+const EXECUTION_CLAIM_KIND = 'EXECUTION';
+const ONBOARDING_HINT_CLAIM_KIND = 'ONBOARDING_HINT';
 const MEMBERSHIP_ACTIVITY_TIMESTAMP_GRANULARITY_MS = 1_000;
 const MANAGED_ENTITY_ACTIVITY_UPDATE_TYPES = new Set([
   'message_created',
@@ -126,9 +165,16 @@ const CHAT_ADMIN_ROSTER_MEMBERSHIP_CHURN_UPDATE_TYPES = new Set([
 const STORED_CHAT_BINDING_REUSE_UPDATE_TYPES = new Set([
   'message_created',
   'message_edited',
+  'message_removed',
   'message_callback',
   'user_added',
   'user_removed',
+]);
+const EXTENDED_TERMINAL_BOT_LIFECYCLE_UPDATE_TYPES = new Set(['bot_stopped', 'dialog_removed']);
+const DURABLE_BOT_LIFECYCLE_UPDATE_TYPES = new Set([
+  'bot_added',
+  'bot_removed',
+  ...EXTENDED_TERMINAL_BOT_LIFECYCLE_UPDATE_TYPES,
 ]);
 
 @Injectable()
@@ -136,10 +182,15 @@ export class WebhookService {
   private readonly logger = new Logger(WebhookService.name);
   private static readonly BOT_ADDED_ADMIN_ROSTER_RETRY_WINDOW_MS = 120_000;
   private readonly rawPayloadSampleRate: number;
+  private readonly canonicalExecutionMode: WebhookCanonicalExecutionMode;
+  private readonly canonicalExecutionCanaryPercent: number;
+  private readonly canonicalExecutionCanaryEntityIds: ReadonlySet<string>;
+  private readonly extendedLifecycleMode: WebhookCanonicalExecutionMode;
+  private readonly extendedLifecycleCanaryPercent: number;
+  private readonly extendedLifecycleCanaryEntityIds: ReadonlySet<string>;
   private readonly botSelfAccessCache = new Map<string, BotSelfAccessCacheEntry>();
   private readonly botSelfAccessBackoffUntilMs = new Map<string, number>();
   private readonly executionOwnerRecheckBackoffUntilMs = new Map<string, number>();
-  private readonly botAddedStartHintBackoffUntilMs = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -153,74 +204,258 @@ export class WebhookService {
     @Optional() private readonly managedEntityHandshakeService?: ManagedEntityHandshakeService,
   ) {
     this.rawPayloadSampleRate = configService.get<number>('RAW_PAYLOAD_SAMPLE_RATE', 0.01);
+    this.canonicalExecutionMode = normalizeWebhookCanonicalExecutionMode(
+      configService.get<string>('WEBHOOK_CANONICAL_EXECUTION_MODE', 'shadow'),
+    );
+    this.canonicalExecutionCanaryPercent = normalizeWebhookCanonicalCanaryPercent(
+      configService.get<number>('WEBHOOK_CANONICAL_EXECUTION_CANARY_PERCENT', 1),
+    );
+    this.canonicalExecutionCanaryEntityIds = this.parseCanaryEntityIds(
+      configService.get<string>('WEBHOOK_CANONICAL_EXECUTION_CANARY_ENTITY_IDS', ''),
+    );
+    this.extendedLifecycleMode = normalizeWebhookCanonicalExecutionMode(
+      configService.get<string>('MAX_EXTENDED_WEBHOOK_LIFECYCLE_MODE', 'shadow'),
+    );
+    this.extendedLifecycleCanaryPercent = normalizeWebhookCanonicalCanaryPercent(
+      configService.get<number>('MAX_EXTENDED_WEBHOOK_LIFECYCLE_CANARY_PERCENT', 1),
+    );
+    this.extendedLifecycleCanaryEntityIds = this.parseCanaryEntityIds(
+      configService.get<string>('MAX_EXTENDED_WEBHOOK_LIFECYCLE_CANARY_ENTITY_IDS', ''),
+    );
   }
 
   async ingest(update: MaxUpdate, sourceIp: string | null) {
-    this.deferBackgroundTask(
-      () => this.invalidateMembershipCacheFromWebhook(update),
-      'membership cache invalidation',
-      update,
-    );
-    const bindingSync = await this.syncChatBotBindingFromWebhook(update);
-    this.attachExecutionOwnerBotId(update, bindingSync.executionOwnerBotId);
+    const receipt = await this.storeReceipt(update, sourceIp);
+    if (receipt.duplicate) {
+      await this.persistMembershipActivityProjection(update);
+      return { accepted: true, duplicate: true };
+    }
 
-    const legacyDuplicateResult = await this.handleLegacyDedupKeyDuplicate(update);
+    if (receipt.webhookEventId) {
+      await this.preparePersistedWebhookEvent(receipt.webhookEventId, update);
+    }
+    return { accepted: true, duplicate: false };
+  }
+
+  async storeReceipt(update: MaxUpdate, sourceIp: string | null): Promise<WebhookReceiptResult> {
+    const legacyDuplicateResult = await this.handleLegacyDedupKeyDuplicate(update, false);
     if (legacyDuplicateResult) {
-      return legacyDuplicateResult;
+      return { ...legacyDuplicateResult, webhookEventId: null };
     }
 
     const shouldKeepRawPayload = Math.random() <= this.rawPayloadSampleRate;
     const rawPayload = shouldKeepRawPayload ? (update.raw ?? {}) : {};
 
     try {
-      const persisted = await this.persistEvent(update, sourceIp, rawPayload);
-      if (!persisted) {
-        return this.acceptDuplicateWebhookEvent(update);
-      }
-      await this.stageManagedEntityPendingBootstrap(update);
-      this.schedulePendingExecutionOwnerFailoverRecheck(bindingSync.pendingExecutionOwnerRecheck);
-      this.deferBotAddedStartHint(update);
-      this.deferManagedEntityHandshake(update);
-
-      return { accepted: true, duplicate: false };
+      const webhookEventId = await this.persistReceipt(update, sourceIp, rawPayload);
+      return { accepted: true, duplicate: false, webhookEventId };
     } catch (error: unknown) {
-      const duplicateResult = await this.handleDuplicateError(error, update);
-      if (duplicateResult) {
-        return duplicateResult;
+      if (this.isUniqueConstraintError(error)) {
+        return { accepted: true, duplicate: true, webhookEventId: null };
       }
 
       if (this.shouldRetryWithSanitizedPayload(error)) {
         const sanitizedUpdate = this.sanitizeForJsonStorage(update) as MaxUpdate;
         const sanitizedRawPayload = this.sanitizeForJsonStorage(rawPayload);
-
         try {
-          const persisted = await this.persistEvent(sanitizedUpdate, sourceIp, sanitizedRawPayload);
-          if (!persisted) {
-            return this.acceptDuplicateWebhookEvent(sanitizedUpdate);
-          }
-          await this.stageManagedEntityPendingBootstrap(sanitizedUpdate);
-          this.schedulePendingExecutionOwnerFailoverRecheck(
-            bindingSync.pendingExecutionOwnerRecheck,
+          const webhookEventId = await this.persistReceipt(
+            sanitizedUpdate,
+            sourceIp,
+            sanitizedRawPayload,
           );
-          this.deferBotAddedStartHint(sanitizedUpdate);
-          this.deferManagedEntityHandshake(sanitizedUpdate);
           this.logger.warn(
             {
               dedupKey: this.buildWebhookDedupKey(update),
               reason: this.extractErrorMessage(error),
             },
-            'Stored webhook event with sanitized payload fallback',
+            'Stored webhook receipt with sanitized payload fallback',
           );
-          return { accepted: true, duplicate: false };
+          return { accepted: true, duplicate: false, webhookEventId };
         } catch (retryError: unknown) {
-          const duplicateRetryResult = await this.handleDuplicateError(retryError, sanitizedUpdate);
-          if (duplicateRetryResult) {
-            return duplicateRetryResult;
+          if (this.isUniqueConstraintError(retryError)) {
+            return { accepted: true, duplicate: true, webhookEventId: null };
           }
+          throw retryError;
         }
       }
 
-      this.logger.error({ err: error }, 'Failed to ingest webhook event');
+      this.logger.error({ err: error }, 'Failed to store durable webhook receipt');
+      throw error;
+    }
+  }
+
+  async preparePersistedWebhookEvent(
+    webhookEventId: string,
+    fallbackUpdate?: MaxUpdate,
+  ): Promise<PreparedWebhookExecution> {
+    const event = await this.loadWebhookReceipt(webhookEventId, fallbackUpdate);
+    if (!event) {
+      return {
+        canonical: false,
+        prepared: false,
+        normalizedPayload: fallbackUpdate ?? null,
+        executionBotId: null,
+        enforced: false,
+      };
+    }
+
+    const update = event.normalizedPayload as MaxUpdate;
+    const semanticKey =
+      buildWebhookSemanticEventKey(update) ?? `receipt:${event.dedupKey || webhookEventId}`;
+    const enforceCanonicalExecution = shouldEnforceCanonicalWebhookExecution({
+      mode: this.resolveEntityScopedCanaryMode(
+        this.canonicalExecutionMode,
+        this.canonicalExecutionCanaryEntityIds,
+        update.message?.chatId,
+      ),
+      canaryPercent: this.canonicalExecutionCanaryPercent,
+      semanticKey,
+    });
+    const claimModel = this.getWebhookExecutionClaimModel();
+    if (!claimModel || this.canonicalExecutionMode === 'off') {
+      const prepared = await this.prepareWebhookEventCore(webhookEventId, update);
+      return {
+        canonical: true,
+        prepared: true,
+        normalizedPayload: prepared.update,
+        executionBotId: prepared.executionBotId,
+        enforced: false,
+      };
+    }
+
+    await claimModel.createMany({
+      data: [
+        {
+          kind: EXECUTION_CLAIM_KIND,
+          semanticKey,
+          webhookEventId,
+          enforced: enforceCanonicalExecution,
+        },
+      ],
+      skipDuplicates: true,
+    });
+    let claim = await claimModel.findUnique({
+      where: {
+        kind_semanticKey: {
+          kind: EXECUTION_CLAIM_KIND,
+          semanticKey,
+        },
+      },
+    });
+    if (!claim) {
+      throw new Error(`Webhook execution claim disappeared for ${semanticKey}`);
+    }
+
+    if (enforceCanonicalExecution && !claim.enforced) {
+      await claimModel.updateMany({
+        where: { id: claim.id },
+        data: { enforced: true },
+      });
+      claim = { ...claim, enforced: true };
+    }
+
+    if (claim.webhookEventId !== webhookEventId) {
+      await this.touchMirroredReceiptMembership(update);
+      if (!claim.enforced) {
+        const prepared = await this.prepareWebhookEventCore(webhookEventId, update);
+        return {
+          canonical: true,
+          prepared: true,
+          normalizedPayload: prepared.update,
+          executionBotId: null,
+          enforced: false,
+        };
+      }
+
+      await this.markMirroredReceiptDuplicate(webhookEventId);
+      return {
+        canonical: false,
+        prepared: true,
+        normalizedPayload: update,
+        executionBotId: claim.executionBotId,
+        enforced: true,
+      };
+    }
+
+    if (claim.preparedAt) {
+      return {
+        canonical: true,
+        prepared: true,
+        normalizedPayload: update,
+        executionBotId: claim.executionBotId,
+        enforced: claim.enforced,
+      };
+    }
+
+    const leaseToken = randomUUID();
+    const now = new Date();
+    const lease = await claimModel.updateMany({
+      where: {
+        id: claim.id,
+        preparedAt: null,
+        OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lt: now } }],
+      },
+      data: {
+        leaseToken,
+        leaseExpiresAt: new Date(now.getTime() + WEBHOOK_PREPARATION_LEASE_MS),
+      },
+    });
+    if (lease.count === 0) {
+      claim =
+        (await claimModel.findUnique({
+          where: {
+            kind_semanticKey: {
+              kind: EXECUTION_CLAIM_KIND,
+              semanticKey,
+            },
+          },
+        })) ?? claim;
+      return {
+        canonical: true,
+        prepared: claim.preparedAt !== null,
+        normalizedPayload: update,
+        executionBotId: claim.executionBotId,
+        enforced: claim.enforced,
+      };
+    }
+
+    try {
+      const prepared = await this.prepareWebhookEventCore(webhookEventId, update);
+      const published = await claimModel.updateMany({
+        where: {
+          id: claim.id,
+          leaseToken,
+        },
+        data: {
+          executionBotId: prepared.executionBotId,
+          enforced: claim.enforced || enforceCanonicalExecution,
+          status: WebhookExecutionClaimStatus.READY,
+          preparedAt: new Date(),
+          leaseToken: null,
+          leaseExpiresAt: null,
+        },
+      });
+      if (published.count !== 1) {
+        throw new Error(`Webhook preparation lease was lost before READY for ${webhookEventId}`);
+      }
+      return {
+        canonical: true,
+        prepared: true,
+        normalizedPayload: prepared.update,
+        executionBotId: prepared.executionBotId,
+        enforced: claim.enforced || enforceCanonicalExecution,
+      };
+    } catch (error: unknown) {
+      await claimModel.updateMany({
+        where: {
+          id: claim.id,
+          leaseToken,
+        },
+        data: {
+          leaseToken: null,
+          leaseExpiresAt: null,
+        },
+      });
       throw error;
     }
   }
@@ -298,11 +533,13 @@ export class WebhookService {
       return;
     }
 
-    const accessEdge = (this.prisma as PrismaService & {
-      managedEntityAccessEdge?: {
-        updateMany?: (args: unknown) => Promise<unknown>;
-      };
-    }).managedEntityAccessEdge;
+    const accessEdge = (
+      this.prisma as PrismaService & {
+        managedEntityAccessEdge?: {
+          updateMany?: (args: unknown) => Promise<unknown>;
+        };
+      }
+    ).managedEntityAccessEdge;
     if (typeof accessEdge?.updateMany !== 'function') {
       return;
     }
@@ -326,14 +563,16 @@ export class WebhookService {
     });
   }
 
-  private async persistEvent(
+  private async persistReceipt(
     update: MaxUpdate,
     sourceIp: string | null,
     rawPayload: Prisma.InputJsonValue,
-  ): Promise<boolean> {
+  ): Promise<string> {
     const storageRawPayload = this.sanitizeForJsonStorage(rawPayload);
     const storageNormalizedPayload = this.sanitizeForJsonStorage(update);
-    const webhookEventData: Prisma.WebhookEventCreateManyInput = {
+    const webhookEventId = randomUUID();
+    const data: Prisma.WebhookEventCreateManyInput = {
+      id: webhookEventId,
       dedupKey: this.buildWebhookDedupKey(update),
       ...(update.botId ? { botId: update.botId } : {}),
       sourceIp: sourceIp ?? undefined,
@@ -341,111 +580,236 @@ export class WebhookService {
       normalizedPayload: storageNormalizedPayload,
       status: WebhookStatus.RECEIVED,
     };
-    const membershipProjections = this.buildMembershipActivityProjections(update);
-    const membershipModel = this.getMembershipActivityEventModel();
-    const webhookEventCreateMany = this.getWebhookEventCreateMany();
-
-    if (membershipProjections.length > 0 && membershipModel) {
-      const transaction = (
-        this.prisma as PrismaService & {
-          $transaction?: (promises: Promise<unknown>[]) => Promise<unknown>;
-        }
-      ).$transaction;
-      if (typeof transaction === 'function' && webhookEventCreateMany) {
-        const [webhookInsertResult] = (await transaction.call(this.prisma, [
-          webhookEventCreateMany.call(this.prisma.webhookEvent, {
-            data: [webhookEventData],
-            skipDuplicates: true,
-          }),
-          membershipModel.createMany({
-            data: membershipProjections,
-            skipDuplicates: true,
-          }),
-        ])) as unknown[];
-        const inserted = this.readCreateManyCount(webhookInsertResult) > 0;
-        if (!inserted) {
-          return false;
-        }
-      } else if (typeof transaction === 'function') {
-        await transaction.call(this.prisma, [
-          this.prisma.webhookEvent.create({
-            data: webhookEventData,
-          }),
-          membershipModel.createMany({
-            data: membershipProjections,
-            skipDuplicates: true,
-          }),
-        ]);
-      } else {
-        const inserted = await this.createWebhookEventSkippingDuplicates(webhookEventData);
-        if (!inserted) {
-          return false;
-        }
-        await membershipModel.createMany({
-          data: membershipProjections,
-          skipDuplicates: true,
-        });
+    const createMany = (
+      this.prisma.webhookEvent as unknown as {
+        createMany?: (args: {
+          data: Prisma.WebhookEventCreateManyInput[];
+          skipDuplicates: boolean;
+        }) => Promise<{ count: number }>;
       }
-      this.deferBackgroundTask(
-        () => this.persistAdminReadModels(update),
-        'admin read model refresh',
-        update,
-      );
-      return true;
+    ).createMany;
+    if (typeof createMany === 'function') {
+      const result = await createMany.call(this.prisma.webhookEvent, {
+        data: [data],
+        skipDuplicates: true,
+      });
+      if (result.count === 0) {
+        throw Object.assign(new Error('Duplicate webhook receipt'), { code: 'P2002' });
+      }
+      return webhookEventId;
     }
 
-    const inserted = await this.createWebhookEventSkippingDuplicates(webhookEventData);
-    if (!inserted) {
-      return false;
+    const created = await this.prisma.webhookEvent.create({
+      data,
+      select: {
+        id: true,
+      },
+    });
+    return created.id;
+  }
+
+  private async loadWebhookReceipt(
+    webhookEventId: string,
+    fallbackUpdate?: MaxUpdate,
+  ): Promise<{
+    id: string;
+    dedupKey: string;
+    botId: string | null;
+    status: WebhookStatus;
+    normalizedPayload: unknown;
+  } | null> {
+    const findUnique = (
+      this.prisma.webhookEvent as unknown as {
+        findUnique?: (args: unknown) => Promise<{
+          id: string;
+          dedupKey?: string | null;
+          botId?: string | null;
+          status?: WebhookStatus;
+          normalizedPayload?: unknown;
+        } | null>;
+      }
+    ).findUnique;
+    if (typeof findUnique === 'function') {
+      const stored = await findUnique.call(this.prisma.webhookEvent, {
+        where: { id: webhookEventId },
+        select: {
+          id: true,
+          dedupKey: true,
+          botId: true,
+          status: true,
+          normalizedPayload: true,
+        },
+      });
+      if (stored?.normalizedPayload) {
+        return {
+          id: stored.id,
+          dedupKey: stored.dedupKey ?? '',
+          botId: stored.botId ?? null,
+          status: stored.status ?? WebhookStatus.RECEIVED,
+          normalizedPayload: stored.normalizedPayload,
+        };
+      }
     }
+
+    if (!fallbackUpdate) {
+      return null;
+    }
+
+    return {
+      id: webhookEventId,
+      dedupKey: this.buildWebhookDedupKey(fallbackUpdate),
+      botId: fallbackUpdate.botId?.trim() || null,
+      status: WebhookStatus.RECEIVED,
+      normalizedPayload: fallbackUpdate,
+    };
+  }
+
+  private getWebhookExecutionClaimModel(): {
+    createMany: (args: {
+      data: Array<{
+        kind: string;
+        semanticKey: string;
+        webhookEventId: string;
+        enforced?: boolean;
+      }>;
+      skipDuplicates: boolean;
+    }) => Promise<{ count: number }>;
+    findUnique: (args: unknown) => Promise<WebhookExecutionClaimRow | null>;
+    updateMany: (args: unknown) => Promise<{ count: number }>;
+  } | null {
+    const model = (
+      this.prisma as PrismaService & {
+        webhookExecutionClaim?: {
+          createMany?: (args: unknown) => Promise<{ count: number }>;
+          findUnique?: (args: unknown) => Promise<WebhookExecutionClaimRow | null>;
+          updateMany?: (args: unknown) => Promise<{ count: number }>;
+        };
+      }
+    ).webhookExecutionClaim;
+    if (
+      typeof model?.createMany !== 'function' ||
+      typeof model.findUnique !== 'function' ||
+      typeof model.updateMany !== 'function'
+    ) {
+      return null;
+    }
+
+    return {
+      createMany: model.createMany.bind(model) as never,
+      findUnique: model.findUnique.bind(model),
+      updateMany: model.updateMany.bind(model),
+    };
+  }
+
+  private async prepareWebhookEventCore(
+    webhookEventId: string,
+    update: MaxUpdate,
+  ): Promise<{ update: MaxUpdate; executionBotId: string | null }> {
+    this.deferBackgroundTask(
+      () => this.invalidateMembershipCacheFromWebhook(update),
+      'membership cache invalidation',
+      update,
+    );
+    const bindingSync = await this.syncChatBotBindingFromWebhook(update);
+    this.attachExecutionOwnerBotId(update, bindingSync.executionOwnerBotId);
+    await this.persistMembershipActivityProjection(update);
     this.deferBackgroundTask(
       () => this.persistAdminReadModels(update),
       'admin read model refresh',
       update,
     );
-    return true;
+    await this.stageManagedEntityPendingBootstrap(update);
+    this.schedulePendingExecutionOwnerFailoverRecheck(bindingSync.pendingExecutionOwnerRecheck);
+    if (await this.claimManagedEntityOnboardingHint(webhookEventId, update)) {
+      this.deferBotAddedStartHint(update);
+    }
+    this.deferManagedEntityHandshake(update);
+
+    await this.prisma.webhookEvent.updateMany({
+      where: {
+        id: webhookEventId,
+        status: { in: [WebhookStatus.RECEIVED, WebhookStatus.FAILED, WebhookStatus.QUEUED] },
+      },
+      data: {
+        normalizedPayload: this.sanitizeForJsonStorage(update),
+      },
+    });
+
+    return {
+      update,
+      executionBotId: bindingSync.executionOwnerBotId ?? update.executionOwnerBotId?.trim() ?? null,
+    };
   }
 
-  private async createWebhookEventSkippingDuplicates(
-    data: Prisma.WebhookEventCreateManyInput,
+  private async claimManagedEntityOnboardingHint(
+    webhookEventId: string,
+    update: MaxUpdate,
   ): Promise<boolean> {
-    const createMany = this.getWebhookEventCreateMany();
-    if (createMany) {
-      const result = await createMany.call(this.prisma.webhookEvent, {
-        data: [data],
-        skipDuplicates: true,
-      });
-      return this.readCreateManyCount(result) > 0;
+    if (update.type.trim().toLowerCase() !== 'bot_added') {
+      return false;
     }
 
-    await this.prisma.webhookEvent.create({
-      data,
-    });
-    return true;
-  }
+    const chatId = update.message?.chatId?.trim() ?? '';
+    if (!chatId) {
+      return false;
+    }
 
-  private getWebhookEventCreateMany():
-    | ((
-        args: {
-          data: Prisma.WebhookEventCreateManyInput[];
-          skipDuplicates?: boolean;
+    const claimModel = this.getWebhookExecutionClaimModel();
+    if (!claimModel) {
+      return true;
+    }
+
+    const occurredAtMs = (readWebhookEventTimestamp(update) ?? new Date()).getTime();
+    const onboardingEpoch = Math.floor(occurredAtMs / MANAGED_ENTITY_ONBOARDING_EPOCH_MS);
+    const result = await claimModel.createMany({
+      data: [
+        {
+          kind: ONBOARDING_HINT_CLAIM_KIND,
+          semanticKey: `${chatId}:${onboardingEpoch}`,
+          webhookEventId,
         },
-      ) => Promise<unknown>)
-    | null {
-    const createMany = (
-      this.prisma.webhookEvent as unknown as {
-        createMany?: (args: {
-          data: Prisma.WebhookEventCreateManyInput[];
-          skipDuplicates?: boolean;
-        }) => Promise<unknown>;
-      }
-    ).createMany;
-    return typeof createMany === 'function' ? createMany : null;
+      ],
+      skipDuplicates: true,
+    });
+    return result.count > 0;
   }
 
-  private readCreateManyCount(result: unknown): number {
-    const count = (result as { count?: unknown })?.count;
-    return typeof count === 'number' ? count : 0;
+  private async markMirroredReceiptDuplicate(webhookEventId: string): Promise<void> {
+    await this.prisma.webhookEvent.updateMany({
+      where: {
+        id: webhookEventId,
+        status: { in: [WebhookStatus.RECEIVED, WebhookStatus.FAILED, WebhookStatus.QUEUED] },
+      },
+      data: {
+        status: WebhookStatus.DUPLICATE,
+        processedAt: new Date(),
+        queueName: null,
+        nextEnqueueAt: null,
+        errorMessage: null,
+      },
+    });
+  }
+
+  private async touchMirroredReceiptMembership(update: MaxUpdate): Promise<void> {
+    const chatId = update.message?.chatId?.trim() ?? '';
+    const observedBotId = update.botId?.trim() ?? '';
+    if (!chatId.startsWith('-') || !observedBotId) {
+      return;
+    }
+
+    const primaryBotId = await this.maxBotLinkService.getStoredChatPrimaryBotId(chatId, {
+      bypassCache: true,
+    });
+    await this.maxBotLinkService.observeStoredChatBotWebhook({
+      chatId,
+      primaryBotId,
+      botId: observedBotId,
+      observedAt: new Date(),
+    });
+  }
+
+  private isUniqueConstraintError(error: unknown): boolean {
+    return (error as { code?: string }).code === 'P2002';
   }
 
   private async stageManagedEntityPendingBootstrap(update: MaxUpdate): Promise<void> {
@@ -540,18 +904,6 @@ export class WebhookService {
       return;
     }
 
-    const backoffKey = this.buildBotAddedStartHintBackoffKey(
-      chatId,
-      entityType,
-      addedBotId ?? botId,
-    );
-    const now = Date.now();
-    const blockedUntil = this.botAddedStartHintBackoffUntilMs.get(backoffKey) ?? 0;
-    if (blockedUntil > now) {
-      return;
-    }
-    this.botAddedStartHintBackoffUntilMs.set(backoffKey, now + BOT_ADDED_START_HINT_BACKOFF_MS);
-
     this.deferBackgroundTask(
       async () => {
         await this.sendBotAddedStartHint(update, chatId, botId, entityType);
@@ -612,10 +964,6 @@ export class WebhookService {
       );
     } catch (error: unknown) {
       if (this.isExpectedBotAddedStartHintSendFailure(error)) {
-        this.botAddedStartHintBackoffUntilMs.set(
-          this.buildBotAddedStartHintBackoffKey(chatId, entityType, botId),
-          Date.now() + BOT_ADDED_START_HINT_FAILURE_BACKOFF_MS,
-        );
         this.logger.debug(
           {
             updateId: update.updateId,
@@ -642,20 +990,14 @@ export class WebhookService {
     }
   }
 
-  private buildBotAddedStartHintBackoffKey(
-    chatId: string,
-    entityType: ChatEntityType,
-    botId: string,
-  ): string {
-    return `${botId}:${chatId}:${entityType}`;
-  }
-
   private resolveBotAddedMemberBotId(update: MaxUpdate): string | null {
     if (update.type.trim().toLowerCase() !== 'bot_added') {
       return null;
     }
 
-    const memberBotId = update.membership?.memberUserIds?.find((userId) => userId.trim().length > 0);
+    const memberBotId = update.membership?.memberUserIds?.find(
+      (userId) => userId.trim().length > 0,
+    );
     return memberBotId?.trim() || null;
   }
 
@@ -701,7 +1043,9 @@ export class WebhookService {
     });
   }
 
-  private async syncChatBotBindingFromWebhook(update: MaxUpdate): Promise<ChatBotBindingSyncResult> {
+  private async syncChatBotBindingFromWebhook(
+    update: MaxUpdate,
+  ): Promise<ChatBotBindingSyncResult> {
     const chatId = update.message?.chatId?.trim() ?? '';
     if (!chatId) {
       return this.buildChatBotBindingSyncResult(null);
@@ -709,22 +1053,55 @@ export class WebhookService {
 
     const entityType = this.readWebhookChatEntityType(update);
     const normalizedType = update.type.trim().toLowerCase();
+    const trustedLifecycleEventAt = readWebhookEventTimestamp(update);
     let pendingExecutionOwnerRecheck: ExecutionOwnerFailoverRecheckParams | null = null;
     try {
+      if (
+        EXTENDED_TERMINAL_BOT_LIFECYCLE_UPDATE_TYPES.has(normalizedType) &&
+        !this.shouldApplyExtendedLifecycleUpdate(update)
+      ) {
+        const storedOwnerBotId = await this.maxBotLinkService.getStoredChatPrimaryBotId(chatId, {
+          bypassCache: true,
+        });
+        return this.buildChatBotBindingSyncResult(storedOwnerBotId);
+      }
+
       if (this.isBotRemovalUpdate(update)) {
+        if (!trustedLifecycleEventAt) {
+          const storedOwnerBotId = await this.maxBotLinkService.getStoredChatPrimaryBotId(chatId, {
+            bypassCache: true,
+          });
+          this.logger.warn(
+            {
+              updateId: update.updateId,
+              type: normalizedType,
+              chatId,
+              botId: update.botId ?? null,
+            },
+            'Skipped terminal bot lifecycle transition without a trusted event timestamp',
+          );
+          this.scheduleChatAdminRosterSyncFromWebhook(update, chatId);
+          return this.buildChatBotBindingSyncResult(storedOwnerBotId);
+        }
+
         const removedBotId = this.resolveRemovedChatBotId(update);
         const nextOwnerBotId = await this.maxBotLinkService.markChatBotRemoved({
           chatId,
           title: update.message?.chatTitle ?? null,
           entityType,
           botId: removedBotId,
+          lifecycleEventAt: trustedLifecycleEventAt,
+          lifecycleEventType: normalizedType,
+          lifecycleSource: 'webhook',
         });
         this.scheduleChatAdminRosterSyncFromWebhook(update, chatId);
         return this.buildChatBotBindingSyncResult(nextOwnerBotId);
       }
 
       if (STORED_CHAT_BINDING_REUSE_UPDATE_TYPES.has(normalizedType)) {
-        const storedOwnerBotId = await this.maxBotLinkService.getStoredChatPrimaryBotId(chatId);
+        const storedOwnerBotId = await this.maxBotLinkService.getStoredChatPrimaryBotId(chatId, {
+          bypassCache: true,
+        });
         if (storedOwnerBotId) {
           let executionOwnerBotId: string | null = storedOwnerBotId;
           const observedBotId = update.botId?.trim() || null;
@@ -770,11 +1147,24 @@ export class WebhookService {
         }
       }
 
+      if (normalizedType !== 'bot_added' || !trustedLifecycleEventAt) {
+        const verifiedBotId = await this.bindIncomingBotAfterLiveProbe(update, chatId, entityType);
+        this.scheduleChatAdminRosterSyncFromWebhook(update, chatId);
+        return this.buildChatBotBindingSyncResult(verifiedBotId);
+      }
+
       const boundBotId = await this.maxBotLinkService.bindChatToBot({
         chatId,
         title: update.message?.chatTitle ?? null,
         entityType,
         botId: update.botId,
+        ...(normalizedType === 'bot_added'
+          ? {
+              lifecycleEventAt: trustedLifecycleEventAt,
+              lifecycleEventType: 'bot_added',
+              lifecycleSource: 'webhook',
+            }
+          : {}),
       });
       let executionOwnerBotId = boundBotId;
       const shouldRefreshExecutionOwner = await this.shouldRefreshExecutionOwnerFromWebhook(
@@ -810,6 +1200,9 @@ export class WebhookService {
         },
         'Failed to bind chat to bot during webhook ingest',
       );
+      if (DURABLE_BOT_LIFECYCLE_UPDATE_TYPES.has(normalizedType)) {
+        throw error;
+      }
       return this.buildChatBotBindingSyncResult(null);
     }
   }
@@ -824,13 +1217,61 @@ export class WebhookService {
     };
   }
 
+  private async bindIncomingBotAfterLiveProbe(
+    update: MaxUpdate,
+    chatId: string,
+    entityType: ChatEntityType | null,
+  ): Promise<string | null> {
+    const incomingBotId = update.botId?.trim() ?? '';
+    if (!chatId.startsWith('-') || !incomingBotId || !this.maxClient) {
+      return null;
+    }
+
+    const canHandleUserFacing = await this.getBotSelfModerationAccessState(chatId, incomingBotId, {
+      bypassCache: true,
+    });
+    if (canHandleUserFacing !== true) {
+      return null;
+    }
+
+    const probeCompletedAt = new Date();
+    const boundBotId = await this.maxBotLinkService.bindChatToBot({
+      chatId,
+      title: update.message?.chatTitle ?? null,
+      entityType,
+      botId: incomingBotId,
+      lifecycleEventAt: probeCompletedAt,
+      lifecycleEventType: 'live_probe',
+      lifecycleSource: 'live_probe',
+    });
+    if (!boundBotId) {
+      return null;
+    }
+
+    // FLAG: Lifecycle reactivation requires access evidence collected after the
+    // lifecycle watermark was stored. Do not collapse these two probes.
+    const confirmedAfterLifecycle = await this.getBotSelfModerationAccessState(
+      chatId,
+      incomingBotId,
+      { bypassCache: true },
+    );
+    if (confirmedAfterLifecycle !== true) {
+      return null;
+    }
+
+    return this.maxBotLinkService.reconcileChatPrimaryByAccess({
+      chatId,
+      title: update.message?.chatTitle ?? null,
+      entityType,
+    });
+  }
+
   private async maybeFailOverExecutionOwner(params: {
     update: MaxUpdate;
     chatId: string;
     incomingBotId: string | null;
     currentOwnerBotId: string | null;
     allowLiveCheck: boolean;
-    bypassLiveCache?: boolean;
   }): Promise<string | null> {
     const incomingBotId = params.incomingBotId?.trim() ?? '';
     const currentOwnerBotId = params.currentOwnerBotId?.trim() ?? '';
@@ -843,23 +1284,26 @@ export class WebhookService {
       return params.currentOwnerBotId;
     }
 
-    const currentOwnerCanHandleUserFacing = params.allowLiveCheck
-      ? await this.getBotSelfModerationAccessState(params.chatId, currentOwnerBotId, {
-          bypassCache: params.bypassLiveCache === true,
-        })
-      : await this.getCachedOrPersistedBotSelfModerationAccessState(
-          params.chatId,
-          currentOwnerBotId,
-        );
+    // Cached or persisted access evidence may schedule a probe, but it must never
+    // be presented as a successful live probe for lifecycle reactivation.
+    if (!params.allowLiveCheck) {
+      return params.currentOwnerBotId;
+    }
+
+    const currentOwnerCanHandleUserFacing = await this.getBotSelfModerationAccessState(
+      params.chatId,
+      currentOwnerBotId,
+      { bypassCache: true },
+    );
     if (currentOwnerCanHandleUserFacing !== false) {
       return params.currentOwnerBotId;
     }
 
-    const incomingBotCanHandleUserFacing = params.allowLiveCheck
-      ? await this.getBotSelfModerationAccessState(params.chatId, incomingBotId, {
-          bypassCache: params.bypassLiveCache === true,
-        })
-      : await this.getCachedOrPersistedBotSelfModerationAccessState(params.chatId, incomingBotId);
+    const incomingBotCanHandleUserFacing = await this.getBotSelfModerationAccessState(
+      params.chatId,
+      incomingBotId,
+      { bypassCache: true },
+    );
     if (incomingBotCanHandleUserFacing !== true) {
       return params.currentOwnerBotId;
     }
@@ -870,6 +1314,9 @@ export class WebhookService {
       entityType: this.readWebhookChatEntityType(params.update),
       botId: incomingBotId,
       allowReassign: true,
+      lifecycleEventAt: new Date(),
+      lifecycleEventType: 'live_probe',
+      lifecycleSource: 'live_probe',
     });
 
     if (reassignedBotId === incomingBotId) {
@@ -1579,7 +2026,7 @@ export class WebhookService {
       const snapshot = buildBotAccessSnapshotPersistence(access, {
         source: 'webhook_owner_failover',
       });
-      await this.prisma.chatBotMembership.updateMany({
+      const updated = await this.prisma.chatBotMembership.updateMany({
         where: {
           chatId,
           botId,
@@ -1588,6 +2035,9 @@ export class WebhookService {
           ...snapshot,
         },
       });
+      if (updated.count > 0) {
+        await this.maxBotLinkService.reconcileChatPrimaryByAccess?.({ chatId });
+      }
     } catch (error: unknown) {
       this.logger.debug(
         {
@@ -1781,10 +2231,58 @@ export class WebhookService {
   }
 
   private isBotRemovalUpdate(update: MaxUpdate): boolean {
-    return update.type.trim().toLowerCase() === 'bot_removed';
+    const normalizedType = update.type.trim().toLowerCase();
+    return (
+      normalizedType === 'bot_removed' ||
+      (EXTENDED_TERMINAL_BOT_LIFECYCLE_UPDATE_TYPES.has(normalizedType) &&
+        this.shouldApplyExtendedLifecycleUpdate(update))
+    );
+  }
+
+  private shouldApplyExtendedLifecycleUpdate(update: MaxUpdate): boolean {
+    const semanticKey =
+      buildWebhookSemanticEventKey(update) ??
+      `extended-lifecycle:${update.type}:${update.message?.chatId ?? ''}:${update.botId ?? ''}:${update.updateId ?? ''}`;
+    return shouldEnforceCanonicalWebhookExecution({
+      mode: this.resolveEntityScopedCanaryMode(
+        this.extendedLifecycleMode,
+        this.extendedLifecycleCanaryEntityIds,
+        update.message?.chatId,
+      ),
+      canaryPercent: this.extendedLifecycleCanaryPercent,
+      semanticKey,
+    });
+  }
+
+  private parseCanaryEntityIds(value: unknown): ReadonlySet<string> {
+    const raw = typeof value === 'string' ? value : '';
+    return new Set(
+      raw
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean),
+    );
+  }
+
+  private resolveEntityScopedCanaryMode(
+    mode: WebhookCanonicalExecutionMode,
+    canaryEntityIds: ReadonlySet<string>,
+    entityId: string | null | undefined,
+  ): WebhookCanonicalExecutionMode {
+    if (mode !== 'canary') {
+      return mode;
+    }
+    const normalizedEntityId = entityId?.trim() ?? '';
+    return normalizedEntityId &&
+      (canaryEntityIds.has('*') || canaryEntityIds.has(normalizedEntityId))
+      ? 'canary'
+      : 'shadow';
   }
 
   private resolveRemovedChatBotId(update: MaxUpdate): string | null {
+    if (update.type.trim().toLowerCase() !== 'bot_removed') {
+      return update.botId?.trim() || null;
+    }
     const raw = this.asRecord(update.raw);
     const rawRecords = [
       this.asRecord(raw?.user),
@@ -1880,7 +2378,6 @@ export class WebhookService {
       backoffKey,
       Date.now() + EXECUTION_OWNER_ASYNC_RECHECK_BACKOFF_MS,
     );
-    const bypassLiveCache = this.shouldPerformInlineExecutionOwnerLiveRefresh(params.update);
     setTimeout(() => {
       void this.maybeFailOverExecutionOwner({
         update: params.update,
@@ -1888,7 +2385,6 @@ export class WebhookService {
         incomingBotId,
         currentOwnerBotId,
         allowLiveCheck: true,
-        bypassLiveCache,
       }).catch((error: unknown) => {
         this.logger.debug(
           {
@@ -2005,20 +2501,9 @@ export class WebhookService {
     return null;
   }
 
-  private async handleDuplicateError(
-    error: unknown,
-    update: MaxUpdate,
-  ): Promise<WebhookIngestResult | null> {
-    const code = (error as { code?: string }).code;
-    if (code !== 'P2002') {
-      return null;
-    }
-
-    return this.acceptDuplicateWebhookEvent(update);
-  }
-
   private async handleLegacyDedupKeyDuplicate(
     update: MaxUpdate,
+    repairProjection = true,
   ): Promise<WebhookIngestResult | null> {
     const updateId = String(update.updateId ?? '').trim();
     const botId = typeof update.botId === 'string' ? update.botId.trim() : '';
@@ -2066,7 +2551,9 @@ export class WebhookService {
       },
       'Accepted webhook event as duplicate via legacy unscoped dedup key',
     );
-    return this.acceptDuplicateWebhookEvent(update);
+    return repairProjection
+      ? this.acceptDuplicateWebhookEvent(update)
+      : { accepted: true, duplicate: true };
   }
 
   private async acceptDuplicateWebhookEvent(update: MaxUpdate): Promise<WebhookIngestResult> {

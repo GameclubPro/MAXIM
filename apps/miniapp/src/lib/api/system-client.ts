@@ -1,7 +1,9 @@
 import {
+  maxActionLedgerWatchdogSnapshotSchema,
   systemBotRoutePreviewResponseSchema,
   systemBotsSnapshotSchema,
   systemCanaryStateSchema,
+  systemDashboardWebhookSloSchema,
   systemQueueGroupHealthSchema,
   systemRollbackReadinessSchema,
   systemRuntimeProfileSchema,
@@ -567,62 +569,14 @@ function parseSystemDashboardSpammerReadModel(value: unknown): SystemDashboardSp
       failed: denormJobs.failed,
       avgAgeMs: denormJobs.avgAgeMs,
       maxAgeMs: denormJobs.maxAgeMs,
-      lastSuccessAt:
-        typeof denormJobs.lastSuccessAt === 'string' ? denormJobs.lastSuccessAt : null,
-      lastFailureAt:
-        typeof denormJobs.lastFailureAt === 'string' ? denormJobs.lastFailureAt : null,
+      lastSuccessAt: typeof denormJobs.lastSuccessAt === 'string' ? denormJobs.lastSuccessAt : null,
+      lastFailureAt: typeof denormJobs.lastFailureAt === 'string' ? denormJobs.lastFailureAt : null,
     },
   };
 }
 
 function parseSystemDashboardWebhookSlo(value: unknown): SystemDashboardWebhookSlo {
-  if (
-    !isRecord(value) ||
-    (value.status !== 'healthy' && value.status !== 'warning' && value.status !== 'critical') ||
-    typeof value.windowSec !== 'number' ||
-    typeof value.targetProcessingMs !== 'number' ||
-    typeof value.totalEvents !== 'number' ||
-    typeof value.processedEvents !== 'number' ||
-    typeof value.failedEvents !== 'number' ||
-    typeof value.sampledProcessedEvents !== 'number' ||
-    (value.p95ProcessingMs !== null &&
-      value.p95ProcessingMs !== undefined &&
-      typeof value.p95ProcessingMs !== 'number') ||
-    (value.p99ProcessingMs !== null &&
-      value.p99ProcessingMs !== undefined &&
-      typeof value.p99ProcessingMs !== 'number') ||
-    (value.underTargetRatio !== null &&
-      value.underTargetRatio !== undefined &&
-      typeof value.underTargetRatio !== 'number') ||
-    typeof value.oldestUnprocessedLagSec !== 'number' ||
-    (value.oldestUnprocessedEventId !== null &&
-      value.oldestUnprocessedEventId !== undefined &&
-      typeof value.oldestUnprocessedEventId !== 'string') ||
-    (value.lastProcessedAt !== null &&
-      value.lastProcessedAt !== undefined &&
-      typeof value.lastProcessedAt !== 'string') ||
-    typeof value.generatedAt !== 'string'
-  ) {
-    throw new Error('Invalid system dashboard webhook SLO');
-  }
-
-  return {
-    status: value.status,
-    windowSec: value.windowSec,
-    targetProcessingMs: value.targetProcessingMs,
-    totalEvents: value.totalEvents,
-    processedEvents: value.processedEvents,
-    failedEvents: value.failedEvents,
-    sampledProcessedEvents: value.sampledProcessedEvents,
-    p95ProcessingMs: typeof value.p95ProcessingMs === 'number' ? value.p95ProcessingMs : null,
-    p99ProcessingMs: typeof value.p99ProcessingMs === 'number' ? value.p99ProcessingMs : null,
-    underTargetRatio: typeof value.underTargetRatio === 'number' ? value.underTargetRatio : null,
-    oldestUnprocessedLagSec: value.oldestUnprocessedLagSec,
-    oldestUnprocessedEventId:
-      typeof value.oldestUnprocessedEventId === 'string' ? value.oldestUnprocessedEventId : null,
-    lastProcessedAt: typeof value.lastProcessedAt === 'string' ? value.lastProcessedAt : null,
-    generatedAt: value.generatedAt,
-  };
+  return parseContractValue(systemDashboardWebhookSloSchema, value, 'system dashboard webhook SLO');
 }
 
 function parseSystemRuntimeProfile(value: unknown): SystemRuntimeProfile {
@@ -634,11 +588,7 @@ function parseSystemCanaryState(value: unknown): SystemCanaryState {
 }
 
 function parseSystemRollbackReadiness(value: unknown): SystemRollbackReadiness {
-  return parseContractValue(
-    systemRollbackReadinessSchema,
-    value,
-    'system rollback readiness',
-  );
+  return parseContractValue(systemRollbackReadinessSchema, value, 'system rollback readiness');
 }
 
 function parseSystemQueueGroupHealth(value: unknown): SystemQueueGroupHealth {
@@ -742,7 +692,7 @@ function parseBotOwnershipFoundation(value: unknown): BotOwnershipFoundationSnap
     throw new Error('Invalid bot ownership foundation snapshot');
   }
 
-  const { bots, entities, anomalies, repair } = value;
+  const { bots, entities, routingStates, anomalies, repair } = value;
   if (
     typeof bots.configured !== 'number' ||
     typeof bots.adminVisible !== 'number' ||
@@ -753,9 +703,14 @@ function parseBotOwnershipFoundation(value: unknown): BotOwnershipFoundationSnap
     !isRecord(entities.total) ||
     !isRecord(entities.chats) ||
     !isRecord(entities.channels) ||
+    (routingStates !== undefined &&
+      (!isRecord(routingStates) ||
+        typeof routingStates.ready !== 'number' ||
+        typeof routingStates.noEligibleBot !== 'number')) ||
     typeof anomalies.noPrimary !== 'number' ||
     typeof anomalies.recoverableLegacyOnly !== 'number' ||
     typeof anomalies.recoverableFromMemberships !== 'number' ||
+    (anomalies.noEligibleBot !== undefined && typeof anomalies.noEligibleBot !== 'number') ||
     typeof anomalies.unbound !== 'number' ||
     typeof anomalies.primaryBotUnknown !== 'number' ||
     typeof anomalies.legacyBotUnknown !== 'number' ||
@@ -766,6 +721,17 @@ function parseBotOwnershipFoundation(value: unknown): BotOwnershipFoundationSnap
     typeof repair.enabled !== 'boolean' ||
     typeof repair.activeOnThisRole !== 'boolean' ||
     typeof repair.intervalMs !== 'number' ||
+    (repair.rebalanceMode !== undefined &&
+      repair.rebalanceMode !== 'off' &&
+      repair.rebalanceMode !== 'shadow' &&
+      repair.rebalanceMode !== 'canary' &&
+      repair.rebalanceMode !== 'on') ||
+    (repair.rebalanceCanaryPercent !== undefined &&
+      typeof repair.rebalanceCanaryPercent !== 'number') ||
+    (repair.rebalanceMaxMovesPerRun !== undefined &&
+      typeof repair.rebalanceMaxMovesPerRun !== 'number') ||
+    (repair.recommendedMoves !== undefined && typeof repair.recommendedMoves !== 'number') ||
+    (repair.lastAppliedMoves !== undefined && typeof repair.lastAppliedMoves !== 'number') ||
     (repair.lastRunAt !== null &&
       repair.lastRunAt !== undefined &&
       typeof repair.lastRunAt !== 'string') ||
@@ -796,10 +762,24 @@ function parseBotOwnershipFoundation(value: unknown): BotOwnershipFoundationSnap
       chats: parseBotOwnershipCoverage(entities.chats),
       channels: parseBotOwnershipCoverage(entities.channels),
     },
+    routingStates: isRecord(routingStates)
+      ? {
+          ready: routingStates.ready as number,
+          noEligibleBot: routingStates.noEligibleBot as number,
+        }
+      : {
+          ready: Math.max(
+            0,
+            (entities.total.total as number) -
+              (typeof anomalies.noEligibleBot === 'number' ? anomalies.noEligibleBot : 0),
+          ),
+          noEligibleBot: typeof anomalies.noEligibleBot === 'number' ? anomalies.noEligibleBot : 0,
+        },
     anomalies: {
       noPrimary: anomalies.noPrimary,
       recoverableLegacyOnly: anomalies.recoverableLegacyOnly,
       recoverableFromMemberships: anomalies.recoverableFromMemberships,
+      noEligibleBot: typeof anomalies.noEligibleBot === 'number' ? anomalies.noEligibleBot : 0,
       unbound: anomalies.unbound,
       primaryBotUnknown: anomalies.primaryBotUnknown,
       legacyBotUnknown: anomalies.legacyBotUnknown,
@@ -812,6 +792,18 @@ function parseBotOwnershipFoundation(value: unknown): BotOwnershipFoundationSnap
       enabled: repair.enabled,
       activeOnThisRole: repair.activeOnThisRole,
       intervalMs: repair.intervalMs,
+      rebalanceMode:
+        repair.rebalanceMode === 'shadow' ||
+        repair.rebalanceMode === 'canary' ||
+        repair.rebalanceMode === 'on'
+          ? repair.rebalanceMode
+          : 'off',
+      rebalanceCanaryPercent:
+        typeof repair.rebalanceCanaryPercent === 'number' ? repair.rebalanceCanaryPercent : 0,
+      rebalanceMaxMovesPerRun:
+        typeof repair.rebalanceMaxMovesPerRun === 'number' ? repair.rebalanceMaxMovesPerRun : 25,
+      recommendedMoves: typeof repair.recommendedMoves === 'number' ? repair.recommendedMoves : 0,
+      lastAppliedMoves: typeof repair.lastAppliedMoves === 'number' ? repair.lastAppliedMoves : 0,
       lastRunAt: typeof repair.lastRunAt === 'string' ? repair.lastRunAt : null,
       lastSuccessAt: typeof repair.lastSuccessAt === 'string' ? repair.lastSuccessAt : null,
       lastError: typeof repair.lastError === 'string' ? repair.lastError : null,
@@ -892,7 +884,9 @@ function parseBotQueueMetricsSnapshot(value: unknown) {
         ? value.userFacingOldestQueuedCreatedAt
         : null,
     userFacingOldestQueuedLagSec:
-      typeof value.userFacingOldestQueuedLagSec === 'number' ? value.userFacingOldestQueuedLagSec : 0,
+      typeof value.userFacingOldestQueuedLagSec === 'number'
+        ? value.userFacingOldestQueuedLagSec
+        : 0,
     userFacingOldestReceivedEventId:
       typeof value.userFacingOldestReceivedEventId === 'string'
         ? value.userFacingOldestReceivedEventId
@@ -996,7 +990,11 @@ function parseBotWebhookSubscriptionSnapshot(value: unknown): BotWebhookSubscrip
     lastError: typeof value.lastError === 'string' ? value.lastError : null,
     note: typeof value.note === 'string' ? value.note : null,
     ...(value.operationalDiagnostics !== undefined
-      ? { operationalDiagnostics: parseBotWebhookOperationalDiagnostics(value.operationalDiagnostics) }
+      ? {
+          operationalDiagnostics: parseBotWebhookOperationalDiagnostics(
+            value.operationalDiagnostics,
+          ),
+        }
       : {}),
   };
 }
@@ -1172,6 +1170,11 @@ function parseSystemDashboardResponse(value: unknown): SystemDashboardResponse {
       webhookBackground: parseQueueCounters(queues.webhookBackground),
       webhookLegacy: parseQueueCounters(queues.webhookLegacy),
       actions: parseQueueCounters(queues.actions),
+      actionQueues: Object.fromEntries(
+        Object.entries(isRecord(queues.actionQueues) ? queues.actionQueues : {}).map(
+          ([queueName, counters]) => [queueName, parseQueueCounters(counters)],
+        ),
+      ),
       globalSpammerDenorm: parseQueueCounters(queues.globalSpammerDenorm),
       auxiliaryQueues: Object.fromEntries(
         Object.entries(isRecord(queues.auxiliaryQueues) ? queues.auxiliaryQueues : {}).map(
@@ -1195,6 +1198,10 @@ function parseSystemDashboardResponse(value: unknown): SystemDashboardResponse {
             failed: parseWebhookStatusMetrics(queues.webhookEvents.failed),
           },
       actionHealth: parseActionHealthSnapshot(queues.actionHealth),
+      actionLedgerWatchdog:
+        queues.actionLedgerWatchdog === null || queues.actionLedgerWatchdog === undefined
+          ? null
+          : maxActionLedgerWatchdogSnapshotSchema.parse(queues.actionLedgerWatchdog),
       webhookDynamicLeases: queues.webhookDynamicLeases ?? null,
       bots: Object.fromEntries(
         Object.entries(isRecord(queues.bots) ? queues.bots : {}).map(([botId, snapshot]) => [

@@ -1,5 +1,10 @@
 import type { Job } from 'bullmq';
-import { MaxActionProcessor } from './max-action.processor';
+import {
+  MaxActionBackgroundProcessor,
+  MaxActionCriticalProcessor,
+  MaxActionInteractiveProcessor,
+  MaxActionProcessor,
+} from './max-action.processor';
 import type { MaxActionJob } from './max-client.service';
 
 function createJob(overrides: Partial<Job<MaxActionJob>> = {}): Job<MaxActionJob> {
@@ -71,5 +76,21 @@ describe('MaxActionProcessor', () => {
         finalAttempt: true,
       },
     );
+  });
+
+  it.each([
+    MaxActionProcessor,
+    MaxActionCriticalProcessor,
+    MaxActionInteractiveProcessor,
+    MaxActionBackgroundProcessor,
+  ])('%p executes jobs through the shared dispatch boundary', async (ProcessorClass) => {
+    const dispatch = {
+      execute: jest.fn().mockResolvedValue(undefined),
+    };
+    const processor = new ProcessorClass(dispatch as never);
+
+    await processor.process(createJob());
+
+    expect(dispatch.execute).toHaveBeenCalledTimes(1);
   });
 });

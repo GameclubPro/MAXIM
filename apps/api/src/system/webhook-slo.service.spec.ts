@@ -68,6 +68,27 @@ describe('WebhookSloService', () => {
             queuedAt: new Date('2026-04-29T11:59:58.600Z'),
           }),
       },
+      webhookExecutionClaim: {
+        count: jest.fn().mockResolvedValue(4),
+      },
+    };
+    const ingress = {
+      available: true,
+      targetMs: 2_000,
+      attemptedReceipts: 11,
+      persistedReceipts: 10,
+      failedReceipts: 1,
+      sampledReceipts: 10,
+      p95LatencyMs: 1_500,
+      p99LatencyMs: 2_000,
+      underTargetRatio: 1,
+      bots: {
+        'bot-1': {
+          attemptedReceipts: 11,
+          persistedReceipts: 10,
+          failedReceipts: 1,
+        },
+      },
     };
     const service = new WebhookSloService(
       prisma as never,
@@ -76,6 +97,9 @@ describe('WebhookSloService', () => {
         SYSTEM_WEBHOOK_SLO_TARGET_MS: 1000,
         SYSTEM_WEBHOOK_ENQUEUE_SLO_TARGET_MS: 500,
       }) as never,
+      {
+        getSnapshot: jest.fn().mockResolvedValue(ingress),
+      } as never,
     );
 
     await expect(service.getSnapshot()).resolves.toMatchObject({
@@ -89,6 +113,7 @@ describe('WebhookSloService', () => {
       oldestUnprocessedLagSec: 10,
       oldestUnprocessedEventId: 'evt-old',
       lastProcessedAt: '2026-04-29T11:59:59.400Z',
+      ingress,
       enqueue: {
         targetMs: 500,
         sampledEvents: 3,
@@ -99,6 +124,11 @@ describe('WebhookSloService', () => {
         oldestPendingEventId: 'evt-pending-enqueue',
         lastQueuedAt: '2026-04-29T11:59:58.600Z',
       },
+      canonicalExecution: {
+        receipts: 10,
+        executionClaims: 4,
+        claimsPerReceiptRatio: 0.4,
+      },
     });
   });
 
@@ -107,11 +137,7 @@ describe('WebhookSloService', () => {
     jest.spyOn(Date, 'now').mockReturnValue(now.getTime());
     const prisma = {
       webhookEvent: {
-        count: jest
-          .fn()
-          .mockResolvedValueOnce(0)
-          .mockResolvedValueOnce(0)
-          .mockResolvedValueOnce(0),
+        count: jest.fn().mockResolvedValueOnce(0).mockResolvedValueOnce(0).mockResolvedValueOnce(0),
         findMany: jest.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([]),
         findFirst: jest
           .fn()
@@ -119,6 +145,9 @@ describe('WebhookSloService', () => {
           .mockResolvedValueOnce(null)
           .mockResolvedValueOnce(null)
           .mockResolvedValueOnce(null),
+      },
+      webhookExecutionClaim: {
+        count: jest.fn().mockResolvedValue(0),
       },
     };
     const service = new WebhookSloService(
@@ -141,6 +170,67 @@ describe('WebhookSloService', () => {
         oldestPendingLagSec: 0,
         oldestPendingEventId: null,
         lastQueuedAt: null,
+      },
+      ingress: {
+        targetMs: 2_000,
+        sampledReceipts: 0,
+        failedReceipts: 0,
+      },
+      canonicalExecution: {
+        receipts: 0,
+        executionClaims: 0,
+        claimsPerReceiptRatio: null,
+      },
+    });
+  });
+
+  it('makes a slow ingress p99 critical even when downstream processing is empty', async () => {
+    const now = new Date('2026-04-29T12:00:00.000Z');
+    jest.spyOn(Date, 'now').mockReturnValue(now.getTime());
+    const prisma = {
+      webhookEvent: {
+        count: jest.fn().mockResolvedValueOnce(6).mockResolvedValueOnce(6).mockResolvedValueOnce(0),
+        findMany: jest.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([]),
+        findFirst: jest
+          .fn()
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(null),
+      },
+      webhookExecutionClaim: {
+        count: jest.fn().mockResolvedValue(3),
+      },
+    };
+    const service = new WebhookSloService(
+      prisma as never,
+      createConfig({ SYSTEM_WEBHOOK_SLO_WINDOW_SEC: 900 }) as never,
+      {
+        getSnapshot: jest.fn().mockResolvedValue({
+          available: true,
+          targetMs: 2_000,
+          attemptedReceipts: 6,
+          persistedReceipts: 6,
+          failedReceipts: 0,
+          sampledReceipts: 6,
+          p95LatencyMs: 2_000,
+          p99LatencyMs: 3_000,
+          underTargetRatio: 0.833,
+          bots: {},
+        }),
+      } as never,
+    );
+
+    await expect(service.getSnapshot()).resolves.toMatchObject({
+      status: 'critical',
+      ingress: {
+        targetMs: 2_000,
+        p99LatencyMs: 3_000,
+      },
+      canonicalExecution: {
+        receipts: 6,
+        executionClaims: 3,
+        claimsPerReceiptRatio: 0.5,
       },
     });
   });

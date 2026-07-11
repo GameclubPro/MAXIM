@@ -1,7 +1,17 @@
-import { MAX_API_SOURCE_TAGS, MaxClientService } from './max-client.service';
+import {
+  MAX_API_SOURCE_TAGS,
+  MaxApiCircuitOpenError,
+  MaxClientService,
+} from './max-client.service';
 import { from, of, throwError } from 'rxjs';
 import Redis from 'ioredis';
 import { UnrecoverableError } from 'bullmq';
+import {
+  MAX_ACTION_BACKGROUND_QUEUE,
+  MAX_ACTION_CRITICAL_QUEUE,
+  MAX_ACTION_INTERACTIVE_QUEUE,
+} from './max-action.queue';
+import { MaxActionDispatchService } from './max-action-dispatch.service';
 
 jest.mock('ioredis', () => {
   const store = new Map<string, { value: string; expiresAtMs: number | null }>();
@@ -90,36 +100,142 @@ jest.mock('ioredis', () => {
           .fn()
           .mockImplementation(
             async (script: string, numKeys: number, ...args: Array<string | number>) => {
-              if (!script.includes('PTTL') || !script.includes('INCR')) {
-                throw new Error('Unexpected Redis eval script');
-              }
-
               const keys = args.slice(0, numKeys).map((value) => String(value));
               const argValues = args.slice(numKeys);
-              const ttlMs = Number(argValues[argValues.length - 1] ?? 0);
 
-              for (let index = 0; index < numKeys; index += 1) {
-                const count = Number(readEntry(keys[index])?.value ?? '0');
-                const limit = Number(argValues[index] ?? 0);
-                if (count >= limit) {
-                  const entry = readEntry(keys[index]);
-                  const retryAfterMs =
-                    entry?.expiresAtMs !== null && entry?.expiresAtMs !== undefined
-                      ? Math.max(1, entry.expiresAtMs - Date.now())
-                      : ttlMs;
-                  return [0, index + 1, retryAfterMs];
+              if (script.includes('MAX_API_GCRA_RESERVE_V1')) {
+                const nowMs = Date.now();
+                const ttlFloorMs = Number(argValues[argValues.length - 1] ?? 0);
+                const updates: Array<{ key: string; tat: number; ttlMs: number }> = [];
+                for (let index = 0; index < numKeys; index += 1) {
+                  const limit = Number(argValues[index] ?? 0);
+                  const intervalMs = 1_000 / limit;
+                  const burstToleranceMs = (limit - 1) * intervalMs;
+                  const storedTat = Number(readEntry(keys[index])?.value ?? nowMs);
+                  const tat = Math.max(storedTat, nowMs);
+                  const allowAtMs = tat - burstToleranceMs;
+                  if (nowMs < allowAtMs) {
+                    return [0, index + 1, Math.max(1, Math.ceil(allowAtMs - nowMs))];
+                  }
+                  const nextTat = tat + intervalMs;
+                  updates.push({
+                    key: keys[index],
+                    tat: nextTat,
+                    ttlMs: Math.max(
+                      ttlFloorMs,
+                      Math.ceil(nextTat - nowMs + burstToleranceMs + intervalMs),
+                    ),
+                  });
                 }
+
+                for (const update of updates) {
+                  store.set(update.key, {
+                    value: String(update.tat),
+                    expiresAtMs: nowMs + update.ttlMs,
+                  });
+                }
+                return [1, 0, 0];
               }
 
-              for (const key of keys) {
-                const current = Number(readEntry(key)?.value ?? '0') + 1;
-                store.set(key, {
-                  value: String(current),
-                  expiresAtMs: Date.now() + ttlMs,
+              const readFailures = (key: string, cutoffMs: number) =>
+                (readEntry(key)?.value ?? '')
+                  .split(',')
+                  .map((value) => Number(value))
+                  .filter((value) => Number.isFinite(value) && value >= cutoffMs);
+
+              if (script.includes('MAX_API_CIRCUIT_ACQUIRE_V1')) {
+                const nowMs = Date.now();
+                const threshold = Number(argValues[0]);
+                const windowMs = Number(argValues[1]);
+                const openMs = Number(argValues[2]);
+                const probeTtlMs = Number(argValues[3]);
+                const stateTtlMs = Number(argValues[4]);
+                const probeToken = String(argValues[5]);
+                const openUntilMs = Number(readEntry(keys[1])?.value ?? 0);
+                if (openUntilMs > nowMs) {
+                  return [0, 0, Math.max(1, Math.ceil(openUntilMs - nowMs))];
+                }
+
+                const failures = readFailures(keys[0], nowMs - windowMs);
+                if (failures.length > 0) {
+                  store.set(keys[0], {
+                    value: failures.join(','),
+                    expiresAtMs: nowMs + stateTtlMs,
+                  });
+                } else {
+                  store.delete(keys[0]);
+                }
+
+                if (openUntilMs > 0) {
+                  const activeProbe = readEntry(keys[2]);
+                  if (!activeProbe) {
+                    store.set(keys[2], {
+                      value: probeToken,
+                      expiresAtMs: nowMs + probeTtlMs,
+                    });
+                    return [1, 1, 0];
+                  }
+                  return [
+                    0,
+                    0,
+                    Math.max(1, (activeProbe.expiresAtMs ?? nowMs + probeTtlMs) - nowMs),
+                  ];
+                }
+
+                if (failures.length >= threshold) {
+                  store.set(keys[1], {
+                    value: String(nowMs + openMs),
+                    expiresAtMs: nowMs + stateTtlMs,
+                  });
+                  store.delete(keys[2]);
+                  return [0, 0, openMs];
+                }
+
+                return [1, 0, 0];
+              }
+
+              if (script.includes('MAX_API_CIRCUIT_FAILURE_V1')) {
+                const nowMs = Date.now();
+                const threshold = Number(argValues[0]);
+                const windowMs = Number(argValues[1]);
+                const openMs = Number(argValues[2]);
+                const stateTtlMs = Number(argValues[3]);
+                const forceOpen = Number(argValues[4]) === 1;
+                const failures = readFailures(keys[0], nowMs - windowMs);
+                failures.push(nowMs);
+                store.set(keys[0], {
+                  value: failures.join(','),
+                  expiresAtMs: nowMs + stateTtlMs,
                 });
+                let openUntilMs = Number(readEntry(keys[1])?.value ?? 0);
+                if (forceOpen || failures.length >= threshold) {
+                  openUntilMs = nowMs + openMs;
+                  store.set(keys[1], {
+                    value: String(openUntilMs),
+                    expiresAtMs: nowMs + stateTtlMs,
+                  });
+                  store.delete(keys[2]);
+                }
+                return [failures.length, openUntilMs];
               }
 
-              return [1, 0, 0];
+              if (script.includes('MAX_API_CIRCUIT_CLOSE_V1')) {
+                if (readEntry(keys[2])?.value === String(argValues[0])) {
+                  keys.forEach((key) => store.delete(key));
+                  return 1;
+                }
+                return 0;
+              }
+
+              if (script.includes('MAX_API_CIRCUIT_RELEASE_PROBE_V1')) {
+                if (readEntry(keys[0])?.value === String(argValues[0])) {
+                  store.delete(keys[0]);
+                  return 1;
+                }
+                return 0;
+              }
+
+              throw new Error('Unexpected Redis eval script');
             },
           ),
         quit: jest.fn().mockResolvedValue(undefined),
@@ -183,6 +299,11 @@ describe('MaxClientService inline keyboard guardrails', () => {
       recordStarted?: jest.Mock;
       recordSucceeded?: jest.Mock;
       recordFailed?: jest.Mock;
+      getCompletedSendDispatch?: jest.Mock;
+      claimSendDispatch?: jest.Mock;
+      completeSendDispatch?: jest.Mock;
+      releaseSendDispatch?: jest.Mock;
+      recordAmbiguousSendDispatch?: jest.Mock;
     },
   ) {
     const configService = {
@@ -476,6 +597,340 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('persists the SEND_MESSAGE remote id behind the dispatch token before returning', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            mid: 'mid-fenced-1',
+          },
+        }),
+      ),
+    };
+    const actionLedgerService = {
+      claimSendDispatch: jest.fn().mockResolvedValue({
+        kind: 'claimed',
+        dispatchToken: 'dispatch-token-1',
+      }),
+      completeSendDispatch: jest.fn().mockResolvedValue(undefined),
+      releaseSendDispatch: jest.fn().mockResolvedValue(undefined),
+      recordAmbiguousSendDispatch: jest.fn().mockResolvedValue(true),
+    };
+    const service = createService(httpService, {}, undefined, actionLedgerService);
+    const job = {
+      actionType: 'SEND_MESSAGE' as const,
+      chatId: 'chat-1',
+      text: 'hello',
+      attempt: 1,
+      idempotencyKey: 'send-fenced-success',
+      createdAt: new Date().toISOString(),
+    };
+
+    await service.executeActionJob(job);
+
+    expect(actionLedgerService.claimSendDispatch).toHaveBeenCalledWith(job, '777000_bot');
+    expect(actionLedgerService.completeSendDispatch).toHaveBeenCalledWith(
+      job,
+      'dispatch-token-1',
+      'mid-fenced-1',
+    );
+    expect(actionLedgerService.releaseSendDispatch).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordAmbiguousSendDispatch).not.toHaveBeenCalled();
+    expect(actionLedgerService.claimSendDispatch.mock.invocationCallOrder[0]).toBeLessThan(
+      httpService.request.mock.invocationCallOrder[0],
+    );
+    expect(httpService.request.mock.invocationCallOrder[0]).toBeLessThan(
+      actionLedgerService.completeSendDispatch.mock.invocationCallOrder[0],
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('recovers a persisted SEND_MESSAGE result without another MAX request', async () => {
+    const httpService = {
+      request: jest.fn(),
+    };
+    const actionLedgerService = {
+      claimSendDispatch: jest.fn().mockResolvedValue({
+        kind: 'recovered',
+        remoteMessageId: 'mid-recovered-1',
+      }),
+      completeSendDispatch: jest.fn(),
+      releaseSendDispatch: jest.fn(),
+      recordAmbiguousSendDispatch: jest.fn(),
+    };
+    const service = createService(httpService, {}, undefined, actionLedgerService);
+
+    await service.executeActionJob({
+      actionType: 'SEND_MESSAGE',
+      chatId: 'chat-1',
+      text: 'hello',
+      attempt: 2,
+      idempotencyKey: 'send-fenced-recovered',
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(httpService.request).not.toHaveBeenCalled();
+    expect(actionLedgerService.completeSendDispatch).not.toHaveBeenCalled();
+    expect(actionLedgerService.releaseSendDispatch).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it.each([400, 403, 429])(
+    'releases the SEND_MESSAGE dispatch fence after definitive HTTP %s rejection',
+    async (status) => {
+      const statusError = {
+        response: {
+          status,
+          data: {
+            message: 'definitive rejection',
+          },
+        },
+      };
+      const httpService = {
+        request: jest.fn(() => throwError(() => statusError)),
+      };
+      const actionLedgerService = {
+        claimSendDispatch: jest.fn().mockResolvedValue({
+          kind: 'claimed',
+          dispatchToken: 'dispatch-token-1',
+        }),
+        completeSendDispatch: jest.fn(),
+        releaseSendDispatch: jest.fn().mockResolvedValue(undefined),
+        recordAmbiguousSendDispatch: jest.fn(),
+      };
+      const service = createService(httpService, {}, undefined, actionLedgerService);
+      const job = {
+        actionType: 'SEND_MESSAGE' as const,
+        chatId: 'chat-1',
+        text: 'hello',
+        attempt: 1,
+        idempotencyKey: `send-fenced-${status}`,
+        createdAt: new Date().toISOString(),
+      };
+
+      const thrown = await service.executeActionJob(job).then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+      if (status === 429) {
+        expect(thrown).toBe(statusError);
+      } else {
+        expect(thrown).toBeInstanceOf(UnrecoverableError);
+        expect(thrown).toHaveProperty('response', statusError.response);
+        expect(thrown).toHaveProperty(
+          'message',
+          `MAX SEND_MESSAGE received definitive HTTP ${status} for chat chat-1`,
+        );
+      }
+
+      expect(actionLedgerService.releaseSendDispatch).toHaveBeenCalledWith(job, 'dispatch-token-1');
+      expect(actionLedgerService.recordAmbiguousSendDispatch).not.toHaveBeenCalled();
+
+      await service.onModuleDestroy();
+    },
+  );
+
+  it('integrates definitive 403 fence release with routed survivor failover', async () => {
+    const denied = {
+      response: {
+        status: 403,
+        data: {
+          code: 'chat.denied',
+          message: 'chat denied',
+        },
+      },
+    };
+    const httpService = {
+      request: jest.fn((config: { headers?: { Authorization?: string } }) =>
+        config.headers?.Authorization === 'bot-1-token'
+          ? throwError(() => denied)
+          : of({
+              status: 200,
+              data: {
+                mid: 'mid-survivor-1',
+              },
+            }),
+      ),
+    };
+    const actionLedgerService = {
+      getCompletedSendDispatch: jest.fn().mockResolvedValue(null),
+      claimSendDispatch: jest.fn(async (_job: unknown, botId: string) => ({
+        kind: 'claimed',
+        dispatchToken: `dispatch-${botId}`,
+      })),
+      completeSendDispatch: jest.fn().mockResolvedValue(undefined),
+      releaseSendDispatch: jest.fn().mockResolvedValue(undefined),
+      recordAmbiguousSendDispatch: jest.fn().mockResolvedValue(true),
+      recordStarted: jest.fn().mockResolvedValue(undefined),
+      recordSucceeded: jest.fn().mockResolvedValue(undefined),
+      recordSkipped: jest.fn().mockResolvedValue(undefined),
+      recordFailed: jest.fn().mockResolvedValue(undefined),
+    };
+    const client = createService(httpService, {}, undefined, actionLedgerService);
+    const botRegistry = (client as any).botRegistry;
+    const defaultBot = botRegistry.getDefaultBot();
+    botRegistry.getBotById.mockImplementation((botId?: string | null) => {
+      if (!botId || botId === defaultBot.id) {
+        return defaultBot;
+      }
+      if (botId === 'bot-1' || botId === 'bot-2') {
+        return {
+          ...defaultBot,
+          id: botId,
+          token: `${botId}-token`,
+        };
+      }
+      return null;
+    });
+    const managedEntityAccessLossService = {
+      recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue({
+        classification: {
+          kind: 'managed_entity_access_lost',
+          reason: 'bot_denied',
+          statusCode: 403,
+          code: 'chat.denied',
+          message: 'chat denied',
+        },
+        reason: 'bot_denied',
+        recorded: {
+          chatId: 'chat-1',
+          botId: 'bot-1',
+          nextOwnerBotId: 'bot-2',
+          updatedAccessEdges: 1,
+          cleanup: {
+            nightModeJobsCleared: false,
+            canceledBroadcasts: null,
+            canceledBroadcastDeliveries: null,
+            canceledBroadcastOccurrences: null,
+            clearedVkPublishPosts: null,
+            pausedVkSources: null,
+            removedRosterSyncJobs: null,
+          },
+        },
+      }),
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: 'chat-1',
+        primaryBotId: 'bot-1',
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1', 'bot-2'],
+        reason: 'primary_confirmed',
+      }),
+      getExecutableBotById: jest.fn((botId: string) => ({ id: botId })),
+    };
+    const dispatch = new MaxActionDispatchService(
+      client,
+      managedEntityAccessLossService as never,
+      actionLedgerService as never,
+      maxBotLinkService as never,
+      {
+        get: jest.fn((key: string) => (key === 'MAX_ROUTED_MUTATIONS_MODE' ? 'on' : undefined)),
+      } as never,
+    );
+
+    await dispatch.execute({
+      actionType: 'SEND_MESSAGE',
+      chatId: 'chat-1',
+      botId: 'bot-1',
+      candidateBotIds: ['bot-1', 'bot-2'],
+      routing: { purpose: 'send_message' },
+      text: 'hello',
+      attempt: 1,
+      idempotencyKey: 'send-fenced-survivor',
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(httpService.request).toHaveBeenCalledTimes(2);
+    expect(actionLedgerService.releaseSendDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ botId: 'bot-1' }),
+      'dispatch-bot-1',
+    );
+    expect(actionLedgerService.completeSendDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ botId: 'bot-2' }),
+      'dispatch-bot-2',
+      'mid-survivor-1',
+    );
+    expect(actionLedgerService.recordAmbiguousSendDispatch).not.toHaveBeenCalled();
+
+    await client.onModuleDestroy();
+  });
+
+  it.each([
+    {
+      label: 'timeout',
+      error: Object.assign(new Error('timeout of 1500ms exceeded'), {
+        code: 'ECONNABORTED',
+      }),
+    },
+    {
+      label: 'HTTP 500',
+      error: {
+        response: {
+          status: 500,
+          data: {
+            message: 'server failure',
+          },
+        },
+      },
+    },
+  ])('retains and quarantines the SEND_MESSAGE fence after $label', async ({ error }) => {
+    const httpService = {
+      request: jest.fn(() => throwError(() => error)),
+    };
+    const retainedFenceError = Object.assign(
+      new UnrecoverableError('Ambiguous MAX SEND_MESSAGE dispatch fence requires manual review'),
+      { maxSendDispatchLedgerFinalized: true },
+    );
+    const actionLedgerService = {
+      claimSendDispatch: jest
+        .fn()
+        .mockResolvedValueOnce({
+          kind: 'claimed',
+          dispatchToken: 'dispatch-token-1',
+        })
+        .mockRejectedValueOnce(retainedFenceError),
+      completeSendDispatch: jest.fn(),
+      releaseSendDispatch: jest.fn(),
+      recordAmbiguousSendDispatch: jest.fn().mockResolvedValue(true),
+    };
+    const service = createService(httpService, {}, undefined, actionLedgerService);
+    const job = {
+      actionType: 'SEND_MESSAGE' as const,
+      chatId: 'chat-1',
+      text: 'hello',
+      attempt: 1,
+      idempotencyKey: 'send-fenced-ambiguous',
+      createdAt: new Date().toISOString(),
+    };
+
+    await expect(service.executeActionJob(job)).rejects.toMatchObject({
+      name: 'UnrecoverableError',
+      maxSendDispatchLedgerFinalized: true,
+    });
+    await expect(
+      service.executeActionJob({
+        ...job,
+        attempt: 2,
+      }),
+    ).rejects.toBe(retainedFenceError);
+
+    expect(httpService.request).toHaveBeenCalledTimes(1);
+    expect(actionLedgerService.releaseSendDispatch).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordAmbiguousSendDispatch).toHaveBeenCalledWith(
+      job,
+      'dispatch-token-1',
+      expect.any(UnrecoverableError),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('inherits queued send dispatch context when scheduling auto-delete', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(
@@ -531,6 +986,36 @@ describe('MaxClientService inline keyboard guardrails', () => {
       }),
       expect.objectContaining({
         delay: 60_000,
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('uses configurable failed action job retention limits', async () => {
+    const actionQueue = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(null),
+    };
+    const service = createService(
+      {},
+      {
+        MAX_ACTION_FAILED_RETENTION_AGE_SEC: '3600',
+        MAX_ACTION_FAILED_RETENTION_COUNT: '250',
+      },
+      actionQueue,
+    );
+
+    await service.sendMessage('chat-1', 'hello');
+
+    expect(actionQueue.add).toHaveBeenCalledWith(
+      'execute-max-action',
+      expect.any(Object),
+      expect.objectContaining({
+        removeOnFail: {
+          age: 3_600,
+          count: 250,
+        },
       }),
     );
 
@@ -752,9 +1237,9 @@ describe('MaxClientService inline keyboard guardrails', () => {
     };
     const service = createService(httpService, {}, undefined, actionLedgerService);
 
-    await expect(service.kickMember('chat-1', 'user-1', { immediate: true })).rejects.toBeInstanceOf(
-      UnrecoverableError,
-    );
+    await expect(
+      service.kickMember('chat-1', 'user-1', { immediate: true }),
+    ).rejects.toBeInstanceOf(UnrecoverableError);
 
     const job = actionLedgerService.recordStarted.mock.calls[0][0];
     expect(job).toEqual(
@@ -786,33 +1271,37 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
-  it('keeps queued SEND_MESSAGE HTTP failures retryable', async () => {
-    const statusError = {
-      response: {
-        status: 500,
-        data: {
-          message: 'server failure',
+  it.each([500, 502, 503])(
+    'marks queued SEND_MESSAGE HTTP %s responses as ambiguous and unrecoverable',
+    async (status) => {
+      const statusError = {
+        response: {
+          status,
+          data: {
+            message: 'server failure',
+          },
         },
-      },
-    };
-    const httpService = {
-      request: jest.fn(() => throwError(() => statusError)),
-    };
-    const service = createService(httpService);
+      };
+      const httpService = {
+        request: jest.fn(() => throwError(() => statusError)),
+      };
+      const service = createService(httpService);
 
-    await expect(
-      service.executeActionJob({
-        actionType: 'SEND_MESSAGE',
-        chatId: 'chat-1',
-        text: 'hello',
-        attempt: 1,
-        idempotencyKey: 'send-http-500',
-        createdAt: new Date().toISOString(),
-      }),
-    ).rejects.toBe(statusError);
+      await expect(
+        service.executeActionJob({
+          actionType: 'SEND_MESSAGE',
+          chatId: 'chat-1',
+          text: 'hello',
+          attempt: 1,
+          idempotencyKey: `send-http-${status}`,
+          createdAt: new Date().toISOString(),
+        }),
+      ).rejects.toBeInstanceOf(UnrecoverableError);
+      expect(httpService.request).toHaveBeenCalledTimes(1);
 
-    await service.onModuleDestroy();
-  });
+      await service.onModuleDestroy();
+    },
+  );
 
   it.each(['BAN_MEMBER', 'KICK_MEMBER'] as const)(
     'keeps queued %s HTTP failures retryable',
@@ -2970,9 +3459,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     };
     const multipartBody = uploadRequest.data?.getBuffer?.().toString('utf8') ?? '';
 
-    expect(multipartBody).toContain(
-      'filename="evil_Content-Disposition_ form-data_ name_x_.jpg"',
-    );
+    expect(multipartBody).toContain('filename="evil_Content-Disposition_ form-data_ name_x_.jpg"');
     expect(multipartBody).not.toContain('filename="../evil');
     expect(multipartBody).not.toContain('\r\nContent-Disposition: form-data; name="x"');
 
@@ -3999,9 +4486,9 @@ describe('MaxClientService inline keyboard guardrails', () => {
       MAX_API_RATE_LIMIT_WAIT_MS_INTERACTIVE: '0',
     });
 
-    (
-      service as unknown as { limiterRedis: { eval: jest.Mock } }
-    ).limiterRedis.eval.mockResolvedValue([0, 1, 1]);
+    (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis.eval
+      .mockResolvedValueOnce([1, 0, 0])
+      .mockResolvedValueOnce([0, 1, 1]);
 
     await expect(service.listMessages('chat-1', 10)).rejects.toThrow(
       'MAX API global rate limit exceeded',
@@ -4022,7 +4509,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     });
 
     const limiterRedis = (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis;
-    limiterRedis.eval.mockResolvedValue([0, 2, 1]);
+    limiterRedis.eval.mockResolvedValueOnce([1, 0, 0]).mockResolvedValueOnce([0, 2, 1]);
 
     await expect(service.listBotChats()).rejects.toThrow('MAX API interactive rate limit exceeded');
     expect(httpService.request).not.toHaveBeenCalled();
@@ -4040,7 +4527,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     });
 
     const limiterRedis = (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis;
-    limiterRedis.eval.mockResolvedValue([0, 4, 1]);
+    limiterRedis.eval.mockResolvedValueOnce([1, 0, 0]).mockResolvedValueOnce([0, 4, 1]);
 
     await expect(service.listMessages('chat-1', 10)).rejects.toThrow(
       'MAX API global rate limit exceeded across all bots',
@@ -4061,7 +4548,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     });
 
     const limiterRedis = (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis;
-    limiterRedis.eval.mockResolvedValue([0, 5, 1]);
+    limiterRedis.eval.mockResolvedValueOnce([1, 0, 0]).mockResolvedValueOnce([0, 5, 1]);
 
     await expect(service.listMessages('chat-1', 10)).rejects.toThrow(
       'MAX API interactive rate limit exceeded across all bots',
@@ -4090,7 +4577,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     ).actionHealthService;
 
     const limiterRedis = (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis;
-    limiterRedis.eval.mockResolvedValue([0, 2, 1]);
+    limiterRedis.eval.mockResolvedValueOnce([1, 0, 0]).mockResolvedValueOnce([0, 2, 1]);
 
     await expect(service.listBotChats()).rejects.toThrow('MAX API interactive rate limit exceeded');
 
@@ -4119,14 +4606,194 @@ describe('MaxClientService inline keyboard guardrails', () => {
       MAX_API_RATE_LIMIT_RETRY_FLOOR_MS: '1',
     });
     const limiterRedis = (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis;
-    limiterRedis.eval.mockResolvedValueOnce([0, 2, 1]).mockResolvedValueOnce([1, 0, 0]);
+    limiterRedis.eval
+      .mockResolvedValueOnce([1, 0, 0])
+      .mockResolvedValueOnce([0, 2, 1])
+      .mockResolvedValueOnce([1, 0, 0]);
 
     await expect(service.listBotChats()).resolves.toEqual([]);
 
-    expect(limiterRedis.eval).toHaveBeenCalledTimes(2);
+    expect(limiterRedis.eval).toHaveBeenCalledTimes(3);
     expect(httpService.request).toHaveBeenCalledTimes(1);
 
     await service.onModuleDestroy();
+  });
+
+  it('shares GCRA stack reservations across service instances and smooths the next slot', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-11T10:00:00.000Z'));
+    const firstService = createService(
+      {},
+      {
+        MAX_API_GLOBAL_RPS: '1',
+        MAX_API_GLOBAL_RPS_INTERACTIVE: '1',
+      },
+    );
+    const secondService = createService(
+      {},
+      {
+        MAX_API_GLOBAL_RPS: '1',
+        MAX_API_GLOBAL_RPS_INTERACTIVE: '1',
+      },
+    );
+
+    await expect(
+      (firstService as any).tryReserveRateLimitSlot('bot-a', 'chat-a', 'interactive'),
+    ).resolves.toEqual({ ok: true });
+    await expect(
+      (secondService as any).tryReserveRateLimitSlot('bot-b', 'chat-b', 'interactive'),
+    ).resolves.toEqual({
+      ok: false,
+      retryAfterMs: 1_000,
+      reason: 'MAX API global rate limit exceeded across all bots',
+    });
+
+    jest.advanceTimersByTime(1_000);
+    await expect(
+      (secondService as any).tryReserveRateLimitSlot('bot-b', 'chat-b', 'interactive'),
+    ).resolves.toEqual({ ok: true });
+
+    await firstService.onModuleDestroy();
+    await secondService.onModuleDestroy();
+  });
+
+  it('shares an open circuit across instances before dispatch', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-11T10:05:00.000Z'));
+    const upstreamFailure = Object.assign(new Error('MAX unavailable'), {
+      response: { status: 500, data: { message: 'MAX unavailable' } },
+    });
+    const firstHttpService = {
+      request: jest.fn().mockReturnValue(throwError(() => upstreamFailure)),
+    };
+    const firstService = createService(firstHttpService, {
+      MAX_API_CIRCUIT_FAILURE_THRESHOLD: '1',
+      MAX_API_CIRCUIT_WINDOW_SEC: '30',
+      MAX_API_CIRCUIT_OPEN_SEC: '2',
+    });
+    const secondHttpService = { request: jest.fn() };
+    const secondService = createService(secondHttpService, {
+      MAX_API_CIRCUIT_FAILURE_THRESHOLD: '1',
+      MAX_API_CIRCUIT_WINDOW_SEC: '30',
+      MAX_API_CIRCUIT_OPEN_SEC: '2',
+    });
+
+    await expect(firstService.getChatSnapshot('chat-1')).rejects.toBe(upstreamFailure);
+    await expect(secondService.getChatSnapshot('chat-1')).rejects.toMatchObject({
+      name: 'MaxApiCircuitOpenError',
+      code: 'MAX_API_CIRCUIT_OPEN',
+      preDispatch: true,
+      botId: '777000_bot',
+      retryAfterMs: 2_000,
+    });
+    expect(secondHttpService.request).not.toHaveBeenCalled();
+
+    await firstService.onModuleDestroy();
+    await secondService.onModuleDestroy();
+  });
+
+  it('allows only one shared half-open probe and closes it with a fenced token', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-11T10:10:00.000Z'));
+    const config = {
+      MAX_API_CIRCUIT_FAILURE_THRESHOLD: '1',
+      MAX_API_CIRCUIT_WINDOW_SEC: '30',
+      MAX_API_CIRCUIT_OPEN_SEC: '1',
+      MAX_API_CIRCUIT_HALF_OPEN_PROBE_SEC: '60',
+    };
+    const firstService = createService({}, config);
+    const secondService = createService({}, config);
+    const thirdService = createService({}, config);
+    const firstPermit = await (firstService as any).acquireCircuitPermit('777000_bot');
+    await (firstService as any).registerCriticalFailure('777000_bot', firstPermit);
+
+    jest.advanceTimersByTime(1_000);
+    const probePermit = await (secondService as any).acquireCircuitPermit('777000_bot');
+    expect(probePermit.halfOpenProbeToken).toEqual(expect.any(String));
+    await expect((thirdService as any).acquireCircuitPermit('777000_bot')).rejects.toBeInstanceOf(
+      MaxApiCircuitOpenError,
+    );
+
+    await (secondService as any).closeCircuitAfterSuccessfulProbe('777000_bot', probePermit);
+    await expect((thirdService as any).acquireCircuitPermit('777000_bot')).resolves.toEqual({
+      halfOpenProbeToken: null,
+    });
+
+    await firstService.onModuleDestroy();
+    await secondService.onModuleDestroy();
+    await thirdService.onModuleDestroy();
+  });
+
+  it('records internal limiter rejection separately from an external MAX 429', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-11T10:15:00.000Z'));
+    const internalService = createService(
+      { request: jest.fn() },
+      {
+        MAX_API_RATE_LIMIT_WAIT_MS_INTERACTIVE: '0',
+      },
+    );
+    const internalRedis = (internalService as any).limiterRedis;
+    const internalDiagnostics = {
+      recordProblemChat: jest.fn().mockResolvedValue(undefined),
+    };
+    (internalService as any).runtimeDiagnosticsService = internalDiagnostics;
+    const internalWarn = jest.spyOn((internalService as any).logger, 'warn');
+    internalRedis.eval.mockResolvedValueOnce([1, 0, 0]).mockResolvedValueOnce([0, 1, 250]);
+
+    await expect(internalService.getChatSnapshot('chat-internal')).rejects.toMatchObject({
+      code: 'MAX_API_INTERNAL_RATE_LIMIT',
+      retryAfterMs: 250,
+    });
+    const nowSec = Math.floor(Date.now() / 1_000);
+    await expect(
+      internalRedis.get(`maxapi:rate-limit:v1:internal_limiter:777000_bot:interactive:${nowSec}`),
+    ).resolves.toBe('1');
+    expect(internalDiagnostics.recordProblemChat).toHaveBeenCalledWith(
+      expect.objectContaining({ category: 'max_api_internal_limiter', statusCode: null }),
+    );
+    expect(internalWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ origin: 'internal_limiter' }),
+      'MAX API internal limiter rejected request before dispatch',
+    );
+    await (internalService as any).recordRateLimitOutcome({
+      origin: 'internal_limiter',
+      botId: '777000_bot',
+      chatId: 'chat-internal-2',
+      trafficClass: 'interactive',
+      reason: 'another internal reject',
+      retryAfterMs: 200,
+    });
+    await expect(
+      internalRedis.get(`maxapi:rate-limit:v1:internal_limiter:777000_bot:interactive:${nowSec}`),
+    ).resolves.toBe('2');
+    expect(internalWarn).toHaveBeenCalledTimes(1);
+    await internalService.onModuleDestroy();
+
+    (
+      Redis as unknown as { __store: Map<string, { value: string; expiresAtMs: number | null }> }
+    ).__store.clear();
+    const externalError = Object.assign(new Error('MAX API rate limit exceeded'), {
+      response: { status: 429, data: { message: 'MAX API rate limit exceeded' } },
+    });
+    const externalService = createService({
+      request: jest.fn().mockReturnValue(throwError(() => externalError)),
+    });
+    const externalRedis = (externalService as any).limiterRedis;
+    const externalDiagnostics = {
+      recordProblemChat: jest.fn().mockResolvedValue(undefined),
+    };
+    (externalService as any).runtimeDiagnosticsService = externalDiagnostics;
+    const externalWarn = jest.spyOn((externalService as any).logger, 'warn');
+
+    await expect(externalService.getChatSnapshot('chat-external')).rejects.toBe(externalError);
+    await expect(
+      externalRedis.get(`maxapi:rate-limit:v1:external_429:777000_bot:interactive:${nowSec}`),
+    ).resolves.toBe('1');
+    expect(externalDiagnostics.recordProblemChat).toHaveBeenCalledWith(
+      expect.objectContaining({ category: 'max_api_external_429', statusCode: 429 }),
+    );
+    expect(externalWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ origin: 'external_429', statusCode: 429 }),
+      'MAX API returned external HTTP 429',
+    );
+    await externalService.onModuleDestroy();
   });
 
   it('lets user-facing traffic classes borrow spare global headroom while capping background work', async () => {
@@ -4458,7 +5125,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     });
 
     const limiterRedis = (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis;
-    limiterRedis.eval.mockResolvedValue([0, 2, 1]);
+    limiterRedis.eval.mockResolvedValueOnce([1, 0, 0]).mockResolvedValueOnce([0, 2, 1]);
 
     await expect(service.getChatSnapshot('chat-1', { trafficClass: 'background' })).rejects.toThrow(
       'MAX API background rate limit exceeded',
@@ -4683,7 +5350,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     });
 
     const limiterRedis = (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis;
-    limiterRedis.eval.mockResolvedValue([0, 3, 1]);
+    limiterRedis.eval.mockResolvedValueOnce([1, 0, 0]).mockResolvedValueOnce([0, 3, 1]);
 
     await expect(service.getChatMemberProfiles('chat-1', ['user-1'])).rejects.toThrow(
       'MAX API per-chat rate limit exceeded for bot 777000_bot chat chat-1',
@@ -4759,6 +5426,48 @@ describe('MaxClientService inline keyboard guardrails', () => {
 
     await service.onModuleDestroy();
   });
+
+  it('forces a webhook subscription POST upsert for secret rotation without deleting first', async () => {
+    const updateTypes = ['message_created', 'bot_added'];
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            data: {
+              subscriptions: [
+                {
+                  url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
+                  update_types: updateTypes,
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(of({ data: {} })),
+    };
+    const service = createService(httpService, {
+      APP_BASE_URL: 'https://major-maksimov.ru',
+      MAX_BOT_ID: '777000_bot',
+      MAX_WEBHOOK_SECRET_PATH: 'secret-path',
+      MAX_WEBHOOK_HEADER_SECRET: 'rotated-header-secret',
+    });
+
+    await service.ensureWebhookSubscription(updateTypes, { forceUpsert: true });
+
+    expect(httpService.request).toHaveBeenCalledTimes(2);
+    expect(httpService.request).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api2.max.ru/subscriptions',
+        data: expect.objectContaining({
+          secret: 'header-secret',
+        }),
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
 });
 
 describe('MaxClientService delayed member actions', () => {
@@ -4769,6 +5478,17 @@ describe('MaxClientService delayed member actions', () => {
       recordEnqueued?: jest.Mock;
       recordFailed?: jest.Mock;
     },
+    maxBotLinkService?: {
+      resolveBotRoute?: jest.Mock;
+    },
+    laneQueues: Partial<
+      Record<
+        | typeof MAX_ACTION_CRITICAL_QUEUE
+        | typeof MAX_ACTION_INTERACTIVE_QUEUE
+        | typeof MAX_ACTION_BACKGROUND_QUEUE,
+        { add: jest.Mock; getJob: jest.Mock }
+      >
+    > = {},
   ) {
     const configService = {
       getOrThrow: jest.fn((key: string) => {
@@ -4830,6 +5550,10 @@ describe('MaxClientService delayed member actions', () => {
       queue as never,
       undefined,
       actionLedgerService as never,
+      maxBotLinkService as never,
+      laneQueues[MAX_ACTION_CRITICAL_QUEUE] as never,
+      laneQueues[MAX_ACTION_INTERACTIVE_QUEUE] as never,
+      laneQueues[MAX_ACTION_BACKGROUND_QUEUE] as never,
     );
   }
 
@@ -4849,6 +5573,51 @@ describe('MaxClientService delayed member actions', () => {
       },
     };
   }
+
+  it('routes queued actions into physical traffic lanes while keeping legacy as fallback', async () => {
+    const createQueue = () => ({
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(null),
+    });
+    const legacy = createQueue();
+    const critical = createQueue();
+    const interactive = createQueue();
+    const background = createQueue();
+    const service = createServiceWithQueue(legacy, undefined, undefined, {
+      [MAX_ACTION_CRITICAL_QUEUE]: critical,
+      [MAX_ACTION_INTERACTIVE_QUEUE]: interactive,
+      [MAX_ACTION_BACKGROUND_QUEUE]: background,
+    });
+
+    await service.sendMessage('chat-1', 'interactive notice');
+    await service.deleteMessage('chat-1', 'message-1');
+    await service.sendMessage('chat-1', 'background notice', undefined, {
+      trafficClass: 'background',
+    });
+
+    expect(interactive.add).toHaveBeenCalledWith(
+      'execute-max-action',
+      expect.objectContaining({ actionType: 'SEND_MESSAGE', text: 'interactive notice' }),
+      expect.any(Object),
+    );
+    expect(critical.add).toHaveBeenCalledWith(
+      'execute-max-action',
+      expect.objectContaining({ actionType: 'DELETE_MESSAGE', messageId: 'message-1' }),
+      expect.any(Object),
+    );
+    expect(background.add).toHaveBeenCalledWith(
+      'execute-max-action',
+      expect.objectContaining({
+        actionType: 'SEND_MESSAGE',
+        text: 'background notice',
+        trafficClass: 'background',
+      }),
+      expect.any(Object),
+    );
+    expect(legacy.add).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
 
   it('dispatches queued delete actions with the active bot context when botId is omitted', async () => {
     const queue = {
@@ -4975,6 +5744,130 @@ describe('MaxClientService delayed member actions', () => {
         actionType: 'SEND_MESSAGE',
         text: 'first notice',
         idempotencyKey: firstJobId,
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('keeps routed job ids logical and carries route candidates into BullMQ', async () => {
+    const queue = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(null),
+    };
+    const service = createServiceWithQueue(queue);
+
+    await service.sendMessage('chat-1', 'notice', undefined, {
+      botId: '777000_bot',
+      candidateBotIds: ['777000_bot', 'standby-bot'],
+      routing: {
+        purpose: 'send_message',
+        primaryBotId: '777000_bot',
+        reason: 'primary_confirmed',
+        routingVersion: 7,
+      },
+      idempotencyKey: 'publication:occurrence-1:chat-1',
+    });
+
+    const queuedJob = queue.add.mock.calls[0][1];
+    expect(queuedJob).toEqual(
+      expect.objectContaining({
+        botId: '777000_bot',
+        candidateBotIds: ['777000_bot', 'standby-bot'],
+        routing: expect.objectContaining({
+          purpose: 'send_message',
+          routingVersion: 7,
+        }),
+      }),
+    );
+    expect(queuedJob.idempotencyKey).toMatch(/^max-action__explicit__send_message__/);
+    expect(queuedJob.idempotencyKey).not.toContain('777000_bot');
+
+    await service.onModuleDestroy();
+  });
+
+  it('resolves managed-chat route candidates when callers do not bind a bot', async () => {
+    const queue = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(null),
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: '-100-chat-1',
+        primaryBotId: '777000_bot',
+        botId: '777000_bot',
+        candidateBotIds: ['777000_bot', 'standby-bot'],
+        reason: 'primary_confirmed',
+      }),
+    };
+    const service = createServiceWithQueue(queue, undefined, maxBotLinkService);
+
+    await service.sendMessage('-100-chat-1', 'notice', undefined, {
+      idempotencyKey: 'publication:occurrence-1:chat-1',
+    });
+
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledWith({
+      purpose: 'send_message',
+      chatId: '-100-chat-1',
+      fallbackToPrimary: true,
+    });
+    expect(queue.add.mock.calls[0][1]).toEqual(
+      expect.objectContaining({
+        botId: '777000_bot',
+        candidateBotIds: ['777000_bot', 'standby-bot'],
+        routing: expect.objectContaining({ purpose: 'send_message' }),
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('fails closed when a managed group route resolves without an eligible bot', async () => {
+    const queue = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(null),
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: '-100-chat-without-route',
+        primaryBotId: null,
+        botId: null,
+        candidateBotIds: [],
+        reason: null,
+        routingVersion: 3,
+      }),
+    };
+    const service = createServiceWithQueue(queue, undefined, maxBotLinkService);
+
+    await expect(
+      service.sendMessage('-100-chat-without-route', 'must not use default'),
+    ).rejects.toThrow('has no eligible routed bot candidate');
+
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledTimes(1);
+    expect(queue.add).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('keeps private dialog sends on their explicit bot context instead of managed routing', async () => {
+    const queue = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(null),
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn(),
+    };
+    const service = createServiceWithQueue(queue, undefined, maxBotLinkService);
+
+    await service.sendMessage('123456789', 'private notice');
+
+    expect(maxBotLinkService.resolveBotRoute).not.toHaveBeenCalled();
+    expect(queue.add.mock.calls[0][1]).toEqual(
+      expect.not.objectContaining({
+        routing: expect.anything(),
+        candidateBotIds: expect.anything(),
       }),
     );
 
@@ -5131,6 +6024,34 @@ describe('MaxClientService delayed member actions', () => {
     await service.onModuleDestroy();
   });
 
+  it('keeps an existing logical job on the legacy drain queue during lane rollout', async () => {
+    const retainedJob = {
+      getState: jest.fn().mockResolvedValue('waiting'),
+      remove: jest.fn(),
+    };
+    const legacy = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(retainedJob),
+    };
+    const interactive = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(null),
+    };
+    const service = createServiceWithQueue(legacy, undefined, undefined, {
+      [MAX_ACTION_INTERACTIVE_QUEUE]: interactive,
+    });
+
+    await service.sendMessage('chat-1', 'same logical notice', undefined, {
+      idempotencyKey: 'notice-1',
+    });
+
+    expect(retainedJob.getState).toHaveBeenCalledTimes(1);
+    expect(legacy.add).toHaveBeenCalledTimes(1);
+    expect(interactive.add).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
   it('uses deterministic queue job id for delayed unban', async () => {
     const queue = {
       add: jest.fn().mockResolvedValue(undefined),
@@ -5168,11 +6089,45 @@ describe('MaxClientService delayed member actions', () => {
     await service.onModuleDestroy();
   });
 
+  it('uses bot-independent delayed unban ids for routed jobs', async () => {
+    const queue = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(null),
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'moderation_action',
+        chatId: '-100-chat-1',
+        primaryBotId: '777000_bot',
+        botId: '777000_bot',
+        candidateBotIds: ['777000_bot', 'standby-bot'],
+        reason: 'primary_confirmed',
+        action: 'moderate_member',
+      }),
+    };
+    const service = createServiceWithQueue(queue, undefined, maxBotLinkService);
+
+    await service.unbanMember('-100-chat-1', 'user-1', { delayMs: 60_000 });
+
+    expect(queue.add).toHaveBeenCalledWith(
+      'execute-max-action',
+      expect.objectContaining({
+        candidateBotIds: ['777000_bot', 'standby-bot'],
+        idempotencyKey: 'member-action__logical__UNBAN_MEMBER__-100-chat-1__user-1',
+      }),
+      expect.objectContaining({
+        jobId: 'member-action__logical__UNBAN_MEMBER__-100-chat-1__user-1',
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('removes queued delayed unban when cancelling manual override', async () => {
     const remove = jest.fn().mockResolvedValue(undefined);
     const queue = {
       add: jest.fn().mockResolvedValue(undefined),
-      getJob: jest.fn().mockResolvedValue({ remove }),
+      getJob: jest.fn().mockResolvedValueOnce({ remove }).mockResolvedValueOnce(null),
     };
     const service = createServiceWithQueue(queue);
 
@@ -5181,6 +6136,31 @@ describe('MaxClientService delayed member actions', () => {
     expect(queue.getJob).toHaveBeenCalledWith(
       'member-action__777000_bot__UNBAN_MEMBER__chat-1__user-2',
     );
+    expect(queue.getJob).toHaveBeenCalledWith(
+      'member-action__logical__UNBAN_MEMBER__chat-1__user-2',
+    );
+    expect(remove).toHaveBeenCalledTimes(1);
+
+    await service.onModuleDestroy();
+  });
+
+  it('removes a delayed unban found in a split action lane', async () => {
+    const remove = jest.fn().mockResolvedValue(undefined);
+    const legacy = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(null),
+    };
+    const critical = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValueOnce({ remove }).mockResolvedValueOnce(null),
+    };
+    const service = createServiceWithQueue(legacy, undefined, undefined, {
+      [MAX_ACTION_CRITICAL_QUEUE]: critical,
+    });
+
+    await service.cancelScheduledUnban('chat-1', 'user-3');
+
+    expect(critical.getJob).toHaveBeenCalledTimes(2);
     expect(remove).toHaveBeenCalledTimes(1);
 
     await service.onModuleDestroy();

@@ -1,8 +1,11 @@
 import {
+  ChatBotAccessState,
   ChatCatalogKind,
   ChatBotMembershipRole,
   ChatBotMembershipStatus,
   ChatEntityType,
+  ChatRoutingState,
+  Prisma,
 } from '../prisma/prisma-client';
 import { MaxBotLinkService } from './max-bot-link.service';
 
@@ -13,6 +16,12 @@ type MutableChat = {
   primaryBotId: string | null;
   entityType?: ChatEntityType;
   catalogKind?: ChatCatalogKind;
+  routingState?: ChatRoutingState;
+  routingVersion?: number;
+};
+
+type MutableChatUpdate = Omit<Partial<MutableChat>, 'routingVersion'> & {
+  routingVersion?: number | { increment: number };
 };
 
 type MutableMembership = {
@@ -22,6 +31,15 @@ type MutableMembership = {
   status: ChatBotMembershipStatus;
   capabilities?: unknown;
   permissionsSnapshot?: unknown;
+  botAccessState?: string;
+  botAccessCheckedAt?: Date | null;
+  botAccessExpiresAt?: Date | null;
+  botAccessSource?: string | null;
+  botAccessLastErrorCode?: string | null;
+  permissionsHash?: string | null;
+  lifecycleEventAt?: Date | null;
+  lifecycleEventType?: string | null;
+  lifecycleSource?: string | null;
   createdAt: Date;
   updatedAt: Date;
   lastSeenAt: Date | null;
@@ -49,6 +67,8 @@ function createActiveMembership(
     botId,
     role: index === 0 ? ChatBotMembershipRole.PRIMARY : ChatBotMembershipRole.STANDBY,
     status: ChatBotMembershipStatus.ACTIVE,
+    botAccessState: 'UNKNOWN',
+    botAccessCheckedAt: null,
     permissionsSnapshot: {
       checkedAt: timestamp.toISOString(),
       isAdmin: true,
@@ -61,6 +81,19 @@ function createActiveMembership(
     lastWebhookAt: timestamp,
     ...overrides,
   };
+}
+
+function permutations<T>(items: readonly T[]): T[][] {
+  if (items.length <= 1) {
+    return [[...items]];
+  }
+
+  return items.flatMap((item, index) =>
+    permutations([...items.slice(0, index), ...items.slice(index + 1)]).map((tail) => [
+      item,
+      ...tail,
+    ]),
+  );
 }
 
 function createServiceFixture() {
@@ -78,6 +111,8 @@ function createServiceFixture() {
         return {
           entityType: chat.entityType ?? null,
           catalogKind: chat.catalogKind ?? null,
+          routingState: chat.routingState ?? ChatRoutingState.READY,
+          routingVersion: chat.routingVersion ?? 0,
           primaryBotId: chat.primaryBotId,
           botId: chat.botId,
           botMemberships: memberships
@@ -86,8 +121,14 @@ function createServiceFixture() {
               botId: membership.botId,
               role: membership.role,
               status: membership.status,
+              botAccessState: membership.botAccessState ?? 'UNKNOWN',
+              botAccessCheckedAt: membership.botAccessCheckedAt ?? null,
+              botAccessExpiresAt: membership.botAccessExpiresAt ?? null,
               capabilities: membership.capabilities ?? [],
-              permissionsSnapshot: membership.permissionsSnapshot ?? null,
+              permissionsSnapshot:
+                membership.permissionsSnapshot === Prisma.JsonNull
+                  ? null
+                  : (membership.permissionsSnapshot ?? null),
             })),
         };
       }),
@@ -104,6 +145,8 @@ function createServiceFixture() {
           primaryBotId: data.primaryBotId ?? null,
           entityType: data.entityType,
           catalogKind: data.catalogKind,
+          routingState: data.routingState ?? ChatRoutingState.READY,
+          routingVersion: data.routingVersion ?? 0,
         });
         return chats.get(data.id);
       }),
@@ -133,6 +176,8 @@ function createServiceFixture() {
               primaryBotId: row.primaryBotId ?? null,
               entityType: row.entityType,
               catalogKind: row.catalogKind,
+              routingState: row.routingState ?? ChatRoutingState.READY,
+              routingVersion: row.routingVersion ?? 0,
             });
             count += 1;
           }
@@ -140,13 +185,74 @@ function createServiceFixture() {
         },
       ),
       update: jest.fn(
-        async ({ where, data }: { where: { id: string }; data: Partial<MutableChat> }) => {
+        async ({ where, data }: { where: { id: string }; data: MutableChatUpdate }) => {
           const existing = chats.get(where.id);
           if (!existing) {
             throw new Error(`Chat ${where.id} not found`);
           }
-          Object.assign(existing, data);
+          const { routingVersion, ...nextData } = data;
+          Object.assign(existing, nextData);
+          if (typeof routingVersion === 'number') {
+            existing.routingVersion = routingVersion;
+          } else if (routingVersion) {
+            existing.routingVersion =
+              (existing.routingVersion ?? 0) + Number(routingVersion.increment ?? 0);
+          }
           return existing;
+        },
+      ),
+      updateMany: jest.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: {
+            id: string;
+            routingState?: ChatRoutingState | { not: ChatRoutingState };
+            routingVersion?: number;
+            botMemberships?: {
+              some: {
+                botId: string;
+                status: ChatBotMembershipStatus;
+                lifecycleEventAt: Date;
+                lifecycleEventType: string;
+              };
+            };
+          };
+          data: MutableChatUpdate;
+        }) => {
+          const existing = chats.get(where.id);
+          if (
+            !existing ||
+            (typeof where.routingState === 'string' &&
+              (existing.routingState ?? ChatRoutingState.READY) !== where.routingState) ||
+            (where.routingState !== undefined &&
+              typeof where.routingState === 'object' &&
+              (existing.routingState ?? ChatRoutingState.READY) === where.routingState.not) ||
+            (where.routingVersion !== undefined &&
+              (existing.routingVersion ?? 0) !== where.routingVersion) ||
+            (where.botMemberships &&
+              !memberships.some(
+                (membership) =>
+                  membership.chatId === where.id &&
+                  membership.botId === where.botMemberships?.some.botId &&
+                  membership.status === where.botMemberships.some.status &&
+                  membership.lifecycleEventType === where.botMemberships.some.lifecycleEventType &&
+                  membership.lifecycleEventAt?.getTime() ===
+                    where.botMemberships.some.lifecycleEventAt.getTime(),
+              ))
+          ) {
+            return { count: 0 };
+          }
+          const { routingVersion, ...nextData } = data;
+          Object.assign(existing, nextData);
+          if (typeof routingVersion === 'number') {
+            existing.routingVersion = routingVersion;
+          } else if (routingVersion) {
+            existing.routingVersion =
+              (existing.routingVersion ?? 0) + Number(routingVersion.increment ?? 0);
+          }
+          return { count: 1 };
         },
       ),
       upsert: jest.fn(
@@ -157,11 +263,18 @@ function createServiceFixture() {
         }: {
           where: { id: string };
           create: MutableChat;
-          update: Partial<MutableChat>;
+          update: MutableChatUpdate;
         }) => {
           const existing = chats.get(where.id);
           if (existing) {
-            Object.assign(existing, update);
+            const { routingVersion, ...nextData } = update;
+            Object.assign(existing, nextData);
+            if (typeof routingVersion === 'number') {
+              existing.routingVersion = routingVersion;
+            } else if (routingVersion) {
+              existing.routingVersion =
+                (existing.routingVersion ?? 0) + Number(routingVersion.increment ?? 0);
+            }
             return existing;
           }
           const created = {
@@ -171,6 +284,8 @@ function createServiceFixture() {
             primaryBotId: create.primaryBotId ?? null,
             entityType: create.entityType,
             catalogKind: create.catalogKind,
+            routingState: create.routingState ?? ChatRoutingState.READY,
+            routingVersion: create.routingVersion ?? 0,
           };
           chats.set(create.id, created);
           return created;
@@ -178,6 +293,14 @@ function createServiceFixture() {
       ),
     },
     chatBotMembership: {
+      findUnique: jest.fn(
+        async ({ where }: { where: { chatId_botId: { chatId: string; botId: string } } }) =>
+          memberships.find(
+            (membership) =>
+              membership.chatId === where.chatId_botId.chatId &&
+              membership.botId === where.chatId_botId.botId,
+          ) ?? null,
+      ),
       upsert: jest.fn(
         async ({
           where,
@@ -198,6 +321,7 @@ function createServiceFixture() {
             return existing;
           }
           const created: MutableMembership = {
+            ...create,
             chatId: create.chatId,
             botId: create.botId,
             role: create.role,
@@ -228,7 +352,12 @@ function createServiceFixture() {
             botId: membership.botId,
             role: membership.role,
             status: membership.status,
-            permissionsSnapshot: membership.permissionsSnapshot ?? null,
+            botAccessState: membership.botAccessState ?? ChatBotAccessState.UNKNOWN,
+            botAccessCheckedAt: membership.botAccessCheckedAt ?? null,
+            permissionsSnapshot:
+              membership.permissionsSnapshot === Prisma.JsonNull
+                ? null
+                : (membership.permissionsSnapshot ?? null),
           })),
       ),
       updateMany: jest.fn(
@@ -236,7 +365,12 @@ function createServiceFixture() {
           where,
           data,
         }: {
-          where: { chatId: string; status?: ChatBotMembershipStatus; botId?: string };
+          where: {
+            chatId: string;
+            status?: ChatBotMembershipStatus;
+            botId?: string;
+            OR?: Array<Record<string, unknown>>;
+          };
           data: Partial<MutableMembership>;
         }) => {
           let count = 0;
@@ -248,6 +382,47 @@ function createServiceFixture() {
               continue;
             }
             if (where.botId && membership.botId !== where.botId) {
+              continue;
+            }
+            if (
+              where.OR &&
+              !where.OR.some((condition) => {
+                if (condition.status && membership.status !== condition.status) {
+                  return false;
+                }
+                if (condition.lifecycleEventAt === null) {
+                  return membership.lifecycleEventAt == null;
+                }
+                const lifecycleEventAt = condition.lifecycleEventAt;
+                if (lifecycleEventAt instanceof Date) {
+                  if (membership.lifecycleEventAt?.getTime() !== lifecycleEventAt.getTime()) {
+                    return false;
+                  }
+                } else if (
+                  lifecycleEventAt &&
+                  typeof lifecycleEventAt === 'object' &&
+                  (lifecycleEventAt as { lt?: unknown }).lt instanceof Date
+                ) {
+                  const existingAtMs = membership.lifecycleEventAt?.getTime();
+                  if (
+                    existingAtMs == null ||
+                    existingAtMs >= (lifecycleEventAt as { lt: Date }).lt.getTime()
+                  ) {
+                    return false;
+                  }
+                }
+                const lifecycleType = condition.lifecycleEventType;
+                if (
+                  lifecycleType &&
+                  typeof lifecycleType === 'object' &&
+                  'not' in lifecycleType &&
+                  membership.lifecycleEventType === (lifecycleType as { not?: string }).not
+                ) {
+                  return false;
+                }
+                return true;
+              })
+            ) {
               continue;
             }
             Object.assign(membership, data, { updatedAt: now() });
@@ -290,6 +465,61 @@ describe('MaxBotLinkService', () => {
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('treats routed send access as stale at the configured age boundary', async () => {
+    const fixture = createServiceFixture();
+    fixture.memberships.push(
+      createActiveMembership('chat-access-age', fixture.bots[0]!.id, 0, {
+        botAccessCheckedAt: new Date('2026-05-09T09:35:00.000Z'),
+      }),
+    );
+
+    await expect(
+      fixture.service.isBotAccessSnapshotStale({
+        chatId: 'chat-access-age',
+        botId: fixture.bots[0]!.id,
+        maxAgeMs: 30 * 60_000,
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      fixture.service.isBotAccessSnapshotStale({
+        chatId: 'chat-access-age',
+        botId: fixture.bots[0]!.id,
+        maxAgeMs: 31 * 60_000,
+      }),
+    ).resolves.toBe(false);
+  });
+
+  it('persists a live routed access probe only onto an ACTIVE membership', async () => {
+    const fixture = createServiceFixture();
+    const membership = createActiveMembership('chat-access-probe', fixture.bots[0]!.id, 0);
+    fixture.memberships.push(membership);
+
+    await expect(
+      fixture.service.recordBotAccessProbe({
+        chatId: 'chat-access-probe',
+        botId: fixture.bots[0]!.id,
+        access: {
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['write'],
+        },
+        source: 'routed_action_preflight',
+      }),
+    ).resolves.toBe(true);
+
+    expect(membership).toEqual(
+      expect.objectContaining({
+        botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+        botAccessSource: 'routed_action_preflight',
+        botAccessCheckedAt: new Date('2026-05-09T10:05:00.000Z'),
+        permissionsSnapshot: expect.objectContaining({
+          isAdmin: true,
+          permissions: ['write'],
+        }),
+      }),
+    );
   });
 
   it('binds a new chat through a duplicate-safe insert instead of a noisy create', async () => {
@@ -422,6 +652,269 @@ describe('MaxBotLinkService', () => {
       expect(moderationRoute.candidateBotIds).toEqual(botIds);
     },
   );
+
+  it('fails closed for every routed purpose when the chat is NO_ELIGIBLE_BOT', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'chat-no-eligible';
+    const botId = fixture.bots[0]!.id;
+    fixture.chats.set(chatId, {
+      id: chatId,
+      title: 'Closed route',
+      botId,
+      primaryBotId: botId,
+      entityType: ChatEntityType.CHAT,
+      routingState: ChatRoutingState.NO_ELIGIBLE_BOT,
+      routingVersion: 7,
+    });
+    fixture.memberships.push(
+      createActiveMembership(chatId, botId, 0, {
+        botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+        botAccessCheckedAt: new Date('2026-05-09T10:04:00.000Z'),
+        botAccessExpiresAt: new Date('2026-05-09T10:20:00.000Z'),
+      }),
+    );
+
+    const routes = await Promise.all([
+      fixture.service.resolveBotRoute({ purpose: 'default', chatId }),
+      fixture.service.resolveBotRoute({ purpose: 'read', chatId }),
+      fixture.service.resolveBotRoute({ purpose: 'send_message', chatId }),
+      fixture.service.resolveBotRouteForChannelPoll({ chatId }),
+      fixture.service.resolveBotRoute({
+        purpose: 'moderation_action',
+        chatId,
+        action: 'delete_message',
+      }),
+      fixture.service.resolveBotRoute({
+        purpose: 'capability',
+        chatId,
+        capability: 'background_scans',
+      }),
+    ]);
+
+    for (const route of routes) {
+      expect(route).toEqual(
+        expect.objectContaining({
+          botId: null,
+          candidateBotIds: [],
+          routingVersion: 7,
+        }),
+      );
+    }
+    await expect(fixture.service.getStoredChatPrimaryBotId(chatId)).resolves.toBeNull();
+    await expect(
+      fixture.service.getChatExecutionBinding({ chatId, activeBotId: botId }),
+    ).resolves.toEqual(expect.objectContaining({ shouldHandleGroupUpdate: false }));
+  });
+
+  it('does not let a stale local binding override the primary stored by another process', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'chat-cross-process-primary';
+    const oldBotId = fixture.bots[0]!.id;
+    const newBotId = fixture.bots[1]!.id;
+    fixture.chats.set(chatId, {
+      id: chatId,
+      title: 'Cross-process route',
+      botId: newBotId,
+      primaryBotId: newBotId,
+      routingState: ChatRoutingState.READY,
+      routingVersion: 9,
+    });
+    fixture.service.rememberChatBotBinding(chatId, oldBotId);
+
+    await expect(fixture.service.getStoredChatPrimaryBotId(chatId)).resolves.toBe(newBotId);
+    expect(fixture.service.resolveBotIdSync(null, chatId)).toBe(newBotId);
+  });
+
+  it('keeps a newly discovered chat closed until a fresh self-access snapshot is confirmed', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'chat-discovery-needs-access';
+    const botId = fixture.bots[0]!.id;
+
+    await expect(
+      fixture.service.bindDiscoveredChatBots({
+        chatId,
+        primaryBotId: botId,
+        botIds: [botId],
+        title: 'Discovered chat',
+        entityType: ChatEntityType.CHAT,
+      }),
+    ).resolves.toBeNull();
+    expect(fixture.chats.get(chatId)).toEqual(
+      expect.objectContaining({
+        routingState: ChatRoutingState.NO_ELIGIBLE_BOT,
+      }),
+    );
+    await expect(fixture.service.getStoredChatPrimaryBotId(chatId)).resolves.toBeNull();
+
+    const accessCheckedAt = new Date();
+    Object.assign(fixture.memberships[0]!, {
+      botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+      botAccessCheckedAt: accessCheckedAt,
+      botAccessExpiresAt: new Date(accessCheckedAt.getTime() + 15 * 60_000),
+      permissionsSnapshot: {
+        checkedAt: accessCheckedAt.toISOString(),
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+      },
+    });
+
+    await expect(fixture.service.reconcileChatPrimaryByAccess({ chatId })).resolves.toBe(botId);
+    expect(fixture.chats.get(chatId)).toEqual(
+      expect.objectContaining({
+        routingState: ChatRoutingState.READY,
+      }),
+    );
+  });
+
+  it('clears a stale primary when no runtime-actionable membership survives', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'chat-zero-actionable';
+    const botId = fixture.bots[0]!.id;
+    fixture.chats.set(chatId, {
+      id: chatId,
+      title: 'No actionable bot',
+      botId,
+      primaryBotId: botId,
+      entityType: ChatEntityType.CHAT,
+      routingState: ChatRoutingState.READY,
+      routingVersion: 3,
+    });
+    fixture.memberships.push(
+      createActiveMembership(chatId, botId, 0, {
+        botAccessState: ChatBotAccessState.DENIED,
+      }),
+    );
+
+    await expect(fixture.service.reconcileChatPrimaryByAccess({ chatId })).resolves.toBeNull();
+    expect(fixture.chats.get(chatId)).toEqual(
+      expect.objectContaining({
+        botId: null,
+        primaryBotId: null,
+        routingState: ChatRoutingState.NO_ELIGIBLE_BOT,
+        routingVersion: 4,
+      }),
+    );
+  });
+
+  it('reopens a persisted route only after runtime eligibility is confirmed', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'chat-route-recovered';
+    const botId = fixture.bots[0]!.id;
+    fixture.chats.set(chatId, {
+      id: chatId,
+      title: 'Recovered route',
+      botId,
+      primaryBotId: botId,
+      entityType: ChatEntityType.CHAT,
+      routingState: ChatRoutingState.NO_ELIGIBLE_BOT,
+      routingVersion: 5,
+    });
+    fixture.memberships.push(
+      createActiveMembership(chatId, botId, 0, {
+        botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+        botAccessCheckedAt: new Date('2026-05-09T10:04:00.000Z'),
+        botAccessExpiresAt: new Date('2026-05-09T10:20:00.000Z'),
+      }),
+    );
+
+    await expect(fixture.service.reconcileChatPrimaryByAccess({ chatId })).resolves.toBe(botId);
+    expect(fixture.chats.get(chatId)).toEqual(
+      expect.objectContaining({
+        routingState: ChatRoutingState.READY,
+      }),
+    );
+    await expect(
+      fixture.service.resolveBotRoute({ purpose: 'send_message', chatId }),
+    ).resolves.toEqual(expect.objectContaining({ botId, candidateBotIds: [botId] }));
+  });
+
+  it('retries a routing-state write when a membership fence changes routingVersion', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'chat-routing-cas';
+    const botId = fixture.bots[0]!.id;
+    fixture.chats.set(chatId, {
+      id: chatId,
+      title: 'CAS route',
+      botId,
+      primaryBotId: botId,
+      entityType: ChatEntityType.CHAT,
+      routingState: ChatRoutingState.NO_ELIGIBLE_BOT,
+      routingVersion: 2,
+    });
+    fixture.memberships.push(
+      createActiveMembership(chatId, botId, 0, {
+        botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+        botAccessCheckedAt: new Date('2026-05-09T10:04:00.000Z'),
+        botAccessExpiresAt: new Date('2026-05-09T10:20:00.000Z'),
+      }),
+    );
+    fixture.prisma.chat.updateMany.mockImplementationOnce(async () => {
+      fixture.chats.get(chatId)!.routingVersion = 3;
+      return { count: 0 };
+    });
+
+    await expect(fixture.service.reconcileChatRoutingState({ chatId })).resolves.toEqual({
+      routingState: ChatRoutingState.READY,
+      changed: true,
+    });
+    expect(fixture.prisma.chat.updateMany).toHaveBeenCalledTimes(2);
+    expect(fixture.chats.get(chatId)).toEqual(
+      expect.objectContaining({ routingState: ChatRoutingState.READY, routingVersion: 4 }),
+    );
+  });
+
+  it('force-bumps routingVersion for a dirty epoch even when the effective state stays READY', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'chat-routing-dirty-epoch';
+    const botId = fixture.bots[0]!.id;
+    fixture.chats.set(chatId, {
+      id: chatId,
+      title: 'Dirty route',
+      botId,
+      primaryBotId: botId,
+      entityType: ChatEntityType.CHAT,
+      routingState: ChatRoutingState.READY,
+      routingVersion: 7,
+    });
+    fixture.memberships.push(
+      createActiveMembership(chatId, botId, 0, {
+        botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+        botAccessCheckedAt: new Date('2026-05-09T10:04:00.000Z'),
+        botAccessExpiresAt: new Date('2026-05-09T10:20:00.000Z'),
+      }),
+    );
+
+    await expect(
+      fixture.service.reconcileChatRoutingState({ chatId, forceVersionBump: true }),
+    ).resolves.toEqual({
+      routingState: ChatRoutingState.READY,
+      changed: true,
+    });
+    expect(fixture.chats.get(chatId)?.routingVersion).toBe(8);
+  });
+
+  it('fails retryably when a forced dirty-epoch CAS is exhausted', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'chat-routing-dirty-cas-exhausted';
+    const botId = fixture.bots[0]!.id;
+    fixture.chats.set(chatId, {
+      id: chatId,
+      title: 'Contended dirty route',
+      botId,
+      primaryBotId: botId,
+      entityType: ChatEntityType.CHAT,
+      routingState: ChatRoutingState.READY,
+      routingVersion: 11,
+    });
+    fixture.memberships.push(createActiveMembership(chatId, botId, 0));
+    fixture.prisma.chat.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(
+      fixture.service.reconcileChatRoutingState({ chatId, forceVersionBump: true }),
+    ).rejects.toThrow('routing state changed during forced reconciliation');
+    expect(fixture.prisma.chat.updateMany).toHaveBeenCalledTimes(2);
+  });
 
   it('promotes an active standby bot to primary when the current primary bot is removed', async () => {
     const fixture = createServiceFixture();
@@ -1618,11 +2111,25 @@ describe('MaxBotLinkService', () => {
           permissions: ['write', 'edit'],
         },
       }),
+      createActiveMembership('channel-poll-route', 'id613002203036_5_bot', 2, {
+        permissionsSnapshot: {
+          checkedAt: '2026-07-10T10:00:02.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['write', 'edit'],
+        },
+      }),
     );
 
     await expect(
       fixture.service.resolveBotIdForChannelPoll({ chatId: 'channel-poll-route' }),
     ).resolves.toBe('id613002203036_4_bot');
+    await expect(
+      fixture.service.resolveBotRouteForChannelPoll({ chatId: 'channel-poll-route' }),
+    ).resolves.toMatchObject({
+      botId: 'id613002203036_4_bot',
+      candidateBotIds: ['id613002203036_4_bot', 'id613002203036_5_bot'],
+    });
   });
 
   it('rejects split or unknown channel poll permissions', async () => {
@@ -2443,6 +2950,17 @@ describe('MaxBotLinkService', () => {
       botId: 'id613002203036_bot',
       primaryBotId: 'id613002203036_bot',
     });
+    fixture.memberships.push({
+      chatId: 'chat-8',
+      botId: 'id613002203036_4_bot',
+      role: ChatBotMembershipRole.STANDBY,
+      status: ChatBotMembershipStatus.ACTIVE,
+      permissionsSnapshot: null,
+      createdAt: new Date('2026-05-09T09:00:00.000Z'),
+      updatedAt: new Date('2026-05-09T09:00:00.000Z'),
+      lastSeenAt: null,
+      lastWebhookAt: null,
+    });
 
     await fixture.service.observeStoredChatBotWebhook({
       chatId: 'chat-8',
@@ -2456,7 +2974,8 @@ describe('MaxBotLinkService', () => {
     });
 
     expect(fixture.prisma.chat.update).not.toHaveBeenCalled();
-    expect(fixture.prisma.chatBotMembership.upsert).toHaveBeenCalledTimes(1);
+    expect(fixture.prisma.chatBotMembership.upsert).not.toHaveBeenCalled();
+    expect(fixture.prisma.chatBotMembership.updateMany).toHaveBeenCalledTimes(1);
     expect(
       fixture.memberships.find((membership) => membership.botId === 'id613002203036_4_bot'),
     ).toEqual(
@@ -2467,6 +2986,309 @@ describe('MaxBotLinkService', () => {
         lastWebhookAt: expect.any(Date),
       }),
     );
+  });
+
+  it('touches an active mirrored membership without promoting it when the chat has no primary', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-route-gap-touch', {
+      id: 'chat-route-gap-touch',
+      title: 'Route gap chat',
+      botId: null,
+      primaryBotId: null,
+    });
+    fixture.memberships.push({
+      chatId: 'chat-route-gap-touch',
+      botId: 'id613002203036_4_bot',
+      role: ChatBotMembershipRole.STANDBY,
+      status: ChatBotMembershipStatus.ACTIVE,
+      permissionsSnapshot: null,
+      createdAt: new Date('2026-05-09T09:00:00.000Z'),
+      updatedAt: new Date('2026-05-09T09:00:00.000Z'),
+      lastSeenAt: null,
+      lastWebhookAt: null,
+    });
+
+    await fixture.service.observeStoredChatBotWebhook({
+      chatId: 'chat-route-gap-touch',
+      primaryBotId: null,
+      botId: 'id613002203036_4_bot',
+      observedAt: new Date('2026-05-09T09:05:00.000Z'),
+    });
+
+    expect(fixture.memberships[0]).toEqual(
+      expect.objectContaining({
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        lastSeenAt: new Date('2026-05-09T09:05:00.000Z'),
+        lastWebhookAt: new Date('2026-05-09T09:05:00.000Z'),
+      }),
+    );
+  });
+
+  it('does not reactivate or clear access loss on an ordinary webhook after bot removal', async () => {
+    const fixture = createServiceFixture();
+    const removedAt = new Date('2026-05-09T09:00:00.123Z');
+    const accessLossSnapshot = {
+      accessLostAt: removedAt.toISOString(),
+      accessLostReason: 'bot_removed',
+    };
+    fixture.chats.set('chat-lifecycle-observe', {
+      id: 'chat-lifecycle-observe',
+      title: 'Lifecycle chat',
+      botId: null,
+      primaryBotId: null,
+      routingState: ChatRoutingState.NO_ELIGIBLE_BOT,
+    });
+    fixture.memberships.push({
+      chatId: 'chat-lifecycle-observe',
+      botId: 'id613002203036_4_bot',
+      role: ChatBotMembershipRole.STANDBY,
+      status: ChatBotMembershipStatus.REMOVED,
+      permissionsSnapshot: accessLossSnapshot,
+      botAccessState: ChatBotAccessState.DENIED,
+      lifecycleEventAt: removedAt,
+      lifecycleEventType: 'bot_removed',
+      lifecycleSource: 'webhook',
+      createdAt: removedAt,
+      updatedAt: removedAt,
+      lastSeenAt: removedAt,
+      lastWebhookAt: removedAt,
+    });
+
+    await fixture.service.observeStoredChatBotWebhook({
+      chatId: 'chat-lifecycle-observe',
+      primaryBotId: null,
+      botId: 'id613002203036_4_bot',
+      observedAt: new Date('2026-05-09T09:05:00.456Z'),
+    });
+
+    expect(fixture.memberships[0]).toEqual(
+      expect.objectContaining({
+        status: ChatBotMembershipStatus.REMOVED,
+        permissionsSnapshot: accessLossSnapshot,
+        botAccessState: ChatBotAccessState.DENIED,
+        lifecycleEventAt: removedAt,
+        lifecycleEventType: 'bot_removed',
+        lastWebhookAt: removedAt,
+      }),
+    );
+  });
+
+  it('keeps removal precedence for old or equal bot_added and permits only a newer re-add', async () => {
+    const fixture = createServiceFixture();
+    const botId = 'id613002203036_4_bot';
+    const removedAt = new Date('2026-05-09T09:00:00.456Z');
+    fixture.chats.set('chat-lifecycle-readd', {
+      id: 'chat-lifecycle-readd',
+      title: 'Lifecycle chat',
+      botId: null,
+      primaryBotId: null,
+      routingState: ChatRoutingState.NO_ELIGIBLE_BOT,
+    });
+    fixture.memberships.push({
+      chatId: 'chat-lifecycle-readd',
+      botId,
+      role: ChatBotMembershipRole.STANDBY,
+      status: ChatBotMembershipStatus.REMOVED,
+      permissionsSnapshot: { accessLostAt: removedAt.toISOString() },
+      botAccessState: ChatBotAccessState.LOST,
+      lifecycleEventAt: removedAt,
+      lifecycleEventType: 'bot_removed',
+      lifecycleSource: 'webhook',
+      createdAt: removedAt,
+      updatedAt: removedAt,
+      lastSeenAt: removedAt,
+      lastWebhookAt: removedAt,
+    });
+
+    for (const lifecycleEventAt of [new Date('2026-05-09T08:59:59.999Z'), new Date(removedAt)]) {
+      await expect(
+        fixture.service.bindChatToBot({
+          chatId: 'chat-lifecycle-readd',
+          title: 'Lifecycle chat',
+          entityType: ChatEntityType.CHAT,
+          botId,
+          lifecycleEventAt,
+          lifecycleEventType: 'bot_added',
+          lifecycleSource: 'webhook',
+        }),
+      ).resolves.toBeNull();
+      expect(fixture.memberships[0]).toEqual(
+        expect.objectContaining({
+          status: ChatBotMembershipStatus.REMOVED,
+          lifecycleEventAt: removedAt,
+          lifecycleEventType: 'bot_removed',
+          botAccessState: ChatBotAccessState.LOST,
+        }),
+      );
+      expect(fixture.chats.get('chat-lifecycle-readd')?.routingState).toBe(
+        ChatRoutingState.NO_ELIGIBLE_BOT,
+      );
+    }
+
+    const readdedAt = new Date('2026-05-09T09:00:00.457Z');
+    await expect(
+      fixture.service.bindChatToBot({
+        chatId: 'chat-lifecycle-readd',
+        title: 'Lifecycle chat',
+        entityType: ChatEntityType.CHAT,
+        botId,
+        lifecycleEventAt: readdedAt,
+        lifecycleEventType: 'bot_added',
+        lifecycleSource: 'webhook',
+      }),
+    ).resolves.toBe(botId);
+
+    expect(fixture.memberships[0]).toEqual(
+      expect.objectContaining({
+        status: ChatBotMembershipStatus.ACTIVE,
+        lifecycleEventAt: readdedAt,
+        lifecycleEventType: 'bot_added',
+        botAccessState: ChatBotAccessState.UNKNOWN,
+        permissionsSnapshot: Prisma.JsonNull,
+      }),
+    );
+    expect(fixture.chats.get('chat-lifecycle-readd')?.routingState).toBe(ChatRoutingState.READY);
+
+    Object.assign(fixture.memberships[0]!, {
+      botAccessState: ChatBotAccessState.DENIED,
+      permissionsSnapshot: {
+        checkedAt: '2026-05-09T09:01:00.000Z',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      },
+    });
+    fixture.chats.get('chat-lifecycle-readd')!.routingState = ChatRoutingState.NO_ELIGIBLE_BOT;
+    await fixture.service.bindChatToBot({
+      chatId: 'chat-lifecycle-readd',
+      title: 'Lifecycle chat',
+      entityType: ChatEntityType.CHAT,
+      botId,
+      lifecycleEventAt: readdedAt,
+      lifecycleEventType: 'bot_added',
+      lifecycleSource: 'webhook',
+    });
+    expect(fixture.chats.get('chat-lifecycle-readd')?.routingState).toBe(
+      ChatRoutingState.NO_ELIGIBLE_BOT,
+    );
+  });
+
+  it('preserves lifecycle fencing across every delivery order of add, message, removal, duplicate, and re-add', async () => {
+    const eventKinds = ['add', 'message', 'remove', 'remove-duplicate', 'readd'] as const;
+    const addedAt = new Date('2026-05-09T09:00:00.123Z');
+    const messageAt = new Date('2026-05-09T09:00:00.234Z');
+    const removedAt = new Date('2026-05-09T09:00:00.456Z');
+    const readdedAt = new Date('2026-05-09T09:00:00.789Z');
+
+    for (const deliveryOrder of permutations(eventKinds)) {
+      const fixture = createServiceFixture();
+      const chatId = `chat-lifecycle-permutation-${deliveryOrder.join('-')}`;
+      const botId = fixture.bots[0]!.id;
+
+      for (const eventKind of deliveryOrder) {
+        if (eventKind === 'message') {
+          await fixture.service.observeStoredChatBotWebhook({
+            chatId,
+            primaryBotId: null,
+            botId,
+            observedAt: messageAt,
+          });
+          continue;
+        }
+        if (eventKind === 'remove' || eventKind === 'remove-duplicate') {
+          await fixture.service.markChatBotRemoved({
+            chatId,
+            botId,
+            title: 'Lifecycle permutation',
+            entityType: ChatEntityType.CHAT,
+            lifecycleEventAt: removedAt,
+            lifecycleEventType: 'bot_removed',
+            lifecycleSource: 'webhook',
+          });
+          continue;
+        }
+
+        const lifecycleEventAt = eventKind === 'readd' ? readdedAt : addedAt;
+        await fixture.service.bindChatToBot({
+          chatId,
+          botId,
+          title: 'Lifecycle permutation',
+          entityType: ChatEntityType.CHAT,
+          lifecycleEventAt,
+          lifecycleEventType: 'bot_added',
+          lifecycleSource: 'webhook',
+        });
+      }
+
+      const membership = fixture.memberships.find(
+        (candidate) => candidate.chatId === chatId && candidate.botId === botId,
+      );
+      expect(membership).toEqual(
+        expect.objectContaining({
+          status: ChatBotMembershipStatus.ACTIVE,
+          lifecycleEventAt: readdedAt,
+          lifecycleEventType: 'bot_added',
+        }),
+      );
+    }
+  });
+
+  it('preserves confirmed access and reopens after a successful live probe', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'chat-live-probe-readd';
+    const botId = fixture.bots[0]!.id;
+    const probeAt = new Date('2026-05-09T10:04:30.000Z');
+    const expiresAt = new Date('2026-05-09T10:20:00.000Z');
+    const confirmedSnapshot = {
+      checkedAt: probeAt.toISOString(),
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+    };
+    fixture.chats.set(chatId, {
+      id: chatId,
+      title: 'Probe recovery',
+      botId: null,
+      primaryBotId: null,
+      routingState: ChatRoutingState.NO_ELIGIBLE_BOT,
+      routingVersion: 2,
+    });
+    fixture.memberships.push(
+      createActiveMembership(chatId, botId, 0, {
+        status: ChatBotMembershipStatus.REMOVED,
+        role: ChatBotMembershipRole.STANDBY,
+        botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+        botAccessCheckedAt: probeAt,
+        botAccessExpiresAt: expiresAt,
+        permissionsSnapshot: confirmedSnapshot,
+        lifecycleEventAt: new Date('2026-05-09T09:00:00.000Z'),
+        lifecycleEventType: 'bot_removed',
+      }),
+    );
+
+    await expect(
+      fixture.service.bindChatToBot({
+        chatId,
+        title: 'Probe recovery',
+        entityType: ChatEntityType.CHAT,
+        botId,
+        allowReassign: true,
+        lifecycleEventAt: probeAt,
+        lifecycleEventType: 'live_probe',
+        lifecycleSource: 'live_probe',
+      }),
+    ).resolves.toBe(botId);
+
+    expect(fixture.memberships[0]).toEqual(
+      expect.objectContaining({
+        status: ChatBotMembershipStatus.ACTIVE,
+        botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+        botAccessExpiresAt: expiresAt,
+        permissionsSnapshot: confirmedSnapshot,
+      }),
+    );
+    expect(fixture.chats.get(chatId)?.routingState).toBe(ChatRoutingState.READY);
   });
 
   it('builds entry mini app links through the canonical entry bot', () => {

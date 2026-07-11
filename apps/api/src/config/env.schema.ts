@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import { botSpeechPersonaSchema } from '@maxim/contracts/bot-speech';
-import { parseAdditionalMaxBotsJson } from '../max/max-bot-config.util';
+import {
+  buildResolvedMaxBotConfigs,
+  maxBotLifecycleStateSchema,
+  parseAdditionalMaxBotsJson,
+  resolveMaxEntryBotConfig,
+} from '../max/max-bot-config.util';
 import { APP_ROLES } from '../runtime/app-role';
 import {
   DEFAULT_WEBHOOK_WORKER_GROUP_NAMES,
@@ -94,6 +99,8 @@ const envSchema = z.object({
   MAX_BOT_CHARACTER_NAME: z.string().min(1).max(128).optional(),
   MAX_BOT_SPEECH_PERSONA: botSpeechPersonaSchema.optional(),
   MAX_BOT_CONTACT_ID: z.string().regex(/^\d+$/).optional(),
+  MAX_BOT_STATE: maxBotLifecycleStateSchema.default('active'),
+  MAX_BOT_OWNERSHIP_WEIGHT: z.coerce.number().finite().positive().max(1_000).default(1),
   MAX_ENTRY_BOT_ID: z.string().min(3).optional(),
   MAX_BOT_TOKEN: z.string().min(10),
   MAX_BOT_TOKEN_PREVIOUS: z.string().min(10).optional(),
@@ -202,6 +209,11 @@ const envSchema = z.object({
   MAX_API_CIRCUIT_FAILURE_THRESHOLD: z.coerce.number().int().positive().default(30),
   MAX_API_CIRCUIT_WINDOW_SEC: z.coerce.number().int().positive().default(30),
   MAX_API_CIRCUIT_OPEN_SEC: z.coerce.number().int().positive().default(20),
+  MAX_API_CIRCUIT_HALF_OPEN_PROBE_SEC: z.coerce.number().int().positive().default(60),
+  MAX_ROUTED_MUTATIONS_MODE: z.enum(['off', 'shadow', 'canary', 'on']).default('shadow'),
+  MAX_ROUTED_MUTATIONS_CANARY_PERCENT: z.coerce.number().min(0).max(100).default(1),
+  MAX_ROUTED_MUTATIONS_CANARY_ENTITY_IDS: z.string().default(''),
+  MAX_CROSS_BOT_EDIT_DELETE_ENABLED: envBoolean(false),
   BACKGROUND_GOVERNOR_SOURCE_WINDOW_SEC: z.coerce.number().int().positive().default(60),
   BACKGROUND_GOVERNOR_CACHE_TTL_MS: z.coerce.number().int().positive().default(2_000),
   BACKGROUND_GOVERNOR_SOFT_QUEUE_LAG_SEC: z.coerce.number().positive().default(3),
@@ -224,14 +236,37 @@ const envSchema = z.object({
     .default(3600),
   SYSTEM_WEBHOOK_SLO_WINDOW_SEC: z.coerce.number().int().positive().default(900),
   SYSTEM_WEBHOOK_SLO_TARGET_MS: z.coerce.number().int().positive().default(400),
+  SYSTEM_WEBHOOK_INGRESS_SLO_TARGET_MS: z.coerce.number().int().positive().default(2_000),
   SYSTEM_WEBHOOK_SLO_SAMPLE_LIMIT: z.coerce.number().int().positive().default(5000),
+  WEBHOOK_CANONICAL_EXECUTION_MODE: z.enum(['off', 'shadow', 'canary', 'on']).default('shadow'),
+  WEBHOOK_CANONICAL_EXECUTION_CANARY_PERCENT: z.coerce.number().min(0).max(100).default(1),
+  WEBHOOK_CANONICAL_EXECUTION_CANARY_ENTITY_IDS: z.string().default(''),
+  MAX_EXTENDED_WEBHOOK_LIFECYCLE_MODE: z.enum(['off', 'shadow', 'canary', 'on']).default('shadow'),
+  MAX_EXTENDED_WEBHOOK_LIFECYCLE_CANARY_PERCENT: z.coerce.number().min(0).max(100).default(1),
+  MAX_EXTENDED_WEBHOOK_LIFECYCLE_CANARY_ENTITY_IDS: z.string().default(''),
   MAX_ACTION_DISPATCH_ENABLED: envBoolean(true),
+  MAX_ACTION_FAILED_RETENTION_AGE_SEC: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(7 * 24 * 60 * 60),
+  MAX_ACTION_FAILED_RETENTION_COUNT: z.coerce.number().int().positive().default(1000),
+  MAX_ACTION_LEDGER_WATCHDOG_MODE: z.enum(['off', 'shadow', 'canary', 'on']).default('shadow'),
+  MAX_ACTION_LEDGER_WATCHDOG_CANARY_PERCENT: z.coerce.number().min(0).max(100).default(1),
+  MAX_ACTION_LEDGER_WATCHDOG_CANARY_ENTITY_IDS: z.string().default(''),
   APP_ROLE: z.enum(APP_ROLES).default('all'),
   APP_SERVICE_NAME: z.enum(RUNTIME_SERVICE_NAMES).optional(),
   BOT_OWNERSHIP_FOUNDATION_ENABLED: envBoolean(true),
   BOT_OWNERSHIP_REPAIR_INTERVAL_MS: z.coerce.number().int().positive().default(300_000),
   BOT_OWNERSHIP_REPAIR_LOCK_TTL_MS: z.coerce.number().int().positive().default(60_000),
   BOT_OWNERSHIP_REPAIR_BATCH_SIZE: z.coerce.number().int().positive().default(250),
+  BOT_OWNERSHIP_REBALANCE_MODE: z.enum(['off', 'shadow', 'canary', 'on']).default('shadow'),
+  BOT_OWNERSHIP_REBALANCE_CANARY_PERCENT: z.coerce.number().min(0).max(100).default(1),
+  BOT_OWNERSHIP_REBALANCE_CANARY_ENTITY_IDS: z.string().default(''),
+  BOT_OWNERSHIP_REBALANCE_MAX_MOVES_PER_RUN: z.coerce.number().int().positive().default(25),
+  CHAT_ROUTING_RECONCILE_INTERVAL_MS: z.coerce.number().int().positive().default(500),
+  CHAT_ROUTING_RECONCILE_BATCH_SIZE: z.coerce.number().int().positive().default(250),
+  CHAT_ROUTING_RECONCILE_CONCURRENCY: z.coerce.number().int().positive().default(8),
   MODERATION_ENABLED_QUEUES: z.string().optional(),
   MODERATION_BACKGROUND_TASKS_ENABLED: envBoolean(true),
   MODERATION_CONCURRENCY_LEGACY: z.coerce.number().int().positive().optional(),
@@ -306,6 +341,9 @@ const envSchema = z.object({
   SPAMMER_OBSERVATION_FAST_PATH_ENABLED: envBoolean(false),
   SPAMMER_OBSERVATION_FAST_PATH_SOURCES: z.string().optional(),
   ACTION_CONCURRENCY: z.coerce.number().int().positive().default(8),
+  MAX_ACTION_CRITICAL_CONCURRENCY: z.coerce.number().int().positive().default(3),
+  MAX_ACTION_INTERACTIVE_CONCURRENCY: z.coerce.number().int().positive().default(2),
+  MAX_ACTION_BACKGROUND_CONCURRENCY: z.coerce.number().int().positive().default(1),
   CHANNEL_STATS_STARTUP_SYNC_ENABLED: envBoolean(false),
   CHANNEL_STATS_STARTUP_MAX_CHANNELS: z.coerce.number().int().min(0).default(6),
   CHANNEL_STATS_STARTUP_STALE_MS: z.coerce.number().int().positive().default(21_600_000),
@@ -369,28 +407,24 @@ export function validateEnv(config: Record<string, unknown>): EnvSchema {
 
   try {
     const additionalBots = parseAdditionalMaxBotsJson(parsed.data.MAX_BOTS_JSON);
-    const configuredBotIds = new Set<string>([
-      parsed.data.MAX_BOT_ID.trim(),
-      ...additionalBots.map((bot) => bot.id),
-    ]);
-    const normalizedEntryBotId =
-      typeof parsed.data.MAX_ENTRY_BOT_ID === 'string' ? parsed.data.MAX_ENTRY_BOT_ID.trim() : '';
-
-    if (normalizedEntryBotId) {
-      if (!configuredBotIds.has(normalizedEntryBotId)) {
-        throw new Error(
-          `MAX_ENTRY_BOT_ID must match MAX_BOT_ID or one of MAX_BOTS_JSON ids (got "${normalizedEntryBotId}")`,
-        );
-      }
-
-      const additionalEntryBot =
-        additionalBots.find((bot) => bot.id === normalizedEntryBotId) ?? null;
-      if (additionalEntryBot && additionalEntryBot.state !== 'active') {
-        throw new Error(
-          `MAX_ENTRY_BOT_ID must reference an active bot; got "${normalizedEntryBotId}" with state "${additionalEntryBot.state}"`,
-        );
-      }
-    }
+    const resolvedBots = buildResolvedMaxBotConfigs({
+      defaultBot: {
+        id: parsed.data.MAX_BOT_ID,
+        label: parsed.data.MAX_BOT_LABEL,
+        characterName: parsed.data.MAX_BOT_CHARACTER_NAME,
+        speechPersona: parsed.data.MAX_BOT_SPEECH_PERSONA,
+        token: parsed.data.MAX_BOT_TOKEN,
+        tokenPrevious: parsed.data.MAX_BOT_TOKEN_PREVIOUS,
+        webhookSecretPath: parsed.data.MAX_WEBHOOK_SECRET_PATH,
+        webhookHeaderSecret: parsed.data.MAX_WEBHOOK_HEADER_SECRET,
+        webhookHeaderSecretPrevious: parsed.data.MAX_WEBHOOK_HEADER_SECRET_PREVIOUS,
+        contactId: parsed.data.MAX_BOT_CONTACT_ID,
+        state: parsed.data.MAX_BOT_STATE,
+        ownershipWeight: parsed.data.MAX_BOT_OWNERSHIP_WEIGHT,
+      },
+      additionalBotsJson: parsed.data.MAX_BOTS_JSON,
+    });
+    resolveMaxEntryBotConfig(resolvedBots, parsed.data.MAX_ENTRY_BOT_ID);
 
     if (parsed.data.NODE_ENV === 'production') {
       for (const bot of additionalBots) {

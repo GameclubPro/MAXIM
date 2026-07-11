@@ -16,7 +16,7 @@ export const MAX_KNOWN_OFFICIAL_WEBHOOK_UPDATE_TYPES = [
   'dialog_removed',
 ] as const;
 
-export const MAX_REQUIRED_WEBHOOK_UPDATE_TYPES = [
+export const MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES = [
   'message_created',
   'message_edited',
   'message_callback',
@@ -27,3 +27,24 @@ export const MAX_REQUIRED_WEBHOOK_UPDATE_TYPES = [
   'bot_started',
   'chat_title_changed',
 ] as const;
+
+export const MAX_EXTENDED_LIFECYCLE_WEBHOOK_UPDATE_TYPES = [
+  'message_removed',
+  'bot_stopped',
+  'dialog_removed',
+] as const;
+
+export const MAX_REQUIRED_WEBHOOK_UPDATE_TYPES = [
+  ...MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES,
+  ...MAX_EXTENDED_LIFECYCLE_WEBHOOK_UPDATE_TYPES,
+] as const;
+
+export type MaxExtendedWebhookLifecycleMode = 'off' | 'shadow' | 'canary' | 'on';
+
+export function resolveRequiredWebhookUpdateTypes(
+  mode: MaxExtendedWebhookLifecycleMode | string | null | undefined,
+): readonly string[] {
+  return mode === 'canary' || mode === 'on'
+    ? MAX_REQUIRED_WEBHOOK_UPDATE_TYPES
+    : MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES;
+}

@@ -1,6 +1,9 @@
 import { MaxWebhookSubscriptionReconcilerService } from './max-webhook-subscription-reconciler.service';
 import { MAX_API_SOURCE_TAGS } from './max-client.service';
-import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from './max-webhook-subscription.constants';
+import {
+  MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES,
+  MAX_REQUIRED_WEBHOOK_UPDATE_TYPES,
+} from './max-webhook-subscription.constants';
 
 describe('MaxWebhookSubscriptionReconcilerService', () => {
   const originalAppRole = process.env.APP_ROLE;
@@ -87,12 +90,20 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
         url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
         maskedUrl: 'https://major-maksimov.ru/api/webhook/max/777000_bot/***',
       }),
-      listWebhookSubscriptions: jest.fn().mockResolvedValue([
-        {
-          url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
-          updateTypes: ['message_created', 'message_callback', 'user_added'],
-        },
-      ]),
+      listWebhookSubscriptions: jest
+        .fn()
+        .mockResolvedValueOnce([
+          {
+            url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
+            updateTypes: ['message_created', 'message_callback', 'user_added'],
+          },
+        ])
+        .mockResolvedValueOnce([
+          {
+            url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
+            updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+          },
+        ]),
       matchesConfiguredWebhookUrl: jest.fn().mockImplementation((url: string) => {
         return url === 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path';
       }),
@@ -127,6 +138,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
         sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
       },
     );
+    expect(maxClient.listWebhookSubscriptions).toHaveBeenCalledTimes(2);
     expect(statusService.writeSyncState).toHaveBeenCalledWith(
       expect.objectContaining({
         bots: expect.objectContaining({
@@ -150,6 +162,64 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
             status: 'healthy',
           }),
         }),
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('keeps extended lifecycle subscription changes read-only in shadow mode', async () => {
+    process.env.APP_ROLE = 'ingress';
+
+    const botRegistry = {
+      getAllBots: jest
+        .fn()
+        .mockReturnValue([{ id: '777000_bot', webhookHeaderSecrets: ['secret-header-current'] }]),
+      getDefaultBot: jest.fn().mockReturnValue({ id: '777000_bot' }),
+      computeWebhookHeaderSecretFingerprint: jest.fn().mockReturnValue('fingerprint-777000_bot'),
+    };
+    const statusService = {
+      getSyncState: jest.fn().mockResolvedValue(null),
+      writeSnapshot: jest.fn().mockResolvedValue(undefined),
+      writeSyncState: jest.fn().mockResolvedValue(undefined),
+      getSnapshot: jest.fn(),
+    };
+    const maxClient = {
+      getConfiguredWebhookSubscriptionTarget: jest.fn().mockReturnValue({
+        url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
+        maskedUrl: 'https://major-maksimov.ru/api/webhook/max/777000_bot/***',
+      }),
+      listWebhookSubscriptions: jest.fn().mockResolvedValue([
+        {
+          url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
+          updateTypes: [...MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES],
+        },
+      ]),
+      matchesConfiguredWebhookUrl: jest.fn().mockReturnValue(true),
+      deleteWebhookSubscription: jest.fn(),
+      ensureWebhookSubscription: jest.fn(),
+    };
+    const service = new MaxWebhookSubscriptionReconcilerService(
+      maxClient as never,
+      botRegistry as never,
+      statusService as never,
+      createPrismaMock() as never,
+      {
+        get: jest.fn((key: string, fallback?: unknown) =>
+          key === 'MAX_EXTENDED_WEBHOOK_LIFECYCLE_MODE' ? 'shadow' : fallback,
+        ),
+      } as never,
+    );
+
+    await service.onModuleInit();
+
+    expect(maxClient.ensureWebhookSubscription).not.toHaveBeenCalled();
+    expect(maxClient.deleteWebhookSubscription).not.toHaveBeenCalled();
+    expect(statusService.writeSnapshot).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: 'healthy',
+        requiredUpdateTypes: [...MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES],
+        missingUpdateTypes: [],
       }),
     );
 
@@ -182,29 +252,25 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
       writeSyncState: jest.fn().mockResolvedValue(undefined),
       getSnapshot: jest.fn(),
     };
-    const firstListSubscriptions = createDeferred<
-      Array<{ url: string; updateTypes: string[] }>
-    >();
+    const firstListSubscriptions = createDeferred<Array<{ url: string; updateTypes: string[] }>>();
     const startedBots: string[] = [];
     const maxClient = {
       getConfiguredWebhookSubscriptionTarget: jest.fn().mockImplementation((botId: string) => ({
         url: `https://major-maksimov.ru/api/webhook/max/${botId}/secret-path`,
         maskedUrl: `https://major-maksimov.ru/api/webhook/max/${botId}/***`,
       })),
-      listWebhookSubscriptions: jest
-        .fn()
-        .mockImplementation(({ botId }: { botId: string }) => {
-          startedBots.push(botId);
-          if (botId === 'first_bot') {
-            return firstListSubscriptions.promise;
-          }
-          return Promise.resolve([
-            {
-              url: `https://major-maksimov.ru/api/webhook/max/${botId}/secret-path`,
-              updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
-            },
-          ]);
-        }),
+      listWebhookSubscriptions: jest.fn().mockImplementation(({ botId }: { botId: string }) => {
+        startedBots.push(botId);
+        if (botId === 'first_bot') {
+          return firstListSubscriptions.promise;
+        }
+        return Promise.resolve([
+          {
+            url: `https://major-maksimov.ru/api/webhook/max/${botId}/secret-path`,
+            updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+          },
+        ]);
+      }),
       matchesConfiguredWebhookUrl: jest
         .fn()
         .mockImplementation(
@@ -387,20 +453,32 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
         url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
         maskedUrl: 'https://major-maksimov.ru/api/webhook/max/777000_bot/***',
       }),
-      listWebhookSubscriptions: jest.fn().mockResolvedValue([
-        {
-          url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
-          updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
-        },
-        {
-          url: 'https://hook.maxim.play-team.ru/api/webhook/max/777000_bot/old-secret',
-          updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
-        },
-        {
-          url: 'https://example.test/third-party/webhook',
-          updateTypes: ['message_created'],
-        },
-      ]),
+      listWebhookSubscriptions: jest
+        .fn()
+        .mockResolvedValueOnce([
+          {
+            url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
+            updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+          },
+          {
+            url: 'https://hook.maxim.play-team.ru/api/webhook/max/777000_bot/old-secret',
+            updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+          },
+          {
+            url: 'https://example.test/third-party/webhook',
+            updateTypes: ['message_created'],
+          },
+        ])
+        .mockResolvedValueOnce([
+          {
+            url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
+            updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+          },
+          {
+            url: 'https://example.test/third-party/webhook',
+            updateTypes: ['message_created'],
+          },
+        ]),
       matchesConfiguredWebhookUrl: jest.fn().mockImplementation((url: string) => {
         return url === 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path';
       }),
@@ -437,6 +515,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
       },
     );
     expect(maxClient.deleteWebhookSubscription).toHaveBeenCalledTimes(1);
+    expect(maxClient.listWebhookSubscriptions).toHaveBeenCalledTimes(2);
     expect(statusService.writeSnapshot).toHaveBeenLastCalledWith(
       expect.objectContaining({
         status: 'warning',
@@ -495,7 +574,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
     expect(statusService.writeSyncState).not.toHaveBeenCalled();
   });
 
-  it('recreates the current webhook subscription once when header secret rotation is pending', async () => {
+  it('upserts the current webhook subscription without deleting it when header secret rotation is pending', async () => {
     process.env.APP_ROLE = 'ingress';
 
     const botRegistry = {
@@ -563,20 +642,14 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
 
     await service.onModuleInit();
 
-    expect(maxClient.deleteWebhookSubscription).toHaveBeenCalledWith(
-      'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
-      {
-        trafficClass: 'background',
-        botId: '777000_bot',
-        sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
-      },
-    );
+    expect(maxClient.deleteWebhookSubscription).not.toHaveBeenCalled();
     expect(maxClient.ensureWebhookSubscription).toHaveBeenCalledWith(
       [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
       {
         trafficClass: 'background',
         botId: '777000_bot',
         sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
+        forceUpsert: true,
       },
     );
     expect(statusService.writeSyncState).toHaveBeenCalledWith(
@@ -593,7 +666,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
     await service.onModuleDestroy();
   });
 
-  it('deletes the exact current subscription URL when rotating a normalized match', async () => {
+  it('upserts a normalized current subscription match without a delivery gap', async () => {
     process.env.APP_ROLE = 'ingress';
 
     const configuredUrl = 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path';
@@ -663,21 +736,19 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
 
     await service.onModuleInit();
 
-    expect(maxClient.deleteWebhookSubscription).toHaveBeenCalledTimes(1);
-    expect(maxClient.deleteWebhookSubscription).toHaveBeenCalledWith(currentUrl, {
-      trafficClass: 'background',
-      botId: '777000_bot',
-      sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
-    });
-    expect(maxClient.deleteWebhookSubscription).not.toHaveBeenCalledWith(
-      configuredUrl,
-      expect.anything(),
+    expect(maxClient.deleteWebhookSubscription).not.toHaveBeenCalled();
+    expect(maxClient.ensureWebhookSubscription).toHaveBeenCalledWith(
+      [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+      expect.objectContaining({
+        botId: '777000_bot',
+        forceUpsert: true,
+      }),
     );
 
     await service.onModuleDestroy();
   });
 
-  it('auto-recreates healthy subscriptions when ingress is stale', async () => {
+  it('keeps a healthy subscription intact when ingress is quiet', async () => {
     process.env.APP_ROLE = 'ingress';
 
     const botRegistry = {
@@ -752,29 +823,15 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
 
     await service.onModuleInit();
 
-    expect(maxClient.deleteWebhookSubscription).toHaveBeenCalledWith(
-      'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
-      {
-        trafficClass: 'background',
-        botId: '777000_bot',
-        sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
-      },
-    );
-    expect(maxClient.ensureWebhookSubscription).toHaveBeenCalledWith(
-      [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
-      {
-        trafficClass: 'background',
-        botId: '777000_bot',
-        sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
-      },
-    );
+    expect(maxClient.deleteWebhookSubscription).not.toHaveBeenCalled();
+    expect(maxClient.ensureWebhookSubscription).not.toHaveBeenCalled();
     expect(statusService.writeSnapshot).toHaveBeenLastCalledWith(
       expect.objectContaining({
         status: 'warning',
         bots: expect.objectContaining({
           '777000_bot': expect.objectContaining({
             status: 'warning',
-            note: expect.stringContaining('подписка была пересоздана автоматически'),
+            note: expect.stringContaining('оставлена без разрыва доставки'),
           }),
         }),
       }),
@@ -783,7 +840,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
     await service.onModuleDestroy();
   });
 
-  it('auto-recreates only the bot whose incoming webhook stream is stale', async () => {
+  it('reports only the quiet bot without recreating either healthy subscription', async () => {
     process.env.APP_ROLE = 'ingress';
 
     const botRegistry = {
@@ -879,15 +936,8 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
 
     await service.onModuleInit();
 
-    expect(maxClient.deleteWebhookSubscription).toHaveBeenCalledTimes(1);
-    expect(maxClient.deleteWebhookSubscription).toHaveBeenCalledWith(
-      'https://major-maksimov.ru/api/webhook/max/stale_bot/secret-path',
-      expect.objectContaining({ botId: 'stale_bot' }),
-    );
-    expect(maxClient.deleteWebhookSubscription).not.toHaveBeenCalledWith(
-      'https://major-maksimov.ru/api/webhook/max/fresh_bot/secret-path',
-      expect.anything(),
-    );
+    expect(maxClient.deleteWebhookSubscription).not.toHaveBeenCalled();
+    expect(maxClient.ensureWebhookSubscription).not.toHaveBeenCalled();
     expect(statusService.writeSnapshot).toHaveBeenLastCalledWith(
       expect.objectContaining({
         status: 'warning',
@@ -895,7 +945,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
           fresh_bot: expect.objectContaining({ status: 'healthy' }),
           stale_bot: expect.objectContaining({
             status: 'warning',
-            note: expect.stringContaining('подписка была пересоздана автоматически'),
+            note: expect.stringContaining('оставлена без разрыва доставки'),
           }),
         }),
       }),

@@ -92,7 +92,8 @@ describe('SystemController auth e2e', () => {
         {
           provide: MaxBotRegistryService,
           useValue: {
-            getValidationTokens: jest.fn(() => [botToken]),
+            getAllBots: jest.fn(() => [{ id: 'test-bot' }]),
+            getValidationTokensForBot: jest.fn(() => [botToken]),
           },
         },
         {

@@ -1,7 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { WebhookStatus } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  WebhookIngressMetricsService,
+  type WebhookIngressMetricsSnapshot,
+} from './webhook-ingress-metrics.service';
 
 export type WebhookSloSnapshot = {
   status: 'healthy' | 'warning' | 'critical';
@@ -17,8 +21,16 @@ export type WebhookSloSnapshot = {
   oldestUnprocessedLagSec: number;
   oldestUnprocessedEventId: string | null;
   lastProcessedAt: string | null;
+  ingress: WebhookIngressMetricsSnapshot;
   enqueue: WebhookEnqueueSloSnapshot;
+  canonicalExecution: WebhookCanonicalExecutionSloSnapshot;
   generatedAt: string;
+};
+
+export type WebhookCanonicalExecutionSloSnapshot = {
+  receipts: number;
+  executionClaims: number;
+  claimsPerReceiptRatio: number | null;
 };
 
 export type WebhookEnqueueSloSnapshot = {
@@ -40,6 +52,8 @@ const WARNING_UNDER_TARGET_RATIO = 0.95;
 const CRITICAL_UNDER_TARGET_RATIO = 0.85;
 const WARNING_UNPROCESSED_LAG_SEC = 5;
 const CRITICAL_UNPROCESSED_LAG_SEC = 15;
+const WARNING_INGRESS_UNDER_TARGET_RATIO = 0.99;
+const CRITICAL_INGRESS_FAILURE_COUNT = 5;
 
 @Injectable()
 export class WebhookSloService {
@@ -51,6 +65,7 @@ export class WebhookSloService {
   constructor(
     private readonly prisma: PrismaService,
     configService: ConfigService,
+    @Optional() private readonly webhookIngressMetricsService?: WebhookIngressMetricsService,
   ) {
     this.windowSec = this.readPositiveInt(
       configService.get('SYSTEM_WEBHOOK_SLO_WINDOW_SEC'),
@@ -83,6 +98,8 @@ export class WebhookSloService {
       oldestPendingEnqueue,
       lastProcessed,
       lastQueued,
+      executionClaims,
+      ingress,
     ] = await Promise.all([
       this.prisma.webhookEvent.count({
         where: {
@@ -184,6 +201,15 @@ export class WebhookSloService {
           queuedAt: 'desc',
         },
       }),
+      this.prisma.webhookExecutionClaim.count({
+        where: {
+          kind: 'EXECUTION',
+          createdAt: { gte: from },
+        },
+      }),
+      this.webhookIngressMetricsService
+        ? this.webhookIngressMetricsService.getSnapshot({ windowSec: this.windowSec })
+        : Promise.resolve(this.emptyIngressSnapshot()),
     ]);
 
     const durations = processedSample
@@ -228,9 +254,7 @@ export class WebhookSloService {
       ? Number(Math.max(0, (nowMs - oldestUnprocessed.createdAt.getTime()) / 1_000).toFixed(3))
       : 0;
     const oldestPendingEnqueueLagSec = oldestPendingEnqueue
-      ? Number(
-          Math.max(0, (nowMs - oldestPendingEnqueue.createdAt.getTime()) / 1_000).toFixed(3),
-        )
+      ? Number(Math.max(0, (nowMs - oldestPendingEnqueue.createdAt.getTime()) / 1_000).toFixed(3))
       : 0;
     const status = this.resolveStatus({
       failedEvents,
@@ -238,6 +262,7 @@ export class WebhookSloService {
       oldestUnprocessedLagSec,
       p95ProcessingMs,
       p99ProcessingMs,
+      ingress,
     });
 
     return {
@@ -254,6 +279,7 @@ export class WebhookSloService {
       oldestUnprocessedLagSec,
       oldestUnprocessedEventId: oldestUnprocessed?.id ?? null,
       lastProcessedAt: lastProcessed?.processedAt?.toISOString() ?? null,
+      ingress,
       enqueue: {
         targetMs: this.targetEnqueueMs,
         sampledEvents: enqueueDurations.length,
@@ -263,6 +289,12 @@ export class WebhookSloService {
         oldestPendingLagSec: oldestPendingEnqueueLagSec,
         oldestPendingEventId: oldestPendingEnqueue?.id ?? null,
         lastQueuedAt: lastQueued?.queuedAt?.toISOString() ?? null,
+      },
+      canonicalExecution: {
+        receipts: totalEvents,
+        executionClaims,
+        claimsPerReceiptRatio:
+          totalEvents > 0 ? Number((executionClaims / totalEvents).toFixed(3)) : null,
       },
       generatedAt: new Date(nowMs).toISOString(),
     };
@@ -274,11 +306,15 @@ export class WebhookSloService {
     oldestUnprocessedLagSec: number;
     p95ProcessingMs: number | null;
     p99ProcessingMs: number | null;
+    ingress: WebhookIngressMetricsSnapshot;
   }): WebhookSloSnapshot['status'] {
     if (
       params.oldestUnprocessedLagSec >= CRITICAL_UNPROCESSED_LAG_SEC ||
       (params.underTargetRatio !== null && params.underTargetRatio < CRITICAL_UNDER_TARGET_RATIO) ||
-      (params.p99ProcessingMs !== null && params.p99ProcessingMs > 1_000)
+      (params.p99ProcessingMs !== null && params.p99ProcessingMs > 1_000) ||
+      params.ingress.failedReceipts >= CRITICAL_INGRESS_FAILURE_COUNT ||
+      (params.ingress.p99LatencyMs !== null &&
+        params.ingress.p99LatencyMs > params.ingress.targetMs)
     ) {
       return 'critical';
     }
@@ -287,7 +323,13 @@ export class WebhookSloService {
       params.failedEvents > 0 ||
       params.oldestUnprocessedLagSec >= WARNING_UNPROCESSED_LAG_SEC ||
       (params.underTargetRatio !== null && params.underTargetRatio < WARNING_UNDER_TARGET_RATIO) ||
-      (params.p95ProcessingMs !== null && params.p95ProcessingMs > this.targetProcessingMs)
+      (params.p95ProcessingMs !== null && params.p95ProcessingMs > this.targetProcessingMs) ||
+      !params.ingress.available ||
+      params.ingress.failedReceipts > 0 ||
+      (params.ingress.underTargetRatio !== null &&
+        params.ingress.underTargetRatio < WARNING_INGRESS_UNDER_TARGET_RATIO) ||
+      (params.ingress.p95LatencyMs !== null &&
+        params.ingress.p95LatencyMs > params.ingress.targetMs)
     ) {
       return 'warning';
     }
@@ -312,5 +354,20 @@ export class WebhookSloService {
       return fallback;
     }
     return Math.max(1, Math.trunc(numericValue));
+  }
+
+  private emptyIngressSnapshot(): WebhookIngressMetricsSnapshot {
+    return {
+      available: true,
+      targetMs: 2_000,
+      attemptedReceipts: 0,
+      persistedReceipts: 0,
+      failedReceipts: 0,
+      sampledReceipts: 0,
+      p95LatencyMs: null,
+      p99LatencyMs: null,
+      underTargetRatio: null,
+      bots: {},
+    };
   }
 }

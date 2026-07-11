@@ -1,4 +1,8 @@
-import { buildResolvedMaxBotConfigs, parseAdditionalMaxBotsJson } from './max-bot-config.util';
+import {
+  buildResolvedMaxBotConfigs,
+  parseAdditionalMaxBotsJson,
+  resolveMaxEntryBotConfig,
+} from './max-bot-config.util';
 
 describe('max bot config util', () => {
   it('defaults the primary bot to male speech persona and legacy character name', () => {
@@ -111,5 +115,102 @@ describe('max bot config util', () => {
       visibleInAdmin: true,
       isDefault: false,
     });
+  });
+
+  it('supports lifecycle state and ownership weight for the default and additional bots', () => {
+    const bots = buildResolvedMaxBotConfigs({
+      defaultBot: {
+        id: 'id613002203036_bot',
+        token: 'token-primary-123456',
+        webhookSecretPath: 'primary-webhook-path-123456',
+        webhookHeaderSecret: 'primary-webhook-header-123456',
+        state: 'draining',
+        ownershipWeight: 2,
+      },
+      additionalBotsJson: JSON.stringify([
+        {
+          id: 'id613002203036_4_bot',
+          token: 'token-secondary-123456',
+          webhookSecretPath: 'secondary-webhook-path-123456',
+          webhookHeaderSecret: 'secondary-webhook-header-123456',
+          state: 'active',
+          ownershipWeight: 3,
+        },
+      ]),
+    });
+
+    expect(bots[0]).toMatchObject({ state: 'draining', ownershipWeight: 2 });
+    expect(bots[1]).toMatchObject({ state: 'active', ownershipWeight: 3 });
+    expect(resolveMaxEntryBotConfig(bots, null).id).toBe('id613002203036_4_bot');
+  });
+
+  it.each([
+    {
+      field: 'token',
+      defaultValue: { token: 'shared-token-123456' },
+      additionalValue: { token: 'shared-token-123456' },
+    },
+    {
+      field: 'webhookSecretPath',
+      defaultValue: { webhookSecretPath: 'shared-webhook-path' },
+      additionalValue: { webhookSecretPath: 'shared-webhook-path' },
+    },
+    {
+      field: 'webhookHeaderSecret',
+      defaultValue: { webhookHeaderSecret: 'shared-webhook-header' },
+      additionalValue: { webhookHeaderSecret: 'shared-webhook-header' },
+    },
+    {
+      field: 'contact identity',
+      defaultValue: { contactId: '214634782' },
+      additionalValue: { contactId: '214634782' },
+    },
+  ])('rejects cross-bot duplicate $field values', ({ field, defaultValue, additionalValue }) => {
+    expect(() =>
+      buildResolvedMaxBotConfigs({
+        defaultBot: {
+          id: 'id613002203036_bot',
+          token: 'token-primary-123456',
+          webhookSecretPath: 'primary-webhook-path-123456',
+          webhookHeaderSecret: 'primary-webhook-header-123456',
+          contactId: '214634782',
+          ...defaultValue,
+        },
+        additionalBotsJson: JSON.stringify([
+          {
+            id: 'custom-secondary-bot',
+            token: 'token-secondary-123456',
+            webhookSecretPath: 'secondary-webhook-path-123456',
+            webhookHeaderSecret: 'secondary-webhook-header-123456',
+            contactId: '214634783',
+            state: 'active',
+            ...additionalValue,
+          },
+        ]),
+      }),
+    ).toThrow(new RegExp(field.replace(' ', '.*'), 'u'));
+  });
+
+  it('rejects configurations without an active actionable entry bot', () => {
+    expect(() =>
+      buildResolvedMaxBotConfigs({
+        defaultBot: {
+          id: 'id613002203036_bot',
+          token: 'token-primary-123456',
+          webhookSecretPath: 'primary-webhook-path-123456',
+          webhookHeaderSecret: 'primary-webhook-header-123456',
+          state: 'draining',
+        },
+        additionalBotsJson: JSON.stringify([
+          {
+            id: 'id613002203036_4_bot',
+            token: 'token-secondary-123456',
+            webhookSecretPath: 'secondary-webhook-path-123456',
+            webhookHeaderSecret: 'secondary-webhook-header-123456',
+            state: 'dormant',
+          },
+        ]),
+      }),
+    ).toThrow(/at least one active actionable entry bot/u);
   });
 });

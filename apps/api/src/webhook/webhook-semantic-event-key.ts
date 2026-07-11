@@ -1,11 +1,7 @@
-const SEMANTIC_EVENT_TIMESTAMP_GRANULARITY_MS = 1_000;
-
 type RecordLike = Record<string, unknown>;
 
 function asRecord(value: unknown): RecordLike | null {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as RecordLike)
-    : null;
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as RecordLike) : null;
 }
 
 function readString(value: unknown): string | null {
@@ -40,10 +36,7 @@ function parseTimestampMs(value: unknown): number | null {
 }
 
 function normalizeTimestampIso(timestampMs: number): string {
-  return new Date(
-    Math.floor(timestampMs / SEMANTIC_EVENT_TIMESTAMP_GRANULARITY_MS) *
-      SEMANTIC_EVENT_TIMESTAMP_GRANULARITY_MS,
-  ).toISOString();
+  return new Date(timestampMs).toISOString();
 }
 
 function readMessage(payload: RecordLike): RecordLike | null {
@@ -190,7 +183,7 @@ function resolveMembershipEventType(payload: RecordLike, updateType: string): st
     updateType === 'user_removed' ||
     updateType === 'bot_removed'
   ) {
-    return updateType.endsWith('_removed') ? 'user_removed' : 'user_added';
+    return updateType;
   }
 
   if (updateType !== 'message_created') {
@@ -216,9 +209,6 @@ function readEventTimestampIso(payload: RecordLike): string | null {
   const rawData = raw ? asRecord(raw.data) : null;
   const rawEvent = raw ? asRecord(raw.event) : null;
   const candidates = [
-    message?.createdAt,
-    message?.created_at,
-    message?.timestamp,
     payload.timestamp,
     payload.created_at,
     payload.createdAt,
@@ -237,6 +227,9 @@ function readEventTimestampIso(payload: RecordLike): string | null {
     rawEvent?.timestamp,
     rawEvent?.created_at,
     rawEvent?.createdAt,
+    message?.createdAt,
+    message?.created_at,
+    message?.timestamp,
   ];
   for (const candidate of candidates) {
     const timestampMs = parseTimestampMs(candidate);
@@ -245,6 +238,19 @@ function readEventTimestampIso(payload: RecordLike): string | null {
     }
   }
   return null;
+}
+
+export function readWebhookEventTimestamp(payload: unknown): Date | null {
+  const row = asRecord(payload);
+  if (!row) {
+    return null;
+  }
+  if (readLowerString(row.eventTimestampSource) === 'ingress') {
+    return null;
+  }
+
+  const timestampIso = readEventTimestampIso(row);
+  return timestampIso ? new Date(timestampIso) : null;
 }
 
 export function buildWebhookSemanticEventKey(payload: unknown): string | null {
@@ -257,15 +263,17 @@ export function buildWebhookSemanticEventKey(payload: unknown): string | null {
   if (!updateType) {
     return null;
   }
+  const hasTrustedEventTimestamp = readLowerString(row.eventTimestampSource) !== 'ingress';
 
   const chatId = readChatId(row);
   const messageId = readMessageId(row);
-  if (
-    chatId &&
-    messageId &&
-    (updateType === 'message_created' || updateType === 'message_edited')
-  ) {
+  if (chatId && messageId && updateType === 'message_created') {
     return `message:${updateType}:${chatId}:${messageId}`;
+  }
+
+  if (chatId && messageId && updateType === 'message_edited') {
+    const eventAtIso = hasTrustedEventTimestamp ? readEventTimestampIso(row) : null;
+    return eventAtIso ? `message:${updateType}:${chatId}:${messageId}:${eventAtIso}` : null;
   }
 
   const callbackId = readCallbackId(row);
@@ -273,10 +281,18 @@ export function buildWebhookSemanticEventKey(payload: unknown): string | null {
     return `callback:${chatId ?? ''}:${callbackId}`;
   }
 
+  if ((updateType === 'bot_stopped' || updateType === 'dialog_removed') && chatId) {
+    const affectedBotId = readString(row.botId ?? row.bot_id);
+    const eventAtIso = hasTrustedEventTimestamp ? readEventTimestampIso(row) : null;
+    if (affectedBotId && eventAtIso) {
+      return `bot-lifecycle:${updateType}:${chatId}:${affectedBotId}:${eventAtIso}`;
+    }
+  }
+
   const membershipEventType = resolveMembershipEventType(row, updateType);
   if (membershipEventType && chatId) {
     const userIds = readMembershipUserIds(row);
-    const eventAtIso = readEventTimestampIso(row);
+    const eventAtIso = hasTrustedEventTimestamp ? readEventTimestampIso(row) : null;
     if (userIds.length > 0 && eventAtIso) {
       return `membership:${membershipEventType}:${chatId}:${userIds.join(',')}:${eventAtIso}`;
     }

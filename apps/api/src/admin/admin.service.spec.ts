@@ -180,8 +180,7 @@ function createAdminMaxBotLinkMock(overrides: Record<string, unknown> = {}) {
     resolveBotRoute: jest.fn(),
     resolveContactIdSync: jest.fn().mockReturnValue(null),
     buildEntryMiniappStartUrlSync: jest.fn(
-      (startParam: string) =>
-        `https://max.ru/entry-bot?startapp=${encodeURIComponent(startParam)}`,
+      (startParam: string) => `https://max.ru/entry-bot?startapp=${encodeURIComponent(startParam)}`,
     ),
     buildMiniappStartUrlSync: jest.fn(
       (startParam: string, botId?: string | null) =>
@@ -8354,7 +8353,10 @@ describe('AdminService.applyManualModerationAction', () => {
 
   it('does not fall back to a persisted send bot when the send route has no executable bot', async () => {
     const prisma = createPrismaMock();
-    prisma.chat.findUnique.mockResolvedValue({ primaryBotId: 'draining-bot', botId: 'draining-bot' });
+    prisma.chat.findUnique.mockResolvedValue({
+      primaryBotId: 'draining-bot',
+      botId: 'draining-bot',
+    });
     const maxClient = {
       getCurrentChatMemberAccess: jest.fn(),
     };
@@ -25530,6 +25532,77 @@ describe('AdminService allowlist normalization', () => {
 });
 
 describe('AdminService.sendBroadcast', () => {
+  async function createRoutedManagedBroadcastRecoveryHarness() {
+    const prisma = createPrismaMock();
+    const deliveries = wireManagedBroadcastDeliveryStore(prisma);
+    await prisma.managedBroadcast.create({
+      data: {
+        id: 'broadcast-1',
+        sourceChatId: 'chat-1',
+        entityType: 'CHAT',
+        actorUserId: 'admin-1',
+        text: 'Ledger recovery message',
+        textFormat: 'plain',
+        applyToAllChats: false,
+        targetChatIds: ['chat-1'],
+        buttons: [],
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        mediaType: null,
+        mediaPayload: null,
+        mediaMimeType: '',
+        mediaFileName: '',
+        scheduleMode: 'legacy',
+        scheduleTimezone: 'Europe/Moscow',
+        nextSendAt: new Date('2026-03-03T10:00:00.000Z'),
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+        sentCount: 0,
+        status: 'FAILED',
+        lastError: 'Worker interrupted',
+        lockedAt: null,
+        lockToken: null,
+        publicationContentRevisionId: null,
+      },
+    });
+    await prisma.managedBroadcastDelivery.createMany({
+      data: [
+        {
+          id: 'delivery-before-recreate',
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 1,
+          targetChatId: 'chat-1',
+          status: 'SENDING',
+          lockedAt: new Date('2026-03-03T09:50:00.000Z'),
+          lockToken: 'stale-lock',
+        },
+      ],
+    });
+    const ledgerFindMany = jest.fn().mockResolvedValue([]);
+    (prisma as any).maxActionLedgerEntry = {
+      findMany: ledgerFindMany,
+      findUnique: jest.fn().mockResolvedValue(null),
+    };
+    const service = new AdminService(
+      prisma as never,
+      { getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']) } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    (service as any).maxRoutedPublicationService = { publish: jest.fn() };
+    const runtime = service.getManagedBroadcastRuntimeForBroadcastService() as any;
+    const broadcast = await prisma.managedBroadcast.findUnique({ where: { id: 'broadcast-1' } });
+    const actionKey = runtime.buildManagedBroadcastDeliveryActionKey(broadcast, 1, 'chat-1');
+
+    return { actionKey, broadcast, deliveries, ledgerFindMany, prisma, runtime, service };
+  }
+
   afterEach(() => {
     jest.useRealTimers();
   });
@@ -27368,28 +27441,150 @@ describe('AdminService.sendBroadcast', () => {
     expect(result.failedChats).toBe(0);
   });
 
-  it('does not immediately retry ambiguous managed broadcast send timeouts', async () => {
+  it.each([
+    {
+      label: 'transport timeout',
+      error: Object.assign(new Error('timeout of 5000ms exceeded'), {
+        code: 'ECONNABORTED',
+      }),
+      expectedLastError: 'timeout of 5000ms exceeded',
+    },
+    {
+      label: 'HTTP 503 response',
+      error: Object.assign(new Error('service unavailable'), {
+        response: {
+          status: 503,
+          data: { message: 'service unavailable' },
+        },
+      }),
+      expectedLastError: 'service unavailable',
+    },
+  ])(
+    'does not immediately retry ambiguous managed broadcast $label',
+    async ({ error, expectedLastError }) => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
+
+      const prisma = createPrismaMock();
+      const deliveries = wireManagedBroadcastDeliveryStore(prisma);
+      const maxClient = {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+        sendMessageImmediateWithId: jest.fn().mockRejectedValue(error),
+      };
+      const chatContextCache = {
+        invalidate: jest.fn(),
+      };
+
+      const service = new AdminService(
+        prisma as never,
+        maxClient as never,
+        chatContextCache as never,
+        createConfigMock() as never,
+      );
+
+      const result = await service.sendBroadcast(
+        'chat-1',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        {
+          text: 'Напоминание',
+          textFormat: 'plain',
+          targetMode: 'current',
+          targetChatIds: ['chat-1'],
+          applyToAllChats: false,
+          buttonEnabled: false,
+          buttonUrl: '',
+          buttonText: 'Открыть',
+          imageEnabled: false,
+          imageBase64: '',
+          imageMimeType: '',
+          imageFileName: '',
+          sendAt: null,
+          cycleEnabled: false,
+          cycleEveryHours: 1,
+          cycleCount: 1,
+        },
+      );
+
+      expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+      expect(result.failedChats).toBe(1);
+      expect(deliveries[0]).toEqual(
+        expect.objectContaining({
+          status: 'AMBIGUOUS',
+          attemptCount: 1,
+          lastError: expectedLastError,
+        }),
+      );
+    },
+  );
+
+  it('retries a managed broadcast with the promoted survivor and keeps future occurrences', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
 
     const prisma = createPrismaMock();
     const deliveries = wireManagedBroadcastDeliveryStore(prisma);
-    const timeoutError = Object.assign(new Error('timeout of 5000ms exceeded'), {
-      code: 'ECONNABORTED',
+    const denied = Object.assign(new Error('chat denied'), {
+      response: {
+        status: 403,
+        data: { code: 'chat.denied', message: 'chat denied' },
+      },
     });
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      sendMessageImmediateWithId: jest.fn().mockRejectedValue(timeoutError),
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockImplementation(
+          async (
+            _chatId: string,
+            _text: string,
+            _options: unknown,
+            requestOptions: { botId?: string },
+          ) => {
+            if (requestOptions.botId === 'bot-1') {
+              throw denied;
+            }
+            return { messageId: 'mid-survivor', url: null };
+          },
+        ),
     };
-    const chatContextCache = {
-      invalidate: jest.fn(),
-    };
-
     const service = new AdminService(
       prisma as never,
       maxClient as never,
-      chatContextCache as never,
+      createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
+    jest.spyOn(service as any, 'resolveDeliveryBotAssignment').mockResolvedValue('bot-1');
+    const accessLossService = {
+      recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue({
+        classification: {
+          kind: 'managed_entity_access_lost',
+          reason: 'bot_denied',
+          statusCode: 403,
+          code: 'chat.denied',
+          message: 'chat denied',
+        },
+        reason: 'bot_denied',
+        recorded: {
+          chatId: 'chat-1',
+          botId: 'bot-1',
+          nextOwnerBotId: 'bot-2',
+          updatedAccessEdges: 1,
+          cleanup: {
+            nightModeJobsCleared: false,
+            canceledBroadcasts: null,
+            canceledBroadcastDeliveries: null,
+            canceledBroadcastOccurrences: null,
+            clearedVkPublishPosts: null,
+            pausedVkSources: null,
+            removedRosterSyncJobs: null,
+          },
+        },
+      }),
+    };
+    (service as any).managedEntityAccessLossService = accessLossService;
 
     const result = await service.sendBroadcast(
       'chat-1',
@@ -27413,20 +27608,44 @@ describe('AdminService.sendBroadcast', () => {
         imageMimeType: '',
         imageFileName: '',
         sendAt: null,
-        cycleEnabled: false,
-        cycleEveryHours: 1,
-        cycleCount: 1,
+        cycleEnabled: true,
+        cycleEveryHours: 2,
+        cycleCount: 2,
       },
     );
 
-    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
-    expect(result.failedChats).toBe(1);
-    expect(deliveries[0]).toEqual(
-      expect.objectContaining({
-        status: 'AMBIGUOUS',
-        attemptCount: 1,
-        lastError: 'timeout of 5000ms exceeded',
-      }),
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(2);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenNthCalledWith(
+      1,
+      'chat-1',
+      'Напоминание',
+      undefined,
+      expect.objectContaining({ botId: 'bot-1' }),
+    );
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenNthCalledWith(
+      2,
+      'chat-1',
+      'Напоминание',
+      undefined,
+      expect.objectContaining({ botId: 'bot-2' }),
+    );
+    expect(result.sentChats).toBe(1);
+    expect(deliveries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          occurrenceIndex: 1,
+          status: 'SENT',
+          botId: 'bot-2',
+          remoteMessageId: 'mid-survivor',
+        }),
+        expect.objectContaining({
+          occurrenceIndex: 2,
+          status: 'PENDING',
+        }),
+      ]),
+    );
+    expect(deliveries.find((delivery) => delivery.occurrenceIndex === 2)?.status).not.toBe(
+      'CANCELED',
     );
   });
 
@@ -29904,6 +30123,154 @@ describe('AdminService.sendBroadcast', () => {
     );
   });
 
+  it('dispatches managed broadcasts through the routed publication ledger with a bot-independent key', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const deliveries = wireManagedBroadcastDeliveryStore(prisma);
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithId: jest.fn(),
+    };
+    const maxRoutedPublicationService = {
+      publish: jest.fn().mockImplementation(async (request: any) => {
+        const prepared = await request.prepareAttempt({ botId: 'dispatch-bot-2', job: {} });
+        request.onDispatchAttempt({ botId: 'dispatch-bot-2', job: { ...prepared } });
+        return {
+          messageId: 'mid-routed-broadcast-1',
+          url: 'https://max.ru/chats/chat-1/messages/mid-routed-broadcast-1',
+          botId: 'dispatch-bot-2',
+          candidateBotIds: ['route-bot-1', 'dispatch-bot-2'],
+          routingVersion: 12,
+        };
+      }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    (service as any).maxRoutedPublicationService = maxRoutedPublicationService;
+
+    const result = await service.sendBroadcast(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: 'Durable routed broadcast',
+        textFormat: 'plain',
+        targetMode: 'current',
+        targetChatIds: ['chat-1'],
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+      },
+    );
+
+    expect(result.sentChats).toBe(1);
+    expect(maxRoutedPublicationService.publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entityId: 'chat-1',
+        logicalIdempotencyKey: expect.stringMatching(
+          /^managed-broadcast:send:broadcast-1:occurrence:1:target:chat-1:content:legacy-/u,
+        ),
+        text: 'Durable routed broadcast',
+        trafficClass: 'interactive',
+        sourceTag: 'managed_broadcast',
+      }),
+    );
+    const logicalIdempotencyKey = maxRoutedPublicationService.publish.mock.calls[0]?.[0]
+      .logicalIdempotencyKey as string;
+    expect(logicalIdempotencyKey).not.toContain('dispatch-bot-2');
+    expect(logicalIdempotencyKey).not.toContain(deliveries[0]?.id ?? 'delivery-id');
+    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+    expect(deliveries[0]).toEqual(
+      expect.objectContaining({
+        targetChatId: 'chat-1',
+        botId: 'dispatch-bot-2',
+        status: 'SENT',
+        remoteMessageId: 'mid-routed-broadcast-1',
+      }),
+    );
+  });
+
+  it('fails closed in production when the routed publication service is unavailable', async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      const prisma = createPrismaMock();
+      wireManagedBroadcastDeliveryStore(prisma);
+      const maxClient = {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+        sendMessageImmediateWithId: jest.fn(),
+      };
+      const service = new AdminService(
+        prisma as never,
+        maxClient as never,
+        createChatContextCacheMock() as never,
+        createConfigMock() as never,
+      );
+
+      await service.sendBroadcast(
+        'chat-1',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        {
+          text: 'Production route fence',
+          textFormat: 'plain',
+          targetMode: 'current',
+          targetChatIds: ['chat-1'],
+          applyToAllChats: false,
+          buttonEnabled: false,
+          buttonUrl: '',
+          buttonText: 'Открыть',
+          imageEnabled: false,
+          imageBase64: '',
+          imageMimeType: '',
+          imageFileName: '',
+          sendAt: null,
+          cycleEnabled: false,
+          cycleEveryHours: 1,
+          cycleCount: 1,
+        },
+      );
+
+      expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+      await expect(
+        prisma.managedBroadcast.findUnique({ where: { id: 'broadcast-1' } }),
+      ).resolves.toEqual(
+        expect.objectContaining({
+          status: 'FAILED',
+          lastError: 'Routed MAX publication service is required for production managed broadcasts',
+        }),
+      );
+    } finally {
+      if (previousNodeEnv === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = previousNodeEnv;
+      }
+    }
+  });
+
   it('sends a chat broadcast only to selected chats and dedupes target ids', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
 
@@ -30122,6 +30489,200 @@ describe('AdminService.sendBroadcast', () => {
         payload: expect.objectContaining({
           broadcastId: 'broadcast-1',
           reconciledWithoutResend: true,
+        }),
+      }),
+    });
+  });
+
+  it('keeps the routed managed-broadcast SEND key stable after delivery row recreation', async () => {
+    const { actionKey, broadcast, runtime } = await createRoutedManagedBroadcastRecoveryHarness();
+
+    const recreatedDelivery = {
+      id: 'delivery-after-recreate',
+      targetChatId: 'chat-1',
+    };
+    const recreatedActionKey = runtime.buildManagedBroadcastDeliveryActionKey(
+      broadcast,
+      1,
+      recreatedDelivery.targetChatId,
+    );
+    const editedContentKey = runtime.buildManagedBroadcastDeliveryActionKey(
+      { ...broadcast, text: 'Changed content' },
+      1,
+      recreatedDelivery.targetChatId,
+    );
+
+    expect(recreatedActionKey).toBe(actionKey);
+    expect(recreatedActionKey).not.toContain('delivery-before-recreate');
+    expect(recreatedActionKey).not.toContain(recreatedDelivery.id);
+    expect(editedContentKey).not.toBe(actionKey);
+  });
+
+  it('refuses calendar overwrite when it would discard a protected delivery', async () => {
+    const { deliveries, prisma, runtime } = await createRoutedManagedBroadcastRecoveryHarness();
+
+    await expect(
+      runtime.assertManagedBroadcastCalendarDeliveriesCanBeDiscarded(prisma, 'broadcast-1', 1),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'BROADCAST_SLOT_DELIVERY_PROTECTED' }),
+    });
+    expect(deliveries[0]?.status).toBe('SENDING');
+  });
+
+  it('returns stale routed SENDING delivery to PENDING when no dispatch ledger exists', async () => {
+    const { deliveries, runtime } = await createRoutedManagedBroadcastRecoveryHarness();
+
+    await runtime.reconcileRoutedManagedBroadcastSendingDeliveries('broadcast-1', 1);
+
+    expect(deliveries[0]).toEqual(
+      expect.objectContaining({
+        status: 'PENDING',
+        remoteMessageId: null,
+        lockedAt: null,
+        lockToken: null,
+      }),
+    );
+  });
+
+  it('quarantines stale routed SENDING delivery with an unresolved dispatch claim', async () => {
+    const { actionKey, deliveries, ledgerFindMany, runtime } =
+      await createRoutedManagedBroadcastRecoveryHarness();
+    ledgerFindMany.mockResolvedValue([
+      {
+        jobId: actionKey,
+        remoteMessageId: null,
+        dispatchToken: 'dispatch-token-1',
+        dispatchStartedAt: new Date('2026-03-03T09:50:30.000Z'),
+        dispatchBotId: 'bot-2',
+        ambiguous: false,
+        terminal: false,
+        lastError: null,
+        completedAt: null,
+        metadata: null,
+      },
+    ]);
+
+    await runtime.reconcileRoutedManagedBroadcastSendingDeliveries('broadcast-1', 1);
+
+    expect(deliveries[0]).toEqual(
+      expect.objectContaining({
+        status: 'AMBIGUOUS',
+        remoteMessageId: null,
+        lockedAt: null,
+        lockToken: null,
+      }),
+    );
+  });
+
+  it('blocks broadcast edits when stale recovery finds an unresolved routed SEND', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
+    const { actionKey, deliveries, ledgerFindMany, prisma, service } =
+      await createRoutedManagedBroadcastRecoveryHarness();
+    ledgerFindMany.mockResolvedValue([
+      {
+        jobId: actionKey,
+        remoteMessageId: null,
+        dispatchToken: 'dispatch-token-1',
+        dispatchStartedAt: new Date('2026-03-03T09:50:30.000Z'),
+        dispatchBotId: 'bot-2',
+        ambiguous: false,
+        terminal: false,
+        lastError: null,
+        completedAt: null,
+        metadata: null,
+      },
+    ]);
+
+    await expect(
+      service.updateManagedBroadcast(
+        'chat-1',
+        'broadcast-1',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        {
+          text: 'Edited content',
+          textFormat: 'plain',
+          targetMode: 'current',
+          targetChatIds: ['chat-1'],
+          applyToAllChats: false,
+          buttonEnabled: false,
+          buttonUrl: '',
+          buttonText: 'Открыть',
+          imageEnabled: false,
+          imageBase64: '',
+          imageMimeType: '',
+          imageFileName: '',
+          sendAt: '2026-03-03T12:00:00.000Z',
+          cycleEnabled: false,
+          cycleEveryHours: 1,
+          cycleCount: 1,
+        },
+      ),
+    ).rejects.toThrow('имеет незавершённую или неоднозначную доставку');
+
+    expect(deliveries[0]?.status).toBe('AMBIGUOUS');
+    expect(prisma.managedBroadcastDelivery.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('hydrates stale routed SENDING delivery from a completed ledger without resend', async () => {
+    const { actionKey, deliveries, ledgerFindMany, prisma, runtime } =
+      await createRoutedManagedBroadcastRecoveryHarness();
+    ledgerFindMany.mockResolvedValue([
+      {
+        jobId: actionKey,
+        remoteMessageId: 'mid-ledger-recovered-1',
+        dispatchToken: 'dispatch-token-1',
+        dispatchStartedAt: new Date('2026-03-03T09:50:30.000Z'),
+        dispatchBotId: 'bot-3',
+        ambiguous: false,
+        terminal: true,
+        lastError: null,
+        completedAt: new Date('2026-03-03T09:50:31.000Z'),
+        metadata: {
+          ledgerContext: {
+            managedBroadcast: {
+              commentDialogReference: {
+                entityType: 'chat',
+                threadId: 'thread-ledger-1',
+                includeCommentsButton: true,
+                includeSuggestButton: false,
+                suggestButtonText: null,
+                autoPostButtonsMode: null,
+                suggestionEntryMode: null,
+                botId: 'bot-3',
+              },
+            },
+          },
+        },
+      },
+    ]);
+
+    await runtime.reconcileRoutedManagedBroadcastSendingDeliveries('broadcast-1', 1);
+
+    expect(deliveries[0]).toEqual(
+      expect.objectContaining({
+        status: 'SENT',
+        botId: 'bot-3',
+        remoteMessageId: 'mid-ledger-recovered-1',
+        sentAt: new Date('2026-03-03T09:50:31.000Z'),
+        lockedAt: null,
+        lockToken: null,
+      }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        actorUserId: 'admin-1',
+        action: 'AUTO_ATTACH_CHAT_COMMENTS',
+        payload: expect.objectContaining({
+          messageId: 'mid-ledger-recovered-1',
+          threadId: 'thread-ledger-1',
+          botId: 'bot-3',
+          managedBroadcastSource: 'ledger_recovery',
         }),
       }),
     });

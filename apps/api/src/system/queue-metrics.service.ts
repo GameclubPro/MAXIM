@@ -10,6 +10,11 @@ import { ADMIN_SUGGESTION_DELIVERY_QUEUE } from '../admin/admin-suggestion-deliv
 import { ADMIN_SUPER_BAN_QUEUE } from '../admin/admin-super-ban.queue';
 import { VK_PARSING_PUBLISH_QUEUE, VK_PARSING_SYNC_QUEUE } from '../admin/vk-parsing.queue';
 import { MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE } from '../max/max-chat-admin-roster-sync.queue';
+import {
+  MAX_ACTION_ALL_QUEUE_NAMES,
+  MAX_ACTION_LEGACY_QUEUE,
+  type MaxActionQueueName,
+} from '../max/max-action.queue';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from '../max/max-webhook-subscription.constants';
 import { GLOBAL_SPAMMER_DENORM_QUEUE } from '../moderation/global-spammer-denorm.queue';
@@ -22,6 +27,7 @@ import {
 } from '../runtime/moderation-runtime';
 import type { DefaultWebhookLeaseSummary } from '../runtime/default-webhook-dynamic-leases';
 import { ActionHealthService, type ActionHealthSnapshot } from './action-health.service';
+import { MaxActionLedgerWatchdogService } from './max-action-ledger-watchdog.service';
 import { WebhookDynamicLeaseStatusService } from './webhook-dynamic-lease-status.service';
 import {
   DEFAULT_WEBHOOK_QUEUE_NAMES,
@@ -133,6 +139,7 @@ export type QueueMetricsSnapshot = {
   webhookBackground: QueueCounters;
   webhookLegacy: QueueCounters;
   actions: QueueCounters;
+  actionQueues: Record<MaxActionQueueName, QueueCounters>;
   globalSpammerDenorm: QueueCounters;
   auxiliaryQueues: Record<AuxiliaryQueueName, QueueCounters>;
   webhookEvents: {
@@ -146,6 +153,7 @@ export type QueueMetricsSnapshot = {
     failed: WebhookStatusMetrics;
   };
   actionHealth: ActionHealthSnapshot;
+  actionLedgerWatchdog: Awaited<ReturnType<MaxActionLedgerWatchdogService['getSnapshot']>> | null;
   webhookDynamicLeases: WebhookDynamicLeaseMetricsSnapshot | null;
   bots: Record<string, BotQueueMetricsSnapshot>;
   oldestQueuedEventId: string | null;
@@ -207,6 +215,7 @@ export class QueueMetricsService {
   private readonly webhookJoinQueuesByName: Record<JoinWebhookQueueName, Queue | undefined>;
   private readonly webhookDefaultQueuesByName: Record<DefaultWebhookQueueName, Queue | undefined>;
   private readonly auxiliaryQueuesByName: Record<AuxiliaryQueueName, Queue | undefined>;
+  private readonly actionQueuesByName: Record<MaxActionQueueName, Queue | undefined>;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -220,10 +229,12 @@ export class QueueMetricsService {
     @InjectQueue(WEBHOOK_QUEUE_BACKGROUND)
     private readonly webhookBackgroundQueue?: Queue,
     @Optional() @InjectQueue(LEGACY_WEBHOOK_QUEUE) private readonly webhookLegacyQueue?: Queue,
-    @Optional() @InjectQueue('moderation-actions') private readonly actionQueue?: Queue,
+    @Optional() @InjectQueue(MAX_ACTION_LEGACY_QUEUE) private readonly actionQueue?: Queue,
     @Optional()
     @InjectQueue(GLOBAL_SPAMMER_DENORM_QUEUE)
     private readonly globalSpammerDenormQueue?: Queue,
+    @Optional()
+    private readonly actionLedgerWatchdogService?: MaxActionLedgerWatchdogService,
   ) {
     this.webhookJoinQueuesByName = Object.fromEntries(
       JOIN_WEBHOOK_QUEUE_NAMES.map((queueName) => [
@@ -240,6 +251,14 @@ export class QueueMetricsService {
     this.auxiliaryQueuesByName = Object.fromEntries(
       AUXILIARY_QUEUE_NAMES.map((queueName) => [queueName, this.resolveOptionalQueue(queueName)]),
     ) as Record<AuxiliaryQueueName, Queue | undefined>;
+    this.actionQueuesByName = Object.fromEntries(
+      MAX_ACTION_ALL_QUEUE_NAMES.map((queueName) => [
+        queueName,
+        queueName === MAX_ACTION_LEGACY_QUEUE
+          ? (this.actionQueue ?? this.resolveOptionalQueue(queueName))
+          : this.resolveOptionalQueue(queueName),
+      ]),
+    ) as Record<MaxActionQueueName, Queue | undefined>;
   }
 
   private resolveOptionalQueue(queueName: string): Queue | undefined {
@@ -352,12 +371,16 @@ export class QueueMetricsService {
       ),
       this.readQueueCounters(this.webhookBackgroundQueue),
       this.readQueueCounters(this.webhookLegacyQueue),
-      this.readQueueCounters(this.actionQueue),
       this.readQueueCounters(this.globalSpammerDenormQueue),
       ...AUXILIARY_QUEUE_NAMES.map((queueName) =>
         this.readQueueCounters(this.auxiliaryQueuesByName[queueName]),
       ),
     ]);
+    const actionQueueSnapshots = await Promise.all(
+      MAX_ACTION_ALL_QUEUE_NAMES.map((queueName) =>
+        this.readQueueCounters(this.actionQueuesByName[queueName]),
+      ),
+    );
     const [received, queued, failed, userFacingReceived, userFacingQueued, userFacingFailed] =
       await Promise.all([
         this.readWebhookStatusMetrics(WebhookStatus.RECEIVED),
@@ -368,6 +391,9 @@ export class QueueMetricsService {
         this.readWebhookStatusMetricsByTypes(WebhookStatus.FAILED, USER_FACING_WEBHOOK_TYPES),
       ]);
     const bots = await this.buildPerBotSnapshots(botIds);
+    const actionLedgerWatchdog = this.actionLedgerWatchdogService
+      ? await this.actionLedgerWatchdogService.getSnapshot().catch(() => null)
+      : null;
 
     const [webhookCritical, ...restSnapshots] = queueSnapshots;
     const webhookJoinShardSnapshots = restSnapshots.slice(0, JOIN_WEBHOOK_QUEUE_NAMES.length);
@@ -381,15 +407,21 @@ export class QueueMetricsService {
     const defaultSnapshotOffset = JOIN_WEBHOOK_QUEUE_NAMES.length;
     const webhookBackground = restSnapshots[defaultSnapshotOffset] ?? EMPTY_COUNTERS;
     const webhookLegacy = restSnapshots[defaultSnapshotOffset + 1] ?? EMPTY_COUNTERS;
-    const actions = restSnapshots[defaultSnapshotOffset + 2] ?? EMPTY_COUNTERS;
-    const globalSpammerDenorm = restSnapshots[defaultSnapshotOffset + 3] ?? EMPTY_COUNTERS;
-    const auxiliaryQueueSnapshotOffset = defaultSnapshotOffset + 4;
+    const globalSpammerDenorm = restSnapshots[defaultSnapshotOffset + 2] ?? EMPTY_COUNTERS;
+    const auxiliaryQueueSnapshotOffset = defaultSnapshotOffset + 3;
     const auxiliaryQueues = Object.fromEntries(
       AUXILIARY_QUEUE_NAMES.map((queueName, index) => [
         queueName,
         restSnapshots[auxiliaryQueueSnapshotOffset + index] ?? { ...EMPTY_COUNTERS },
       ]),
     ) as Record<AuxiliaryQueueName, QueueCounters>;
+    const actionQueues = Object.fromEntries(
+      MAX_ACTION_ALL_QUEUE_NAMES.map((queueName, index) => [
+        queueName,
+        actionQueueSnapshots[index] ?? { ...EMPTY_COUNTERS },
+      ]),
+    ) as Record<MaxActionQueueName, QueueCounters>;
+    const actions = this.sumQueueCounters(...Object.values(actionQueues));
     const webhookDefaultShards = defaultShardSnapshot.webhookDefaultShards;
     const webhookDefault = this.sumQueueCounters(...Object.values(webhookDefaultShards));
     const webhookDefaultWorkerGroups = defaultShardSnapshot.webhookDefaultWorkerGroups;
@@ -423,6 +455,7 @@ export class QueueMetricsService {
       webhookBackground,
       webhookLegacy,
       actions,
+      actionQueues,
       globalSpammerDenorm,
       auxiliaryQueues,
       webhookEvents: {
@@ -436,6 +469,7 @@ export class QueueMetricsService {
         failed: userFacingFailed,
       },
       actionHealth,
+      actionLedgerWatchdog,
       webhookDynamicLeases: dynamicLeaseSummary
         ? {
             mode: dynamicLeaseSummary.mode,
