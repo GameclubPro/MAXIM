@@ -267,6 +267,7 @@ export function BroadcastContentComposer({
         previewButtonRows.length > 0 && 'has-buttons',
         (textError || imageError) && 'field--error',
       )}
+      aria-busy={isPreparingImage || undefined}
     >
       <div
         className={cn(
@@ -319,8 +320,8 @@ export function BroadcastContentComposer({
                           className="broadcast-message-card__media-remove"
                           onClick={() => removeImage(item.index)}
                           disabled={isBusy}
-                          aria-label="Убрать фото"
-                          title="Убрать фото"
+                          aria-label={`Убрать фото ${item.index + 1}`}
+                          title={`Убрать фото ${item.index + 1}`}
                         >
                           <IconoirXmark aria-hidden focusable="false" />
                         </button>
@@ -402,7 +403,11 @@ export function BroadcastContentComposer({
           </div>
 
           <div className="broadcast-content-composer__bar">
-            <div className="broadcast-content-composer__media-actions">
+            <div
+              className="broadcast-content-composer__media-actions"
+              role="group"
+              aria-label="Инструменты сообщения"
+            >
               <button
                 type="button"
                 className={cn(
@@ -447,7 +452,7 @@ export function BroadcastContentComposer({
                     multiple={maxImageCount > 1}
                     disabled={isBusy || imagePreviewItems.length >= maxImageCount}
                     onChange={(event) => void handleImageFiles(event.currentTarget.files)}
-                    tabIndex={-1}
+                    aria-label={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
                   />
                 </label>
               ) : (
@@ -501,7 +506,7 @@ export function BroadcastContentComposer({
 
             <span className="broadcast-content-composer__asset-strip">
               {isPreparingImage || imagePreviewItems.length > 0 || videoLabel ? (
-                <span className="broadcast-content-composer__media-label">
+                <span className="broadcast-content-composer__media-label" aria-live="polite">
                   {isPreparingImage
                     ? `${preparingImages.done}/${preparingImages.total}`
                     : imagePreviewItems.length > 1

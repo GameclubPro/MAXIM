@@ -1,6 +1,6 @@
 import { MAX_PUBLICATION_TARGETS } from '@maxim/contracts/publication';
 import { Check, NavArrowDown, Search, Xmark } from 'iconoir-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { EntityAvatar } from '../../components/ui/entity-avatar';
 import { cn } from '../../lib/cn';
 import {
@@ -38,6 +38,8 @@ export function PublicationTargetPicker({
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<PublicationEntityFilter>('all');
   const [expanded, setExpanded] = useState(() => value.length === 0);
+  const editorId = useId();
+  const errorId = useId();
   const selectedKeys = useMemo(
     () => new Set(value.map((target) => getPublicationTargetKey(target))),
     [value],
@@ -51,12 +53,32 @@ export function PublicationTargetPicker({
       ),
     [choices, filter, query],
   );
-  const selectedSummary =
+  const collapsedSelectedSummary =
     value.length === 0
       ? 'Выберите получателей'
       : value.length === 1
         ? (value[0]?.title ?? '1 получатель')
         : `Выбрано: ${value.length}`;
+  const summaryTitle = expanded ? 'Получатели' : collapsedSelectedSummary;
+  const summaryMeta =
+    value.length === 0
+      ? expanded
+        ? 'Выберите чаты и каналы'
+        : 'Чаты и каналы'
+      : expanded
+        ? `Выбрано: ${value.length}`
+        : value.length === 1
+          ? value[0]?.entityType === 'channel'
+            ? 'Канал'
+            : 'Чат'
+          : 'Чаты и каналы';
+  const hasHiddenSelection = value.some(
+    (target) =>
+      !visibleChoices.some(
+        (choice) => getPublicationTargetKey(choice) === getPublicationTargetKey(target),
+      ),
+  );
+  const shouldShowSelectedChips = value.length > 1 || hasHiddenSelection;
 
   useEffect(() => {
     if (error) {
@@ -89,29 +111,38 @@ export function PublicationTargetPicker({
         onClick={() => setExpanded((current) => !current)}
         disabled={disabled}
         aria-expanded={expanded}
+        aria-controls={editorId}
+        aria-describedby={error ? errorId : undefined}
       >
         <span>
-          <strong>{selectedSummary}</strong>
-          <small>
-            {value.length === 0
-              ? 'Чаты и каналы'
-              : value.length === 1
-                ? value[0]?.entityType === 'channel'
-                  ? 'Канал'
-                  : 'Чат'
-                : 'Чаты и каналы'}
-          </small>
+          <strong>{summaryTitle}</strong>
+          <small>{summaryMeta}</small>
         </span>
-        <span className="publication-target-picker__summary-action">Изменить</span>
+        <span className="publication-target-picker__summary-action">
+          {expanded ? 'Свернуть' : 'Изменить'}
+        </span>
         <NavArrowDown aria-hidden />
       </button>
 
       {expanded ? (
-        <div className="publication-target-picker__editor">
-          {value.length > 0 ? (
-            <div className="publication-target-picker__selected" aria-label="Выбранные получатели">
+        <div
+          id={editorId}
+          className="publication-target-picker__editor"
+          role="region"
+          aria-label="Выбор получателей"
+        >
+          {shouldShowSelectedChips ? (
+            <div
+              className="publication-target-picker__selected"
+              role="list"
+              aria-label="Выбранные получатели"
+            >
               {value.map((target) => (
-                <span key={getPublicationTargetKey(target)} className="publication-target-chip">
+                <span
+                  key={getPublicationTargetKey(target)}
+                  className="publication-target-chip"
+                  role="listitem"
+                >
                   <span>{target.title}</span>
                   <button
                     type="button"
@@ -150,15 +181,14 @@ export function PublicationTargetPicker({
 
           <div
             className="publication-target-picker__filters"
-            role="tablist"
+            role="group"
             aria-label="Тип получателя"
           >
             {FILTERS.map((item) => (
               <button
                 key={item.value}
                 type="button"
-                role="tab"
-                aria-selected={filter === item.value}
+                aria-pressed={filter === item.value}
                 className={cn(filter === item.value && 'is-active')}
                 onClick={() => setFilter(item.value)}
                 disabled={disabled}
@@ -177,8 +207,10 @@ export function PublicationTargetPicker({
                     key={getPublicationTargetKey(choice)}
                     type="button"
                     className={cn('publication-target-row', selected && 'is-selected')}
-                    role="checkbox"
-                    aria-checked={selected}
+                    aria-pressed={selected}
+                    aria-label={`${selected ? 'Убрать' : 'Выбрать'} ${choice.title}, ${
+                      choice.entityType === 'channel' ? 'канал' : 'чат'
+                    }`}
                     onClick={() => toggleTarget(choice)}
                     disabled={disabled}
                   >
@@ -199,14 +231,16 @@ export function PublicationTargetPicker({
                 );
               })
             ) : (
-              <span className="publication-target-picker__empty">Ничего не найдено</span>
+              <span className="publication-target-picker__empty" role="status">
+                Ничего не найдено
+              </span>
             )}
           </div>
         </div>
       ) : null}
 
       {error ? (
-        <p className="publication-field-error" role="alert">
+        <p id={errorId} className="publication-field-error" role="alert">
           {error}
         </p>
       ) : null}

@@ -5,6 +5,8 @@ import {
   listPublicationsQuerySchema,
   listPublicationsResponseSchema,
   publicationActionRequestSchema,
+  publicationCalendarAvailabilityRequestSchema,
+  publicationCalendarAvailabilityResponseSchema,
   publicationDetailsSchema,
   retryPublicationOccurrenceRequestSchema,
   resolvePublicationAmbiguousDeliveryRequestSchema,
@@ -16,6 +18,8 @@ import {
   type ListPublicationsQuery,
   type ListPublicationsResponse,
   type PublicationActionRequest,
+  type PublicationCalendarAvailabilityRequest,
+  type PublicationCalendarAvailabilityResponse,
   type PublicationDetails,
   type RetryPublicationOccurrenceRequest,
   type ResolvePublicationAmbiguousDeliveryRequest,
@@ -43,6 +47,17 @@ export async function listPublications(
   const parsed = listPublicationsQuerySchema.parse(query);
   const response = await api.request(appendQuery('/publications', parsed));
   return listPublicationsResponseSchema.parse(response);
+}
+
+export async function getPublicationCalendarAvailability(
+  api: ApiTransport,
+  payload: PublicationCalendarAvailabilityRequest,
+): Promise<PublicationCalendarAvailabilityResponse> {
+  const response = await api.request('/publications/calendar-availability', {
+    method: 'POST',
+    body: JSON.stringify(publicationCalendarAvailabilityRequestSchema.parse(payload)),
+  });
+  return publicationCalendarAvailabilityResponseSchema.parse(response);
 }
 
 export async function getPublication(

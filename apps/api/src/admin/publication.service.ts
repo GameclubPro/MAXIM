@@ -6,6 +6,8 @@ import {
   listPublicationDeliveriesResponseSchema,
   listPublicationsQuerySchema,
   listPublicationsResponseSchema,
+  publicationCalendarAvailabilityRequestSchema,
+  publicationCalendarAvailabilityResponseSchema,
   MAX_PUBLICATION_TARGETS,
   publicationActionRequestSchema,
   publicationScheduleInputSchema,
@@ -16,6 +18,7 @@ import {
   type CreatePublicationRequest,
   type ListPublicationDeliveriesResponse,
   type ListPublicationsResponse,
+  type PublicationCalendarAvailabilityResponse,
   type PublicationAudienceInput,
   type PublicationContentInput,
   type PublicationDetails,
@@ -261,6 +264,131 @@ export class PublicationService {
               status: parsed.data.status,
             })
           : null,
+    });
+  }
+
+  async getCalendarAvailability(
+    user: AuthUser,
+    body: unknown,
+  ): Promise<PublicationCalendarAvailabilityResponse> {
+    const parsed = publicationCalendarAvailabilityRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const request = parsed.data;
+    if (request.excludePublicationId) {
+      await this.assertPublicationOwner(request.excludePublicationId, user.userId);
+    }
+
+    const targets = await this.resolveAudienceTargets(user, request.audience);
+    const from = new Date(request.from);
+    const to = new Date(request.to);
+    const targetKeys = new Set(
+      targets.map((target) => `${this.toPrismaEntityType(target.entityType)}:${target.chatId}`),
+    );
+    const targetPredicates = this.buildPublicationCalendarTargetPredicates(targets);
+    const [reservations, occurrences] = await Promise.all([
+      this.prisma.managedBroadcastCalendarReservation.findMany({
+        where: {
+          scheduledAt: { gte: from, lte: to },
+          OR: targetPredicates,
+          broadcast: {
+            is: {
+              status: {
+                in: [
+                  ManagedBroadcastStatus.ACTIVE,
+                  ManagedBroadcastStatus.PARTIAL,
+                  ManagedBroadcastStatus.FAILED,
+                ],
+              },
+            },
+          },
+        },
+        select: {
+          entityType: true,
+          targetChatId: true,
+          scheduledAt: true,
+          broadcast: {
+            select: {
+              publicationOccurrence: { select: { publicationId: true } },
+            },
+          },
+        },
+      }),
+      this.prisma.publicationOccurrence.findMany({
+        where: {
+          ...(request.excludePublicationId
+            ? { publicationId: { not: request.excludePublicationId } }
+            : {}),
+          scheduledAt: { gte: from, lte: to },
+          status: {
+            in: [PublicationOccurrenceStatus.SCHEDULED, PublicationOccurrenceStatus.IN_PROGRESS],
+          },
+          schedule: {
+            is: {
+              status: {
+                in: [PublicationScheduleStatus.ACTIVE, PublicationScheduleStatus.ERROR],
+              },
+            },
+          },
+          publication: {
+            is: {
+              lifecycle: { in: [PublicationLifecycle.ACTIVE, PublicationLifecycle.ERROR] },
+              targets: { some: { OR: targetPredicates } },
+            },
+          },
+        },
+        select: {
+          scheduledAt: true,
+          publication: {
+            select: {
+              targets: {
+                select: { targetChatId: true, entityType: true },
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    const slots = new Map<string, { scheduledAt: Date; targetKeys: Set<string> }>();
+    const addSlot = (scheduledAt: Date, targetKey: string) => {
+      const key = scheduledAt.toISOString();
+      const current = slots.get(key) ?? { scheduledAt, targetKeys: new Set<string>() };
+      current.targetKeys.add(targetKey);
+      slots.set(key, current);
+    };
+
+    for (const reservation of reservations) {
+      if (
+        reservation.broadcast.publicationOccurrence?.publicationId === request.excludePublicationId
+      ) {
+        continue;
+      }
+      const targetKey = `${reservation.entityType}:${reservation.targetChatId}`;
+      if (targetKeys.has(targetKey)) {
+        addSlot(reservation.scheduledAt, targetKey);
+      }
+    }
+    for (const occurrence of occurrences) {
+      for (const target of occurrence.publication.targets) {
+        const targetKey = `${target.entityType}:${target.targetChatId}`;
+        if (targetKeys.has(targetKey)) {
+          addSlot(occurrence.scheduledAt, targetKey);
+        }
+      }
+    }
+
+    return publicationCalendarAvailabilityResponseSchema.parse({
+      from: from.toISOString(),
+      to: to.toISOString(),
+      slots: [...slots.values()]
+        .sort((left, right) => left.scheduledAt.getTime() - right.scheduledAt.getTime())
+        .map((slot) => ({
+          scheduledAt: slot.scheduledAt.toISOString(),
+          targetCount: slot.targetKeys.size,
+        })),
     });
   }
 
@@ -2270,13 +2398,8 @@ export class PublicationService {
     `);
   }
 
-  private async findPublicationCalendarConflicts(
-    client: any,
-    targets: ResolvedPublicationTarget[],
-    slots: Date[],
-    excludePublicationId?: string,
-  ): Promise<PublicationCalendarConflicts> {
-    const targetPredicates = [
+  private buildPublicationCalendarTargetPredicates(targets: ResolvedPublicationTarget[]) {
+    return [
       {
         entityType: ChatEntityType.CHAT,
         targetChatId: {
@@ -2294,6 +2417,15 @@ export class PublicationService {
         },
       },
     ];
+  }
+
+  private async findPublicationCalendarConflicts(
+    client: any,
+    targets: ResolvedPublicationTarget[],
+    slots: Date[],
+    excludePublicationId?: string,
+  ): Promise<PublicationCalendarConflicts> {
+    const targetPredicates = this.buildPublicationCalendarTargetPredicates(targets);
     const [reservations, occurrenceCandidates] = await Promise.all([
       client.managedBroadcastCalendarReservation.findMany({
         where: { scheduledAt: { in: slots }, OR: targetPredicates },

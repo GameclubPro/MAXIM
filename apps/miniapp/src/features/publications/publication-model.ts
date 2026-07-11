@@ -16,6 +16,7 @@ import type {
 } from '@maxim/contracts/publication';
 import { trimBroadcastLinkButtons } from '../../lib/broadcast-link-buttons';
 import {
+  formatLocalDateTimeInputValue,
   resolveBroadcastScheduleTimezone,
   sortAndUniqueBroadcastSlots,
 } from '../../lib/broadcast-schedule';
@@ -45,6 +46,8 @@ export type PublicationDraft = {
   timingMode: PublicationTimingMode;
   scheduleKind: PublicationScheduleKind;
   scheduledSlots: string[];
+  onceDate: string;
+  onceTime: string;
   scheduleTimezone: string;
   recurrence: PublicationRecurrenceDraft;
   mediaType: 'image' | 'video' | null;
@@ -152,16 +155,7 @@ export function getPublicationTargetKey(
   return `${target.entityType}:${target.id}`;
 }
 
-export function createEmptyPublicationDraft(
-  targets: PublicationTarget[] = [],
-  nowMs = Date.now(),
-): PublicationDraft {
-  const initialSlot = new Date(nowMs + 24 * 60 * 60_000);
-  initialSlot.setMinutes(initialSlot.getMinutes() >= 30 ? 0 : 30, 0, 0);
-  if (initialSlot.getMinutes() === 0) {
-    initialSlot.setHours(initialSlot.getHours() + 1);
-  }
-
+export function createEmptyPublicationDraft(targets: PublicationTarget[] = []): PublicationDraft {
   return {
     title: '',
     text: '',
@@ -171,16 +165,18 @@ export function createEmptyPublicationDraft(
     targets,
     timingMode: 'now',
     scheduleKind: 'slots',
-    scheduledSlots: [initialSlot.toISOString()],
+    scheduledSlots: [],
+    onceDate: '',
+    onceTime: '',
     scheduleTimezone: resolveBroadcastScheduleTimezone(),
     recurrence: {
       frequency: 'weekly',
       interval: 1,
-      weekdays: [((new Date(nowMs).getDay() + 6) % 7) + 1],
-      times: ['10:00'],
+      weekdays: [],
+      times: [],
       startsAt: null,
       endsAt: null,
-      maxOccurrences: 30,
+      maxOccurrences: null,
     },
     mediaType: null,
     mediaPayload: null,
@@ -188,6 +184,19 @@ export function createEmptyPublicationDraft(
     mediaMimeType: '',
     mediaFileName: '',
     retainedAssets: [],
+  };
+}
+
+export function createPublicationDuplicateDraft(draft: PublicationDraft): PublicationDraft {
+  const empty = createEmptyPublicationDraft();
+  return {
+    ...draft,
+    timingMode: 'schedule',
+    scheduleKind: 'slots',
+    scheduledSlots: [],
+    onceDate: '',
+    onceTime: '',
+    recurrence: empty.recurrence,
   };
 }
 
@@ -341,7 +350,7 @@ export function createPublicationDraftFromDetails(
   details: PublicationDetails,
   nowMs = Date.now(),
 ): PublicationDraft {
-  const fallback = createEmptyPublicationDraft([], nowMs);
+  const fallback = createEmptyPublicationDraft();
   const schedule = details.schedule;
   const timingMode: PublicationTimingMode =
     !schedule || schedule.mode === 'now' ? 'now' : schedule.mode === 'once' ? 'once' : 'schedule';
@@ -363,6 +372,8 @@ export function createPublicationDraftFromDetails(
           maxOccurrences: schedule.maxOccurrences,
         }
       : fallback.recurrence;
+  const onceValue = schedule?.mode === 'once' ? formatLocalDateTimeInputValue(schedule.at) : '';
+  const [onceDate = '', onceTime = ''] = onceValue.split('T');
 
   return {
     ...fallback,
@@ -379,6 +390,8 @@ export function createPublicationDraftFromDetails(
     timingMode,
     scheduleKind: schedule?.mode === 'recurrence' ? 'recurrence' : 'slots',
     scheduledSlots: scheduledSlots.length > 0 ? scheduledSlots : fallback.scheduledSlots,
+    onceDate,
+    onceTime,
     scheduleTimezone: schedule?.timezone ?? fallback.scheduleTimezone,
     recurrence,
     mediaType: null,

@@ -206,6 +206,7 @@ describe('MiniappMutationTunnelController', () => {
     ['DELETE', '/autopost-rules/rule-1'],
     ['POST', '/publications'],
     ['POST', '/publications/test'],
+    ['POST', '/publications/calendar-availability'],
     ['PUT', '/publications/publication-1'],
     ['DELETE', '/publications/publication-1'],
     ['POST', '/publications/publication-1/pause'],

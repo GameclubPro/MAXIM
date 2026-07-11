@@ -1,5 +1,14 @@
 import type { ManagedBroadcastCalendarSlot, ManagedBroadcastSummary } from '@maxim/contracts';
-import { useEffect, useEffectEvent, useMemo, useRef, useState, type PointerEvent } from 'react';
+import {
+  useEffect,
+  useEffectEvent,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { MaxMarkdownPreview } from './max-markdown-preview';
 import { TimeField } from './ui/time-field';
@@ -15,7 +24,6 @@ import {
   addDays,
   buildSlotsByDay,
   buildFreeWindowsForDay,
-  endOfMonth,
   formatAgendaTime,
   formatCountLabel,
   formatDayChipLabel,
@@ -23,6 +31,8 @@ import {
   formatDaySummary,
   formatMinuteLabel,
   formatMonthKey,
+  getBroadcastPlannerKeyboardNavigationDayKey,
+  getBroadcastPlannerWindow,
   getCommonSelectedMinutesForDays,
   getMinutesList,
   getMonthCells,
@@ -201,11 +211,13 @@ export function BroadcastSchedulePlanner({
   const [recipeDraft, setRecipeDraft] = useState<BroadcastScheduleRecipeDraft>(() =>
     createDefaultBroadcastScheduleRecipeDraft(),
   );
+  const calendarGridId = useId();
   const lastSelectionStateRef = useRef<BroadcastSchedulePlannerSelectionState | null>(null);
+  const calendarGridRef = useRef<HTMLDivElement | null>(null);
+  const pendingCalendarFocusDayKeyRef = useRef<string | null>(null);
   const sheetPanelRef = useRef<HTMLElement | null>(null);
 
-  const windowStart = startOfDay(liveNow);
-  const windowEnd = endOfMonth(addDays(liveNow, BROADCAST_SCHEDULE_MAX_DAYS - 1));
+  const { start: windowStart, end: windowEnd } = getBroadcastPlannerWindow(liveNow);
   const monthKeys = getMonthKeys(windowStart, windowEnd);
   const visibleMonthKey = monthKeys.includes(currentMonthKey) ? currentMonthKey : monthKeys[0];
   const selectedDayCount = countBroadcastScheduleDays(normalizedValue);
@@ -587,6 +599,25 @@ export function BroadcastSchedulePlanner({
       setCalendarExpanded(true);
     }
   }, [calendarOnly]);
+
+  useEffect(() => {
+    const dayKey = pendingCalendarFocusDayKeyRef.current;
+    if (!dayKey || !showCalendar) {
+      return undefined;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      const dayButton = calendarGridRef.current?.querySelector<HTMLButtonElement>(
+        `[data-broadcast-schedule-day="${dayKey}"]`,
+      );
+      if (!dayButton?.disabled) {
+        dayButton?.focus();
+      }
+      pendingCalendarFocusDayKeyRef.current = null;
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [showCalendar, visibleMonthKey]);
 
   useEffect(() => {
     const nextState = {
@@ -974,6 +1005,44 @@ export function BroadcastSchedulePlanner({
     maxImpact('soft');
   }
 
+  function focusCalendarDay(dayKey: string) {
+    const targetDate = new Date(`${dayKey}T12:00:00`);
+    const targetTime = startOfDay(targetDate).getTime();
+    if (
+      !Number.isFinite(targetTime) ||
+      targetTime < windowStart.getTime() ||
+      targetTime > windowEnd.getTime()
+    ) {
+      return;
+    }
+
+    const targetMonthKey = getMonthKey(targetDate);
+    if (targetMonthKey !== visibleMonthKey) {
+      pendingCalendarFocusDayKeyRef.current = dayKey;
+      setCurrentMonthKey(targetMonthKey);
+      return;
+    }
+
+    calendarGridRef.current
+      ?.querySelector<HTMLButtonElement>(`[data-broadcast-schedule-day="${dayKey}"]`)
+      ?.focus();
+  }
+
+  function handleCalendarDayKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>, dayKey: string) {
+    const targetDayKey = getBroadcastPlannerKeyboardNavigationDayKey(
+      dayKey,
+      event.key,
+      windowStart,
+      windowEnd,
+    );
+    if (!targetDayKey) {
+      return;
+    }
+
+    event.preventDefault();
+    focusCalendarDay(targetDayKey);
+  }
+
   function toggleSlot(minutes: number) {
     if (disabled) {
       return;
@@ -1254,6 +1323,7 @@ export function BroadcastSchedulePlanner({
                   }}
                   disabled={disabled}
                   aria-expanded={calendarExpanded}
+                  aria-controls={calendarGridId}
                 >
                   Даты
                 </button>
@@ -1298,7 +1368,7 @@ export function BroadcastSchedulePlanner({
                 >
                   ←
                 </button>
-                <strong>{formatMonthKey(visibleMonthKey)}</strong>
+                <strong aria-live="polite">{formatMonthKey(visibleMonthKey)}</strong>
                 <button
                   type="button"
                   className="broadcast-planner__month-button"
@@ -1322,7 +1392,13 @@ export function BroadcastSchedulePlanner({
                 ))}
               </div>
 
-              <div className="broadcast-planner__grid">
+              <div
+                ref={calendarGridRef}
+                id={calendarGridId}
+                className="broadcast-planner__grid"
+                role="group"
+                aria-label={`Календарь: ${formatMonthKey(visibleMonthKey)}`}
+              >
                 {monthCells.map((cell) => {
                   const dayKey = getBroadcastScheduleDayKey(cell);
                   const daySlots = getSelectedDaySlots(dayKey, normalizedValue);
@@ -1385,7 +1461,11 @@ export function BroadcastSchedulePlanner({
                         isActive && isPicked && 'is-active',
                       )}
                       disabled={isDisabled}
+                      data-broadcast-schedule-day={dayKey}
+                      aria-current={isToday ? 'date' : undefined}
+                      aria-pressed={isPicked}
                       aria-label={dayAriaLabelParts.join(', ')}
+                      onKeyDown={(event) => handleCalendarDayKeyDown(event, dayKey)}
                       onClick={() => {
                         const hasAgendaEntries = agendaCount > 0;
                         const hasDraftSlots = daySlots.length > 0;

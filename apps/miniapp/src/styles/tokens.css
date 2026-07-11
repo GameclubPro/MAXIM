@@ -52,6 +52,25 @@
   --publication-handoff-border: rgba(18, 132, 112, 0.2);
   --publication-handoff-bg: rgba(235, 249, 245, 0.96);
   --publication-handoff-ink: #10745f;
+  /* Publication workspace keeps its palette local instead of inheriting page-specific chrome. */
+  --publication-ui-page: #f5f9fc;
+  --publication-ui-surface: #ffffff;
+  --publication-ui-surface-raised: rgba(255, 255, 255, 0.96);
+  --publication-ui-surface-muted: #f5f9fc;
+  --publication-ui-surface-tint: #eff7ff;
+  --publication-ui-ink: #0e1f2d;
+  --publication-ui-ink-muted: #3f5366;
+  --publication-ui-ink-subtle: #667c90;
+  --publication-ui-accent: #0b84ff;
+  --publication-ui-accent-soft: rgba(11, 132, 255, 0.14);
+  --publication-ui-border: rgba(218, 229, 240, 0.82);
+  --publication-ui-border-strong: rgba(190, 205, 220, 0.86);
+  --publication-ui-scrim: rgba(17, 31, 45, 0.42);
+  --publication-ui-control-fill: rgba(225, 234, 242, 0.7);
+  --publication-ui-control-count: rgba(98, 120, 140, 0.12);
+  --publication-ui-shadow: rgba(35, 65, 92, 0.06);
+  --publication-ui-row-border: rgba(218, 229, 240, 0.66);
+  --publication-ui-selected: rgba(235, 246, 255, 0.74);
   --favorite-important-text: #9a6200;
   --favorite-important-bg: #fff0bd;
   --favorite-watch-text: #9a2f3f;
@@ -157,11 +176,8 @@
   --suggest-polish-cyan: #2399aa;
   --suggest-polish-green: #2c9a68;
   --suggest-polish-plum: #6f69c9;
-  --suggest-polish-backdrop-bg: linear-gradient(
-      180deg,
-      rgba(249, 251, 250, 0.98),
-      rgba(232, 246, 248, 0.94)
-    ),
+  --suggest-polish-backdrop-bg:
+    linear-gradient(180deg, rgba(249, 251, 250, 0.98), rgba(232, 246, 248, 0.94)),
     linear-gradient(135deg, rgba(230, 106, 75, 0.055), rgba(35, 153, 170, 0.065));
   --suggest-polish-label-bg: rgba(230, 106, 75, 0.1);
   --suggest-polish-label-ink: #9e5039;
@@ -174,14 +190,9 @@
     var(--suggest-polish-phone-bg) 72%,
     white
   );
-  --suggest-polish-active-border: color-mix(
-    in srgb,
-    var(--suggest-polish-cyan) 38%,
-    transparent
-  );
+  --suggest-polish-active-border: color-mix(in srgb, var(--suggest-polish-cyan) 38%, transparent);
   --suggest-polish-composer-shadow:
-    0 10px 24px var(--suggest-polish-shadow),
-    inset 0 1px 0 var(--suggest-polish-surface-inset);
+    0 10px 24px var(--suggest-polish-shadow), inset 0 1px 0 var(--suggest-polish-surface-inset);
   --suggest-polish-bar-shadow: none;
   --suggest-polish-bubble-shadow: none;
   --suggest-polish-submit-shadow: 0 8px 18px rgba(35, 126, 148, 0.18);
@@ -192,11 +203,7 @@
   --suggest-polish-image-remove-border: rgba(18, 39, 58, 0.12);
   --suggest-polish-image-remove-bg: rgba(255, 255, 255, 0.94);
   --suggest-polish-image-remove-ink: #315b78;
-  --suggest-polish-toolbar-mask: linear-gradient(
-    90deg,
-    #000 0 calc(100% - 10px),
-    transparent 100%
-  );
+  --suggest-polish-toolbar-mask: linear-gradient(90deg, #000 0 calc(100% - 10px), transparent 100%);
 }
 
 html[data-max-theme='dark'] {
@@ -232,11 +239,8 @@ html[data-max-theme='dark'] {
   --suggest-polish-cyan: #3db7ca;
   --suggest-polish-green: #63ba7a;
   --suggest-polish-plum: #9284f0;
-  --suggest-polish-backdrop-bg: linear-gradient(
-      180deg,
-      rgba(15, 22, 27, 0.99),
-      rgba(8, 30, 37, 0.97)
-    ),
+  --suggest-polish-backdrop-bg:
+    linear-gradient(180deg, rgba(15, 22, 27, 0.99), rgba(8, 30, 37, 0.97)),
     linear-gradient(135deg, rgba(240, 111, 80, 0.08), rgba(61, 183, 202, 0.08));
   --suggest-polish-label-bg: rgba(240, 111, 80, 0.13);
   --suggest-polish-label-ink: rgba(255, 213, 201, 0.98);
@@ -289,11 +293,8 @@ html[data-max-theme='dark'] {
     --suggest-polish-cyan: #3db7ca;
     --suggest-polish-green: #63ba7a;
     --suggest-polish-plum: #9284f0;
-    --suggest-polish-backdrop-bg: linear-gradient(
-        180deg,
-        rgba(15, 22, 27, 0.99),
-        rgba(8, 30, 37, 0.97)
-      ),
+    --suggest-polish-backdrop-bg:
+      linear-gradient(180deg, rgba(15, 22, 27, 0.99), rgba(8, 30, 37, 0.97)),
       linear-gradient(135deg, rgba(240, 111, 80, 0.08), rgba(61, 183, 202, 0.08));
     --suggest-polish-label-bg: rgba(240, 111, 80, 0.13);
     --suggest-polish-label-ink: rgba(255, 213, 201, 0.98);
@@ -328,12 +329,8 @@ html[data-max-theme='dark'] {
   --suggest-polish-control-active-bg: rgba(61, 183, 202, 0.16);
   --suggest-polish-control-border: rgba(255, 255, 255, 0.12);
   --suggest-polish-control-ink: rgba(225, 249, 248, 0.94);
-  --suggest-polish-phone-bg: linear-gradient(
-      180deg,
-      rgba(25, 29, 32, 0.98),
-      rgba(13, 16, 18, 0.98)
-    ),
-    #101214;
+  --suggest-polish-phone-bg:
+    linear-gradient(180deg, rgba(25, 29, 32, 0.98), rgba(13, 16, 18, 0.98)), #101214;
   --suggest-polish-bubble-bg: linear-gradient(160deg, #1b4b4f, #17333d 72%);
   --suggest-polish-bubble-ink: rgba(248, 250, 247, 0.96);
   --suggest-polish-bubble-border: rgba(126, 215, 230, 0.16);
@@ -350,11 +347,8 @@ html[data-max-theme='dark'] {
   --suggest-polish-cyan: #45c9cf;
   --suggest-polish-green: #75d08a;
   --suggest-polish-plum: #a99bff;
-  --suggest-polish-backdrop-bg: linear-gradient(
-      180deg,
-      rgba(13, 15, 18, 0.995),
-      rgba(18, 24, 23, 0.98)
-    ),
+  --suggest-polish-backdrop-bg:
+    linear-gradient(180deg, rgba(13, 15, 18, 0.995), rgba(18, 24, 23, 0.98)),
     linear-gradient(
       145deg,
       rgba(255, 120, 92, 0.12),
@@ -370,17 +364,13 @@ html[data-max-theme='dark'] {
   --suggest-polish-link-panel-input-bg: rgba(255, 255, 255, 0.09);
   --suggest-polish-active-border: rgba(69, 201, 207, 0.34);
   --suggest-polish-composer-shadow:
-    0 18px 38px rgba(0, 0, 0, 0.3),
-    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    0 18px 38px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.08);
   --suggest-polish-bar-shadow:
-    0 14px 30px rgba(0, 0, 0, 0.32),
-    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+    0 14px 30px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.07);
   --suggest-polish-bubble-shadow:
-    0 12px 24px rgba(0, 0, 0, 0.24),
-    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    0 12px 24px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.08);
   --suggest-polish-submit-shadow:
-    0 12px 28px rgba(69, 201, 207, 0.22),
-    0 8px 18px rgba(255, 120, 92, 0.16);
+    0 12px 28px rgba(69, 201, 207, 0.22), 0 8px 18px rgba(255, 120, 92, 0.16);
   --suggest-polish-image-tile-bg: rgba(255, 255, 255, 0.08);
   --suggest-polish-image-tile-ink: rgba(225, 249, 248, 0.76);
   --suggest-polish-image-loader-bg: rgba(18, 28, 29, 0.9);
@@ -388,6 +378,38 @@ html[data-max-theme='dark'] {
   --suggest-polish-image-remove-border: rgba(255, 255, 255, 0.12);
   --suggest-polish-image-remove-bg: rgba(12, 14, 16, 0.82);
   --suggest-polish-image-remove-ink: rgba(248, 250, 247, 0.94);
+  --publication-ui-page: #111820;
+  --publication-ui-surface: #18222c;
+  --publication-ui-surface-raised: rgba(27, 38, 49, 0.98);
+  --publication-ui-surface-muted: #141d26;
+  --publication-ui-surface-tint: #152a3a;
+  --publication-ui-ink: #eef5f8;
+  --publication-ui-ink-muted: #b6c5cf;
+  --publication-ui-ink-subtle: #8ca1b0;
+  --publication-ui-accent: #61b0ff;
+  --publication-ui-accent-soft: rgba(97, 176, 255, 0.18);
+  --publication-ui-border: rgba(195, 215, 230, 0.15);
+  --publication-ui-border-strong: rgba(195, 215, 230, 0.26);
+  --publication-ui-scrim: rgba(0, 0, 0, 0.62);
+  --publication-ui-control-fill: rgba(255, 255, 255, 0.07);
+  --publication-ui-control-count: rgba(195, 215, 230, 0.14);
+  --publication-ui-shadow: rgba(0, 0, 0, 0.2);
+  --publication-ui-row-border: rgba(195, 215, 230, 0.12);
+  --publication-ui-selected: rgba(97, 176, 255, 0.13);
+  --publication-success-border: rgba(84, 209, 160, 0.3);
+  --publication-success-bg: rgba(31, 112, 80, 0.28);
+  --publication-success-bg-muted: rgba(31, 112, 80, 0.2);
+  --publication-success-ink: #8ee7bc;
+  --publication-success-ink-strong: #b0f0ce;
+  --publication-success-ink-muted: #94cdae;
+  --publication-warning-bg: rgba(238, 174, 69, 0.18);
+  --publication-warning-ink: #ffd486;
+  --publication-danger-border: rgba(255, 142, 157, 0.28);
+  --publication-danger-bg: rgba(137, 45, 59, 0.34);
+  --publication-danger-bg-muted: rgba(222, 87, 108, 0.2);
+  --publication-danger-ink: #ffb3bf;
+  --publication-row-border: rgba(195, 215, 230, 0.12);
+  --publication-selected-bg: rgba(97, 176, 255, 0.13);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -406,12 +428,8 @@ html[data-max-theme='dark'] {
     --suggest-polish-control-active-bg: rgba(61, 183, 202, 0.16);
     --suggest-polish-control-border: rgba(255, 255, 255, 0.12);
     --suggest-polish-control-ink: rgba(225, 249, 248, 0.94);
-    --suggest-polish-phone-bg: linear-gradient(
-        180deg,
-        rgba(25, 29, 32, 0.98),
-        rgba(13, 16, 18, 0.98)
-      ),
-      #101214;
+    --suggest-polish-phone-bg:
+      linear-gradient(180deg, rgba(25, 29, 32, 0.98), rgba(13, 16, 18, 0.98)), #101214;
     --suggest-polish-bubble-bg: linear-gradient(160deg, #1b4b4f, #17333d 72%);
     --suggest-polish-bubble-ink: rgba(248, 250, 247, 0.96);
     --suggest-polish-bubble-border: rgba(126, 215, 230, 0.16);
@@ -428,11 +446,8 @@ html[data-max-theme='dark'] {
     --suggest-polish-cyan: #45c9cf;
     --suggest-polish-green: #75d08a;
     --suggest-polish-plum: #a99bff;
-    --suggest-polish-backdrop-bg: linear-gradient(
-        180deg,
-        rgba(13, 15, 18, 0.995),
-        rgba(18, 24, 23, 0.98)
-      ),
+    --suggest-polish-backdrop-bg:
+      linear-gradient(180deg, rgba(13, 15, 18, 0.995), rgba(18, 24, 23, 0.98)),
       linear-gradient(
         145deg,
         rgba(255, 120, 92, 0.12),
@@ -448,17 +463,13 @@ html[data-max-theme='dark'] {
     --suggest-polish-link-panel-input-bg: rgba(255, 255, 255, 0.09);
     --suggest-polish-active-border: rgba(69, 201, 207, 0.34);
     --suggest-polish-composer-shadow:
-      0 18px 38px rgba(0, 0, 0, 0.3),
-      inset 0 1px 0 rgba(255, 255, 255, 0.08);
+      0 18px 38px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.08);
     --suggest-polish-bar-shadow:
-      0 14px 30px rgba(0, 0, 0, 0.32),
-      inset 0 1px 0 rgba(255, 255, 255, 0.07);
+      0 14px 30px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.07);
     --suggest-polish-bubble-shadow:
-      0 12px 24px rgba(0, 0, 0, 0.24),
-      inset 0 1px 0 rgba(255, 255, 255, 0.08);
+      0 12px 24px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.08);
     --suggest-polish-submit-shadow:
-      0 12px 28px rgba(69, 201, 207, 0.22),
-      0 8px 18px rgba(255, 120, 92, 0.16);
+      0 12px 28px rgba(69, 201, 207, 0.22), 0 8px 18px rgba(255, 120, 92, 0.16);
     --suggest-polish-image-tile-bg: rgba(255, 255, 255, 0.08);
     --suggest-polish-image-tile-ink: rgba(225, 249, 248, 0.76);
     --suggest-polish-image-loader-bg: rgba(18, 28, 29, 0.9);
@@ -466,6 +477,38 @@ html[data-max-theme='dark'] {
     --suggest-polish-image-remove-border: rgba(255, 255, 255, 0.12);
     --suggest-polish-image-remove-bg: rgba(12, 14, 16, 0.82);
     --suggest-polish-image-remove-ink: rgba(248, 250, 247, 0.94);
+    --publication-ui-page: #111820;
+    --publication-ui-surface: #18222c;
+    --publication-ui-surface-raised: rgba(27, 38, 49, 0.98);
+    --publication-ui-surface-muted: #141d26;
+    --publication-ui-surface-tint: #152a3a;
+    --publication-ui-ink: #eef5f8;
+    --publication-ui-ink-muted: #b6c5cf;
+    --publication-ui-ink-subtle: #8ca1b0;
+    --publication-ui-accent: #61b0ff;
+    --publication-ui-accent-soft: rgba(97, 176, 255, 0.18);
+    --publication-ui-border: rgba(195, 215, 230, 0.15);
+    --publication-ui-border-strong: rgba(195, 215, 230, 0.26);
+    --publication-ui-scrim: rgba(0, 0, 0, 0.62);
+    --publication-ui-control-fill: rgba(255, 255, 255, 0.07);
+    --publication-ui-control-count: rgba(195, 215, 230, 0.14);
+    --publication-ui-shadow: rgba(0, 0, 0, 0.2);
+    --publication-ui-row-border: rgba(195, 215, 230, 0.12);
+    --publication-ui-selected: rgba(97, 176, 255, 0.13);
+    --publication-success-border: rgba(84, 209, 160, 0.3);
+    --publication-success-bg: rgba(31, 112, 80, 0.28);
+    --publication-success-bg-muted: rgba(31, 112, 80, 0.2);
+    --publication-success-ink: #8ee7bc;
+    --publication-success-ink-strong: #b0f0ce;
+    --publication-success-ink-muted: #94cdae;
+    --publication-warning-bg: rgba(238, 174, 69, 0.18);
+    --publication-warning-ink: #ffd486;
+    --publication-danger-border: rgba(255, 142, 157, 0.28);
+    --publication-danger-bg: rgba(137, 45, 59, 0.34);
+    --publication-danger-bg-muted: rgba(222, 87, 108, 0.2);
+    --publication-danger-ink: #ffb3bf;
+    --publication-row-border: rgba(195, 215, 230, 0.12);
+    --publication-selected-bg: rgba(97, 176, 255, 0.13);
   }
 }
 

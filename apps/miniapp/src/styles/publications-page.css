@@ -1,5 +1,35 @@
 @layer pages {
   .publications-page {
+    /* Keep publication surfaces predictable even when the surrounding route has richer chrome. */
+    --text-primary: var(--publication-ui-ink);
+    --text-secondary: var(--publication-ui-ink-muted);
+    --text-muted: var(--publication-ui-ink-subtle);
+    --accent: var(--publication-ui-accent);
+    --accent-soft: var(--publication-ui-accent-soft);
+    --color-ink: var(--publication-ui-ink);
+    --color-ink-muted: var(--publication-ui-ink-muted);
+    --color-ink-subtle: var(--publication-ui-ink-subtle);
+    --color-accent: var(--publication-ui-accent);
+    --color-accent-soft: var(--publication-ui-accent-soft);
+    --color-surface: var(--publication-ui-surface);
+    --color-surface-raised: var(--publication-ui-surface-raised);
+    --color-surface-muted: var(--publication-ui-surface-muted);
+    --color-surface-tint: var(--publication-ui-surface-tint);
+    --color-border: var(--publication-ui-border);
+    --color-border-strong: var(--publication-ui-border-strong);
+    --color-scrim: var(--publication-ui-scrim);
+    --surface-page: var(--publication-ui-page);
+    --surface-card: var(--publication-ui-surface-raised);
+    --surface-card-muted: var(--publication-ui-surface-tint);
+    --surface-overlay: var(--publication-ui-surface-raised);
+    --border-subtle: var(--publication-ui-border);
+    --border-strong: var(--publication-ui-border-strong);
+    --publication-control-fill: var(--publication-ui-control-fill);
+    --publication-control-count-bg: var(--publication-ui-control-count);
+    --publication-control-shadow: var(--publication-ui-shadow);
+    --publication-card-shadow: var(--publication-ui-shadow);
+    --publication-row-border: var(--publication-ui-row-border);
+    --publication-selected-bg: var(--publication-ui-selected);
     min-height: 100%;
     padding: calc(var(--app-safe-top, 0px) + 12px) 12px
       calc(var(--bottom-nav-height, 68px) + var(--app-safe-bottom, 0px) + 34px);
@@ -349,22 +379,23 @@
 
   .publication-feed-card__head {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 8px;
     min-width: 0;
   }
 
   .publication-feed-card__head > strong {
     min-width: 0;
-    overflow: hidden;
     font-size: 0.9rem;
     font-weight: 820;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    line-height: 1.28;
+    overflow-wrap: anywhere;
+    white-space: normal;
   }
 
   .publication-feed-card__status {
     flex: 0 0 auto;
+    margin-top: 1px;
     padding: 3px 6px;
     border-radius: 5px;
     background: rgba(93, 116, 136, 0.11);
@@ -631,6 +662,11 @@
     height: 100%;
     opacity: 0;
     cursor: pointer;
+  }
+
+  .publication-video-picker:focus-within {
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px var(--color-accent-soft);
   }
 
   .publications-calendar-error {
@@ -1465,11 +1501,18 @@
 
   /* The publication workspace stays intentionally plain: authoring comes before decoration. */
   .publications-page.is-editor {
-    padding-bottom: calc(148px + var(--app-safe-bottom, 0px));
+    --publication-dock-keyboard-offset: min(var(--app-keyboard-overlap, 0px), 320px);
+    --publication-dock-bottom: calc(
+      var(--app-safe-bottom, 0px) + var(--publication-dock-keyboard-offset)
+    );
+    --publication-dock-space: calc(86px + var(--publication-dock-bottom));
+    padding-bottom: var(--publication-dock-space);
+    scroll-padding-bottom: calc(var(--publication-dock-space) + 12px);
   }
 
   .publications-page.is-editor:has(.broadcast-publish-bar.has-issues) {
-    padding-bottom: calc(194px + var(--app-safe-bottom, 0px));
+    --publication-dock-space: calc(122px + var(--publication-dock-bottom));
+    padding-bottom: var(--publication-dock-space);
   }
 
   .publications-header,
@@ -1507,12 +1550,14 @@
 
   .publications-filterbar {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 7px;
     margin-bottom: 10px;
   }
 
   .publications-filterbar__search-row {
     display: grid;
+    min-width: 0;
     grid-template-columns: minmax(0, 1fr) 42px;
     gap: 7px;
   }
@@ -1549,7 +1594,8 @@
 
   .publications-filterbar__controls {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr) 42px;
     gap: 7px;
   }
 
@@ -1559,7 +1605,7 @@
   }
 
   .publications-filterbar__controls select {
-    grid-column: auto;
+    grid-column: 1;
     grid-row: auto;
     width: 100%;
     max-width: none;
@@ -1700,6 +1746,7 @@
     display: grid;
     gap: 8px;
     padding: 2px 0 0;
+    scroll-margin-bottom: calc(var(--publication-dock-space, 0px) + 12px);
   }
 
   .publication-target-picker__list {
@@ -1780,18 +1827,63 @@
     width: 38px;
     height: 38px;
     border-radius: 8px;
+    border-color: var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-ink-muted);
+    box-shadow: none;
+  }
+
+  .publications-page .publication-content-composer .broadcast-content-composer__tool.is-active {
+    border-color: color-mix(in srgb, var(--color-accent) 40%, var(--color-border));
+    background: var(--color-surface-tint);
+    color: var(--color-accent);
+  }
+
+  .publications-page .publication-content-composer .broadcast-content-composer__tool.is-danger {
+    background: var(--publication-danger-bg-muted);
+    color: var(--publication-danger-ink);
+  }
+
+  .publications-page .publication-content-composer .max-rich-text-editor__surface {
+    color: var(--color-ink);
+  }
+
+  .publications-page .publication-content-composer .max-rich-text-editor__surface:empty::before {
+    color: var(--color-ink-subtle);
+  }
+
+  .publications-page .time-field__button {
+    border-color: var(--color-border-strong);
+    background: var(--color-surface);
+    color: var(--color-ink);
+    box-shadow: none;
+  }
+
+  .publications-page .time-field__label,
+  .publications-page .time-field.is-empty .time-field__value {
+    color: var(--color-ink-subtle);
+  }
+
+  .publications-page .time-field__value {
+    color: var(--color-ink);
+  }
+
+  .publications-page .time-field__icon {
+    background: var(--color-surface-tint);
+    color: var(--color-accent);
   }
 
   .publications-publish-bar {
-    bottom: calc(var(--app-safe-bottom, 0px) + 6px);
+    bottom: calc(var(--publication-dock-bottom, var(--app-safe-bottom, 0px)) + 6px);
     width: min(calc(100% - 20px), 640px);
   }
 
   .publications-page .broadcast-publish-bar {
-    min-height: 64px;
+    min-height: 56px;
     padding: 7px;
     border-radius: 8px;
-    box-shadow: 0 8px 22px rgba(28, 55, 80, 0.14);
+    background: var(--color-surface-raised);
+    box-shadow: 0 8px 20px var(--publication-card-shadow);
   }
 
   .publications-page .broadcast-publish-bar.has-issues {
@@ -1835,9 +1927,117 @@
     font-weight: 760;
   }
 
+  /* The planner is a tool surface here, so its controls stay flat and easy to scan. */
+  .publications-page .broadcast-planner__calendar-card {
+    gap: 8px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .publications-page .broadcast-planner__compact-summary,
+  .publications-page .broadcast-planner__selection-bar,
+  .publications-page .broadcast-planner__dock {
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: var(--color-surface);
+    box-shadow: none;
+  }
+
+  .publications-page .broadcast-planner__compact-summary {
+    min-height: 50px;
+    padding: 8px 10px;
+  }
+
+  .publications-page .broadcast-planner__compact-summary.is-ready {
+    border-color: var(--color-border-strong);
+    background: var(--color-surface-tint);
+  }
+
+  .publications-page .broadcast-planner__compact-action {
+    min-height: 0;
+    padding: 0 2px;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .publications-page .broadcast-planner__month-button {
+    border-color: var(--color-border);
+    border-radius: 7px;
+    background: var(--color-surface-muted);
+    box-shadow: none;
+  }
+
+  .publications-page .broadcast-planner__weekdays span {
+    color: var(--color-ink-subtle);
+  }
+
+  .publications-page .broadcast-planner__day {
+    border-color: var(--color-border);
+    border-radius: 7px;
+    background: var(--color-surface);
+    box-shadow: none;
+  }
+
+  .publications-page .broadcast-planner__day.is-today,
+  .publications-page .broadcast-planner__day.is-busy {
+    background: var(--color-surface-muted);
+  }
+
+  .publications-page .broadcast-planner__day.is-selected,
+  .publications-page .broadcast-planner__day.is-picked,
+  .publications-page .broadcast-planner__day.is-selected.is-picked {
+    border-color: color-mix(in srgb, var(--color-accent) 42%, var(--color-border));
+    background: var(--color-surface-tint);
+    box-shadow: none;
+  }
+
+  .publications-page .broadcast-planner__day-number {
+    color: var(--color-ink);
+  }
+
+  .publications-page .broadcast-planner__day-count,
+  .publications-page .broadcast-planner__day-density {
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+  }
+
+  .publications-page .broadcast-planner__dock {
+    bottom: 6px;
+    padding: 9px 10px;
+  }
+
+  .publications-page .broadcast-planner__dock-primary,
+  .publications-page .broadcast-planner__dock-clear {
+    border-radius: 7px;
+    box-shadow: none;
+  }
+
+  .publications-page .broadcast-planner__dock-primary {
+    border-color: var(--color-accent);
+    background: var(--color-accent);
+  }
+
+  .publications-page .broadcast-planner__dock-clear {
+    border-color: var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-ink-muted);
+  }
+
   @media (min-width: 720px) {
+    .publications-filterbar {
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: start;
+    }
+
+    .publications-filterbar__search-row {
+      grid-column: 1;
+    }
+
     .publications-filterbar__controls {
       grid-template-columns: minmax(240px, auto) minmax(160px, 1fr) auto;
+      grid-column: 2;
     }
 
     .publications-filterbar__controls .publications-filterbar__entities {
@@ -1879,6 +2079,262 @@
 
     .publications-page .publication-content-composer .max-rich-text-editor__surface {
       min-height: 96px;
+    }
+  }
+
+  @media (max-width: 719px) {
+    .publications-page .broadcast-publish-bar {
+      grid-template-columns: 44px minmax(0, 1fr);
+      gap: 6px;
+    }
+
+    .publications-page .broadcast-publish-bar.has-issues {
+      grid-template-columns: 44px minmax(0, 1fr);
+    }
+
+    .publications-page .broadcast-publish-bar__test {
+      width: 44px;
+      min-width: 44px;
+      padding-inline: 0;
+      justify-content: center;
+    }
+
+    .publications-page .broadcast-publish-bar__test > span {
+      display: none;
+    }
+
+    .publications-page .broadcast-publish-bar__primary {
+      padding-inline: 10px;
+      font-size: 0.78rem;
+    }
+
+    .publications-page .broadcast-publish-bar__primary > span {
+      overflow: visible;
+      text-align: center;
+      text-overflow: clip;
+      white-space: normal;
+    }
+  }
+
+  @media (max-width: 340px) {
+    .publications-page .broadcast-publish-bar__primary {
+      padding-inline: 8px;
+      font-size: 0.72rem;
+      line-height: 1.1;
+    }
+  }
+
+  .publication-details-sheet,
+  .broadcast-planner-sheet,
+  .action-confirm-sheet,
+  .time-field-sheet {
+    --text-primary: var(--publication-ui-ink);
+    --text-secondary: var(--publication-ui-ink-muted);
+    --text-muted: var(--publication-ui-ink-subtle);
+    --accent: var(--publication-ui-accent);
+    --accent-soft: var(--publication-ui-accent-soft);
+    --color-ink: var(--publication-ui-ink);
+    --color-ink-muted: var(--publication-ui-ink-muted);
+    --color-ink-subtle: var(--publication-ui-ink-subtle);
+    --color-accent: var(--publication-ui-accent);
+    --color-accent-soft: var(--publication-ui-accent-soft);
+    --color-surface: var(--publication-ui-surface);
+    --color-surface-raised: var(--publication-ui-surface-raised);
+    --color-surface-muted: var(--publication-ui-surface-muted);
+    --color-surface-tint: var(--publication-ui-surface-tint);
+    --color-border: var(--publication-ui-border);
+    --color-border-strong: var(--publication-ui-border-strong);
+    --color-scrim: var(--publication-ui-scrim);
+    --surface-page: var(--publication-ui-page);
+    --surface-card: var(--publication-ui-surface-raised);
+    --surface-card-muted: var(--publication-ui-surface-tint);
+    --surface-overlay: var(--publication-ui-surface-raised);
+    --border-subtle: var(--publication-ui-border);
+    --border-strong: var(--publication-ui-border-strong);
+    color: var(--publication-ui-ink);
+  }
+
+  .broadcast-planner-sheet .broadcast-planner__time-chip {
+    position: relative;
+  }
+
+  .broadcast-planner-sheet .broadcast-planner__info-mark {
+    position: absolute;
+    top: 3px;
+    right: 4px;
+    min-width: 28px;
+    height: 12px;
+    display: inline-grid;
+    padding: 0 3px;
+    border-radius: 999px;
+    background: var(--publication-warning-bg);
+    color: var(--publication-warning-ink);
+    font-size: 0.52rem;
+    font-weight: 850;
+    line-height: 1;
+    place-items: center;
+    pointer-events: none;
+  }
+
+  html[data-max-theme='dark'] .publication-details-sheet,
+  html[data-max-theme='dark'] .broadcast-planner-sheet,
+  html[data-max-theme='dark'] .action-confirm-sheet,
+  html[data-max-theme='dark'] .time-field-sheet {
+    color-scheme: dark;
+  }
+
+  html[data-max-theme='dark'] .broadcast-planner-sheet__backdrop,
+  html[data-max-theme='dark'] .action-confirm-sheet__backdrop,
+  html[data-max-theme='dark'] .time-field-sheet__backdrop {
+    background: var(--publication-ui-scrim);
+  }
+
+  html[data-max-theme='dark'] .broadcast-planner-sheet__panel,
+  html[data-max-theme='dark'] .action-confirm-sheet__panel,
+  html[data-max-theme='dark'] .time-field-sheet__panel {
+    border-color: var(--publication-ui-border-strong);
+    background: var(--publication-ui-surface);
+    box-shadow: 0 20px 46px rgba(0, 0, 0, 0.36);
+  }
+
+  html[data-max-theme='dark'] .broadcast-planner__sheet,
+  html[data-max-theme='dark'] .broadcast-planner__calendar-card,
+  html[data-max-theme='dark'] .broadcast-planner__review-card,
+  html[data-max-theme='dark'] .broadcast-planner__calendar-surface,
+  html[data-max-theme='dark'] .broadcast-planner__selection-bar,
+  html[data-max-theme='dark'] .broadcast-planner__review-stat,
+  html[data-max-theme='dark'] .broadcast-planner__agenda-row,
+  html[data-max-theme='dark'] .broadcast-planner__day-tab,
+  html[data-max-theme='dark'] .broadcast-planner__time-chip,
+  html[data-max-theme='dark'] .broadcast-planner__picked-chip {
+    border-color: var(--publication-ui-border);
+    background: var(--publication-ui-surface);
+    box-shadow: none;
+  }
+
+  html[data-max-theme='dark'] .broadcast-planner__day-tab.has-slots,
+  html[data-max-theme='dark'] .broadcast-planner__time-chip.is-selected,
+  html[data-max-theme='dark'] .broadcast-planner__selected-chip {
+    border-color: rgba(255, 212, 134, 0.28);
+    background: rgba(181, 125, 24, 0.22);
+    color: #ffd486;
+  }
+
+  html[data-max-theme='dark'] .broadcast-planner__time-chip.is-mixed,
+  html[data-max-theme='dark'] .broadcast-planner__mode-chip.is-active,
+  html[data-max-theme='dark'] .broadcast-planner__day-tab.is-active {
+    border-color: color-mix(
+      in srgb,
+      var(--publication-ui-accent) 46%,
+      var(--publication-ui-border)
+    );
+    background: var(--publication-ui-surface-tint);
+    color: var(--publication-ui-accent);
+  }
+
+  html[data-max-theme='dark'] .broadcast-planner__time-chip.is-busy {
+    border-color: rgba(255, 212, 134, 0.28);
+    background: rgba(181, 125, 24, 0.18);
+    color: #ffd486;
+  }
+
+  html[data-max-theme='dark'] .broadcast-planner__time-empty {
+    border: 1px solid var(--publication-ui-border);
+    border-radius: 8px;
+    background: var(--publication-ui-surface-muted);
+    color: var(--publication-ui-ink);
+  }
+
+  html[data-max-theme='dark'] .broadcast-planner__time-empty button {
+    border: 1px solid var(--publication-ui-border);
+    border-radius: 7px;
+    background: var(--publication-ui-surface);
+    color: var(--publication-ui-accent);
+  }
+
+  html[data-max-theme='dark'] .broadcast-planner__time-chip.is-disabled,
+  html[data-max-theme='dark'] .broadcast-planner__month-button,
+  html[data-max-theme='dark'] .broadcast-planner__clear-button,
+  html[data-max-theme='dark'] .broadcast-planner__selection-reset,
+  html[data-max-theme='dark'] .broadcast-planner__review-link {
+    border-color: var(--publication-ui-border);
+    background: var(--publication-ui-surface-muted);
+    color: var(--publication-ui-ink-muted);
+    box-shadow: none;
+  }
+
+  html[data-max-theme='dark'] .broadcast-planner__sheet-footer {
+    background: linear-gradient(
+      180deg,
+      rgba(24, 34, 44, 0) 0%,
+      rgba(24, 34, 44, 0.94) 32%,
+      rgba(24, 34, 44, 0.99) 100%
+    );
+  }
+
+  html[data-max-theme='dark'] .action-confirm-sheet__preview {
+    border-color: var(--publication-ui-border);
+    background: var(--publication-ui-surface-muted);
+    box-shadow: none;
+  }
+
+  html[data-max-theme='dark'] .action-confirm-sheet__button--ghost {
+    border-color: var(--publication-ui-border);
+    background: var(--publication-ui-surface-muted);
+    color: var(--publication-ui-ink);
+  }
+
+  html[data-max-theme='dark'] .broadcast-planner-sheet .time-field__button,
+  html[data-max-theme='dark'] .time-field__button {
+    border-color: var(--publication-ui-border);
+    background: var(--publication-ui-surface);
+    color: var(--publication-ui-ink);
+    box-shadow: none;
+  }
+
+  html[data-max-theme='dark'] .broadcast-planner-sheet .time-field__icon,
+  html[data-max-theme='dark'] .time-field__icon {
+    background: var(--publication-ui-surface-tint);
+    color: var(--publication-ui-accent);
+  }
+
+  html[data-max-theme='dark'] .time-field-sheet__head {
+    color: var(--publication-ui-ink);
+  }
+
+  html[data-max-theme='dark'] .time-field-sheet__head small,
+  html[data-max-theme='dark'] .time-field-sheet__head svg {
+    color: var(--publication-ui-accent);
+  }
+
+  html[data-max-theme='dark'] .time-field-sheet__column-label,
+  html[data-max-theme='dark'] .time-field-sheet__divider {
+    color: var(--publication-ui-ink-subtle);
+  }
+
+  html[data-max-theme='dark'] .time-field-sheet__option,
+  html[data-max-theme='dark'] .time-field-sheet__button--ghost,
+  html[data-max-theme='dark'] .time-field-sheet__button--clear {
+    border-color: var(--publication-ui-border);
+    background: var(--publication-ui-surface-muted);
+    color: var(--publication-ui-ink);
+  }
+
+  html[data-max-theme='dark'] .time-field-sheet__option.is-active,
+  html[data-max-theme='dark'] .time-field-sheet__button--apply {
+    border-color: var(--publication-ui-accent);
+    background: var(--publication-ui-accent);
+    color: var(--publication-on-accent);
+    box-shadow: none;
+  }
+
+  html[data-max-theme='dark'] .publications-page {
+    color-scheme: dark;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    html:not([data-max-theme]) .publications-page {
+      color-scheme: dark;
     }
   }
 }

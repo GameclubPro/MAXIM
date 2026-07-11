@@ -107,6 +107,13 @@ export function endOfMonth(value: Date): Date {
   return new Date(value.getFullYear(), value.getMonth() + 1, 0, 23, 59, 59, 999);
 }
 
+export function getBroadcastPlannerWindow(now = new Date()): { start: Date; end: Date } {
+  return {
+    start: startOfDay(now),
+    end: endOfMonth(addDays(now, BROADCAST_SCHEDULE_MAX_DAYS - 1)),
+  };
+}
+
 export function getMonthKey(value: Date): string {
   return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}`;
 }
@@ -182,6 +189,54 @@ export function getMonthCells(monthKey: string): Date[] {
     cells.push(addDays(gridStart, index));
   }
   return cells;
+}
+
+export function getBroadcastPlannerKeyboardNavigationDayKey(
+  dayKey: string,
+  key: string,
+  windowStart: Date,
+  windowEnd: Date,
+): string | null {
+  const currentDate = new Date(`${dayKey}T12:00:00`);
+  if (!Number.isFinite(currentDate.getTime())) {
+    return null;
+  }
+
+  let offsetDays: number | null = null;
+  switch (key) {
+    case 'ArrowLeft':
+      offsetDays = -1;
+      break;
+    case 'ArrowRight':
+      offsetDays = 1;
+      break;
+    case 'ArrowUp':
+      offsetDays = -7;
+      break;
+    case 'ArrowDown':
+      offsetDays = 7;
+      break;
+    case 'Home':
+      offsetDays = -((currentDate.getDay() + 6) % 7);
+      break;
+    case 'End':
+      offsetDays = 6 - ((currentDate.getDay() + 6) % 7);
+      break;
+    default:
+      return null;
+  }
+
+  const targetDayKey = getBroadcastScheduleDayKey(addDays(currentDate, offsetDays));
+  const targetTime = startOfDay(new Date(`${targetDayKey}T12:00:00`)).getTime();
+  if (
+    !Number.isFinite(targetTime) ||
+    targetTime < startOfDay(windowStart).getTime() ||
+    targetTime > startOfDay(windowEnd).getTime()
+  ) {
+    return null;
+  }
+
+  return targetDayKey;
 }
 
 export function getMinutesList(group: BroadcastPlannerSlotGroup): number[] {

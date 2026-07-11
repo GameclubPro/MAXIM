@@ -1,6 +1,6 @@
 import type { BroadcastLinkButton } from '@maxim/contracts';
 import { Link as IconoirLink, Xmark as IconoirXmark } from 'iconoir-react';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { BroadcastLinkButtonsEditor } from './broadcast-link-buttons-editor';
 import type { ApiTransport } from '../lib/api/transport';
@@ -9,6 +9,7 @@ import {
   type BroadcastLinkButtonFieldErrors,
 } from '../lib/broadcast-link-buttons';
 import { cn } from '../lib/cn';
+import { useDialogFocusTrap } from '../lib/dialog-focus';
 import { useNativeBackHandler } from '../lib/native-back';
 import './broadcast-buttons-sheet.css';
 
@@ -53,6 +54,10 @@ export function BroadcastButtonsSheet({
   onChange,
   onClose,
 }: BroadcastButtonsSheetProps) {
+  const panelRef = useRef<HTMLElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  useDialogFocusTrap(open, panelRef, closeButtonRef);
+
   useNativeBackHandler(
     () => {
       onClose();
@@ -76,6 +81,25 @@ export function BroadcastButtonsSheet({
     };
   }, [open]);
 
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      onClose();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose, open]);
+
   const portalTarget = open ? resolveButtonsSheetPortalTarget() : null;
   if (!open || !portalTarget) {
     return null;
@@ -89,13 +113,16 @@ export function BroadcastButtonsSheet({
         className="broadcast-buttons-sheet__backdrop"
         aria-label={closeAriaLabel}
         onClick={onClose}
+        tabIndex={-1}
       />
 
       <section
+        ref={panelRef}
         className="broadcast-buttons-sheet__panel"
         role="dialog"
         aria-modal="true"
         aria-labelledby="broadcast-buttons-sheet-title"
+        tabIndex={-1}
       >
         <div className="broadcast-buttons-sheet__grabber" aria-hidden />
 
@@ -110,6 +137,7 @@ export function BroadcastButtonsSheet({
           </span>
 
           <button
+            ref={closeButtonRef}
             type="button"
             className="broadcast-buttons-sheet__close"
             onClick={onClose}
@@ -129,6 +157,7 @@ export function BroadcastButtonsSheet({
               checked={enabled}
               onChange={(event) => onEnabledChange(event.currentTarget.checked)}
               disabled={disabled}
+              aria-label="Добавить кнопки"
             />
             <span className="toggle-switch" aria-hidden>
               <span className="toggle-switch__thumb" />

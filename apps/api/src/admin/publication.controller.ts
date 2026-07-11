@@ -23,6 +23,11 @@ export class PublicationController {
     return this.publicationService.sendTest(user, body);
   }
 
+  @Post('calendar-availability')
+  calendarAvailability(@CurrentUser() user: AuthUser, @Body() body: unknown) {
+    return this.publicationService.getCalendarAvailability(user, body);
+  }
+
   @Get(':publicationId')
   get(@Param('publicationId') publicationId: string, @CurrentUser() user: AuthUser) {
     return this.publicationService.get(publicationId, user);

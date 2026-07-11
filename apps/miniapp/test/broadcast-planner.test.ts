@@ -15,6 +15,8 @@ import {
   buildSlotsByDay,
   filterBroadcastSlotsByDayKeys,
   formatCountLabel,
+  getBroadcastPlannerKeyboardNavigationDayKey,
+  getBroadcastPlannerWindow,
   getCommonSelectedMinutesForDays,
   getMonthCells,
   getMonthKeys,
@@ -120,6 +122,47 @@ test('builds month keys and 42 calendar cells for planner grids', () => {
   assert.equal(getMonthCells('2026-05').length, 42);
 });
 
+test('uses one complete visible window for planner dates and availability', () => {
+  const window = getBroadcastPlannerWindow(new Date(2026, 6, 11, 12, 0, 0, 0));
+
+  assert.equal(window.start.getTime(), new Date(2026, 6, 11, 0, 0, 0, 0).getTime());
+  assert.equal(window.end.getTime(), new Date(2026, 7, 31, 23, 59, 59, 999).getTime());
+});
+
+test('moves calendar focus with keyboard keys without leaving the scheduling window', () => {
+  const windowStart = new Date(2026, 4, 4, 0, 0, 0, 0);
+  const windowEnd = new Date(2026, 4, 31, 23, 59, 59, 999);
+
+  assert.equal(
+    getBroadcastPlannerKeyboardNavigationDayKey('2026-05-06', 'ArrowLeft', windowStart, windowEnd),
+    '2026-05-05',
+  );
+  assert.equal(
+    getBroadcastPlannerKeyboardNavigationDayKey('2026-05-06', 'ArrowDown', windowStart, windowEnd),
+    '2026-05-13',
+  );
+  assert.equal(
+    getBroadcastPlannerKeyboardNavigationDayKey('2026-05-06', 'Home', windowStart, windowEnd),
+    '2026-05-04',
+  );
+  assert.equal(
+    getBroadcastPlannerKeyboardNavigationDayKey('2026-05-06', 'End', windowStart, windowEnd),
+    '2026-05-10',
+  );
+  assert.equal(
+    getBroadcastPlannerKeyboardNavigationDayKey('2026-05-04', 'ArrowLeft', windowStart, windowEnd),
+    null,
+  );
+  assert.equal(
+    getBroadcastPlannerKeyboardNavigationDayKey('2026-05-31', 'ArrowRight', windowStart, windowEnd),
+    null,
+  );
+  assert.equal(
+    getBroadcastPlannerKeyboardNavigationDayKey('2026-05-06', 'Enter', windowStart, windowEnd),
+    null,
+  );
+});
+
 test('calculates planner free windows from occupied slots', () => {
   const windows = buildFreeWindowsForDay([
     buildBroadcastScheduleSlotIso('2026-05-06', 9 * 60),
@@ -218,10 +261,7 @@ test('builds a complete five-day two-times recipe plan', () => {
   assert.equal(plan.dayKeys.length, 5);
   assert.equal(plan.slots.length, 10);
   assert.equal(plan.requestedSlotCount, 10);
-  assert.deepEqual(getCommonSelectedMinutesForDays(plan.dayKeys, plan.slots), [
-    10 * 60,
-    18 * 60,
-  ]);
+  assert.deepEqual(getCommonSelectedMinutesForDays(plan.dayKeys, plan.slots), [10 * 60, 18 * 60]);
 });
 
 test('keeps recipe plans complete by skipping past and occupied days', () => {

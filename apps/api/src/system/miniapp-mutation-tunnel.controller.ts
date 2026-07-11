@@ -123,6 +123,7 @@ const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
   { method: 'DELETE', pattern: new RegExp(`^/autopost-rules/${ENTITY_ID_SEGMENT}$`) },
 
   { method: 'POST', pattern: /^\/publications(?:\/test)?$/u },
+  { method: 'POST', pattern: /^\/publications\/calendar-availability$/u },
   {
     method: 'PUT',
     pattern: new RegExp(`^/publications/${ENTITY_ID_SEGMENT}$`),

@@ -6,6 +6,7 @@ import {
   buildTestPublicationRequest,
   canResumePublication,
   createEmptyPublicationDraft,
+  createPublicationDuplicateDraft,
   filterFuturePublicationSlots,
   inferPublicationVideoMimeType,
   isIsolatedPublicationEditor,
@@ -14,8 +15,15 @@ import {
   shouldReviewPublicationScheduleConflict,
   shouldPersistPublicationDraft,
 } from '../src/features/publications/publication-model';
-import { buildPublicationDraftStorageKey } from '../src/features/publications/publication-draft-storage';
-import { createPublication, testPublication } from '../src/lib/api/publication-client';
+import {
+  buildPublicationDraftStorageKey,
+  parsePublicationDraftEnvelope,
+} from '../src/features/publications/publication-draft-storage';
+import {
+  createPublication,
+  getPublicationCalendarAvailability,
+  testPublication,
+} from '../src/lib/api/publication-client';
 import type { ApiRequestInit, ApiTransport } from '../src/lib/api/transport';
 
 const chatTarget = {
@@ -40,11 +48,112 @@ test('isolates edit and duplicate drafts from the persisted create draft', () =>
   assert.equal(isIsolatedPublicationEditor('duplicate'), true);
 });
 
+test('starts a new publication without a recipient or a publishable schedule', () => {
+  const draft = createEmptyPublicationDraft();
+
+  assert.deepEqual(draft.targets, []);
+  assert.deepEqual(draft.scheduledSlots, []);
+  assert.equal(draft.onceDate, '');
+  assert.equal(draft.onceTime, '');
+  assert.deepEqual(draft.recurrence, {
+    frequency: 'weekly',
+    interval: 1,
+    weekdays: [],
+    times: [],
+    startsAt: null,
+    endsAt: null,
+    maxOccurrences: null,
+  });
+});
+
+test('duplicates content and recipients but requires a new schedule choice', () => {
+  const source = createEmptyPublicationDraft([chatTarget, channelTarget]);
+  source.title = 'Утренний дайджест';
+  source.text = 'Доброе утро';
+  source.timingMode = 'schedule';
+  source.scheduleKind = 'recurrence';
+  source.scheduledSlots = ['2026-08-01T07:00:00.000Z'];
+  source.onceDate = '2026-08-01';
+  source.onceTime = '10:00';
+  source.recurrence = {
+    frequency: 'weekly',
+    interval: 1,
+    weekdays: [1, 3],
+    times: ['10:00'],
+    startsAt: '2026-08-01T00:00:00.000Z',
+    endsAt: null,
+    maxOccurrences: 30,
+  };
+
+  const duplicate = createPublicationDuplicateDraft(source);
+
+  assert.equal(duplicate.title, source.title);
+  assert.equal(duplicate.text, source.text);
+  assert.deepEqual(duplicate.targets, source.targets);
+  assert.equal(duplicate.timingMode, 'schedule');
+  assert.equal(duplicate.scheduleKind, 'slots');
+  assert.deepEqual(duplicate.scheduledSlots, []);
+  assert.equal(duplicate.onceDate, '');
+  assert.equal(duplicate.onceTime, '');
+  assert.deepEqual(duplicate.recurrence.weekdays, []);
+  assert.deepEqual(duplicate.recurrence.times, []);
+  assert.equal(duplicate.recurrence.startsAt, null);
+});
+
 test('scopes publication drafts by MAX user id', () => {
   assert.equal(buildPublicationDraftStorageKey('1001'), 'maxim:publications-composer:v1:1001');
   assert.equal(buildPublicationDraftStorageKey('1002'), 'maxim:publications-composer:v1:1002');
   assert.notEqual(buildPublicationDraftStorageKey('1001'), buildPublicationDraftStorageKey('1002'));
   assert.equal(buildPublicationDraftStorageKey(null), 'maxim:publications-composer:v1:anonymous');
+});
+
+test('keeps intentional schedules when migrating a legacy publication draft', () => {
+  const slotsDraft = parsePublicationDraftEnvelope({
+    version: 1,
+    savedAt: '2026-07-11T09:00:00.000Z',
+    draft: {
+      timingMode: 'schedule',
+      scheduleKind: 'slots',
+      scheduledSlots: ['2026-08-01T09:00:00.000Z'],
+      recurrence: { weekdays: [1], times: ['09:00'] },
+    },
+  });
+  const recurrenceDraft = parsePublicationDraftEnvelope({
+    version: 1,
+    savedAt: '2026-07-11T09:00:00.000Z',
+    draft: {
+      timingMode: 'schedule',
+      scheduleKind: 'recurrence',
+      scheduledSlots: ['2026-08-01T09:00:00.000Z'],
+      recurrence: {
+        frequency: 'weekly',
+        interval: 2,
+        weekdays: [1, 4],
+        times: ['09:00'],
+        startsAt: null,
+        maxOccurrences: 12,
+      },
+    },
+  });
+  const nowDraft = parsePublicationDraftEnvelope({
+    version: 1,
+    savedAt: '2026-07-11T09:00:00.000Z',
+    draft: {
+      timingMode: 'now',
+      scheduledSlots: ['2026-08-01T09:00:00.000Z'],
+      recurrence: { weekdays: [1], times: ['09:00'] },
+    },
+  });
+
+  assert.deepEqual(slotsDraft?.scheduledSlots, ['2026-08-01T09:00:00.000Z']);
+  assert.deepEqual(recurrenceDraft?.scheduledSlots, []);
+  assert.deepEqual(recurrenceDraft?.recurrence.weekdays, [1, 4]);
+  assert.deepEqual(recurrenceDraft?.recurrence.times, ['09:00']);
+  assert.equal(recurrenceDraft?.recurrence.startsAt, null);
+  assert.equal(recurrenceDraft?.recurrence.maxOccurrences, 12);
+  assert.deepEqual(nowDraft?.scheduledSlots, []);
+  assert.deepEqual(nowDraft?.recurrence.weekdays, []);
+  assert.deepEqual(nowDraft?.recurrence.times, []);
 });
 
 test('recognizes current publication calendar conflict copy', () => {
@@ -251,5 +360,36 @@ test('publication client uses v2 create and test endpoints', async () => {
       ['/publications', 'POST'],
       ['/publications/test', 'POST'],
     ],
+  );
+});
+
+test('publication client requests target-aware calendar availability', async () => {
+  const calls: Array<{ path: string; init?: ApiRequestInit }> = [];
+  const api: ApiTransport = {
+    request: async (path, init) => {
+      calls.push({ path, init });
+      return {
+        from: '2026-08-01T00:00:00.000Z',
+        to: '2026-08-31T23:59:59.999Z',
+        slots: [{ scheduledAt: '2026-08-01T09:00:00.000Z', targetCount: 1 }],
+      };
+    },
+    requestKeepalive: () => undefined,
+  };
+
+  const result = await getPublicationCalendarAvailability(api, {
+    audience: {
+      selection: 'SELECTED',
+      mode: 'SNAPSHOT',
+      targets: [{ chatId: chatTarget.id, entityType: chatTarget.entityType }],
+    },
+    from: '2026-08-01T00:00:00.000Z',
+    to: '2026-08-31T23:59:59.999Z',
+  });
+
+  assert.deepEqual(result.slots, [{ scheduledAt: '2026-08-01T09:00:00.000Z', targetCount: 1 }]);
+  assert.deepEqual(
+    calls.map((call) => [call.path, call.init?.method]),
+    [['/publications/calendar-availability', 'POST']],
   );
 });

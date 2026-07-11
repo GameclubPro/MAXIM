@@ -1,7 +1,9 @@
 import type { BroadcastImage, BroadcastLinkButton } from '@maxim/contracts';
+import { formatLocalDateTimeInputValue } from '../../lib/broadcast-schedule';
 import { getInitDataUserId } from '../../lib/init-data';
-import type {
-  PublicationDraft,
+import {
+  createEmptyPublicationDraft,
+  type PublicationDraft,
   PublicationTarget,
   PublicationTimingMode,
 } from './publication-model';
@@ -116,11 +118,28 @@ function readRecurrence(value: unknown): PublicationDraft['recurrence'] {
   };
 }
 
-function parseDraftEnvelope(value: unknown): PublicationDraft | null {
+export function parsePublicationDraftEnvelope(value: unknown): PublicationDraft | null {
   if (!isObject(value) || value.version !== STORAGE_VERSION || !isObject(value.draft)) {
     return null;
   }
   const draft = value.draft;
+  const hasExplicitTimingFields =
+    Object.prototype.hasOwnProperty.call(draft, 'onceDate') ||
+    Object.prototype.hasOwnProperty.call(draft, 'onceTime');
+  const timingMode = readTimingMode(draft.timingMode);
+  const scheduleKind = draft.scheduleKind === 'recurrence' ? 'recurrence' : 'slots';
+  const safeTimingDefaults = createEmptyPublicationDraft().recurrence;
+  const scheduledSlots = Array.isArray(draft.scheduledSlots)
+    ? draft.scheduledSlots.filter((item): item is string => typeof item === 'string')
+    : [];
+  const shouldRestoreLegacySlots =
+    hasExplicitTimingFields ||
+    timingMode === 'once' ||
+    (timingMode === 'schedule' && scheduleKind === 'slots');
+  const shouldRestoreLegacyRecurrence =
+    hasExplicitTimingFields || (timingMode === 'schedule' && scheduleKind === 'recurrence');
+  const storedOnceValue = scheduledSlots[0] ? formatLocalDateTimeInputValue(scheduledSlots[0]) : '';
+  const [storedOnceDate = '', storedOnceTime = ''] = storedOnceValue.split('T');
   return {
     title: readString(draft.title),
     text: readString(draft.text),
@@ -128,13 +147,21 @@ function parseDraftEnvelope(value: unknown): PublicationDraft | null {
     buttons: readButtons(draft.buttons),
     buttonEnabled: draft.buttonEnabled === true,
     targets: readTargets(draft.targets),
-    timingMode: readTimingMode(draft.timingMode),
-    scheduleKind: draft.scheduleKind === 'recurrence' ? 'recurrence' : 'slots',
-    scheduledSlots: Array.isArray(draft.scheduledSlots)
-      ? draft.scheduledSlots.filter((item): item is string => typeof item === 'string')
-      : [],
+    timingMode,
+    scheduleKind,
+    scheduledSlots: shouldRestoreLegacySlots ? scheduledSlots : [],
+    onceDate:
+      hasExplicitTimingFields || timingMode === 'once'
+        ? readString(draft.onceDate) || storedOnceDate
+        : '',
+    onceTime:
+      hasExplicitTimingFields || timingMode === 'once'
+        ? readString(draft.onceTime) || storedOnceTime
+        : '',
     scheduleTimezone: readString(draft.scheduleTimezone) || 'Europe/Moscow',
-    recurrence: readRecurrence(draft.recurrence),
+    recurrence: shouldRestoreLegacyRecurrence
+      ? readRecurrence(draft.recurrence)
+      : safeTimingDefaults,
     mediaType: draft.mediaType === 'video' ? 'video' : null,
     mediaPayload: isObject(draft.mediaPayload) ? draft.mediaPayload : null,
     mediaBase64: readString(draft.mediaBase64),
@@ -169,7 +196,7 @@ async function readIndexedDraft(storageKey: string): Promise<PublicationDraft | 
     const transaction = db.transaction(STORE_NAME, 'readonly');
     const request = transaction.objectStore(STORE_NAME).get(storageKey);
     request.onerror = () => resolve(null);
-    request.onsuccess = () => resolve(parseDraftEnvelope(request.result));
+    request.onsuccess = () => resolve(parsePublicationDraftEnvelope(request.result));
     transaction.oncomplete = () => db.close();
     transaction.onerror = () => db.close();
   });
@@ -220,7 +247,7 @@ export async function loadPublicationDraft(): Promise<PublicationDraft | null> {
   }
   try {
     const value = window.localStorage.getItem(storageKey);
-    return value ? parseDraftEnvelope(JSON.parse(value)) : null;
+    return value ? parsePublicationDraftEnvelope(JSON.parse(value)) : null;
   } catch {
     return null;
   }

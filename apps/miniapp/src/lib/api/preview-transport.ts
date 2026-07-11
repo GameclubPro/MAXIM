@@ -163,6 +163,8 @@ import {
   listPublicationsQuerySchema,
   listPublicationsResponseSchema,
   publicationActionRequestSchema,
+  publicationCalendarAvailabilityRequestSchema,
+  publicationCalendarAvailabilityResponseSchema,
   publicationDetailsSchema,
   resolvePublicationAmbiguousDeliveryRequestSchema,
   retryPublicationOccurrenceRequestSchema,
@@ -7976,6 +7978,54 @@ function handlePublicationsRequest(
   method: string,
   init: RequestInit,
 ) {
+  if (segments.length === 2 && segments[1] === 'calendar-availability' && method === 'POST') {
+    const payload = publicationCalendarAvailabilityRequestSchema.parse(parseJsonBody(init));
+    const requestedTargets = new Set(
+      payload.audience.targets.map((target) => `${target.entityType}:${target.chatId}`),
+    );
+    const from = Date.parse(payload.from);
+    const to = Date.parse(payload.to);
+    const slots = new Map<string, Set<string>>();
+    for (const candidate of state.publications) {
+      if (
+        candidate.id === payload.excludePublicationId ||
+        candidate.lifecycle === 'COMPLETED' ||
+        candidate.lifecycle === 'CANCELED'
+      ) {
+        continue;
+      }
+      const matchingTargets = candidate.targets.filter((target) =>
+        requestedTargets.has(`${target.entityType}:${target.chatId}`),
+      );
+      if (matchingTargets.length === 0) {
+        continue;
+      }
+      for (const occurrence of candidate.occurrences) {
+        const scheduledAt = Date.parse(occurrence.scheduledAt);
+        if (
+          !Number.isFinite(scheduledAt) ||
+          scheduledAt < from ||
+          scheduledAt > to ||
+          (occurrence.status !== 'SCHEDULED' && occurrence.status !== 'IN_PROGRESS')
+        ) {
+          continue;
+        }
+        const targetSet = slots.get(occurrence.scheduledAt) ?? new Set<string>();
+        for (const target of matchingTargets) {
+          targetSet.add(`${target.entityType}:${target.chatId}`);
+        }
+        slots.set(occurrence.scheduledAt, targetSet);
+      }
+    }
+    return publicationCalendarAvailabilityResponseSchema.parse({
+      from: payload.from,
+      to: payload.to,
+      slots: [...slots.entries()]
+        .sort(([left], [right]) => Date.parse(left) - Date.parse(right))
+        .map(([scheduledAt, targetSet]) => ({ scheduledAt, targetCount: targetSet.size })),
+    });
+  }
+
   if (segments.length === 1) {
     if (method === 'GET') {
       const query = listPublicationsQuerySchema.parse(Object.fromEntries(url.searchParams));

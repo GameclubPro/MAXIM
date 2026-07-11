@@ -42,6 +42,7 @@ import {
   buildUpdatePublicationRequest,
   canResumePublication,
   createEmptyPublicationDraft,
+  createPublicationDuplicateDraft,
   createPublicationDraftFromDetails,
   getPublicationTargetKey,
   hasFuturePublicationSlot,
@@ -67,6 +68,7 @@ import { getAutopostRules } from '../lib/api/autopost-client';
 import {
   createPublication,
   cancelPublication,
+  getPublicationCalendarAvailability,
   getPublication,
   listPublications,
   pausePublication,
@@ -89,6 +91,7 @@ import {
   parseLocalDateTimeInputValue,
   sortAndUniqueBroadcastSlots,
 } from '../lib/broadcast-schedule';
+import { addDays, getBroadcastPlannerWindow, startOfDay } from '../lib/broadcast-planner-time';
 import { formatRussianCountLabel } from '../lib/broadcast-audience';
 import { cn } from '../lib/cn';
 import { sortManagedAutopostRules } from '../lib/managed-autopost-ui';
@@ -103,7 +106,7 @@ type PublicationEditorContext =
 
 type PublicationActionTarget = {
   publication: PublicationSummary;
-  action: 'delete' | 'pause' | 'resume';
+  action: 'cancel' | 'pause' | 'resume';
 };
 
 type PublicationAmbiguousTarget = {
@@ -112,6 +115,11 @@ type PublicationAmbiguousTarget = {
   deliveryId: string;
   resolution: 'mark_sent' | 'mark_failed';
 };
+
+function getPublicationCalendarRange(now = new Date()): { from: string; to: string } {
+  const { start, end } = getBroadcastPlannerWindow(now);
+  return { from: start.toISOString(), to: end.toISOString() };
+}
 
 const queryKeys = {
   sources: ['publications', 'sources'] as const,
@@ -123,13 +131,15 @@ const queryKeys = {
     entityFilter: PublicationEntityFilter,
     statusFilter: PublicationStatusFilter,
   ) => ['publications', 'list', view, query, entityFilter, statusFilter] as const,
+  calendar: (targetsKey: string, excludePublicationId: string | null, from: string, to: string) =>
+    ['publications', 'calendar', targetsKey, excludePublicationId, from, to] as const,
 };
 
 const PUBLICATION_LIST_PAGE_SIZE = 30;
 
 const VIEW_OPTIONS: Array<{ value: PublicationView; label: string }> = [
-  { value: 'plan', label: 'План' },
-  { value: 'schedules', label: 'Расписания' },
+  { value: 'plan', label: 'Текущие' },
+  { value: 'schedules', label: 'По времени' },
   { value: 'history', label: 'История' },
 ];
 
@@ -139,13 +149,27 @@ const ENTITY_FILTERS: Array<{ value: PublicationEntityFilter; label: string }> =
   { value: 'channel', label: 'Каналы' },
 ];
 
-const STATUS_FILTERS: Array<{ value: PublicationStatusFilter; label: string }> = [
-  { value: 'all', label: 'Все статусы' },
-  { value: 'active', label: 'Активные' },
-  { value: 'paused', label: 'На паузе' },
-  { value: 'completed', label: 'Завершённые' },
-  { value: 'failed', label: 'С ошибкой' },
-];
+const STATUS_FILTERS_BY_VIEW: Record<
+  PublicationView,
+  Array<{ value: PublicationStatusFilter; label: string }>
+> = {
+  plan: [
+    { value: 'all', label: 'Все статусы' },
+    { value: 'active', label: 'Активные' },
+    { value: 'paused', label: 'На паузе' },
+    { value: 'failed', label: 'С ошибкой' },
+  ],
+  schedules: [
+    { value: 'all', label: 'Все статусы' },
+    { value: 'active', label: 'Активные' },
+    { value: 'paused', label: 'На паузе' },
+    { value: 'failed', label: 'С ошибкой' },
+  ],
+  history: [
+    { value: 'all', label: 'Вся история' },
+    { value: 'completed', label: 'Завершённые и отменённые' },
+  ],
+};
 
 const WEEKDAYS = [
   { value: 1, label: 'Пн' },
@@ -223,6 +247,13 @@ function formatPublicationTargets(publication: PublicationSummary): string {
 }
 
 function formatRecurrence(draft: PublicationDraft): string {
+  if (
+    !draft.recurrence.startsAt ||
+    draft.recurrence.times.length === 0 ||
+    (draft.recurrence.frequency === 'weekly' && draft.recurrence.weekdays.length === 0)
+  ) {
+    return 'Настройте повтор';
+  }
   const interval = draft.recurrence.interval;
   const frequency =
     draft.recurrence.frequency === 'daily'
@@ -248,6 +279,9 @@ function formatDraftTiming(draft: PublicationDraft): string {
     return formatRecurrence(draft);
   }
   const slots = sortAndUniqueBroadcastSlots(draft.scheduledSlots);
+  if (slots.length === 0) {
+    return 'Время не выбрано';
+  }
   return slots.length === 1
     ? formatDateTime(slots[0] ?? null, draft.scheduleTimezone)
     : formatRussianCountLabel(slots.length, 'отправка', 'отправки', 'отправок');
@@ -262,12 +296,13 @@ function formatPublicationSchedule(publication: PublicationSummary): string {
     return 'Сейчас';
   }
   if (schedule.mode === 'once') {
-    return formatDateTime(schedule.at, schedule.timezone);
+    return `Следующая · ${formatDateTime(schedule.at, schedule.timezone)}`;
   }
   if (schedule.mode === 'slots') {
-    return schedule.slots.length === 1
-      ? formatDateTime(schedule.slots[0] ?? null, schedule.timezone)
-      : formatRussianCountLabel(schedule.slots.length, 'отправка', 'отправки', 'отправок');
+    if (schedule.nextOccurrenceAt) {
+      return `Следующая · ${formatDateTime(schedule.nextOccurrenceAt, schedule.timezone)}`;
+    }
+    return formatRussianCountLabel(schedule.slots.length, 'отправка', 'отправки', 'отправок');
   }
   const interval = schedule.interval;
   const frequency =
@@ -278,7 +313,10 @@ function formatPublicationSchedule(publication: PublicationSummary): string {
       : interval === 1
         ? 'Каждую неделю'
         : `Каждые ${interval} нед.`;
-  return `${frequency} · ${schedule.times.join(', ')}`;
+  const next = schedule.nextOccurrenceAt
+    ? `Следующая · ${formatDateTime(schedule.nextOccurrenceAt, schedule.timezone)}`
+    : '';
+  return next || `${frequency} · ${schedule.times.join(', ')}`;
 }
 
 function getLifecycleLabel(lifecycle: PublicationLifecycle): string {
@@ -362,6 +400,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
   const [videoPreparing, setVideoPreparing] = useState(false);
   const [pendingReview, setPendingReview] = useState(false);
   const [pendingConflict, setPendingConflict] = useState(false);
+  const [validationAttempted, setValidationAttempted] = useState(false);
   const [actionTarget, setActionTarget] = useState<PublicationActionTarget | null>(null);
   const [detailsTarget, setDetailsTarget] = useState<PublicationSummary | null>(null);
   const [ambiguousTarget, setAmbiguousTarget] = useState<PublicationAmbiguousTarget | null>(null);
@@ -380,6 +419,44 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     },
   });
   const targets = sourcesQuery.data ?? [];
+  const [calendarRange, setCalendarRange] = useState(() => getPublicationCalendarRange());
+  const calendarTargetsKey = useMemo(
+    () =>
+      draft.targets
+        .map((target) => getPublicationTargetKey(target))
+        .sort((left, right) => left.localeCompare(right))
+        .join(','),
+    [draft.targets],
+  );
+  const calendarExcludePublicationId =
+    editorContext?.kind === 'edit' ? editorContext.publicationId : null;
+  const calendarAvailabilityQuery = useQuery({
+    queryKey: queryKeys.calendar(
+      calendarTargetsKey,
+      calendarExcludePublicationId,
+      calendarRange.from,
+      calendarRange.to,
+    ),
+    queryFn: () =>
+      getPublicationCalendarAvailability(api, {
+        audience: {
+          selection: 'SELECTED',
+          mode: 'SNAPSHOT',
+          targets: draft.targets.map((target) => ({
+            chatId: target.id,
+            entityType: target.entityType,
+          })),
+        },
+        from: calendarRange.from,
+        to: calendarRange.to,
+        ...(calendarExcludePublicationId
+          ? { excludePublicationId: calendarExcludePublicationId }
+          : {}),
+      }),
+    enabled: isEditor && draft.timingMode === 'schedule' && draft.targets.length > 0,
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
+  });
   const legacyAutopostsQuery = useQuery({
     queryKey: queryKeys.legacyAutoposts,
     queryFn: () => getAutopostRules(api),
@@ -395,6 +472,40 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     const timeoutId = window.setTimeout(() => setDebouncedQuery(query.trim()), 250);
     return () => window.clearTimeout(timeoutId);
   }, [query]);
+  useEffect(() => {
+    if (!isEditor) {
+      return undefined;
+    }
+
+    let timeoutId: number | undefined;
+    const refreshCalendarRange = () => {
+      const nextRange = getPublicationCalendarRange();
+      setCalendarRange((currentRange) =>
+        currentRange.from === nextRange.from && currentRange.to === nextRange.to
+          ? currentRange
+          : nextRange,
+      );
+    };
+    const scheduleNextRefresh = () => {
+      refreshCalendarRange();
+      const now = new Date();
+      const nextDay = startOfDay(addDays(now, 1));
+      timeoutId = window.setTimeout(
+        scheduleNextRefresh,
+        Math.max(1_000, nextDay.getTime() - now.getTime() + 1_000),
+      );
+    };
+    const handleWindowFocus = () => refreshCalendarRange();
+
+    scheduleNextRefresh();
+    window.addEventListener('focus', handleWindowFocus);
+    return () => {
+      if (timeoutId !== undefined) {
+        window.clearTimeout(timeoutId);
+      }
+      window.removeEventListener('focus', handleWindowFocus);
+    };
+  }, [isEditor]);
   const listEntityType = entityFilter === 'all' ? undefined : entityFilter;
   const listStatus = statusFilter === 'all' ? undefined : statusFilter;
   const planQuery = useInfiniteQuery({
@@ -528,7 +639,8 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     }) => getPublication(api, publication.id).then((details) => ({ details, mode })),
     onSuccess: ({ details, mode }) => {
       savedCreateDraftRef.current = draft;
-      setDraft(createPublicationDraftFromDetails(details));
+      const sourceDraft = createPublicationDraftFromDetails(details);
+      setDraft(mode === 'duplicate' ? createPublicationDuplicateDraft(sourceDraft) : sourceDraft);
       setEditorContext(
         mode === 'edit'
           ? { kind: 'edit', publicationId: details.id, expectedRevision: details.version }
@@ -552,7 +664,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
   const actionMutation = useMutation({
     mutationFn: ({ publication, action }: PublicationActionTarget) => {
       const payload = { expectedRevision: publication.version, requestId: createRequestId() };
-      if (action === 'delete') {
+      if (action === 'cancel') {
         return cancelPublication(api, publication.id, payload);
       }
       return action === 'pause'
@@ -564,10 +676,10 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
       setDetailsTarget(null);
       await invalidatePublicationQueries();
       pushToast({
-        tone: variables.action === 'delete' ? 'info' : 'success',
+        tone: variables.action === 'cancel' ? 'info' : 'success',
         title:
-          variables.action === 'delete'
-            ? 'Публикация удалена'
+          variables.action === 'cancel'
+            ? 'Публикация отменена'
             : variables.action === 'pause'
               ? 'Расписание на паузе'
               : 'Расписание запущено',
@@ -699,6 +811,12 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
   }, [draft, hasButtonErrors, hasContent, recurrenceError]);
 
   useEffect(() => {
+    if (validationAttempted && validationIssues.length === 0) {
+      setValidationAttempted(false);
+    }
+  }, [validationAttempted, validationIssues.length]);
+
+  useEffect(() => {
     document.body.classList.toggle('publications-editor-open', isEditor);
     return () => document.body.classList.remove('publications-editor-open');
   }, [isEditor]);
@@ -728,8 +846,6 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
                 : [...current.targets, routeTarget],
             },
       );
-    } else if (isPublicationDraftEmpty(draft) && draft.targets.length === 0 && targets[0]) {
-      setDraft((current) => ({ ...current, targets: [targets[0]!] }));
     }
     if (searchParams.get('compose') === '1') {
       setEditorContext({ kind: 'create' });
@@ -745,7 +861,10 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
   );
 
   async function invalidatePublicationQueries() {
-    await queryClient.invalidateQueries({ queryKey: queryKeys.listRoot });
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.listRoot }),
+      queryClient.invalidateQueries({ queryKey: ['publications', 'calendar'] }),
+    ]);
   }
 
   function setComposeRoute(open: boolean) {
@@ -760,6 +879,9 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
 
   function changeView(nextView: PublicationView) {
     setView(nextView);
+    if (!STATUS_FILTERS_BY_VIEW[nextView].some((filter) => filter.value === statusFilter)) {
+      setStatusFilter('all');
+    }
     const next = new URLSearchParams(searchParams);
     if (nextView === 'plan') {
       next.delete('view');
@@ -787,6 +909,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     setEditorContext({ kind: 'create' });
     setButtonErrors(validateBroadcastLinkButtons(draft.buttons));
     setFieldError('');
+    setValidationAttempted(false);
     setComposeRoute(true);
     maxImpact('soft');
   }
@@ -800,6 +923,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     setButtonsOpen(false);
     setPendingReview(false);
     setPendingConflict(false);
+    setValidationAttempted(false);
     setFieldError('');
     setComposeRoute(false);
     if (!preserveDraft) {
@@ -816,6 +940,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     setButtonsOpen(false);
     setPendingReview(false);
     setPendingConflict(false);
+    setValidationAttempted(false);
     setFieldError('');
     setComposeRoute(false);
   }
@@ -866,8 +991,11 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
 
   function handlePrimaryAction() {
     if (validateDraft()) {
+      setValidationAttempted(false);
       setPendingReview(true);
+      return;
     }
+    setValidationAttempted(true);
   }
 
   function handleTest() {
@@ -877,17 +1005,19 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
   }
 
   function updateOnceSlot(part: 'date' | 'time', value: string) {
-    const current = formatLocalDateTimeInputValue(
-      draft.scheduledSlots[0] ?? createEmptyPublicationDraft().scheduledSlots[0] ?? new Date(),
-    );
-    const [currentDate = '', currentTime = '12:00'] = current.split('T');
-    const parsed = parseLocalDateTimeInputValue(
-      part === 'date' ? `${value}T${currentTime}` : `${currentDate}T${value}`,
-    );
-    if (parsed) {
-      setDraft((state) => ({ ...state, scheduledSlots: [parsed] }));
-      setFieldError('');
-    }
+    setDraft((current) => {
+      const onceDate = part === 'date' ? value : current.onceDate;
+      const onceTime = part === 'time' ? value : current.onceTime;
+      const scheduledAt =
+        onceDate && onceTime ? parseLocalDateTimeInputValue(`${onceDate}T${onceTime}`) : null;
+      return {
+        ...current,
+        onceDate,
+        onceTime,
+        scheduledSlots: scheduledAt ? [scheduledAt] : [],
+      };
+    });
+    setFieldError('');
   }
 
   function updateRecurrenceTime(index: number, value: string) {
@@ -904,6 +1034,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
   }
 
   function renderFilters() {
+    const statusFilters = STATUS_FILTERS_BY_VIEW[view];
     const hasActiveFilters = entityFilter !== 'all' || statusFilter !== 'all';
     const showFilterControls = filtersOpen || hasActiveFilters;
 
@@ -963,7 +1094,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
               }
               aria-label="Статус публикаций"
             >
-              {STATUS_FILTERS.map((filter) => (
+              {statusFilters.map((filter) => (
                 <option key={filter.value} value={filter.value}>
                   {filter.label}
                 </option>
@@ -1018,13 +1149,13 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         canResume={canResumePublication(publication.lifecycle)}
         canRetry={publication.delivery.failed > 0 || publication.delivery.ambiguous > 0}
         canDuplicate
-        canDelete={publication.lifecycle !== 'COMPLETED' && publication.lifecycle !== 'CANCELED'}
+        canCancel={publication.lifecycle !== 'COMPLETED' && publication.lifecycle !== 'CANCELED'}
         onEdit={() => openPublicationMutation.mutate({ publication, mode: 'edit' })}
         onPause={() => setActionTarget({ publication, action: 'pause' })}
         onResume={() => setActionTarget({ publication, action: 'resume' })}
         onRetry={() => setDetailsTarget(publication)}
         onDuplicate={() => openPublicationMutation.mutate({ publication, mode: 'duplicate' })}
-        onDelete={() => setActionTarget({ publication, action: 'delete' })}
+        onCancel={() => setActionTarget({ publication, action: 'cancel' })}
         footer={
           publication.delivery.ambiguous > 0 ? (
             <span className="publication-delivery-note is-danger">Проверьте отправку</span>
@@ -1108,21 +1239,6 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         <header className="publications-header">
           <div>
             <h1>Публикации</h1>
-            {view === 'plan' &&
-            planQuery.data &&
-            !planQuery.hasNextPage &&
-            !debouncedQuery &&
-            entityFilter === 'all' &&
-            statusFilter === 'all' ? (
-              <span>
-                {formatRussianCountLabel(
-                  planItems.filter((item) => item.lifecycle === 'ACTIVE').length,
-                  'активная',
-                  'активные',
-                  'активных',
-                )}
-              </span>
-            ) : null}
           </div>
           <button
             type="button"
@@ -1317,6 +1433,23 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
           ) : null}
         </div>
 
+        <label className="publication-recurrence__date">
+          <span>Начать с</span>
+          <input
+            type="date"
+            value={formatDateInput(draft.recurrence.startsAt)}
+            onChange={(event) => {
+              const startsAt = parseLocalDateTimeInputValue(`${event.currentTarget.value}T00:00`);
+              setDraft((current) => ({
+                ...current,
+                recurrence: { ...current.recurrence, startsAt },
+              }));
+              setFieldError('');
+            }}
+            disabled={isBusy}
+          />
+        </label>
+
         <div className="publication-recurrence__end" role="group" aria-label="Завершение">
           {(
             [
@@ -1396,10 +1529,8 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
   }
 
   function renderTiming() {
-    const onceValue = formatLocalDateTimeInputValue(
-      draft.scheduledSlots[0] ?? createEmptyPublicationDraft().scheduledSlots[0] ?? new Date(),
-    );
-    const [onceDate = '', onceTime = '12:00'] = onceValue.split('T');
+    const onceDate = draft.onceDate;
+    const onceTime = draft.onceTime;
     return (
       <section
         ref={timingSectionRef}
@@ -1423,16 +1554,22 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
               aria-pressed={draft.timingMode === option.value}
               className={cn(draft.timingMode === option.value && 'is-active')}
               onClick={() => {
-                setDraft((current) => ({
-                  ...current,
-                  timingMode: option.value,
-                  scheduledSlots:
-                    option.value === 'once'
-                      ? current.scheduledSlots.slice(0, 1)
-                      : current.scheduledSlots.length > 0
-                        ? current.scheduledSlots
-                        : createEmptyPublicationDraft().scheduledSlots,
-                }));
+                setDraft((current) => {
+                  if (current.timingMode === option.value) {
+                    return current;
+                  }
+                  if (option.value === 'once') {
+                    const hasExplicitOnceTime = Boolean(current.onceDate && current.onceTime);
+                    return {
+                      ...current,
+                      timingMode: 'once',
+                      scheduledSlots: hasExplicitOnceTime ? current.scheduledSlots.slice(0, 1) : [],
+                      onceDate: hasExplicitOnceTime ? current.onceDate : '',
+                      onceTime: hasExplicitOnceTime ? current.onceTime : '',
+                    };
+                  }
+                  return { ...current, timingMode: option.value };
+                });
                 setFieldError('');
               }}
               disabled={isBusy}
@@ -1456,6 +1593,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
             <TimeField
               label="Время"
               value={onceTime}
+              allowEmpty
               minuteStep={30}
               onChange={(value) => updateOnceSlot('time', value)}
               disabled={isBusy}
@@ -1489,12 +1627,15 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
             ) : (
               <BroadcastSchedulePlanner
                 value={draft.scheduledSlots}
+                occupiedSlots={
+                  calendarAvailabilityQuery.data?.slots.map((slot) => slot.scheduledAt) ?? []
+                }
                 onChange={(scheduledSlots) => {
                   setDraft((current) => ({ ...current, scheduledSlots }));
                   setFieldError('');
                 }}
-                managedBroadcastsLoading={planQuery.isFetching}
-                calendarRefreshing={planQuery.isFetching}
+                managedBroadcastsLoading={calendarAvailabilityQuery.isLoading}
+                calendarRefreshing={calendarAvailabilityQuery.isFetching}
                 currentTargetLabel={formatTargetSummary(draft.targets)}
                 targetContextLabel={formatTargetSummary(draft.targets)}
                 timingMode="scheduled"
@@ -1507,10 +1648,12 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
           </>
         ) : null}
 
-        {draft.timingMode === 'schedule' && draft.scheduleKind === 'slots' && planQuery.isError ? (
+        {draft.timingMode === 'schedule' &&
+        draft.scheduleKind === 'slots' &&
+        calendarAvailabilityQuery.isError ? (
           <div className="publications-calendar-error" role="alert">
-            <span>План не загрузился.</span>
-            <button type="button" onClick={() => void planQuery.refetch()}>
+            <span>Не удалось загрузить занятые слоты.</span>
+            <button type="button" onClick={() => void calendarAvailabilityQuery.refetch()}>
               <Refresh aria-hidden />
               <span>Повторить</span>
             </button>
@@ -1584,12 +1727,14 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
             type="button"
             onClick={() => {
               if (duplicating) {
-                setDraft(createEmptyPublicationDraft(draft.targets.slice(0, 1)));
+                setDraft(createEmptyPublicationDraft());
                 setButtonErrors([]);
                 setFieldError('');
+                setValidationAttempted(false);
                 return;
               }
-              void clearDraft(draft.targets.slice(0, 1));
+              setValidationAttempted(false);
+              void clearDraft();
             }}
             aria-label="Очистить черновик"
             title="Очистить"
@@ -1650,6 +1795,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
               <input
                 type="file"
                 accept="video/*"
+                aria-label="Выбрать видео для публикации"
                 disabled={isBusy || videoPreparing}
                 onChange={(event) => {
                   const input = event.currentTarget;
@@ -1657,7 +1803,6 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
                     input.value = '';
                   });
                 }}
-                tabIndex={-1}
               />
             </label>
             <BroadcastContentComposer
@@ -1779,14 +1924,14 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
               editing ? 'Изменения' : draft.timingMode === 'schedule' ? 'Расписание' : 'Публикация'
             }
             meta={formatTargetSummary(draft.targets)}
-            issues={validationIssues}
+            issues={validationAttempted ? validationIssues : []}
             busy={isBusy}
             testLabel="Отправить себе"
             compactTestLabel="Тест"
             testAriaLabel="Отправить публикацию себе"
             testDisabled={isBusy || !hasContent || draft.targets.length === 0 || hasButtonErrors}
             primaryLabel={primaryLabel}
-            primaryDisabled={isBusy || validationIssues.length > 0}
+            primaryDisabled={isBusy}
             onTest={handleTest}
             onPrimary={handlePrimaryAction}
           />
@@ -1849,11 +1994,13 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
       <ActionConfirmSheet
         id="publication-conflict"
         open={pendingConflict}
-        title="Время занято"
-        summary="Можно заменить пересекающиеся отправки."
-        confirmLabel="Заменить"
+        title="Есть пересечение"
+        summary="Будут отменены только будущие отправки в совпадающее время для выбранных получателей. Уже опубликованные сообщения и другие даты останутся без изменений."
+        previewTitle={formatDraftTiming(draft)}
+        previewMeta={`Получатели: ${formatTargetSummary(draft.targets)}`}
+        confirmLabel="Отменить и сохранить"
         cancelLabel="Другое время"
-        tone="accent"
+        tone="danger"
         isBusy={saveMutation.isPending}
         onClose={() => {
           setPendingConflict(false);
@@ -1869,22 +2016,27 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         id="publication-action"
         open={actionTarget !== null}
         title={
-          actionTarget?.action === 'delete'
-            ? 'Удалить публикацию?'
+          actionTarget?.action === 'cancel'
+            ? 'Отменить публикацию?'
             : actionTarget?.action === 'pause'
               ? 'Поставить на паузу?'
               : 'Запустить расписание?'
         }
+        summary={
+          actionTarget?.action === 'cancel'
+            ? 'Будущие отправки отменятся, а ошибки нельзя будет повторить.'
+            : undefined
+        }
         previewTitle={actionTarget?.publication.title || actionTarget?.publication.contentPreview}
         confirmLabel={
-          actionTarget?.action === 'delete'
-            ? 'Удалить'
+          actionTarget?.action === 'cancel'
+            ? 'Отменить'
             : actionTarget?.action === 'pause'
               ? 'Пауза'
               : 'Запустить'
         }
         confirmBusyLabel="Сохраняем..."
-        tone={actionTarget?.action === 'delete' ? 'danger' : 'accent'}
+        tone={actionTarget?.action === 'cancel' ? 'danger' : 'accent'}
         isBusy={actionMutation.isPending}
         onClose={() => !actionMutation.isPending && setActionTarget(null)}
         onConfirm={() => actionTarget && actionMutation.mutate(actionTarget)}
@@ -1896,9 +2048,10 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         busy={anyBusy}
         onClose={() => setDetailsTarget(null)}
         onEdit={(publicationId) => {
-          const publication = [...planItems, ...historyItems].find(
-            (item) => item.id === publicationId,
-          );
+          const publication =
+            [...planItems, ...scheduleItems, ...historyItems].find(
+              (item) => item.id === publicationId,
+            ) ?? (detailsTarget?.id === publicationId ? detailsTarget : null);
           if (publication) {
             openPublicationMutation.mutate({ publication, mode: 'edit' });
           }
@@ -1932,6 +2085,12 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
 }
 
 function getRecurrenceError(draft: PublicationDraft): string {
+  if (!draft.recurrence.startsAt) {
+    return 'Выберите дату начала.';
+  }
+  if (!Number.isFinite(Date.parse(draft.recurrence.startsAt))) {
+    return 'Выберите корректную дату начала.';
+  }
   if (draft.recurrence.times.length === 0) {
     return 'Добавьте хотя бы одно время.';
   }

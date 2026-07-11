@@ -22,6 +22,7 @@ import {
 function createService(prismaOverrides: Record<string, unknown> = {}) {
   const prisma = {
     managedBroadcastDelivery: { groupBy: jest.fn().mockResolvedValue([]) },
+    managedBroadcastCalendarReservation: { findMany: jest.fn().mockResolvedValue([]) },
     $queryRaw: jest.fn().mockResolvedValue([]),
     ...prismaOverrides,
   };
@@ -71,6 +72,77 @@ function createPublicationUpdateTransaction() {
 }
 
 describe('PublicationService', () => {
+  it('returns occupied calendar slots only for the selected publication targets', async () => {
+    const scheduledAt = new Date('2026-07-12T09:00:00.000Z');
+    const { service, prisma } = createService({
+      managedBroadcastCalendarReservation: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            entityType: ChatEntityType.CHAT,
+            targetChatId: 'chat-1',
+            scheduledAt,
+            broadcast: { publicationOccurrence: null },
+          },
+        ]),
+      },
+      publicationOccurrence: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            scheduledAt,
+            publication: {
+              targets: [
+                { entityType: ChatEntityType.CHAT, targetChatId: 'chat-1' },
+                { entityType: ChatEntityType.CHANNEL, targetChatId: 'channel-1' },
+              ],
+            },
+          },
+        ]),
+      },
+    });
+    jest.spyOn(service as any, 'resolveAudienceTargets').mockResolvedValue([
+      {
+        chatId: 'chat-1',
+        entityType: 'chat',
+        title: 'Чат',
+        avatarUrl: null,
+        link: null,
+      },
+      {
+        chatId: 'channel-1',
+        entityType: 'channel',
+        title: 'Канал',
+        avatarUrl: null,
+        link: null,
+      },
+    ]);
+
+    const result = await service.getCalendarAvailability({ userId: 'user-1' } as never, {
+      audience: {
+        selection: 'SELECTED',
+        mode: 'SNAPSHOT',
+        targets: [
+          { chatId: 'chat-1', entityType: 'chat' },
+          { chatId: 'channel-1', entityType: 'channel' },
+        ],
+      },
+      from: '2026-07-11T00:00:00.000Z',
+      to: '2026-07-31T23:59:59.999Z',
+    });
+
+    expect(result).toEqual({
+      from: '2026-07-11T00:00:00.000Z',
+      to: '2026-07-31T23:59:59.999Z',
+      slots: [{ scheduledAt: scheduledAt.toISOString(), targetCount: 2 }],
+    });
+    expect(prisma.managedBroadcastCalendarReservation.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          scheduledAt: { gte: expect.any(Date), lte: expect.any(Date) },
+        }),
+      }),
+    );
+  });
+
   it('anchors recurrence and rejects off-grid local times', () => {
     const { service } = createService();
     const now = new Date('2026-07-10T09:00:00.000Z');

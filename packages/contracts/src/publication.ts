@@ -8,6 +8,7 @@ export const MAX_PUBLICATION_BUTTONS = 8;
 export const MAX_PUBLICATION_TARGETS = 500;
 export const MAX_PUBLICATION_RECURRENCE_OCCURRENCES = 365;
 export const MAX_PUBLICATION_LIST_CURSOR_LENGTH = 1_024;
+export const MAX_PUBLICATION_CALENDAR_WINDOW_DAYS = 62;
 
 export const publicationLifecycleSchema = z.enum([
   'DRAFT',
@@ -303,6 +304,53 @@ export const publicationScheduleInputSchema = z.discriminatedUnion('mode', [
   publicationRecurrenceScheduleSchema,
 ]);
 export type PublicationScheduleInput = z.infer<typeof publicationScheduleInputSchema>;
+
+export const publicationCalendarAvailabilityRequestSchema = z
+  .object({
+    audience: publicationAudienceInputSchema,
+    from: publicationDateTimeSchema,
+    to: publicationDateTimeSchema,
+    excludePublicationId: z.string().trim().min(1).max(256).optional(),
+  })
+  .superRefine((value, ctx) => {
+    const from = Date.parse(value.from);
+    const to = Date.parse(value.to);
+    if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['to'],
+        message: 'Конец периода должен быть позже начала.',
+      });
+      return;
+    }
+    if (to - from > MAX_PUBLICATION_CALENDAR_WINDOW_DAYS * 24 * 60 * 60_000) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['to'],
+        message: `Период календаря не может быть больше ${MAX_PUBLICATION_CALENDAR_WINDOW_DAYS} дней.`,
+      });
+    }
+  });
+export type PublicationCalendarAvailabilityRequest = z.infer<
+  typeof publicationCalendarAvailabilityRequestSchema
+>;
+
+export const publicationCalendarAvailabilitySlotSchema = z.object({
+  scheduledAt: publicationDateTimeSchema,
+  targetCount: z.number().int().min(1).max(MAX_PUBLICATION_TARGETS),
+});
+export type PublicationCalendarAvailabilitySlot = z.infer<
+  typeof publicationCalendarAvailabilitySlotSchema
+>;
+
+export const publicationCalendarAvailabilityResponseSchema = z.object({
+  from: publicationDateTimeSchema,
+  to: publicationDateTimeSchema,
+  slots: z.array(publicationCalendarAvailabilitySlotSchema).default([]),
+});
+export type PublicationCalendarAvailabilityResponse = z.infer<
+  typeof publicationCalendarAvailabilityResponseSchema
+>;
 
 export const publicationScheduleSchema = publicationScheduleInputSchema.and(
   z.object({
