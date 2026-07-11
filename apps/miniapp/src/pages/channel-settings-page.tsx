@@ -119,6 +119,7 @@ import {
 } from '../lib/broadcast-composer-draft';
 import { normalizeComposerBroadcastImages } from '../lib/broadcast-image-list-basic';
 import { buildChannelBroadcastSystemButtons } from '../lib/broadcast-system-buttons';
+import { saveUntilLatestDraftIsPersisted } from '../lib/latest-draft-save';
 import { buildBroadcastAudiencePresentation } from '../lib/broadcast-audience-presentation';
 import { cn } from '../lib/cn';
 import { maxNotify, setMaxClosingConfirmation } from '../lib/max-bridge';
@@ -328,46 +329,8 @@ function toLocalTimeInputValue(value: Date): string {
   return `${hours}:${minutes}`;
 }
 
-function buildAutoPostButtonsMode(
-  includeComments: boolean,
-  includeSuggest: boolean,
-): ChannelAutoPostButtonsMode {
-  if (includeComments && includeSuggest) {
-    return 'BOTH';
-  }
-  if (includeComments) {
-    return 'COMMENTS';
-  }
-  if (includeSuggest) {
-    return 'SUGGEST';
-  }
-  return 'OFF';
-}
-
-function sanitizeAutoPostButtonsMode(
-  mode: ChannelAutoPostButtonsMode,
-  commentsEnabled: boolean,
-  suggestEnabled: boolean,
-): ChannelAutoPostButtonsMode {
-  if (!commentsEnabled && !suggestEnabled) {
-    return 'OFF';
-  }
-  if (mode === 'OFF') {
-    return 'OFF';
-  }
-  if (mode === 'COMMENTS') {
-    return commentsEnabled ? 'COMMENTS' : suggestEnabled ? 'SUGGEST' : 'OFF';
-  }
-  if (mode === 'SUGGEST') {
-    return suggestEnabled ? 'SUGGEST' : commentsEnabled ? 'COMMENTS' : 'OFF';
-  }
-  if (mode === 'BOTH') {
-    if (commentsEnabled && suggestEnabled) {
-      return 'BOTH';
-    }
-    return commentsEnabled ? 'COMMENTS' : suggestEnabled ? 'SUGGEST' : 'OFF';
-  }
-  return buildAutoPostButtonsMode(commentsEnabled, suggestEnabled);
+function sanitizeAutoPostButtonsMode(mode: ChannelAutoPostButtonsMode): ChannelAutoPostButtonsMode {
+  return mode;
 }
 
 function isHttpUrl(value: string): boolean {
@@ -900,11 +863,7 @@ function normalizeChannelSettingsDraft(
   draft: ChannelSettings,
   resolvedChannelLink: string,
 ): ChannelSettings {
-  const autoPostButtonsMode = sanitizeAutoPostButtonsMode(
-    draft.autoPostButtonsMode,
-    draft.commentsEnabled,
-    draft.postSuggestionsEnabled,
-  );
+  const autoPostButtonsMode = sanitizeAutoPostButtonsMode(draft.autoPostButtonsMode);
 
   return {
     ...draft,
@@ -936,7 +895,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const [draft, setDraft] = useState<ChannelSettings | null>(null);
   const [savedSnapshot, setSavedSnapshot] = useState<ChannelSettings | null>(null);
   const [autosaveState, setAutosaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [isSavingChannelSettingsForBroadcast, setIsSavingChannelSettingsForBroadcast] =
+    useState(false);
   const saveInFlightRef = useRef<Promise<ChannelSettings> | null>(null);
+  const broadcastSettingsSaveInFlightRef = useRef(false);
   const lastFailedDraftKeyRef = useRef<string | null>(null);
   const latestNormalizedDraftRef = useRef<ChannelSettings | null>(null);
   const latestDraftKeyRef = useRef('');
@@ -1525,11 +1487,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         [key]: value,
       };
 
-      nextDraft.autoPostButtonsMode = sanitizeAutoPostButtonsMode(
-        nextDraft.autoPostButtonsMode,
-        nextDraft.commentsEnabled,
-        nextDraft.postSuggestionsEnabled,
-      );
+      nextDraft.autoPostButtonsMode = sanitizeAutoPostButtonsMode(nextDraft.autoPostButtonsMode);
 
       return nextDraft;
     });
@@ -1602,6 +1560,34 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
     saveInFlightRef.current = request;
     return request;
+  };
+
+  const saveChannelSettingsForBroadcast = async (): Promise<boolean> => {
+    if (!isDirtyRef.current) {
+      return true;
+    }
+    if (broadcastSettingsSaveInFlightRef.current) {
+      return false;
+    }
+
+    broadcastSettingsSaveInFlightRef.current = true;
+    setIsSavingChannelSettingsForBroadcast(true);
+    try {
+      return await saveUntilLatestDraftIsPersisted({
+        getCurrentKey: () => latestDraftKeyRef.current,
+        getSavedKey: (saved) =>
+          JSON.stringify(normalizeChannelSettingsDraft(saved, resolvedChannelLink)),
+        save: () => {
+          const force = latestDraftKeyRef.current === lastFailedDraftKeyRef.current;
+          return saveCurrentDraft({ force });
+        },
+      });
+    } catch {
+      return false;
+    } finally {
+      broadcastSettingsSaveInFlightRef.current = false;
+      setIsSavingChannelSettingsForBroadcast(false);
+    }
   };
 
   const recheckAccessMutation = useMutation({
@@ -2163,13 +2149,37 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     postSuggestionsButtonText: draft.postSuggestionsButtonText,
     autoPostButtonsMode: draft.autoPostButtonsMode,
   });
-  const broadcastSystemButtonOptions = [
+  const broadcastSystemButtonOptions: Array<{
+    value: ChannelAutoPostButtonsMode;
+    label: string;
+    disabled?: boolean;
+  }> = [
     { value: 'OFF', label: 'Нет' },
-    draft.commentsEnabled ? { value: 'COMMENTS', label: 'Комментарии' } : null,
-    draft.postSuggestionsEnabled ? { value: 'SUGGEST', label: 'Предложка' } : null,
-    draft.commentsEnabled && draft.postSuggestionsEnabled ? { value: 'BOTH', label: 'Обе' } : null,
-  ].filter((item): item is { value: ChannelAutoPostButtonsMode; label: string } => item !== null);
-  const showBroadcastSystemButtonMode = broadcastSystemButtonOptions.length > 1;
+    ...(draft.commentsEnabled || draft.autoPostButtonsMode === 'COMMENTS'
+      ? [{ value: 'COMMENTS' as const, label: 'Комментарии', disabled: !draft.commentsEnabled }]
+      : []),
+    ...(draft.postSuggestionsEnabled || draft.autoPostButtonsMode === 'SUGGEST'
+      ? [
+          {
+            value: 'SUGGEST' as const,
+            label: 'Предложка',
+            disabled: !draft.postSuggestionsEnabled,
+          },
+        ]
+      : []),
+    ...(draft.commentsEnabled ||
+    draft.postSuggestionsEnabled ||
+    draft.autoPostButtonsMode === 'BOTH'
+      ? [
+          {
+            value: 'BOTH' as const,
+            label: 'Обе',
+            disabled: !draft.commentsEnabled || !draft.postSuggestionsEnabled,
+          },
+        ]
+      : []),
+  ];
+  const showBroadcastSystemButtonMode = draft.commentsEnabled || draft.postSuggestionsEnabled;
   const broadcastHasButton = normalizedBroadcastButtons.length > 0;
   const broadcastVisibleButtons = [...normalizedBroadcastButtons, ...broadcastSystemButtons];
   const broadcastHasVisibleButtons = broadcastVisibleButtons.length > 0;
@@ -2226,6 +2236,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const isUpdatingManagedBroadcast = updateManagedBroadcastMutation.isPending;
   const isOpeningManagedBroadcastEditor = openManagedBroadcastEditorMutation.isPending;
   const isBroadcastBusy =
+    isSavingChannelSettingsForBroadcast ||
+    autosaveState === 'saving' ||
     sendBroadcastMutation.isPending ||
     sendBroadcastTestMutation.isPending ||
     clearBroadcastHandoffMutation.isPending ||
@@ -2791,8 +2803,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     }
   }
 
-  function confirmBroadcastPublishReview() {
+  async function confirmBroadcastPublishReview() {
     if (!pendingBroadcastPublishReview || isBroadcastBusy) {
+      return;
+    }
+
+    if (!(await saveChannelSettingsForBroadcast())) {
       return;
     }
 
@@ -2815,8 +2831,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastScheduleError('Занято.');
   }
 
-  function confirmBroadcastSlotReplacement() {
-    if (!pendingBroadcastSlotConflict) {
+  async function confirmBroadcastSlotReplacement() {
+    if (!pendingBroadcastSlotConflict || isBroadcastBusy) {
+      return;
+    }
+
+    if (!(await saveChannelSettingsForBroadcast())) {
       return;
     }
 
@@ -2829,8 +2849,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     });
   }
 
-  function handleSaveChannelAutopostRule() {
+  async function handleSaveChannelAutopostRule() {
     if (!chatId || broadcastAutopostDisabled) {
+      return;
+    }
+
+    if (!(await saveChannelSettingsForBroadcast())) {
       return;
     }
 
@@ -2956,8 +2980,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     });
   }
 
-  function handleSendChannelBroadcastTest() {
-    if (!chatId || sendBroadcastTestMutation.isPending) {
+  async function handleSendChannelBroadcastTest() {
+    if (!chatId || isBroadcastBusy) {
       return;
     }
 
@@ -2999,6 +3023,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     }
 
     if (hasError) {
+      return;
+    }
+
+    if (!(await saveChannelSettingsForBroadcast())) {
       return;
     }
 
@@ -3915,15 +3943,17 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           facts={pendingBroadcastReviewFacts}
           confirmLabel={broadcastPrimaryActionLabel}
           confirmBusyLabel={
-            updateManagedBroadcastMutation.isPending
-              ? 'Сохраняем...'
-              : sendBroadcastMutation.isPending
-                ? broadcastTimingMode === 'now'
-                  ? 'Публикуем...'
-                  : 'Планируем...'
-                : '...'
+            isSavingChannelSettingsForBroadcast
+              ? 'Сохраняем настройки...'
+              : updateManagedBroadcastMutation.isPending
+                ? 'Сохраняем...'
+                : sendBroadcastMutation.isPending
+                  ? broadcastTimingMode === 'now'
+                    ? 'Публикуем...'
+                    : 'Планируем...'
+                  : '...'
           }
-          isBusy={sendBroadcastMutation.isPending || updateManagedBroadcastMutation.isPending}
+          isBusy={isBroadcastBusy}
           extraActionBusy={sendBroadcastTestMutation.isPending}
           extraActionDisabled={!broadcastTestReady}
           onExtraAction={handleSendChannelBroadcastTest}

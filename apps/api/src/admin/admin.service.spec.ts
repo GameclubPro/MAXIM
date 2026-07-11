@@ -30651,6 +30651,7 @@ describe('AdminService.sendBroadcast', () => {
                 includeCommentsButton: true,
                 includeSuggestButton: false,
                 suggestButtonText: null,
+                customButtons: [{ text: 'Открыть прайс', url: 'https://max.ru/pricelist' }],
                 autoPostButtonsMode: null,
                 suggestionEntryMode: null,
                 botId: 'bot-3',
@@ -30683,6 +30684,7 @@ describe('AdminService.sendBroadcast', () => {
           threadId: 'thread-ledger-1',
           botId: 'bot-3',
           managedBroadcastSource: 'ledger_recovery',
+          customButtons: [{ text: 'Открыть прайс', url: 'https://max.ru/pricelist' }],
         }),
       }),
     });
@@ -31143,6 +31145,54 @@ describe('AdminService.sendBroadcast', () => {
         },
       ],
       [{ type: 'link', text: 'Тех поддержка ⚙️', url: 'https://max.ru/support' }],
+    ]);
+  });
+
+  it('restores both channel system buttons when comments are enabled again', async () => {
+    const prisma = createPrismaMock();
+    prisma.channelSettings.upsert
+      .mockResolvedValueOnce({
+        chatId: 'channel-1',
+        autoPostButtonsMode: 'BOTH',
+        postSuggestionsEnabled: true,
+        postSuggestionsEntryMode: 'BOT',
+        postSuggestionsButtonText: 'Предложить пост',
+        commentsEnabled: false,
+      })
+      .mockResolvedValueOnce({
+        chatId: 'channel-1',
+        autoPostButtonsMode: 'BOTH',
+        postSuggestionsEnabled: true,
+        postSuggestionsEntryMode: 'BOT',
+        postSuggestionsButtonText: 'Предложить пост',
+        commentsEnabled: true,
+      });
+
+    const service = new AdminService(
+      prisma as never,
+      { getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']) } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const options = {
+      includeCustomButton: false,
+      customButtonText: '',
+      customButtonUrl: '',
+    };
+
+    const disabledCommentsButtons = await (
+      service as unknown as Pick<AdminServicePrivateAccess, 'resolveBroadcastButtons'>
+    ).resolveBroadcastButtons('channel-1', 'channel', options);
+    const restoredCommentsButtons = await (
+      service as unknown as Pick<AdminServicePrivateAccess, 'resolveBroadcastButtons'>
+    ).resolveBroadcastButtons('channel-1', 'channel', options);
+
+    expect(disabledCommentsButtons).toMatchObject([
+      [expect.objectContaining({ text: 'Предложить пост' })],
+    ]);
+    expect(restoredCommentsButtons).toMatchObject([
+      [expect.objectContaining({ text: '💬 Комментарии · 0' })],
+      [expect.objectContaining({ text: 'Предложить пост' })],
     ]);
   });
 
@@ -32752,6 +32802,7 @@ describe('AdminService.sendChannelBroadcast', () => {
         text: 'Пост с обсуждением',
         textFormat: 'plain',
         applyToAllChats: false,
+        buttons: [{ text: 'Заказать рекламу', url: 'https://max.ru/advertiser' }],
         buttonEnabled: false,
         buttonUrl: '',
         buttonText: 'Открыть',
@@ -32771,7 +32822,10 @@ describe('AdminService.sendChannelBroadcast', () => {
       'channel-1',
       'Пост с обсуждением',
       expect.objectContaining({
-        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0' })]],
+        buttons: [
+          [{ type: 'link', text: 'Заказать рекламу', url: 'https://max.ru/advertiser' }],
+          [expect.objectContaining({ text: '💬 Комментарии · 0' })],
+        ],
       }),
       expect.objectContaining({
         trafficClass: 'interactive',
@@ -32797,6 +32851,7 @@ describe('AdminService.sendChannelBroadcast', () => {
           occurrenceIndex: 1,
           text: 'Пост с обсуждением',
           publishedUrl: 'https://max.ru/chats/channel-1/message/mid-channel-comments-1',
+          customButtons: [{ text: 'Заказать рекламу', url: 'https://max.ru/advertiser' }],
         }),
       }),
     });
@@ -36369,6 +36424,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           includeCommentsButton: true,
           includeSuggestButton: true,
           suggestButtonText: 'Предложить пост',
+          customButtons: [{ text: 'Заказать рекламу', url: 'https://max.ru/advertiser' }],
         },
       },
     ]);
@@ -36453,6 +36509,13 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       null,
       expect.objectContaining({
         buttons: [
+          [
+            {
+              type: 'link',
+              text: 'Заказать рекламу',
+              url: 'https://max.ru/advertiser',
+            },
+          ],
           [expect.objectContaining({ text: 'Комментарии · 4', type: 'link' })],
           [expect.objectContaining({ text: 'Предложить пост' })],
         ],
@@ -36465,13 +36528,13 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
     expect(maxBotLinkService.buildMiniappStartUrlSync).not.toHaveBeenCalled();
     const [, , , keyboardOptions] = maxClient.editMessageInlineKeyboard.mock.calls[0] ?? [];
-    const commentsButton = keyboardOptions?.buttons?.[0]?.[0] as { url?: string } | undefined;
+    const commentsButton = keyboardOptions?.buttons?.[1]?.[0] as { url?: string } | undefined;
     expect(commentsButton).toMatchObject({
       url: expect.stringContaining('https://max.ru/entry-bot?startapp='),
     });
   });
 
-  it('refreshes suggestion-only auto-attached channel buttons after a new comment', async () => {
+  it('preserves custom buttons when refreshing auto-attached channel buttons after a comment', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
       entityType: 'CHANNEL',
@@ -36492,6 +36555,10 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           includeCommentsButton: false,
           includeSuggestButton: true,
           suggestButtonText: 'Предложить пост',
+          customButtons: [
+            { text: 'Заказать рекламу', url: 'https://max.ru/advertiser' },
+            { text: 'Прайс', url: 'https://max.ru/pricelist' },
+          ],
         },
       },
     ]);

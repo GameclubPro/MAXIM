@@ -21,34 +21,10 @@ function readTrimmedString(value: unknown): string | null {
 }
 
 export function normalizeChannelAutoPostButtonsMode(
-  settings: Pick<
-    ChannelSettings,
-    'autoPostButtonsMode' | 'commentsEnabled' | 'postSuggestionsEnabled'
-  >,
+  settings: Pick<ChannelSettings, 'autoPostButtonsMode'>,
 ): ChannelSettings['autoPostButtonsMode'] {
-  const commentsAvailable = settings.commentsEnabled;
-  const suggestAvailable = settings.postSuggestionsEnabled;
-  const mode = settings.autoPostButtonsMode;
-
-  if (!commentsAvailable && !suggestAvailable) {
-    return 'OFF';
-  }
-  if (mode === 'OFF') {
-    return 'OFF';
-  }
-  if (mode === 'COMMENTS') {
-    return commentsAvailable ? 'COMMENTS' : suggestAvailable ? 'SUGGEST' : 'OFF';
-  }
-  if (mode === 'SUGGEST') {
-    return suggestAvailable ? 'SUGGEST' : commentsAvailable ? 'COMMENTS' : 'OFF';
-  }
-  if (mode === 'BOTH') {
-    if (commentsAvailable && suggestAvailable) {
-      return 'BOTH';
-    }
-    return commentsAvailable ? 'COMMENTS' : suggestAvailable ? 'SUGGEST' : 'OFF';
-  }
-  return 'OFF';
+  // Delivery intersects this preference with enabled features at send time.
+  return settings.autoPostButtonsMode;
 }
 
 export function sanitizeStoredChannelSettings(settings: unknown): unknown {

@@ -103,6 +103,7 @@
 - `/publications` is the ordinary chat/channel publishing workspace; chat and channel settings are compatibility/handoff surfaces, while VK parsing remains a separate flow.
 - Publication list search, entity/status filters, and the schedules view are server-side and cursor-bound; do not auto-fetch every page for client-side filtering.
 - Managed broadcast rows with `publicationOccurrenceId != null` are Publication execution envelopes. Keep them hidden from legacy broadcast/autopost read, mutation, calendar-overwrite, and retry APIs; new code should use the Publication domain instead.
+- Channel `autoPostButtonsMode` is the owner's retained choice. Do not downgrade it when comments or suggestions are temporarily disabled; delivery must intersect the stored mode with the currently enabled features.
 - Chat settings section apply targets must fail safe to the current chat. Keep `applySettingsTargetSchema`, mini app apply-target defaults, and preview transport defaults aligned on `current`; applying a section to all chats must require an explicit `mode: 'all'`.
 - Keep home-card statistics prefetch imports lazy. Static importing events/stats API clients into `chats-page.tsx` counts against the startup JS budget.
 - Keep mini app chat/channel statistics routes off heavy shared chunks: stats API clients should import `@maxim/contracts` types only, and stats pages should use focused route CSS instead of `lazy-pages.css`.

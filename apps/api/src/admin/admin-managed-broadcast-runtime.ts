@@ -574,6 +574,7 @@ type ManagedBroadcastCommentDialogReference = {
   includeCommentsButton: boolean;
   includeSuggestButton: boolean;
   suggestButtonText: string | null;
+  customButtons: BroadcastLinkButton[];
   autoPostButtonsMode: ChannelSettings['autoPostButtonsMode'] | null;
   suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'] | null;
   botId: string | null;
@@ -4008,6 +4009,7 @@ export class AdminManagedBroadcastRuntime {
       ...(params.broadcastId ? { broadcastId: params.broadcastId } : {}),
       ...(params.occurrenceIndex ? { occurrenceIndex: params.occurrenceIndex } : {}),
       ...(reference.botId ? { botId: reference.botId } : {}),
+      ...(reference.customButtons.length > 0 ? { customButtons: reference.customButtons } : {}),
     };
     const payload =
       reference.entityType === 'channel'
@@ -7379,6 +7381,7 @@ export class AdminManagedBroadcastRuntime {
               includeCommentsButton: reference.includeCommentsButton,
               includeSuggestButton: reference.includeSuggestButton,
               suggestButtonText: reference.suggestButtonText,
+              customButtons: reference.customButtons,
               autoPostButtonsMode: reference.autoPostButtonsMode,
               suggestionEntryMode: reference.suggestionEntryMode,
               botId: reference.botId,
@@ -7440,6 +7443,7 @@ export class AdminManagedBroadcastRuntime {
           typeof reference.suggestButtonText === 'string' && reference.suggestButtonText.trim()
             ? reference.suggestButtonText.trim()
             : null,
+        customButtons: this.normalizeManagedBroadcastButtons(reference.customButtons),
         autoPostButtonsMode:
           typeof reference.autoPostButtonsMode === 'string'
             ? (reference.autoPostButtonsMode as ManagedBroadcastCommentDialogReference['autoPostButtonsMode'])

@@ -14864,9 +14864,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           threadId,
           includeCommentsButton,
           includeSuggestButton,
-          autoPostButtonsMode: this.deriveChannelAutoPostButtonsMode(
-            managedChannel.channelSettings,
-          ),
+          autoPostButtonsMode: managedChannel.channelSettings.autoPostButtonsMode ?? 'OFF',
           suggestionEntryMode: managedChannel.channelSettings.postSuggestionsEntryMode,
           deliveryMode,
           linkType,
@@ -15560,21 +15558,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       includeCommentsButton: includeComments,
       includeSuggestButton: includeSuggest,
     };
-  }
-
-  private deriveChannelAutoPostButtonsMode(
-    settings: Pick<PersistedChannelSettings, 'commentsEnabled' | 'postSuggestionsEnabled'>,
-  ): PersistedChannelSettings['autoPostButtonsMode'] {
-    if (settings.commentsEnabled && settings.postSuggestionsEnabled) {
-      return 'BOTH';
-    }
-    if (settings.commentsEnabled) {
-      return 'COMMENTS';
-    }
-    if (settings.postSuggestionsEnabled) {
-      return 'SUGGEST';
-    }
-    return 'OFF';
   }
 
   private buildChannelAutoPostButtons(

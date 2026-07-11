@@ -35,6 +35,15 @@
   opacity: 0.78;
 }
 
+.segmented-control__item:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.segmented-control__item.is-active:disabled {
+  opacity: 0.72;
+}
+
 .segmented-control__item.is-active {
   color: #0a5fa8;
   border-color: rgba(11, 132, 255, 0.42);

@@ -8800,6 +8800,7 @@ export class AdminService implements OnModuleDestroy {
       includeCommentsButton: boolean;
       includeSuggestButton: boolean;
       suggestButtonText: string | null;
+      customButtons: BroadcastLinkButton[];
       autoPostButtonsMode: ChannelSettings['autoPostButtonsMode'] | null;
       suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'] | null;
       botId: string | null;
@@ -8834,6 +8835,7 @@ export class AdminService implements OnModuleDestroy {
         includeCommentsButton: boolean;
         includeSuggestButton: boolean;
         suggestButtonText: string | null;
+        customButtons: BroadcastLinkButton[];
         autoPostButtonsMode: ChannelSettings['autoPostButtonsMode'] | null;
         suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'] | null;
         botId: string | null;
@@ -8855,6 +8857,7 @@ export class AdminService implements OnModuleDestroy {
           includeCommentsButton: true,
           includeSuggestButton: false,
           suggestButtonText: null,
+          customButtons,
           autoPostButtonsMode: null,
           suggestionEntryMode: null,
           botId: botId ?? null,
@@ -8935,6 +8938,7 @@ export class AdminService implements OnModuleDestroy {
               includeCommentsButton,
               includeSuggestButton,
               suggestButtonText: includeSuggestButton ? suggestButtonText : null,
+              customButtons,
               autoPostButtonsMode,
               suggestionEntryMode: channelSettings.postSuggestionsEntryMode,
               botId: botId ?? null,
@@ -17109,7 +17113,10 @@ export class AdminService implements OnModuleDestroy {
           continue;
         }
 
-        const buttons: MaxMessageButton[][] = [];
+        const buttons = this.buildBroadcastLinkButtonRows(
+          this.normalizeManagedBroadcastButtons(payload.customButtons),
+          { buttonsPerRow: 1 },
+        );
 
         if (includeCommentsButton) {
           buttons.push([
@@ -17153,7 +17160,10 @@ export class AdminService implements OnModuleDestroy {
         continue;
       }
 
-      const buttons: MaxMessageButton[][] = [];
+      const buttons = this.buildBroadcastLinkButtonRows(
+        this.normalizeManagedBroadcastButtons(payload.customButtons),
+        { buttonsPerRow: 1 },
+      );
 
       if (includeCommentsButton) {
         buttons.push([
@@ -17234,20 +17244,23 @@ export class AdminService implements OnModuleDestroy {
         continue;
       }
 
+      const buttons = this.buildBroadcastLinkButtonRows(
+        this.normalizeManagedBroadcastButtons(payload.customButtons),
+      );
+      buttons.push([
+        this.dialogLinkHelper.buildChatDialogButton(
+          chatId,
+          'comments',
+          threadId,
+          formatCommentsButtonText('💬 Комментарии', count),
+          botId,
+        ),
+      ]);
+
       await this.safeUpdateCommentsButton(
         chatId,
         messageId,
-        [
-          [
-            this.dialogLinkHelper.buildChatDialogButton(
-              chatId,
-              'comments',
-              threadId,
-              formatCommentsButtonText('💬 Комментарии', count),
-              botId,
-            ),
-          ],
-        ],
+        buttons,
         'chat',
         botId,
       );

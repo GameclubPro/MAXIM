@@ -35,4 +35,14 @@ test('respects explicit channel autopost system button mode', () => {
       { kind: 'suggest', text: 'Предложить' },
     ],
   );
+
+  assert.deepEqual(
+    buildChannelBroadcastSystemButtons({
+      commentsEnabled: false,
+      postSuggestionsEnabled: true,
+      postSuggestionsButtonText: 'Предложить',
+      autoPostButtonsMode: 'BOTH',
+    }),
+    [{ kind: 'suggest', text: 'Предложить' }],
+  );
 });

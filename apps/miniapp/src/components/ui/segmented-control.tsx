@@ -5,6 +5,7 @@ export type SegmentedOption<T extends string> = {
   value: T;
   label: string;
   count?: number;
+  disabled?: boolean;
 };
 
 type SegmentedControlProps<T extends string> = {
@@ -35,6 +36,7 @@ export function SegmentedControl<T extends string>({
             onClick={() => onChange(option.value)}
             role="tab"
             aria-selected={active}
+            disabled={option.disabled}
           >
             <span>{option.label}</span>
             {typeof option.count === 'number' ? (
