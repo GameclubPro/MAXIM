@@ -174,5 +174,17 @@ describe('bot speech custom override compatibility', () => {
     expect(resolveMessageLimitsSanctionReason('MESSAGE_BLOCKED_WORD', 'казино', '')).toBe(
       'сообщение совпало со стоп-листом чата',
     );
+    expect(resolveMessageLimitsSanctionReason('PHOTO_RATE_LIMIT', null, '')).toBe(
+      'фото отправляются чаще, чем разрешено в чате',
+    );
+    expect(resolveMessageLimitsSanctionReason('PHOTO_RATE_LIMIT', null, 'Свой шаблон')).toBe(
+      'слишком частая отправка фото',
+    );
+    expect(resolveMessageLimitsSanctionReason('STICKER_RATE_LIMIT', null, '')).toBe(
+      'стикеры отправляются чаще, чем разрешено в чате',
+    );
+    expect(resolveMessageLimitsSanctionReason('UNKNOWN_LIMIT', null, '')).toBe(
+      'нарушено ограничение на отправку сообщений',
+    );
   });
 });

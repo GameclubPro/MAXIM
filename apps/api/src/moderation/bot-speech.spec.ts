@@ -124,7 +124,7 @@ describe('bot speech styles', () => {
     );
 
     expect(legacyLinkText).toBe(
-      '**Алексей**, ссылка зафиксирована. Сообщение удалено: ссылки в этом чате запрещены. Без самодеятельности.',
+      '**Алексей**, сообщение удалено: эта ссылка запрещена настройками чата. Без самодеятельности.',
     );
     expect(legacyWarnText).toBe(
       '**Алексей**, предупреждение зафиксировано. Основание: сообщение превышает допустимую длину.',
@@ -138,14 +138,14 @@ describe('bot speech styles', () => {
     const userLabel = '**Алексей**';
 
     expect((service as any).buildGreetingMessage(userLabel, '', 'ROBOT')).toBe(
-      'Привет, **Алексей**. Я Майор Максимов. Помогу с правилами и модерацией чата.',
+      'Привет, **Алексей**. Я Майор Максимов. Подскажу правила и помогу освоиться в чате.',
     );
     expect(
       (service as any).buildNightModeOpenedNotice(23 * 60, 8 * 60, 'Europe/Moscow', '', 'ROBOT'),
-    ).toBe('Чат снова открыт. Обычный режим восстановлен.');
+    ).toBe('Чат снова открыт. Можно отправлять сообщения.');
 
     expect((service as any).buildLinkExplanation(userLabel, true, '', 'ROBOT')).toBe(
-      '**Алексей**, сообщение удалено: ссылки в этом чате запрещены.',
+      '**Алексей**, сообщение удалено: эта ссылка запрещена настройками чата.',
     );
     expect(
       (service as any).buildRequiredSubscriptionWarnExplanation(
@@ -155,7 +155,7 @@ describe('bot speech styles', () => {
         'ROBOT',
       ),
     ).toBe(
-      '**Алексей**, предупреждение: обязательная подписка ещё не подтверждена. Обязательные подписки: Новости MAX.',
+      '**Алексей**, предупреждение: обязательная подписка ещё не подтверждена. Подпишитесь на Новости MAX.',
     );
 
     expect(
@@ -211,7 +211,7 @@ describe('bot speech styles', () => {
     ).toBe('**Алексей**, предупреждение: сообщение превышает допустимую длину.');
 
     expect((service as any).buildGreetingMessage(userLabel, '', 'POLICE')).toBe(
-      'Приветствую, **Алексей**. На связи Майор Максимов. Правила простые: всё фиксируется по факту, без лишнего шума.',
+      'Приветствую, **Алексей**. На связи Майор Максимов. Здесь всё просто: соблюдаем правила, остальное разберём по факту.',
     );
 
     expect((service as any).buildDuplicateHitExplanation(userLabel, true, '', 'POLICE')).toBe(
@@ -226,7 +226,7 @@ describe('bot speech styles', () => {
     ).toBe('Чат снова открыт. Можно снова писать.');
 
     expect((service as any).buildLinkExplanation(userLabel, true, '', 'FRIENDLY')).toBe(
-      '**Алексей**, сообщение удалено: ссылки в этом чате запрещены. Уберите ссылку, и всё будет в порядке.',
+      '**Алексей**, сообщение удалено: эта ссылка запрещена настройками чата. В следующих сообщениях учитывайте правила для ссылок.',
     );
 
     expect(
@@ -308,22 +308,22 @@ describe('bot speech styles', () => {
         'FRIENDLY',
       ),
     ).toBe(
-      '**Алексей**, за сообщения без подписки включён мут. Для доступа подпишитесь на Новости MAX.',
+      '**Алексей**, за сообщения без подписки включён мут. Чтобы писать после его окончания, подпишитесь на Новости MAX.',
     );
 
     expect((service as any).buildGreetingMessage(userLabel, '', 'IRONIC')).toBe(
-      'Привет, **Алексей**. На связи Майор Максимов. Правила не кусаются, пока их не проверяют на прочность.',
+      'Привет, **Алексей**. На связи Майор Максимов. У правил здесь хорошая память, а у меня короткие комментарии.',
     );
     expect(
       (service as any).buildNightModeOpenedNotice(23 * 60, 8 * 60, 'Europe/Moscow', '', 'IRONIC'),
     ).toBe('Чат снова открыт. Лента снова принимает реплики.');
 
     expect((service as any).buildLinkExplanation(userLabel, true, '', 'IRONIC')).toBe(
-      '**Алексей**, ссылка решила пройти без пропуска. Сообщение удалено: ссылки в этом чате запрещены.',
+      '**Алексей**, ссылка решила пройти без пропуска. Сообщение удалено: эта ссылка запрещена настройками чата.',
     );
 
     expect((service as any).buildDuplicateHitExplanation(userLabel, true, '', 'IRONIC')).toBe(
-      '**Алексей**, сообщение вышло на бис. Повтор удалён. На бис сегодня без аншлага.',
+      '**Алексей**, сообщение вышло на бис. Повтор удалён.',
     );
 
     expect(
@@ -342,9 +342,33 @@ describe('bot speech styles', () => {
         '',
         'IRONIC',
       ),
+    ).toBe('**Алексей**, сообщение вышло на бис. Предупреждение за повтор.');
+  });
+
+  it('keeps inherited invitation counters grammatical without rewriting custom copy', () => {
+    const service = createService();
+    const userLabel = '**Алексей**';
+
+    expect(
+      (service as any).buildInvitationAccessExplanation(userLabel, true, 3, 2, '', 'ROBOT'),
     ).toBe(
-      '**Алексей**, сообщение вышло на бис. Предупреждение за повтор. Второй экземпляр убедительнее не стал.',
+      '**Алексей**, сообщение удалено. Чтобы писать в чат, нужно пригласить 3 друзей. Прогресс: 2/3; осталось пригласить 1 друга.',
     );
+    expect(
+      (service as any).buildInvitationAccessMuteExplanation(userLabel, 3, 1, 'POLICE'),
+    ).toBe(
+      '**Алексей**, условие по приглашениям не выполнено. Включён мут. Нужно пригласить 3 друзей; осталось пригласить 2 друзей.',
+    );
+    expect(
+      (service as any).buildInvitationAccessExplanation(
+        userLabel,
+        true,
+        3,
+        2,
+        'Осталось: {remaining_invites}.',
+        'ROBOT',
+      ),
+    ).toBe('Осталось: 1 друга.');
   });
 
   it('keeps current sanction defaults gender-neutral for every bot persona', () => {
@@ -383,11 +407,14 @@ describe('bot speech styles', () => {
         'IRONIC',
       ),
     ).toBe(
-      '**Алексей**, предупреждение: сообщение превышает допустимую длину. Настройки чата спорить не любят.',
+      '**Алексей**, предупреждение: сообщение превышает допустимую длину. У ограничений чата всё довольно буквально.',
     );
 
     expect((service as any).buildLinkMuteExplanation(userLabel, 'IRONIC')).toBe(
-      '**Алексей**, за повторные ссылки включён мут. Ссылочный марафон на паузе.',
+      '**Алексей**, за запрещённую ссылку включён мут. Переход временно закрыт.',
+    );
+    expect((service as any).buildMuteNotice(userLabel, 6, 'IRONIC')).toBe(
+      '**Алексей**, мут включён на 6ч. До конца срока новые сообщения будут удаляться.',
     );
   });
 
@@ -396,10 +423,10 @@ describe('bot speech styles', () => {
     const userLabel = '**Алексей**';
 
     expect((service as any).buildLinkExplanation(userLabel, true, '', 'POLICE', true)).toBe(
-      '**Алексей**, ссылка добавлена при редактировании. Сообщение удалено: ссылка добавлена при редактировании, а ссылки в этом чате запрещены. Манёвр зафиксирован.',
+      '**Алексей**, сообщение удалено: добавленная при редактировании ссылка запрещена настройками чата. Правка правила не отменяет.',
     );
     expect((service as any).buildLinkWarnExplanation(userLabel, '', 'POLICE', true)).toBe(
-      '**Алексей**, предупреждение зафиксировано: ссылка добавлена при редактировании, а ссылки в этом чате запрещены. Тихая правка правила не отменяет.',
+      '**Алексей**, предупреждение зафиксировано: добавленная при редактировании ссылка запрещена настройками чата. Правка правила не отменяет.',
     );
 
     expect(
@@ -420,7 +447,7 @@ describe('bot speech styles', () => {
     const formerRobotDefault = '🔗 {user}, сообщение {message_status}. Причина: {reason}.';
 
     expect((service as any).buildLinkExplanation(userLabel, true, '', 'ROBOT')).toBe(
-      '**Алексей**, сообщение удалено: ссылки в этом чате запрещены.',
+      '**Алексей**, сообщение удалено: эта ссылка запрещена настройками чата.',
     );
     expect(
       (service as any).buildLinkExplanation(userLabel, true, formerRobotDefault, 'ROBOT'),
@@ -447,7 +474,7 @@ describe('bot speech styles', () => {
     ).toBe('Статус: не по форме. Контекст: идёт повтором. ⚠️ Предупреждение записано.');
 
     expect((service as any).buildPhoneNumbersExplanation(userLabel, true, '', 'POLICE')).toBe(
-      '**Алексей**, сообщение удалено. Основание: номера телефонов в сообщениях запрещены. Номер из текста лучше убрать.',
+      '**Алексей**, сообщение удалено: номера телефонов в сообщениях запрещены. Дальше без номера в тексте.',
     );
     expect(
       (service as any).buildPhoneNumbersExplanation(
@@ -497,7 +524,7 @@ describe('bot speech styles', () => {
       '**Алексей**, сообщение удалено: коммерческая реклама запрещена правилами чата. Давайте дальше без этого.',
     );
     expect((service as any).buildTopicFilterExplanation(userLabel, true, null, 'POLICE')).toBe(
-      '**Алексей**, сообщение удалено. Основание: сообщение не соответствует тематике чата. Держитесь темы чата.',
+      '**Алексей**, сообщение удалено: сообщение не соответствует тематике чата. Разговор возвращаем в русло.',
     );
     expect(
       (service as any).buildMessageLimitsExplanation(
@@ -515,7 +542,7 @@ describe('bot speech styles', () => {
         'IRONIC',
       ),
     ).toBe(
-      '**Алексей**, сообщение удалено: сообщение совпало со стоп-листом чата. Настройка оказалась не декоративной.',
+      '**Алексей**, сообщение удалено: сообщение совпало со стоп-листом чата. Настройки не считают себя рекомендациями.',
     );
     expect(
       (service as any).buildMessageLimitsMuteExplanation(
@@ -525,7 +552,7 @@ describe('bot speech styles', () => {
         'POLICE',
       ),
     ).toBe(
-      '**Алексей**, нарушение ограничения зафиксировано. Включён мут. Основание: отправка голосовых сообщений в этом чате отключена.',
+      '**Алексей**, включён мут. Основание: отправка голосовых сообщений в этом чате отключена.',
     );
   });
 
@@ -555,6 +582,12 @@ describe('bot speech styles', () => {
           expect(getBotSpeechSystemTemplate(style, templateKey, persona)).toBe(neutralTemplate);
         }
       }
+    }
+  });
+
+  it('keeps link mute copy accurate when the configured threshold is one', () => {
+    for (const style of BOT_SPEECH_STYLE_VALUES) {
+      expect(getBotSpeechSystemTemplate(style, 'linkMute')).not.toMatch(/повтор|новые ссылки/iu);
     }
   });
 

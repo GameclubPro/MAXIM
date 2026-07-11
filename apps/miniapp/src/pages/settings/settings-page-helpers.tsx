@@ -993,7 +993,7 @@ export function buildSpeechStylePreviewSamples(
       {
         user: 'Алексей',
         message_status: 'удалено',
-        reason: 'ссылки в этом чате запрещены',
+        reason: 'эта ссылка запрещена настройками чата',
       },
       previewContext,
     ),

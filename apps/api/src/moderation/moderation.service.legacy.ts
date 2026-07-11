@@ -3173,8 +3173,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         ? 'ссылка появилась после тихой правки; в этом чате ссылки не проходят'
         : 'в этом чате ссылки не проходят, без ссылок',
       editedMessage
-        ? 'ссылка добавлена при редактировании, а ссылки в этом чате запрещены'
-        : 'ссылки в этом чате запрещены',
+        ? 'добавленная при редактировании ссылка запрещена настройками чата'
+        : 'эта ссылка запрещена настройками чата',
     );
     const messageStatus = resolveBotSpeechMessageStatus(templateText, canDeleteMessage);
     if (editedMessage && !hasTemplateOverride) {
@@ -3317,8 +3317,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         ? 'ссылка появилась после тихой правки; в этом чате ссылки всё ещё нельзя'
         : 'в этом чате ссылки не проходят, без ссылок',
       editedMessage
-        ? 'ссылка добавлена при редактировании, а ссылки в этом чате запрещены'
-        : 'ссылки в этом чате запрещены',
+        ? 'добавленная при редактировании ссылка запрещена настройками чата'
+        : 'эта ссылка запрещена настройками чата',
     );
     const warning = resolveBotSpeechPlaceholder(
       templateText,

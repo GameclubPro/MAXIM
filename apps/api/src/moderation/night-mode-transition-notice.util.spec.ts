@@ -105,7 +105,7 @@ describe('night mode transition notice util', () => {
     ).toBe(true);
     expect(
       isNightModeNoticeMessage({
-        text: 'Чат снова открыт.   Обычный режим восстановлен.',
+        text: 'Чат снова открыт.   Можно отправлять сообщения.',
         settings,
         activeBotSpeechProfile,
       }),
@@ -134,7 +134,7 @@ describe('night mode transition notice util', () => {
     ).toBe(false);
     expect(
       isNightModeNoticeMessage({
-        text: 'Чат снова открыт. Обычный режим восстановлен.',
+        text: 'Чат снова открыт. Можно отправлять сообщения.',
         settings: {
           ...settings,
           nightModeEnabled: false,

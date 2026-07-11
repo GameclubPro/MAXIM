@@ -95,8 +95,8 @@ function majorExplanation(
   reason: string,
   subject = 'Сообщение',
 ): string {
-  if (reason === 'ссылки в этом чате запрещены') {
-    return `${userMention(name)}, ссылка зафиксирована. Сообщение ${messageStatus}: ${reason}. Без самодеятельности.`;
+  if (reason === 'эта ссылка запрещена настройками чата') {
+    return `${userMention(name)}, сообщение ${messageStatus}: ${reason}. Без самодеятельности.`;
   }
 
   if (subject === 'Объявление') {
@@ -113,10 +113,10 @@ function majorExplanation(
     reason.includes('номера телефонов') ||
     reason.includes('лимит')
   ) {
-    return `${userMention(name)}, сообщение ${messageStatus}. Основание: ${reason}. Не усугубляйте.`;
+    return `${userMention(name)}, сообщение ${messageStatus}: ${reason}. При следующей отправке учтите ограничение.`;
   }
 
-  return `${userMention(name)}, сообщение ${messageStatus}. Основание: ${reason}. Нарушение зафиксировано.`;
+  return `${userMention(name)}, сообщение ${messageStatus}: ${reason}. Дальше держимся правил.`;
 }
 
 function duplicateExplanation(name: string, sanction: string): string {
@@ -124,23 +124,23 @@ function duplicateExplanation(name: string, sanction: string): string {
 }
 
 function muteNotice(name: string, duration: string): string {
-  return `${userMention(name)}, оформлен мут на ${duration}. До конца срока новые сообщения будут удаляться.`;
+  return `${userMention(name)}, мут включён на ${duration}. До конца срока новые сообщения будут удаляться.`;
 }
 
 function permanentBanNotice(name: string): string {
-  return `${userMention(name)}, оформлен бан до ручного снятия.`;
+  return `${userMention(name)}, бан включён до ручного снятия.`;
 }
 
 function textFilterWarnNotice(name: string, reason: string): string {
-  return `${userMention(name)}, предупреждение зафиксировано. Основание: ${reason}. Дальше без лишнего шума.`;
+  return `${userMention(name)}, предупреждение зафиксировано: ${reason}. Повторять не стоит.`;
 }
 
 function linkWarnNotice(name: string): string {
-  return `${userMention(name)}, предупреждение зафиксировано: ссылки в этом чате запрещены. Дальше без самодеятельности.`;
+  return `${userMention(name)}, предупреждение зафиксировано: эта ссылка запрещена настройками чата. Дальше без запрещённых ссылок.`;
 }
 
 function editedLinkWarnNotice(name: string): string {
-  return `${userMention(name)}, предупреждение зафиксировано: ссылка добавлена при редактировании, а ссылки в этом чате запрещены. Тихая правка правила не отменяет.`;
+  return `${userMention(name)}, предупреждение зафиксировано: добавленная при редактировании ссылка запрещена настройками чата. Правка правила не отменяет.`;
 }
 
 function messageLimitsWarnNotice(name: string, reason: string): string {
@@ -148,7 +148,7 @@ function messageLimitsWarnNotice(name: string, reason: string): string {
 }
 
 function messageLimitsBanNotice(name: string, reason: string): string {
-  return `${userMention(name)}, оформлен бан до ручного снятия. Основание: ${reason}.`;
+  return `${userMention(name)}, бан включён до ручного снятия. Основание: ${reason}.`;
 }
 
 function topicFilterWarnNotice(name: string, reason: string): string {
@@ -198,11 +198,11 @@ function expectImmediateBanMember(mockFn: jest.Mock, chatId: string, userId: str
 }
 
 function nightModeNotice(window: string, timezone: string): string {
-  return `🌙 Ночной режим действует: ${window} (${timezone}). До открытия новые сообщения будут удаляться. До открытия без самодеятельности.`;
+  return `🌙 Ночной режим: ${window} (${timezone}). До открытия новые сообщения будут удаляться. Всё по графику.`;
 }
 
 function nightModeOpenNotice(): string {
-  return 'Чат снова открыт. Работаем в обычном режиме, без самодеятельности.';
+  return 'Чат снова открыт. Возвращаемся к обычному режиму.';
 }
 
 function createMaxApiError(status: number, message: string, code?: string): Error {
@@ -13823,7 +13823,7 @@ describe('ModerationService', () => {
       );
       (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
         'chat-1',
-        duplicateExplanation('Алексей', 'За повторные сообщения оформлен мут на 6ч.'),
+        duplicateExplanation('Алексей', 'За повторные сообщения включён мут на 6ч.'),
       );
       expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
@@ -15638,7 +15638,7 @@ describe('ModerationService', () => {
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      majorExplanation('Алексей', 'удалено', 'ссылки в этом чате запрещены'),
+      majorExplanation('Алексей', 'удалено', 'эта ссылка запрещена настройками чата'),
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
@@ -15717,7 +15717,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      majorExplanation('Алексей', 'удалено', 'ссылки в этом чате запрещены'),
+      majorExplanation('Алексей', 'удалено', 'эта ссылка запрещена настройками чата'),
     );
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
@@ -16362,7 +16362,7 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      majorExplanation('Алексей', 'удалено', 'ссылки в этом чате запрещены'),
+      majorExplanation('Алексей', 'удалено', 'эта ссылка запрещена настройками чата'),
       {
         button: {
           text: 'Канал',
@@ -16426,7 +16426,7 @@ describe('ModerationService', () => {
       `${majorExplanation(
         'Алексей',
         'удалено',
-        'ссылки в этом чате запрещены',
+        'эта ссылка запрещена настройками чата',
       )}\n\n[Связь с админом](https://max.ru/admin)`,
       {
         textFormat: 'markdown',
@@ -16545,7 +16545,7 @@ describe('ModerationService', () => {
     expect(maxClient.banMember).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      majorExplanation('Алексей', 'не удалено', 'ссылки в этом чате запрещены'),
+      majorExplanation('Алексей', 'не удалено', 'эта ссылка запрещена настройками чата'),
     );
   });
 
@@ -18279,7 +18279,7 @@ describe('ModerationService', () => {
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      '[Алексей](max://user/user-1), сообщение удалено. Основание: номера телефонов в сообщениях запрещены. Номер из текста лучше убрать.',
+      '[Алексей](max://user/user-1), сообщение удалено: номера телефонов в сообщениях запрещены. Дальше без номера в тексте.',
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
@@ -18508,7 +18508,7 @@ describe('ModerationService', () => {
     expectImmediateBanMember(maxClient.banMember, 'chat-1', 'user-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      messageLimitsBanNotice('Алексей', 'частота отправки фото превышает настройку чата'),
+      messageLimitsBanNotice('Алексей', 'фото отправляются чаще, чем разрешено в чате'),
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {

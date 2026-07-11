@@ -355,7 +355,7 @@ describe('NightModeTransitionDeliveryService', () => {
 
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       'chat-1',
-      'Чат снова открыт. Обычный режим восстановлен.',
+      'Чат снова открыт. Можно отправлять сообщения.',
       expect.objectContaining({ textFormat: 'markdown' }),
       expect.objectContaining({
         trafficClass: 'background',

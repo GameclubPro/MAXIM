@@ -296,9 +296,9 @@ export function resolveMessageLimitsSanctionReason(
     VOICE_BLOCKED: 'голосовые сообщения в этом чате отключены',
   };
   const inheritedReasons: Record<string, string> = {
-    PHOTO_RATE_LIMIT: 'частота отправки фото превышает настройку чата',
+    PHOTO_RATE_LIMIT: 'фото отправляются чаще, чем разрешено в чате',
     PHOTO_BLOCKED: 'отправка фото в этом чате отключена',
-    STICKER_RATE_LIMIT: 'частота отправки стикеров превышает настройку чата',
+    STICKER_RATE_LIMIT: 'стикеры отправляются чаще, чем разрешено в чате',
     MESSAGE_RATE_LIMIT: 'за короткое время отправлено слишком много сообщений или стикеров',
     MESSAGE_COUNT_LIMIT: 'лимит сообщений за выбранный период превышен',
     MESSAGE_TOO_LONG: 'сообщение превышает допустимую длину',
@@ -312,7 +312,7 @@ export function resolveMessageLimitsSanctionReason(
     : (legacyReasons[ruleCode] ?? 'нарушение ограничений сообщений');
   const inheritedReason = isMessageLimitsBlockedListRuleCode(ruleCode)
     ? buildMessageLimitsBlockedReason(ruleCode, blockedWord)
-    : (inheritedReasons[ruleCode] ?? 'нарушено ограничение на сообщения');
+    : (inheritedReasons[ruleCode] ?? 'нарушено ограничение на отправку сообщений');
   return resolveBotSpeechPlaceholder(templateText, legacyReason, inheritedReason);
 }
 
