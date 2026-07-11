@@ -36611,7 +36611,11 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       'mid-channel-auto-suggest-99',
       null,
       expect.objectContaining({
-        buttons: [[expect.objectContaining({ text: 'Предложить пост' })]],
+        buttons: [
+          [{ type: 'link', text: 'Заказать рекламу', url: 'https://max.ru/advertiser' }],
+          [{ type: 'link', text: 'Прайс', url: 'https://max.ru/pricelist' }],
+          [expect.objectContaining({ text: 'Предложить пост' })],
+        ],
       }),
     );
   });
