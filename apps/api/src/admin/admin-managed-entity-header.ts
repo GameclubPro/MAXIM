@@ -1,4 +1,9 @@
-import type { ManagedEntityHeader, ManagedEntityType } from '@maxim/contracts';
+import {
+  DEFAULT_BOT_SPEECH_PREVIEW_PROFILE,
+  type BotSpeechPreviewProfile,
+  type ManagedEntityHeader,
+  type ManagedEntityType,
+} from '@maxim/contracts';
 import type { Logger } from '@nestjs/common';
 import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import type { MaxClientService } from '../max/max-client.service';
@@ -80,6 +85,38 @@ export function sanitizePublicManagedEntityHeader(
     sharedMode: 'owned',
     ...(botCount > 0 ? { botCount } : {}),
     ...(hasSharedAutomation ? { hasSharedAutomation } : {}),
+  };
+}
+
+export function resolveManagedEntityBotSpeechPreviewProfile(
+  header: ManagedEntityHeader,
+): BotSpeechPreviewProfile {
+  const assignedBots = Array.isArray(header.assignedBots) ? header.assignedBots : [];
+  const primaryBotId = readTrimmedString(header.primaryBotId);
+  const isActive = (bot: (typeof assignedBots)[number]) =>
+    bot.membershipStatus === 'active' && bot.lifecycleState === 'active';
+  const bot =
+    assignedBots.find((candidate) => candidate.botId === primaryBotId && isActive(candidate)) ??
+    assignedBots.find((candidate) => candidate.role === 'primary' && isActive(candidate)) ??
+    assignedBots.find(isActive) ??
+    assignedBots.find((candidate) => candidate.botId === primaryBotId) ??
+    assignedBots.find((candidate) => candidate.role === 'primary') ??
+    assignedBots[0];
+
+  if (!bot) {
+    return { ...DEFAULT_BOT_SPEECH_PREVIEW_PROFILE };
+  }
+
+  const botId = readTrimmedString(bot.botId);
+  const characterName = readTrimmedString(bot.characterName);
+  const label = readTrimmedString(bot.label);
+  const safeCharacterName = [characterName, label].find(
+    (candidate) => candidate !== null && candidate !== botId,
+  );
+
+  return {
+    persona: bot.speechPersona,
+    characterName: safeCharacterName ?? DEFAULT_BOT_SPEECH_PREVIEW_PROFILE.characterName,
   };
 }
 

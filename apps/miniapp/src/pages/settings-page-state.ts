@@ -17,6 +17,10 @@ export type ApplySectionKey =
   | 'commands'
   | 'extra';
 
+export const BOT_SPEECH_SYNC_SETTING_KEYS = ['botSpeechStyle'] as const satisfies ReadonlyArray<
+  keyof ChatSettings
+>;
+
 export const NIGHT_SECTION_SETTING_KEYS = [
   'nightModeEnabled',
   'nightModeStartTimeMinutes',
@@ -388,4 +392,14 @@ export function mergeCommentsSettings(
   nextSettings.commentsAllEnabled = false;
 
   return nextSettings;
+}
+
+export function mergeBotSpeechStyleSettings(
+  targetSettings: ChatSettings,
+  sourceSettings: ChatSettings,
+): ChatSettings {
+  return {
+    ...targetSettings,
+    botSpeechStyle: sourceSettings.botSpeechStyle,
+  };
 }

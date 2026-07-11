@@ -5,18 +5,46 @@ import {
 } from './max-bot-config.util';
 
 describe('max bot config util', () => {
-  it('defaults the primary bot to male speech persona and legacy character name', () => {
+  it.each([
+    ['id613070470872_9_bot', 'Майор Максимов', 'male'],
+    ['id613002203036_bot', 'Майор Максимов', 'male'],
+    ['id613070470872_5_bot', 'Майор Максимова', 'female'],
+    ['id613002203036_4_bot', 'Майор Максимова', 'female'],
+    ['id613070470872_6_bot', 'Рэкс', 'neutral'],
+    ['id613002203036_5_bot', 'Рэкс', 'neutral'],
+  ] as const)(
+    'resolves the known speech profile for %s without mixing bot identities',
+    (id, characterName, speechPersona) => {
+      const [bot] = buildResolvedMaxBotConfigs({
+        defaultBot: {
+          id,
+          token: 'token-primary-123456',
+          webhookSecretPath: 'secret-path-123456',
+          webhookHeaderSecret: 'header-secret-123456',
+        },
+      });
+
+      expect(bot).toMatchObject({ id, characterName, speechPersona });
+    },
+  );
+
+  it('keeps explicit speech metadata above the built-in profile for a known bot id', () => {
     const [bot] = buildResolvedMaxBotConfigs({
       defaultBot: {
-        id: 'id613002203036_bot',
+        id: 'id613002203036_5_bot',
+        characterName: 'Рэкс тестовый',
+        speechPersona: 'male',
         token: 'token-primary-123456',
         webhookSecretPath: 'secret-path-123456',
         webhookHeaderSecret: 'header-secret-123456',
       },
     });
 
-    expect(bot?.speechPersona).toBe('male');
-    expect(bot?.characterName).toBe('Майор Максимов');
+    expect(bot).toMatchObject({
+      id: 'id613002203036_5_bot',
+      characterName: 'Рэкс тестовый',
+      speechPersona: 'male',
+    });
   });
 
   it('parses dormant additional bots with explicit female persona metadata', () => {
@@ -83,7 +111,6 @@ describe('max bot config util', () => {
           id: 'id613002203036_4_bot',
           label: 'Майор Максимова',
           characterName: 'Майор Максимова',
-          speechPersona: 'female',
           token: 'token-secondary-123456',
           webhookSecretPath: 'secondary-webhook-path-123456',
           webhookHeaderSecret: 'secondary-webhook-header-123456',
@@ -93,7 +120,6 @@ describe('max bot config util', () => {
           id: 'id613002203036_5_bot',
           label: 'Рэкс',
           characterName: 'Рэкс',
-          speechPersona: 'male',
           token: 'token-rex-123456',
           webhookSecretPath: 'rex-webhook-path-123456',
           webhookHeaderSecret: 'rex-webhook-header-123456',
@@ -110,7 +136,7 @@ describe('max bot config util', () => {
     expect(bots.at(2)).toMatchObject({
       label: 'Рэкс',
       characterName: 'Рэкс',
-      speechPersona: 'male',
+      speechPersona: 'neutral',
       state: 'active',
       visibleInAdmin: true,
       isDefault: false,

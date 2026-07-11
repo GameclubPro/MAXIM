@@ -121,7 +121,7 @@ export function parseAdminForwardedModerationCommand(
   );
   if (banDurationMatch && banDurationMatch.durationText !== null) {
     throw new BadRequestException(
-      `Команда \`${banCommandName}\` теперь делает только постоянный системный бан. Используйте просто \`${banCommandName}\`.`,
+      `Команда \`${banCommandName}\` применяется без срока. Отправьте её без длительности: \`${banCommandName}\`.`,
     );
   }
 
@@ -131,7 +131,7 @@ export function parseAdminForwardedModerationCommand(
   );
   if (banAllDurationMatch && banAllDurationMatch.durationText !== null) {
     throw new BadRequestException(
-      `Команда \`${banAllCommandName}\` теперь делает только постоянный системный бан во всех чатах админа. Используйте просто \`${banAllCommandName}\`.`,
+      `Команда \`${banAllCommandName}\` применяется без срока во всех ваших чатах. Отправьте её без длительности: \`${banAllCommandName}\`.`,
     );
   }
 
@@ -161,7 +161,7 @@ export function parseAdminForwardedModerationCommand(
       silenceDurationHours > MAX_ACTIVE_MUTE_DURATION_HOURS
     ) {
       throw new BadRequestException(
-        `Длительность тишины должна быть от 1 до ${MAX_ACTIVE_MUTE_DURATION_HOURS} часов.`,
+        `Для закрытия чата укажите срок от 1 до ${MAX_ACTIVE_MUTE_DURATION_HOURS} ч.`,
       );
     }
 
@@ -202,7 +202,7 @@ export function parseAdminForwardedModerationCommand(
     muteDurationHours > MAX_ACTIVE_MUTE_DURATION_HOURS
   ) {
     throw new BadRequestException(
-      `Длительность мута должна быть от 1 до ${MAX_ACTIVE_MUTE_DURATION_HOURS} часов.`,
+      `Для мута укажите срок от 1 до ${MAX_ACTIVE_MUTE_DURATION_HOURS} ч.`,
     );
   }
 
@@ -227,12 +227,10 @@ export function parsePrivateForwardedModerationCommand(
   }
 
   if (
-    /^(?:бан|ban)\s+\d{1,3}(?:\s*(?:ч|час|часа|часов|h|hr|hrs|hour|hours))?[.!]?$/u.test(
-      normalized,
-    )
+    /^(?:бан|ban)\s+\d{1,3}(?:\s*(?:ч|час|часа|часов|h|hr|hrs|hour|hours))?[.!]?$/u.test(normalized)
   ) {
     throw new BadRequestException(
-      'Команда «бан» теперь делает только постоянный системный бан. Используйте просто «бан».',
+      'Команда «бан» применяется без срока. Отправьте её без длительности.',
     );
   }
 
@@ -270,7 +268,7 @@ export function parsePrivateForwardedModerationCommand(
     muteDurationHours > MAX_ACTIVE_MUTE_DURATION_HOURS
   ) {
     throw new BadRequestException(
-      `Длительность мута должна быть от 1 до ${MAX_ACTIVE_MUTE_DURATION_HOURS} часов.`,
+      `Для мута укажите срок от 1 до ${MAX_ACTIVE_MUTE_DURATION_HOURS} ч.`,
     );
   }
 
@@ -469,7 +467,9 @@ export function extractPrivateForwardedRulesSources(update: MaxUpdate): Forwarde
   });
 }
 
-export function dedupeForwardedRulesSources(sources: ForwardedRulesSource[]): ForwardedRulesSource[] {
+export function dedupeForwardedRulesSources(
+  sources: ForwardedRulesSource[],
+): ForwardedRulesSource[] {
   const unique = new Map<string, ForwardedRulesSource>();
   for (const source of sources) {
     const key = `${source.chatId}:${source.messageId ?? source.url ?? ''}`;
@@ -586,7 +586,8 @@ function parseForwardedModerationTarget(
   options: ForwardedExtractionOptions = {},
 ): ForwardedModerationTarget | null {
   const chatId =
-    readChatIdFromEntity(row) ?? (isReplyLinkedMessage(row) ? readString(fallbackReplyChatId) : null);
+    readChatIdFromEntity(row) ??
+    (isReplyLinkedMessage(row) ? readString(fallbackReplyChatId) : null);
   const userId = readUserIdFromForwardedNode(row, options);
   if (!chatId || !userId || shouldSkipForwardedChat(chatId, options)) {
     return null;
@@ -901,7 +902,9 @@ function readDisplayNameFromEntity(node: Record<string, unknown>): string | null
   const firstName = readString(
     node.first_name ?? node.firstName ?? node.given_name ?? node.givenName,
   );
-  const lastName = readString(node.last_name ?? node.lastName ?? node.family_name ?? node.familyName);
+  const lastName = readString(
+    node.last_name ?? node.lastName ?? node.family_name ?? node.familyName,
+  );
   const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
   if (fullName.length > 0) {
     return fullName;

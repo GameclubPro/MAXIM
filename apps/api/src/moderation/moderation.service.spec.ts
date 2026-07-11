@@ -91,71 +91,68 @@ function userMention(name: string, userId = 'user-1'): string {
 
 function majorExplanation(
   name: string,
-  messageStatus: 'снято с линии' | 'не по форме',
+  messageStatus: 'удалено' | 'не удалено',
   reason: string,
   subject = 'Сообщение',
 ): string {
-  void messageStatus;
-
-  if (reason === 'в этом чате ссылки не проходят, без ссылок') {
-    return `Товарищ ${userMention(name)}, ссылку снял с линии 🚨 Тут со ссылками без самодеятельности.`;
+  if (reason === 'ссылки в этом чате запрещены') {
+    return `${userMention(name)}, ссылка зафиксирована. Сообщение ${messageStatus}: ${reason}. Без самодеятельности.`;
   }
 
   if (subject === 'Объявление') {
-    return `Товарищ ${userMention(name)}, объявление прикрыл 👮‍♂️ Причина: ${reason}. Подправьте по форме и снова в эфир.`;
+    return `${userMention(name)}, объявление ${messageStatus}. Основание: ${reason}. Исправьте по форме и отправьте снова.`;
   }
 
   if (
     reason.includes('стоп-слово') ||
-    reason.includes('слово из стоп-листа') ||
-    reason.includes('такие сообщения запрещены') ||
-    reason.includes('слишком длинное сообщение') ||
-    reason.includes('видео в этом чате отключены') ||
-    reason.includes('файлы в этом чате отключены') ||
-    reason.includes('голосовые сообщения в этом чате отключены') ||
-    reason.includes('телефонные номера') ||
-    reason.includes('слишком частая отправка')
+    reason.includes('стоп-лист') ||
+    reason.includes('длина сообщения') ||
+    reason.includes('отправка видео') ||
+    reason.includes('отправка файлов') ||
+    reason.includes('отправка голосовых сообщений') ||
+    reason.includes('номера телефонов') ||
+    reason.includes('лимит')
   ) {
-    return `Товарищ ${userMention(name)}, это прикрыл 📏 Причина: ${reason}. Подправьте и снова в эфир.`;
+    return `${userMention(name)}, сообщение ${messageStatus}. Основание: ${reason}. Не усугубляйте.`;
   }
 
-  return `Товарищ ${userMention(name)}, это прикрыл 👮‍♂️ Причина: ${reason}. Подправьте по форме и снова в эфир.`;
+  return `${userMention(name)}, сообщение ${messageStatus}. Основание: ${reason}. Нарушение зафиксировано.`;
 }
 
 function duplicateExplanation(name: string, sanction: string): string {
-  return `Товарищ ${userMention(name)}, вижу повтор 👀 ${sanction}`;
+  return `${userMention(name)}, повтор зафиксирован. ${sanction}`;
 }
 
 function muteNotice(name: string, duration: string): string {
-  return `Товарищ ${userMention(name)}, включаю тихий режим на ${duration} 🔒 До конца срока новые сообщения будут скрываться.`;
+  return `${userMention(name)}, оформлен мут на ${duration}. До конца срока новые сообщения будут удаляться.`;
 }
 
 function permanentBanNotice(name: string): string {
-  return `Товарищ ${userMention(name)}, тут уже шлагбаум ⛔ До ручного разбана.`;
+  return `${userMention(name)}, оформлен бан до ручного снятия.`;
 }
 
 function textFilterWarnNotice(name: string, reason: string): string {
-  return `Товарищ ${userMention(name)}, взял на карандаш 📝 Причина: ${reason}. Дальше без лишнего шума.`;
+  return `${userMention(name)}, предупреждение зафиксировано. Основание: ${reason}. Дальше без лишнего шума.`;
 }
 
 function linkWarnNotice(name: string): string {
-  return `Товарищ ${userMention(name)}, взял на карандаш 📝 По ссылкам тут режим строгий, не доводим до протокола.`;
+  return `${userMention(name)}, предупреждение зафиксировано: ссылки в этом чате запрещены. Дальше без самодеятельности.`;
 }
 
 function editedLinkWarnNotice(name: string): string {
-  return `${userMention(name)}, предупреждение за ссылку. Расчёт на тихую правку был элегантный, но протокол внимательный: ссылки здесь всё ещё нельзя.`;
+  return `${userMention(name)}, предупреждение зафиксировано: ссылка добавлена при редактировании, а ссылки в этом чате запрещены. Тихая правка правила не отменяет.`;
 }
 
 function messageLimitsWarnNotice(name: string, reason: string): string {
-  return `Товарищ ${userMention(name)}, взял на карандаш 📝 Причина: ${reason}.`;
+  return `${userMention(name)}, предупреждение зафиксировано. Основание: ${reason}.`;
 }
 
 function messageLimitsBanNotice(name: string, reason: string): string {
-  return `Товарищ ${userMention(name)}, тут уже шлагбаум ⛔ Причина: ${reason}. До ручного разбана.`;
+  return `${userMention(name)}, оформлен бан до ручного снятия. Основание: ${reason}.`;
 }
 
 function topicFilterWarnNotice(name: string, reason: string): string {
-  return `Товарищ ${userMention(name)}, взял на карандаш 📝 Причина: ${reason}.`;
+  return `${userMention(name)}, предупреждение зафиксировано. Основание: ${reason}.`;
 }
 
 function expectImmediateDeleteMessage(mockFn: jest.Mock, chatId: string, messageId: string) {
@@ -201,11 +198,11 @@ function expectImmediateBanMember(mockFn: jest.Mock, chatId: string, userId: str
 }
 
 function nightModeNotice(window: string, timezone: string): string {
-  return `🌙 Ночной патруль на линии. Чат прикрыт на ${window} (${timezone}). Новые сообщения временно не принимаются.`;
+  return `🌙 Ночной режим действует: ${window} (${timezone}). До открытия новые сообщения будут удаляться. До открытия без самодеятельности.`;
 }
 
 function nightModeOpenNotice(): string {
-  return '☀️ Отбой ночному патрулю. Группа снова открыта. Можно снова в эфир, но без подвигов.';
+  return 'Чат снова открыт. Работаем в обычном режиме, без самодеятельности.';
 }
 
 function createMaxApiError(status: number, message: string, code?: string): Error {
@@ -10930,7 +10927,7 @@ describe('ModerationService', () => {
     expect(adminService.enqueueManualGroupModerationCommand).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      'Команда `супер бан` доступна только разработчику бота.',
+      'Недостаточно прав: команду `супер бан` может запускать только разработчик бота.',
       { textFormat: 'markdown' },
       expect.objectContaining({ immediate: true, botId: 'bot-4' }),
     );
@@ -11333,7 +11330,8 @@ describe('ModerationService', () => {
       enqueueManualGroupModerationCommand: jest.fn(),
       applyManualChatSilenceCommand: jest.fn().mockResolvedValue({
         ok: true,
-        message: 'Тишина включена на 12 ч.',
+        message:
+          'Чат закрыт на 12 ч. До конца срока сообщения участников без прав администратора будут удаляться.',
         durationHours: 12,
         until: '2026-06-20T15:00:00.000Z',
       }),
@@ -11384,7 +11382,7 @@ describe('ModerationService', () => {
     );
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      'Тишина включена на 12 ч.',
+      'Чат закрыт на 12 ч. До конца срока сообщения участников без прав администратора будут удаляться.',
       expect.any(Object),
       expect.objectContaining({
         autoDeleteDelayMs: 180_000,
@@ -11460,7 +11458,8 @@ describe('ModerationService', () => {
       enqueueManualGroupModerationCommand: jest.fn(),
       applyManualChatSilenceCommand: jest.fn().mockResolvedValue({
         ok: true,
-        message: 'Тишина включена на 12 ч.',
+        message:
+          'Чат закрыт на 12 ч. До конца срока сообщения участников без прав администратора будут удаляться.',
         durationHours: 12,
         until: '2026-06-20T15:00:00.000Z',
       }),
@@ -11551,7 +11550,7 @@ describe('ModerationService', () => {
       applyManualChatSilenceCommand: jest.fn(),
       applyManualOpenChatCommand: jest.fn().mockResolvedValue({
         ok: true,
-        message: 'Чат открыт.',
+        message: 'Чат открыт. Для сообщений снова действуют обычные правила.',
       }),
     };
 
@@ -11598,7 +11597,7 @@ describe('ModerationService', () => {
     );
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      'Чат открыт.',
+      'Чат открыт. Для сообщений снова действуют обычные правила.',
       expect.any(Object),
       expect.objectContaining({
         immediate: true,
@@ -12048,9 +12047,7 @@ describe('ModerationService', () => {
     const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
     expect(
       sentTexts.some((text) =>
-        text.includes(
-          'Команда `бан` теперь делает только постоянный системный бан. Используйте просто `бан`.',
-        ),
+        text.includes('Команда `бан` применяется без срока. Отправьте её без длительности: `бан`.'),
       ),
     ).toBe(true);
   });
@@ -12115,7 +12112,11 @@ describe('ModerationService', () => {
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
-    expect(sentTexts.some((text) => text.includes('Команда `бан` работает только'))).toBe(true);
+    expect(
+      sentTexts.some((text) =>
+        text.includes('Команда `бан` применима только к участнику этого чата'),
+      ),
+    ).toBe(true);
   });
 
   it('keeps local allowlist admin bypass even when remote list does not include sender', async () => {
@@ -13185,7 +13186,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      duplicateExplanation('Алексей', 'Взял на карандаш 📝.'),
+      duplicateExplanation('Алексей', 'Предупреждение за повтор зафиксировано.'),
     );
   });
 
@@ -13264,7 +13265,7 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      duplicateExplanation('Алексей', 'Этот экземпляр прикрыл.'),
+      duplicateExplanation('Алексей', 'Повтор удалён. Профилактика сработала.'),
     );
   });
 
@@ -13384,7 +13385,7 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      duplicateExplanation('Алексей', 'Взял на карандаш 📝.'),
+      duplicateExplanation('Алексей', 'Предупреждение за повтор зафиксировано.'),
       {
         button: {
           text: 'Правила',
@@ -13578,7 +13579,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      duplicateExplanation('Алексей', 'Этот экземпляр прикрыл.'),
+      duplicateExplanation('Алексей', 'Повтор удалён. Профилактика сработала.'),
     );
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
@@ -13822,7 +13823,7 @@ describe('ModerationService', () => {
       );
       (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
         'chat-1',
-        duplicateExplanation('Алексей', 'Включаю тихий режим на 6ч 🔒.'),
+        duplicateExplanation('Алексей', 'За повторные сообщения оформлен мут на 6ч.'),
       );
       expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
@@ -13973,7 +13974,7 @@ describe('ModerationService', () => {
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      textFilterWarnNotice('Алексей', 'грубую лексику'),
+      textFilterWarnNotice('Алексей', 'грубая лексика запрещена правилами чата'),
     );
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
@@ -14648,7 +14649,7 @@ describe('ModerationService', () => {
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      majorExplanation('Алексей', 'снято с линии', 'коммерческая реклама в этом чате запрещена'),
+      majorExplanation('Алексей', 'удалено', 'коммерческая реклама запрещена правилами чата'),
       {
         button: {
           text: 'Правила',
@@ -14837,7 +14838,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      majorExplanation('Алексей', 'снято с линии', 'коммерческая реклама в этом чате запрещена'),
+      majorExplanation('Алексей', 'удалено', 'коммерческая реклама запрещена правилами чата'),
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
       data: expect.objectContaining({
@@ -15154,7 +15155,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      textFilterWarnNotice('Алексей', 'коммерческую рекламу'),
+      textFilterWarnNotice('Алексей', 'коммерческая реклама запрещена правилами чата'),
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
@@ -15232,8 +15233,8 @@ describe('ModerationService', () => {
       'chat-1',
       majorExplanation(
         'Алексей',
-        'снято с линии',
-        'объявление должно начинаться с кодового слова "недвижимость"',
+        'удалено',
+        'объявление должно начинаться с кодового слова «недвижимость»',
         'Объявление',
       ),
     );
@@ -15321,8 +15322,8 @@ describe('ModerationService', () => {
       'chat-1',
       majorExplanation(
         senderName,
-        'снято с линии',
-        `объявление должно начинаться с кодового слова "${escapeMaxMarkdown(requiredCodeword)}"`,
+        'удалено',
+        `объявление должно начинаться с кодового слова «${escapeMaxMarkdown(requiredCodeword)}»`,
         'Объявление',
       ),
       expect.objectContaining({ textFormat: 'markdown' }),
@@ -15398,7 +15399,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      topicFilterWarnNotice('Алексей', 'объявление должно начинаться с кодового слова "авторынок"'),
+      topicFilterWarnNotice('Алексей', 'объявление должно начинаться с кодового слова «авторынок»'),
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
@@ -15480,7 +15481,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      `Товарищ ${userMention('Алексей')}, тут уже шлагбаум ⛔ Причина: объявление должно начинаться с кодового слова "недвижимость". До ручного разбана.`,
+      `${userMention('Алексей')}, по материалам повторных нарушений включён бан до ручного снятия. Основание: объявление должно начинаться с кодового слова «недвижимость».`,
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
@@ -15637,7 +15638,7 @@ describe('ModerationService', () => {
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      majorExplanation('Алексей', 'снято с линии', 'в этом чате ссылки не проходят, без ссылок'),
+      majorExplanation('Алексей', 'удалено', 'ссылки в этом чате запрещены'),
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
@@ -15716,7 +15717,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      majorExplanation('Алексей', 'снято с линии', 'в этом чате ссылки не проходят, без ссылок'),
+      majorExplanation('Алексей', 'удалено', 'ссылки в этом чате запрещены'),
     );
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
@@ -16361,7 +16362,7 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      majorExplanation('Алексей', 'снято с линии', 'в этом чате ссылки не проходят, без ссылок'),
+      majorExplanation('Алексей', 'удалено', 'ссылки в этом чате запрещены'),
       {
         button: {
           text: 'Канал',
@@ -16424,8 +16425,8 @@ describe('ModerationService', () => {
       'chat-1',
       `${majorExplanation(
         'Алексей',
-        'снято с линии',
-        'в этом чате ссылки не проходят, без ссылок',
+        'удалено',
+        'ссылки в этом чате запрещены',
       )}\n\n[Связь с админом](https://max.ru/admin)`,
       {
         textFormat: 'markdown',
@@ -16544,7 +16545,7 @@ describe('ModerationService', () => {
     expect(maxClient.banMember).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      majorExplanation('Алексей', 'не по форме', 'в этом чате ссылки не проходят, без ссылок'),
+      majorExplanation('Алексей', 'не удалено', 'ссылки в этом чате запрещены'),
     );
   });
 
@@ -17713,11 +17714,7 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      majorExplanation(
-        'Алексей',
-        'снято с линии',
-        'слишком длинное сообщение: 187 символов при лимите 100',
-      ),
+      majorExplanation('Алексей', 'удалено', 'длина сообщения 187 символов при лимите 100'),
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
   });
@@ -17782,11 +17779,7 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      majorExplanation(
-        'Алексей',
-        'снято с линии',
-        'слишком частая отправка сообщений: не более 2 за 6ч',
-      ),
+      majorExplanation('Алексей', 'удалено', 'лимит 2 сообщений за 6 ч превышен'),
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
   });
@@ -17870,11 +17863,7 @@ describe('ModerationService', () => {
     );
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      majorExplanation(
-        'Алексей',
-        'снято с линии',
-        'слишком частая отправка сообщений: не более 2 за 6ч',
-      ),
+      majorExplanation('Алексей', 'удалено', 'лимит 2 сообщений за 6 ч превышен'),
       expect.objectContaining({
         imagePayload: { token: 'bot-speech-image-1' },
         textFormat: 'markdown',
@@ -17946,7 +17935,10 @@ describe('ModerationService', () => {
     expectImmediateBanMember(maxClient.banMember, 'chat-1', 'user-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      messageLimitsBanNotice('Алексей', 'слишком частая отправка сообщений или стикеров'),
+      messageLimitsBanNotice(
+        'Алексей',
+        'за короткое время отправлено слишком много сообщений или стикеров',
+      ),
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenLastCalledWith({
@@ -18084,7 +18076,10 @@ describe('ModerationService', () => {
     expectImmediateBanMember(maxClient.banMember, 'chat-1', 'user-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      messageLimitsBanNotice('Алексей', 'слишком частая отправка сообщений или стикеров'),
+      messageLimitsBanNotice(
+        'Алексей',
+        'за короткое время отправлено слишком много сообщений или стикеров',
+      ),
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenLastCalledWith({
@@ -18214,7 +18209,7 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      majorExplanation('Алексей', 'снято с линии', 'такие сообщения запрещены в чате'),
+      majorExplanation('Алексей', 'удалено', 'сообщение совпало со стоп-листом чата'),
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
       data: expect.objectContaining({
@@ -18284,7 +18279,7 @@ describe('ModerationService', () => {
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Товарищ [Алексей](max://user/user-1), телефон снял с линии ☎️ Причина: телефонные номера в этом чате запрещены.',
+      '[Алексей](max://user/user-1), сообщение удалено. Основание: номера телефонов в сообщениях запрещены. Номер из текста лучше убрать.',
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
@@ -18361,7 +18356,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      messageLimitsWarnNotice('Алексей', 'слишком длинное сообщение'),
+      messageLimitsWarnNotice('Алексей', 'сообщение превышает допустимую длину'),
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
@@ -18513,7 +18508,7 @@ describe('ModerationService', () => {
     expectImmediateBanMember(maxClient.banMember, 'chat-1', 'user-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      messageLimitsBanNotice('Алексей', 'слишком частая отправка фото'),
+      messageLimitsBanNotice('Алексей', 'частота отправки фото превышает настройку чата'),
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
@@ -19354,7 +19349,7 @@ describe('ModerationService', () => {
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-voice-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      majorExplanation('Алексей', 'снято с линии', 'голосовые сообщения в этом чате отключены'),
+      majorExplanation('Алексей', 'удалено', 'отправка голосовых сообщений в этом чате отключена'),
       {
         button: {
           text: 'Правила чата',

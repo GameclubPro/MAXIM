@@ -100,6 +100,7 @@ import {
   type LogsDashboardRange,
   type LogsDashboardResponse,
   type BotSpeechPersona,
+  type BotSpeechPreviewProfile,
   type ManagedBroadcastDetails,
   type ManagedAutopostHubRuleDetails,
   type ManagedAutopostPayload,
@@ -285,7 +286,7 @@ const PREVIEW_BOT_FIXTURES = [
   {
     botId: PREVIEW_REX_BOT_ID,
     label: PREVIEW_REX_BOT_LABEL,
-    speechPersona: 'male',
+    speechPersona: 'neutral',
     characterName: 'Рэкс',
     avatarColors: ['#39c58f', '#178a68'],
     assistCapabilities: ['access_prewarm'],
@@ -361,6 +362,23 @@ function buildPreviewAssignedBots(
       },
     };
   });
+}
+
+function buildPreviewBotSpeechProfile(
+  primaryBotId: string | null,
+  assignedBots: ChatSummary['assignedBots'],
+): BotSpeechPreviewProfile {
+  const bot =
+    assignedBots.find(
+      (candidate) =>
+        candidate.botId === primaryBotId &&
+        candidate.membershipStatus === 'active' &&
+        candidate.lifecycleState === 'active',
+    ) ?? assignedBots.find((candidate) => candidate.role === 'primary');
+  return {
+    persona: bot?.speechPersona ?? 'neutral',
+    characterName: bot?.characterName?.trim() || bot?.label.trim() || 'Чат-бот',
+  };
 }
 
 function createPreviewChatSummary(
@@ -4785,12 +4803,13 @@ function buildChatSettingsScreen(state: PreviewState, chatId: string): ChatSetti
       link: null,
       participantsCount: state.chatHeaderParticipantsCount,
       avatarUrl: resolveChatAvatarUrl(chatId, state),
-      primaryBotId: state.chatPrimaryBotId,
-      assignedBots,
-      sharedMode: buildPreviewSharedMode(state.chatPartnerAssistEnabled),
+      primaryBotId: null,
+      assignedBots: [],
+      sharedMode: 'owned',
       botCount: assignedBots.length,
       hasSharedAutomation: assignedBots.length > 1,
     },
+    botSpeechPreviewProfile: buildPreviewBotSpeechProfile(state.chatPrimaryBotId, assignedBots),
     requiredSubscriptionChannels: (state.chatSettings.requiredSubscriptionChannelIds ?? []).map(
       (channelId) => {
         const channel =
@@ -4811,9 +4830,9 @@ function buildChatSettingsScreen(state: PreviewState, chatId: string): ChatSetti
             (channel?.entityType === 'chat'
               ? resolveChatAvatarUrl(channelId, state)
               : resolveChannelAvatarUrl(channelId, state)),
-          primaryBotId: channel?.primaryBotId ?? null,
-          assignedBots: channel?.assignedBots ?? [],
-          sharedMode: channel?.sharedMode ?? 'owned',
+          primaryBotId: null,
+          assignedBots: [],
+          sharedMode: 'owned',
           botCount: channel?.botCount,
           hasSharedAutomation: channel?.hasSharedAutomation,
         };
@@ -5630,15 +5649,15 @@ function normalizePreviewGiveawayPrizes(value: unknown): ManagedGiveawayDetails[
 function buildModerationMessage(payload: ManualModerationActionRequest): string {
   const scopeLabel = payload.scope === 'all_chats' ? 'во всех чатах' : 'в этом чате';
   if (payload.action === 'MUTE') {
-    return `Участник замьючен на ${payload.muteDurationHours ?? 24}ч ${scopeLabel} в preview-режиме.`;
+    return `Мут включён на ${payload.muteDurationHours ?? 24} ч ${scopeLabel} (preview).`;
   }
   if (payload.action === 'UNMUTE') {
-    return 'Мут снят в preview-режиме.';
+    return 'Мут снят (preview).';
   }
   if (payload.action === 'UNBAN') {
-    return 'Участник разбанен в preview-режиме.';
+    return 'Блокировка снята (preview).';
   }
-  return `Участник забанен ${scopeLabel} в preview-режиме.`;
+  return `Бан включён ${scopeLabel} (preview).`;
 }
 
 function createModerationResult(

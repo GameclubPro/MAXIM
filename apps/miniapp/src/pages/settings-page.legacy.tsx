@@ -27,7 +27,6 @@ import {
   BOT_SPEECH_STYLE_METADATA,
   BOT_SPEECH_STYLE_OPTIONS,
   applyBotSpeechStylePreset,
-  hasBotSpeechEditableOverrides,
   type BotSpeechStyle,
 } from '@maxim/contracts/bot-speech';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -203,12 +202,14 @@ import { SettingsExtraSection } from './settings/settings-extra-section';
 import { SettingsSectionSaveFooter } from './settings/settings-section-save-footer';
 import { useBroadcastImageDraft } from './settings/use-broadcast-image-draft';
 import {
+  BOT_SPEECH_SYNC_SETTING_KEYS,
   COMMENTS_SETTING_KEYS,
   SECTION_SETTING_KEYS,
   type ApplySectionKey,
   applyNightModeBotMessageEnabledChange,
   applyNightModeEnabledChange,
   hasSectionBotSpeechMediaChanges,
+  mergeBotSpeechStyleSettings,
   mergeCommentsSettings,
   mergeSectionSettings,
 } from './settings-page-state';
@@ -319,10 +320,8 @@ import {
   formatDuplicateAllowanceLabel,
   LINK_POLICY_OPTIONS,
   RUSSIAN_TIMEZONE_OPTIONS,
-  BOT_SPEECH_SYNC_SETTING_KEYS,
   BOT_SPEECH_STYLE_SELECTOR_LABELS,
   resolveBotSpeechPreviewContext,
-  mergeBotSpeechStyleSettings,
   buildSpeechStylePreviewSamples,
   formatApiError,
   minutesToTimeInput,
@@ -879,8 +878,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     data: settingsScreenQuery.data?.header,
   };
   const botSpeechPreviewContext = useMemo(
-    () => resolveBotSpeechPreviewContext(chatHeaderQuery.data ?? null),
-    [chatHeaderQuery.data],
+    () => resolveBotSpeechPreviewContext(settingsScreenQuery.data?.botSpeechPreviewProfile),
+    [settingsScreenQuery.data?.botSpeechPreviewProfile],
   );
   const domainsQuery = {
     data: settingsScreenQuery.data?.domains,
@@ -1365,13 +1364,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const showHeaderStatus = isHeaderSaving || hasPendingHeaderChanges;
   const compactHeaderStatusLabel = isHeaderSaving ? 'Сохр.' : 'Черн.';
   const canSeeThematicFilters = canUserAccessThematicFilters(meQuery.data?.userId);
-  const activeSpeechStyle = useMemo(() => {
-    if (!draft?.botSpeechStyle || hasBotSpeechEditableOverrides(draft)) {
-      return null;
-    }
-
-    return draft.botSpeechStyle;
-  }, [draft]);
+  const activeSpeechStyle = draft?.botSpeechStyle ?? null;
   const pendingSpeechStyleMeta = pendingSpeechStyle
     ? BOT_SPEECH_STYLE_METADATA[pendingSpeechStyle]
     : null;

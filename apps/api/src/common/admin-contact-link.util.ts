@@ -185,6 +185,5 @@ export function appendAdminContactMarkdownLink(
     return text;
   }
 
-  const normalizedText = text.trimEnd();
-  return normalizedText ? `${normalizedText}\n\n${link}` : link;
+  return text.length > 0 ? `${text}\n\n${link}` : link;
 }

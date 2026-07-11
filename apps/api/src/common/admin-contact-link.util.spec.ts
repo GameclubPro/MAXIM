@@ -123,4 +123,13 @@ describe('admin contact markdown links', () => {
       }),
     ).toBeNull();
   });
+
+  it('does not trim custom text before appending the admin contact link', () => {
+    expect(
+      appendAdminContactMarkdownLink('Свой текст  \n', {
+        enabled: true,
+        url: 'https://max.ru/designer',
+      }),
+    ).toBe('Свой текст  \n\n\n[Связь с админом](https://max.ru/designer)');
+  });
 });

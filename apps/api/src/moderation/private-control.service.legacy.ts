@@ -1110,7 +1110,7 @@ export class PrivateControlService {
     const uniqueTargets = dedupePrivateForwardedModerationTargets(targets);
     if (uniqueTargets.length !== 1) {
       throw new BadRequestException(
-        'Перешлите одно сообщение из нужной группы одним сообщением и добавьте слово «бан» или «мут».',
+        'Перешлите ровно одно сообщение из нужного чата и добавьте команду «бан» или «мут».',
       );
     }
 
@@ -1144,8 +1144,8 @@ export class PrivateControlService {
     const chatLabel = target.chatTitle ? target.chatTitle : target.chatId;
     const lines =
       command.action === 'BAN'
-        ? [`Забанен: ${targetLabel}`, `Чат: ${chatLabel}`]
-        : [result.message, `Чат: ${chatLabel}`, `Пользователь: ${targetLabel}`];
+        ? [`Бан включён для: ${targetLabel}`, `Чат: ${chatLabel}`]
+        : [result.message, `Чат: ${chatLabel}`, `Участник: ${targetLabel}`];
     await this.sendImmediate(
       context.chatId,
       lines.join('\n'),
@@ -3388,7 +3388,7 @@ export class PrivateControlService {
         const view = await this.renderManualUsersScreen(context, session);
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
-          notification: 'Показываю пользователей',
+          notification: 'Показываю участников',
         });
         return;
       }
@@ -3397,7 +3397,7 @@ export class PrivateControlService {
         this.assertChatSelected(session);
         const targetUserId = callback.args[0] ?? '';
         if (!targetUserId) {
-          throw new BadRequestException('Нужен user_id');
+          throw new BadRequestException('Не указан user_id участника.');
         }
 
         session.screen = 'manual_actions';
@@ -3405,7 +3405,7 @@ export class PrivateControlService {
         const view = this.renderManualActionsScreen(session.manualTargetUserId);
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
-          notification: 'Пользователь выбран',
+          notification: 'Участник выбран',
         });
         return;
       }
@@ -3415,7 +3415,7 @@ export class PrivateControlService {
         const action = (callback.args[0] ?? '').toUpperCase();
         const targetUserId = session.manualTargetUserId;
         if (!targetUserId) {
-          throw new BadRequestException('Сначала выберите пользователя из списка');
+          throw new BadRequestException('Сначала выберите участника из списка.');
         }
 
         if (action === 'MUTE') {
@@ -3432,7 +3432,7 @@ export class PrivateControlService {
         }
 
         if (action !== 'BAN' && action !== 'UNMUTE' && action !== 'UNBAN') {
-          throw new BadRequestException('Неизвестное действие');
+          throw new BadRequestException('Действие не распознано.');
         }
 
         const result = await this.manualModerationService.applyManualModerationAction(
@@ -6532,12 +6532,12 @@ export class PrivateControlService {
     session.manualPage = pageInfo.page;
 
     const lines: string[] = [
-      `Действия с участником (страница ${pageInfo.page}/${pageInfo.pages})`,
+      `Ручная модерация участников (страница ${pageInfo.page}/${pageInfo.pages})`,
       '',
     ];
 
     if (users.length === 0) {
-      lines.push('За выбранный период нет пользователей для действий.');
+      lines.push('За выбранный период нет участников с событиями модерации.');
     } else {
       lines.push(
         ...pageInfo.items.map(
@@ -6575,7 +6575,7 @@ export class PrivateControlService {
   ): PrivateView {
     if (!targetUserId) {
       return {
-        text: 'Сначала выберите пользователя из списка.',
+        text: 'Сначала выберите участника из списка.',
         options: {
           buttons: [
             [this.callbackButton('К списку пользователей', this.cb('open_manual_users'))],
@@ -6588,7 +6588,7 @@ export class PrivateControlService {
     const lines = [
       'Действия с участником',
       '',
-      `Пользователь: ${targetUserId}`,
+      `Участник: ${targetUserId}`,
       ...(notice ? ['', `Статус: ${notice}`] : []),
     ];
 

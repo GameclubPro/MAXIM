@@ -98,6 +98,17 @@ import {
 } from '../system/system-mode.service';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { ModerationExecutionService } from './moderation-execution.service';
+import {
+  buildMessageLimitsExplanationReplacements,
+  buildLegacyDuplicatePassiveSanctionLabel,
+  buildLegacyDuplicateSanctionLabel,
+  hasCustomBotSpeechTemplate,
+  resolveBotSpeechDuplicateContext,
+  resolveBotSpeechMessageStatus,
+  resolveBotSpeechPlaceholder,
+  resolveMessageLimitsSanctionReason,
+  resolveTextFilterExplanationReason,
+} from './bot-speech-custom-override.util';
 import { PrivateControlService } from './private-control.service';
 import { ModerationAccessService } from './moderation-access.service';
 import {
@@ -115,11 +126,7 @@ import {
   buildDeveloperForcedGlobalSpammerWarmMarkerKey,
 } from './developer-forced-global-spammer-cache';
 import { buildModerationEscalationCounterKey } from './moderation-escalation-state.util';
-import {
-  buildMessageLimitsBlockedReason,
-  extractMessageLimitsBlockedToken,
-  isMessageLimitsBlockedListRuleCode,
-} from './message-limits-blocked-reason.util';
+import { extractMessageLimitsBlockedToken } from './message-limits-blocked-reason.util';
 import { RedisCounterService } from './redis-counter.service';
 import type {
   DuplicateAction,
@@ -130,10 +137,6 @@ import type {
 import { RuleEngineService } from './rule-engine.service';
 import { createAllowlistLinkMatcher, detectBlockedLink } from './rule-engine-link-detector';
 import { MessageLimitsBlockedDomainDetector } from './rule-engine-blocked-domains.detector';
-import {
-  ANTI_SPAM_BURST_LIMIT,
-  ANTI_SPAM_BURST_WINDOW_SEC,
-} from './rule-engine-message-limits.detector';
 import { SanctionService } from './sanction.service';
 import { maskText } from './text-mask.util';
 import {
@@ -763,7 +766,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private createNightModeTransitionHooks() {
     return this.nightModeTransitionDelivery.createHooks({
-      getActiveBotSpeechProfile: () => this.resolveActiveBotSpeechProfile(),
+      getBotSpeechProfile: (botId) => this.resolveBotSpeechProfile(botId),
       buildClosedNoticeOptions: (settings) =>
         this.buildNightModeClosedNoticeOptions({
           chatId: settings.chatId,
@@ -3163,18 +3166,26 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     botSpeechStyle: BotSpeechStyle | null,
     editedMessage = false,
   ): string {
-    const reason = editedMessage
-      ? 'ссылка появилась после тихой правки; в этом чате ссылки не проходят'
-      : 'в этом чате ссылки не проходят, без ссылок';
-    const messageStatus = this.buildMessageStatusLabel(canDeleteMessage);
-    const hasTemplateOverride = typeof templateText === 'string' && templateText.trim().length > 0;
+    const hasTemplateOverride = hasCustomBotSpeechTemplate(templateText);
+    const reason = resolveBotSpeechPlaceholder(
+      templateText,
+      editedMessage
+        ? 'ссылка появилась после тихой правки; в этом чате ссылки не проходят'
+        : 'в этом чате ссылки не проходят, без ссылок',
+      editedMessage
+        ? 'ссылка добавлена при редактировании, а ссылки в этом чате запрещены'
+        : 'ссылки в этом чате запрещены',
+    );
+    const messageStatus = resolveBotSpeechMessageStatus(templateText, canDeleteMessage);
     if (editedMessage && !hasTemplateOverride) {
-      const editedFallback =
-        '{user}, ссылку убрал. Расчёт на тихую правку был элегантный, но протокол внимательный: ссылки здесь не проходят.';
-      return this.renderBotMessageTemplate(editedFallback, editedFallback, {
-        user: userLabel,
-        message_status: messageStatus,
-        reason,
+      return this.renderSystemBotSpeechTemplate({
+        style: botSpeechStyle,
+        templateKey: 'linkEdited',
+        replacements: {
+          user: userLabel,
+          message_status: messageStatus,
+          reason,
+        },
       });
     }
 
@@ -3206,7 +3217,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       replacements: {
         user: userLabel,
         channels: channelsLabel,
-        message_status: this.buildMessageStatusLabel(canDeleteMessage),
+        message_status: resolveBotSpeechMessageStatus(templateText, canDeleteMessage),
       },
     });
   }
@@ -3218,8 +3229,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     botSpeechStyle: BotSpeechStyle | null,
   ): string {
     const channelsLabel = this.formatRequiredSubscriptionChannels(channelTitles);
-    const reason = 'для сообщений нужна подписка на обязательные чаты или каналы';
-    const warning = 'вынесено предупреждение за отсутствие обязательной подписки';
+    const reason = resolveBotSpeechPlaceholder(
+      templateText,
+      'для сообщений нужна подписка на обязательные чаты или каналы',
+      'обязательная подписка ещё не подтверждена',
+    );
+    const warning = resolveBotSpeechPlaceholder(
+      templateText,
+      'вынесено предупреждение за отсутствие обязательной подписки',
+      'предупреждение за сообщение без обязательной подписки',
+    );
 
     return this.renderEditableBotSpeechTemplate({
       style: botSpeechStyle,
@@ -3248,7 +3267,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       overrideText: templateText,
       replacements: {
         user: userLabel,
-        message_status: this.buildMessageStatusLabel(canDeleteMessage),
+        message_status: resolveBotSpeechMessageStatus(templateText, canDeleteMessage),
         ...this.buildInvitationAccessTemplateReplacements(requiredCount, invitedCount),
       },
     });
@@ -3261,8 +3280,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     templateText: string,
     botSpeechStyle: BotSpeechStyle | null,
   ): string {
-    const reason = 'для сообщений нужно пригласить друзей в чат';
-    const warning = 'вынесено предупреждение за доступ без приглашений';
+    const reason = resolveBotSpeechPlaceholder(
+      templateText,
+      'для сообщений нужно пригласить друзей в чат',
+      'условие по приглашениям ещё не выполнено',
+    );
+    const warning = resolveBotSpeechPlaceholder(
+      templateText,
+      'вынесено предупреждение за доступ без приглашений',
+      'предупреждение за сообщение до выполнения условия по приглашениям',
+    );
 
     return this.renderEditableBotSpeechTemplate({
       style: botSpeechStyle,
@@ -3283,20 +3310,34 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     botSpeechStyle: BotSpeechStyle | null,
     editedMessage = false,
   ): string {
-    const reason = editedMessage
-      ? 'ссылка появилась после тихой правки; в этом чате ссылки всё ещё нельзя'
-      : 'в этом чате ссылки не проходят, без ссылок';
-    const warning = editedMessage
-      ? 'вынесено предупреждение за ссылку после редактирования'
-      : 'вынесено предупреждение за ссылку';
-    const hasTemplateOverride = typeof templateText === 'string' && templateText.trim().length > 0;
+    const hasTemplateOverride = hasCustomBotSpeechTemplate(templateText);
+    const reason = resolveBotSpeechPlaceholder(
+      templateText,
+      editedMessage
+        ? 'ссылка появилась после тихой правки; в этом чате ссылки всё ещё нельзя'
+        : 'в этом чате ссылки не проходят, без ссылок',
+      editedMessage
+        ? 'ссылка добавлена при редактировании, а ссылки в этом чате запрещены'
+        : 'ссылки в этом чате запрещены',
+    );
+    const warning = resolveBotSpeechPlaceholder(
+      templateText,
+      editedMessage
+        ? 'вынесено предупреждение за ссылку после редактирования'
+        : 'вынесено предупреждение за ссылку',
+      editedMessage
+        ? 'предупреждение за ссылку, добавленную при редактировании'
+        : 'предупреждение за запрещённую ссылку',
+    );
     if (editedMessage && !hasTemplateOverride) {
-      const editedFallback =
-        '{user}, предупреждение за ссылку. Расчёт на тихую правку был элегантный, но протокол внимательный: ссылки здесь всё ещё нельзя.';
-      return this.renderBotMessageTemplate(editedFallback, editedFallback, {
-        user: userLabel,
-        reason,
-        warning,
+      return this.renderSystemBotSpeechTemplate({
+        style: botSpeechStyle,
+        templateKey: 'linkEditedWarn',
+        replacements: {
+          user: userLabel,
+          reason,
+          warning,
+        },
       });
     }
 
@@ -3434,13 +3475,27 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     templateText: string,
     botSpeechStyle: BotSpeechStyle | null,
   ): string {
-    const reason =
+    const hasTemplateOverride = hasCustomBotSpeechTemplate(templateText);
+    const legacyReason =
       ruleCode === 'COMMERCIAL_AD'
         ? 'коммерческую рекламу'
         : ruleCode === 'PROFANITY'
           ? 'грубую лексику'
           : 'нарушение текстовых правил';
-    const warning = `вынесено предупреждение за ${reason}`;
+    const reason = hasTemplateOverride
+      ? legacyReason
+      : ruleCode === 'COMMERCIAL_AD'
+        ? 'коммерческая реклама запрещена правилами чата'
+        : ruleCode === 'PROFANITY'
+          ? 'грубая лексика запрещена правилами чата'
+          : 'текст нарушает правила чата';
+    const warning = hasTemplateOverride
+      ? `вынесено предупреждение за ${legacyReason}`
+      : ruleCode === 'COMMERCIAL_AD'
+        ? 'предупреждение за коммерческую рекламу'
+        : ruleCode === 'PROFANITY'
+          ? 'предупреждение за грубую лексику'
+          : 'предупреждение за нарушение текстовых правил';
 
     return this.renderEditableBotSpeechTemplate({
       style: botSpeechStyle,
@@ -3553,13 +3608,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     templateText: string,
     botSpeechStyle: BotSpeechStyle | null,
   ): string {
+    const hasTemplateOverride = hasCustomBotSpeechTemplate(templateText);
     const banDurationLabel = this.formatMuteDurationLabel(muteDurationHours);
-    const baseContext = this.buildDuplicateContextLabel(messageDeleted);
-    const sanction = this.buildDuplicateSanctionLabel(
-      botSpeechStyle,
-      decision.action,
-      banDurationLabel,
-    );
+    const baseContext = resolveBotSpeechDuplicateContext(templateText, messageDeleted);
+    const sanction = hasTemplateOverride
+      ? buildLegacyDuplicateSanctionLabel({
+          style: botSpeechStyle,
+          persona: this.resolveActiveBotSpeechProfile().persona,
+          action: decision.action,
+          muteDurationLabel: banDurationLabel,
+        })
+      : this.buildDuplicateSanctionLabel(botSpeechStyle, decision.action, banDurationLabel);
 
     return this.renderEditableBotSpeechTemplate({
       style: botSpeechStyle,
@@ -3567,8 +3626,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       overrideText: templateText,
       replacements: {
         user: userLabel,
-        message_status: this.buildMessageStatusLabel(messageDeleted),
-        reason: 'в этом чате серийные повторы не проходят',
+        message_status: resolveBotSpeechMessageStatus(templateText, messageDeleted),
+        reason: hasTemplateOverride
+          ? 'в этом чате серийные повторы не проходят'
+          : 'повторные сообщения ограничены настройками чата',
         duplicate_context: baseContext,
         sanction,
         mute_duration: banDurationLabel,
@@ -3583,8 +3644,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     templateText: string,
     botSpeechStyle: BotSpeechStyle | null,
   ): string {
-    const duplicateContext = this.buildDuplicateContextLabel(messageDeleted);
-    const messageStatus = this.buildMessageStatusLabel(messageDeleted);
+    const hasTemplateOverride = hasCustomBotSpeechTemplate(templateText);
+    const duplicateContext = resolveBotSpeechDuplicateContext(templateText, messageDeleted);
+    const messageStatus = resolveBotSpeechMessageStatus(templateText, messageDeleted);
 
     return this.renderEditableBotSpeechTemplate({
       style: botSpeechStyle,
@@ -3593,9 +3655,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       replacements: {
         user: userLabel,
         message_status: messageStatus,
-        reason: 'в этом чате серийные повторы не проходят',
+        reason: hasTemplateOverride
+          ? 'в этом чате серийные повторы не проходят'
+          : 'повторные сообщения ограничены настройками чата',
         duplicate_context: duplicateContext,
-        sanction: this.buildDuplicatePassiveSanctionLabel(botSpeechStyle, messageDeleted),
+        sanction: hasTemplateOverride
+          ? buildLegacyDuplicatePassiveSanctionLabel({
+              style: botSpeechStyle,
+              persona: this.resolveActiveBotSpeechProfile().persona,
+              messageDeleted,
+            })
+          : this.buildDuplicatePassiveSanctionLabel(botSpeechStyle, messageDeleted),
       },
     });
   }
@@ -3605,11 +3675,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     fieldKey: BotSpeechEditableFieldKey,
     overrideText: string,
   ): string {
-    const normalizedOverride =
-      typeof overrideText === 'string' && overrideText.trim().length > 0 ? overrideText.trim() : '';
-
-    return normalizedOverride.length > 0
-      ? normalizedOverride
+    // FLAG: Empty means inherited. Every non-empty value is user-owned, even if it matches an old default.
+    return typeof overrideText === 'string' && overrideText.length > 0
+      ? overrideText
       : getBotSpeechEditableTemplate(style, fieldKey, this.resolveActiveBotSpeechProfile().persona);
   }
 
@@ -3667,38 +3735,24 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     fallbackText: string,
     replacements: Record<string, string>,
   ): string {
-    const normalizedTemplate =
-      typeof templateText === 'string' && templateText.trim().length > 0 ? templateText.trim() : '';
-    if (!normalizedTemplate) {
+    if (typeof templateText !== 'string' || templateText.length === 0) {
       return fallbackText;
     }
 
-    let rendered = normalizedTemplate;
+    let rendered = templateText;
     for (const [key, value] of Object.entries(replacements)) {
       rendered = rendered.split(`{${key}}`).join(value);
     }
 
-    const normalizedRendered = rendered.trim();
-    return normalizedRendered.length > 0 ? normalizedRendered : fallbackText;
-  }
-
-  private buildMajorExplanationFallback(
-    userLabel: string,
-    subject: 'Сообщение' | 'Объявление',
-    messageStatus: string,
-    reason: string,
-  ): string {
-    const activeBotSpeechProfile = this.resolveActiveBotSpeechProfile();
-    const badge = activeBotSpeechProfile.persona === 'female' ? '👮‍♀️' : '👮‍♂️';
-    return `Товарищ ${userLabel}, ${activeBotSpeechProfile.characterName} на линии ${badge} ${subject} ${messageStatus}: ${reason}. Подправьте по форме и снова в эфир.`;
+    return rendered;
   }
 
   private resolveTopicFilterRequirementLabel(requiredCodeword: string | null): string {
     if (requiredCodeword) {
-      return `объявление должно начинаться с кодового слова "${this.escapeMaxMarkdownText(requiredCodeword)}"`;
+      return `объявление должно начинаться с кодового слова «${this.escapeMaxMarkdownText(requiredCodeword)}»`;
     }
 
-    return 'сообщение не проходит тематический фильтр';
+    return 'сообщение не соответствует тематике чата';
   }
 
   private extractTopicFilterRequiredCodeword(metadata?: Record<string, unknown>): string | null {
@@ -3709,11 +3763,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private buildMessageStatusLabel(canDeleteMessage: boolean): string {
-    return canDeleteMessage ? 'снято с линии' : 'не по форме';
+    return canDeleteMessage ? 'удалено' : 'не удалено';
   }
 
   private buildDuplicateContextLabel(canDeleteMessage: boolean): string {
-    return canDeleteMessage ? 'снято с линии как дубль' : 'идёт повтором';
+    return canDeleteMessage ? 'удалено как повтор' : 'отмечено как повтор';
   }
 
   private buildDuplicateSanctionLabel(
@@ -3721,87 +3775,32 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     action: SanctionAction,
     muteDurationLabel: string,
   ): string {
-    if (style === 'POLICE' || style === null) {
-      const activeBotPersona = this.resolveActiveBotSpeechProfile().persona;
-      if (action === 'WARN') {
-        return activeBotPersona === 'female' ? 'Взяла на карандаш 📝.' : 'Взял на карандаш 📝.';
-      }
-      if (action === 'MUTE') {
-        return `Включаю тихий режим на ${muteDurationLabel} 🔒.`;
-      }
-      return 'Тут уже шлагбаум ⛔ До ручного разбана.';
-    }
+    const templateKey =
+      action === SanctionAction.WARN
+        ? 'duplicateWarn'
+        : action === SanctionAction.MUTE
+          ? 'duplicateMute'
+          : 'duplicateBan';
 
-    if (style === 'ROBOT') {
-      if (action === 'WARN') {
-        return '⚠️ Предупреждение записано.';
-      }
-      if (action === 'MUTE') {
-        return `🔒 Включен мут на ${muteDurationLabel}.`;
-      }
-      return '⛔ Включен бан до ручного снятия.';
-    }
-
-    if (style === 'FRIENDLY') {
-      if (action === 'WARN') {
-        return '⚠️ Это уже предупреждение.';
-      }
-      if (action === 'MUTE') {
-        return `🔒 Включил мут на ${muteDurationLabel}.`;
-      }
-      return '⛔ Пришлось выдать бан до ручного разбана.';
-    }
-
-    if (style === 'IRONIC') {
-      if (action === 'WARN') {
-        return '⚠️ Это уже предупреждение. Повтор не сделал мысль сильнее.';
-      }
-      if (action === 'MUTE') {
-        return `🔒 Мут на ${muteDurationLabel}. Со второго дубля лучше не стало.`;
-      }
-      return '⛔ Дальше уже только ручной разбан.';
-    }
-
-    if (action === 'WARN') {
-      return 'Фиксирую предупреждение.';
-    }
-    if (action === 'MUTE') {
-      return `Оформляю мут на ${muteDurationLabel}.`;
-    }
-    return 'Оформляю бан до ручного снятия.';
+    return this.renderSystemBotSpeechTemplate({
+      style,
+      templateKey,
+      replacements: {
+        mute_duration: muteDurationLabel,
+        ban_duration: muteDurationLabel,
+      },
+    });
   }
 
   private buildDuplicatePassiveSanctionLabel(
     style: BotSpeechStyle | null,
     messageDeleted: boolean,
   ): string {
-    if (style === 'POLICE' || style === null) {
-      if (!messageDeleted) {
-        return this.resolveActiveBotSpeechProfile().persona === 'female'
-          ? 'Повтор взяла на карандаш, пока без санкций.'
-          : 'Повтор взял на карандаш, пока без санкций.';
-      }
-
-      return this.resolveActiveBotSpeechProfile().persona === 'female'
-        ? 'Этот экземпляр прикрыла.'
-        : 'Этот экземпляр прикрыл.';
-    }
-
-    if (style === 'ROBOT') {
-      return messageDeleted ? '🧹 Дубль убран.' : '🧾 Дубль отмечен без санкции.';
-    }
-
-    if (style === 'FRIENDLY') {
-      return messageDeleted ? '🧹 Повтор убрал.' : '👀 Повтор заметил, пока без санкций.';
-    }
-
-    if (style === 'IRONIC') {
-      return messageDeleted
-        ? '♻️ Повтор убрал. Второй дубль тут был лишним.'
-        : '👀 Повтор заметил. Пока без санкций, но мысль уже учтена.';
-    }
-
-    return 'Пока без взыскания.';
+    return this.renderSystemBotSpeechTemplate({
+      style,
+      templateKey: messageDeleted ? 'duplicatePassiveDeleted' : 'duplicatePassiveKept',
+      replacements: {},
+    });
   }
 
   private escapeMaxMarkdownText(value: string): string {
@@ -4283,24 +4282,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userLabel: string,
     botSpeechStyle: BotSpeechStyle | null,
   ): string {
-    if (botSpeechStyle === 'ROBOT') {
-      return `⛔ ${userLabel}, включен бан до ручного снятия.`;
-    }
-
-    if (botSpeechStyle === 'FRIENDLY') {
-      return `⛔ ${userLabel}, пришлось выдать бан до ручного разбана.`;
-    }
-
-    if (botSpeechStyle === 'IRONIC') {
-      return `${userLabel}, дальше уже только ручной разбан ⛔.`;
-    }
-
-    return `Товарищ ${userLabel}, тут уже шлагбаум ⛔ До ручного разбана.`;
+    return this.renderSystemBotSpeechTemplate({
+      style: botSpeechStyle,
+      templateKey: 'permanentBanNotice',
+      replacements: {
+        user: userLabel,
+      },
+    });
   }
 
   private resolveActiveBotSpeechProfile(): ActiveBotSpeechProfile {
-    const activeBotId = this.maxBotContextService?.getActiveBotId() ?? null;
-    const bot = this.maxBotLinkService?.getResolvedBotSync?.(activeBotId);
+    return this.resolveBotSpeechProfile(this.maxBotContextService?.getActiveBotId() ?? null);
+  }
+
+  private resolveBotSpeechProfile(botId?: string | null): ActiveBotSpeechProfile {
+    const normalizedBotId = botId?.trim() || null;
+    const bot = this.maxBotLinkService?.getResolvedBotSync?.(normalizedBotId);
     const characterName = bot?.characterName?.trim() || bot?.label?.trim() || 'Майор Максимов';
 
     return {
@@ -4571,20 +4568,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     templateText: string,
     botSpeechStyle: BotSpeechStyle | null,
   ): string {
-    const messageStatus = this.buildMessageStatusLabel(canDeleteMessage);
-    const reason =
-      ruleCode === 'PROFANITY'
-        ? 'грубая лексика запрещена правилами чата'
-        : 'коммерческая реклама в этом чате запрещена';
-
     return this.renderEditableBotSpeechTemplate({
       style: botSpeechStyle,
       fieldKey: 'textFiltersBotMessageText',
       overrideText: templateText,
       replacements: {
         user: userLabel,
-        message_status: messageStatus,
-        reason,
+        message_status: resolveBotSpeechMessageStatus(templateText, canDeleteMessage),
+        reason: resolveTextFilterExplanationReason(ruleCode, templateText),
       },
     });
   }
@@ -4603,199 +4594,24 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     templateText?: string,
     botSpeechStyle?: BotSpeechStyle | null,
   ): string {
-    const messageStatus = this.buildMessageStatusLabel(canDeleteMessage);
-
-    if (isMessageLimitsBlockedListRuleCode(ruleCode)) {
-      const reason = buildMessageLimitsBlockedReason(ruleCode, blockedWord);
-      return this.renderEditableBotSpeechTemplate({
-        style: botSpeechStyle ?? null,
-        fieldKey: 'messageLimitsBotMessageText',
-        overrideText: templateText ?? '',
-        replacements: {
-          user: userLabel,
-          message_status: messageStatus,
-          reason,
-        },
-      });
-    }
-
-    if (ruleCode === 'PHONE_NUMBER_BLOCKED') {
-      const reason = 'телефонные номера в этом чате запрещены';
-      return this.renderEditableBotSpeechTemplate({
-        style: botSpeechStyle ?? null,
-        fieldKey: 'messageLimitsBotMessageText',
-        overrideText: templateText ?? '',
-        replacements: {
-          user: userLabel,
-          message_status: messageStatus,
-          reason,
-        },
-      });
-    }
-
-    if (ruleCode === 'MESSAGE_TOO_LONG') {
-      const actualLength =
-        typeof messageLength === 'number' && Number.isFinite(messageLength) && messageLength > 0
-          ? Math.round(messageLength)
-          : null;
-      const maxLength =
-        typeof maxMessageLength === 'number' &&
-        Number.isFinite(maxMessageLength) &&
-        maxMessageLength > 0
-          ? Math.round(maxMessageLength)
-          : null;
-      const reason =
-        actualLength !== null && maxLength !== null
-          ? `слишком длинное сообщение: ${actualLength} символов при лимите ${maxLength}`
-          : 'слишком длинное сообщение';
-      return this.renderEditableBotSpeechTemplate({
-        style: botSpeechStyle ?? null,
-        fieldKey: 'messageLimitsBotMessageText',
-        overrideText: templateText ?? '',
-        replacements: {
-          user: userLabel,
-          message_status: messageStatus,
-          reason,
-          actual_length: actualLength !== null ? String(actualLength) : '',
-          max_length: maxLength !== null ? String(maxLength) : '',
-        },
-      });
-    }
-
-    if (ruleCode === 'MESSAGE_RATE_LIMIT') {
-      const reason = `слишком частая отправка сообщений или стикеров: не более ${ANTI_SPAM_BURST_LIMIT} за ${ANTI_SPAM_BURST_WINDOW_SEC}с`;
-      return this.renderEditableBotSpeechTemplate({
-        style: botSpeechStyle ?? null,
-        fieldKey: 'messageLimitsBotMessageText',
-        overrideText: templateText ?? '',
-        replacements: {
-          user: userLabel,
-          message_status: messageStatus,
-          reason,
-          message_limit_count: String(ANTI_SPAM_BURST_LIMIT),
-          message_limit_window_seconds: String(ANTI_SPAM_BURST_WINDOW_SEC),
-        },
-      });
-    }
-
-    if (ruleCode === 'MESSAGE_COUNT_LIMIT') {
-      const maxMessages =
-        Number.isInteger(messageCountLimitMessages) &&
-        messageCountLimitMessages >= 1 &&
-        messageCountLimitMessages <= 10
-          ? messageCountLimitMessages
-          : 5;
-      const windowHours =
-        Number.isInteger(messageCountLimitWindowHours) &&
-        messageCountLimitWindowHours >= 1 &&
-        messageCountLimitWindowHours <= 24
-          ? messageCountLimitWindowHours
-          : 1;
-      const reason = `слишком частая отправка сообщений: не более ${maxMessages} за ${windowHours}ч`;
-      return this.renderEditableBotSpeechTemplate({
-        style: botSpeechStyle ?? null,
-        fieldKey: 'messageLimitsBotMessageText',
-        overrideText: templateText ?? '',
-        replacements: {
-          user: userLabel,
-          message_status: messageStatus,
-          reason,
-          message_limit_count: String(maxMessages),
-          message_limit_window_hours: String(windowHours),
-        },
-      });
-    }
-
-    if (ruleCode === 'PHOTO_BLOCKED') {
-      const reason = 'фото в этом чате отключены';
-      return this.renderEditableBotSpeechTemplate({
-        style: botSpeechStyle ?? null,
-        fieldKey: 'messageLimitsBotMessageText',
-        overrideText: templateText ?? '',
-        replacements: {
-          user: userLabel,
-          message_status: messageStatus,
-          reason,
-        },
-      });
-    }
-
-    if (ruleCode === 'VIDEO_BLOCKED') {
-      const reason = 'видео в этом чате отключены';
-      return this.renderEditableBotSpeechTemplate({
-        style: botSpeechStyle ?? null,
-        fieldKey: 'messageLimitsBotMessageText',
-        overrideText: templateText ?? '',
-        replacements: {
-          user: userLabel,
-          message_status: messageStatus,
-          reason,
-        },
-      });
-    }
-
-    if (ruleCode === 'FILE_BLOCKED') {
-      const reason = 'файлы в этом чате отключены';
-      return this.renderEditableBotSpeechTemplate({
-        style: botSpeechStyle ?? null,
-        fieldKey: 'messageLimitsBotMessageText',
-        overrideText: templateText ?? '',
-        replacements: {
-          user: userLabel,
-          message_status: messageStatus,
-          reason,
-        },
-      });
-    }
-
-    if (ruleCode === 'VOICE_BLOCKED') {
-      const reason = 'голосовые сообщения в этом чате отключены';
-      return this.renderEditableBotSpeechTemplate({
-        style: botSpeechStyle ?? null,
-        fieldKey: 'messageLimitsBotMessageText',
-        overrideText: templateText ?? '',
-        replacements: {
-          user: userLabel,
-          message_status: messageStatus,
-          reason,
-        },
-      });
-    }
-
-    if (ruleCode === 'STICKER_RATE_LIMIT') {
-      const minutes =
-        Number.isInteger(stickerCooldownMinutes) &&
-        stickerCooldownMinutes >= 1 &&
-        stickerCooldownMinutes <= 60
-          ? stickerCooldownMinutes
-          : 5;
-      const reason = `слишком частая отправка стикеров: не чаще одного раза в ${minutes} мин`;
-      return this.renderEditableBotSpeechTemplate({
-        style: botSpeechStyle ?? null,
-        fieldKey: 'messageLimitsBotMessageText',
-        overrideText: templateText ?? '',
-        replacements: {
-          user: userLabel,
-          message_status: messageStatus,
-          reason,
-        },
-      });
-    }
-
-    const hours =
-      Number.isInteger(photoCooldownHours) && photoCooldownHours >= 1 && photoCooldownHours <= 24
-        ? photoCooldownHours
-        : 1;
-    const reason = `слишком частая отправка фото: не чаще одного раза в ${hours}ч. Если фото несколько, лучше собрать их в альбом или коллаж`;
     return this.renderEditableBotSpeechTemplate({
       style: botSpeechStyle ?? null,
       fieldKey: 'messageLimitsBotMessageText',
       overrideText: templateText ?? '',
       replacements: {
         user: userLabel,
-        message_status: messageStatus,
-        reason,
-        photo_cooldown_hours: String(hours),
+        ...buildMessageLimitsExplanationReplacements({
+          templateText,
+          ruleCode,
+          messageDeleted: canDeleteMessage,
+          messageCountLimitMessages,
+          messageCountLimitWindowHours,
+          photoCooldownHours,
+          stickerCooldownMinutes,
+          messageLength,
+          maxMessageLength,
+          blockedWord,
+        }),
       },
     });
   }
@@ -4806,16 +4622,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     templateText: string,
     botSpeechStyle: BotSpeechStyle | null,
   ): string {
-    const messageStatus = this.buildMessageStatusLabel(canDeleteMessage);
-    const reason = 'телефонные номера в этом чате запрещены';
     return this.renderEditableBotSpeechTemplate({
       style: botSpeechStyle ?? null,
       fieldKey: 'phoneNumbersBotMessageText',
       overrideText: templateText,
       replacements: {
         user: userLabel,
-        message_status: messageStatus,
-        reason,
+        message_status: resolveBotSpeechMessageStatus(templateText, canDeleteMessage),
+        reason: resolveBotSpeechPlaceholder(
+          templateText,
+          'телефонные номера в этом чате запрещены',
+          'номера телефонов в сообщениях запрещены',
+        ),
       },
     });
   }
@@ -4831,7 +4649,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       templateKey: 'messageLimitsMute',
       replacements: {
         user: userLabel,
-        reason: this.resolveMessageLimitsSanctionReasonLabel(ruleCode, blockedWord),
+        reason: resolveMessageLimitsSanctionReason(ruleCode, blockedWord),
       },
     });
   }
@@ -4849,7 +4667,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       overrideText: templateText,
       replacements: {
         user: userLabel,
-        reason: this.resolveMessageLimitsSanctionReasonLabel(ruleCode, blockedWord),
+        reason: resolveMessageLimitsSanctionReason(ruleCode, blockedWord, templateText),
       },
     });
   }
@@ -4866,60 +4684,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       templateKey: 'messageLimitsBan',
       replacements: {
         user: userLabel,
-        reason: this.resolveMessageLimitsSanctionReasonLabel(ruleCode, blockedWord),
+        reason: resolveMessageLimitsSanctionReason(ruleCode, blockedWord),
       },
     });
-  }
-
-  private resolveMessageLimitsSanctionReasonLabel(
-    ruleCode: string,
-    blockedWord?: string | null,
-  ): string {
-    if (ruleCode === 'PHOTO_RATE_LIMIT') {
-      return 'слишком частая отправка фото';
-    }
-
-    if (ruleCode === 'PHOTO_BLOCKED') {
-      return 'фото в этом чате отключены';
-    }
-
-    if (ruleCode === 'STICKER_RATE_LIMIT') {
-      return 'слишком частая отправка стикеров';
-    }
-
-    if (ruleCode === 'MESSAGE_RATE_LIMIT') {
-      return 'слишком частая отправка сообщений или стикеров';
-    }
-
-    if (ruleCode === 'MESSAGE_COUNT_LIMIT') {
-      return 'слишком частая отправка сообщений';
-    }
-
-    if (ruleCode === 'MESSAGE_TOO_LONG') {
-      return 'слишком длинное сообщение';
-    }
-
-    if (isMessageLimitsBlockedListRuleCode(ruleCode)) {
-      return buildMessageLimitsBlockedReason(ruleCode, blockedWord);
-    }
-
-    if (ruleCode === 'PHONE_NUMBER_BLOCKED') {
-      return 'телефонные номера запрещены';
-    }
-
-    if (ruleCode === 'VIDEO_BLOCKED') {
-      return 'видео в этом чате отключены';
-    }
-
-    if (ruleCode === 'FILE_BLOCKED') {
-      return 'файлы в этом чате отключены';
-    }
-
-    if (ruleCode === 'VOICE_BLOCKED') {
-      return 'голосовые сообщения в этом чате отключены';
-    }
-
-    return 'нарушение ограничений сообщений';
   }
 
   private buildBotMessageOptions(
@@ -6127,7 +5894,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         chatId,
         botId: commandBotId,
         settings,
-        text: 'Команда `супер бан` доступна только разработчику бота.',
+        text: 'Недостаточно прав: команду `супер бан` может запускать только разработчик бота.',
       });
       return true;
     }
@@ -6243,7 +6010,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           chatId,
           botId: commandBotId,
           settings,
-          text: `Не удалось выполнить команду: ${this.escapeMaxMarkdownText(
+          text: `Команда не выполнена: ${this.escapeMaxMarkdownText(
             this.extractGroupAdminCommandErrorMessage(error),
           )}`,
         });
@@ -6278,7 +6045,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         chatId,
         botId: commandBotId,
         settings,
-        text: `Ответьте на сообщение из этого чата или перешлите его и добавьте команду ${commandHelpText}.`,
+        text: `Нужна цель: ответьте на сообщение из этого чата командой ${commandHelpText} или перешлите одно сообщение и добавьте команду.`,
       });
       return true;
     }
@@ -6289,7 +6056,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         chatId,
         botId: commandBotId,
         settings,
-        text: `Перешлите или ответьте на одно сообщение из этого чата и добавьте команду ${commandHelpText}.`,
+        text: `Для команды ${commandHelpText} выберите одно сообщение: ответьте на него или перешлите только его.`,
       });
       return true;
     }
@@ -6300,7 +6067,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         chatId,
         botId: commandBotId,
         settings,
-        text: `Команда ${commandHelpText} работает только для сообщений из этого чата.`,
+        text: `Команда ${commandHelpText} применима только к участнику этого чата. Выберите сообщение отсюда.`,
       });
       return true;
     }
@@ -6354,7 +6121,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             chatId,
             botId: commandBotId,
             settings,
-            text: 'Не удалось запустить супер бан. Повторите команду через несколько секунд.',
+            text: 'Команда `супер бан` не запущена. Повторите через несколько секунд.',
           });
         }
       }
@@ -6374,7 +6141,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           chatId,
           botId: commandBotId,
           settings,
-          text: `Не удалось запустить супер бан: ${this.escapeMaxMarkdownText(
+          text: `Команда \`супер бан\` не запущена: ${this.escapeMaxMarkdownText(
             this.extractGroupAdminCommandErrorMessage(error),
           )}`,
         });

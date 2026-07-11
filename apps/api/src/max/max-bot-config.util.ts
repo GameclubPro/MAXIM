@@ -13,7 +13,7 @@ const maxAdditionalBotSchema = z.object({
   id: z.string().trim().min(3),
   label: z.string().trim().min(1).max(64).optional(),
   characterName: z.string().trim().min(1).max(128).optional(),
-  speechPersona: botSpeechPersonaSchema.optional().default('male'),
+  speechPersona: botSpeechPersonaSchema.optional(),
   token: z.string().trim().min(10),
   tokenPrevious: z.string().trim().min(10).optional(),
   webhookSecretPath: z.string().trim().min(8),
@@ -45,6 +45,17 @@ export type ResolvedMaxBotConfig = {
   visibleInAdmin: boolean;
   isDefault: boolean;
 };
+
+const KNOWN_MAX_BOT_SPEECH_PROFILES: Readonly<
+  Record<string, { characterName: string; speechPersona: BotSpeechPersona }>
+> = Object.freeze({
+  id613070470872_9_bot: { characterName: 'Майор Максимов', speechPersona: 'male' },
+  id613002203036_bot: { characterName: 'Майор Максимов', speechPersona: 'male' },
+  id613070470872_5_bot: { characterName: 'Майор Максимова', speechPersona: 'female' },
+  id613002203036_4_bot: { characterName: 'Майор Максимова', speechPersona: 'female' },
+  id613070470872_6_bot: { characterName: 'Рэкс', speechPersona: 'neutral' },
+  id613002203036_5_bot: { characterName: 'Рэкс', speechPersona: 'neutral' },
+});
 
 export function parseAdditionalMaxBotsJson(
   rawValue: string | null | undefined,
@@ -116,14 +127,19 @@ export function buildResolvedMaxBotConfigs(input: {
   additionalBotsJson?: string | null;
 }): ResolvedMaxBotConfig[] {
   const defaultBotId = input.defaultBot.id.trim();
-  const defaultBotLabel = normalizeBotLabel(input.defaultBot.label) ?? defaultBotId;
-  const defaultBotSpeechPersona = input.defaultBot.speechPersona ?? 'male';
+  const defaultKnownProfile = resolveKnownMaxBotSpeechProfile(defaultBotId);
+  const defaultBotLabel =
+    normalizeBotLabel(input.defaultBot.label) ?? defaultKnownProfile?.characterName ?? defaultBotId;
+  const defaultBotSpeechPersona =
+    input.defaultBot.speechPersona ?? defaultKnownProfile?.speechPersona ?? 'male';
   const bots: ResolvedMaxBotConfig[] = [
     {
       id: defaultBotId,
       label: defaultBotLabel,
       characterName: resolveBotCharacterName({
-        explicitCharacterName: input.defaultBot.characterName,
+        explicitCharacterName:
+          normalizeBotCharacterName(input.defaultBot.characterName) ??
+          defaultKnownProfile?.characterName,
         label: defaultBotLabel,
         speechPersona: defaultBotSpeechPersona,
         isDefault: true,
@@ -154,16 +170,21 @@ export function buildResolvedMaxBotConfigs(input: {
       throw new Error(`MAX_BOTS_JSON must not repeat default bot id "${defaultBotId}"`);
     }
 
+    const knownProfile = resolveKnownMaxBotSpeechProfile(bot.id);
+    const botLabel = normalizeBotLabel(bot.label) ?? knownProfile?.characterName ?? bot.id;
+    const speechPersona = bot.speechPersona ?? knownProfile?.speechPersona ?? 'male';
+
     bots.push({
       id: bot.id,
-      label: normalizeBotLabel(bot.label) ?? bot.id,
+      label: botLabel,
       characterName: resolveBotCharacterName({
-        explicitCharacterName: bot.characterName,
-        label: normalizeBotLabel(bot.label) ?? bot.id,
-        speechPersona: bot.speechPersona,
+        explicitCharacterName:
+          normalizeBotCharacterName(bot.characterName) ?? knownProfile?.characterName,
+        label: botLabel,
+        speechPersona,
         isDefault: false,
       }),
-      speechPersona: bot.speechPersona,
+      speechPersona,
       token: bot.token,
       tokenValidationSecrets: collectBotTokenSecrets(bot.token, bot.tokenPrevious),
       webhookSecretPath: bot.webhookSecretPath,
@@ -238,6 +259,13 @@ function normalizeBotCharacterName(value: string | null | undefined): string | n
   return normalized.length > 0 ? normalized : null;
 }
 
+function resolveKnownMaxBotSpeechProfile(
+  botId: string | null | undefined,
+): { characterName: string; speechPersona: BotSpeechPersona } | null {
+  const normalizedBotId = typeof botId === 'string' ? botId.trim() : '';
+  return normalizedBotId ? (KNOWN_MAX_BOT_SPEECH_PROFILES[normalizedBotId] ?? null) : null;
+}
+
 function resolveBotCharacterName(params: {
   explicitCharacterName: string | null | undefined;
   label: string;
@@ -250,7 +278,7 @@ function resolveBotCharacterName(params: {
   }
 
   if (params.isDefault) {
-    return params.speechPersona === 'female' ? 'Капитан Максимова' : 'Майор Максимов';
+    return params.speechPersona === 'female' ? 'Майор Максимова' : 'Майор Максимов';
   }
 
   return params.label;

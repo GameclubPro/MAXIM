@@ -12,14 +12,12 @@ import {
   formatDeleteBotMessagesDelayLabel,
 } from '@maxim/contracts/settings';
 import { type BroadcastImage, type SendBroadcastResult } from '@maxim/contracts/broadcast';
-import { type ManagedEntityHeader } from '@maxim/contracts/managed-entities';
 import {
   BOT_SPEECH_STYLE_OPTIONS,
   getBotSpeechEditableTemplate,
   getBotSpeechSystemTemplate,
   type BotSpeechEditableFieldKey,
   type BotSpeechMediaFieldKey,
-  type BotSpeechPersona,
   type BotSpeechStyle,
 } from '@maxim/contracts/bot-speech';
 import { Suspense, lazy, useEffect, useRef, useState, type ReactNode } from 'react';
@@ -33,6 +31,11 @@ import type { PublishedRulesButtonToggleProps } from '../../components/published
 import { HOME_ENTITY_FAVORITE_ICONS } from '../../components/ui/compact-icons';
 import { formatBroadcastButtonsStatus } from '../../lib/broadcast-link-buttons';
 import { buildBroadcastAudiencePresentation } from '../../lib/broadcast-audience-presentation';
+import {
+  DEFAULT_BOT_SPEECH_PREVIEW_CONTEXT,
+  resolveBotSpeechPreviewContext,
+  type BotSpeechPreviewContext,
+} from '../../lib/bot-speech-preview-context';
 import {
   formatBroadcastCycleSummary,
   sortAndUniqueBroadcastSlots,
@@ -905,26 +908,6 @@ export const RUSSIAN_TIMEZONE_OPTIONS = [
   { value: 'Asia/Kamchatka', label: 'Камчатка (UTC+12)' },
 ] as const;
 
-export const BOT_SPEECH_SYNC_SETTING_KEYS = [
-  'botSpeechStyle',
-  'botSpeechMedia',
-  'greetingBotMessageText',
-  'linkBotMessageText',
-  'linkWarnMessageText',
-  'requiredSubscriptionBotMessageText',
-  'requiredSubscriptionWarnMessageText',
-  'invitationAccessBotMessageText',
-  'invitationAccessWarnMessageText',
-  'textFiltersBotMessageText',
-  'textFiltersWarnMessageText',
-  'duplicateBotMessageText',
-  'messageLimitsBotMessageText',
-  'messageLimitsWarnMessageText',
-  'phoneNumbersBotMessageText',
-  'nightModeBotMessageText',
-  'nightModeOpenMessageText',
-] as const satisfies ReadonlyArray<keyof ChatSettings>;
-
 export const BOT_SPEECH_STYLE_ICON_ASSETS = {
   robot: botSpeechRobotImage,
   friendly: botSpeechFriendlyImage,
@@ -939,24 +922,14 @@ export const BOT_SPEECH_STYLE_SELECTOR_LABELS: Record<BotSpeechStyle, string> = 
   IRONIC: 'Шут',
 };
 
-export type BotSpeechPreviewContext = {
-  persona: BotSpeechPersona;
-  characterName: string;
-};
-
-export const DEFAULT_BOT_SPEECH_PREVIEW_CONTEXT: BotSpeechPreviewContext = {
-  persona: 'neutral',
-  characterName: 'Чат-бот',
+export {
+  DEFAULT_BOT_SPEECH_PREVIEW_CONTEXT,
+  resolveBotSpeechPreviewContext,
+  type BotSpeechPreviewContext,
 };
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-export function resolveBotSpeechPreviewContext(
-  _header: ManagedEntityHeader | null | undefined,
-): BotSpeechPreviewContext {
-  return DEFAULT_BOT_SPEECH_PREVIEW_CONTEXT;
 }
 
 export function getSpeechTemplateFallback(
@@ -976,7 +949,7 @@ export function getSpeechSystemTemplateFallback(
 }
 
 export function resolveBotMessageTemplate(customValue: string, fallbackTemplate: string): string {
-  return customValue.trim().length > 0 ? customValue : fallbackTemplate;
+  return customValue.length > 0 ? customValue : fallbackTemplate;
 }
 
 export function renderBotMessageTemplatePreview(
@@ -993,22 +966,7 @@ export function renderBotMessageTemplatePreview(
     rendered = rendered.split(`{${key}}`).join(value);
   }
 
-  return rendered.trim();
-}
-
-export function mergeBotSpeechStyleSettings(
-  target: ChatSettings,
-  source: ChatSettings,
-): ChatSettings {
-  const nextSettings: ChatSettings = {
-    ...target,
-  };
-
-  for (const key of BOT_SPEECH_SYNC_SETTING_KEYS) {
-    nextSettings[key] = source[key] as never;
-  }
-
-  return nextSettings;
+  return rendered;
 }
 
 export function buildSpeechStylePreviewSamples(
@@ -1034,8 +992,8 @@ export function buildSpeechStylePreviewSamples(
       getSpeechTemplateFallback(style, 'linkBotMessageText', previewContext),
       {
         user: 'Алексей',
-        message_status: 'снято с линии',
-        reason: 'в этом чате ссылки не проходят, без ссылок',
+        message_status: 'удалено',
+        reason: 'ссылки в этом чате запрещены',
       },
       previewContext,
     ),
@@ -1043,7 +1001,7 @@ export function buildSpeechStylePreviewSamples(
       getSpeechTemplateFallback(style, 'textFiltersWarnMessageText', previewContext),
       {
         user: 'Алексей',
-        warning: 'вынесено предупреждение за грубую лексику',
+        warning: 'предупреждение за грубую лексику',
         reason: 'грубая лексика запрещена правилами чата',
       },
       previewContext,
@@ -1061,7 +1019,7 @@ export function buildSpeechStylePreviewSamples(
       getSpeechSystemTemplateFallback(style, 'topicBan', previewContext),
       {
         user: 'Алексей',
-        reason: 'повторные нарушения правил чата',
+        reason: 'правила чата нарушены повторно',
       },
       previewContext,
     ),

@@ -1,4 +1,5 @@
 import type { BotSpeechMediaImage } from '@maxim/contracts/settings';
+import { hasCustomBotSpeechText } from '@maxim/contracts/bot-speech';
 import { Camera as IconoirCamera } from 'iconoir-react';
 import { type ChangeEvent, useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -79,7 +80,7 @@ export function BotSpeechMessageEditorSheet({
   const [imageError, setImageError] = useState('');
   const [isPreparingImage, setIsPreparingImage] = useState(false);
   const portalTarget = resolveBotMessageEditorPortalTarget();
-  const isDefaultTemplate = value.trim().length === 0;
+  const isDefaultTemplate = !hasCustomBotSpeechText(value);
   const editorValue = isDefaultTemplate ? defaultValue : value;
   const hasImage = Boolean(image?.base64 && image.mimeType);
   const imagePreviewUrl = hasImage ? `data:${image?.mimeType};base64,${image?.base64}` : '';

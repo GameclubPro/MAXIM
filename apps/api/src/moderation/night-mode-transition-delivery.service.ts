@@ -46,7 +46,7 @@ export type NightModeTransitionDeliverySnapshot = {
 };
 
 export type NightModeTransitionDeliveryAdapters = {
-  getActiveBotSpeechProfile(): NightModeBotSpeechProfile;
+  getBotSpeechProfile(botId?: string | null): NightModeBotSpeechProfile;
   buildClosedNoticeOptions(
     settings: NightModeTransitionRuntimeSettings,
   ): MaxSendMessageOptions | null;
@@ -81,14 +81,15 @@ export class NightModeTransitionDeliveryService {
     snapshot: NightModeTransitionDeliverySnapshot,
     adapters: NightModeTransitionDeliveryAdapters,
   ): Promise<NightModeTransitionNoticeResult> {
-    const messageText = buildNightModeClosedNotice({
-      startMinutes: snapshot.startMinutes,
-      endMinutes: snapshot.endMinutes,
-      timezone: snapshot.timezone,
-      templateText: settings.nightModeBotMessageText,
-      botSpeechStyle: settings.botSpeechStyle,
-      activeBotSpeechProfile: adapters.getActiveBotSpeechProfile(),
-    });
+    const buildMessageText = (botId?: string | null) =>
+      buildNightModeClosedNotice({
+        startMinutes: snapshot.startMinutes,
+        endMinutes: snapshot.endMinutes,
+        timezone: snapshot.timezone,
+        templateText: settings.nightModeBotMessageText,
+        botSpeechStyle: settings.botSpeechStyle,
+        activeBotSpeechProfile: adapters.getBotSpeechProfile(botId),
+      });
     const messageOptions = adapters.buildClosedNoticeOptions(settings);
 
     let sent: { messageId: string | null };
@@ -101,7 +102,8 @@ export class NightModeTransitionDeliveryService {
           settings.chatId,
           snapshot.sessionKey,
         ),
-        messageText,
+        messageText: buildMessageText(),
+        resolveMessageText: buildMessageText,
         messageOptions,
         mediaSettings: settings,
         mediaFieldKey: 'nightModeBotMessageText',
@@ -150,14 +152,15 @@ export class NightModeTransitionDeliveryService {
     snapshot: NightModeTransitionDeliverySnapshot,
     adapters: NightModeTransitionDeliveryAdapters,
   ): Promise<NightModeTransitionProcessResult> {
-    const messageText = buildNightModeOpenedNotice({
-      startMinutes: snapshot.startMinutes,
-      endMinutes: snapshot.endMinutes,
-      timezone: snapshot.timezone,
-      templateText: settings.nightModeOpenMessageText,
-      botSpeechStyle: settings.botSpeechStyle,
-      activeBotSpeechProfile: adapters.getActiveBotSpeechProfile(),
-    });
+    const buildMessageText = (botId?: string | null) =>
+      buildNightModeOpenedNotice({
+        startMinutes: snapshot.startMinutes,
+        endMinutes: snapshot.endMinutes,
+        timezone: snapshot.timezone,
+        templateText: settings.nightModeOpenMessageText,
+        botSpeechStyle: settings.botSpeechStyle,
+        activeBotSpeechProfile: adapters.getBotSpeechProfile(botId),
+      });
     let sent: { messageId: string | null };
     let attemptedBotId: string | null = null;
     try {
@@ -168,7 +171,8 @@ export class NightModeTransitionDeliveryService {
           settings.chatId,
           snapshot.sessionKey,
         ),
-        messageText,
+        messageText: buildMessageText(),
+        resolveMessageText: buildMessageText,
         messageOptions: undefined,
         mediaSettings: settings,
         mediaFieldKey: 'nightModeOpenMessageText',
@@ -206,6 +210,7 @@ export class NightModeTransitionDeliveryService {
     chatId: string;
     logicalIdempotencyKey: string;
     messageText: string;
+    resolveMessageText?: (botId: string | null) => string;
     messageOptions: MaxSendMessageOptions | null | undefined;
     mediaSettings: { botSpeechMedia?: unknown };
     mediaFieldKey: 'nightModeBotMessageText' | 'nightModeOpenMessageText';
@@ -233,6 +238,7 @@ export class NightModeTransitionDeliveryService {
         sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION,
         ignoreFailureMetricStatuses: [403, 404],
         prepareAttempt: async ({ botId }) => ({
+          text: params.resolveMessageText?.(botId) ?? params.messageText,
           options: await this.botSpeechMediaService.withMediaOptions(baseOptions, media, {
             botId,
             sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION,
@@ -253,7 +259,7 @@ export class NightModeTransitionDeliveryService {
     );
     return this.maxClient.sendMessageImmediateWithId(
       params.chatId,
-      params.messageText,
+      params.resolveMessageText?.(botId) ?? params.messageText,
       messageOptionsWithMedia,
       this.buildRequestOptions(botId),
     );

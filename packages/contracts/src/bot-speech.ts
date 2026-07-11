@@ -6,6 +6,15 @@ export type BotSpeechStyle = z.infer<typeof botSpeechStyleSchema>;
 export const BOT_SPEECH_PERSONA_VALUES = ['male', 'female', 'neutral'] as const;
 export const botSpeechPersonaSchema = z.enum(BOT_SPEECH_PERSONA_VALUES);
 export type BotSpeechPersona = z.infer<typeof botSpeechPersonaSchema>;
+export const botSpeechPreviewProfileSchema = z.object({
+  persona: botSpeechPersonaSchema,
+  characterName: z.string().trim().min(1).max(128),
+});
+export type BotSpeechPreviewProfile = z.infer<typeof botSpeechPreviewProfileSchema>;
+export const DEFAULT_BOT_SPEECH_PREVIEW_PROFILE: BotSpeechPreviewProfile = {
+  persona: 'neutral',
+  characterName: 'Чат-бот',
+};
 
 export const BOT_SPEECH_EDITABLE_FIELD_KEYS = [
   'greetingBotMessageText',
@@ -32,6 +41,8 @@ export type BotSpeechSettingsSubset = {
 export type BotSpeechMediaFieldKey = BotSpeechEditableFieldKey;
 
 export const BOT_SPEECH_SYSTEM_TEMPLATE_KEYS = [
+  'linkEdited',
+  'linkEditedWarn',
   'linkMute',
   'requiredSubscriptionMute',
   'requiredSubscriptionBan',
@@ -47,9 +58,15 @@ export const BOT_SPEECH_SYSTEM_TEMPLATE_KEYS = [
   'topicMuteMessage',
   'topicBan',
   'muteNotice',
+  'permanentBanNotice',
   'messageLimitsWarn',
   'messageLimitsMute',
   'messageLimitsBan',
+  'duplicateWarn',
+  'duplicateMute',
+  'duplicateBan',
+  'duplicatePassiveDeleted',
+  'duplicatePassiveKept',
 ] as const;
 export type BotSpeechSystemTemplateKey = (typeof BOT_SPEECH_SYSTEM_TEMPLATE_KEYS)[number];
 
@@ -101,291 +118,269 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
   ROBOT: {
     editable: {
       greetingBotMessageText:
-        '🤖 {user}, доступ открыт. На линии {bot_character_name}. Работаем чисто и по правилам.',
-      linkBotMessageText: '🔗 {user}, сообщение {message_status}. Причина: {reason}.',
-      linkWarnMessageText: '⚠️ {user}, это предупреждение. Причина: {reason}.',
+        'Привет, {user}. Я {bot_character_name}. Помогу с правилами и модерацией чата.',
+      linkBotMessageText: '{user}, сообщение {message_status}: {reason}.',
+      linkWarnMessageText: '{user}, предупреждение: {reason}.',
       requiredSubscriptionBotMessageText:
-        '📡 {user}, для сообщений нужна подписка на {channels}. Подпишитесь и отправьте еще раз. Статус: {message_status}.',
+        '{user}, сообщение {message_status}. Для отправки нужна подписка на {channels}.',
       requiredSubscriptionWarnMessageText:
-        '⚠️ {user}, это предупреждение. Для сообщений нужна подписка на {channels}. Причина: {reason}.',
+        '{user}, предупреждение: {reason}. Обязательные подписки: {channels}.',
       invitationAccessBotMessageText:
-        '👥 {user}, сообщение {message_status}. Для доступа нужно пригласить {required_invites}. Прогресс: {invited_count}/{required_invites_count}. Осталось: {remaining_invites}.',
+        '{user}, сообщение {message_status}. Для доступа нужно пригласить {required_invites}. Прогресс: {invited_count}/{required_invites_count}; осталось {remaining_invites}.',
       invitationAccessWarnMessageText:
-        '⚠️ {user}, это предупреждение. Для доступа нужно пригласить {required_invites}. Сейчас: {invited_count}/{required_invites_count}. Причина: {reason}.',
-      textFiltersBotMessageText: '🛡️ {user}, сообщение {message_status}. Причина: {reason}.',
-      textFiltersWarnMessageText: '⚠️ {user}, это предупреждение. Причина: {reason}.',
-      duplicateBotMessageText: '♻️ {user}, дубль найден. {sanction}',
-      messageLimitsBotMessageText: '📏 {user}, сообщение {message_status}. Причина: {reason}.',
-      messageLimitsWarnMessageText: '⚠️ {user}, это предупреждение. Причина: {reason}.',
-      phoneNumbersBotMessageText: '☎️ {user}, сообщение {message_status}. Причина: {reason}.',
+        '{user}, предупреждение: {reason}. Условие: {required_invites}; прогресс {invited_count}/{required_invites_count}.',
+      textFiltersBotMessageText: '{user}, сообщение {message_status}: {reason}.',
+      textFiltersWarnMessageText: '{user}, предупреждение: {reason}.',
+      duplicateBotMessageText: '{user}, сообщение распознано как повтор. {sanction}',
+      messageLimitsBotMessageText: '{user}, сообщение {message_status}: {reason}.',
+      messageLimitsWarnMessageText: '{user}, предупреждение: {reason}.',
+      phoneNumbersBotMessageText: '{user}, сообщение {message_status}: {reason}.',
       nightModeBotMessageText:
-        '🌙 Ночной режим активен: {night_window} ({night_timezone}). {night_status}',
-      nightModeOpenMessageText: '☀️ Ночной режим завершен. {opening_status}',
+        '🌙 Чат закрыт по расписанию: {night_window} ({night_timezone}). {night_status}',
+      nightModeOpenMessageText: '{opening_status} Обычный режим восстановлен.',
     },
     system: {
-      linkMute: '🔒 {user}, за повторные ссылки включен мут.',
-      requiredSubscriptionMute:
-        '🔒 {user}, за повторные сообщения без подписки на {channels} включен мут.',
+      linkEdited:
+        '{user}, после редактирования обнаружена ссылка. Сообщение {message_status}: {reason}.',
+      linkEditedWarn: '{user}, предупреждение: {reason}.',
+      linkMute: '{user}, за повторные ссылки включён мут.',
+      requiredSubscriptionMute: '{user}, за сообщения без подписки на {channels} включён мут.',
       requiredSubscriptionBan:
-        '⛔ {user}, включен бан до ручного снятия. Для сообщений нужна подписка на {channels}.',
+        '{user}, включён бан до ручного снятия. Для сообщений нужна подписка на {channels}.',
       invitationAccessMute:
-        '🔒 {user}, включен мут. Для доступа пригласите {remaining_invites} из {required_invites}.',
+        '{user}, включён мут. Для доступа осталось пригласить {remaining_invites} из {required_invites}.',
       invitationAccessBan:
-        '⛔ {user}, включен бан до ручного снятия. Причина: доступ к сообщениям требует приглашений.',
-      textFiltersMuteCommercial: '🔒 {user}, за повторную рекламу включен мут.',
-      textFiltersMuteProfanity: '🔒 {user}, за повторную грубую лексику включен мут.',
-      textFiltersMuteGeneric: '🔒 {user}, за повторные нарушения текста включен мут.',
-      topicExplainAnnouncement: '🧾 {user}, объявление не прошло. Причина: {reason}.',
-      topicExplainMessage: '🧾 {user}, сообщение не прошло. Причина: {reason}.',
-      topicWarn: '⚠️ {user}, это предупреждение. Причина: {reason}.',
-      topicMuteAnnouncement: '🔒 {user}, за повторные объявления не по формату включен мут.',
-      topicMuteMessage: '🔒 {user}, за повторные сообщения не по формату включен мут.',
-      topicBan: '⛔ {user}, включен бан до ручного снятия. Причина: {reason}.',
+        '{user}, включён бан до ручного снятия. Условие по приглашениям не выполнено.',
+      textFiltersMuteCommercial: '{user}, за повторную рекламу включён мут.',
+      textFiltersMuteProfanity: '{user}, за повторную грубую лексику включён мут.',
+      textFiltersMuteGeneric: '{user}, за повторные нарушения текста включён мут.',
+      topicExplainAnnouncement: '{user}, объявление {message_status}: {reason}.',
+      topicExplainMessage: '{user}, сообщение {message_status}: {reason}.',
+      topicWarn: '{user}, предупреждение: {reason}.',
+      topicMuteAnnouncement: '{user}, за повторные объявления не по формату включён мут.',
+      topicMuteMessage: '{user}, за повторные сообщения не по тематике включён мут.',
+      topicBan: '{user}, включён бан до ручного снятия. Причина: {reason}.',
       muteNotice:
-        '🔒 {user}, включен мут на {mute_duration}. Новые сообщения будут скрываться до конца ограничения.',
-      messageLimitsWarn: '⚠️ {user}, это предупреждение. Причина: {reason}.',
-      messageLimitsMute:
-        '🔒 {user}, за повторное нарушение ограничений включен мут. Причина: {reason}.',
-      messageLimitsBan: '⛔ {user}, включен бан до ручного снятия. Причина: {reason}.',
+        '{user}, включён мут на {mute_duration}. До конца срока новые сообщения будут удаляться.',
+      permanentBanNotice: '{user}, включён бан до ручного снятия.',
+      messageLimitsWarn: '{user}, предупреждение: {reason}.',
+      messageLimitsMute: '{user}, включён мут. Причина: {reason}.',
+      messageLimitsBan: '{user}, включён бан до ручного снятия. Причина: {reason}.',
+      duplicateWarn: 'Предупреждение за повтор зафиксировано.',
+      duplicateMute: 'Включён мут на {mute_duration} за повторные сообщения.',
+      duplicateBan: 'Включён бан до ручного снятия за повторные сообщения.',
+      duplicatePassiveDeleted: 'Повтор удалён, дополнительной санкции нет.',
+      duplicatePassiveKept: 'Повтор отмечен, дополнительной санкции нет.',
     },
   },
   FRIENDLY: {
     editable: {
       greetingBotMessageText:
-        'Привет, {user} 🫶 На связи {bot_character_name}. Помогу освоиться и держать чат в порядке.',
+        'Привет, {user} 👋 На связи {bot_character_name}. Помогу освоиться и не запутаться в правилах.',
       linkBotMessageText:
-        '🔗 {user}, ссылку убрал. Здесь они отключены. Если она по делу, лучше согласовать с админом.',
-      linkWarnMessageText: '⚠️ {user}, это предупреждение. Ссылки здесь всё ещё нельзя.',
+        '{user}, сообщение {message_status}: {reason}. Уберите ссылку, и всё будет в порядке.',
+      linkWarnMessageText: '{user}, это предупреждение: {reason}. Дальше лучше без ссылок.',
       requiredSubscriptionBotMessageText:
-        '📡 {user}, чтобы писать сюда, нужна подписка на {channels}. Подпишитесь и попробуйте снова. Сейчас оно: {message_status}.',
+        '{user}, сообщение {message_status}. Сначала подпишитесь на {channels}, и можно продолжать.',
       requiredSubscriptionWarnMessageText:
-        '⚠️ {user}, это предупреждение. Для сообщений всё ещё нужна подписка на {channels}. Причина: {reason}.',
+        '{user}, это предупреждение: {reason}. Нужная подписка: {channels}.',
       invitationAccessBotMessageText:
-        '👥 {user}, пока сообщение не прошло. Чтобы писать сюда, пригласите {required_invites}. Уже засчитано: {invited_count}/{required_invites_count}. Осталось {remaining_invites}.',
+        '{user}, сообщение {message_status}. Для доступа нужно пригласить {required_invites}. Уже засчитано {invited_count}/{required_invites_count}, осталось {remaining_invites}.',
       invitationAccessWarnMessageText:
-        '⚠️ {user}, это предупреждение. Доступ всё ещё закрыт: нужно пригласить {required_invites}, сейчас {invited_count}/{required_invites_count}.',
+        '{user}, это предупреждение: {reason}. Нужно пригласить {required_invites}; сейчас {invited_count}/{required_invites_count}.',
       textFiltersBotMessageText:
-        '🧹 {user}, сообщение убрал. Причина: {reason}. Поправьте и можно отправить снова ✨',
-      textFiltersWarnMessageText:
-        '⚠️ {user}, это предупреждение. Причина: {reason}. Давайте дальше без этого 🙌',
-      duplicateBotMessageText: '♻️ {user}, это уже повтор. {sanction}',
-      messageLimitsBotMessageText: '📏 {user}, сообщение не прошло. Причина: {reason}.',
-      messageLimitsWarnMessageText: '⚠️ {user}, это предупреждение. Причина: {reason}.',
-      phoneNumbersBotMessageText: '☎️ {user}, номер телефона убрал. Причина: {reason}.',
+        '{user}, сообщение {message_status}: {reason}. Давайте дальше без этого.',
+      textFiltersWarnMessageText: '{user}, это предупреждение: {reason}. Давайте дальше без этого.',
+      duplicateBotMessageText: '{user}, сообщение повторилось. {sanction}',
+      messageLimitsBotMessageText:
+        '{user}, сообщение {message_status}: {reason}. Учтите это перед следующей отправкой.',
+      messageLimitsWarnMessageText: '{user}, это предупреждение: {reason}.',
+      phoneNumbersBotMessageText:
+        '{user}, сообщение {message_status}: {reason}. Уберите номер, и его можно отправить снова.',
       nightModeBotMessageText:
-        '🌙 Сейчас тихий режим: {night_window} ({night_timezone}). {night_status}',
-      nightModeOpenMessageText: '☀️ Доброе утро. {opening_status} Можно снова писать ✨',
+        '🌙 В чате тихий режим: {night_window} ({night_timezone}). {night_status}',
+      nightModeOpenMessageText: '{opening_status} Можно снова писать.',
     },
     system: {
-      linkMute: '🔒 {user}, ссылки повторились, поэтому включил мут.',
+      linkEdited:
+        '{user}, после правки в сообщении появилась ссылка. Сообщение {message_status}: {reason}.',
+      linkEditedWarn: '{user}, это предупреждение: {reason}. После правки ссылки тоже учитываются.',
+      linkMute: '{user}, за новые ссылки включён мут.',
       requiredSubscriptionMute:
-        '🔒 {user}, сообщения без подписки повторились, поэтому включил мут. Сначала подпишитесь на {channels}.',
+        '{user}, за сообщения без подписки включён мут. Для доступа подпишитесь на {channels}.',
       requiredSubscriptionBan:
-        '⛔ {user}, пришлось выдать бан до ручного разбана. Чтобы писать дальше, сначала подпишитесь на {channels}.',
+        '{user}, включён бан до ручного снятия. Для сообщений нужна подписка на {channels}.',
       invitationAccessMute:
-        '🔒 {user}, сообщения до выполнения условия повторились, поэтому включил мут. Осталось пригласить {remaining_invites}.',
+        '{user}, включён мут: условие по приглашениям ещё не выполнено. Осталось пригласить {remaining_invites} из {required_invites}.',
       invitationAccessBan:
-        '⛔ {user}, пришлось выдать бан до ручного разбана. Для доступа к сообщениям нужно выполнить условие приглашений.',
-      textFiltersMuteCommercial: '🔒 {user}, реклама повторилась, поэтому включил мут.',
-      textFiltersMuteProfanity: '🔒 {user}, грубая лексика повторилась, поэтому включил мут.',
-      textFiltersMuteGeneric: '🔒 {user}, нарушения повторились, поэтому включил мут.',
+        '{user}, включён бан до ручного снятия: условие по приглашениям не выполнено.',
+      textFiltersMuteCommercial: '{user}, за повторную рекламу включён мут.',
+      textFiltersMuteProfanity: '{user}, за повторную грубую лексику включён мут.',
+      textFiltersMuteGeneric: '{user}, за повторные нарушения текста включён мут.',
       topicExplainAnnouncement:
-        '🧾 {user}, объявление не прошло: {reason}. Поправьте и отправьте ещё раз ✨',
+        '{user}, объявление {message_status}: {reason}. Исправьте формат, и можно отправить снова.',
       topicExplainMessage:
-        '🧾 {user}, сообщение не прошло: {reason}. Поправьте и отправьте ещё раз ✨',
-      topicWarn: '⚠️ {user}, это предупреждение. Причина: {reason}.',
-      topicMuteAnnouncement: '🔒 {user}, объявления снова были не по формату, поэтому включил мут.',
-      topicMuteMessage: '🔒 {user}, сообщения снова были не по формату, поэтому включил мут.',
-      topicBan: '⛔ {user}, пришлось выдать бан до ручного разбана. Причина: {reason}.',
+        '{user}, сообщение {message_status}: {reason}. Вернитесь к теме чата и попробуйте снова.',
+      topicWarn: '{user}, это предупреждение: {reason}.',
+      topicMuteAnnouncement: '{user}, за повторные объявления не по формату включён мут.',
+      topicMuteMessage: '{user}, за повторные сообщения не по теме включён мут.',
+      topicBan: '{user}, включён бан до ручного снятия. Причина: {reason}.',
       muteNotice:
-        '🔒 {user}, включил мут на {mute_duration}. До конца срока новые сообщения будут скрываться.',
-      messageLimitsWarn: '⚠️ {user}, это предупреждение. Причина: {reason}.',
-      messageLimitsMute:
-        '🔒 {user}, ограничения по сообщениям снова нарушились, поэтому включил мут. Причина: {reason}.',
-      messageLimitsBan: '⛔ {user}, пришлось выдать бан до ручного разбана. Причина: {reason}.',
+        '{user}, мут включён на {mute_duration}. До конца срока новые сообщения будут удаляться.',
+      permanentBanNotice: '{user}, включён бан до ручного снятия.',
+      messageLimitsWarn: '{user}, это предупреждение: {reason}.',
+      messageLimitsMute: '{user}, мут включён. Причина: {reason}.',
+      messageLimitsBan: '{user}, включён бан до ручного снятия. Причина: {reason}.',
+      duplicateWarn: 'Это предупреждение за повтор.',
+      duplicateMute: 'За повторы включён мут на {mute_duration}.',
+      duplicateBan: 'За повторы включён бан до ручного снятия.',
+      duplicatePassiveDeleted: 'Повтор удалён, дополнительной санкции нет.',
+      duplicatePassiveKept: 'Повтор отмечен, пока без санкции.',
     },
   },
   POLICE: {
     editable: {
       greetingBotMessageText:
-        'Здравия, {user} 👮‍♂️ На линии {bot_character_name}. Осваивайтесь спокойно, тут порядок без лишней драмы.',
+        'Приветствую, {user}. На связи {bot_character_name}. Правила простые: всё фиксируется по факту, без лишнего шума.',
       linkBotMessageText:
-        'Товарищ {user}, ссылку снял с линии 🚨 Тут со ссылками без самодеятельности.',
+        '{user}, ссылка зафиксирована. Сообщение {message_status}: {reason}. Без самодеятельности.',
       linkWarnMessageText:
-        'Товарищ {user}, взял на карандаш 📝 По ссылкам тут режим строгий, не доводим до протокола.',
+        '{user}, предупреждение зафиксировано: {reason}. Дальше без самодеятельности.',
       requiredSubscriptionBotMessageText:
-        'Товарищ {user}, вход в эфир через подписку на {channels} 📡 Подпишитесь и заходите снова. Сейчас сообщение: {message_status}.',
+        '{user}, порядок такой: сначала подписка на {channels}. Сообщение {message_status}.',
       requiredSubscriptionWarnMessageText:
-        'Товарищ {user}, это предупреждение 📝 Для сообщений нужна подписка на {channels}.',
+        '{user}, предупреждение зафиксировано: {reason}. Нужна подписка на {channels}.',
       invitationAccessBotMessageText:
-        'Товарищ {user}, вход в эфир через приглашения 👥 Нужно пригласить {required_invites}. Сейчас {invited_count}/{required_invites_count}, осталось {remaining_invites}. Сообщение: {message_status}.',
+        '{user}, условие по приглашениям не закрыто. Сообщение {message_status}. Требование: {required_invites}; по учёту {invited_count}/{required_invites_count}, осталось {remaining_invites}.',
       invitationAccessWarnMessageText:
-        'Товарищ {user}, это предупреждение 📝 Для доступа нужно пригласить {required_invites}. Сейчас {invited_count}/{required_invites_count}.',
+        '{user}, предупреждение зафиксировано: {reason}. Требование: {required_invites}; по учёту {invited_count}/{required_invites_count}.',
       textFiltersBotMessageText:
-        'Товарищ {user}, это прикрыл 👮‍♂️ Причина: {reason}. Подправьте по форме и снова в эфир.',
+        '{user}, сообщение {message_status}. Основание: {reason}. Нарушение зафиксировано.',
       textFiltersWarnMessageText:
-        'Товарищ {user}, взял на карандаш 📝 Причина: {reason}. Дальше без лишнего шума.',
-      duplicateBotMessageText: 'Товарищ {user}, вижу повтор 👀 {sanction}',
+        '{user}, предупреждение зафиксировано. Основание: {reason}. Дальше без лишнего шума.',
+      duplicateBotMessageText: '{user}, повтор зафиксирован. {sanction}',
       messageLimitsBotMessageText:
-        'Товарищ {user}, это прикрыл 📏 Причина: {reason}. Подправьте и снова в эфир.',
-      messageLimitsWarnMessageText: 'Товарищ {user}, взял на карандаш 📝 Причина: {reason}.',
-      phoneNumbersBotMessageText: 'Товарищ {user}, телефон снял с линии ☎️ Причина: {reason}.',
+        '{user}, сообщение {message_status}. Основание: {reason}. Не усугубляйте.',
+      messageLimitsWarnMessageText: '{user}, предупреждение зафиксировано. Основание: {reason}.',
+      phoneNumbersBotMessageText:
+        '{user}, сообщение {message_status}. Основание: {reason}. Номер из текста лучше убрать.',
       nightModeBotMessageText:
-        '🌙 Ночной патруль на линии. Чат прикрыт на {night_window} ({night_timezone}). {night_status}',
-      nightModeOpenMessageText:
-        '☀️ Отбой ночному патрулю. {opening_status} Можно снова в эфир, но без подвигов.',
+        '🌙 Ночной режим действует: {night_window} ({night_timezone}). {night_status} До открытия без самодеятельности.',
+      nightModeOpenMessageText: '{opening_status} Работаем в обычном режиме, без самодеятельности.',
     },
     system: {
-      linkMute: 'Товарищ {user}, по ссылкам пошёл рецидив 🚨 Включаю мут.',
+      linkEdited:
+        '{user}, ссылка добавлена при редактировании. Сообщение {message_status}: {reason}. Манёвр зафиксирован.',
+      linkEditedWarn:
+        '{user}, предупреждение зафиксировано: {reason}. Тихая правка правила не отменяет.',
+      linkMute: '{user}, повторные ссылки зафиксированы. Включён мут.',
       requiredSubscriptionMute:
-        'Товарищ {user}, без подписки на {channels} снова пошли в эфир 📡 Включаю мут.',
+        '{user}, сообщения без подписки на {channels} повторились. Включён мут.',
       requiredSubscriptionBan:
-        'Товарищ {user}, тут уже шлагбаум ⛔ До ручного разбана. Для сообщений нужна подписка на {channels}.',
+        '{user}, мера усилена: бан до ручного снятия. Для сообщений нужна подписка на {channels}.',
       invitationAccessMute:
-        'Товарищ {user}, условие приглашений всё ещё не закрыто 👥 Включаю мут. Осталось: {remaining_invites}.',
+        '{user}, условие по приглашениям не закрыто. Включён мут; осталось пригласить {remaining_invites} из {required_invites}.',
       invitationAccessBan:
-        'Товарищ {user}, тут уже шлагбаум ⛔ До ручного разбана. Причина: доступ требует приглашений.',
-      textFiltersMuteCommercial: 'Товарищ {user}, реклама пошла по второму кругу 🚨 Включаю мут.',
-      textFiltersMuteProfanity: 'Товарищ {user}, по лексике снова занесло 🚨 Включаю мут.',
-      textFiltersMuteGeneric: 'Товарищ {user}, нарушения пошли серией 🚨 Включаю мут.',
+        '{user}, условие по приглашениям не выполнено. Включён бан до ручного снятия.',
+      textFiltersMuteCommercial: '{user}, повторная реклама зафиксирована. Включён мут.',
+      textFiltersMuteProfanity: '{user}, повторная грубая лексика зафиксирована. Включён мут.',
+      textFiltersMuteGeneric: '{user}, серия текстовых нарушений зафиксирована. Включён мут.',
       topicExplainAnnouncement:
-        'Товарищ {user}, объявление прикрыл 👮‍♂️ Причина: {reason}. Подправьте по форме и снова в эфир.',
+        '{user}, объявление {message_status}. Основание: {reason}. Исправьте по форме и отправьте снова.',
       topicExplainMessage:
-        'Товарищ {user}, сообщение прикрыл 👮‍♂️ Причина: {reason}. Подправьте по форме и снова в эфир.',
-      topicWarn: 'Товарищ {user}, взял на карандаш 📝 Причина: {reason}.',
-      topicMuteAnnouncement: 'Товарищ {user}, объявления опять мимо формы 🚨 Включаю мут.',
-      topicMuteMessage: 'Товарищ {user}, сообщения опять мимо формы 🚨 Включаю мут.',
-      topicBan: 'Товарищ {user}, тут уже шлагбаум ⛔ Причина: {reason}. До ручного разбана.',
+        '{user}, сообщение {message_status}. Основание: {reason}. Держитесь темы чата.',
+      topicWarn: '{user}, предупреждение зафиксировано. Основание: {reason}.',
+      topicMuteAnnouncement: '{user}, повторные объявления не по форме. Включён мут.',
+      topicMuteMessage: '{user}, повторные сообщения не по теме. Включён мут.',
+      topicBan:
+        '{user}, по материалам повторных нарушений включён бан до ручного снятия. Основание: {reason}.',
       muteNotice:
-        'Товарищ {user}, включаю тихий режим на {mute_duration} 🔒 До конца срока новые сообщения будут скрываться.',
-      messageLimitsWarn: 'Товарищ {user}, взял на карандаш 📝 Причина: {reason}.',
-      messageLimitsMute: 'Товарищ {user}, лимиты снова поехали 🚨 Включаю мут. Причина: {reason}.',
-      messageLimitsBan:
-        'Товарищ {user}, тут уже шлагбаум ⛔ Причина: {reason}. До ручного разбана.',
+        '{user}, оформлен мут на {mute_duration}. До конца срока новые сообщения будут удаляться.',
+      permanentBanNotice: '{user}, оформлен бан до ручного снятия.',
+      messageLimitsWarn: '{user}, предупреждение зафиксировано. Основание: {reason}.',
+      messageLimitsMute:
+        '{user}, нарушение ограничения зафиксировано. Включён мут. Основание: {reason}.',
+      messageLimitsBan: '{user}, оформлен бан до ручного снятия. Основание: {reason}.',
+      duplicateWarn: 'Предупреждение за повтор зафиксировано.',
+      duplicateMute: 'За повторные сообщения оформлен мут на {mute_duration}.',
+      duplicateBan: 'За повторные сообщения оформлен бан до ручного снятия.',
+      duplicatePassiveDeleted: 'Повтор удалён. Профилактика сработала.',
+      duplicatePassiveKept: 'Повтор отмечен, пока без санкции.',
     },
   },
   IRONIC: {
     editable: {
       greetingBotMessageText:
-        '{user}, привет 😏 На связи {bot_character_name}. Осваивайтесь спокойно, а правила лучше не проверять на характер.',
+        'Привет, {user}. На связи {bot_character_name}. Правила не кусаются, пока их не проверяют на прочность.',
       linkBotMessageText:
-        '{user}, ссылку убрал 🔗 Тут и без внешнего интернета хватает приключений.',
+        '{user}, ссылка решила пройти без пропуска. Сообщение {message_status}: {reason}.',
       linkWarnMessageText:
-        '{user}, это уже предупреждение ⚠️ Со ссылками здесь по-прежнему не сложилось.',
+        '{user}, предупреждение: {reason}. У ссылок здесь стабильно не складывается.',
       requiredSubscriptionBotMessageText:
-        '{user}, сначала подпишитесь на {channels} 📡 Потом уже пишите сюда. Да, формальность. Да, обязательная: {message_status}.',
+        '{user}, сообщение {message_status}. Сначала подписка на {channels}; формальность короткая, но обязательная.',
       requiredSubscriptionWarnMessageText:
-        '{user}, это уже предупреждение ⚠️ Без подписки на {channels} сообщение всё ещё не проходит. Причина: {reason}.',
+        '{user}, предупреждение: {reason}. Подписка на {channels} всё ещё обязательна.',
       invitationAccessBotMessageText:
-        '{user}, сначала пригласите {required_invites} 👥 Потом уже в эфир. Сейчас {invited_count}/{required_invites_count}, осталось {remaining_invites}. Сообщение {message_status}.',
+        '{user}, сообщение {message_status}. Для доступа нужно пригласить {required_invites}: сейчас {invited_count}/{required_invites_count}, осталось {remaining_invites}. Счётчик к обаянию равнодушен.',
       invitationAccessWarnMessageText:
-        '{user}, это уже предупреждение ⚠️ Приглашения всё ещё не закрыты: {invited_count}/{required_invites_count}. Причина: {reason}.',
+        '{user}, предупреждение: {reason}. Нужно пригласить {required_invites}; сейчас {invited_count}/{required_invites_count}.',
       textFiltersBotMessageText:
-        '{user}, это убрал 🧹 Причина: {reason}. Мысль можно оставить, подачу лучше сменить.',
+        '{user}, сообщение {message_status}: {reason}. Правило оказалось не декоративным.',
       textFiltersWarnMessageText:
-        '{user}, это уже предупреждение ⚠️ Причина: {reason}. Харизма харизмой, а правила на месте.',
-      duplicateBotMessageText: '{user}, это уже было 👀 {sanction}',
+        '{user}, предупреждение: {reason}. Харизма харизмой, а правила на месте.',
+      duplicateBotMessageText: '{user}, сообщение вышло на бис. {sanction}',
       messageLimitsBotMessageText:
-        '{user}, это не прошло 📏 Причина: {reason}. Лимиты скучные, зато считают без эмоций.',
+        '{user}, сообщение {message_status}: {reason}. Настройка оказалась не декоративной.',
       messageLimitsWarnMessageText:
-        '{user}, это уже предупреждение ⚠️ Причина: {reason}. Лимиты спорить не любят.',
+        '{user}, предупреждение: {reason}. Настройки чата спорить не любят.',
       phoneNumbersBotMessageText:
-        '{user}, номер телефона убрал ☎️ Причина: {reason}. Тут контакты проходят через правила.',
+        '{user}, сообщение {message_status}: {reason}. Номер телефона в этот выпуск не прошёл.',
       nightModeBotMessageText:
-        '🌙 Ночной режим: {night_window} ({night_timezone}). {night_status} Чату тоже иногда нужен режим потише.',
-      nightModeOpenMessageText:
-        '☀️ Тихий режим снят. {opening_status} Можно снова писать, только без резкого старта.',
+        '🌙 Чат взял паузу: {night_window} ({night_timezone}). {night_status} Даже ленте иногда нужен сон.',
+      nightModeOpenMessageText: '{opening_status} Лента снова принимает реплики.',
     },
     system: {
-      linkMute: '{user}, со ссылками снова перебор 🔒 Поэтому теперь мут.',
+      linkEdited:
+        '{user}, ссылка появилась уже после правки. Сообщение {message_status}: {reason}. Тихий вход не удался.',
+      linkEditedWarn:
+        '{user}, предупреждение: {reason}. Редактирование не выдаёт ссылкам невидимость.',
+      linkMute: '{user}, за повторные ссылки включён мут. Ссылочный марафон на паузе.',
       requiredSubscriptionMute:
-        '{user}, без подписки на {channels} снова идём напролом 📡 Поэтому теперь мут.',
+        '{user}, за сообщения без подписки на {channels} включён мут. Формальность всё-таки победила.',
       requiredSubscriptionBan:
-        '{user}, дальше уже только ручной разбан ⛔ Без подписки на {channels} эта история всё равно не работает.',
+        '{user}, включён бан до ручного снятия. Для сообщений нужна подписка на {channels}.',
       invitationAccessMute:
-        '{user}, спор с условием приглашений затянулся 🔒 Поэтому теперь мут. Осталось: {remaining_invites}.',
+        '{user}, условие по приглашениям не выполнено, поэтому включён мут. Осталось пригласить {remaining_invites} из {required_invites}.',
       invitationAccessBan:
-        '{user}, дальше уже только ручной разбан ⛔ Без приглашений эта история всё равно не работает.',
-      textFiltersMuteCommercial: '{user}, реклама опять пошла в атаку 🔒 Поэтому теперь мут.',
+        '{user}, включён бан до ручного снятия: условие по приглашениям не выполнено.',
+      textFiltersMuteCommercial:
+        '{user}, за повторную рекламу включён мут. Рекламная пауза затянулась.',
       textFiltersMuteProfanity:
-        '{user}, лексика снова вышла без приглашения 🔒 Поэтому теперь мут.',
-      textFiltersMuteGeneric: '{user}, спор с правилами затянулся 🔒 Поэтому теперь мут.',
+        '{user}, за повторную грубую лексику включён мут. Словарь ушёл на перерыв.',
+      textFiltersMuteGeneric:
+        '{user}, за повторные нарушения текста включён мут. Спор с правилами окончен.',
       topicExplainAnnouncement:
-        '{user}, объявление убрал 🧹 Причина: {reason}. Формат тут не для красоты, а чтобы всем было проще.',
+        '{user}, объявление {message_status}: {reason}. Формат оказался не декоративным.',
       topicExplainMessage:
-        '{user}, сообщение убрал 🧹 Причина: {reason}. Формат тут не для красоты, а чтобы всем было проще.',
-      topicWarn: '{user}, это уже предупреждение ⚠️ Причина: {reason}.',
+        '{user}, сообщение {message_status}: {reason}. Тема чата всё-таки была подсказкой.',
+      topicWarn: '{user}, предупреждение: {reason}. Правило всё ещё действует.',
       topicMuteAnnouncement:
-        '{user}, с форматом объявлений снова не срослось 🔒 Поэтому теперь мут.',
-      topicMuteMessage: '{user}, с форматом сообщений снова не срослось 🔒 Поэтому теперь мут.',
-      topicBan: '{user}, дальше уже только ручной разбан ⛔ Причина: {reason}.',
+        '{user}, за повторные объявления не по формату включён мут. Форма взяла реванш.',
+      topicMuteMessage: '{user}, за повторные сообщения не по теме включён мут. Тема взяла реванш.',
+      topicBan: '{user}, включён бан до ручного снятия. Причина: {reason}.',
       muteNotice:
-        '{user}, мут на {mute_duration} 🔒 До конца срока новые сообщения будут скрываться. Небольшая пауза сейчас полезнее новых реплик.',
-      messageLimitsWarn:
-        '{user}, это уже предупреждение ⚠️ Причина: {reason}. Лимиты спорить не любят.',
+        '{user}, мут включён на {mute_duration}. До конца срока новые сообщения будут удаляться. Пауза сейчас полезнее продолжения.',
+      permanentBanNotice: '{user}, включён бан до ручного снятия.',
+      messageLimitsWarn: '{user}, предупреждение: {reason}. Настройки чата спорить не любят.',
       messageLimitsMute:
-        '{user}, лимиты снова проверяем на прочность 🔒 Поэтому теперь мут. Причина: {reason}.',
-      messageLimitsBan: '{user}, дальше уже только ручной разбан ⛔ Причина: {reason}.',
+        '{user}, включён мут. Причина: {reason}. Настройки проверены на прочность.',
+      messageLimitsBan: '{user}, включён бан до ручного снятия. Причина: {reason}.',
+      duplicateWarn: 'Предупреждение за повтор. Второй экземпляр убедительнее не стал.',
+      duplicateMute: 'За повторы включён мут на {mute_duration}. Бис затянулся.',
+      duplicateBan: 'За повторные сообщения включён бан до ручного снятия.',
+      duplicatePassiveDeleted: 'Повтор удалён. На бис сегодня без аншлага.',
+      duplicatePassiveKept: 'Повтор отмечен, пока без санкции.',
     },
-  },
-};
-
-const BOT_SPEECH_POLICE_FEMALE_PRESET: BotSpeechPreset = {
-  editable: {
-    greetingBotMessageText:
-      'Здравия, {user} 👮‍♀️ На линии {bot_character_name}. Осваивайтесь спокойно, тут порядок без лишней драмы.',
-    linkBotMessageText:
-      'Товарищ {user}, ссылку сняла с линии 🚨 Тут со ссылками без самодеятельности.',
-    linkWarnMessageText:
-      'Товарищ {user}, взяла на карандаш 📝 По ссылкам тут режим строгий, не доводим до протокола.',
-    requiredSubscriptionBotMessageText:
-      'Товарищ {user}, вход в эфир через подписку на {channels} 📡 Подпишитесь и заходите снова. Сейчас сообщение: {message_status}.',
-    requiredSubscriptionWarnMessageText:
-      'Товарищ {user}, это предупреждение 📝 Для сообщений нужна подписка на {channels}.',
-    invitationAccessBotMessageText:
-      'Товарищ {user}, вход в эфир через приглашения 👥 Нужно пригласить {required_invites}. Сейчас {invited_count}/{required_invites_count}, осталось {remaining_invites}. Сообщение: {message_status}.',
-    invitationAccessWarnMessageText:
-      'Товарищ {user}, это предупреждение 📝 Для доступа нужно пригласить {required_invites}. Сейчас {invited_count}/{required_invites_count}.',
-    textFiltersBotMessageText:
-      'Товарищ {user}, это прикрыла 👮‍♀️ Причина: {reason}. Подправьте по форме и снова в эфир.',
-    textFiltersWarnMessageText:
-      'Товарищ {user}, взяла на карандаш 📝 Причина: {reason}. Дальше без лишнего шума.',
-    duplicateBotMessageText: 'Товарищ {user}, вижу повтор 👀 {sanction}',
-    messageLimitsBotMessageText:
-      'Товарищ {user}, это прикрыла 📏 Причина: {reason}. Подправьте и снова в эфир.',
-    messageLimitsWarnMessageText: 'Товарищ {user}, взяла на карандаш 📝 Причина: {reason}.',
-    phoneNumbersBotMessageText: 'Товарищ {user}, телефон сняла с линии ☎️ Причина: {reason}.',
-    nightModeBotMessageText:
-      '🌙 Ночной патруль на линии. Чат прикрыт на {night_window} ({night_timezone}). {night_status}',
-    nightModeOpenMessageText:
-      '☀️ Отбой ночному патрулю. {opening_status} Можно снова в эфир, но без подвигов.',
-  },
-  system: {
-    linkMute: 'Товарищ {user}, по ссылкам пошёл рецидив 🚨 Включаю мут.',
-    requiredSubscriptionMute:
-      'Товарищ {user}, без подписки на {channels} снова пошли в эфир 📡 Включаю мут.',
-    requiredSubscriptionBan:
-      'Товарищ {user}, тут уже шлагбаум ⛔ До ручного разбана. Для сообщений нужна подписка на {channels}.',
-    invitationAccessMute:
-      'Товарищ {user}, условие приглашений всё ещё не закрыто 👥 Включаю мут. Осталось: {remaining_invites}.',
-    invitationAccessBan:
-      'Товарищ {user}, тут уже шлагбаум ⛔ До ручного разбана. Причина: доступ требует приглашений.',
-    textFiltersMuteCommercial: 'Товарищ {user}, реклама пошла по второму кругу 🚨 Включаю мут.',
-    textFiltersMuteProfanity: 'Товарищ {user}, по лексике снова занесло 🚨 Включаю мут.',
-    textFiltersMuteGeneric: 'Товарищ {user}, нарушения пошли серией 🚨 Включаю мут.',
-    topicExplainAnnouncement:
-      'Товарищ {user}, объявление прикрыла 👮‍♀️ Причина: {reason}. Подправьте по форме и снова в эфир.',
-    topicExplainMessage:
-      'Товарищ {user}, сообщение прикрыла 👮‍♀️ Причина: {reason}. Подправьте по форме и снова в эфир.',
-    topicWarn: 'Товарищ {user}, взяла на карандаш 📝 Причина: {reason}.',
-    topicMuteAnnouncement: 'Товарищ {user}, объявления опять мимо формы 🚨 Включаю мут.',
-    topicMuteMessage: 'Товарищ {user}, сообщения опять мимо формы 🚨 Включаю мут.',
-    topicBan: 'Товарищ {user}, тут уже шлагбаум ⛔ Причина: {reason}. До ручного разбана.',
-    muteNotice:
-      'Товарищ {user}, включаю тихий режим на {mute_duration} 🔒 До конца срока новые сообщения будут скрываться.',
-    messageLimitsWarn: 'Товарищ {user}, взяла на карандаш 📝 Причина: {reason}.',
-    messageLimitsMute: 'Товарищ {user}, лимиты снова поехали 🚨 Включаю мут. Причина: {reason}.',
-    messageLimitsBan: 'Товарищ {user}, тут уже шлагбаум ⛔ Причина: {reason}. До ручного разбана.',
   },
 };
 
@@ -401,36 +396,27 @@ export function resolveBotSpeechPersona(
 
 function resolveBotSpeechPreset(
   style: BotSpeechStyle | null | undefined,
-  persona: BotSpeechPersona | null | undefined,
+  _persona: BotSpeechPersona | null | undefined,
 ): BotSpeechPreset {
-  const resolvedStyle = resolveBotSpeechStyle(style);
-  const resolvedPersona = resolveBotSpeechPersona(persona);
-
-  if (resolvedStyle === 'POLICE' && resolvedPersona === 'female') {
-    return BOT_SPEECH_POLICE_FEMALE_PRESET;
-  }
-
-  return BOT_SPEECH_PRESETS[resolvedStyle];
+  return BOT_SPEECH_PRESETS[resolveBotSpeechStyle(style)];
 }
 
 export function hasBotSpeechEditableOverrides(settings: BotSpeechSettingsSubset): boolean {
-  return BOT_SPEECH_EDITABLE_FIELD_KEYS.some((key) => settings[key].trim().length > 0);
+  return BOT_SPEECH_EDITABLE_FIELD_KEYS.some((key) => hasCustomBotSpeechText(settings[key]));
+}
+
+export function hasCustomBotSpeechText(value: string | null | undefined): value is string {
+  return typeof value === 'string' && value.length > 0;
 }
 
 export function applyBotSpeechStylePreset<T extends BotSpeechSettingsSubset>(
   settings: T,
   style: BotSpeechStyle,
 ): T {
-  const nextSettings = {
+  return {
     ...settings,
     botSpeechStyle: style,
   };
-
-  for (const key of BOT_SPEECH_EDITABLE_FIELD_KEYS) {
-    nextSettings[key] = '';
-  }
-
-  return nextSettings;
 }
 
 export function getBotSpeechEditableTemplate(

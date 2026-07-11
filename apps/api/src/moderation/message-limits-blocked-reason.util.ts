@@ -1,6 +1,6 @@
 type BlockedListRuleCode = 'MESSAGE_BLOCKED_WORD' | 'MESSAGE_BLOCKED_DOMAIN';
 
-export const MESSAGE_LIMITS_BLOCKED_LIST_PUBLIC_REASON = 'такие сообщения запрещены в чате';
+export const MESSAGE_LIMITS_BLOCKED_LIST_PUBLIC_REASON = 'сообщение совпало со стоп-листом чата';
 
 export function isMessageLimitsBlockedListRuleCode(
   ruleCode: string,

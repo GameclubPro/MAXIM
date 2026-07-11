@@ -21,7 +21,9 @@ describe('night mode transition notice util', () => {
         botSpeechStyle: 'ROBOT',
         activeBotSpeechProfile,
       }),
-    ).toBe('🌙 Ночной режим активен: 23:00-08:00 (Москва). Новые сообщения временно не принимаются.');
+    ).toBe(
+      '🌙 Чат закрыт по расписанию: 23:00-08:00 (Москва). До открытия новые сообщения будут удаляться.',
+    );
 
     expect(
       buildNightModeOpenedNotice({
@@ -32,7 +34,7 @@ describe('night mode transition notice util', () => {
         botSpeechStyle: 'FRIENDLY',
         activeBotSpeechProfile,
       }),
-    ).toBe('☀️ Доброе утро. Группа снова открыта. Можно снова писать ✨');
+    ).toBe('Чат снова открыт. Можно снова писать.');
   });
 
   it('renders override placeholders with profile, window, timezone, and status values', () => {
@@ -50,8 +52,35 @@ describe('night mode transition notice util', () => {
         },
       }),
     ).toBe(
-      'Капитан Максимова: 22:30-07:15, Asia/Yekaterinburg. Новые сообщения временно не принимаются.',
+      'Капитан Максимова: 22:30-07:15, Asia/Yekaterinburg. Новые сообщения временно не принимаются. ',
     );
+
+    expect(
+      buildNightModeOpenedNotice({
+        startMinutes: 22 * 60 + 30,
+        endMinutes: 7 * 60 + 15,
+        timezone: 'Asia/Yekaterinburg',
+        templateText: '{bot_character_name}: {opening_status}',
+        botSpeechStyle: 'FRIENDLY',
+        activeBotSpeechProfile: {
+          persona: 'female',
+          characterName: 'Капитан Максимова',
+        },
+      }),
+    ).toBe('Капитан Максимова: Группа снова открыта.');
+  });
+
+  it('preserves whitespace-only custom text instead of replacing it with an inherited default', () => {
+    expect(
+      buildNightModeClosedNotice({
+        startMinutes: 23 * 60,
+        endMinutes: 8 * 60,
+        timezone: 'Europe/Moscow',
+        templateText: '   ',
+        botSpeechStyle: 'ROBOT',
+        activeBotSpeechProfile,
+      }),
+    ).toBe('   ');
   });
 
   it('matches closed and opened notice messages with whitespace normalization', () => {
@@ -69,14 +98,14 @@ describe('night mode transition notice util', () => {
 
     expect(
       isNightModeNoticeMessage({
-        text: '🌙 Ночной режим активен:\n23:00-08:00 (Москва). Новые сообщения временно не принимаются.',
+        text: '🌙 Чат закрыт по расписанию:\n23:00-08:00 (Москва). До открытия новые сообщения будут удаляться.',
         settings,
         activeBotSpeechProfile,
       }),
     ).toBe(true);
     expect(
       isNightModeNoticeMessage({
-        text: '☀️ Ночной режим завершен.   Группа снова открыта.',
+        text: 'Чат снова открыт.   Обычный режим восстановлен.',
         settings,
         activeBotSpeechProfile,
       }),
@@ -98,14 +127,14 @@ describe('night mode transition notice util', () => {
 
     expect(
       isNightModeNoticeMessage({
-        text: '🌙 Ночной режим активен: 23:00-08:00 (Москва). Новые сообщения временно не принимаются.',
+        text: '🌙 Чат закрыт по расписанию: 23:00-08:00 (Москва). До открытия новые сообщения будут удаляться.',
         settings,
         activeBotSpeechProfile,
       }),
     ).toBe(false);
     expect(
       isNightModeNoticeMessage({
-        text: '☀️ Ночной режим завершен. Группа снова открыта.',
+        text: 'Чат снова открыт. Обычный режим восстановлен.',
         settings: {
           ...settings,
           nightModeEnabled: false,

@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { chatSettingsSchema, type ChatSettings } from '@maxim/contracts';
 import {
-  SECTION_SETTING_KEYS,
+  BOT_SPEECH_SYNC_SETTING_KEYS,
   NIGHT_SECTION_SETTING_KEYS,
+  SECTION_SETTING_KEYS,
   applyNightModeBotMessageEnabledChange,
   applyNightModeEnabledChange,
   hasSectionBotSpeechMediaChanges,
+  mergeBotSpeechStyleSettings,
   mergeNightSectionSettings,
   mergeSectionSettings,
 } from '../src/pages/settings-page-state';
@@ -55,6 +57,35 @@ test('applyNightModeBotMessageEnabledChange clears dependent toggles when bot no
   assert.equal(next.nightModeCommentsEnabled, false);
   assert.equal(next.nightModeBotButtonEnabled, false);
   assert.equal(next.nightModeRulesButtonEnabled, false);
+});
+
+test('mergeBotSpeechStyleSettings changes only the inherited base style', () => {
+  assert.deepEqual(BOT_SPEECH_SYNC_SETTING_KEYS, ['botSpeechStyle']);
+  const current = createSettings({
+    botSpeechStyle: 'POLICE',
+    linkBotMessageText: '  Свой текст.\n',
+    messageLimitsWarnMessageText: '   ',
+    botSpeechMedia: {
+      linkBotMessageText: {
+        base64: 'custom-image',
+        mimeType: 'image/jpeg',
+        fileName: 'custom.jpg',
+      },
+    },
+  });
+  const saved = createSettings({
+    botSpeechStyle: 'FRIENDLY',
+    linkBotMessageText: 'Текст из ответа',
+    messageLimitsWarnMessageText: 'Другой текст из ответа',
+    botSpeechMedia: {},
+  });
+
+  const merged = mergeBotSpeechStyleSettings(current, saved);
+
+  assert.equal(merged.botSpeechStyle, 'FRIENDLY');
+  assert.equal(merged.linkBotMessageText, '  Свой текст.\n');
+  assert.equal(merged.messageLimitsWarnMessageText, '   ');
+  assert.deepEqual(merged.botSpeechMedia, current.botSpeechMedia);
 });
 
 test('mergeNightSectionSettings syncs nightModeRulesButtonEnabled as part of section save', () => {

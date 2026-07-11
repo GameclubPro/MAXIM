@@ -9323,7 +9323,9 @@ export class AdminService implements OnModuleDestroy {
             userId: targetUserId,
             muteDurationHours,
             muteExpiresAt: muteExpiresAt ? muteExpiresAt.toISOString() : null,
-            message: mutePermanent ? 'Мут бессрочно.' : `Мут на ${muteDurationHours}ч.`,
+            message: mutePermanent
+              ? 'Мут включён без срока.'
+              : `Мут включён на ${muteDurationHours} ч.`,
           });
         }
       }
@@ -9410,7 +9412,9 @@ export class AdminService implements OnModuleDestroy {
         userId: targetUserId,
         muteDurationHours,
         muteExpiresAt: muteExpiresAt ? muteExpiresAt.toISOString() : null,
-        message: mutePermanent ? 'Мут бессрочно.' : `Мут на ${muteDurationHours}ч.`,
+        message: mutePermanent
+          ? 'Мут включён без срока.'
+          : `Мут включён на ${muteDurationHours} ч.`,
       });
     }
 
@@ -9467,9 +9471,7 @@ export class AdminService implements OnModuleDestroy {
             muteDurationHours: null,
             muteExpiresAt: null,
             message:
-              executionMode === 'MAX_REMOVE_ONLY'
-                ? 'Пользователь удалён.'
-                : 'Пользователь забанен.',
+              executionMode === 'MAX_REMOVE_ONLY' ? 'Участник удалён из чата.' : 'Бан включён.',
           });
         }
       }
@@ -9541,7 +9543,9 @@ export class AdminService implements OnModuleDestroy {
           error,
           resolvedBotId,
         );
-        throw new BadRequestException(resolvedMessage || 'Не удалось применить бан.');
+        throw new BadRequestException(
+          resolvedMessage || 'Бан не применён. Проверьте права бота и статус участника.',
+        );
       }
 
       await this.deleteAdminGlobalSpammerExemption(user.userId, targetUserId);
@@ -9650,8 +9654,7 @@ export class AdminService implements OnModuleDestroy {
         userId: targetUserId,
         muteDurationHours: null,
         muteExpiresAt: null,
-        message:
-          executionMode === 'MAX_REMOVE_ONLY' ? 'Пользователь удалён.' : 'Пользователь забанен.',
+        message: executionMode === 'MAX_REMOVE_ONLY' ? 'Участник удалён из чата.' : 'Бан включён.',
       });
     }
 
@@ -9682,7 +9685,7 @@ export class AdminService implements OnModuleDestroy {
         userId: targetUserId,
         muteDurationHours: null,
         muteExpiresAt: null,
-        message: 'Мут снят. Новые сообщения больше не будут удаляться автоматически.',
+        message: 'Мут снят. Автоматическое удаление новых сообщений остановлено.',
       });
     }
 
@@ -9721,7 +9724,7 @@ export class AdminService implements OnModuleDestroy {
           );
           throw new BadRequestException(
             resolvedMessage ||
-              'MAX отклонил возврат участника в чат. Проверьте тип чата, статус цели и права бота.',
+              'Участника не удалось вернуть в чат: MAX отклонил действие. Проверьте тип чата, статус участника и права бота.',
           );
         }
       }
@@ -9758,8 +9761,8 @@ export class AdminService implements OnModuleDestroy {
       muteExpiresAt: null,
       message:
         unbanMode === 'ALREADY_PRESENT'
-          ? 'Блокировка снята. Участник уже состоит в чате, повторное добавление не потребовалось.'
-          : 'Участник возвращён в чат и разблокирован.',
+          ? 'Блокировка снята. Участник уже в чате, добавлять его повторно не понадобилось.'
+          : 'Блокировка снята, участник возвращён в чат.',
     });
   }
 
@@ -9868,7 +9871,7 @@ export class AdminService implements OnModuleDestroy {
           muteDurationHours: null,
           muteExpiresAt: null,
           message:
-            executionMode === 'MAX_REMOVE_ONLY' ? 'Пользователь удалён.' : 'Пользователь забанен.',
+            executionMode === 'MAX_REMOVE_ONLY' ? 'Участник удалён из чата.' : 'Бан включён.',
         });
       }
     }
@@ -9940,7 +9943,9 @@ export class AdminService implements OnModuleDestroy {
         error,
         resolvedBotId,
       );
-      throw new BadRequestException(resolvedMessage || 'Не удалось применить системный бан.');
+      throw new BadRequestException(
+        resolvedMessage || 'Бан не применён. Проверьте права бота и статус участника.',
+      );
     }
 
     await this.deleteAdminGlobalSpammerExemption(user.userId, targetUserId);
@@ -10042,8 +10047,7 @@ export class AdminService implements OnModuleDestroy {
       userId: targetUserId,
       muteDurationHours: null,
       muteExpiresAt: null,
-      message:
-        executionMode === 'MAX_REMOVE_ONLY' ? 'Пользователь удалён.' : 'Пользователь забанен.',
+      message: executionMode === 'MAX_REMOVE_ONLY' ? 'Участник удалён из чата.' : 'Бан включён.',
     });
   }
 
@@ -10143,7 +10147,7 @@ export class AdminService implements OnModuleDestroy {
 
     return {
       ok: true,
-      message: `Тишина включена на ${durationHours} ч. Сообщения не-админов будут удаляться до окончания срока.`,
+      message: `Чат закрыт на ${durationHours} ч. До конца срока сообщения участников без прав администратора будут удаляться.`,
       durationHours,
       until,
     };
@@ -10207,7 +10211,7 @@ export class AdminService implements OnModuleDestroy {
 
     return {
       ok: true,
-      message: 'Чат открыт. Сообщения участников снова проходят по обычным правилам.',
+      message: 'Чат открыт. Для сообщений снова действуют обычные правила.',
     };
   }
 
@@ -10269,8 +10273,8 @@ export class AdminService implements OnModuleDestroy {
 
     const userMention = this.buildManualModerationUserMention(params.targetUserId);
     const text = params.removedOnly
-      ? `Пользователь ${userMention} удалён из чата.`
-      : `Пользователь ${userMention} забанен.`;
+      ? `Участник ${userMention} удалён из чата.`
+      : `Для участника ${userMention} включён бан.`;
 
     try {
       await maxClientWithSendMessage.sendMessage(
@@ -10321,7 +10325,7 @@ export class AdminService implements OnModuleDestroy {
       await this.sendManualGroupCommandNotice({
         chatId: job.sourceChatId,
         botId: noticeBotId,
-        text: 'Супер бан не применяется к настроенным ботам MAX.',
+        text: 'Команда `супер бан` отклонена: настроенные боты MAX защищены от блокировки.',
         deleteBotMessagesEnabled: job.deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes: job.deleteBotMessagesDelayMinutes,
       });
@@ -10377,7 +10381,7 @@ export class AdminService implements OnModuleDestroy {
     await this.sendManualGroupCommandNotice({
       chatId: job.sourceChatId,
       botId: noticeBotId,
-      text: `Пользователь ${targetLabel} заблокирован в ${estimatedChatCountText} по решению разработчика бота.`,
+      text: `Для пользователя ${targetLabel} включена блокировка в ${estimatedChatCountText} по решению разработчика бота.`,
       deleteBotMessagesEnabled: job.deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes: job.deleteBotMessagesDelayMinutes,
     });
@@ -10899,7 +10903,7 @@ export class AdminService implements OnModuleDestroy {
           commandMessageId: job.commandMessageId,
           action: job.action,
         },
-        text: `Не удалось применить ${failedActionLabel}: ${this.escapeMarkdownPlainText(
+        text: `Команда «${failedActionLabel}» не выполнена: ${this.escapeMarkdownPlainText(
           this.extractManualGroupCommandErrorMessage(error),
         )}`,
         deleteBotMessagesEnabled: job.deleteBotMessagesEnabled,
@@ -10938,10 +10942,10 @@ export class AdminService implements OnModuleDestroy {
       },
       text:
         job.action === 'BAN'
-          ? `Пользователь ${targetLabel} ${
-              result.message.toLowerCase().includes('удал') ? 'удалён' : 'забанен'
-            }.`
-          : `${result.message}\nПользователь: ${targetLabel}`,
+          ? result.message.toLowerCase().includes('удал')
+            ? `Участник ${targetLabel} удалён из чата.`
+            : `Для участника ${targetLabel} включён бан.`
+          : `${result.message}\nУчастник: ${targetLabel}`,
       deleteBotMessagesEnabled: job.deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes: job.deleteBotMessagesDelayMinutes,
     });
@@ -11458,7 +11462,7 @@ export class AdminService implements OnModuleDestroy {
 
     const durationHours = Math.trunc(value);
     if (!Number.isInteger(durationHours) || durationHours < 1 || durationHours > 14 * 24) {
-      throw new BadRequestException('Длительность тишины должна быть от 1 до 336 часов.');
+      throw new BadRequestException('Для закрытия чата укажите срок от 1 до 336 ч.');
     }
 
     return durationHours;
@@ -12809,7 +12813,7 @@ export class AdminService implements OnModuleDestroy {
     } catch (error: unknown) {
       if (isBotAdminLookupDeniedError(error)) {
         throw new ForbiddenException(
-          'Бот больше не состоит в этом чате MAX или не является его администратором.',
+          'Действие недоступно: бот больше не состоит в этом чате MAX или утратил права администратора.',
         );
       }
       throw error;
@@ -12822,10 +12826,10 @@ export class AdminService implements OnModuleDestroy {
     if (!botAccess.isAdmin) {
       throw new ForbiddenException(
         action === 'BAN'
-          ? 'Бот должен быть администратором этого чата MAX, чтобы банить участников.'
+          ? 'Для бана боту нужны права администратора этого чата MAX.'
           : action === 'UNBAN'
-            ? 'Бот должен быть администратором этого чата MAX, чтобы возвращать участников.'
-            : 'Бот должен быть администратором этого чата MAX, чтобы модерировать участников.',
+            ? 'Чтобы снять блокировку и вернуть участника, боту нужны права администратора этого чата MAX.'
+            : 'Для модерации участников боту нужны права администратора этого чата MAX.',
       );
     }
 
@@ -12835,10 +12839,10 @@ export class AdminService implements OnModuleDestroy {
     ) {
       throw new ForbiddenException(
         action === 'BAN'
-          ? 'У бота нет права MAX add_remove_members, поэтому он не может банить участников.'
+          ? 'В правах бота нет управления участниками (add_remove_members), поэтому бан недоступен.'
           : action === 'UNBAN'
-            ? 'У бота нет права MAX add_remove_members, поэтому он не может возвращать участников.'
-            : 'У бота нет права MAX add_remove_members, поэтому он не может модерировать участников.',
+            ? 'В правах бота нет управления участниками (add_remove_members), поэтому снять блокировку нельзя.'
+            : 'В правах бота нет управления участниками (add_remove_members), поэтому действие недоступно.',
       );
     }
   }
@@ -12861,7 +12865,7 @@ export class AdminService implements OnModuleDestroy {
     } catch (error: unknown) {
       if (isBotAdminLookupDeniedError(error)) {
         throw new ForbiddenException(
-          'Бот больше не состоит в этом чате MAX или не является его администратором.',
+          'Действие недоступно: бот больше не состоит в этом чате MAX или утратил права администратора.',
         );
       }
       throw error;
@@ -12873,7 +12877,7 @@ export class AdminService implements OnModuleDestroy {
 
     if (!botAccess.isAdmin) {
       throw new ForbiddenException(
-        'Бот должен быть администратором этого чата MAX, чтобы удалять сообщения во время мута.',
+        'Для мута боту нужны права администратора этого чата MAX и возможность удалять сообщения.',
       );
     }
 
@@ -12891,7 +12895,9 @@ export class AdminService implements OnModuleDestroy {
     botId?: string,
   ): Promise<void> {
     if (this.isKnownRuntimeBotUserId(targetUserId)) {
-      throw new BadRequestException('Нельзя модерировать настроенных MAX-ботов проекта.');
+      throw new BadRequestException(
+        'Действие отклонено: настроенные боты MAX защищены от модерации.',
+      );
     }
 
     const maxClientWithMemberAccess = this.maxClient as MaxClientService & {
@@ -12907,14 +12913,14 @@ export class AdminService implements OnModuleDestroy {
       ...(botId ? { botId } : {}),
     } as never);
     if (!targetAccess) {
-      throw new BadRequestException('Пользователь уже не состоит в этом чате.');
+      throw new BadRequestException('Участник уже вышел из чата или был удалён.');
     }
 
     if (targetAccess.isOwner || targetAccess.isAdmin) {
       throw new BadRequestException(
         action === 'BAN'
-          ? 'Через бота нельзя забанить владельца или администратора чата.'
-          : 'Через бота нельзя замьютить владельца или администратора чата.',
+          ? 'Бан нельзя применить к владельцу или администратору чата.'
+          : 'Мут нельзя применить к владельцу или администратору чата.',
       );
     }
   }
@@ -13046,8 +13052,8 @@ export class AdminService implements OnModuleDestroy {
     }
 
     return action === 'BAN'
-      ? 'MAX отклонил бан участника. Проверьте тип чата, статус цели и права бота.'
-      : 'MAX отклонил модерацию участника. Проверьте статус цели.';
+      ? 'MAX отклонил бан. Проверьте тип чата, статус участника и права бота.'
+      : 'MAX отклонил мут. Проверьте статус участника и права бота.';
   }
 
   private async resolveManualMemberUnbanErrorMessage(
@@ -13071,7 +13077,7 @@ export class AdminService implements OnModuleDestroy {
       return maxApiMessage;
     }
 
-    return 'MAX отклонил возврат участника в чат. Проверьте тип чата, статус цели и права бота.';
+    return 'Участника не удалось вернуть в чат: MAX отклонил действие. Проверьте тип чата, статус участника и права бота.';
   }
 
   private throwManualModerationTransientMaxError(error: unknown): void {
@@ -13080,7 +13086,7 @@ export class AdminService implements OnModuleDestroy {
     }
 
     throw new ServiceUnavailableException(
-      'MAX API временно занят. Действие не выполнено, повторите через несколько секунд.',
+      'MAX API временно недоступен. Действие не выполнено; повторите через несколько секунд.',
     );
   }
 
@@ -13684,7 +13690,7 @@ export class AdminService implements OnModuleDestroy {
     if (access.status === 'denied') {
       if (access.reason === 'bot_not_admin') {
         throw new ForbiddenException(
-          'Бот больше не состоит в этом чате MAX или не является его администратором.',
+          'Действие недоступно: бот больше не состоит в этом чате MAX или утратил права администратора.',
         );
       }
 

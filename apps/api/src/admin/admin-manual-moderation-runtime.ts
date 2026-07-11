@@ -17,9 +17,9 @@ export class AdminManualModerationRuntime {
     return this.context.logger;
   }
 
-  private enqueueManualModerationFanout(job: Parameters<
-    AdminManualModerationRuntimeContext['enqueueManualModerationFanout']
-  >[0]): Promise<boolean> {
+  private enqueueManualModerationFanout(
+    job: Parameters<AdminManualModerationRuntimeContext['enqueueManualModerationFanout']>[0],
+  ): Promise<boolean> {
     return this.context.enqueueManualModerationFanout(job);
   }
 
@@ -70,11 +70,15 @@ export class AdminManualModerationRuntime {
     deleteBotMessagesDelayMinutes: number;
   }): Promise<boolean> {
     if (!this.isSuperBanDeveloperUserId(params.actor.userId)) {
-      throw new ForbiddenException('Команда `супер бан` доступна только разработчику бота.');
+      throw new ForbiddenException(
+        'Недостаточно прав: команду `супер бан` может запускать только разработчик бота.',
+      );
     }
 
     if (this.isKnownRuntimeBotUserId(params.targetUserId)) {
-      throw new BadRequestException('Нельзя применять супер бан к настроенному боту MAX.');
+      throw new BadRequestException(
+        'Команда `супер бан` отклонена: настроенные боты MAX защищены от блокировки.',
+      );
     }
 
     const job = this.buildDeveloperSuperBanCommandJob(params);

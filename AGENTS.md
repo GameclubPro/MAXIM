@@ -226,6 +226,7 @@
 - Profile/admin-contact handoff links (`pmh-` legacy and compact `pm2_`) are dedicated flows, not generic bot buttons; keep generic button schemas/sanitizers rejecting both prefixes, and keep resolved profile cache keys scoped to the route bot when the handoff URL is bot-specific.
 - `MAX_REQUIRED_WEBHOOK_UPDATE_TYPES` is the product-required subscription subset of the official MAX `Update` list. When adding official-only lifecycle events such as `bot_stopped`, `dialog_removed`, or `message_removed`, add parser/queue/product handling intentionally instead of silently expanding subscriptions.
 - Sanction explanations, warnings, and published chat rules use dedicated `*AdminContactButtonEnabled` / `*AdminContactButtonUrl` settings to append the fixed `Связь с админом` markdown link; mute/ban notices do not include that admin-contact link. Keep profile handoff links out of generic custom button fields.
+- Editable bot-speech inheritance is structural: an empty stored `*MessageText` means inherited catalog copy, while every non-empty value is custom even if it matches a historical default. Never rewrite saved bot text by string comparison.
 - In mini app code, use `window.WebApp.openMaxLink` only for `https://max.ru/...` deep links; use `openLink` for external links.
 - Public comments and post-suggestion dialog routes opened from bot buttons should close the MAX
   mini app on the native BackButton instead of navigating to the mini app home screen.

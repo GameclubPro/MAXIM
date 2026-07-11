@@ -39,6 +39,10 @@ function createChatSettingsScreenResponse(): ChatSettingsScreenResponse {
       link: null,
       participantsCount: null,
     },
+    botSpeechPreviewProfile: {
+      persona: 'female',
+      characterName: 'Майор Максимова',
+    },
     requiredSubscriptionChannels: [],
     domains: [],
     managedBroadcasts: [],
@@ -64,9 +68,15 @@ test('chat settings screen client only adds prefetch query when requested', asyn
   const api = createApiMock(createChatSettingsScreenResponse(), calls);
   const controller = new AbortController();
 
-  await getSettingsScreen(api, 'chat-1', { signal: controller.signal });
+  const screen = await getSettingsScreen(api, 'chat-1', { signal: controller.signal });
   await getSettingsScreen(api, 'chat-1', { signal: controller.signal, prefetch: true });
 
+  assert.deepEqual(screen.botSpeechPreviewProfile, {
+    persona: 'female',
+    characterName: 'Майор Максимова',
+  });
+  assert.equal(screen.header.primaryBotId, null);
+  assert.deepEqual(screen.header.assignedBots, []);
   assert.equal(calls[0]?.path, '/chats/chat-1/settings-screen');
   assert.equal(calls[0]?.init?.signal, controller.signal);
   assert.equal(calls[1]?.path, '/chats/chat-1/settings-screen?prefetch=1');

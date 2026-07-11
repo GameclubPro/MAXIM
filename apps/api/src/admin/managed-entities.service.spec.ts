@@ -204,7 +204,9 @@ function createService(
       ? undefined
       : (options.maxBotExecutionPlanner ?? createMaxBotExecutionPlannerMock());
   const maxBotRegistry =
-    options.maxBotRegistry === null ? undefined : (options.maxBotRegistry ?? createMaxBotRegistryMock());
+    options.maxBotRegistry === null
+      ? undefined
+      : (options.maxBotRegistry ?? createMaxBotRegistryMock());
   const maxChatAdminRosterSyncService =
     options.maxChatAdminRosterSyncService === null
       ? undefined
@@ -647,7 +649,9 @@ describe('ManagedEntitiesService list flow', () => {
       'chat',
       { fresh: true },
     );
-    expect(legacyAdminService.attachManagedEntityFavoriteTypesForManagedEntities).not.toHaveBeenCalled();
+    expect(
+      legacyAdminService.attachManagedEntityFavoriteTypesForManagedEntities,
+    ).not.toHaveBeenCalled();
     expect(prisma.managedEntityFavorite.findMany).toHaveBeenCalledWith({
       where: {
         userId: 'admin-1',
@@ -688,7 +692,9 @@ describe('ManagedEntitiesService list flow', () => {
       'channel',
       {},
     );
-    expect(legacyAdminService.attachManagedEntityFavoriteTypesForManagedEntities).not.toHaveBeenCalled();
+    expect(
+      legacyAdminService.attachManagedEntityFavoriteTypesForManagedEntities,
+    ).not.toHaveBeenCalled();
     expect(prisma.managedEntityFavorite.findMany).toHaveBeenCalledTimes(1);
   });
 
@@ -995,6 +1001,99 @@ describe('ManagedEntitiesService headers', () => {
         primaryBotId: 'bot-1',
       }),
     );
+  });
+
+  it('returns a safe speech profile while keeping bot assignments out of the public header', async () => {
+    const cachedHeader = {
+      id: 'chat-1',
+      title: 'Чат с Максимовой',
+      entityType: 'chat',
+      link: 'https://max.ru/chat-1',
+      participantsCount: 12,
+      avatarUrl: 'https://cdn.max/chat-1.png',
+      primaryBotId: 'bot-maksimova',
+      assignedBots: [
+        {
+          botId: 'bot-rex',
+          label: 'Рэкс',
+          role: 'standby',
+          membershipStatus: 'active',
+          lifecycleState: 'active',
+          speechPersona: 'neutral',
+          characterName: 'Рэкс',
+          capabilities: [],
+          permissionsSummary: null,
+        },
+        {
+          botId: 'bot-maksimova',
+          label: 'Майор Максимова',
+          role: 'primary',
+          membershipStatus: 'active',
+          lifecycleState: 'active',
+          speechPersona: 'female',
+          characterName: 'Майор Максимова',
+          capabilities: [],
+          permissionsSummary: null,
+        },
+      ],
+      sharedMode: 'shared-standby',
+    } as const;
+    const { chatContextCache, service } = createService();
+    chatContextCache.getManagedEntityHeader.mockResolvedValueOnce(cachedHeader);
+
+    const result = await service.getChatHeaderWithBotSpeechPreviewProfile('chat-1', user as never);
+
+    expect(result.botSpeechPreviewProfile).toEqual({
+      persona: 'female',
+      characterName: 'Майор Максимова',
+    });
+    expect(result.header).toEqual(
+      expect.objectContaining({
+        primaryBotId: null,
+        assignedBots: [],
+        sharedMode: 'owned',
+        botCount: 2,
+        hasSharedAutomation: true,
+      }),
+    );
+    expect(JSON.stringify(result)).not.toContain('bot-maksimova');
+    expect(JSON.stringify(result)).not.toContain('bot-rex');
+  });
+
+  it('does not expose an unknown bot id as the speech preview character name', async () => {
+    const unknownBotId = 'id999999999999_unknown_bot';
+    const { chatContextCache, service } = createService();
+    chatContextCache.getManagedEntityHeader.mockResolvedValueOnce({
+      id: 'chat-1',
+      title: 'Чат без метаданных бота',
+      entityType: 'chat',
+      link: 'https://max.ru/chat-1',
+      participantsCount: 12,
+      avatarUrl: 'https://cdn.max/chat-1.png',
+      primaryBotId: unknownBotId,
+      assignedBots: [
+        {
+          botId: unknownBotId,
+          label: unknownBotId,
+          role: 'primary',
+          membershipStatus: 'active',
+          lifecycleState: 'active',
+          speechPersona: 'male',
+          characterName: unknownBotId,
+          capabilities: [],
+          permissionsSummary: null,
+        },
+      ],
+      sharedMode: 'owned',
+    });
+
+    const result = await service.getChatHeaderWithBotSpeechPreviewProfile('chat-1', user as never);
+
+    expect(result.botSpeechPreviewProfile).toEqual({
+      persona: 'male',
+      characterName: 'Чат-бот',
+    });
+    expect(JSON.stringify(result)).not.toContain(unknownBotId);
   });
 
   it('returns fresh cached channel header without routing through legacy getChannelHeader', async () => {
@@ -1418,14 +1517,9 @@ describe('ManagedEntitiesService bot execution plan', () => {
   it('updates favorites through the managed entities domain service', async () => {
     const { legacyAdminService, prisma, service } = createService();
 
-    const result = await service.updateManagedEntityFavorites(
-      'channel',
-      'chat-1',
-      user as never,
-      {
-        favoriteTypes: ['watch', 'watch', 'broadcast'],
-      },
-    );
+    const result = await service.updateManagedEntityFavorites('channel', 'chat-1', user as never, {
+      favoriteTypes: ['watch', 'watch', 'broadcast'],
+    });
 
     expect(result).toEqual({
       entityType: 'channel',

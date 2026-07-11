@@ -12,12 +12,14 @@ import {
   parsePrivateForwardedModerationCommand,
 } from './admin-forwarded-command.util';
 
-function createCommandUpdate(params: {
-  text?: string;
-  forwardedChatId?: string | number;
-  forwardedMessageId?: string | number;
-  forwardedUserId?: string | number;
-} = {}): MaxUpdate {
+function createCommandUpdate(
+  params: {
+    text?: string;
+    forwardedChatId?: string | number;
+    forwardedMessageId?: string | number;
+    forwardedUserId?: string | number;
+  } = {},
+): MaxUpdate {
   const text = params.text ?? 'бан';
   const forwardedChatId = params.forwardedChatId ?? 'chat-1';
   const forwardedMessageId = params.forwardedMessageId ?? 'mid-forward-1';
@@ -164,10 +166,11 @@ describe('admin forwarded command util', () => {
     expect(parseAdminForwardedModerationCommand('super-ban.')).toEqual({
       action: 'SUPER_BAN',
     });
-    expect(parseAdminForwardedModerationCommand('регламент', { adminRulesCommandName: 'Регламент' }))
-      .toEqual({
-        action: 'RULES',
-      });
+    expect(
+      parseAdminForwardedModerationCommand('регламент', { adminRulesCommandName: 'Регламент' }),
+    ).toEqual({
+      action: 'RULES',
+    });
     expect(
       parseAdminForwardedModerationCommand('открыть', {
         adminOpenChatCommandName: 'Открыть',
@@ -227,10 +230,10 @@ describe('admin forwarded command util', () => {
     expect(() => parseAdminForwardedModerationCommand('мут 999')).toThrow(BadRequestException);
     expect(() => parseAdminForwardedModerationCommand('тишина 0')).toThrow(BadRequestException);
     expect(() => parsePrivateForwardedModerationCommand('бан 24')).toThrow(
-      'Команда «бан» теперь делает только постоянный системный бан. Используйте просто «бан».',
+      'Команда «бан» применяется без срока. Отправьте её без длительности.',
     );
     expect(() => parsePrivateForwardedModerationCommand('мут 999')).toThrow(
-      'Длительность мута должна быть от 1 до 336 часов.',
+      'Для мута укажите срок от 1 до 336 ч.',
     );
   });
 

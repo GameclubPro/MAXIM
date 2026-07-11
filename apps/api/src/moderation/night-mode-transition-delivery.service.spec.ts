@@ -45,10 +45,17 @@ function createAdapters(
   overrides: Partial<NightModeTransitionDeliveryAdapters> = {},
 ): NightModeTransitionDeliveryAdapters {
   return {
-    getActiveBotSpeechProfile: jest.fn().mockReturnValue({
-      persona: 'male',
-      characterName: 'Майор Максимов',
-    }),
+    getBotSpeechProfile: jest.fn((botId?: string | null) =>
+      botId === 'bot-survivor'
+        ? {
+            persona: 'female',
+            characterName: 'Майор Максимова',
+          }
+        : {
+            persona: 'male',
+            characterName: 'Майор Максимов',
+          },
+    ),
     buildClosedNoticeOptions: jest.fn().mockReturnValue({
       buttons: [[{ type: 'link', text: 'Комментарии', url: 'https://example.test' }]],
     }),
@@ -85,7 +92,13 @@ describe('NightModeTransitionDeliveryService', () => {
       publish: jest.fn().mockImplementation(async (request: any) => {
         const job = { idempotencyKey: request.logicalIdempotencyKey };
         const prepared = await request.prepareAttempt({ botId: 'bot-survivor', job });
+        expect(prepared).toEqual(
+          expect.objectContaining({
+            text: 'Майор Максимова: Новые сообщения временно не принимаются.',
+          }),
+        );
         expect(prepared).toEqual({
+          text: 'Майор Максимова: Новые сообщения временно не принимаются.',
           options: expect.objectContaining({
             textFormat: 'markdown',
             imagePayload: { token: 'survivor-upload' },
@@ -113,7 +126,9 @@ describe('NightModeTransitionDeliveryService', () => {
 
     await expect(
       service.sendClosedNotice(
-        createSettings(),
+        createSettings({
+          nightModeBotMessageText: '{bot_character_name}: {night_status}',
+        }),
         {
           startMinutes: 23 * 60,
           endMinutes: 8 * 60,
@@ -141,6 +156,7 @@ describe('NightModeTransitionDeliveryService', () => {
       { botId: 'bot-survivor', sourceTag: 'night_mode_transition' },
     );
     expect(adapters.resolveBotId).not.toHaveBeenCalled();
+    expect(adapters.getBotSpeechProfile).toHaveBeenCalledWith('bot-survivor');
     expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
     expect(eventService.createTransitionEvent).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -228,7 +244,7 @@ describe('NightModeTransitionDeliveryService', () => {
 
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       'chat-1',
-      '🌙 Ночной режим активен: 23:00-08:00 (Москва). Новые сообщения временно не принимаются.',
+      '🌙 Чат закрыт по расписанию: 23:00-08:00 (Москва). До открытия новые сообщения будут удаляться.',
       expect.objectContaining({
         textFormat: 'markdown',
         imagePayload: { token: 'image-token' },
@@ -339,7 +355,7 @@ describe('NightModeTransitionDeliveryService', () => {
 
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       'chat-1',
-      '☀️ Ночной режим завершен. Группа снова открыта.',
+      'Чат снова открыт. Обычный режим восстановлен.',
       expect.objectContaining({ textFormat: 'markdown' }),
       expect.objectContaining({
         trafficClass: 'background',

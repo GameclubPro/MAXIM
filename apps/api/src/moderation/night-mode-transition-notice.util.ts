@@ -50,6 +50,7 @@ export function formatNightModeMinutesAsTime(value: number): string {
 export function buildNightModeClosedNotice(params: NightModeNoticeTextSettings): string {
   const windowLabel = buildNightModeWindowLabel(params.startMinutes, params.endMinutes);
   const timezoneLabel = formatNightModeTimezoneLabel(params.timezone);
+  const hasTemplateOverride = hasEditableBotSpeechOverride(params.templateText);
 
   return renderEditableBotSpeechTemplate({
     style: params.botSpeechStyle,
@@ -60,7 +61,9 @@ export function buildNightModeClosedNotice(params: NightModeNoticeTextSettings):
       user: '',
       night_window: windowLabel,
       night_timezone: timezoneLabel,
-      night_status: 'Новые сообщения временно не принимаются.',
+      night_status: hasTemplateOverride
+        ? 'Новые сообщения временно не принимаются.'
+        : 'До открытия новые сообщения будут удаляться.',
     },
   });
 }
@@ -68,6 +71,7 @@ export function buildNightModeClosedNotice(params: NightModeNoticeTextSettings):
 export function buildNightModeOpenedNotice(params: NightModeNoticeTextSettings): string {
   const windowLabel = buildNightModeWindowLabel(params.startMinutes, params.endMinutes);
   const timezoneLabel = formatNightModeTimezoneLabel(params.timezone);
+  const hasTemplateOverride = hasEditableBotSpeechOverride(params.templateText);
 
   return renderEditableBotSpeechTemplate({
     style: params.botSpeechStyle,
@@ -78,7 +82,7 @@ export function buildNightModeOpenedNotice(params: NightModeNoticeTextSettings):
       user: '',
       night_window: windowLabel,
       night_timezone: timezoneLabel,
-      opening_status: 'Группа снова открыта.',
+      opening_status: hasTemplateOverride ? 'Группа снова открыта.' : 'Чат снова открыт.',
     },
   });
 }
@@ -110,9 +114,7 @@ export function isNightModeNoticeMessage(params: {
       activeBotSpeechProfile: params.activeBotSpeechProfile,
     });
 
-    if (
-      normalizedMessage === normalizeNightModeNoticeTextForComparison(expectedClosedNotice)
-    ) {
+    if (normalizedMessage === normalizeNightModeNoticeTextForComparison(expectedClosedNotice)) {
       return true;
     }
   }
@@ -178,13 +180,9 @@ function resolveEditableBotSpeechText(params: {
   overrideText: string;
   activeBotSpeechProfile: NightModeBotSpeechProfile;
 }): string {
-  const normalizedOverride =
-    typeof params.overrideText === 'string' && params.overrideText.trim().length > 0
-      ? params.overrideText.trim()
-      : '';
-
-  return normalizedOverride.length > 0
-    ? normalizedOverride
+  // FLAG: Empty means inherited. Never replace a non-empty stored template by matching its text.
+  return hasEditableBotSpeechOverride(params.overrideText)
+    ? params.overrideText
     : getBotSpeechEditableTemplate(
         params.style,
         params.fieldKey,
@@ -192,22 +190,23 @@ function resolveEditableBotSpeechText(params: {
       );
 }
 
+function hasEditableBotSpeechOverride(value: string | null | undefined): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
 function renderBotMessageTemplate(
   templateText: string,
   fallbackText: string,
   replacements: Record<string, string>,
 ): string {
-  const normalizedTemplate =
-    typeof templateText === 'string' && templateText.trim().length > 0 ? templateText.trim() : '';
-  if (!normalizedTemplate) {
+  if (typeof templateText !== 'string' || templateText.length === 0) {
     return fallbackText;
   }
 
-  let rendered = normalizedTemplate;
+  let rendered = templateText;
   for (const [key, value] of Object.entries(replacements)) {
     rendered = rendered.split(`{${key}}`).join(value);
   }
 
-  const normalizedRendered = rendered.trim();
-  return normalizedRendered.length > 0 ? normalizedRendered : fallbackText;
+  return rendered;
 }

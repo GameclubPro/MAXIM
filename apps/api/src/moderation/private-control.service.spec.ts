@@ -783,7 +783,7 @@ function createHarness(
       userId: 'user-77',
       muteDurationHours: null,
       unbanScheduledAt: null,
-      message: 'Пользователь забанен.',
+      message: 'Бан включён.',
     }),
     ...overrides.manualModerationService,
   };
@@ -1569,7 +1569,7 @@ describe('PrivateControlService', () => {
       'private_command',
     );
     expect(manualModerationService.applyManualModerationAction).not.toHaveBeenCalled();
-    expect(getLastSentText(maxClient)).toContain('Забанен: Нарушитель (user-77)');
+    expect(getLastSentText(maxClient)).toContain('Бан включён для: Нарушитель (user-77)');
     expect(getLastSentText(maxClient)).toContain(`Чат: ${chats[0].title}`);
   });
 
@@ -1604,7 +1604,7 @@ describe('PrivateControlService', () => {
       userId: 'user-77',
       muteDurationHours: 6,
       muteExpiresAt: '2026-03-26T12:00:00.000Z',
-      message: 'Мут на 6ч.',
+      message: 'Мут включён на 6 ч.',
     });
 
     await service.handleUpdate(createPrivateForwardedModerationUpdate('мут'));
@@ -1623,9 +1623,9 @@ describe('PrivateControlService', () => {
       'private_command',
     );
     expect(manualModerationService.applyManualSystemBan).not.toHaveBeenCalled();
-    expect(getLastSentText(maxClient)).toContain('Мут на 6ч.');
+    expect(getLastSentText(maxClient)).toContain('Мут включён на 6 ч.');
     expect(getLastSentText(maxClient)).toContain(`Чат: ${chats[0].title}`);
-    expect(getLastSentText(maxClient)).toContain('Пользователь: Нарушитель (user-77)');
+    expect(getLastSentText(maxClient)).toContain('Участник: Нарушитель (user-77)');
   });
 
   it('mutes a forwarded sender from private chat for the requested number of hours', async () => {
@@ -1636,7 +1636,7 @@ describe('PrivateControlService', () => {
       userId: 'user-77',
       muteDurationHours: 12,
       muteExpiresAt: '2026-03-26T18:00:00.000Z',
-      message: 'Мут на 12ч.',
+      message: 'Мут включён на 12 ч.',
     });
 
     await service.handleUpdate(createPrivateForwardedModerationUpdate('мут 12'));
@@ -1655,9 +1655,9 @@ describe('PrivateControlService', () => {
       'private_command',
     );
     expect(manualModerationService.applyManualSystemBan).not.toHaveBeenCalled();
-    expect(getLastSentText(maxClient)).toContain('Мут на 12ч.');
+    expect(getLastSentText(maxClient)).toContain('Мут включён на 12 ч.');
     expect(getLastSentText(maxClient)).toContain(`Чат: ${chats[0].title}`);
-    expect(getLastSentText(maxClient)).toContain('Пользователь: Нарушитель (user-77)');
+    expect(getLastSentText(maxClient)).toContain('Участник: Нарушитель (user-77)');
   });
 
   it('treats private forwarded mute command duration 88 as a permanent mute', async () => {
@@ -1668,7 +1668,7 @@ describe('PrivateControlService', () => {
       userId: 'user-77',
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: 'Мут бессрочно.',
+      message: 'Мут включён без срока.',
     });
 
     await service.handleUpdate(createPrivateForwardedModerationUpdate('мут 88'));
@@ -1687,9 +1687,9 @@ describe('PrivateControlService', () => {
       'private_command',
     );
     expect(manualModerationService.applyManualSystemBan).not.toHaveBeenCalled();
-    expect(getLastSentText(maxClient)).toContain('Мут бессрочно.');
+    expect(getLastSentText(maxClient)).toContain('Мут включён без срока.');
     expect(getLastSentText(maxClient)).toContain(`Чат: ${chats[0].title}`);
-    expect(getLastSentText(maxClient)).toContain('Пользователь: Нарушитель (user-77)');
+    expect(getLastSentText(maxClient)).toContain('Участник: Нарушитель (user-77)');
   });
 
   it('rejects explicit duration in the forwarded ban command', async () => {
@@ -1704,7 +1704,7 @@ describe('PrivateControlService', () => {
 
     expect(manualModerationService.applyManualSystemBan).not.toHaveBeenCalled();
     expect(getLastSentText(maxClient)).toContain(
-      'Команда «бан» теперь делает только постоянный системный бан. Используйте просто «бан».',
+      'Команда «бан» применяется без срока. Отправьте её без длительности.',
     );
   });
 

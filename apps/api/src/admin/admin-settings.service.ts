@@ -105,10 +105,10 @@ export class AdminSettingsService {
       await this.managedEntitiesService.assertManagedEntityDiagnosticsAccess(chatId, user, 'chat');
     }
 
-    const [settings, rules, header, domains, managedBroadcasts] = await Promise.all([
+    const [settings, rules, headerBundle, domains, managedBroadcasts] = await Promise.all([
       this.getSettings(chatId, user, { skipAdminCheck: true, skipEntityCheck: true }),
       this.getRules(chatId, user, { skipAdminCheck: true, skipEntityCheck: true }),
-      this.managedEntitiesService.getChatHeader(chatId, user, {
+      this.managedEntitiesService.getChatHeaderWithBotSpeechPreviewProfile(chatId, user, {
         skipAdminCheck: true,
         skipEntityCheck: true,
       }),
@@ -128,7 +128,8 @@ export class AdminSettingsService {
     return chatSettingsScreenResponseSchema.parse({
       settings,
       rules,
-      header,
+      header: headerBundle.header,
+      botSpeechPreviewProfile: headerBundle.botSpeechPreviewProfile,
       requiredSubscriptionChannels: requiredSubscriptionChannels.map((channel) =>
         sanitizePublicManagedEntityHeader(channel),
       ),
@@ -149,7 +150,9 @@ export class AdminSettingsService {
     }
 
     const channel = sanitizePublicManagedEntityHeader(
-      await this.legacyAdminService.resolveRequiredSubscriptionChannelReferenceValue(parsed.data.value),
+      await this.legacyAdminService.resolveRequiredSubscriptionChannelReferenceValue(
+        parsed.data.value,
+      ),
     );
     return resolveRequiredSubscriptionChannelResponseSchema.parse({ channel });
   }

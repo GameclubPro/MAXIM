@@ -7,8 +7,11 @@ export * from './giveaway.js';
 export * from './managed-entities.js';
 export { logsDashboardRangeSchema, type LogsDashboardRange } from './dashboard-common.js';
 export * from './membership-activity.js';
-import { botSpeechStyleSchema } from './bot-speech.js';
-import { BOT_SPEECH_EDITABLE_FIELD_KEYS } from './bot-speech.js';
+import {
+  BOT_SPEECH_EDITABLE_FIELD_KEYS,
+  botSpeechPreviewProfileSchema,
+  botSpeechStyleSchema,
+} from './bot-speech.js';
 import { broadcastTextFormatSchema } from './broadcast-common.js';
 import { booleanQueryFlagSchema, logsDashboardRangeSchema } from './dashboard-common.js';
 import {
@@ -3348,6 +3351,7 @@ export const chatSettingsScreenResponseSchema = z.object({
   settings: chatSettingsSchema,
   rules: chatRulesSchema,
   header: managedEntityHeaderSchema,
+  botSpeechPreviewProfile: botSpeechPreviewProfileSchema.nullable().default(null),
   requiredSubscriptionChannels: z.array(managedEntityHeaderSchema).default([]),
   domains: z.array(domainAllowlistEntrySchema),
   managedBroadcasts: z.array(managedBroadcastSummarySchema).default([]),

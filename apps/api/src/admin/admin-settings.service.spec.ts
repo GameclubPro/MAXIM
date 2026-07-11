@@ -157,6 +157,7 @@ function createService(
   options: {
     applyTargetChats?: Array<Record<string, unknown>>;
     botAssignmentData?: { botId?: string; primaryBotId?: string };
+    botSpeechPreviewProfile?: { persona: 'male' | 'female' | 'neutral'; characterName: string };
     currentSettings?: Record<string, unknown> | null;
     domainAllowlistDetails?: Array<Record<string, unknown>>;
     managedBroadcasts?: Array<Record<string, unknown>>;
@@ -317,6 +318,13 @@ function createService(
     getChatHeader: jest
       .fn()
       .mockResolvedValue(options.managedEntityHeader ?? createManagedEntityHeader()),
+    getChatHeaderWithBotSpeechPreviewProfile: jest.fn().mockResolvedValue({
+      header: options.managedEntityHeader ?? createManagedEntityHeader(),
+      botSpeechPreviewProfile: options.botSpeechPreviewProfile ?? {
+        persona: 'neutral',
+        characterName: 'Чат-бот',
+      },
+    }),
     getChannelHeader: jest
       .fn()
       .mockResolvedValue(
@@ -410,6 +418,10 @@ describe('AdminSettingsService chat rules', () => {
         },
       ],
       managedBroadcasts: [createManagedBroadcastSummary()],
+      botSpeechPreviewProfile: {
+        persona: 'female',
+        characterName: 'Майор Максимова',
+      },
       requiredSubscriptionChannels: [requiredChannel],
     });
 
@@ -431,6 +443,10 @@ describe('AdminSettingsService chat rules', () => {
     ]);
     expect(result.domains).toHaveLength(1);
     expect(result.managedBroadcasts).toHaveLength(1);
+    expect(result.botSpeechPreviewProfile).toEqual({
+      persona: 'female',
+      characterName: 'Майор Максимова',
+    });
     expect(legacyAdminService.assertManagedEntityReadAccess).toHaveBeenCalledWith(
       'chat-1',
       'admin-1',
@@ -441,10 +457,14 @@ describe('AdminSettingsService chat rules', () => {
       },
     );
     expect(legacyAdminService.getChatSettingsScreen).not.toHaveBeenCalled();
-    expect(managedEntitiesService.getChatHeader).toHaveBeenCalledWith('chat-1', user, {
-      skipAdminCheck: true,
-      skipEntityCheck: true,
-    });
+    expect(managedEntitiesService.getChatHeaderWithBotSpeechPreviewProfile).toHaveBeenCalledWith(
+      'chat-1',
+      user,
+      {
+        skipAdminCheck: true,
+        skipEntityCheck: true,
+      },
+    );
     expect(manualModerationService.getDomainAllowlistDetails).toHaveBeenCalledWith('chat-1', user, {
       skipAdminCheck: true,
     });
@@ -984,9 +1004,7 @@ describe('AdminSettingsService chat rules', () => {
       updatedExisting: true,
     });
     expect(legacyAdminService.resolveChannelEngagementActionBotId).not.toHaveBeenCalled();
-    expect(legacyAdminService.resolveChannelEngagementEditBotId).toHaveBeenCalledWith(
-      'channel-1',
-    );
+    expect(legacyAdminService.resolveChannelEngagementEditBotId).toHaveBeenCalledWith('channel-1');
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
       'channel-1',
       'message-old',

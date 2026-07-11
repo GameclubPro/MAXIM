@@ -192,6 +192,18 @@ test('preview settings include schema-complete managed broadcast summaries', asy
   const api = createPreviewApiTransport();
 
   const chatSettings = (await api.request('/chats/preview-chat/settings-screen')) as {
+    botSpeechPreviewProfile: {
+      persona: string;
+      characterName: string;
+    };
+    header: {
+      primaryBotId: string | null;
+      assignedBots: unknown[];
+    };
+    requiredSubscriptionChannels: Array<{
+      primaryBotId: string | null;
+      assignedBots: unknown[];
+    }>;
     managedBroadcasts: Array<{
       id: string;
       targetMode: string;
@@ -218,6 +230,14 @@ test('preview settings include schema-complete managed broadcast summaries', asy
     }>;
   };
 
+  assert.deepEqual(chatSettings.botSpeechPreviewProfile, {
+    persona: 'male',
+    characterName: 'Майор Максимов',
+  });
+  assert.equal(chatSettings.header.primaryBotId, null);
+  assert.deepEqual(chatSettings.header.assignedBots, []);
+  assert.equal(chatSettings.requiredSubscriptionChannels[0]?.primaryBotId, null);
+  assert.deepEqual(chatSettings.requiredSubscriptionChannels[0]?.assignedBots, []);
   assert.equal(chatSettings.managedBroadcasts[0]?.targetMode, 'current');
   assert.equal(chatSettings.managedBroadcasts[0]?.blockedChats, 0);
   assert.deepEqual(chatSettings.managedBroadcasts[0]?.failureBreakdown, {

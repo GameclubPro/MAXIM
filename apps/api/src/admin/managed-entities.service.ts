@@ -9,6 +9,7 @@ import {
   updateManagedEntityPartnerAssistRequestSchema,
   updateManagedEntityPrimaryBotRequestSchema,
   type ChatSummary,
+  type BotSpeechPreviewProfile,
   type Me,
   type ManagedEntityAccessDiagnostics,
   type ManagedEntityAccessLossReason,
@@ -58,6 +59,7 @@ import { AdminDialogLinkHelper } from './admin-dialog-link-helper';
 import type { AdminManagedEntitiesRefreshJob } from './admin-managed-entities-refresh.queue';
 import {
   getManagedEntityHeaderValue,
+  resolveManagedEntityBotSpeechPreviewProfile,
   sanitizePublicManagedEntityHeader,
 } from './admin-managed-entity-header';
 import {
@@ -100,7 +102,13 @@ const MANAGED_ENTITY_ACCESS_LOSS_REASONS = new Set<ManagedEntityAccessLossReason
 
 const HANDSHAKE_OUTCOME_BY_PRISMA_STATUS: Record<
   ManagedEntityHandshakeOutcomeStatus,
-  'connected' | 'already_connected' | 'bootstrapped_without_user' | 'bot_denied' | 'user_denied' | 'rate_limited' | 'failed'
+  | 'connected'
+  | 'already_connected'
+  | 'bootstrapped_without_user'
+  | 'bot_denied'
+  | 'user_denied'
+  | 'rate_limited'
+  | 'failed'
 > = {
   CONNECTED: 'connected',
   ALREADY_CONNECTED: 'already_connected',
@@ -268,8 +276,9 @@ export class ManagedEntitiesService {
   private async resolveCurrentAdminProfileHandoffBotId(chatId: string): Promise<string | null> {
     try {
       return (
-        readTrimmedString(await this.legacyAdminService.resolveManagedEntityHeaderReadBotId(chatId)) ??
-        null
+        readTrimmedString(
+          await this.legacyAdminService.resolveManagedEntityHeaderReadBotId(chatId),
+        ) ?? null
       );
     } catch (error: unknown) {
       this.logger.debug(
@@ -283,10 +292,7 @@ export class ManagedEntitiesService {
     }
   }
 
-  listChats(
-    user: AuthUser,
-    options: ManagedEntitiesListOptions = {},
-  ): Promise<ChatSummary[]> {
+  listChats(user: AuthUser, options: ManagedEntitiesListOptions = {}): Promise<ChatSummary[]> {
     return listManagedEntitiesValue({
       user,
       entityType: 'chat',
@@ -298,7 +304,9 @@ export class ManagedEntitiesService {
           listOptions,
         ),
       attachFavoriteTypes: async (userId, items) =>
-        this.sanitizePublicChatSummaries(await this.attachManagedEntityFavoriteTypes(userId, items)),
+        this.sanitizePublicChatSummaries(
+          await this.attachManagedEntityFavoriteTypes(userId, items),
+        ),
     });
   }
 
@@ -317,7 +325,9 @@ export class ManagedEntitiesService {
           listOptions,
         ),
       attachFavoriteTypes: async (userId, items) =>
-        this.sanitizePublicChatSummaries(await this.attachManagedEntityFavoriteTypes(userId, items)),
+        this.sanitizePublicChatSummaries(
+          await this.attachManagedEntityFavoriteTypes(userId, items),
+        ),
       attachFavoriteTypesToDiff: (userId, diff) =>
         this.attachManagedEntityFavoriteTypesToDiff(userId, diff),
       createIdleRefreshState: () =>
@@ -325,10 +335,7 @@ export class ManagedEntitiesService {
     });
   }
 
-  listChannels(
-    user: AuthUser,
-    options: ManagedEntitiesListOptions = {},
-  ): Promise<ChatSummary[]> {
+  listChannels(user: AuthUser, options: ManagedEntitiesListOptions = {}): Promise<ChatSummary[]> {
     return listManagedEntitiesValue({
       user,
       entityType: 'channel',
@@ -340,7 +347,9 @@ export class ManagedEntitiesService {
           listOptions,
         ),
       attachFavoriteTypes: async (userId, items) =>
-        this.sanitizePublicChatSummaries(await this.attachManagedEntityFavoriteTypes(userId, items)),
+        this.sanitizePublicChatSummaries(
+          await this.attachManagedEntityFavoriteTypes(userId, items),
+        ),
     });
   }
 
@@ -359,7 +368,9 @@ export class ManagedEntitiesService {
           listOptions,
         ),
       attachFavoriteTypes: async (userId, items) =>
-        this.sanitizePublicChatSummaries(await this.attachManagedEntityFavoriteTypes(userId, items)),
+        this.sanitizePublicChatSummaries(
+          await this.attachManagedEntityFavoriteTypes(userId, items),
+        ),
       attachFavoriteTypesToDiff: (userId, diff) =>
         this.attachManagedEntityFavoriteTypesToDiff(userId, diff),
       createIdleRefreshState: () =>
@@ -470,6 +481,21 @@ export class ManagedEntitiesService {
     return this.getManagedEntityHeader(chatId, user, 'chat', options);
   }
 
+  async getChatHeaderWithBotSpeechPreviewProfile(
+    chatId: string,
+    user: AuthUser,
+    options: AdminReadBypassOptions = {},
+  ): Promise<{
+    header: ManagedEntityHeader;
+    botSpeechPreviewProfile: BotSpeechPreviewProfile;
+  }> {
+    const header = await this.loadManagedEntityHeaderWithDiagnostics(chatId, user, 'chat', options);
+    return {
+      header: sanitizePublicManagedEntityHeader(header),
+      botSpeechPreviewProfile: resolveManagedEntityBotSpeechPreviewProfile(header),
+    };
+  }
+
   getChannelHeader(
     chatId: string,
     user: AuthUser,
@@ -478,16 +504,18 @@ export class ManagedEntitiesService {
     return this.getManagedEntityHeader(chatId, user, 'channel', options);
   }
 
-  private getManagedEntityHeader(
+  private async getManagedEntityHeader(
     chatId: string,
     user: AuthUser,
     entityType: ManagedEntityType,
     options: AdminReadBypassOptions,
   ): Promise<ManagedEntityHeader> {
-    return this.getManagedEntityHeaderWithDiagnostics(chatId, user, entityType, options);
+    return sanitizePublicManagedEntityHeader(
+      await this.loadManagedEntityHeaderWithDiagnostics(chatId, user, entityType, options),
+    );
   }
 
-  private async getManagedEntityHeaderWithDiagnostics(
+  private async loadManagedEntityHeaderWithDiagnostics(
     chatId: string,
     user: AuthUser,
     entityType: ManagedEntityType,
@@ -513,11 +541,11 @@ export class ManagedEntitiesService {
         this.legacyAdminService.attachManagedEntityHeaderBotAssignmentsForManagedEntities(header),
     });
 
-    return sanitizePublicManagedEntityHeader({
+    return {
       ...header,
       accessDiagnostics: await this.getManagedEntityAccessDiagnostics(chatId),
       viewerAccess: await this.getManagedEntityViewerAccess(chatId, user.userId, entityType),
-    });
+    };
   }
 
   getChatBotExecutionPlan(
@@ -776,9 +804,7 @@ export class ManagedEntitiesService {
 
   private sanitizePublicChatSummary(item: ChatSummary): ChatSummary {
     const assignedBots = Array.isArray(item.assignedBots) ? item.assignedBots : [];
-    const activeBotCount = assignedBots.filter(
-      (bot) => bot.membershipStatus === 'active',
-    ).length;
+    const activeBotCount = assignedBots.filter((bot) => bot.membershipStatus === 'active').length;
     const botCount =
       typeof item.botCount === 'number' && item.botCount > 0
         ? item.botCount
@@ -926,11 +952,7 @@ export class ManagedEntitiesService {
     user: AuthUser,
     entityType: ManagedEntityType,
   ): Promise<void> {
-    return this.legacyAdminService.assertManagedEntityAdminAccess(
-      chatId,
-      user.userId,
-      entityType,
-    );
+    return this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, entityType);
   }
 
   private assertSystemAccess(user: AuthUser): void {
@@ -1045,8 +1067,7 @@ export class ManagedEntitiesService {
         source: row.source || 'managed_entity_access_loss',
         lastMaxErrorCode: readTrimmedString(row.lastMaxErrorCode),
         lastMaxErrorMessage: readTrimmedString(row.lastMaxErrorMessage),
-        lastMaxStatusCode:
-          typeof row.lastMaxStatusCode === 'number' ? row.lastMaxStatusCode : null,
+        lastMaxStatusCode: typeof row.lastMaxStatusCode === 'number' ? row.lastMaxStatusCode : null,
       });
     }
 
@@ -1058,7 +1079,9 @@ export class ManagedEntitiesService {
       state:
         lostBots.length > 0
           ? 'bot_access_lost'
-          : freshness.activeBotCount > 0 && freshness.freshUntil && Date.parse(freshness.freshUntil) < Date.now()
+          : freshness.activeBotCount > 0 &&
+              freshness.freshUntil &&
+              Date.parse(freshness.freshUntil) < Date.now()
             ? 'stale'
             : freshness.activeBotCount > 0 && !freshness.lastCheckedAt
               ? 'checking'
@@ -1193,7 +1216,8 @@ export class ManagedEntitiesService {
       }
       activeBotCount += 1;
       const snapshot = normalizeMembershipAccessSnapshot(row.permissionsSnapshot);
-      const checkedAt = row.botAccessCheckedAt ?? this.readSnapshotCheckedAt(row.permissionsSnapshot);
+      const checkedAt =
+        row.botAccessCheckedAt ?? this.readSnapshotCheckedAt(row.permissionsSnapshot);
       const expiresAt = row.botAccessExpiresAt ?? null;
       const hasConfirmedAccess =
         row.botAccessState === ChatBotAccessState.CONFIRMED_ADMIN ||

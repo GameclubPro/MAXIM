@@ -6303,7 +6303,7 @@ describe('AdminService.applyManualModerationAction', () => {
       userId: 'user-2',
       muteDurationHours: 6,
       muteExpiresAt: expect.any(String),
-      message: 'Мут на 6ч.',
+      message: 'Мут включён на 6 ч.',
     });
   });
 
@@ -6596,7 +6596,7 @@ describe('AdminService.applyManualModerationAction', () => {
       userId: 'user-2',
       muteDurationHours: 6,
       muteExpiresAt: expect.any(String),
-      message: 'Мут на 6ч.',
+      message: 'Мут включён на 6 ч.',
     });
   });
 
@@ -6691,7 +6691,7 @@ describe('AdminService.applyManualModerationAction', () => {
       userId: 'user-2',
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: 'Мут бессрочно.',
+      message: 'Мут включён без срока.',
     });
   });
 
@@ -6748,7 +6748,7 @@ describe('AdminService.applyManualModerationAction', () => {
     );
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      'Пользователь [user-3](max://user/user-3) забанен.',
+      'Для участника [user-3](max://user/user-3) включён бан.',
       { textFormat: 'markdown' },
       { immediate: true },
     );
@@ -6758,7 +6758,7 @@ describe('AdminService.applyManualModerationAction', () => {
       userId: 'user-3',
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: 'Пользователь забанен.',
+      message: 'Бан включён.',
     });
   });
 
@@ -7511,7 +7511,7 @@ describe('AdminService.applyManualModerationAction', () => {
       userId: 'user-3',
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: 'Пользователь забанен.',
+      message: 'Бан включён.',
     });
   });
 
@@ -7604,7 +7604,7 @@ describe('AdminService.applyManualModerationAction', () => {
         ok: true,
         action: 'BAN',
         userId: 'user-3',
-        message: 'Пользователь забанен.',
+        message: 'Бан включён.',
       }),
     );
   });
@@ -7677,7 +7677,7 @@ describe('AdminService.applyManualModerationAction', () => {
       userId: 'user-3',
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: 'Пользователь удалён.',
+      message: 'Участник удалён из чата.',
     });
   });
 
@@ -7720,7 +7720,7 @@ describe('AdminService.applyManualModerationAction', () => {
         { action: 'BAN' },
       ),
     ).rejects.toThrow(
-      'У бота нет права MAX add_remove_members, поэтому он не может банить участников.',
+      'В правах бота нет управления участниками (add_remove_members), поэтому бан недоступен.',
     );
 
     expect(maxClient.banMember).not.toHaveBeenCalled();
@@ -7759,7 +7759,7 @@ describe('AdminService.applyManualModerationAction', () => {
         },
         { action: 'BAN' },
       ),
-    ).rejects.toThrow('Пользователь уже не состоит в этом чате.');
+    ).rejects.toThrow('Участник уже вышел из чата или был удалён.');
 
     expect(maxClient.banMember).not.toHaveBeenCalled();
   });
@@ -7825,7 +7825,7 @@ describe('AdminService.applyManualModerationAction', () => {
       userId: 'user-rollback',
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: 'Пользователь забанен.',
+      message: 'Бан включён.',
     });
   });
 
@@ -7931,7 +7931,7 @@ describe('AdminService.applyManualModerationAction', () => {
       userId: 'user-4',
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: 'Участник возвращён в чат и разблокирован.',
+      message: 'Блокировка снята, участник возвращён в чат.',
     });
   });
 
@@ -8487,8 +8487,7 @@ describe('AdminService.applyManualModerationAction', () => {
       userId: 'user-4',
       muteDurationHours: null,
       muteExpiresAt: null,
-      message:
-        'Блокировка снята. Участник уже состоит в чате, повторное добавление не потребовалось.',
+      message: 'Блокировка снята. Участник уже в чате, добавлять его повторно не понадобилось.',
     });
   });
 
@@ -8527,7 +8526,7 @@ describe('AdminService.applyManualModerationAction', () => {
         { action: 'UNBAN' },
       ),
     ).rejects.toThrow(
-      'У бота нет права MAX add_remove_members, поэтому он не может возвращать участников.',
+      'В правах бота нет управления участниками (add_remove_members), поэтому снять блокировку нельзя.',
     );
 
     expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-4');
@@ -8569,7 +8568,7 @@ describe('AdminService.applyManualModerationAction', () => {
         { action: 'UNBAN' },
       ),
     ).rejects.toThrow(
-      'MAX отклонил возврат участника в чат. Проверьте тип чата, статус цели и права бота.',
+      'Участника не удалось вернуть в чат: MAX отклонил действие. Проверьте тип чата, статус участника и права бота.',
     );
 
     expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-4');
@@ -8647,7 +8646,7 @@ describe('AdminService.applyManualSystemBan', () => {
       userId: 'user-3',
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: 'Пользователь забанен.',
+      message: 'Бан включён.',
     });
   });
 
@@ -8745,7 +8744,7 @@ describe('AdminService.applyManualSystemBan', () => {
         ok: true,
         action: 'BAN',
         userId: 'user-3',
-        message: 'Пользователь забанен.',
+        message: 'Бан включён.',
       }),
     );
   });
@@ -8817,7 +8816,7 @@ describe('AdminService.applyManualSystemBan', () => {
       userId: 'user-3',
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: 'Пользователь удалён.',
+      message: 'Участник удалён из чата.',
     });
   });
 
@@ -8921,7 +8920,7 @@ describe('AdminService.applyManualSystemBan', () => {
         userId: 'user-3',
       }),
     );
-    expect(result.message).toBe('Пользователь забанен.');
+    expect(result.message).toBe('Бан включён.');
   });
 
   it('uses the resolved chat bot for manual ban fanout in multi-bot chats', async () => {
@@ -9087,7 +9086,7 @@ describe('AdminService.applyManualSystemBan', () => {
       userId: 'user-2',
       muteDurationHours: 6,
       muteExpiresAt: expect.any(String),
-      message: 'Мут на 6ч.',
+      message: 'Мут включён на 6 ч.',
     });
   });
 
@@ -9336,7 +9335,7 @@ describe('AdminService.applyManualSystemBan', () => {
         userId: 'user-2',
         muteDurationHours: null,
         muteExpiresAt: null,
-        message: 'Пользователь забанен.',
+        message: 'Бан включён.',
       });
     const assertBotCanManageMembers = jest.spyOn(service as any, 'assertBotCanManageMembers');
     const assertBotCanDeleteMessages = jest.spyOn(service as any, 'assertBotCanDeleteMessages');
@@ -9429,7 +9428,7 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(resolveManualFanoutTargetState).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      expect.stringContaining('заблокирован в 16232 чатах по решению разработчика бота'),
+      expect.stringContaining('включена блокировка в 16232 чатах по решению разработчика бота'),
       { textFormat: 'markdown' },
       expect.objectContaining({
         immediate: true,
@@ -9551,7 +9550,7 @@ describe('AdminService.applyManualSystemBan', () => {
     });
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      expect.stringContaining('заблокирован в 7 чатах по решению разработчика бота'),
+      expect.stringContaining('включена блокировка в 7 чатах по решению разработчика бота'),
       { textFormat: 'markdown' },
       expect.objectContaining({
         immediate: true,
@@ -9673,7 +9672,7 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(resolveManualFanoutTargetState).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      expect.stringContaining('заблокирован в 3 чатах по решению разработчика бота'),
+      expect.stringContaining('включена блокировка в 3 чатах по решению разработчика бота'),
       { textFormat: 'markdown' },
       expect.objectContaining({
         immediate: true,
@@ -9718,7 +9717,7 @@ describe('AdminService.applyManualSystemBan', () => {
       userId: 'user-2',
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: 'Пользователь забанен.',
+      message: 'Бан включён.',
     });
 
     await service.processDeveloperSuperBanJob({
@@ -9754,7 +9753,7 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(activeMembershipCountSqlText).not.toContain('bot_id');
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      expect.stringContaining('заблокирован в 12 чатах по решению разработчика бота'),
+      expect.stringContaining('включена блокировка в 12 чатах по решению разработчика бота'),
       { textFormat: 'markdown' },
       expect.objectContaining({
         immediate: true,
@@ -9782,7 +9781,7 @@ describe('AdminService.applyManualSystemBan', () => {
       userId: 'user-2',
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: 'Пользователь забанен.',
+      message: 'Бан включён.',
     });
 
     await service.processManualModerationFanoutJob({
@@ -9837,7 +9836,7 @@ describe('AdminService.applyManualSystemBan', () => {
     });
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      'Пользователь [Нарушитель](max://user/user-2) забанен.',
+      'Для участника [Нарушитель](max://user/user-2) включён бан.',
       { textFormat: 'markdown' },
       {
         immediate: true,
@@ -9914,7 +9913,7 @@ describe('AdminService.applyManualSystemBan', () => {
       userId: 'user-2',
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: 'Пользователь забанен.',
+      message: 'Бан включён.',
     });
 
     await service.processManualModerationFanoutJob({
@@ -9955,7 +9954,7 @@ describe('AdminService.applyManualSystemBan', () => {
     });
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      'Пользователь [Нарушитель](max://user/user-2) забанен.',
+      'Для участника [Нарушитель](max://user/user-2) включён бан.',
       { textFormat: 'markdown' },
       expect.objectContaining({
         immediate: true,
@@ -9983,7 +9982,7 @@ describe('AdminService.applyManualSystemBan', () => {
       userId: 'user-2',
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: 'Пользователь удалён.',
+      message: 'Участник удалён из чата.',
     });
 
     await service.processManualModerationFanoutJob({
@@ -10010,7 +10009,7 @@ describe('AdminService.applyManualSystemBan', () => {
 
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      'Пользователь [Нарушитель](max://user/user-2) удалён.',
+      'Участник [Нарушитель](max://user/user-2) удалён из чата.',
       { textFormat: 'markdown' },
       expect.objectContaining({
         immediate: true,
@@ -10078,7 +10077,7 @@ describe('AdminService.applyManualSystemBan', () => {
 
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      'Не удалось применить бан: Нельзя применять это действие к своему аккаунту.',
+      'Команда «бан» не выполнена: Нельзя применять это действие к своему аккаунту.',
       { textFormat: 'markdown' },
       {
         immediate: true,
@@ -10243,7 +10242,7 @@ describe('AdminService.applyManualSystemBan', () => {
       userId: 'user-2',
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: 'Мут бессрочно.',
+      message: 'Мут включён без срока.',
     });
 
     await service.processManualModerationFanoutJob({
@@ -10301,7 +10300,7 @@ describe('AdminService.applyManualSystemBan', () => {
     });
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      'Мут бессрочно.\nПользователь: [Нарушитель](max://user/user-2)',
+      'Мут включён без срока.\nУчастник: [Нарушитель](max://user/user-2)',
       { textFormat: 'markdown' },
       {
         immediate: true,
@@ -10479,7 +10478,7 @@ describe('AdminService.applyManualSystemBan', () => {
         userId: 'user-3',
       }),
     );
-    expect(result.message).toBe('Пользователь забанен.');
+    expect(result.message).toBe('Бан включён.');
   });
 
   it('deletes source chat messages during queued manual ban fanout processing', async () => {
@@ -10918,7 +10917,7 @@ describe('AdminService.applyManualSystemBan', () => {
       userId: 'user-2',
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: 'Пользователь забанен.',
+      message: 'Бан включён.',
     });
 
     const job = {
@@ -11045,14 +11044,14 @@ describe('AdminService.applyManualSystemBan', () => {
     ).resolves.toEqual(
       expect.objectContaining({
         ok: true,
-        message: 'Пользователь забанен.',
+        message: 'Бан включён.',
       }),
     );
 
     expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-3', { immediate: true });
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      'Пользователь [user-3](max://user/user-3) забанен.',
+      'Для участника [user-3](max://user/user-3) включён бан.',
       { textFormat: 'markdown' },
       { immediate: true },
     );
@@ -20912,6 +20911,7 @@ describe('AdminService settings screen endpoints', () => {
         entityType: 'chat',
         participantsCount: 128,
       }),
+      botSpeechPreviewProfile: null,
       requiredSubscriptionChannels: [],
       domains: [
         {
@@ -21512,7 +21512,7 @@ describe('AdminService admin access validation', () => {
       ForbiddenException,
     );
     await expect(service.assertChatAdmin('chat-1', user.userId, 'chat')).rejects.toThrow(
-      'Бот больше не состоит в этом чате MAX или не является его администратором.',
+      'Действие недоступно: бот больше не состоит в этом чате MAX или утратил права администратора.',
     );
     expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(2);
   });
