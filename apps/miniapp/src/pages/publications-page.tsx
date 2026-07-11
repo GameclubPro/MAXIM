@@ -6,7 +6,16 @@ import {
   type PublicationLifecycle,
   type PublicationSummary,
 } from '@maxim/contracts/publication';
-import { NavArrowLeft, Plus, Refresh, Search, Trash, VideoCamera, Xmark } from 'iconoir-react';
+import {
+  FilterList,
+  NavArrowLeft,
+  Plus,
+  Refresh,
+  Search,
+  Trash,
+  VideoCamera,
+  Xmark,
+} from 'iconoir-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { BroadcastButtonsSheet } from '../components/broadcast-buttons-sheet';
@@ -346,6 +355,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [entityFilter, setEntityFilter] = useState<PublicationEntityFilter>('all');
   const [statusFilter, setStatusFilter] = useState<PublicationStatusFilter>('all');
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [buttonsOpen, setButtonsOpen] = useState(false);
   const [buttonErrors, setButtonErrors] = useState<BroadcastLinkButtonFieldErrors[]>([]);
   const [fieldError, setFieldError] = useState('');
@@ -355,6 +365,9 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
   const [actionTarget, setActionTarget] = useState<PublicationActionTarget | null>(null);
   const [detailsTarget, setDetailsTarget] = useState<PublicationSummary | null>(null);
   const [ambiguousTarget, setAmbiguousTarget] = useState<PublicationAmbiguousTarget | null>(null);
+  const contentSectionRef = useRef<HTMLElement | null>(null);
+  const targetsSectionRef = useRef<HTMLElement | null>(null);
+  const timingSectionRef = useRef<HTMLElement | null>(null);
 
   const sourcesQuery = useQuery({
     queryKey: queryKeys.sources,
@@ -375,9 +388,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
   });
   const legacyAutopostRules = useMemo<ManagedAutopostHubRuleSummary[]>(
     () =>
-      sortManagedAutopostRules(
-        legacyAutopostsQuery.data ?? [],
-      ) as ManagedAutopostHubRuleSummary[],
+      sortManagedAutopostRules(legacyAutopostsQuery.data ?? []) as ManagedAutopostHubRuleSummary[],
     [legacyAutopostsQuery.data],
   );
   useEffect(() => {
@@ -638,23 +649,25 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     if (!hasContent) {
       issues.push({
         label: 'Сообщение',
-        onClick: () => setFieldError('Добавьте текст, фото или видео.'),
+        onClick: () => focusEditorSection('content', 'Добавьте текст, фото или видео.'),
       });
     } else if (draft.text.length > PUBLICATION_TEXT_MAX_LENGTH) {
       issues.push({
         label: 'Текст',
-        onClick: () => setFieldError(`Максимум ${PUBLICATION_TEXT_MAX_LENGTH} символов.`),
+        onClick: () =>
+          focusEditorSection('content', `Максимум ${PUBLICATION_TEXT_MAX_LENGTH} символов.`),
       });
     }
     if (draft.targets.length === 0) {
       issues.push({
         label: 'Получатели',
-        onClick: () => setFieldError('Выберите хотя бы одного получателя.'),
+        onClick: () => focusEditorSection('targets', 'Выберите хотя бы одного получателя.'),
       });
     } else if (draft.targets.length > MAX_PUBLICATION_TARGETS) {
       issues.push({
         label: 'Получатели',
-        onClick: () => setFieldError(`Можно выбрать до ${MAX_PUBLICATION_TARGETS} получателей.`),
+        onClick: () =>
+          focusEditorSection('targets', `Можно выбрать до ${MAX_PUBLICATION_TARGETS} получателей.`),
       });
     }
     if (
@@ -662,13 +675,25 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         (draft.timingMode === 'schedule' && draft.scheduleKind === 'slots')) &&
       !hasFuturePublicationSlot(draft.scheduledSlots)
     ) {
-      issues.push({ label: 'Время', onClick: () => setFieldError('Выберите будущее время.') });
+      issues.push({
+        label: 'Время',
+        onClick: () => focusEditorSection('timing', 'Выберите будущее время.'),
+      });
     }
     if (draft.timingMode === 'schedule' && draft.scheduleKind === 'recurrence' && recurrenceError) {
-      issues.push({ label: 'Повтор', onClick: () => setFieldError(recurrenceError) });
+      issues.push({
+        label: 'Повтор',
+        onClick: () => focusEditorSection('timing', recurrenceError),
+      });
     }
     if (hasButtonErrors) {
-      issues.push({ label: 'Кнопки', onClick: () => setButtonsOpen(true) });
+      issues.push({
+        label: 'Кнопки',
+        onClick: () => {
+          focusEditorSection('content', 'Проверьте текст и ссылку кнопки.');
+          setButtonsOpen(true);
+        },
+      });
     }
     return issues;
   }, [draft, hasButtonErrors, hasContent, recurrenceError]);
@@ -743,6 +768,19 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     }
     setSearchParams(next, { replace: true });
     maxImpact('soft');
+  }
+
+  function focusEditorSection(section: 'content' | 'targets' | 'timing', message: string) {
+    setFieldError(message);
+    const target =
+      section === 'content'
+        ? contentSectionRef.current
+        : section === 'targets'
+          ? targetsSectionRef.current
+          : timingSectionRef.current;
+    window.requestAnimationFrame(() =>
+      target?.scrollIntoView({ behavior: 'smooth', block: 'center' }),
+    );
   }
 
   function openCreateEditor() {
@@ -866,49 +904,87 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
   }
 
   function renderFilters() {
+    const hasActiveFilters = entityFilter !== 'all' || statusFilter !== 'all';
+    const showFilterControls = filtersOpen || hasActiveFilters;
+
     return (
-      <div className="publications-filterbar">
-        <label className="publication-search publications-filterbar__search">
-          <Search aria-hidden />
-          <input
-            type="search"
-            value={query}
-            onChange={(event) => setQuery(event.currentTarget.value)}
-            placeholder="Найти"
-            aria-label="Поиск публикаций"
-          />
-          {query ? (
-            <button type="button" onClick={() => setQuery('')} aria-label="Очистить поиск">
-              <Xmark aria-hidden />
-            </button>
-          ) : null}
-        </label>
-        <div className="publications-filterbar__entities" role="group" aria-label="Тип получателя">
-          {ENTITY_FILTERS.map((filter) => (
-            <button
-              key={filter.value}
-              type="button"
-              aria-pressed={entityFilter === filter.value}
-              className={cn(entityFilter === filter.value && 'is-active')}
-              onClick={() => setEntityFilter(filter.value)}
-            >
-              {filter.label}
-            </button>
-          ))}
+      <div className={cn('publications-filterbar', showFilterControls && 'is-expanded')}>
+        <div className="publications-filterbar__search-row">
+          <label className="publication-search publications-filterbar__search">
+            <Search aria-hidden />
+            <input
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.currentTarget.value)}
+              placeholder="Найти"
+              aria-label="Поиск публикаций"
+            />
+            {query ? (
+              <button type="button" onClick={() => setQuery('')} aria-label="Очистить поиск">
+                <Xmark aria-hidden />
+              </button>
+            ) : null}
+          </label>
+          <button
+            type="button"
+            className={cn('publications-filterbar__toggle', hasActiveFilters && 'is-active')}
+            onClick={() => setFiltersOpen((current) => !current)}
+            aria-expanded={showFilterControls}
+            aria-label="Фильтры публикаций"
+            title="Фильтры"
+          >
+            <FilterList aria-hidden />
+          </button>
         </div>
-        <select
-          value={statusFilter}
-          onChange={(event) =>
-            setStatusFilter(event.currentTarget.value as PublicationStatusFilter)
-          }
-          aria-label="Статус публикаций"
-        >
-          {STATUS_FILTERS.map((filter) => (
-            <option key={filter.value} value={filter.value}>
-              {filter.label}
-            </option>
-          ))}
-        </select>
+
+        {showFilterControls ? (
+          <div className="publications-filterbar__controls">
+            <div
+              className="publications-filterbar__entities"
+              role="group"
+              aria-label="Тип получателя"
+            >
+              {ENTITY_FILTERS.map((filter) => (
+                <button
+                  key={filter.value}
+                  type="button"
+                  aria-pressed={entityFilter === filter.value}
+                  className={cn(entityFilter === filter.value && 'is-active')}
+                  onClick={() => setEntityFilter(filter.value)}
+                >
+                  {filter.label}
+                </button>
+              ))}
+            </div>
+            <select
+              value={statusFilter}
+              onChange={(event) =>
+                setStatusFilter(event.currentTarget.value as PublicationStatusFilter)
+              }
+              aria-label="Статус публикаций"
+            >
+              {STATUS_FILTERS.map((filter) => (
+                <option key={filter.value} value={filter.value}>
+                  {filter.label}
+                </option>
+              ))}
+            </select>
+            {hasActiveFilters ? (
+              <button
+                type="button"
+                className="publications-filterbar__reset"
+                onClick={() => {
+                  setEntityFilter('all');
+                  setStatusFilter('all');
+                }}
+                aria-label="Сбросить фильтры"
+                title="Сбросить фильтры"
+              >
+                <Xmark aria-hidden />
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -950,13 +1026,15 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         onDuplicate={() => openPublicationMutation.mutate({ publication, mode: 'duplicate' })}
         onDelete={() => setActionTarget({ publication, action: 'delete' })}
         footer={
-          publication.delivery.failed > 0 || publication.delivery.ambiguous > 0 ? (
+          publication.delivery.ambiguous > 0 ? (
+            <span className="publication-delivery-note is-danger">Проверьте отправку</span>
+          ) : publication.delivery.failed > 0 ? (
             <span className="publication-delivery-note is-danger">
-              Ошибки {publication.delivery.failed} · Неясно {publication.delivery.ambiguous}
+              Есть недоставленные сообщения
             </span>
           ) : publication.delivery.sent > 0 ? (
             <span className="publication-delivery-note">
-              Доставлено {publication.delivery.sent}/{publication.delivery.total}
+              Доставлено {publication.delivery.sent} из {publication.delivery.total}
             </span>
           ) : null
         }
@@ -1059,33 +1137,36 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         </header>
 
         <div className="publications-tabs" role="group" aria-label="Раздел публикаций">
-          {VIEW_OPTIONS.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              aria-pressed={view === option.value}
-              className={cn(view === option.value && 'is-active')}
-              onClick={() => changeView(option.value)}
-            >
-              <span>{option.label}</span>
-              <small>
-                {option.value === 'plan'
+          {VIEW_OPTIONS.map((option) =>
+            (() => {
+              const count =
+                option.value === 'plan'
                   ? planQuery.data
                     ? formatLoadedCount(planItems.length, Boolean(planQuery.hasNextPage))
-                    : '…'
+                    : null
                   : option.value === 'schedules'
                     ? schedulesQuery.data
                       ? formatLoadedCount(scheduleItems.length, Boolean(schedulesQuery.hasNextPage))
-                      : '…'
+                      : null
                     : historyQuery.data
                       ? formatLoadedCount(historyItems.length, Boolean(historyQuery.hasNextPage))
-                      : '…'}
-              </small>
-            </button>
-          ))}
-        </div>
+                      : null;
 
-        {view !== 'history' ? <LegacyAutopostsPanel rules={legacyAutopostRules} /> : null}
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  aria-pressed={view === option.value}
+                  className={cn(view === option.value && 'is-active')}
+                  onClick={() => changeView(option.value)}
+                >
+                  <span>{option.label}</span>
+                  {count ? <small>{count}</small> : null}
+                </button>
+              );
+            })(),
+          )}
+        </div>
 
         {hasSavedDraft ? (
           <button type="button" className="publication-draft-resume" onClick={openCreateEditor}>
@@ -1098,6 +1179,8 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         ) : null}
 
         {renderFeed()}
+
+        {view !== 'history' ? <LegacyAutopostsPanel rules={legacyAutopostRules} /> : null}
       </>
     );
   }
@@ -1318,7 +1401,10 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     );
     const [onceDate = '', onceTime = '12:00'] = onceValue.split('T');
     return (
-      <section className="publication-editor-section publication-editor-section--timing">
+      <section
+        ref={timingSectionRef}
+        className="publication-editor-section publication-editor-section--timing"
+      >
         <div className="publication-editor-section__head">
           <strong>Когда</strong>
           <small>{formatDraftTiming(draft)}</small>
@@ -1414,6 +1500,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
                 timingMode="scheduled"
                 availableTimingModes={['scheduled']}
                 viewMode="compose"
+                allowRecipe={false}
                 disabled={isBusy}
               />
             )}
@@ -1490,7 +1577,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
             <NavArrowLeft aria-hidden />
           </button>
           <span>
-            <h1>{editing ? 'Редактирование' : 'Новая публикация'}</h1>
+            <h1>{editing ? 'Редактирование' : 'Новый пост'}</h1>
             <small>{formatTargetSummary(draft.targets)}</small>
           </span>
           <button
@@ -1513,7 +1600,10 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         </header>
 
         <div className="publications-editor">
-          <section className="publication-editor-section publication-editor-section--content">
+          <section
+            ref={contentSectionRef}
+            className="publication-editor-section publication-editor-section--content"
+          >
             <div className="publication-editor-section__head">
               <strong>Пост</strong>
               <small>
@@ -1571,6 +1661,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
               />
             </label>
             <BroadcastContentComposer
+              className="publication-content-composer"
               text={draft.text}
               maxLength={PUBLICATION_TEXT_MAX_LENGTH}
               images={draft.images}
@@ -1623,10 +1714,10 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
             />
           </section>
 
-          <section className="publication-editor-section">
+          <section ref={targetsSectionRef} className="publication-editor-section">
             <div className="publication-editor-section__head">
               <strong>Получатели</strong>
-              <small>{draft.targets.length || 'Не выбраны'}</small>
+              <small>{formatTargetSummary(draft.targets)}</small>
             </div>
             <PublicationTargetPicker
               choices={targets}
@@ -1695,7 +1786,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
             testAriaLabel="Отправить публикацию себе"
             testDisabled={isBusy || !hasContent || draft.targets.length === 0 || hasButtonErrors}
             primaryLabel={primaryLabel}
-            primaryDisabled={isBusy}
+            primaryDisabled={isBusy || validationIssues.length > 0}
             onTest={handleTest}
             onPrimary={handlePrimaryAction}
           />

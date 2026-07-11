@@ -41,7 +41,7 @@ export function LegacyAutopostsPanel({ rules }: LegacyAutopostsPanelProps) {
     <details className="legacy-autoposts">
       <summary>
         <span>
-          <strong>Ранее созданные</strong>
+          <strong>Автопосты старого формата</strong>
           <small>{rules.length}</small>
         </span>
         <NavArrowDown aria-hidden />

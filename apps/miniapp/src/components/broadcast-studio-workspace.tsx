@@ -77,8 +77,8 @@ export function BroadcastWorkspaceTabs({
         options={[
           { value: 'compose', label: 'Создать' },
           { value: 'calendar', label: 'План' },
-          { value: 'autoposts', label: 'Автопосты', count: autopostCount },
-          { value: 'history', label: 'История', count: historyCount },
+          { value: 'autoposts', label: 'Автопосты', count: autopostCount || undefined },
+          { value: 'history', label: 'История', count: historyCount || undefined },
         ]}
       />
     </div>
@@ -119,7 +119,11 @@ export function BroadcastWorkspaceChrome({
 
   return (
     <>
-      {chatId ? <PublicationWorkspaceHandoff entityType={entityType} entityId={chatId} /> : null}
+      {chatId ? (
+        <div className={`broadcast-studio-shell__handoff${showTabs ? ' is-compact' : ''}`}>
+          <PublicationWorkspaceHandoff entityType={entityType} entityId={chatId} />
+        </div>
+      ) : null}
       {showTabs || showReset ? (
         <div className="broadcast-studio-shell__topbar broadcast-studio-screen__nav">
           {showTabs ? (
@@ -155,19 +159,21 @@ export function BroadcastHistoryFilterTabs({
   counts,
   onChange,
 }: BroadcastHistoryFilterTabsProps) {
+  const options = [
+    { value: 'future' as const, label: 'Запланировано', count: counts.future },
+    { value: 'active' as const, label: 'В работе', count: counts.active },
+    { value: 'error' as const, label: 'Ошибки', count: counts.error },
+    { value: 'sent' as const, label: 'Опубликовано', count: counts.sent },
+    { value: 'canceled' as const, label: 'Отменено', count: counts.canceled },
+  ].filter((option) => option.count > 0 || option.value === value);
+
   return (
     <SegmentedControl<BroadcastHistoryFilter>
       className="broadcast-history-filters"
       value={value}
       onChange={onChange}
       ariaLabel="История автопостинга"
-      options={[
-        { value: 'future', label: 'Запланировано', count: counts.future },
-        { value: 'active', label: 'В работе', count: counts.active },
-        { value: 'error', label: 'Ошибки', count: counts.error },
-        { value: 'sent', label: 'Опубликовано', count: counts.sent },
-        { value: 'canceled', label: 'Стоп', count: counts.canceled },
-      ]}
+      options={options}
     />
   );
 }

@@ -1,4 +1,14 @@
 @layer components {
+  .broadcast-studio-shell__handoff {
+    display: grid;
+    gap: 8px;
+  }
+
+  .broadcast-studio-shell__handoff.is-compact {
+    justify-items: end;
+    margin-bottom: 2px;
+  }
+
   .publication-workspace-handoff {
     min-height: 36px;
     display: flex;
@@ -17,6 +27,22 @@
   .publication-workspace-handoff svg {
     width: 17px;
     height: 17px;
+  }
+
+  .broadcast-studio-shell__handoff.is-compact .publication-workspace-handoff {
+    min-height: 32px;
+    width: max-content;
+    padding: 0 4px;
+    border-color: transparent;
+    border-radius: 0;
+    background: transparent;
+    color: var(--color-accent);
+    font-size: 0.72rem;
+  }
+
+  .broadcast-studio-shell__handoff.is-compact .publication-workspace-handoff svg {
+    width: 16px;
+    height: 16px;
   }
 
   .publication-workspace-handoff:active {

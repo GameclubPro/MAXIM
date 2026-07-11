@@ -105,6 +105,7 @@ type BroadcastSchedulePlannerProps = {
   onTimingModeChange?: (mode: BroadcastTimingMode) => void;
   onCycleChange?: (cycle: BroadcastCycleDraft) => void;
   viewMode?: 'compose' | 'calendar';
+  allowRecipe?: boolean;
 };
 
 export type BroadcastSchedulePlannerSelectionState = {
@@ -172,6 +173,7 @@ export function BroadcastSchedulePlanner({
   onTimingModeChange,
   onCycleChange,
   viewMode = 'compose',
+  allowRecipe = true,
 }: BroadcastSchedulePlannerProps) {
   const [liveNowMs, setLiveNowMs] = useState(() => Date.now());
   const liveNow = useMemo(() => new Date(liveNowMs), [liveNowMs]);
@@ -393,7 +395,7 @@ export function BroadcastSchedulePlanner({
   const timingModeSet = new Set(availableTimingModes);
   const showTimingModePicker = !calendarOnly && availableTimingModes.length > 1;
   const showCalendar = calendarOnly || (timingMode === 'scheduled' && calendarExpanded);
-  const showRecipe = !calendarOnly && timingMode === 'scheduled';
+  const showRecipe = allowRecipe && !calendarOnly && timingMode === 'scheduled';
   const emitSelectionStateChange = useEffectEvent(
     (nextState: BroadcastSchedulePlannerSelectionState) => {
       onSelectionStateChange?.(nextState);
