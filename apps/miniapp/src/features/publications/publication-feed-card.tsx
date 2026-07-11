@@ -57,6 +57,8 @@ export function PublicationFeedCard({
   const menuRef = useRef<HTMLDetailsElement | null>(null);
   const hasMenu = canEdit || canPause || canResume || canRetry || canDuplicate || canCancel;
   const primaryActionLabel = primaryAction ? `${primaryAction.label}: ${title}` : undefined;
+  const [audience, schedule, ...additionalMeta] = meta;
+  const scheduleLabel = schedule?.replace(/^Следующая · /u, '') ?? null;
 
   useEffect(() => {
     if (busy) {
@@ -72,18 +74,35 @@ export function PublicationFeedCard({
   const content = (
     <>
       <span className="publication-feed-card__head">
-        <span className={cn('publication-feed-card__status', `is-${tone}`)}>{eyebrow}</span>
-        <strong>{title}</strong>
+        <span className={cn('publication-feed-card__status', `is-${tone}`)}>
+          <span aria-hidden className="publication-feed-card__status-dot" />
+          {eyebrow}
+        </span>
+        {scheduleLabel ? (
+          <span
+            className="publication-feed-card__schedule"
+            title={schedule ?? undefined}
+            aria-label={schedule ?? undefined}
+          >
+            {scheduleLabel}
+          </span>
+        ) : null}
       </span>
+      <strong className="publication-feed-card__title">{title}</strong>
       <MaxMarkdownPreview
         value={preview}
         normalizeWhitespace
         fallback={fallback}
         className="publication-feed-card__preview max-markdown-preview--clamp-2"
       />
-      {meta.length > 0 ? (
+      {audience || additionalMeta.length > 0 ? (
         <span className="publication-feed-card__meta">
-          {meta.map((item) => (
+          {audience ? (
+            <span className="publication-feed-card__audience" title={audience}>
+              {audience}
+            </span>
+          ) : null}
+          {additionalMeta.map((item) => (
             <span key={`${id}-${item}`}>{item}</span>
           ))}
         </span>

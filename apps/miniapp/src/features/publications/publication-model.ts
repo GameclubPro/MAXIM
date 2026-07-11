@@ -36,6 +36,16 @@ export type PublicationTarget = {
   avatarUrl: string | null;
 };
 
+export function getPublicationTargetTitle(
+  target: Pick<PublicationTarget, 'entityType' | 'title'>,
+): string {
+  const title = target.title.trim();
+  if (title) {
+    return title;
+  }
+  return target.entityType === 'channel' ? 'Канал' : 'Чат';
+}
+
 export type PublicationDraft = {
   title: string;
   text: string;
@@ -144,7 +154,7 @@ export function toPublicationTarget(source: ChatSummary): PublicationTarget {
   return {
     id: source.id,
     entityType: source.entityType,
-    title: source.title.trim() || (source.entityType === 'channel' ? 'Канал' : 'Чат'),
+    title: getPublicationTargetTitle(source),
     avatarUrl: source.avatarUrl ?? null,
   };
 }
@@ -384,7 +394,7 @@ export function createPublicationDraftFromDetails(
     targets: details.targets.map((target) => ({
       id: target.chatId,
       entityType: target.entityType,
-      title: target.title,
+      title: getPublicationTargetTitle(target),
       avatarUrl: target.avatarUrl,
     })),
     timingMode,

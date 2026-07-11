@@ -1,5 +1,4 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { ManagedAutopostHubRuleSummary } from '@maxim/contracts';
 import {
   MAX_PUBLICATION_TARGETS,
   MAX_PUBLICATION_VIDEO_BASE64_LENGTH,
@@ -35,7 +34,6 @@ import {
   PublicationFeedCard,
   type PublicationFeedTone,
 } from '../features/publications/publication-feed-card';
-import { LegacyAutopostsPanel } from '../features/publications/legacy-autoposts-panel';
 import {
   buildCreatePublicationRequest,
   buildTestPublicationRequest,
@@ -45,6 +43,7 @@ import {
   createPublicationDuplicateDraft,
   createPublicationDraftFromDetails,
   getPublicationTargetKey,
+  getPublicationTargetTitle,
   hasFuturePublicationSlot,
   inferPublicationVideoMimeType,
   isIsolatedPublicationEditor,
@@ -64,7 +63,6 @@ import { mergePublicationPages } from '../features/publications/publication-pagi
 import { PublicationTargetPicker } from '../features/publications/publication-target-picker';
 import { usePublicationComposer } from '../features/publications/use-publication-composer';
 import { describeApiError } from '../lib/api-error';
-import { getAutopostRules } from '../lib/api/autopost-client';
 import {
   createPublication,
   cancelPublication,
@@ -94,10 +92,10 @@ import {
 import { addDays, getBroadcastPlannerWindow, startOfDay } from '../lib/broadcast-planner-time';
 import { formatRussianCountLabel } from '../lib/broadcast-audience';
 import { cn } from '../lib/cn';
-import { sortManagedAutopostRules } from '../lib/managed-autopost-ui';
 import { maxImpact, maxNotify } from '../lib/max-bridge';
 import { useNativeBackHandler } from '../lib/native-back';
 import '../styles/publications-page.css';
+import '../features/publications/publication-workbench.css';
 
 type PublicationEditorContext =
   | { kind: 'create' }
@@ -123,7 +121,6 @@ function getPublicationCalendarRange(now = new Date()): { from: string; to: stri
 
 const queryKeys = {
   sources: ['publications', 'sources'] as const,
-  legacyAutoposts: ['publications', 'legacy-autoposts'] as const,
   listRoot: ['publications', 'list'] as const,
   list: (
     view: PublicationView,
@@ -212,10 +209,10 @@ function formatDateInput(value: string | null): string {
 
 function formatTargetSummary(targets: readonly PublicationTarget[]): string {
   if (targets.length === 0) {
-    return 'Получатели не выбраны';
+    return 'Выберите получателей';
   }
   if (targets.length === 1) {
-    return targets[0]?.title ?? '1 получатель';
+    return targets[0] ? getPublicationTargetTitle(targets[0]) : '1 получатель';
   }
   const channels = targets.filter((target) => target.entityType === 'channel').length;
   const chats = targets.length - channels;
@@ -400,7 +397,6 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
   const [videoPreparing, setVideoPreparing] = useState(false);
   const [pendingReview, setPendingReview] = useState(false);
   const [pendingConflict, setPendingConflict] = useState(false);
-  const [validationAttempted, setValidationAttempted] = useState(false);
   const [actionTarget, setActionTarget] = useState<PublicationActionTarget | null>(null);
   const [detailsTarget, setDetailsTarget] = useState<PublicationSummary | null>(null);
   const [ambiguousTarget, setAmbiguousTarget] = useState<PublicationAmbiguousTarget | null>(null);
@@ -457,17 +453,6 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     staleTime: 15_000,
     refetchOnWindowFocus: false,
   });
-  const legacyAutopostsQuery = useQuery({
-    queryKey: queryKeys.legacyAutoposts,
-    queryFn: () => getAutopostRules(api),
-    enabled: !isEditor && view !== 'history',
-    staleTime: 30_000,
-  });
-  const legacyAutopostRules = useMemo<ManagedAutopostHubRuleSummary[]>(
-    () =>
-      sortManagedAutopostRules(legacyAutopostsQuery.data ?? []) as ManagedAutopostHubRuleSummary[],
-    [legacyAutopostsQuery.data],
-  );
   useEffect(() => {
     const timeoutId = window.setTimeout(() => setDebouncedQuery(query.trim()), 250);
     return () => window.clearTimeout(timeoutId);
@@ -811,12 +796,6 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
   }, [draft, hasButtonErrors, hasContent, recurrenceError]);
 
   useEffect(() => {
-    if (validationAttempted && validationIssues.length === 0) {
-      setValidationAttempted(false);
-    }
-  }, [validationAttempted, validationIssues.length]);
-
-  useEffect(() => {
     document.body.classList.toggle('publications-editor-open', isEditor);
     return () => document.body.classList.remove('publications-editor-open');
   }, [isEditor]);
@@ -851,6 +830,31 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
       setEditorContext({ kind: 'create' });
     }
   }, [draft, hydrated, searchParams, setDraft, sourcesQuery.isSuccess, targets]);
+
+  useEffect(() => {
+    if (!sourcesQuery.isSuccess || targets.length === 0) {
+      return;
+    }
+
+    setDraft((current) => {
+      let changed = false;
+      const refreshedTargets = current.targets.map((target) => {
+        const currentTarget = targets.find(
+          (candidate) => getPublicationTargetKey(candidate) === getPublicationTargetKey(target),
+        );
+        if (
+          !currentTarget ||
+          (currentTarget.title === target.title && currentTarget.avatarUrl === target.avatarUrl)
+        ) {
+          return target;
+        }
+        changed = true;
+        return currentTarget;
+      });
+
+      return changed ? { ...current, targets: refreshedTargets } : current;
+    });
+  }, [draft.targets, setDraft, sourcesQuery.isSuccess, targets]);
 
   useNativeBackHandler(
     () => {
@@ -909,7 +913,6 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     setEditorContext({ kind: 'create' });
     setButtonErrors(validateBroadcastLinkButtons(draft.buttons));
     setFieldError('');
-    setValidationAttempted(false);
     setComposeRoute(true);
     maxImpact('soft');
   }
@@ -923,7 +926,6 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     setButtonsOpen(false);
     setPendingReview(false);
     setPendingConflict(false);
-    setValidationAttempted(false);
     setFieldError('');
     setComposeRoute(false);
     if (!preserveDraft) {
@@ -940,7 +942,6 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     setButtonsOpen(false);
     setPendingReview(false);
     setPendingConflict(false);
-    setValidationAttempted(false);
     setFieldError('');
     setComposeRoute(false);
   }
@@ -991,17 +992,22 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
 
   function handlePrimaryAction() {
     if (validateDraft()) {
-      setValidationAttempted(false);
       setPendingReview(true);
       return;
     }
-    setValidationAttempted(true);
+    validationIssues[0]?.onClick();
   }
 
   function handleTest() {
-    if (validateDraft({ ignoreSchedule: true }) && !testMutation.isPending) {
-      testMutation.mutate();
+    if (testMutation.isPending) {
+      return;
     }
+
+    if (validateDraft({ ignoreSchedule: true })) {
+      testMutation.mutate();
+      return;
+    }
+    validationIssues.find((issue) => issue.label !== 'Время' && issue.label !== 'Повтор')?.onClick();
   }
 
   function updateOnceSlot(part: 'date' | 'time', value: string) {
@@ -1295,8 +1301,6 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         ) : null}
 
         {renderFeed()}
-
-        {view !== 'history' ? <LegacyAutopostsPanel rules={legacyAutopostRules} /> : null}
       </>
     );
   }
@@ -1721,7 +1725,6 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
           </button>
           <span>
             <h1>{editing ? 'Редактирование' : 'Новый пост'}</h1>
-            <small>{formatTargetSummary(draft.targets)}</small>
           </span>
           <button
             type="button"
@@ -1730,10 +1733,8 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
                 setDraft(createEmptyPublicationDraft());
                 setButtonErrors([]);
                 setFieldError('');
-                setValidationAttempted(false);
                 return;
               }
-              setValidationAttempted(false);
               void clearDraft();
             }}
             aria-label="Очистить черновик"
@@ -1745,6 +1746,28 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         </header>
 
         <div className="publications-editor">
+          <section ref={targetsSectionRef} className="publication-editor-section">
+            <div className="publication-editor-section__head">
+              <strong>Получатели</strong>
+            </div>
+            <PublicationTargetPicker
+              choices={targets}
+              value={draft.targets}
+              disabled={isBusy || sourcesQuery.isLoading}
+              error={fieldError.includes('получател') ? fieldError : null}
+              onLimitReached={() =>
+                pushToast({
+                  tone: 'info',
+                  title: `Можно выбрать до ${MAX_PUBLICATION_TARGETS} получателей`,
+                })
+              }
+              onChange={(nextTargets) => {
+                setDraft((current) => ({ ...current, targets: nextTargets }));
+                setFieldError('');
+              }}
+            />
+          </section>
+
           <section
             ref={contentSectionRef}
             className="publication-editor-section publication-editor-section--content"
@@ -1859,29 +1882,6 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
             />
           </section>
 
-          <section ref={targetsSectionRef} className="publication-editor-section">
-            <div className="publication-editor-section__head">
-              <strong>Получатели</strong>
-              <small>{formatTargetSummary(draft.targets)}</small>
-            </div>
-            <PublicationTargetPicker
-              choices={targets}
-              value={draft.targets}
-              disabled={isBusy || sourcesQuery.isLoading}
-              error={fieldError.includes('получател') ? fieldError : null}
-              onLimitReached={() =>
-                pushToast({
-                  tone: 'info',
-                  title: `Можно выбрать до ${MAX_PUBLICATION_TARGETS} получателей`,
-                })
-              }
-              onChange={(nextTargets) => {
-                setDraft((current) => ({ ...current, targets: nextTargets }));
-                setFieldError('');
-              }}
-            />
-          </section>
-
           {renderTiming()}
 
           {fieldError &&
@@ -1924,7 +1924,6 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
               editing ? 'Изменения' : draft.timingMode === 'schedule' ? 'Расписание' : 'Публикация'
             }
             meta={formatTargetSummary(draft.targets)}
-            issues={validationAttempted ? validationIssues : []}
             busy={isBusy}
             testLabel="Отправить себе"
             compactTestLabel="Тест"

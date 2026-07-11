@@ -3,6 +3,7 @@ import { formatLocalDateTimeInputValue } from '../../lib/broadcast-schedule';
 import { getInitDataUserId } from '../../lib/init-data';
 import {
   createEmptyPublicationDraft,
+  getPublicationTargetTitle,
   type PublicationDraft,
   PublicationTarget,
   PublicationTimingMode,
@@ -55,7 +56,7 @@ function readTargets(value: unknown): PublicationTarget[] {
       {
         id: item.id,
         entityType,
-        title: readString(item.title),
+        title: getPublicationTargetTitle({ entityType, title: readString(item.title) }),
         avatarUrl: typeof item.avatarUrl === 'string' ? item.avatarUrl : null,
       },
     ];

@@ -687,6 +687,7 @@
   .publication-target-picker {
     display: grid;
     gap: 9px;
+    scroll-margin-block: 12px calc(var(--publication-dock-space, 0px) + 12px);
   }
 
   .publication-target-picker__selected {
@@ -1824,8 +1825,8 @@
   }
 
   .publications-page .publication-content-composer .broadcast-content-composer__tool {
-    width: 38px;
-    height: 38px;
+    width: 44px;
+    height: 44px;
     border-radius: 8px;
     border-color: var(--color-border);
     background: var(--color-surface);
@@ -2084,23 +2085,27 @@
 
   @media (max-width: 719px) {
     .publications-page .broadcast-publish-bar {
-      grid-template-columns: 44px minmax(0, 1fr);
+      grid-template-columns: minmax(84px, 0.78fr) minmax(0, 1.22fr);
       gap: 6px;
     }
 
     .publications-page .broadcast-publish-bar.has-issues {
-      grid-template-columns: 44px minmax(0, 1fr);
+      grid-template-columns: minmax(84px, 0.78fr) minmax(0, 1.22fr);
     }
 
     .publications-page .broadcast-publish-bar__test {
-      width: 44px;
-      min-width: 44px;
-      padding-inline: 0;
+      width: 100%;
+      min-width: 0;
+      padding-inline: 10px;
       justify-content: center;
     }
 
-    .publications-page .broadcast-publish-bar__test > span {
+    .publications-page .broadcast-publish-bar__test-label--regular {
       display: none;
+    }
+
+    .publications-page .broadcast-publish-bar__test-label--compact {
+      display: inline;
     }
 
     .publications-page .broadcast-publish-bar__primary {

@@ -1,4 +1,84 @@
 @layer pages {
+  .broadcast-content-composer__bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .broadcast-content-composer__media-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .broadcast-content-composer__tool {
+    width: 40px;
+    height: 40px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(62, 96, 127, 0.14);
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.92);
+    color: #315b78;
+    cursor: pointer;
+    transition:
+      transform 0.18s ease,
+      border-color 0.18s ease,
+      color 0.18s ease,
+      background 0.18s ease;
+  }
+
+  .broadcast-content-composer__tool svg {
+    width: 19px;
+    height: 19px;
+  }
+
+  .broadcast-content-composer__tool--format {
+    font-size: 0.78rem;
+    font-weight: 900;
+    line-height: 1;
+  }
+
+  /* Android must receive a real, transparent input over the visible control. */
+  .broadcast-content-composer__tool--native-file {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .broadcast-content-composer__tool.is-active {
+    border-color: rgba(11, 132, 255, 0.22);
+    background: rgba(236, 245, 255, 0.94);
+    color: #0b66b6;
+  }
+
+  .broadcast-content-composer__tool:not(:disabled):active {
+    transform: translateY(1px);
+  }
+
+  .broadcast-content-composer__tool:disabled,
+  .broadcast-content-composer__tool.is-disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+
+  .broadcast-content-composer__file-input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .broadcast-content-composer__file-input--native {
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: auto;
+    cursor: pointer;
+  }
+
   .broadcast-content-composer__asset-strip {
     min-width: 0;
     display: flex;

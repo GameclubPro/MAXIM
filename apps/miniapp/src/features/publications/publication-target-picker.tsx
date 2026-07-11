@@ -1,10 +1,11 @@
 import { MAX_PUBLICATION_TARGETS } from '@maxim/contracts/publication';
 import { Check, NavArrowDown, Search, Xmark } from 'iconoir-react';
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { EntityAvatar } from '../../components/ui/entity-avatar';
 import { cn } from '../../lib/cn';
 import {
   getPublicationTargetKey,
+  getPublicationTargetTitle,
   matchesPublicationSearch,
   type PublicationEntityFilter,
   type PublicationTarget,
@@ -37,7 +38,9 @@ export function PublicationTargetPicker({
 }: PublicationTargetPickerProps) {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<PublicationEntityFilter>('all');
-  const [expanded, setExpanded] = useState(() => value.length === 0);
+  const [expanded, setExpanded] = useState(false);
+  const [shouldRevealEditor, setShouldRevealEditor] = useState(false);
+  const pickerRef = useRef<HTMLDivElement | null>(null);
   const editorId = useId();
   const errorId = useId();
   const selectedKeys = useMemo(
@@ -57,9 +60,9 @@ export function PublicationTargetPicker({
     value.length === 0
       ? 'Выберите получателей'
       : value.length === 1
-        ? (value[0]?.title ?? '1 получатель')
+        ? (value[0] ? getPublicationTargetTitle(value[0]) : '1 получатель')
         : `Выбрано: ${value.length}`;
-  const summaryTitle = expanded ? 'Получатели' : collapsedSelectedSummary;
+  const summaryTitle = collapsedSelectedSummary;
   const summaryMeta =
     value.length === 0
       ? expanded
@@ -83,8 +86,25 @@ export function PublicationTargetPicker({
   useEffect(() => {
     if (error) {
       setExpanded(true);
+      setShouldRevealEditor(true);
     }
   }, [error]);
+
+  useEffect(() => {
+    if (!expanded || !shouldRevealEditor) {
+      return;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      pickerRef.current?.scrollIntoView({
+        behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+        block: 'start',
+      });
+      setShouldRevealEditor(false);
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [expanded, shouldRevealEditor]);
 
   function toggleTarget(target: PublicationTarget) {
     const key = getPublicationTargetKey(target);
@@ -99,8 +119,19 @@ export function PublicationTargetPicker({
     );
   }
 
+  function toggleEditor() {
+    if (expanded) {
+      setExpanded(false);
+      setShouldRevealEditor(false);
+      return;
+    }
+
+    setExpanded(true);
+    setShouldRevealEditor(true);
+  }
+
   return (
-    <div className={cn('publication-target-picker', error && 'has-error')}>
+    <div ref={pickerRef} className={cn('publication-target-picker', error && 'has-error')}>
       <button
         type="button"
         className={cn(
@@ -108,7 +139,7 @@ export function PublicationTargetPicker({
           value.length === 0 && 'is-empty',
           expanded && 'is-expanded',
         )}
-        onClick={() => setExpanded((current) => !current)}
+        onClick={toggleEditor}
         disabled={disabled}
         aria-expanded={expanded}
         aria-controls={editorId}
@@ -143,12 +174,12 @@ export function PublicationTargetPicker({
                   className="publication-target-chip"
                   role="listitem"
                 >
-                  <span>{target.title}</span>
+                  <span>{getPublicationTargetTitle(target)}</span>
                   <button
                     type="button"
                     onClick={() => toggleTarget(target)}
                     disabled={disabled}
-                    aria-label={`Убрать ${target.title}`}
+                    aria-label={`Убрать ${getPublicationTargetTitle(target)}`}
                   >
                     <Xmark aria-hidden />
                   </button>

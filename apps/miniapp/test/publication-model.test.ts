@@ -8,6 +8,7 @@ import {
   createEmptyPublicationDraft,
   createPublicationDuplicateDraft,
   filterFuturePublicationSlots,
+  getPublicationTargetTitle,
   inferPublicationVideoMimeType,
   isIsolatedPublicationEditor,
   isPublicationScheduleConflictError,
@@ -64,6 +65,12 @@ test('starts a new publication without a recipient or a publishable schedule', (
     endsAt: null,
     maxOccurrences: null,
   });
+});
+
+test('uses a stable fallback when a persisted publication target has no title', () => {
+  assert.equal(getPublicationTargetTitle({ entityType: 'chat', title: '  ' }), 'Чат');
+  assert.equal(getPublicationTargetTitle({ entityType: 'channel', title: '' }), 'Канал');
+  assert.equal(getPublicationTargetTitle({ entityType: 'chat', title: '  Новости  ' }), 'Новости');
 });
 
 test('duplicates content and recipients but requires a new schedule choice', () => {
