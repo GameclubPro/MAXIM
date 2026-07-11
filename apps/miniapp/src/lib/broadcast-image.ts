@@ -3,6 +3,7 @@ const MAX_SOURCE_IMAGE_BYTES = 64_000_000;
 const MIN_PREPARED_IMAGE_BYTES = 96_000;
 const IMAGE_DIMENSION_STEPS = [2560, 2200, 1920, 1600, 1440, 1280, 1080, 960, 800, 640];
 const IMAGE_QUALITY_STEPS = [0.92, 0.88, 0.84, 0.8, 0.76, 0.72];
+const BASE64_BINARY_CHUNK_BYTES = 12_288;
 const FALLBACK_IMAGE_ERROR = 'Не удалось подготовить фото. Выберите другое изображение.';
 const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
   bmp: 'image/bmp',
@@ -61,12 +62,49 @@ function readBlobAsDataUrl(blob: Blob): Promise<string> {
 
       resolve(result);
     };
-    reader.onerror = () => reject(new Error('Не удалось прочитать файл.'));
-    reader.readAsDataURL(blob);
+    const rejectRead = () => reject(new Error('Не удалось прочитать файл.'));
+    reader.onerror = rejectRead;
+    reader.onabort = rejectRead;
+    try {
+      reader.readAsDataURL(blob);
+    } catch {
+      rejectRead();
+    }
   });
 }
 
-async function blobToBase64(blob: Blob): Promise<string> {
+function encodeArrayBufferAsBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  if (bytes.byteLength === 0) {
+    return '';
+  }
+
+  const chunks: string[] = [];
+  // The chunk size is divisible by three so independent base64 chunks concatenate correctly.
+  for (let start = 0; start < bytes.length; start += BASE64_BINARY_CHUNK_BYTES) {
+    const end = Math.min(start + BASE64_BINARY_CHUNK_BYTES, bytes.length);
+    let binary = '';
+    for (let index = start; index < end; index += 1) {
+      binary += String.fromCharCode(bytes[index] ?? 0);
+    }
+    chunks.push(globalThis.btoa(binary));
+  }
+
+  return chunks.join('');
+}
+
+export async function readBlobAsBase64(blob: Blob): Promise<string> {
+  if (typeof blob.arrayBuffer === 'function' && typeof globalThis.btoa === 'function') {
+    try {
+      const base64 = encodeArrayBufferAsBase64(await blob.arrayBuffer());
+      if (base64) {
+        return base64;
+      }
+    } catch {
+      // Some older WebViews only support FileReader for Blob reads.
+    }
+  }
+
   const dataUrl = await readBlobAsDataUrl(blob);
   const payload = dataUrl.includes(',') ? dataUrl.split(',')[1] : '';
   if (!payload) {
@@ -225,7 +263,7 @@ async function readOriginalImage(
   dimensions: { width: number | null; height: number | null } = { width: null, height: null },
 ): Promise<PreparedBroadcastImage> {
   return {
-    base64: await blobToBase64(file),
+    base64: await readBlobAsBase64(file),
     mimeType,
     fileName: resolveOutputFileName(fileName, mimeType),
     width: dimensions.width,
@@ -313,7 +351,7 @@ export async function prepareBroadcastImage(
 
             if (blob.size <= maxImageBytes) {
               return {
-                base64: await blobToBase64(blob),
+                base64: await readBlobAsBase64(blob),
                 mimeType: actualMimeType,
                 fileName: resolveOutputFileName(file.name, actualMimeType),
                 width: scaled.width,
@@ -333,7 +371,7 @@ export async function prepareBroadcastImage(
 
       if (bestBlob && bestBlob.size <= maxImageBytes) {
         return {
-          base64: await blobToBase64(bestBlob),
+          base64: await readBlobAsBase64(bestBlob),
           mimeType: bestMimeType,
           fileName: resolveOutputFileName(file.name, bestMimeType),
           width: bestWidth,
