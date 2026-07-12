@@ -179,6 +179,11 @@
   resolves provenance, build the shared API image directly on the VPS with
   `docker buildx build --load --provenance=false -t infra-api-ingress:latest -f apps/api/Dockerfile .`,
   then tag it to every `infra-api-*` role image before migrations and `--force-recreate`.
+- If deploy disk preflight blocks at the warning threshold, first run
+  `./infra/scripts/vps-docker-space-reclaim.sh` on the VPS. If it reclaims nothing because the
+  unused build cache is newer than its default age filter, use
+  `docker builder prune --all --force`; it removes unused build cache without pruning volumes,
+  images, or running containers.
 - If `/var/www/Chat_bot/.env` is missing, restore it from any running API role container before `docker compose exec` or `docker compose run`. Current scripts check role-based containers first and keep `infra-api-1` only as a legacy fallback.
 - If `git pull --ff-only` is blocked by a dirty VPS worktree:
   - if current tracked contents already match `origin/<branch>`, `git stash push -> git pull --ff-only -> git stash drop` is acceptable
