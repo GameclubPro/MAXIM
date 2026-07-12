@@ -1,12 +1,16 @@
 import { Body, Controller, Delete, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { InitDataGuard } from '../auth/init-data.guard';
 import { CurrentUser, type AuthUser } from '../common/decorators/current-user.decorator';
+import { PublicationLegacyService } from './publication-legacy.service';
 import { PublicationService } from './publication.service';
 
 @Controller('v1/publications')
 @UseGuards(InitDataGuard)
 export class PublicationController {
-  constructor(private readonly publicationService: PublicationService) {}
+  constructor(
+    private readonly publicationService: PublicationService,
+    private readonly publicationLegacyService: PublicationLegacyService,
+  ) {}
 
   @Get()
   list(@CurrentUser() user: AuthUser, @Query() query: unknown) {
@@ -26,6 +30,11 @@ export class PublicationController {
   @Post('calendar-availability')
   calendarAvailability(@CurrentUser() user: AuthUser, @Body() body: unknown) {
     return this.publicationService.getCalendarAvailability(user, body);
+  }
+
+  @Get('legacy')
+  listLegacy(@CurrentUser() user: AuthUser, @Query() query: unknown) {
+    return this.publicationLegacyService.list(user, query);
   }
 
   @Get(':publicationId')

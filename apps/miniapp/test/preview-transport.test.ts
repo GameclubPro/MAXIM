@@ -18,6 +18,7 @@ import {
   cancelPublication,
   createPublication,
   getPublication,
+  listLegacyPublications,
   listPublicationDeliveries,
   listPublications,
   pausePublication,
@@ -505,6 +506,92 @@ test('preview publications support list, CRUD, actions, and delivery review', as
     requestId: 'cancel_request_001',
   });
   assert.equal(canceled.lifecycle, 'CANCELED');
+});
+
+test('preview legacy publications support bound cursors, filters, and history', async () => {
+  const api = createPreviewApiTransport();
+  const active = await listLegacyPublications(api, { view: 'active', limit: 30 });
+
+  assert.equal(active.totalCount, 4);
+  assert.equal(active.items.length, 4);
+  assert.equal(
+    active.items.every((item) =>
+      item.kind === 'autopost'
+        ? item.status === 'ACTIVE' || item.status === 'PAUSED' || item.status === 'ERROR'
+        : item.status === 'ACTIVE' || item.status === 'PARTIAL' || item.status === 'FAILED',
+    ),
+    true,
+  );
+  assert.equal(
+    active.items.every((item) => item.source.title.length > 0),
+    true,
+  );
+
+  const autoposts = await listLegacyPublications(api, {
+    view: 'active',
+    kind: 'autopost',
+    limit: 30,
+  });
+  assert.equal(autoposts.totalCount, 2);
+  assert.equal(
+    autoposts.items.every((item) => item.kind === 'autopost'),
+    true,
+  );
+
+  const channels = await listLegacyPublications(api, {
+    view: 'active',
+    entityType: 'channel',
+    limit: 30,
+  });
+  assert.equal(channels.totalCount, 2);
+  assert.equal(
+    channels.items.every((item) => item.source.entityType === 'channel'),
+    true,
+  );
+
+  const searched = await listLegacyPublications(api, {
+    view: 'active',
+    query: 'грунты',
+    limit: 30,
+  });
+  assert.deepEqual(
+    searched.items.map((item) => `${item.kind}:${item.id}`),
+    ['autopost:autopost-preview-soil'],
+  );
+
+  const history = await listLegacyPublications(api, { view: 'history', limit: 30 });
+  assert.equal(history.totalCount, 2);
+  assert.equal(
+    history.items.every((item) =>
+      item.kind === 'autopost'
+        ? item.status === 'COMPLETED'
+        : item.status === 'COMPLETED' || item.status === 'CANCELED',
+    ),
+    true,
+  );
+
+  const firstPage = await listLegacyPublications(api, { view: 'active', limit: 1 });
+  assert.equal(firstPage.items.length, 1);
+  assert.equal(typeof firstPage.nextCursor, 'string');
+  const secondPage = await listLegacyPublications(api, {
+    view: 'active',
+    limit: 1,
+    cursor: firstPage.nextCursor ?? undefined,
+  });
+  assert.notEqual(
+    `${secondPage.items[0]?.kind}:${secondPage.items[0]?.id}`,
+    `${firstPage.items[0]?.kind}:${firstPage.items[0]?.id}`,
+  );
+
+  await assert.rejects(
+    listLegacyPublications(api, {
+      view: 'active',
+      kind: 'broadcast',
+      limit: 1,
+      cursor: firstPage.nextCursor ?? undefined,
+    }),
+    /cursor is invalid/u,
+  );
 });
 
 test('preview publications expose schedule conflicts and allow explicit replacement', async () => {

@@ -156,8 +156,12 @@ import {
 } from '@maxim/contracts/poll';
 import {
   createPublicationRequestSchema,
+  decodeLegacyPublicationListCursor,
   decodePublicationListCursor,
+  encodeLegacyPublicationListCursor,
   encodePublicationListCursor,
+  listLegacyPublicationsQuerySchema,
+  listLegacyPublicationsResponseSchema,
   listPublicationDeliveriesQuerySchema,
   listPublicationDeliveriesResponseSchema,
   listPublicationsQuerySchema,
@@ -176,6 +180,7 @@ import {
   type PublicationDelivery,
   type PublicationDeliveryStats,
   type PublicationDetails,
+  type LegacyPublicationSummary,
   type PublicationScheduleInput,
   type PublicationTarget,
 } from '@maxim/contracts/publication';
@@ -4171,6 +4176,26 @@ function createInitialState(): PreviewState {
       lastError: null,
     }),
   ];
+  chatBroadcasts.push(
+    managedBroadcastDetailsSchema.parse({
+      ...chatBroadcasts[0],
+      id: 'broadcast-preview-completed',
+      status: 'COMPLETED',
+      text: 'Итоги весеннего субботника: двор убран, инвентарь возвращён в управляющую компанию.',
+      buttons: [],
+      buttonEnabled: false,
+      buttonUrl: '',
+      scheduledSlots: [addDays(now, -8).toISOString()],
+      nextSendAt: null,
+      cycleCount: 1,
+      sentCount: 1,
+      currentOccurrence: 1,
+      deliveredChats: 1,
+      remainingCount: 0,
+      createdAt: addDays(now, -10).toISOString(),
+      updatedAt: addDays(now, -8).toISOString(),
+    }),
+  );
   const chatGiveaways = [
     managedGiveawayDetailsSchema.parse({
       id: 'giveaway-chat-1',
@@ -4780,6 +4805,28 @@ function createInitialState(): PreviewState {
       }),
       createdAt: addDays(now, -4).toISOString(),
       updatedAt: addHours(now, -2).toISOString(),
+    }),
+    buildPreviewAutopostRule(state, {
+      id: 'autopost-preview-completed',
+      sourceChatId: PREVIEW_CHAT_ID,
+      entityType: 'chat',
+      title: 'Зимние объявления',
+      status: 'COMPLETED',
+      payload: managedAutopostPayloadSchema.parse({
+        text: 'Архив объявлений об уборке снега и временных ограничениях парковки.',
+        textFormat: 'plain',
+        targetMode: 'current',
+        targetChatIds: [PREVIEW_CHAT_ID],
+        applyToAllChats: false,
+        buttons: [],
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        scheduleTimezone: 'Europe/Moscow',
+        scheduledSlots: [addDays(now, -30).toISOString()],
+      }),
+      createdAt: addDays(now, -45).toISOString(),
+      updatedAt: addDays(now, -30).toISOString(),
     }),
   ];
 
@@ -7971,6 +8018,192 @@ function replacePreviewPublication(
   return syncPreviewPublication(state, id);
 }
 
+function resolvePreviewLegacyContentPreview(
+  text: string,
+  imageCount: number,
+  hasVideo: boolean,
+): string {
+  const normalized = text.replace(/\s+/gu, ' ').trim();
+  if (normalized) {
+    return normalized.slice(0, 160);
+  }
+  if (hasVideo) {
+    return 'Видео без текста';
+  }
+  if (imageCount > 0) {
+    return 'Фото без текста';
+  }
+  return 'Пустая публикация';
+}
+
+function buildPreviewLegacyPublicationItems(state: PreviewState): LegacyPublicationSummary[] {
+  const autopostItems = state.autopostRules.flatMap((rule): LegacyPublicationSummary[] => {
+    if (rule.status === 'DISABLED') {
+      return [];
+    }
+    const source = resolvePreviewSource(state, rule.entityType, rule.sourceChatId);
+    const hasVideo = rule.hasVideo || rule.payload.mediaType === 'video';
+    const imageCount = rule.imageCount || rule.payload.images.length || (rule.hasImage ? 1 : 0);
+
+    return [
+      {
+        kind: 'autopost',
+        id: rule.id,
+        source: {
+          chatId: rule.sourceChatId,
+          entityType: rule.entityType,
+          title: source?.title ?? rule.sourcePreview.title,
+          avatarUrl: source?.avatarUrl ?? rule.sourcePreview.avatarUrl ?? null,
+          link: source?.link?.trim() || rule.sourcePreview.link?.trim() || null,
+        },
+        status: rule.status,
+        title: rule.title.trim(),
+        contentPreview: resolvePreviewLegacyContentPreview(rule.payload.text, imageCount, hasVideo),
+        targetCount: Math.max(1, rule.targetChats),
+        mediaCount: hasVideo ? 1 : imageCount,
+        hasVideo,
+        scheduleTimezone: rule.scheduleTimezone,
+        nextRunAt: rule.nextSendAt,
+        createdAt: rule.createdAt,
+        updatedAt: rule.updatedAt,
+        lastError: rule.lastError?.trim() || null,
+      },
+    ];
+  });
+
+  const mapBroadcasts = (
+    broadcasts: ManagedBroadcastDetails[],
+    entityType: ManagedEntityType,
+    sourceChatId: string,
+  ): LegacyPublicationSummary[] => {
+    const source = resolvePreviewSource(state, entityType, sourceChatId);
+    return broadcasts.flatMap((broadcast): LegacyPublicationSummary[] => {
+      const publicationOccurrenceId = (
+        broadcast as ManagedBroadcastDetails & { publicationOccurrenceId?: unknown }
+      ).publicationOccurrenceId;
+      if (broadcast.autopostRuleId || publicationOccurrenceId) {
+        return [];
+      }
+      const hasVideo = broadcast.mediaType === 'video';
+      const imageCount =
+        broadcast.images.length ||
+        (broadcast.imageEnabled || broadcast.mediaType === 'image' ? 1 : 0);
+      const targetCount = broadcast.applyToAllChats
+        ? Math.max(1, state.chats.length)
+        : Math.max(1, new Set(broadcast.targetChatIds.map((id) => id.trim()).filter(Boolean)).size);
+
+      return [
+        {
+          kind: 'broadcast',
+          id: broadcast.id,
+          source: {
+            chatId: sourceChatId,
+            entityType,
+            title:
+              source?.title ??
+              (entityType === 'channel' ? PREVIEW_CHANNEL_TITLE : PREVIEW_CHAT_TITLE),
+            avatarUrl: source?.avatarUrl ?? null,
+            link: source?.link?.trim() || null,
+          },
+          status: broadcast.status,
+          title: '',
+          contentPreview: resolvePreviewLegacyContentPreview(broadcast.text, imageCount, hasVideo),
+          targetCount,
+          mediaCount: hasVideo ? 1 : imageCount,
+          hasVideo,
+          scheduleTimezone: broadcast.scheduleTimezone,
+          nextRunAt: broadcast.nextSendAt,
+          createdAt: broadcast.createdAt,
+          updatedAt: broadcast.updatedAt,
+          lastError: broadcast.lastError?.trim() || null,
+        },
+      ];
+    });
+  };
+
+  return [
+    ...autopostItems,
+    ...mapBroadcasts(state.chatBroadcasts, 'chat', PREVIEW_CHAT_ID),
+    ...mapBroadcasts(state.channelBroadcasts, 'channel', PREVIEW_CHANNEL_ID),
+  ];
+}
+
+function handleLegacyPublicationsRequest(state: PreviewState, url: URL) {
+  const query = listLegacyPublicationsQuerySchema.parse(Object.fromEntries(url.searchParams));
+  const cursor = query.cursor ? decodeLegacyPublicationListCursor(query.cursor) : null;
+  if (
+    query.cursor &&
+    (!cursor ||
+      cursor.view !== query.view ||
+      cursor.kind !== query.kind ||
+      cursor.entityType !== query.entityType ||
+      cursor.query !== query.query)
+  ) {
+    throw new Error('Preview legacy publication cursor is invalid.');
+  }
+
+  const normalizedQuery = query.query.toLocaleLowerCase('ru-RU');
+  const matchesView = (item: LegacyPublicationSummary) =>
+    item.kind === 'autopost'
+      ? query.view === 'active'
+        ? item.status === 'ACTIVE' || item.status === 'PAUSED' || item.status === 'ERROR'
+        : item.status === 'COMPLETED'
+      : query.view === 'active'
+        ? item.status === 'ACTIVE' || item.status === 'PARTIAL' || item.status === 'FAILED'
+        : item.status === 'COMPLETED' || item.status === 'CANCELED';
+  const filtered = buildPreviewLegacyPublicationItems(state)
+    .filter(matchesView)
+    .filter((item) => query.kind === 'all' || item.kind === query.kind)
+    .filter((item) => !query.entityType || item.source.entityType === query.entityType)
+    .filter((item) => {
+      if (!normalizedQuery) {
+        return true;
+      }
+      return [item.title, item.contentPreview, item.source.title].some((value) =>
+        value.toLocaleLowerCase('ru-RU').includes(normalizedQuery),
+      );
+    })
+    .sort((left, right) => {
+      const updatedAtDifference = Date.parse(right.updatedAt) - Date.parse(left.updatedAt);
+      if (updatedAtDifference !== 0) {
+        return updatedAtDifference;
+      }
+      const idDifference = right.id.localeCompare(left.id);
+      return idDifference !== 0 ? idDifference : right.kind.localeCompare(left.kind);
+    });
+  const afterCursor = cursor
+    ? filtered.filter((item) => {
+        const updatedAt = Date.parse(item.updatedAt);
+        const cursorUpdatedAt = Date.parse(cursor.updatedAt);
+        if (updatedAt !== cursorUpdatedAt) {
+          return updatedAt < cursorUpdatedAt;
+        }
+        const idDifference = item.id.localeCompare(cursor.id);
+        return idDifference !== 0 ? idDifference < 0 : item.kind.localeCompare(cursor.itemKind) < 0;
+      })
+    : filtered;
+  const page = afterCursor.slice(0, query.limit);
+  const last = page.at(-1);
+
+  return listLegacyPublicationsResponseSchema.parse({
+    items: page,
+    nextCursor:
+      page.length < afterCursor.length && last
+        ? encodeLegacyPublicationListCursor({
+            v: 1,
+            updatedAt: last.updatedAt,
+            id: last.id,
+            itemKind: last.kind,
+            view: query.view,
+            kind: query.kind,
+            entityType: query.entityType,
+            query: query.query,
+          })
+        : null,
+    totalCount: filtered.length,
+  });
+}
+
 function handlePublicationsRequest(
   state: PreviewState,
   segments: string[],
@@ -7978,6 +8211,10 @@ function handlePublicationsRequest(
   method: string,
   init: RequestInit,
 ) {
+  if (segments.length === 2 && segments[1] === 'legacy' && method === 'GET') {
+    return handleLegacyPublicationsRequest(state, url);
+  }
+
   if (segments.length === 2 && segments[1] === 'calendar-availability' && method === 'POST') {
     const payload = publicationCalendarAvailabilityRequestSchema.parse(parseJsonBody(init));
     const requestedTargets = new Set(
@@ -8480,6 +8717,28 @@ export function createPreviewApiTransport(): ApiTransport {
       }
 
       const segments = url.pathname.split('/').filter(Boolean);
+      if (
+        (segments[0] === 'chats' || segments[0] === 'channels') &&
+        segments[1] &&
+        segments[2] === 'autopost-rules'
+      ) {
+        const entityType = segments[0] === 'channels' ? 'channel' : 'chat';
+        const sourceChatId = decodeURIComponent(segments[1]);
+        const scopedSegments = ['autopost-rules', ...segments.slice(3)];
+        const ruleId = scopedSegments[1] ? decodeURIComponent(scopedSegments[1]) : '';
+        if (ruleId) {
+          const rule = findAutopostRule(state.autopostRules, ruleId);
+          if (!rule || rule.entityType !== entityType || rule.sourceChatId !== sourceChatId) {
+            throw new Error(`Preview autopost rule not found: ${ruleId}`);
+          }
+        }
+
+        const scopedUrl = new URL(url);
+        scopedUrl.searchParams.set('entityType', entityType);
+        scopedUrl.searchParams.set('sourceChatId', sourceChatId);
+        return handleAutopostRulesRequest(state, scopedSegments, scopedUrl, method, init);
+      }
+
       if (segments[0] === 'publications') {
         return handlePublicationsRequest(state, segments, url, method, init);
       }

@@ -4,6 +4,9 @@ const DEFAULT_BASE_URLS = ['https://major-maksimov.ru/app/'];
 const DEFAULT_SCENARIOS = [
   'home',
   'home-channels',
+  'publications',
+  'publications-legacy',
+  'publications-compose',
   'chat-settings',
   'chat-settings-vk-parsing',
   'channel-settings-vk-parsing',

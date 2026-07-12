@@ -169,6 +169,46 @@ test('resolves legacy autopost workspaces only inside broadcast settings', () =>
   assert.equal(resolveLaunchRoute(''), null);
 });
 
+test('resolves explicit legacy editors only inside broadcast settings', () => {
+  assignWindow(
+    `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(
+      encodeRouteStartParam(
+        '/channel/-68085832859751/settings?focus=broadcast&legacyKind=broadcast&legacyId=legacy-1',
+      ),
+    )}`,
+  );
+
+  assert.equal(
+    resolveLaunchRoute(''),
+    '/channel/-68085832859751/settings?focus=broadcast&legacyKind=broadcast&legacyId=legacy-1',
+  );
+
+  assignWindow(
+    `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(
+      encodeRouteStartParam(
+        '/chat/-68085832859751/settings?focus=rules&legacyKind=autopost&legacyId=legacy-2',
+      ),
+    )}`,
+  );
+  assert.equal(resolveLaunchRoute(''), null);
+
+  assignWindow(
+    `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(
+      encodeRouteStartParam('/chat/-68085832859751/settings?focus=broadcast&legacyKind=autopost'),
+    )}`,
+  );
+  assert.equal(resolveLaunchRoute(''), null);
+
+  assignWindow(
+    `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(
+      encodeRouteStartParam(
+        '/chat/-68085832859751/settings?focus=broadcast&handoff=1&legacyKind=autopost&legacyId=legacy-2',
+      ),
+    )}`,
+  );
+  assert.equal(resolveLaunchRoute(''), null);
+});
+
 test('resolves startapp from hash-route query parameters', () => {
   assignWindow(
     `https://maxim.play-team.ru/app/#/?startapp=${encodeURIComponent(
@@ -222,6 +262,29 @@ test('resolves the publications workspace with compose target parameters', () =>
     resolveLaunchRoute(''),
     '/publications?compose=1&entityType=channel&entityId=-68085832859751',
   );
+});
+
+test('resolves the legacy publications workspace only for the supported flag', () => {
+  assignWindow(
+    `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(
+      encodeRouteStartParam('/publications?legacy=1'),
+    )}`,
+  );
+  assert.equal(resolveLaunchRoute(''), '/publications?legacy=1');
+
+  assignWindow(
+    `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(
+      encodeRouteStartParam('/publications?legacy=0'),
+    )}`,
+  );
+  assert.equal(resolveLaunchRoute(''), null);
+
+  assignWindow(
+    `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(
+      encodeRouteStartParam('/publications?legacy=1&compose=1'),
+    )}`,
+  );
+  assert.equal(resolveLaunchRoute(''), null);
 });
 
 test('normalizes legacy autopost launcher routes to publications', () => {

@@ -104,6 +104,7 @@
 - For Android MAX WebView image payloads, prefer `Blob.arrayBuffer()` before `FileReader`; gallery-selected blobs can fail in `FileReader` after a successful picker selection, so retain `FileReader` only as a legacy fallback.
 - For time-only mini app inputs, use shared `TimeField` instead of native `<input type="time">`; Android MAX WebViews can hide native picker action buttons.
 - `/publications` is the ordinary chat/channel publishing workspace; chat and channel settings are compatibility/handoff surfaces, while VK parsing remains a separate flow.
+- Open legacy publishing UI only through `workspace=autoposts`, an exact `legacyKind` + `legacyId` target, or `handoff=1` backed by a real private-bot draft; a bare handoff flag must not restore ordinary legacy creation.
 - Publication list search, entity/status filters, and the schedules view are server-side and cursor-bound; do not auto-fetch every page for client-side filtering.
 - Managed broadcast rows with `publicationOccurrenceId != null` are Publication execution envelopes. Keep them hidden from legacy broadcast/autopost read, mutation, calendar-overwrite, and retry APIs; new code should use the Publication domain instead.
 - Channel `autoPostButtonsMode` is the owner's retained choice. Do not downgrade it when comments or suggestions are temporarily disabled; delivery must intersect the stored mode with the currently enabled features.

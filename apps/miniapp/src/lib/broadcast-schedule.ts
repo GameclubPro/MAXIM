@@ -29,6 +29,19 @@ export type BroadcastScheduleHandoffState = {
   hasContent?: boolean;
 };
 
+export function resolveBroadcastHandoffLoadMode(params: {
+  requested: boolean;
+  queries: readonly { isFetchedAfterMount: boolean; isError: boolean }[];
+}): 'loading' | 'error' | null {
+  if (!params.requested) {
+    return null;
+  }
+  if (params.queries.some((query) => query.isError)) {
+    return 'error';
+  }
+  return params.queries.some((query) => !query.isFetchedAfterMount) ? 'loading' : null;
+}
+
 function pad(value: number): string {
   return String(value).padStart(2, '0');
 }
@@ -117,12 +130,12 @@ export function hasBroadcastHandoffDraft(
 ): boolean {
   return Boolean(
     state.hasContent ||
-      (state.buttons?.length ?? 0) > 0 ||
-      (state.scheduledSlots?.length ?? 0) > 0 ||
-      state.sendAt ||
-      state.cycleEnabled ||
-      (options?.includeTargets &&
-        (state.targetMode !== 'current' || (state.targetChatIds?.length ?? 0) > 0)),
+    (state.buttons?.length ?? 0) > 0 ||
+    (state.scheduledSlots?.length ?? 0) > 0 ||
+    state.sendAt ||
+    state.cycleEnabled ||
+    (options?.includeTargets &&
+      (state.targetMode !== 'current' || (state.targetChatIds?.length ?? 0) > 0)),
   );
 }
 

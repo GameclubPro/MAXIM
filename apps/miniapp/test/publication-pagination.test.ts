@@ -2,10 +2,29 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   isAmbiguousDeliveryPhaseComplete,
+  mergeLegacyPublicationPages,
   mergePrioritizedPublicationPages,
   mergePublicationDeliveryPages,
   mergePublicationPages,
 } from '../src/features/publications/publication-pagination';
+
+test('legacy publication pagination keeps colliding ids from different stores', () => {
+  assert.deepEqual(
+    mergeLegacyPublicationPages([
+      {
+        items: [
+          { id: 'same-id', kind: 'autopost', value: 1 },
+          { id: 'same-id', kind: 'broadcast', value: 2 },
+        ],
+      },
+      { items: [{ id: 'same-id', kind: 'autopost', value: 3 }] },
+    ]),
+    [
+      { id: 'same-id', kind: 'autopost', value: 3 },
+      { id: 'same-id', kind: 'broadcast', value: 2 },
+    ],
+  );
+});
 
 test('keeps general deliveries blocked after the first ambiguous page fails', () => {
   assert.equal(

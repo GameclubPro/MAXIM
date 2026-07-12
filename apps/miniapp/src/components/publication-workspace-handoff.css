@@ -29,6 +29,75 @@
     height: 17px;
   }
 
+  .publication-workspace-handoff--settings-entry {
+    width: 100%;
+    min-height: 72px;
+    justify-content: flex-start;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--color-ink);
+  }
+
+  .publication-workspace-handoff__icon {
+    width: 40px;
+    height: 40px;
+    flex: 0 0 40px;
+    display: grid;
+    place-items: center;
+    border-radius: 8px;
+    background: var(--publication-handoff-bg);
+    color: var(--publication-handoff-ink);
+  }
+
+  .publication-workspace-handoff__icon svg {
+    width: 21px;
+    height: 21px;
+  }
+
+  .publication-workspace-handoff__copy {
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+    margin-right: auto;
+    text-align: left;
+  }
+
+  .publication-workspace-handoff__copy strong {
+    font-size: 0.94rem;
+    line-height: 1.15;
+  }
+
+  .publication-workspace-handoff__copy small {
+    overflow: hidden;
+    color: var(--color-ink-subtle);
+    font-size: 0.74rem;
+    font-weight: 650;
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .publication-workspace-handoff__status {
+    flex: 0 0 auto;
+    color: var(--publication-handoff-ink);
+    font-size: 0.72rem;
+    font-weight: 850;
+  }
+
+  .publication-workspace-handoff--settings-entry > svg {
+    flex: 0 0 auto;
+    color: var(--color-ink-subtle);
+  }
+
+  .publication-workspace-handoff--settings-tile {
+    height: 100%;
+    display: grid;
+    text-decoration: none;
+  }
+
   .broadcast-studio-shell__handoff.is-compact .publication-workspace-handoff {
     min-height: 32px;
     width: max-content;
@@ -47,5 +116,11 @@
 
   .publication-workspace-handoff:active {
     transform: translateY(1px);
+  }
+
+  @media (max-width: 360px) {
+    .publication-workspace-handoff__status {
+      display: none;
+    }
   }
 }

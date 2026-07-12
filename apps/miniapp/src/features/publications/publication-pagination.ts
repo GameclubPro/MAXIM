@@ -31,6 +31,18 @@ export function mergePublicationPages<T extends { id: string }>(
   return Array.from(items.values());
 }
 
+export function mergeLegacyPublicationPages<T extends { id: string; kind: string }>(
+  pages: readonly CursorPage<T>[] | undefined,
+): T[] {
+  const items = new Map<string, T>();
+  for (const page of pages ?? []) {
+    for (const item of page.items) {
+      items.set(`${item.kind}:${item.id}`, item);
+    }
+  }
+  return Array.from(items.values());
+}
+
 export function mergePrioritizedPublicationPages<T extends { id: string }>(
   priorityPages: readonly CursorPage<T>[] | undefined,
   remainingPages: readonly CursorPage<T>[] | undefined,

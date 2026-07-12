@@ -1,6 +1,5 @@
 import type { ManagedBroadcastSummary } from '@maxim/contracts';
 import {
-  Copy as IconoirCopy,
   MoreHoriz as IconoirMoreHoriz,
   RefreshDouble as IconoirRefreshDouble,
   Trash as IconoirTrash,
@@ -30,10 +29,8 @@ type ManagedBroadcastHistoryCardProps = {
   canCancel: boolean;
   isBusy: boolean;
   isDeleting: boolean;
-  isDuplicating: boolean;
   isRetrying: boolean;
   onEdit: () => void;
-  onDuplicate: () => void;
   onRetry: () => void;
   onDelete: () => void;
 };
@@ -49,10 +46,8 @@ export function ManagedBroadcastHistoryCard({
   canCancel,
   isBusy,
   isDeleting,
-  isDuplicating,
   isRetrying,
   onEdit,
-  onDuplicate,
   onRetry,
   onDelete,
 }: ManagedBroadcastHistoryCardProps) {
@@ -83,7 +78,11 @@ export function ManagedBroadcastHistoryCard({
             className="managed-broadcast-card__preview max-markdown-preview--clamp-2"
             normalizeWhitespace
             fallback={
-              broadcast.hasVideo ? 'Видео без текста' : broadcast.hasImage ? 'Фото без текста' : null
+              broadcast.hasVideo
+                ? 'Видео без текста'
+                : broadcast.hasImage
+                  ? 'Фото без текста'
+                  : null
             }
           />
         </span>
@@ -147,35 +146,23 @@ export function ManagedBroadcastHistoryCard({
           </button>
         ) : null}
 
-        <details className={cn('managed-broadcast-card__menu', isBusy && 'is-disabled')}>
-          <summary
-            className="managed-broadcast-card__menu-trigger"
-            aria-label="Действия"
-            title="Действия"
-            aria-disabled={isBusy}
-            onClick={(event) => {
-              if (isBusy) {
-                event.preventDefault();
-              }
-            }}
-          >
-            <IconoirMoreHoriz aria-hidden focusable="false" />
-          </summary>
-
-          <div className="managed-broadcast-card__menu-popover">
-            <button
-              type="button"
+        {canCancel ? (
+          <details className={cn('managed-broadcast-card__menu', isBusy && 'is-disabled')}>
+            <summary
+              className="managed-broadcast-card__menu-trigger"
+              aria-label="Действия"
+              title="Действия"
+              aria-disabled={isBusy}
               onClick={(event) => {
-                event.currentTarget.closest('details')?.removeAttribute('open');
-                onDuplicate();
+                if (isBusy) {
+                  event.preventDefault();
+                }
               }}
-              disabled={isBusy}
             >
-              <IconoirCopy aria-hidden focusable="false" />
-              <span>{isDuplicating ? 'Копируем...' : 'Дублировать'}</span>
-            </button>
+              <IconoirMoreHoriz aria-hidden focusable="false" />
+            </summary>
 
-            {canCancel ? (
+            <div className="managed-broadcast-card__menu-popover">
               <button
                 type="button"
                 className="is-danger"
@@ -188,9 +175,9 @@ export function ManagedBroadcastHistoryCard({
                 <IconoirTrash aria-hidden focusable="false" />
                 <span>{isDeleting ? 'Удаляем...' : 'Удалить'}</span>
               </button>
-            ) : null}
-          </div>
-        </details>
+            </div>
+          </details>
+        ) : null}
       </div>
     </div>
   );

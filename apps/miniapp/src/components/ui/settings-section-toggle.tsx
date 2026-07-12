@@ -55,7 +55,7 @@ function ChevronIcon() {
   );
 }
 
-function SettingsSectionIcon({ name }: { name: SettingsSectionIconName }) {
+export function SettingsSectionIcon({ name }: { name: SettingsSectionIconName }) {
   if (name === 'links') {
     return (
       <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">

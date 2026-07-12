@@ -73,9 +73,13 @@ const scenarios = [
   {
     name: 'publications-legacy',
     path: '/publications',
+    searchParams: {
+      legacy: '1',
+    },
     beforeShot: async (page) => {
-      await page.locator('.legacy-autoposts > summary').click();
-      await page.locator('.legacy-autoposts[open]').waitFor({ state: 'visible' });
+      const firstLegacyRow = page.locator('.legacy-publications-row').first();
+      await firstLegacyRow.waitFor({ state: 'visible' });
+      await firstLegacyRow.scrollIntoViewIfNeeded();
       await page.waitForTimeout(250);
     },
   },
@@ -388,21 +392,21 @@ const scenarios = [
     path: '/chat/preview-chat/settings',
     searchParams: {
       focus: 'broadcast',
-      handoff: '1',
+      workspace: 'autoposts',
     },
     beforeShot: async (page) => {
-      await page.waitForTimeout(1000);
+      await page.locator('.managed-autopost-rule-card').first().waitFor({ state: 'visible' });
     },
   },
   {
-    name: 'chat-settings-broadcast-plan',
+    name: 'chat-settings-broadcast-handoff',
     path: '/chat/preview-chat/settings',
     searchParams: {
       focus: 'broadcast',
       handoff: '1',
     },
     beforeShot: async (page) => {
-      await openBroadcastPlanTab(page);
+      await page.locator('.broadcast-compose-flow').waitFor({ state: 'visible' });
     },
   },
   {
@@ -410,57 +414,22 @@ const scenarios = [
     path: '/chat/preview-chat/settings',
     searchParams: {
       focus: 'broadcast',
-      handoff: '1',
+      workspace: 'autoposts',
     },
     beforeShot: async (page) => {
       await openBroadcastHistoryTab(page);
     },
   },
   {
-    name: 'chat-settings-broadcast-recipe',
+    name: 'chat-settings-broadcast-editor',
     path: '/chat/preview-chat/settings',
     searchParams: {
       focus: 'broadcast',
-      handoff: '1',
+      legacyKind: 'autopost',
+      legacyId: 'autopost-preview-soil',
     },
     beforeShot: async (page) => {
-      await applyBroadcastFiveByTwoRecipe(page);
-    },
-  },
-  {
-    name: 'chat-settings-broadcast-scrolled',
-    path: '/chat/preview-chat/settings',
-    searchParams: {
-      focus: 'broadcast',
-      handoff: '1',
-    },
-    beforeShot: async (page) => {
-      await openBroadcastPlannerTimeSheet(page);
-    },
-  },
-  {
-    name: 'chat-settings-broadcast-time',
-    path: '/chat/preview-chat/settings',
-    searchParams: {
-      focus: 'broadcast',
-      handoff: '1',
-    },
-    beforeShot: async (page) => {
-      await openBroadcastPlannerTimeSheet(page);
-    },
-  },
-  {
-    name: 'chat-settings-broadcast-review',
-    path: '/chat/preview-chat/settings',
-    searchParams: {
-      focus: 'broadcast',
-      handoff: '1',
-    },
-    beforeShot: async (page) => {
-      await openBroadcastPlannerTimeSheet(page);
-      await page.waitForTimeout(150);
-      await page.getByRole('button', { name: /Готово/u }).click();
-      await page.waitForTimeout(300);
+      await page.locator('.broadcast-compose-flow').waitFor({ state: 'visible' });
     },
   },
   {
@@ -514,21 +483,21 @@ const scenarios = [
     path: '/channel/preview-channel/settings',
     searchParams: {
       focus: 'broadcast',
-      handoff: '1',
+      workspace: 'autoposts',
     },
     beforeShot: async (page) => {
-      await page.waitForTimeout(1000);
+      await page.locator('.managed-autopost-rule-card').first().waitFor({ state: 'visible' });
     },
   },
   {
-    name: 'channel-settings-broadcast-plan',
+    name: 'channel-settings-broadcast-handoff',
     path: '/channel/preview-channel/settings',
     searchParams: {
       focus: 'broadcast',
       handoff: '1',
     },
     beforeShot: async (page) => {
-      await openBroadcastPlanTab(page);
+      await page.locator('.broadcast-compose-flow').waitFor({ state: 'visible' });
     },
   },
   {
@@ -536,88 +505,22 @@ const scenarios = [
     path: '/channel/preview-channel/settings',
     searchParams: {
       focus: 'broadcast',
-      handoff: '1',
+      workspace: 'autoposts',
     },
     beforeShot: async (page) => {
       await openBroadcastHistoryTab(page);
     },
   },
   {
-    name: 'channel-settings-broadcast-recipe',
+    name: 'channel-settings-broadcast-editor',
     path: '/channel/preview-channel/settings',
     searchParams: {
       focus: 'broadcast',
-      handoff: '1',
+      legacyKind: 'broadcast',
+      legacyId: 'broadcast-channel-1',
     },
     beforeShot: async (page) => {
-      await applyBroadcastFiveByTwoRecipe(page);
-    },
-  },
-  {
-    name: 'channel-settings-broadcast-scrolled',
-    path: '/channel/preview-channel/settings',
-    searchParams: {
-      focus: 'broadcast',
-      handoff: '1',
-    },
-    beforeShot: async (page) => {
-      await openBroadcastPlannerTimeSheet(page);
-    },
-  },
-  {
-    name: 'channel-settings-broadcast-time',
-    path: '/channel/preview-channel/settings',
-    searchParams: {
-      focus: 'broadcast',
-      handoff: '1',
-    },
-    beforeShot: async (page) => {
-      await openBroadcastPlannerTimeSheet(page);
-    },
-  },
-  {
-    name: 'channel-settings-broadcast-review',
-    path: '/channel/preview-channel/settings',
-    searchParams: {
-      focus: 'broadcast',
-      handoff: '1',
-    },
-    beforeShot: async (page) => {
-      await openBroadcastPlannerTimeSheet(page);
-      await page.waitForTimeout(150);
-      await page.getByRole('button', { name: /Готово/u }).click();
-      await page.waitForTimeout(300);
-    },
-  },
-  {
-    name: 'channel-settings-broadcast-button-picker',
-    path: '/channel/preview-channel/settings',
-    searchParams: {
-      focus: 'broadcast',
-      handoff: '1',
-    },
-    beforeShot: async (page) => {
-      await page.waitForTimeout(1000);
-      await page.getByRole('button', { name: /кноп/iu }).first().click();
-      await page.locator('.broadcast-buttons-sheet__panel').waitFor({ state: 'visible' });
-      if ((await page.locator('.broadcast-link-editor').count()) === 0) {
-        await page.locator('.broadcast-buttons-sheet__empty-action').first().click();
-      }
-      const picker = page.locator('.broadcast-link-editor').first();
-      await picker.waitFor({ state: 'visible' });
-      await page.evaluate(() => {
-        document.querySelector('.broadcast-link-editor')?.scrollIntoView({
-          block: 'start',
-          behavior: 'instant',
-        });
-        window.scrollBy({ top: -84, behavior: 'instant' });
-      });
-      await page
-        .locator('.broadcast-link-editor input[type="url"]')
-        .first()
-        .fill('https://max.ru/preview-channel');
-      await page.locator('.broadcast-link-editor input[type="text"]').first().fill('Открыть канал');
-      await page.waitForTimeout(350);
+      await page.locator('.broadcast-compose-flow').waitFor({ state: 'visible' });
     },
   },
   {
@@ -887,123 +790,6 @@ async function assertCommentsContentTopInset(page) {
   }
 }
 
-async function openBroadcastPlannerTimeSheet(page) {
-  await page.waitForTimeout(1000);
-
-  const planner = page.locator('.broadcast-planner').first();
-  if ((await planner.count()) > 0) {
-    await planner.scrollIntoViewIfNeeded();
-    await page.waitForTimeout(150);
-  }
-
-  const compactSummary = page.locator('.broadcast-planner__compact-summary').first();
-  if ((await compactSummary.count()) > 0) {
-    await compactSummary.click();
-    await page.waitForTimeout(350);
-  }
-
-  await openBroadcastPlannerTimeGrid(page);
-  await selectBroadcastPlannerDefaultTimes(page);
-}
-
-async function openBroadcastPlannerTimeGrid(page) {
-  const dockButton = page.locator('.broadcast-planner .broadcast-planner__dock-primary').first();
-  const sheetPanel = page.locator('.broadcast-planner-sheet__panel').first();
-  const timeChip = page.locator('.broadcast-planner-sheet .broadcast-planner__time-chip').first();
-  const addButton = page
-    .locator('.broadcast-planner-sheet[aria-hidden="false"] .broadcast-planner__sheet-submit')
-    .filter({ hasText: /^Добавить$/u })
-    .first();
-
-  if ((await timeChip.count()) > 0 && (await timeChip.isVisible())) {
-    return;
-  }
-
-  if ((await dockButton.count()) > 0) {
-    await clickBroadcastPlannerDockTime(page, dockButton, sheetPanel);
-    await timeChip.waitFor({ state: 'visible', timeout: 10_000 });
-    return;
-  }
-
-  const planIntentButton = page
-    .locator('.broadcast-planner__intent-chip')
-    .filter({ hasText: /Позже/u })
-    .first();
-  if ((await planIntentButton.count()) > 0) {
-    await planIntentButton.click();
-    await page.waitForTimeout(250);
-  }
-
-  const calendarToggleButton = page
-    .locator('.broadcast-planner__recipe-calendar')
-    .filter({ hasText: /^Даты$/u })
-    .first();
-  const calendarToggleExpanded =
-    (await calendarToggleButton.count()) > 0
-      ? await calendarToggleButton.evaluate((node) => node.getAttribute('aria-expanded') === 'true')
-      : false;
-  if ((await calendarToggleButton.count()) > 0 && !calendarToggleExpanded) {
-    await calendarToggleButton.click();
-    await page.waitForTimeout(250);
-  }
-
-  const scheduleCard = page.locator('.broadcast-planner__schedule-card').first();
-  if ((await scheduleCard.count()) > 0) {
-    await scheduleCard.click();
-    await page.waitForTimeout(250);
-    if ((await timeChip.count()) > 0 && (await timeChip.isVisible())) {
-      return;
-    }
-  }
-
-  await selectBroadcastPlannerDefaultDays(page);
-  if ((await timeChip.count()) > 0 && (await timeChip.isVisible())) {
-    return;
-  }
-  if ((await dockButton.count()) > 0) {
-    await clickBroadcastPlannerDockTime(page, dockButton, sheetPanel);
-    await timeChip.waitFor({ state: 'visible', timeout: 10_000 });
-    return;
-  }
-
-  const selectedDayButton = page
-    .locator(
-      '.broadcast-planner__day.is-selected:not(.is-picked):not(.is-outside), .broadcast-planner__day:not([disabled]):not(.is-picked):not(.is-outside):not(.is-busy)',
-    )
-    .first();
-  if ((await selectedDayButton.count()) > 0) {
-    await selectedDayButton.click();
-    await page.waitForTimeout(250);
-    if ((await timeChip.count()) > 0 && (await timeChip.isVisible())) {
-      return;
-    }
-    if ((await addButton.count()) > 0 && (await addButton.isEnabled())) {
-      await addButton.click();
-      await timeChip.waitFor({ state: 'visible', timeout: 10_000 });
-      return;
-    }
-    if ((await dockButton.count()) > 0) {
-      await clickBroadcastPlannerDockTime(page, dockButton, sheetPanel);
-      await timeChip.waitFor({ state: 'visible', timeout: 10_000 });
-      return;
-    }
-  }
-
-  throw new Error('Broadcast planner time sheet trigger was not found.');
-}
-
-async function openBroadcastPlanTab(page) {
-  await page.waitForTimeout(900);
-  const planTab = page
-    .locator('.broadcast-studio-shell__tabs [role="tab"]')
-    .filter({ hasText: /^План$/u })
-    .first();
-  await planTab.waitFor({ state: 'visible', timeout: 10_000 });
-  await planTab.click();
-  await page.locator('.broadcast-planner').first().waitFor({ state: 'visible', timeout: 10_000 });
-  await page.waitForTimeout(500);
-}
-
 async function openBroadcastHistoryTab(page) {
   await page.waitForTimeout(900);
   const historyTab = page
@@ -1017,278 +803,6 @@ async function openBroadcastHistoryTab(page) {
     .first()
     .waitFor({ state: 'visible', timeout: 10_000 });
   await page.waitForTimeout(500);
-}
-
-async function applyBroadcastFiveByTwoRecipe(page) {
-  await page.waitForTimeout(1000);
-  const recipe = page.locator('.broadcast-planner__recipe').first();
-  await recipe.waitFor({ state: 'visible', timeout: 10_000 });
-  await setBroadcastRecipeStepper(page, recipe, /Дней/u, 5);
-  await setBroadcastRecipeStepper(page, recipe, /Постов\/день/u, 2);
-
-  await recipe.evaluate((element) => {
-    element.scrollIntoView({ block: 'center', behavior: 'instant' });
-  });
-  await page.waitForTimeout(350);
-}
-
-async function setBroadcastRecipeStepper(page, recipe, labelPattern, targetValue) {
-  const stepper = recipe
-    .locator('.broadcast-planner__recipe-stepper')
-    .filter({ hasText: labelPattern })
-    .first();
-
-  for (let attempt = 0; attempt < 10 && (await stepper.count()) > 0; attempt += 1) {
-    const currentValue = Number.parseInt(
-      (await stepper.locator('strong').first().textContent())?.trim() ?? '',
-      10,
-    );
-    if (currentValue === targetValue) {
-      break;
-    }
-
-    const controlName =
-      Number.isFinite(currentValue) && currentValue > targetValue ? /Меньше/u : /Больше/u;
-    const control = stepper.getByRole('button', { name: controlName }).first();
-    const fallbackControl = stepper
-      .locator('button')
-      .filter({ hasText: controlName.source === 'Меньше' ? /^−$/u : /^\+$/u })
-      .first();
-    const targetControl = (await control.count()) > 0 ? control : fallbackControl;
-    if ((await targetControl.count()) === 0 || !(await targetControl.isEnabled())) {
-      break;
-    }
-    await targetControl.click();
-    await page.waitForTimeout(180);
-  }
-}
-
-async function clickBroadcastPlannerDockTime(page, dockButton, sheetPanel) {
-  await scrollLocatorIntoPreviewScreen(page, dockButton);
-  const clickPoint = await dockButton.evaluate((element) => {
-    const rect = element.getBoundingClientRect();
-    const x = rect.left + rect.width / 2;
-    const y = rect.top + rect.height / 2;
-    const hit = document.elementFromPoint(x, y);
-    if (hit !== element && !element.contains(hit)) {
-      return null;
-    }
-
-    return { x, y };
-  });
-
-  if (!clickPoint) {
-    const diagnostic = await dockButton.evaluate((element) => {
-      const rect = element.getBoundingClientRect();
-      const screen =
-        document.querySelector('.design-preview__device-screen') ?? document.documentElement;
-      const screenRect = screen.getBoundingClientRect();
-      const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-      const scrollParents = [];
-      let parent = element.parentElement;
-      while (parent instanceof HTMLElement) {
-        const style = getComputedStyle(parent);
-        if (/(auto|scroll|overlay)/u.test(`${style.overflowY} ${style.overflow}`)) {
-          scrollParents.push({
-            className: parent.className,
-            scrollTop: parent.scrollTop,
-            scrollHeight: parent.scrollHeight,
-            clientHeight: parent.clientHeight,
-          });
-        }
-        parent = parent.parentElement;
-      }
-      return {
-        button: {
-          top: rect.top,
-          bottom: rect.bottom,
-          left: rect.left,
-          right: rect.right,
-        },
-        screen: {
-          top: screenRect.top,
-          bottom: screenRect.bottom,
-          left: screenRect.left,
-          right: screenRect.right,
-        },
-        hit: hit
-          ? {
-              tagName: hit.tagName,
-              className: hit instanceof HTMLElement ? hit.className : '',
-              text: hit.textContent?.trim().slice(0, 80) ?? '',
-            }
-          : null,
-        scrollParents,
-      };
-    });
-    throw new Error(
-      `Broadcast planner time button is outside the visible preview screen: ${JSON.stringify(diagnostic)}`,
-    );
-  }
-
-  if (screenshotTarget === 'native') {
-    await page.touchscreen.tap(clickPoint.x, clickPoint.y);
-  } else {
-    await page.mouse.click(clickPoint.x, clickPoint.y);
-  }
-  await sheetPanel.waitFor({ state: 'visible', timeout: 10_000 });
-}
-
-async function scrollLocatorIntoPreviewScreen(page, locator) {
-  if ((await locator.count()) === 0) {
-    return;
-  }
-
-  const didScroll = await locator.evaluate(async (element) => {
-    const screen =
-      document.querySelector('.design-preview__device-screen') ?? document.documentElement;
-    const scrollRoots = [];
-    let scrollRoot = element.parentElement;
-
-    while (scrollRoot instanceof HTMLElement) {
-      const style = getComputedStyle(scrollRoot);
-      const canScroll =
-        /(auto|scroll|overlay)/u.test(`${style.overflowY} ${style.overflow}`) &&
-        scrollRoot.scrollHeight > scrollRoot.clientHeight + 1;
-      if (canScroll) {
-        scrollRoots.push(scrollRoot);
-      }
-      scrollRoot = scrollRoot.parentElement;
-    }
-
-    const fallbackScrollRoot = element.closest('.app-shell') ?? document.scrollingElement;
-    if (fallbackScrollRoot instanceof Element && !scrollRoots.includes(fallbackScrollRoot)) {
-      scrollRoots.push(fallbackScrollRoot);
-    }
-
-    if (!(screen instanceof HTMLElement) || scrollRoots.length === 0) {
-      return false;
-    }
-
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      const rect = element.getBoundingClientRect();
-      const screenRect = screen.getBoundingClientRect();
-      const footer = document.querySelector('.settings-drilldown__footer');
-      const footerTop =
-        footer instanceof HTMLElement && getComputedStyle(footer).display !== 'none'
-          ? footer.getBoundingClientRect().top
-          : Number.POSITIVE_INFINITY;
-      const visibleTop = Math.max(screenRect.top, 0);
-      const visibleBottom = Math.min(screenRect.bottom, window.innerHeight, footerTop);
-      let delta = 0;
-
-      if (rect.bottom > visibleBottom - 16) {
-        delta = rect.bottom - visibleBottom + 32;
-      } else if (rect.top < visibleTop + 16) {
-        delta = rect.top - visibleTop - 32;
-      }
-
-      if (Math.abs(delta) < 1) {
-        return attempt > 0;
-      }
-
-      let moved = false;
-      for (const root of scrollRoots) {
-        const before = root.scrollTop;
-        root.scrollBy({ top: delta, behavior: 'instant' });
-        moved = moved || Math.abs(root.scrollTop - before) > 0.5;
-      }
-
-      if (!moved) {
-        return attempt > 0;
-      }
-      await new Promise((resolve) => window.setTimeout(resolve, 40));
-    }
-
-    return true;
-  });
-
-  if (didScroll) {
-    await page.waitForTimeout(180);
-  }
-}
-
-async function selectBroadcastPlannerDefaultDays(page) {
-  const clearButton = page
-    .locator('.broadcast-planner__recipe-calendar')
-    .filter({ hasText: /^Очистить$/u })
-    .first();
-  if ((await clearButton.count()) > 0 && (await clearButton.isEnabled())) {
-    await clearButton.click();
-    await page.waitForTimeout(150);
-  }
-
-  const dateToggle = page
-    .locator('.broadcast-planner__recipe-calendar')
-    .filter({ hasText: /^Даты$/u })
-    .first();
-  if ((await dateToggle.count()) > 0) {
-    const isExpanded = await dateToggle.evaluate(
-      (node) => node.getAttribute('aria-expanded') === 'true',
-    );
-    if (!isExpanded) {
-      await dateToggle.click();
-      await page.waitForTimeout(200);
-    }
-  }
-
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    if ((await page.locator('.broadcast-planner__day.is-picked').count()) >= 5) {
-      break;
-    }
-
-    await closeBroadcastPlannerSheetIfOpen(page);
-    const day = page
-      .locator(
-        '.broadcast-planner__day:not([disabled]):not(.is-picked):not(.is-outside):not(.is-busy)',
-      )
-      .first();
-    if ((await day.count()) === 0) {
-      break;
-    }
-    if (await day.isEnabled()) {
-      await day.click();
-      await page.waitForTimeout(80);
-    }
-  }
-
-  if ((await page.locator('.broadcast-planner__day.is-picked').count()) > 0) {
-    await page.waitForTimeout(250);
-    return;
-  }
-
-  const firstDay = page.locator('.broadcast-planner__day:not([disabled])').first();
-  if ((await firstDay.count()) > 0) {
-    await firstDay.click();
-    await page.waitForTimeout(250);
-  }
-}
-
-async function selectBroadcastPlannerDefaultTimes(page) {
-  for (let index = 0; index < 2; index += 1) {
-    const timeChip = page
-      .locator(
-        '.broadcast-planner__time-chip:not(.is-selected):not(.is-mixed):not(.is-disabled):not(.is-busy)',
-      )
-      .first();
-    if ((await timeChip.count()) > 0 && (await timeChip.isEnabled())) {
-      await timeChip.click();
-      await page.waitForTimeout(120);
-    }
-  }
-}
-
-async function closeBroadcastPlannerSheetIfOpen(page) {
-  const sheet = page.locator('.broadcast-planner-sheet[aria-hidden="false"]').first();
-  if ((await sheet.count()) === 0) {
-    return;
-  }
-
-  const backdrop = sheet.locator('.broadcast-planner-sheet__backdrop').first();
-  if ((await backdrop.count()) > 0) {
-    await backdrop.click({ force: true });
-    await page.waitForTimeout(180);
-  }
 }
 
 function buildPreviewUrl(baseUrl, routePath, queryDevice, scenarioSearchParams = {}, options = {}) {

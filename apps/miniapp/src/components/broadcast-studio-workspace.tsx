@@ -25,6 +25,7 @@ type BroadcastWorkspaceTabsProps = {
   value: BroadcastWorkspaceView;
   autopostCount: number;
   historyCount: number;
+  compatibilityOnly?: boolean;
   disabled?: boolean;
   onChange: (value: BroadcastWorkspaceView) => void;
 };
@@ -40,6 +41,7 @@ type BroadcastWorkspaceChromeProps = {
   value: BroadcastWorkspaceView;
   autopostCount: number;
   historyCount: number;
+  compatibilityOnly?: boolean;
   disabled?: boolean;
   showReset: boolean;
   resetLabel: string;
@@ -52,6 +54,7 @@ export function BroadcastWorkspaceTabs({
   value,
   autopostCount,
   historyCount,
+  compatibilityOnly = false,
   disabled = false,
   onChange,
 }: BroadcastWorkspaceTabsProps) {
@@ -73,13 +76,20 @@ export function BroadcastWorkspaceTabs({
             onChange(nextValue);
           }
         }}
-        ariaLabel="Раздел автопостинга"
-        options={[
-          { value: 'compose', label: 'Создать' },
-          { value: 'calendar', label: 'План' },
-          { value: 'autoposts', label: 'Автопосты', count: autopostCount || undefined },
-          { value: 'history', label: 'История', count: historyCount || undefined },
-        ]}
+        ariaLabel={compatibilityOnly ? 'Ранее созданные посты' : 'Раздел автопостинга'}
+        options={
+          compatibilityOnly
+            ? [
+                { value: 'autoposts', label: 'Автопосты', count: autopostCount || undefined },
+                { value: 'history', label: 'История', count: historyCount || undefined },
+              ]
+            : [
+                { value: 'compose', label: 'Создать' },
+                { value: 'calendar', label: 'План' },
+                { value: 'autoposts', label: 'Автопосты', count: autopostCount || undefined },
+                { value: 'history', label: 'История', count: historyCount || undefined },
+              ]
+        }
       />
     </div>
   );
@@ -90,6 +100,7 @@ export function BroadcastWorkspaceChrome({
   value,
   autopostCount,
   historyCount,
+  compatibilityOnly = false,
   disabled = false,
   showReset,
   resetLabel,
@@ -131,6 +142,7 @@ export function BroadcastWorkspaceChrome({
               value={value}
               autopostCount={autopostCount}
               historyCount={historyCount}
+              compatibilityOnly={compatibilityOnly}
               disabled={disabled}
               onChange={onChange}
             />

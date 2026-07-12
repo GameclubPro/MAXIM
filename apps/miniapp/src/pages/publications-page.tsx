@@ -2,6 +2,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 import {
   MAX_PUBLICATION_TARGETS,
   MAX_PUBLICATION_VIDEO_BASE64_LENGTH,
+  type ListLegacyPublicationsQuery,
   type PublicationLifecycle,
   type PublicationSummary,
 } from '@maxim/contracts/publication';
@@ -59,7 +60,14 @@ import {
   type PublicationTimingMode,
   type PublicationView,
 } from '../features/publications/publication-model';
-import { mergePublicationPages } from '../features/publications/publication-pagination';
+import {
+  LegacyPublicationsEntry,
+  LegacyPublicationsList,
+} from '../features/publications/legacy-publications-panel';
+import {
+  mergeLegacyPublicationPages,
+  mergePublicationPages,
+} from '../features/publications/publication-pagination';
 import { PublicationTargetPicker } from '../features/publications/publication-target-picker';
 import { usePublicationComposer } from '../features/publications/use-publication-composer';
 import { describeApiError } from '../lib/api-error';
@@ -68,6 +76,7 @@ import {
   cancelPublication,
   getPublicationCalendarAvailability,
   getPublication,
+  listLegacyPublications,
   listPublications,
   pausePublication,
   resumePublication,
@@ -114,6 +123,9 @@ type PublicationAmbiguousTarget = {
   resolution: 'mark_sent' | 'mark_failed';
 };
 
+type LegacyPublicationView = ListLegacyPublicationsQuery['view'];
+type LegacyPublicationKindFilter = ListLegacyPublicationsQuery['kind'];
+
 function getPublicationCalendarRange(now = new Date()): { from: string; to: string } {
   const { start, end } = getBroadcastPlannerWindow(now);
   return { from: start.toISOString(), to: end.toISOString() };
@@ -128,15 +140,23 @@ const queryKeys = {
     entityFilter: PublicationEntityFilter,
     statusFilter: PublicationStatusFilter,
   ) => ['publications', 'list', view, query, entityFilter, statusFilter] as const,
+  legacyProbe: (view: LegacyPublicationView) => ['publications', 'legacy', 'probe', view] as const,
+  legacyList: (
+    view: LegacyPublicationView,
+    query: string,
+    kind: LegacyPublicationKindFilter,
+    entityFilter: PublicationEntityFilter,
+  ) => ['publications', 'legacy', 'list', view, query, kind, entityFilter] as const,
   calendar: (targetsKey: string, excludePublicationId: string | null, from: string, to: string) =>
     ['publications', 'calendar', targetsKey, excludePublicationId, from, to] as const,
 };
 
 const PUBLICATION_LIST_PAGE_SIZE = 30;
+const LEGACY_PUBLICATION_LIST_PAGE_SIZE = 30;
 
 const VIEW_OPTIONS: Array<{ value: PublicationView; label: string }> = [
-  { value: 'plan', label: 'Текущие' },
-  { value: 'schedules', label: 'По времени' },
+  { value: 'plan', label: 'Активные' },
+  { value: 'schedules', label: 'Расписание' },
   { value: 'history', label: 'История' },
 ];
 
@@ -144,6 +164,17 @@ const ENTITY_FILTERS: Array<{ value: PublicationEntityFilter; label: string }> =
   { value: 'all', label: 'Все' },
   { value: 'chat', label: 'Чаты' },
   { value: 'channel', label: 'Каналы' },
+];
+
+const LEGACY_VIEW_OPTIONS: Array<{ value: LegacyPublicationView; label: string }> = [
+  { value: 'active', label: 'Активные' },
+  { value: 'history', label: 'История' },
+];
+
+const LEGACY_KIND_FILTERS: Array<{ value: LegacyPublicationKindFilter; label: string }> = [
+  { value: 'all', label: 'Все' },
+  { value: 'autopost', label: 'Автопосты' },
+  { value: 'broadcast', label: 'Отправки' },
 ];
 
 const STATUS_FILTERS_BY_VIEW: Record<
@@ -180,6 +211,22 @@ const WEEKDAYS = [
 
 function normalizeView(value: string | null): PublicationView {
   return value === 'schedules' || value === 'history' ? value : 'plan';
+}
+
+function normalizeLegacyView(value: string | null): LegacyPublicationView {
+  return value === 'history' ? 'history' : 'active';
+}
+
+function normalizeLegacyKindFilter(value: string | null): LegacyPublicationKindFilter {
+  return value === 'autopost' || value === 'broadcast' ? value : 'all';
+}
+
+function normalizeLegacyEntityFilter(value: string | null): PublicationEntityFilter {
+  return value === 'chat' || value === 'channel' ? value : 'all';
+}
+
+function normalizeLegacyQuery(value: string | null): string {
+  return value?.trim().slice(0, 120) ?? '';
 }
 
 function normalizeEntityType(value: string | null): 'chat' | 'channel' | null {
@@ -378,6 +425,8 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [editorContext, setEditorContext] = useState<PublicationEditorContext | null>(null);
   const isEditor = editorContext !== null;
+  const legacyRouteRequested = searchParams.get('legacy') === '1';
+  const isLegacyView = legacyRouteRequested && !isEditor;
   const persistenceEnabled = shouldPersistPublicationDraft(editorContext?.kind ?? null);
   const { draft, setDraft, hydrated, hasSavedDraft, clearDraft } = usePublicationComposer(
     isEditor,
@@ -391,6 +440,22 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
   const [entityFilter, setEntityFilter] = useState<PublicationEntityFilter>('all');
   const [statusFilter, setStatusFilter] = useState<PublicationStatusFilter>('all');
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [legacyView, setLegacyView] = useState<LegacyPublicationView>(() =>
+    normalizeLegacyView(searchParams.get('legacyView')),
+  );
+  const [legacyQuery, setLegacyQuery] = useState(() =>
+    normalizeLegacyQuery(searchParams.get('legacyQuery')),
+  );
+  const [legacyDebouncedQuery, setLegacyDebouncedQuery] = useState(() =>
+    normalizeLegacyQuery(searchParams.get('legacyQuery')),
+  );
+  const [legacyKindFilter, setLegacyKindFilter] = useState<LegacyPublicationKindFilter>(() =>
+    normalizeLegacyKindFilter(searchParams.get('legacyKind')),
+  );
+  const [legacyEntityFilter, setLegacyEntityFilter] = useState<PublicationEntityFilter>(() =>
+    normalizeLegacyEntityFilter(searchParams.get('legacyEntity')),
+  );
+  const [legacyFiltersOpen, setLegacyFiltersOpen] = useState(false);
   const [buttonsOpen, setButtonsOpen] = useState(false);
   const [buttonErrors, setButtonErrors] = useState<BroadcastLinkButtonFieldErrors[]>([]);
   const [fieldError, setFieldError] = useState('');
@@ -458,6 +523,10 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     return () => window.clearTimeout(timeoutId);
   }, [query]);
   useEffect(() => {
+    const timeoutId = window.setTimeout(() => setLegacyDebouncedQuery(legacyQuery.trim()), 250);
+    return () => window.clearTimeout(timeoutId);
+  }, [legacyQuery]);
+  useEffect(() => {
     if (!isEditor) {
       return undefined;
     }
@@ -493,6 +562,43 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
   }, [isEditor]);
   const listEntityType = entityFilter === 'all' ? undefined : entityFilter;
   const listStatus = statusFilter === 'all' ? undefined : statusFilter;
+  const legacyListEntityType = legacyEntityFilter === 'all' ? undefined : legacyEntityFilter;
+  const legacyActiveProbeQuery = useQuery({
+    queryKey: queryKeys.legacyProbe('active'),
+    queryFn: () => listLegacyPublications(api, { view: 'active', limit: 1 }),
+    enabled: !isEditor,
+    staleTime: 0,
+    refetchOnMount: 'always',
+  });
+  const legacyHistoryProbeQuery = useQuery({
+    queryKey: queryKeys.legacyProbe('history'),
+    queryFn: () => listLegacyPublications(api, { view: 'history', limit: 1 }),
+    enabled: !isEditor,
+    staleTime: 0,
+    refetchOnMount: 'always',
+  });
+  const legacyListQuery = useInfiniteQuery({
+    queryKey: queryKeys.legacyList(
+      legacyView,
+      legacyDebouncedQuery,
+      legacyKindFilter,
+      legacyEntityFilter,
+    ),
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam }) =>
+      listLegacyPublications(api, {
+        view: legacyView,
+        query: legacyDebouncedQuery,
+        kind: legacyKindFilter,
+        entityType: legacyListEntityType,
+        limit: LEGACY_PUBLICATION_LIST_PAGE_SIZE,
+        cursor: pageParam ?? undefined,
+      }),
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    enabled: isLegacyView,
+    staleTime: 0,
+    refetchOnMount: 'always',
+  });
   const planQuery = useInfiniteQuery({
     queryKey: queryKeys.list('plan', debouncedQuery, entityFilter, statusFilter),
     initialPageParam: null as string | null,
@@ -506,7 +612,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         cursor: pageParam ?? undefined,
       }),
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
-    enabled: !isEditor && view === 'plan',
+    enabled: !isEditor && !isLegacyView && view === 'plan',
   });
   const schedulesQuery = useInfiniteQuery({
     queryKey: queryKeys.list('schedules', debouncedQuery, entityFilter, statusFilter),
@@ -521,7 +627,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         cursor: pageParam ?? undefined,
       }),
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
-    enabled: !isEditor && view === 'schedules',
+    enabled: !isEditor && !isLegacyView && view === 'schedules',
   });
   const historyQuery = useInfiniteQuery({
     queryKey: queryKeys.list('history', debouncedQuery, entityFilter, statusFilter),
@@ -536,7 +642,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         cursor: pageParam ?? undefined,
       }),
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
-    enabled: !isEditor && view === 'history',
+    enabled: !isEditor && !isLegacyView && view === 'history',
   });
   const planItems = useMemo(
     () => mergePublicationPages(planQuery.data?.pages),
@@ -550,6 +656,25 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     () => mergePublicationPages(historyQuery.data?.pages),
     [historyQuery.data?.pages],
   );
+  const legacyItems = useMemo(
+    () => mergeLegacyPublicationPages(legacyListQuery.data?.pages),
+    [legacyListQuery.data?.pages],
+  );
+  const legacyActiveCount = legacyActiveProbeQuery.data?.totalCount ?? null;
+  const legacyHistoryCount = legacyHistoryProbeQuery.data?.totalCount ?? null;
+  const legacyKnownCount = (legacyActiveCount ?? 0) + (legacyHistoryCount ?? 0);
+  const legacyProbeHasError = legacyActiveProbeQuery.isError || legacyHistoryProbeQuery.isError;
+  const legacyProbeComplete =
+    (legacyActiveProbeQuery.isSuccess || legacyActiveProbeQuery.isError) &&
+    (legacyHistoryProbeQuery.isSuccess || legacyHistoryProbeQuery.isError);
+  const showLegacyEntry = legacyKnownCount > 0 || (legacyProbeComplete && legacyProbeHasError);
+  const legacyEntryCount =
+    legacyKnownCount > 0
+      ? legacyKnownCount
+      : legacyActiveCount !== null && legacyHistoryCount !== null
+        ? 0
+        : null;
+  const legacyCurrentTotal = legacyListQuery.data?.pages[0]?.totalCount ?? null;
 
   const saveMutation = useMutation({
     mutationFn: ({ replaceConflicts }: { replaceConflicts: boolean }) => {
@@ -864,6 +989,14 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     { enabled: isEditor, priority: 610 },
   );
 
+  useNativeBackHandler(
+    () => {
+      closeLegacyView();
+      return true;
+    },
+    { enabled: isLegacyView, priority: 600 },
+  );
+
   async function invalidatePublicationQueries() {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: queryKeys.listRoot }),
@@ -879,6 +1012,66 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
       next.delete('compose');
     }
     setSearchParams(next, { replace: true });
+  }
+
+  function setLegacyRoute(
+    open: boolean,
+    state: {
+      view?: LegacyPublicationView;
+      query?: string;
+      kind?: LegacyPublicationKindFilter;
+      entity?: PublicationEntityFilter;
+    } = {},
+  ) {
+    const next = new URLSearchParams(searchParams);
+    if (open) {
+      const nextView = state.view ?? legacyView;
+      const nextQuery = state.query ?? legacyQuery;
+      const nextKind = state.kind ?? legacyKindFilter;
+      const nextEntity = state.entity ?? legacyEntityFilter;
+      next.set('legacy', '1');
+      if (nextView === 'active') {
+        next.delete('legacyView');
+      } else {
+        next.set('legacyView', nextView);
+      }
+      if (nextQuery.trim()) {
+        next.set('legacyQuery', nextQuery.trim());
+      } else {
+        next.delete('legacyQuery');
+      }
+      if (nextKind === 'all') {
+        next.delete('legacyKind');
+      } else {
+        next.set('legacyKind', nextKind);
+      }
+      if (nextEntity === 'all') {
+        next.delete('legacyEntity');
+      } else {
+        next.set('legacyEntity', nextEntity);
+      }
+    } else {
+      next.delete('legacy');
+      next.delete('legacyView');
+      next.delete('legacyQuery');
+      next.delete('legacyKind');
+      next.delete('legacyEntity');
+    }
+    setSearchParams(next, { replace: true });
+  }
+
+  function openLegacyView() {
+    const nextView = view === 'history' ? 'history' : 'active';
+    setLegacyView(nextView);
+    setLegacyRoute(true, { view: nextView });
+    window.scrollTo({ top: 0, behavior: 'auto' });
+    maxImpact('soft');
+  }
+
+  function closeLegacyView() {
+    setLegacyRoute(false);
+    window.scrollTo({ top: 0, behavior: 'auto' });
+    maxImpact('soft');
   }
 
   function changeView(nextView: PublicationView) {
@@ -1007,7 +1200,9 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
       testMutation.mutate();
       return;
     }
-    validationIssues.find((issue) => issue.label !== 'Время' && issue.label !== 'Повтор')?.onClick();
+    validationIssues
+      .find((issue) => issue.label !== 'Время' && issue.label !== 'Повтор')
+      ?.onClick();
   }
 
   function updateOnceSlot(part: 'date' | 'time', value: string) {
@@ -1126,6 +1321,110 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     );
   }
 
+  function renderLegacyFilters() {
+    const hasActiveFilters = legacyKindFilter !== 'all' || legacyEntityFilter !== 'all';
+    const showFilterControls = legacyFiltersOpen || hasActiveFilters;
+
+    return (
+      <div className={cn('legacy-publications-filterbar', showFilterControls && 'is-expanded')}>
+        <div className="legacy-publications-filterbar__search-row">
+          <label className="publication-search legacy-publications-filterbar__search">
+            <Search aria-hidden />
+            <input
+              type="search"
+              value={legacyQuery}
+              maxLength={120}
+              onChange={(event) => {
+                const nextQuery = event.currentTarget.value;
+                setLegacyQuery(nextQuery);
+                setLegacyRoute(true, { query: nextQuery });
+              }}
+              placeholder="Найти"
+              aria-label="Поиск ранее созданных постов"
+            />
+            {legacyQuery ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setLegacyQuery('');
+                  setLegacyRoute(true, { query: '' });
+                }}
+                aria-label="Очистить поиск"
+              >
+                <Xmark aria-hidden />
+              </button>
+            ) : null}
+          </label>
+          <button
+            type="button"
+            className={cn('legacy-publications-filterbar__toggle', hasActiveFilters && 'is-active')}
+            onClick={() => setLegacyFiltersOpen((current) => !current)}
+            aria-expanded={showFilterControls}
+            aria-label="Фильтры ранее созданных постов"
+            title="Фильтры"
+          >
+            <FilterList aria-hidden />
+          </button>
+        </div>
+
+        {showFilterControls ? (
+          <div className="legacy-publications-filterbar__controls">
+            <div
+              className="legacy-publications-filterbar__kinds"
+              role="group"
+              aria-label="Тип ранее созданного поста"
+            >
+              {LEGACY_KIND_FILTERS.map((filter) => (
+                <button
+                  key={filter.value}
+                  type="button"
+                  aria-pressed={legacyKindFilter === filter.value}
+                  className={cn(legacyKindFilter === filter.value && 'is-active')}
+                  onClick={() => {
+                    setLegacyKindFilter(filter.value);
+                    setLegacyRoute(true, { kind: filter.value });
+                  }}
+                >
+                  {filter.label}
+                </button>
+              ))}
+            </div>
+            <select
+              value={legacyEntityFilter}
+              onChange={(event) => {
+                const nextEntity = event.currentTarget.value as PublicationEntityFilter;
+                setLegacyEntityFilter(nextEntity);
+                setLegacyRoute(true, { entity: nextEntity });
+              }}
+              aria-label="Источник ранее созданных постов"
+            >
+              {ENTITY_FILTERS.map((filter) => (
+                <option key={filter.value} value={filter.value}>
+                  {filter.label}
+                </option>
+              ))}
+            </select>
+            {hasActiveFilters ? (
+              <button
+                type="button"
+                className="legacy-publications-filterbar__reset"
+                onClick={() => {
+                  setLegacyKindFilter('all');
+                  setLegacyEntityFilter('all');
+                  setLegacyRoute(true, { kind: 'all', entity: 'all' });
+                }}
+                aria-label="Сбросить фильтры"
+                title="Сбросить фильтры"
+              >
+                <Xmark aria-hidden />
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
   function renderPublicationCard(publication: PublicationSummary) {
     const pending =
       (actionMutation.isPending && actionMutation.variables?.publication.id === publication.id) ||
@@ -1209,7 +1508,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
                   ? 'История пока пустая'
                   : view === 'schedules'
                     ? 'Расписаний пока нет'
-                    : 'План свободен'}
+                    : 'Активных постов нет'}
             </strong>
             {view !== 'history' && !query ? (
               <button type="button" className="publications-primary" onClick={openCreateEditor}>
@@ -1244,7 +1543,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
       <>
         <header className="publications-header">
           <div>
-            <h1>Публикации</h1>
+            <h1>Посты</h1>
           </div>
           <button
             type="button"
@@ -1258,7 +1557,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
           </button>
         </header>
 
-        <div className="publications-tabs" role="group" aria-label="Раздел публикаций">
+        <div className="publications-tabs" role="group" aria-label="Раздел постов">
           {VIEW_OPTIONS.map((option) =>
             (() => {
               const count =
@@ -1300,7 +1599,115 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
           </button>
         ) : null}
 
+        {showLegacyEntry ? (
+          <LegacyPublicationsEntry
+            count={legacyEntryCount}
+            countIncomplete={
+              legacyProbeHasError || legacyActiveCount === null || legacyHistoryCount === null
+            }
+            onOpen={openLegacyView}
+          />
+        ) : null}
+
         {renderFeed()}
+      </>
+    );
+  }
+
+  function renderLegacyHub() {
+    const hasFilters =
+      legacyQuery.trim().length > 0 || legacyKindFilter !== 'all' || legacyEntityFilter !== 'all';
+
+    return (
+      <>
+        <header className="publications-editor-header legacy-publications-header">
+          <button
+            type="button"
+            onClick={closeLegacyView}
+            aria-label="Вернуться к постам"
+            title="Назад"
+          >
+            <NavArrowLeft aria-hidden />
+          </button>
+          <span>
+            <h1>Ранее созданные</h1>
+            {legacyCurrentTotal !== null ? (
+              <small>
+                {formatRussianCountLabel(legacyCurrentTotal, 'запись', 'записи', 'записей')}
+              </small>
+            ) : null}
+          </span>
+        </header>
+
+        <div className="legacy-publications-tabs" role="group" aria-label="Ранее созданные посты">
+          {LEGACY_VIEW_OPTIONS.map((option) => {
+            const count = option.value === 'active' ? legacyActiveCount : legacyHistoryCount;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                aria-pressed={legacyView === option.value}
+                className={cn(legacyView === option.value && 'is-active')}
+                onClick={() => {
+                  setLegacyView(option.value);
+                  setLegacyRoute(true, { view: option.value });
+                  maxImpact('soft');
+                }}
+              >
+                <span>{option.label}</span>
+                {count !== null ? <small>{count}</small> : null}
+              </button>
+            );
+          })}
+        </div>
+
+        {renderLegacyFilters()}
+
+        {legacyListQuery.isLoading ? (
+          <StatusState tone="neutral" title="Загружаю ранее созданные посты" />
+        ) : legacyListQuery.isError && !legacyListQuery.data ? (
+          <StatusState
+            tone="danger"
+            title="Не удалось загрузить"
+            description={describeApiError(legacyListQuery.error, 'Повторите ещё раз.')}
+            action={
+              <button
+                type="button"
+                className="button button--ghost"
+                onClick={() => void legacyListQuery.refetch()}
+              >
+                Обновить
+              </button>
+            }
+          />
+        ) : legacyItems.length === 0 ? (
+          <div className="publications-empty">
+            <strong>
+              {hasFilters
+                ? 'Ничего не найдено'
+                : legacyView === 'history'
+                  ? 'История пока пустая'
+                  : 'Активных записей нет'}
+            </strong>
+          </div>
+        ) : (
+          <LegacyPublicationsList items={legacyItems} />
+        )}
+
+        {legacyListQuery.hasNextPage && legacyListQuery.data ? (
+          <button
+            type="button"
+            className="publications-load-more"
+            onClick={() => void legacyListQuery.fetchNextPage()}
+            disabled={legacyListQuery.isFetchingNextPage}
+          >
+            {legacyListQuery.isFetchingNextPage
+              ? 'Загрузка...'
+              : legacyListQuery.isFetchNextPageError
+                ? 'Повторить'
+                : 'Показать ещё'}
+          </button>
+        ) : null}
       </>
     );
   }
@@ -1969,7 +2376,11 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
 
   return (
     <div className={cn('publications-page', isEditor && 'is-editor')}>
-      {sourcesQuery.isError && !isEditor ? (
+      {isEditor ? (
+        renderEditor()
+      ) : isLegacyView ? (
+        renderLegacyHub()
+      ) : sourcesQuery.isError ? (
         <StatusState
           tone="danger"
           title="Не удалось загрузить чаты и каналы"
@@ -1984,8 +2395,6 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
             </button>
           }
         />
-      ) : isEditor ? (
-        renderEditor()
       ) : (
         renderHub()
       )}

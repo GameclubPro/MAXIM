@@ -9,6 +9,7 @@ export const MAX_PUBLICATION_TARGETS = 500;
 export const MAX_PUBLICATION_RECURRENCE_OCCURRENCES = 365;
 export const MAX_PUBLICATION_LIST_CURSOR_LENGTH = 1_024;
 export const MAX_PUBLICATION_CALENDAR_WINDOW_DAYS = 62;
+export const MAX_LEGACY_PUBLICATION_LIST_LIMIT = 30;
 
 export const publicationLifecycleSchema = z.enum([
   'DRAFT',
@@ -522,6 +523,128 @@ export const listPublicationsResponseSchema = z.object({
   nextCursor: z.string().nullable(),
 });
 export type ListPublicationsResponse = z.infer<typeof listPublicationsResponseSchema>;
+
+export const legacyPublicationKindSchema = z.enum(['autopost', 'broadcast']);
+export type LegacyPublicationKind = z.infer<typeof legacyPublicationKindSchema>;
+
+export const legacyPublicationListKindSchema = z.enum(['all', 'autopost', 'broadcast']);
+export const legacyPublicationListViewSchema = z.enum(['active', 'history']);
+
+export const legacyPublicationListCursorPayloadSchema = z.object({
+  v: z.literal(1),
+  updatedAt: publicationDateTimeSchema,
+  id: z.string().trim().min(1).max(256),
+  itemKind: legacyPublicationKindSchema,
+  view: legacyPublicationListViewSchema,
+  kind: legacyPublicationListKindSchema,
+  entityType: publicationEntityTypeSchema.optional(),
+  query: z.string().max(120),
+});
+export type LegacyPublicationListCursorPayload = z.infer<
+  typeof legacyPublicationListCursorPayloadSchema
+>;
+
+export function encodeLegacyPublicationListCursor(
+  payload: LegacyPublicationListCursorPayload,
+): string {
+  const parsed = legacyPublicationListCursorPayloadSchema.parse(payload);
+  const bytes = new TextEncoder().encode(JSON.stringify(parsed));
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return globalThis.btoa(binary).replace(/\+/gu, '-').replace(/\//gu, '_').replace(/=+$/u, '');
+}
+
+export function decodeLegacyPublicationListCursor(
+  value: string,
+): LegacyPublicationListCursorPayload | null {
+  const normalized = value.trim();
+  if (
+    normalized.length === 0 ||
+    normalized.length > MAX_PUBLICATION_LIST_CURSOR_LENGTH ||
+    !/^[A-Za-z0-9_-]+$/u.test(normalized)
+  ) {
+    return null;
+  }
+
+  try {
+    const padding = '='.repeat((4 - (normalized.length % 4)) % 4);
+    const binary = globalThis.atob(
+      `${normalized.replace(/-/gu, '+').replace(/_/gu, '/')}${padding}`,
+    );
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const decoded = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+    const parsed = legacyPublicationListCursorPayloadSchema.safeParse(decoded);
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+export const listLegacyPublicationsQuerySchema = z.object({
+  view: legacyPublicationListViewSchema.default('active'),
+  kind: legacyPublicationListKindSchema.default('all'),
+  entityType: publicationEntityTypeSchema.optional(),
+  query: z.string().trim().max(120).default(''),
+  cursor: z.string().trim().min(1).max(MAX_PUBLICATION_LIST_CURSOR_LENGTH).optional(),
+  limit: z.coerce.number().int().min(1).max(MAX_LEGACY_PUBLICATION_LIST_LIMIT).default(30),
+});
+export type ListLegacyPublicationsQuery = z.infer<typeof listLegacyPublicationsQuerySchema>;
+
+export const legacyPublicationSourceSchema = z.object({
+  chatId: z.string(),
+  entityType: publicationEntityTypeSchema,
+  title: z.string(),
+  avatarUrl: z.string().url().nullable(),
+  link: z.string().trim().max(2_048).nullable(),
+});
+export type LegacyPublicationSource = z.infer<typeof legacyPublicationSourceSchema>;
+
+const legacyPublicationSummaryBaseSchema = z.object({
+  id: z.string(),
+  source: legacyPublicationSourceSchema,
+  title: z.string(),
+  contentPreview: z.string(),
+  targetCount: z.number().int().min(1),
+  mediaCount: z.number().int().min(0),
+  hasVideo: z.boolean(),
+  scheduleTimezone: z.string().trim().min(1).max(128),
+  nextRunAt: publicationDateTimeSchema.nullable(),
+  createdAt: publicationDateTimeSchema,
+  updatedAt: publicationDateTimeSchema,
+  lastError: z.string().nullable(),
+});
+
+export const legacyAutopostPublicationSummarySchema = legacyPublicationSummaryBaseSchema.extend({
+  kind: z.literal('autopost'),
+  status: z.enum(['ACTIVE', 'PAUSED', 'COMPLETED', 'ERROR']),
+});
+export type LegacyAutopostPublicationSummary = z.infer<
+  typeof legacyAutopostPublicationSummarySchema
+>;
+
+export const legacyBroadcastPublicationSummarySchema = legacyPublicationSummaryBaseSchema.extend({
+  kind: z.literal('broadcast'),
+  status: z.enum(['ACTIVE', 'PARTIAL', 'FAILED', 'COMPLETED', 'CANCELED']),
+});
+export type LegacyBroadcastPublicationSummary = z.infer<
+  typeof legacyBroadcastPublicationSummarySchema
+>;
+
+export const legacyPublicationSummarySchema = z.discriminatedUnion('kind', [
+  legacyAutopostPublicationSummarySchema,
+  legacyBroadcastPublicationSummarySchema,
+]);
+export type LegacyPublicationSummary = z.infer<typeof legacyPublicationSummarySchema>;
+
+export const listLegacyPublicationsResponseSchema = z.object({
+  items: z.array(legacyPublicationSummarySchema),
+  nextCursor: z.string().nullable(),
+  totalCount: z.number().int().min(0),
+});
+export type ListLegacyPublicationsResponse = z.infer<typeof listLegacyPublicationsResponseSchema>;
 
 export const publicationDeliverySchema = z.object({
   id: z.string(),

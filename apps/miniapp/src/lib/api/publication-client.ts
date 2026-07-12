@@ -1,5 +1,7 @@
 import {
   createPublicationRequestSchema,
+  listLegacyPublicationsQuerySchema,
+  listLegacyPublicationsResponseSchema,
   listPublicationDeliveriesQuerySchema,
   listPublicationDeliveriesResponseSchema,
   listPublicationsQuerySchema,
@@ -13,6 +15,8 @@ import {
   testPublicationRequestSchema,
   updatePublicationRequestSchema,
   type CreatePublicationRequest,
+  type ListLegacyPublicationsQuery,
+  type ListLegacyPublicationsResponse,
   type ListPublicationDeliveriesQuery,
   type ListPublicationDeliveriesResponse,
   type ListPublicationsQuery,
@@ -47,6 +51,15 @@ export async function listPublications(
   const parsed = listPublicationsQuerySchema.parse(query);
   const response = await api.request(appendQuery('/publications', parsed));
   return listPublicationsResponseSchema.parse(response);
+}
+
+export async function listLegacyPublications(
+  api: ApiTransport,
+  query: Partial<ListLegacyPublicationsQuery> = {},
+): Promise<ListLegacyPublicationsResponse> {
+  const parsed = listLegacyPublicationsQuerySchema.parse(query);
+  const response = await api.request(appendQuery('/publications/legacy', parsed));
+  return listLegacyPublicationsResponseSchema.parse(response);
 }
 
 export async function getPublicationCalendarAvailability(

@@ -1,7 +1,10 @@
 import {
   createPublicationRequestSchema,
+  decodeLegacyPublicationListCursor,
   decodePublicationListCursor,
+  encodeLegacyPublicationListCursor,
   encodePublicationListCursor,
+  listLegacyPublicationsQuerySchema,
   listPublicationDeliveriesQuerySchema,
   listPublicationsQuerySchema,
   MAX_PUBLICATION_IMAGES_TOTAL_BASE64_LENGTH,
@@ -158,6 +161,45 @@ describe('publication contracts', () => {
       entityType: 'channel',
       status: 'failed',
     });
+  });
+
+  it('binds legacy pagination cursors to view, kind, entity, and search filters', () => {
+    const query = listLegacyPublicationsQuerySchema.parse({
+      view: 'history',
+      kind: 'broadcast',
+      entityType: 'channel',
+      query: 'Анонс',
+      limit: '25',
+    });
+    expect(query).toEqual({
+      view: 'history',
+      kind: 'broadcast',
+      entityType: 'channel',
+      query: 'Анонс',
+      limit: 25,
+    });
+
+    const cursor = encodeLegacyPublicationListCursor({
+      v: 1,
+      updatedAt: '2026-07-10T09:00:00.000Z',
+      id: 'broadcast-1',
+      itemKind: 'broadcast',
+      view: query.view,
+      kind: query.kind,
+      entityType: query.entityType,
+      query: query.query,
+    });
+    expect(decodeLegacyPublicationListCursor(cursor)).toEqual({
+      v: 1,
+      updatedAt: '2026-07-10T09:00:00.000Z',
+      id: 'broadcast-1',
+      itemKind: 'broadcast',
+      view: 'history',
+      kind: 'broadcast',
+      entityType: 'channel',
+      query: 'Анонс',
+    });
+    expect(listLegacyPublicationsQuerySchema.safeParse({ limit: 31 }).success).toBe(false);
   });
 
   it('accepts delivery pagination that excludes a reviewed status', () => {

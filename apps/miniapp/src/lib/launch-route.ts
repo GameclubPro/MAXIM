@@ -246,6 +246,14 @@ function normalizeRouteLaunchPath(value: string): string | null {
 }
 
 function hasAllowedPublicationsSearchParams(parsed: URL): boolean {
+  const legacyValues = parsed.searchParams.getAll('legacy');
+  if (
+    legacyValues.length > 1 ||
+    (legacyValues.length === 1 && [...parsed.searchParams.keys()].some((key) => key !== 'legacy'))
+  ) {
+    return false;
+  }
+
   for (const [key, value] of parsed.searchParams.entries()) {
     if (key === 'view') {
       if (!PUBLICATIONS_VIEWS.has(value)) {
@@ -254,6 +262,12 @@ function hasAllowedPublicationsSearchParams(parsed: URL): boolean {
       continue;
     }
     if (key === 'compose') {
+      if (value !== '1') {
+        return false;
+      }
+      continue;
+    }
+    if (key === 'legacy') {
       if (value !== '1') {
         return false;
       }
@@ -280,8 +294,16 @@ function hasAllowedSearchParams(parsed: URL, allowedFocus: Set<string>): boolean
   const focusValues = parsed.searchParams.getAll('focus');
   const handoffValues = parsed.searchParams.getAll('handoff');
   const workspaceValues = parsed.searchParams.getAll('workspace');
+  const legacyKindValues = parsed.searchParams.getAll('legacyKind');
+  const legacyIdValues = parsed.searchParams.getAll('legacyId');
 
-  if (focusValues.length > 1 || handoffValues.length > 1 || workspaceValues.length > 1) {
+  if (
+    focusValues.length > 1 ||
+    handoffValues.length > 1 ||
+    workspaceValues.length > 1 ||
+    legacyKindValues.length > 1 ||
+    legacyIdValues.length > 1
+  ) {
     return false;
   }
 
@@ -307,7 +329,32 @@ function hasAllowedSearchParams(parsed: URL, allowedFocus: Set<string>): boolean
       continue;
     }
 
+    if (key === 'legacyKind') {
+      if (value !== 'autopost' && value !== 'broadcast') {
+        return false;
+      }
+      continue;
+    }
+
+    if (key === 'legacyId') {
+      if (!value.trim() || value.length > 256) {
+        return false;
+      }
+      continue;
+    }
+
     return false;
+  }
+
+  const hasLegacyTarget = legacyKindValues.length === 1 || legacyIdValues.length === 1;
+  if (hasLegacyTarget) {
+    return (
+      focusValues[0] === 'broadcast' &&
+      legacyKindValues.length === 1 &&
+      legacyIdValues.length === 1 &&
+      handoffValues.length === 0 &&
+      workspaceValues.length === 0
+    );
   }
 
   return workspaceValues.length === 0 || focusValues[0] === 'broadcast';

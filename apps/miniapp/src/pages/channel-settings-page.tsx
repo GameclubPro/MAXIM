@@ -8,7 +8,6 @@ import {
   type ManagedAutopostRuleDetails,
   type ManagedAutopostRuleSummary,
   type ManagedBroadcastDetails,
-  type SendBroadcastResult,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { StatsUpSquare } from 'iconoir-react';
@@ -34,7 +33,6 @@ import {
 } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import type { BroadcastSchedulePlannerSelectionState } from '../components/broadcast-schedule-planner';
-import { BroadcastDraftCard } from '../components/broadcast-draft-card';
 import { BroadcastPublishBar } from '../components/broadcast-publish-bar';
 import type { ManagedPollWorkspaceHandle } from '../components/managed-poll-workspace';
 import {
@@ -45,6 +43,7 @@ import {
   type BroadcastHistoryFilter,
   type BroadcastWorkspaceView,
 } from '../components/broadcast-studio-workspace';
+import { PublicationWorkspaceHandoff } from '../components/publication-workspace-handoff';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
@@ -60,7 +59,6 @@ import {
   cancelChannelManagedBroadcast,
   clearChannelBroadcastHandoffState,
   createBroadcastRequestId,
-  createChannelManagedAutopostRule,
   deleteChannelManagedAutopostRule,
   getChannelBroadcastComposerClientResetState,
   getChannelBroadcastHandoffState,
@@ -102,6 +100,7 @@ import {
   getBroadcastCycleValidationError,
   hasBroadcastHandoffDraft,
   normalizeBroadcastCycleDraft,
+  resolveBroadcastHandoffLoadMode,
   resolveBroadcastHandoffSchedule,
   resolveBroadcastCycleSendAt,
   resolveBroadcastScheduleTimezone,
@@ -128,6 +127,10 @@ import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 import { queryKeys } from '../lib/query-keys';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
+import {
+  resolveLegacyBroadcastEditorTarget,
+  resolveLegacyPublicationReturnPath,
+} from '../features/publications/legacy-autoposts';
 
 type ChannelRouteState = {
   chatTitle: string;
@@ -447,41 +450,6 @@ function formatManagedBroadcastDateTime(value: string | null, timeZone?: string 
     },
     timeZone,
   );
-}
-
-function formatChannelBroadcastResultDescription(result: SendBroadcastResult): string {
-  const sentTargetLabel =
-    result.sentChatPreviews.length > 0
-      ? `${result.sentChatPreviews[0]?.title}${result.sentChatOverflowCount > 0 ? ` +${result.sentChatOverflowCount}` : ''}`
-      : '';
-  const failedTargetLabel =
-    result.failedChatPreviews.length > 0
-      ? `${result.failedChatPreviews[0]?.title}${result.failedChatOverflowCount > 0 ? ` +${result.failedChatOverflowCount}` : ''}`
-      : '';
-  if (result.sentChats === 0 && result.nextSendAt) {
-    return `Первая отправка: ${formatManagedBroadcastDateTime(
-      result.nextSendAt,
-      result.scheduleTimezone,
-    )}.`;
-  }
-
-  if (result.failedChats > 0) {
-    if (failedTargetLabel) {
-      return `Ошибки: ${failedTargetLabel}. Отправлено: ${result.sentChats}/${result.targetChats}.`;
-    }
-    return `Отправлено: ${result.sentChats}/${result.targetChats}, ошибок: ${result.failedChats}.`;
-  }
-
-  if (result.nextSendAt && result.scheduledOccurrences > 0) {
-    return `Следующая отправка: ${formatManagedBroadcastDateTime(
-      result.nextSendAt,
-      result.scheduleTimezone,
-    )}.`;
-  }
-
-  return sentTargetLabel
-    ? `Отправлено: ${sentTargetLabel}.`
-    : `Отправлено: ${result.sentChats}/${result.targetChats}.`;
 }
 
 function formatCompactManagedBroadcastDateTime(
@@ -948,8 +916,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     useState<BroadcastSchedulePlannerSelectionState>(EMPTY_BROADCAST_PLANNER_STATE);
   const [editingManagedBroadcast, setEditingManagedBroadcast] =
     useState<ManagedBroadcastDetails | null>(null);
-  const [duplicatedManagedBroadcast, setDuplicatedManagedBroadcast] =
-    useState<ManagedBroadcastDetails | null>(null);
   const [editingManagedAutopostRule, setEditingManagedAutopostRule] =
     useState<ManagedAutopostRuleDetails | null>(null);
   const [managedBroadcastDeleteTarget, setManagedBroadcastDeleteTarget] =
@@ -968,11 +934,13 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     useState<BroadcastHistoryFilter>('future');
   const [broadcastNowMs, setBroadcastNowMs] = useState(() => Date.now());
   const appliedBroadcastHandoffSignatureRef = useRef<string | null>(null);
+  const appliedLegacyEditorTargetRef = useRef<string | null>(null);
   const broadcastDraftRestoreEpochRef = useRef(0);
   const [broadcastDraftRestoreReady, setBroadcastDraftRestoreReady] = useState(false);
   const searchParams = new URLSearchParams(location.search);
   const focusSection = searchParams.get('focus');
   const handoffRequested = searchParams.get('handoff') === '1';
+  const legacyEditorTarget = resolveLegacyBroadcastEditorTarget(location.search);
 
   function applyBroadcastImages(nextImages: BroadcastImage[]) {
     const normalizedImages = normalizeBroadcastImageList(nextImages);
@@ -1007,6 +975,81 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       focusSection === 'broadcast' &&
       handoffRequested,
     refetchOnWindowFocus: false,
+  });
+  const settingsHandoffMode = resolveBroadcastHandoffLoadMode({
+    requested: Boolean(chatId) && focusSection === 'broadcast' && handoffRequested,
+    queries: [settingsScreenQuery, broadcastHandoffStateQuery],
+  });
+  const hasLegacyBroadcastHandoff =
+    handoffRequested &&
+    Boolean(
+      broadcastHandoffStateQuery.data && hasBroadcastHandoffDraft(broadcastHandoffStateQuery.data),
+    );
+  const legacyBroadcastWorkspaceRequested =
+    focusSection === 'broadcast' &&
+    (hasLegacyBroadcastHandoff ||
+      searchParams.get('workspace') === 'autoposts' ||
+      legacyEditorTarget !== null);
+  const sendBroadcastHandoffMutation = useMutation({
+    mutationFn: (payload: SendBroadcastPayload) => sendChannelBroadcast(api, chatId ?? '', payload),
+    onSuccess: async (result) => {
+      resetBroadcastComposer();
+      let cleanupFailed = false;
+      if (chatId) {
+        const handoffQueryKey = queryKeys.channelBroadcastHandoff(chatId);
+        try {
+          await clearChannelBroadcastHandoffState(api, chatId);
+          await queryClient.invalidateQueries({ queryKey: handoffQueryKey });
+        } catch {
+          cleanupFailed = true;
+          queryClient.setQueryData(handoffQueryKey, null);
+        }
+        void queryClient.invalidateQueries({ queryKey: queryKeys.channelSettingsScreen(chatId) });
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.channelManagedBroadcastCalendar(chatId),
+        });
+      }
+      void queryClient.invalidateQueries({ queryKey: ['publications', 'legacy'] });
+      pushToast({
+        tone: result.failedChats > 0 || cleanupFailed ? 'info' : 'success',
+        title: result.failedChats > 0 ? 'Часть публикаций с ошибкой' : 'Публикация запланирована',
+        description:
+          [
+            result.failedChats > 0
+              ? `Отправлено: ${result.sentChats}/${result.targetChats}, ошибок: ${result.failedChats}.`
+              : '',
+            cleanupFailed ? 'Черновик не удалось очистить. Не запускайте его повторно.' : '',
+          ]
+            .filter(Boolean)
+            .join(' ') || undefined,
+      });
+      maxNotify(result.failedChats > 0 || cleanupFailed ? 'warning' : 'success');
+    },
+    onError: (error) => {
+      const description = normalizeApiError(error);
+      if (description.includes('BROADCAST_TARGET_SLOT_CONFLICT')) {
+        setBroadcastScheduleError('Занято у получателя.');
+        void queryClient.invalidateQueries({ queryKey: queryKeys.channelSettingsScreen(chatId) });
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.channelManagedBroadcastCalendar(chatId),
+        });
+      } else if (
+        description.includes('выбранное время') ||
+        description.includes('BROADCAST_SLOT_CONFLICT')
+      ) {
+        setBroadcastScheduleError('Занято.');
+        void queryClient.invalidateQueries({ queryKey: queryKeys.channelSettingsScreen(chatId) });
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.channelManagedBroadcastCalendar(chatId),
+        });
+      }
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось запустить публикацию',
+        description,
+      });
+      maxNotify('error');
+    },
   });
   const broadcastComposerClientResetQuery = useQuery({
     queryKey: queryKeys.channelBroadcastComposerClientReset(chatId),
@@ -1051,15 +1094,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     error: settingsScreenQuery.error,
     refetch: settingsScreenQuery.refetch,
   };
-  const settingsHandoffRetryCount = settingsScreenQuery.failureCount;
-  const showSettingsHandoffPending =
-    Boolean(chatId) &&
-    handoffRequested &&
-    !settingsScreenQuery.data &&
-    !settingsScreenQuery.isError &&
-    (settingsScreenQuery.isPending || settingsHandoffRetryCount > 0);
-  const showSettingsHandoffError =
-    Boolean(chatId) && handoffRequested && !settingsScreenQuery.data && settingsScreenQuery.isError;
   const channelHeader = settingsScreenQuery.data?.header ?? null;
   const vkParsingCapabilityQuery = useQuery({
     queryKey: queryKeys.channelVkParsingCapability(chatId),
@@ -1161,6 +1195,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     }
 
     if (!hasBroadcastHandoffDraft(broadcastHandoffStateQuery.data)) {
+      appliedBroadcastHandoffSignatureRef.current = null;
       return;
     }
 
@@ -1172,7 +1207,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     appliedBroadcastHandoffSignatureRef.current = signature;
     broadcastDraftRestoreEpochRef.current += 1;
     setEditingManagedBroadcast(null);
-    setDuplicatedManagedBroadcast(null);
     setEditingManagedAutopostRule(null);
     setBroadcastButtons(broadcastHandoffStateQuery.data.buttons);
     const handoffSchedule = resolveBroadcastHandoffSchedule(broadcastHandoffStateQuery.data);
@@ -1212,7 +1246,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastCycleCount(2);
     setBroadcastCycleError('');
     setEditingManagedBroadcast(null);
-    setDuplicatedManagedBroadcast(null);
     setEditingManagedAutopostRule(null);
     setBroadcastWorkspaceView('compose');
     setPendingBroadcastPublishReview(null);
@@ -1405,6 +1438,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function closeSection(section: ChannelSettingsSectionKey) {
+    const legacyReturnPath = resolveLegacyPublicationReturnPath(location.state);
+    if (section === 'broadcast' && legacyEditorTarget && legacyReturnPath) {
+      navigate(-1);
+      return;
+    }
     if (
       (section === 'broadcast' && focusSection === 'broadcast') ||
       (section === 'comments' && focusSection === 'comments') ||
@@ -1417,6 +1455,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       nextSearchParams.delete('focus');
       nextSearchParams.delete('handoff');
       nextSearchParams.delete('workspace');
+      nextSearchParams.delete('legacyKind');
+      nextSearchParams.delete('legacyId');
       navigate(
         {
           pathname: location.pathname,
@@ -1610,53 +1650,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     },
   });
 
-  const sendBroadcastMutation = useMutation({
-    mutationFn: (payload: SendBroadcastPayload) => sendChannelBroadcast(api, chatId ?? '', payload),
-    onSuccess: (result) => {
-      appliedBroadcastHandoffSignatureRef.current = null;
-      resetBroadcastComposer();
-      if (chatId) {
-        void clearChannelBroadcastHandoffState(api, chatId).catch(() => undefined);
-      }
-      void queryClient.invalidateQueries({ queryKey: queryKeys.channelSettingsScreen(chatId) });
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.channelManagedBroadcastCalendar(chatId),
-      });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.channelBroadcastHandoff(chatId) });
-      pushToast({
-        tone: result.failedChats > 0 ? 'info' : 'success',
-        title: result.failedChats > 0 ? 'Часть публикаций с ошибкой' : 'Публикация запланирована',
-        description: formatChannelBroadcastResultDescription(result),
-      });
-      maxNotify(result.failedChats > 0 ? 'warning' : 'success');
-    },
-    onError: (error) => {
-      const description = normalizeApiError(error);
-      if (description.includes('BROADCAST_TARGET_SLOT_CONFLICT')) {
-        setBroadcastScheduleError('Занято у получателя.');
-        void queryClient.invalidateQueries({ queryKey: queryKeys.channelSettingsScreen(chatId) });
-        void queryClient.invalidateQueries({
-          queryKey: queryKeys.channelManagedBroadcastCalendar(chatId),
-        });
-      } else if (
-        description.includes('выбранное время') ||
-        description.includes('BROADCAST_SLOT_CONFLICT')
-      ) {
-        setBroadcastScheduleError('Занято.');
-        void queryClient.invalidateQueries({ queryKey: queryKeys.channelSettingsScreen(chatId) });
-        void queryClient.invalidateQueries({
-          queryKey: queryKeys.channelManagedBroadcastCalendar(chatId),
-        });
-      }
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось запустить автопостинг',
-        description,
-      });
-      maxNotify('error');
-    },
-  });
-
   const sendBroadcastTestMutation = useMutation({
     mutationFn: (payload: SendBroadcastPayload) =>
       sendChannelBroadcastTest(api, chatId ?? '', payload),
@@ -1704,29 +1697,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       queryKey: queryKeys.channelManagedBroadcastCalendar(chatId),
     });
   };
-
-  const createManagedAutopostRuleMutation = useMutation({
-    mutationFn: (payload: SendBroadcastPayload) =>
-      createChannelManagedAutopostRule(api, chatId ?? '', {
-        title: '',
-        payload: normalizeManagedAutopostPayload(payload),
-      }),
-    onSuccess: () => {
-      resetBroadcastComposer();
-      invalidateChannelAutopostData();
-      setBroadcastWorkspaceView('autoposts');
-      pushToast({ tone: 'success', title: 'Автопост создан' });
-      maxNotify('success');
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось создать автопост',
-        description: normalizeApiError(error),
-      });
-      maxNotify('error');
-    },
-  });
 
   const updateManagedAutopostRuleMutation = useMutation({
     mutationFn: ({
@@ -1795,10 +1765,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
   const openManagedAutopostRuleMutation = useMutation({
     mutationFn: (ruleId: string) => getChannelManagedAutopostRule(api, chatId ?? '', ruleId),
+    retry: 2,
     onSuccess: (rule) => {
       const payload = rule.payload;
       setEditingManagedBroadcast(null);
-      setDuplicatedManagedBroadcast(null);
       setEditingManagedAutopostRule(rule);
       setBroadcastText(payload.text);
       setBroadcastButtons(payload.buttons);
@@ -1806,7 +1776,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       setBroadcastVideoCleared(false);
       setBroadcastTimingMode('scheduled');
       setBroadcastScheduledSlots(sortAndUniqueBroadcastSlots(payload.scheduledSlots));
-      setBroadcastScheduleTimezone(payload.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone());
+      setBroadcastScheduleTimezone(
+        payload.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
+      );
       setBroadcastScheduleError('');
       setBroadcastCycleError('');
       resetBroadcastPlanner();
@@ -1932,17 +1904,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     },
   });
 
-  function applyManagedBroadcastToComposer(
-    broadcast: ManagedBroadcastDetails,
-    mode: 'edit' | 'duplicate',
-  ) {
+  function applyManagedBroadcastToComposer(broadcast: ManagedBroadcastDetails) {
     setEditingManagedAutopostRule(null);
-    setEditingManagedBroadcast(mode === 'edit' ? broadcast : null);
-    setDuplicatedManagedBroadcast(
-      mode === 'duplicate' && broadcast.mediaType === 'video' && broadcast.mediaPayload
-        ? broadcast
-        : null,
-    );
+    setEditingManagedBroadcast(broadcast);
     setBroadcastText(broadcast.text);
     setBroadcastButtons(broadcast.buttons);
     setBroadcastButtonErrors([]);
@@ -1966,22 +1930,20 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       }),
     );
     setBroadcastScheduledSlots(
-      mode === 'edit'
-        ? sortAndUniqueBroadcastSlots(
-            broadcast.scheduleMode === 'calendar'
-              ? broadcast.scheduledSlots
-              : broadcast.nextSendAt && !broadcast.cycleEnabled
-                ? [broadcast.nextSendAt]
-                : [],
-          )
-        : [],
+      sortAndUniqueBroadcastSlots(
+        broadcast.scheduleMode === 'calendar'
+          ? broadcast.scheduledSlots
+          : broadcast.nextSendAt && !broadcast.cycleEnabled
+            ? [broadcast.nextSendAt]
+            : [],
+      ),
     );
     setBroadcastScheduleTimezone(
       broadcast.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
     );
     setBroadcastTextError('');
     setBroadcastImageError('');
-    setBroadcastScheduleError(mode === 'duplicate' ? 'Выберите время.' : '');
+    setBroadcastScheduleError('');
     setBroadcastCycleError('');
     resetBroadcastPlanner();
     setExpandedSections((current) => ({ ...current, broadcast: true }));
@@ -1989,8 +1951,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
   const openManagedBroadcastEditorMutation = useMutation({
     mutationFn: (broadcastId: string) => getChannelManagedBroadcast(api, chatId ?? '', broadcastId),
+    retry: 2,
     onSuccess: (broadcast) => {
-      applyManagedBroadcastToComposer(broadcast, 'edit');
+      applyManagedBroadcastToComposer(broadcast);
       pushToast({
         tone: 'info',
         title: 'Редактирование автопостинга',
@@ -2012,24 +1975,42 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     },
   });
 
-  const duplicateManagedBroadcastMutation = useMutation({
-    mutationFn: (broadcastId: string) => getChannelManagedBroadcast(api, chatId ?? '', broadcastId),
-    onSuccess: (broadcast) => {
-      applyManagedBroadcastToComposer(broadcast, 'duplicate');
-      pushToast({
-        tone: 'success',
-        title: 'Копия готова',
-      });
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Копия не создана',
-        description: normalizeApiError(error),
-      });
-      maxNotify('error');
-    },
-  });
+  useEffect(() => {
+    if (!legacyEditorTarget) {
+      appliedLegacyEditorTargetRef.current = null;
+      return;
+    }
+
+    const signature = `${chatId}:${legacyEditorTarget.kind}:${legacyEditorTarget.id}`;
+    if (appliedLegacyEditorTargetRef.current === signature) {
+      return;
+    }
+
+    if (legacyEditorTarget.kind === 'autopost') {
+      if (!settingsScreenQuery.data || openManagedAutopostRuleMutation.isPending) {
+        return;
+      }
+
+      appliedLegacyEditorTargetRef.current = signature;
+      setBroadcastWorkspaceView('autoposts');
+      openManagedAutopostRuleMutation.mutate(legacyEditorTarget.id);
+      return;
+    }
+
+    if (!settingsScreenQuery.data || openManagedBroadcastEditorMutation.isPending) {
+      return;
+    }
+
+    appliedLegacyEditorTargetRef.current = signature;
+    setBroadcastWorkspaceView('history');
+    openManagedBroadcastEditorMutation.mutate(legacyEditorTarget.id);
+  }, [
+    chatId,
+    legacyEditorTarget,
+    openManagedAutopostRuleMutation,
+    openManagedBroadcastEditorMutation,
+    settingsScreenQuery.data,
+  ]);
 
   useHintPopoverAutoPosition(openHintKey !== null, openHintKey);
 
@@ -2060,28 +2041,34 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     );
   }
 
-  if (showSettingsHandoffPending) {
+  if (settingsHandoffMode === 'loading') {
     return (
       <div className="page-stack page-enter">
         <Suspense fallback={null}>
           <LazySettingsHandoffState
             entityType="channel"
             mode="loading"
-            retryCount={settingsHandoffRetryCount}
+            retryCount={Math.max(
+              settingsScreenQuery.failureCount,
+              broadcastHandoffStateQuery.failureCount,
+            )}
           />
         </Suspense>
       </div>
     );
   }
 
-  if (showSettingsHandoffError) {
+  if (settingsHandoffMode === 'error') {
     return (
       <div className="page-stack page-enter">
         <Suspense fallback={null}>
           <LazySettingsHandoffState
             entityType="channel"
             mode="error"
-            onRetry={() => void settingsQuery.refetch()}
+            onRetry={() => {
+              void settingsQuery.refetch();
+              void broadcastHandoffStateQuery.refetch();
+            }}
           />
         </Suspense>
       </div>
@@ -2238,15 +2225,13 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const isBroadcastBusy =
     isSavingChannelSettingsForBroadcast ||
     autosaveState === 'saving' ||
-    sendBroadcastMutation.isPending ||
+    sendBroadcastHandoffMutation.isPending ||
     sendBroadcastTestMutation.isPending ||
     clearBroadcastHandoffMutation.isPending ||
-    createManagedAutopostRuleMutation.isPending ||
     updateManagedAutopostRuleMutation.isPending ||
     deleteManagedAutopostRuleMutation.isPending ||
     openManagedAutopostRuleMutation.isPending ||
     isOpeningManagedBroadcastEditor ||
-    duplicateManagedBroadcastMutation.isPending ||
     isUpdatingManagedBroadcast ||
     cancelManagedBroadcastMutation.isPending ||
     retryManagedBroadcastMutation.isPending;
@@ -2257,8 +2242,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     'отправок',
   );
   const normalizedBroadcastText = broadcastText.trim();
-  const broadcastVideoSource =
-    editingManagedBroadcast ?? duplicatedManagedBroadcast ?? editingManagedAutopostRule?.payload;
+  const broadcastVideoSource = editingManagedBroadcast ?? editingManagedAutopostRule?.payload;
   const editingBroadcastHasVideo =
     !broadcastVideoCleared &&
     broadcastVideoSource?.mediaType === 'video' &&
@@ -2334,11 +2318,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     !broadcastScheduleReady ||
     !broadcastHasFutureSlots ||
     !broadcastButtonDraftValid;
-  const showBroadcastAutopostAction =
-    !editingManagedBroadcast && !duplicatedManagedBroadcast && broadcastTimingMode === 'scheduled';
   const broadcastAutopostDisabled =
     isBroadcastBusy ||
-    !showBroadcastAutopostAction ||
     !broadcastContentReady ||
     !broadcastCalendarScheduleReady ||
     !broadcastButtonDraftValid;
@@ -2382,7 +2363,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   }));
   const showBroadcastResetAction =
     editingManagedBroadcast !== null ||
-    duplicatedManagedBroadcast !== null ||
     broadcastTimingMode !== 'now' ||
     broadcastScheduledSlots.length > 0 ||
     normalizedBroadcastText.length > 0 ||
@@ -2407,10 +2387,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const postSuggestionsCardStatus = draft.postSuggestionsEnabled
     ? postSuggestionsEntryLabel
     : 'Ручной';
-  const broadcastCardStatus =
-    editingManagedAutopostRule
-      ? 'Правка'
-      : broadcastTimingMode === 'cycle'
+  const broadcastCardStatus = editingManagedAutopostRule
+    ? 'Правка'
+    : broadcastTimingMode === 'cycle'
       ? 'Цикл'
       : broadcastTimingMode === 'now'
         ? 'Сейчас'
@@ -2425,7 +2404,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     ? 'Сбросить изменения'
     : editingManagedAutopostRule
       ? 'Сбросить изменения'
-    : 'Очистить автопостинг';
+      : 'Очистить автопостинг';
   const broadcastFooterScheduleLabel =
     broadcastTimingMode === 'now'
       ? 'Сейчас'
@@ -2446,40 +2425,34 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   ]
     .filter(Boolean)
     .join(' · ');
-  const broadcastDraftFallback = editingBroadcastHasVideo
-    ? 'Видео без текста'
-    : broadcastImageEnabled
-      ? 'Фото без текста'
-      : 'Добавьте текст, фото или видео';
   const broadcastPrimaryActionLabel = editingManagedBroadcast
     ? 'Сохранить'
     : editingManagedAutopostRule
       ? 'Сохранить'
-    : broadcastTimingMode === 'now'
-      ? 'Опубликовать'
-      : broadcastTimingMode === 'scheduled'
-        ? 'Запланировать публикацию'
-        : 'Запустить';
+      : broadcastTimingMode === 'now'
+        ? 'Опубликовать'
+        : broadcastTimingMode === 'scheduled'
+          ? 'Запланировать публикацию'
+          : 'Запустить';
   const broadcastFooterPrimaryActionLabel = editingManagedBroadcast
     ? 'Сохранить'
     : editingManagedAutopostRule
       ? 'Сохранить'
-    : broadcastTimingMode === 'now'
-      ? 'Опубликовать'
-      : broadcastTimingMode === 'scheduled'
-        ? 'Запланировать публикацию'
-        : 'Запустить';
-  const showBroadcastWorkspaceTabs =
-    !editingManagedBroadcast && !duplicatedManagedBroadcast && !editingManagedAutopostRule;
+      : broadcastTimingMode === 'now'
+        ? 'Опубликовать'
+        : broadcastTimingMode === 'scheduled'
+          ? 'Запланировать публикацию'
+          : 'Запустить';
+  const showBroadcastWorkspaceTabs = !editingManagedBroadcast && !editingManagedAutopostRule;
   const activeBroadcastWorkspaceView = showBroadcastWorkspaceTabs
-    ? broadcastWorkspaceView
+    ? legacyBroadcastWorkspaceRequested &&
+      !handoffRequested &&
+      (broadcastWorkspaceView === 'compose' || broadcastWorkspaceView === 'calendar')
+      ? legacyEditorTarget?.kind === 'broadcast'
+        ? 'history'
+        : 'autoposts'
+      : broadcastWorkspaceView
     : 'compose';
-  const showBroadcastDraftCard = showBroadcastWorkspaceTabs && showBroadcastResetAction;
-  const broadcastDraftFacts = [
-    broadcastTargetContextLabel,
-    broadcastFooterScheduleLabel,
-    broadcastFooterMeta,
-  ].filter((item): item is string => Boolean(item));
   const broadcastDrilldownFooter = (
     <BroadcastPublishBar
       title={broadcastFooterTitle}
@@ -2489,35 +2462,22 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       testLabel={sendBroadcastTestMutation.isPending ? 'Тест...' : 'Тест'}
       testAriaLabel={sendBroadcastTestMutation.isPending ? 'Отправляем тест' : 'Отправить тест'}
       testDisabled={isBroadcastBusy || !broadcastTestReady}
-      secondaryLabel={
-        showBroadcastAutopostAction && !editingManagedAutopostRule
-          ? createManagedAutopostRuleMutation.isPending
-            ? 'Сохраняем...'
-            : 'Сохранить как автопост'
-          : undefined
-      }
-      secondaryDisabled={broadcastAutopostDisabled}
-      onSecondary={
-        showBroadcastAutopostAction && !editingManagedAutopostRule
-          ? handleSaveChannelAutopostRule
-          : undefined
-      }
       primaryLabel={
         updateManagedAutopostRuleMutation.isPending && editingManagedAutopostRule
           ? 'Сохраняем...'
           : isUpdatingManagedBroadcast
-          ? 'Сохраняем...'
-          : sendBroadcastMutation.isPending
-            ? broadcastTimingMode === 'now'
-              ? 'Публикуем...'
-              : 'Планируем...'
+            ? 'Сохраняем...'
             : isOpeningManagedBroadcastEditor
               ? 'Открываем...'
               : broadcastFooterPrimaryActionLabel
       }
-      primaryDisabled={editingManagedAutopostRule ? broadcastAutopostDisabled : broadcastSendDisabled}
+      primaryDisabled={
+        editingManagedAutopostRule ? broadcastAutopostDisabled : broadcastSendDisabled
+      }
       onTest={handleSendChannelBroadcastTest}
-      onPrimary={editingManagedAutopostRule ? handleSaveChannelAutopostRule : handleSendChannelBroadcast}
+      onPrimary={
+        editingManagedAutopostRule ? handleSaveChannelAutopostRule : handleSendChannelBroadcast
+      }
     />
   );
 
@@ -2528,7 +2488,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
   function resetBroadcastComposer() {
     setEditingManagedBroadcast(null);
-    setDuplicatedManagedBroadcast(null);
     setEditingManagedAutopostRule(null);
     setBroadcastText('');
     setBroadcastTextError('');
@@ -2566,7 +2525,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function handleClearBroadcastComposer() {
-    if (editingManagedBroadcast || duplicatedManagedBroadcast || editingManagedAutopostRule) {
+    if (editingManagedBroadcast || editingManagedAutopostRule) {
       handleCancelBroadcastEdit();
       return;
     }
@@ -2601,14 +2560,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     openManagedBroadcastEditorMutation.mutate(broadcast.id);
   }
 
-  function handleDuplicateManagedBroadcast(broadcast: ManagedBroadcastListItem) {
-    if (!chatId || duplicateManagedBroadcastMutation.isPending) {
-      return;
-    }
-
-    duplicateManagedBroadcastMutation.mutate(broadcast.id);
-  }
-
   function handleDeleteManagedBroadcastById(broadcastId: string) {
     const broadcast = managedBroadcasts.find((item) => item.id === broadcastId);
     if (!broadcast) {
@@ -2640,7 +2591,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function confirmDeleteManagedAutopostRule() {
-    if (!managedAutopostRuleDeleteTarget || !chatId || deleteManagedAutopostRuleMutation.isPending) {
+    if (
+      !managedAutopostRuleDeleteTarget ||
+      !chatId ||
+      deleteManagedAutopostRuleMutation.isPending
+    ) {
       return;
     }
 
@@ -2794,7 +2749,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    sendBroadcastMutation.mutate(payload);
+    if (hasLegacyBroadcastHandoff) {
+      sendBroadcastHandoffMutation.mutate(payload);
+      return;
+    }
+
+    navigate(`/publications?compose=1&entityType=channel&entityId=${encodeURIComponent(chatId)}`);
   }
 
   function handleCloseBroadcastPublishReview() {
@@ -2854,6 +2814,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
+    if (!editingManagedAutopostRule) {
+      navigate(`/publications?compose=1&entityType=channel&entityId=${encodeURIComponent(chatId)}`);
+      return;
+    }
+
     if (!(await saveChannelSettingsForBroadcast())) {
       return;
     }
@@ -2872,19 +2837,19 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       cycleCount: 1,
     };
 
-    if (editingManagedAutopostRule) {
-      updateManagedAutopostRuleMutation.mutate({
-        ruleId: editingManagedAutopostRule.id,
-        payload: nextPayload,
-      });
-      return;
-    }
-
-    createManagedAutopostRuleMutation.mutate(nextPayload);
+    updateManagedAutopostRuleMutation.mutate({
+      ruleId: editingManagedAutopostRule.id,
+      payload: nextPayload,
+    });
   }
 
   function handleSendChannelBroadcast() {
     if (!chatId) {
+      return;
+    }
+
+    if (!editingManagedBroadcast && !hasLegacyBroadcastHandoff) {
+      navigate(`/publications?compose=1&entityType=channel&entityId=${encodeURIComponent(chatId)}`);
       return;
     }
 
@@ -3403,156 +3368,236 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         </SettingsDrilldownPanel>
       </GlassCard>
 
-      <GlassCard className="channel-settings-card" elevated>
-        <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-          <SettingsSectionToggle
+      {!legacyBroadcastWorkspaceRequested ? (
+        <GlassCard
+          className="channel-settings-card settings-home-entry settings-home-entry--priority"
+          elevated
+          padding="sm"
+          aria-label="Посты"
+        >
+          <PublicationWorkspaceHandoff
+            entityType="channel"
+            entityId={chatId}
+            variant="settings-entry"
+          />
+        </GlassCard>
+      ) : null}
+
+      {legacyBroadcastWorkspaceRequested ? (
+        <GlassCard className="channel-settings-card" elevated>
+          <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+            <SettingsSectionToggle
+              title="Автопостинг"
+              summary={broadcastHeaderSummary}
+              status={broadcastCardStatus}
+              icon="send"
+              tone="sky"
+              open={expandedSections.broadcast}
+              controls="channel-settings-broadcast"
+              onClick={() => toggleSection('broadcast')}
+            />
+          </div>
+
+          <SettingsDrilldownPanel
+            id="channel-settings-broadcast"
+            open={expandedSections.broadcast}
             title="Автопостинг"
             summary={broadcastHeaderSummary}
-            status={broadcastCardStatus}
-            icon="send"
+            variant="screen"
             tone="sky"
-            open={expandedSections.broadcast}
-            controls="channel-settings-broadcast"
-            onClick={() => toggleSection('broadcast')}
-          />
-        </div>
-
-        <SettingsDrilldownPanel
-          id="channel-settings-broadcast"
-          open={expandedSections.broadcast}
-          title="Автопостинг"
-          summary={broadcastHeaderSummary}
-          variant="screen"
-          tone="sky"
-          className="settings-drilldown__panel--campaign settings-drilldown__panel--broadcast settings-drilldown__panel--broadcast-screen"
-          onClose={() => toggleSection('broadcast')}
-          footer={activeBroadcastWorkspaceView === 'compose' ? broadcastDrilldownFooter : null}
-        >
-          <div
-            id="channel-settings-broadcast"
-            className={cn('settings-section__collapse', expandedSections.broadcast && 'is-open')}
+            className="settings-drilldown__panel--campaign settings-drilldown__panel--broadcast settings-drilldown__panel--broadcast-screen"
+            onClose={() => toggleSection('broadcast')}
+            footer={activeBroadcastWorkspaceView === 'compose' ? broadcastDrilldownFooter : null}
           >
-            {expandedSections.broadcast ? (
-              <div className="settings-section__collapse-inner">
-                <div className="channel-broadcast-studio broadcast-studio-screen broadcast-studio-screen--channel">
-                  <div className="broadcast-studio-screen__chrome">
-                    <BroadcastWorkspaceChrome
-                      showTabs={showBroadcastWorkspaceTabs}
-                      value={activeBroadcastWorkspaceView}
-                      autopostCount={orderedManagedAutopostRules.length}
-                      historyCount={orderedManagedBroadcasts.length}
-                      disabled={isBroadcastBusy}
-                      showReset={showBroadcastResetAction}
-                      resetLabel={broadcastResetActionLabel}
-                      resetPending={clearBroadcastHandoffMutation.isPending}
-                      onChange={setBroadcastWorkspaceView}
-                      onReset={handleClearBroadcastComposer}
-                    />
-                  </div>
+            <div
+              id="channel-settings-broadcast"
+              className={cn('settings-section__collapse', expandedSections.broadcast && 'is-open')}
+            >
+              {expandedSections.broadcast ? (
+                <div className="settings-section__collapse-inner">
+                  <div className="channel-broadcast-studio broadcast-studio-screen broadcast-studio-screen--channel">
+                    <div className="broadcast-studio-screen__chrome">
+                      <BroadcastWorkspaceChrome
+                        showTabs={showBroadcastWorkspaceTabs && !handoffRequested}
+                        value={activeBroadcastWorkspaceView}
+                        autopostCount={orderedManagedAutopostRules.length}
+                        historyCount={orderedManagedBroadcasts.length}
+                        compatibilityOnly
+                        disabled={isBroadcastBusy}
+                        showReset={showBroadcastResetAction}
+                        resetLabel={broadcastResetActionLabel}
+                        resetPending={clearBroadcastHandoffMutation.isPending}
+                        onChange={setBroadcastWorkspaceView}
+                        onReset={handleClearBroadcastComposer}
+                      />
+                    </div>
 
-                  {activeBroadcastWorkspaceView === 'compose' ? (
-                    <div className="broadcast-compose-flow broadcast-compose-flow--screen">
-                      <div className="broadcast-stage-card broadcast-stage-card--message broadcast-stage-card--primary">
-                        <div className="broadcast-stage-card__head">
-                          <div className="broadcast-stage-card__title-wrap">
-                            <strong>Сообщение</strong>
+                    {activeBroadcastWorkspaceView === 'compose' ? (
+                      <div className="broadcast-compose-flow broadcast-compose-flow--screen">
+                        <div className="broadcast-stage-card broadcast-stage-card--message broadcast-stage-card--primary">
+                          <div className="broadcast-stage-card__head">
+                            <div className="broadcast-stage-card__title-wrap">
+                              <strong>Сообщение</strong>
+                            </div>
+                            <span
+                              className={cn(
+                                'broadcast-stage-card__status',
+                                broadcastContentReady ? 'is-ready' : 'is-pending',
+                              )}
+                            >
+                              {broadcastContentReady
+                                ? 'Готов'
+                                : broadcastImagesPreparing
+                                  ? 'Фото...'
+                                  : broadcastHasDirectContent
+                                    ? 'Проверка'
+                                    : 'Пусто'}
+                            </span>
                           </div>
-                          <span
-                            className={cn(
-                              'broadcast-stage-card__status',
-                              broadcastContentReady ? 'is-ready' : 'is-pending',
-                            )}
-                          >
-                            {broadcastContentReady
-                              ? 'Готов'
-                              : broadcastImagesPreparing
-                                ? 'Фото...'
-                                : broadcastHasDirectContent
-                                  ? 'Проверка'
-                                  : 'Пусто'}
-                          </span>
+
+                          <div className="broadcast-stage-card__body">
+                            <Suspense fallback={null}>
+                              <LazyBroadcastContentComposer
+                                text={broadcastText}
+                                maxLength={MAX_BROADCAST_TEXT_LENGTH}
+                                images={broadcastImages}
+                                videoLabel={editingBroadcastHasVideo ? 'Видео' : null}
+                                disabled={isBroadcastBusy}
+                                textError={broadcastTextError}
+                                imageError={broadcastImageError}
+                                onTextChange={(nextText) => {
+                                  setBroadcastText(nextText);
+                                  if (broadcastTextError) {
+                                    setBroadcastTextError('');
+                                  }
+                                }}
+                                onImagesChange={(nextImages) => {
+                                  applyBroadcastImages(nextImages);
+                                  if (nextImages.length > 0) {
+                                    setBroadcastVideoCleared(true);
+                                  }
+                                  setBroadcastImageError('');
+                                  if (broadcastTextError) {
+                                    setBroadcastTextError('');
+                                  }
+                                }}
+                                onImagePreparationChange={setBroadcastImagesPreparing}
+                                onClearVideo={() => {
+                                  setBroadcastVideoCleared(true);
+                                }}
+                                onError={(message) => {
+                                  setBroadcastImageError(message);
+                                  pushToast({
+                                    tone: 'danger',
+                                    title: 'Фото не добавлено',
+                                    description: message,
+                                  });
+                                  maxNotify('error');
+                                }}
+                                buttons={normalizedBroadcastButtons}
+                                systemButtons={broadcastSystemButtons}
+                                buttonsStatusLabel={broadcastVisibleButtonStatus}
+                                buttonsActive={broadcastHasVisibleButtons}
+                                buttonsError={!broadcastButtonDraftValid}
+                                onOpenButtons={() => setBroadcastButtonsSheetOpen(true)}
+                              />
+                            </Suspense>
+                            {showBroadcastSystemButtonMode ? (
+                              <div className="channel-settings-mode-card channel-settings-mode-card--broadcast-buttons">
+                                <span className="channel-settings-mode-card__label">Кнопки</span>
+                                <SegmentedControl<ChannelAutoPostButtonsMode>
+                                  value={draft.autoPostButtonsMode}
+                                  options={broadcastSystemButtonOptions}
+                                  onChange={(value) => patchDraft('autoPostButtonsMode', value)}
+                                  ariaLabel="Системные кнопки автопостинга"
+                                  className="channel-settings-mode-card__control"
+                                />
+                              </div>
+                            ) : null}
+                          </div>
                         </div>
 
-                        <div className="broadcast-stage-card__body">
-                          <Suspense fallback={null}>
-                            <LazyBroadcastContentComposer
-                              text={broadcastText}
-                              maxLength={MAX_BROADCAST_TEXT_LENGTH}
-                              images={broadcastImages}
-                              videoLabel={editingBroadcastHasVideo ? 'Видео' : null}
-                              disabled={isBroadcastBusy}
-                              textError={broadcastTextError}
-                              imageError={broadcastImageError}
-                              onTextChange={(nextText) => {
-                                setBroadcastText(nextText);
-                                if (broadcastTextError) {
-                                  setBroadcastTextError('');
-                                }
-                              }}
-                              onImagesChange={(nextImages) => {
-                                applyBroadcastImages(nextImages);
-                                if (nextImages.length > 0) {
-                                  setBroadcastVideoCleared(true);
-                                }
-                                setBroadcastImageError('');
-                                if (broadcastTextError) {
-                                  setBroadcastTextError('');
-                                }
-                              }}
-                              onImagePreparationChange={setBroadcastImagesPreparing}
-                              onClearVideo={() => {
-                                setBroadcastVideoCleared(true);
-                              }}
-                              onError={(message) => {
-                                setBroadcastImageError(message);
-                                pushToast({
-                                  tone: 'danger',
-                                  title: 'Фото не добавлено',
-                                  description: message,
-                                });
-                                maxNotify('error');
-                              }}
-                              buttons={normalizedBroadcastButtons}
-                              systemButtons={broadcastSystemButtons}
-                              buttonsStatusLabel={broadcastVisibleButtonStatus}
-                              buttonsActive={broadcastHasVisibleButtons}
-                              buttonsError={!broadcastButtonDraftValid}
-                              onOpenButtons={() => setBroadcastButtonsSheetOpen(true)}
-                            />
-                          </Suspense>
-                          {showBroadcastSystemButtonMode ? (
-                            <div className="channel-settings-mode-card channel-settings-mode-card--broadcast-buttons">
-                              <span className="channel-settings-mode-card__label">Кнопки</span>
-                              <SegmentedControl<ChannelAutoPostButtonsMode>
-                                value={draft.autoPostButtonsMode}
-                                options={broadcastSystemButtonOptions}
-                                onChange={(value) => patchDraft('autoPostButtonsMode', value)}
-                                ariaLabel="Системные кнопки автопостинга"
-                                className="channel-settings-mode-card__control"
-                              />
+                        <div className="broadcast-stage-card broadcast-stage-card--planner">
+                          <div className="broadcast-stage-card__head">
+                            <div className="broadcast-stage-card__title-wrap">
+                              <strong>Когда</strong>
                             </div>
-                          ) : null}
+                          </div>
+
+                          <div className="broadcast-stage-card__body">
+                            <Suspense fallback={null}>
+                              <LazyBroadcastSchedulePlanner
+                                resetKey={broadcastPlannerResetKey}
+                                value={broadcastScheduledSlots}
+                                occupiedSlots={broadcastOccupiedSlots}
+                                error={broadcastScheduleError || broadcastCycleError}
+                                disabled={isBroadcastBusy}
+                                managedBroadcasts={managedBroadcasts}
+                                calendarSlots={broadcastCalendarQuery.data?.slots ?? []}
+                                targetAwareAvailability
+                                sourceChatId={chatId}
+                                managedBroadcastsLoading={
+                                  settingsScreenQuery.isLoading ||
+                                  settingsScreenQuery.isFetching ||
+                                  broadcastCalendarQuery.isFetching
+                                }
+                                currentTargetLabel={broadcastTargetContextLabel}
+                                targetContextLabel={broadcastTargetContextLabel}
+                                calendarRefreshing={broadcastCalendarQuery.isFetching}
+                                excludeBroadcastId={editingManagedBroadcast?.id ?? null}
+                                excludeAutopostRuleId={editingManagedAutopostRule?.id ?? null}
+                                onEditBroadcast={handleEditManagedBroadcastById}
+                                onDeleteBroadcast={handleDeleteManagedBroadcastById}
+                                pendingEditBroadcastId={
+                                  openManagedBroadcastEditorMutation.isPending
+                                    ? openManagedBroadcastEditorMutation.variables
+                                    : null
+                                }
+                                pendingDeleteBroadcastId={
+                                  cancelManagedBroadcastMutation.isPending
+                                    ? cancelManagedBroadcastMutation.variables
+                                    : null
+                                }
+                                timingMode={broadcastTimingMode}
+                                cycle={broadcastCycleDraft}
+                                onTimingModeChange={(nextMode) => {
+                                  setBroadcastTimingMode(nextMode);
+                                  setBroadcastScheduleError('');
+                                  setBroadcastCycleError('');
+                                }}
+                                onCycleChange={(nextCycle) => {
+                                  setBroadcastCycleDraft(nextCycle);
+                                  setBroadcastCycleError('');
+                                }}
+                                onSelectionStateChange={handleBroadcastPlannerStateChange}
+                                onChange={(nextValue) => {
+                                  setBroadcastScheduledSlots(nextValue);
+                                  if (broadcastScheduleError) {
+                                    setBroadcastScheduleError('');
+                                  }
+                                }}
+                              />
+                            </Suspense>
+                          </div>
                         </div>
                       </div>
-
-                      <div className="broadcast-stage-card broadcast-stage-card--planner">
+                    ) : activeBroadcastWorkspaceView === 'calendar' ? (
+                      <div className="broadcast-stage-card broadcast-stage-card--planner broadcast-stage-card--calendar">
                         <div className="broadcast-stage-card__head">
                           <div className="broadcast-stage-card__title-wrap">
-                            <strong>Когда</strong>
+                            <strong>Календарь</strong>
                           </div>
                         </div>
 
                         <div className="broadcast-stage-card__body">
                           <Suspense fallback={null}>
                             <LazyBroadcastSchedulePlanner
-                              resetKey={broadcastPlannerResetKey}
-                              value={broadcastScheduledSlots}
+                              resetKey={`calendar-${broadcastPlannerResetKey}`}
+                              value={[]}
                               occupiedSlots={broadcastOccupiedSlots}
-                              error={broadcastScheduleError || broadcastCycleError}
                               disabled={isBroadcastBusy}
                               managedBroadcasts={managedBroadcasts}
                               calendarSlots={broadcastCalendarQuery.data?.slots ?? []}
-                              targetAwareAvailability
                               sourceChatId={chatId}
                               managedBroadcastsLoading={
                                 settingsScreenQuery.isLoading ||
@@ -3576,252 +3621,164 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                                   ? cancelManagedBroadcastMutation.variables
                                   : null
                               }
-                              timingMode={broadcastTimingMode}
-                              cycle={broadcastCycleDraft}
-                              onTimingModeChange={(nextMode) => {
-                                setBroadcastTimingMode(nextMode);
-                                setBroadcastScheduleError('');
-                                setBroadcastCycleError('');
-                              }}
-                              onCycleChange={(nextCycle) => {
-                                setBroadcastCycleDraft(nextCycle);
-                                setBroadcastCycleError('');
-                              }}
+                              viewMode="calendar"
                               onSelectionStateChange={handleBroadcastPlannerStateChange}
                               onChange={(nextValue) => {
+                                setBroadcastTimingMode('scheduled');
                                 setBroadcastScheduledSlots(nextValue);
-                                if (broadcastScheduleError) {
-                                  setBroadcastScheduleError('');
-                                }
+                                setBroadcastScheduleError('');
+                                setBroadcastWorkspaceView('compose');
                               }}
                             />
                           </Suspense>
                         </div>
                       </div>
-                    </div>
-                  ) : activeBroadcastWorkspaceView === 'calendar' ? (
-                    <div className="broadcast-stage-card broadcast-stage-card--planner broadcast-stage-card--calendar">
-                      <div className="broadcast-stage-card__head">
-                        <div className="broadcast-stage-card__title-wrap">
-                          <strong>Календарь</strong>
+                    ) : activeBroadcastWorkspaceView === 'autoposts' ? (
+                      <div className="broadcast-stage-card broadcast-stage-card--feed">
+                        <div className="broadcast-stage-card__head">
+                          <div className="broadcast-stage-card__title-wrap">
+                            <strong>Автопосты</strong>
+                            <small>
+                              {managedAutopostRulesQuery.isLoading
+                                ? 'Загрузка'
+                                : orderedManagedAutopostRules.length > 0
+                                  ? `${orderedManagedAutopostRules.length} шт.`
+                                  : 'Пусто'}
+                            </small>
+                          </div>
                         </div>
-                      </div>
 
-                      <div className="broadcast-stage-card__body">
-                        <Suspense fallback={null}>
-                          <LazyBroadcastSchedulePlanner
-                            resetKey={`calendar-${broadcastPlannerResetKey}`}
-                            value={[]}
-                            occupiedSlots={broadcastOccupiedSlots}
-                            disabled={isBroadcastBusy}
-                            managedBroadcasts={managedBroadcasts}
-                            calendarSlots={broadcastCalendarQuery.data?.slots ?? []}
-                            sourceChatId={chatId}
-                            managedBroadcastsLoading={
-                              settingsScreenQuery.isLoading ||
-                              settingsScreenQuery.isFetching ||
-                              broadcastCalendarQuery.isFetching
-                            }
-                            currentTargetLabel={broadcastTargetContextLabel}
-                            targetContextLabel={broadcastTargetContextLabel}
-                            calendarRefreshing={broadcastCalendarQuery.isFetching}
-                            excludeBroadcastId={editingManagedBroadcast?.id ?? null}
-                            excludeAutopostRuleId={editingManagedAutopostRule?.id ?? null}
-                            onEditBroadcast={handleEditManagedBroadcastById}
-                            onDeleteBroadcast={handleDeleteManagedBroadcastById}
-                            pendingEditBroadcastId={
-                              openManagedBroadcastEditorMutation.isPending
-                                ? openManagedBroadcastEditorMutation.variables
-                                : null
-                            }
-                            pendingDeleteBroadcastId={
-                              cancelManagedBroadcastMutation.isPending
-                                ? cancelManagedBroadcastMutation.variables
-                                : null
-                            }
-                            viewMode="calendar"
-                            onSelectionStateChange={handleBroadcastPlannerStateChange}
-                            onChange={(nextValue) => {
-                              setBroadcastTimingMode('scheduled');
-                              setBroadcastScheduledSlots(nextValue);
-                              setBroadcastScheduleError('');
-                              setBroadcastWorkspaceView('compose');
-                            }}
-                          />
-                        </Suspense>
-                      </div>
-                    </div>
-                  ) : activeBroadcastWorkspaceView === 'autoposts' ? (
-                    <div className="broadcast-stage-card broadcast-stage-card--feed">
-                      <div className="broadcast-stage-card__head">
-                        <div className="broadcast-stage-card__title-wrap">
-                          <strong>Автопосты</strong>
-                          <small>
-                            {managedAutopostRulesQuery.isLoading
-                              ? 'Загрузка'
-                              : orderedManagedAutopostRules.length > 0
-                                ? `${orderedManagedAutopostRules.length} шт.`
-                                : 'Пусто'}
-                          </small>
-                        </div>
-                      </div>
+                        <div className="broadcast-stage-card__body">
+                          <div className="managed-broadcasts-list">
+                            {orderedManagedAutopostRules.length === 0 &&
+                            !managedAutopostRulesQuery.isLoading ? (
+                              <div className="managed-broadcasts-list__empty">
+                                Автопостов пока нет. Соберите сообщение и сохраните автопост.
+                              </div>
+                            ) : null}
 
-                      <div className="broadcast-stage-card__body">
-                        <div className="managed-broadcasts-list">
-                          {showBroadcastDraftCard ? (
-                            <BroadcastDraftCard
-                              preview={normalizedBroadcastText}
-                              fallback={broadcastDraftFallback}
-                              facts={broadcastDraftFacts}
-                              disabled={isBroadcastBusy}
-                              onOpen={() => setBroadcastWorkspaceView('compose')}
-                              onReset={handleClearBroadcastComposer}
-                            />
-                          ) : null}
-
-                          {orderedManagedAutopostRules.length === 0 &&
-                          !showBroadcastDraftCard &&
-                          !managedAutopostRulesQuery.isLoading ? (
-                            <div className="managed-broadcasts-list__empty">
-                              Автопостов пока нет. Соберите сообщение и сохраните автопост.
-                            </div>
-                          ) : null}
-
-                          <Suspense fallback={<SkeletonCard lines={2} />}>
-                            {orderedManagedAutopostRules.map((rule) => (
-                              <LazyManagedAutopostRuleCard
-                                key={rule.id}
-                                rule={rule}
-                                nextLabel={formatCompactManagedBroadcastDateTime(
-                                  rule.nextSendAt,
-                                  rule.scheduleTimezone,
-                                )}
-                                facts={buildManagedAutopostRuleFacts(rule, 'Текущий канал')}
-                                isBusy={isBroadcastBusy}
-                                onOpen={() => openManagedAutopostRuleMutation.mutate(rule.id)}
-                                onPause={() =>
-                                  updateManagedAutopostRuleMutation.mutate({
-                                    ruleId: rule.id,
-                                    status: 'PAUSED',
-                                  })
-                                }
-                                onResume={() =>
-                                  updateManagedAutopostRuleMutation.mutate({
-                                    ruleId: rule.id,
-                                    status: 'ACTIVE',
-                                  })
-                                }
-                                onDelete={() => handleDeleteManagedAutopostRule(rule)}
-                              />
-                            ))}
-                          </Suspense>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="broadcast-stage-card broadcast-stage-card--feed">
-                      <div className="broadcast-stage-card__head">
-                        <div className="broadcast-stage-card__title-wrap">
-                          <strong>История</strong>
-                          <small>
-                            {settingsScreenQuery.isLoading
-                              ? 'Загрузка'
-                              : filteredBroadcasts.length > 0
-                                ? `${filteredBroadcasts.length} записей`
-                                : 'Пусто'}
-                          </small>
-                        </div>
-                      </div>
-
-                      <div className="broadcast-stage-card__body">
-                        <BroadcastHistoryFilterTabs
-                          value={broadcastHistoryFilter}
-                          counts={broadcastHistoryCounts}
-                          onChange={setBroadcastHistoryFilter}
-                        />
-
-                        <div className="managed-broadcasts-list">
-                          {showBroadcastDraftCard ? (
-                            <BroadcastDraftCard
-                              preview={normalizedBroadcastText}
-                              fallback={broadcastDraftFallback}
-                              facts={broadcastDraftFacts}
-                              disabled={isBroadcastBusy}
-                              onOpen={() => setBroadcastWorkspaceView('compose')}
-                              onReset={handleClearBroadcastComposer}
-                            />
-                          ) : null}
-
-                          {filteredBroadcasts.length === 0 &&
-                          !showBroadcastDraftCard &&
-                          !settingsScreenQuery.isLoading ? (
-                            <div className="managed-broadcasts-list__empty">История пока пустая.</div>
-                          ) : null}
-
-                          <Suspense fallback={<SkeletonCard lines={2} />}>
-                            {filteredBroadcasts.map((broadcast) => {
-                              const cardTone = resolveManagedBroadcastCardTone(broadcast);
-                              const cardMetric = resolveManagedBroadcastMetric(
-                                broadcast,
-                                broadcastNowMs,
-                              );
-                              const cardFacts = buildManagedBroadcastFactChips(broadcast);
-                              const canEditBroadcastSchedule =
-                                broadcast.scheduleMode === 'calendar' &&
-                                broadcast.status !== 'COMPLETED' &&
-                                broadcast.status !== 'CANCELED';
-                              const canCancelBroadcast =
-                                broadcast.status !== 'COMPLETED' &&
-                                broadcast.status !== 'CANCELED';
-                              const isDeletingBroadcast =
-                                cancelManagedBroadcastMutation.isPending &&
-                                cancelManagedBroadcastMutation.variables === broadcast.id;
-                              const isOpeningBroadcastEditor =
-                                openManagedBroadcastEditorMutation.isPending &&
-                                openManagedBroadcastEditorMutation.variables === broadcast.id;
-                              const isDuplicatingBroadcast =
-                                duplicateManagedBroadcastMutation.isPending &&
-                                duplicateManagedBroadcastMutation.variables === broadcast.id;
-                              const isRetryingBroadcast =
-                                retryManagedBroadcastMutation.isPending &&
-                                retryManagedBroadcastMutation.variables === broadcast.id;
-                              const cardBadge = isOpeningBroadcastEditor
-                                ? 'Открываем'
-                                : resolveManagedBroadcastCardBadge(broadcast);
-
-                              return (
-                                <LazyManagedBroadcastHistoryCard
-                                  key={broadcast.id}
-                                  broadcast={broadcast}
-                                  tone={cardTone}
-                                  badge={cardBadge}
-                                  title={resolveManagedBroadcastCardTitle(broadcast)}
-                                  metric={cardMetric}
-                                  facts={cardFacts}
-                                  canEdit={canEditBroadcastSchedule}
-                                  canCancel={canCancelBroadcast}
+                            <Suspense fallback={<SkeletonCard lines={2} />}>
+                              {orderedManagedAutopostRules.map((rule) => (
+                                <LazyManagedAutopostRuleCard
+                                  key={rule.id}
+                                  rule={rule}
+                                  nextLabel={formatCompactManagedBroadcastDateTime(
+                                    rule.nextSendAt,
+                                    rule.scheduleTimezone,
+                                  )}
+                                  facts={buildManagedAutopostRuleFacts(rule, 'Текущий канал')}
                                   isBusy={isBroadcastBusy}
-                                  isDeleting={isDeletingBroadcast}
-                                  isDuplicating={isDuplicatingBroadcast}
-                                  isRetrying={isRetryingBroadcast}
-                                  onEdit={() => handleEditManagedBroadcast(broadcast)}
-                                  onDuplicate={() => handleDuplicateManagedBroadcast(broadcast)}
-                                  onRetry={() => retryManagedBroadcastMutation.mutate(broadcast.id)}
-                                  onDelete={() => handleDeleteManagedBroadcast(broadcast)}
+                                  onOpen={() => openManagedAutopostRuleMutation.mutate(rule.id)}
+                                  onPause={() =>
+                                    updateManagedAutopostRuleMutation.mutate({
+                                      ruleId: rule.id,
+                                      status: 'PAUSED',
+                                    })
+                                  }
+                                  onResume={() =>
+                                    updateManagedAutopostRuleMutation.mutate({
+                                      ruleId: rule.id,
+                                      status: 'ACTIVE',
+                                    })
+                                  }
+                                  onDelete={() => handleDeleteManagedAutopostRule(rule)}
                                 />
-                              );
-                            })}
-                          </Suspense>
+                              ))}
+                            </Suspense>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  )}
+                    ) : (
+                      <div className="broadcast-stage-card broadcast-stage-card--feed">
+                        <div className="broadcast-stage-card__head">
+                          <div className="broadcast-stage-card__title-wrap">
+                            <strong>История</strong>
+                            <small>
+                              {settingsScreenQuery.isLoading
+                                ? 'Загрузка'
+                                : filteredBroadcasts.length > 0
+                                  ? `${filteredBroadcasts.length} записей`
+                                  : 'Пусто'}
+                            </small>
+                          </div>
+                        </div>
+
+                        <div className="broadcast-stage-card__body">
+                          <BroadcastHistoryFilterTabs
+                            value={broadcastHistoryFilter}
+                            counts={broadcastHistoryCounts}
+                            onChange={setBroadcastHistoryFilter}
+                          />
+
+                          <div className="managed-broadcasts-list">
+                            {filteredBroadcasts.length === 0 && !settingsScreenQuery.isLoading ? (
+                              <div className="managed-broadcasts-list__empty">
+                                История пока пустая.
+                              </div>
+                            ) : null}
+
+                            <Suspense fallback={<SkeletonCard lines={2} />}>
+                              {filteredBroadcasts.map((broadcast) => {
+                                const cardTone = resolveManagedBroadcastCardTone(broadcast);
+                                const cardMetric = resolveManagedBroadcastMetric(
+                                  broadcast,
+                                  broadcastNowMs,
+                                );
+                                const cardFacts = buildManagedBroadcastFactChips(broadcast);
+                                const canEditBroadcastSchedule =
+                                  broadcast.scheduleMode === 'calendar' &&
+                                  broadcast.status !== 'COMPLETED' &&
+                                  broadcast.status !== 'CANCELED';
+                                const canCancelBroadcast =
+                                  broadcast.status !== 'COMPLETED' &&
+                                  broadcast.status !== 'CANCELED';
+                                const isDeletingBroadcast =
+                                  cancelManagedBroadcastMutation.isPending &&
+                                  cancelManagedBroadcastMutation.variables === broadcast.id;
+                                const isOpeningBroadcastEditor =
+                                  openManagedBroadcastEditorMutation.isPending &&
+                                  openManagedBroadcastEditorMutation.variables === broadcast.id;
+                                const isRetryingBroadcast =
+                                  retryManagedBroadcastMutation.isPending &&
+                                  retryManagedBroadcastMutation.variables === broadcast.id;
+                                const cardBadge = isOpeningBroadcastEditor
+                                  ? 'Открываем'
+                                  : resolveManagedBroadcastCardBadge(broadcast);
+
+                                return (
+                                  <LazyManagedBroadcastHistoryCard
+                                    key={broadcast.id}
+                                    broadcast={broadcast}
+                                    tone={cardTone}
+                                    badge={cardBadge}
+                                    title={resolveManagedBroadcastCardTitle(broadcast)}
+                                    metric={cardMetric}
+                                    facts={cardFacts}
+                                    canEdit={canEditBroadcastSchedule}
+                                    canCancel={canCancelBroadcast}
+                                    isBusy={isBroadcastBusy}
+                                    isDeleting={isDeletingBroadcast}
+                                    isRetrying={isRetryingBroadcast}
+                                    onEdit={() => handleEditManagedBroadcast(broadcast)}
+                                    onRetry={() =>
+                                      retryManagedBroadcastMutation.mutate(broadcast.id)
+                                    }
+                                    onDelete={() => handleDeleteManagedBroadcast(broadcast)}
+                                  />
+                                );
+                              })}
+                            </Suspense>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ) : null}
-          </div>
-        </SettingsDrilldownPanel>
-      </GlassCard>
+              ) : null}
+            </div>
+          </SettingsDrilldownPanel>
+        </GlassCard>
+      ) : null}
 
       {chatId ? (
         <GlassCard className="channel-settings-card" elevated>
@@ -3947,7 +3904,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
               ? 'Сохраняем настройки...'
               : updateManagedBroadcastMutation.isPending
                 ? 'Сохраняем...'
-                : sendBroadcastMutation.isPending
+                : sendBroadcastHandoffMutation.isPending
                   ? broadcastTimingMode === 'now'
                     ? 'Публикуем...'
                     : 'Планируем...'

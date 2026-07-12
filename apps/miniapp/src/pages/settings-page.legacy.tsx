@@ -72,6 +72,7 @@ import {
   filterManagedBroadcastsByHistoryFilter,
   type BroadcastHistoryFilter,
 } from '../components/broadcast-studio-workspace';
+import { PublicationWorkspaceHandoff } from '../components/publication-workspace-handoff';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
@@ -89,7 +90,6 @@ import {
   cancelManagedBroadcast,
   clearBroadcastHandoffState,
   createBroadcastRequestId,
-  createManagedAutopostRule,
   deleteManagedAutopostRule,
   getBroadcastComposerClientResetState,
   getBroadcastHandoffState,
@@ -145,6 +145,7 @@ import {
   getBroadcastCycleValidationError,
   hasBroadcastHandoffDraft,
   normalizeBroadcastCycleDraft,
+  resolveBroadcastHandoffLoadMode,
   resolveBroadcastHandoffSchedule,
   resolveBroadcastCycleSendAt,
   resolveBroadcastScheduleTimezone,
@@ -196,6 +197,10 @@ import {
   useManagedEntitiesVisibilityRefresh,
 } from '../lib/use-managed-entities-visibility-refresh';
 import { useVisualViewportOverlayStyle } from '../lib/use-visual-viewport-overlay-style';
+import {
+  resolveLegacyBroadcastEditorTarget,
+  resolveLegacyPublicationReturnPath,
+} from '../features/publications/legacy-autoposts';
 import { SettingsApplyTargetSheet } from './settings/settings-apply-target-sheet';
 import { SettingsCommentsSection } from './settings/settings-comments-section';
 import { SettingsExtraSection } from './settings/settings-extra-section';
@@ -240,7 +245,6 @@ import {
   LazyBroadcastAudienceControls,
   LazyBroadcastSchedulePlanner,
   LazyBroadcastContentComposer,
-  LazyBroadcastDraftCardSlot,
   LazyBroadcastButtonsSheet,
   LazyBroadcastPublishReviewSheet,
   LazySettingsHandoffState,
@@ -329,7 +333,6 @@ import {
   toLocalTimeInputValue,
   parseIsoToLocalDateTime,
   formatRemovalDateTime,
-  formatMiniappBroadcastResultDescription,
   formatAllowlistModeLabel,
   formatAllowlistMetaLabel,
   ALLOWLIST_MATCH_OPTIONS,
@@ -460,8 +463,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     useState<BroadcastSchedulePlannerSelectionState>(EMPTY_BROADCAST_PLANNER_STATE);
   const [editingManagedBroadcast, setEditingManagedBroadcast] =
     useState<ManagedBroadcastDetails | null>(null);
-  const [duplicatedManagedBroadcast, setDuplicatedManagedBroadcast] =
-    useState<ManagedBroadcastDetails | null>(null);
   const [editingManagedAutopostRule, setEditingManagedAutopostRule] =
     useState<ManagedAutopostRuleDetails | null>(null);
   const [managedBroadcastDeleteTarget, setManagedBroadcastDeleteTarget] =
@@ -540,6 +541,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   });
   const isLinksKeyboardOpen = useKeyboardOpen(120, expandedSections.links);
   const appliedBroadcastHandoffSignatureRef = useRef<string | null>(null);
+  const appliedLegacyEditorTargetRef = useRef<string | null>(null);
   const broadcastDraftRestoreEpochRef = useRef(0);
   const [broadcastDraftRestoreReady, setBroadcastDraftRestoreReady] = useState(false);
 
@@ -548,6 +550,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const searchParams = new URLSearchParams(location.search);
   const focusSection = searchParams.get('focus');
   const handoffRequested = searchParams.get('handoff') === '1';
+  const legacyEditorTarget = resolveLegacyBroadcastEditorTarget(location.search);
   const broadcastComposerClientResetQuery = useQuery({
     queryKey: ['broadcast-composer-client-reset', chatId],
     queryFn: ({ signal }) => getBroadcastComposerClientResetState(api, chatId ?? '', { signal }),
@@ -639,7 +642,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setResolvedRequiredSubscriptionChannels([]);
     resetMailingPlanner();
     setEditingManagedBroadcast(null);
-    setDuplicatedManagedBroadcast(null);
     setEditingManagedAutopostRule(null);
     setMailingWorkspaceView('compose');
     const restoreEpoch = ++broadcastDraftRestoreEpochRef.current;
@@ -749,6 +751,64 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       focusSection === 'broadcast' &&
       handoffRequested,
     refetchOnWindowFocus: false,
+  });
+  const settingsHandoffMode = resolveBroadcastHandoffLoadMode({
+    requested: Boolean(chatId) && focusSection === 'broadcast' && handoffRequested,
+    queries: [settingsScreenQuery, broadcastHandoffStateQuery],
+  });
+  const hasLegacyBroadcastHandoff =
+    handoffRequested &&
+    Boolean(
+      broadcastHandoffStateQuery.data &&
+      hasBroadcastHandoffDraft(broadcastHandoffStateQuery.data, { includeTargets: true }),
+    );
+  const legacyBroadcastWorkspaceRequested =
+    focusSection === 'broadcast' &&
+    (hasLegacyBroadcastHandoff ||
+      searchParams.get('workspace') === 'autoposts' ||
+      legacyEditorTarget !== null);
+  const sendBroadcastHandoffMutation = useMutation({
+    mutationFn: (payload: SendBroadcastPayload) => sendBroadcast(api, chatId ?? '', payload),
+    onSuccess: async (result) => {
+      resetMailingComposer();
+      let cleanupFailed = false;
+      if (chatId) {
+        const handoffQueryKey = ['broadcast-handoff-state', chatId] as const;
+        try {
+          await clearBroadcastHandoffState(api, chatId);
+          await queryClient.invalidateQueries({ queryKey: handoffQueryKey });
+        } catch {
+          cleanupFailed = true;
+          queryClient.setQueryData(handoffQueryKey, null);
+        }
+        void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
+        void queryClient.invalidateQueries({ queryKey: ['managed-broadcast-calendar', chatId] });
+      }
+      void queryClient.invalidateQueries({ queryKey: ['publications', 'legacy'] });
+      pushToast({
+        tone: result.failedChats > 0 || cleanupFailed ? 'info' : 'success',
+        title: result.failedChats > 0 ? 'Часть публикаций с ошибкой' : 'Публикация запланирована',
+        description:
+          [
+            result.failedChats > 0
+              ? `Отправлено: ${result.sentChats}/${result.targetChats}, ошибок: ${result.failedChats}.`
+              : '',
+            cleanupFailed ? 'Черновик не удалось очистить. Не запускайте его повторно.' : '',
+          ]
+            .filter(Boolean)
+            .join(' ') || undefined,
+      });
+      maxNotify(result.failedChats > 0 || cleanupFailed ? 'warning' : 'success');
+    },
+    onError: (error) => {
+      const description = reportMailingAudienceApiError(error);
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось запустить публикацию',
+        description,
+      });
+      maxNotify('error');
+    },
   });
   const meQuery = useQuery({
     queryKey: ['me', chatId ?? null],
@@ -1042,6 +1102,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     if (!hasBroadcastHandoffDraft(broadcastHandoffStateQuery.data, { includeTargets: true })) {
+      appliedBroadcastHandoffSignatureRef.current = null;
       return;
     }
 
@@ -1053,7 +1114,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     appliedBroadcastHandoffSignatureRef.current = signature;
     broadcastDraftRestoreEpochRef.current += 1;
     setEditingManagedBroadcast(null);
-    setDuplicatedManagedBroadcast(null);
     setEditingManagedAutopostRule(null);
     const handoffTargetChatIds = normalizeBroadcastAudienceTargetChatIds(
       broadcastHandoffStateQuery.data.targetChatIds,
@@ -1593,35 +1653,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     },
   });
 
-  const sendBroadcastMutation = useMutation({
-    mutationFn: (payload: SendBroadcastPayload) => sendBroadcast(api, chatId ?? '', payload),
-    onSuccess: (result) => {
-      appliedBroadcastHandoffSignatureRef.current = null;
-      resetMailingComposer();
-      if (chatId) {
-        void clearBroadcastHandoffState(api, chatId).catch(() => undefined);
-      }
-      void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
-      void queryClient.invalidateQueries({ queryKey: ['managed-broadcast-calendar', chatId] });
-      void queryClient.invalidateQueries({ queryKey: ['broadcast-handoff-state', chatId] });
-      pushToast({
-        tone: result.failedChats > 0 ? 'info' : 'success',
-        title: result.failedChats > 0 ? 'Часть чатов с ошибкой' : 'Публикация запланирована',
-        description: formatMiniappBroadcastResultDescription(result),
-      });
-      maxNotify(result.failedChats > 0 ? 'warning' : 'success');
-    },
-    onError: (error) => {
-      const description = reportMailingAudienceApiError(error);
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось запустить автопостинг',
-        description,
-      });
-      maxNotify('error');
-    },
-  });
-
   const sendBroadcastTestMutation = useMutation({
     mutationFn: (payload: SendBroadcastPayload) => sendBroadcastTest(api, chatId ?? '', payload),
     onSuccess: () => {
@@ -1666,29 +1697,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
     void queryClient.invalidateQueries({ queryKey: ['managed-broadcast-calendar', chatId] });
   };
-
-  const createManagedAutopostRuleMutation = useMutation({
-    mutationFn: (payload: SendBroadcastPayload) =>
-      createManagedAutopostRule(api, chatId ?? '', {
-        title: '',
-        payload: normalizeManagedAutopostPayload(payload),
-      }),
-    onSuccess: () => {
-      resetMailingComposer();
-      invalidateChatAutopostData();
-      setMailingWorkspaceView('autoposts');
-      pushToast({ tone: 'success', title: 'Автопост создан' });
-      maxNotify('success');
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось создать автопост',
-        description: formatApiError(error),
-      });
-      maxNotify('error');
-    },
-  });
 
   const updateManagedAutopostRuleMutation = useMutation({
     mutationFn: ({
@@ -1757,10 +1765,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   const openManagedAutopostRuleMutation = useMutation({
     mutationFn: (ruleId: string) => getManagedAutopostRule(api, chatId ?? '', ruleId),
+    retry: 2,
     onSuccess: (rule) => {
       const payload = rule.payload;
       setEditingManagedBroadcast(null);
-      setDuplicatedManagedBroadcast(null);
       setEditingManagedAutopostRule(rule);
       setMailingText(payload.text);
       setMailingButtons(payload.buttons);
@@ -1768,12 +1776,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       setMailingVideoCleared(false);
       setMailingTargetMode(payload.targetMode);
       setMailingTargetChatIds(normalizeBroadcastAudienceTargetChatIds(payload.targetChatIds));
-      setMailingLastScopedTargetMode(
-        payload.targetMode === 'selected' ? 'selected' : 'current',
-      );
+      setMailingLastScopedTargetMode(payload.targetMode === 'selected' ? 'selected' : 'current');
       setMailingTimingMode('scheduled');
       setMailingScheduledSlots(sortAndUniqueBroadcastSlots(payload.scheduledSlots));
-      setMailingScheduleTimezone(payload.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone());
+      setMailingScheduleTimezone(
+        payload.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
+      );
       setMailingScheduleError('');
       setMailingCycleError('');
       resetMailingPlanner();
@@ -1925,18 +1933,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     },
   });
 
-  function applyManagedBroadcastToMailingComposer(
-    broadcast: ManagedBroadcastDetails,
-    mode: 'edit' | 'duplicate',
-  ) {
+  function applyManagedBroadcastToMailingComposer(broadcast: ManagedBroadcastDetails) {
     const targetChatIds = normalizeBroadcastAudienceTargetChatIds(broadcast.targetChatIds);
     setEditingManagedAutopostRule(null);
-    setEditingManagedBroadcast(mode === 'edit' ? broadcast : null);
-    setDuplicatedManagedBroadcast(
-      mode === 'duplicate' && broadcast.mediaType === 'video' && broadcast.mediaPayload
-        ? broadcast
-        : null,
-    );
+    setEditingManagedBroadcast(broadcast);
     setMailingTargetMode(broadcast.targetMode);
     setMailingTargetChatIds(
       broadcast.targetMode === 'selected' && targetChatIds.length === 0
@@ -1975,15 +1975,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       }),
     );
     setMailingScheduledSlots(
-      mode === 'edit'
-        ? sortAndUniqueBroadcastSlots(
-            broadcast.scheduleMode === 'calendar'
-              ? broadcast.scheduledSlots
-              : broadcast.nextSendAt && !broadcast.cycleEnabled
-                ? [broadcast.nextSendAt]
-                : [],
-          )
-        : [],
+      sortAndUniqueBroadcastSlots(
+        broadcast.scheduleMode === 'calendar'
+          ? broadcast.scheduledSlots
+          : broadcast.nextSendAt && !broadcast.cycleEnabled
+            ? [broadcast.nextSendAt]
+            : [],
+      ),
     );
     setMailingScheduleTimezone(
       broadcast.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
@@ -1991,7 +1989,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingTextError('');
     setMailingButtonErrors([]);
     setMailingImageError('');
-    setMailingScheduleError(mode === 'duplicate' ? 'Выберите время.' : '');
+    setMailingScheduleError('');
     setMailingCycleError('');
     resetMailingPlanner();
     setMailingWorkspaceView('compose');
@@ -2000,8 +1998,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   const openManagedBroadcastEditorMutation = useMutation({
     mutationFn: (broadcastId: string) => getManagedBroadcast(api, chatId ?? '', broadcastId),
+    retry: 2,
     onSuccess: (broadcast) => {
-      applyManagedBroadcastToMailingComposer(broadcast, 'edit');
+      applyManagedBroadcastToMailingComposer(broadcast);
       pushToast({
         tone: 'info',
         title: 'Редактирование автопостинга',
@@ -2017,24 +2016,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       pushToast({
         tone: 'danger',
         title: 'Не удалось открыть автопостинг',
-        description: formatApiError(error),
-      });
-    },
-  });
-
-  const duplicateManagedBroadcastMutation = useMutation({
-    mutationFn: (broadcastId: string) => getManagedBroadcast(api, chatId ?? '', broadcastId),
-    onSuccess: (broadcast) => {
-      applyManagedBroadcastToMailingComposer(broadcast, 'duplicate');
-      pushToast({
-        tone: 'success',
-        title: 'Копия готова',
-      });
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Копия не создана',
         description: formatApiError(error),
       });
     },
@@ -3075,7 +3056,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   function resetMailingComposer() {
     setEditingManagedBroadcast(null);
-    setDuplicatedManagedBroadcast(null);
     setEditingManagedAutopostRule(null);
     setMailingTargetMode('current');
     setMailingTargetChatIds(chatId ? [chatId] : []);
@@ -3112,7 +3092,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function handleClearMailingComposer() {
-    if (editingManagedBroadcast || duplicatedManagedBroadcast || editingManagedAutopostRule) {
+    if (editingManagedBroadcast || editingManagedAutopostRule) {
       handleCancelMailingEdit();
       return;
     }
@@ -3228,14 +3208,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     openManagedBroadcastEditorMutation.mutate(broadcast.id);
   }
 
-  function handleDuplicateManagedBroadcast(broadcast: ManagedBroadcastListItem) {
-    if (!chatId || duplicateManagedBroadcastMutation.isPending) {
-      return;
-    }
-
-    duplicateManagedBroadcastMutation.mutate(broadcast.id);
-  }
-
   function handleDeleteManagedBroadcastById(broadcastId: string) {
     const broadcast = managedBroadcasts.find((item) => item.id === broadcastId);
     if (!broadcast) {
@@ -3267,7 +3239,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function confirmDeleteManagedAutopostRule() {
-    if (!managedAutopostRuleDeleteTarget || !chatId || deleteManagedAutopostRuleMutation.isPending) {
+    if (
+      !managedAutopostRuleDeleteTarget ||
+      !chatId ||
+      deleteManagedAutopostRuleMutation.isPending
+    ) {
       return;
     }
 
@@ -3428,7 +3404,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    sendBroadcastMutation.mutate(payload);
+    if (hasLegacyBroadcastHandoff) {
+      sendBroadcastHandoffMutation.mutate(payload);
+      return;
+    }
+
+    navigate(
+      `/publications?compose=1&entityType=chat&entityId=${encodeURIComponent(chatId ?? '')}`,
+    );
   }
 
   function handleCloseMailingPublishReview() {
@@ -3480,6 +3463,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
+    if (!editingManagedAutopostRule) {
+      navigate(`/publications?compose=1&entityType=chat&entityId=${encodeURIComponent(chatId)}`);
+      return;
+    }
+
     const audiencePayload = resolveBroadcastAudiencePayload({
       targetMode: mailingTargetMode,
       targetChatIds: mailingTargetChatIds,
@@ -3511,19 +3499,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       cycleCount: 1,
     };
 
-    if (editingManagedAutopostRule) {
-      updateManagedAutopostRuleMutation.mutate({
-        ruleId: editingManagedAutopostRule.id,
-        payload: nextPayload,
-      });
-      return;
-    }
-
-    createManagedAutopostRuleMutation.mutate(nextPayload);
+    updateManagedAutopostRuleMutation.mutate({
+      ruleId: editingManagedAutopostRule.id,
+      payload: nextPayload,
+    });
   }
 
   function handleSendBroadcast() {
     if (!chatId) {
+      return;
+    }
+
+    if (!editingManagedBroadcast && !hasLegacyBroadcastHandoff) {
+      navigate(`/publications?compose=1&entityType=chat&entityId=${encodeURIComponent(chatId)}`);
       return;
     }
 
@@ -3998,6 +3986,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function closeSection(section: SettingsSectionKey) {
+    const legacyReturnPath = resolveLegacyPublicationReturnPath(location.state);
+    if (section === 'mailing' && legacyEditorTarget && legacyReturnPath) {
+      navigate(-1);
+      return;
+    }
     if (
       (section === 'mailing' && focusSection === 'broadcast') ||
       (section === 'giveaway' && focusSection === 'giveaway') ||
@@ -4005,7 +3998,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       (section === 'requiredSubscription' && focusSection === 'requiredSubscription')
     ) {
       const nextSearchParams = new URLSearchParams(location.search);
-      ['focus', 'handoff', 'workspace'].forEach((key) => nextSearchParams.delete(key));
+      ['focus', 'handoff', 'workspace', 'legacyKind', 'legacyId'].forEach((key) =>
+        nextSearchParams.delete(key),
+      );
       navigate(
         {
           pathname: location.pathname,
@@ -4636,22 +4631,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingAudienceChoicesError = chatsList.error
     ? formatApiError(chatsList.error) || 'Не удалось загрузить список чатов.'
     : null;
-  const settingsHandoffRetryCount = settingsScreenQuery.failureCount;
-  const showSettingsHandoffPending =
-    Boolean(chatId) &&
-    handoffRequested &&
-    !settingsScreenQuery.data &&
-    !settingsScreenQuery.isError &&
-    (settingsScreenQuery.isPending || settingsHandoffRetryCount > 0);
-  const showSettingsHandoffError =
-    Boolean(chatId) && handoffRequested && !settingsScreenQuery.data && settingsScreenQuery.isError;
-  const settingsHandoffMode = showSettingsHandoffPending
-    ? 'loading'
-    : showSettingsHandoffError
-      ? 'error'
-      : null;
   const managedChatsRoute = buildManagedEntitiesRoute('chat');
-  const refetchSettings = () => void settingsQuery.refetch();
+  const refetchSettings = () => {
+    void settingsQuery.refetch();
+    if (handoffRequested) {
+      void broadcastHandoffStateQuery.refetch();
+    }
+  };
   const managedBroadcasts = managedBroadcastsQuery.data ?? [];
   const managedAutopostRulesQuery = useQuery({
     queryKey: ['managed-autopost-rules', chatId],
@@ -4664,6 +4650,43 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     () => sortManagedAutopostRules(managedAutopostRulesQuery.data ?? []),
     [managedAutopostRulesQuery.data],
   );
+
+  useEffect(() => {
+    if (!legacyEditorTarget) {
+      appliedLegacyEditorTargetRef.current = null;
+      return;
+    }
+
+    const signature = `${chatId}:${legacyEditorTarget.kind}:${legacyEditorTarget.id}`;
+    if (appliedLegacyEditorTargetRef.current === signature) {
+      return;
+    }
+
+    if (legacyEditorTarget.kind === 'autopost') {
+      if (!settingsScreenQuery.data || openManagedAutopostRuleMutation.isPending) {
+        return;
+      }
+
+      appliedLegacyEditorTargetRef.current = signature;
+      setMailingWorkspaceView('autoposts');
+      openManagedAutopostRuleMutation.mutate(legacyEditorTarget.id);
+      return;
+    }
+
+    if (!settingsScreenQuery.data || openManagedBroadcastEditorMutation.isPending) {
+      return;
+    }
+
+    appliedLegacyEditorTargetRef.current = signature;
+    setMailingWorkspaceView('history');
+    openManagedBroadcastEditorMutation.mutate(legacyEditorTarget.id);
+  }, [
+    chatId,
+    legacyEditorTarget,
+    openManagedAutopostRuleMutation,
+    openManagedBroadcastEditorMutation,
+    settingsScreenQuery.data,
+  ]);
   const orderedManagedBroadcasts = useMemo(() => {
     const priority = (item: ManagedBroadcastListItem): number => {
       if (item.status === 'FAILED') {
@@ -4811,15 +4834,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const isUpdatingManagedBroadcast = updateManagedBroadcastMutation.isPending;
   const isOpeningManagedBroadcastEditor = openManagedBroadcastEditorMutation.isPending;
   const isMailingBusy =
-    sendBroadcastMutation.isPending ||
     sendBroadcastTestMutation.isPending ||
+    sendBroadcastHandoffMutation.isPending ||
     clearBroadcastHandoffMutation.isPending ||
-    createManagedAutopostRuleMutation.isPending ||
     updateManagedAutopostRuleMutation.isPending ||
     deleteManagedAutopostRuleMutation.isPending ||
     openManagedAutopostRuleMutation.isPending ||
     isOpeningManagedBroadcastEditor ||
-    duplicateManagedBroadcastMutation.isPending ||
     isUpdatingManagedBroadcast ||
     cancelManagedBroadcastMutation.isPending ||
     retryManagedBroadcastMutation.isPending;
@@ -4877,17 +4898,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingVisibleButtons = [...normalizedMailingButtons, ...mailingSystemButtons];
   const mailingHasVisibleButtons = mailingVisibleButtons.length > 0;
   const mailingVisibleButtonStatus = formatBroadcastButtonsStatus(mailingVisibleButtons);
-  const mailingVideoSource =
-    editingManagedBroadcast ?? duplicatedManagedBroadcast ?? editingManagedAutopostRule?.payload;
+  const mailingVideoSource = editingManagedBroadcast ?? editingManagedAutopostRule?.payload;
   const editingMailingHasVideo =
     !mailingVideoCleared &&
     mailingVideoSource?.mediaType === 'video' &&
     Boolean(mailingVideoSource.mediaPayload);
-  const mailingDraftFallback = editingMailingHasVideo
-    ? 'Видео без текста'
-    : mailingImageEnabled
-      ? 'Фото без текста'
-      : undefined;
   const mailingImageLabel =
     mailingImages.length > 1 ? `${mailingImages.length} фото` : mailingImageEnabled ? 'Фото' : null;
   const mailingHasDirectContent = Boolean(
@@ -4928,20 +4943,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingHeaderSummary = [mailingHeaderTargetLabel, mailingTimingSummary]
     .filter(Boolean)
     .join(' · ');
-  const mailingCardStatus = editingManagedBroadcast || editingManagedAutopostRule
-    ? 'Правка'
-    : mailingTimingMode === 'cycle'
-      ? 'Цикл'
-      : mailingTimingMode === 'scheduled'
-        ? mailingScheduledSlots.length > 0
-          ? mailingSlotsLabel
-          : 'План'
-        : mailingHasPublishableContent
-          ? 'Готов'
-          : 'Черновик';
+  const mailingCardStatus =
+    editingManagedBroadcast || editingManagedAutopostRule
+      ? 'Правка'
+      : mailingTimingMode === 'cycle'
+        ? 'Цикл'
+        : mailingTimingMode === 'scheduled'
+          ? mailingScheduledSlots.length > 0
+            ? mailingSlotsLabel
+            : 'План'
+          : mailingHasPublishableContent
+            ? 'Готов'
+            : 'Черновик';
   const showMailingResetAction =
     editingManagedBroadcast !== null ||
-    duplicatedManagedBroadcast !== null ||
     mailingTargetMode !== 'current' ||
     mailingTimingMode !== 'now' ||
     mailingScheduledSlots.length > 0 ||
@@ -4978,11 +4993,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     !mailingScheduleReady ||
     !mailingHasFutureSlots ||
     !mailingButtonDraftValid;
-  const showMailingAutopostAction =
-    !editingManagedBroadcast && !duplicatedManagedBroadcast && mailingTimingMode === 'scheduled';
   const mailingAutopostDisabled =
     isMailingBusy ||
-    !showMailingAutopostAction ||
     !mailingContentReady ||
     !mailingAudienceReady ||
     !mailingCalendarScheduleReady ||
@@ -5033,28 +5045,35 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     ? 'Сохранить'
     : editingManagedAutopostRule
       ? 'Сохранить'
-    : mailingTimingMode === 'now'
-      ? 'Опубликовать'
-      : mailingTimingMode === 'scheduled'
-        ? 'Запланировать публикацию'
-        : 'Запустить';
+      : mailingTimingMode === 'now'
+        ? 'Опубликовать'
+        : mailingTimingMode === 'scheduled'
+          ? 'Запланировать публикацию'
+          : 'Запустить';
   const mailingFooterPrimaryActionLabel = editingManagedBroadcast
     ? 'Сохранить'
     : editingManagedAutopostRule
       ? 'Сохранить'
-    : mailingTimingMode === 'now'
-      ? 'Опубликовать'
-      : mailingTimingMode === 'scheduled'
-        ? 'Запланировать публикацию'
-        : 'Запустить';
-  const showMailingWorkspaceTabs =
-    !editingManagedBroadcast && !duplicatedManagedBroadcast && !editingManagedAutopostRule;
-  const showMailingDraftCard = showMailingWorkspaceTabs && showMailingResetAction;
+      : mailingTimingMode === 'now'
+        ? 'Опубликовать'
+        : mailingTimingMode === 'scheduled'
+          ? 'Запланировать публикацию'
+          : 'Запустить';
+  const showMailingWorkspaceTabs = !editingManagedBroadcast && !editingManagedAutopostRule;
+  const activeMailingWorkspaceView =
+    legacyBroadcastWorkspaceRequested &&
+    !handoffRequested &&
+    showMailingWorkspaceTabs &&
+    (mailingWorkspaceView === 'compose' || mailingWorkspaceView === 'calendar')
+      ? legacyEditorTarget?.kind === 'broadcast'
+        ? 'history'
+        : 'autoposts'
+      : mailingWorkspaceView;
   const mailingResetActionLabel = editingManagedBroadcast
     ? 'Сбросить изменения'
     : editingManagedAutopostRule
       ? 'Сбросить изменения'
-    : 'Очистить автопостинг';
+      : 'Очистить автопостинг';
   const mailingFooterScheduleLabel =
     mailingTimingMode === 'now'
       ? 'Сейчас'
@@ -5075,22 +5094,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   ]
     .filter(Boolean)
     .join(' · ');
-  const mailingDraftFacts = [
-    mailingHeaderTargetLabel,
-    mailingFooterScheduleLabel,
-    mailingFooterMeta,
-  ].filter((item): item is string => Boolean(item));
-  const renderMailingDraftCard = () =>
-    showMailingDraftCard ? (
-      <LazyBroadcastDraftCardSlot
-        preview={normalizedMailingText}
-        fallback={mailingDraftFallback}
-        facts={mailingDraftFacts}
-        disabled={isMailingBusy}
-        onOpen={() => setMailingWorkspaceView('compose')}
-        onReset={handleClearMailingComposer}
-      />
-    ) : null;
   const mailingDrilldownFooter = (
     <BroadcastPublishBar
       title={mailingFooterTitle}
@@ -5100,28 +5103,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       testLabel={sendBroadcastTestMutation.isPending ? 'Тест...' : 'Тест'}
       testAriaLabel={sendBroadcastTestMutation.isPending ? 'Отправляем тест' : 'Отправить тест'}
       testDisabled={isMailingBusy || !mailingTestReady}
-      secondaryLabel={
-        showMailingAutopostAction && !editingManagedAutopostRule
-          ? createManagedAutopostRuleMutation.isPending
-            ? 'Сохраняем...'
-            : 'Сохранить как автопост'
-          : undefined
-      }
-      secondaryDisabled={mailingAutopostDisabled}
-      onSecondary={
-        showMailingAutopostAction && !editingManagedAutopostRule
-          ? handleSaveChatAutopostRule
-          : undefined
-      }
       primaryLabel={
         updateManagedAutopostRuleMutation.isPending && editingManagedAutopostRule
           ? 'Сохраняем...'
           : isUpdatingManagedBroadcast
-          ? 'Сохраняем...'
-          : sendBroadcastMutation.isPending
-            ? mailingTimingMode === 'now'
-              ? 'Публикуем...'
-              : 'Планируем...'
+            ? 'Сохраняем...'
             : isOpeningManagedBroadcastEditor
               ? 'Открываем...'
               : mailingFooterPrimaryActionLabel
@@ -5133,13 +5119,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   );
 
   useEffect(() => {
-    if (
-      (editingManagedBroadcast || duplicatedManagedBroadcast) &&
-      mailingWorkspaceView !== 'compose'
-    ) {
+    if (editingManagedBroadcast && mailingWorkspaceView !== 'compose') {
       setMailingWorkspaceView('compose');
     }
-  }, [duplicatedManagedBroadcast, editingManagedBroadcast, mailingWorkspaceView]);
+  }, [editingManagedBroadcast, mailingWorkspaceView]);
 
   useEffect(() => {
     if (
@@ -5398,7 +5381,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         </Suspense>
       ) : null}
 
-      {settingsQuery.isLoading && !showSettingsHandoffPending ? (
+      {settingsQuery.isLoading && settingsHandoffMode !== 'loading' ? (
         <section className="settings-sections" aria-label="Загрузка настроек">
           <GlassCard className="settings-section">
             <SkeletonCard lines={5} />
@@ -5406,7 +5389,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         </section>
       ) : null}
 
-      {settingsQuery.error && !showSettingsHandoffError ? (
+      {settingsQuery.error && settingsHandoffMode !== 'error' ? (
         <GlassCard>
           <StatusState
             tone="danger"
@@ -5421,7 +5404,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         </GlassCard>
       ) : null}
 
-      {!settingsQuery.isLoading && !settingsQuery.error && draft ? (
+      {!settingsHandoffMode && !settingsQuery.isLoading && !settingsQuery.error && draft ? (
         <section
           className="settings-sections settings-sections--chat-home"
           aria-label="Настройки модерации"
@@ -10206,182 +10189,265 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               </SettingsDrilldownPanel>
             </GlassCard>
 
-            <GlassCard
-              className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
-              style={{ animationDelay: '315ms', order: 5 }}
-              aria-label="Автопостинг"
-            >
-              <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-                <SettingsSectionToggle
-                  title="Автопостинг"
-                  summary={mailingHeaderSummary}
-                  status={mailingCardStatus}
-                  icon="send"
-                  tone="sky"
-                  open={expandedSections.mailing}
-                  controls="settings-mailing-content"
-                  onClick={() => toggleSection('mailing')}
-                  hideChevron
+            {!legacyBroadcastWorkspaceRequested ? (
+              <GlassCard
+                className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
+                style={{ animationDelay: '315ms', order: 5 }}
+                aria-label="Посты"
+                padding="sm"
+              >
+                <PublicationWorkspaceHandoff
+                  entityType="chat"
+                  entityId={chatId}
+                  variant="settings-tile"
                 />
-              </div>
-
-              <SettingsDrilldownPanel
-                id="settings-mailing-content"
-                open={expandedSections.mailing}
-                title="Автопостинг"
-                summary={mailingHeaderSummary}
-                variant="screen"
-                tone="sky"
-                className="settings-drilldown__panel--campaign settings-drilldown__panel--mailing settings-drilldown__panel--broadcast-screen"
-                onClose={() => toggleSection('mailing')}
-                footer={mailingWorkspaceView === 'compose' ? mailingDrilldownFooter : null}
+              </GlassCard>
+            ) : null}
+            {legacyBroadcastWorkspaceRequested ? (
+              <GlassCard
+                className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
+                style={{ animationDelay: '315ms', order: 5 }}
+                aria-label="Ранее созданные посты"
               >
                 <div
-                  id="settings-mailing-content"
-                  className={cn(
-                    'settings-section__collapse',
-                    expandedSections.mailing && 'is-open',
-                  )}
+                  className={cn('settings-section__head', 'settings-section__head--interactive')}
                 >
-                  {expandedSections.mailing ? (
-                    <div className="settings-section__collapse-inner settings-mailing">
-                      <div className="broadcast-studio-shell broadcast-studio-screen broadcast-studio-screen--chat">
-                        <div className="broadcast-studio-screen__chrome">
-                          <BroadcastWorkspaceChrome
-                            showTabs={showMailingWorkspaceTabs}
-                            value={mailingWorkspaceView}
-                            autopostCount={orderedManagedAutopostRules.length}
-                            historyCount={orderedManagedBroadcasts.length}
-                            disabled={isMailingBusy}
-                            showReset={showMailingResetAction}
-                            resetLabel={mailingResetActionLabel}
-                            resetPending={clearBroadcastHandoffMutation.isPending}
-                            onChange={setMailingWorkspaceView}
-                            onReset={handleClearMailingComposer}
-                          />
-                        </div>
+                  <SettingsSectionToggle
+                    title="Автопостинг"
+                    summary={mailingHeaderSummary}
+                    status={mailingCardStatus}
+                    icon="send"
+                    tone="sky"
+                    open={expandedSections.mailing}
+                    controls="settings-mailing-content"
+                    onClick={() => toggleSection('mailing')}
+                    hideChevron
+                  />
+                </div>
 
-                        {mailingWorkspaceView === 'compose' ? (
-                          <div className="broadcast-compose-flow broadcast-compose-flow--screen">
-                            <div className="broadcast-stage-card broadcast-stage-card--message broadcast-stage-card--primary">
-                              <div className="broadcast-stage-card__head">
-                                <div className="broadcast-stage-card__title-wrap">
-                                  <strong>Сообщение</strong>
+                <SettingsDrilldownPanel
+                  id="settings-mailing-content"
+                  open={expandedSections.mailing}
+                  title="Автопостинг"
+                  summary={mailingHeaderSummary}
+                  variant="screen"
+                  tone="sky"
+                  className="settings-drilldown__panel--campaign settings-drilldown__panel--mailing settings-drilldown__panel--broadcast-screen"
+                  onClose={() => toggleSection('mailing')}
+                  footer={activeMailingWorkspaceView === 'compose' ? mailingDrilldownFooter : null}
+                >
+                  <div
+                    id="settings-mailing-content"
+                    className={cn(
+                      'settings-section__collapse',
+                      expandedSections.mailing && 'is-open',
+                    )}
+                  >
+                    {expandedSections.mailing ? (
+                      <div className="settings-section__collapse-inner settings-mailing">
+                        <div className="broadcast-studio-shell broadcast-studio-screen broadcast-studio-screen--chat">
+                          <div className="broadcast-studio-screen__chrome">
+                            <BroadcastWorkspaceChrome
+                              showTabs={showMailingWorkspaceTabs && !handoffRequested}
+                              value={activeMailingWorkspaceView}
+                              autopostCount={orderedManagedAutopostRules.length}
+                              historyCount={orderedManagedBroadcasts.length}
+                              compatibilityOnly
+                              disabled={isMailingBusy}
+                              showReset={showMailingResetAction}
+                              resetLabel={mailingResetActionLabel}
+                              resetPending={clearBroadcastHandoffMutation.isPending}
+                              onChange={setMailingWorkspaceView}
+                              onReset={handleClearMailingComposer}
+                            />
+                          </div>
+
+                          {activeMailingWorkspaceView === 'compose' ? (
+                            <div className="broadcast-compose-flow broadcast-compose-flow--screen">
+                              <div className="broadcast-stage-card broadcast-stage-card--message broadcast-stage-card--primary">
+                                <div className="broadcast-stage-card__head">
+                                  <div className="broadcast-stage-card__title-wrap">
+                                    <strong>Сообщение</strong>
+                                  </div>
+                                  <span
+                                    className={cn(
+                                      'broadcast-stage-card__status',
+                                      mailingContentReady ? 'is-ready' : 'is-pending',
+                                    )}
+                                  >
+                                    {mailingContentReady
+                                      ? 'Готов'
+                                      : mailingImagesPreparing
+                                        ? 'Фото...'
+                                        : mailingHasDirectContent
+                                          ? 'Проверка'
+                                          : 'Пусто'}
+                                  </span>
                                 </div>
-                                <span
-                                  className={cn(
-                                    'broadcast-stage-card__status',
-                                    mailingContentReady ? 'is-ready' : 'is-pending',
-                                  )}
-                                >
-                                  {mailingContentReady
-                                    ? 'Готов'
-                                    : mailingImagesPreparing
-                                      ? 'Фото...'
-                                      : mailingHasDirectContent
-                                        ? 'Проверка'
-                                        : 'Пусто'}
-                                </span>
-                              </div>
 
-                              <div className="broadcast-stage-card__body">
-                                <Suspense fallback={null}>
-                                  <LazyBroadcastContentComposer
-                                    text={mailingText}
-                                    maxLength={MAX_BROADCAST_TEXT_LENGTH}
-                                    images={mailingImages}
-                                    videoLabel={editingMailingHasVideo ? 'Видео' : null}
-                                    disabled={isMailingBusy}
-                                    textError={mailingTextError}
-                                    imageError={mailingImageError}
-                                    onTextChange={(nextText) => {
-                                      setMailingText(nextText);
-                                      if (mailingTextError) {
-                                        setMailingTextError('');
-                                      }
-                                    }}
-                                    onImagesChange={(nextImages) => {
-                                      applyMailingImages(nextImages);
-                                      if (nextImages.length > 0) {
+                                <div className="broadcast-stage-card__body">
+                                  <Suspense fallback={null}>
+                                    <LazyBroadcastContentComposer
+                                      text={mailingText}
+                                      maxLength={MAX_BROADCAST_TEXT_LENGTH}
+                                      images={mailingImages}
+                                      videoLabel={editingMailingHasVideo ? 'Видео' : null}
+                                      disabled={isMailingBusy}
+                                      textError={mailingTextError}
+                                      imageError={mailingImageError}
+                                      onTextChange={(nextText) => {
+                                        setMailingText(nextText);
+                                        if (mailingTextError) {
+                                          setMailingTextError('');
+                                        }
+                                      }}
+                                      onImagesChange={(nextImages) => {
+                                        applyMailingImages(nextImages);
+                                        if (nextImages.length > 0) {
+                                          setMailingVideoCleared(true);
+                                        }
+                                        setMailingImageError('');
+                                        if (mailingTextError) {
+                                          setMailingTextError('');
+                                        }
+                                      }}
+                                      onImagePreparationChange={setMailingImagesPreparing}
+                                      onClearVideo={() => {
                                         setMailingVideoCleared(true);
-                                      }
-                                      setMailingImageError('');
-                                      if (mailingTextError) {
-                                        setMailingTextError('');
-                                      }
-                                    }}
-                                    onImagePreparationChange={setMailingImagesPreparing}
-                                    onClearVideo={() => {
-                                      setMailingVideoCleared(true);
-                                    }}
-                                    onError={(message) => {
-                                      setMailingImageError(message);
-                                      pushToast({
-                                        tone: 'danger',
-                                        title: 'Фото не добавлено',
-                                        description: message,
-                                      });
-                                      maxNotify('error');
-                                    }}
-                                    buttons={normalizedMailingButtons}
-                                    systemButtons={mailingSystemButtons}
-                                    buttonsStatusLabel={mailingVisibleButtonStatus}
-                                    buttonsActive={mailingHasVisibleButtons}
-                                    buttonsError={!mailingButtonDraftValid}
-                                    onOpenButtons={() => setMailingButtonsSheetOpen(true)}
-                                  />
-                                </Suspense>
-                              </div>
-                            </div>
-
-                            <div className="broadcast-stage-card broadcast-stage-card--scope">
-                              <div className="broadcast-stage-card__head">
-                                <div className="broadcast-stage-card__title-wrap">
-                                  <strong>Кому</strong>
+                                      }}
+                                      onError={(message) => {
+                                        setMailingImageError(message);
+                                        pushToast({
+                                          tone: 'danger',
+                                          title: 'Фото не добавлено',
+                                          description: message,
+                                        });
+                                        maxNotify('error');
+                                      }}
+                                      buttons={normalizedMailingButtons}
+                                      systemButtons={mailingSystemButtons}
+                                      buttonsStatusLabel={mailingVisibleButtonStatus}
+                                      buttonsActive={mailingHasVisibleButtons}
+                                      buttonsError={!mailingButtonDraftValid}
+                                      onOpenButtons={() => setMailingButtonsSheetOpen(true)}
+                                    />
+                                  </Suspense>
                                 </div>
                               </div>
 
-                              <div className="broadcast-stage-card__body">
-                                <Suspense fallback={null}>
-                                  <LazyBroadcastAudienceControls
-                                    targetMode={mailingTargetMode}
-                                    currentChatId={chatId ?? ''}
-                                    targetChatIds={mailingAudiencePayload.targetChatIds}
-                                    favoriteUserId={meQuery.data?.userId ?? null}
-                                    choices={mailingAudienceChoices}
-                                    loading={mailingAudienceChoicesLoading}
-                                    refreshing={chatsList.isRefreshing}
-                                    remoteError={mailingAudienceChoicesError}
-                                    validationError={mailingAudienceError || null}
-                                    disabled={isMailingBusy}
-                                    onToggleAllChats={handleMailingAllChatsToggle}
-                                    onChangeScopedMode={handleMailingScopedTargetModeChange}
-                                    onApplySelection={handleApplyMailingAudienceSelection}
-                                    onClearValidationError={() => setMailingAudienceError('')}
-                                    onRefreshChoices={handleRefreshMailingAudienceChoices}
-                                  />
-                                </Suspense>
+                              <div className="broadcast-stage-card broadcast-stage-card--scope">
+                                <div className="broadcast-stage-card__head">
+                                  <div className="broadcast-stage-card__title-wrap">
+                                    <strong>Кому</strong>
+                                  </div>
+                                </div>
+
+                                <div className="broadcast-stage-card__body">
+                                  <Suspense fallback={null}>
+                                    <LazyBroadcastAudienceControls
+                                      targetMode={mailingTargetMode}
+                                      currentChatId={chatId ?? ''}
+                                      targetChatIds={mailingAudiencePayload.targetChatIds}
+                                      favoriteUserId={meQuery.data?.userId ?? null}
+                                      choices={mailingAudienceChoices}
+                                      loading={mailingAudienceChoicesLoading}
+                                      refreshing={chatsList.isRefreshing}
+                                      remoteError={mailingAudienceChoicesError}
+                                      validationError={mailingAudienceError || null}
+                                      disabled={isMailingBusy}
+                                      onToggleAllChats={handleMailingAllChatsToggle}
+                                      onChangeScopedMode={handleMailingScopedTargetModeChange}
+                                      onApplySelection={handleApplyMailingAudienceSelection}
+                                      onClearValidationError={() => setMailingAudienceError('')}
+                                      onRefreshChoices={handleRefreshMailingAudienceChoices}
+                                    />
+                                  </Suspense>
+                                </div>
+                              </div>
+
+                              <div className="broadcast-stage-card broadcast-stage-card--planner">
+                                <div className="broadcast-stage-card__head">
+                                  <div className="broadcast-stage-card__title-wrap">
+                                    <strong>Когда</strong>
+                                  </div>
+                                </div>
+
+                                <div className="broadcast-stage-card__body">
+                                  <Suspense fallback={null}>
+                                    <LazyBroadcastSchedulePlanner
+                                      resetKey={mailingPlannerResetKey}
+                                      value={mailingScheduledSlots}
+                                      occupiedSlots={mailingOccupiedSlots}
+                                      error={mailingScheduleError || mailingCycleError}
+                                      disabled={isMailingBusy}
+                                      managedBroadcasts={managedBroadcasts}
+                                      calendarSlots={mailingCalendarQuery.data?.slots ?? []}
+                                      targetAwareAvailability
+                                      sourceChatId={chatId}
+                                      managedBroadcastsLoading={
+                                        settingsScreenQuery.isLoading ||
+                                        settingsScreenQuery.isFetching ||
+                                        mailingCalendarQuery.isFetching
+                                      }
+                                      currentTargetLabel="Текущий чат"
+                                      targetContextLabel={
+                                        mailingHeaderTargetPresentation.compactLabel
+                                      }
+                                      calendarRefreshing={mailingCalendarQuery.isFetching}
+                                      excludeBroadcastId={editingManagedBroadcast?.id ?? null}
+                                      excludeAutopostRuleId={editingManagedAutopostRule?.id ?? null}
+                                      onEditBroadcast={handleEditManagedBroadcastById}
+                                      onDeleteBroadcast={handleDeleteManagedBroadcastById}
+                                      pendingEditBroadcastId={
+                                        openManagedBroadcastEditorMutation.isPending
+                                          ? openManagedBroadcastEditorMutation.variables
+                                          : null
+                                      }
+                                      pendingDeleteBroadcastId={
+                                        cancelManagedBroadcastMutation.isPending
+                                          ? cancelManagedBroadcastMutation.variables
+                                          : null
+                                      }
+                                      timingMode={mailingTimingMode}
+                                      cycle={mailingCycleDraft}
+                                      onTimingModeChange={(nextMode) => {
+                                        setMailingTimingMode(nextMode);
+                                        setMailingScheduleError('');
+                                        setMailingCycleError('');
+                                      }}
+                                      onCycleChange={(nextCycle) => {
+                                        setMailingCycleDraft(nextCycle);
+                                        setMailingCycleError('');
+                                      }}
+                                      onSelectionStateChange={handleMailingPlannerStateChange}
+                                      onChange={(nextValue) => {
+                                        setMailingScheduledSlots(nextValue);
+                                        if (mailingScheduleError) {
+                                          setMailingScheduleError('');
+                                        }
+                                      }}
+                                    />
+                                  </Suspense>
+                                </div>
                               </div>
                             </div>
-
-                            <div className="broadcast-stage-card broadcast-stage-card--planner">
+                          ) : activeMailingWorkspaceView === 'calendar' ? (
+                            <div className="broadcast-stage-card broadcast-stage-card--planner broadcast-stage-card--calendar">
                               <div className="broadcast-stage-card__head">
                                 <div className="broadcast-stage-card__title-wrap">
-                                  <strong>Когда</strong>
+                                  <strong>Календарь</strong>
                                 </div>
                               </div>
 
                               <div className="broadcast-stage-card__body">
                                 <Suspense fallback={null}>
                                   <LazyBroadcastSchedulePlanner
-                                    resetKey={mailingPlannerResetKey}
-                                    value={mailingScheduledSlots}
+                                    resetKey={`calendar-${mailingPlannerResetKey}`}
+                                    value={[]}
                                     occupiedSlots={mailingOccupiedSlots}
-                                    error={mailingScheduleError || mailingCycleError}
                                     disabled={isMailingBusy}
                                     managedBroadcasts={managedBroadcasts}
                                     calendarSlots={mailingCalendarQuery.data?.slots ?? []}
-                                    targetAwareAvailability
                                     sourceChatId={chatId}
                                     managedBroadcastsLoading={
                                       settingsScreenQuery.isLoading ||
@@ -10407,236 +10473,168 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                         ? cancelManagedBroadcastMutation.variables
                                         : null
                                     }
-                                    timingMode={mailingTimingMode}
-                                    cycle={mailingCycleDraft}
-                                    onTimingModeChange={(nextMode) => {
-                                      setMailingTimingMode(nextMode);
-                                      setMailingScheduleError('');
-                                      setMailingCycleError('');
-                                    }}
-                                    onCycleChange={(nextCycle) => {
-                                      setMailingCycleDraft(nextCycle);
-                                      setMailingCycleError('');
-                                    }}
+                                    viewMode="calendar"
                                     onSelectionStateChange={handleMailingPlannerStateChange}
                                     onChange={(nextValue) => {
+                                      setMailingTimingMode('scheduled');
                                       setMailingScheduledSlots(nextValue);
-                                      if (mailingScheduleError) {
-                                        setMailingScheduleError('');
-                                      }
+                                      setMailingScheduleError('');
+                                      setMailingWorkspaceView('compose');
                                     }}
                                   />
                                 </Suspense>
                               </div>
                             </div>
-                          </div>
-                        ) : mailingWorkspaceView === 'calendar' ? (
-                          <div className="broadcast-stage-card broadcast-stage-card--planner broadcast-stage-card--calendar">
-                            <div className="broadcast-stage-card__head">
-                              <div className="broadcast-stage-card__title-wrap">
-                                <strong>Календарь</strong>
+                          ) : activeMailingWorkspaceView === 'autoposts' ? (
+                            <div className="broadcast-stage-card broadcast-stage-card--feed">
+                              <div className="broadcast-stage-card__head">
+                                <div className="broadcast-stage-card__title-wrap">
+                                  <strong>Автопосты</strong>
+                                  <small>
+                                    {managedAutopostRulesQuery.isLoading
+                                      ? 'Загрузка'
+                                      : orderedManagedAutopostRules.length > 0
+                                        ? `${orderedManagedAutopostRules.length} шт.`
+                                        : 'Пусто'}
+                                  </small>
+                                </div>
                               </div>
-                            </div>
 
-                            <div className="broadcast-stage-card__body">
-                              <Suspense fallback={null}>
-                                <LazyBroadcastSchedulePlanner
-                                  resetKey={`calendar-${mailingPlannerResetKey}`}
-                                  value={[]}
-                                  occupiedSlots={mailingOccupiedSlots}
-                                  disabled={isMailingBusy}
-                                  managedBroadcasts={managedBroadcasts}
-                                  calendarSlots={mailingCalendarQuery.data?.slots ?? []}
-                                  sourceChatId={chatId}
-                                  managedBroadcastsLoading={
-                                    settingsScreenQuery.isLoading ||
-                                    settingsScreenQuery.isFetching ||
-                                    mailingCalendarQuery.isFetching
-                                  }
-                                  currentTargetLabel="Текущий чат"
-                                  targetContextLabel={mailingHeaderTargetPresentation.compactLabel}
-                                  calendarRefreshing={mailingCalendarQuery.isFetching}
-                                  excludeBroadcastId={editingManagedBroadcast?.id ?? null}
-                                  excludeAutopostRuleId={editingManagedAutopostRule?.id ?? null}
-                                  onEditBroadcast={handleEditManagedBroadcastById}
-                                  onDeleteBroadcast={handleDeleteManagedBroadcastById}
-                                  pendingEditBroadcastId={
-                                    openManagedBroadcastEditorMutation.isPending
-                                      ? openManagedBroadcastEditorMutation.variables
-                                      : null
-                                  }
-                                  pendingDeleteBroadcastId={
-                                    cancelManagedBroadcastMutation.isPending
-                                      ? cancelManagedBroadcastMutation.variables
-                                      : null
-                                  }
-                                  viewMode="calendar"
-                                  onSelectionStateChange={handleMailingPlannerStateChange}
-                                  onChange={(nextValue) => {
-                                    setMailingTimingMode('scheduled');
-                                    setMailingScheduledSlots(nextValue);
-                                    setMailingScheduleError('');
-                                    setMailingWorkspaceView('compose');
-                                  }}
-                                />
-                              </Suspense>
-                            </div>
-                          </div>
-                        ) : mailingWorkspaceView === 'autoposts' ? (
-                          <div className="broadcast-stage-card broadcast-stage-card--feed">
-                            <div className="broadcast-stage-card__head">
-                              <div className="broadcast-stage-card__title-wrap">
-                                <strong>Автопосты</strong>
-                                <small>
-                                  {managedAutopostRulesQuery.isLoading
-                                    ? 'Загрузка'
-                                    : orderedManagedAutopostRules.length > 0
-                                      ? `${orderedManagedAutopostRules.length} шт.`
-                                      : 'Пусто'}
-                                </small>
-                              </div>
-                            </div>
+                              <div className="broadcast-stage-card__body">
+                                <div className="managed-broadcasts-list managed-broadcasts-list--autoposts">
+                                  {orderedManagedAutopostRules.length === 0 &&
+                                  !managedAutopostRulesQuery.isLoading ? (
+                                    <div className="managed-broadcasts-list__empty">
+                                      Автопостов пока нет.
+                                    </div>
+                                  ) : null}
 
-                            <div className="broadcast-stage-card__body">
-                              <div className="managed-broadcasts-list managed-broadcasts-list--autoposts">
-                                {renderMailingDraftCard()}
-
-                                {orderedManagedAutopostRules.length === 0 &&
-                                !showMailingDraftCard &&
-                                !managedAutopostRulesQuery.isLoading ? (
-                                  <div className="managed-broadcasts-list__empty">Автопостов пока нет.</div>
-                                ) : null}
-
-                                <Suspense fallback={<SkeletonCard lines={2} />}>
-                                  {orderedManagedAutopostRules.map((rule) => (
-                                    <LazyManagedAutopostRuleCard
-                                      key={rule.id}
-                                      rule={rule}
-                                      nextLabel={formatCompactBroadcastDateTime(
-                                        rule.nextSendAt,
-                                        rule.scheduleTimezone,
-                                      )}
-                                      facts={buildManagedAutopostRuleFacts(rule, 'Текущий чат')}
-                                      isBusy={isMailingBusy}
-                                      onOpen={() => openManagedAutopostRuleMutation.mutate(rule.id)}
-                                      onPause={() =>
-                                        updateManagedAutopostRuleMutation.mutate({
-                                          ruleId: rule.id,
-                                          status: 'PAUSED',
-                                        })
-                                      }
-                                      onResume={() =>
-                                        updateManagedAutopostRuleMutation.mutate({
-                                          ruleId: rule.id,
-                                          status: 'ACTIVE',
-                                        })
-                                      }
-                                      onDelete={() => handleDeleteManagedAutopostRule(rule)}
-                                    />
-                                  ))}
-                                </Suspense>
-                              </div>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="broadcast-stage-card broadcast-stage-card--feed">
-                            <div className="broadcast-stage-card__head">
-                              <div className="broadcast-stage-card__title-wrap">
-                                <strong>История</strong>
-                                <small>
-                                  {managedBroadcastsQuery.isLoading
-                                    ? 'Загрузка'
-                                    : filteredManagedBroadcasts.length > 0
-                                      ? `${filteredManagedBroadcasts.length} записей`
-                                      : 'Пусто'}
-                                </small>
-                              </div>
-                            </div>
-
-                            <div className="broadcast-stage-card__body">
-                              <BroadcastHistoryFilterTabs
-                                value={mailingHistoryFilter}
-                                counts={mailingHistoryCounts}
-                                onChange={setMailingHistoryFilter}
-                              />
-
-                              <div className="managed-broadcasts-list">
-                                {renderMailingDraftCard()}
-
-                                {filteredManagedBroadcasts.length === 0 &&
-                                !showMailingDraftCard &&
-                                !managedBroadcastsQuery.isLoading ? (
-                                  <div className="managed-broadcasts-list__empty">История пока пустая.</div>
-                                ) : null}
-
-                                <Suspense fallback={<SkeletonCard lines={2} />}>
-                                  {filteredManagedBroadcasts.map((broadcast) => {
-                                    const cardTone = resolveManagedBroadcastCardTone(broadcast);
-                                    const cardMetric = resolveManagedBroadcastMetric(
-                                      broadcast,
-                                      mailingNowMs,
-                                    );
-                                    const cardFacts = buildManagedBroadcastFactChips(broadcast);
-                                    const canEditBroadcastSchedule =
-                                      broadcast.scheduleMode === 'calendar' &&
-                                      broadcast.status !== 'COMPLETED' &&
-                                      broadcast.status !== 'CANCELED';
-                                    const canCancelBroadcast =
-                                      broadcast.status !== 'COMPLETED' &&
-                                      broadcast.status !== 'CANCELED';
-                                    const isDeletingBroadcast =
-                                      cancelManagedBroadcastMutation.isPending &&
-                                      cancelManagedBroadcastMutation.variables === broadcast.id;
-                                    const isOpeningBroadcastEditor =
-                                      openManagedBroadcastEditorMutation.isPending &&
-                                      openManagedBroadcastEditorMutation.variables === broadcast.id;
-                                    const isDuplicatingBroadcast =
-                                      duplicateManagedBroadcastMutation.isPending &&
-                                      duplicateManagedBroadcastMutation.variables === broadcast.id;
-                                    const isRetryingBroadcast =
-                                      retryManagedBroadcastMutation.isPending &&
-                                      retryManagedBroadcastMutation.variables === broadcast.id;
-                                    const cardBadge = isOpeningBroadcastEditor
-                                      ? 'Открываем'
-                                      : resolveManagedBroadcastCardBadge(broadcast);
-
-                                    return (
-                                      <LazyManagedBroadcastHistoryCard
-                                        key={broadcast.id}
-                                        broadcast={broadcast}
-                                        tone={cardTone}
-                                        badge={cardBadge}
-                                        title={resolveManagedBroadcastCardTitle(broadcast)}
-                                        metric={cardMetric}
-                                        facts={cardFacts}
-                                        canEdit={canEditBroadcastSchedule}
-                                        canCancel={canCancelBroadcast}
+                                  <Suspense fallback={<SkeletonCard lines={2} />}>
+                                    {orderedManagedAutopostRules.map((rule) => (
+                                      <LazyManagedAutopostRuleCard
+                                        key={rule.id}
+                                        rule={rule}
+                                        nextLabel={formatCompactBroadcastDateTime(
+                                          rule.nextSendAt,
+                                          rule.scheduleTimezone,
+                                        )}
+                                        facts={buildManagedAutopostRuleFacts(rule, 'Текущий чат')}
                                         isBusy={isMailingBusy}
-                                        isDeleting={isDeletingBroadcast}
-                                        isDuplicating={isDuplicatingBroadcast}
-                                        isRetrying={isRetryingBroadcast}
-                                        onEdit={() => handleEditManagedBroadcast(broadcast)}
-                                        onDuplicate={() =>
-                                          handleDuplicateManagedBroadcast(broadcast)
+                                        onOpen={() =>
+                                          openManagedAutopostRuleMutation.mutate(rule.id)
                                         }
-                                        onRetry={() =>
-                                          retryManagedBroadcastMutation.mutate(broadcast.id)
+                                        onPause={() =>
+                                          updateManagedAutopostRuleMutation.mutate({
+                                            ruleId: rule.id,
+                                            status: 'PAUSED',
+                                          })
                                         }
-                                        onDelete={() => handleDeleteManagedBroadcast(broadcast)}
+                                        onResume={() =>
+                                          updateManagedAutopostRuleMutation.mutate({
+                                            ruleId: rule.id,
+                                            status: 'ACTIVE',
+                                          })
+                                        }
+                                        onDelete={() => handleDeleteManagedAutopostRule(rule)}
                                       />
-                                    );
-                                  })}
-                                </Suspense>
+                                    ))}
+                                  </Suspense>
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        )}
+                          ) : (
+                            <div className="broadcast-stage-card broadcast-stage-card--feed">
+                              <div className="broadcast-stage-card__head">
+                                <div className="broadcast-stage-card__title-wrap">
+                                  <strong>История</strong>
+                                  <small>
+                                    {managedBroadcastsQuery.isLoading
+                                      ? 'Загрузка'
+                                      : filteredManagedBroadcasts.length > 0
+                                        ? `${filteredManagedBroadcasts.length} записей`
+                                        : 'Пусто'}
+                                  </small>
+                                </div>
+                              </div>
+
+                              <div className="broadcast-stage-card__body">
+                                <BroadcastHistoryFilterTabs
+                                  value={mailingHistoryFilter}
+                                  counts={mailingHistoryCounts}
+                                  onChange={setMailingHistoryFilter}
+                                />
+
+                                <div className="managed-broadcasts-list">
+                                  {filteredManagedBroadcasts.length === 0 &&
+                                  !managedBroadcastsQuery.isLoading ? (
+                                    <div className="managed-broadcasts-list__empty">
+                                      История пока пустая.
+                                    </div>
+                                  ) : null}
+
+                                  <Suspense fallback={<SkeletonCard lines={2} />}>
+                                    {filteredManagedBroadcasts.map((broadcast) => {
+                                      const cardTone = resolveManagedBroadcastCardTone(broadcast);
+                                      const cardMetric = resolveManagedBroadcastMetric(
+                                        broadcast,
+                                        mailingNowMs,
+                                      );
+                                      const cardFacts = buildManagedBroadcastFactChips(broadcast);
+                                      const canEditBroadcastSchedule =
+                                        broadcast.scheduleMode === 'calendar' &&
+                                        broadcast.status !== 'COMPLETED' &&
+                                        broadcast.status !== 'CANCELED';
+                                      const canCancelBroadcast =
+                                        broadcast.status !== 'COMPLETED' &&
+                                        broadcast.status !== 'CANCELED';
+                                      const isDeletingBroadcast =
+                                        cancelManagedBroadcastMutation.isPending &&
+                                        cancelManagedBroadcastMutation.variables === broadcast.id;
+                                      const isOpeningBroadcastEditor =
+                                        openManagedBroadcastEditorMutation.isPending &&
+                                        openManagedBroadcastEditorMutation.variables ===
+                                          broadcast.id;
+                                      const isRetryingBroadcast =
+                                        retryManagedBroadcastMutation.isPending &&
+                                        retryManagedBroadcastMutation.variables === broadcast.id;
+                                      const cardBadge = isOpeningBroadcastEditor
+                                        ? 'Открываем'
+                                        : resolveManagedBroadcastCardBadge(broadcast);
+
+                                      return (
+                                        <LazyManagedBroadcastHistoryCard
+                                          key={broadcast.id}
+                                          broadcast={broadcast}
+                                          tone={cardTone}
+                                          badge={cardBadge}
+                                          title={resolveManagedBroadcastCardTitle(broadcast)}
+                                          metric={cardMetric}
+                                          facts={cardFacts}
+                                          canEdit={canEditBroadcastSchedule}
+                                          canCancel={canCancelBroadcast}
+                                          isBusy={isMailingBusy}
+                                          isDeleting={isDeletingBroadcast}
+                                          isRetrying={isRetryingBroadcast}
+                                          onEdit={() => handleEditManagedBroadcast(broadcast)}
+                                          onRetry={() =>
+                                            retryManagedBroadcastMutation.mutate(broadcast.id)
+                                          }
+                                          onDelete={() => handleDeleteManagedBroadcast(broadcast)}
+                                        />
+                                      );
+                                    })}
+                                  </Suspense>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ) : null}
-                </div>
-              </SettingsDrilldownPanel>
-            </GlassCard>
+                    ) : null}
+                  </div>
+                </SettingsDrilldownPanel>
+              </GlassCard>
+            ) : null}
 
             {shouldShowVkParsingSection ? (
               <GlassCard
@@ -11346,15 +11344,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           facts={pendingMailingReviewFacts}
           confirmLabel={mailingPrimaryActionLabel}
           confirmBusyLabel={
-            updateManagedBroadcastMutation.isPending
-              ? 'Сохраняем...'
-              : sendBroadcastMutation.isPending
-                ? mailingTimingMode === 'now'
-                  ? 'Публикуем...'
-                  : 'Планируем...'
-                : '...'
+            updateManagedBroadcastMutation.isPending ? 'Сохраняем...' : 'Публикуем...'
           }
-          isBusy={sendBroadcastMutation.isPending || updateManagedBroadcastMutation.isPending}
+          isBusy={
+            updateManagedBroadcastMutation.isPending || sendBroadcastHandoffMutation.isPending
+          }
           extraActionBusy={sendBroadcastTestMutation.isPending}
           extraActionDisabled={!mailingTestReady}
           onExtraAction={handleSendBroadcastTest}

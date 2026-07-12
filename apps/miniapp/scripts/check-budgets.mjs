@@ -26,6 +26,8 @@ const KEEPALIVE_MUTATION_TUNNEL_STARTUP_JS_ALLOWANCE_GZIP = 512;
 const MULTIBOT_HOME_METADATA_STARTUP_JS_ALLOWANCE_GZIP = 512;
 // Channel poll deep links add one validated settings focus value to the startup route parser.
 const CHANNEL_POLLS_ROUTE_STARTUP_JS_ALLOWANCE_GZIP = 128;
+// The posts compatibility launcher validates the legacy list flag and exact legacy editor target.
+const POSTS_CONSOLIDATION_ROUTE_STARTUP_JS_ALLOWANCE_GZIP = 256;
 // Major production bakes an absolute same-origin API base, unlike the local relative default.
 // Keep its stable Alpine gzip delta scoped to that production-shaped startup bundle.
 const ABSOLUTE_API_BASE_STARTUP_JS_ALLOWANCE_GZIP = /^https?:\/\//u.test(
@@ -40,6 +42,7 @@ const STARTUP_JS_BUDGET_GZIP =
   KEEPALIVE_MUTATION_TUNNEL_STARTUP_JS_ALLOWANCE_GZIP +
   MULTIBOT_HOME_METADATA_STARTUP_JS_ALLOWANCE_GZIP +
   CHANNEL_POLLS_ROUTE_STARTUP_JS_ALLOWANCE_GZIP +
+  POSTS_CONSOLIDATION_ROUTE_STARTUP_JS_ALLOWANCE_GZIP +
   ABSOLUTE_API_BASE_STARTUP_JS_ALLOWANCE_GZIP;
 // Settings remains lazy-loaded, but richer giveaway, rules, and broadcast editors,
 // shared drilldown UI reuse, the compact required-subscription timer card,

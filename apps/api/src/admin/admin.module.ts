@@ -43,6 +43,7 @@ import { ManagedGiveawayService } from './managed-giveaway.service';
 import { ManagedPollService } from './managed-poll.service';
 import { PublicationController } from './publication.controller';
 import { PublicationContentService } from './publication-content.service';
+import { PublicationLegacyService } from './publication-legacy.service';
 import { PublicationPresenterService } from './publication-presenter.service';
 import { PublicationRunnerService } from './publication-runner.service';
 import { PublicationService } from './publication.service';
@@ -121,6 +122,7 @@ import { SupportRequestsService } from './support-requests.service';
     ManagedGiveawayService,
     ManagedPollService,
     PublicationContentService,
+    PublicationLegacyService,
     PublicationPresenterService,
     PublicationService,
     PublicationRunnerService,

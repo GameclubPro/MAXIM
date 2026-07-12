@@ -7,6 +7,7 @@ import {
   getBroadcastCycleValidationError,
   hasBroadcastHandoffDraft,
   normalizeBroadcastCycleDraft,
+  resolveBroadcastHandoffLoadMode,
   resolveBroadcastHandoffSchedule,
   resolveBroadcastCycleLastSendAt,
   resolveBroadcastCycleSendAt,
@@ -14,6 +15,36 @@ import {
 } from '../src/lib/broadcast-schedule';
 
 const NOW_MS = Date.parse('2026-05-06T10:00:00.000Z');
+
+test('keeps handoff loading and refetch errors ahead of cached data', () => {
+  assert.equal(
+    resolveBroadcastHandoffLoadMode({
+      requested: true,
+      queries: [
+        { isFetchedAfterMount: true, isError: false },
+        { isFetchedAfterMount: false, isError: false },
+      ],
+    }),
+    'loading',
+  );
+  assert.equal(
+    resolveBroadcastHandoffLoadMode({
+      requested: true,
+      queries: [
+        { isFetchedAfterMount: true, isError: false },
+        { isFetchedAfterMount: true, isError: true },
+      ],
+    }),
+    'error',
+  );
+  assert.equal(
+    resolveBroadcastHandoffLoadMode({
+      requested: false,
+      queries: [{ isFetchedAfterMount: false, isError: true }],
+    }),
+    null,
+  );
+});
 
 test('defaults cycle drafts to a channel-safe daily cadence', () => {
   assert.deepEqual(createDefaultBroadcastCycleDraft(NOW_MS), {

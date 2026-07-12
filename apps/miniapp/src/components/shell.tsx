@@ -143,7 +143,7 @@ function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
 
   if (pathname === '/publications' || pathname === '/autoposts') {
     return {
-      title: 'Публикации',
+      title: 'Посты',
     };
   }
 
