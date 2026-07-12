@@ -1195,14 +1195,26 @@ export class PublicationService {
   }
 
   async processDuePublications(reason: 'startup' | 'scheduled'): Promise<void> {
+    await this.dispatchScheduledOccurrences(PUBLICATION_DISPATCH_BATCH, [
+      PublicationScheduleMode.NOW,
+    ]);
+    await this.managedBroadcastService.processDueImmediatePublicationBroadcasts();
+    await this.rollupActiveOccurrences();
+    await this.rollupPublicationLifecycles();
+
     const decision = await this.resolveBackgroundDecision(reason);
     if (decision === 'pause') {
       return;
     }
+
     await this.materializeRecurringSchedules(
       decision === 'slow' ? 10 : PUBLICATION_MATERIALIZE_BATCH,
     );
-    await this.dispatchScheduledOccurrences(decision === 'slow' ? 10 : PUBLICATION_DISPATCH_BATCH);
+    await this.dispatchScheduledOccurrences(decision === 'slow' ? 10 : PUBLICATION_DISPATCH_BATCH, [
+      PublicationScheduleMode.ONCE,
+      PublicationScheduleMode.SLOTS,
+      PublicationScheduleMode.RECURRENCE,
+    ]);
     await this.rollupActiveOccurrences();
     await this.rollupPublicationLifecycles();
   }
@@ -1418,7 +1430,10 @@ export class PublicationService {
     }
   }
 
-  private async dispatchScheduledOccurrences(limit: number): Promise<void> {
+  private async dispatchScheduledOccurrences(
+    limit: number,
+    scheduleModes?: PublicationScheduleMode[],
+  ): Promise<void> {
     const now = new Date();
     const horizon = new Date(now.getTime() + PUBLICATION_EXECUTION_HORIZON_MS);
     const occurrences = await this.prisma.publicationOccurrence.findMany({
@@ -1426,7 +1441,12 @@ export class PublicationService {
         status: PublicationOccurrenceStatus.SCHEDULED,
         scheduledAt: { lte: horizon },
         publication: { is: { lifecycle: PublicationLifecycle.ACTIVE } },
-        schedule: { is: { status: PublicationScheduleStatus.ACTIVE } },
+        schedule: {
+          is: {
+            status: PublicationScheduleStatus.ACTIVE,
+            ...(scheduleModes ? { mode: { in: scheduleModes } } : {}),
+          },
+        },
         legacyBroadcasts: { none: {} },
       },
       orderBy: { scheduledAt: 'asc' },
@@ -3002,25 +3022,33 @@ export class PublicationService {
     const decision = await this.backgroundRuntimeGovernorService.decide({
       component: 'publication-materializer',
       sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
+      allowMaxApiCapacitySlowPath: true,
     });
     if (decision.action !== 'run') {
-      this.logThrottle(reason, decision.reason);
+      this.logThrottle(reason, decision.action, decision.reason);
       return decision.action;
     }
     const snapshot = await this.systemModeService.getSnapshot();
     if (snapshot.mode === 'degrade' && !isSystemModeRecoveryWindow(snapshot)) {
-      this.logThrottle(reason, snapshot.reason);
+      this.logThrottle(reason, 'pause', snapshot.reason);
       return 'pause';
     }
     return 'run';
   }
 
-  private logThrottle(reason: 'startup' | 'scheduled', details: string): void {
+  private logThrottle(
+    reason: 'startup' | 'scheduled',
+    action: 'slow' | 'pause',
+    details: string,
+  ): void {
     const now = Date.now();
     if (now - this.throttleLogAtMs < 60_000) {
       return;
     }
     this.throttleLogAtMs = now;
-    this.logger.log({ reason, details }, 'Paused publication materializer');
+    this.logger.log(
+      { reason, action, details },
+      action === 'pause' ? 'Paused publication materializer' : 'Throttled publication materializer',
+    );
   }
 }

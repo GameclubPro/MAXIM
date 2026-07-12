@@ -67,7 +67,150 @@ function createStackRateLimitSnapshot(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function createDecisionSnapshotForTest() {
+  return {
+    generatedAt: '2026-07-12T10:00:00.000Z',
+    mode: {
+      mode: 'normal',
+      source: 'auto',
+      reason: 'healthy',
+      updatedAt: '2026-07-12T10:00:00.000Z',
+      manualMode: null,
+      queueLagSec: 0,
+      action: {
+        windowSec: 60,
+        total: 0,
+        success: 0,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
+      },
+    },
+    queues: {
+      webhookDefaultWorkerGroups: {},
+      userFacingEffectiveLagSec: 0,
+      effectiveLagSec: 0,
+    },
+    backgroundShare: 0,
+    systemPressure: {
+      enabled: true,
+      loadAverage1m: 1,
+      loadRatio1m: 0.1,
+      cpuCount: 10,
+      ioWaitRatio: 0,
+      sampleWindowMs: 1_000,
+      thresholds: {
+        loadSlow: 0.85,
+        loadPause: 1.25,
+        ioWaitSlow: 0.15,
+        ioWaitPause: 0.35,
+      },
+    },
+    stackLoad: {
+      windowSec: 60,
+      smoothedLoad: 0,
+      peakLoad: 0,
+      avgLoad: 0,
+      slowThreshold: 0.35,
+      pauseThreshold: 0.7,
+    },
+    botLoad: {
+      maxSmoothedLoad: 0,
+      maxPeakLoad: 0,
+      slowThreshold: 0.35,
+      pauseThreshold: 0.7,
+      topBots: [],
+    },
+    topSources: [],
+    workerSkew: { groupName: null, pressure: 0, totalPressure: 0, share: 0 },
+  };
+}
+
 describe('BackgroundRuntimeGovernorService', () => {
+  it.each([
+    {
+      label: 'stack-wide MAX capacity',
+      pressure: { stackLoad: { smoothedLoad: 0.8, peakLoad: 0.9, avgLoad: 0.7 } },
+      reason: 'MAX API stack load 80.0%',
+    },
+    {
+      label: 'per-bot MAX capacity',
+      pressure: { botLoad: { maxSmoothedLoad: 0.8, maxPeakLoad: 0.9 } },
+      reason: 'MAX API bot load 80.0%',
+    },
+  ])('allows bounded slow progress under $label pressure', ({ pressure, reason }) => {
+    const service = new BackgroundRuntimeGovernorService(
+      {} as never,
+      {} as never,
+      {} as never,
+      createConfigMock(),
+    );
+    const base = createDecisionSnapshotForTest();
+    const snapshot = {
+      ...base,
+      ...(pressure.stackLoad ? { stackLoad: { ...base.stackLoad, ...pressure.stackLoad } } : {}),
+      ...(pressure.botLoad ? { botLoad: { ...base.botLoad, ...pressure.botLoad } } : {}),
+    };
+
+    expect((service as any).buildDecisionFromSnapshot(snapshot)).toMatchObject({
+      action: 'pause',
+      reason,
+    });
+    expect(
+      (service as any).buildDecisionFromSnapshot(snapshot, {
+        allowMaxApiCapacitySlowPath: true,
+      }),
+    ).toMatchObject({
+      action: 'slow',
+      retryAfterMs: 20_000,
+      reason,
+    });
+  });
+
+  it('does not let the MAX capacity slow path bypass mode, queue, or host pressure pauses', () => {
+    const service = new BackgroundRuntimeGovernorService(
+      {} as never,
+      {} as never,
+      {} as never,
+      createConfigMock(),
+    );
+    const base = createDecisionSnapshotForTest();
+    const options = { allowMaxApiCapacitySlowPath: true };
+    const stackLoad = { ...base.stackLoad, smoothedLoad: 0.8 };
+
+    expect(
+      (service as any).buildDecisionFromSnapshot(
+        {
+          ...base,
+          mode: { ...base.mode, mode: 'degrade', reason: 'manual maintenance' },
+          stackLoad,
+        },
+        options,
+      ),
+    ).toMatchObject({ action: 'pause', reason: 'manual maintenance' });
+    expect(
+      (service as any).buildDecisionFromSnapshot(
+        {
+          ...base,
+          queues: { ...base.queues, userFacingEffectiveLagSec: 12, effectiveLagSec: 12 },
+          stackLoad,
+        },
+        options,
+      ),
+    ).toMatchObject({ action: 'pause', reason: 'user-facing queue lag 12.0s' });
+    expect(
+      (service as any).buildDecisionFromSnapshot(
+        {
+          ...base,
+          systemPressure: { ...base.systemPressure, ioWaitRatio: 0.5 },
+          stackLoad,
+        },
+        options,
+      ),
+    ).toMatchObject({ action: 'pause', reason: 'system iowait 50.0%' });
+  });
+
   it('pauses background work during the recovery window before hard degrade', async () => {
     const service = new BackgroundRuntimeGovernorService(
       {
@@ -108,9 +251,7 @@ describe('BackgroundRuntimeGovernorService', () => {
           },
           sources: {},
         }),
-        getStackRateLimitSnapshot: jest
-          .fn()
-          .mockResolvedValue(createStackRateLimitSnapshot()),
+        getStackRateLimitSnapshot: jest.fn().mockResolvedValue(createStackRateLimitSnapshot()),
       } as never,
       createConfigMock(),
       {
@@ -166,9 +307,7 @@ describe('BackgroundRuntimeGovernorService', () => {
           },
           sources: {},
         }),
-        getStackRateLimitSnapshot: jest
-          .fn()
-          .mockResolvedValue(createStackRateLimitSnapshot()),
+        getStackRateLimitSnapshot: jest.fn().mockResolvedValue(createStackRateLimitSnapshot()),
       } as never,
       createConfigMock(),
       {
@@ -228,9 +367,7 @@ describe('BackgroundRuntimeGovernorService', () => {
           },
           sources: {},
         }),
-        getStackRateLimitSnapshot: jest
-          .fn()
-          .mockResolvedValue(createStackRateLimitSnapshot()),
+        getStackRateLimitSnapshot: jest.fn().mockResolvedValue(createStackRateLimitSnapshot()),
       } as never,
       createConfigMock(),
       {
@@ -306,9 +443,7 @@ describe('BackgroundRuntimeGovernorService', () => {
             },
           },
         }),
-        getStackRateLimitSnapshot: jest
-          .fn()
-          .mockResolvedValue(createStackRateLimitSnapshot()),
+        getStackRateLimitSnapshot: jest.fn().mockResolvedValue(createStackRateLimitSnapshot()),
       } as never,
       createConfigMock({ BACKGROUND_GOVERNOR_BACKGROUND_SHARE_THRESHOLD: 0.4 }),
       {
@@ -364,9 +499,7 @@ describe('BackgroundRuntimeGovernorService', () => {
           },
           sources: {},
         }),
-        getStackRateLimitSnapshot: jest
-          .fn()
-          .mockResolvedValue(createStackRateLimitSnapshot()),
+        getStackRateLimitSnapshot: jest.fn().mockResolvedValue(createStackRateLimitSnapshot()),
         getBotRateLimitSnapshot: jest.fn().mockResolvedValue({}),
       } as never,
       createConfigMock({
@@ -429,9 +562,7 @@ describe('BackgroundRuntimeGovernorService', () => {
           },
           sources: {},
         }),
-        getStackRateLimitSnapshot: jest
-          .fn()
-          .mockResolvedValue(createStackRateLimitSnapshot()),
+        getStackRateLimitSnapshot: jest.fn().mockResolvedValue(createStackRateLimitSnapshot()),
         getBotRateLimitSnapshot: jest.fn().mockResolvedValue({}),
       } as never,
       createConfigMock({

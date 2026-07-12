@@ -172,4 +172,8 @@ export class ManagedBroadcastService {
   processDueManagedBroadcasts(reason: 'startup' | 'scheduled'): Promise<void> {
     return this.runtime.processDueManagedBroadcasts(reason);
   }
+
+  processDueImmediatePublicationBroadcasts(): Promise<void> {
+    return this.runtime.processDueImmediatePublicationBroadcasts();
+  }
 }

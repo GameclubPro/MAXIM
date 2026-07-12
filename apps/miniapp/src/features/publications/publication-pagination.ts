@@ -31,6 +31,18 @@ export function mergePublicationPages<T extends { id: string }>(
   return Array.from(items.values());
 }
 
+export function shouldPollPublicationDeliveryPages<T extends { status: string }>(
+  aggregatePending: boolean,
+  pages: readonly CursorPage<T>[] | undefined,
+): boolean {
+  return (
+    aggregatePending ||
+    (pages ?? []).some((page) =>
+      page.items.some((item) => item.status === 'PENDING' || item.status === 'SENDING'),
+    )
+  );
+}
+
 export function mergeLegacyPublicationPages<T extends { id: string; kind: string }>(
   pages: readonly CursorPage<T>[] | undefined,
 ): T[] {

@@ -77,6 +77,7 @@ import {
   updateChannelSettings,
 } from '../lib/api/channel-settings-client';
 import type { ApiTransport } from '../lib/api/transport';
+import { buildBroadcastSendFeedback } from '../lib/broadcast-send-feedback';
 import type { BroadcastHandoffPayload, SendBroadcastPayload } from '../lib/api/shared-types';
 import {
   buildBroadcastLinkButtonLegacyFields,
@@ -993,16 +994,21 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const sendBroadcastHandoffMutation = useMutation({
     mutationFn: (payload: SendBroadcastPayload) => sendChannelBroadcast(api, chatId ?? '', payload),
     onSuccess: async (result) => {
-      resetBroadcastComposer();
+      const feedback = buildBroadcastSendFeedback(result);
+      if (feedback.clearDraft) {
+        resetBroadcastComposer();
+      }
       let cleanupFailed = false;
       if (chatId) {
         const handoffQueryKey = queryKeys.channelBroadcastHandoff(chatId);
-        try {
-          await clearChannelBroadcastHandoffState(api, chatId);
-          await queryClient.invalidateQueries({ queryKey: handoffQueryKey });
-        } catch {
-          cleanupFailed = true;
-          queryClient.setQueryData(handoffQueryKey, null);
+        if (feedback.clearDraft) {
+          try {
+            await clearChannelBroadcastHandoffState(api, chatId);
+            await queryClient.invalidateQueries({ queryKey: handoffQueryKey });
+          } catch {
+            cleanupFailed = true;
+            queryClient.setQueryData(handoffQueryKey, null);
+          }
         }
         void queryClient.invalidateQueries({ queryKey: queryKeys.channelSettingsScreen(chatId) });
         void queryClient.invalidateQueries({
@@ -1011,19 +1017,17 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       }
       void queryClient.invalidateQueries({ queryKey: ['publications', 'legacy'] });
       pushToast({
-        tone: result.failedChats > 0 || cleanupFailed ? 'info' : 'success',
-        title: result.failedChats > 0 ? 'Часть публикаций с ошибкой' : 'Публикация запланирована',
+        tone: cleanupFailed && feedback.tone === 'success' ? 'info' : feedback.tone,
+        title: feedback.title,
         description:
           [
-            result.failedChats > 0
-              ? `Отправлено: ${result.sentChats}/${result.targetChats}, ошибок: ${result.failedChats}.`
-              : '',
+            feedback.description ?? '',
             cleanupFailed ? 'Черновик не удалось очистить. Не запускайте его повторно.' : '',
           ]
             .filter(Boolean)
             .join(' ') || undefined,
       });
-      maxNotify(result.failedChats > 0 || cleanupFailed ? 'warning' : 'success');
+      maxNotify(cleanupFailed ? 'warning' : feedback.notification);
     },
     onError: (error) => {
       const description = normalizeApiError(error);

@@ -37,6 +37,7 @@ import {
 } from '../features/publications/publication-feed-card';
 import {
   buildCreatePublicationRequest,
+  buildPublicationSaveFeedback,
   buildTestPublicationRequest,
   buildUpdatePublicationRequest,
   canResumePublication,
@@ -613,6 +614,18 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
       }),
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     enabled: !isEditor && !isLegacyView && view === 'plan',
+    refetchInterval: (query) => {
+      const items = query.state.data?.pages.flatMap((page) => page.items) ?? [];
+      return items.some(
+        (item) =>
+          item.delivery.pending > 0 ||
+          (item.lifecycle === 'ACTIVE' &&
+            item.schedule?.mode === 'now' &&
+            item.delivery.total === 0),
+      )
+        ? 5_000
+        : false;
+    },
   });
   const schedulesQuery = useInfiniteQuery({
     queryKey: queryKeys.list('schedules', debouncedQuery, entityFilter, statusFilter),
@@ -628,6 +641,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
       }),
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     enabled: !isEditor && !isLegacyView && view === 'schedules',
+    refetchInterval: 10_000,
   });
   const historyQuery = useInfiniteQuery({
     queryKey: queryKeys.list('history', debouncedQuery, entityFilter, statusFilter),
@@ -643,6 +657,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
       }),
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     enabled: !isEditor && !isLegacyView && view === 'history',
+    refetchInterval: 10_000,
   });
   const planItems = useMemo(
     () => mergePublicationPages(planQuery.data?.pages),
@@ -695,20 +710,14 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         buildCreatePublicationRequest(draft, createRequestId(), { replaceConflicts }),
       );
     },
-    onSuccess: async () => {
+    onSuccess: async (publication) => {
       await invalidatePublicationQueries();
-      pushToast({
-        tone: 'success',
-        title:
-          editorContext?.kind === 'edit'
-            ? 'Публикация обновлена'
-            : draft.timingMode === 'now'
-              ? 'Публикация поставлена в отправку'
-              : draft.timingMode === 'once'
-                ? 'Публикация запланирована'
-                : 'Расписание сохранено',
+      const feedback = buildPublicationSaveFeedback(publication, {
+        editorKind: editorContext?.kind ?? null,
+        timingMode: draft.timingMode,
       });
-      maxNotify('success');
+      pushToast(feedback);
+      maxNotify(feedback.notification);
       if (isIsolatedPublicationEditor(editorContext?.kind ?? null)) {
         restoreCreateDraftAndClose();
       } else {
@@ -1464,7 +1473,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         footer={
           publication.delivery.ambiguous > 0 ? (
             <span className="publication-delivery-note is-danger">Проверьте отправку</span>
-          ) : publication.delivery.failed > 0 ? (
+          ) : publication.delivery.failed > 0 || publication.delivery.canceled > 0 ? (
             <span className="publication-delivery-note is-danger">
               Есть недоставленные сообщения
             </span>

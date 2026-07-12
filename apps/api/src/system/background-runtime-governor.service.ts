@@ -233,11 +233,13 @@ export class BackgroundRuntimeGovernorService {
     sourceTag: string;
     allowRecoveryWindowRun?: boolean;
     allowQueueLagSlowPathBelowSec?: number;
+    allowMaxApiCapacitySlowPath?: boolean;
   }): Promise<BackgroundRuntimeGovernorDecision> {
     const snapshot = await this.getPressureSnapshot();
     const decision = this.buildDecisionFromSnapshot(snapshot, {
       allowRecoveryWindowRun: params.allowRecoveryWindowRun === true,
       allowQueueLagSlowPathBelowSec: params.allowQueueLagSlowPathBelowSec,
+      allowMaxApiCapacitySlowPath: params.allowMaxApiCapacitySlowPath === true,
     });
 
     if (decision.action !== 'run') {
@@ -257,6 +259,7 @@ export class BackgroundRuntimeGovernorService {
     sourceTag: string;
     allowRecoveryWindowRun?: boolean;
     allowQueueLagSlowPathBelowSec?: number;
+    allowMaxApiCapacitySlowPath?: boolean;
   }): BackgroundRuntimeGovernorDecision | null {
     const snapshot = this.getCachedSnapshot();
     if (!snapshot) {
@@ -266,6 +269,7 @@ export class BackgroundRuntimeGovernorService {
     return this.buildDecisionFromSnapshot(snapshot, {
       allowRecoveryWindowRun: params.allowRecoveryWindowRun === true,
       allowQueueLagSlowPathBelowSec: params.allowQueueLagSlowPathBelowSec,
+      allowMaxApiCapacitySlowPath: params.allowMaxApiCapacitySlowPath === true,
     });
   }
 
@@ -389,6 +393,7 @@ export class BackgroundRuntimeGovernorService {
     options: {
       allowRecoveryWindowRun?: boolean;
       allowQueueLagSlowPathBelowSec?: number;
+      allowMaxApiCapacitySlowPath?: boolean;
     } = {},
   ): BackgroundRuntimeGovernorDecision {
     const queueLagSec =
@@ -440,8 +445,11 @@ export class BackgroundRuntimeGovernorService {
 
     if (snapshot.stackLoad.smoothedLoad >= snapshot.stackLoad.pauseThreshold) {
       return {
-        action: 'pause',
-        retryAfterMs: this.pauseRetryAfterMs,
+        action: options.allowMaxApiCapacitySlowPath === true ? 'slow' : 'pause',
+        retryAfterMs:
+          options.allowMaxApiCapacitySlowPath === true
+            ? this.slowRetryAfterMs
+            : this.pauseRetryAfterMs,
         reason: `MAX API stack load ${(snapshot.stackLoad.smoothedLoad * 100).toFixed(1)}%`,
       };
     }
@@ -456,8 +464,11 @@ export class BackgroundRuntimeGovernorService {
 
     if (snapshot.botLoad.maxSmoothedLoad >= this.botLoadPauseThreshold) {
       return {
-        action: 'pause',
-        retryAfterMs: this.pauseRetryAfterMs,
+        action: options.allowMaxApiCapacitySlowPath === true ? 'slow' : 'pause',
+        retryAfterMs:
+          options.allowMaxApiCapacitySlowPath === true
+            ? this.slowRetryAfterMs
+            : this.pauseRetryAfterMs,
         reason: `MAX API bot load ${(snapshot.botLoad.maxSmoothedLoad * 100).toFixed(1)}%`,
       };
     }
@@ -560,9 +571,7 @@ export class BackgroundRuntimeGovernorService {
 
     const [loadAverage1m = null] = loadavg();
     const normalizedLoadAverage1m =
-      typeof loadAverage1m === 'number' && Number.isFinite(loadAverage1m)
-        ? loadAverage1m
-        : null;
+      typeof loadAverage1m === 'number' && Number.isFinite(loadAverage1m) ? loadAverage1m : null;
 
     let cpuSample: CpuStatSample | null = null;
     try {

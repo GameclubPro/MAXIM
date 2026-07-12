@@ -21,6 +21,7 @@ import {
   isAmbiguousDeliveryPhaseComplete,
   mergePublicationDeliveryPages,
   mergePublicationPages,
+  shouldPollPublicationDeliveryPages,
 } from './publication-pagination';
 
 type PublicationDetailsSheetProps = {
@@ -88,7 +89,24 @@ export function PublicationDetailsSheet({
     queryKey: ['publications', 'details', publication?.id],
     queryFn: () => getPublication(api, publication?.id ?? ''),
     enabled: open,
+    refetchInterval: (query) => {
+      const details = query.state.data;
+      return details &&
+        (details.delivery.pending > 0 ||
+          (details.lifecycle === 'ACTIVE' &&
+            details.schedule?.mode === 'now' &&
+            details.delivery.total === 0))
+        ? 5_000
+        : false;
+    },
   });
+  const shouldPollDeliveries = Boolean(
+    detailsQuery.data &&
+    (detailsQuery.data.delivery.pending > 0 ||
+      (detailsQuery.data.lifecycle === 'ACTIVE' &&
+        detailsQuery.data.schedule?.mode === 'now' &&
+        detailsQuery.data.delivery.total === 0)),
+  );
   const ambiguousCount =
     detailsQuery.data?.delivery.ambiguous ?? publication?.delivery.ambiguous ?? 0;
   const hasAmbiguous = ambiguousCount > 0;
@@ -103,6 +121,10 @@ export function PublicationDetailsSheet({
       }),
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     enabled: open && hasAmbiguous,
+    refetchInterval: (query) =>
+      shouldPollPublicationDeliveryPages(shouldPollDeliveries, query.state.data?.pages)
+        ? 5_000
+        : false,
   });
   const {
     fetchNextPage: fetchNextAmbiguousPage,
@@ -132,6 +154,10 @@ export function PublicationDetailsSheet({
       }),
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     enabled: open && ambiguousPhaseComplete,
+    refetchInterval: (query) =>
+      shouldPollPublicationDeliveryPages(shouldPollDeliveries, query.state.data?.pages)
+        ? 5_000
+        : false,
   });
 
   useEffect(() => {
@@ -200,7 +226,8 @@ export function PublicationDetailsSheet({
   }
 
   const details = detailsQuery.data;
-  const canEdit = publication.lifecycle !== 'COMPLETED' && publication.lifecycle !== 'CANCELED';
+  const currentLifecycle = details?.lifecycle ?? publication.lifecycle;
+  const canEdit = currentLifecycle !== 'COMPLETED' && currentLifecycle !== 'CANCELED';
 
   return createPortal(
     <div className="publication-details-sheet">

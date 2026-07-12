@@ -25855,7 +25855,7 @@ describe('AdminService.sendBroadcast', () => {
 
     await service.processDueManagedBroadcasts('scheduled');
 
-    expect(prisma.managedBroadcast.findMany).toHaveBeenCalledTimes(6);
+    expect(prisma.managedBroadcast.findMany).toHaveBeenCalledTimes(7);
     expect(processSpy).toHaveBeenCalledTimes(2);
     expect(processSpy).toHaveBeenNthCalledWith(1, 'broadcast-1', 'scheduled', expect.any(Date), [
       'ACTIVE',
@@ -25930,6 +25930,7 @@ describe('AdminService.sendBroadcast', () => {
 
     const prisma = createPrismaMock();
     let retryableCalls = 0;
+    let retryableWhere: Record<string, unknown> | null = null;
     prisma.managedBroadcast.findMany.mockImplementation(
       async ({ where }: { where?: { status?: string | { in?: string[] } } }) => {
         if (where?.status === 'ACTIVE') {
@@ -25939,6 +25940,7 @@ describe('AdminService.sendBroadcast', () => {
         const statusFilter = where?.status as { in?: string[] } | undefined;
         if (Array.isArray(statusFilter?.in) && statusFilter.in.includes('FAILED')) {
           retryableCalls += 1;
+          retryableWhere = where as Record<string, unknown>;
           return retryableCalls === 1 ? [{ id: 'broadcast-1' }] : [];
         }
 
@@ -25965,6 +25967,7 @@ describe('AdminService.sendBroadcast', () => {
       'PARTIAL',
       'FAILED',
     ]);
+    expect(retryableWhere).not.toHaveProperty('NOT');
   });
 
   it('picks timed out failed managed broadcasts for scheduled automatic retry', async () => {
@@ -26015,7 +26018,7 @@ describe('AdminService.sendBroadcast', () => {
 
   it('pauses due managed broadcasts when the background governor reports runtime pressure', async () => {
     const prisma = createPrismaMock();
-    prisma.managedBroadcast.findMany.mockResolvedValue([{ id: 'broadcast-1' }]);
+    prisma.managedBroadcast.findMany.mockResolvedValue([]);
     const backgroundRuntimeGovernorService = {
       decide: jest.fn().mockResolvedValue({
         action: 'pause',
@@ -26049,8 +26052,9 @@ describe('AdminService.sendBroadcast', () => {
     expect(backgroundRuntimeGovernorService.decide).toHaveBeenCalledWith({
       component: 'managed-broadcast',
       sourceTag: 'managed_broadcast',
+      allowMaxApiCapacitySlowPath: true,
     });
-    expect(prisma.managedBroadcast.findMany).not.toHaveBeenCalled();
+    expect(prisma.managedBroadcast.findMany).toHaveBeenCalledTimes(1);
     expect(processSpy).not.toHaveBeenCalled();
   });
 
@@ -28480,7 +28484,14 @@ describe('AdminService.sendBroadcast', () => {
     );
 
     expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
-    expect(result.status).toBe('ACTIVE');
+    expect(result).toEqual(
+      expect.objectContaining({
+        status: 'ACTIVE',
+        sentChatIds: ['chat-1'],
+        failedChatIds: ['chat-2'],
+        canRetry: false,
+      }),
+    );
     expect(deliveries).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -28621,7 +28632,14 @@ describe('AdminService.sendBroadcast', () => {
     );
 
     expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
-    expect(result.status).toBe('ACTIVE');
+    expect(result).toEqual(
+      expect.objectContaining({
+        status: 'ACTIVE',
+        sentChatIds: ['chat-1'],
+        failedChatIds: ['chat-2'],
+        canRetry: false,
+      }),
+    );
     expect(deliveries).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

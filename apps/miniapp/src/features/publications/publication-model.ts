@@ -29,6 +29,13 @@ export type PublicationRecurrenceFrequency = 'daily' | 'weekly';
 export type PublicationEntityFilter = 'all' | ManagedEntityType;
 export type PublicationStatusFilter = 'all' | 'active' | 'paused' | 'completed' | 'failed';
 
+export type PublicationSaveFeedback = {
+  tone: 'success' | 'info' | 'danger';
+  title: string;
+  description?: string;
+  notification: 'success' | 'warning' | 'error';
+};
+
 export type PublicationTarget = {
   id: string;
   entityType: ManagedEntityType;
@@ -101,6 +108,77 @@ export function shouldPersistPublicationDraft(kind: PublicationEditorKind | null
 
 export function canResumePublication(lifecycle: PublicationLifecycle): boolean {
   return lifecycle === 'PAUSED';
+}
+
+export function buildPublicationSaveFeedback(
+  publication: Pick<PublicationDetails, 'delivery'>,
+  options: {
+    editorKind: PublicationEditorKind | null;
+    timingMode: PublicationTimingMode;
+  },
+): PublicationSaveFeedback {
+  if (options.editorKind === 'edit') {
+    return {
+      tone: 'success',
+      title: 'Публикация обновлена',
+      notification: 'success',
+    };
+  }
+  if (options.timingMode === 'once') {
+    return {
+      tone: 'success',
+      title: 'Публикация запланирована',
+      notification: 'success',
+    };
+  }
+  if (options.timingMode === 'schedule') {
+    return {
+      tone: 'success',
+      title: 'Расписание сохранено',
+      notification: 'success',
+    };
+  }
+
+  const delivery = publication.delivery;
+  if (delivery.ambiguous > 0) {
+    return {
+      tone: 'info',
+      title: 'Отправка требует проверки',
+      description: 'MAX мог принять сообщение без подтверждения. Проверьте детали публикации.',
+      notification: 'warning',
+    };
+  }
+  const undelivered = delivery.failed + delivery.canceled;
+  if (undelivered > 0 && delivery.pending === 0) {
+    return {
+      tone: 'danger',
+      title: 'Не все сообщения отправлены',
+      description: `Доставлено: ${delivery.sent}/${delivery.total}, не доставлено: ${undelivered}.`,
+      notification: 'error',
+    };
+  }
+  if (delivery.total > 0 && delivery.sent === delivery.total) {
+    return {
+      tone: 'success',
+      title: 'Публикация отправлена',
+      description: `Доставлено: ${delivery.sent}/${delivery.total}.`,
+      notification: 'success',
+    };
+  }
+  if (undelivered > 0) {
+    return {
+      tone: 'info',
+      title: 'Отправка продолжается',
+      description: `Доставлено: ${delivery.sent}/${delivery.total}, не доставлено: ${undelivered}.`,
+      notification: 'warning',
+    };
+  }
+  return {
+    tone: 'info',
+    title: 'Начинаем отправку',
+    description: 'Результат появится в списке постов после ответа MAX.',
+    notification: 'success',
+  };
 }
 
 export function isPublicationScheduleConflictMessage(message: string): boolean {

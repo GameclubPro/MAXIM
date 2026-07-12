@@ -114,6 +114,7 @@ import {
   updateSettings,
 } from '../lib/api/chat-settings-client';
 import { getVkParsingCapability } from '../lib/api/vk-parsing-client';
+import { buildBroadcastSendFeedback } from '../lib/broadcast-send-feedback';
 import { getGlobalSpammerReviewMetrics } from '../lib/api/spammer-review-client';
 import { getMe } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
@@ -770,35 +771,38 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const sendBroadcastHandoffMutation = useMutation({
     mutationFn: (payload: SendBroadcastPayload) => sendBroadcast(api, chatId ?? '', payload),
     onSuccess: async (result) => {
-      resetMailingComposer();
+      const feedback = buildBroadcastSendFeedback(result);
+      if (feedback.clearDraft) {
+        resetMailingComposer();
+      }
       let cleanupFailed = false;
       if (chatId) {
         const handoffQueryKey = ['broadcast-handoff-state', chatId] as const;
-        try {
-          await clearBroadcastHandoffState(api, chatId);
-          await queryClient.invalidateQueries({ queryKey: handoffQueryKey });
-        } catch {
-          cleanupFailed = true;
-          queryClient.setQueryData(handoffQueryKey, null);
+        if (feedback.clearDraft) {
+          try {
+            await clearBroadcastHandoffState(api, chatId);
+            await queryClient.invalidateQueries({ queryKey: handoffQueryKey });
+          } catch {
+            cleanupFailed = true;
+            queryClient.setQueryData(handoffQueryKey, null);
+          }
         }
         void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
         void queryClient.invalidateQueries({ queryKey: ['managed-broadcast-calendar', chatId] });
       }
       void queryClient.invalidateQueries({ queryKey: ['publications', 'legacy'] });
       pushToast({
-        tone: result.failedChats > 0 || cleanupFailed ? 'info' : 'success',
-        title: result.failedChats > 0 ? 'Часть публикаций с ошибкой' : 'Публикация запланирована',
+        tone: cleanupFailed && feedback.tone === 'success' ? 'info' : feedback.tone,
+        title: feedback.title,
         description:
           [
-            result.failedChats > 0
-              ? `Отправлено: ${result.sentChats}/${result.targetChats}, ошибок: ${result.failedChats}.`
-              : '',
+            feedback.description ?? '',
             cleanupFailed ? 'Черновик не удалось очистить. Не запускайте его повторно.' : '',
           ]
             .filter(Boolean)
             .join(' ') || undefined,
       });
-      maxNotify(result.failedChats > 0 || cleanupFailed ? 'warning' : 'success');
+      maxNotify(cleanupFailed ? 'warning' : feedback.notification);
     },
     onError: (error) => {
       const description = reportMailingAudienceApiError(error);

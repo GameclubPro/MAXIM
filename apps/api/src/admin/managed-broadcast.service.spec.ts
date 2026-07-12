@@ -13,6 +13,7 @@ describe('ManagedBroadcastService', () => {
       sendBroadcast: jest.fn().mockResolvedValue({ targetChats: 1, sentChats: 1, failedChats: 0 }),
       listChannelManagedBroadcasts: jest.fn().mockResolvedValue([{ id: 'broadcast-1' }]),
       processDueManagedBroadcasts: jest.fn().mockResolvedValue(undefined),
+      processDueImmediatePublicationBroadcasts: jest.fn().mockResolvedValue(undefined),
     };
 
     return {
@@ -50,5 +51,13 @@ describe('ManagedBroadcastService', () => {
     await service.processDueManagedBroadcasts('scheduled');
 
     expect(runtime.processDueManagedBroadcasts).toHaveBeenCalledWith('scheduled');
+  });
+
+  it('delegates immediate publication recovery directly to the runtime', async () => {
+    const { runtime, service } = createService();
+
+    await service.processDueImmediatePublicationBroadcasts();
+
+    expect(runtime.processDueImmediatePublicationBroadcasts).toHaveBeenCalledTimes(1);
   });
 });

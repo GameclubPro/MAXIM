@@ -72,6 +72,62 @@ function createPublicationUpdateTransaction() {
 }
 
 describe('PublicationService', () => {
+  it('materializes and dispatches NOW publications and rolls up state while background work is paused', async () => {
+    const { service } = createService();
+    const backgroundRuntimeGovernorService = {
+      decide: jest.fn().mockResolvedValue({
+        action: 'pause',
+        reason: 'MAX API stack load 80.0%',
+        retryAfterMs: 60_000,
+      }),
+    };
+    const managedBroadcastService = {
+      processDueImmediatePublicationBroadcasts: jest.fn().mockResolvedValue(undefined),
+    };
+    (service as any).backgroundRuntimeGovernorService = backgroundRuntimeGovernorService;
+    (service as any).managedBroadcastService = managedBroadcastService;
+    const dispatchSpy = jest
+      .spyOn(service as any, 'dispatchScheduledOccurrences')
+      .mockResolvedValue(undefined);
+    const materializeSpy = jest
+      .spyOn(service as any, 'materializeRecurringSchedules')
+      .mockResolvedValue(undefined);
+    const rollupOccurrencesSpy = jest
+      .spyOn(service as any, 'rollupActiveOccurrences')
+      .mockResolvedValue(undefined);
+    const rollupPublicationsSpy = jest
+      .spyOn(service as any, 'rollupPublicationLifecycles')
+      .mockResolvedValue(undefined);
+
+    await service.processDuePublications('scheduled');
+
+    expect(dispatchSpy).toHaveBeenCalledTimes(1);
+    expect(dispatchSpy).toHaveBeenCalledWith(50, [PublicationScheduleMode.NOW]);
+    expect(managedBroadcastService.processDueImmediatePublicationBroadcasts).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(backgroundRuntimeGovernorService.decide).toHaveBeenCalledWith({
+      component: 'publication-materializer',
+      sourceTag: 'managed_broadcast',
+      allowMaxApiCapacitySlowPath: true,
+    });
+    expect(materializeSpy).not.toHaveBeenCalled();
+    expect(rollupOccurrencesSpy).toHaveBeenCalledTimes(1);
+    expect(rollupPublicationsSpy).toHaveBeenCalledTimes(1);
+    expect(dispatchSpy.mock.invocationCallOrder[0]).toBeLessThan(
+      managedBroadcastService.processDueImmediatePublicationBroadcasts.mock.invocationCallOrder[0],
+    );
+    expect(
+      managedBroadcastService.processDueImmediatePublicationBroadcasts.mock.invocationCallOrder[0],
+    ).toBeLessThan(backgroundRuntimeGovernorService.decide.mock.invocationCallOrder[0]);
+    expect(rollupOccurrencesSpy.mock.invocationCallOrder[0]).toBeLessThan(
+      backgroundRuntimeGovernorService.decide.mock.invocationCallOrder[0],
+    );
+    expect(rollupPublicationsSpy.mock.invocationCallOrder[0]).toBeLessThan(
+      backgroundRuntimeGovernorService.decide.mock.invocationCallOrder[0],
+    );
+  });
+
   it('returns occupied calendar slots only for the selected publication targets', async () => {
     const scheduledAt = new Date('2026-07-12T09:00:00.000Z');
     const { service, prisma } = createService({

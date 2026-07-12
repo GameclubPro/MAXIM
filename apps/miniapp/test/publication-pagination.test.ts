@@ -6,6 +6,7 @@ import {
   mergePrioritizedPublicationPages,
   mergePublicationDeliveryPages,
   mergePublicationPages,
+  shouldPollPublicationDeliveryPages,
 } from '../src/features/publications/publication-pagination';
 
 test('legacy publication pagination keeps colliding ids from different stores', () => {
@@ -112,4 +113,24 @@ test('drops cached ambiguous deliveries after the current count reaches zero', (
   );
 
   assert.deepEqual(items, [{ id: 'delivery-sent', status: 'SENT' }]);
+});
+
+test('keeps polling cached delivery rows until their terminal state is fetched', () => {
+  assert.equal(
+    shouldPollPublicationDeliveryPages(false, [
+      {
+        items: [{ status: 'SENT' }, { status: 'PENDING' }],
+      },
+    ]),
+    true,
+  );
+  assert.equal(
+    shouldPollPublicationDeliveryPages(false, [
+      {
+        items: [{ status: 'SENT' }, { status: 'FAILED' }],
+      },
+    ]),
+    false,
+  );
+  assert.equal(shouldPollPublicationDeliveryPages(true, undefined), true);
 });

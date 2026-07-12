@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   buildCreatePublicationRequest,
   buildPublicationContent,
+  buildPublicationSaveFeedback,
   buildTestPublicationRequest,
   canResumePublication,
   createEmptyPublicationDraft,
@@ -47,6 +48,102 @@ test('isolates edit and duplicate drafts from the persisted create draft', () =>
   assert.equal(shouldPersistPublicationDraft('duplicate'), false);
   assert.equal(isIsolatedPublicationEditor('edit'), true);
   assert.equal(isIsolatedPublicationEditor('duplicate'), true);
+});
+
+test('describes a new NOW publication as starting while delivery is still queued', () => {
+  const feedback = buildPublicationSaveFeedback(
+    {
+      delivery: {
+        total: 0,
+        pending: 0,
+        sent: 0,
+        failed: 0,
+        ambiguous: 0,
+        canceled: 0,
+      },
+    },
+    { editorKind: 'create', timingMode: 'now' },
+  );
+
+  assert.equal(feedback.tone, 'info');
+  assert.equal(feedback.title, 'Начинаем отправку');
+});
+
+test('confirms a new NOW publication only when every delivery is sent', () => {
+  const feedback = buildPublicationSaveFeedback(
+    {
+      delivery: {
+        total: 2,
+        pending: 0,
+        sent: 2,
+        failed: 0,
+        ambiguous: 0,
+        canceled: 0,
+      },
+    },
+    { editorKind: 'create', timingMode: 'now' },
+  );
+
+  assert.equal(feedback.tone, 'success');
+  assert.equal(feedback.title, 'Публикация отправлена');
+});
+
+test('does not hide an ambiguous NOW delivery behind a success confirmation', () => {
+  const feedback = buildPublicationSaveFeedback(
+    {
+      delivery: {
+        total: 1,
+        pending: 0,
+        sent: 0,
+        failed: 0,
+        ambiguous: 1,
+        canceled: 0,
+      },
+    },
+    { editorKind: 'create', timingMode: 'now' },
+  );
+
+  assert.equal(feedback.tone, 'info');
+  assert.equal(feedback.notification, 'warning');
+  assert.equal(feedback.title, 'Отправка требует проверки');
+});
+
+test('treats canceled NOW targets as undelivered instead of queued', () => {
+  const feedback = buildPublicationSaveFeedback(
+    {
+      delivery: {
+        total: 1,
+        pending: 0,
+        sent: 0,
+        failed: 0,
+        ambiguous: 0,
+        canceled: 1,
+      },
+    },
+    { editorKind: 'create', timingMode: 'now' },
+  );
+
+  assert.equal(feedback.tone, 'danger');
+  assert.equal(feedback.title, 'Не все сообщения отправлены');
+});
+
+test('keeps edit feedback focused on saving the publication', () => {
+  const feedback = buildPublicationSaveFeedback(
+    {
+      delivery: {
+        total: 1,
+        pending: 0,
+        sent: 0,
+        failed: 1,
+        ambiguous: 0,
+        canceled: 0,
+      },
+    },
+    { editorKind: 'edit', timingMode: 'now' },
+  );
+
+  assert.equal(feedback.tone, 'success');
+  assert.equal(feedback.title, 'Публикация обновлена');
 });
 
 test('starts a new publication without a recipient or a publishable schedule', () => {
