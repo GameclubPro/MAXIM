@@ -2,6 +2,7 @@ import type { Queue } from 'bullmq';
 import { ChatBotMembershipStatus, ChatEntityType } from '../prisma/prisma-client';
 import { NightModeTransitionSchedulerService } from './night-mode-transition-scheduler.service';
 import {
+  buildNightModeTransitionJobId,
   NIGHT_MODE_TRANSITION_JOB_NAME,
   type NightModeTransitionJob,
 } from './night-mode-transition.queue';
@@ -178,6 +179,7 @@ describe('NightModeTransitionSchedulerService', () => {
           transition: 'open',
           scheduledFor: '2026-05-31T05:00:00.000Z',
           sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+          transitionRuntimeVersion: 2,
         }),
         expect.any(Object),
       );
@@ -189,6 +191,315 @@ describe('NightModeTransitionSchedulerService', () => {
           transition: 'close',
           scheduledFor: '2026-05-31T20:00:00.000Z',
           sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-31',
+        }),
+        expect.any(Object),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('bootstraps a catch-up open job when the current night session already ended', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-31T06:12:00.000Z'));
+    try {
+      const prisma = {
+        chatSettings: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              chatId: 'chat-1',
+              nightModeEnabled: true,
+              nightModeStartTimeMinutes: 23 * 60,
+              nightModeEndTimeMinutes: 8 * 60,
+              nightModeTimezone: 'Europe/Moscow',
+            },
+          ]),
+        },
+      };
+      const queue = {
+        add: jest.fn(),
+      };
+      const service = new NightModeTransitionSchedulerService(
+        prisma as never,
+        queue as unknown as Queue<NightModeTransitionJob>,
+      );
+
+      await service.bootstrapEnabledChats();
+
+      expect(queue.add).toHaveBeenCalledTimes(3);
+      expect(queue.add).toHaveBeenNthCalledWith(
+        1,
+        NIGHT_MODE_TRANSITION_JOB_NAME,
+        expect.objectContaining({
+          chatId: 'chat-1',
+          transition: 'open',
+          scheduledFor: '2026-05-31T05:00:00.000Z',
+          sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+          transitionRuntimeVersion: 2,
+        }),
+        expect.objectContaining({
+          delay: 0,
+        }),
+      );
+      expect(queue.add).toHaveBeenNthCalledWith(
+        2,
+        NIGHT_MODE_TRANSITION_JOB_NAME,
+        expect.objectContaining({
+          transition: 'close',
+          scheduledFor: '2026-05-31T20:00:00.000Z',
+          sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-31',
+        }),
+        expect.any(Object),
+      );
+      expect(queue.add).toHaveBeenNthCalledWith(
+        3,
+        NIGHT_MODE_TRANSITION_JOB_NAME,
+        expect.objectContaining({
+          transition: 'open',
+          scheduledFor: '2026-06-01T05:00:00.000Z',
+          sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-31',
+        }),
+        expect.any(Object),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('reconciles a catch-up open job when the current night session already ended', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-31T06:12:00.000Z'));
+    try {
+      const queue = {
+        getJobs: jest.fn().mockResolvedValue([]),
+        add: jest.fn(),
+      };
+      const service = new NightModeTransitionSchedulerService(
+        {} as never,
+        queue as unknown as Queue<NightModeTransitionJob>,
+      );
+
+      await service.reconcileChatSettings('chat-1', {
+        nightModeEnabled: true,
+        nightModeStartTimeMinutes: 23 * 60,
+        nightModeEndTimeMinutes: 8 * 60,
+        nightModeTimezone: 'Europe/Moscow',
+      });
+
+      expect(queue.add).toHaveBeenNthCalledWith(
+        1,
+        NIGHT_MODE_TRANSITION_JOB_NAME,
+        expect.objectContaining({
+          chatId: 'chat-1',
+          transition: 'open',
+          scheduledFor: '2026-05-31T05:00:00.000Z',
+          sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+        }),
+        expect.objectContaining({
+          delay: 0,
+        }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('requeues a legacy failed current open job after a known pre-send delete rejection', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-31T06:12:00.000Z'));
+    try {
+      const jobId = buildNightModeTransitionJobId(
+        'chat-1',
+        'open',
+        '2026-05-31T05:00:00.000Z',
+        'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+      );
+      const failedJob = {
+        id: jobId,
+        failedReason: 'user.not.admin',
+        data: {},
+        getState: jest.fn().mockResolvedValue('failed'),
+        remove: jest.fn().mockResolvedValue(undefined),
+      };
+      const prisma = {
+        chatSettings: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              chatId: 'chat-1',
+              nightModeEnabled: true,
+              nightModeStartTimeMinutes: 23 * 60,
+              nightModeEndTimeMinutes: 8 * 60,
+              nightModeTimezone: 'Europe/Moscow',
+            },
+          ]),
+        },
+      };
+      const queue = {
+        getJob: jest.fn().mockResolvedValue(failedJob),
+        add: jest.fn(),
+      };
+      const service = new NightModeTransitionSchedulerService(
+        prisma as never,
+        queue as unknown as Queue<NightModeTransitionJob>,
+      );
+
+      await service.bootstrapEnabledChats();
+
+      expect(queue.getJob).toHaveBeenCalledWith(jobId);
+      expect(failedJob.getState).toHaveBeenCalledTimes(1);
+      expect(failedJob.remove).toHaveBeenCalledTimes(1);
+      expect(queue.add).toHaveBeenNthCalledWith(
+        1,
+        NIGHT_MODE_TRANSITION_JOB_NAME,
+        expect.objectContaining({
+          transition: 'open',
+          scheduledFor: '2026-05-31T05:00:00.000Z',
+        }),
+        expect.objectContaining({ jobId }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not re-add a legacy current open job when the failed job cannot be removed', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-31T06:12:00.000Z'));
+    try {
+      const jobId = buildNightModeTransitionJobId(
+        'chat-1',
+        'open',
+        '2026-05-31T05:00:00.000Z',
+        'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+      );
+      const failedJob = {
+        id: jobId,
+        failedReason: 'user.not.admin',
+        data: {},
+        getState: jest.fn().mockResolvedValue('failed'),
+        remove: jest.fn().mockRejectedValue(new Error('queue unavailable')),
+      };
+      const prisma = {
+        chatSettings: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              chatId: 'chat-1',
+              nightModeEnabled: true,
+              nightModeStartTimeMinutes: 23 * 60,
+              nightModeEndTimeMinutes: 8 * 60,
+              nightModeTimezone: 'Europe/Moscow',
+            },
+          ]),
+        },
+      };
+      const queue = {
+        getJob: jest.fn().mockResolvedValue(failedJob),
+        add: jest.fn(),
+      };
+      const service = new NightModeTransitionSchedulerService(
+        prisma as never,
+        queue as unknown as Queue<NightModeTransitionJob>,
+      );
+
+      await service.bootstrapEnabledChats();
+
+      expect(failedJob.remove).toHaveBeenCalledTimes(1);
+      expect(queue.add).not.toHaveBeenCalledWith(
+        NIGHT_MODE_TRANSITION_JOB_NAME,
+        expect.any(Object),
+        expect.objectContaining({ jobId }),
+      );
+      expect(queue.add).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not revive a versioned current open job after a user.not.admin failure', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-31T06:12:00.000Z'));
+    try {
+      const jobId = buildNightModeTransitionJobId(
+        'chat-1',
+        'open',
+        '2026-05-31T05:00:00.000Z',
+        'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+      );
+      const failedJob = {
+        id: jobId,
+        failedReason: 'user.not.admin',
+        data: { transitionRuntimeVersion: 2 },
+        getState: jest.fn().mockResolvedValue('failed'),
+        remove: jest.fn(),
+      };
+      const prisma = {
+        chatSettings: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              chatId: 'chat-1',
+              nightModeEnabled: true,
+              nightModeStartTimeMinutes: 23 * 60,
+              nightModeEndTimeMinutes: 8 * 60,
+              nightModeTimezone: 'Europe/Moscow',
+            },
+          ]),
+        },
+      };
+      const queue = {
+        getJob: jest.fn().mockResolvedValue(failedJob),
+        add: jest.fn(),
+      };
+      const service = new NightModeTransitionSchedulerService(
+        prisma as never,
+        queue as unknown as Queue<NightModeTransitionJob>,
+      );
+
+      await service.bootstrapEnabledChats();
+
+      expect(failedJob.remove).not.toHaveBeenCalled();
+      expect(queue.add).toHaveBeenCalledTimes(2);
+      expect(queue.add).toHaveBeenNthCalledWith(
+        1,
+        NIGHT_MODE_TRANSITION_JOB_NAME,
+        expect.objectContaining({
+          transition: 'close',
+          scheduledFor: '2026-05-31T20:00:00.000Z',
+        }),
+        expect.any(Object),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not enqueue a stale opening catch-up after its recovery window', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-31T12:00:00.000Z'));
+    try {
+      const prisma = {
+        chatSettings: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              chatId: 'chat-1',
+              nightModeEnabled: true,
+              nightModeStartTimeMinutes: 23 * 60,
+              nightModeEndTimeMinutes: 8 * 60,
+              nightModeTimezone: 'Europe/Moscow',
+            },
+          ]),
+        },
+      };
+      const queue = {
+        add: jest.fn(),
+      };
+      const service = new NightModeTransitionSchedulerService(
+        prisma as never,
+        queue as unknown as Queue<NightModeTransitionJob>,
+      );
+
+      await service.bootstrapEnabledChats();
+
+      expect(queue.add).toHaveBeenCalledTimes(2);
+      expect(queue.add).toHaveBeenNthCalledWith(
+        1,
+        NIGHT_MODE_TRANSITION_JOB_NAME,
+        expect.objectContaining({
+          transition: 'close',
+          scheduledFor: '2026-05-31T20:00:00.000Z',
         }),
         expect.any(Object),
       );

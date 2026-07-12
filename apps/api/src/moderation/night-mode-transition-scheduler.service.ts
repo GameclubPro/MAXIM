@@ -16,6 +16,7 @@ import {
 } from './night-mode-transition.queue';
 import {
   resolveCurrentNightModeCloseOccurrence,
+  resolveCurrentNightModeOpenOccurrence,
   resolveNextNightModeTransitionOccurrences,
   type NightModeTransitionOccurrence,
   type NightModeTransitionScheduleSettings,
@@ -105,7 +106,10 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
             : {}),
         });
 
-        await this.enqueueChatSettingsRows(settingsRows, { includeCurrentClose: true });
+        await this.enqueueChatSettingsRows(settingsRows, {
+          includeCurrentClose: true,
+          includeCurrentOpen: true,
+        });
 
         if (settingsRows.length < NIGHT_MODE_TRANSITION_BOOTSTRAP_BATCH_SIZE) {
           break;
@@ -136,6 +140,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     if (settings) {
       await this.enqueueChatSettingsOccurrences(settings.chatId, settings, {
         includeCurrentClose: true,
+        includeCurrentOpen: true,
       });
     }
   }
@@ -175,6 +180,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     if (await this.hasActiveBotMembership(chatId)) {
       await this.enqueueChatSettingsOccurrences(chatId, settings, {
         includeCurrentClose: true,
+        includeCurrentOpen: true,
       });
     }
   }
@@ -195,13 +201,14 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     for (const settings of settingsRows) {
       await this.enqueueChatSettingsOccurrences(settings.chatId, settings, {
         includeCurrentClose: true,
+        includeCurrentOpen: true,
       });
     }
   }
 
   private async enqueueChatSettingsRows(
     settingsRows: readonly (NightModeTransitionScheduleSettings & { chatId: string })[],
-    options: { includeCurrentClose?: boolean } = {},
+    options: { includeCurrentClose?: boolean; includeCurrentOpen?: boolean } = {},
   ): Promise<void> {
     if (!this.queue) {
       return;
@@ -275,10 +282,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
   }
 
   private async hasActiveBotMembership(chatId: string): Promise<boolean> {
-    if (
-      typeof this.prisma.chat?.findUnique === 'function' &&
-      !(await this.isChatEntity(chatId))
-    ) {
+    if (typeof this.prisma.chat?.findUnique === 'function' && !(await this.isChatEntity(chatId))) {
       return false;
     }
 
@@ -337,7 +341,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
   private async enqueueChatSettingsOccurrences(
     chatId: string,
     settings: NightModeTransitionScheduleSettings,
-    options: { includeCurrentClose?: boolean } = {},
+    options: { includeCurrentClose?: boolean; includeCurrentOpen?: boolean } = {},
   ): Promise<void> {
     if (!this.queue) {
       return;
@@ -351,6 +355,27 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     const nowMs = Date.now();
     for (const occurrence of occurrences) {
       const scheduledFor = occurrence.dueAt.toISOString();
+      const jobId = buildNightModeTransitionJobId(
+        chatId,
+        occurrence.transition,
+        scheduledFor,
+        occurrence.sessionKey,
+      );
+      const isCurrentOpenCatchUp =
+        options.includeCurrentOpen === true &&
+        occurrence.transition === 'open' &&
+        occurrence.dueAt.getTime() <= nowMs;
+      if (
+        isCurrentOpenCatchUp &&
+        !(await this.canEnqueueCurrentOpenCatchUp({
+          chatId,
+          jobId,
+          sessionKey: occurrence.sessionKey,
+        }))
+      ) {
+        continue;
+      }
+
       await this.queue.add(
         NIGHT_MODE_TRANSITION_JOB_NAME,
         {
@@ -359,15 +384,11 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
           scheduledFor,
           sessionKey: occurrence.sessionKey,
           retryPolicyName: 'night-mode-transition',
+          transitionRuntimeVersion: 2,
           createdAt: new Date().toISOString(),
         },
         {
-          jobId: buildNightModeTransitionJobId(
-            chatId,
-            occurrence.transition,
-            scheduledFor,
-            occurrence.sessionKey,
-          ),
+          jobId,
           delay: Math.max(0, occurrence.dueAt.getTime() - nowMs),
           attempts: NIGHT_MODE_TRANSITION_JOB_ATTEMPTS,
           backoff: {
@@ -381,30 +402,92 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     }
   }
 
+  private async canEnqueueCurrentOpenCatchUp(params: {
+    chatId: string;
+    jobId: string;
+    sessionKey: string;
+  }): Promise<boolean> {
+    if (!this.queue || typeof this.queue.getJob !== 'function') {
+      return true;
+    }
+
+    try {
+      const existing = await this.queue.getJob(params.jobId);
+      if (!existing || typeof existing.getState !== 'function') {
+        return true;
+      }
+
+      if ((await existing.getState()) !== 'failed') {
+        return true;
+      }
+
+      const transitionRuntimeVersion = existing.data.transitionRuntimeVersion;
+      if (
+        transitionRuntimeVersion !== undefined ||
+        !this.isRecoverableCurrentOpenFailure(existing.failedReason)
+      ) {
+        this.logger.warn(
+          {
+            chatId: params.chatId,
+            jobId: params.jobId,
+            sessionKey: params.sessionKey,
+            transitionRuntimeVersion: transitionRuntimeVersion ?? null,
+            failedReason: existing.failedReason ?? null,
+          },
+          'Skipped night mode opening catch-up after an ambiguous or terminal prior failure',
+        );
+        return false;
+      }
+
+      await existing.remove();
+      return true;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId: params.chatId,
+          jobId: params.jobId,
+          sessionKey: params.sessionKey,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'Could not safely inspect a failed night mode opening job for catch-up',
+      );
+      return false;
+    }
+  }
+
+  private isRecoverableCurrentOpenFailure(failedReason: string | undefined): boolean {
+    const normalized = failedReason?.trim().toLowerCase() ?? '';
+    return normalized.includes('user.not.admin') || normalized.includes('user is not an admin');
+  }
+
   private resolveTransitionOccurrences(
     settings: NightModeTransitionScheduleSettings,
-    options: { includeCurrentClose?: boolean },
+    options: { includeCurrentClose?: boolean; includeCurrentOpen?: boolean },
   ): NightModeTransitionOccurrence[] {
     const occurrences = resolveNextNightModeTransitionOccurrences(settings);
-    if (!options.includeCurrentClose) {
+    if (!options.includeCurrentClose && !options.includeCurrentOpen) {
       return occurrences;
     }
 
-    const currentClose = resolveCurrentNightModeCloseOccurrence(settings);
-    if (
-      !currentClose ||
-      occurrences.some(
-        (occurrence) =>
-          occurrence.transition === currentClose.transition &&
-          occurrence.sessionKey === currentClose.sessionKey,
-      )
-    ) {
+    const currentOccurrences = [
+      ...(options.includeCurrentClose ? [resolveCurrentNightModeCloseOccurrence(settings)] : []),
+      ...(options.includeCurrentOpen ? [resolveCurrentNightModeOpenOccurrence(settings)] : []),
+    ].filter((occurrence): occurrence is NightModeTransitionOccurrence => occurrence !== null);
+
+    if (currentOccurrences.length === 0) {
       return occurrences;
     }
 
-    return [currentClose, ...occurrences].sort(
-      (left, right) => left.dueAt.getTime() - right.dueAt.getTime(),
+    const currentOccurrenceKeys = new Set(
+      currentOccurrences.map((occurrence) => `${occurrence.transition}:${occurrence.sessionKey}`),
     );
+    return [
+      ...currentOccurrences,
+      ...occurrences.filter(
+        (occurrence) =>
+          !currentOccurrenceKeys.has(`${occurrence.transition}:${occurrence.sessionKey}`),
+      ),
+    ].sort((left, right) => left.dueAt.getTime() - right.dueAt.getTime());
   }
 
   private async clearChatJobsForChatIds(chatIds: readonly string[]): Promise<void> {

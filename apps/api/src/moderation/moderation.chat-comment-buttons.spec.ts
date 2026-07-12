@@ -99,12 +99,14 @@ function createChatAutoCommentAttachMarkerMock() {
         return row ? { status: row.status, lockedAt: row.lockedAt } : null;
       }),
       create: jest.fn(async (args: unknown) => {
-        const data = (args as {
-          data: Pick<
-            MockChatAutoCommentAttachMarkerRow,
-            'chatId' | 'messageId' | 'status' | 'lockToken' | 'lockedAt' | 'botId' | 'source'
-          >;
-        }).data;
+        const data = (
+          args as {
+            data: Pick<
+              MockChatAutoCommentAttachMarkerRow,
+              'chatId' | 'messageId' | 'status' | 'lockToken' | 'lockedAt' | 'botId' | 'source'
+            >;
+          }
+        ).data;
         const key = keyOf(data.chatId, data.messageId);
         if (rows.has(key)) {
           throw { code: 'P2002', message: 'Unique constraint failed' };
@@ -123,14 +125,16 @@ function createChatAutoCommentAttachMarkerMock() {
         return { id: key, ...row };
       }),
       createMany: jest.fn(async (args: unknown) => {
-        const data = (args as {
-          data: Array<
-            Pick<
-              MockChatAutoCommentAttachMarkerRow,
-              'chatId' | 'messageId' | 'status' | 'lockToken' | 'lockedAt' | 'botId' | 'source'
-            >
-          >;
-        }).data;
+        const data = (
+          args as {
+            data: Array<
+              Pick<
+                MockChatAutoCommentAttachMarkerRow,
+                'chatId' | 'messageId' | 'status' | 'lockToken' | 'lockedAt' | 'botId' | 'source'
+              >
+            >;
+          }
+        ).data;
         let count = 0;
         for (const entry of data) {
           const key = keyOf(entry.chatId, entry.messageId);
@@ -387,6 +391,57 @@ describe('ModerationService chat comment buttons', () => {
     );
   });
 
+  it('persists the bot copy marker before deleting the original admin message', async () => {
+    const markerMock = createChatAutoCommentAttachMarkerMock();
+    const { maxClient, service } = createService(
+      {
+        commentsEnabled: true,
+        commentsAdminsEnabled: true,
+        commentsAllEnabled: false,
+        commentsChatBroadcastsEnabled: false,
+      },
+      ['admin-1'],
+      { chatAutoCommentAttachMarker: markerMock.delegate },
+    );
+    let releaseDelete!: () => void;
+    const deleteReleased = new Promise<void>((resolve) => {
+      releaseDelete = resolve;
+    });
+    let markDeleteStarted!: () => void;
+    const deleteStarted = new Promise<void>((resolve) => {
+      markDeleteStarted = resolve;
+    });
+    maxClient.deleteMessage.mockImplementation(async () => {
+      markDeleteStarted();
+      await deleteReleased;
+    });
+
+    const attach = service.handleUpdate(
+      createChatMessageUpdate({
+        senderId: 'admin-1',
+        senderName: 'Админ',
+        messageId: 'mid-admin-marker-order',
+        text: 'Пост админа с комментариями',
+      }),
+    );
+    await deleteStarted;
+
+    expect(markerMock.rows.get('chat-1:mid-admin-marker-order')).toMatchObject({
+      status: 'IN_PROGRESS',
+      replacementMessageId: 'mid-bot-copy-1',
+      originalDeleted: false,
+    });
+
+    releaseDelete();
+    await attach;
+
+    expect(markerMock.rows.get('chat-1:mid-admin-marker-order')).toMatchObject({
+      status: 'SUCCEEDED',
+      replacementMessageId: 'mid-bot-copy-1',
+      originalDeleted: true,
+    });
+  });
+
   it('does not publish a duplicate bot copy while the same admin message is already being processed', async () => {
     const markerMock = createChatAutoCommentAttachMarkerMock();
     const { prisma, maxClient, service } = createService(
@@ -445,10 +500,7 @@ describe('ModerationService chat comment buttons', () => {
   it('claims chat auto-comment markers with skipDuplicates to avoid unique constraint noise', async () => {
     const delegate = {
       findUnique: jest.fn().mockResolvedValue(null),
-      createMany: jest
-        .fn()
-        .mockResolvedValueOnce({ count: 1 })
-        .mockResolvedValueOnce({ count: 0 }),
+      createMany: jest.fn().mockResolvedValueOnce({ count: 1 }).mockResolvedValueOnce({ count: 0 }),
       create: jest.fn(),
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
     };

@@ -15,6 +15,7 @@ export type NightModeTransitionJob = QueueJobEnvelope<
   {
     retryPolicyName?: Extract<QueueRetryPolicyName, 'night-mode-transition'>;
     createdAt?: string;
+    transitionRuntimeVersion?: 2;
   }
 >;
 

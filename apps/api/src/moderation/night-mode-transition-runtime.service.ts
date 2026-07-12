@@ -1,4 +1,4 @@
-import { Injectable, Optional } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { ChatEntityType, type ChatSettings, type Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -80,10 +80,7 @@ export type NightModeTransitionRuntimeHooks = {
       sessionKey: string;
     },
   ): Promise<NightModeTransitionProcessResult>;
-  deleteClosedNotice(
-    chatId: string,
-    messageId: string,
-  ): Promise<NightModeTransitionProcessResult>;
+  deleteClosedNotice(chatId: string, messageId: string): Promise<NightModeTransitionProcessResult>;
 };
 
 type NightModeTransitionLock = {
@@ -94,6 +91,7 @@ type NightModeTransitionLock = {
 
 @Injectable()
 export class NightModeTransitionRuntimeService {
+  private readonly logger = new Logger(NightModeTransitionRuntimeService.name);
   private readonly nightModeTransitionMemoryState = new Map<string, NightModeTransitionState>();
   private readonly nightModeTransitionMemoryLocks = new Set<string>();
 
@@ -245,21 +243,58 @@ export class NightModeTransitionRuntimeService {
         return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
       }
 
-      const previousCloseNoticeMessageId =
-        currentState?.status === 'closed' ? currentState.closeNoticeMessageId : null;
-      const transitionAlreadyRecorded =
+      let previousCloseNoticeMessageId =
+        currentState?.status === 'closed' && currentState.sessionKey === snapshot.sessionKey
+          ? currentState.closeNoticeMessageId
+          : null;
+      let transitionAlreadyRecorded =
         currentState?.status === 'open' && currentState.sessionKey === snapshot.sessionKey;
-
-      if (previousCloseNoticeMessageId) {
-        const deleteResult = await hooks.deleteClosedNotice(
+      if (!previousCloseNoticeMessageId && !transitionAlreadyRecorded) {
+        previousCloseNoticeMessageId = await this.findPersistedCloseNoticeMessageId(
           settings.chatId,
-          previousCloseNoticeMessageId,
+          snapshot.sessionKey,
         );
-        if (!deleteResult.shouldEnqueueNext) {
-          return deleteResult;
+      }
+      if (
+        !transitionAlreadyRecorded &&
+        snapshot.isOpenBoundary &&
+        settings.nightModeOpenMessageEnabled
+      ) {
+        transitionAlreadyRecorded = await this.hasPersistedOpenNotice(
+          settings.chatId,
+          snapshot.sessionKey,
+        );
+      }
+
+      let deleteResult: NightModeTransitionProcessResult | null = null;
+      if (previousCloseNoticeMessageId) {
+        try {
+          deleteResult = await hooks.deleteClosedNotice(
+            settings.chatId,
+            previousCloseNoticeMessageId,
+          );
+          if (!deleteResult.shouldEnqueueNext) {
+            this.logger.warn(
+              {
+                chatId: settings.chatId,
+                messageId: previousCloseNoticeMessageId,
+              },
+              'Night mode close notice cleanup reported access loss; continuing opening transition',
+            );
+          }
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId: settings.chatId,
+              messageId: previousCloseNoticeMessageId,
+              error: error instanceof Error ? error.message : String(error),
+            },
+            'Failed to delete night mode close notice; continuing opening transition',
+          );
         }
       }
 
+      let sentOpenedNotice = false;
       if (
         snapshot.isOpenBoundary &&
         settings.nightModeOpenMessageEnabled &&
@@ -273,6 +308,7 @@ export class NightModeTransitionRuntimeService {
         if (!noticeResult.shouldEnqueueNext) {
           return noticeResult;
         }
+        sentOpenedNotice = true;
       }
 
       await this.writeNightModeTransitionState(settings.chatId, {
@@ -281,6 +317,9 @@ export class NightModeTransitionRuntimeService {
         closeNoticeMessageId: null,
         updatedAt: new Date().toISOString(),
       });
+      if (deleteResult && !deleteResult.shouldEnqueueNext && !sentOpenedNotice) {
+        return deleteResult;
+      }
       return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
     } finally {
       await this.releaseNightModeTransitionLock(lock);
@@ -339,6 +378,30 @@ export class NightModeTransitionRuntimeService {
     return messageId ? messageId : null;
   }
 
+  private async hasPersistedOpenNotice(chatId: string, sessionKey: string): Promise<boolean> {
+    if (typeof this.prisma.moderationEvent?.findFirst !== 'function') {
+      return false;
+    }
+
+    const event = await this.prisma.moderationEvent.findFirst({
+      where: {
+        chatId,
+        ruleCode: 'NIGHT_MODE_OPEN_NOTICE',
+        metadata: {
+          path: ['sessionKey'],
+          equals: sessionKey,
+        } satisfies Prisma.JsonFilter,
+      },
+      select: {
+        id: true,
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+    });
+    return Boolean(event);
+  }
+
   private async sendClosedNoticeAndCaptureAcceptedState(
     settings: NightModeTransitionRuntimeSettings,
     snapshot: NightModeTransitionSnapshot,
@@ -375,12 +438,7 @@ export class NightModeTransitionRuntimeService {
       return await hooks.sendOpenedNotice(settings, snapshot);
     } catch (error: unknown) {
       if (
-        this.isAcceptedNoticeForSnapshot(
-          error,
-          settings.chatId,
-          snapshot,
-          'NIGHT_MODE_OPEN_NOTICE',
-        )
+        this.isAcceptedNoticeForSnapshot(error, settings.chatId, snapshot, 'NIGHT_MODE_OPEN_NOTICE')
       ) {
         await this.writeNightModeTransitionState(settings.chatId, {
           status: 'open',

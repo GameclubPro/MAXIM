@@ -3718,6 +3718,84 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
   });
 
+  it('does not auto-delete a bot copy that carries chat comments', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            deleteBotMessagesEnabled: true,
+            deleteBotMessagesDelayMinutes: 2,
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      managedBroadcastDelivery: {
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+      chatAutoCommentAttachMarker: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'comment-copy-1' }),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      globalSpammer: {
+        upsert: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn().mockReturnValue('id613002203036_bot'),
+      } as never,
+    );
+
+    await service.handleUpdate(
+      createOwnBotUpdateWithoutBotFlags('post with comments', 'mid-comment-copy-1'),
+    );
+
+    expect(prisma.chatAutoCommentAttachMarker.findFirst).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-1',
+        replacementMessageId: 'mid-comment-copy-1',
+      },
+      select: {
+        id: true,
+      },
+    });
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
   it('does not auto-delete night mode notice from own bot', async () => {
     const prisma = {
       chat: {
@@ -9653,7 +9731,7 @@ describe('ModerationService', () => {
     }
   });
 
-  it('still sends the open notice when deleting the old close notice is terminally rejected', async () => {
+  it('still sends the open notice when deleting the old close notice lacks admin permission', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-31T05:00:10.000Z'));
     try {
       const prisma = {
@@ -9668,9 +9746,7 @@ describe('ModerationService', () => {
         }),
         deleteMessage: jest
           .fn()
-          .mockRejectedValue(
-            createMaxApiError(404, 'Request failed with status code 404', 'message.not.found'),
-          ),
+          .mockRejectedValue(createMaxApiError(400, 'User is not an admin', 'user.not.admin')),
       };
       const redisCounter = createRedisCounterMock();
       redisCounter.stringCache.set(

@@ -6471,7 +6471,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     messageId: string;
     text: string;
     settings: ChatSettings;
-  }): Promise<'night_mode_notice' | 'greeting_message' | 'managed_broadcast' | null> {
+  }): Promise<
+    | 'night_mode_notice'
+    | 'greeting_message'
+    | 'managed_broadcast'
+    | 'chat_auto_comment_replacement'
+    | null
+  > {
     if (
       this.isNightModeNoticeMessage({
         text: params.text,
@@ -6509,6 +6515,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
     if (managedBroadcastDelivery) {
       return 'managed_broadcast';
+    }
+
+    const chatAutoCommentAttachMarker = await this.prisma.chatAutoCommentAttachMarker?.findFirst?.({
+      where: {
+        chatId: params.chatId,
+        replacementMessageId: params.messageId,
+      },
+      select: {
+        id: true,
+      },
+    });
+    if (chatAutoCommentAttachMarker) {
+      return 'chat_auto_comment_replacement';
     }
 
     return null;
@@ -15125,6 +15144,33 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  private async recordChatAutoCommentReplacementMessage(params: {
+    chatId: string;
+    messageId: string;
+    lockToken: string;
+    replacementMessageId: string;
+  }): Promise<void> {
+    const delegate = this.getChatAutoCommentAttachMarkerDelegate();
+    if (!delegate?.updateMany) {
+      return;
+    }
+
+    const updated = await delegate.updateMany({
+      where: {
+        chatId: params.chatId,
+        messageId: params.messageId,
+        lockToken: params.lockToken,
+        status: CHAT_AUTO_COMMENT_ATTACH_STATUS.IN_PROGRESS,
+      },
+      data: {
+        replacementMessageId: params.replacementMessageId,
+      },
+    });
+    if (updated.count !== 1) {
+      throw new Error('Failed to persist the chat auto-comment replacement message marker');
+    }
+  }
+
   private async releaseChatAutoCommentAttachMarker(params: {
     chatId: string;
     messageId: string;
@@ -15488,6 +15534,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         });
         throw error;
       }
+
+      // FLAG: Persist the copy ID before awaiting the original deletion. Its webhook can run
+      // in another worker immediately after send succeeds.
+      await this.recordChatAutoCommentReplacementMessage({
+        chatId,
+        messageId,
+        lockToken: claim.lockToken,
+        replacementMessageId,
+      });
 
       try {
         await this.maxClient.deleteMessage(chatId, messageId, {

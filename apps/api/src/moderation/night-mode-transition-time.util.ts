@@ -5,10 +5,7 @@ export type NightModeTransitionKind = 'close' | 'open';
 
 export type NightModeTransitionScheduleSettings = Pick<
   ChatSettings,
-  | 'nightModeEnabled'
-  | 'nightModeStartTimeMinutes'
-  | 'nightModeEndTimeMinutes'
-  | 'nightModeTimezone'
+  'nightModeEnabled' | 'nightModeStartTimeMinutes' | 'nightModeEndTimeMinutes' | 'nightModeTimezone'
 >;
 
 export type NightModeTransitionSnapshot = {
@@ -26,6 +23,8 @@ export type NightModeTransitionOccurrence = {
   dueAt: Date;
   sessionKey: string;
 };
+
+export const NIGHT_MODE_OPEN_CATCH_UP_MAX_AGE_MS = 2 * 60 * 60 * 1_000;
 
 type ZonedDateParts = {
   year: number;
@@ -252,6 +251,49 @@ export function resolveCurrentNightModeCloseOccurrence(
       endMinutes,
       sessionDateKey,
     }),
+  };
+}
+
+export function resolveCurrentNightModeOpenOccurrence(
+  settings: NightModeTransitionScheduleSettings,
+  now = new Date(),
+): NightModeTransitionOccurrence | null {
+  if (!settings.nightModeEnabled) {
+    return null;
+  }
+
+  const startMinutes = normalizeDayMinutes(settings.nightModeStartTimeMinutes, 23 * 60);
+  const endMinutes = normalizeDayMinutes(settings.nightModeEndTimeMinutes, 8 * 60);
+  if (startMinutes === endMinutes) {
+    return null;
+  }
+
+  const timezone = normalizeNightModeTimezone(settings.nightModeTimezone);
+  const currentMinutes = getCurrentMinutesInTimeZone(timezone, now);
+  if (currentMinutes === null) {
+    return null;
+  }
+
+  const snapshot = resolveNightModeTransitionSnapshot(settings, now);
+  if (!snapshot || snapshot.status !== 'open') {
+    return null;
+  }
+
+  const currentDateKey = formatDateKeyInTimeZone(now, timezone);
+  const openDateKey =
+    startMinutes < endMinutes && currentMinutes < startMinutes
+      ? addDaysToDateKey(currentDateKey, -1)
+      : currentDateKey;
+  const dueAt = zonedDateTimeToUtc(openDateKey, endMinutes, timezone);
+  const ageMs = now.getTime() - dueAt.getTime();
+  if (ageMs < 0 || ageMs > NIGHT_MODE_OPEN_CATCH_UP_MAX_AGE_MS) {
+    return null;
+  }
+
+  return {
+    transition: 'open',
+    dueAt,
+    sessionKey: snapshot.sessionKey,
   };
 }
 

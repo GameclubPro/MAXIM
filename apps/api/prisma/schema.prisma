@@ -1745,6 +1745,7 @@ model ChatAutoCommentAttachMarker {
   @@unique([chatId, messageId], map: "chat_auto_comment_attach_markers_chat_message_key")
   @@index([status, lockedAt], map: "chat_auto_comment_attach_markers_status_locked_at_idx")
   @@index([chatId, updatedAt(sort: Desc)], map: "chat_auto_comment_attach_markers_chat_updated_idx")
+  @@index([chatId, replacementMessageId], map: "chat_auto_comment_attach_markers_chat_replacement_idx")
   @@map("chat_auto_comment_attach_markers")
 }
 
