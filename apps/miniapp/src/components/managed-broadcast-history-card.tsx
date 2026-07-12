@@ -2,7 +2,7 @@ import type { ManagedBroadcastSummary } from '@maxim/contracts';
 import {
   MoreHoriz as IconoirMoreHoriz,
   RefreshDouble as IconoirRefreshDouble,
-  Trash as IconoirTrash,
+  Xmark as IconoirXmark,
 } from 'iconoir-react';
 import { MaxMarkdownPreview } from './max-markdown-preview';
 import { ManagedBroadcastDeliveryMeter } from './managed-broadcast-delivery-meter';
@@ -172,8 +172,8 @@ export function ManagedBroadcastHistoryCard({
                 }}
                 disabled={isBusy}
               >
-                <IconoirTrash aria-hidden focusable="false" />
-                <span>{isDeleting ? 'Удаляем...' : 'Удалить'}</span>
+                <IconoirXmark aria-hidden focusable="false" />
+                <span>{isDeleting ? 'Отменяем...' : 'Отменить'}</span>
               </button>
             </div>
           </details>

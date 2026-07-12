@@ -1755,12 +1755,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         resetMailingComposer();
       }
       setManagedAutopostRuleDeleteTarget(null);
-      pushToast({ tone: 'info', title: 'Автопост удалён' });
+      pushToast({ tone: 'info', title: 'Автопост отменён' });
     },
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось удалить автопост',
+        title: 'Не удалось отменить автопост',
         description: formatApiError(error),
       });
       maxNotify('error');
@@ -1896,14 +1896,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       }
       pushToast({
         tone: 'info',
-        title: 'Автопостинг удалён',
-        description: 'Будущие отправки сняты, карточка убрана из списка.',
+        title: 'Отправки отменены',
       });
     },
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось удалить автопостинг',
+        title: 'Не удалось отменить',
         description: formatApiError(error),
       });
     },
@@ -11394,7 +11393,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       <ActionConfirmSheet
         id="managed-broadcast-delete"
         open={managedBroadcastDeleteTarget !== null}
-        title="Удалить публикацию?"
+        title="Отменить отправки?"
         previewTitle={
           managedBroadcastDeleteTarget ? (
             <LazyActionConfirmMarkdownPreview
@@ -11416,8 +11415,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               : 'Будущие отправки будут сняты.'
             : undefined
         }
-        confirmLabel="Удалить"
-        confirmBusyLabel="Удаляем..."
+        confirmLabel="Отменить"
+        confirmBusyLabel="Отменяем..."
         tone="danger"
         isBusy={cancelManagedBroadcastMutation.isPending}
         onClose={() => setManagedBroadcastDeleteTarget(null)}
@@ -11427,7 +11426,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       <ActionConfirmSheet
         id="managed-autopost-rule-delete"
         open={managedAutopostRuleDeleteTarget !== null}
-        title="Удалить автопост?"
+        title="Отменить автопост?"
         previewTitle={
           managedAutopostRuleDeleteTarget ? (
             <LazyActionConfirmMarkdownPreview
@@ -11451,8 +11450,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               )}`
             : undefined
         }
-        confirmLabel="Удалить"
-        confirmBusyLabel="Удаляем..."
+        confirmLabel="Отменить"
+        confirmBusyLabel="Отменяем..."
         tone="danger"
         isBusy={deleteManagedAutopostRuleMutation.isPending}
         onClose={() => setManagedAutopostRuleDeleteTarget(null)}

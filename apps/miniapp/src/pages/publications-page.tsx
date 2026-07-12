@@ -2383,6 +2383,12 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     );
   }
 
+  const cancelsFutureSends = Boolean(
+    actionTarget?.action === 'cancel' &&
+    actionTarget.publication.schedule &&
+    actionTarget.publication.schedule.mode !== 'now',
+  );
+
   return (
     <div className={cn('publications-page', isEditor && 'is-editor')}>
       {isEditor ? (
@@ -2434,13 +2440,15 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         open={actionTarget !== null}
         title={
           actionTarget?.action === 'cancel'
-            ? 'Отменить публикацию?'
+            ? cancelsFutureSends
+              ? 'Отменить будущие отправки?'
+              : 'Отменить публикацию?'
             : actionTarget?.action === 'pause'
               ? 'Поставить на паузу?'
               : 'Запустить расписание?'
         }
         summary={
-          actionTarget?.action === 'cancel'
+          cancelsFutureSends
             ? 'Будущие отправки отменятся, а ошибки нельзя будет повторить.'
             : undefined
         }
@@ -2464,6 +2472,10 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         publication={detailsTarget}
         busy={anyBusy}
         onClose={() => setDetailsTarget(null)}
+        onCancel={(publication) => {
+          setDetailsTarget(null);
+          setActionTarget({ publication, action: 'cancel' });
+        }}
         onEdit={(publicationId) => {
           const publication =
             [...planItems, ...scheduleItems, ...historyItems].find(

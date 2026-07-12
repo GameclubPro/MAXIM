@@ -1385,6 +1385,7 @@
   .publication-details-sheet__footer {
     min-height: calc(64px + var(--app-safe-bottom, 0px));
     display: flex;
+    flex-wrap: wrap;
     align-items: flex-start;
     gap: 8px;
     padding: 8px 12px calc(8px + var(--app-safe-bottom, 0px));
@@ -1394,7 +1395,7 @@
 
   .publication-details-sheet__footer > button {
     min-height: 48px;
-    flex: 1;
+    flex: 1 1 calc(50% - 4px);
     border: 1px solid var(--color-border);
     border-radius: 8px;
     background: var(--color-surface);
@@ -1407,6 +1408,13 @@
     border-color: var(--color-accent);
     background: var(--color-accent);
     color: var(--publication-on-accent);
+  }
+
+  .publication-details-sheet__footer > .publication-details-sheet__cancel {
+    flex-basis: 100%;
+    border-color: var(--publication-danger-border);
+    background: var(--publication-danger-bg);
+    color: var(--publication-danger-ink);
   }
 
   @media (min-width: 720px) {

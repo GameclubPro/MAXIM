@@ -3,7 +3,7 @@ import {
   MoreHoriz as IconoirMoreHoriz,
   Pause as IconoirPause,
   Play as IconoirPlay,
-  Trash as IconoirTrash,
+  Xmark as IconoirXmark,
 } from 'iconoir-react';
 import { cn } from '../lib/cn';
 import { MaxMarkdownPreview } from './max-markdown-preview';
@@ -184,8 +184,8 @@ export function ManagedAutopostRuleCard({
               }}
               disabled={isBusy}
             >
-              <IconoirTrash aria-hidden focusable="false" />
-              <span>Удалить</span>
+              <IconoirXmark aria-hidden focusable="false" />
+              <span>Отменить</span>
             </button>
           </div>
         </details>

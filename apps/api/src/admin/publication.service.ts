@@ -166,7 +166,15 @@ export class PublicationService {
     if (parsed.data.view === 'schedules') {
       filters.push({
         schedule: {
-          is: { mode: { in: [PublicationScheduleMode.SLOTS, PublicationScheduleMode.RECURRENCE] } },
+          is: {
+            mode: {
+              in: [
+                PublicationScheduleMode.ONCE,
+                PublicationScheduleMode.SLOTS,
+                PublicationScheduleMode.RECURRENCE,
+              ],
+            },
+          },
         },
       });
     }

@@ -8287,6 +8287,7 @@ function handlePublicationsRequest(
               publication.lifecycle === 'ERROR';
       const scheduleMatches = (publication: PublicationDetails) =>
         query.view !== 'schedules' ||
+        publication.schedule?.mode === 'once' ||
         publication.schedule?.mode === 'slots' ||
         publication.schedule?.mode === 'recurrence';
       const entityMatches = (publication: PublicationDetails) => {

@@ -376,7 +376,9 @@ test('preview publications support list, CRUD, actions, and delivery review', as
   assert.equal(
     schedules.items.every(
       (publication) =>
-        publication.schedule?.mode === 'slots' || publication.schedule?.mode === 'recurrence',
+        publication.schedule?.mode === 'once' ||
+        publication.schedule?.mode === 'slots' ||
+        publication.schedule?.mode === 'recurrence',
     ),
     true,
   );
@@ -483,6 +485,11 @@ test('preview publications support list, CRUD, actions, and delivery review', as
     intent: 'publish',
   });
   assert.equal(created.targetCount, 2);
+  const schedulesWithCreated = await listPublications(api, { view: 'schedules', limit: 100 });
+  assert.equal(
+    schedulesWithCreated.items.some((publication) => publication.id === created.id),
+    true,
+  );
 
   const updated = await updatePublication(api, created.id, {
     expectedRevision: created.version,

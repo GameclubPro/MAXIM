@@ -29,6 +29,7 @@ type PublicationDetailsSheetProps = {
   publication: PublicationSummary | null;
   busy?: boolean;
   onClose: () => void;
+  onCancel: (publication: PublicationSummary) => void;
   onEdit: (publicationId: string) => void;
   onRetry: (publicationId: string, occurrenceId: string) => void;
   onResolveAmbiguous: (
@@ -77,6 +78,7 @@ export function PublicationDetailsSheet({
   publication,
   busy = false,
   onClose,
+  onCancel,
   onEdit,
   onRetry,
   onResolveAmbiguous,
@@ -228,6 +230,9 @@ export function PublicationDetailsSheet({
   const details = detailsQuery.data;
   const currentLifecycle = details?.lifecycle ?? publication.lifecycle;
   const canEdit = currentLifecycle !== 'COMPLETED' && currentLifecycle !== 'CANCELED';
+  const canCancel = canEdit;
+  const schedule = details?.schedule ?? publication.schedule;
+  const hasFutureSends = Boolean(schedule && schedule.mode !== 'now');
 
   return createPortal(
     <div className="publication-details-sheet">
@@ -491,6 +496,17 @@ export function PublicationDetailsSheet({
             >
               <EditPencil aria-hidden />
               <span>Редактировать</span>
+            </button>
+          ) : null}
+          {canCancel ? (
+            <button
+              type="button"
+              className="publication-details-sheet__cancel"
+              onClick={() => onCancel(details ?? publication)}
+              disabled={busy}
+            >
+              <Xmark aria-hidden />
+              <span>{hasFutureSends ? 'Отменить будущие отправки' : 'Отменить публикацию'}</span>
             </button>
           ) : null}
           <button type="button" onClick={onClose} disabled={busy}>

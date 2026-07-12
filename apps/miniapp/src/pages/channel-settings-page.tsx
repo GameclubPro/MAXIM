@@ -1755,12 +1755,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         resetBroadcastComposer();
       }
       setManagedAutopostRuleDeleteTarget(null);
-      pushToast({ tone: 'info', title: 'Автопост удалён' });
+      pushToast({ tone: 'info', title: 'Автопост отменён' });
     },
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось удалить автопост',
+        title: 'Не удалось отменить автопост',
         description: normalizeApiError(error),
       });
       maxNotify('error');
@@ -1863,13 +1863,13 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       }
       pushToast({
         tone: 'info',
-        title: 'Автопостинг удалён',
+        title: 'Отправки отменены',
       });
     },
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось удалить автопостинг',
+        title: 'Не удалось отменить',
         description: normalizeApiError(error),
       });
       maxNotify('error');
@@ -3956,7 +3956,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       <ActionConfirmSheet
         id="channel-managed-broadcast-delete"
         open={managedBroadcastDeleteTarget !== null}
-        title="Удалить публикацию?"
+        title="Отменить отправки?"
         previewTitle={
           managedBroadcastDeleteTarget ? (
             <MaxMarkdownPreview
@@ -3977,8 +3977,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
               : 'Будущие отправки будут сняты.'
             : undefined
         }
-        confirmLabel="Удалить"
-        confirmBusyLabel="Удаляем..."
+        confirmLabel="Отменить"
+        confirmBusyLabel="Отменяем..."
         tone="danger"
         isBusy={cancelManagedBroadcastMutation.isPending}
         onClose={() => setManagedBroadcastDeleteTarget(null)}
@@ -3988,7 +3988,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       <ActionConfirmSheet
         id="channel-managed-autopost-rule-delete"
         open={managedAutopostRuleDeleteTarget !== null}
-        title="Удалить автопост?"
+        title="Отменить автопост?"
         previewTitle={
           managedAutopostRuleDeleteTarget ? (
             <MaxMarkdownPreview
@@ -4013,8 +4013,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
               )}`
             : undefined
         }
-        confirmLabel="Удалить"
-        confirmBusyLabel="Удаляем..."
+        confirmLabel="Отменить"
+        confirmBusyLabel="Отменяем..."
         tone="danger"
         isBusy={deleteManagedAutopostRuleMutation.isPending}
         onClose={() => setManagedAutopostRuleDeleteTarget(null)}

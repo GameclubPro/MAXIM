@@ -6,6 +6,7 @@ import {
   ManagedBroadcastDeliveryStatus,
   PublicationLifecycle,
   PublicationOccurrenceStatus,
+  PublicationScheduleMode,
 } from '../prisma/prisma-client';
 import { PublicationPresenterService } from './publication-presenter.service';
 import { PublicationService } from './publication.service';
@@ -84,6 +85,42 @@ describe('Publication performance and pagination', () => {
       { ...EMPTY_DELIVERY_STATS, total: 3, sent: 3 },
       { ...EMPTY_DELIVERY_STATS, total: 2, failed: 2 },
     ]);
+  });
+
+  it('lists one-time publications with other scheduled publications', async () => {
+    const prisma = {
+      publication: { findMany: jest.fn().mockResolvedValue([]) },
+      managedBroadcastDelivery: { groupBy: jest.fn() },
+      $queryRaw: jest.fn().mockResolvedValue([]),
+    };
+    const { service } = createPublicationService(prisma);
+
+    await service.list({ userId: 'user-1' } as never, {
+      view: 'schedules',
+      limit: 30,
+    });
+
+    expect(prisma.publication.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          AND: [
+            {
+              schedule: {
+                is: {
+                  mode: {
+                    in: [
+                      PublicationScheduleMode.ONCE,
+                      PublicationScheduleMode.SLOTS,
+                      PublicationScheduleMode.RECURRENCE,
+                    ],
+                  },
+                },
+              },
+            },
+          ],
+        }),
+      }),
+    );
   });
 
   it('binds an opaque cursor to the list filters and applies an explicit keyset predicate', async () => {
