@@ -549,6 +549,73 @@ describe('WebhookParser', () => {
     expect(parsed.message?.text).not.toContain('https://example.com/hidden-preview-link');
   });
 
+  it('excludes a forwarded MAX media preview url repeated in forwarded text', () => {
+    const inviteUrl = 'https://max.ru/join/allowed-forwarded-invite';
+    const mediaPreviewUrl = 'https://i.oneme.ru/i?r=forwarded-preview-token';
+    const externalUrl = 'https://bad.example/offer';
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      message: {
+        message_id: 'msg-forward-media-preview-1',
+        chat_id: 'chat-forward-media-preview-1',
+        sender_id: 'user-forward-media-preview-1',
+        created_at: '2026-07-09T10:34:00.000Z',
+        body: {
+          text: '',
+        },
+        link: {
+          type: 'forward',
+          message: {
+            body: {
+              text: `${inviteUrl} ${mediaPreviewUrl} ${externalUrl}`,
+              attachments: [
+                {
+                  type: 'image',
+                  payload: {
+                    token: 'forwarded-preview-image-token',
+                    url: mediaPreviewUrl,
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+
+    expect(parsed.message?.text).toContain(inviteUrl);
+    expect(parsed.message?.text).toContain(externalUrl);
+    expect(parsed.message?.text).not.toContain(mediaPreviewUrl);
+  });
+
+  it('keeps a MAX media URL from forwarded text when it is not a media attachment preview', () => {
+    const inviteUrl = 'https://max.ru/join/allowed-forwarded-invite';
+    const mediaPreviewUrl = 'https://i.oneme.ru/i?r=text-only-forwarded-url';
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      message: {
+        message_id: 'msg-forward-text-url-1',
+        chat_id: 'chat-forward-text-url-1',
+        sender_id: 'user-forward-text-url-1',
+        created_at: '2026-07-09T10:35:00.000Z',
+        body: {
+          text: '',
+        },
+        link: {
+          type: 'forward',
+          message: {
+            body: {
+              text: `${inviteUrl} ${mediaPreviewUrl}`,
+            },
+          },
+        },
+      },
+    });
+
+    expect(parsed.message?.text).toContain(inviteUrl);
+    expect(parsed.message?.text).toContain(mediaPreviewUrl);
+  });
+
   it('does not append forwarded inline keyboard button urls when forwarded text has no links', () => {
     const parsed = parser.parse({
       update_type: 'message_created',

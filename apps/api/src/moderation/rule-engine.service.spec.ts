@@ -483,6 +483,20 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
   });
 
+  it('still blocks a MAX media URL when it is not removed as forwarded media metadata', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const inviteUrl = 'https://max.ru/join/allowed-forwarded-invite';
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: `${inviteUrl} https://i.oneme.ru/i?r=text-only-forwarded-url`,
+      settings: buildSettings(),
+      domainAllowlist: [inviteUrl],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
+  });
+
   it('allows any path on an allowlisted domain rule', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const allowed = await service.detect({

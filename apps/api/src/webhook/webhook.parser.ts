@@ -912,6 +912,7 @@ export class WebhookParser {
 
     const supplementalTextSnippets = this.collectSupplementalTextSnippets(message);
     const supplementalLinkUrls = this.collectSupplementalLinkUrls(message);
+    const forwardedMaxMediaPreviewUrls = this.collectForwardedMaxMediaPreviewUrls(message);
 
     const filteredSupplementalSnippets: string[] = [];
     if (directText) {
@@ -953,7 +954,7 @@ export class WebhookParser {
       filteredSupplementalSnippets,
     ).join(' ');
     if (supplementalLinkUrls.length === 0) {
-      return composedText;
+      return this.stripForwardedMaxMediaPreviewUrls(composedText, forwardedMaxMediaPreviewUrls);
     }
 
     const composedUrls = new Set(
@@ -964,11 +965,11 @@ export class WebhookParser {
     );
 
     if (missingUrls.length === 0) {
-      return composedText;
+      return this.stripForwardedMaxMediaPreviewUrls(composedText, forwardedMaxMediaPreviewUrls);
     }
 
     composedText = `${composedText} ${missingUrls.join(' ')}`.trim();
-    return composedText;
+    return this.stripForwardedMaxMediaPreviewUrls(composedText, forwardedMaxMediaPreviewUrls);
   }
 
   private collectSupplementalTextSnippets(message: Record<string, unknown>): string[] {
@@ -1072,6 +1073,141 @@ export class WebhookParser {
     }
 
     return [...acc];
+  }
+
+  private collectForwardedMaxMediaPreviewUrls(message: Record<string, unknown>): Set<string> {
+    const urls = new Set<string>();
+    this.collectForwardedMaxMediaPreviewUrlsFromNode(message, urls);
+    return urls;
+  }
+
+  private collectForwardedMaxMediaPreviewUrlsFromNode(
+    node: unknown,
+    urls: Set<string>,
+    insideForward = false,
+    depth = 0,
+  ): void {
+    if (depth > 8 || node === null || node === undefined) {
+      return;
+    }
+
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        this.collectForwardedMaxMediaPreviewUrlsFromNode(item, urls, insideForward, depth + 1);
+      }
+      return;
+    }
+
+    const row = this.asRecord(node);
+    if (!row) {
+      return;
+    }
+
+    const type = this.readEntityType(row);
+    const nestedInsideForward = insideForward || type === 'forward';
+    if (nestedInsideForward && this.isMediaAttachment(row)) {
+      const payload = this.asRecord(row.payload);
+      const previewUrl =
+        payload && typeof payload.url === 'string'
+          ? this.normalizeForwardedMaxMediaPreviewUrl(payload.url)
+          : null;
+      if (previewUrl) {
+        urls.add(previewUrl);
+      }
+    }
+
+    for (const [key, value] of Object.entries(row)) {
+      if (!value || (typeof value !== 'object' && !Array.isArray(value))) {
+        continue;
+      }
+
+      const normalizedKey = key.toLowerCase();
+      this.collectForwardedMaxMediaPreviewUrlsFromNode(
+        value,
+        urls,
+        nestedInsideForward ||
+          normalizedKey === 'forward' ||
+          normalizedKey === 'forwarded_message' ||
+          normalizedKey === 'forwardedmessage',
+        depth + 1,
+      );
+    }
+  }
+
+  private isMediaAttachment(row: Record<string, unknown>): boolean {
+    const payload = this.asRecord(row.payload);
+    const type = this.readEntityType(row);
+    const mediaType = this.readLowerString(
+      row.media_type ?? row.mediaType ?? payload?.media_type ?? payload?.mediaType,
+    );
+    const mimeType = this.readLowerString(
+      row.mime_type ?? row.mimeType ?? payload?.mime_type ?? payload?.mimeType,
+    );
+
+    return (
+      type === 'image' ||
+      type === 'photo' ||
+      type === 'picture' ||
+      type === 'video' ||
+      type === 'voice' ||
+      type === 'audio' ||
+      type === 'audio_message' ||
+      type === 'file' ||
+      type === 'document' ||
+      type === 'sticker' ||
+      mediaType === 'image' ||
+      mediaType === 'photo' ||
+      mediaType === 'picture' ||
+      mediaType === 'video' ||
+      mediaType === 'voice' ||
+      mediaType === 'audio' ||
+      mediaType === 'file' ||
+      mediaType === 'document' ||
+      mediaType === 'sticker' ||
+      mimeType?.startsWith('image/') === true ||
+      mimeType?.startsWith('video/') === true ||
+      mimeType?.startsWith('audio/') === true
+    );
+  }
+
+  private normalizeForwardedMaxMediaPreviewUrl(value: string): string | null {
+    let parsed: URL;
+    try {
+      parsed = new URL(value.trim());
+    } catch {
+      return null;
+    }
+
+    if (
+      parsed.protocol.toLowerCase() !== 'https:' ||
+      parsed.hostname.toLowerCase() !== 'i.oneme.ru' ||
+      parsed.port.length > 0 ||
+      parsed.pathname !== '/i' ||
+      !parsed.searchParams.get('r')
+    ) {
+      return null;
+    }
+
+    return `https://i.oneme.ru/i${parsed.search}${parsed.hash}`;
+  }
+
+  private stripForwardedMaxMediaPreviewUrls(
+    text: string,
+    previewUrls: ReadonlySet<string>,
+  ): string {
+    if (!text || previewUrls.size === 0) {
+      return text;
+    }
+
+    let stripped = text;
+    for (const url of this.extractUrlsFromString(text)) {
+      const normalizedUrl = this.normalizeForwardedMaxMediaPreviewUrl(url);
+      if (normalizedUrl && previewUrls.has(normalizedUrl)) {
+        stripped = stripped.replaceAll(url, '');
+      }
+    }
+
+    return stripped.replace(/\s+/gu, ' ').trim();
   }
 
   private mergeTextSnippets(base: string[], supplemental: string[]): string[] {
