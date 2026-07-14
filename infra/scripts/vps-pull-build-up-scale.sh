@@ -523,7 +523,7 @@ wait_for_postgres 180
 
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   ensure_compose_env
-  docker compose "${COMPOSE_FILES[@]}" build "${API_SERVICES[@]}"
+  maxim_topology_build_shared_api_image "$SCALE_PROJECT_NAME"
 fi
 
 if ! run_migrations; then

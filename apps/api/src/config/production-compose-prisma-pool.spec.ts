@@ -114,6 +114,26 @@ describe('production deploy script guards', () => {
     expect(script).toContain('batch_delay_sec="${MAXIM_DEPLOY_API_RECREATE_BATCH_DELAY_SEC:-5}"');
   });
 
+  it('builds one direct API image without provenance and tags every runtime role', () => {
+    const topology = readRepoFile('infra/scripts/lib/deploy-topology.sh');
+    const mainDeploy = readRepoFile('infra/scripts/vps-pull-build-up.sh');
+    const scaleDeploy = readRepoFile('infra/scripts/vps-pull-build-up-scale.sh');
+    const rollback = readRepoFile('infra/scripts/vps-runtime-rollback.sh');
+    const composeApiBuild = 'docker compose "${COMPOSE_FILES[@]}" build "${API_SERVICES[@]}"';
+
+    expect(topology).toContain('maxim_topology_build_shared_api_image()');
+    expect(topology).toContain(
+      'docker buildx build --load --provenance=false -t "$source_image" -f apps/api/Dockerfile .',
+    );
+    expect(topology).toContain('docker tag "$source_image" "${project_name}-${service}:latest"');
+    expect(mainDeploy).toContain('maxim_topology_build_shared_api_image "$MAIN_PROJECT_NAME"');
+    expect(scaleDeploy).toContain('maxim_topology_build_shared_api_image "$SCALE_PROJECT_NAME"');
+    expect(rollback).toContain('maxim_topology_build_shared_api_image infra');
+    expect(mainDeploy).not.toContain(composeApiBuild);
+    expect(scaleDeploy).not.toContain(composeApiBuild);
+    expect(rollback).not.toContain(composeApiBuild);
+  });
+
   it('prepares scale Redis named volume before stopping conflicting stacks', () => {
     const script = readRepoFile('infra/scripts/vps-pull-build-up-scale.sh');
 

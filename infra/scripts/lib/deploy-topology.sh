@@ -49,3 +49,25 @@ maxim_topology_expand_api_services() {
     echo "$reason Expanding deploy target to every shared API role: ${MAXIM_PRODUCTION_API_SERVICES[*]}"
   fi
 }
+
+maxim_topology_build_shared_api_image() {
+  local project_name="$1"
+  local source_image
+  local service
+
+  if [[ -z "$project_name" ]]; then
+    echo "Docker Compose project name is required to build the shared API image." >&2
+    return 1
+  fi
+
+  source_image="${project_name}-api-ingress:latest"
+  echo "Building one shared API image without BuildKit provenance: $source_image"
+  docker buildx build --load --provenance=false -t "$source_image" -f apps/api/Dockerfile .
+
+  for service in "${MAXIM_PRODUCTION_API_SERVICES[@]}"; do
+    if [[ "$service" == "api-ingress" ]]; then
+      continue
+    fi
+    docker tag "$source_image" "${project_name}-${service}:latest"
+  done
+}

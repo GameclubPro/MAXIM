@@ -179,10 +179,10 @@
   stale due jobs blindly, verify `wait`/`active`/`failed` are empty and `delayed_due_now=0`, and
   treat persisted `NIGHT_MODE_CLOSE_NOTICE` events as the idempotency source.
 - The `vps-pull-build-up*.sh` scripts are designed to run on the VPS host. From local machine, invoke them through SSH.
-- If multi-service API `docker compose build` stalls after the TypeScript build while buildx/bake
-  resolves provenance, build the shared API image directly on the VPS with
-  `docker buildx build --load --provenance=false -t infra-api-ingress:latest -f apps/api/Dockerfile .`,
-  then tag it to every `infra-api-*` role image before migrations and `--force-recreate`.
+- Shared API deploy and rollback scripts build one direct image with
+  `docker buildx build --load --provenance=false` and tag it to every API role before migrations
+  and `--force-recreate`; do not switch this back to multi-service Compose/bake API builds. Docker
+  BuildKit provenance/history handling can crash the daemon under that parallel workload.
 - If deploy disk preflight blocks at the warning threshold, first run
   `./infra/scripts/vps-docker-space-reclaim.sh` on the VPS. If it reclaims nothing because the
   unused build cache is newer than its default age filter, use
