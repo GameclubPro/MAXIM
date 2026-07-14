@@ -180,29 +180,101 @@ export class KaravanStorefrontRelayService {
     return this.extractVisibleText(context)?.trimStart().startsWith('$') === true;
   }
 
+  // FLAG: Normalized text can include reply/quote previews; use it only without raw payload or after a validated forward.
   private extractVisibleText(context: RelayContext): string | null {
     const raw = this.asRecord(context.raw);
-    const message = this.asRecord(raw?.message);
-    const body = this.asRecord(message?.body);
+    const message = this.extractRawMessage(raw);
+    if (!message) {
+      return raw ? null : this.readString(context.text);
+    }
 
-    return (
-      this.readRawString(body?.text) ??
-      this.readRawString(message?.text) ??
-      this.readRawString(raw?.text) ??
-      this.readRawString(context.text)
+    const directText = this.extractMessageText(message) ?? this.readString(raw?.text);
+    if (directText) {
+      return directText;
+    }
+
+    const link = this.asRecord(message.link);
+    if (
+      this.readLowerString(link?.type) !== 'forward' ||
+      !this.isForwardFromContextSender(link, context.senderId)
+    ) {
+      return null;
+    }
+
+    return this.extractMessageText(this.asRecord(link?.message)) ?? this.readString(context.text);
+  }
+
+  private extractRawMessage(raw: Record<string, unknown> | null): Record<string, unknown> | null {
+    const directMessage = this.asRecord(raw?.message);
+    if (directMessage) {
+      return directMessage;
+    }
+
+    const envelopeKeys = ['message_created', 'data', 'event'];
+    for (const typeKey of [raw?.update_type, raw?.type]) {
+      if (typeof typeKey === 'string' && typeKey.trim()) {
+        envelopeKeys.push(typeKey);
+      }
+    }
+
+    for (const key of envelopeKeys) {
+      const envelope = this.asRecord(raw?.[key]);
+      if (!envelope) {
+        continue;
+      }
+
+      const nestedMessage = this.asRecord(envelope.message);
+      if (nestedMessage) {
+        return nestedMessage;
+      }
+
+      const nestedData = this.asRecord(envelope.data);
+      const nestedDataMessage = this.asRecord(nestedData?.message);
+      if (nestedDataMessage) {
+        return nestedDataMessage;
+      }
+    }
+
+    return null;
+  }
+
+  private extractMessageText(message: Record<string, unknown> | null): string | null {
+    const body = this.asRecord(message?.body);
+    const candidates = [
+      body?.text,
+      body?.caption,
+      body?.plain,
+      message?.text,
+      message?.caption,
+      message?.plain,
+      message?.message_text,
+      message?.messageText,
+    ];
+
+    for (const candidate of candidates) {
+      const text = this.readString(candidate);
+      if (text) {
+        return text;
+      }
+    }
+
+    return null;
+  }
+
+  private isForwardFromContextSender(
+    link: Record<string, unknown> | null,
+    contextSenderId: string,
+  ): boolean {
+    const sender = this.asRecord(link?.sender);
+    const forwardSenderId = this.readString(
+      link?.sender_id ?? link?.senderId ?? sender?.user_id ?? sender?.userId ?? sender?.id,
     );
+
+    return !forwardSenderId || forwardSenderId === contextSenderId.trim();
   }
 
   private isPrivateDirectChat(chatId: string): boolean {
     return /^\d+$/u.test(chatId.trim());
-  }
-
-  private readRawString(value: unknown): string | null {
-    if (typeof value !== 'string' && typeof value !== 'number') {
-      return null;
-    }
-
-    return String(value);
   }
 
   private async lookupStorefront(maxUserId: string): Promise<LookupStore | null | undefined> {

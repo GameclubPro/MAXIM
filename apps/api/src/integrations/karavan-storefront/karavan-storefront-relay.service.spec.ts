@@ -211,6 +211,252 @@ describe('KaravanStorefrontRelayService', () => {
     }
   });
 
+  it('adds a storefront button for a forwarded seller post with a blank outer body', async () => {
+    const fixture = createService();
+
+    try {
+      await expect(
+        fixture.service.handleMessageCreated({
+          ...baseContext,
+          raw: {
+            message: {
+              body: {
+                text: '',
+              },
+              link: {
+                type: 'forward',
+                sender: {
+                  user_id: '1001',
+                },
+                message: {
+                  text: '$ свежая клубника',
+                },
+              },
+            },
+          },
+        }),
+      ).resolves.toBe('handled');
+
+      expect(fixture.fetchMock).toHaveBeenCalledTimes(1);
+      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+    } finally {
+      fixture.restore();
+    }
+  });
+
+  it('supports a forwarded seller post when MAX omits the outer body and forward sender', async () => {
+    const fixture = createService();
+
+    try {
+      await expect(
+        fixture.service.handleMessageCreated({
+          ...baseContext,
+          raw: {
+            message: {
+              body: null,
+              link: {
+                type: 'forward',
+                message: {
+                  text: '$ свежая клубника',
+                },
+              },
+            },
+          },
+        }),
+      ).resolves.toBe('handled');
+
+      expect(fixture.fetchMock).toHaveBeenCalledTimes(1);
+      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+    } finally {
+      fixture.restore();
+    }
+  });
+
+  it('reads a forwarded seller post from a webhook event envelope', async () => {
+    const fixture = createService();
+
+    try {
+      await expect(
+        fixture.service.handleMessageCreated({
+          ...baseContext,
+          raw: {
+            update_type: 'message_created',
+            message_created: {
+              message: {
+                body: {
+                  text: '',
+                },
+                link: {
+                  type: 'forward',
+                  sender: {
+                    user_id: '1001',
+                  },
+                  message: {
+                    text: '$ свежая клубника',
+                  },
+                },
+              },
+            },
+          },
+        }),
+      ).resolves.toBe('handled');
+
+      expect(fixture.fetchMock).toHaveBeenCalledTimes(1);
+      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+    } finally {
+      fixture.restore();
+    }
+  });
+
+  it('reads a forwarded seller marker from the nested message body after whitespace-only outer text', async () => {
+    const fixture = createService();
+
+    try {
+      await expect(
+        fixture.service.handleMessageCreated({
+          ...baseContext,
+          raw: {
+            message: {
+              body: {
+                text: '   ',
+              },
+              link: {
+                type: 'forward',
+                sender: {
+                  user_id: '1001',
+                },
+                message: {
+                  body: {
+                    text: '$ клубника с доставкой',
+                  },
+                },
+              },
+            },
+          },
+        }),
+      ).resolves.toBe('handled');
+
+      expect(fixture.fetchMock).toHaveBeenCalledTimes(1);
+      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+    } finally {
+      fixture.restore();
+    }
+  });
+
+  it.each(['reply', 'quoted'])('ignores a dollar marker inside a %s preview', async (linkType) => {
+    const fixture = createService();
+
+    try {
+      await expect(
+        fixture.service.handleMessageCreated({
+          ...baseContext,
+          raw: {
+            message: {
+              body: {
+                text: '',
+              },
+              link: {
+                type: linkType,
+                message: {
+                  text: '$ чужая витрина',
+                },
+              },
+            },
+          },
+        }),
+      ).resolves.toBe('noop');
+
+      expect(fixture.fetchMock).not.toHaveBeenCalled();
+      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    } finally {
+      fixture.restore();
+    }
+  });
+
+  it('ignores a forwarded marker whose author differs from the current sender', async () => {
+    const fixture = createService();
+
+    try {
+      await expect(
+        fixture.service.handleMessageCreated({
+          ...baseContext,
+          raw: {
+            message: {
+              body: {
+                text: '',
+              },
+              link: {
+                type: 'forward',
+                sender: {
+                  user_id: 'another-seller',
+                },
+                message: {
+                  text: '$ чужая витрина',
+                },
+              },
+            },
+          },
+        }),
+      ).resolves.toBe('noop');
+
+      expect(fixture.fetchMock).not.toHaveBeenCalled();
+      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    } finally {
+      fixture.restore();
+    }
+  });
+
+  it('prioritizes direct current-message text over a forwarded marker', async () => {
+    const fixture = createService();
+
+    try {
+      await expect(
+        fixture.service.handleMessageCreated({
+          ...baseContext,
+          raw: {
+            message: {
+              body: {
+                text: 'обычный ответ на пересылку',
+              },
+              link: {
+                type: 'forward',
+                sender: {
+                  user_id: '1001',
+                },
+                message: {
+                  text: '$ свежая клубника',
+                },
+              },
+            },
+          },
+        }),
+      ).resolves.toBe('noop');
+
+      expect(fixture.fetchMock).not.toHaveBeenCalled();
+      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    } finally {
+      fixture.restore();
+    }
+  });
+
+  it('keeps the normalized text fallback for raw-less compatibility contexts', async () => {
+    const fixture = createService();
+
+    try {
+      await expect(
+        fixture.service.handleMessageCreated({
+          ...baseContext,
+          raw: undefined,
+        }),
+      ).resolves.toBe('handled');
+
+      expect(fixture.fetchMock).toHaveBeenCalledTimes(1);
+      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+    } finally {
+      fixture.restore();
+    }
+  });
+
   it('retries a failed lookup on a later dollar-prefixed message edit', async () => {
     const fixture = createService();
     fixture.fetchMock

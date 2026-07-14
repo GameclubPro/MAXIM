@@ -12664,7 +12664,7 @@ describe('ModerationService', () => {
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
   });
 
-  it('runs Karavan storefront relay when violation admin recheck recognizes a dollar-prefixed seller admin', async () => {
+  it('runs Karavan storefront relay for a forwarded dollar-prefixed seller post after violation admin recheck', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -12728,7 +12728,16 @@ describe('ModerationService', () => {
       raw: {
         message: {
           body: {
-            text: '$ Овощной Кирова 12Г',
+            text: '',
+          },
+          link: {
+            type: 'forward',
+            sender: {
+              user_id: 'user-1',
+            },
+            message: {
+              text: '$ Овощной Кирова 12Г',
+            },
           },
         },
       },
