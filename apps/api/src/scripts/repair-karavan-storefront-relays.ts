@@ -1,13 +1,10 @@
-import type { INestApplicationContext } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { maxUpdateSchema, type MaxUpdate } from '@maxim/contracts';
-import { Logger } from 'nestjs-pino';
 import type { KaravanStorefrontRelayResult } from '../integrations/karavan-storefront/karavan-storefront-relay.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import { WebhookStatus } from '../prisma/prisma-client';
 
 const KARAVAN_STOREFRONT_RELAY_AUDIT_ACTION = 'KARAVAN_STOREFRONT_RELAY';
-const APP_CLOSE_TIMEOUT_MS = 5_000;
 
 export type CliOptions = {
   webhookEventIds: string[];
@@ -277,41 +274,18 @@ function printResult(result: unknown, json: boolean): void {
   console.log(result);
 }
 
-async function closeApplicationContext(app: INestApplicationContext): Promise<void> {
-  let timedOut = false;
-  let timeout: NodeJS.Timeout | undefined;
-  await Promise.race([
-    app.close(),
-    new Promise<void>((resolve) => {
-      timeout = setTimeout(() => {
-        timedOut = true;
-        resolve();
-      }, APP_CLOSE_TIMEOUT_MS);
-      timeout.unref();
-    }),
-  ]);
-
-  if (timeout) {
-    clearTimeout(timeout);
-  }
-  if (timedOut) {
-    console.error(
-      `Timed out closing Nest application context after ${APP_CLOSE_TIMEOUT_MS}ms; exiting CLI process.`,
-    );
-  }
-}
-
 async function main(): Promise<void> {
   const options = readCliOptions(process.argv.slice(2));
-  const [{ AppModule }, { KaravanStorefrontRelayService }, { PrismaService }] = await Promise.all([
-    import('../app.module'),
+  const [
+    { KaravanStorefrontRelayRepairModule },
+    { KaravanStorefrontRelayService },
+    { PrismaService },
+  ] = await Promise.all([
+    import('./karavan-storefront-relay-repair.module'),
     import('../integrations/karavan-storefront/karavan-storefront-relay.service'),
     import('../prisma/prisma.service'),
   ]);
-  const app = await NestFactory.createApplicationContext(AppModule, {
-    bufferLogs: true,
-  });
-  app.useLogger(app.get(Logger));
+  const app = await NestFactory.createApplicationContext(KaravanStorefrontRelayRepairModule);
 
   try {
     const prisma = app.get(PrismaService);
@@ -412,7 +386,7 @@ async function main(): Promise<void> {
       process.exitCode = 1;
     }
   } finally {
-    await closeApplicationContext(app);
+    await app.close();
   }
 }
 
