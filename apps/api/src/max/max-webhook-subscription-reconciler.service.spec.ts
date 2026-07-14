@@ -337,6 +337,141 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
     await service.onModuleDestroy();
   });
 
+  it('continues after one bot subscription reconcile fails and preserves its last known state', async () => {
+    process.env.APP_ROLE = 'ingress';
+
+    const firstBotUrl = 'https://major-maksimov.ru/api/webhook/max/first_bot/secret-path';
+    const secondBotUrl = 'https://major-maksimov.ru/api/webhook/max/second_bot/secret-path';
+    const firstBotSyncState = {
+      configuredUrl: firstBotUrl,
+      headerSecretFingerprint: 'fingerprint-first_bot',
+      updatedAt: '2026-07-10T09:00:00.000Z',
+      lastIncomingWebhookAt: '2026-07-10T09:05:00.000Z',
+      lastAutoRecreateAt: '2026-07-10T09:01:00.000Z',
+    };
+    const firstBotSnapshot = {
+      botId: 'first_bot',
+      status: 'healthy' as const,
+      configured: true,
+      url: 'https://major-maksimov.ru/api/webhook/max/first_bot/***',
+      checkedAt: '2026-07-10T09:00:00.000Z',
+      reconciledAt: '2026-07-10T09:00:00.000Z',
+      requiredUpdateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+      actualUpdateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+      missingUpdateTypes: [],
+      extraUpdateTypes: [],
+      otherSubscriptionsCount: 0,
+      lastError: null,
+      note: 'Webhook coverage was healthy before the failed reconcile.',
+    };
+    const botRegistry = {
+      getAllBots: jest.fn().mockReturnValue([
+        { id: 'first_bot', webhookHeaderSecrets: ['first-secret'] },
+        { id: 'second_bot', webhookHeaderSecrets: ['second-secret'] },
+      ]),
+      getDefaultBot: jest.fn().mockReturnValue({ id: 'first_bot' }),
+      computeWebhookHeaderSecretFingerprint: jest
+        .fn()
+        .mockImplementation((botId: string) => `fingerprint-${botId}`),
+    };
+    const statusService = {
+      getSyncState: jest.fn().mockResolvedValue({
+        bots: { first_bot: firstBotSyncState },
+        lastGlobalIncomingWebhookAt: firstBotSyncState.lastIncomingWebhookAt,
+        lastGlobalAutoRecreateAt: firstBotSyncState.lastAutoRecreateAt,
+      }),
+      getSnapshot: jest.fn().mockResolvedValue({
+        bots: { first_bot: firstBotSnapshot },
+      }),
+      writeSnapshot: jest.fn().mockResolvedValue(undefined),
+      writeSyncState: jest.fn().mockResolvedValue(undefined),
+    };
+    let secondBotListCalls = 0;
+    const maxClient = {
+      getConfiguredWebhookSubscriptionTarget: jest.fn().mockImplementation((botId: string) => ({
+        url: botId === 'first_bot' ? firstBotUrl : secondBotUrl,
+        maskedUrl: `https://major-maksimov.ru/api/webhook/max/${botId}/***`,
+      })),
+      listWebhookSubscriptions: jest.fn().mockImplementation(({ botId }: { botId: string }) => {
+        if (botId === 'first_bot') {
+          return Promise.reject(new Error('MAX subscriptions endpoint unavailable'));
+        }
+
+        secondBotListCalls += 1;
+        return Promise.resolve([
+          {
+            url: secondBotUrl,
+            updateTypes:
+              secondBotListCalls === 1
+                ? MAX_REQUIRED_WEBHOOK_UPDATE_TYPES.slice(0, -1)
+                : [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+          },
+        ]);
+      }),
+      matchesConfiguredWebhookUrl: jest
+        .fn()
+        .mockImplementation(
+          (url: string, botId: string) =>
+            url === (botId === 'first_bot' ? firstBotUrl : secondBotUrl),
+        ),
+      deleteWebhookSubscription: jest.fn().mockResolvedValue(undefined),
+      ensureWebhookSubscription: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new MaxWebhookSubscriptionReconcilerService(
+      maxClient as never,
+      botRegistry as never,
+      statusService as never,
+      createPrismaMock() as never,
+      {
+        get: jest.fn((key: string, fallback?: number) => {
+          if (key === 'MAX_WEBHOOK_RECONCILE_INTERVAL_MS') {
+            return 60_000;
+          }
+          return fallback;
+        }),
+      } as never,
+    );
+
+    await service.onModuleInit();
+
+    expect(maxClient.listWebhookSubscriptions).toHaveBeenCalledWith(
+      expect.objectContaining({ botId: 'second_bot' }),
+    );
+    expect(maxClient.ensureWebhookSubscription).toHaveBeenCalledWith(
+      [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+      expect.objectContaining({ botId: 'second_bot' }),
+    );
+    expect(statusService.writeSyncState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bots: expect.objectContaining({
+          first_bot: firstBotSyncState,
+          second_bot: expect.objectContaining({
+            configuredUrl: secondBotUrl,
+            headerSecretFingerprint: 'fingerprint-second_bot',
+          }),
+        }),
+      }),
+    );
+    expect(statusService.writeSnapshot).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: 'warning',
+        lastError: 'Не удалось синхронизировать webhook subscription для first_bot (Error).',
+        note: expect.stringContaining('first_bot'),
+        bots: expect.objectContaining({
+          first_bot: expect.objectContaining({
+            status: 'warning',
+            url: firstBotSnapshot.url,
+            actualUpdateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+            lastError: 'Не удалось синхронизировать webhook subscription для first_bot (Error).',
+          }),
+          second_bot: expect.objectContaining({ status: 'healthy', lastError: null }),
+        }),
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('marks an active bot with a subscription but no memberships or incoming webhook as warning', async () => {
     process.env.APP_ROLE = 'ingress';
 

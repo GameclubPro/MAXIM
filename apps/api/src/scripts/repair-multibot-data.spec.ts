@@ -7,6 +7,8 @@ import {
 import {
   parseMultiBotDataRepairOptions,
   planMultiBotEntityRepair,
+  selectRecentAccessProbeCandidates,
+  type MultiBotAccessProbeCandidate,
   type MultiBotRepairEntity,
   type MultiBotRepairMembership,
   type MultiBotRepairRuntimeBot,
@@ -106,6 +108,35 @@ describe('multi-bot data repair CLI options', () => {
     expect(() => parseMultiBotDataRepairOptions(['--apply-route'])).toThrow(
       'Unknown option: --apply-route',
     );
+  });
+});
+
+describe('multi-bot data repair probe selection', () => {
+  it('prioritizes recent activity before stale catalog rows', () => {
+    const candidates: MultiBotAccessProbeCandidate[] = [
+      {
+        entityId: 'stale-chat',
+        entityType: ChatEntityType.CHAT,
+        botIds: ['bot-1'],
+        lastActivityAtMs: 0,
+      },
+      {
+        entityId: 'recent-channel',
+        entityType: ChatEntityType.CHANNEL,
+        botIds: ['bot-2'],
+        lastActivityAtMs: 2_000,
+      },
+      {
+        entityId: 'recent-chat',
+        entityType: ChatEntityType.CHAT,
+        botIds: ['bot-1'],
+        lastActivityAtMs: 1_000,
+      },
+    ];
+
+    expect(
+      selectRecentAccessProbeCandidates(candidates, 2).map((candidate) => candidate.entityId),
+    ).toEqual(['recent-channel', 'recent-chat']);
   });
 });
 

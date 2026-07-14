@@ -8,7 +8,10 @@ import {
   buildDeveloperForcedGlobalSpammerWarmMarkerKey,
 } from './developer-forced-global-spammer-cache';
 import { ModerationService } from './moderation.service';
-import { WebhookCanonicalExecutionService } from './webhook-canonical-execution.service';
+import {
+  WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX,
+  WebhookCanonicalExecutionService,
+} from './webhook-canonical-execution.service';
 import { RuleEngineService } from './rule-engine.service.impl';
 import {
   DEVELOPER_FORCED_GLOBAL_SPAMMER_HOT_PATH_TIMEOUT_MS,
@@ -1742,6 +1745,121 @@ describe('ModerationService', () => {
     expect(prisma.webhookExecutionClaim.findUnique).not.toHaveBeenCalled();
   });
 
+  it('does not reacquire a hot-path timeout quarantine after its business lease expires', async () => {
+    const prisma = {
+      webhookEvent: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'event-timeout-quarantine-1',
+          status: 'FAILED',
+          botId: 'bot-1',
+          normalizedPayload: createUpdate(),
+          nextEnqueueAt: null,
+          errorMessage: `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}: awaiting manual review`,
+        }),
+      },
+      webhookExecutionClaim: {
+        findUnique: jest.fn(),
+        updateMany: jest.fn(),
+      },
+    };
+    const service = new WebhookCanonicalExecutionService(prisma as never);
+
+    await expect(
+      service.prepareExecution('event-timeout-quarantine-1', 'bot-1'),
+    ).resolves.toBeNull();
+
+    expect(prisma.webhookExecutionClaim.findUnique).not.toHaveBeenCalled();
+    expect(prisma.webhookExecutionClaim.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('rechecks a timeout quarantine after acquiring a stale canonical business lease', async () => {
+    const queuedEvent = {
+      id: 'event-stale-timeout-claim-1',
+      status: 'QUEUED',
+      botId: 'bot-1',
+      normalizedPayload: createUpdate(),
+      nextEnqueueAt: null,
+      errorMessage: null,
+    };
+    const quarantinedEvent = {
+      ...queuedEvent,
+      status: 'FAILED',
+      errorMessage: `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}: detached work is unresolved`,
+    };
+    const prisma = {
+      webhookEvent: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValueOnce(queuedEvent)
+          .mockResolvedValueOnce(quarantinedEvent),
+      },
+      webhookExecutionClaim: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'claim-stale-timeout-claim-1',
+          webhookEventId: queuedEvent.id,
+          executionBotId: 'bot-1',
+          enforced: true,
+          status: 'READY',
+          leaseToken: null,
+          leaseExpiresAt: null,
+        }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const service = new WebhookCanonicalExecutionService(prisma as never);
+
+    await expect(service.prepareExecution(queuedEvent.id, 'bot-1')).resolves.toBeNull();
+
+    expect(prisma.webhookEvent.findUnique).toHaveBeenCalledTimes(2);
+    expect(prisma.webhookExecutionClaim.updateMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          webhookEventId: queuedEvent.id,
+          kind: 'EXECUTION',
+          leaseToken: expect.any(String),
+          status: 'READY',
+        }),
+        data: {
+          leaseToken: null,
+          leaseExpiresAt: null,
+        },
+      }),
+    );
+  });
+
+  it('persists a timeout quarantine before releasing its canonical business lease', async () => {
+    const operations: string[] = [];
+    const prisma = {
+      webhookEvent: {
+        update: jest.fn().mockImplementation(async () => {
+          operations.push('quarantine');
+        }),
+      },
+      webhookExecutionClaim: {
+        updateMany: jest.fn().mockImplementation(async () => {
+          operations.push('release');
+          return { count: 1 };
+        }),
+      },
+    };
+    const service = new WebhookCanonicalExecutionService(prisma as never);
+
+    await service.failTimedOutExecution(
+      {
+        webhookEvent: {
+          id: 'event-timeout-release-order-1',
+        } as never,
+        update: createUpdate(),
+        activeBotId: 'bot-1',
+        businessLeaseToken: 'lease-token-1',
+      },
+      { errorMessage: 'timed out' },
+    );
+
+    expect(operations).toEqual(['quarantine', 'release']);
+  });
+
   it('does not mark a webhook processed after losing its canonical business lease', async () => {
     const update = createUpdate();
     const webhookUpdate = jest.fn().mockResolvedValue(undefined);
@@ -1922,7 +2040,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('marks hot-path timeout webhooks as fail-open processed while detached work continues', async () => {
+  it('quarantines a hot-path timeout until detached work completes successfully', async () => {
     const update = {
       ...createUpdate(),
       message: {
@@ -1930,14 +2048,32 @@ describe('ModerationService', () => {
         chatId: '-chat-42',
       },
     };
+    let resolveHandleUpdate!: () => void;
+    const handleUpdateGate = new Promise<void>((resolve) => {
+      resolveHandleUpdate = resolve;
+    });
+    const executionClaimUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
     const prisma = {
       webhookEvent: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'event-timeout-1',
+          status: 'QUEUED',
           botId: 'id613002203036_bot',
           normalizedPayload: update,
         }),
         update: jest.fn().mockResolvedValue(undefined),
+      },
+      webhookExecutionClaim: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'claim-timeout-1',
+          webhookEventId: 'event-timeout-1',
+          executionBotId: 'id613002203036_bot',
+          enforced: true,
+          status: 'READY',
+          leaseToken: null,
+          leaseExpiresAt: null,
+        }),
+        updateMany: executionClaimUpdateMany,
       },
     };
     const service = new ModerationService(
@@ -1947,12 +2083,7 @@ describe('ModerationService', () => {
       {} as never,
     );
     (service as any).webhookUserFacingTimeoutMs = 10;
-    jest.spyOn(service, 'handleUpdate').mockImplementation(
-      () =>
-        new Promise<void>(() => {
-          // Intentionally never resolves: the watchdog must release the webhook processor.
-        }),
-    );
+    jest.spyOn(service, 'handleUpdate').mockReturnValue(handleUpdateGate);
     const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((
       callback: TimerHandler,
     ) => {
@@ -1972,11 +2103,227 @@ describe('ModerationService', () => {
       expect(prisma.webhookEvent.update).toHaveBeenCalledWith({
         where: { id: 'event-timeout-1' },
         data: expect.objectContaining({
+          status: 'FAILED',
+          errorMessage: expect.stringMatching(
+            new RegExp(`^${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:`),
+          ),
+          nextEnqueueAt: null,
+        }),
+      });
+      expect(executionClaimUpdateMany).toHaveBeenCalledTimes(1);
+
+      resolveHandleUpdate();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(prisma.webhookEvent.update).toHaveBeenLastCalledWith({
+        where: { id: 'event-timeout-1' },
+        data: expect.objectContaining({
           status: 'PROCESSED',
           errorMessage: null,
           nextEnqueueAt: null,
           processedAt: expect.any(Date),
         }),
+      });
+      expect(executionClaimUpdateMany).toHaveBeenCalledWith({
+        where: {
+          webhookEventId: 'event-timeout-1',
+          kind: 'EXECUTION',
+          leaseToken: expect.any(String),
+        },
+        data: {
+          status: 'COMPLETED',
+          completedAt: expect.any(Date),
+          leaseToken: null,
+          leaseExpiresAt: null,
+        },
+      });
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
+  });
+
+  it('keeps a hot-path timeout quarantined when detached work later fails', async () => {
+    const update = {
+      ...createUpdate(),
+      message: {
+        ...createUpdate().message,
+        chatId: '-chat-42',
+      },
+    };
+    let rejectHandleUpdate!: (error: Error) => void;
+    const handleUpdateGate = new Promise<void>((_resolve, reject) => {
+      rejectHandleUpdate = reject;
+    });
+    const prisma = {
+      webhookEvent: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'event-timeout-late-failure-1',
+          status: 'QUEUED',
+          botId: 'id613002203036_bot',
+          normalizedPayload: update,
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+    );
+    (service as any).webhookUserFacingTimeoutMs = 10;
+    jest.spyOn(service, 'handleUpdate').mockReturnValue(handleUpdateGate);
+    const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((
+      callback: TimerHandler,
+    ) => {
+      if (typeof callback === 'function') {
+        callback();
+      }
+      return {
+        unref() {
+          return this;
+        },
+      } as unknown as NodeJS.Timeout;
+    }) as unknown as typeof setTimeout);
+
+    try {
+      await expect(
+        service.processWebhookEvent('event-timeout-late-failure-1'),
+      ).resolves.toBeUndefined();
+
+      rejectHandleUpdate(new Error('late detached webhook failure'));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(prisma.webhookEvent.update).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ status: 'PROCESSED' }),
+        }),
+      );
+      expect(prisma.webhookEvent.update).toHaveBeenLastCalledWith({
+        where: { id: 'event-timeout-late-failure-1' },
+        data: expect.objectContaining({
+          status: 'FAILED',
+          errorMessage: expect.stringMatching(
+            new RegExp(
+              `^${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}: late detached webhook failure$`,
+            ),
+          ),
+          nextEnqueueAt: null,
+        }),
+      });
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
+  });
+
+  it('falls back to terminal quarantine when the first timeout persistence write fails', async () => {
+    const update = {
+      ...createUpdate(),
+      message: {
+        ...createUpdate().message,
+        chatId: '-chat-42',
+      },
+    };
+    let resolveHandleUpdate!: () => void;
+    const handleUpdateGate = new Promise<void>((resolve) => {
+      resolveHandleUpdate = resolve;
+    });
+    const executionClaimUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const prisma = {
+      webhookEvent: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'event-timeout-persistence-failure-1',
+          status: 'QUEUED',
+          botId: 'id613002203036_bot',
+          normalizedPayload: update,
+        }),
+        update: jest
+          .fn()
+          .mockRejectedValueOnce(new Error('initial timeout quarantine database failure'))
+          .mockResolvedValue(undefined),
+      },
+      webhookExecutionClaim: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'claim-timeout-persistence-failure-1',
+          webhookEventId: 'event-timeout-persistence-failure-1',
+          executionBotId: 'id613002203036_bot',
+          enforced: true,
+          status: 'READY',
+          leaseToken: null,
+          leaseExpiresAt: null,
+        }),
+        updateMany: executionClaimUpdateMany,
+      },
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+    );
+    (service as any).webhookUserFacingTimeoutMs = 10;
+    jest.spyOn(service, 'handleUpdate').mockReturnValue(handleUpdateGate);
+    const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((
+      callback: TimerHandler,
+    ) => {
+      if (typeof callback === 'function') {
+        callback();
+      }
+      return {
+        unref() {
+          return this;
+        },
+      } as unknown as NodeJS.Timeout;
+    }) as unknown as typeof setTimeout);
+
+    try {
+      await expect(
+        service.processWebhookEvent('event-timeout-persistence-failure-1'),
+      ).resolves.toBeUndefined();
+
+      expect(prisma.webhookEvent.update).toHaveBeenLastCalledWith({
+        where: { id: 'event-timeout-persistence-failure-1' },
+        data: expect.objectContaining({
+          status: 'FAILED',
+          errorMessage: expect.stringMatching(
+            new RegExp(
+              `^${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}: .*initial timeout quarantine database failure`,
+            ),
+          ),
+          nextEnqueueAt: null,
+        }),
+      });
+      expect(prisma.webhookEvent.update).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ nextEnqueueAt: expect.any(Date) }),
+        }),
+      );
+      expect(executionClaimUpdateMany).toHaveBeenCalledTimes(1);
+
+      resolveHandleUpdate();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(prisma.webhookEvent.update).toHaveBeenLastCalledWith({
+        where: { id: 'event-timeout-persistence-failure-1' },
+        data: expect.objectContaining({
+          status: 'PROCESSED',
+          errorMessage: null,
+          nextEnqueueAt: null,
+          processedAt: expect.any(Date),
+        }),
+      });
+      expect(executionClaimUpdateMany).toHaveBeenCalledWith({
+        where: {
+          webhookEventId: 'event-timeout-persistence-failure-1',
+          kind: 'EXECUTION',
+          leaseToken: expect.any(String),
+        },
+        data: {
+          status: 'COMPLETED',
+          completedAt: expect.any(Date),
+          leaseToken: null,
+          leaseExpiresAt: null,
+        },
       });
     } finally {
       setTimeoutSpy.mockRestore();
@@ -2041,7 +2388,7 @@ describe('ModerationService', () => {
     expect((service as any).isWebhookHotTimeoutChatBackoffActive('-chat-1')).toBe(true);
   });
 
-  it('detaches stuck user-facing message_created events instead of re-enqueueing them forever', async () => {
+  it('returns a quarantine outcome for stuck user-facing message_created events', async () => {
     const update = {
       ...createUpdate(),
       message: {
@@ -2085,7 +2432,7 @@ describe('ModerationService', () => {
               // Intentionally never resolves.
             }),
         ),
-      ).resolves.toBeUndefined();
+      ).resolves.toMatchObject({ kind: 'timed_out' });
       expect(
         (service as any).isTerminalWebhookProcessingError(
           (service as any).createWebhookHotPathTimeoutError({
@@ -2174,7 +2521,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('detaches violation follow-up timeouts after the destructive action boundary', async () => {
+  it('returns a quarantine outcome for violation follow-up timeouts after the action boundary', async () => {
     const update = {
       ...createUpdate(),
       message: {
@@ -2236,11 +2583,11 @@ describe('ModerationService', () => {
           successBoundaryStage: 'violation-delete',
         }),
       ),
-    ).resolves.toBeUndefined();
+    ).resolves.toMatchObject({ kind: 'timed_out' });
 
     expect(runtimeDiagnosticsService.recordHotPathStageOutcome).toHaveBeenCalledWith({
-      stage: 'violation-follow-up.deferred',
-      outcome: 'skip',
+      stage: 'violation-follow-up',
+      outcome: 'timeout',
       failOpen: true,
     });
 
@@ -2444,7 +2791,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('fails open for stuck message_callback events instead of leaving the critical queue hung', async () => {
+  it('returns a quarantine outcome for stuck message_callback events', async () => {
     const update = createPrivateCallbackUpdate('pc2|broadcast_send');
     const service = new ModerationService(
       {} as never,
@@ -2482,7 +2829,7 @@ describe('ModerationService', () => {
               // Intentionally never resolves.
             }),
         ),
-      ).resolves.toBeUndefined();
+      ).resolves.toMatchObject({ kind: 'timed_out' });
       expect(
         (service as any).isTerminalWebhookProcessingError(
           (service as any).createWebhookHotPathTimeoutError({

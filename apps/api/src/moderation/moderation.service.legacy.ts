@@ -364,7 +364,10 @@ import {
 } from './bot-speech-media.service';
 import { NightModeTransitionEventService } from './night-mode-transition-event.service';
 import { KaravanStorefrontRelayService } from '../integrations/karavan-storefront/karavan-storefront-relay.service';
-import { WebhookCanonicalExecutionService } from './webhook-canonical-execution.service';
+import {
+  WebhookCanonicalExecutionService,
+  type WebhookCanonicalExecutionContext,
+} from './webhook-canonical-execution.service';
 
 type ManualModerationCommandBridge = Pick<
   ManualModerationService,
@@ -381,6 +384,16 @@ type RequiredSubscriptionMembershipResolution = {
   fresh: boolean;
   terminal: boolean;
 };
+
+type WebhookUpdateGuardResult =
+  | {
+      kind: 'completed';
+    }
+  | {
+      kind: 'timed_out';
+      detachedTask: Promise<void>;
+      timeoutError: Error;
+    };
 
 type RequiredSubscriptionMembershipLookupResult = {
   membership: boolean | null;
@@ -872,7 +885,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     try {
       let hotPathProfile: WebhookHotPathProfile | null = null;
-      await this.executeWebhookUpdateWithGuard(
+      const guardResult = await this.executeWebhookUpdateWithGuard(
         webhookEvent.id,
         update,
         activeBotId,
@@ -888,12 +901,46 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
         () => this.readWebhookHotPathProfileSnapshot(hotPathProfile),
       );
+
+      if (guardResult.kind === 'timed_out') {
+        const timeoutErrorMessage = this.formatWebhookProcessingErrorMessage(
+          guardResult.timeoutError,
+        );
+        const quarantinePromise = this.webhookCanonicalExecutionService.quarantineTimedOutExecution(
+          execution,
+          {
+            errorMessage: timeoutErrorMessage,
+          },
+        );
+        try {
+          await quarantinePromise;
+        } catch (error: unknown) {
+          await this.persistTimedOutWebhookFallback({
+            execution,
+            timeoutError: guardResult.timeoutError,
+            timeoutErrorMessage,
+            persistenceError: error,
+          });
+        }
+        this.observeTimedOutWebhookExecution({
+          execution,
+          detachedTask: guardResult.detachedTask,
+        });
+        return;
+      }
+
       await this.webhookCanonicalExecutionService.completeExecution(execution);
     } catch (error: unknown) {
-      await this.webhookCanonicalExecutionService.failExecution(execution, {
-        errorMessage: this.formatWebhookProcessingErrorMessage(error),
-        terminal: this.isTerminalWebhookProcessingError(error),
-      });
+      if (this.isWebhookHotPathTimeoutError(error)) {
+        await this.webhookCanonicalExecutionService.failTimedOutExecution(execution, {
+          errorMessage: this.formatWebhookProcessingErrorMessage(error),
+        });
+      } else {
+        await this.webhookCanonicalExecutionService.failExecution(execution, {
+          errorMessage: this.formatWebhookProcessingErrorMessage(error),
+          terminal: this.isTerminalWebhookProcessingError(error),
+        });
+      }
       throw error;
     }
   }
@@ -16429,8 +16476,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return true;
     }
 
-    const timeoutMarker = (error as { webhookHotPathTimeout?: unknown })?.webhookHotPathTimeout;
-    if (timeoutMarker === true) {
+    if (this.isWebhookHotPathTimeoutError(error)) {
       return false;
     }
 
@@ -16452,17 +16498,50 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  private isWebhookHotPathTimeoutError(error: unknown): boolean {
+    return (error as { webhookHotPathTimeout?: unknown })?.webhookHotPathTimeout === true;
+  }
+
+  private createWebhookHotPathTimeoutPersistenceError(params: {
+    timeoutError: Error;
+    persistenceError: unknown;
+  }): Error {
+    const timeout = params.timeoutError as Error & {
+      code?: string;
+      chatId?: string | null;
+      activeBotId?: string | null;
+      webhookHotPathContext?: Record<string, unknown> | null;
+    };
+    const error = new Error(
+      `Webhook timeout quarantine persistence failed: ${this.formatWebhookProcessingErrorMessage(
+        params.persistenceError,
+      )}`,
+    ) as Error & {
+      code?: string;
+      webhookHotPathTimeout?: boolean;
+      chatId?: string | null;
+      activeBotId?: string | null;
+      webhookHotPathContext?: Record<string, unknown> | null;
+    };
+    error.code = timeout.code;
+    error.webhookHotPathTimeout = true;
+    error.chatId = timeout.chatId;
+    error.activeBotId = timeout.activeBotId;
+    error.webhookHotPathContext = timeout.webhookHotPathContext;
+    return error;
+  }
+
   private async executeWebhookUpdateWithGuard(
     webhookEventId: string,
     update: MaxUpdate,
     activeBotId: string | null,
     task: () => Promise<void>,
     getTimeoutContext?: () => Record<string, unknown> | null,
-  ): Promise<void> {
+  ): Promise<WebhookUpdateGuardResult> {
     const timeoutMs = this.resolveWebhookHotPathTimeoutMs(update);
     if (timeoutMs === null) {
       await task();
-      return;
+      return { kind: 'completed' };
     }
 
     const startedAtMs = Date.now();
@@ -16517,6 +16596,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           'Slow webhook user-facing hot path completed close to the watchdog deadline',
         );
       }
+      return { kind: 'completed' };
     } catch (error: unknown) {
       if ((error as { code?: unknown })?.code === 'WEBHOOK_USER_FACING_TIMEOUT') {
         const timeoutContext = getTimeoutContext?.() ?? null;
@@ -16535,55 +16615,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           failOpen: true,
         });
         const successBoundaryReached = timeoutContext?.successBoundaryReached === true;
-        const backoffSuppressedStage =
-          WEBHOOK_HOT_TIMEOUT_BACKOFF_SUPPRESSED_STAGES.has(latestStage);
-        taskPromise.catch((followUpError: unknown) => {
-          void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
-            stage: successBoundaryReached ? 'follow_up_failed' : 'detached_hot_path_failed',
-            outcome: 'timeout',
-            failOpen: true,
-          });
-          this.logger.warn(
-            {
-              webhookEventId,
-              updateType: this.readLowerString(update.type),
-              chatId: this.extractWebhookHotPathChatId(update),
-              activeBotId,
-              latestStage,
-              successBoundaryStage: timeoutContext?.successBoundaryStage,
-              err: followUpError instanceof Error ? followUpError.message : String(followUpError),
-            },
-            successBoundaryReached
-              ? 'Deferred webhook follow-up failed after the user-facing success boundary'
-              : 'Detached webhook hot path failed after the watchdog timeout',
-          );
-        });
-
-        if (successBoundaryReached && backoffSuppressedStage) {
-          void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
-            stage: `${latestStage}.deferred`,
-            outcome: 'skip',
-            failOpen: true,
-          });
-          void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
-            stage: 'follow_up_deferred',
-            outcome: 'skip',
-            failOpen: true,
-          });
-          this.logger.warn(
-            {
-              webhookEventId,
-              updateType: this.readLowerString(update.type),
-              chatId: this.extractWebhookHotPathChatId(update),
-              activeBotId,
-              latestStage,
-              successBoundaryStage: timeoutContext?.successBoundaryStage,
-              timeoutMs,
-            },
-            'Detached webhook follow-up after the user-facing success boundary timed out',
-          );
-          return;
-        }
         this.logger.warn(
           {
             webhookEventId,
@@ -16594,9 +16625,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             successBoundaryReached,
             timeoutMs,
           },
-          'Detached webhook hot path after the watchdog timeout; treating the webhook as fail-open',
+          'Detached webhook hot path after the watchdog timeout; quarantining until it settles',
         );
-        return;
+        return {
+          kind: 'timed_out',
+          detachedTask: taskPromise,
+          timeoutError: error instanceof Error ? error : new Error(String(error)),
+        };
       }
       throw error;
     } finally {
@@ -16604,6 +16639,103 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         clearTimeout(timeout);
       }
     }
+  }
+
+  private observeTimedOutWebhookExecution(params: {
+    execution: WebhookCanonicalExecutionContext;
+    detachedTask: Promise<void>;
+  }): void {
+    void (async () => {
+      try {
+        await params.detachedTask;
+      } catch (error: unknown) {
+        await this.webhookCanonicalExecutionService
+          .failTimedOutExecution(params.execution, {
+            errorMessage: this.formatWebhookProcessingErrorMessage(error),
+          })
+          .catch((persistenceError: unknown) => {
+            this.logger.error(
+              {
+                webhookEventId: params.execution.webhookEvent.id,
+                err:
+                  persistenceError instanceof Error
+                    ? persistenceError.message
+                    : String(persistenceError),
+              },
+              'Could not persist detached webhook execution failure after timeout',
+            );
+          });
+        this.logger.warn(
+          {
+            webhookEventId: params.execution.webhookEvent.id,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Detached webhook execution failed after timeout and remains quarantined',
+        );
+        return;
+      }
+
+      try {
+        await this.webhookCanonicalExecutionService.completeExecution(params.execution);
+        this.logger.log(
+          { webhookEventId: params.execution.webhookEvent.id },
+          'Detached webhook execution completed after timeout quarantine',
+        );
+      } catch (error: unknown) {
+        await this.webhookCanonicalExecutionService
+          .failTimedOutExecution(params.execution, {
+            errorMessage: this.formatWebhookProcessingErrorMessage(error),
+          })
+          .catch((persistenceError: unknown) => {
+            this.logger.error(
+              {
+                webhookEventId: params.execution.webhookEvent.id,
+                err:
+                  persistenceError instanceof Error
+                    ? persistenceError.message
+                    : String(persistenceError),
+              },
+              'Could not preserve a failed detached webhook completion after timeout',
+            );
+          });
+        this.logger.error(
+          {
+            webhookEventId: params.execution.webhookEvent.id,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Detached webhook execution could not complete after timeout and remains quarantined',
+        );
+      }
+    })();
+  }
+
+  private async persistTimedOutWebhookFallback(params: {
+    execution: WebhookCanonicalExecutionContext;
+    timeoutError: Error;
+    timeoutErrorMessage: string;
+    persistenceError: unknown;
+  }): Promise<void> {
+    try {
+      await this.webhookCanonicalExecutionService.quarantineTimedOutExecution(params.execution, {
+        errorMessage: `${params.timeoutErrorMessage}; initial timeout quarantine persistence failed: ${this.formatWebhookProcessingErrorMessage(params.persistenceError)}`,
+      });
+    } catch (fallbackError: unknown) {
+      throw this.createWebhookHotPathTimeoutPersistenceError({
+        timeoutError: params.timeoutError,
+        persistenceError: fallbackError,
+      });
+    }
+
+    this.logger.error(
+      {
+        webhookEventId: params.execution.webhookEvent.id,
+        err:
+          params.persistenceError instanceof Error
+            ? params.persistenceError.message
+            : String(params.persistenceError),
+      },
+      'Initial webhook timeout quarantine write failed; persisted terminal fallback quarantine',
+    );
   }
 
   private resolveWebhookHotPathTimeoutMs(update: MaxUpdate): number | null {
@@ -16732,7 +16864,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         hotChatBackoffSuppressed,
         ...(params.timeoutContext ?? {}),
       },
-      'Webhook user-facing hot path timed out; failing this event open to keep the shard responsive',
+      'Webhook user-facing hot path timed out; quarantining the event to keep the shard responsive',
     );
     return error;
   }

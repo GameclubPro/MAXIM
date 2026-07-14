@@ -44,8 +44,39 @@ export type MaxCompletedSendDispatch = {
   dispatchBotId: string | null;
 };
 
+export const MAX_SEND_LEDGER_PREPARATION_ERROR_CODES = {
+  MISSING_ROW: 'MAX_SEND_LEDGER_PREPARATION_MISSING_ROW',
+  TERMINAL_OR_AMBIGUOUS: 'MAX_SEND_LEDGER_PREPARATION_TERMINAL_OR_AMBIGUOUS',
+  DISPATCH_FENCE_EXISTS: 'MAX_SEND_LEDGER_PREPARATION_DISPATCH_FENCE_EXISTS',
+  ALREADY_COMPLETED: 'MAX_SEND_LEDGER_PREPARATION_ALREADY_COMPLETED',
+  UNEXPECTED_STATE: 'MAX_SEND_LEDGER_PREPARATION_UNEXPECTED_STATE',
+} as const;
+
+export type MaxSendLedgerPreparationErrorCode =
+  (typeof MAX_SEND_LEDGER_PREPARATION_ERROR_CODES)[keyof typeof MAX_SEND_LEDGER_PREPARATION_ERROR_CODES];
+
 type MaxSendDispatchLedgerFinalizedError = Error & {
   maxSendDispatchLedgerFinalized?: boolean;
+};
+
+type MaxSendDispatchState = {
+  status: MaxActionLedgerStatus;
+  ambiguous: boolean;
+  terminal: boolean;
+  dispatchToken: string | null;
+  dispatchStartedAt: Date | null;
+  dispatchBotId: string | null;
+  remoteMessageId: string | null;
+};
+
+type MaxSendLedgerPreparationFailure = {
+  code: MaxSendLedgerPreparationErrorCode;
+  message: string;
+  preserveExistingLedger: boolean;
+};
+
+type MaxSendLedgerPreparationError = UnrecoverableError & {
+  code: MaxSendLedgerPreparationErrorCode;
 };
 
 export function markMaxSendDispatchLedgerFinalized<T extends Error>(error: T): T {
@@ -161,13 +192,12 @@ export class MaxActionLedgerService {
     }
 
     const row = await this.readSendDispatchState(job.idempotencyKey);
-    if (row?.remoteMessageId) {
-      return;
+    const failure = this.classifyPreparedSendFailure(job.idempotencyKey, row);
+    const error = this.createPreparedSendFailureError(failure);
+    if (failure.preserveExistingLedger) {
+      throw markMaxSendDispatchLedgerFinalized(error);
     }
-
-    throw new UnrecoverableError(
-      `MAX SEND_MESSAGE ledger context could not be persisted before dispatch ${job.idempotencyKey}`,
-    );
+    throw error;
   }
 
   async recordSucceeded(job: MaxActionJob): Promise<void> {
@@ -605,7 +635,65 @@ export class MaxActionLedgerService {
     return normalized;
   }
 
-  private async readSendDispatchState(jobId: string) {
+  private classifyPreparedSendFailure(
+    jobId: string,
+    row: MaxSendDispatchState | null,
+  ): MaxSendLedgerPreparationFailure {
+    if (!row) {
+      return {
+        code: MAX_SEND_LEDGER_PREPARATION_ERROR_CODES.MISSING_ROW,
+        message: `MAX SEND_MESSAGE ledger row is missing before dispatch ${jobId}`,
+        preserveExistingLedger: false,
+      };
+    }
+
+    if (row.remoteMessageId != null) {
+      return {
+        code: MAX_SEND_LEDGER_PREPARATION_ERROR_CODES.ALREADY_COMPLETED,
+        message: `MAX SEND_MESSAGE ledger entry ${jobId} already has a remote message id; refusing another dispatch`,
+        preserveExistingLedger: true,
+      };
+    }
+
+    if (
+      row.terminal ||
+      row.ambiguous ||
+      row.status === MaxActionLedgerStatus.SUCCEEDED ||
+      row.status === MaxActionLedgerStatus.SKIPPED ||
+      row.status === MaxActionLedgerStatus.AMBIGUOUS ||
+      row.status === MaxActionLedgerStatus.FAILED_TERMINAL
+    ) {
+      return {
+        code: MAX_SEND_LEDGER_PREPARATION_ERROR_CODES.TERMINAL_OR_AMBIGUOUS,
+        message: `MAX SEND_MESSAGE ledger entry ${jobId} is terminal or ambiguous before dispatch`,
+        preserveExistingLedger: true,
+      };
+    }
+
+    if (row.dispatchToken != null || row.dispatchStartedAt != null || row.dispatchBotId != null) {
+      return {
+        code: MAX_SEND_LEDGER_PREPARATION_ERROR_CODES.DISPATCH_FENCE_EXISTS,
+        message: `MAX SEND_MESSAGE ledger entry ${jobId} already has a dispatch fence; refusing another dispatch`,
+        preserveExistingLedger: true,
+      };
+    }
+
+    return {
+      code: MAX_SEND_LEDGER_PREPARATION_ERROR_CODES.UNEXPECTED_STATE,
+      message: `MAX SEND_MESSAGE ledger entry ${jobId} is in an unexpected state before dispatch`,
+      preserveExistingLedger: false,
+    };
+  }
+
+  private createPreparedSendFailureError(
+    failure: MaxSendLedgerPreparationFailure,
+  ): MaxSendLedgerPreparationError {
+    const error = new UnrecoverableError(failure.message) as MaxSendLedgerPreparationError;
+    error.code = failure.code;
+    return error;
+  }
+
+  private async readSendDispatchState(jobId: string): Promise<MaxSendDispatchState | null> {
     return this.prisma.maxActionLedgerEntry.findUnique({
       where: {
         jobId,

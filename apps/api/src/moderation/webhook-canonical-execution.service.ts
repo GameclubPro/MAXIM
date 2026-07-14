@@ -7,6 +7,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { buildWebhookSemanticEventKey } from '../webhook/webhook-semantic-event-key';
 
 const WEBHOOK_CANONICAL_BUSINESS_LEASE_MS = 5 * 60_000;
+export const WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX = 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED';
+const WEBHOOK_EVENT_ERROR_MESSAGE_MAX_LENGTH = 500;
 
 type WebhookExecutionClaimRecord = {
   id?: string;
@@ -64,6 +66,13 @@ export class WebhookCanonicalExecutionService {
       webhookEvent.status === WebhookStatus.DUPLICATE ||
       webhookEvent.status === WebhookStatus.PROCESSED
     ) {
+      return null;
+    }
+    if (this.isHotPathTimeoutQuarantined(webhookEvent)) {
+      this.logger.warn(
+        { webhookEventId: webhookEvent.id },
+        'Skipped webhook execution that is quarantined after a hot-path timeout',
+      );
       return null;
     }
 
@@ -139,7 +148,7 @@ export class WebhookCanonicalExecutionService {
       executionClaimModel,
     });
 
-    return {
+    const context: WebhookCanonicalExecutionContext = {
       webhookEvent,
       update,
       activeBotId:
@@ -149,6 +158,31 @@ export class WebhookCanonicalExecutionService {
         this.normalizeBotId(defaultBotId),
       businessLeaseToken,
     };
+
+    // Recheck after a fenced claim: another worker can have read this event before a timeout
+    // quarantine was persisted, then win the claim after its original owner finishes.
+    if (businessLeaseToken) {
+      const latestWebhookEvent = await this.prisma.webhookEvent.findUnique({
+        where: { id: webhookEvent.id },
+      });
+      if (
+        !latestWebhookEvent ||
+        latestWebhookEvent.status === WebhookStatus.DUPLICATE ||
+        latestWebhookEvent.status === WebhookStatus.PROCESSED ||
+        this.isHotPathTimeoutQuarantined(latestWebhookEvent)
+      ) {
+        await this.releaseBusinessLease(context);
+        if (latestWebhookEvent && this.isHotPathTimeoutQuarantined(latestWebhookEvent)) {
+          this.logger.warn(
+            { webhookEventId: latestWebhookEvent.id },
+            'Released a stale canonical claim after a hot-path timeout quarantine',
+          );
+        }
+        return null;
+      }
+    }
+
+    return context;
   }
 
   async completeExecution(context: WebhookCanonicalExecutionContext): Promise<void> {
@@ -208,6 +242,29 @@ export class WebhookCanonicalExecutionService {
           : {}),
       },
     });
+  }
+
+  // FLAG: A watchdog timeout can leave a MAX action in flight, so retain its lease and quarantine replay.
+  async quarantineTimedOutExecution(
+    context: WebhookCanonicalExecutionContext,
+    params: { errorMessage: string },
+  ): Promise<void> {
+    await this.prisma.webhookEvent.update({
+      where: { id: context.webhookEvent.id },
+      data: {
+        status: WebhookStatus.FAILED,
+        errorMessage: this.buildHotPathTimeoutQuarantineMessage(params.errorMessage),
+        nextEnqueueAt: null,
+      },
+    });
+  }
+
+  async failTimedOutExecution(
+    context: WebhookCanonicalExecutionContext,
+    params: { errorMessage: string },
+  ): Promise<void> {
+    await this.quarantineTimedOutExecution(context, params);
+    await this.releaseBusinessLease(context);
   }
 
   private get executionClaimModel(): WebhookExecutionClaimModel | undefined {
@@ -272,6 +329,22 @@ export class WebhookCanonicalExecutionService {
         },
       })
       .catch(() => undefined);
+  }
+
+  private isHotPathTimeoutQuarantined(webhookEvent: WebhookEvent): boolean {
+    return (
+      webhookEvent.status === WebhookStatus.FAILED &&
+      webhookEvent.nextEnqueueAt === null &&
+      typeof webhookEvent.errorMessage === 'string' &&
+      webhookEvent.errorMessage.startsWith(`${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:`)
+    );
+  }
+
+  private buildHotPathTimeoutQuarantineMessage(errorMessage: string): string {
+    return `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}: ${errorMessage}`.slice(
+      0,
+      WEBHOOK_EVENT_ERROR_MESSAGE_MAX_LENGTH,
+    );
   }
 
   private normalizeBotId(value: unknown): string | null {

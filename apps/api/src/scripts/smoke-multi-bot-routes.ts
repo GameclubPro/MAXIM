@@ -22,7 +22,7 @@ const ROUTE_MATRIX_BOT_IDS = [
 ] as const;
 
 type SmokeMode = 'fixture' | 'db';
-type SmokeStatus = 'PASS' | 'FAIL';
+type SmokeStatus = 'PASS' | 'DEGRADED' | 'FAIL';
 
 type CliOptions = {
   json: boolean;
@@ -323,14 +323,31 @@ async function runDbSmoke(chatId: string): Promise<SmokeResult> {
       botCount: registry.getAllBots().length,
       routes,
       assertions,
-      warnings: routes.some((route) => !route.botId)
-        ? ['Some route purposes did not resolve a selected bot from local DB state.']
-        : [],
+      warnings: buildDbRouteWarnings(routes),
     };
     return buildResult('db', [scenario]);
   } finally {
     await prisma.$disconnect();
   }
+}
+
+export function buildDbRouteWarnings(routes: readonly MaxBotRoute[]): string[] {
+  const requiredRoutes = [
+    findRoute(routes, 'send_message'),
+    findRoute(routes, 'moderation_action', 'delete_message'),
+    findRoute(routes, 'moderation_action', 'moderate_member'),
+  ];
+  const missingRequiredRoutes = requiredRoutes
+    .filter((route) => !route?.botId)
+    .map((route) => (route ? formatRouteName(route) : 'unknown'));
+
+  if (missingRequiredRoutes.length === 0) {
+    return [];
+  }
+
+  return [
+    `Required action routes have no selected bot from local DB state: ${missingRequiredRoutes.join(', ')}.`,
+  ];
 }
 
 function createFixture(
@@ -570,7 +587,11 @@ function buildResult(mode: SmokeMode, scenarios: SmokeScenario[]): SmokeResult {
   return {
     generatedAt: new Date().toISOString(),
     mode,
-    status: assertions.every((assertion) => assertion.pass) ? 'PASS' : 'FAIL',
+    status: assertions.some((assertion) => !assertion.pass)
+      ? 'FAIL'
+      : warnings.length > 0
+        ? 'DEGRADED'
+        : 'PASS',
     scenarios,
     assertions,
     warnings,

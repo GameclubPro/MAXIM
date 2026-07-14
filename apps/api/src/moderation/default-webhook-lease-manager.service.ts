@@ -42,6 +42,97 @@ type WorkerHeartbeat = {
 
 type CloseWorkerResult = 'closed' | 'timed_out' | 'skipped';
 
+const CLAIM_DEFAULT_WEBHOOK_LEASE_SCRIPT = `
+-- default-webhook-lease:claim
+local currentRaw = redis.call('GET', KEYS[1])
+local ownerId = ARGV[1]
+local queueName = ARGV[2]
+local nowMs = tonumber(ARGV[3])
+local ttlMs = tonumber(ARGV[4])
+local currentFencingToken = 0
+local heldByAnotherOwner = false
+local currentLeaseTtlMs = redis.call('PTTL', KEYS[1])
+
+if currentRaw then
+  local decoded, current = pcall(cjson.decode, currentRaw)
+  if decoded and type(current) == 'table' then
+    currentFencingToken = tonumber(current['fencingToken']) or 0
+    if (currentLeaseTtlMs > 0 or currentLeaseTtlMs == -1) and current['ownerId'] ~= ownerId then
+      heldByAnotherOwner = true
+    end
+  end
+end
+
+local recordedFencingToken = tonumber(redis.call('GET', KEYS[2]) or '0') or 0
+if currentFencingToken > recordedFencingToken then
+  redis.call('SET', KEYS[2], tostring(currentFencingToken))
+end
+
+if heldByAnotherOwner then
+  return {0, 0}
+end
+
+local fencingToken = redis.call('INCR', KEYS[2])
+local claim = {
+  queueName = queueName,
+  ownerId = ownerId,
+  fencingToken = fencingToken,
+  claimedAtMs = nowMs,
+  updatedAtMs = nowMs,
+  leaseUntilMs = nowMs + ttlMs
+}
+redis.call('SET', KEYS[1], cjson.encode(claim), 'PX', ttlMs)
+return {1, fencingToken}
+`;
+
+const RENEW_DEFAULT_WEBHOOK_LEASE_SCRIPT = `
+-- default-webhook-lease:renew
+local currentRaw = redis.call('GET', KEYS[1])
+if not currentRaw then
+  return 0
+end
+
+local decoded, current = pcall(cjson.decode, currentRaw)
+if not decoded or type(current) ~= 'table' then
+  return 0
+end
+
+local ownerId = ARGV[1]
+local fencingToken = tonumber(ARGV[2])
+if current['ownerId'] ~= ownerId or tonumber(current['fencingToken']) ~= fencingToken then
+  return 0
+end
+
+local nowMs = tonumber(ARGV[3])
+local ttlMs = tonumber(ARGV[4])
+current['updatedAtMs'] = nowMs
+current['leaseUntilMs'] = nowMs + ttlMs
+redis.call('SET', KEYS[1], cjson.encode(current), 'PX', ttlMs)
+return 1
+`;
+
+const RELEASE_DEFAULT_WEBHOOK_LEASE_SCRIPT = `
+-- default-webhook-lease:release
+local currentRaw = redis.call('GET', KEYS[1])
+if not currentRaw then
+  return 0
+end
+
+local decoded, current = pcall(cjson.decode, currentRaw)
+if not decoded or type(current) ~= 'table' then
+  return 0
+end
+
+if current['ownerId'] == ARGV[1] and tonumber(current['fencingToken']) == tonumber(ARGV[2]) then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+`;
+
+function buildDefaultWebhookLeaseFenceKey(queueName: DefaultWebhookQueueName): string {
+  return `${buildDefaultWebhookLeaseKey(queueName)}:fence`;
+}
+
 @Injectable()
 export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(DefaultWebhookLeaseManagerService.name);
@@ -60,6 +151,7 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
   private readonly summaryTtlMs: number;
   private readonly closeTimeoutMs: number;
   private readonly workers = new Map<DefaultWebhookQueueName, Worker<ProcessWebhookJob>>();
+  private readonly localClaimFencingTokens = new Map<DefaultWebhookQueueName, number>();
   private readonly closingWorkers = new Set<DefaultWebhookQueueName>();
   private readonly closeRetryNotBeforeMs = new Map<DefaultWebhookQueueName, number>();
   private readonly lastHandoffAtMs = new Map<DefaultWebhookQueueName, number>();
@@ -231,6 +323,9 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
       const currentClaim = claims[queueName] ?? null;
       const currentOwner = currentClaim?.ownerId ?? entry.homeOwner;
       if (currentOwner === this.workerGroupName && entry.desiredOwner !== this.workerGroupName) {
+        if (!this.hasLocalClaim(queueName, currentClaim)) {
+          continue;
+        }
         if (entry.activeJobs > 0 || this.isCloseRetryCoolingDown(queueName)) {
           allowedWorkers.add(queueName);
           continue;
@@ -348,17 +443,8 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
   }
 
   private async releaseLocalDynamicClaims(): Promise<void> {
-    if (!this.workerGroupName) {
-      return;
-    }
-
-    const claims = await this.loadClaims();
     await Promise.all(
-      DEFAULT_WEBHOOK_QUEUE_NAMES.map(async (queueName) => {
-        if (claims[queueName]?.ownerId === this.workerGroupName) {
-          await this.releaseClaim(queueName);
-        }
-      }),
+      [...this.localClaimFencingTokens.keys()].map((queueName) => this.releaseClaim(queueName)),
     );
   }
 
@@ -367,44 +453,19 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
       return;
     }
 
-    const queueNames = [...this.workers.keys()].filter(
-      (queueName) => this.isDynamicQueue(queueName) && !this.closingWorkers.has(queueName),
+    const localClaims = [...this.localClaimFencingTokens.entries()].filter(
+      ([queueName]) =>
+        this.workers.has(queueName) &&
+        this.isDynamicQueue(queueName) &&
+        !this.closingWorkers.has(queueName),
     );
-    if (queueNames.length === 0) {
+    if (localClaims.length === 0) {
       return;
     }
 
-    const pipeline = this.redis.pipeline();
-    for (const queueName of queueNames) {
-      pipeline.get(buildDefaultWebhookLeaseKey(queueName));
-    }
-    const results = await pipeline.exec();
-    if (!results) {
-      return;
-    }
-
-    const nowMs = Date.now();
-    const renewPipeline = this.redis.pipeline();
-    queueNames.forEach((queueName, index) => {
-      const parsed = this.parseClaim(results[index]?.[1], queueName);
-      if (!parsed || parsed.ownerId !== this.workerGroupName) {
-        return;
-      }
-
-      const renewedClaim: DefaultWebhookShardClaim = {
-        ...parsed,
-        updatedAtMs: nowMs,
-        leaseUntilMs: nowMs + this.leaseTtlMs,
-      };
-      renewPipeline.set(
-        buildDefaultWebhookLeaseKey(queueName),
-        JSON.stringify(renewedClaim),
-        'PX',
-        this.leaseTtlMs,
-      );
-    });
-
-    await renewPipeline.exec();
+    await Promise.all(
+      localClaims.map(([queueName, fencingToken]) => this.renewClaim(queueName, fencingToken)),
+    );
   }
 
   private async bootstrapHomeClaims(): Promise<void> {
@@ -593,31 +654,103 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
       return false;
     }
 
-    const existing = await this.redis.get(buildDefaultWebhookLeaseKey(queueName));
-    const parsed = this.parseClaim(existing, queueName);
-    if (parsed && parsed.ownerId !== this.workerGroupName && parsed.leaseUntilMs > Date.now()) {
+    const localFencingToken = this.localClaimFencingTokens.get(queueName);
+    if (typeof localFencingToken === 'number') {
+      return this.renewClaim(queueName, localFencingToken);
+    }
+
+    const nowMs = Date.now();
+    const result = await this.redis.eval(
+      CLAIM_DEFAULT_WEBHOOK_LEASE_SCRIPT,
+      2,
+      buildDefaultWebhookLeaseKey(queueName),
+      buildDefaultWebhookLeaseFenceKey(queueName),
+      this.workerGroupName,
+      queueName,
+      String(nowMs),
+      String(this.leaseTtlMs),
+    );
+    const acquired = Array.isArray(result) && Number(result[0]) === 1;
+    const fencingToken = Array.isArray(result) ? Number(result[1]) : Number.NaN;
+    if (!acquired || !Number.isSafeInteger(fencingToken) || fencingToken <= 0) {
       return false;
     }
 
-    const claim: DefaultWebhookShardClaim = {
-      queueName,
-      ownerId: this.workerGroupName,
-      fencingToken: (parsed?.fencingToken ?? 0) + 1,
-      claimedAtMs: parsed?.claimedAtMs ?? Date.now(),
-      updatedAtMs: Date.now(),
-      leaseUntilMs: Date.now() + this.leaseTtlMs,
-    };
-    await this.redis.set(
-      buildDefaultWebhookLeaseKey(queueName),
-      JSON.stringify(claim),
-      'PX',
-      this.leaseTtlMs,
-    );
+    this.recordLocalClaim(queueName, fencingToken);
     return true;
   }
 
-  private async releaseClaim(queueName: DefaultWebhookQueueName): Promise<void> {
-    await this.redis.del(buildDefaultWebhookLeaseKey(queueName));
+  private async renewClaim(
+    queueName: DefaultWebhookQueueName,
+    fencingToken: number,
+  ): Promise<boolean> {
+    if (!this.workerGroupName) {
+      return false;
+    }
+
+    const renewed = Number(
+      await this.redis.eval(
+        RENEW_DEFAULT_WEBHOOK_LEASE_SCRIPT,
+        1,
+        buildDefaultWebhookLeaseKey(queueName),
+        this.workerGroupName,
+        String(fencingToken),
+        String(Date.now()),
+        String(this.leaseTtlMs),
+      ),
+    );
+    if (renewed > 0) {
+      return true;
+    }
+
+    this.clearLocalClaim(queueName, fencingToken);
+    return false;
+  }
+
+  private async releaseClaim(queueName: DefaultWebhookQueueName): Promise<boolean> {
+    if (!this.workerGroupName) {
+      return false;
+    }
+
+    const fencingToken = this.localClaimFencingTokens.get(queueName);
+    if (typeof fencingToken !== 'number') {
+      return false;
+    }
+
+    const released = Number(
+      await this.redis.eval(
+        RELEASE_DEFAULT_WEBHOOK_LEASE_SCRIPT,
+        1,
+        buildDefaultWebhookLeaseKey(queueName),
+        this.workerGroupName,
+        String(fencingToken),
+      ),
+    );
+    this.clearLocalClaim(queueName, fencingToken);
+    return released > 0;
+  }
+
+  private recordLocalClaim(queueName: DefaultWebhookQueueName, fencingToken: number): void {
+    const currentFencingToken = this.localClaimFencingTokens.get(queueName);
+    if (typeof currentFencingToken !== 'number' || fencingToken >= currentFencingToken) {
+      this.localClaimFencingTokens.set(queueName, fencingToken);
+    }
+  }
+
+  private clearLocalClaim(queueName: DefaultWebhookQueueName, fencingToken: number): void {
+    if (this.localClaimFencingTokens.get(queueName) === fencingToken) {
+      this.localClaimFencingTokens.delete(queueName);
+    }
+  }
+
+  private hasLocalClaim(
+    queueName: DefaultWebhookQueueName,
+    claim: DefaultWebhookShardClaim | null,
+  ): boolean {
+    return (
+      claim?.ownerId === this.workerGroupName &&
+      this.localClaimFencingTokens.get(queueName) === claim.fencingToken
+    );
   }
 
   private async issueHandoff(

@@ -23,6 +23,10 @@ type BotWebhookMembershipDiagnostics = {
   activeMemberships: number;
   lastMembershipWebhookAt: string | null;
 };
+type ConfiguredWebhookSubscriptionTarget = {
+  url: string | null;
+  maskedUrl: string | null;
+};
 
 @Injectable()
 export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, OnModuleDestroy {
@@ -99,21 +103,66 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
         snapshot: BotWebhookSubscriptionSnapshot;
         syncState: WebhookSubscriptionBotSyncState;
       }> = [];
-      for (const bot of operationalBots) {
-        botResults.push(
-          await this.reconcileBot(
-            bot,
-            syncState?.bots?.[bot.id] ?? null,
+      let previousSnapshot: WebhookSubscriptionSnapshot | null | undefined;
+      let previousSnapshotLoaded = false;
+      const getPreviousSnapshot = async (): Promise<WebhookSubscriptionSnapshot | null> => {
+        if (previousSnapshotLoaded) {
+          return previousSnapshot ?? null;
+        }
+
+        previousSnapshotLoaded = true;
+        try {
+          previousSnapshot = await this.webhookSubscriptionStatusService.getSnapshot();
+        } catch (error: unknown) {
+          this.logger.warn(
             {
-              latestRecordedIncomingWebhookAt: latestRecordedIncomingByBot[bot.id] ?? null,
-              membershipDiagnostics: membershipDiagnosticsByBot[bot.id] ?? {
-                activeMemberships: 0,
-                lastMembershipWebhookAt: null,
-              },
+              reason,
+              errorType: this.describeErrorType(error),
             },
-            reason,
-          ),
-        );
+            'Failed to load the previous MAX webhook subscription snapshot',
+          );
+        }
+
+        return previousSnapshot ?? null;
+      };
+      for (const bot of operationalBots) {
+        const previousBotSyncState = syncState?.bots?.[bot.id] ?? null;
+        const botState = {
+          latestRecordedIncomingWebhookAt: latestRecordedIncomingByBot[bot.id] ?? null,
+          membershipDiagnostics: membershipDiagnosticsByBot[bot.id] ?? {
+            activeMemberships: 0,
+            lastMembershipWebhookAt: null,
+          },
+        };
+
+        let target: ConfiguredWebhookSubscriptionTarget | null = null;
+        try {
+          target = this.maxClient.getConfiguredWebhookSubscriptionTarget(bot.id);
+          botResults.push(
+            await this.reconcileBot(bot, previousBotSyncState, botState, reason, target),
+          );
+        } catch (error: unknown) {
+          const lastError = this.describeBotReconcileError(bot.id, error);
+          const previousBotSnapshot = (await getPreviousSnapshot())?.bots?.[bot.id] ?? null;
+          botResults.push(
+            this.createFailedBotReconcileResult({
+              bot,
+              syncState: previousBotSyncState,
+              botState,
+              previousSnapshot: previousBotSnapshot,
+              target,
+              lastError,
+            }),
+          );
+          this.logger.warn(
+            {
+              reason,
+              botId: bot.id,
+              errorType: this.describeErrorType(error),
+            },
+            'Failed to reconcile MAX webhook subscriptions for one bot',
+          );
+        }
       }
       const botSnapshots = Object.fromEntries(
         botResults.map((result) => [result.snapshot.botId, result.snapshot]),
@@ -235,11 +284,11 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
       membershipDiagnostics: BotWebhookMembershipDiagnostics;
     },
     reason: 'startup' | 'scheduled',
+    target: ConfiguredWebhookSubscriptionTarget,
   ): Promise<{
     snapshot: BotWebhookSubscriptionSnapshot;
     syncState: WebhookSubscriptionBotSyncState;
   }> {
-    const target = this.maxClient.getConfiguredWebhookSubscriptionTarget(bot.id);
     const checkedAt = new Date().toISOString();
     const headerSecretFingerprint = this.maxBotRegistry.computeWebhookHeaderSecretFingerprint(
       bot.id,
@@ -423,6 +472,66 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
         lastAutoRecreateAt: syncState?.lastAutoRecreateAt ?? null,
       },
     };
+  }
+
+  private createFailedBotReconcileResult(params: {
+    bot: MaxBotDefinition;
+    syncState: WebhookSubscriptionBotSyncState | null;
+    botState: {
+      latestRecordedIncomingWebhookAt: string | null;
+      membershipDiagnostics: BotWebhookMembershipDiagnostics;
+    };
+    previousSnapshot: BotWebhookSubscriptionSnapshot | null;
+    target: ConfiguredWebhookSubscriptionTarget | null;
+    lastError: string;
+  }): {
+    snapshot: BotWebhookSubscriptionSnapshot;
+    syncState: WebhookSubscriptionBotSyncState;
+  } {
+    const checkedAt = new Date().toISOString();
+    const previousSnapshot = params.previousSnapshot;
+    const configured =
+      previousSnapshot?.configured ??
+      Boolean(params.target?.url ?? params.syncState?.configuredUrl);
+
+    return {
+      snapshot: {
+        botId: params.bot.id,
+        status: previousSnapshot?.status === 'critical' ? 'critical' : 'warning',
+        configured,
+        url: previousSnapshot?.url ?? params.target?.maskedUrl ?? null,
+        checkedAt,
+        reconciledAt: previousSnapshot?.reconciledAt ?? null,
+        requiredUpdateTypes: previousSnapshot?.requiredUpdateTypes ?? [...this.requiredUpdateTypes],
+        actualUpdateTypes: previousSnapshot?.actualUpdateTypes ?? [],
+        missingUpdateTypes: previousSnapshot?.missingUpdateTypes ?? [],
+        extraUpdateTypes: previousSnapshot?.extraUpdateTypes ?? [],
+        otherSubscriptionsCount: previousSnapshot?.otherSubscriptionsCount ?? 0,
+        lastError: params.lastError,
+        note: `Не удалось синхронизировать webhook subscription для ${params.bot.id}; сохранено последнее известное состояние.`,
+        ...(previousSnapshot?.operationalDiagnostics
+          ? { operationalDiagnostics: previousSnapshot.operationalDiagnostics }
+          : {}),
+      },
+      syncState: {
+        configuredUrl: params.syncState?.configuredUrl ?? params.target?.url ?? null,
+        headerSecretFingerprint: params.syncState?.headerSecretFingerprint ?? null,
+        updatedAt: params.syncState?.updatedAt ?? checkedAt,
+        lastIncomingWebhookAt:
+          params.botState.latestRecordedIncomingWebhookAt ??
+          params.syncState?.lastIncomingWebhookAt ??
+          null,
+        lastAutoRecreateAt: params.syncState?.lastAutoRecreateAt ?? null,
+      },
+    };
+  }
+
+  private describeBotReconcileError(botId: string, error: unknown): string {
+    return `Не удалось синхронизировать webhook subscription для ${botId} (${this.describeErrorType(error)}).`;
+  }
+
+  private describeErrorType(error: unknown): string {
+    return error instanceof Error && error.name ? error.name : 'unknown error';
   }
 
   private buildOperationalDiagnostics(params: {
@@ -632,6 +741,9 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
       .map((snapshot) => snapshot.reconciledAt)
       .filter((value): value is string => typeof value === 'string');
     const lastError = snapshots.find((snapshot) => snapshot.lastError)?.lastError ?? null;
+    const failedBotIds = snapshots
+      .filter((snapshot) => snapshot.lastError !== null)
+      .map((snapshot) => snapshot.botId);
     const defaultBotId =
       typeof this.maxBotRegistry.getDefaultBot === 'function'
         ? this.maxBotRegistry.getDefaultBot().id
@@ -658,11 +770,13 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
       ),
       lastError,
       note:
-        snapshots.length <= 1
-          ? reason === 'startup'
-            ? 'Webhook coverage проверена при старте ingress.'
-            : 'Webhook coverage поддерживается фоновым reconcile.'
-          : `Webhook coverage синхронизирована для ${snapshots.length} ботов.`,
+        failedBotIds.length > 0
+          ? `Webhook coverage не удалось синхронизировать для ${failedBotIds.join(', ')}; состояние остальных ботов обновлено.`
+          : snapshots.length <= 1
+            ? reason === 'startup'
+              ? 'Webhook coverage проверена при старте ingress.'
+              : 'Webhook coverage поддерживается фоновым reconcile.'
+            : `Webhook coverage синхронизирована для ${snapshots.length} ботов.`,
       botCount: snapshots.length,
       bots: snapshotsByBot,
       operationalDiagnostics: this.buildAggregateOperationalDiagnostics(snapshots),

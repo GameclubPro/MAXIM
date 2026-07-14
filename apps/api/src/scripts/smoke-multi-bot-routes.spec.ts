@@ -1,4 +1,10 @@
-import { parseArgs, renderText, runFixtureSmoke } from './smoke-multi-bot-routes';
+import {
+  buildDbRouteWarnings,
+  parseArgs,
+  renderText,
+  runFixtureSmoke,
+} from './smoke-multi-bot-routes';
+import type { MaxBotRoute } from '../max/max-bot-link.service';
 
 describe('smoke-multi-bot-routes', () => {
   it('parses fixture, db, json, and chat id flags', () => {
@@ -47,5 +53,43 @@ describe('smoke-multi-bot-routes', () => {
     );
     expect(result.assertions.every((assertion) => assertion.pass)).toBe(true);
     expect(renderText(result)).toContain('Multi-bot route smoke: PASS');
+  });
+
+  it('marks missing required action routes as a degraded DB smoke condition', () => {
+    const routes = [
+      {
+        purpose: 'send_message',
+        chatId: 'chat-1',
+        primaryBotId: null,
+        botId: null,
+        candidateBotIds: [],
+        reason: null,
+        routingVersion: 1,
+      },
+      {
+        purpose: 'moderation_action',
+        chatId: 'chat-1',
+        primaryBotId: null,
+        botId: null,
+        candidateBotIds: [],
+        reason: null,
+        routingVersion: 1,
+        action: 'delete_message',
+      },
+      {
+        purpose: 'moderation_action',
+        chatId: 'chat-1',
+        primaryBotId: null,
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1'],
+        reason: 'primary_confirmed',
+        routingVersion: 1,
+        action: 'moderate_member',
+      },
+    ] as MaxBotRoute[];
+
+    expect(buildDbRouteWarnings(routes)).toEqual([
+      'Required action routes have no selected bot from local DB state: send_message, moderation_action/delete_message.',
+    ]);
   });
 });

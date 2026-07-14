@@ -1,6 +1,7 @@
 import { UnrecoverableError } from 'bullmq';
 import {
   markMaxSendDispatchLedgerFinalized,
+  MAX_SEND_LEDGER_PREPARATION_ERROR_CODES,
   MaxActionLedgerService,
 } from './max-action-ledger.service';
 import { MaxActionLedgerStatus } from '../prisma/prisma-client';
@@ -206,6 +207,129 @@ describe('MaxActionLedgerService', () => {
         }),
       }),
     });
+  });
+
+  it.each([
+    ['the ledger row is missing', null, MAX_SEND_LEDGER_PREPARATION_ERROR_CODES.MISSING_ROW, false],
+    [
+      'the ledger row is terminal',
+      {
+        status: MaxActionLedgerStatus.FAILED_TERMINAL,
+        ambiguous: false,
+        terminal: true,
+        dispatchToken: null,
+        dispatchStartedAt: null,
+        dispatchBotId: null,
+        remoteMessageId: null,
+      },
+      MAX_SEND_LEDGER_PREPARATION_ERROR_CODES.TERMINAL_OR_AMBIGUOUS,
+      true,
+    ],
+    [
+      'the ledger row is ambiguous',
+      {
+        status: MaxActionLedgerStatus.AMBIGUOUS,
+        ambiguous: true,
+        terminal: true,
+        dispatchToken: null,
+        dispatchStartedAt: null,
+        dispatchBotId: null,
+        remoteMessageId: null,
+      },
+      MAX_SEND_LEDGER_PREPARATION_ERROR_CODES.TERMINAL_OR_AMBIGUOUS,
+      true,
+    ],
+    [
+      'an existing dispatch fence is retained',
+      {
+        status: MaxActionLedgerStatus.IN_PROGRESS,
+        ambiguous: false,
+        terminal: false,
+        dispatchToken: 'prior-token',
+        dispatchStartedAt: new Date('2026-07-13T12:00:00.000Z'),
+        dispatchBotId: 'bot-1',
+        remoteMessageId: null,
+      },
+      MAX_SEND_LEDGER_PREPARATION_ERROR_CODES.DISPATCH_FENCE_EXISTS,
+      true,
+    ],
+    [
+      'the remote message is already completed',
+      {
+        status: MaxActionLedgerStatus.SUCCEEDED,
+        ambiguous: false,
+        terminal: true,
+        dispatchToken: 'completed-token',
+        dispatchStartedAt: new Date('2026-07-13T12:00:00.000Z'),
+        dispatchBotId: 'bot-1',
+        remoteMessageId: 'remote-message-1',
+      },
+      MAX_SEND_LEDGER_PREPARATION_ERROR_CODES.ALREADY_COMPLETED,
+      true,
+    ],
+    [
+      'the retained ledger state is otherwise unexpected',
+      {
+        status: MaxActionLedgerStatus.ENQUEUED,
+        ambiguous: false,
+        terminal: false,
+        dispatchToken: null,
+        dispatchStartedAt: null,
+        dispatchBotId: null,
+        remoteMessageId: null,
+      },
+      MAX_SEND_LEDGER_PREPARATION_ERROR_CODES.UNEXPECTED_STATE,
+      false,
+    ],
+  ])(
+    'fails closed with a classified error when %s',
+    async (_description, row, code, preserveExistingLedger) => {
+      const { service, prisma } = createService(row);
+      prisma.maxActionLedgerEntry.updateMany.mockResolvedValueOnce({ count: 0 });
+
+      const error = await service.recordPrepared(createJob()).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(UnrecoverableError);
+      expect(error).toMatchObject({ code });
+      if (preserveExistingLedger) {
+        expect(error).toMatchObject({ maxSendDispatchLedgerFinalized: true });
+      } else {
+        expect(error).not.toHaveProperty('maxSendDispatchLedgerFinalized');
+      }
+      expect(prisma.maxActionLedgerEntry.findUnique).toHaveBeenCalledWith({
+        where: {
+          jobId: 'job-1',
+        },
+        select: {
+          status: true,
+          ambiguous: true,
+          terminal: true,
+          dispatchToken: true,
+          dispatchStartedAt: true,
+          dispatchBotId: true,
+          remoteMessageId: true,
+        },
+      });
+    },
+  );
+
+  it('does not overwrite a retained SEND_MESSAGE dispatch fence after preparation is blocked', async () => {
+    const { service, prisma } = createService({
+      status: MaxActionLedgerStatus.IN_PROGRESS,
+      ambiguous: false,
+      terminal: false,
+      dispatchToken: 'prior-token',
+      dispatchStartedAt: new Date('2026-07-13T12:00:00.000Z'),
+      dispatchBotId: 'bot-1',
+      remoteMessageId: null,
+    });
+    prisma.maxActionLedgerEntry.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    const error = await service.recordPrepared(createJob()).catch((caught: unknown) => caught);
+    await service.recordFailed(createJob(), error);
+
+    expect(prisma.maxActionLedgerEntry.upsert).not.toHaveBeenCalled();
+    expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledTimes(1);
   });
 
   it('claims the first SEND_MESSAGE dispatch with an atomic token fence', async () => {

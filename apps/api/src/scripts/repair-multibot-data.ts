@@ -64,6 +64,8 @@ export type MultiBotRepairMembership = {
   botAccessState: ChatBotAccessState;
   botAccessCheckedAt?: Date | null;
   botAccessExpiresAt?: Date | null;
+  lastSeenAt?: Date | null;
+  lastWebhookAt?: Date | null;
   permissionsSnapshot: unknown;
 };
 
@@ -113,10 +115,11 @@ type RouteRepairCandidate = {
   proposedPrimaryBotId: string;
 };
 
-type ProbeCandidate = {
+export type MultiBotAccessProbeCandidate = {
   entityId: string;
   entityType: ChatEntityType;
   botIds: string[];
+  lastActivityAtMs: number;
 };
 
 type NoEligibleCandidate = {
@@ -307,6 +310,19 @@ export function planMultiBotEntityRepair(
   };
 }
 
+export function selectRecentAccessProbeCandidates(
+  candidates: readonly MultiBotAccessProbeCandidate[],
+  limit: number,
+): MultiBotAccessProbeCandidate[] {
+  return [...candidates]
+    .sort(
+      (left, right) =>
+        right.lastActivityAtMs - left.lastActivityAtMs ||
+        left.entityId.localeCompare(right.entityId),
+    )
+    .slice(0, Math.max(0, limit));
+}
+
 function resolvePrimaryIssue(
   primaryBotId: string | null,
   memberships: readonly MultiBotRepairMembership[],
@@ -405,7 +421,7 @@ async function runMultiBotDataRepair(
   const summary = createEmptySummary(runtimeBots, options);
   const routeCandidates: RouteRepairCandidate[] = [];
   const noEligibleCandidates: NoEligibleCandidate[] = [];
-  const probeCandidates: ProbeCandidate[] = [];
+  const probeCandidates: MultiBotAccessProbeCandidate[] = [];
   let cursor: string | undefined;
 
   while (true) {
@@ -434,6 +450,8 @@ async function runMultiBotDataRepair(
             botAccessState: true,
             botAccessCheckedAt: true,
             botAccessExpiresAt: true,
+            lastSeenAt: true,
+            lastWebhookAt: true,
             permissionsSnapshot: true,
           },
         },
@@ -534,13 +552,12 @@ async function runMultiBotDataRepair(
       );
       if (targetedProbeBotIds.length > 0) {
         summary.accessContradictions.candidateJobs += 1;
-        if (probeCandidates.length < options.probeLimit) {
-          probeCandidates.push({
-            entityId: row.id,
-            entityType: row.entityType,
-            botIds: targetedProbeBotIds,
-          });
-        }
+        probeCandidates.push({
+          entityId: row.id,
+          entityType: row.entityType,
+          botIds: targetedProbeBotIds,
+          lastActivityAtMs: resolveMembershipActivityAtMs(row.botMemberships),
+        });
       }
     }
 
@@ -552,7 +569,11 @@ async function runMultiBotDataRepair(
 
   summary.routes.selectedForApply = routeCandidates.length;
   summary.noEligible.selectedForApply = noEligibleCandidates.length;
-  summary.accessContradictions.selectedForEnqueue = probeCandidates.length;
+  const selectedProbeCandidates = selectRecentAccessProbeCandidates(
+    probeCandidates,
+    options.probeLimit,
+  );
+  summary.accessContradictions.selectedForEnqueue = selectedProbeCandidates.length;
 
   if (options.applyRoutes) {
     for (const candidate of routeCandidates) {
@@ -596,14 +617,14 @@ async function runMultiBotDataRepair(
     }
   }
 
-  if (options.enqueueProbes && probeCandidates.length > 0) {
+  if (options.enqueueProbes && selectedProbeCandidates.length > 0) {
     const connection: ConnectionOptions = { url: redisUrl, maxRetriesPerRequest: null };
     const queue = new Queue<MaxChatAdminRosterSyncJob>(MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE, {
       connection,
     });
     try {
       const outcomes = await mapWithConcurrency(
-        probeCandidates,
+        selectedProbeCandidates,
         options.enqueueConcurrency,
         async (candidate) => {
           try {
@@ -615,7 +636,7 @@ async function runMultiBotDataRepair(
       );
       for (let index = 0; index < outcomes.length; index += 1) {
         const outcome = outcomes[index]!;
-        const candidate = probeCandidates[index]!;
+        const candidate = selectedProbeCandidates[index]!;
         if (outcome.outcome === 'failed') {
           summary.accessContradictions.failed += 1;
           if (summary.accessContradictions.failureSamples.length < options.sampleLimit) {
@@ -634,6 +655,20 @@ async function runMultiBotDataRepair(
   }
 
   return summary;
+}
+
+function resolveMembershipActivityAtMs(
+  memberships: readonly Pick<MultiBotRepairMembership, 'lastSeenAt' | 'lastWebhookAt'>[],
+): number {
+  return memberships.reduce((latestAtMs, membership) => {
+    const webhookAtMs = membership.lastWebhookAt?.getTime() ?? Number.NaN;
+    const seenAtMs = membership.lastSeenAt?.getTime() ?? Number.NaN;
+    return Math.max(
+      latestAtMs,
+      Number.isFinite(webhookAtMs) ? webhookAtMs : 0,
+      Number.isFinite(seenAtMs) ? seenAtMs : 0,
+    );
+  }, 0);
 }
 
 async function applyRouteRepair(
@@ -789,7 +824,7 @@ type ProbeEnqueueResult =
 
 async function enqueueTargetedAccessProbe(
   queue: Queue<MaxChatAdminRosterSyncJob>,
-  candidate: ProbeCandidate,
+  candidate: MultiBotAccessProbeCandidate,
 ): Promise<ProbeEnqueueResult> {
   const jobId = buildRosterSyncJobId(candidate.entityId);
   const desiredBotIds = Array.from(new Set(candidate.botIds.map(normalizeId).filter(Boolean)));
@@ -841,7 +876,7 @@ async function enqueueTargetedAccessProbe(
 }
 
 function buildRosterSyncJob(
-  candidate: ProbeCandidate,
+  candidate: MultiBotAccessProbeCandidate,
   botIds: string[],
 ): MaxChatAdminRosterSyncJob {
   return {

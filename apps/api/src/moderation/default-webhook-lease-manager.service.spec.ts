@@ -11,16 +11,18 @@ type RedisMockInstance = {
   get: jest.Mock<Promise<string | null>, [string]>;
   set: jest.Mock<Promise<'OK'>, [string, string, ...Array<string | number>]>;
   del: jest.Mock<Promise<number>, [string]>;
+  eval: jest.Mock;
   quit: jest.Mock<Promise<void>, []>;
   pipeline: jest.Mock;
 };
 
 const redisInstances: RedisMockInstance[] = [];
+const sharedRedisStore = new Map<string, string>();
 
 jest.mock('ioredis', () => ({
   __esModule: true,
   default: jest.fn().mockImplementation(() => {
-    const store = new Map<string, string>();
+    const store = sharedRedisStore;
     const instance: RedisMockInstance = {
       store,
       get: jest.fn(async (key: string) => store.get(key) ?? null),
@@ -31,6 +33,102 @@ jest.mock('ioredis', () => ({
       del: jest.fn(async (key: string) => {
         return store.delete(key) ? 1 : 0;
       }),
+      eval: jest.fn(
+        async (script: string, keyCount: number | string, ...args: Array<string | number>) => {
+          const keyLength = Number(keyCount);
+          const keys = args.slice(0, keyLength).map(String);
+          const values = args.slice(keyLength).map(String);
+          const parseClaim = (key: string | undefined) => {
+            const raw = key ? store.get(key) : null;
+            if (!raw) {
+              return null;
+            }
+            try {
+              return JSON.parse(raw) as {
+                queueName: string;
+                ownerId: string;
+                fencingToken: number;
+                claimedAtMs: number;
+                updatedAtMs: number;
+                leaseUntilMs: number;
+              };
+            } catch {
+              return null;
+            }
+          };
+
+          if (script.includes('default-webhook-lease:claim')) {
+            const [leaseKey, fencingKey] = keys;
+            const [ownerId, queueName, nowRaw, ttlRaw] = values;
+            const nowMs = Number(nowRaw);
+            const ttlMs = Number(ttlRaw);
+            const current = parseClaim(leaseKey);
+            const recordedFencingToken = Number(store.get(fencingKey ?? '') ?? 0);
+            const currentFencingToken = current?.fencingToken ?? 0;
+            if (currentFencingToken > recordedFencingToken) {
+              store.set(fencingKey ?? '', String(currentFencingToken));
+            }
+            if (current && current.leaseUntilMs > nowMs && current.ownerId !== ownerId) {
+              return [0, 0];
+            }
+
+            const fencingToken = Math.max(recordedFencingToken, currentFencingToken) + 1;
+            store.set(fencingKey ?? '', String(fencingToken));
+            store.set(
+              leaseKey ?? '',
+              JSON.stringify({
+                queueName,
+                ownerId,
+                fencingToken,
+                claimedAtMs: nowMs,
+                updatedAtMs: nowMs,
+                leaseUntilMs: nowMs + ttlMs,
+              }),
+            );
+            return [1, fencingToken];
+          }
+
+          if (script.includes('default-webhook-lease:renew')) {
+            const [leaseKey] = keys;
+            const [ownerId, fencingTokenRaw, nowRaw, ttlRaw] = values;
+            const current = parseClaim(leaseKey);
+            if (
+              !current ||
+              current.ownerId !== ownerId ||
+              current.fencingToken !== Number(fencingTokenRaw)
+            ) {
+              return 0;
+            }
+
+            const nowMs = Number(nowRaw);
+            store.set(
+              leaseKey ?? '',
+              JSON.stringify({
+                ...current,
+                updatedAtMs: nowMs,
+                leaseUntilMs: nowMs + Number(ttlRaw),
+              }),
+            );
+            return 1;
+          }
+
+          if (script.includes('default-webhook-lease:release')) {
+            const [leaseKey] = keys;
+            const [ownerId, fencingTokenRaw] = values;
+            const current = parseClaim(leaseKey);
+            if (
+              !current ||
+              current.ownerId !== ownerId ||
+              current.fencingToken !== Number(fencingTokenRaw)
+            ) {
+              return 0;
+            }
+            return store.delete(leaseKey ?? '') ? 1 : 0;
+          }
+
+          return null;
+        },
+      ),
       quit: jest.fn(async () => undefined),
       pipeline: jest.fn(() => {
         const commands: Array<{ op: 'get' | 'set'; args: unknown[] }> = [];
@@ -149,6 +247,7 @@ describe('DefaultWebhookLeaseManagerService', () => {
   beforeEach(() => {
     process.env.APP_ROLE = 'moderation';
     redisInstances.length = 0;
+    sharedRedisStore.clear();
   });
 
   afterEach(async () => {
@@ -183,6 +282,7 @@ describe('DefaultWebhookLeaseManagerService', () => {
     (service as any).workers.set(queueName, {
       close: jest.fn().mockResolvedValue(undefined),
     });
+    (service as any).localClaimFencingTokens.set(queueName, 4);
 
     await (service as any).publishKeepalive();
 
@@ -195,6 +295,178 @@ describe('DefaultWebhookLeaseManagerService', () => {
     expect(renewedClaim.ownerId).toBe('api-moderation');
     expect(renewedClaim.fencingToken).toBe(4);
     expect(renewedClaim.leaseUntilMs).toBeGreaterThan(previousLeaseUntilMs);
+
+    await service.onModuleDestroy();
+  });
+
+  it('atomically grants a contested shard claim to only one worker group', async () => {
+    const primaryService = new DefaultWebhookLeaseManagerService(
+      createConfigMock() as never,
+      { processWebhookEvent: jest.fn() } as never,
+      createQueueMetricsMock() as never,
+      createSystemModeMock() as never,
+    );
+    const secondaryService = new DefaultWebhookLeaseManagerService(
+      createConfigMock({
+        WEBHOOK_DYNAMIC_LEASES_WORKER_GROUP: 'api-moderation-realtime-b',
+      }) as never,
+      { processWebhookEvent: jest.fn() } as never,
+      createQueueMetricsMock() as never,
+      createSystemModeMock() as never,
+    );
+
+    const queueName = 'moderation-default-0';
+    const [primaryClaimed, secondaryClaimed] = await Promise.all([
+      (primaryService as any).claimQueue(queueName),
+      (secondaryService as any).claimQueue(queueName),
+    ]);
+
+    expect([primaryClaimed, secondaryClaimed].filter(Boolean)).toHaveLength(1);
+
+    const claim = JSON.parse(
+      redisInstances[0]!.store.get(buildDefaultWebhookLeaseKey(queueName)) ?? '{}',
+    );
+    const winningService = primaryClaimed ? primaryService : secondaryService;
+    const losingService = primaryClaimed ? secondaryService : primaryService;
+    expect(claim.ownerId).toBe(primaryClaimed ? 'api-moderation' : 'api-moderation-realtime-b');
+    expect((winningService as any).localClaimFencingTokens.get(queueName)).toBe(claim.fencingToken);
+    expect((losingService as any).localClaimFencingTokens.has(queueName)).toBe(false);
+
+    await Promise.all([primaryService.onModuleDestroy(), secondaryService.onModuleDestroy()]);
+  });
+
+  it('preserves an observed fencing epoch when an existing claim initially blocks acquisition', async () => {
+    const service = new DefaultWebhookLeaseManagerService(
+      createConfigMock({
+        WEBHOOK_DYNAMIC_LEASES_WORKER_GROUP: 'api-moderation-realtime-b',
+      }) as never,
+      { processWebhookEvent: jest.fn() } as never,
+      createQueueMetricsMock() as never,
+      createSystemModeMock() as never,
+    );
+
+    const queueName = 'moderation-default-0';
+    const claimKey = buildDefaultWebhookLeaseKey(queueName);
+    const legacyClaim = {
+      queueName,
+      ownerId: 'api-moderation',
+      fencingToken: 41,
+      claimedAtMs: Date.now() - 10_000,
+      updatedAtMs: Date.now() - 1_000,
+      leaseUntilMs: Date.now() + 10_000,
+    };
+    redisInstances[0]!.store.set(claimKey, JSON.stringify(legacyClaim));
+
+    expect(await (service as any).claimQueue(queueName)).toBe(false);
+
+    redisInstances[0]!.store.delete(claimKey);
+    expect(await (service as any).claimQueue(queueName)).toBe(true);
+
+    const claim = JSON.parse(redisInstances[0]!.store.get(claimKey) ?? '{}');
+    expect(claim.ownerId).toBe('api-moderation-realtime-b');
+    expect(claim.fencingToken).toBe(42);
+
+    await service.onModuleDestroy();
+  });
+
+  it('does not renew a lease after its local fencing token is superseded', async () => {
+    const staleService = new DefaultWebhookLeaseManagerService(
+      createConfigMock() as never,
+      { processWebhookEvent: jest.fn() } as never,
+      createQueueMetricsMock() as never,
+      createSystemModeMock() as never,
+    );
+    const replacementService = new DefaultWebhookLeaseManagerService(
+      createConfigMock() as never,
+      { processWebhookEvent: jest.fn() } as never,
+      createQueueMetricsMock() as never,
+      createSystemModeMock() as never,
+    );
+
+    const queueName = 'moderation-default-0';
+    expect(await (staleService as any).claimQueue(queueName)).toBe(true);
+    const staleFencingToken = (staleService as any).localClaimFencingTokens.get(queueName);
+    expect(await (replacementService as any).claimQueue(queueName)).toBe(true);
+    const replacementFencingToken = (replacementService as any).localClaimFencingTokens.get(
+      queueName,
+    );
+    expect(replacementFencingToken).toBeGreaterThan(staleFencingToken);
+
+    (staleService as any).workers.set(queueName, {
+      close: jest.fn().mockResolvedValue(undefined),
+    });
+    await (staleService as any).publishKeepalive();
+
+    const claim = JSON.parse(
+      redisInstances[0]!.store.get(buildDefaultWebhookLeaseKey(queueName)) ?? '{}',
+    );
+    expect(claim.fencingToken).toBe(replacementFencingToken);
+    expect((staleService as any).localClaimFencingTokens.has(queueName)).toBe(false);
+
+    await Promise.all([staleService.onModuleDestroy(), replacementService.onModuleDestroy()]);
+  });
+
+  it('does not let a stale release remove a replacement claim from the same worker group', async () => {
+    const staleService = new DefaultWebhookLeaseManagerService(
+      createConfigMock() as never,
+      { processWebhookEvent: jest.fn() } as never,
+      createQueueMetricsMock() as never,
+      createSystemModeMock() as never,
+    );
+    const replacementService = new DefaultWebhookLeaseManagerService(
+      createConfigMock() as never,
+      { processWebhookEvent: jest.fn() } as never,
+      createQueueMetricsMock() as never,
+      createSystemModeMock() as never,
+    );
+
+    const queueName = 'moderation-default-0';
+    expect(await (staleService as any).claimQueue(queueName)).toBe(true);
+    const staleFencingToken = (staleService as any).localClaimFencingTokens.get(queueName);
+    expect(await (replacementService as any).claimQueue(queueName)).toBe(true);
+    const replacementFencingToken = (replacementService as any).localClaimFencingTokens.get(
+      queueName,
+    );
+
+    await expect((staleService as any).releaseClaim(queueName)).resolves.toBe(false);
+
+    const claim = JSON.parse(
+      redisInstances[0]!.store.get(buildDefaultWebhookLeaseKey(queueName)) ?? '{}',
+    );
+    expect(replacementFencingToken).toBeGreaterThan(staleFencingToken);
+    expect(claim.ownerId).toBe('api-moderation');
+    expect(claim.fencingToken).toBe(replacementFencingToken);
+    expect((staleService as any).localClaimFencingTokens.has(queueName)).toBe(false);
+
+    await Promise.all([staleService.onModuleDestroy(), replacementService.onModuleDestroy()]);
+  });
+
+  it('releases locally fenced claims when dynamic leases are disabled', async () => {
+    const service = new DefaultWebhookLeaseManagerService(
+      createConfigMock({ WEBHOOK_DYNAMIC_LEASES_MODE: 'shadow' }) as never,
+      { processWebhookEvent: jest.fn() } as never,
+      createQueueMetricsMock() as never,
+      createSystemModeMock() as never,
+    );
+
+    const queueName = 'moderation-default-0';
+    redisInstances[0]!.store.set(
+      buildDefaultWebhookLeaseKey(queueName),
+      JSON.stringify({
+        queueName,
+        ownerId: 'api-moderation',
+        fencingToken: 9,
+        claimedAtMs: Date.now() - 1_000,
+        updatedAtMs: Date.now() - 1_000,
+        leaseUntilMs: Date.now() + 10_000,
+      }),
+    );
+    (service as any).localClaimFencingTokens.set(queueName, 9);
+
+    await (service as any).releaseLocalDynamicClaims();
+
+    expect(redisInstances[0]!.store.has(buildDefaultWebhookLeaseKey(queueName))).toBe(false);
+    expect((service as any).localClaimFencingTokens.has(queueName)).toBe(false);
 
     await service.onModuleDestroy();
   });
@@ -317,6 +589,7 @@ describe('DefaultWebhookLeaseManagerService', () => {
     (service as any).workers.set(queueName, {
       close: jest.fn().mockResolvedValue(undefined),
     });
+    (service as any).localClaimFencingTokens.set(queueName, 7);
     (service as any).closingWorkers.add(queueName);
 
     await (service as any).publishKeepalive();
@@ -449,6 +722,7 @@ describe('DefaultWebhookLeaseManagerService', () => {
     (service as any).ensureWorkerRunning = jest.fn().mockResolvedValue(undefined);
     (service as any).issueHandoff = jest.fn().mockResolvedValue(undefined);
     (service as any).releaseClaim = jest.fn().mockResolvedValue(undefined);
+    (service as any).localClaimFencingTokens.set(queueName, 1);
 
     await (service as any).applyDynamicPlan();
 
