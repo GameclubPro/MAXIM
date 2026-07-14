@@ -68,6 +68,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private readonly webhookRetentionDays: number;
   private readonly webhookFailedRetentionHours: number;
   private readonly moderationRetentionDays: number;
+  private readonly userDisplayNameRetentionDays: number;
 
   private poller: NodeJS.Timeout | null = null;
   private cleaner: NodeJS.Timeout | null = null;
@@ -105,6 +106,10 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       24,
     );
     this.moderationRetentionDays = this.configService.get<number>('MODERATION_RETENTION_DAYS', 90);
+    this.userDisplayNameRetentionDays = this.configService.get<number>(
+      'USER_DISPLAY_NAME_RETENTION_DAYS',
+      180,
+    );
     this.joinShardQueuesByName = Object.fromEntries(
       JOIN_WEBHOOK_QUEUE_NAMES.map((queueName) => [queueName, this.resolveShardQueue(queueName)]),
     ) as Record<JoinWebhookQueueName, Queue<ProcessWebhookJob>>;
@@ -865,12 +870,16 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       const moderationCutoff = new Date(
         Date.now() - this.moderationRetentionDays * 24 * 60 * 60 * 1_000,
       );
+      const userDisplayNameCutoff = new Date(
+        Date.now() - this.userDisplayNameRetentionDays * 24 * 60 * 60 * 1_000,
+      );
       const [
         webhookDeleted,
         failedWebhookDeleted,
         moderationDeleted,
         violationsDeleted,
         violationMessageClaimsDeleted,
+        userDisplayNamesDeleted,
       ] = await Promise.all([
         this.prisma.webhookEvent.deleteMany({
           where: {
@@ -894,6 +903,9 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         this.prisma.moderationViolationMessageClaim.deleteMany({
           where: { createdAt: { lt: moderationCutoff } },
         }),
+        this.prisma.chatUserDisplayName.deleteMany({
+          where: { observedAt: { lt: userDisplayNameCutoff } },
+        }),
       ]);
 
       this.logger.log(
@@ -903,9 +915,11 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
           moderationEvents: moderationDeleted.count,
           violations: violationsDeleted.count,
           violationMessageClaims: violationMessageClaimsDeleted.count,
+          userDisplayNames: userDisplayNamesDeleted.count,
           webhookRetentionDays: this.webhookRetentionDays,
           webhookFailedRetentionHours: this.webhookFailedRetentionHours,
           moderationRetentionDays: this.moderationRetentionDays,
+          userDisplayNameRetentionDays: this.userDisplayNameRetentionDays,
         },
         'Retention cleanup finished',
       );

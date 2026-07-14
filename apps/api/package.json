@@ -29,6 +29,7 @@
     "moderation:commercial-audit-summary": "tsx src/scripts/commercial-audit-summary.ts",
     "moderation:validate-commercial-corpus": "tsx src/scripts/validate-commercial-corpus.ts",
     "managed-entities:backfill": "tsx src/scripts/backfill-managed-entities-index.ts",
+    "stats:backfill-display-names": "sh -c 'if [ -f dist/apps/api/src/scripts/backfill-chat-user-display-names.js ]; then exec node dist/apps/api/src/scripts/backfill-chat-user-display-names.js \"$@\"; else exec tsx src/scripts/backfill-chat-user-display-names.ts \"$@\"; fi' --",
     "moderation:repair-missed-deletes": "tsx src/scripts/repair-missed-moderation-deletes.ts",
     "night-mode:repair-close-notices": "sh -c 'if [ -f dist/apps/api/src/scripts/repair-missed-night-mode-close-notices.js ]; then exec node dist/apps/api/src/scripts/repair-missed-night-mode-close-notices.js \"$@\"; else exec tsx src/scripts/repair-missed-night-mode-close-notices.ts \"$@\"; fi' --",
     "night-mode:repair-duplicate-close-notices": "sh -c 'if [ -f dist/apps/api/src/scripts/repair-duplicate-night-mode-close-notices.js ]; then exec node dist/apps/api/src/scripts/repair-duplicate-night-mode-close-notices.js \"$@\"; else exec tsx src/scripts/repair-duplicate-night-mode-close-notices.ts \"$@\"; fi' --",

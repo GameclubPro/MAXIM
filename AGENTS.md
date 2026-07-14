@@ -68,6 +68,7 @@
 - Refactor guards intentionally track the real `*.legacy` implementation files and allow `.legacy` imports only from thin facade files. New code should import the public facade modules instead of legacy files directly.
 - Runtime hot-path entry points should route through focused boundary services: `WebhookIngestionService`, `ModerationExecutionService`, `MaxActionDispatchService`, and `ManagedEntitiesDiscoveryService`. Keep controllers/processors/lease managers from calling legacy webhook, moderation, action, or admin refresh implementations directly.
 - Admin runtime entry points should route through focused admin domain facades where available: `ManagedEntitiesService`, `AdminSettingsService`, `ManagedBroadcastService`, `ManualModerationService`, `ChannelDialogService`, and `ManagedGiveawayService`. These facades are the stable extraction boundary around legacy `AdminService`; avoid adding new controller/runner/private-bot calls directly to `AdminService` when a facade exists.
+- Statistics participant names use the chat-scoped `chat_user_display_names` read model before temporary local history; `allowRemoteLookup: false` must disable only MAX calls, not local resolution. Backfill it with bounded `npm run stats:backfill-display-names -- ...` runs, never a broad webhook migration.
 - Use `npm run check` for a full local CI-style pass before broad or risky changes.
 - Do not run API validation commands that invoke `prisma generate` in parallel with each other
   (for example API typecheck and API Jest); concurrent generation can corrupt the ignored

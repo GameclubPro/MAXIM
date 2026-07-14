@@ -68,6 +68,17 @@ describe('validateEnv boolean parsing', () => {
     expect(env.MAX_API_BASE_URL).toBe('https://platform-api2.max.ru');
   });
 
+  it('retains local display-name snapshots beyond the moderation history window', () => {
+    expect(validateEnv(createValidEnv()).USER_DISPLAY_NAME_RETENTION_DAYS).toBe(180);
+    expect(
+      validateEnv(createValidEnv({ USER_DISPLAY_NAME_RETENTION_DAYS: '365' }))
+        .USER_DISPLAY_NAME_RETENTION_DAYS,
+    ).toBe(365);
+    expect(() => validateEnv(createValidEnv({ USER_DISPLAY_NAME_RETENTION_DAYS: '89' }))).toThrow(
+      /USER_DISPLAY_NAME_RETENTION_DAYS/u,
+    );
+  });
+
   it('validates shared MAX API circuit timing', () => {
     expect(validateEnv(createValidEnv()).MAX_API_CIRCUIT_HALF_OPEN_PROBE_SEC).toBe(60);
     expect(

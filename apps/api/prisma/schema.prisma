@@ -1520,6 +1520,34 @@ model ChatMembershipActivityFeedItem {
   @@map("chat_membership_activity_feed_items")
 }
 
+model ChatUserDisplayName {
+  chatId        String   @map("chat_id")
+  userId        String   @map("user_id")
+  displayName   String   @map("display_name")
+  observedAt    DateTime @map("observed_at")
+  sourceEventId String   @map("source_event_id")
+  sourceKind    String   @map("source_kind")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@id([chatId, userId])
+  @@index([observedAt], map: "chat_user_display_names_observed_at_idx")
+  @@map("chat_user_display_names")
+}
+
+model ChatUserDisplayNameBackfillState {
+  chatId        String    @map("chat_id")
+  sourceKind    String    @map("source_kind")
+  cursorEventAt DateTime? @map("cursor_event_at")
+  cursorEventId String?   @map("cursor_event_id")
+  completedAt   DateTime? @map("completed_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  @@id([chatId, sourceKind])
+  @@index([sourceKind, completedAt, updatedAt], map: "chat_user_display_name_backfill_state_work_idx")
+  @@map("chat_user_display_name_backfill_states")
+}
+
 model ChannelStatsBucketRollup {
   chatId      String   @map("chat_id")
   bucketStart DateTime @map("bucket_start")

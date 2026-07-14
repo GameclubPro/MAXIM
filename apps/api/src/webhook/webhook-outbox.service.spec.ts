@@ -268,6 +268,9 @@ function createService(params?: {
     moderationViolationMessageClaim: {
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
+    chatUserDisplayName: {
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
   };
 
   const createQueue = (
@@ -310,6 +313,7 @@ function createService(params?: {
     WEBHOOK_RETENTION_DAYS: 7,
     WEBHOOK_FAILED_RETENTION_HOURS: 24,
     MODERATION_RETENTION_DAYS: 90,
+    USER_DISPLAY_NAME_RETENTION_DAYS: 180,
     ...(params?.configOverrides ?? {}),
   };
   const config = {
@@ -764,6 +768,7 @@ describe('WebhookOutboxService', () => {
         WEBHOOK_RETENTION_DAYS: 7,
         WEBHOOK_FAILED_RETENTION_HOURS: 24,
         MODERATION_RETENTION_DAYS: 90,
+        USER_DISPLAY_NAME_RETENTION_DAYS: 180,
       },
     });
 
@@ -785,6 +790,11 @@ describe('WebhookOutboxService', () => {
     expect(prisma.moderationViolationMessageClaim.deleteMany).toHaveBeenCalledWith({
       where: {
         createdAt: { lt: expect.any(Date) },
+      },
+    });
+    expect(prisma.chatUserDisplayName.deleteMany).toHaveBeenCalledWith({
+      where: {
+        observedAt: { lt: expect.any(Date) },
       },
     });
   });

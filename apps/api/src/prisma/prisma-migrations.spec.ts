@@ -42,6 +42,49 @@ describe('Prisma migrations', () => {
     }
   });
 
+  it('adds a durable chat-scoped display-name read model', () => {
+    const schema = readSchema();
+    const migration = readMigration('20260714120000_add_chat_user_display_names');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+
+    expect(schema).toContain('model ChatUserDisplayName {');
+    expect(schema).toContain('@@id([chatId, userId])');
+    expect(schema).toContain('@@map("chat_user_display_names")');
+    expect(compact).toContain('CREATE TABLE IF NOT EXISTS "chat_user_display_names"');
+    expect(compact).toContain('"display_name" TEXT NOT NULL');
+    expect(compact).toContain('"observed_at" TIMESTAMP(3) NOT NULL');
+    expect(compact).toContain('"source_event_id" TEXT NOT NULL');
+    expect(compact).toContain('"source_kind" TEXT NOT NULL');
+    expect(compact).toContain(
+      'CONSTRAINT "chat_user_display_names_pkey" PRIMARY KEY ("chat_id", "user_id")',
+    );
+    expect(compact).toContain('CHECK (BTRIM("display_name") <> \'\')');
+    expect(compact).toContain(
+      'CREATE INDEX IF NOT EXISTS "chat_user_display_names_observed_at_idx" ON "chat_user_display_names"("observed_at")',
+    );
+    expect(migration).not.toMatch(/\b(?:TRUNCATE\s+TABLE|DELETE\s+FROM)\b/i);
+  });
+
+  it('repairs duplicate membership names without replaying membership rollups', () => {
+    const schema = readSchema();
+    const migration = readMigration('20260714121500_repair_membership_display_name_replays');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+
+    expect(schema).toContain('model ChatUserDisplayNameBackfillState {');
+    expect(schema).toContain('@@id([chatId, sourceKind])');
+    expect(compact).toContain(
+      'CREATE TABLE IF NOT EXISTS "chat_user_display_name_backfill_states"',
+    );
+    expect(compact).toContain(
+      'CREATE TRIGGER "chat_membership_activity_events_rollup_sender_name_update"',
+    );
+    expect(compact).toContain('AFTER UPDATE OF "sender_name" ON "chat_membership_activity_events"');
+    expect(compact).toContain('EXECUTE FUNCTION "sync_chat_membership_activity_rollup"()');
+    expect(compact).toContain("COALESCE(BTRIM(OLD.\"sender_name\"), '') = ''");
+    expect(compact).toContain("COALESCE(BTRIM(NEW.\"sender_name\"), '') <> ''");
+    expect(migration).not.toMatch(/\b(?:TRUNCATE\s+TABLE|DELETE\s+FROM)\b/i);
+  });
+
   it('adds the publication domain without destructively rewriting legacy broadcasts', () => {
     const schema = readSchema();
     const migration = readMigration('20260710142000_publication_domain_foundation');

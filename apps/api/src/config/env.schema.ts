@@ -169,6 +169,7 @@ const envSchema = z.object({
   WEBHOOK_RETENTION_DAYS: z.coerce.number().int().positive().default(7),
   WEBHOOK_FAILED_RETENTION_HOURS: z.coerce.number().int().positive().default(24),
   MODERATION_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
+  USER_DISPLAY_NAME_RETENTION_DAYS: z.coerce.number().int().min(90).default(180),
   MAX_API_GLOBAL_RPS: z.coerce.number().int().positive().default(30),
   MAX_API_GLOBAL_RPS_CRITICAL: z.coerce.number().int().positive().optional(),
   MAX_API_GLOBAL_RPS_INTERACTIVE: z.coerce.number().int().positive().optional(),

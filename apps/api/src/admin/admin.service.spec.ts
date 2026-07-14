@@ -6139,6 +6139,78 @@ describe('AdminService.getChatModerationFeed', () => {
     expect(secondSqlText).toContain('feed.id <');
   });
 
+  it('resolves blank moderation display names locally without loading MAX member profiles', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-02T12:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    prisma.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          id: 'evt-ban-local-name',
+          action: 'BAN',
+          ruleCode: 'MANUAL_BAN',
+          userId: 'user-4',
+          createdAt: new Date('2026-03-02T11:15:00.000Z'),
+          maskedExcerpt: null,
+          metadata: null,
+          userDisplayName: null,
+          avatarUrl: null,
+          profileUrl: null,
+          profileHandoffUrl: null,
+        },
+      ])
+      .mockResolvedValueOnce([{ user_id: 'user-4', sender_name: 'Людмила' }]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatMemberProfiles: jest.fn(),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.getChatModerationFeed(
+        'chat-1',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { range: '7d', filter: 'BAN', limit: 50 },
+      ),
+    ).resolves.toEqual({
+      items: [
+        {
+          id: 'evt-ban-local-name',
+          action: 'BAN',
+          ruleCode: 'MANUAL_BAN',
+          userId: 'user-4',
+          userDisplayName: 'Людмила',
+          avatarUrl: null,
+          profileUrl: null,
+          profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pm2_'),
+          createdAt: '2026-03-02T11:15:00.000Z',
+          maskedExcerpt: null,
+          metadata: null,
+        },
+      ],
+      hasMore: false,
+      nextCursor: null,
+    });
+
+    expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+    const localNameSql = extractSqlText(prisma.$queryRaw.mock.calls[1]?.[0]);
+    expect(localNameSql).toContain('FROM chat_user_display_names');
+    expect(localNameSql).toContain('FROM chat_membership_activity_feed_items');
+    expect(localNameSql).toContain('ORDER BY user_id, source_priority, event_at DESC');
+  });
+
   it('prefers stored target display names from moderation event metadata when profile lookup is empty', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-02T12:00:00.000Z'));
 

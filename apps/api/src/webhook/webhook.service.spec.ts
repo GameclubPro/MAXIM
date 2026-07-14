@@ -985,6 +985,85 @@ describe('WebhookService', () => {
     });
   });
 
+  it('repairs blank membership names and snapshots service-event targets on duplicate delivery', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockRejectedValue({ code: 'P2002' }),
+        updateMany: jest.fn(),
+      },
+      chatUserDisplayName: {},
+      $executeRaw: jest.fn().mockResolvedValue(undefined),
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-duplicate-service-membership-name',
+          type: 'message_created',
+          message: {
+            messageId: 'mid-duplicate-service-membership-name',
+            chatId: '-100200',
+            senderId: 'admin-1',
+            senderName: 'Админ',
+            text: '',
+            createdAt: new Date('2026-07-14T10:00:00.000Z').toISOString(),
+          },
+          membership: {
+            action: 'added',
+            memberUserIds: ['user-1001'],
+          },
+          raw: {
+            message: {
+              new_members: [
+                {
+                  user_id: 'user-1001',
+                  display_name: 'Первый участник',
+                },
+              ],
+            },
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: true });
+
+    const queries = prisma.$executeRaw.mock.calls.map(([query]) => query);
+    const membershipQuery = queries.find((query) =>
+      extractSqlText(query).includes('INSERT INTO "chat_membership_activity_events"'),
+    );
+    const snapshotQuery = queries.find((query) =>
+      extractSqlText(query).includes('INSERT INTO "chat_user_display_names"'),
+    );
+
+    expect(membershipQuery).toBeDefined();
+    expect(extractSqlText(membershipQuery)).toContain('WITH incoming');
+    expect(extractSqlText(membershipQuery)).toContain(
+      'UPDATE "chat_membership_activity_events" AS existing',
+    );
+    expect(extractSqlText(membershipQuery)).toContain('ON CONFLICT DO NOTHING');
+    expect(extractSqlText(membershipQuery)).toContain(
+      'COALESCE(BTRIM(existing."sender_name"), \'\') = \'\'',
+    );
+    expect(snapshotQuery).toBeDefined();
+    expect(extractSqlValues(snapshotQuery)).toEqual(
+      expect.arrayContaining([
+        '-100200',
+        'user-1001',
+        'Первый участник',
+        'u-duplicate-service-membership-name',
+        'membership:added',
+      ]),
+    );
+  });
+
   it('best-effort invalidates membership cache for join and leave events after webhook persistence', async () => {
     const prisma = {
       webhookEvent: {

@@ -10,6 +10,10 @@ import {
   WebhookStatus,
 } from '../prisma/prisma-client';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
+import {
+  buildChatUserDisplayNameUpsert,
+  type ChatUserDisplayNameObservation,
+} from '../common/chat-user-display-name-read-model.util';
 import { isPrivateDirectChatId } from '../common/chat-id.util';
 import { isManagedEntityHandshakeStartCommand } from '../common/managed-entity-handshake-command.util';
 import {
@@ -227,7 +231,10 @@ export class WebhookService {
   async ingest(update: MaxUpdate, sourceIp: string | null) {
     const receipt = await this.storeReceipt(update, sourceIp);
     if (receipt.duplicate) {
-      await this.persistMembershipActivityProjection(update);
+      await Promise.all([
+        this.persistMembershipActivityProjection(update),
+        this.persistUserDisplayNameSnapshots(update),
+      ]);
       return { accepted: true, duplicate: true };
     }
 
@@ -367,6 +374,7 @@ export class WebhookService {
         };
       }
 
+      await this.persistUserDisplayNameSnapshots(update);
       await this.markMirroredReceiptDuplicate(webhookEventId);
       return {
         canonical: false,
@@ -1431,6 +1439,14 @@ export class WebhookService {
 
     const managedProjection = this.buildManagedEntityLocalActivityProjection(update);
     const rawClient = this.prisma as ManagedEntityLocalActivityRawClient;
+    const displayNameSnapshotUpsert = this.buildUserDisplayNameSnapshotUpsert(update);
+    if (
+      displayNameSnapshotUpsert &&
+      this.hasChatUserDisplayNameReadModel() &&
+      typeof rawClient.$executeRaw === 'function'
+    ) {
+      writes.push(rawClient.$executeRaw(displayNameSnapshotUpsert));
+    }
     const managedModel = (
       this.prisma as PrismaService & {
         managedEntityLocalActivity?: {
@@ -1587,6 +1603,73 @@ export class WebhookService {
     }
   }
 
+  private async persistUserDisplayNameSnapshots(update: MaxUpdate): Promise<void> {
+    const snapshotUpsert = this.buildUserDisplayNameSnapshotUpsert(update);
+    const rawClient = this.prisma as ManagedEntityLocalActivityRawClient;
+    if (
+      !snapshotUpsert ||
+      !this.hasChatUserDisplayNameReadModel() ||
+      typeof rawClient.$executeRaw !== 'function'
+    ) {
+      return;
+    }
+
+    await rawClient.$executeRaw(snapshotUpsert);
+  }
+
+  private hasChatUserDisplayNameReadModel(): boolean {
+    return (
+      (this.prisma as PrismaService & { chatUserDisplayName?: unknown }).chatUserDisplayName !==
+      undefined
+    );
+  }
+
+  private buildUserDisplayNameSnapshotUpsert(update: MaxUpdate): Prisma.Sql | null {
+    const chatId = update.message?.chatId?.trim() ?? '';
+    if (!chatId || isPrivateDirectChatId(chatId)) {
+      return null;
+    }
+
+    const observedAt = this.resolveUpdateEventAt(update);
+    const sourceEventId =
+      this.readTrimmedString(update.updateId) ??
+      this.readTrimmedString(update.message?.messageId) ??
+      `${update.type.trim().toLowerCase() || 'webhook'}:${observedAt.toISOString()}`;
+    const normalizedType = update.type.trim().toLowerCase() || 'webhook';
+    const observations: ChatUserDisplayNameObservation[] = [];
+    const senderId = update.message?.senderId?.trim() ?? '';
+    const senderName = update.message?.senderName?.trim() ?? '';
+    if (senderId && senderName) {
+      observations.push({
+        chatId,
+        userId: senderId,
+        displayName: senderName,
+        observedAt,
+        sourceEventId,
+        sourceKind: `${normalizedType}:sender`,
+      });
+    }
+
+    const membershipAction = this.resolveMembershipActivityAction(update);
+    if (membershipAction) {
+      for (const [userId, displayName] of this.findMembershipMemberDisplayNames(
+        update.raw,
+        membershipAction,
+      )) {
+        observations.push({
+          chatId,
+          userId,
+          displayName,
+          observedAt,
+          sourceEventId,
+          sourceKind: `membership:${membershipAction}`,
+        });
+      }
+    }
+
+    return buildChatUserDisplayNameUpsert(observations);
+  }
+
   private getMembershipActivityEventModel(): MembershipActivityEventModel | null {
     const model = (
       this.prisma as PrismaService & {
@@ -1640,33 +1723,103 @@ export class WebhookService {
 
   private async persistMembershipActivityProjection(update: MaxUpdate): Promise<void> {
     const projections = this.buildMembershipActivityProjections(update);
-    const membershipModel = this.getMembershipActivityEventModel();
-    if (projections.length === 0 || !membershipModel) {
+    if (projections.length === 0) {
       return;
     }
 
+    const rawClient = this.prisma as ManagedEntityLocalActivityRawClient;
+    if (typeof rawClient.$executeRaw === 'function') {
+      await this.upsertMembershipActivityProjections(
+        rawClient as Required<ManagedEntityLocalActivityRawClient>,
+        projections,
+      );
+      return;
+    }
+
+    const membershipModel = this.getMembershipActivityEventModel();
+    if (!membershipModel) {
+      return;
+    }
     await membershipModel.createMany({
       data: projections,
       skipDuplicates: true,
     });
   }
 
+  private async upsertMembershipActivityProjections(
+    rawClient: Required<ManagedEntityLocalActivityRawClient>,
+    projections: readonly MembershipActivityProjection[],
+  ): Promise<void> {
+    await rawClient.$executeRaw(Prisma.sql`
+      WITH incoming (
+        "id",
+        "dedupe_key",
+        "bot_id",
+        "chat_id",
+        "event_type",
+        "user_id",
+        "sender_name",
+        "event_at",
+        "created_at"
+      ) AS (
+      VALUES ${Prisma.join(
+        projections.map(
+          (projection) => Prisma.sql`(
+            ${projection.id},
+            ${projection.dedupeKey},
+            ${projection.botId ?? null},
+            ${projection.chatId},
+            ${projection.eventType},
+            ${projection.userId ?? null},
+            ${projection.senderName ?? null},
+            ${projection.eventAt},
+            ${projection.createdAt}
+          )`,
+        ),
+      )}
+      ),
+      repaired AS (
+        UPDATE "chat_membership_activity_events" AS existing
+        SET "sender_name" = incoming."sender_name"
+        FROM incoming
+        WHERE existing."dedupe_key" = incoming."dedupe_key"
+          AND COALESCE(BTRIM(existing."sender_name"), '') = ''
+          AND COALESCE(BTRIM(incoming."sender_name"), '') <> ''
+        RETURNING existing."dedupe_key"
+      )
+      INSERT INTO "chat_membership_activity_events" (
+        "id",
+        "dedupe_key",
+        "bot_id",
+        "chat_id",
+        "event_type",
+        "user_id",
+        "sender_name",
+        "event_at",
+        "created_at"
+      )
+      SELECT
+        "id",
+        "dedupe_key",
+        "bot_id",
+        "chat_id",
+        "event_type",
+        "user_id",
+        "sender_name",
+        "event_at",
+        "created_at"
+      FROM incoming
+      ON CONFLICT DO NOTHING
+    `);
+  }
+
   private buildMembershipActivityProjections(update: MaxUpdate): MembershipActivityProjection[] {
-    const normalizedType = update.type.trim().toLowerCase();
     const chatId = update.message?.chatId?.trim() ?? '';
     if (!chatId) {
       return [];
     }
 
-    const membershipAction = update.membership?.action;
-    const eventType =
-      normalizedType === 'message_created' && membershipAction === 'added'
-        ? 'user_added'
-        : normalizedType === 'message_created' && membershipAction === 'removed'
-          ? 'user_removed'
-          : MEMBERSHIP_ACTIVITY_UPDATE_TYPES.has(normalizedType)
-            ? normalizedType
-            : null;
+    const eventType = this.resolveMembershipActivityEventType(update);
     if (!eventType) {
       return [];
     }
@@ -1677,6 +1830,8 @@ export class WebhookService {
     }
 
     const eventAt = this.resolveUpdateEventAt(update);
+    const membershipAction = eventType === 'user_removed' ? 'removed' : 'added';
+    const memberDisplayNames = this.findMembershipMemberDisplayNames(update.raw, membershipAction);
     return memberUserIds.map((userId, index) => ({
       id: this.buildMembershipActivityProjectionId(
         update.updateId,
@@ -1690,10 +1845,35 @@ export class WebhookService {
       chatId,
       eventType,
       userId,
-      senderName: this.resolveMembershipActivitySenderName(update, eventType, userId),
+      senderName: this.resolveMembershipActivitySenderName(update, userId, memberDisplayNames),
       eventAt,
       createdAt: eventAt,
     }));
+  }
+
+  private resolveMembershipActivityEventType(update: MaxUpdate): string | null {
+    const normalizedType = update.type.trim().toLowerCase();
+    const membershipAction = update.membership?.action;
+    if (normalizedType === 'message_created' && membershipAction === 'added') {
+      return 'user_added';
+    }
+    if (normalizedType === 'message_created' && membershipAction === 'removed') {
+      return 'user_removed';
+    }
+
+    return MEMBERSHIP_ACTIVITY_UPDATE_TYPES.has(normalizedType) ? normalizedType : null;
+  }
+
+  private resolveMembershipActivityAction(update: MaxUpdate): 'added' | 'removed' | null {
+    const eventType = this.resolveMembershipActivityEventType(update);
+    if (eventType === 'user_added') {
+      return 'added';
+    }
+    if (eventType === 'user_removed') {
+      return 'removed';
+    }
+
+    return null;
   }
 
   private resolveMembershipActivityUserIds(update: MaxUpdate): string[] {
@@ -1729,11 +1909,10 @@ export class WebhookService {
 
   private resolveMembershipActivitySenderName(
     update: MaxUpdate,
-    eventType: string,
     userId: string,
+    memberDisplayNames: ReadonlyMap<string, string>,
   ): string | null {
-    const action = eventType === 'user_removed' ? 'removed' : 'added';
-    const rawName = this.findMembershipMemberDisplayName(update.raw, action, userId);
+    const rawName = memberDisplayNames.get(userId);
     if (rawName) {
       return rawName;
     }
@@ -1746,57 +1925,65 @@ export class WebhookService {
     return null;
   }
 
-  private findMembershipMemberDisplayName(
+  private findMembershipMemberDisplayNames(
     node: unknown,
     action: 'added' | 'removed',
-    userId: string,
+  ): Map<string, string> {
+    const displayNames = new Map<string, string>();
+    this.collectMembershipMemberDisplayNames(node, action, displayNames);
+    return displayNames;
+  }
+
+  private collectMembershipMemberDisplayNames(
+    node: unknown,
+    action: 'added' | 'removed',
+    displayNames: Map<string, string>,
     depth = 0,
     insideMembershipCollection = false,
-  ): string | null {
+  ): void {
     if (depth > 6 || node === null || node === undefined) {
-      return null;
+      return;
     }
 
     if (Array.isArray(node)) {
       for (const item of node) {
-        const displayName = this.findMembershipMemberDisplayName(
+        this.collectMembershipMemberDisplayNames(
           item,
           action,
-          userId,
+          displayNames,
           depth + 1,
           insideMembershipCollection,
         );
-        if (displayName) {
-          return displayName;
-        }
       }
-      return null;
+      return;
     }
 
     const row = this.asRecord(node);
     if (!row) {
-      return null;
+      return;
     }
 
-    if (insideMembershipCollection && this.readMembershipMemberUserId(row) === userId) {
-      return this.readMembershipMemberDisplayName(row);
+    if (insideMembershipCollection) {
+      const userId = this.readMembershipMemberUserId(row);
+      const displayName = this.readMembershipMemberDisplayName(row);
+      if (userId && displayName && !displayNames.has(userId)) {
+        displayNames.set(userId, displayName);
+      }
+      if (userId) {
+        return;
+      }
     }
 
     for (const [key, value] of Object.entries(row)) {
       const normalizedKey = key.trim().toLowerCase();
-      const displayName = this.findMembershipMemberDisplayName(
+      this.collectMembershipMemberDisplayNames(
         value,
         action,
-        userId,
+        displayNames,
         depth + 1,
         insideMembershipCollection || this.isMembershipCollectionKey(normalizedKey, action),
       );
-      if (displayName) {
-        return displayName;
-      }
     }
-
-    return null;
   }
 
   private readMembershipMemberUserId(row: Record<string, unknown>): string | null {

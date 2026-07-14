@@ -630,12 +630,9 @@ export class AdminLogsDashboardRuntime {
     });
 
     const pageRows = rows.slice(0, limit);
-    const userIdsToResolve =
-      profileOptions.allowRemoteLookup === false
-        ? []
-        : pageRows
-            .filter((row) => !this.readTrimmedString(row.userDisplayName))
-            .map((row) => row.userId);
+    const userIdsToResolve = pageRows
+      .filter((row) => !this.readTrimmedString(row.userDisplayName))
+      .map((row) => row.userId);
     const userProfiles =
       userIdsToResolve.length > 0
         ? await this.resolveUserProfiles(chatId, entityType, userIdsToResolve, profileOptions)
