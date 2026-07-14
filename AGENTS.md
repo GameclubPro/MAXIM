@@ -164,6 +164,9 @@
 - Keep production API Prisma pool caps aligned with `apps/api/src/config/production-compose-prisma-pool.spec.ts`;
   for `api-action` pressure incidents, prefer lowering concurrency/batch sizes and adding governor
   checks before raising Postgres connection caps.
+- During live audits, keep `webhook_events` and ledger SQL indexed and bounded. Broad aggregates can
+  saturate Postgres I/O and make Prisma pool checkouts time out even when `max_connections` has headroom;
+  prefer health snapshots, status-index filters, and short samples.
 - Redis stores BullMQ queues, delayed jobs, locks, and runtime snapshots under `/data`; main and
   scale compose pin it to `redis_data:/data`. The scale deploy script preflights
   `infra-scale_redis_data` before stopping the main stack. Avoid routine Redis recreation unless
