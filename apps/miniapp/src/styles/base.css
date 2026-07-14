@@ -27,31 +27,8 @@ body {
   min-height: var(--app-viewport-height);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-  background:
-    linear-gradient(180deg, rgba(245, 250, 255, 0.96) 0%, rgba(239, 247, 255, 0.98) 44%),
-    linear-gradient(135deg, rgba(228, 242, 255, 0.9), rgba(246, 251, 248, 0.92));
+  background: var(--app-page-background);
   background-attachment: fixed;
-}
-
-body::before,
-body::after {
-  content: '';
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: -1;
-}
-
-body::before {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.48), transparent 42%);
-}
-
-body::after {
-  opacity: 0.42;
-  background:
-    linear-gradient(90deg, rgba(92, 126, 160, 0.045) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(92, 126, 160, 0.04) 1px, transparent 1px);
-  background-size: 22px 22px;
 }
 
 h1,
@@ -111,6 +88,6 @@ input:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
 a:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--accent) 36%, transparent);
+  outline: 2px solid var(--app-focus-ring);
   outline-offset: 3px;
 }

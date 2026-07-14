@@ -47,8 +47,10 @@ import './settings-page.css';
 import './settings/settings-word-banlist.css';
 import './settings/settings-duplicate-stage.css';
 import '../styles/broadcast-autopost-polish.css';
+import '../styles/settings-tile-grid.css';
 import {
   Suspense,
+  lazy,
   startTransition,
   useEffect,
   useMemo,
@@ -77,7 +79,6 @@ import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl, type SegmentedOption } from '../components/ui/segmented-control';
-import { ActionConfirmSheet } from '../components/ui/action-confirm-sheet';
 import { ResetIcon } from '../components/ui/reset-icon';
 import { SettingsDrilldownPanel } from '../components/ui/settings-drilldown-panel';
 import { SettingsSectionToggle } from '../components/ui/settings-section-toggle';
@@ -369,6 +370,12 @@ import {
   areBroadcastPlannerStatesEqual,
   LazyWarnMessageEditor,
 } from './settings/settings-page-helpers';
+
+const LazyActionConfirmSheet = lazy(() =>
+  import('../components/ui/action-confirm-sheet').then((module) => ({
+    default: module.ActionConfirmSheet,
+  })),
+);
 
 export function SettingsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
@@ -11360,103 +11367,109 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         />
       </Suspense>
 
-      <ActionConfirmSheet
-        id="mailing-slot-conflict"
-        open={pendingMailingSlotConflict !== null}
-        title="Время занято"
-        summary="Можно заменить только эту отправку."
-        previewTitle={
-          pendingMailingConflictPreviewSlot
-            ? formatCompactBroadcastDateTime(
-                pendingMailingConflictPreviewSlot,
-                pendingMailingSlotConflict?.payload.scheduleTimezone,
-              )
-            : 'Занято'
-        }
-        previewMeta={
-          pendingMailingConflictSlots.length > 1
-            ? formatRussianCountLabel(
-                pendingMailingConflictSlots.length,
-                'занятая отправка',
-                'занятые отправки',
-                'занятых отправок',
-              )
-            : 'Заменим, если получатели свободны.'
-        }
-        confirmLabel="Заменить"
-        cancelLabel="Другое время"
-        tone="accent"
-        onClose={handleCloseMailingSlotConflict}
-        onConfirm={confirmMailingSlotReplacement}
-      />
+      <Suspense fallback={null}>
+        <LazyActionConfirmSheet
+          id="mailing-slot-conflict"
+          open={pendingMailingSlotConflict !== null}
+          title="Время занято"
+          summary="Можно заменить только эту отправку."
+          previewTitle={
+            pendingMailingConflictPreviewSlot
+              ? formatCompactBroadcastDateTime(
+                  pendingMailingConflictPreviewSlot,
+                  pendingMailingSlotConflict?.payload.scheduleTimezone,
+                )
+              : 'Занято'
+          }
+          previewMeta={
+            pendingMailingConflictSlots.length > 1
+              ? formatRussianCountLabel(
+                  pendingMailingConflictSlots.length,
+                  'занятая отправка',
+                  'занятые отправки',
+                  'занятых отправок',
+                )
+              : 'Заменим, если получатели свободны.'
+          }
+          confirmLabel="Заменить"
+          cancelLabel="Другое время"
+          tone="accent"
+          onClose={handleCloseMailingSlotConflict}
+          onConfirm={confirmMailingSlotReplacement}
+        />
+      </Suspense>
 
-      <ActionConfirmSheet
-        id="managed-broadcast-delete"
-        open={managedBroadcastDeleteTarget !== null}
-        title="Отменить отправки?"
-        previewTitle={
-          managedBroadcastDeleteTarget ? (
-            <LazyActionConfirmMarkdownPreview
-              value={managedBroadcastDeleteTarget.textPreview}
-              fallback={
-                managedBroadcastDeleteTarget.textPreview ||
-                (managedBroadcastDeleteTarget.hasImage ? 'Фото без текста' : null)
-              }
-            />
-          ) : undefined
-        }
-        previewMeta={
-          managedBroadcastDeleteTarget
-            ? managedBroadcastDeleteTarget.nextSendAt
-              ? `Следующая отправка · ${formatCompactBroadcastDateTime(
-                  managedBroadcastDeleteTarget.nextSendAt,
-                  managedBroadcastDeleteTarget.scheduleTimezone,
+      <Suspense fallback={null}>
+        <LazyActionConfirmSheet
+          id="managed-broadcast-delete"
+          open={managedBroadcastDeleteTarget !== null}
+          title="Отменить отправки?"
+          previewTitle={
+            managedBroadcastDeleteTarget ? (
+              <LazyActionConfirmMarkdownPreview
+                value={managedBroadcastDeleteTarget.textPreview}
+                fallback={
+                  managedBroadcastDeleteTarget.textPreview ||
+                  (managedBroadcastDeleteTarget.hasImage ? 'Фото без текста' : null)
+                }
+              />
+            ) : undefined
+          }
+          previewMeta={
+            managedBroadcastDeleteTarget
+              ? managedBroadcastDeleteTarget.nextSendAt
+                ? `Следующая отправка · ${formatCompactBroadcastDateTime(
+                    managedBroadcastDeleteTarget.nextSendAt,
+                    managedBroadcastDeleteTarget.scheduleTimezone,
+                  )}`
+                : 'Будущие отправки будут сняты.'
+              : undefined
+          }
+          confirmLabel="Отменить"
+          confirmBusyLabel="Отменяем..."
+          tone="danger"
+          isBusy={cancelManagedBroadcastMutation.isPending}
+          onClose={() => setManagedBroadcastDeleteTarget(null)}
+          onConfirm={confirmDeleteManagedBroadcast}
+        />
+      </Suspense>
+
+      <Suspense fallback={null}>
+        <LazyActionConfirmSheet
+          id="managed-autopost-rule-delete"
+          open={managedAutopostRuleDeleteTarget !== null}
+          title="Отменить автопост?"
+          previewTitle={
+            managedAutopostRuleDeleteTarget ? (
+              <LazyActionConfirmMarkdownPreview
+                value={managedAutopostRuleDeleteTarget.textPreview}
+                fallback={
+                  managedAutopostRuleDeleteTarget.textPreview ||
+                  (managedAutopostRuleDeleteTarget.hasVideo
+                    ? 'Видео без текста'
+                    : managedAutopostRuleDeleteTarget.hasImage
+                      ? 'Фото без текста'
+                      : 'Пусто')
+                }
+              />
+            ) : undefined
+          }
+          previewMeta={
+            managedAutopostRuleDeleteTarget?.nextSendAt
+              ? `Следующий · ${formatCompactBroadcastDateTime(
+                  managedAutopostRuleDeleteTarget.nextSendAt,
+                  managedAutopostRuleDeleteTarget.scheduleTimezone,
                 )}`
-              : 'Будущие отправки будут сняты.'
-            : undefined
-        }
-        confirmLabel="Отменить"
-        confirmBusyLabel="Отменяем..."
-        tone="danger"
-        isBusy={cancelManagedBroadcastMutation.isPending}
-        onClose={() => setManagedBroadcastDeleteTarget(null)}
-        onConfirm={confirmDeleteManagedBroadcast}
-      />
-
-      <ActionConfirmSheet
-        id="managed-autopost-rule-delete"
-        open={managedAutopostRuleDeleteTarget !== null}
-        title="Отменить автопост?"
-        previewTitle={
-          managedAutopostRuleDeleteTarget ? (
-            <LazyActionConfirmMarkdownPreview
-              value={managedAutopostRuleDeleteTarget.textPreview}
-              fallback={
-                managedAutopostRuleDeleteTarget.textPreview ||
-                (managedAutopostRuleDeleteTarget.hasVideo
-                  ? 'Видео без текста'
-                  : managedAutopostRuleDeleteTarget.hasImage
-                    ? 'Фото без текста'
-                    : 'Пусто')
-              }
-            />
-          ) : undefined
-        }
-        previewMeta={
-          managedAutopostRuleDeleteTarget?.nextSendAt
-            ? `Следующий · ${formatCompactBroadcastDateTime(
-                managedAutopostRuleDeleteTarget.nextSendAt,
-                managedAutopostRuleDeleteTarget.scheduleTimezone,
-              )}`
-            : undefined
-        }
-        confirmLabel="Отменить"
-        confirmBusyLabel="Отменяем..."
-        tone="danger"
-        isBusy={deleteManagedAutopostRuleMutation.isPending}
-        onClose={() => setManagedAutopostRuleDeleteTarget(null)}
-        onConfirm={confirmDeleteManagedAutopostRule}
-      />
+              : undefined
+          }
+          confirmLabel="Отменить"
+          confirmBusyLabel="Отменяем..."
+          tone="danger"
+          isBusy={deleteManagedAutopostRuleMutation.isPending}
+          onClose={() => setManagedAutopostRuleDeleteTarget(null)}
+          onConfirm={confirmDeleteManagedAutopostRule}
+        />
+      </Suspense>
     </div>
   );
 }

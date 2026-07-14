@@ -19,6 +19,7 @@ import {
 } from 'react-router-dom';
 import { Shell } from './components/shell';
 import { GlassCard } from './components/ui/glass-card';
+import { Spinner } from './components/ui/spinner';
 import { StatusState } from './components/ui/status-state';
 import { ToastProvider } from './components/ui/toast';
 import { createApiTransport } from './lib/api/transport';
@@ -254,6 +255,17 @@ type PreviewRuntime = {
   createPreviewApiTransport: () => ReturnType<typeof createApiTransport>;
 };
 
+function RouteLoadingFallback() {
+  return (
+    <main className="route-loading" aria-busy="true">
+      <div className="route-loading__content" role="status" aria-live="polite">
+        <Spinner label={null} />
+        <span>Загружаю экран</span>
+      </div>
+    </main>
+  );
+}
+
 function AppRoutes({
   apiClient,
   launchInitData,
@@ -268,7 +280,7 @@ function AppRoutes({
   return (
     <>
       {launchInitData ? <LaunchRouteSync launchInitData={launchInitData} /> : null}
-      <Suspense fallback={null}>
+      <Suspense fallback={<RouteLoadingFallback />}>
         <Routes>
           <Route element={<Shell />}>
             <Route path="/" element={<LazyChatsPage api={apiClient} />} />
@@ -310,7 +322,7 @@ function AppRoutes({
 function PublicLegalRoutes() {
   return (
     <AppRouter basename={ROUTER_BASENAME}>
-      <Suspense fallback={null}>
+      <Suspense fallback={<RouteLoadingFallback />}>
         <Routes>
           <Route path="/legal/agreement" element={<LazyLegalAgreementPage />} />
           <Route path="/legal/privacy" element={<LazyPrivacyPolicyPage />} />

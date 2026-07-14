@@ -237,9 +237,8 @@ async function saveManagedEntityFavoriteTypes(
   entityId: string,
   favoriteTypes: ManagedEntityFavoriteType[],
 ) {
-  const { updateManagedEntityFavorites } = await import(
-    '../lib/api/managed-entity-favorites-client'
-  );
+  const { updateManagedEntityFavorites } =
+    await import('../lib/api/managed-entity-favorites-client');
   return updateManagedEntityFavorites(api, entityType, entityId, favoriteTypes);
 }
 
@@ -266,18 +265,6 @@ function buildEntityRouteState(entityType: ManagedTab, entity: ManagedHomeEntity
     chatTitle: entity.title,
     avatarUrl: entity.avatarUrl ?? null,
   };
-}
-
-function ActivityGlyph() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden>
-      <path d="M5 17V9.8" />
-      <path d="M10 17V7" />
-      <path d="M15 17v-4.6" />
-      <path d="M20 17V5" />
-      <path d="M4.5 19h15.8" />
-    </svg>
-  );
 }
 
 function SparksGlyph(props: SVGProps<SVGSVGElement>) {
@@ -1045,10 +1032,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       style = { animationDelay: `${staggerIndex * CHAT_CARD_STAGGER_STEP_MS}ms` };
     }
 
-    const settingsRoute = buildEntitySettingsRoute(activeTab, entity.id);
     const activityRoute = buildEntityActivityRoute(activeTab, entity.id);
+    const settingsRoute = buildEntitySettingsRoute(activeTab, entity.id);
     const routeState = buildEntityRouteState(activeTab, entity);
-    const activityLabel = 'Статистика';
+    const activityLabel = 'Открыть сводку';
+    const settingsLabel = 'Настройки';
     const favoriteLabel =
       favoriteTypes.length > 0
         ? `Избранное: ${favoriteTypes
@@ -1060,16 +1048,24 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     return (
       <GlassCard as="article" key={entity.id} className={className} style={style}>
         <Link
-          to={settingsRoute}
+          to={activityRoute}
           className="chat-card__primary-link"
           state={routeState}
-          onClick={() => rememberEntity(activeTab, entity)}
+          onClick={() => {
+            rememberEntity(activeTab, entity);
+            prefetchEntityActivity(activeTab, entity.id);
+          }}
           onPointerEnter={(event) => {
             if (shouldPrefetchFromPointerEvent(event)) {
-              prefetchEntitySettings(activeTab, entity.id);
+              prefetchEntityActivity(activeTab, entity.id);
             }
           }}
-          aria-label={`Открыть настройки: ${entity.title}`}
+          onPointerDown={(event) => {
+            if (shouldPrefetchFromPressEvent(event)) {
+              prefetchEntityActivity(activeTab, entity.id);
+            }
+          }}
+          aria-label={`${activityLabel}: ${entity.title}`}
         />
 
         <div className="chat-card__header">
@@ -1117,27 +1113,27 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           </button>
 
           <Link
-            to={activityRoute}
+            to={settingsRoute}
             className="chat-card__action"
             state={routeState}
             onClick={() => {
               rememberEntity(activeTab, entity);
-              prefetchEntityActivity(activeTab, entity.id);
+              prefetchEntitySettings(activeTab, entity.id);
             }}
             onPointerEnter={(event) => {
               if (shouldPrefetchFromPointerEvent(event)) {
-                prefetchEntityActivity(activeTab, entity.id);
+                prefetchEntitySettings(activeTab, entity.id);
               }
             }}
             onPointerDown={(event) => {
               if (shouldPrefetchFromPressEvent(event)) {
-                prefetchEntityActivity(activeTab, entity.id);
+                prefetchEntitySettings(activeTab, entity.id);
               }
             }}
-            aria-label={activityLabel}
-            title={activityLabel}
+            aria-label={settingsLabel}
+            title={settingsLabel}
           >
-            <ActivityGlyph />
+            <SettingsGlyph aria-hidden />
           </Link>
         </div>
       </GlassCard>

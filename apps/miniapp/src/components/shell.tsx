@@ -301,6 +301,9 @@ export function Shell() {
       : `/chat/${resolvedChatId}/events?section=activity`
     : '';
   const activityNavLabel = 'Сводка';
+  const entityPickerLabel = resolvedEntityType === 'channel' ? 'канал' : 'чат';
+  const settingsContextLabel = `Выберите ${entityPickerLabel}, чтобы открыть настройки`;
+  const activityContextLabel = `Выберите ${entityPickerLabel}, чтобы открыть сводку`;
   const isChatsListRoute = isChatsRoute && selectedRootEntityType === 'chat';
   const isChannelsListRoute = isChatsRoute && selectedRootEntityType === 'channel';
   const isGiveawayRoute = location.pathname.includes('/giveaways/');
@@ -407,6 +410,7 @@ export function Shell() {
           <Link
             to={buildManagedEntitiesRoute('chat')}
             className={cn('bottom-nav__item', isChatsListRoute && 'is-active')}
+            aria-current={isChatsListRoute ? 'page' : undefined}
           >
             <span className="bottom-nav__icon" aria-hidden>
               <BottomNavIcon name="chats" />
@@ -417,6 +421,7 @@ export function Shell() {
           <Link
             to={buildManagedEntitiesRoute('channel')}
             className={cn('bottom-nav__item', isChannelsListRoute && 'is-active')}
+            aria-current={isChannelsListRoute ? 'page' : undefined}
           >
             <span className="bottom-nav__icon" aria-hidden>
               <BottomNavIcon name="channels" />
@@ -445,12 +450,17 @@ export function Shell() {
               <span className="bottom-nav__label">Настройки</span>
             </NavLink>
           ) : (
-            <span className="bottom-nav__item is-disabled" aria-disabled>
+            <Link
+              to={homeRoute}
+              className="bottom-nav__item is-contextual"
+              aria-label={settingsContextLabel}
+              title={settingsContextLabel}
+            >
               <span className="bottom-nav__icon" aria-hidden>
                 <BottomNavIcon name="settings" />
               </span>
               <span className="bottom-nav__label">Настройки</span>
-            </span>
+            </Link>
           )}
 
           {resolvedChatId ? (
@@ -464,12 +474,17 @@ export function Shell() {
               <span className="bottom-nav__label">{activityNavLabel}</span>
             </NavLink>
           ) : (
-            <span className="bottom-nav__item is-disabled" aria-disabled>
+            <Link
+              to={homeRoute}
+              className="bottom-nav__item is-contextual"
+              aria-label={activityContextLabel}
+              title={activityContextLabel}
+            >
               <span className="bottom-nav__icon" aria-hidden>
                 <BottomNavIcon name="events" />
               </span>
               <span className="bottom-nav__label">{activityNavLabel}</span>
-            </span>
+            </Link>
           )}
         </nav>
       ) : null}

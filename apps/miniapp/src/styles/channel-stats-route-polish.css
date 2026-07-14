@@ -22,7 +22,12 @@ body.channel-stats-page-open .channel-insights__body {
   border-radius: 18px;
   padding: 10px 8px 9px;
   background:
-    linear-gradient(135deg, var(--color-surface-tint), var(--surface-card-muted), var(--color-surface)),
+    linear-gradient(
+      135deg,
+      var(--color-surface-tint),
+      var(--surface-card-muted),
+      var(--color-surface)
+    ),
     var(--color-surface);
   box-shadow: var(--shadow-sm);
 }
@@ -53,7 +58,7 @@ body.channel-stats-page-open .channel-insights__body {
   color: var(--text-secondary);
 }
 
-.channel-insights__chart-controls .segmented-control__item[aria-selected='true'] {
+.channel-insights__chart-controls .segmented-control__item[aria-checked='true'] {
   color: var(--accent);
   background: var(--color-surface);
 }
@@ -196,9 +201,7 @@ body.channel-stats-page-open .channel-insights__body {
 }
 
 .channel-insights__kpi-card--live {
-  background:
-    linear-gradient(135deg, var(--accent-soft), transparent),
-    transparent;
+  background: linear-gradient(135deg, var(--accent-soft), transparent), transparent;
 }
 
 .channel-insights__kpi-card small {
@@ -289,9 +292,7 @@ body.channel-stats-page-open .channel-insights__body {
   }
 
   .channel-insights__kpi-grid .channel-insights__kpi-card--live {
-    background:
-      linear-gradient(135deg, var(--accent-soft), transparent),
-      var(--surface-card);
+    background: linear-gradient(135deg, var(--accent-soft), transparent), var(--surface-card);
   }
 }
 
@@ -386,15 +387,11 @@ body.channel-stats-page-open .channel-insights__body {
 }
 
 .channel-summary-card--subscribers {
-  background:
-    linear-gradient(145deg, var(--accent-soft), transparent 42%),
-    var(--surface-card);
+  background: linear-gradient(145deg, var(--accent-soft), transparent 42%), var(--surface-card);
 }
 
 .channel-summary-card--views {
-  background:
-    linear-gradient(145deg, var(--accent-soft), transparent 42%),
-    var(--surface-card);
+  background: linear-gradient(145deg, var(--accent-soft), transparent 42%), var(--surface-card);
 }
 
 .channel-summary-card header {
@@ -427,6 +424,13 @@ body.channel-stats-page-open .channel-insights__body {
 
 .channel-summary-card--views header strong {
   color: var(--accent);
+}
+
+.channel-summary-card__scope {
+  color: var(--text-muted);
+  font-size: 0.62rem;
+  font-weight: 760;
+  line-height: 1;
 }
 
 .channel-summary-card__rows {
@@ -480,8 +484,7 @@ body.channel-stats-page-open .channel-insights__body {
   padding: 12px;
   gap: 10px;
   background:
-    linear-gradient(180deg, var(--surface-card), var(--surface-card-muted)),
-    var(--surface-card);
+    linear-gradient(180deg, var(--surface-card), var(--surface-card-muted)), var(--surface-card);
 }
 
 .channel-insights__chart-card--executive > .channel-insights__chart-header {
@@ -633,7 +636,6 @@ body.channel-stats-page-open .channel-insights__body {
   .channel-insights__chart-controls {
     grid-template-columns: minmax(0, 1fr) 116px;
   }
-
 }
 
 @media (max-width: 370px) {
@@ -665,8 +667,7 @@ body.channel-stats-page-open .channel-insights__body {
 }
 
 /* Final route polish: native header rhythm, calm controls, opaque nav shelter. */
-html:not([data-max-platform='android'])
-  .channel-insights__sticky-header.compact-page-header {
+html:not([data-max-platform='android']) .channel-insights__sticky-header.compact-page-header {
   --compact-page-header-safe-top: min(var(--app-safe-top), 28px);
   --compact-page-header-offset-top: calc(var(--app-safe-top) + 10px);
 }
@@ -733,7 +734,7 @@ body.channel-stats-page-open .bottom-nav::after {
   box-shadow: none;
 }
 
-.channel-insights__chart-controls .segmented-control__item[aria-selected='true'],
+.channel-insights__chart-controls .segmented-control__item[aria-checked='true'],
 .channel-insights__chart-controls .segmented-control__item.is-active {
   color: var(--accent);
   background: var(--color-surface);
@@ -765,5 +766,75 @@ body.channel-stats-page-open .bottom-nav::after {
   .channel-insights__chart-controls .channel-insights__range:only-child {
     grid-column: 1 / -1;
   }
+}
+
+html[data-max-theme='dark'] body.channel-stats-page-open {
+  color-scheme: dark;
+  background: var(--surface-page);
+}
+
+html[data-max-theme='dark'] .channel-insights__sticky-header .compact-page-header__bar,
+html[data-max-theme='dark'] .channel-insights__section-tabs,
+html[data-max-theme='dark'] .channel-events-section__head,
+html[data-max-theme='dark'] .channel-insights__range {
+  border-color: var(--border-subtle);
+  background: var(--surface-card);
+  box-shadow: var(--shadow-xs);
+}
+
+html[data-max-theme='dark']
+  .channel-insights__summary--command
+  > .channel-insights__chart-card--executive,
+html[data-max-theme='dark'] .channel-summary-card,
+html[data-max-theme='dark'] .channel-top-posts-panel,
+html[data-max-theme='dark'] .channel-best-windows-panel {
+  border-color: var(--border-subtle);
+  background: var(--surface-card);
+  box-shadow: var(--shadow-xs);
+}
+
+html[data-max-theme='dark'] .channel-insights__chart-card--executive .channel-stats-graph__canvas,
+html[data-max-theme='dark']
+  .channel-insights__chart-card--executive
+  .channel-stats-graph__canvas--audience,
+html[data-max-theme='dark'] .channel-insights__chart-controls .channel-insights__range {
+  background: var(--surface-card-muted);
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+
+html[data-max-theme='dark'] .channel-insights__summary-copy h2,
+html[data-max-theme='dark'] .channel-insights__summary-copy strong,
+html[data-max-theme='dark'] .channel-events-section__head h2,
+html[data-max-theme='dark'] .compact-page-header__title {
+  color: var(--text-primary);
+}
+
+html[data-max-theme='dark'] .channel-insights__summary-copy p,
+html[data-max-theme='dark'] .channel-summary-card header small,
+html[data-max-theme='dark'] .channel-summary-card__rows small,
+html[data-max-theme='dark'] .channel-stats-graph__summary-date {
+  color: var(--text-muted);
+}
+
+html[data-max-theme='dark'] .channel-insights__section-tabs .segmented-control__item,
+html[data-max-theme='dark'] .channel-insights__chart-controls .segmented-control__item {
+  color: var(--text-secondary);
+}
+
+html[data-max-theme='dark']
+  .channel-insights__section-tabs
+  .segmented-control__item[aria-checked='true'],
+html[data-max-theme='dark'] .channel-insights__section-tabs .segmented-control__item.is-active,
+html[data-max-theme='dark']
+  .channel-insights__chart-controls
+  .segmented-control__item[aria-checked='true'],
+html[data-max-theme='dark'] .channel-insights__chart-controls .segmented-control__item.is-active {
+  color: var(--accent);
+  background: var(--surface-card-muted);
+}
+
+html[data-max-theme='dark'] body.channel-stats-page-open .bottom-nav {
+  border-color: var(--nav-border);
+  background: var(--nav-surface);
 }
 }

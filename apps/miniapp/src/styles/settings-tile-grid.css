@@ -1,0 +1,257 @@
+@layer pages {
+  /*
+   * The settings home is a compact launcher, not a stack of expanded cards.
+   * Keep the overview scannable; each tile opens its existing drilldown.
+   */
+  body.settings-home-page-open .settings-sections--chat-home .settings-sections-shell {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    align-items: stretch;
+  }
+
+  body.settings-home-page-open .settings-sections--chat-home .settings-home-group-head,
+  body.settings-home-page-open .settings-sections--chat-home .settings-home-entry--speech {
+    grid-column: 1 / -1;
+  }
+
+  body.settings-home-page-open .settings-sections--chat-home .settings-home-group-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 14px 2px 2px;
+  }
+
+  body.settings-home-page-open .settings-sections--chat-home .settings-home-group-head::after {
+    flex: 1;
+    background: var(--border-subtle);
+  }
+
+  body.settings-home-page-open .settings-sections--chat-home .settings-home-group-head__title {
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  body.settings-home-page-open
+    .settings-sections--chat-home
+    .settings-home-entry:not(.settings-home-entry--speech) {
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  body.settings-home-page-open
+    .settings-sections--chat-home
+    .settings-home-entry
+    .settings-section__head {
+    height: 100%;
+  }
+
+  body.settings-home-page-open
+    .settings-sections--chat-home
+    .settings-home-entry
+    .settings-section__toggle {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    min-height: 132px;
+    height: 100%;
+    gap: 8px;
+    padding: 13px;
+    overflow: hidden;
+    border: 1px solid var(--border-subtle);
+    border-radius: 12px;
+    background: var(--surface-card);
+    box-shadow: var(--shadow-xs);
+    color: var(--text-primary);
+  }
+
+  body.settings-home-page-open
+    .settings-sections--chat-home
+    .settings-home-entry
+    .settings-section__toggle::before,
+  body.settings-home-page-open
+    .settings-sections--chat-home
+    .settings-home-entry
+    .settings-section__toggle::after {
+    content: none;
+  }
+
+  body.settings-home-page-open
+    .settings-sections--chat-home
+    .settings-home-entry
+    .settings-section__toggle:hover {
+    border-color: var(--border-strong);
+    box-shadow: var(--shadow-sm);
+    transform: translateY(-1px);
+  }
+
+  body.settings-home-page-open
+    .settings-sections--chat-home
+    .settings-home-entry
+    .settings-section__toggle[aria-expanded='true'] {
+    border-color: color-mix(in srgb, var(--accent) 42%, var(--border-subtle));
+    background: var(--surface-card-muted);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 12%, transparent);
+  }
+
+  body.settings-home-page-open
+    .settings-sections--chat-home
+    .settings-home-entry
+    .settings-section__icon-badge {
+    grid-column: 1;
+    grid-row: 1;
+    width: 40px;
+    height: 40px;
+    border: 0;
+    border-radius: 10px;
+    box-shadow: none;
+  }
+
+  body.settings-home-page-open
+    .settings-sections--chat-home
+    .settings-home-entry
+    .settings-section__icon-badge
+    svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  body.settings-home-page-open
+    .settings-sections--chat-home
+    .settings-home-entry
+    .settings-section__toggle-main {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    align-self: end;
+  }
+
+  body.settings-home-page-open
+    .settings-sections--chat-home
+    .settings-home-entry
+    .settings-section__toggle-main
+    h3 {
+    display: block;
+    overflow-wrap: anywhere;
+    font-size: 0.92rem;
+    font-weight: 780;
+    line-height: 1.18;
+  }
+
+  body.settings-home-page-open
+    .settings-sections--chat-home
+    .settings-home-entry
+    .settings-section__status-chip {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    justify-self: start;
+    max-width: 100%;
+    min-height: 22px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  body.settings-home-page-open
+    .settings-sections--chat-home
+    .settings-home-entry
+    .settings-section__chevron {
+    grid-column: 2;
+    grid-row: 1;
+    width: 32px;
+    height: 32px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--surface-card-muted);
+    box-shadow: none;
+  }
+
+  body.settings-home-page-open .settings-sections--chat-home .settings-home-entry--speech {
+    min-height: 0;
+  }
+
+  @media (max-width: 380px) {
+    body.settings-home-page-open .settings-sections--chat-home .settings-sections-shell {
+      gap: 8px;
+    }
+
+    body.settings-home-page-open
+      .settings-sections--chat-home
+      .settings-home-entry
+      .settings-section__toggle {
+      min-height: 122px;
+      padding: 11px;
+    }
+
+    body.settings-home-page-open
+      .settings-sections--chat-home
+      .settings-home-entry
+      .settings-section__toggle-main
+      h3 {
+      font-size: 0.84rem;
+    }
+  }
+
+  html[data-max-theme='dark']
+    body.settings-home-page-open
+    .settings-sections--chat-home
+    .settings-home-entry
+    .settings-section__toggle {
+    border-color: var(--border-subtle);
+    background: var(--surface-card);
+    box-shadow: none;
+  }
+
+  html[data-max-theme='dark']
+    body.settings-home-page-open
+    .settings-sections--chat-home
+    .settings-home-entry
+    .settings-section__toggle[aria-expanded='true'] {
+    background: var(--surface-card-muted);
+  }
+
+  html[data-max-theme='dark']
+    body.settings-home-page-open
+    .settings-sections--chat-home
+    .settings-section__status-chip {
+    color: var(--text-secondary);
+  }
+
+  html[data-max-theme='dark']
+    body.settings-home-page-open
+    .settings-sections--chat-home
+    .settings-section__status-chip.is-sky {
+    color: var(--accent);
+  }
+
+  html[data-max-theme='dark']
+    body.settings-home-page-open
+    .settings-sections--chat-home
+    .settings-section__status-chip.is-mint {
+    color: var(--success);
+  }
+
+  html[data-max-theme='dark']
+    body.settings-home-page-open
+    .settings-sections--chat-home
+    .settings-section__status-chip.is-amber {
+    color: var(--warning);
+  }
+
+  html[data-max-theme='dark']
+    body.settings-home-page-open
+    .settings-sections--chat-home
+    .settings-section__status-chip.is-rose {
+    color: var(--danger);
+  }
+}

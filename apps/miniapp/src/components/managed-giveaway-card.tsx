@@ -10,6 +10,8 @@ import {
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  lazy,
+  Suspense,
   useEffect,
   useMemo,
   useRef,
@@ -56,6 +58,11 @@ const FINISH_PRESETS = [
   { hours: 168, label: '7 дней' },
 ] as const;
 
+const LazyActionConfirmSheet = lazy(async () => {
+  const module = await import('./ui/action-confirm-sheet');
+  return { default: module.ActionConfirmSheet };
+});
+
 type GiveawayEditorMode = 'closed' | 'create' | 'edit';
 type GiveawayEditorStepId = 'basics' | 'conditions' | 'prizes';
 type GiveawayPrizeMode = 'same' | 'different';
@@ -72,6 +79,13 @@ type GiveawayHintKey =
   | 'prizes';
 type GiveawayValidationResult = { valid: boolean; message: string };
 type GiveawayValidationFocusTarget = 'title' | 'endsAt' | 'channels' | 'prizes';
+type GiveawayConfirmationAction =
+  | { kind: 'discard-editor'; origin: 'back' | 'reset' }
+  | { kind: 'cancel-draft'; giveawayId: string }
+  | { kind: 'close'; giveawayId: string; title: string }
+  | { kind: 'reroll'; giveawayId: string; winnerId: string; winnerName: string }
+  | { kind: 'deliver'; giveawayId: string; winnerId: string; winnerName: string }
+  | { kind: 'delete'; giveawayId: string; title: string };
 
 type GiveawayEditorDraft = {
   title: string;
@@ -736,6 +750,9 @@ export function ManagedGiveawayCard({
   const [validationHint, setValidationHint] = useState('');
   const [editorStep, setEditorStep] = useState<GiveawayEditorStepId>('basics');
   const [openHintKey, setOpenHintKey] = useState<GiveawayHintKey | null>(null);
+  const [pendingConfirmation, setPendingConfirmation] = useState<GiveawayConfirmationAction | null>(
+    null,
+  );
   const [channelModalOpen, setChannelModalOpen] = useState(false);
   const [channelModalSelection, setChannelModalSelection] = useState<string[]>([]);
   const [channelLinkValue, setChannelLinkValue] = useState('');
@@ -979,6 +996,9 @@ export function ManagedGiveawayCard({
     editorMode === 'edit'
       ? Boolean(draft && savedSnapshot && !isDraftEqual(draft, savedSnapshot))
       : true;
+  const hasUnsavedEditorChanges = Boolean(
+    draft && savedSnapshot && !isDraftEqual(draft, savedSnapshot),
+  );
   const blankValidation = useMemo<GiveawayValidationResult>(
     () => ({ valid: false, message: 'Черновик не заполнен.' }),
     [],
@@ -1152,6 +1172,7 @@ export function ManagedGiveawayCard({
     deleteMutation.isPending;
 
   const clearEditor = () => {
+    setPendingConfirmation(null);
     setEditorMode('closed');
     setEditingGiveawayId(null);
     setDraft(null);
@@ -1520,35 +1541,37 @@ export function ManagedGiveawayCard({
     }
   };
 
-  const closeFeaturedGiveaway = async () => {
-    if (!featuredItem) {
-      return;
+  const closeFeaturedGiveaway = async (giveawayId: string): Promise<boolean> => {
+    if (!giveawayId) {
+      return false;
     }
 
     try {
-      await closeMutation.mutateAsync(featuredItem.id);
+      await closeMutation.mutateAsync(giveawayId);
       await refetchManagedGiveaways();
       pushToast({
         tone: 'success',
         title: 'Розыгрыш завершён',
       });
+      return true;
     } catch (error: unknown) {
       pushToast({
         tone: 'danger',
         title: 'Не удалось завершить розыгрыш',
         description: formatApiError(error, 'Не удалось завершить розыгрыш.'),
       });
+      return false;
     }
   };
 
-  const rerollFeaturedWinner = async (winnerId: string) => {
-    if (!featuredItem) {
-      return;
+  const rerollFeaturedWinner = async (giveawayId: string, winnerId: string): Promise<boolean> => {
+    if (!giveawayId || !winnerId) {
+      return false;
     }
 
     try {
       await rerollMutation.mutateAsync({
-        giveawayId: featuredItem.id,
+        giveawayId,
         winnerId,
       });
       await refetchManagedGiveaways();
@@ -1556,23 +1579,28 @@ export function ManagedGiveawayCard({
         tone: 'success',
         title: 'Реролл выполнен',
       });
+      return true;
     } catch (error: unknown) {
       pushToast({
         tone: 'danger',
         title: 'Не удалось сделать реролл',
         description: formatApiError(error, 'Не удалось сделать реролл.'),
       });
+      return false;
     }
   };
 
-  const markFeaturedWinnerDelivered = async (winnerId: string) => {
-    if (!featuredItem) {
-      return;
+  const markFeaturedWinnerDelivered = async (
+    giveawayId: string,
+    winnerId: string,
+  ): Promise<boolean> => {
+    if (!giveawayId || !winnerId) {
+      return false;
     }
 
     try {
       await deliverMutation.mutateAsync({
-        giveawayId: featuredItem.id,
+        giveawayId,
         winnerId,
       });
       await refetchManagedGiveaways();
@@ -1580,33 +1608,37 @@ export function ManagedGiveawayCard({
         tone: 'success',
         title: 'Выдача отмечена',
       });
+      return true;
     } catch (error: unknown) {
       pushToast({
         tone: 'danger',
         title: 'Не удалось отметить выдачу',
         description: formatApiError(error, 'Не удалось отметить выдачу.'),
       });
+      return false;
     }
   };
 
-  const deleteFeaturedGiveaway = async () => {
-    if (!featuredItem) {
-      return;
+  const deleteFeaturedGiveaway = async (giveawayId: string): Promise<boolean> => {
+    if (!giveawayId) {
+      return false;
     }
 
     try {
-      await deleteMutation.mutateAsync(featuredItem.id);
+      await deleteMutation.mutateAsync(giveawayId);
       await refetchManagedGiveaways();
       pushToast({
         tone: 'success',
         title: 'Розыгрыш удалён',
       });
+      return true;
     } catch (error: unknown) {
       pushToast({
         tone: 'danger',
         title: 'Не удалось удалить розыгрыш',
         description: formatApiError(error, 'Не удалось удалить розыгрыш.'),
       });
+      return false;
     }
   };
 
@@ -1772,7 +1804,7 @@ export function ManagedGiveawayCard({
       const lastFilledPrize =
         current.prizeMode === 'same'
           ? current.samePrizeTitle
-          : [...current.prizes].reverse().find((item) => item.trim()) ?? '';
+          : ([...current.prizes].reverse().find((item) => item.trim()) ?? '');
       const extraPrizes = Array.from(
         { length: normalizedCount - current.prizes.length },
         () => lastFilledPrize,
@@ -1864,20 +1896,20 @@ export function ManagedGiveawayCard({
     void publishEditor();
   };
 
-  const cancelEditorDraft = async () => {
-    if (editorMode === 'create' || !editingGiveawayId) {
-      clearEditor();
-      return;
+  const cancelEditorDraft = async (giveawayId: string): Promise<boolean> => {
+    if (!giveawayId) {
+      return false;
     }
 
     try {
-      await cancelMutation.mutateAsync(editingGiveawayId);
+      await cancelMutation.mutateAsync(giveawayId);
       await refetchManagedGiveaways();
       clearEditor();
       pushToast({
         tone: 'success',
         title: 'Черновик удалён',
       });
+      return true;
     } catch (error: unknown) {
       const message = formatApiError(error, 'Не удалось отменить черновик.');
       setEditorError(message);
@@ -1886,7 +1918,146 @@ export function ManagedGiveawayCard({
         title: 'Не удалось удалить',
         description: message,
       });
+      return false;
     }
+  };
+
+  const requestCloseEditor = () => {
+    if (isBusy) {
+      return;
+    }
+
+    if (hasUnsavedEditorChanges) {
+      setPendingConfirmation({ kind: 'discard-editor', origin: 'back' });
+      return;
+    }
+
+    clearEditor();
+  };
+
+  const requestCancelEditorDraft = () => {
+    if (isBusy) {
+      return;
+    }
+
+    if (editorMode === 'edit' && editingGiveawayId) {
+      setPendingConfirmation({ kind: 'cancel-draft', giveawayId: editingGiveawayId });
+      return;
+    }
+
+    if (hasUnsavedEditorChanges) {
+      setPendingConfirmation({ kind: 'discard-editor', origin: 'reset' });
+      return;
+    }
+
+    clearEditor();
+  };
+
+  const requestCloseFeaturedGiveaway = () => {
+    if (!featuredItem || isBusy) {
+      return;
+    }
+
+    setPendingConfirmation({
+      kind: 'close',
+      giveawayId: featuredItem.id,
+      title: featuredItem.title.trim() || 'Этот розыгрыш',
+    });
+  };
+
+  const requestRerollFeaturedWinner = (winner: ManagedGiveawayWinner) => {
+    if (!featuredItem || isBusy) {
+      return;
+    }
+
+    setPendingConfirmation({
+      kind: 'reroll',
+      giveawayId: featuredItem.id,
+      winnerId: winner.id,
+      winnerName: winner.displayName?.trim() || 'текущий победитель',
+    });
+  };
+
+  const requestMarkFeaturedWinnerDelivered = (winner: ManagedGiveawayWinner) => {
+    if (!featuredItem || isBusy) {
+      return;
+    }
+
+    setPendingConfirmation({
+      kind: 'deliver',
+      giveawayId: featuredItem.id,
+      winnerId: winner.id,
+      winnerName: winner.displayName?.trim() || 'победитель',
+    });
+  };
+
+  const requestDeleteFeaturedGiveaway = () => {
+    if (!featuredItem || isBusy) {
+      return;
+    }
+
+    setPendingConfirmation({
+      kind: 'delete',
+      giveawayId: featuredItem.id,
+      title: featuredItem.title.trim() || 'Этот сценарий',
+    });
+  };
+
+  const confirmPendingAction = async () => {
+    const action = pendingConfirmation;
+    if (!action || isBusy) {
+      return;
+    }
+
+    if (action.kind === 'discard-editor') {
+      clearEditor();
+      return;
+    }
+
+    if (action.kind === 'cancel-draft') {
+      if (await cancelEditorDraft(action.giveawayId)) {
+        setPendingConfirmation(null);
+      }
+      return;
+    }
+
+    if (action.kind === 'close') {
+      if (await closeFeaturedGiveaway(action.giveawayId)) {
+        setPendingConfirmation(null);
+      }
+      return;
+    }
+
+    if (action.kind === 'reroll') {
+      if (await rerollFeaturedWinner(action.giveawayId, action.winnerId)) {
+        setPendingConfirmation(null);
+      }
+      return;
+    }
+
+    if (action.kind === 'deliver') {
+      if (await markFeaturedWinnerDelivered(action.giveawayId, action.winnerId)) {
+        setPendingConfirmation(null);
+      }
+      return;
+    }
+
+    if (await deleteFeaturedGiveaway(action.giveawayId)) {
+      setPendingConfirmation(null);
+    }
+  };
+
+  const saveAndCloseEditor = async () => {
+    if (!validation.valid || isBusy) {
+      return;
+    }
+
+    const saved = await saveEditor();
+    if (!saved) {
+      return;
+    }
+
+    clearEditor();
   };
 
   const editorStatusLabel = buildEditorStatusLabel({
@@ -1896,6 +2067,9 @@ export function ManagedGiveawayCard({
     loadingDetails: draftDetailsQuery.isLoading,
   });
   const isEditingOpen = editorMode !== 'closed';
+  useEffect(() => {
+    void import('./ui/action-confirm-sheet');
+  }, []);
   useNativeBackHandler(
     () => {
       setOpenHintKey(null);
@@ -1913,13 +2087,13 @@ export function ManagedGiveawayCard({
   useNativeBackHandler(
     () => {
       if (isBusy) {
-        return false;
+        return true;
       }
 
-      clearEditor();
+      requestCloseEditor();
       return true;
     },
-    { enabled: isEditingOpen, priority: 540 },
+    { enabled: isEditingOpen && pendingConfirmation === null, priority: 540 },
   );
   const publicationTextReady = Boolean(draft?.description.trim());
   const canSaveEditor = Boolean(draft) && validation.valid && (editorMode === 'create' || isDirty);
@@ -2220,9 +2394,7 @@ export function ManagedGiveawayCard({
                 type="button"
                 className="button button--accent"
                 disabled={isBusy}
-                onClick={() => {
-                  void closeFeaturedGiveaway();
-                }}
+                onClick={requestCloseFeaturedGiveaway}
               >
                 {closeMutation.isPending ? 'Завершаем…' : 'Завершить сейчас'}
               </button>
@@ -2242,9 +2414,7 @@ export function ManagedGiveawayCard({
                 type="button"
                 className="button button--ghost managed-giveaway__dashboard-link managed-giveaway__dashboard-link--danger"
                 disabled={isBusy}
-                onClick={() => {
-                  void deleteFeaturedGiveaway();
-                }}
+                onClick={requestDeleteFeaturedGiveaway}
               >
                 {deleteMutation.isPending ? 'Удаляем…' : 'Удалить сценарий'}
               </button>
@@ -2303,9 +2473,7 @@ export function ManagedGiveawayCard({
                                 type="button"
                                 className="button button--ghost managed-giveaway__dashboard-link"
                                 disabled={isBusy}
-                                onClick={() => {
-                                  void markFeaturedWinnerDelivered(winner.id);
-                                }}
+                                onClick={() => requestMarkFeaturedWinnerDelivered(winner)}
                               >
                                 {deliverMutation.isPending ? 'Сохраняем…' : 'Выдано'}
                               </button>
@@ -2315,9 +2483,7 @@ export function ManagedGiveawayCard({
                                 type="button"
                                 className="button button--ghost managed-giveaway__dashboard-link"
                                 disabled={isBusy}
-                                onClick={() => {
-                                  void rerollFeaturedWinner(winner.id);
-                                }}
+                                onClick={() => requestRerollFeaturedWinner(winner)}
                               >
                                 {rerollMutation.isPending ? 'Рероллим…' : 'Реролл'}
                               </button>
@@ -2431,7 +2597,7 @@ export function ManagedGiveawayCard({
             <button
               type="button"
               className="button button--ghost managed-giveaway__hero-button managed-giveaway__hero-button--danger"
-              onClick={cancelEditorDraft}
+              onClick={requestCancelEditorDraft}
               disabled={isBusy}
             >
               {cancelMutation.isPending
@@ -2864,11 +3030,7 @@ export function ManagedGiveawayCard({
                 </div>
               </div>
 
-              <div
-                className="managed-giveaway__prize-mode"
-                role="group"
-                aria-label="Тип призов"
-              >
+              <div className="managed-giveaway__prize-mode" role="group" aria-label="Тип призов">
                 <button
                   type="button"
                   className={cn(
@@ -2958,7 +3120,9 @@ export function ManagedGiveawayCard({
                       maxLength={MANAGED_GIVEAWAY_PRIZE_TITLE_MAX_LENGTH}
                       aria-label="Одинаковый приз для всех мест"
                       aria-invalid={!prizesValidation.valid}
-                      aria-describedby={validationHint ? 'managed-giveaway-editor-alert' : undefined}
+                      aria-describedby={
+                        validationHint ? 'managed-giveaway-editor-alert' : undefined
+                      }
                       onChange={(event) =>
                         updateDraft((current) => ({
                           ...current,
@@ -3208,6 +3372,7 @@ export function ManagedGiveawayCard({
           role="dialog"
           aria-modal="true"
           aria-labelledby="managed-giveaway-modal-title"
+          aria-describedby="managed-giveaway-modal-description"
           tabIndex={-1}
         >
           <div className="managed-giveaway-modal__grabber" aria-hidden />
@@ -3216,7 +3381,9 @@ export function ManagedGiveawayCard({
             <div className="managed-giveaway-modal__head">
               <div>
                 <strong id="managed-giveaway-modal-title">Добавьте свои каналы</strong>
-                <small>Отметьте каналы, которые станут дополнительным условием участия.</small>
+                <small id="managed-giveaway-modal-description">
+                  Отметьте каналы, которые станут дополнительным условием участия.
+                </small>
               </div>
               <span className="managed-giveaway__badge is-muted">
                 {channelModalSelection.length}/{ownedSelectionLimitRemaining}
@@ -3313,6 +3480,75 @@ export function ManagedGiveawayCard({
     );
   };
 
+  const confirmationCopy = (() => {
+    if (!pendingConfirmation) {
+      return null;
+    }
+
+    switch (pendingConfirmation.kind) {
+      case 'discard-editor':
+        return {
+          title:
+            pendingConfirmation.origin === 'back' ? 'Выйти без сохранения?' : 'Сбросить изменения?',
+          summary:
+            pendingConfirmation.origin === 'back'
+              ? 'В черновике есть несохранённые изменения. Их можно сохранить перед выходом.'
+              : 'Черновик ещё не сохранён. Эти изменения будут потеряны.',
+          confirmLabel: pendingConfirmation.origin === 'back' ? 'Выйти без сохранения' : 'Сбросить',
+          confirmBusyLabel: 'Закрываем…',
+          cancelLabel: 'Продолжить редактирование',
+          tone: 'danger' as const,
+        };
+      case 'cancel-draft':
+        return {
+          title: 'Удалить черновик?',
+          summary: 'Черновик будет удалён без возможности восстановления.',
+          confirmLabel: 'Удалить черновик',
+          confirmBusyLabel: 'Удаляем…',
+          cancelLabel: 'Не удалять',
+          tone: 'danger' as const,
+        };
+      case 'close':
+        return {
+          title: 'Завершить розыгрыш?',
+          summary: `«${pendingConfirmation.title}» перейдёт к подведению итогов. Отменить это действие нельзя.`,
+          confirmLabel: 'Завершить',
+          confirmBusyLabel: 'Завершаем…',
+          cancelLabel: 'Не сейчас',
+          tone: 'danger' as const,
+        };
+      case 'reroll':
+        return {
+          title: 'Провести реролл?',
+          summary: `Победитель «${pendingConfirmation.winnerName}» будет заменён. Вернуть результат реролла нельзя.`,
+          confirmLabel: 'Провести реролл',
+          confirmBusyLabel: 'Рероллим…',
+          cancelLabel: 'Не сейчас',
+          tone: 'danger' as const,
+        };
+      case 'deliver':
+        return {
+          title: 'Отметить выдачу?',
+          summary: `«${pendingConfirmation.winnerName}» будет отмечен как получивший приз.`,
+          confirmLabel: 'Отметить выданным',
+          confirmBusyLabel: 'Сохраняем…',
+          cancelLabel: 'Не сейчас',
+          tone: 'accent' as const,
+        };
+      case 'delete':
+        return {
+          title: 'Удалить сценарий?',
+          summary: `«${pendingConfirmation.title}» будет удалён без возможности восстановления.`,
+          confirmLabel: 'Удалить сценарий',
+          confirmBusyLabel: 'Удаляем…',
+          cancelLabel: 'Не удалять',
+          tone: 'danger' as const,
+        };
+    }
+  })();
+  const canSaveBeforeExit =
+    pendingConfirmation?.kind === 'discard-editor' && Boolean(draft) && validation.valid;
+
   return (
     <div
       className={cn(
@@ -3341,6 +3577,39 @@ export function ManagedGiveawayCard({
       ) : null}
 
       {renderOwnedChannelsModal()}
+
+      {pendingConfirmation && confirmationCopy ? (
+        <Suspense fallback={null}>
+          <LazyActionConfirmSheet
+            id="managed-giveaway-confirmation"
+            open
+            title={confirmationCopy.title}
+            summary={confirmationCopy.summary}
+            tone={confirmationCopy.tone}
+            confirmLabel={confirmationCopy.confirmLabel}
+            confirmBusyLabel={confirmationCopy.confirmBusyLabel}
+            cancelLabel={confirmationCopy.cancelLabel}
+            isBusy={isBusy}
+            extraActionLabel={
+              pendingConfirmation.kind === 'discard-editor' ? 'Сохранить и выйти' : undefined
+            }
+            extraActionBusyLabel="Сохраняем…"
+            extraActionBusy={createMutation.isPending || updateMutation.isPending}
+            extraActionDisabled={!canSaveBeforeExit}
+            onExtraAction={
+              pendingConfirmation.kind === 'discard-editor'
+                ? () => {
+                    void saveAndCloseEditor();
+                  }
+                : undefined
+            }
+            onClose={() => setPendingConfirmation(null)}
+            onConfirm={() => {
+              void confirmPendingAction();
+            }}
+          />
+        </Suspense>
+      ) : null}
     </div>
   );
 }

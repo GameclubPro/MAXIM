@@ -10,11 +10,8 @@
   --comments-native-line-strong: rgba(50, 137, 194, 0.32);
   --comments-native-shadow: rgba(20, 55, 78, 0.13);
   --comments-native-shadow-soft: rgba(20, 55, 78, 0.075);
-  --comments-native-incoming: linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0.98),
-      rgba(248, 253, 253, 0.91)
-    ),
+  --comments-native-incoming:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 253, 253, 0.91)),
     rgba(255, 255, 255, 0.86);
   --comments-native-own: linear-gradient(145deg, #c7ecff, #a8dbfb 56%, #98d3f6);
   --comments-native-own-ink: #102e43;
@@ -26,7 +23,11 @@
   --comments-native-edge-inline: var(--comments-native-x);
   --comments-native-edge-top: 0px;
   --comments-native-edge-bottom: max(0px, var(--safe-bottom, 0px));
-  --comments-native-content-top: 10px;
+  --comments-native-header-height: 44px;
+  --comments-native-content-top: calc(
+    var(--comments-native-header-height) + 8px +
+      var(--comments-dialog-notification-top-nudge, 0px)
+  );
   --comments-native-top-bleed: var(--comments-dialog-top-bleed, 4px);
   --comments-native-notification-top: calc(
     1px + var(--comments-dialog-notification-top-nudge, 0px)
@@ -50,7 +51,8 @@
   --channel-dialog-comments-bubble-compact-max-width: min(calc(100% - 58px), 24rem);
   --channel-dialog-comments-bubble-own-medium-max-width: min(calc(100% - 50px), 30rem);
   --channel-dialog-comments-bubble-own-compact-max-width: min(calc(100% - 58px), 24rem);
-  min-height: calc(100% + var(--comments-native-top-bleed));
+  /* FLAG: The immersive shell owns the top bleed. Adding it here makes the dialog taller twice. */
+  min-height: 100%;
   padding: var(--comments-native-edge-top) var(--comments-native-edge-inline)
     var(--comments-native-edge-bottom);
   background: var(--comments-native-bg);
@@ -90,10 +92,58 @@
   top: 0;
   left: 0;
   right: 0;
-  min-height: 36px;
-  padding: 0 40px 0 0;
+  min-height: var(--comments-native-header-height);
+  padding: 0 48px 0 0;
   grid-template-columns: minmax(0, 1fr);
   pointer-events: none;
+}
+
+.channel-dialog-screen--comments .channel-dialog-comments-header__context {
+  position: absolute;
+  top: calc(var(--comments-native-notification-top) + 6px);
+  left: 0;
+  max-width: calc(100% - 48px);
+  min-width: 0;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 7px 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.62);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.58);
+  box-shadow:
+    0 6px 14px var(--comments-native-shadow-soft),
+    inset 0 1px 0 rgba(255, 255, 255, 0.68);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+}
+
+.channel-dialog-screen--comments .channel-dialog-comments-header__context strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--comments-native-ink);
+  font-size: 0.76rem;
+  font-weight: 820;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-dialog-screen--comments .channel-dialog-comments-header__context span {
+  min-width: 20px;
+  min-height: 20px;
+  padding: 0 5px;
+  border-radius: 7px;
+  background: rgba(35, 136, 209, 0.12);
+  color: rgba(20, 92, 137, 0.9);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.67rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 820;
+  line-height: 1;
 }
 
 .channel-dialog-screen--comments .channel-dialog-notifications {
@@ -103,8 +153,8 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-notifications__toggle {
-  width: 34px;
-  height: 34px;
+  width: 44px;
+  height: 44px;
   border-color: rgba(255, 255, 255, 0.68);
   border-radius: 10px;
   background:
@@ -256,12 +306,21 @@
   font-weight: 760;
 }
 
-.channel-dialog-screen--comments .channel-dialog-message.is-own .channel-dialog-message__meta strong,
-.channel-dialog-screen--comments .channel-dialog-message.is-own .channel-dialog-message__bubble p {
+.channel-dialog-screen--comments
+  .channel-dialog-message.is-own
+  .channel-dialog-message__meta
+  strong,
+.channel-dialog-screen--comments
+  .channel-dialog-message.is-own
+  .channel-dialog-message__bubble
+  p {
   color: var(--comments-native-own-ink);
 }
 
-.channel-dialog-screen--comments .channel-dialog-message.is-own .channel-dialog-message__meta time {
+.channel-dialog-screen--comments
+  .channel-dialog-message.is-own
+  .channel-dialog-message__meta
+  time {
   color: var(--comments-native-own-muted);
 }
 
@@ -295,7 +354,10 @@
   background: rgba(255, 255, 255, 0.36);
 }
 
-.channel-dialog-screen--comments .channel-dialog-message.is-own .channel-dialog-message__reply span {
+.channel-dialog-screen--comments
+  .channel-dialog-message.is-own
+  .channel-dialog-message__reply
+  span {
   color: rgba(16, 78, 118, 0.94);
 }
 
@@ -336,7 +398,9 @@
     inset 0 1px 0 rgba(255, 255, 255, 0.68);
 }
 
-.channel-dialog-screen--comments .channel-dialog-message.is-own .channel-dialog-message__file-pill {
+.channel-dialog-screen--comments
+  .channel-dialog-message.is-own
+  .channel-dialog-message__file-pill {
   border-color: rgba(67, 135, 177, 0.24);
   background: rgba(255, 255, 255, 0.36);
 }
@@ -725,7 +789,10 @@
 @media (max-width: 420px) {
   .channel-dialog-screen--comments {
     --comments-native-x: 7px;
-    --comments-native-content-top: 8px;
+    --comments-native-content-top: calc(
+      var(--comments-native-header-height) + 6px +
+        var(--comments-dialog-notification-top-nudge, 0px)
+    );
     --comments-compose-surface-padding: 6px;
     --comments-compose-surface-radius: 23px;
     --comments-compose-toolbar-height: 32px;
@@ -753,7 +820,6 @@
   .channel-dialog-screen--comments .channel-dialog-message__bubble {
     padding: 8px 11px 9px;
   }
-
 }
 
 @media (max-width: 370px) {
@@ -782,13 +848,14 @@
     --comments-native-line-strong: rgba(120, 185, 225, 0.32);
     --comments-native-shadow: rgba(0, 0, 0, 0.36);
     --comments-native-shadow-soft: rgba(0, 0, 0, 0.22);
-    --comments-native-incoming: linear-gradient(
-        180deg,
-        rgba(31, 49, 64, 0.94),
-        rgba(19, 35, 50, 0.9)
-      ),
+    --comments-native-incoming:
+      linear-gradient(180deg, rgba(31, 49, 64, 0.94), rgba(19, 35, 50, 0.9)),
       rgba(19, 35, 50, 0.84);
-    --comments-native-own: linear-gradient(145deg, rgba(47, 108, 148, 0.96), rgba(32, 83, 122, 0.94));
+    --comments-native-own: linear-gradient(
+      145deg,
+      rgba(47, 108, 148, 0.96),
+      rgba(32, 83, 122, 0.94)
+    );
     --comments-native-own-ink: rgba(238, 248, 252, 0.95);
     --comments-native-own-muted: rgba(196, 225, 240, 0.62);
   }
@@ -807,6 +874,19 @@
       100% 100%,
       max(100%, 520px) auto,
       100% 100%;
+  }
+
+  .channel-dialog-screen--comments .channel-dialog-comments-header__context {
+    border-color: rgba(255, 255, 255, 0.1);
+    background: rgba(12, 28, 42, 0.68);
+    box-shadow:
+      0 6px 14px var(--comments-native-shadow-soft),
+      inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  }
+
+  .channel-dialog-screen--comments .channel-dialog-comments-header__context span {
+    background: rgba(112, 186, 230, 0.18);
+    color: rgba(214, 239, 252, 0.94);
   }
 
   .channel-dialog-screen--comments .channel-dialog-message__bubble,
@@ -844,7 +924,9 @@
     color: rgba(194, 211, 230, 0.68);
   }
 
-  .channel-dialog-screen--comments .channel-dialog-message.is-own .channel-dialog-message__bubble {
+  .channel-dialog-screen--comments
+    .channel-dialog-message.is-own
+    .channel-dialog-message__bubble {
     border-color: rgba(120, 185, 225, 0.2);
     background: var(--comments-native-own);
   }

@@ -157,4 +157,41 @@
     padding: 18px;
   }
 }
+
+html[data-max-theme='dark'] .legal-page {
+  color-scheme: dark;
+}
+
+html[data-max-theme='dark'] .legal-hero__eyebrow {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+html[data-max-theme='dark'] .legal-hero__nav,
+html[data-max-theme='dark'] .legal-summary,
+html[data-max-theme='dark'] .legal-documents-note,
+html[data-max-theme='dark'] .legal-section,
+html[data-max-theme='dark'] .legal-footer {
+  border-color: var(--border-subtle);
+  background: var(--surface-card);
+  box-shadow: var(--shadow-xs);
+}
+
+html[data-max-theme='dark'] .legal-hero__nav a {
+  color: var(--text-secondary);
+}
+
+html[data-max-theme='dark'] .legal-hero__nav a.is-active {
+  color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark'] .legal-summary p:first-child {
+  color: var(--text-primary);
+}
+
+html[data-max-theme='dark'] .legal-inline-link {
+  color: var(--accent);
+}
 }

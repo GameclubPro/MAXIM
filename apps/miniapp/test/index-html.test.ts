@@ -9,3 +9,10 @@ test('MAX bridge script is loaded without blocking public legal routes', () => {
   assert.ok(match);
   assert.match(match[0], /\basync\b/u);
 });
+
+test('viewport keeps browser zoom available', () => {
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+
+  assert.doesNotMatch(html, /maximum-scale\s*=/iu);
+  assert.doesNotMatch(html, /user-scalable\s*=\s*no/iu);
+});

@@ -19,7 +19,6 @@ import '../styles/dashboard-events.css';
 import {
   startTransition,
   type CSSProperties,
-  type KeyboardEvent,
   type MouseEvent,
   useDeferredValue,
   useEffect,
@@ -432,22 +431,6 @@ function handleProfileLinkClick(
   event.preventDefault();
   event.stopPropagation();
   onActivate();
-}
-
-function handleExpandableCardKeyDown(
-  event: KeyboardEvent<HTMLDivElement>,
-  onToggle: () => void,
-): void {
-  if (event.key !== 'Enter' && event.key !== ' ') {
-    return;
-  }
-
-  if ((event.target as HTMLElement | null)?.closest('a')) {
-    return;
-  }
-
-  event.preventDefault();
-  onToggle();
 }
 
 function isManualUnban(violation: ViolationItem): boolean {
@@ -2335,8 +2318,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       ),
     enabled: Boolean(
       chatId &&
-        spammerDiagnosticsUserId &&
-        spammerDiagnosticsFullEnabledFor === spammerDiagnosticsUserId,
+      spammerDiagnosticsUserId &&
+      spammerDiagnosticsFullEnabledFor === spammerDiagnosticsUserId,
     ),
     staleTime: 60_000,
     gcTime: 10 * 60_000,
@@ -2350,13 +2333,12 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     spammerDiagnosticsFullQuery.data?.userId === spammerDiagnosticsUserId
       ? spammerDiagnosticsFullQuery.data
       : null;
-  const spammerDiagnostics =
-    spammerDiagnosticsFull ?? spammerDiagnosticsLight ?? null;
+  const spammerDiagnostics = spammerDiagnosticsFull ?? spammerDiagnosticsLight ?? null;
   const isSpammerDiagnosticsFullScheduled = Boolean(
     spammerDiagnosticsLight &&
-      !spammerDiagnosticsFull &&
-      spammerDiagnosticsUserId &&
-      spammerDiagnosticsFullEnabledFor !== spammerDiagnosticsUserId,
+    !spammerDiagnosticsFull &&
+    spammerDiagnosticsUserId &&
+    spammerDiagnosticsFullEnabledFor !== spammerDiagnosticsUserId,
   );
   const spammerDiagnosticsError =
     spammerDiagnosticsFullQuery.error && spammerDiagnostics
@@ -2369,12 +2351,11 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const isSpammerDiagnosticsRefreshing =
     Boolean(spammerDiagnostics) &&
     (spammerDiagnosticsLightQuery.isFetching || spammerDiagnosticsFullQuery.isFetching);
-  const isSpammerDiagnosticsLoadingDetails =
-    Boolean(
-      spammerDiagnosticsLight &&
-        !spammerDiagnosticsFull &&
-        (spammerDiagnosticsFullQuery.isFetching || isSpammerDiagnosticsFullScheduled),
-    );
+  const isSpammerDiagnosticsLoadingDetails = Boolean(
+    spammerDiagnosticsLight &&
+    !spammerDiagnosticsFull &&
+    (spammerDiagnosticsFullQuery.isFetching || isSpammerDiagnosticsFullScheduled),
+  );
 
   useEffect(() => {
     setSpammerDiagnosticsFullEnabledFor(null);
@@ -2931,7 +2912,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   ];
   const dashboardTitle =
     section === 'activity' ? 'События' : section === 'participants' ? 'Участники' : 'Модерация';
-  const dashboardSubtitle = '';
   const activateProfile = (
     userId: string,
     displayName: string,
@@ -3003,12 +2983,11 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         </header>
 
         <div className="events-stage__panel stagger-in">
-          <div className="events-primary-tabs" role="tablist" aria-label="Раздел статистики">
+          <div className="events-primary-tabs" role="group" aria-label="Раздел статистики">
             <div className="events-primary-tabs__track">
               <button
                 type="button"
-                role="tab"
-                aria-selected={section === 'moderation'}
+                aria-pressed={section === 'moderation'}
                 className={`events-primary-tab ${section === 'moderation' ? 'is-active' : ''}`}
                 onClick={() => handleSectionChange('moderation')}
               >
@@ -3020,8 +2999,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
               <button
                 type="button"
-                role="tab"
-                aria-selected={section === 'participants'}
+                aria-pressed={section === 'participants'}
                 className={`events-primary-tab ${section === 'participants' ? 'is-active' : ''}`}
                 onClick={() => handleSectionChange('participants')}
               >
@@ -3033,8 +3011,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
               <button
                 type="button"
-                role="tab"
-                aria-selected={section === 'activity'}
+                aria-pressed={section === 'activity'}
                 className={`events-primary-tab ${section === 'activity' ? 'is-active' : ''}`}
                 onClick={() => handleSectionChange('activity')}
               >
@@ -3057,13 +3034,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             }
           >
             <div className="events-dashboard__head">
-              <div className="events-dashboard__head-copy">
-                <strong>{dashboardTitle}</strong>
-                {dashboardSubtitle ? (
-                  <span className="events-dashboard__eyebrow">{dashboardSubtitle}</span>
-                ) : null}
-              </div>
-
               {section !== 'participants' ? (
                 <SegmentedControl
                   value={range}
@@ -3170,7 +3140,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           </section>
 
           {section === 'moderation' && dashboard ? (
-            <div className="events-screen__filters" role="tablist" aria-label="Фильтр модерации">
+            <div className="events-screen__filters" role="group" aria-label="Фильтр модерации">
               {filterOptions.map((option) => {
                 const active = option.value === eventsFilter;
 
@@ -3180,8 +3150,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                     type="button"
                     className={`events-filter-chip ${active ? 'is-active' : ''}`}
                     onClick={() => handleEventsFilterChange(option.value)}
-                    role="tab"
-                    aria-selected={active}
+                    aria-pressed={active}
                   >
                     <span>{option.label}</span>
                     <small>{option.count}</small>
@@ -3333,19 +3302,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                         isExpanded ? 'is-expanded' : ''
                       }`}
                     >
-                      <div
-                        className="event-feed-item__trigger"
-                        role="button"
-                        tabIndex={0}
-                        onClick={(event) => {
-                          if ((event.target as HTMLElement | null)?.closest('a')) {
-                            return;
-                          }
-                          toggleExpanded();
-                        }}
-                        onKeyDown={(event) => handleExpandableCardKeyDown(event, toggleExpanded)}
-                        aria-expanded={isExpanded}
-                      >
+                      <div className="event-feed-item__trigger">
                         {canOpenProfile ? (
                           <a
                             href={profileHandoffUrl || profileUrl || '#'}
@@ -3371,53 +3328,47 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                           />
                         )}
 
-                        <div className="event-feed-item__body">
-                          <div className="event-feed-item__headline">
-                            <div className="event-feed-item__identity">
-                              {canOpenProfile ? (
-                                <a
-                                  href={profileHandoffUrl || profileUrl || '#'}
-                                  className="event-feed-item__name-link"
-                                  onClick={(event) =>
-                                    handleProfileLinkClick(event, () =>
-                                      activateProfile(
-                                        violation.userId,
-                                        displayName,
-                                        profileHandoffUrl,
-                                      ),
-                                    )
-                                  }
-                                >
-                                  {displayName}
-                                </a>
-                              ) : (
+                        <button
+                          type="button"
+                          className="event-feed-item__expand"
+                          onClick={toggleExpanded}
+                          aria-expanded={isExpanded}
+                          aria-controls={`event-details-${violation.id}`}
+                          aria-label={`${isExpanded ? 'Скрыть' : 'Показать'} детали нарушения: ${displayName}`}
+                        >
+                          <span className="event-feed-item__body">
+                            <span className="event-feed-item__headline">
+                              <span className="event-feed-item__identity">
                                 <strong>{displayName}</strong>
-                              )}
-                              <div className="event-feed-item__stamp">
-                                <span
-                                  className={`event-feed-item__action event-feed-item__action--${actionToneMap[displayAction]}`}
-                                >
-                                  {actionLabelMap[displayAction]}
+                                <span className="event-feed-item__stamp">
+                                  <span
+                                    className={`event-feed-item__action event-feed-item__action--${actionToneMap[displayAction]}`}
+                                  >
+                                    {actionLabelMap[displayAction]}
+                                  </span>
+                                  <time dateTime={violation.createdAt}>
+                                    {formatViolationDate(violation.createdAt)}
+                                  </time>
                                 </span>
-                                <time dateTime={violation.createdAt}>
-                                  {formatViolationDate(violation.createdAt)}
-                                </time>
-                              </div>
-                            </div>
+                              </span>
 
-                            <span className="event-feed-item__toggle" aria-hidden="true">
-                              {isExpanded ? '−' : '+'}
+                              <span className="event-feed-item__toggle" aria-hidden="true">
+                                {isExpanded ? '−' : '+'}
+                              </span>
                             </span>
-                          </div>
 
-                          <p className="event-feed-item__summary">
-                            {violationReason || resolveViolationBlurb(violation)}
-                          </p>
-                        </div>
+                            <span className="event-feed-item__summary">
+                              {violationReason || resolveViolationBlurb(violation)}
+                            </span>
+                          </span>
+                        </button>
                       </div>
 
                       {isExpanded ? (
-                        <div className="event-feed-item__details">
+                        <div
+                          id={`event-details-${violation.id}`}
+                          className="event-feed-item__details"
+                        >
                           <div className="event-feed-item__reason">
                             <span>Причина</span>
                             <p>{violationReason || resolveViolationBlurb(violation)}</p>

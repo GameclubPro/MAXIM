@@ -62,7 +62,7 @@ export function BroadcastWorkspaceTabs({
 
   useEffect(() => {
     tabListRef.current
-      ?.querySelector<HTMLElement>('[aria-selected="true"]')
+      ?.querySelector<HTMLElement>('[aria-checked="true"]')
       ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }, [value]);
 

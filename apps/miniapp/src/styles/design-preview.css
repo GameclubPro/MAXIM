@@ -131,6 +131,7 @@
   padding-top: var(--design-preview-safe-top);
   padding-bottom: var(--design-preview-safe-bottom);
   border-radius: 28px;
+  background: var(--app-page-background);
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18);
 }
 

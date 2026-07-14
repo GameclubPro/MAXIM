@@ -1596,6 +1596,7 @@ function ChannelStatsOverview({
                 <small>Подписчиков</small>
                 <strong>{formatCount(summary.subscribers.current)}</strong>
               </header>
+              <span className="channel-summary-card__scope">Контрольные периоды</span>
               <div className="channel-summary-card__rows">
                 <span>
                   <small>Сегодня</small>
@@ -1623,6 +1624,7 @@ function ChannelStatsOverview({
                 <small>Просмотров на пост</small>
                 <strong>{formatCount(selectedPeriodAverageViews)}</strong>
               </header>
+              <span className="channel-summary-card__scope">Оперативные показатели</span>
               <div className="channel-summary-card__rows">
                 <span>
                   <small>За 24ч</small>

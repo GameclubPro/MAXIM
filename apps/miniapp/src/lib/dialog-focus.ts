@@ -9,6 +9,16 @@ function getDialogFocusableElements(scope: HTMLElement): HTMLElement[] {
   );
 }
 
+export function isTopmostModalDialog(panel: HTMLElement): boolean {
+  const modalDialogs = Array.from(
+    document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]'),
+  ).filter(
+    (dialog) => !dialog.hasAttribute('hidden') && dialog.getAttribute('aria-hidden') !== 'true',
+  );
+
+  return modalDialogs[modalDialogs.length - 1] === panel;
+}
+
 export function useDialogFocusTrap<T extends HTMLElement>(
   open: boolean,
   panelRef: RefObject<HTMLElement | null>,
@@ -25,14 +35,16 @@ export function useDialogFocusTrap<T extends HTMLElement>(
     const restoreScope =
       restoreScopeCandidate instanceof HTMLElement ? restoreScopeCandidate : null;
     const focusFrame = window.requestAnimationFrame(() => {
-      (initialFocusRef.current ?? panelRef.current)?.focus();
+      const initialFocus = initialFocusRef.current;
+      const focusTarget = initialFocus?.matches(':disabled') ? panelRef.current : initialFocus;
+      (focusTarget ?? panelRef.current)?.focus();
     });
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Tab') {
         return;
       }
       const panel = panelRef.current;
-      if (!panel) {
+      if (!panel || !isTopmostModalDialog(panel)) {
         return;
       }
       const focusable = getDialogFocusableElements(panel);

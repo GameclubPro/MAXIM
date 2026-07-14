@@ -69,7 +69,7 @@ export function ActionConfirmSheet({
   useNativeBackHandler(
     () => {
       if (isBusy) {
-        return false;
+        return true;
       }
 
       onClose();
@@ -87,11 +87,14 @@ export function ActionConfirmSheet({
     const previousBodyOverflow = body.style.overflow;
     const previousDocumentOverflow = documentElement.style.overflow;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !isBusy) {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        onClose();
+      if (event.key !== 'Escape') {
         return;
+      }
+
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (!isBusy) {
+        onClose();
       }
     };
 

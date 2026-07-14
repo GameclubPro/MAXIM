@@ -160,6 +160,27 @@
   }
 }
 
+html[data-max-theme='dark'] .action-confirm-sheet__backdrop {
+  background: var(--color-scrim);
+}
+
+html[data-max-theme='dark'] .action-confirm-sheet__panel {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-lg);
+}
+
+html[data-max-theme='dark'] .action-confirm-sheet__preview,
+html[data-max-theme='dark'] .action-confirm-sheet__button--ghost {
+  border-color: var(--color-border);
+  background: var(--color-surface-muted);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark'] .action-confirm-sheet__button--ghost {
+  color: var(--text-primary);
+}
+
 @keyframes action-confirm-sheet-fade-in {
   from {
     opacity: 0;

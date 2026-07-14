@@ -94,6 +94,7 @@ import {
   openMaxBotLink,
   openMaxBotLinkAndClose,
 } from '../lib/max-bridge';
+import { useDialogFocusTrap } from '../lib/dialog-focus';
 import { useNativeBackHandler } from '../lib/native-back';
 import { queryKeys } from '../lib/query-keys';
 import { tokenizeTextLinks } from '../lib/text-links';
@@ -1432,6 +1433,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const scrollViewportRef = useRef<HTMLElement | null>(null);
   const suggestComposerRef = useRef<HTMLElement | null>(null);
   const notificationToggleRef = useRef<HTMLButtonElement | null>(null);
+  const imageViewerPanelRef = useRef<HTMLElement | null>(null);
+  const imageViewerCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const commentsNotificationTopNudgeRef = useRef(0);
   const reactionPopoverRef = useRef<HTMLDivElement | null>(null);
   const lastMessageIdRef = useRef<string | null>(null);
@@ -1531,6 +1534,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     const previousDocumentOverflow = documentElement.style.overflow;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopImmediatePropagation();
         closeCommentImageAlbum();
         return;
       }
@@ -1675,6 +1680,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     ? getCommentAttachmentViewerUrl(activeViewerAttachment)
     : '';
 
+  useDialogFocusTrap(Boolean(imageViewer), imageViewerPanelRef, imageViewerCloseButtonRef);
+  useDialogFocusTrap(Boolean(activeMessage), reactionPopoverRef, reactionPopoverRef);
+
   const clearMessagePress = () => {
     if (pressTimerRef.current !== null && typeof window !== 'undefined') {
       window.clearTimeout(pressTimerRef.current);
@@ -1708,6 +1716,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       : 0;
 
     setActiveMessageId(null);
+    setIsComposeEmojiOpen(false);
+    setIsNotificationSettingsOpen(false);
     setImageViewer({
       attachments: viewerAttachments,
       activeIndex,
@@ -1844,6 +1854,14 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     setIsComposeEmojiOpen(false);
     resetAttachmentPickers();
   };
+
+  useNativeBackHandler(
+    () => {
+      closeCommentImageAlbum();
+      return true;
+    },
+    { enabled: Boolean(imageViewer), priority: 720 },
+  );
 
   useNativeBackHandler(
     () => {
@@ -2907,9 +2925,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   });
   const profileHandoffMutation = useMutation({
     mutationFn: async ({ userId, displayName }: { userId: string; displayName: string }) => {
-      const { handoffEntityMemberProfile } = await import(
-        '../lib/api/member-profile-handoff-client'
-      );
+      const { handoffEntityMemberProfile } =
+        await import('../lib/api/member-profile-handoff-client');
       return handoffEntityMemberProfile(api, entityType, chatId, userId, { displayName });
     },
     onSuccess: (result) => {
@@ -3786,7 +3803,12 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       >
         {dialogType === 'comments' ? (
           <div className="channel-dialog-comments-header">
-            <span className="channel-dialog-comments-header__spacer" aria-hidden />
+            <div className="channel-dialog-comments-header__context">
+              <strong>{viewModel.title}</strong>
+              {dialogQuery.isSuccess ? (
+                <span aria-label={`Комментариев: ${messages.length}`}>{messages.length}</span>
+              ) : null}
+            </div>
 
             <div className="channel-dialog-notifications">
               <button
@@ -4573,7 +4595,11 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                       <CloseIcon />
                     </button>
                   </div>
-                  <div className="channel-dialog-compose__emoji-tabs" role="tablist">
+                  <div
+                    className="channel-dialog-compose__emoji-tabs"
+                    role="group"
+                    aria-label="Группа эмодзи"
+                  >
                     {COMMENT_COMPOSE_EMOJI_GROUPS.map((group) => (
                       <button
                         key={group.id}
@@ -4582,8 +4608,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                           'channel-dialog-compose__emoji-tab',
                           group.id === activeComposeEmojiGroup.id && 'is-active',
                         )}
-                        role="tab"
-                        aria-selected={group.id === activeComposeEmojiGroup.id}
+                        aria-pressed={group.id === activeComposeEmojiGroup.id}
                         onClick={() => setActiveComposeEmojiGroupId(group.id)}
                       >
                         {group.label}
@@ -4613,6 +4638,13 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                     rows={1}
                     value={draft}
                     onChange={(event) => setDraft(event.target.value)}
+                    aria-label={
+                      editingMessage
+                        ? 'Текст редактируемого комментария'
+                        : replyTarget
+                          ? 'Текст ответа'
+                          : 'Текст комментария'
+                    }
                     placeholder={
                       editingMessage
                         ? editingMessage.attachments.length > 0 && !editingMessage.text.trim()
@@ -4657,7 +4689,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
       {imageViewer && activeViewerAttachment && activeViewerImageSrc
         ? createPortal(
-            <div className="channel-dialog-image-viewer" aria-hidden={false}>
+            <div className="channel-dialog-image-viewer">
               <button
                 type="button"
                 className="channel-dialog-image-viewer__backdrop"
@@ -4666,10 +4698,12 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
               />
 
               <section
+                ref={imageViewerPanelRef}
                 className="channel-dialog-image-viewer__panel"
                 role="dialog"
                 aria-modal="true"
                 aria-label="Просмотр фото"
+                tabIndex={-1}
               >
                 <div className="channel-dialog-image-viewer__topbar">
                   {imageViewer.attachments.length > 1 ? (
@@ -4680,6 +4714,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                     <span aria-hidden />
                   )}
                   <button
+                    ref={imageViewerCloseButtonRef}
                     type="button"
                     className="channel-dialog-image-viewer__close"
                     onClick={closeCommentImageAlbum}
@@ -4732,7 +4767,11 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                 </div>
 
                 {imageViewer.attachments.length > 1 ? (
-                  <div className="channel-dialog-image-viewer__thumbs" role="tablist">
+                  <div
+                    className="channel-dialog-image-viewer__thumbs"
+                    role="group"
+                    aria-label="Фото в сообщении"
+                  >
                     {imageViewer.attachments.map((attachment, attachmentIndex) => {
                       const previewUrl = getCommentAttachmentPreviewUrl(attachment);
                       const fileName = attachment.fileName?.trim() || `Фото ${attachmentIndex + 1}`;
@@ -4756,8 +4795,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                                 : current,
                             );
                           }}
-                          role="tab"
-                          aria-selected={attachmentIndex === imageViewer.activeIndex}
+                          aria-pressed={attachmentIndex === imageViewer.activeIndex}
                           aria-label={`Открыть ${fileName}`}
                         >
                           {previewUrl ? <img src={previewUrl} alt="" loading="lazy" /> : null}
@@ -4784,7 +4822,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   !reactionPopoverLayout && 'is-measuring',
                 )}
                 role="dialog"
+                aria-modal="true"
                 aria-label="Действия с комментарием"
+                tabIndex={-1}
                 style={
                   reactionPopoverLayout
                     ? {

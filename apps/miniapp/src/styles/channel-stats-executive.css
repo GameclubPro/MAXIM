@@ -10,7 +10,12 @@
   overflow: visible;
   border-radius: 18px;
   background:
-    linear-gradient(135deg, var(--color-surface), var(--surface-card-muted) 58%, var(--surface-card)),
+    linear-gradient(
+      135deg,
+      var(--color-surface),
+      var(--surface-card-muted) 58%,
+      var(--surface-card)
+    ),
     var(--surface-card);
   box-shadow:
     var(--shadow-md),
@@ -122,8 +127,7 @@
   border: 1px solid var(--border-subtle);
   border-radius: 14px;
   background:
-    linear-gradient(135deg, var(--surface-card), var(--surface-card-muted)),
-    var(--surface-card);
+    linear-gradient(135deg, var(--surface-card), var(--surface-card-muted)), var(--surface-card);
   box-shadow: var(--shadow-xs);
 }
 
@@ -175,7 +179,11 @@
 }
 
 .channel-posts-chart__preview--image::after {
-  background: linear-gradient(180deg, transparent 56%, color-mix(in srgb, var(--text-primary) 36%, transparent));
+  background: linear-gradient(
+    180deg,
+    transparent 56%,
+    color-mix(in srgb, var(--text-primary) 36%, transparent)
+  );
 }
 
 .channel-posts-chart__preview img {
@@ -384,7 +392,12 @@ body.channel-stats-page-open .channel-insights__body {
   padding: clamp(12px, 2vw, 16px);
   border-radius: 18px;
   background:
-    linear-gradient(180deg, var(--surface-card), var(--surface-card-muted) 58%, var(--surface-card)),
+    linear-gradient(
+      180deg,
+      var(--surface-card),
+      var(--surface-card-muted) 58%,
+      var(--surface-card)
+    ),
     var(--surface-card);
 }
 
@@ -445,7 +458,7 @@ body.channel-stats-page-open .channel-insights__body {
   font-weight: 880;
 }
 
-.channel-insights__chart-controls .segmented-control__item[aria-selected='true'],
+.channel-insights__chart-controls .segmented-control__item[aria-checked='true'],
 .channel-insights__chart-controls .segmented-control__item.is-active {
   color: var(--accent);
   background: var(--color-surface);
@@ -648,15 +661,11 @@ body.channel-stats-page-open .channel-insights__body {
 }
 
 .channel-summary-card--subscribers {
-  background:
-    linear-gradient(145deg, var(--accent-soft), transparent 48%),
-    var(--surface-card);
+  background: linear-gradient(145deg, var(--accent-soft), transparent 48%), var(--surface-card);
 }
 
 .channel-summary-card--views {
-  background:
-    linear-gradient(145deg, var(--accent-soft), transparent 48%),
-    var(--surface-card);
+  background: linear-gradient(145deg, var(--accent-soft), transparent 48%), var(--surface-card);
 }
 
 .channel-summary-card__rows {
@@ -1435,7 +1444,12 @@ body.channel-stats-page-open .bottom-nav::after {
   border-radius: 14px;
   background:
     radial-gradient(circle at 50% 0%, var(--accent-soft), transparent 36%),
-    linear-gradient(180deg, var(--color-surface) 0%, var(--audience-board-soft) 55%, var(--color-surface) 100%);
+    linear-gradient(
+      180deg,
+      var(--color-surface) 0%,
+      var(--audience-board-soft) 55%,
+      var(--color-surface) 100%
+    );
   box-shadow:
     var(--audience-board-shadow),
     0 1px 0 var(--color-surface) inset;
@@ -1456,11 +1470,7 @@ body.channel-stats-page-open .bottom-nav::after {
   height: 11px;
   flex: 0 0 11px;
   border-radius: 999px;
-  background: linear-gradient(
-    180deg,
-    var(--success),
-    var(--success)
-  );
+  background: linear-gradient(180deg, var(--success), var(--success));
   box-shadow: var(--shadow-xs);
 }
 
@@ -1915,5 +1925,4 @@ body.channel-stats-page-open .bottom-nav::after {
     padding: 7px 6px;
   }
 }
-
 }

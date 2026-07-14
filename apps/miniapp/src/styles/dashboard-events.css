@@ -246,9 +246,9 @@
 }
 
 .events-dashboard__head {
-  justify-content: space-between;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto;
+  justify-content: end;
   align-items: center;
   gap: 8px;
 }
@@ -1451,7 +1451,8 @@
   padding: 10px 11px;
   border-radius: 8px;
   border: 1px solid rgba(211, 224, 236, 0.76);
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0.96), rgba(248, 251, 253, 0.94)), #ffffff;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.96), rgba(248, 251, 253, 0.94)), #ffffff;
   box-shadow: 0 5px 12px rgba(31, 58, 84, 0.04);
 }
 
@@ -1638,6 +1639,24 @@
   padding: 9px 9px 9px 15px;
 }
 
+.event-feed-item__expand {
+  display: block;
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.event-feed-item__expand:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 54%, transparent);
+  outline-offset: 3px;
+  border-radius: 8px;
+}
+
 .event-feed-item__trigger:focus-visible {
   outline: 2px solid rgba(11, 132, 255, 0.42);
 }
@@ -1658,7 +1677,11 @@
 }
 
 .event-feed-item__avatar-link {
-  display: inline-flex;
+  display: inline-grid;
+  place-items: center;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
   text-decoration: none;
 }
 
@@ -2400,7 +2423,6 @@ body.events-page-open .app-shell {
     contain: layout paint style;
     contain-intrinsic-size: 72px;
   }
-
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2801,8 +2823,12 @@ body.events-page-open .app-shell {
 
   .event-feed-item__trigger {
     display: grid;
-    grid-template-columns: 32px minmax(0, 1fr);
+    grid-template-columns: 44px minmax(0, 1fr);
     gap: 8px;
+  }
+
+  .event-feed-item__expand {
+    grid-column: 2;
   }
 
   .event-feed-item__avatar {
@@ -3158,7 +3184,10 @@ body.events-page-open .membership-feed--immersive .membership-feed__toolbar {
   border-radius: 12px;
 }
 
-body.events-page-open .membership-feed--immersive .membership-feed__filters .segmented-control__item {
+body.events-page-open
+  .membership-feed--immersive
+  .membership-feed__filters
+  .segmented-control__item {
   min-height: 30px;
   border-radius: 9px;
   font-size: 0.66rem;
@@ -3276,7 +3305,6 @@ body.events-page-open .membership-feed--immersive .membership-feed__description 
   .events-dashboard__flow-card {
     padding: 8px;
   }
-
 }
 
 /* Final events polish: compact live summary and quiet loading states. */
@@ -3433,5 +3461,147 @@ body.events-page-open .membership-feed--immersive .membership-feed__description 
   .events-dashboard__activity {
     grid-template-columns: minmax(68px, 0.64fr) minmax(0, 1.36fr);
   }
+}
+
+html[data-max-theme='dark'] body.events-page-open {
+  background: var(--surface-page);
+}
+
+html[data-max-theme='dark'] .events-stage,
+html[data-max-theme='dark'] .events-stage--moderation,
+html[data-max-theme='dark'] .events-stage--activity,
+html[data-max-theme='dark'] .events-stage--participants {
+  border-color: var(--border-subtle);
+  background: var(--surface-page);
+  box-shadow: var(--shadow-xs);
+}
+
+html[data-max-theme='dark'] .events-stage__appbar-bar,
+html[data-max-theme='dark'] .events-primary-tabs,
+html[data-max-theme='dark'] .events-dashboard,
+html[data-max-theme='dark'] .events-dashboard__range,
+html[data-max-theme='dark'] .events-inline-state,
+html[data-max-theme='dark'] .spammer-review,
+html[data-max-theme='dark'] .spammer-review__entry,
+html[data-max-theme='dark'] .event-feed-item,
+html[data-max-theme='dark'] .logs-violation-item,
+html[data-max-theme='dark'] .membership-feed--immersive {
+  border-color: var(--border-subtle);
+  background: var(--surface-card);
+  box-shadow: var(--shadow-xs);
+}
+
+html[data-max-theme='dark'] .events-stage__back,
+html[data-max-theme='dark'] .events-dashboard__hero,
+html[data-max-theme='dark'] .events-dashboard__metric,
+html[data-max-theme='dark'] .events-dashboard__activity-balance,
+html[data-max-theme='dark'] .events-dashboard__flow-card,
+html[data-max-theme='dark'] .event-feed-item__details,
+html[data-max-theme='dark'] .logs-violation-item__ban-config {
+  border-color: var(--border-subtle);
+  background: var(--surface-card-muted);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark'] .events-stage__back,
+html[data-max-theme='dark'] .events-stage__appbar-copy strong,
+html[data-max-theme='dark'] .events-dashboard__head-copy strong,
+html[data-max-theme='dark'] .spammer-review__copy strong,
+html[data-max-theme='dark'] .events-dashboard__hero strong,
+html[data-max-theme='dark'] .events-dashboard__metric strong,
+html[data-max-theme='dark'] .events-dashboard__activity-balance strong,
+html[data-max-theme='dark'] .events-dashboard__flow-card strong,
+html[data-max-theme='dark'] .event-feed-item__reason p,
+html[data-max-theme='dark'] .event-feed-item__excerpt p,
+html[data-max-theme='dark'] .logs-violation-item__offender {
+  color: var(--text-primary);
+}
+
+html[data-max-theme='dark'] .events-stage__appbar-label,
+html[data-max-theme='dark'] .events-dashboard__eyebrow,
+html[data-max-theme='dark'] .spammer-review__label,
+html[data-max-theme='dark'] .events-dashboard__hero small,
+html[data-max-theme='dark'] .events-dashboard__metric small,
+html[data-max-theme='dark'] .events-dashboard__activity-balance small,
+html[data-max-theme='dark'] .events-dashboard__flow-card small,
+html[data-max-theme='dark'] .event-feed-item__stamp,
+html[data-max-theme='dark'] .event-feed-item__summary,
+html[data-max-theme='dark'] .logs-violation-item__date {
+  color: var(--text-muted);
+}
+
+html[data-max-theme='dark'] .events-primary-tab {
+  color: var(--text-secondary);
+}
+
+html[data-max-theme='dark'] .events-primary-tab.is-active,
+html[data-max-theme='dark'] .events-dashboard__range .segmented-control__item.is-active {
+  color: var(--theme-surface-muted);
+  background: var(--accent);
+}
+
+html[data-max-theme='dark'] .events-filter-chip,
+html[data-max-theme='dark'] .logs-violation-item__quick-button {
+  border-color: var(--border-subtle);
+  background: var(--surface-card-muted);
+  color: var(--text-secondary);
+}
+
+html[data-max-theme='dark'] .events-filter-chip small {
+  color: var(--text-muted);
+}
+
+html[data-max-theme='dark'] .events-filter-chip.is-active {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border-subtle));
+  background: var(--accent);
+  color: var(--theme-surface-muted);
+}
+
+html[data-max-theme='dark'] .events-filter-chip.is-active small {
+  color: inherit;
+}
+
+html[data-max-theme='dark'] .logs-violation-item__quick-button--danger {
+  border-color: color-mix(in srgb, var(--danger) 42%, var(--border-subtle));
+  background: color-mix(in srgb, var(--danger) 15%, var(--surface-card-muted));
+  color: var(--danger);
+}
+
+html[data-max-theme='dark'] .logs-violation-item__quick-button--warning,
+html[data-max-theme='dark'] .logs-violation-item__quick-button--warning.is-active {
+  border-color: color-mix(in srgb, var(--warning) 42%, var(--border-subtle));
+  background: color-mix(in srgb, var(--warning) 15%, var(--surface-card-muted));
+  color: var(--warning);
+}
+
+html[data-max-theme='dark'] .logs-violation-item__quick-button--success {
+border-color: color-mix(in srgb, var(--success) 42%, var(--border-subtle));
+background: color-mix(in srgb, var(--success) 15%, var(--surface-card-muted));
+color: var(--success);
+}
+
+html[data-max-theme='dark'] .logs-violation-item__moderation {
+border-color: var(--border-subtle);
+background: var(--surface-card-muted);
+}
+
+html[data-max-theme='dark'] .events-dashboard__hero--loading,
+html[data-max-theme='dark'] .events-dashboard__activity-balance--loading,
+html[data-max-theme='dark'] .events-dashboard__metric--loading,
+html[data-max-theme='dark'] .events-dashboard__flow-card--loading {
+  background: var(--surface-card-muted);
+}
+
+html[data-max-theme='dark'] .events-dashboard__flow-bar--loading {
+  background: color-mix(in srgb, var(--text-muted) 22%, transparent);
+}
+
+html[data-max-theme='dark'] .events-dashboard__skeleton-line {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--text-muted) 20%, transparent),
+    color-mix(in srgb, var(--color-surface) 42%, transparent),
+    color-mix(in srgb, var(--text-muted) 20%, transparent)
+  );
 }
 }

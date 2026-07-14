@@ -2340,6 +2340,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
               editing ? 'Изменения' : draft.timingMode === 'schedule' ? 'Расписание' : 'Публикация'
             }
             meta={formatTargetSummary(draft.targets)}
+            issues={validationIssues}
             busy={isBusy}
             testLabel="Отправить себе"
             compactTestLabel="Тест"

@@ -405,7 +405,8 @@ export function SettingsSectionToggle({
   const trimmedSummary = summary?.trim() ?? '';
   const trimmedStatus = status?.trim() ?? '';
   const hasStatus = trimmedStatus.length > 0;
-  const showStatus = hasStatus && !hideChevron;
+  // A tile can omit the decorative chevron without losing its useful live status.
+  const showStatus = hasStatus;
   const accessibleLabel = [title, trimmedStatus, trimmedSummary].filter(Boolean).join('. ');
 
   return (

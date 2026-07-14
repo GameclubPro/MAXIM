@@ -1,7 +1,7 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '../../lib/cn';
-import { useDialogFocusTrap } from '../../lib/dialog-focus';
+import { isTopmostModalDialog, useDialogFocusTrap } from '../../lib/dialog-focus';
 import { useNativeBackHandler } from '../../lib/native-back';
 import { useKeyboardOpen } from '../../lib/use-keyboard-open';
 
@@ -152,7 +152,12 @@ export function SettingsDrilldownPanel({
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        const panel = panelRef.current;
+        if (!panel || !isTopmostModalDialog(panel)) {
+          return;
+        }
         event.preventDefault();
+        event.stopImmediatePropagation();
         onClose();
         return;
       }

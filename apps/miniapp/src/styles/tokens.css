@@ -525,3 +525,138 @@ html[data-max-client='native'] {
     --app-viewport-height: 100dvh;
   }
 }
+
+/* Shared semantic palette. Route styles should consume these aliases instead of carrying a
+ * separate light-only surface palette. MAX sets data-max-theme after the bridge is available;
+ * the media fallback keeps standalone legal pages coherent before that happens. */
+:root {
+  color-scheme: light;
+
+  --theme-ink-strong: #14212c;
+  --theme-ink: #415462;
+  --theme-ink-muted: #6d7f8e;
+  --theme-accent: #1678d4;
+  --theme-accent-soft: rgba(22, 120, 212, 0.13);
+  --theme-success: #198760;
+  --theme-warning: #b96f08;
+  --theme-danger: #c33f50;
+  --theme-surface: #ffffff;
+  --theme-surface-raised: rgba(255, 255, 255, 0.96);
+  --theme-surface-muted: #f3f6f8;
+  --theme-surface-tint: #eaf2f7;
+  --theme-border: rgba(116, 138, 156, 0.2);
+  --theme-border-strong: rgba(94, 120, 141, 0.32);
+  --theme-scrim: rgba(10, 20, 29, 0.46);
+  --theme-glass-bg: rgba(255, 255, 255, 0.84);
+  --theme-shadow-xs: 0 4px 12px rgba(28, 48, 65, 0.06);
+  --theme-shadow-sm: 0 10px 24px rgba(28, 48, 65, 0.09);
+  --theme-shadow-md: 0 18px 38px rgba(20, 38, 54, 0.14);
+  --theme-shadow-lg: 0 28px 58px rgba(14, 28, 40, 0.2);
+  --app-page-background: #f3f6f8;
+  --app-focus-ring: rgba(22, 120, 212, 0.46);
+
+  --text-primary: var(--theme-ink-strong);
+  --text-secondary: var(--theme-ink);
+  --text-muted: var(--theme-ink-muted);
+  --accent: var(--theme-accent);
+  --accent-soft: var(--theme-accent-soft);
+  --success: var(--theme-success);
+  --warning: var(--theme-warning);
+  --danger: var(--theme-danger);
+  --color-ink: var(--theme-ink-strong);
+  --color-ink-muted: var(--theme-ink);
+  --color-ink-subtle: var(--theme-ink-muted);
+  --color-accent: var(--theme-accent);
+  --color-accent-soft: var(--theme-accent-soft);
+  --color-success: var(--theme-success);
+  --color-warning: var(--theme-warning);
+  --color-danger: var(--theme-danger);
+  --color-surface: var(--theme-surface);
+  --color-surface-raised: var(--theme-surface-raised);
+  --color-surface-muted: var(--theme-surface-muted);
+  --color-surface-tint: var(--theme-surface-tint);
+  --color-border: var(--theme-border);
+  --color-border-strong: var(--theme-border-strong);
+  --color-scrim: var(--theme-scrim);
+  --glass-bg: var(--theme-glass-bg);
+  --glass-border: var(--theme-border);
+  --glass-shadow: var(--theme-shadow-sm);
+  --surface-page: var(--theme-surface-muted);
+  --surface-card: var(--theme-surface-raised);
+  --surface-card-muted: var(--theme-surface-tint);
+  --surface-overlay: var(--theme-surface-raised);
+  --border-subtle: var(--theme-border);
+  --border-strong: var(--theme-border-strong);
+  --shadow-xs: var(--theme-shadow-xs);
+  --shadow-sm: var(--theme-shadow-sm);
+  --shadow-md: var(--theme-shadow-md);
+  --shadow-lg: var(--theme-shadow-lg);
+  --nav-surface: var(--theme-glass-bg);
+  --nav-border: var(--theme-border-strong);
+  --nav-scrim: var(--app-page-background);
+  --nav-item-ink: var(--theme-ink-muted);
+  --nav-icon-ink: var(--theme-ink);
+  --nav-active-ink: var(--theme-accent);
+  --nav-active-bg: var(--theme-accent-soft);
+  --nav-context-ink: color-mix(in srgb, var(--theme-ink-muted) 76%, transparent);
+}
+
+html[data-max-theme='light'] {
+  color-scheme: light;
+}
+
+html[data-max-theme='dark'] {
+  color-scheme: dark;
+
+  --theme-ink-strong: #edf3f7;
+  --theme-ink: #c3ced7;
+  --theme-ink-muted: #91a0ad;
+  --theme-accent: #6ab8ff;
+  --theme-accent-soft: rgba(106, 184, 255, 0.18);
+  --theme-success: #69cf9d;
+  --theme-warning: #ffc36d;
+  --theme-danger: #ff909d;
+  --theme-surface: #18232d;
+  --theme-surface-raised: rgba(24, 35, 45, 0.97);
+  --theme-surface-muted: #101820;
+  --theme-surface-tint: #1e2c37;
+  --theme-border: rgba(198, 215, 229, 0.15);
+  --theme-border-strong: rgba(206, 222, 234, 0.25);
+  --theme-scrim: rgba(0, 0, 0, 0.66);
+  --theme-glass-bg: rgba(21, 31, 41, 0.92);
+  --theme-shadow-xs: 0 4px 12px rgba(0, 0, 0, 0.2);
+  --theme-shadow-sm: 0 10px 24px rgba(0, 0, 0, 0.28);
+  --theme-shadow-md: 0 18px 38px rgba(0, 0, 0, 0.36);
+  --theme-shadow-lg: 0 28px 58px rgba(0, 0, 0, 0.48);
+  --app-page-background: #0d141b;
+  --app-focus-ring: rgba(132, 196, 255, 0.72);
+}
+
+@media (prefers-color-scheme: dark) {
+  html:not([data-max-theme]) {
+    color-scheme: dark;
+
+    --theme-ink-strong: #edf3f7;
+    --theme-ink: #c3ced7;
+    --theme-ink-muted: #91a0ad;
+    --theme-accent: #6ab8ff;
+    --theme-accent-soft: rgba(106, 184, 255, 0.18);
+    --theme-success: #69cf9d;
+    --theme-warning: #ffc36d;
+    --theme-danger: #ff909d;
+    --theme-surface: #18232d;
+    --theme-surface-raised: rgba(24, 35, 45, 0.97);
+    --theme-surface-muted: #101820;
+    --theme-surface-tint: #1e2c37;
+    --theme-border: rgba(198, 215, 229, 0.15);
+    --theme-border-strong: rgba(206, 222, 234, 0.25);
+    --theme-scrim: rgba(0, 0, 0, 0.66);
+    --theme-glass-bg: rgba(21, 31, 41, 0.92);
+    --theme-shadow-xs: 0 4px 12px rgba(0, 0, 0, 0.2);
+    --theme-shadow-sm: 0 10px 24px rgba(0, 0, 0, 0.28);
+    --theme-shadow-md: 0 18px 38px rgba(0, 0, 0, 0.36);
+    --theme-shadow-lg: 0 28px 58px rgba(0, 0, 0, 0.48);
+    --app-page-background: #0d141b;
+    --app-focus-ring: rgba(132, 196, 255, 0.72);
+  }
+}

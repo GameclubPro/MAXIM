@@ -2372,7 +2372,7 @@ body.chats-home-page-open .bottom-nav__label {
 }
 
 .chats-command {
-  --chats-command-control: 34px;
+  --chats-command-control: 40px;
   position: sticky;
   top: 0;
   display: grid;
@@ -2608,10 +2608,10 @@ body.chats-home-page-open .bottom-nav__label {
 
 .chat-card__action,
 .chat-card__favorite {
-  width: 36px;
-  min-width: 36px;
-  height: 36px;
-  border-radius: 13px;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  border-radius: 12px;
 }
 
 @media (max-width: 430px) {
@@ -2630,7 +2630,7 @@ body.chats-home-page-open .bottom-nav__label {
   }
 
   .chats-command {
-    --chats-command-control: 32px;
+    --chats-command-control: 40px;
     padding: 8px;
     border-radius: 16px;
   }
@@ -2662,7 +2662,7 @@ body.chats-home-page-open .bottom-nav__label {
   }
 
   .chat-card {
-    min-height: 72px;
+    min-height: 84px;
     padding: 9px;
     border-radius: 16px;
   }
@@ -2684,5 +2684,111 @@ body.chats-home-page-open .bottom-nav__label {
     height: 34px;
     border-radius: 12px;
   }
+}
+
+/* The home route owns several compact controls, so keep its final light-only overrides from
+ * leaking through the shared dark palette. */
+body.chats-home-page-open .bottom-nav__label {
+  font-size: 0.64rem;
+}
+
+html[data-max-theme='dark'] body.chats-home-page-open {
+  background: var(--surface-page);
+}
+
+html[data-max-theme='dark'] body.chats-home-page-open::after {
+  display: none;
+}
+
+html[data-max-theme='dark'] body.chats-home-page-open .bottom-nav {
+  border-color: var(--nav-border);
+  background: var(--nav-surface);
+  box-shadow:
+    var(--shadow-sm),
+    0 1px 0 color-mix(in srgb, var(--color-surface) 38%, transparent) inset;
+}
+
+html[data-max-theme='dark'] body.chats-home-page-open .bottom-nav__item {
+  color: var(--nav-item-ink);
+}
+
+html[data-max-theme='dark'] body.chats-home-page-open .bottom-nav__icon {
+  color: var(--nav-icon-ink);
+}
+
+html[data-max-theme='dark'] body.chats-home-page-open .bottom-nav__item.is-active {
+  color: var(--nav-active-ink);
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--nav-border));
+}
+
+html[data-max-theme='dark'] body.chats-home-page-open .bottom-nav__item.is-active::before {
+  background: var(--nav-active-bg);
+}
+
+html[data-max-theme='dark'] body.chats-home-page-open .bottom-nav__item.is-active::after {
+  background: var(--accent);
+}
+
+html[data-max-theme='dark']
+  body.chats-home-page-open
+  .bottom-nav__item.is-active
+  .bottom-nav__icon {
+  color: var(--nav-active-ink);
+}
+
+html[data-max-theme='dark'] .chats-home {
+  --chats-home-line: var(--border-subtle);
+  --chats-home-panel: var(--surface-card);
+}
+
+html[data-max-theme='dark'] .chats-command,
+html[data-max-theme='dark'] .chat-card {
+  border-color: var(--border-subtle);
+  background: var(--surface-card);
+  box-shadow: var(--shadow-xs);
+}
+
+html[data-max-theme='dark'] .chats-command__tabs,
+html[data-max-theme='dark'] .chats-command__field input,
+html[data-max-theme='dark'] .chat-card__link-label,
+html[data-max-theme='dark'] .chat-card__signal {
+  border-color: var(--border-subtle);
+  background: var(--surface-card-muted);
+}
+
+html[data-max-theme='dark'] .chats-command__tab,
+html[data-max-theme='dark'] .favorite-filter__chip {
+  color: var(--text-secondary);
+}
+
+html[data-max-theme='dark'] .chats-command__tab.is-active {
+  color: var(--text-primary);
+  background: var(--color-surface);
+}
+
+html[data-max-theme='dark'] .chats-command__icon-button,
+html[data-max-theme='dark'] .chat-card__action,
+html[data-max-theme='dark'] .chat-card__favorite:not(.is-active) {
+  border-color: var(--border-subtle);
+  background: var(--surface-card-muted);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark'] .chats-command__icon-button,
+html[data-max-theme='dark'] .chat-card__action {
+  color: var(--accent);
+}
+
+html[data-max-theme='dark'] .chat-card__favorite:not(.is-active) {
+  color: var(--text-secondary);
+}
+
+html[data-max-theme='dark'] .chats-command__icon-button:hover,
+html[data-max-theme='dark'] .chat-card__action:hover,
+html[data-max-theme='dark'] .chat-card__favorite:not(.is-active):hover {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border-strong));
+  color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: none;
 }
 }

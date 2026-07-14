@@ -2,9 +2,12 @@ import type {
   ChannelDialogNotificationMode,
   ChannelDialogNotificationScope,
 } from '@maxim/contracts';
+import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '../lib/cn';
+import { useDialogFocusTrap } from '../lib/dialog-focus';
 import type { LastEntityType } from '../lib/last-chat';
+import { useNativeBackHandler } from '../lib/native-back';
 import './channel-dialog-notification-sheet.css';
 
 type ChannelDialogNotificationSheetProps = {
@@ -65,6 +68,32 @@ export default function ChannelDialogNotificationSheet({
   onDraftScopeSelect,
   onApply,
 }: ChannelDialogNotificationSheetProps) {
+  const panelRef = useRef<HTMLElement | null>(null);
+  const cancelButtonRef = useRef<HTMLButtonElement | null>(null);
+  useDialogFocusTrap(true, panelRef, cancelButtonRef);
+  useNativeBackHandler(
+    () => {
+      onClose();
+      return true;
+    },
+    { priority: 700 },
+  );
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      onClose();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
   const modeOptions: ChannelDialogNotificationMode[] = [
     'replies',
     ...(canUseAllNotifications ? (['all'] as const) : []),
@@ -77,16 +106,21 @@ export default function ChannelDialogNotificationSheet({
       : getNotificationScopeLabel(selectedScope, entityType);
 
   return createPortal(
-    <div className="channel-dialog-notification-sheet" role="dialog" aria-modal="true">
+    <div className="channel-dialog-notification-sheet">
       <button
         type="button"
         className="channel-dialog-notification-sheet__backdrop"
         aria-label="Закрыть уведомления"
         onClick={onClose}
+        tabIndex={-1}
       />
       <section
+        ref={panelRef}
         className="channel-dialog-notification-sheet__panel"
+        role="dialog"
+        aria-modal="true"
         aria-labelledby="channel-dialog-notification-sheet-title"
+        tabIndex={-1}
       >
         <div className="channel-dialog-notification-sheet__grabber" aria-hidden />
         <header className="channel-dialog-notification-sheet__head">
@@ -135,6 +169,7 @@ export default function ChannelDialogNotificationSheet({
 
         <footer className="channel-dialog-notification-sheet__actions">
           <button
+            ref={cancelButtonRef}
             type="button"
             className="channel-dialog-notification-sheet__button channel-dialog-notification-sheet__button--ghost"
             onClick={onClose}

@@ -21,23 +21,16 @@
   display: grid;
   gap: 12px;
   padding: 14px;
-  border-radius: 26px;
-  border: 1px solid rgba(79, 108, 137, 0.12);
-  background:
-    radial-gradient(140% 120% at 0% 0%, rgba(11, 132, 255, 0.14), transparent 54%),
-    radial-gradient(120% 120% at 100% 0%, rgba(76, 186, 157, 0.12), transparent 46%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.995), rgba(246, 250, 255, 0.97));
-  box-shadow:
-    0 20px 40px rgba(17, 42, 66, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-surface-raised, var(--color-surface));
+  box-shadow: none;
 }
 
 .managed-giveaway__surface--editor {
   gap: 14px;
-  border-color: rgba(44, 122, 197, 0.14);
-  background:
-    radial-gradient(145% 120% at 0% 0%, rgba(11, 132, 255, 0.14), transparent 54%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.992), rgba(247, 251, 255, 0.974));
+  border-color: var(--color-border);
+  background: var(--color-surface-raised, var(--color-surface));
 }
 
 .managed-giveaway__hero-head {
@@ -55,7 +48,7 @@
 
 .managed-giveaway__hero-copy h2 {
   margin: 0;
-  color: #10283f;
+  color: var(--text-primary);
   font-size: clamp(1.1rem, 4.4vw, 1.42rem);
   line-height: 1.04;
   letter-spacing: 0;
@@ -63,7 +56,7 @@
 
 .managed-giveaway__hero-copy p {
   margin: 0;
-  color: #57718a;
+  color: var(--text-secondary);
   font-size: 0.77rem;
   line-height: 1.32;
   max-width: 28ch;
@@ -79,10 +72,10 @@
 .managed-giveaway__hero-button {
   min-height: 40px;
   padding: 0 11px;
-  border-radius: 999px;
-  border-color: rgba(77, 109, 138, 0.14);
-  background: rgba(255, 255, 255, 0.82);
-  color: #48657c;
+  border-radius: 8px;
+  border-color: var(--color-border);
+  background: var(--color-surface);
+  color: var(--text-secondary);
   font-size: 0.7rem;
   font-weight: 770;
   letter-spacing: 0;
@@ -97,19 +90,19 @@
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
-  padding: 3px;
-  border-radius: 20px;
-  border: 1px solid rgba(101, 128, 153, 0.1);
-  background: rgba(238, 245, 251, 0.92);
+  padding: 2px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-muted);
 }
 
 .managed-giveaway__step-pill {
   min-width: 0;
   display: grid;
   justify-items: start;
-  gap: 5px;
-  padding: 8px 10px;
-  border-radius: 16px;
+  gap: 4px;
+  padding: 7px 8px;
+  border-radius: 6px;
   border: 0;
   background: transparent;
   color: inherit;
@@ -122,7 +115,7 @@
 }
 
 .managed-giveaway__step-pill > strong {
-  color: #6c8297;
+  color: var(--text-secondary);
   font-size: 0.74rem;
   font-weight: 760;
   line-height: 1.18;
@@ -130,10 +123,8 @@
 }
 
 .managed-giveaway__step-pill.is-active {
-  background: rgba(255, 255, 255, 0.98);
-  box-shadow:
-    0 10px 20px rgba(29, 57, 85, 0.06),
-    inset 0 1px 0 rgba(255, 255, 255, 0.86);
+  background: var(--color-surface-raised, var(--color-surface));
+  box-shadow: none;
 }
 
 .managed-giveaway__step-pill.is-active > strong {
@@ -152,21 +143,19 @@
   width: 26px;
   min-height: 26px;
   border-radius: 999px;
-  border: 1px solid rgba(89, 117, 145, 0.12);
-  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
   color: var(--text-secondary);
   font-size: 0.68rem;
   font-weight: 800;
-  box-shadow:
-    0 8px 16px rgba(28, 55, 83, 0.06),
-    inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  box-shadow: none;
 }
 
 .managed-giveaway__step-pill.is-active .managed-giveaway__step-pill-index {
-  border-color: rgba(11, 132, 255, 0.32);
-  background: linear-gradient(145deg, #1593ff, #0a74e8);
+  border-color: var(--color-accent);
+  background: var(--color-accent);
   color: #fff;
-  box-shadow: 0 12px 24px rgba(11, 132, 255, 0.24);
+  box-shadow: none;
 }
 
 .managed-giveaway__step-pill.is-complete .managed-giveaway__step-pill-index {
@@ -182,18 +171,18 @@
 }
 
 .managed-giveaway__choice-card {
-  border: 1px solid rgba(89, 117, 145, 0.1);
-  border-radius: 16px;
-  background: rgba(247, 249, 252, 0.96);
-  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-muted);
+  padding: 10px 12px;
   text-align: left;
   color: inherit;
-  min-height: 52px;
+  min-height: 44px;
 }
 
 .managed-giveaway__choice-card.is-active {
-  border-color: rgba(11, 132, 255, 0.24);
-  background: rgba(231, 243, 255, 0.94);
+  border-color: color-mix(in srgb, var(--color-accent) 38%, var(--color-border));
+  background: var(--color-surface-tint);
 }
 
 .managed-giveaway__choice-copy {
@@ -267,13 +256,13 @@
 .managed-giveaway__primary-actions .button {
   width: 100%;
   min-height: 48px;
-  border-radius: 16px;
+  border-radius: 8px;
   font-size: 0.86rem;
   letter-spacing: 0;
 }
 
 .managed-giveaway__primary-actions .button--accent {
-  box-shadow: 0 16px 28px rgba(11, 132, 255, 0.22);
+  box-shadow: none;
 }
 
 .managed-giveaway__dashboard-stat-grid {
@@ -285,16 +274,14 @@
 .managed-giveaway__dashboard-stat {
   display: grid;
   gap: 4px;
-  padding: 13px 14px;
-  border-radius: 18px;
-  border: 1px solid rgba(89, 117, 145, 0.1);
-  background:
-    linear-gradient(160deg, rgba(255, 255, 255, 0.98), rgba(245, 249, 254, 0.94)),
-    rgba(247, 249, 252, 0.96);
+  padding: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-muted);
 }
 
 .managed-giveaway__dashboard-stat span {
-  color: #688198;
+  color: var(--text-secondary);
   font-size: 0.68rem;
   font-weight: 800;
   letter-spacing: 0.08em;
@@ -302,14 +289,14 @@
 }
 
 .managed-giveaway__dashboard-stat strong {
-  color: #10283f;
+  color: var(--text-primary);
   font-size: 1.1rem;
   line-height: 1.04;
   letter-spacing: 0;
 }
 
 .managed-giveaway__dashboard-stat small {
-  color: #60788f;
+  color: var(--text-secondary);
   font-size: 0.73rem;
   line-height: 1.36;
 }
@@ -317,16 +304,14 @@
 .managed-giveaway__dashboard-note {
   display: grid;
   gap: 5px;
-  padding: 13px 14px;
-  border-radius: 18px;
-  border: 1px solid rgba(44, 122, 197, 0.12);
-  background:
-    linear-gradient(160deg, rgba(239, 247, 255, 0.96), rgba(251, 253, 255, 0.94)),
-    rgba(255, 255, 255, 0.96);
+  padding: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-muted);
 }
 
 .managed-giveaway__dashboard-note strong {
-  color: #2d4b67;
+  color: var(--text-secondary);
   font-size: 0.74rem;
   font-weight: 820;
   letter-spacing: 0.08em;
@@ -335,7 +320,7 @@
 
 .managed-giveaway__dashboard-note p {
   margin: 0;
-  color: #143149;
+  color: var(--text-primary);
   font-size: 0.82rem;
   line-height: 1.48;
   display: -webkit-box;
@@ -357,16 +342,14 @@
   flex: 1 1 132px;
   display: grid;
   gap: 2px;
-  padding: 12px 13px;
-  border-radius: 18px;
-  border: 1px solid rgba(89, 117, 145, 0.1);
-  background:
-    linear-gradient(160deg, rgba(255, 255, 255, 0.98), rgba(245, 249, 254, 0.94)),
-    rgba(247, 249, 252, 0.96);
+  padding: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-muted);
 }
 
 .managed-giveaway__dashboard-prize-chip span {
-  color: #678198;
+  color: var(--text-secondary);
   font-size: 0.67rem;
   font-weight: 800;
   letter-spacing: 0.08em;
@@ -374,7 +357,7 @@
 }
 
 .managed-giveaway__dashboard-prize-chip strong {
-  color: #143149;
+  color: var(--text-primary);
   font-size: 0.82rem;
   line-height: 1.3;
 }
@@ -387,7 +370,7 @@
 .managed-giveaway__dashboard-link {
   min-height: 40px;
   padding-inline: 14px;
-  border-radius: 14px;
+  border-radius: 8px;
   font-size: 0.74rem;
   font-weight: 760;
 }
@@ -411,10 +394,10 @@
   grid-template-columns: auto minmax(0, 1fr);
   gap: 10px;
   align-items: start;
-  padding: 12px;
-  border-radius: 18px;
-  border: 1px solid rgba(89, 117, 145, 0.1);
-  background: rgba(255, 255, 255, 0.9);
+  padding: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-muted);
 }
 
 .managed-giveaway__dashboard-winner-rank {
@@ -438,13 +421,13 @@
 }
 
 .managed-giveaway__dashboard-winner-copy strong {
-  color: #10283f;
+  color: var(--text-primary);
   font-size: 0.85rem;
   line-height: 1.24;
 }
 
 .managed-giveaway__dashboard-winner-copy span {
-  color: #5e778e;
+  color: var(--text-secondary);
   font-size: 0.74rem;
   line-height: 1.34;
 }
@@ -553,16 +536,18 @@
 
 .managed-giveaway__section {
   display: grid;
-  gap: 12px;
-  padding: 14px;
-  border-radius: 20px;
-  border: 1px solid rgba(92, 120, 149, 0.1);
-  background:
-    linear-gradient(160deg, rgba(252, 253, 255, 0.98), rgba(246, 249, 253, 0.94)),
-    rgba(250, 251, 253, 0.88);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.82),
-    0 12px 24px rgba(30, 56, 83, 0.04);
+  gap: 10px;
+  padding: 12px 0;
+  border: 0;
+  border-top: 1px solid var(--color-border);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.managed-giveaway__step-stage > .managed-giveaway__section:first-child {
+  padding-top: 0;
+  border-top: 0;
 }
 
 .managed-giveaway__subsection {
@@ -603,9 +588,9 @@
 .managed-giveaway .field textarea,
 .managed-giveaway .field select {
   min-height: 46px;
-  border-radius: 14px;
-  border-color: rgba(86, 116, 145, 0.14);
-  background: rgba(255, 255, 255, 0.98);
+  border-radius: 8px;
+  border-color: var(--color-border);
+  background: var(--color-surface);
   padding-inline: 12px;
 }
 
@@ -647,7 +632,7 @@
   font-size: 0.71rem;
   line-height: 1.25;
   font-weight: 750;
-  color: #5e788f;
+  color: var(--text-secondary);
 }
 
 .managed-giveaway__editor-grid {
@@ -686,9 +671,9 @@
 .managed-giveaway__count-stepper-button {
   width: 42px;
   min-height: 42px;
-  border-radius: 14px;
-  border: 1px solid rgba(89, 117, 145, 0.12);
-  background: rgba(247, 249, 252, 0.96);
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
   color: var(--text-primary);
   font-size: 1.12rem;
   line-height: 1;
@@ -707,13 +692,13 @@
   justify-items: center;
   text-align: center;
   padding: 0 12px;
-  border-radius: 14px;
-  border: 1px solid rgba(89, 117, 145, 0.1);
-  background: rgba(247, 249, 252, 0.96);
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-muted);
 }
 
 .managed-giveaway__count-stepper-value span {
-  color: #70889d;
+  color: var(--text-secondary);
   font-size: 0.65rem;
   font-weight: 800;
   letter-spacing: 0.08em;
@@ -743,9 +728,9 @@
   display: inline-flex;
   align-items: center;
   min-width: 0;
-  border-radius: 16px;
-  border: 1px solid rgba(89, 117, 145, 0.12);
-  background: rgba(247, 249, 252, 0.96);
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-muted);
   padding: 0 12px;
   color: var(--text-primary);
   font-size: 0.8rem;
@@ -815,11 +800,9 @@
   gap: 0;
   min-width: 0;
   padding: 10px 12px;
-  border-radius: 16px;
-  border: 1px solid rgba(89, 117, 145, 0.1);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(245, 249, 253, 0.95)),
-    rgba(247, 249, 252, 0.96);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-muted);
 }
 
 .managed-giveaway__channel-copy strong {
@@ -840,10 +823,10 @@
 
 .managed-giveaway__prize-remove,
 .managed-giveaway__channel-remove {
-  border: 1px solid rgba(89, 117, 145, 0.12);
-  background: rgba(247, 249, 252, 0.96);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
   color: var(--text-secondary);
-  border-radius: 12px;
+  border-radius: 8px;
   min-width: 40px;
   min-height: 40px;
   font-size: 1rem;
@@ -869,10 +852,10 @@
 }
 
 .managed-giveaway__prize-remove {
-  border: 1px solid rgba(89, 117, 145, 0.12);
-  background: rgba(247, 249, 252, 0.96);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
   color: var(--text-secondary);
-  border-radius: 14px;
+  border-radius: 8px;
   min-width: 44px;
   min-height: 44px;
   font-size: 1rem;
@@ -947,7 +930,7 @@
 .managed-giveaway__channel-action {
   min-height: 38px;
   padding-inline: 14px;
-  border-radius: 14px;
+  border-radius: 8px;
   font-size: 0.74rem;
   font-weight: 760;
 }
@@ -955,11 +938,9 @@
 .managed-giveaway__channel-picker {
   display: grid;
   gap: 7px;
-  border-radius: 16px;
-  border: 1px solid rgba(89, 117, 145, 0.1);
-  background:
-    linear-gradient(180deg, rgba(249, 252, 255, 0.98), rgba(245, 248, 252, 0.96)),
-    rgba(247, 249, 252, 0.96);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-muted);
   padding: 10px;
 }
 
@@ -970,9 +951,9 @@
 }
 
 .managed-giveaway__channel-picker-item {
-  border: 1px solid rgba(89, 117, 145, 0.1);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
   color: var(--text-primary);
   min-height: 42px;
   padding: 0 12px;
@@ -1314,16 +1295,12 @@
   position: sticky;
   bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
   display: grid;
-  gap: 10px;
-  padding: 12px;
-  border-radius: 20px;
-  border: 1px solid rgba(44, 122, 197, 0.16);
-  background:
-    linear-gradient(160deg, rgba(244, 249, 255, 0.98), rgba(251, 253, 255, 0.96)),
-    rgba(255, 255, 255, 0.98);
-  box-shadow:
-    0 24px 44px rgba(10, 33, 53, 0.14),
-    inset 0 1px 0 rgba(255, 255, 255, 0.84);
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--color-border-strong, var(--color-border));
+  border-radius: 8px;
+  background: var(--color-surface-raised, var(--color-surface));
+  box-shadow: 0 -4px 12px color-mix(in srgb, var(--color-ink) 8%, transparent);
   z-index: 4;
 }
 
@@ -1374,12 +1351,12 @@
 .managed-giveaway__action-dock-actions .button {
   min-height: 46px;
   min-width: 0;
-  border-radius: 16px;
+  border-radius: 8px;
 }
 
 .managed-giveaway__action-dock-actions .button--ghost {
-  background: rgba(255, 255, 255, 0.9);
-  border-color: rgba(81, 112, 141, 0.14);
+  background: var(--color-surface);
+  border-color: var(--color-border);
 }
 
 .managed-giveaway__empty {
@@ -1455,14 +1432,10 @@
   padding: 16px;
   max-height: min(78dvh, 760px);
   overflow-y: auto;
-  border-radius: 28px;
-  border: 1px solid rgba(88, 118, 146, 0.16);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(242, 248, 255, 0.96)),
-    rgba(255, 255, 255, 0.98);
-  box-shadow:
-    0 24px 48px rgba(16, 38, 58, 0.16),
-    inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  background: var(--color-surface-raised, var(--color-surface));
+  box-shadow: 0 12px 28px color-mix(in srgb, var(--color-ink) 18%, transparent);
 }
 
 .managed-giveaway-modal__head {
@@ -1500,12 +1473,10 @@
   grid-template-columns: auto minmax(0, 1fr);
   gap: 12px;
   align-items: center;
-  padding: 14px;
-  border-radius: 20px;
-  border: 1px solid rgba(89, 117, 145, 0.12);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(245, 249, 253, 0.95)),
-    rgba(247, 249, 252, 0.96);
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-muted);
   cursor: pointer;
   transition:
     border-color 0.2s ease,
@@ -1521,16 +1492,14 @@
 }
 
 .managed-giveaway-modal__option:focus-within {
-  border-color: rgba(11, 132, 255, 0.32);
-  box-shadow:
-    0 0 0 3px rgba(11, 132, 255, 0.14),
-    0 12px 22px rgba(22, 69, 109, 0.08);
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 18%, transparent);
 }
 
 .managed-giveaway-modal__option.is-selected {
-  border-color: rgba(11, 132, 255, 0.24);
-  background: rgba(232, 243, 255, 0.96);
-  box-shadow: 0 12px 22px rgba(22, 69, 109, 0.08);
+  border-color: color-mix(in srgb, var(--color-accent) 38%, var(--color-border));
+  background: var(--color-surface-tint);
+  box-shadow: none;
 }
 
 .managed-giveaway-modal__option.is-disabled {
@@ -1558,8 +1527,8 @@
 }
 
 .managed-giveaway-modal__option.is-selected .managed-giveaway-modal__checkbox {
-  border-color: rgba(11, 132, 255, 0.28);
-  background: linear-gradient(145deg, #1593ff, #0a74e8);
+  border-color: var(--color-accent);
+  background: var(--color-accent);
   color: #fff;
 }
 
@@ -1596,7 +1565,7 @@
 
 .managed-giveaway-modal__actions .button {
   min-height: 48px;
-  border-radius: 16px;
+  border-radius: 8px;
 }
 
 .broadcast-audience-sheet {
@@ -1616,7 +1585,8 @@
   border: 0;
   padding: 0;
   background:
-    radial-gradient(circle at top, rgba(28, 91, 176, 0.14), transparent 42%), rgba(7, 18, 30, 0.42);
+    radial-gradient(circle at top, rgba(28, 91, 176, 0.14), transparent 42%),
+    rgba(7, 18, 30, 0.42);
   backdrop-filter: blur(16px);
 }
 
@@ -2332,11 +2302,9 @@
   display: grid;
   gap: 8px;
   min-width: 0;
-  border-radius: 18px;
-  border: 1px solid rgba(89, 117, 145, 0.1);
-  background:
-    linear-gradient(160deg, rgba(255, 255, 255, 0.98), rgba(246, 249, 253, 0.94)),
-    rgba(247, 249, 252, 0.96);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-muted);
   padding: 10px;
 }
 
@@ -2350,9 +2318,9 @@
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
-  border-radius: 16px;
-  border: 1px solid rgba(89, 117, 145, 0.1);
-  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
   padding: 10px;
 }
 
@@ -2395,5 +2363,284 @@
 .managed-giveaway__dashboard-prize-chip.is-repeat em {
   grid-column: 2;
   grid-row: 1 / span 2;
+}
+
+/* Settings embeds the same workflow; keep its component hierarchy instead of restoring card-on-card chrome. */
+.settings-drilldown
+  :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
+  .managed-giveaway__surface {
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-surface-raised, var(--color-surface));
+  box-shadow: none;
+}
+
+.settings-drilldown
+  :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
+  .managed-giveaway__section {
+  gap: 10px;
+  padding: 12px 0;
+  border: 0;
+  border-top: 1px solid var(--color-border);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.settings-drilldown
+  :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
+  .managed-giveaway__step-stage
+  > .managed-giveaway__section:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.settings-drilldown
+  :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
+  .managed-giveaway__subsection {
+  gap: 10px;
+  padding: 10px 0 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.settings-drilldown
+  :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
+  .managed-giveaway__section-copy
+  strong {
+  display: block;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  line-height: 1.16;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.settings-drilldown
+  :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
+  .managed-giveaway
+  .field {
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.settings-drilldown
+  :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
+  .managed-giveaway
+  .field::before {
+  content: none;
+}
+
+.settings-drilldown
+  :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
+  .managed-giveaway
+  .field
+  input,
+.settings-drilldown
+  :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
+  .managed-giveaway
+  .field
+  textarea,
+.settings-drilldown
+  :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
+  .managed-giveaway
+  .field
+  select {
+  border-color: var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  box-shadow: none;
+}
+
+.settings-drilldown
+  :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
+  .managed-giveaway__dashboard-stat,
+.settings-drilldown
+  :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
+  .managed-giveaway__dashboard-note,
+.settings-drilldown
+  :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
+  .managed-giveaway__dashboard-prize-chip,
+.settings-drilldown
+  :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
+  .managed-giveaway__dashboard-winner,
+.settings-drilldown
+  :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
+  .managed-giveaway__same-prize-card,
+.settings-drilldown
+  :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
+  .managed-giveaway__same-prize-preview,
+.settings-drilldown
+  :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
+  .managed-giveaway__channel-copy,
+.settings-drilldown
+  :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
+  .managed-giveaway__channel-picker {
+  border-color: var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-muted);
+  box-shadow: none;
+}
+
+.settings-drilldown
+  :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
+  .managed-giveaway__primary-actions
+  .button,
+.settings-drilldown
+  :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
+  .managed-giveaway__action-dock-actions
+  .button {
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+html[data-max-theme='dark'] .managed-giveaway__eyebrow,
+html[data-max-theme='dark'] .managed-giveaway__dashboard-stat span,
+html[data-max-theme='dark'] .managed-giveaway__dashboard-prize-chip span,
+html[data-max-theme='dark'] .managed-giveaway__count-stepper-value span {
+  color: var(--text-muted);
+}
+
+html[data-max-theme='dark'] .managed-giveaway__hero-button--danger,
+html[data-max-theme='dark'] .managed-giveaway__dashboard-link--danger,
+html[data-max-theme='dark'] .managed-giveaway__prize-remove:hover,
+html[data-max-theme='dark'] .managed-giveaway__channel-remove:hover {
+  color: var(--color-danger);
+}
+
+html[data-max-theme='dark'] .managed-giveaway__hero-button {
+  border-color: var(--color-border);
+  background: var(--color-surface-muted);
+  color: var(--text-secondary);
+}
+
+html[data-max-theme='dark'] .managed-giveaway__hero-button--danger {
+  border-color: color-mix(in srgb, var(--color-danger) 34%, var(--color-border));
+  background: color-mix(in srgb, var(--color-danger) 12%, var(--color-surface-muted));
+}
+
+html[data-max-theme='dark'] .settings-drilldown__panel--giveaway .settings-drilldown__header {
+  border-bottom-color: var(--color-border);
+  background: var(--color-surface-raised);
+}
+
+html[data-max-theme='dark'] .settings-drilldown__panel--giveaway,
+html[data-max-theme='dark'] .settings-drilldown__panel--giveaway .settings-drilldown__content,
+html[data-max-theme='dark'] .settings-drilldown__panel--giveaway .settings-drilldown__body {
+  border-color: var(--color-border);
+  background: var(--color-surface-raised);
+}
+
+html[data-max-theme='dark'] .settings-drilldown__panel--giveaway .settings-drilldown__title {
+  color: var(--text-primary);
+}
+
+html[data-max-theme='dark'] .settings-drilldown__panel--giveaway .settings-drilldown__summary {
+  border-color: color-mix(in srgb, var(--color-warning) 32%, var(--color-border));
+  background: color-mix(in srgb, var(--color-warning) 12%, var(--color-surface-muted));
+  color: var(--color-warning);
+}
+
+html[data-max-theme='dark'] .settings-drilldown__panel--giveaway .settings-drilldown__close {
+  border-color: var(--color-border);
+  background: var(--color-surface-muted);
+  color: var(--text-primary);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark'] .managed-giveaway__step-pill .managed-giveaway__step-pill-index {
+  border-color: color-mix(in srgb, var(--color-success) 34%, var(--color-border));
+  background: color-mix(in srgb, var(--color-success) 12%, var(--color-surface-muted));
+  color: var(--color-success);
+}
+
+html[data-max-theme='dark']
+  .managed-giveaway__step-pill.is-active
+  .managed-giveaway__step-pill-index {
+  border-color: color-mix(in srgb, var(--color-accent) 42%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 18%, var(--color-surface-muted));
+  color: var(--color-accent);
+}
+
+html[data-max-theme='dark'] .managed-giveaway__chip-button {
+  border-color: var(--color-border);
+  background: var(--color-surface-muted);
+  color: var(--text-secondary);
+}
+
+html[data-max-theme='dark'] .managed-giveaway__chip-button.is-active {
+  border-color: color-mix(in srgb, var(--color-accent) 42%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 16%, var(--color-surface-muted));
+  color: var(--color-accent);
+}
+
+html[data-max-theme='dark'] .settings-drilldown__panel--giveaway .managed-giveaway .field > span {
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+html[data-max-theme='dark'] .settings-drilldown__panel--giveaway .time-field__button {
+  border-color: var(--color-border);
+  background: var(--color-surface-muted);
+  color: var(--text-primary);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark'] .settings-drilldown__panel--giveaway .time-field__icon {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+html[data-max-theme='dark'] .managed-giveaway__chip,
+html[data-max-theme='dark'] .managed-giveaway__prize-position,
+html[data-max-theme='dark'] .managed-giveaway__badge.is-muted,
+html[data-max-theme='dark'] .managed-giveaway__step-pill-index,
+html[data-max-theme='dark'] .managed-giveaway__info-button {
+  border-color: var(--color-border);
+  background: var(--color-surface-muted);
+  color: var(--text-secondary);
+}
+
+html[data-max-theme='dark'] .managed-giveaway__badge.is-success,
+html[data-max-theme='dark'] .managed-giveaway__channel-index {
+  border-color: color-mix(in srgb, var(--color-success) 42%, var(--color-border));
+  background: color-mix(in srgb, var(--color-success) 18%, var(--color-surface-muted));
+  color: var(--color-success);
+}
+
+html[data-max-theme='dark'] .managed-giveaway__step-pill.is-complete > strong {
+  color: var(--color-success);
+}
+
+html[data-max-theme='dark'] .managed-giveaway__badge.is-warning,
+html[data-max-theme='dark'] .managed-giveaway__error-inline {
+  border-color: color-mix(in srgb, var(--color-warning) 42%, var(--color-border));
+  background: color-mix(in srgb, var(--color-warning) 16%, var(--color-surface-muted));
+  color: var(--color-warning);
+}
+
+html[data-max-theme='dark'] .managed-giveaway__badge.is-danger {
+  border-color: color-mix(in srgb, var(--color-danger) 42%, var(--color-border));
+  background: color-mix(in srgb, var(--color-danger) 16%, var(--color-surface-muted));
+  color: var(--color-danger);
+}
+
+html[data-max-theme='dark'] .managed-giveaway__dashboard-winner-rank,
+html[data-max-theme='dark'] .managed-giveaway__same-prize-preview span,
+html[data-max-theme='dark'] .managed-giveaway__dashboard-prize-chip em {
+  border-color: color-mix(in srgb, var(--color-accent) 42%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 18%, var(--color-surface-muted));
+  color: var(--color-accent);
 }
 }
