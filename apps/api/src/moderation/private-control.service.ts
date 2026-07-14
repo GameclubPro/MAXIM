@@ -16,6 +16,7 @@ import { ManualModerationService } from '../admin/manual-moderation.service';
 import { SupportRequestsService } from '../admin/support-requests.service';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxClientService } from '../max/max-client.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { RedisCounterService } from './redis-counter.service';
 import { PrivateControlService as LegacyPrivateControlService } from './private-control.service.legacy';
 
@@ -33,6 +34,7 @@ export class PrivateControlService extends LegacyPrivateControlService {
     @Optional() managedBroadcastService?: ManagedBroadcastService,
     @Optional() adminDialogLinkService?: AdminDialogLinkService,
     @Optional() supportRequestsService?: SupportRequestsService,
+    @Optional() prisma?: PrismaService,
   ) {
     super(
       maxClient,
@@ -46,6 +48,7 @@ export class PrivateControlService extends LegacyPrivateControlService {
       managedBroadcastService,
       adminDialogLinkService,
       supportRequestsService,
+      prisma,
     );
   }
 

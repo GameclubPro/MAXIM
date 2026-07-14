@@ -28,6 +28,7 @@ describe('WebhookIngestionService', () => {
         duplicate: false,
         webhookEventId: 'event-1',
       }),
+      repairDuplicateReceiptReadModels: jest.fn().mockResolvedValue(undefined),
       schedulePersistedWebhookPreparation: jest.fn(),
     };
     const webhookRateLimitService = {
@@ -93,6 +94,7 @@ describe('WebhookIngestionService', () => {
       '127.0.0.1',
     );
     expect(webhookService.schedulePersistedWebhookPreparation).not.toHaveBeenCalled();
+    expect(webhookService.repairDuplicateReceiptReadModels).not.toHaveBeenCalled();
     await flushImmediate();
     expect(webhookIngressMetricsService.recordReceiptPersistence).toHaveBeenCalledWith({
       botId: 'bot-1',
@@ -128,6 +130,33 @@ describe('WebhookIngestionService', () => {
     ).resolves.toEqual(expect.objectContaining({ ok: true, duplicate: true }));
 
     expect(webhookService.schedulePersistedWebhookPreparation).not.toHaveBeenCalled();
+    expect(webhookService.repairDuplicateReceiptReadModels).toHaveBeenCalledWith({
+      updateId: '1',
+      type: 'message_created',
+    });
+  });
+
+  it('asks MAX to retry when duplicate read-model repair fails', async () => {
+    const { service, webhookService } = createService();
+    webhookService.storeReceipt.mockResolvedValueOnce({
+      duplicate: true,
+      webhookEventId: null,
+    });
+    webhookService.repairDuplicateReceiptReadModels.mockRejectedValueOnce(
+      new Error('postgres unavailable'),
+    );
+
+    await expect(
+      service.ingest({ botId: 'bot-1', secretPath: 'secret-path' }, {}, {
+        headers: { 'x-max-bot-api-secret': 'secret-header' },
+        ip: '127.0.0.1',
+      } as never),
+    ).rejects.toMatchObject({ status: 503 });
+
+    expect(webhookService.repairDuplicateReceiptReadModels).toHaveBeenCalledWith({
+      updateId: '1',
+      type: 'message_created',
+    });
   });
 
   it('returns a retryable service error when the durable receipt cannot be stored', async () => {

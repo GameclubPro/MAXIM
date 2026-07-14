@@ -2,6 +2,7 @@ import {
   resolveChannelStatsPartialEdgeRanges,
   selectChannelStatsContentBucketRows,
   selectChannelStatsMembershipBucketRows,
+  selectModerationFeedReadModelRows,
 } from './stats-read-model-selectors';
 
 function extractSqlText(arg: unknown): string {
@@ -25,6 +26,27 @@ function extractSqlText(arg: unknown): string {
 }
 
 describe('stats read model selectors', () => {
+  it('reads moderation snapshot names through bounded primary-key lookups', async () => {
+    const queryRaw = jest.fn().mockResolvedValue([]);
+    const prisma = { $queryRaw: queryRaw };
+
+    await selectModerationFeedReadModelRows(prisma as never, {
+      chatId: 'chat-1',
+      from: new Date('2026-07-01T00:00:00.000Z'),
+      to: new Date('2026-07-14T00:00:00.000Z'),
+      filter: 'ALL',
+      cursor: null,
+      limit: 51,
+    });
+
+    const sqlText = extractSqlText(queryRaw.mock.calls[0]);
+    expect(sqlText).toContain('FROM chat_user_display_names AS snapshot');
+    expect(sqlText).toContain('snapshot.chat_id = feed.chat_id');
+    expect(sqlText).toContain('snapshot.user_id = feed.user_id');
+    expect(sqlText).not.toContain('LEFT JOIN LATERAL');
+    expect(sqlText).not.toContain('chat_membership_activity_feed_items membership');
+  });
+
   it('resolves channel stats raw edge ranges around complete hourly rollups', () => {
     const from = new Date('2026-03-01T10:15:00.000Z');
     const to = new Date('2026-03-07T12:45:00.000Z');

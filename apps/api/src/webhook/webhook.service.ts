@@ -11,6 +11,7 @@ import {
 } from '../prisma/prisma-client';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import {
+  buildChatUserDisplayNameInsertIfAbsent,
   buildChatUserDisplayNameUpsert,
   type ChatUserDisplayNameObservation,
 } from '../common/chat-user-display-name-read-model.util';
@@ -231,10 +232,7 @@ export class WebhookService {
   async ingest(update: MaxUpdate, sourceIp: string | null) {
     const receipt = await this.storeReceipt(update, sourceIp);
     if (receipt.duplicate) {
-      await Promise.all([
-        this.persistMembershipActivityProjection(update),
-        this.persistUserDisplayNameSnapshots(update),
-      ]);
+      await this.repairDuplicateReceiptReadModels(update);
       return { accepted: true, duplicate: true };
     }
 
@@ -242,6 +240,13 @@ export class WebhookService {
       await this.preparePersistedWebhookEvent(receipt.webhookEventId, update);
     }
     return { accepted: true, duplicate: false };
+  }
+
+  async repairDuplicateReceiptReadModels(update: MaxUpdate): Promise<void> {
+    await Promise.all([
+      this.persistMembershipActivityProjection(update),
+      this.persistUserDisplayNameSnapshots(update),
+    ]);
   }
 
   async storeReceipt(update: MaxUpdate, sourceIp: string | null): Promise<WebhookReceiptResult> {
@@ -1630,12 +1635,14 @@ export class WebhookService {
       return null;
     }
 
-    const observedAt = this.resolveUpdateEventAt(update);
+    const trustedObservedAt = readWebhookEventTimestamp(update);
+    const observedAt = trustedObservedAt ?? new Date();
     const sourceEventId =
       this.readTrimmedString(update.updateId) ??
       this.readTrimmedString(update.message?.messageId) ??
       `${update.type.trim().toLowerCase() || 'webhook'}:${observedAt.toISOString()}`;
     const normalizedType = update.type.trim().toLowerCase() || 'webhook';
+    const sourceKindSuffix = trustedObservedAt ? '' : ':ingress';
     const observations: ChatUserDisplayNameObservation[] = [];
     const senderId = update.message?.senderId?.trim() ?? '';
     const senderName = update.message?.senderName?.trim() ?? '';
@@ -1646,7 +1653,7 @@ export class WebhookService {
         displayName: senderName,
         observedAt,
         sourceEventId,
-        sourceKind: `${normalizedType}:sender`,
+        sourceKind: `${normalizedType}:sender${sourceKindSuffix}`,
       });
     }
 
@@ -1662,12 +1669,14 @@ export class WebhookService {
           displayName,
           observedAt,
           sourceEventId,
-          sourceKind: `membership:${membershipAction}`,
+          sourceKind: `membership:${membershipAction}${sourceKindSuffix}`,
         });
       }
     }
 
-    return buildChatUserDisplayNameUpsert(observations);
+    return trustedObservedAt
+      ? buildChatUserDisplayNameUpsert(observations)
+      : buildChatUserDisplayNameInsertIfAbsent(observations);
   }
 
   private getMembershipActivityEventModel(): MembershipActivityEventModel | null {
@@ -2745,7 +2754,7 @@ export class WebhookService {
 
   private async acceptDuplicateWebhookEvent(update: MaxUpdate): Promise<WebhookIngestResult> {
     try {
-      await this.persistMembershipActivityProjection(update);
+      await this.repairDuplicateReceiptReadModels(update);
     } catch (repairError: unknown) {
       this.logger.warn(
         {

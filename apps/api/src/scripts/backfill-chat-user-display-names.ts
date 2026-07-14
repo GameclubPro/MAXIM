@@ -121,16 +121,18 @@ function readPositiveIntOption(args: readonly string[], name: string): number | 
   return parsed;
 }
 
-function stateSourceKind(source: BackfillSource): string {
-  return `chat_user_display_name:${source}:v1`;
+export function buildChatUserDisplayNameBackfillStateSourceKind(
+  source: BackfillSource,
+  sinceDays: number,
+): string {
+  return `chat_user_display_name:${source}:v3:${sinceDays}d`;
 }
 
 async function loadWorkItems(
   prisma: PrismaClient,
-  source: BackfillSource,
+  sourceKind: string,
   options: CliOptions,
 ): Promise<BackfillWorkItem[]> {
-  const sourceKind = stateSourceKind(source);
   const chatFilter = options.chatId ? Prisma.sql`AND chat.id = ${options.chatId}` : Prisma.empty;
   return prisma.$queryRaw<BackfillWorkItem[]>`
     SELECT
@@ -176,6 +178,7 @@ async function loadSourceRows(
       FROM chat_membership_activity_feed_items
       WHERE chat_id = ${item.chatId}
         AND event_at >= ${cutoff}
+        AND COALESCE(BTRIM(sender_name), '') <> ''
         ${cursor}
       ORDER BY event_at DESC, source_event_id DESC
       LIMIT ${batchSize}
@@ -191,6 +194,7 @@ async function loadSourceRows(
     FROM chat_moderation_feed_items
     WHERE chat_id = ${item.chatId}
       AND created_at >= ${cutoff}
+      AND COALESCE(BTRIM(user_display_name), '') <> ''
       ${buildModerationCursorSql(item)}
     ORDER BY created_at DESC, id DESC
     LIMIT ${batchSize}
@@ -212,7 +216,7 @@ function buildModerationCursorSql(item: BackfillWorkItem): Prisma.Sql {
 
 async function persistProgress(
   prisma: PrismaClient,
-  source: BackfillSource,
+  sourceKind: string,
   item: BackfillWorkItem,
   rows: readonly BackfillNameRow[],
   batchSize: number,
@@ -230,7 +234,7 @@ async function persistProgress(
     )
     VALUES (
       ${item.chatId},
-      ${stateSourceKind(source)},
+      ${sourceKind},
       ${lastRow?.eventAt ?? item.cursorEventAt},
       ${lastRow?.sourceEventId ?? item.cursorEventId},
       ${completed ? new Date() : null},
@@ -251,7 +255,8 @@ async function backfillSource(
   options: CliOptions,
 ): Promise<BackfillSummary> {
   const cutoff = new Date(Date.now() - options.sinceDays * 24 * 60 * 60 * 1_000);
-  const workItems = await loadWorkItems(prisma, source, options);
+  const sourceKind = buildChatUserDisplayNameBackfillStateSourceKind(source, options.sinceDays);
+  const workItems = await loadWorkItems(prisma, sourceKind, options);
   const summary: BackfillSummary = {
     source,
     selectedChats: workItems.length,
@@ -295,7 +300,7 @@ async function backfillSource(
     if (upsert) {
       await prisma.$executeRaw(upsert);
     }
-    if (await persistProgress(prisma, source, item, rows, options.batchSize)) {
+    if (await persistProgress(prisma, sourceKind, item, rows, options.batchSize)) {
       summary.completedChats += 1;
     }
   }

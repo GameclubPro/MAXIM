@@ -85,6 +85,39 @@ describe('Prisma migrations', () => {
     expect(migration).not.toMatch(/\b(?:TRUNCATE\s+TABLE|DELETE\s+FROM)\b/i);
   });
 
+  it('keeps moderation display-name backfill off nameless rows', () => {
+    const migration = readMigration('20260714123000_optimize_display_name_backfill');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+
+    expect(compact).toContain(
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "chat_moderation_feed_items_chat_named_created_id_idx"',
+    );
+    expect(compact).toContain(
+      'ON "chat_moderation_feed_items"("chat_id", "created_at" DESC, "id" DESC)',
+    );
+    expect(compact).toContain("WHERE COALESCE(BTRIM(\"user_display_name\"), '') <> ''");
+  });
+
+  it('keeps live moderation display names in the shared participant snapshot', () => {
+    const migration = readMigration('20260714124500_sync_moderation_display_name_snapshots');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+
+    expect(compact).toContain(
+      'CREATE OR REPLACE FUNCTION "sync_chat_user_display_name_from_moderation_feed"()',
+    );
+    expect(compact).toContain('INSERT INTO "chat_user_display_names"');
+    expect(compact).toContain("'moderation_feed'");
+    expect(compact).toContain('CREATE TRIGGER "chat_moderation_feed_items_display_name_snapshot"');
+    expect(compact).toContain(
+      'AFTER INSERT OR UPDATE OF "chat_id", "user_id", "user_display_name", "created_at"',
+    );
+    expect(compact).toContain('ON "chat_moderation_feed_items"');
+    expect(compact).toContain(
+      'EXECUTE FUNCTION "sync_chat_user_display_name_from_moderation_feed"()',
+    );
+    expect(migration).not.toMatch(/\b(?:TRUNCATE\s+TABLE|DELETE\s+FROM)\b/i);
+  });
+
   it('adds the publication domain without destructively rewriting legacy broadcasts', () => {
     const schema = readSchema();
     const migration = readMigration('20260710142000_publication_domain_foundation');

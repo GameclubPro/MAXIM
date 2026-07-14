@@ -1,4 +1,7 @@
-import { parseChatUserDisplayNameBackfillOptions } from './backfill-chat-user-display-names';
+import {
+  buildChatUserDisplayNameBackfillStateSourceKind,
+  parseChatUserDisplayNameBackfillOptions,
+} from './backfill-chat-user-display-names';
 
 describe('parseChatUserDisplayNameBackfillOptions', () => {
   it('uses bounded, non-mutating defaults', () => {
@@ -46,5 +49,14 @@ describe('parseChatUserDisplayNameBackfillOptions', () => {
       /source/u,
     );
     expect(() => parseChatUserDisplayNameBackfillOptions(['--unknown'])).toThrow(/Unknown/u);
+  });
+
+  it('keeps backfill cursor state separate for each requested history range', () => {
+    expect(buildChatUserDisplayNameBackfillStateSourceKind('moderation', 7)).toBe(
+      'chat_user_display_name:moderation:v3:7d',
+    );
+    expect(buildChatUserDisplayNameBackfillStateSourceKind('moderation', 180)).toBe(
+      'chat_user_display_name:moderation:v3:180d',
+    );
   });
 });

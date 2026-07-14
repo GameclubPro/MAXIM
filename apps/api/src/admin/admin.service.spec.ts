@@ -5305,10 +5305,10 @@ describe('AdminService.getLogsDashboard', () => {
       querySqlTexts.find(
         (sqlText) =>
           sqlText.includes('FROM chat_membership_activity_feed_items') &&
-          sqlText.includes('ORDER BY event_at'),
+          sqlText.includes('ORDER BY feed.event_at'),
       ) ?? '';
     expect(activitySqlText).toContain('FROM chat_membership_activity_feed_items');
-    expect(activitySqlText).toContain('ORDER BY event_at');
+    expect(activitySqlText).toContain('ORDER BY feed.event_at');
 
     expect(prisma.moderationEvent.groupBy).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.findMany).not.toHaveBeenCalled();
@@ -5813,7 +5813,51 @@ describe('AdminService.getChatActivityFeed', () => {
 
     const activitySqlText = extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0]);
     expect(activitySqlText).toContain('FROM chat_membership_activity_feed_items');
-    expect(activitySqlText).toContain('ORDER BY event_at');
+    expect(activitySqlText).toContain('ORDER BY feed.event_at');
+  });
+
+  it('reads membership snapshot names inline without a second local-history query', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-02T12:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    prisma.$queryRaw.mockResolvedValueOnce([
+      {
+        id: 'wh-left-snapshot',
+        created_at: new Date('2026-03-02T11:00:00.000Z'),
+        event_type: 'user_removed',
+        user_id: 'user-5',
+        sender_name: 'Игорь из snapshot',
+      },
+    ]);
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatMemberProfiles: jest.fn(),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.getChatActivityFeed(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { range: '7d', filter: 'left', limit: 20 },
+    );
+
+    expect(result.items[0]?.userDisplayName).toBe('Игорь из snapshot');
+    expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    const activitySqlText = extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0]);
+    expect(activitySqlText).toContain('FROM chat_user_display_names AS snapshot');
+    expect(activitySqlText).toContain('snapshot.chat_id = feed.chat_id');
+    expect(activitySqlText).toContain('snapshot.user_id = feed.user_id');
   });
 
   it('uses read-only admin validation for channel activity feeds', async () => {
@@ -6139,27 +6183,25 @@ describe('AdminService.getChatModerationFeed', () => {
     expect(secondSqlText).toContain('feed.id <');
   });
 
-  it('resolves blank moderation display names locally without loading MAX member profiles', async () => {
+  it('reads moderation snapshot names inline without loading MAX member profiles', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-02T12:00:00.000Z'));
 
     const prisma = createPrismaMock();
-    prisma.$queryRaw
-      .mockResolvedValueOnce([
-        {
-          id: 'evt-ban-local-name',
-          action: 'BAN',
-          ruleCode: 'MANUAL_BAN',
-          userId: 'user-4',
-          createdAt: new Date('2026-03-02T11:15:00.000Z'),
-          maskedExcerpt: null,
-          metadata: null,
-          userDisplayName: null,
-          avatarUrl: null,
-          profileUrl: null,
-          profileHandoffUrl: null,
-        },
-      ])
-      .mockResolvedValueOnce([{ user_id: 'user-4', sender_name: 'Людмила' }]);
+    prisma.$queryRaw.mockResolvedValueOnce([
+      {
+        id: 'evt-ban-local-name',
+        action: 'BAN',
+        ruleCode: 'MANUAL_BAN',
+        userId: 'user-4',
+        createdAt: new Date('2026-03-02T11:15:00.000Z'),
+        maskedExcerpt: null,
+        metadata: null,
+        userDisplayName: 'Людмила',
+        avatarUrl: null,
+        profileUrl: null,
+        profileHandoffUrl: null,
+      },
+    ]);
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
@@ -6204,11 +6246,11 @@ describe('AdminService.getChatModerationFeed', () => {
     });
 
     expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
-    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
-    const localNameSql = extractSqlText(prisma.$queryRaw.mock.calls[1]?.[0]);
-    expect(localNameSql).toContain('FROM chat_user_display_names');
-    expect(localNameSql).toContain('FROM chat_membership_activity_feed_items');
-    expect(localNameSql).toContain('ORDER BY user_id, source_priority, event_at DESC');
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    const moderationFeedSql = extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0]);
+    expect(moderationFeedSql).toContain('FROM chat_user_display_names AS snapshot');
+    expect(moderationFeedSql).toContain('snapshot.chat_id = feed.chat_id');
+    expect(moderationFeedSql).toContain('snapshot.user_id = feed.user_id');
   });
 
   it('prefers stored target display names from moderation event metadata when profile lookup is empty', async () => {
@@ -20595,6 +20637,45 @@ describe('AdminService.listChats', () => {
       expect.any(String),
       'bot-2',
     );
+  });
+
+  it('does not let a remote profile cache hide a newer local display-name snapshot', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatMemberProfiles: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'user-1',
+            {
+              displayName: 'Старое удалённое имя',
+              username: null,
+              avatarUrl: null,
+              profileUrl: null,
+            },
+          ],
+        ]),
+      ),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const resolveLocalNames = jest
+      .fn()
+      .mockResolvedValueOnce(new Map<string, string>())
+      .mockResolvedValueOnce(new Map([['user-1', 'Новое локальное имя']]));
+    (service as any).resolveUserDisplayNames = resolveLocalNames;
+
+    await (service as any).resolveUserProfiles('chat-1', 'chat', ['user-1']);
+    const localProfiles = await (service as any).resolveUserProfiles('chat-1', 'chat', ['user-1'], {
+      allowRemoteLookup: false,
+    });
+
+    expect(localProfiles.get('user-1')?.displayName).toBe('Новое локальное имя');
+    expect(resolveLocalNames).toHaveBeenCalledTimes(2);
+    expect(maxClient.getChatMemberProfiles).toHaveBeenCalledTimes(1);
   });
 
   it('backs off background header hydration after MAX API throttling', async () => {

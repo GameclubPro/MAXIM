@@ -14616,9 +14616,9 @@ export class AdminService implements OnModuleDestroy {
         allowRemoteLookup: false,
         ...(routeBotId ? { botId: routeBotId } : {}),
       });
-      const cached =
-        this.resolvedUserProfileCache.get(remoteCacheKey) ??
-        (allowRemoteLookup ? undefined : this.resolvedUserProfileCache.get(localCacheKey));
+      const cached = allowRemoteLookup
+        ? this.resolvedUserProfileCache.get(remoteCacheKey)
+        : this.resolvedUserProfileCache.get(localCacheKey);
       if (cached && cached.expiresAtMs > nowMs) {
         pendingByUserId.set(userId, cached.promise);
         continue;

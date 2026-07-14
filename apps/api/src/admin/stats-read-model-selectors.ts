@@ -86,20 +86,19 @@ export async function selectModerationFeedReadModelRows(
       feed.created_at AS "createdAt",
       feed.masked_excerpt AS "maskedExcerpt",
       feed.metadata,
-      COALESCE(feed.user_display_name, membership_profile.sender_name) AS "userDisplayName",
+      COALESCE(
+        NULLIF(BTRIM(feed.user_display_name), ''),
+        (
+          SELECT snapshot.display_name
+          FROM chat_user_display_names AS snapshot
+          WHERE snapshot.chat_id = feed.chat_id
+            AND snapshot.user_id = feed.user_id
+        )
+      ) AS "userDisplayName",
       NULL::TEXT AS "avatarUrl",
       NULL::TEXT AS "profileUrl",
       NULL::TEXT AS "profileHandoffUrl"
     FROM chat_moderation_feed_items feed
-    LEFT JOIN LATERAL (
-      SELECT membership.sender_name
-      FROM chat_membership_activity_feed_items membership
-      WHERE membership.chat_id = feed.chat_id
-        AND membership.user_id = feed.user_id
-        AND COALESCE(BTRIM(membership.sender_name), '') <> ''
-      ORDER BY membership.event_at DESC, membership.source_event_id DESC
-      LIMIT 1
-    ) membership_profile ON TRUE
     WHERE feed.chat_id = ${params.chatId}
       AND feed.created_at >= ${params.from}
       AND feed.created_at <= ${params.to}

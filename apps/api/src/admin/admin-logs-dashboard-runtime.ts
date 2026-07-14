@@ -431,8 +431,8 @@ export class AdminLogsDashboardRuntime {
     const cursorClause = cursor
       ? Prisma.sql`
           AND (
-            event_at < ${cursor.createdAt}
-            OR (event_at = ${cursor.createdAt} AND source_event_id < ${cursor.id})
+            feed.event_at < ${cursor.createdAt}
+            OR (feed.event_at = ${cursor.createdAt} AND feed.source_event_id < ${cursor.id})
           )
         `
       : Prisma.empty;
@@ -443,18 +443,26 @@ export class AdminLogsDashboardRuntime {
 
     return this.prisma.$queryRaw<MembershipEventRow[]>`
       SELECT
-        source_event_id AS id,
-        event_at AS created_at,
-        event_type,
-        user_id,
-        sender_name
-      FROM chat_membership_activity_feed_items
-      WHERE chat_id = ${chatId}
-        AND event_type IN (${Prisma.join(eventTypes)})
-        AND event_at >= ${from}
-        AND event_at <= ${to}
+        feed.source_event_id AS id,
+        feed.event_at AS created_at,
+        feed.event_type,
+        feed.user_id,
+        COALESCE(
+          NULLIF(BTRIM(feed.sender_name), ''),
+          (
+            SELECT snapshot.display_name
+            FROM chat_user_display_names AS snapshot
+            WHERE snapshot.chat_id = feed.chat_id
+              AND snapshot.user_id = feed.user_id
+          )
+        ) AS sender_name
+      FROM chat_membership_activity_feed_items AS feed
+      WHERE feed.chat_id = ${chatId}
+        AND feed.event_type IN (${Prisma.join(eventTypes)})
+        AND feed.event_at >= ${from}
+        AND feed.event_at <= ${to}
         ${cursorClause}
-      ORDER BY event_at ${orderDirectionSql}, source_event_id ${orderDirectionSql}
+      ORDER BY feed.event_at ${orderDirectionSql}, feed.source_event_id ${orderDirectionSql}
       ${limitClause}
     `;
   }

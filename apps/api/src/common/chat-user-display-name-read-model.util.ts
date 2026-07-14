@@ -19,6 +19,45 @@ export function buildChatUserDisplayNameUpsert(
     return null;
   }
 
+  return buildChatUserDisplayNameWrite(
+    normalized,
+    Prisma.sql`
+      ON CONFLICT ("chat_id", "user_id") DO UPDATE SET
+        "display_name" = EXCLUDED."display_name",
+        "observed_at" = EXCLUDED."observed_at",
+        "source_event_id" = EXCLUDED."source_event_id",
+        "source_kind" = EXCLUDED."source_kind",
+        "updated_at" = CURRENT_TIMESTAMP
+      WHERE
+        EXCLUDED."observed_at" > "chat_user_display_names"."observed_at"
+        OR (
+          EXCLUDED."observed_at" = "chat_user_display_names"."observed_at"
+          AND EXCLUDED."source_event_id" > "chat_user_display_names"."source_event_id"
+        )
+    `,
+  );
+}
+
+// Use this for observations whose timestamp came from ingress rather than MAX.
+// They may populate an empty snapshot, but must never reorder known history.
+export function buildChatUserDisplayNameInsertIfAbsent(
+  observations: readonly ChatUserDisplayNameObservation[],
+): Prisma.Sql | null {
+  const normalized = dedupeChatUserDisplayNameObservations(observations);
+  if (normalized.length === 0) {
+    return null;
+  }
+
+  return buildChatUserDisplayNameWrite(
+    normalized,
+    Prisma.sql`ON CONFLICT ("chat_id", "user_id") DO NOTHING`,
+  );
+}
+
+function buildChatUserDisplayNameWrite(
+  observations: readonly ChatUserDisplayNameObservation[],
+  conflictClause: Prisma.Sql,
+): Prisma.Sql {
   return Prisma.sql`
     INSERT INTO "chat_user_display_names" (
       "chat_id",
@@ -31,7 +70,7 @@ export function buildChatUserDisplayNameUpsert(
       "updated_at"
     )
     VALUES ${Prisma.join(
-      normalized.map(
+      observations.map(
         (observation) => Prisma.sql`(
           ${observation.chatId},
           ${observation.userId},
@@ -44,18 +83,7 @@ export function buildChatUserDisplayNameUpsert(
         )`,
       ),
     )}
-    ON CONFLICT ("chat_id", "user_id") DO UPDATE SET
-      "display_name" = EXCLUDED."display_name",
-      "observed_at" = EXCLUDED."observed_at",
-      "source_event_id" = EXCLUDED."source_event_id",
-      "source_kind" = EXCLUDED."source_kind",
-      "updated_at" = CURRENT_TIMESTAMP
-    WHERE
-      EXCLUDED."observed_at" > "chat_user_display_names"."observed_at"
-      OR (
-        EXCLUDED."observed_at" = "chat_user_display_names"."observed_at"
-        AND EXCLUDED."source_event_id" > "chat_user_display_names"."source_event_id"
-      )
+    ${conflictClause}
   `;
 }
 

@@ -81,6 +81,23 @@ export class WebhookIngestionService {
     });
     this.runPostReceiptIngressAccounting(bot.id, ip);
 
+    if (result.duplicate) {
+      try {
+        await this.webhookService.repairDuplicateReceiptReadModels(update);
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            botId: bot.id,
+            updateId: update.updateId,
+            type: update.type,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to repair duplicate webhook read models; requesting MAX redelivery',
+        );
+        throw new ServiceUnavailableException('Webhook duplicate repair unavailable');
+      }
+    }
+
     return {
       ok: true,
       duplicate: result.duplicate,

@@ -34,6 +34,8 @@ import { ManagedBroadcastService } from '../admin/managed-broadcast.service';
 import { ManagedGiveawayService } from '../admin/managed-giveaway.service';
 import { SupportRequestsService } from '../admin/support-requests.service';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
+import { isPrivateDirectChatId } from '../common/chat-id.util';
+import { buildChatUserDisplayNameUpsert } from '../common/chat-user-display-name-read-model.util';
 import {
   containsSupportedMarkdownSyntax,
   renderSupportedMarkdownAsHtml,
@@ -52,6 +54,7 @@ import {
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
 import { normalizeMaxInlineKeyboardButtons } from '../max/max-inline-keyboard-layout';
+import { PrismaService } from '../prisma/prisma.service';
 import {
   extractIncomingFormattedText,
   extractIncomingFormattedTextPayload,
@@ -257,6 +260,7 @@ export class PrivateControlService {
     @Optional() private readonly managedBroadcastService?: ManagedBroadcastService,
     @Optional() private readonly adminDialogLinkService?: AdminDialogLinkService,
     @Optional() private readonly supportRequestsService?: SupportRequestsService,
+    @Optional() private readonly prisma?: PrismaService,
   ) {
     this.appBaseUrl = this.normalizeAppBaseUrl(configService?.get<string>('APP_BASE_URL'));
     this.botDeepLinkId = this.normalizeBotDeepLinkId(configService?.get<string>('MAX_BOT_ID'));
@@ -945,6 +949,11 @@ export class PrivateControlService {
       const displayName = readPrivateControlString(profile?.displayName);
       if (displayName) {
         resolvedDisplayName = displayName;
+        await this.persistResolvedProfileDisplayName(
+          sourceChatId,
+          normalizedTargetUserId,
+          displayName,
+        );
       }
     } catch (error) {
       this.logger.warn(
@@ -8299,6 +8308,9 @@ export class PrivateControlService {
         ? await this.maxClient.getChatMemberProfiles(sourceChatId, [userId], { botId })
         : await this.maxClient.getChatMemberProfiles(sourceChatId, [userId]);
       const resolvedDisplayName = readPrivateControlString(profiles.get(userId)?.displayName);
+      if (resolvedDisplayName) {
+        await this.persistResolvedProfileDisplayName(sourceChatId, userId, resolvedDisplayName);
+      }
       return resolvedDisplayName || fallback;
     } catch (error: unknown) {
       this.logger.warn(
@@ -8310,6 +8322,52 @@ export class PrivateControlService {
         'Failed to resolve compact profile mention display name from MAX',
       );
       return fallback;
+    }
+  }
+
+  private async persistResolvedProfileDisplayName(
+    chatId: string,
+    userId: string,
+    displayName: string,
+  ): Promise<void> {
+    const normalizedChatId = chatId.trim();
+    const normalizedUserId = userId.trim();
+    const normalizedDisplayName = displayName.trim();
+    if (
+      !normalizedChatId ||
+      !normalizedUserId ||
+      !normalizedDisplayName ||
+      isPrivateDirectChatId(normalizedChatId)
+    ) {
+      return;
+    }
+
+    const observedAt = new Date();
+    const upsert = buildChatUserDisplayNameUpsert([
+      {
+        chatId: normalizedChatId,
+        userId: normalizedUserId,
+        displayName: normalizedDisplayName,
+        observedAt,
+        sourceEventId: `profile_handoff:${observedAt.toISOString()}:${normalizedUserId}`,
+        sourceKind: 'profile_handoff',
+      },
+    ]);
+    if (!upsert || !this.prisma) {
+      return;
+    }
+
+    try {
+      await this.prisma.$executeRaw(upsert);
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId: normalizedChatId,
+          userId: normalizedUserId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to persist profile handoff display name snapshot',
+      );
     }
   }
 

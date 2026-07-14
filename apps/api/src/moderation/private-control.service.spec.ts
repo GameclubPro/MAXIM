@@ -14,6 +14,19 @@ import {
 import { createDefaultPrivateControlSession } from './private-control-session-normalizer';
 import { PrivateControlService } from './private-control.service';
 
+function extractSqlValues(query: unknown): unknown[] {
+  if (!query || typeof query !== 'object' || !('values' in query)) {
+    return [];
+  }
+
+  const values = (query as { values?: unknown }).values;
+  if (!Array.isArray(values)) {
+    return [];
+  }
+
+  return values.flatMap((value) => [value, ...extractSqlValues(value)]);
+}
+
 function createMaxApiError(status: number, message: string, code?: string): Error {
   return Object.assign(new Error(message), {
     response: {
@@ -577,6 +590,7 @@ function createHarness(
     maxBotLinkService?: Record<string, unknown>;
     adminDialogLinkService?: Record<string, unknown>;
     supportRequestsService?: Record<string, unknown>;
+    prisma?: Record<string, unknown>;
   } = {},
 ) {
   const chats = [
@@ -1012,6 +1026,12 @@ function createHarness(
     createRequest: jest.fn().mockResolvedValue({ id: 'support-request-1' }),
     ...(overrides.supportRequestsService ?? {}),
   };
+  const prisma = overrides.prisma
+    ? {
+        $executeRaw: jest.fn().mockResolvedValue(undefined),
+        ...overrides.prisma,
+      }
+    : undefined;
 
   const service = new PrivateControlService(
     maxClient as never,
@@ -1041,6 +1061,7 @@ function createHarness(
     overrides.managedBroadcastService as never,
     adminDialogLinkService as never,
     supportRequestsService as never,
+    prisma as never,
   );
 
   return {
@@ -1052,6 +1073,7 @@ function createHarness(
     adminDialogLinkService,
     managedGiveawayService,
     supportRequestsService,
+    prisma,
     redisCounter,
     chats,
     channels,
@@ -4244,6 +4266,34 @@ describe('PrivateControlService', () => {
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith(chats[0].id, ['user-42'], {
       botId: '888000_bot',
     });
+  });
+
+  it('persists a MAX-resolved profile handoff name for later local statistics reads', async () => {
+    const { service, maxClient, chats, prisma } = createHarness({ prisma: {} });
+    const actor = {
+      userId: 'user-1',
+      username: null,
+      displayName: 'Тестовый пользователь',
+      chatId: chats[0].id,
+      chatTitle: chats[0].title,
+    };
+    maxClient.getChatMemberProfiles.mockResolvedValue(
+      new Map([['user-42', { displayName: 'Юлия Максимова' }]]),
+    );
+
+    await service.handoffProfileMentionFromMiniapp(
+      chats[0].id,
+      actor,
+      'user-42',
+      { displayName: 'Участник' },
+      'chat',
+    );
+
+    const executeRaw = prisma?.$executeRaw as jest.Mock | undefined;
+    expect(executeRaw).toHaveBeenCalledTimes(1);
+    expect(extractSqlValues(executeRaw?.mock.calls[0]?.[0])).toEqual(
+      expect.arrayContaining([chats[0].id, 'user-42', 'Юлия Максимова', 'profile_handoff']),
+    );
   });
 
   it('falls back to the provided profile name when MAX member profile lookup is empty', async () => {
