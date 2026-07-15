@@ -156,6 +156,10 @@
   backface-visibility: hidden;
 }
 
+.bottom-nav--primary {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .bottom-nav::after {
   content: '';
   position: absolute;

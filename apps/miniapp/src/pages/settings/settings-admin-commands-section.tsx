@@ -55,6 +55,8 @@ type SettingsAdminCommandsSectionProps = {
   fieldErrors: FieldErrors;
   openHintKey: HintKey | null;
   footer: ReactNode;
+  hasChanges: boolean;
+  onDiscardChanges: () => void;
   onToggleSection: () => void;
   onToggleHint: (key: HintKey) => void;
   onFieldChange: (key: AdminCommandNameKey, value: string) => void;
@@ -152,6 +154,8 @@ export function SettingsAdminCommandsSection({
   fieldErrors,
   openHintKey,
   footer,
+  hasChanges,
+  onDiscardChanges,
   onToggleSection,
   onToggleHint,
   onFieldChange,
@@ -195,7 +199,9 @@ export function SettingsAdminCommandsSection({
         tone="ink"
         className="settings-drilldown__panel--notice settings-drilldown__panel--commands"
         onClose={onToggleSection}
-        footer={footer}
+        confirmCloseWhen={hasChanges}
+        onDiscardChanges={onDiscardChanges}
+        footer={hasChanges ? footer : null}
       >
         <div
           id="settings-commands-content"

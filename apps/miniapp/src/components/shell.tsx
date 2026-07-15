@@ -12,7 +12,6 @@ import {
   buildManagedEntitiesRoute,
   hydrateLastEntityState,
   normalizeEntityType,
-  readLastEntityId,
   readLastEntityType,
   saveLastEntityId,
   saveLastEntityType,
@@ -200,10 +199,6 @@ export function Shell() {
   const { chatId = '' } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
-  const [lastEntityIds, setLastEntityIds] = useState<Record<LastEntityType, string>>(() => ({
-    chat: readLastEntityId('chat'),
-    channel: readLastEntityId('channel'),
-  }));
   const [lastEntityType, setLastEntityType] = useState<LastEntityType>(() => readLastEntityType());
   const isKeyboardOpen = useKeyboardOpen();
   const hasNativeBackHandlers = useNativeBackHandlersAvailable();
@@ -230,9 +225,6 @@ export function Shell() {
 
     saveLastEntityId(routeEntityType, chatId);
     setLastEntityType(routeEntityType);
-    setLastEntityIds((current) =>
-      current[routeEntityType] === chatId ? current : { ...current, [routeEntityType]: chatId },
-    );
 
     if (!routeChatTitle) {
       return;
@@ -248,11 +240,6 @@ export function Shell() {
       if (cancelled) {
         return;
       }
-
-      setLastEntityIds((current) => ({
-        chat: current.chat || state.chatId,
-        channel: current.channel || state.channelId,
-      }));
 
       if (!chatId) {
         setLastEntityType(state.entityType);
@@ -273,10 +260,14 @@ export function Shell() {
     setLastEntityType(selectedRootEntityType);
   }, [isChatsRoute, selectedRootEntityType]);
 
+  const isManagedEntityRoute =
+    location.pathname.includes('/channel/') || location.pathname.includes('/chat/');
   const resolvedEntityType: LastEntityType = isChatsRoute
     ? selectedRootEntityType
-    : routeEntityType;
-  const resolvedChatId = chatId || lastEntityIds[resolvedEntityType];
+    : isManagedEntityRoute
+      ? routeEntityType
+      : lastEntityType;
+  const resolvedChatId = chatId;
   const homeRoute = buildManagedEntitiesRoute(resolvedEntityType);
 
   const resolvedChatTitle = useMemo(() => {
@@ -290,22 +281,7 @@ export function Shell() {
 
     return readChatTitle(resolvedChatId);
   }, [chatId, resolvedChatId, routeChatTitle]);
-  const settingsRoute = resolvedChatId
-    ? resolvedEntityType === 'channel'
-      ? `/channel/${resolvedChatId}/settings`
-      : `/chat/${resolvedChatId}/settings`
-    : '';
-  const activityRoute = resolvedChatId
-    ? resolvedEntityType === 'channel'
-      ? `/channel/${resolvedChatId}/stats?section=events`
-      : `/chat/${resolvedChatId}/events?section=activity`
-    : '';
-  const activityNavLabel = 'Сводка';
-  const entityPickerLabel = resolvedEntityType === 'channel' ? 'канал' : 'чат';
-  const settingsContextLabel = `Выберите ${entityPickerLabel}, чтобы открыть настройки`;
-  const activityContextLabel = `Выберите ${entityPickerLabel}, чтобы открыть сводку`;
-  const isChatsListRoute = isChatsRoute && selectedRootEntityType === 'chat';
-  const isChannelsListRoute = isChatsRoute && selectedRootEntityType === 'channel';
+  const isEntitiesNavRoute = isChatsRoute || isManagedEntityRoute;
   const isGiveawayRoute = location.pathname.includes('/giveaways/');
   const isLegalRoute = location.pathname.startsWith('/legal/');
   const isDialogRoute =
@@ -404,29 +380,21 @@ export function Shell() {
 
       {!isDialogRoute && !isGiveawayRoute ? (
         <nav
-          className={cn('bottom-nav glass-card', isKeyboardOpen && 'is-keyboard-open')}
+          className={cn(
+            'bottom-nav bottom-nav--primary glass-card',
+            isKeyboardOpen && 'is-keyboard-open',
+          )}
           aria-label="Навигация приложения"
         >
           <Link
-            to={buildManagedEntitiesRoute('chat')}
-            className={cn('bottom-nav__item', isChatsListRoute && 'is-active')}
-            aria-current={isChatsListRoute ? 'page' : undefined}
+            to={homeRoute}
+            className={cn('bottom-nav__item', isEntitiesNavRoute && 'is-active')}
+            aria-current={isEntitiesNavRoute ? 'page' : undefined}
           >
             <span className="bottom-nav__icon" aria-hidden>
               <BottomNavIcon name="chats" />
             </span>
-            <span className="bottom-nav__label">Чаты</span>
-          </Link>
-
-          <Link
-            to={buildManagedEntitiesRoute('channel')}
-            className={cn('bottom-nav__item', isChannelsListRoute && 'is-active')}
-            aria-current={isChannelsListRoute ? 'page' : undefined}
-          >
-            <span className="bottom-nav__icon" aria-hidden>
-              <BottomNavIcon name="channels" />
-            </span>
-            <span className="bottom-nav__label">Каналы</span>
+            <span className="bottom-nav__label">Объекты</span>
           </Link>
 
           <NavLink
@@ -438,54 +406,6 @@ export function Shell() {
             </span>
             <span className="bottom-nav__label">Посты</span>
           </NavLink>
-
-          {resolvedChatId ? (
-            <NavLink
-              to={settingsRoute}
-              className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}
-            >
-              <span className="bottom-nav__icon" aria-hidden>
-                <BottomNavIcon name="settings" />
-              </span>
-              <span className="bottom-nav__label">Настройки</span>
-            </NavLink>
-          ) : (
-            <Link
-              to={homeRoute}
-              className="bottom-nav__item is-contextual"
-              aria-label={settingsContextLabel}
-              title={settingsContextLabel}
-            >
-              <span className="bottom-nav__icon" aria-hidden>
-                <BottomNavIcon name="settings" />
-              </span>
-              <span className="bottom-nav__label">Настройки</span>
-            </Link>
-          )}
-
-          {resolvedChatId ? (
-            <NavLink
-              to={activityRoute}
-              className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}
-            >
-              <span className="bottom-nav__icon" aria-hidden>
-                <BottomNavIcon name="events" />
-              </span>
-              <span className="bottom-nav__label">{activityNavLabel}</span>
-            </NavLink>
-          ) : (
-            <Link
-              to={homeRoute}
-              className="bottom-nav__item is-contextual"
-              aria-label={activityContextLabel}
-              title={activityContextLabel}
-            >
-              <span className="bottom-nav__icon" aria-hidden>
-                <BottomNavIcon name="events" />
-              </span>
-              <span className="bottom-nav__label">{activityNavLabel}</span>
-            </Link>
-          )}
         </nav>
       ) : null}
     </div>

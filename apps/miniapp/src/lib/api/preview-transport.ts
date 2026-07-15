@@ -81,6 +81,7 @@ import {
   type ChatParticipantImmunityUpdateRequest,
   type ChatParticipantItem,
   type ChatParticipantsPage,
+  type ChatParticipantsQuery,
   type ChatUnavailableParticipantsCleanupRequest,
   type ChannelDialogMessage,
   type ChannelDialogNotificationMode,
@@ -2509,11 +2510,13 @@ function buildParticipantsPage(
     limit = 100,
     cursor,
     search,
+    roleFilter = 'all',
   }: {
     range?: LogsDashboardRange;
     limit?: number;
     cursor?: string | null;
     search?: string | null;
+    roleFilter?: ChatParticipantsQuery['roleFilter'];
   },
   totalCount: number,
   violations: LogsDashboardResponse['violations'],
@@ -2522,9 +2525,11 @@ function buildParticipantsPage(
   const offset = cursor ? Number.parseInt(cursor, 10) : 0;
   const safeOffset = Number.isFinite(offset) && offset > 0 ? offset : 0;
   const normalizedSearch = normalizeParticipantSearchText(search ?? '');
-  const filteredItems = normalizedSearch
-    ? items.filter((item) => participantMatchesSearch(item, normalizedSearch))
-    : items;
+  const filteredItems = items.filter(
+    (item) =>
+      (!normalizedSearch || participantMatchesSearch(item, normalizedSearch)) &&
+      participantMatchesRoleFilter(item, roleFilter),
+  );
   const violationCountByUserId = new Map<string, number>();
 
   for (const violation of violations) {
@@ -2550,6 +2555,25 @@ function buildParticipantsPage(
     hasMore: nextOffset < filteredItems.length,
     nextCursor: nextOffset < filteredItems.length ? String(nextOffset) : null,
   });
+}
+
+function participantMatchesRoleFilter(
+  item: ChatParticipantItem,
+  roleFilter: ChatParticipantsQuery['roleFilter'],
+): boolean {
+  if (roleFilter === 'all') {
+    return true;
+  }
+  if (roleFilter === 'bots') {
+    return item.isBot;
+  }
+  if (item.isBot) {
+    return false;
+  }
+  if (roleFilter === 'admins') {
+    return item.role === 'owner' || item.role === 'admin';
+  }
+  return item.role === 'member';
 }
 
 function normalizeParticipantSearchText(value: string): string {
@@ -7138,6 +7162,9 @@ async function handleChatRequest(
           limit: Number.parseInt(url.searchParams.get('limit') ?? '100', 10),
           cursor: url.searchParams.get('cursor'),
           search: url.searchParams.get('search'),
+          roleFilter:
+            (url.searchParams.get('roleFilter') as ChatParticipantsQuery['roleFilter'] | null) ??
+            'all',
         },
         state.chatParticipants.length,
         state.chatViolations,

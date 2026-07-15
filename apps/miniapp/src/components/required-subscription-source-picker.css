@@ -246,7 +246,7 @@
 .settings-drilldown__panel--required-subscription .required-subscription__source-link {
   min-width: 0;
   overflow: hidden;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: 0.7rem;
   line-height: 1.2;
   text-overflow: ellipsis;

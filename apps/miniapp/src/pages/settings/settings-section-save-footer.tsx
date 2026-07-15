@@ -34,6 +34,7 @@ export function SettingsSectionSaveFooter({
 }: SettingsSectionSaveFooterProps) {
   const isCurrentSectionSaving = isSavingSettings && savingSection === section;
   const isCurrentSectionApplying = isApplyingSectionToAll && applyingSection === section;
+  const sectionDirty = isSectionDirty(section);
   const emphasize = options?.emphasize ?? 'save';
   const saveButtonClassName =
     emphasize === 'save' ? 'button button--accent' : 'button button--ghost';
@@ -44,15 +45,19 @@ export function SettingsSectionSaveFooter({
   return (
     <>
       {footerNote ? <p className="settings-drilldown__footer-note">{footerNote}</p> : null}
-      <div className="settings-drilldown__footer-actions">
-        <button
-          type="button"
-          className={saveButtonClassName}
-          onClick={() => onSaveSection(section)}
-          disabled={isCurrentSectionSaving || isCurrentSectionApplying || !isSectionDirty(section)}
-        >
-          {isCurrentSectionSaving ? 'Сохраняем...' : (options?.saveLabel ?? 'Сохранить')}
-        </button>
+      <div
+        className={`settings-drilldown__footer-actions${sectionDirty ? '' : ' is-single-action'}`}
+      >
+        {sectionDirty ? (
+          <button
+            type="button"
+            className={saveButtonClassName}
+            onClick={() => onSaveSection(section)}
+            disabled={isCurrentSectionSaving || isCurrentSectionApplying}
+          >
+            {isCurrentSectionSaving ? 'Сохраняем...' : (options?.saveLabel ?? 'Сохранить')}
+          </button>
+        ) : null}
         <button
           type="button"
           className={applyToAllButtonClassName}

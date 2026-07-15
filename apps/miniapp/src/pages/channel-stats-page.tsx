@@ -20,7 +20,7 @@ import '../styles/channel-stats-route-polish.css';
 import '../styles/channel-stats-executive.css';
 import type { CSSProperties, PointerEvent } from 'react';
 import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useLocation, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
@@ -57,6 +57,11 @@ import {
   resolveInitialAudienceChartIndex,
   shouldRenderChannelStatsPointMarkers,
 } from '../lib/channel-stats-chart';
+import { formatStatisticsRangeLabel } from '../lib/statistics-display';
+import {
+  buildStatisticsRouteSearch,
+  parseChannelStatisticsRouteQuery,
+} from '../lib/statistics-route-query';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 
@@ -240,10 +245,6 @@ function getRouteState(state: unknown): ChannelStatsRouteState {
     avatarUrl:
       typeof row.avatarUrl === 'string' && row.avatarUrl.trim() ? row.avatarUrl.trim() : null,
   };
-}
-
-function getInitialSection(search: string): ChannelStatsSection {
-  return new URLSearchParams(search).get('section') === 'events' ? 'events' : 'overview';
 }
 
 function formatCount(value: number | null): string {
@@ -1143,15 +1144,8 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
       : 1;
   const averageGrowth = totalGrowth !== null ? totalGrowth / knownPointSpan : null;
   const averageGrowthLabel = resolveAudienceChartAverageGrowthLabel(stats.period.bucket);
-  const detailLabelIndices = !renderPointMarkers
-    ? new Set<number>()
-    : labels.length <= 11
-      ? new Set(labels.map((_, index) => index))
-      : resolveSparseLabelIndices(labels.length, safeActiveIndex);
-  const xAxisLabelIndices =
-    labels.length <= 12
-      ? new Set(labels.map((_, index) => index))
-      : resolveSparseLabelIndices(labels.length, safeActiveIndex);
+  const detailLabelIndices = new Set<number>();
+  const xAxisLabelIndices = resolveSparseLabelIndices(labels.length, safeActiveIndex);
   const activeParticipantsLabel = formatAudienceCount(
     activePoint?.displayValue ?? null,
     activePoint?.confidence,
@@ -1523,9 +1517,9 @@ function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
               </div>
               <div className="channel-posts-chart__content">
                 <div className="channel-posts-chart__row-head">
-                  <span className="channel-posts-chart__rank">#{index + 1}</span>
+                  <span className="channel-posts-chart__rank">№{index + 1}</span>
                   <span className="channel-posts-chart__title">
-                    {formatPostDateTime(post.publishedAt)}
+                    Публикация · {formatPostDateTime(post.publishedAt)} МСК
                   </span>
                 </div>
                 <div className="channel-posts-chart__metrics" aria-hidden="true">
@@ -1539,7 +1533,7 @@ function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
           );
           const rowLabel = `Публикация ${index + 1}, ${formatPostDateTime(
             post.publishedAt,
-          )}: ${detailParts.join(', ')}`;
+          )} по московскому времени: ${detailParts.join(', ')}`;
 
           return post.url ? (
             <a
@@ -1582,6 +1576,11 @@ function ChannelStatsOverview({
   const hasTopPosts = stats.official.content.topPosts.length > 0;
   const hasBestWindows = stats.signals.bestWindows.some((window) => window.posts > 0);
   const hasDetailPanels = hasTopPosts || hasBestWindows;
+  const periodLabel = formatStatisticsRangeLabel(stats.period.range);
+  const engagement =
+    stats.official.content.views > 0
+      ? (stats.official.content.reactions / stats.official.content.views) * 100
+      : null;
 
   return (
     <section
@@ -1590,55 +1589,28 @@ function ChannelStatsOverview({
     >
       <div className="channel-insights__overview-top">
         <div className="channel-insights__primary-stack">
-          <div className="channel-insights__summary-metrics">
-            <article className="channel-summary-card channel-summary-card--subscribers">
-              <header>
-                <small>Подписчиков</small>
-                <strong>{formatCount(summary.subscribers.current)}</strong>
-              </header>
-              <span className="channel-summary-card__scope">Контрольные периоды</span>
-              <div className="channel-summary-card__rows">
-                <span>
-                  <small>Сегодня</small>
-                  <b className={`is-${getSignedTone(summary.subscribers.todayDelta)}`}>
-                    {formatSignedCount(summary.subscribers.todayDelta)}
-                  </b>
-                </span>
-                <span>
-                  <small>За неделю</small>
-                  <b className={`is-${getSignedTone(summary.subscribers.weekDelta)}`}>
-                    {formatSignedCount(summary.subscribers.weekDelta)}
-                  </b>
-                </span>
-                <span>
-                  <small>За 16 дней</small>
-                  <b className={`is-${getSignedTone(summary.subscribers.sixteenDaysDelta)}`}>
-                    {formatSignedCount(summary.subscribers.sixteenDaysDelta)}
-                  </b>
-                </span>
-              </div>
+          <div className="channel-insights__summary-metrics channel-insights__summary-metrics--compact">
+            <article className="channel-summary-card channel-summary-card--compact">
+              <small>Подписчики</small>
+              <strong>{formatCount(summary.subscribers.current)}</strong>
+              <span>Сейчас</span>
             </article>
-
-            <article className="channel-summary-card channel-summary-card--views">
-              <header>
-                <small>Просмотров на пост</small>
-                <strong>{formatCount(selectedPeriodAverageViews)}</strong>
-              </header>
-              <span className="channel-summary-card__scope">Оперативные показатели</span>
-              <div className="channel-summary-card__rows">
-                <span>
-                  <small>За 24ч</small>
-                  <b>{formatCompactCount(summary.views.last24h)}</b>
-                </span>
-                <span>
-                  <small>За 48ч</small>
-                  <b>{formatCompactCount(summary.views.last48h)}</b>
-                </span>
-                <span>
-                  <small>ER24</small>
-                  <b>{formatPercent(summary.views.er24)}</b>
-                </span>
-              </div>
+            <article className="channel-summary-card channel-summary-card--compact">
+              <small>Чистый рост</small>
+              <strong className={`is-${getSignedTone(stats.official.audience.net)}`}>
+                {formatSignedCount(stats.official.audience.net)}
+              </strong>
+              <span>{periodLabel}</span>
+            </article>
+            <article className="channel-summary-card channel-summary-card--compact">
+              <small>Просмотры / пост</small>
+              <strong>{formatCount(selectedPeriodAverageViews)}</strong>
+              <span>{periodLabel}</span>
+            </article>
+            <article className="channel-summary-card channel-summary-card--compact">
+              <small>Вовлечённость</small>
+              <strong>{formatPercent(engagement)}</strong>
+              <span>Реакции от просмотров</span>
             </article>
           </div>
 
@@ -1652,7 +1624,7 @@ function ChannelStatsOverview({
                   options={periodOptions}
                   onChange={(next) => onRangeChange(next as ChannelStatsRange)}
                   className="channel-insights__range"
-                  ariaLabel="Период графика"
+                  ariaLabel="Период статистики канала"
                 />
               </div>
             </header>
@@ -1662,7 +1634,8 @@ function ChannelStatsOverview({
         </div>
 
         {summaryDailyRows.length > 0 ? (
-          <article className="channel-summary-table-card" aria-label="Динамика подписчиков">
+          <details className="channel-summary-table-card" aria-label="Динамика подписчиков">
+            <summary>Данные по дням</summary>
             <table className="channel-summary-table">
               <thead>
                 <tr>
@@ -1726,7 +1699,7 @@ function ChannelStatsOverview({
                 })}
               </tbody>
             </table>
-          </article>
+          </details>
         ) : null}
       </div>
 
@@ -1753,12 +1726,19 @@ function ChannelStatsOverview({
 export function ChannelStatsPage({ api }: { api: ApiTransport }) {
   const { chatId = '' } = useParams();
   const location = useLocation();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const routeState = getRouteState(location.state);
-  const [range, setRange] = useState<ChannelStatsRange>('7d');
-  const [section, setSection] = useState<ChannelStatsSection>(() =>
-    getInitialSection(location.search),
+  const [range, setRange] = useState<ChannelStatsRange>(
+    () => parseChannelStatisticsRouteQuery(location.search).range,
+  );
+  const [section, setSection] = useState<ChannelStatsSection>(
+    () => parseChannelStatisticsRouteQuery(location.search).section,
+  );
+  const routeQuery = useMemo(
+    () => parseChannelStatisticsRouteQuery(location.search),
+    [location.search],
   );
   const { isCompact: isHeaderCompact, isHidden: isHeaderHidden } = useAutoHideHeader({
     compactAfter: 12,
@@ -1767,17 +1747,17 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     revealDistance: 6,
   });
   const initialStatsSnapshot = useMemo(() => {
-    if (!chatId || section !== 'overview') {
+    if (!chatId) {
       return null;
     }
 
     const snapshot = readStatsSnapshotMirror<ChannelStatsResponse>('channel', [
       chatId,
       range,
-      'overview',
+      'full',
     ]);
     return isChannelStatsResponseForRange(snapshot, chatId, range) ? snapshot : null;
-  }, [chatId, range, section]);
+  }, [chatId, range]);
   const initialActivityPageSnapshot = useMemo(() => {
     if (!chatId || section !== 'events') {
       return null;
@@ -1789,8 +1769,6 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     );
     return isMembershipActivityPage(snapshot) ? snapshot : null;
   }, [chatId, range, section]);
-  const shouldLoadOverviewStats = Boolean(chatId) && section === 'overview';
-
   const statsQuery = useQuery({
     queryKey: queryKeys.channelStats(chatId, range),
     queryFn: ({ signal }) =>
@@ -1801,10 +1779,9 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
         { signal },
         {
           includeActivityPreview: false,
-          mode: 'overview',
         },
       ),
-    enabled: shouldLoadOverviewStats,
+    enabled: Boolean(chatId),
     staleTime: 30_000,
     initialData: initialStatsSnapshot ?? undefined,
     initialDataUpdatedAt: initialStatsSnapshot ? 0 : undefined,
@@ -1821,12 +1798,33 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
   });
 
   useEffect(() => {
-    if (!chatId || section !== 'overview') {
+    startTransition(() => {
+      setSection(routeQuery.section);
+      setRange(routeQuery.range);
+    });
+
+    const nextSearch = buildStatisticsRouteSearch(location.search, routeQuery);
+    if (nextSearch === location.search) {
+      return;
+    }
+
+    navigate(
+      {
+        pathname: location.pathname,
+        search: nextSearch,
+        hash: location.hash,
+      },
+      { replace: true, state: location.state },
+    );
+  }, [location.hash, location.pathname, location.search, location.state, navigate, routeQuery]);
+
+  useEffect(() => {
+    if (!chatId) {
       return undefined;
     }
 
     let cancelled = false;
-    void readStatsSnapshot<ChannelStatsResponse>('channel', [chatId, range, 'overview']).then(
+    void readStatsSnapshot<ChannelStatsResponse>('channel', [chatId, range, 'full']).then(
       (snapshot) => {
         if (cancelled || !isChannelStatsResponseForRange(snapshot, chatId, range)) {
           return;
@@ -1842,15 +1840,15 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     return () => {
       cancelled = true;
     };
-  }, [chatId, queryClient, range, section]);
+  }, [chatId, queryClient, range]);
 
   useEffect(() => {
-    if (section !== 'overview' || !isChannelStatsResponseForRange(statsQuery.data, chatId, range)) {
+    if (!isChannelStatsResponseForRange(statsQuery.data, chatId, range)) {
       return;
     }
 
-    saveStatsSnapshot('channel', [chatId, range, 'overview'], statsQuery.data);
-  }, [chatId, range, section, statsQuery.data]);
+    saveStatsSnapshot('channel', [chatId, range, 'full'], statsQuery.data);
+  }, [chatId, range, statsQuery.data]);
 
   useEffect(() => {
     if (!chatId || section !== 'events' || activityFeed.filter !== 'all') {
@@ -1912,46 +1910,39 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     saveChatTitle(chatId, resolvedTitle);
   }, [chatId, resolvedTitle]);
 
-  const loadedActivitySummary = useMemo(() => {
-    const joined = activityFeed.items.reduce(
-      (count, item) => count + (item.type === 'joined' ? 1 : 0),
-      0,
-    );
-    const left = activityFeed.items.reduce(
-      (count, item) => count + (item.type === 'left' ? 1 : 0),
-      0,
-    );
-
-    return {
-      total: activityFeed.items.length,
-      joined,
-      left,
-      balance: joined - left,
-    };
-  }, [activityFeed.items]);
-
   const activitySummary = useMemo(() => {
     if (!stats) {
-      return loadedActivitySummary;
+      return null;
     }
 
     const joined = stats.official.audience.joined;
-    const left = stats.official.audience.left ?? 0;
-    const balance = stats.official.audience.net ?? joined - left;
+    const left = stats.official.audience.left;
 
     return {
-      total: joined + left,
       joined,
       left,
-      balance,
+      total: left === null ? null : joined + left,
+      balance: stats.official.audience.net,
     };
-  }, [loadedActivitySummary, stats]);
+  }, [stats]);
 
-  const activityBalance = activitySummary.balance;
+  const activityBalance = activitySummary?.balance ?? null;
   const activityBalanceTone =
-    activityBalance > 0 ? 'success' : activityBalance < 0 ? 'danger' : 'neutral';
+    activityBalance !== null && activityBalance > 0
+      ? 'success'
+      : activityBalance !== null && activityBalance < 0
+        ? 'danger'
+        : 'neutral';
   const activityBalanceLabel =
-    activityBalance > 0 ? 'Рост аудитории' : activityBalance < 0 ? 'Отток аудитории' : 'Без сдвига';
+    activityBalance === null
+      ? statsQuery.isFetching
+        ? 'Считаем за период'
+        : 'Нет полных данных'
+      : activityBalance > 0
+        ? 'Рост аудитории'
+        : activityBalance < 0
+          ? 'Отток аудитории'
+          : 'Без изменений';
   const profileHandoffMutation = useMutation({
     mutationFn: ({ userId, displayName }: { userId: string; displayName: string }) =>
       handoffChannelMemberProfile(api, chatId, userId, { displayName }),
@@ -2012,39 +2003,6 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     );
   }
 
-  if (section === 'overview' && !stats && (statsQuery.isLoading || statsQuery.isFetching)) {
-    return (
-      <div className="page-stack page-enter">
-        <GlassCard className="settings-section">
-          <SkeletonCard lines={12} />
-        </GlassCard>
-      </div>
-    );
-  }
-
-  if (section === 'overview' && statsQuery.error && !stats) {
-    return (
-      <div className="page-stack page-enter">
-        <GlassCard>
-          <StatusState
-            tone="danger"
-            title="Не удалось загрузить статистику"
-            description={(statsQuery.error as Error).message}
-            action={
-              <button
-                type="button"
-                className="button button--danger"
-                onClick={() => void statsQuery.refetch()}
-              >
-                Повторить
-              </button>
-            }
-          />
-        </GlassCard>
-      </div>
-    );
-  }
-
   const handleSectionChange = (nextSection: ChannelStatsSection) => {
     if (nextSection === section) {
       return;
@@ -2053,6 +2011,31 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     startTransition(() => {
       setSection(nextSection);
     });
+    navigate(
+      {
+        pathname: location.pathname,
+        search: buildStatisticsRouteSearch(location.search, { section: nextSection, range }),
+        hash: location.hash,
+      },
+      { replace: true, state: location.state },
+    );
+  };
+  const handleRangeChange = (nextRange: ChannelStatsRange) => {
+    if (nextRange === range) {
+      return;
+    }
+
+    startTransition(() => {
+      setRange(nextRange);
+    });
+    navigate(
+      {
+        pathname: location.pathname,
+        search: buildStatisticsRouteSearch(location.search, { section, range: nextRange }),
+        hash: location.hash,
+      },
+      { replace: true, state: location.state },
+    );
   };
   const handleActivityFilterChange = (nextFilter: Parameters<typeof activityFeed.setFilter>[0]) => {
     if (nextFilter === activityFeed.filter) {
@@ -2064,9 +2047,8 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     });
   };
   const isBusy =
-    section === 'events'
-      ? activityFeed.isReloading || activityFeed.isLoadingMore
-      : statsQuery.isFetching;
+    statsQuery.isFetching ||
+    (section === 'events' && (activityFeed.isReloading || activityFeed.isLoadingMore));
 
   return (
     <div className="channel-insights page-enter">
@@ -2104,6 +2086,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
           options={sectionOptions}
           onChange={(next) => handleSectionChange(next as ChannelStatsSection)}
           className="channel-insights__section-tabs"
+          ariaLabel="Раздел статистики канала"
         />
 
         {section === 'events' ? (
@@ -2118,6 +2101,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
                 <div
                   className={`channel-events-section__balance channel-events-section__balance--${activityBalanceTone}`}
                   aria-label={`Баланс: ${formatSignedCount(activityBalance)}`}
+                  aria-busy={activitySummary === null}
                 >
                   <small>Баланс</small>
                   <strong>{formatSignedCount(activityBalance)}</strong>
@@ -2128,37 +2112,58 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
               <SegmentedControl
                 value={range}
                 options={periodOptions}
-                onChange={(next) => setRange(next as ChannelStatsRange)}
+                onChange={(next) => handleRangeChange(next as ChannelStatsRange)}
                 className="channel-insights__range"
+                ariaLabel="Период статистики событий"
               />
             </div>
 
             <div
               className="channel-events-section__metrics"
-              aria-label="Сводка загруженных событий"
+              aria-label="Сводка событий за выбранный период"
+              aria-busy={activitySummary === null}
             >
               <span className="channel-events-section__metric channel-events-section__metric--total">
                 <span className="channel-events-section__metric-icon" aria-hidden="true">
                   <IconActivity width={17} height={17} strokeWidth={2.05} />
                 </span>
                 <small>Событий</small>
-                <strong>{formatCount(activitySummary.total)}</strong>
+                <strong>{formatCount(activitySummary?.total ?? null)}</strong>
               </span>
               <span className="channel-events-section__metric channel-events-section__metric--joined">
                 <span className="channel-events-section__metric-icon" aria-hidden="true">
                   <IconUserPlus width={17} height={17} strokeWidth={2.05} />
                 </span>
                 <small>Вошли</small>
-                <strong>{formatCount(activitySummary.joined)}</strong>
+                <strong>{formatCount(activitySummary?.joined ?? null)}</strong>
               </span>
               <span className="channel-events-section__metric channel-events-section__metric--left">
                 <span className="channel-events-section__metric-icon" aria-hidden="true">
                   <IconUserXmark width={17} height={17} strokeWidth={2.05} />
                 </span>
                 <small>Вышли</small>
-                <strong>{formatCount(activitySummary.left)}</strong>
+                <strong>{formatCount(activitySummary?.left ?? null)}</strong>
               </span>
             </div>
+
+            {statsQuery.error && !stats ? (
+              <GlassCard className="channel-insights__inline-state">
+                <StatusState
+                  tone="warning"
+                  title="Итоги временно недоступны"
+                  description={(statsQuery.error as Error).message}
+                  action={
+                    <button
+                      type="button"
+                      className="button button--ghost"
+                      onClick={() => void statsQuery.refetch()}
+                    >
+                      Повторить
+                    </button>
+                  }
+                />
+              </GlassCard>
+            ) : null}
 
             <MembershipActivityFeed
               joinedLabel="каналу"
@@ -2178,8 +2183,29 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
             />
           </section>
         ) : stats ? (
-          <ChannelStatsOverview stats={stats} range={range} onRangeChange={setRange} />
-        ) : null}
+          <ChannelStatsOverview stats={stats} range={range} onRangeChange={handleRangeChange} />
+        ) : statsQuery.error ? (
+          <GlassCard className="channel-insights__inline-state">
+            <StatusState
+              tone="danger"
+              title="Не удалось загрузить статистику"
+              description={(statsQuery.error as Error).message}
+              action={
+                <button
+                  type="button"
+                  className="button button--danger"
+                  onClick={() => void statsQuery.refetch()}
+                >
+                  Повторить
+                </button>
+              }
+            />
+          </GlassCard>
+        ) : (
+          <GlassCard className="channel-insights__inline-state" aria-busy="true">
+            <SkeletonCard lines={8} />
+          </GlassCard>
+        )}
       </div>
     </div>
   );

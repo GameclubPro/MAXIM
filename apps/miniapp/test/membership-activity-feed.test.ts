@@ -7,6 +7,7 @@ import {
   MEMBERSHIP_ACTIVITY_RENDER_STEP,
   resolveNextMembershipActivityRenderLimit,
 } from '../src/lib/membership-activity-feed';
+import { shouldClearMembershipActivityFeed } from '../src/lib/use-membership-activity-feed';
 
 function item(
   id: string,
@@ -57,4 +58,25 @@ test('membership activity render limit reveals loaded events in bounded chunks',
     MEMBERSHIP_ACTIVITY_INITIAL_RENDER_LIMIT + MEMBERSHIP_ACTIVITY_RENDER_STEP,
   );
   assert.equal(resolveNextMembershipActivityRenderLimit(9_999, 180), 180);
+});
+
+test('membership activity clears an all-events snapshot when a narrower filter is selected', () => {
+  assert.equal(
+    shouldClearMembershipActivityFeed({
+      scopeChanged: true,
+      filter: 'joined',
+      hasInitialPage: true,
+      itemCount: 20,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldClearMembershipActivityFeed({
+      scopeChanged: true,
+      filter: 'all',
+      hasInitialPage: true,
+      itemCount: 20,
+    }),
+    false,
+  );
 });

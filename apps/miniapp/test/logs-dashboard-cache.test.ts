@@ -11,10 +11,12 @@ import {
   shouldPrefetchSecondaryEventsDashboard,
 } from '../src/lib/logs-dashboard-cache';
 
-function createDashboard(overrides: {
-  chatId?: string;
-  range?: LogsDashboardResponse['period']['range'];
-} = {}): LogsDashboardResponse {
+function createDashboard(
+  overrides: {
+    chatId?: string;
+    range?: LogsDashboardResponse['period']['range'];
+  } = {},
+): LogsDashboardResponse {
   return {
     chat: {
       id: overrides.chatId ?? 'chat-1',
@@ -82,12 +84,21 @@ test('feed snapshot keys stay scoped by entity, range, filter, and search', () =
   assert.deepEqual(buildChatParticipantsSnapshotParts('chat-1', '24h', '  Иван  '), [
     'chat-1',
     '24h',
+    'all',
     'Иван',
     'first-page',
   ]);
   assert.deepEqual(buildChatParticipantsSnapshotParts('chat-1', '24h', ''), [
     'chat-1',
     '24h',
+    'all',
+    'all',
+    'first-page',
+  ]);
+  assert.deepEqual(buildChatParticipantsSnapshotParts('chat-1', '7d', '', 'admins'), [
+    'chat-1',
+    '7d',
+    'admins',
     'all',
     'first-page',
   ]);

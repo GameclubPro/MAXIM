@@ -20,6 +20,8 @@ const deviceProfiles = previewDevicePresets;
 const screenshotTarget = (process.env.MINIAPP_SCREENSHOT_TARGET ?? 'device').trim().toLowerCase();
 const colorScheme = (process.env.MINIAPP_SCREENSHOT_COLOR_SCHEME ?? 'light').trim().toLowerCase();
 const strictLayout = parseEnvFlag('MINIAPP_SCREENSHOT_STRICT_LAYOUT');
+const strictContrast = parseEnvFlag('MINIAPP_SCREENSHOT_STRICT_CONTRAST');
+const strictAccessibility = parseEnvFlag('MINIAPP_SCREENSHOT_STRICT_ACCESSIBILITY');
 const envMaxBridgeShim = parseOptionalEnvFlag('MINIAPP_SCREENSHOT_MAX_BRIDGE');
 const maxBridgeShimEnabled = envMaxBridgeShim ?? screenshotTarget === 'native';
 const simulateKeyboard = parseEnvFlag('MINIAPP_SCREENSHOT_SIMULATE_KEYBOARD');
@@ -60,6 +62,53 @@ const scenarios = [
     path: '/',
     searchParams: {
       view: 'channel',
+    },
+  },
+  {
+    name: 'home-actions',
+    path: '/',
+    beforeShot: async (page) => {
+      const trigger = page.locator('.chat-card__more').first();
+      const panel = page.locator('.home-actions__panel');
+      await trigger.click();
+      await panel.waitFor({ state: 'visible' });
+      await page.locator('.favorite-picker__backdrop').click({ position: { x: 2, y: 2 } });
+      await panel.waitFor({ state: 'detached' });
+      await page.waitForTimeout(50);
+      if (!(await trigger.evaluate((element) => element === document.activeElement))) {
+        throw new Error('Home action sheet did not restore focus after outside click.');
+      }
+      await trigger.click();
+      await panel.waitFor({ state: 'visible' });
+      await page.keyboard.press('Escape');
+      await panel.waitFor({ state: 'detached' });
+      await page.waitForTimeout(50);
+      if (!(await trigger.evaluate((element) => element === document.activeElement))) {
+        throw new Error('Home action sheet did not restore focus after Escape.');
+      }
+      await trigger.click();
+      await panel.waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'home-favorite-picker',
+    path: '/',
+    beforeShot: async (page) => {
+      await page.locator('.chat-card__more').first().click();
+      await page
+        .locator('.home-actions__item')
+        .filter({ hasText: /(?:Категория|В избранное)/u })
+        .first()
+        .click();
+      await page.locator('.favorite-picker__panel').waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'home-favorite-categories',
+    path: '/',
+    beforeShot: async (page) => {
+      await page.getByRole('button', { name: 'Настроить категории' }).click();
+      await page.locator('.favorite-label-editor__panel').waitFor({ state: 'visible' });
     },
   },
   {
@@ -124,8 +173,59 @@ const scenarios = [
     },
   },
   {
+    name: 'events-participants',
+    path: '/chat/preview-chat/events',
+    searchParams: {
+      section: 'participants',
+    },
+    beforeShot: async (page) => {
+      await page.locator('.participants-roster').waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'events-participant-sheet',
+    path: '/chat/preview-chat/events',
+    searchParams: {
+      section: 'participants',
+    },
+    beforeShot: async (page) => {
+      const firstParticipant = page.locator('.participants-roster__item--interactive').first();
+      await firstParticipant.waitFor({ state: 'visible' });
+      await firstParticipant.click();
+      await page.locator('.participant-sheet').waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'events-spam-review',
+    path: '/chat/preview-chat/events',
+    beforeShot: async (page) => {
+      await page.locator('.spammer-review__entry').click();
+      await page.locator('.spammer-review-sheet').waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'events-spam-diagnostics',
+    path: '/chat/preview-chat/events',
+    beforeShot: async (page) => {
+      await page.locator('.spammer-review__entry').click();
+      const firstCandidate = page.locator('.spammer-review-sheet__row').first();
+      await firstCandidate.waitFor({ state: 'visible' });
+      await firstCandidate.click();
+      await page.locator('.spammer-diagnostics-sheet').waitFor({ state: 'visible' });
+    },
+  },
+  {
     name: 'chat-settings',
     path: '/chat/preview-chat/settings',
+  },
+  {
+    name: 'chat-settings-speech-style',
+    path: '/chat/preview-chat/settings',
+    beforeShot: async (page) => {
+      await page.getByRole('button', { name: 'Стиль речи', exact: true }).click();
+      await page.locator('.settings-drilldown__panel--speech').waitFor({ state: 'visible' });
+      await page.waitForTimeout(300);
+    },
   },
   {
     name: 'chat-settings-stop-words',
@@ -378,13 +478,19 @@ const scenarios = [
     },
   },
   {
-    name: 'chat-settings-invitation-access',
+    name: 'chat-settings-apply-target',
     path: '/chat/preview-chat/settings',
     searchParams: {
-      focus: 'invitationAccess',
+      focus: 'links',
     },
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
+      const explanationToggle = page.getByLabel('Включить объяснение для модерации ссылок');
+      if (!(await explanationToggle.isChecked())) {
+        await explanationToggle.check();
+      }
+      await page.getByRole('button', { name: /Выбрать чаты/u }).click();
+      await page.locator('.settings-apply-target__panel').waitFor({ state: 'visible' });
     },
   },
   {
@@ -453,6 +559,18 @@ const scenarios = [
     },
   },
   {
+    name: 'channel-settings-post-suggestions-off',
+    path: '/channel/preview-channel/settings',
+    beforeShot: async (page) => {
+      await page.getByRole('button', { name: /Предложка/u }).click();
+      const toggle = page.getByRole('checkbox', { name: 'Приём предложек', exact: true });
+      if (await toggle.isChecked()) {
+        await toggle.uncheck();
+      }
+      await page.waitForTimeout(300);
+    },
+  },
+  {
     name: 'channel-settings-vk-parsing',
     path: '/channel/preview-channel/settings',
     searchParams: {
@@ -463,6 +581,15 @@ const scenarios = [
         .locator('.settings-drilldown__panel--vk-parsing .vk-parsing-card')
         .waitFor({ state: 'visible' });
       await page.waitForTimeout(500);
+    },
+  },
+  {
+    name: 'channel-settings-polls',
+    path: '/channel/preview-channel/settings',
+    beforeShot: async (page) => {
+      await page.getByRole('button', { name: /Опросы/u }).click();
+      await page.locator('.managed-poll-workspace').waitFor({ state: 'visible' });
+      await page.waitForTimeout(350);
     },
   },
   {
@@ -886,6 +1013,253 @@ async function assertStrictLayout(page, scenario) {
   await assertPrimaryControlsReachable(page, scenario);
   await assertChartsPainted(page, scenario);
   await assertKeyboardState(page, scenario);
+  await assertCriticalContrast(page, scenario);
+  await assertCriticalAccessibility(page, scenario);
+}
+
+async function assertCriticalContrast(page, scenario) {
+  if (!strictContrast) {
+    return;
+  }
+
+  const issues = await page.evaluate(() => {
+    const scopeSelectors = [
+      '.chats-page',
+      '.chats-home',
+      '.favorite-picker',
+      '.settings-sections',
+      '.channel-settings-screen',
+      '.channel-settings-card',
+      '.settings-drilldown',
+      '.settings-apply-target',
+      '.managed-poll-workspace',
+      '.events-screen',
+      '.membership-activity-feed',
+      '.chat-participants-roster',
+      '.participant-sheet',
+      '.spammer-review-sheet',
+      '.spammer-diagnostics-sheet',
+      '.channel-stats-page',
+    ];
+
+    const parseColor = (value) => {
+      const match = value
+        .trim()
+        .match(/^rgba?\(\s*([\d.]+)[, ]+([\d.]+)[, ]+([\d.]+)(?:\s*[,/]\s*([\d.]+))?\s*\)$/iu);
+      if (!match) {
+        return null;
+      }
+      return {
+        red: Number(match[1]),
+        green: Number(match[2]),
+        blue: Number(match[3]),
+        alpha: match[4] == null ? 1 : Number(match[4]),
+      };
+    };
+    const composite = (foreground, background) => {
+      const alpha = Math.max(0, Math.min(1, foreground.alpha));
+      return {
+        red: foreground.red * alpha + background.red * (1 - alpha),
+        green: foreground.green * alpha + background.green * (1 - alpha),
+        blue: foreground.blue * alpha + background.blue * (1 - alpha),
+        alpha: 1,
+      };
+    };
+    const luminance = (color) => {
+      const linearize = (channel) => {
+        const normalized = channel / 255;
+        return normalized <= 0.04045
+          ? normalized / 12.92
+          : ((normalized + 0.055) / 1.055) ** 2.4;
+      };
+      return (
+        0.2126 * linearize(color.red) +
+        0.7152 * linearize(color.green) +
+        0.0722 * linearize(color.blue)
+      );
+    };
+    const contrast = (foreground, background) => {
+      const foregroundLuminance = luminance(foreground);
+      const backgroundLuminance = luminance(background);
+      const light = Math.max(foregroundLuminance, backgroundLuminance);
+      const dark = Math.min(foregroundLuminance, backgroundLuminance);
+      return (light + 0.05) / (dark + 0.05);
+    };
+    const firstBackgroundImageColor = (value) => {
+      if (!value || value === 'none') {
+        return null;
+      }
+      const match = value.match(/rgba?\([^)]*\)/iu);
+      return match ? parseColor(match[0]) : null;
+    };
+    const effectiveBackground = (element) => {
+      const lineage = [];
+      let current = element;
+      while (current instanceof HTMLElement) {
+        lineage.unshift(current);
+        current = current.parentElement;
+      }
+      let result = { red: 255, green: 255, blue: 255, alpha: 1 };
+      for (const node of lineage) {
+        const style = getComputedStyle(node);
+        const backgroundColor = parseColor(style.backgroundColor);
+        if (backgroundColor && backgroundColor.alpha > 0.01) {
+          result = composite(backgroundColor, result);
+        }
+        const imageColor = firstBackgroundImageColor(style.backgroundImage);
+        if (imageColor && imageColor.alpha > 0.01) {
+          result = composite(imageColor, result);
+        }
+      }
+      return result;
+    };
+    const hasDirectText = (element) =>
+      Array.from(element.childNodes).some(
+        (node) => node.nodeType === Node.TEXT_NODE && Boolean(node.textContent?.trim()),
+      );
+    const isVisible = (element) => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return (
+        rect.width > 1 &&
+        rect.height > 1 &&
+        rect.bottom > 0 &&
+        rect.top < window.innerHeight &&
+        style.display !== 'none' &&
+        style.visibility !== 'hidden' &&
+        Number.parseFloat(style.opacity || '1') > 0.05
+      );
+    };
+
+    const roots = scopeSelectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)));
+    const candidates = Array.from(
+      new Set(
+        roots.flatMap((root) => [root, ...root.querySelectorAll('*')]),
+      ),
+    ).filter(
+      (element) =>
+        element instanceof HTMLElement &&
+        hasDirectText(element) &&
+        isVisible(element) &&
+        !element.closest('[disabled], [aria-disabled="true"], [aria-hidden="true"]'),
+    );
+
+    return candidates.flatMap((element) => {
+      const style = getComputedStyle(element);
+      const foreground = parseColor(style.color);
+      if (!foreground || foreground.alpha <= 0.05) {
+        return [];
+      }
+      const background = effectiveBackground(element);
+      const renderedForeground = composite(foreground, background);
+      const ratio = contrast(renderedForeground, background);
+      const fontSize = Number.parseFloat(style.fontSize) || 16;
+      const fontWeight = Number.parseInt(style.fontWeight, 10) || 400;
+      const isLarge = fontSize >= 24 || (fontSize >= 18.66 && fontWeight >= 700);
+      const requiredRatio = isLarge ? 3 : 4.5;
+      if (ratio + 0.05 >= requiredRatio) {
+        return [];
+      }
+      return [
+        {
+          tagName: element.tagName,
+          className: element.className?.toString() ?? '',
+          text: element.innerText.replace(/\s+/gu, ' ').trim().slice(0, 80),
+          ratio,
+          requiredRatio,
+        },
+      ];
+    }).slice(0, 5);
+  });
+
+  if (issues.length > 0) {
+    const first = issues[0];
+    throw new Error(
+      `Scenario ${scenario.name} has insufficient text contrast at ` +
+        `${first.tagName}.${first.className}: ${first.ratio.toFixed(2)} < ` +
+        `${first.requiredRatio.toFixed(1)} ("${first.text}").`,
+    );
+  }
+}
+
+async function assertCriticalAccessibility(page, scenario) {
+  if (!strictAccessibility) {
+    return;
+  }
+
+  const issues = await page.evaluate(() => {
+    const isVisible = (element) => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return (
+        rect.width > 1 &&
+        rect.height > 1 &&
+        style.display !== 'none' &&
+        style.visibility !== 'hidden' &&
+        Number.parseFloat(style.opacity || '1') > 0.05
+      );
+    };
+    const accessibleName = (element) => {
+      const labelledBy = element.getAttribute('aria-labelledby');
+      if (labelledBy) {
+        const label = labelledBy
+          .split(/\s+/u)
+          .map((id) => document.getElementById(id)?.textContent?.trim() ?? '')
+          .filter(Boolean)
+          .join(' ');
+        if (label) {
+          return label;
+        }
+      }
+      const ariaLabel = element.getAttribute('aria-label')?.trim();
+      if (ariaLabel) {
+        return ariaLabel;
+      }
+      if (element instanceof HTMLInputElement && element.id) {
+        const label = document.querySelector(`label[for="${CSS.escape(element.id)}"]`);
+        if (label?.textContent?.trim()) {
+          return label.textContent.trim();
+        }
+      }
+      if (element.closest('label')?.textContent?.trim()) {
+        return element.closest('label').textContent.trim();
+      }
+      if (
+        element instanceof HTMLElement &&
+        element.matches('button, summary, a[href], [role="button"], [role="tab"], [role="switch"]')
+      ) {
+        return element.textContent?.trim() ?? '';
+      }
+      return '';
+    };
+    const problems = [];
+
+    for (const dialog of document.querySelectorAll('[role="dialog"]')) {
+      if (dialog instanceof HTMLElement && isVisible(dialog) && !accessibleName(dialog)) {
+        problems.push({ type: 'unnamed dialog', target: dialog.className || dialog.id });
+      }
+    }
+
+    for (const control of document.querySelectorAll(
+      'button, summary, a[href], input:not([type="hidden"]), select, textarea, [role="button"], [role="tab"], [role="switch"]',
+    )) {
+      if (!(control instanceof HTMLElement) || !isVisible(control)) {
+        continue;
+      }
+      if (!accessibleName(control)) {
+        problems.push({ type: 'unnamed control', target: control.className || control.id });
+      }
+    }
+
+    return problems.slice(0, 5);
+  });
+
+  if (issues.length > 0) {
+    const first = issues[0];
+    throw new Error(
+      `Scenario ${scenario.name} has accessibility issue: ${first.type} (${first.target}).`,
+    );
+  }
 }
 
 async function assertAppHasVisibleContent(page, scenario) {

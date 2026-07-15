@@ -172,7 +172,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #6e859a;
+  color: var(--text-secondary);
   text-align: center;
   position: relative;
   transition:
@@ -186,7 +186,7 @@
 }
 
 .events-primary-tab:not(.is-active) {
-  opacity: 0.84;
+  opacity: 1;
 }
 
 .events-primary-tab.is-active {
@@ -774,7 +774,7 @@
 }
 
 .spammer-review__label {
-  color: #70869a;
+  color: var(--text-secondary);
   font-size: 0.62rem;
   font-weight: 840;
   line-height: 1.1;
@@ -1055,10 +1055,29 @@
 }
 
 .spammer-diagnostics-sheet.settings-drilldown__panel {
+  height: min(
+    calc(var(--app-viewport-height) - var(--settings-drilldown-top-offset)),
+    calc(100dvh - var(--settings-drilldown-top-offset))
+  );
+  max-height: min(
+    calc(var(--app-viewport-height) - var(--settings-drilldown-top-offset)),
+    calc(100dvh - var(--settings-drilldown-top-offset))
+  );
+  animation: spammer-diagnostics-panel-enter 0.2s ease-out;
   border-color: rgba(104, 132, 158, 0.24);
   box-shadow:
     0 28px 72px rgba(16, 36, 58, 0.22),
     0 0 0 1px rgba(255, 255, 255, 0.76) inset;
+}
+
+@keyframes spammer-diagnostics-panel-enter {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 .spammer-diagnostics-sheet .settings-drilldown__body {
@@ -1089,7 +1108,7 @@
   padding: 0;
   border: 0;
   background: transparent;
-  color: #71879b;
+  color: var(--text-secondary);
   font-size: 0.62rem;
   font-weight: 760;
   overflow-wrap: anywhere;
@@ -1101,7 +1120,7 @@
   display: grid;
   place-items: center;
   gap: 10px;
-  color: #60778c;
+  color: var(--text-secondary);
   font-size: 0.78rem;
   font-weight: 760;
   text-align: center;
@@ -1190,7 +1209,7 @@
 
 .spammer-diagnostics__profile-copy span {
   min-width: 0;
-  color: #60778c;
+  color: var(--text-secondary);
   font-size: 0.66rem;
   font-weight: 740;
   line-height: 1.2;
@@ -1275,7 +1294,7 @@
 .spammer-diagnostics__section-head span,
 .spammer-diagnostics__facts dt {
   min-width: 0;
-  color: #71879b;
+  color: var(--text-secondary);
   font-size: 0.62rem;
   font-weight: 850;
   line-height: 1.12;
@@ -1345,7 +1364,7 @@
 
 .spammer-diagnostics__confidence-head span {
   min-width: 0;
-  color: #60778c;
+  color: var(--text-secondary);
   font-size: 0.54rem;
   font-weight: 850;
   line-height: 1.08;
@@ -1476,7 +1495,7 @@
 .spammer-diagnostics__signal-copy small,
 .spammer-diagnostics__empty span {
   min-width: 0;
-  color: #60778c;
+  color: var(--text-secondary);
   font-size: 0.68rem;
   font-weight: 760;
   line-height: 1.24;
@@ -1564,14 +1583,14 @@
 .spammer-diagnostics__action--accent {
   color: #ffffff;
   border-color: rgba(11, 132, 255, 0.18);
-  background: linear-gradient(145deg, #1b9af5, #0a6fc8);
+  background: linear-gradient(145deg, #0872c5, #07558f);
   box-shadow: 0 10px 20px rgba(11, 132, 255, 0.2);
 }
 
 .spammer-diagnostics__action--danger {
   color: #ffffff;
   border-color: rgba(228, 83, 99, 0.22);
-  background: linear-gradient(145deg, #f06b79, #d83d50);
+  background: linear-gradient(145deg, #c53345, #a91f32);
   box-shadow: 0 10px 20px rgba(228, 83, 99, 0.18);
 }
 
@@ -1747,7 +1766,7 @@
 }
 
 .event-feed-item__stamp time {
-  color: #7b91a6;
+  color: var(--text-secondary);
   font-size: 0.68rem;
   font-weight: 700;
   white-space: nowrap;
@@ -1857,10 +1876,10 @@
 
 .event-feed-item__reason span,
 .event-feed-item__excerpt span {
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: 0.68rem;
   font-weight: 800;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -3619,4 +3638,316 @@ html[data-max-theme='dark'] .events-dashboard__skeleton-line {
     color-mix(in srgb, var(--text-muted) 20%, transparent)
   );
 }
+
+  .events-stage__back,
+  .events-primary-tab,
+  .events-dashboard__range .segmented-control__item,
+  .events-filter-chip,
+  .event-feed-item__avatar-link,
+  .event-feed-item__expand,
+  .membership-feed__load-more {
+    min-height: 44px;
+  }
+
+  .events-filter-menu {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 10px;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    font-weight: 750;
+  }
+
+  .events-filter-menu select {
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+    padding: 0 32px 0 11px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card-muted);
+    color: var(--text-primary);
+    font: inherit;
+  }
+
+  .events-filter-menu select:focus-visible {
+    outline: 2px solid var(--app-focus-ring);
+    outline-offset: 2px;
+  }
+
+  .events-stage__back {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    border-radius: 8px;
+  }
+
+  .events-primary-tab,
+  .events-dashboard__range .segmented-control__item,
+  .events-filter-chip {
+    border-radius: 8px;
+  }
+
+  .events-stage__back:focus-visible,
+  .events-primary-tab:focus-visible,
+  .events-dashboard__range .segmented-control__item:focus-visible,
+  .events-filter-chip:focus-visible,
+  .event-feed-item__avatar-link:focus-visible,
+  .event-feed-item__expand:focus-visible {
+    outline: 2px solid var(--app-focus-ring);
+    outline-offset: 2px;
+  }
+
+  .events-stage,
+  .events-stage--moderation,
+  .events-stage--activity,
+  .events-stage--participants {
+    border-color: var(--border-subtle);
+    background: var(--surface-page);
+  }
+
+  .events-stage__appbar-bar,
+  .events-primary-tabs,
+  .events-dashboard,
+  .events-inline-state,
+  .event-feed-item,
+  .logs-violation-item {
+    border-color: var(--border-subtle);
+    background: var(--surface-card);
+    box-shadow: var(--shadow-xs);
+  }
+
+  .events-dashboard__hero,
+  .events-dashboard__metric,
+  .events-dashboard__activity-balance,
+  .events-dashboard__flow-card,
+  .event-feed-item__details,
+  .logs-violation-item__ban-config {
+    border-color: var(--border-subtle);
+    background: var(--surface-card-muted);
+    box-shadow: none;
+  }
+
+  .events-stage__appbar-label,
+  .events-dashboard__eyebrow,
+  .events-dashboard__hero small,
+  .events-dashboard__metric small,
+  .events-dashboard__activity-balance small,
+  .events-dashboard__activity-balance span,
+  .events-dashboard__flow-card small,
+  .events-dashboard__flow-card span,
+  .events-dashboard__flow-meta small,
+  .event-feed-item__stamp,
+  .event-feed-item__summary {
+    color: var(--text-secondary);
+  }
+
+  .events-dashboard__flow-bar.is-empty {
+    background: var(--border-subtle);
+  }
+
+  body.events-page-open .app-shell {
+    padding-bottom: calc(var(--bottom-nav-height) + var(--bottom-nav-content-inset) + 56px);
+  }
+
+  body.events-page-open.settings-drilldown-open .bottom-nav {
+    visibility: hidden;
+  }
+
+  html[data-max-theme='dark'] .events-dashboard__activity-balance span,
+  html[data-max-theme='dark'] .events-dashboard__flow-card span,
+  html[data-max-theme='dark'] .events-dashboard__flow-meta small,
+  html[data-max-theme='dark'] .event-feed-item__summary,
+  html[data-max-theme='dark'] .events-stage__appbar-label {
+    color: var(--text-secondary);
+  }
+
+  .spammer-review-sheet__row,
+  .spammer-diagnostics__profile-avatar-link,
+  .spammer-diagnostics__action {
+    min-height: 44px;
+  }
+
+  html[data-max-theme='dark'] .spammer-review-sheet,
+  html[data-max-theme='dark'] .spammer-diagnostics-sheet,
+  html[data-max-theme='dark'] .spammer-review-sheet__state,
+  html[data-max-theme='dark'] .spammer-review-sheet__row,
+  html[data-max-theme='dark'] .spammer-diagnostics__state,
+  html[data-max-theme='dark'] .spammer-diagnostics__profile,
+  html[data-max-theme='dark'] .spammer-diagnostics__hero,
+  html[data-max-theme='dark'] .spammer-diagnostics__facts,
+  html[data-max-theme='dark'] .spammer-diagnostics__signal-card,
+  html[data-max-theme='dark'] .spammer-diagnostics__empty,
+  html[data-max-theme='dark'] .spammer-diagnostics__action {
+    border-color: var(--border-subtle);
+    background: var(--surface-card);
+    color: var(--text-primary);
+    box-shadow: var(--shadow-xs);
+  }
+
+  html[data-max-theme='dark'] .spammer-diagnostics-overlay .settings-drilldown__backdrop {
+    background: var(--theme-scrim);
+  }
+
+  html[data-max-theme='dark'] .spammer-diagnostics-sheet .settings-drilldown__footer {
+    border-color: var(--border-subtle);
+    background: var(--surface-card-muted);
+  }
+
+  html[data-max-theme='dark'] .spammer-review-sheet .settings-drilldown__header,
+  html[data-max-theme='dark'] .spammer-review-sheet .settings-drilldown__body,
+  html[data-max-theme='dark'] .spammer-diagnostics-sheet .settings-drilldown__header,
+  html[data-max-theme='dark'] .spammer-diagnostics-sheet .settings-drilldown__body {
+    border-color: var(--border-subtle);
+    background: var(--surface-card);
+    color: var(--text-primary);
+  }
+
+  html[data-max-theme='dark'] .spammer-review-sheet .settings-drilldown__title,
+  html[data-max-theme='dark'] .spammer-diagnostics-sheet .settings-drilldown__title {
+    color: var(--text-primary);
+  }
+
+  html[data-max-theme='dark'] .spammer-review-sheet .settings-drilldown__summary,
+  html[data-max-theme='dark'] .spammer-review-sheet .settings-drilldown__close,
+  html[data-max-theme='dark'] .spammer-diagnostics-sheet .settings-drilldown__summary,
+  html[data-max-theme='dark'] .spammer-diagnostics-sheet .settings-drilldown__close {
+    border-color: var(--border-subtle);
+    background: var(--surface-card-muted);
+    color: var(--text-secondary);
+    box-shadow: none;
+  }
+
+  html[data-max-theme='dark'] .spammer-diagnostics__confidence-track,
+  html[data-max-theme='dark'] .spammer-diagnostics__confidence,
+  html[data-max-theme='dark'] .spammer-diagnostics__facts div,
+  html[data-max-theme='dark'] .spammer-diagnostics__signals {
+    border-color: var(--border-subtle);
+    background: var(--surface-card-muted);
+    box-shadow: none;
+  }
+
+  html[data-max-theme='dark'] .spammer-diagnostics__hero-top strong {
+    border-color: var(--border-strong);
+    background: var(--surface-card-muted);
+    color: var(--text-primary);
+  }
+
+  html[data-max-theme='dark'] .spammer-review-sheet__person strong,
+  html[data-max-theme='dark'] .spammer-diagnostics__profile-name,
+  html[data-max-theme='dark'] .spammer-diagnostics__profile-copy strong,
+  html[data-max-theme='dark'] .spammer-diagnostics__hero h4,
+  html[data-max-theme='dark'] .spammer-diagnostics__signal-copy strong,
+  html[data-max-theme='dark'] .spammer-diagnostics__section-head strong,
+  html[data-max-theme='dark'] .spammer-diagnostics__facts dd,
+  html[data-max-theme='dark'] .spammer-diagnostics__empty strong {
+    color: var(--text-primary);
+  }
+
+  html[data-max-theme='dark'] .spammer-review-sheet__person span,
+  html[data-max-theme='dark'] .spammer-diagnostics__profile-copy span,
+  html[data-max-theme='dark'] .spammer-diagnostics__hero-top span,
+  html[data-max-theme='dark'] .spammer-diagnostics__section-head span,
+  html[data-max-theme='dark'] .spammer-diagnostics__confidence-head span,
+  html[data-max-theme='dark'] .spammer-diagnostics__facts dt,
+  html[data-max-theme='dark'] .spammer-diagnostics__signal-copy span,
+  html[data-max-theme='dark'] .spammer-diagnostics__signal-copy small,
+  html[data-max-theme='dark'] .spammer-diagnostics__empty span,
+  html[data-max-theme='dark'] .spammer-diagnostics__action small {
+    color: var(--text-secondary);
+  }
+
+  html[data-max-theme='dark'] .spammer-diagnostics__confidence-head strong,
+  html[data-max-theme='dark'] .spammer-diagnostics__refresh {
+    color: var(--accent);
+  }
+
+  html[data-max-theme='dark'] .spammer-diagnostics__refresh::before {
+    background: var(--accent);
+  }
+
+  html[data-max-theme='dark'] .spammer-diagnostics__action--accent {
+    border-color: color-mix(in srgb, var(--accent) 42%, var(--border-subtle));
+    background: color-mix(in srgb, var(--accent) 20%, var(--surface-card));
+    color: var(--text-primary);
+  }
+
+  html[data-max-theme='dark'] .spammer-diagnostics__action--danger {
+    border-color: color-mix(in srgb, var(--danger) 42%, var(--border-subtle));
+    background: color-mix(in srgb, var(--danger) 20%, var(--surface-card));
+    color: var(--text-primary);
+  }
+
+  html[data-max-theme='dark'] .participant-sheet.settings-drilldown__panel,
+  html[data-max-theme='dark'] .participant-sheet .settings-drilldown__header,
+  html[data-max-theme='dark'] .participant-sheet .settings-drilldown__body,
+  html[data-max-theme='dark'] .participant-sheet__hero,
+  html[data-max-theme='dark'] .participant-sheet__stat,
+  html[data-max-theme='dark'] .participant-sheet__dock,
+  html[data-max-theme='dark'] .participant-sheet__composer,
+  html[data-max-theme='dark'] .participant-sheet__mode-switch {
+    border-color: var(--border-subtle);
+    background: var(--surface-card);
+    color: var(--text-primary);
+    box-shadow: var(--shadow-xs);
+  }
+
+  html[data-max-theme='dark'] .participant-sheet .settings-drilldown__title,
+  html[data-max-theme='dark'] .participant-sheet__identity strong,
+  html[data-max-theme='dark'] .participant-sheet__stat strong,
+  html[data-max-theme='dark'] .participant-sheet__composer-title,
+  html[data-max-theme='dark'] .participant-sheet__label-with-info > span {
+    color: var(--text-primary);
+  }
+
+  html[data-max-theme='dark'] .participant-sheet .settings-drilldown__summary,
+  html[data-max-theme='dark'] .participant-sheet__identity span,
+  html[data-max-theme='dark'] .participant-sheet__stat small,
+  html[data-max-theme='dark'] .participant-sheet__stat span,
+  html[data-max-theme='dark'] .participant-sheet__slider-labels,
+  html[data-max-theme='dark'] .participant-sheet__composer-head output,
+  html[data-max-theme='dark'] .participant-sheet__slider-head output {
+    color: var(--text-secondary);
+  }
+
+  html[data-max-theme='dark'] .participant-sheet .settings-drilldown__summary,
+  html[data-max-theme='dark'] .participant-sheet .settings-drilldown__close {
+    border-color: var(--border-subtle);
+    background: var(--surface-card-muted);
+    color: var(--text-secondary);
+    box-shadow: none;
+  }
+
+  html[data-max-theme='dark'] .participant-sheet__avatar-shell,
+  html[data-max-theme='dark'] .participant-sheet__chip,
+  html[data-max-theme='dark'] .participant-sheet__action,
+  html[data-max-theme='dark'] .participant-sheet__mode-option {
+    border-color: var(--border-subtle);
+    background: var(--surface-card-muted);
+    color: var(--text-secondary);
+    box-shadow: none;
+  }
+
+  html[data-max-theme='dark'] .participant-sheet__chip--immune,
+  html[data-max-theme='dark'] .participant-sheet__action--immunity,
+  html[data-max-theme='dark'] .participant-sheet__action--neutral.is-active,
+  html[data-max-theme='dark'] .participant-sheet__mode-option.is-active {
+    border-color: color-mix(in srgb, var(--accent) 42%, var(--border-subtle));
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  html[data-max-theme='dark'] .participant-sheet__action--mute,
+  html[data-max-theme='dark'] .participant-sheet__action--mute.is-active {
+    border-color: color-mix(in srgb, var(--warning) 38%, var(--border-subtle));
+    background: color-mix(in srgb, var(--warning) 14%, var(--surface-card-muted));
+    color: var(--warning);
+  }
+
+  html[data-max-theme='dark'] .participant-sheet__action--ban {
+    border-color: color-mix(in srgb, var(--danger) 38%, var(--border-subtle));
+    background: color-mix(in srgb, var(--danger) 14%, var(--surface-card-muted));
+    color: var(--danger);
+  }
 }

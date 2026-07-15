@@ -1188,7 +1188,7 @@
 
 .required-subscription__selection-link {
   min-width: 0;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: 0.7rem;
   line-height: 1.25;
   white-space: nowrap;

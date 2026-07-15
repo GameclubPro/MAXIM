@@ -1,0 +1,80 @@
+@layer components {
+  .participant-sheet__hero,
+  .participant-sheet__stat,
+  .participant-sheet__dock,
+  .participant-sheet__composer,
+  .participant-sheet__mode-switch {
+    border-color: var(--border-subtle); background: var(--surface-card);
+    color: var(--text-primary); box-shadow: var(--shadow-xs);
+  }
+  .participant-sheet__hero,
+  .participant-sheet__dock,
+  .participant-sheet__composer,
+  .participant-sheet__stat,
+  .participant-sheet__action,
+  .participant-sheet__mode-switch,
+  .participant-sheet__mode-option { border-radius: 8px; }
+  .participant-sheet__identity strong,
+  .participant-sheet__stat strong,
+  .participant-sheet__composer-title,
+  .participant-sheet__label-with-info > span { color: var(--text-primary); }
+  .participant-sheet__identity span,
+  .participant-sheet__stat small,
+  .participant-sheet__stat span,
+  .participant-sheet__slider-labels,
+  .participant-sheet__composer-head output,
+  .participant-sheet__slider-head output { color: var(--text-secondary); }
+  .participant-sheet__info-button { width: 44px; min-width: 44px; height: 44px; }
+  .participant-sheet__action:focus-visible,
+  .participant-sheet__mode-option:focus-visible,
+  .participant-sheet__info-button:focus-visible { outline: 2px solid var(--app-focus-ring); outline-offset: 2px; }
+
+  html[data-max-theme='dark'] .participant-sheet__hero,
+  html[data-max-theme='dark'] .participant-sheet__stat,
+  html[data-max-theme='dark'] .participant-sheet__dock,
+  html[data-max-theme='dark'] .participant-sheet__composer,
+  html[data-max-theme='dark'] .participant-sheet__mode-switch {
+    border-color: var(--border-subtle); background: var(--surface-card);
+    color: var(--text-primary); box-shadow: var(--shadow-xs);
+  }
+  html[data-max-theme='dark'] .participant-sheet.settings-drilldown__panel,
+  html[data-max-theme='dark'] .participant-sheet .settings-drilldown__header,
+  html[data-max-theme='dark'] .participant-sheet .settings-drilldown__body {
+    border-color: var(--border-subtle); background: var(--surface-card); color: var(--text-primary);
+  }
+  html[data-max-theme='dark'] .participant-sheet .settings-drilldown__title,
+  html[data-max-theme='dark'] .participant-sheet__identity strong,
+  html[data-max-theme='dark'] .participant-sheet__stat strong,
+  html[data-max-theme='dark'] .participant-sheet__composer-title,
+  html[data-max-theme='dark'] .participant-sheet__label-with-info > span { color: var(--text-primary); }
+  html[data-max-theme='dark'] .participant-sheet .settings-drilldown__summary,
+  html[data-max-theme='dark'] .participant-sheet__identity span,
+  html[data-max-theme='dark'] .participant-sheet__stat small,
+  html[data-max-theme='dark'] .participant-sheet__stat span,
+  html[data-max-theme='dark'] .participant-sheet__slider-labels,
+  html[data-max-theme='dark'] .participant-sheet__composer-head output,
+  html[data-max-theme='dark'] .participant-sheet__slider-head output { color: var(--text-secondary); }
+  html[data-max-theme='dark'] .participant-sheet__avatar-shell,
+  html[data-max-theme='dark'] .participant-sheet__chip,
+  html[data-max-theme='dark'] .participant-sheet__action,
+  html[data-max-theme='dark'] .participant-sheet__mode-option {
+    border-color: var(--border-subtle); background: var(--surface-card-muted);
+    color: var(--text-secondary); box-shadow: none;
+  }
+  html[data-max-theme='dark'] .participant-sheet__chip--immune,
+  html[data-max-theme='dark'] .participant-sheet__action--immunity,
+  html[data-max-theme='dark'] .participant-sheet__action--neutral.is-active,
+  html[data-max-theme='dark'] .participant-sheet__mode-option.is-active {
+    border-color: color-mix(in srgb, var(--accent) 42%, var(--border-subtle));
+    background: var(--accent-soft); color: var(--accent);
+  }
+  html[data-max-theme='dark'] .participant-sheet__action--mute,
+  html[data-max-theme='dark'] .participant-sheet__action--mute.is-active {
+    border-color: color-mix(in srgb, var(--warning) 38%, var(--border-subtle));
+    background: color-mix(in srgb, var(--warning) 14%, var(--surface-card-muted)); color: var(--warning);
+  }
+  html[data-max-theme='dark'] .participant-sheet__action--ban {
+    border-color: color-mix(in srgb, var(--danger) 38%, var(--border-subtle));
+    background: color-mix(in srgb, var(--danger) 14%, var(--surface-card-muted)); color: var(--danger);
+  }
+}

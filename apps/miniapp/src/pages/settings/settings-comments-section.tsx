@@ -26,6 +26,7 @@ type SettingsCommentsSectionProps = {
   onToggleSection: () => void;
   onToggleHint: (key: HintKey) => void;
   onSave: () => void;
+  onDiscardChanges: () => void;
   onToggleCommentsEnabled: (enabled: boolean) => void;
   onFieldChange: (
     key: 'commentsAdminsEnabled' | 'commentsChatBroadcastsEnabled',
@@ -67,6 +68,7 @@ export function SettingsCommentsSection({
   onToggleSection,
   onToggleHint,
   onSave,
+  onDiscardChanges,
   onToggleCommentsEnabled,
   onFieldChange,
 }: SettingsCommentsSectionProps) {
@@ -98,7 +100,13 @@ export function SettingsCommentsSection({
         tone="mint"
         className="settings-drilldown__panel--board settings-drilldown__panel--comments"
         onClose={onToggleSection}
-        footer={<CommentsFooter isSaving={isSaving} canSave={canSave} onSave={onSave} />}
+        confirmCloseWhen={canSave}
+        onDiscardChanges={onDiscardChanges}
+        footer={
+          canSave || isSaving ? (
+            <CommentsFooter isSaving={isSaving} canSave={canSave} onSave={onSave} />
+          ) : null
+        }
       >
         <div
           id="settings-comments-content"
@@ -118,14 +126,17 @@ export function SettingsCommentsSection({
                         label="Как работают комментарии в чатах"
                       >
                         В MAX нет нативных комментариев под сообщениями в чатах, поэтому бот сам
-                        публикует сообщение с кнопкой комментариев. Для постов админа бот
-                        отправляет копию с той же разметкой и удаляет исходное сообщение, а для
-                        автопостинга кнопка ставится сразу на сообщение бота.
+                        публикует сообщение с кнопкой комментариев. Для постов админа бот отправляет
+                        копию с той же разметкой и удаляет исходное сообщение, а для автопостинга
+                        кнопка ставится сразу на сообщение бота.
                       </SettingsHintAnchor>
                     </div>
                   </div>
 
-                  <label className="settings-native-switch" aria-label="Включить комментарии в чатах">
+                  <label
+                    className="settings-native-switch"
+                    aria-label="Включить комментарии в чатах"
+                  >
                     <input
                       type="checkbox"
                       checked={draft.commentsEnabled}

@@ -25,7 +25,6 @@ import {
 import { type ChatSummary, type ManagedEntityHeader } from '@maxim/contracts/managed-entities';
 import {
   BOT_SPEECH_STYLE_METADATA,
-  BOT_SPEECH_STYLE_OPTIONS,
   applyBotSpeechStylePreset,
   type BotSpeechStyle,
 } from '@maxim/contracts/bot-speech';
@@ -41,6 +40,7 @@ import '../styles/settings-link-allowlist.css';
 import '../styles/settings-drilldown-polish.css';
 import '../styles/settings-duration-editor.css';
 import '../styles/settings-route-polish.css';
+import '../styles/settings-interaction-polish.css';
 import '../styles/managed-giveaway.css';
 import '../styles/broadcast-studio.css';
 import './settings-page.css';
@@ -203,7 +203,6 @@ import {
   resolveLegacyBroadcastEditorTarget,
   resolveLegacyPublicationReturnPath,
 } from '../features/publications/legacy-autoposts';
-import { SettingsApplyTargetSheet } from './settings/settings-apply-target-sheet';
 import { SettingsCommentsSection } from './settings/settings-comments-section';
 import { SettingsExtraSection } from './settings/settings-extra-section';
 import { SettingsSectionSaveFooter } from './settings/settings-section-save-footer';
@@ -326,7 +325,6 @@ import {
   formatDuplicateAllowanceLabel,
   LINK_POLICY_OPTIONS,
   RUSSIAN_TIMEZONE_OPTIONS,
-  BOT_SPEECH_STYLE_SELECTOR_LABELS,
   resolveBotSpeechPreviewContext,
   buildSpeechStylePreviewSamples,
   formatApiError,
@@ -361,8 +359,6 @@ import {
   CalendarIcon,
   ClockIcon,
   TrashIcon,
-  BotSpeechStyleIcon,
-  StyleSelectedIcon,
   EditToggleButton,
   SettingsHintAnchor,
   LazyBotMessageEditor,
@@ -375,6 +371,24 @@ const LazyActionConfirmSheet = lazy(() =>
   import('../components/ui/action-confirm-sheet').then((module) => ({
     default: module.ActionConfirmSheet,
   })),
+);
+let settingsApplyTargetSheetPromise: Promise<{
+  default: typeof import('./settings/settings-apply-target-sheet').SettingsApplyTargetSheet;
+}> | null = null;
+function preloadSettingsApplyTargetSheet() {
+  settingsApplyTargetSheetPromise ??= import('./settings/settings-apply-target-sheet').then(
+    (module) => ({ default: module.SettingsApplyTargetSheet }),
+  );
+  return settingsApplyTargetSheetPromise;
+}
+const LazySettingsApplyTargetSheet = lazy(preloadSettingsApplyTargetSheet);
+const LazySettingsOverviewSearch = lazy(() =>
+  import('../components/ui/settings-overview-search').then((module) => ({
+    default: module.SettingsOverviewSearch,
+  })),
+);
+const LazySettingsSpeechStylePanel = lazy(
+  () => import('./settings/settings-speech-style-panel'),
 );
 
 export function SettingsPage({ api }: { api: ApiTransport }) {
@@ -534,6 +548,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [openMuteDurationKey, setOpenMuteDurationKey] = useState<AutoMuteDurationKey | null>(null);
   const [openBotEditorKey, setOpenBotEditorKey] = useState<BotMessageEditorKey | null>(null);
   const [openWarnEditorKey, setOpenWarnEditorKey] = useState<WarnMessageEditorKey | null>(null);
+  const [speechStylePanelOpen, setSpeechStylePanelOpen] = useState(false);
   const [pendingSpeechStyle, setPendingSpeechStyle] = useState<BotSpeechStyle | null>(null);
   const [expandedSections, setExpandedSections] =
     useState<Record<SettingsSectionKey, boolean>>(INITIAL_EXPANDED_SECTIONS);
@@ -1380,6 +1395,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       updateSettings(api, chatId ?? '', payload),
     onSuccess: (saved, variables) => {
       syncSavedBotSpeechStyle(saved);
+      setSpeechStylePanelOpen(false);
       setPendingSpeechStyle(null);
       pushToast({
         tone: 'success',
@@ -1436,9 +1452,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const compactHeaderStatusLabel = isHeaderSaving ? 'Сохр.' : 'Черн.';
   const canSeeThematicFilters = canUserAccessThematicFilters(meQuery.data?.userId);
   const activeSpeechStyle = draft?.botSpeechStyle ?? null;
-  const pendingSpeechStyleMeta = pendingSpeechStyle
-    ? BOT_SPEECH_STYLE_METADATA[pendingSpeechStyle]
-    : null;
   const pendingSpeechStyleSamples = pendingSpeechStyle
     ? buildSpeechStylePreviewSamples(pendingSpeechStyle, botSpeechPreviewContext)
     : null;
@@ -2868,36 +2881,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     rulesDraft,
     rulesDraftSnapshot,
     rulesFailedSnapshot,
-  ]);
-
-  useEffect(() => {
-    if (!chatId || !draft || !expandedSections.comments || isSavingComments) {
-      return;
-    }
-
-    if (!isCommentsDirty()) {
-      return;
-    }
-
-    const payload = buildCommentsPayload();
-    if (!payload) {
-      return;
-    }
-
-    const timeoutId = window.setTimeout(() => {
-      saveCommentsMutation.mutate(payload);
-    }, AUTO_SAVE_DELAY_MS);
-
-    return () => {
-      window.clearTimeout(timeoutId);
-    };
-  }, [
-    chatId,
-    draftSnapshot,
-    expandedSections.comments,
-    isSavingComments,
-    saveCommentsMutation,
-    serverSnapshot,
   ]);
 
   function handleAddDomain() {
@@ -5188,6 +5171,26 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     return COMMENTS_SETTING_KEYS.some((key) => draft[key] !== savedSettings[key]);
   }
 
+  function discardSectionChanges(section: ApplySectionKey) {
+    const savedSettings = settingsQuery.data;
+    if (!savedSettings) {
+      return;
+    }
+
+    setDraft((current) =>
+      current ? mergeSectionSettings(current, savedSettings, section) : current,
+    );
+  }
+
+  function discardCommentsChanges() {
+    const savedSettings = settingsQuery.data;
+    if (!savedSettings) {
+      return;
+    }
+
+    setDraft((current) => (current ? mergeCommentsSettings(current, savedSettings) : current));
+  }
+
   function buildSectionPayload(section: ApplySectionKey) {
     if (!draft || !settingsQuery.data) {
       return null;
@@ -5292,6 +5295,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
+    void preloadSettingsApplyTargetSheet();
     setApplyTargetSheet({
       section,
       sourceSettings: payload,
@@ -5371,19 +5375,24 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   return (
     <div className="page-stack page-enter">
-      <SettingsApplyTargetSheet
-        sheet={applyTargetSheet}
-        preview={applyTargetPreview}
-        previewLoading={applyTargetPreviewLoading}
-        previewError={applyTargetPreviewError}
-        overlayStyle={applyTargetOverlayStyle}
-        isApplying={isApplyingSectionToAll}
-        onClose={() => setApplyTargetSheet(null)}
-        onTargetChange={(target) =>
-          setApplyTargetSheet((current) => (current ? { ...current, target } : current))
-        }
-        onConfirm={() => void handleConfirmApplyTarget()}
-      />
+      {applyTargetSheet ? (
+        <Suspense fallback={null}>
+          <LazySettingsApplyTargetSheet
+            sheet={applyTargetSheet}
+            preview={applyTargetPreview}
+            previewLoading={applyTargetPreviewLoading}
+            previewError={applyTargetPreviewError}
+            sectionLabel={SECTION_LABELS[applyTargetSheet.section]}
+            overlayStyle={applyTargetOverlayStyle}
+            isApplying={isApplyingSectionToAll}
+            onClose={() => setApplyTargetSheet(null)}
+            onTargetChange={(target) =>
+              setApplyTargetSheet((current) => (current ? { ...current, target } : current))
+            }
+            onConfirm={() => void handleConfirmApplyTarget()}
+          />
+        </Suspense>
+      ) : null}
 
       {settingsHandoffMode ? (
         <Suspense fallback={null}>
@@ -5465,103 +5474,40 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             </Suspense>
           ) : null}
 
-          <SettingsDrilldownPanel
-            id="settings-bot-speech-style"
-            open={pendingSpeechStyle !== null}
-            title={pendingSpeechStyleMeta?.label ?? 'Стиль речи'}
-            tone="mint"
-            className="settings-drilldown__panel--notice settings-drilldown__panel--speech"
-            onClose={() => {
-              if (!isSavingSpeechStyle) {
-                setPendingSpeechStyle(null);
-              }
-            }}
-            footer={
-              pendingSpeechStyle ? (
-                <div className="settings-drilldown__footer-actions">
-                  <button
-                    type="button"
-                    className="button button--ghost"
-                    onClick={() => setPendingSpeechStyle(null)}
-                    disabled={isSavingSpeechStyle}
-                  >
-                    Отмена
-                  </button>
-                  <button
-                    type="button"
-                    className="button button--accent"
-                    onClick={() => void handleApplyBotSpeechStyle(pendingSpeechStyle)}
-                    disabled={isSavingSpeechStyle}
-                  >
-                    {isSavingSpeechStyle ? 'Применяем...' : 'Применить стиль'}
-                  </button>
-                </div>
-              ) : null
-            }
-          >
-            {pendingSpeechStyleMeta && pendingSpeechStyleSamples ? (
-              <div className="settings-speech-preview">
-                <div
-                  className="settings-subsection-divider"
-                  role="separator"
-                  aria-label="Приветствие"
-                >
-                  <span>Приветствие</span>
-                </div>
+          {speechStylePanelOpen && pendingSpeechStyle && pendingSpeechStyleSamples ? (
+            <Suspense fallback={null}>
+              <LazySettingsSpeechStylePanel
+                activeStyle={activeSpeechStyle}
+                selectedStyle={pendingSpeechStyle}
+                samples={pendingSpeechStyleSamples}
+                isSaving={isSavingSpeechStyle}
+                onSelect={setPendingSpeechStyle}
+                onClose={() => {
+                  if (!isSavingSpeechStyle) {
+                    setSpeechStylePanelOpen(false);
+                    setPendingSpeechStyle(null);
+                  }
+                }}
+                onCancel={() => {
+                  setSpeechStylePanelOpen(false);
+                  setPendingSpeechStyle(null);
+                }}
+                onDiscard={() => setPendingSpeechStyle(activeSpeechStyle ?? 'ROBOT')}
+                onSave={(style) => void handleApplyBotSpeechStyle(style)}
+              />
+            </Suspense>
+          ) : null}
 
-                <div className="settings-native-toggle">
-                  <div className="settings-native-toggle__row">
-                    <span className="settings-native-toggle__title">Новые участники</span>
-                  </div>
-                  <p className="settings-native-toggle__hint">
-                    {pendingSpeechStyleSamples.greeting}
-                  </p>
-                </div>
+          <Suspense fallback={null}>
+            <LazySettingsOverviewSearch
+              key={chatId}
+              containerId="chat-settings-overview"
+              entrySelector=".settings-home-entry"
+              groupSelector=".settings-home-group-head"
+            />
+          </Suspense>
 
-                <div
-                  className="settings-subsection-divider"
-                  role="separator"
-                  aria-label="Стандартные действия бота"
-                >
-                  <span>Стандартные действия бота</span>
-                </div>
-
-                <div className="settings-native-toggle">
-                  <div className="settings-native-toggle__row">
-                    <span className="settings-native-toggle__title">1. Объяснение</span>
-                  </div>
-                  <p className="settings-native-toggle__hint">
-                    {pendingSpeechStyleSamples.explanation}
-                  </p>
-                </div>
-
-                <div className="settings-native-toggle settings-native-toggle--nested">
-                  <div className="settings-native-toggle__row">
-                    <span className="settings-native-toggle__title">2. Предупреждение</span>
-                  </div>
-                  <p className="settings-native-toggle__hint">
-                    {pendingSpeechStyleSamples.warning}
-                  </p>
-                </div>
-
-                <div className="settings-native-toggle settings-native-toggle--nested">
-                  <div className="settings-native-toggle__row">
-                    <span className="settings-native-toggle__title">3. Мут</span>
-                  </div>
-                  <p className="settings-native-toggle__hint">{pendingSpeechStyleSamples.mute}</p>
-                </div>
-
-                <div className="settings-native-toggle settings-native-toggle--nested">
-                  <div className="settings-native-toggle__row">
-                    <span className="settings-native-toggle__title">4. Бан</span>
-                  </div>
-                  <p className="settings-native-toggle__hint">{pendingSpeechStyleSamples.ban}</p>
-                </div>
-              </div>
-            ) : null}
-          </SettingsDrilldownPanel>
-
-          <div className="settings-sections-shell">
+          <div id="chat-settings-overview" className="settings-sections-shell">
             <div className="settings-home-group-head stagger-in" style={{ order: 10 }}>
               <h2 className="settings-home-group-head__title">Защита</h2>
             </div>
@@ -5600,6 +5546,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 tone="sky"
                 className="settings-drilldown__panel--board settings-drilldown__panel--links"
                 onClose={() => toggleSection('links')}
+                confirmCloseWhen={isSectionDirty('links')}
+                onDiscardChanges={() => discardSectionChanges('links')}
                 footer={renderSectionSaveFooter('links', {
                   note: isLinksKeyboardOpen ? null : undefined,
                 })}
@@ -5683,6 +5631,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     setDomainInputError('');
                                   }}
                                   className="allowlist-composer__mode"
+                                  ariaLabel="Что разрешить: домен или точную ссылку"
                                 />
                                 <div className="allowlist-add-row">
                                   <input
@@ -5707,6 +5656,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       domainInputMode === 'DOMAIN'
                                         ? 'example.com'
                                         : 'https://site.ru'
+                                    }
+                                    aria-label={
+                                      domainInputMode === 'DOMAIN'
+                                        ? 'Домен для белого списка'
+                                        : 'Точная ссылка для белого списка'
                                     }
                                   />
 
@@ -6530,6 +6484,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 tone="mint"
                 className="settings-drilldown__panel--notice settings-drilldown__panel--greeting"
                 onClose={() => toggleSection('greeting')}
+                confirmCloseWhen={isSectionDirty('greeting')}
+                onDiscardChanges={() => discardSectionChanges('greeting')}
                 footer={renderSectionSaveFooter('greeting')}
               >
                 <div
@@ -6866,6 +6822,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 tone="rose"
                 className="settings-drilldown__panel--ladder settings-drilldown__panel--profanity"
                 onClose={() => toggleSection('profanityFilter')}
+                confirmCloseWhen={isSectionDirty('profanityFilter')}
+                onDiscardChanges={() => discardSectionChanges('profanityFilter')}
                 footer={renderSectionSaveFooter('profanityFilter')}
               >
                 <div
@@ -7068,6 +7026,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 tone="amber"
                 className="settings-drilldown__panel--ladder settings-drilldown__panel--commercial"
                 onClose={() => toggleSection('commercialFilter')}
+                confirmCloseWhen={isSectionDirty('commercialFilter')}
+                onDiscardChanges={() => discardSectionChanges('commercialFilter')}
                 footer={renderSectionSaveFooter('commercialFilter')}
               >
                 <div
@@ -7521,6 +7481,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   tone="sky"
                   className="settings-drilldown__panel--board settings-drilldown__panel--thematic"
                   onClose={() => toggleSection('thematicFilters')}
+                  confirmCloseWhen={isSectionDirty('thematicFilters')}
+                  onDiscardChanges={() => discardSectionChanges('thematicFilters')}
                   footer={renderSectionSaveFooter('thematicFilters')}
                 >
                   <div
@@ -7795,6 +7757,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 tone="rose"
                 className="settings-drilldown__panel--ladder settings-drilldown__panel--duplicates"
                 onClose={() => toggleSection('duplicates')}
+                confirmCloseWhen={isSectionDirty('duplicates')}
+                onDiscardChanges={() => discardSectionChanges('duplicates')}
                 footer={renderSectionSaveFooter('duplicates')}
               >
                 <div
@@ -8359,6 +8323,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 tone="ink"
                 className="settings-drilldown__panel--ladder settings-drilldown__panel--limits"
                 onClose={() => toggleSection('limits')}
+                confirmCloseWhen={isSectionDirty('limits')}
+                onDiscardChanges={() => discardSectionChanges('limits')}
                 footer={renderSectionSaveFooter('limits')}
               >
                 <div
@@ -9246,6 +9212,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 tone="rose"
                 className="settings-drilldown__panel--board settings-drilldown__panel--stop-words"
                 onClose={() => toggleSection('stopWords')}
+                confirmCloseWhen={isSectionDirty('stopWords')}
+                onDiscardChanges={() => discardSectionChanges('stopWords')}
                 footer={renderSectionSaveFooter('stopWords')}
               >
                 <div
@@ -9357,7 +9325,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       aria-label={`Удалить слово ${word}`}
                                     >
                                       <span>{word}</span>
-                                      <span aria-hidden>+</span>
+                                      <span aria-hidden>×</span>
                                     </button>
                                   ))}
                                 </div>
@@ -9457,7 +9425,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       aria-label={`Удалить домен ${domain}`}
                                     >
                                       <span>{domain}</span>
-                                      <span aria-hidden>+</span>
+                                      <span aria-hidden>×</span>
                                     </button>
                                   ))}
                                 </div>
@@ -9576,6 +9544,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 tone="ink"
                 className="settings-drilldown__panel--time settings-drilldown__panel--night"
                 onClose={() => toggleSection('night')}
+                confirmCloseWhen={isSectionDirty('night')}
+                onDiscardChanges={() => discardSectionChanges('night')}
                 footer={renderSectionSaveFooter('night')}
               >
                 <div
@@ -10700,7 +10670,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             title="VK-парсинг не настроен"
                             description={
                               vkParsingCapability.reason ??
-                              'Сервер не подключён к VK API: нужен VK_SERVICE_TOKEN в окружении API.'
+                              'VK-парсинг временно недоступен. Обратитесь к администратору сервиса.'
                             }
                             action={
                               <button
@@ -10732,6 +10702,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               onToggleSection={() => toggleSection('comments')}
               onToggleHint={toggleHint}
               onSave={() => void handleSaveComments()}
+              onDiscardChanges={discardCommentsChanges}
               onToggleCommentsEnabled={(enabled) =>
                 setDraft((current) =>
                   current
@@ -10779,6 +10750,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 tone="sky"
                 className="settings-drilldown__panel--ladder settings-drilldown__panel--required-subscription"
                 onClose={() => toggleSection('requiredSubscription')}
+                confirmCloseWhen={isSectionDirty('requiredSubscription')}
+                onDiscardChanges={() => discardSectionChanges('requiredSubscription')}
                 footer={renderSectionSaveFooter('requiredSubscription', {
                   applyToAllLabel: 'Выбрать чаты',
                   emphasize: 'save',
@@ -11216,6 +11189,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 fieldErrors={fieldErrors}
                 openHintKey={openHintKey}
                 footer={renderSectionSaveFooter('commands')}
+                hasChanges={isSectionDirty('commands')}
+                onDiscardChanges={() => discardSectionChanges('commands')}
                 onToggleSection={() => toggleSection('commands')}
                 onToggleHint={toggleHint}
                 onFieldChange={(key, value) => setFieldValue(key, value)}
@@ -11230,6 +11205,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               openHintKey={openHintKey}
               fieldErrors={fieldErrors}
               footer={renderSectionSaveFooter('extra')}
+              hasChanges={isSectionDirty('extra')}
+              onDiscardChanges={() => discardSectionChanges('extra')}
               onToggleSection={() => toggleSection('extra')}
               onToggleHint={toggleHint}
               onFieldChange={(key, value) => setFieldValue(key, value)}
@@ -11237,41 +11214,23 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             />
 
             <GlassCard
-              className="settings-speech-style-card settings-home-entry settings-home-entry--speech stagger-in"
+              className="settings-section settings-home-entry stagger-in"
               style={{ order: 32 }}
             >
-              <div className="settings-speech-style-card__head">
-                <div className="settings-speech-style-card__title-copy">
-                  <h3 className="settings-speech-style-card__title">Стиль речи</h3>
-                </div>
-              </div>
-
-              <div className="settings-speech-style-grid" role="group" aria-label="Стили речи бота">
-                {BOT_SPEECH_STYLE_OPTIONS.map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    className={cn(
-                      'settings-speech-style-option',
-                      activeSpeechStyle === option.value && 'is-active',
-                    )}
-                    onClick={() => setPendingSpeechStyle(option.value)}
-                    disabled={isSavingSpeechStyle}
-                    aria-label={option.label}
-                  >
-                    {activeSpeechStyle === option.value ? (
-                      <span className="settings-speech-style-option__badge" aria-hidden>
-                        <StyleSelectedIcon />
-                      </span>
-                    ) : null}
-                    <span className="settings-speech-style-option__icon" aria-hidden>
-                      <BotSpeechStyleIcon iconKey={option.iconKey} />
-                    </span>
-                    <span className="settings-speech-style-option__label">
-                      {BOT_SPEECH_STYLE_SELECTOR_LABELS[option.value]}
-                    </span>
-                  </button>
-                ))}
+              <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+                <SettingsSectionToggle
+                  title="Стиль речи"
+                  summary=""
+                  status=""
+                  icon="comments"
+                  tone="mint"
+                  open={speechStylePanelOpen}
+                  controls="settings-bot-speech-style"
+                  onClick={() => {
+                    setPendingSpeechStyle(activeSpeechStyle ?? 'ROBOT');
+                    setSpeechStylePanelOpen(true);
+                  }}
+                />
               </div>
             </GlassCard>
           </div>

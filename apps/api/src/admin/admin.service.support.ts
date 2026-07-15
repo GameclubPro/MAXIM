@@ -12,6 +12,7 @@ import {
   type ChannelStatsResponse,
   type ChatSettings,
   type ChatSummary,
+  type ChatParticipantsQuery,
   type ManagedBroadcastTargetPreview,
   type ManagedEntitiesResponseDiff,
   type ManagedEntitiesResponseSnapshot,
@@ -260,6 +261,7 @@ export type ChatParticipantsSearchCursor = {
   marker: string | null;
   skip: number;
   search: string;
+  roleFilter?: ChatParticipantsQuery['roleFilter'];
 };
 
 export type ChannelSuggestionActor = Pick<AuthUser, 'userId'> & {

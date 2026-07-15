@@ -18,9 +18,11 @@ import '../styles/settings-home-route-polish.css';
 import '../styles/broadcast-studio-base.css';
 import '../styles/settings-drilldown-polish.css';
 import '../styles/settings-route-polish.css';
+import '../styles/settings-interaction-polish.css';
 import '../styles/managed-giveaway.css';
 import '../styles/broadcast-studio.css';
 import '../styles/broadcast-autopost-polish.css';
+import '../styles/settings-tile-grid.css';
 import {
   Suspense,
   lazy,
@@ -306,6 +308,11 @@ const LazyManagedGiveawayCard = lazy(() =>
 const LazyManagedPollWorkspace = lazy(() =>
   import('../components/managed-poll-workspace').then((module) => ({
     default: module.ManagedPollWorkspace,
+  })),
+);
+const LazySettingsOverviewSearch = lazy(() =>
+  import('../components/ui/settings-overview-search').then((module) => ({
+    default: module.SettingsOverviewSearch,
   })),
 );
 
@@ -819,6 +826,7 @@ function ChannelSettingsToggleCard({
           checked={checked}
           onChange={(event) => onChange(event.target.checked)}
           disabled={disabled}
+          aria-label={title}
         />
         <span className="toggle-switch" aria-hidden>
           <span className="toggle-switch__thumb" />
@@ -1535,6 +1543,16 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
       return nextDraft;
     });
+  };
+
+  const discardChannelSettingsChanges = () => {
+    if (!savedSnapshot) {
+      return;
+    }
+
+    setDraft(savedSnapshot);
+    lastFailedDraftKeyRef.current = null;
+    setAutosaveState('idle');
   };
 
   useEffect(() => {
@@ -2387,10 +2405,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     draft.postSuggestionsEntryMode === 'MINIAPP' ? 'Мини-апп' : 'Бот';
   const postSuggestionsCardSummary = draft.postSuggestionsEnabled
     ? `${postSuggestionsEntryLabel} · ${draft.postSuggestionsDailyLimit}/24ч`
-    : 'Ручной режим';
+    : 'Выключено';
   const postSuggestionsCardStatus = draft.postSuggestionsEnabled
     ? postSuggestionsEntryLabel
-    : 'Ручной';
+    : 'Выкл';
   const broadcastCardStatus = editingManagedAutopostRule
     ? 'Правка'
     : broadcastTimingMode === 'cycle'
@@ -2623,13 +2641,18 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function renderChannelSectionFooter(section: ChannelSettingsSectionKey) {
+    if (!isDirty && autosaveState !== 'saving') {
+      return null;
+    }
+
     return (
       <div className="settings-drilldown__footer-actions is-single-action">
         <button
           type="button"
           className="button button--accent"
           onClick={() => void handleSaveChannelSection(section)}
-          disabled={autosaveState === 'saving' || !isDirty}
+          disabled={autosaveState === 'saving'}
+          aria-live="polite"
         >
           {autosaveState === 'saving' ? 'Сохраняем...' : 'Сохранить'}
         </button>
@@ -3014,6 +3037,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
   return (
     <div
+      id="channel-settings-overview"
       className="channel-settings-screen page-enter"
       onClickCapture={handleDesktopToggleRowClick}
     >
@@ -3086,6 +3110,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         </Suspense>
       ) : null}
 
+      <Suspense fallback={null}>
+        <LazySettingsOverviewSearch
+          key={chatId}
+          containerId="channel-settings-overview"
+          entrySelector=".channel-settings-card"
+        />
+      </Suspense>
+
       <GlassCard className="channel-settings-card" elevated>
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
           <SettingsSectionToggle
@@ -3109,6 +3141,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           className="settings-drilldown__panel--board settings-drilldown__panel--channel-comments"
           onClose={() => toggleSection('comments')}
           footer={renderChannelSectionFooter('comments')}
+          confirmCloseWhen={isDirty}
+          onDiscardChanges={discardChannelSettingsChanges}
         >
           <div
             id="channel-settings-comments"
@@ -3236,7 +3270,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                       title="VK-парсинг не настроен"
                       description={
                         vkParsingCapability.reason ??
-                        'Сервер не подключён к VK API: нужен VK_SERVICE_TOKEN в окружении API.'
+                        'VK-парсинг временно недоступен. Обратитесь к администратору сервиса.'
                       }
                       action={
                         <button
@@ -3282,6 +3316,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           overlayClassName="settings-drilldown--post-suggestions-screen"
           onClose={() => toggleSection('postSuggestions')}
           footer={renderChannelSectionFooter('postSuggestions')}
+          confirmCloseWhen={isDirty}
+          onDiscardChanges={discardChannelSettingsChanges}
         >
           <div
             id="channel-settings-post-suggestions"
@@ -3302,6 +3338,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                   onChange={(nextValue) => patchDraft('postSuggestionsEnabled', nextValue)}
                 />
 
+                {draft.postSuggestionsEnabled ? (
+                  <>
                 <div className="channel-settings-mode-card channel-settings-mode-card--suggestion">
                   <span className="channel-settings-mode-card__label">Отправка</span>
                   <SegmentedControl<ChannelSuggestionEntryMode>
@@ -3366,6 +3404,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                     </div>
                   </label>
                 </div>
+                  </>
+                ) : null}
               </div>
             ) : null}
           </div>

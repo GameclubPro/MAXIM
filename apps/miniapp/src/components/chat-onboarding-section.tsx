@@ -14,12 +14,14 @@ export function ChatOnboardingSection({
   entityType = 'chat',
   isFetching,
   isRefreshBlocked,
+  refreshLabel,
   onRefresh,
 }: {
   api: ApiTransport;
   entityType?: ManagedEntityType;
   isFetching: boolean;
   isRefreshBlocked: boolean;
+  refreshLabel?: string;
   onRefresh: () => void;
 }) {
   const diagnosticsQuery = useQuery({
@@ -37,101 +39,90 @@ export function ChatOnboardingSection({
   const recentSignalText = buildRecentSignalText(diagnostics, entityLabel);
 
   return (
-    <section className="chats-onboarding" aria-label={`Как подключить бота в MAX к ${entityLabel}у`}>
+    <section
+      className="chats-onboarding"
+      aria-label={`Как подключить бота в MAX к ${entityLabel}у`}
+    >
       <GlassCard className="chats-onboarding__hero" elevated>
-        <div className="chats-onboarding__hero-top">
-          <span className="chip chats-onboarding__badge">3 шага • 1 минута</span>
-        </div>
         <div className="chats-onboarding__hero-text">
           <h1>{heading}</h1>
-          <p>
-            Добавьте бота, выдайте ему права администратора и нажмите «Проверить подключение» в
-            сообщении бота. После успешной проверки {entityLabel} появится здесь автоматически.
-          </p>
+          <p>Добавьте бота администратором и подтвердите подключение в MAX.</p>
         </div>
+
+        {lastHandshakeText || recentSignalText ? (
+          <div className="onboarding-diagnostics" role="status">
+            <strong>{lastHandshakeText ?? recentSignalText}</strong>
+            {lastHandshakeText && recentSignalText ? <span>{recentSignalText}</span> : null}
+          </div>
+        ) : null}
+
+        <button
+          type="button"
+          className="button button--accent onboarding-refresh"
+          onClick={onRefresh}
+          disabled={isFetching || isRefreshBlocked}
+        >
+          {isFetching
+            ? 'Обновляем...'
+            : isRefreshBlocked && refreshLabel
+              ? refreshLabel
+              : `Проверить ${entityPlural}`}
+        </button>
+
+        <ol className="onboarding-steps">
+          <li>
+            <span>1</span>
+            <div>
+              <strong>Добавьте бота</strong>
+              <small>Через список участников {entityGenitive}.</small>
+            </div>
+          </li>
+          <li>
+            <span>2</span>
+            <div>
+              <strong>Выдайте права</strong>
+              <small>Боту нужны права администратора.</small>
+            </div>
+          </li>
+          <li>
+            <span>3</span>
+            <div>
+              <strong>Подтвердите доступ</strong>
+              <small>Нажмите кнопку в сообщении бота.</small>
+            </div>
+          </li>
+        </ol>
+
+        <details className="onboarding-instructions">
+          <summary>Показать инструкцию</summary>
+          <div className="onboarding-instructions__body">
+            <figure>
+              <img
+                src={addBotToChatImage}
+                alt={`Добавление бота в участники ${entityGenitive} в MAX.`}
+                loading="lazy"
+              />
+              <figcaption>
+                Откройте {entityLabel}, нажмите его название и выберите «Добавить участников».
+              </figcaption>
+            </figure>
+            <figure>
+              <img
+                src={grantBotAdminRightsImage}
+                alt={`Назначение бота администратором в настройках прав ${entityGenitive} MAX.`}
+                loading="lazy"
+              />
+              <figcaption>
+                В правах администратора разрешите боту читать и удалять сообщения.
+              </figcaption>
+            </figure>
+            <p>
+              Затем нажмите «Проверить подключение» в сообщении бота. Если сообщения нет, отправьте
+              слово «Старт».
+            </p>
+          </div>
+        </details>
       </GlassCard>
-
-      {lastHandshakeText || recentSignalText ? (
-        <GlassCard className="onboarding-diagnostics" elevated>
-          <span className="onboarding-diagnostics__kicker">Последняя проверка</span>
-          <strong>{lastHandshakeText ?? recentSignalText}</strong>
-          {lastHandshakeText && recentSignalText ? <span>{recentSignalText}</span> : null}
-        </GlassCard>
-      ) : null}
-
-      <GlassCard
-        className="onboarding-step-card stagger-in"
-        style={{ animationDelay: '40ms' }}
-        elevated
-      >
-        <div className="onboarding-step-card__content">
-          <h2>1. Добавьте бота</h2>
-          <ul>
-            <li>Откройте нужный {entityLabel} в MAX.</li>
-            <li>Нажмите название {entityGenitive} → «Добавить участников».</li>
-            <li>Найдите бота и добавьте его.</li>
-          </ul>
-        </div>
-        <figure className="onboarding-step-card__media">
-          <img
-            src={addBotToChatImage}
-            alt={`Добавление бота в участники ${entityGenitive} в MAX.`}
-            loading="lazy"
-          />
-          <figcaption>Экран добавления участников в MAX.</figcaption>
-        </figure>
-      </GlassCard>
-
-      <GlassCard
-        className="onboarding-step-card stagger-in"
-        style={{ animationDelay: '80ms' }}
-        elevated
-      >
-        <div className="onboarding-step-card__content">
-          <h2>2. Назначьте бота администратором</h2>
-          <ul>
-            <li>Откройте настройки {entityGenitive} → «Права администратора».</li>
-            <li>Выберите бота и включите нужные права.</li>
-            <li>Минимально для модерации: «Читать сообщения» и «Удалять сообщения».</li>
-          </ul>
-        </div>
-        <figure className="onboarding-step-card__media">
-          <img
-            src={grantBotAdminRightsImage}
-            alt={`Назначение бота администратором в настройках прав ${entityGenitive} MAX.`}
-            loading="lazy"
-          />
-          <figcaption>Экран прав администратора для бота.</figcaption>
-        </figure>
-      </GlassCard>
-
-      <GlassCard
-        className="onboarding-step-card onboarding-step-card--command stagger-in"
-        style={{ animationDelay: '120ms' }}
-        elevated
-      >
-        <div className="onboarding-step-card__content">
-          <h2>3. Подтвердите подключение</h2>
-          <ul>
-            <li>Нажмите «Проверить подключение» в сообщении бота.</li>
-            <li>Если сообщения нет, отправьте в {entityLabel} слово Старт.</li>
-            <li>Подтверждение доступно администратору или владельцу.</li>
-            <li>После успешной проверки {entityLabel} появится в списке.</li>
-          </ul>
-        </div>
-        <div className="onboarding-command-preview" aria-hidden>
-          <span>Проверить подключение</span>
-        </div>
-      </GlassCard>
-
-      <button
-        type="button"
-        className="button button--accent onboarding-refresh"
-        onClick={onRefresh}
-        disabled={isFetching || isRefreshBlocked}
-      >
-        {isFetching ? 'Обновляем...' : `Проверить ${entityPlural}`}
-      </button>
     </section>
   );
 }

@@ -4,6 +4,7 @@ import { useNativeBackHandler } from '../../lib/native-back';
 import { PersonAvatar } from '../ui/person-avatar';
 import { SettingsDrilldownPanel } from '../ui/settings-drilldown-panel';
 import './chat-participant-sheet.css';
+import './chat-participant-sheet-theme.css';
 
 const MUTE_DURATION_MIN_HOURS = 1;
 const MUTE_DURATION_MAX_HOURS = 336;
@@ -23,13 +24,15 @@ type ChatParticipantImmunityView = Omit<
   expiresAt?: string | null;
   remainingViolatingMessagesToday?: number | null;
 };
-type SaveImmunityPayload = {
-  mode: 'limited';
-  durationHours: number;
-  dailyViolationLimit: number;
-} | {
-  mode: 'always';
-};
+type SaveImmunityPayload =
+  | {
+      mode: 'limited';
+      durationHours: number;
+      dailyViolationLimit: number;
+    }
+  | {
+      mode: 'always';
+    };
 
 type ChatParticipantSheetProps = {
   open: boolean;
@@ -136,9 +139,7 @@ function parseNonNegativeInteger(value: number | null | undefined): number | nul
   return Math.max(0, Math.trunc(value));
 }
 
-function resolveInitialImmunityDurationDays(
-  immunity: ChatParticipantImmunityView | null,
-): number {
+function resolveInitialImmunityDurationDays(immunity: ChatParticipantImmunityView | null): number {
   if (!immunity || isAlwaysImmunity(immunity) || !immunity.expiresAt) {
     return 3;
   }
@@ -441,7 +442,7 @@ export function ChatParticipantSheet({
 
         <div className="participant-sheet__stats">
           <article className="participant-sheet__stat">
-            <small>Наруш.</small>
+            <small>Нарушения</small>
             <strong>{formatViolationCount(violationCount)}</strong>
             <span>{rangeLabel}</span>
           </article>
@@ -638,8 +639,7 @@ export function ChatParticipantSheet({
                         id="participant-sheet-hint-duration"
                         className="settings-native-toggle__hint settings-native-toggle__hint--inline participant-sheet__hint"
                       >
-                        Срок показывает, сколько дней защита будет действовать для этого
-                        участника.
+                        Срок показывает, сколько дней защита будет действовать для этого участника.
                       </p>
                     ) : null}
                     <input

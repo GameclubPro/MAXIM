@@ -90,7 +90,7 @@
 .settings-word-banlist__preset-badge-text small {
   font-size: 0.68rem;
   line-height: 1.2;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   white-space: nowrap;
 }
 
@@ -164,7 +164,7 @@
   margin: 0;
   font-size: 0.8rem;
   line-height: 1.45;
-  color: var(--text-muted);
+  color: var(--text-secondary);
 }
 
 .settings-word-banlist__preset-sheet-words {

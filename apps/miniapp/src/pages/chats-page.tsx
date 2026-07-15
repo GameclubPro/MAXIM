@@ -11,7 +11,6 @@ import {
   type PointerEvent as ReactPointerEvent,
   type SVGProps,
 } from 'react';
-import { createPortal } from 'react-dom';
 import { Link, useSearchParams } from 'react-router-dom';
 import type {
   ChatSummary,
@@ -83,7 +82,6 @@ import {
   useManagedEntitiesVisibilityRefresh,
 } from '../lib/use-managed-entities-visibility-refresh';
 import { readLocalMirrorItem, writeLocalMirrorItem } from '../lib/native-storage';
-import { useVisualViewportOverlayStyle } from '../lib/use-visual-viewport-overlay-style';
 import {
   preloadChannelSettingsPage,
   preloadChannelStatsPage,
@@ -97,6 +95,7 @@ type HomeSyncTone = 'ready' | 'syncing' | 'cache' | 'warning';
 type ManagedHomeEntity = ChatSummary;
 type EntitySignal = {
   key: string;
+  label: string;
   value?: string;
   Icon: ElementType<SVGProps<SVGSVGElement>>;
 };
@@ -117,7 +116,7 @@ const DEFAULT_CHANNEL_STATS_RANGE = '7d';
 const HOME_MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 2_000;
 const CHAT_LIST_VIRTUALIZATION_THRESHOLD = 80;
 const CHAT_LIST_VIRTUAL_OVERSCAN = 6;
-const CHAT_LIST_VIRTUAL_ROW_HEIGHT = 104;
+const CHAT_LIST_VIRTUAL_ROW_HEIGHT = 124;
 const CHAT_LIST_VIRTUAL_WINDOW_SIZE = 20;
 const FAVORITE_FILTER_ALL = 'all';
 type FavoriteLabelDraft = Record<ManagedEntityFavoriteType, string>;
@@ -134,6 +133,13 @@ const LazyChatOnboardingSection = lazy(async () => {
   const module = await import('../components/chat-onboarding-section');
   return { default: module.ChatOnboardingSection };
 });
+
+let homeEntitySheetsPromise: Promise<typeof import('./home-entity-sheets')> | null = null;
+function preloadHomeEntitySheets() {
+  homeEntitySheetsPromise ??= import('./home-entity-sheets');
+  return homeEntitySheetsPromise;
+}
+const LazyHomeEntitySheets = lazy(preloadHomeEntitySheets);
 
 function getEntitiesKey(tab: ManagedTab): 'chats' | 'channels' {
   return tab === 'chat' ? 'chats' : 'channels';
@@ -181,26 +187,41 @@ function buildPendingSyncDescription(options: {
 }
 
 function buildHomeSyncStatus(options: {
+  isLoading: boolean;
   isRefreshing: boolean;
   isBackoffActive: boolean;
   hasLoadedFromServer: boolean;
   snapshotStale: boolean | null | undefined;
   isSyncComplete: boolean;
+  retryAfterSec: number | null;
+  manualRefreshBlockedReason: string | null;
 }): { label: string; tone: HomeSyncTone } {
   if (options.isBackoffActive) {
-    return { label: 'Пауза', tone: 'warning' };
+    return {
+      label: options.retryAfterSec ? `Пауза ${options.retryAfterSec} с` : 'Пауза',
+      tone: 'warning',
+    };
+  }
+  if (options.isLoading) {
+    return { label: 'Загружаем', tone: 'syncing' };
+  }
+  if (options.manualRefreshBlockedReason === 'in_progress') {
+    return { label: 'Обновление запущено', tone: 'syncing' };
+  }
+  if (options.manualRefreshBlockedReason === 'recent_sync' && options.retryAfterSec) {
+    return { label: `Повтор через ${options.retryAfterSec} с`, tone: 'ready' };
   }
   if (!options.hasLoadedFromServer) {
-    return { label: 'Кеш', tone: 'cache' };
-  }
-  if (options.isSyncComplete) {
-    return { label: 'Готово', tone: 'ready' };
+    return { label: 'Сохранённые данные', tone: 'cache' };
   }
   if (options.isRefreshing || options.snapshotStale === true) {
-    return { label: 'Синк', tone: 'syncing' };
+    return { label: 'Обновляем', tone: 'syncing' };
+  }
+  if (options.isSyncComplete) {
+    return { label: 'Актуально', tone: 'ready' };
   }
 
-  return { label: 'Готово', tone: 'ready' };
+  return { label: 'Актуально', tone: 'ready' };
 }
 
 function buildEntitySignals(entity: ManagedHomeEntity, entityType: ManagedTab): EntitySignal[] {
@@ -213,6 +234,7 @@ function buildEntitySignals(entity: ManagedHomeEntity, entityType: ManagedTab): 
   if (entity.channelOverview.enabledScenariosCount > 0) {
     signals.push({
       key: 'scenarios',
+      label: `Активные сценарии: ${entity.channelOverview.enabledScenariosCount}`,
       value: String(entity.channelOverview.enabledScenariosCount),
       Icon: SparksGlyph,
     });
@@ -224,6 +246,7 @@ function buildEntitySignals(entity: ManagedHomeEntity, entityType: ManagedTab): 
   ) {
     secondarySignals.push({
       key: 'live',
+      label: 'Активны обсуждения или предложка',
       Icon: CommentsGlyph,
     });
   }
@@ -242,13 +265,9 @@ async function saveManagedEntityFavoriteTypes(
   return updateManagedEntityFavorites(api, entityType, entityId, favoriteTypes);
 }
 
-function buildEntitySettingsRoute(entityType: ManagedTab, entityId: string): string {
-  return entityType === 'channel' ? `/channel/${entityId}/settings` : `/chat/${entityId}/settings`;
-}
-
 function buildEntityActivityRoute(entityType: ManagedTab, entityId: string): string {
   return entityType === 'channel'
-    ? `/channel/${entityId}/stats?section=events`
+    ? `/channel/${entityId}/stats?section=overview`
     : `/chat/${entityId}/events?section=activity`;
 }
 
@@ -286,24 +305,12 @@ function CommentsGlyph(props: SVGProps<SVGSVGElement>) {
   );
 }
 
-function PlusGlyph(props: SVGProps<SVGSVGElement>) {
+function MoreGlyph(props: SVGProps<SVGSVGElement>) {
   return (
     <svg viewBox="0 0 24 24" fill="none" {...props}>
-      <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function CheckGlyph(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" {...props}>
-      <path
-        d="M5 12.4l4.2 4.1L19 7"
-        stroke="currentColor"
-        strokeWidth="2.1"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
+      <circle cx="5" cy="12" r="1.5" fill="currentColor" />
+      <circle cx="12" cy="12" r="1.5" fill="currentColor" />
+      <circle cx="19" cy="12" r="1.5" fill="currentColor" />
     </svg>
   );
 }
@@ -313,7 +320,9 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const [searchParams] = useSearchParams();
   const [query, setQuery] = useState('');
   const [currentUserId, setCurrentUserId] = useState<string | null>(() => getInitDataUserId());
+  const homeRootRef = useRef<HTMLDivElement | null>(null);
   const virtualListViewportRef = useRef<HTMLElement | null>(null);
+  const favoriteOverlayTriggerRef = useRef<HTMLElement | null>(null);
   const [virtualListScrollTop, setVirtualListScrollTop] = useState(0);
   const favoriteStorageScope = useMemo(() => {
     const normalizedUserId = currentUserId?.trim();
@@ -339,13 +348,17 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     entityType: ManagedTab;
     entity: ManagedHomeEntity;
   } | null>(null);
+  const [entityActionTarget, setEntityActionTarget] = useState<{
+    entityType: ManagedTab;
+    entity: ManagedHomeEntity;
+  } | null>(null);
   const [favoriteLabelsEditorOpen, setFavoriteLabelsEditorOpen] = useState(false);
   const [favoriteLabelDraft, setFavoriteLabelDraft] = useState<FavoriteLabelDraft>(() =>
     createFavoriteLabelDraft(readHomeEntityFavoriteLabels(favoriteStorageScope)),
   );
   const [savingFavoriteEntityKey, setSavingFavoriteEntityKey] = useState<string | null>(null);
-  const favoriteOverlayOpen = Boolean(favoritePicker) || favoriteLabelsEditorOpen;
-  const favoritePickerOverlayStyle = useVisualViewportOverlayStyle(favoriteOverlayOpen);
+  const favoriteOverlayOpen =
+    Boolean(entityActionTarget) || Boolean(favoritePicker) || favoriteLabelsEditorOpen;
   const favoriteMigrationAttemptedRef = useRef(false);
   const [refreshRequestByTab, setRefreshRequestByTab] = useState<
     Record<ManagedTab, ManagedEntitiesReloadRequest>
@@ -362,8 +375,10 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     () => {
       if (favoriteLabelsEditorOpen) {
         setFavoriteLabelsEditorOpen(false);
-      } else {
+      } else if (favoritePicker) {
         setFavoritePicker(null);
+      } else {
+        setEntityActionTarget(null);
       }
       return true;
     },
@@ -435,11 +450,14 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     isRefreshTemporarilyBlocked || isManualRefreshCoolingDown || isManualRefreshInProgressByState;
   const isForegroundSyncing = activeEntitiesState.isRefreshing && !isUserVisibleSyncSettled;
   const homeSyncStatus = buildHomeSyncStatus({
+    isLoading,
     isRefreshing: isForegroundSyncing,
     isBackoffActive: activeEntitiesState.isBackoffActive,
     hasLoadedFromServer: activeEntitiesState.hasLoadedFromServer,
     snapshotStale: activeEntitiesState.snapshot?.stale ?? null,
     isSyncComplete: isUserVisibleSyncSettled,
+    retryAfterSec: manualRefreshRetryAfterSec,
+    manualRefreshBlockedReason,
   });
   const refreshProgressPercent =
     !activeEntitiesState.isUserVisibleComplete &&
@@ -699,19 +717,70 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     }
 
     const { body, documentElement } = document;
+    const homeRoot = homeRootRef.current;
+    const bottomNav = homeRoot
+      ?.closest('.app-shell')
+      ?.querySelector<HTMLElement>(':scope > .bottom-nav');
     const previousBodyOverflow = body.style.overflow;
     const previousDocumentOverflow = documentElement.style.overflow;
+    const previousHomeInert = homeRoot?.inert ?? false;
+    const previousBottomNavInert = bottomNav?.inert ?? false;
 
     body.classList.add('favorite-picker-open');
     body.style.overflow = 'hidden';
     documentElement.style.overflow = 'hidden';
+    if (homeRoot) {
+      homeRoot.inert = true;
+    }
+    if (bottomNav) {
+      bottomNav.inert = true;
+    }
 
     return () => {
       body.classList.remove('favorite-picker-open');
       body.style.overflow = previousBodyOverflow;
       documentElement.style.overflow = previousDocumentOverflow;
+      if (homeRoot) {
+        homeRoot.inert = previousHomeInert;
+      }
+      if (bottomNav) {
+        bottomNav.inert = previousBottomNavInert;
+      }
+      const restoreTarget = favoriteOverlayTriggerRef.current;
+      favoriteOverlayTriggerRef.current = null;
+      if (restoreTarget?.isConnected) {
+        window.requestAnimationFrame(() => restoreTarget.focus());
+      }
     };
   }, [favoriteOverlayOpen]);
+
+  useEffect(() => {
+    if (!favoriteOverlayOpen) {
+      return undefined;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (favoriteLabelsEditorOpen) {
+        setFavoriteLabelDraft(createFavoriteLabelDraft(homeEntityFavoriteLabels));
+        setFavoriteLabelsEditorOpen(false);
+        return;
+      }
+      if (favoritePicker) {
+        setFavoritePicker(null);
+        return;
+      }
+      setEntityActionTarget(null);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [favoriteLabelsEditorOpen, favoriteOverlayOpen, favoritePicker, homeEntityFavoriteLabels]);
 
   useEffect(() => {
     const previousScope = favoriteStorageScopeRef.current;
@@ -876,15 +945,21 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     return `${entityType}:${entityId}`;
   }
 
-  function openFavoriteLabelsEditor() {
+  function openFavoriteLabelsEditor(trigger?: HTMLElement) {
+    favoriteOverlayTriggerRef.current = trigger ?? null;
+    setEntityActionTarget(null);
     setFavoritePicker(null);
     setFavoriteLabelDraft(createFavoriteLabelDraft(homeEntityFavoriteLabels));
     setFavoriteLabelsEditorOpen(true);
   }
 
-  function closeFavoriteLabelsEditor() {
-    setFavoriteLabelDraft(createFavoriteLabelDraft(homeEntityFavoriteLabels));
+  function closeHomeEntitySheet() {
+    if (favoriteLabelsEditorOpen) {
+      setFavoriteLabelDraft(createFavoriteLabelDraft(homeEntityFavoriteLabels));
+    }
     setFavoriteLabelsEditorOpen(false);
+    setFavoritePicker(null);
+    setEntityActionTarget(null);
   }
 
   function updateFavoriteLabelDraft(favoriteType: ManagedEntityFavoriteType, value: string) {
@@ -982,6 +1057,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         return;
       }
 
+      void preloadHomeEntitySheets();
       for (const entityId of candidates) {
         prefetchEntityActivity(activeTab, entityId);
       }
@@ -1004,15 +1080,19 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const tabLabel = activeTab === 'chat' ? 'Чаты' : 'Каналы';
   const searchLabel = activeTab === 'chat' ? 'Поиск чата' : 'Поиск канала';
   const searchPlaceholder = 'Поиск';
-  const refreshButtonLabel = isFetching ? 'Обновление уже идет' : 'Обновить';
+  const refreshButtonLabel = isFetching
+    ? 'Обновление уже идёт'
+    : manualRefreshBlockedReason === 'recent_sync' && manualRefreshRetryAfterSec
+      ? `Обновить можно через ${manualRefreshRetryAfterSec} с`
+      : manualRefreshBlockedReason === 'in_progress'
+        ? 'Обновление уже выполняется'
+        : manualRefreshBlockedReason === 'backoff' && manualRefreshRetryAfterSec
+          ? `MAX на паузе, повтор через ${manualRefreshRetryAfterSec} с`
+          : 'Обновить';
 
   function renderEntityCard(entity: ManagedHomeEntity, index: number) {
     const favorite = isHomeEntityFavorite(homeEntityFavorites, activeTab, entity.id);
     const favoriteTypes = getHomeEntityFavoriteTypes(homeEntityFavorites, activeTab, entity.id);
-    const PrimaryFavoriteIcon =
-      favoriteTypes.length > 0 ? HOME_ENTITY_FAVORITE_ICONS[favoriteTypes[0]] : PlusGlyph;
-    const favoriteEntitySaving =
-      savingFavoriteEntityKey === buildFavoriteEntityKey(activeTab, entity.id);
     const staggerIndex = limitedStagger === null ? index : index < limitedStagger ? index : null;
     const className = cn(
       'chat-card',
@@ -1033,41 +1113,12 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     }
 
     const activityRoute = buildEntityActivityRoute(activeTab, entity.id);
-    const settingsRoute = buildEntitySettingsRoute(activeTab, entity.id);
     const routeState = buildEntityRouteState(activeTab, entity);
-    const activityLabel = 'Открыть сводку';
-    const settingsLabel = 'Настройки';
-    const favoriteLabel =
-      favoriteTypes.length > 0
-        ? `Избранное: ${favoriteTypes
-            .map((favoriteType) => favoriteLabels[favoriteType])
-            .join(', ')}`
-        : 'Добавить в избранное';
+    const activityLabel = activeTab === 'channel' ? 'Обзор' : 'Статистика';
     const entitySignals = buildEntitySignals(entity, activeTab);
 
     return (
       <GlassCard as="article" key={entity.id} className={className} style={style}>
-        <Link
-          to={activityRoute}
-          className="chat-card__primary-link"
-          state={routeState}
-          onClick={() => {
-            rememberEntity(activeTab, entity);
-            prefetchEntityActivity(activeTab, entity.id);
-          }}
-          onPointerEnter={(event) => {
-            if (shouldPrefetchFromPointerEvent(event)) {
-              prefetchEntityActivity(activeTab, entity.id);
-            }
-          }}
-          onPointerDown={(event) => {
-            if (shouldPrefetchFromPressEvent(event)) {
-              prefetchEntityActivity(activeTab, entity.id);
-            }
-          }}
-          aria-label={`${activityLabel}: ${entity.title}`}
-        />
-
         <div className="chat-card__header">
           <div className="chat-card__identity">
             <EntityAvatar
@@ -1080,8 +1131,14 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               <h3>{entity.title}</h3>
               {entitySignals.length > 0 ? (
                 <div className="chat-card__meta">
-                  {entitySignals.map(({ key, value, Icon }) => (
-                    <span key={key} className="chat-card__signal">
+                  {entitySignals.map(({ key, label, value, Icon }) => (
+                    <span
+                      key={key}
+                      className="chat-card__signal"
+                      role="img"
+                      aria-label={label}
+                      title={label}
+                    >
                       <Icon aria-hidden />
                       {value ? <strong>{value}</strong> : null}
                     </span>
@@ -1093,256 +1150,125 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         </div>
 
         <div className="chat-card__quick-actions">
-          <button
-            type="button"
-            className={cn(
-              'chat-card__favorite',
-              favorite && 'is-active',
-              favoriteTypes[0] && `is-${favoriteTypes[0]}`,
-            )}
-            onClick={() => setFavoritePicker({ entityType: activeTab, entity })}
-            aria-pressed={favorite}
-            aria-label={favoriteLabel}
-            title={favoriteLabel}
-            disabled={favoriteEntitySaving}
-          >
-            <PrimaryFavoriteIcon aria-hidden />
-            {favoriteTypes.length > 1 ? (
-              <span className="chat-card__favorite-count">{favoriteTypes.length}</span>
-            ) : null}
-          </button>
-
           <Link
-            to={settingsRoute}
-            className="chat-card__action"
+            to={activityRoute}
+            className="chat-card__open"
             state={routeState}
             onClick={() => {
               rememberEntity(activeTab, entity);
-              prefetchEntitySettings(activeTab, entity.id);
+              prefetchEntityActivity(activeTab, entity.id);
             }}
             onPointerEnter={(event) => {
               if (shouldPrefetchFromPointerEvent(event)) {
-                prefetchEntitySettings(activeTab, entity.id);
+                prefetchEntityActivity(activeTab, entity.id);
               }
             }}
             onPointerDown={(event) => {
               if (shouldPrefetchFromPressEvent(event)) {
-                prefetchEntitySettings(activeTab, entity.id);
+                prefetchEntityActivity(activeTab, entity.id);
               }
             }}
-            aria-label={settingsLabel}
-            title={settingsLabel}
+            aria-label={`${activityLabel}: ${entity.title}`}
           >
-            <SettingsGlyph aria-hidden />
+            {activityLabel}
           </Link>
+
+          <button
+            type="button"
+            className="chat-card__more"
+            aria-label={`Действия: ${entity.title}`}
+            aria-haspopup="dialog"
+            aria-controls="home-sheet-actions"
+            aria-expanded={
+              entityActionTarget?.entityType === activeTab &&
+              entityActionTarget.entity.id === entity.id
+            }
+            title="Другие действия"
+            onPointerEnter={() => void preloadHomeEntitySheets()}
+            onPointerDown={() => void preloadHomeEntitySheets()}
+            onClick={(event) => {
+              favoriteOverlayTriggerRef.current = event.currentTarget;
+              setEntityActionTarget({ entityType: activeTab, entity });
+            }}
+          >
+            <MoreGlyph aria-hidden />
+          </button>
         </div>
       </GlassCard>
     );
   }
 
-  function renderFavoritePicker() {
-    if (!favoritePicker) {
-      return null;
-    }
-
-    const selectedTypes = getHomeEntityFavoriteTypes(
-      homeEntityFavorites,
-      favoritePicker.entityType,
-      favoritePicker.entity.id,
-    );
-    const saving =
-      savingFavoriteEntityKey ===
-      buildFavoriteEntityKey(favoritePicker.entityType, favoritePicker.entity.id);
-
-    const picker = (
-      <div
-        className="favorite-picker"
-        style={favoritePickerOverlayStyle}
-        role="dialog"
-        aria-modal="true"
-      >
-        <button
-          type="button"
-          className="favorite-picker__backdrop"
-          aria-label="Закрыть избранное"
-          onClick={() => setFavoritePicker(null)}
-        />
-        <div className="favorite-picker__panel">
-          <div className="favorite-picker__header">
-            <div>
-              <strong>{favoritePicker.entity.title}</strong>
-            </div>
-            <button
-              type="button"
-              className="favorite-picker__close"
-              aria-label="Закрыть"
-              title="Закрыть"
-              onClick={() => setFavoritePicker(null)}
-            >
-              <XmarkGlyph aria-hidden />
-            </button>
-          </div>
-
-          <div className="favorite-picker__grid">
-            {HOME_ENTITY_FAVORITE_TYPES.map((favoriteType) => {
-              const FavoriteIcon = HOME_ENTITY_FAVORITE_ICONS[favoriteType];
-              const active = selectedTypes.includes(favoriteType);
-              return (
-                <button
-                  key={favoriteType}
-                  type="button"
-                  className={cn(
-                    'favorite-picker__option',
-                    `is-${favoriteType}`,
-                    active && 'is-active',
-                  )}
-                  aria-pressed={active}
-                  disabled={saving}
-                  onClick={() =>
-                    void handleToggleHomeEntityFavoriteType(
-                      favoritePicker.entityType,
-                      favoritePicker.entity.id,
-                      favoriteType,
-                    )
-                  }
-                >
-                  <span className="favorite-picker__icon">
-                    <FavoriteIcon aria-hidden />
-                  </span>
-                  <strong>{favoriteLabels[favoriteType]}</strong>
-                  {active ? <CheckGlyph aria-hidden className="favorite-picker__check" /> : null}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-    );
-
-    if (typeof document === 'undefined') {
-      return picker;
-    }
-
-    return createPortal(
-      picker,
-      document.querySelector('.design-preview__device-screen') ?? document.body,
-    );
-  }
-
-  function renderFavoriteLabelsEditor() {
-    if (!favoriteLabelsEditorOpen) {
-      return null;
-    }
-
-    const draftOverrides = sanitizeHomeEntityFavoriteLabels(favoriteLabelDraft);
-    const canSave = JSON.stringify(draftOverrides) !== JSON.stringify(homeEntityFavoriteLabels);
-
-    const editor = (
-      <div
-        className="favorite-picker favorite-label-editor"
-        style={favoritePickerOverlayStyle}
-        role="dialog"
-        aria-modal="true"
-      >
-        <button
-          type="button"
-          className="favorite-picker__backdrop"
-          aria-label="Закрыть категории"
-          onClick={closeFavoriteLabelsEditor}
-        />
-        <div className="favorite-picker__panel favorite-label-editor__panel">
-          <div className="favorite-picker__header">
-            <div>
-              <strong>Категории избранного</strong>
-            </div>
-            <button
-              type="button"
-              className="favorite-picker__close"
-              aria-label="Закрыть"
-              title="Закрыть"
-              onClick={closeFavoriteLabelsEditor}
-            >
-              <XmarkGlyph aria-hidden />
-            </button>
-          </div>
-
-          <div className="favorite-label-editor__list">
-            {HOME_ENTITY_FAVORITE_TYPES.map((favoriteType) => {
-              const FavoriteIcon = HOME_ENTITY_FAVORITE_ICONS[favoriteType];
-              const isCustom = Boolean(homeEntityFavoriteLabels[favoriteType]);
-
-              return (
-                <label key={favoriteType} className="favorite-label-editor__row">
-                  <span className={cn('favorite-label-editor__icon', `is-${favoriteType}`)}>
-                    <FavoriteIcon aria-hidden />
-                  </span>
-                  <input
-                    type="text"
-                    inputMode="text"
-                    value={favoriteLabelDraft[favoriteType]}
-                    maxLength={HOME_ENTITY_FAVORITE_LABEL_MAX_LENGTH}
-                    aria-label={`Название категории: ${HOME_ENTITY_FAVORITE_LABELS[favoriteType]}`}
-                    onChange={(event) =>
-                      updateFavoriteLabelDraft(favoriteType, event.currentTarget.value)
-                    }
-                  />
-                  <button
-                    type="button"
-                    className="favorite-label-editor__reset"
-                    aria-label="Вернуть стандартное название"
-                    title="Вернуть стандартное название"
-                    disabled={
-                      !isCustom &&
-                      favoriteLabelDraft[favoriteType] === HOME_ENTITY_FAVORITE_LABELS[favoriteType]
-                    }
-                    onClick={() => resetFavoriteLabelDraft(favoriteType)}
-                  >
-                    <XmarkGlyph aria-hidden />
-                  </button>
-                </label>
-              );
-            })}
-          </div>
-
-          <div className="favorite-label-editor__actions">
-            <button
-              type="button"
-              className="button button--ghost"
-              onClick={closeFavoriteLabelsEditor}
-            >
-              Отмена
-            </button>
-            <button
-              type="button"
-              className="button button--accent"
-              onClick={saveFavoriteLabelDraft}
-              disabled={!canSave}
-            >
-              Сохранить
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-
-    if (typeof document === 'undefined') {
-      return editor;
-    }
-
-    return createPortal(
-      editor,
-      document.querySelector('.design-preview__device-screen') ?? document.body,
-    );
-  }
+  const sheetTarget = favoritePicker ?? entityActionTarget;
+  const selectedSheetFavoriteTypes = sheetTarget
+    ? getHomeEntityFavoriteTypes(
+        homeEntityFavorites,
+        sheetTarget.entityType,
+        sheetTarget.entity.id,
+      )
+    : [];
+  const sheetFavoriteSaving = sheetTarget
+    ? savingFavoriteEntityKey === buildFavoriteEntityKey(sheetTarget.entityType, sheetTarget.entity.id)
+    : false;
+  const canSaveFavoriteLabels =
+    JSON.stringify(sanitizeHomeEntityFavoriteLabels(favoriteLabelDraft)) !==
+    JSON.stringify(homeEntityFavoriteLabels);
 
   return (
-    <div className={cn('page-stack page-enter chats-home', `chats-home--${activeTab}`)}>
-      {renderFavoritePicker()}
-      {renderFavoriteLabelsEditor()}
+    <div
+      ref={homeRootRef}
+      className={cn('page-stack page-enter chats-home', `chats-home--${activeTab}`)}
+    >
+      {favoriteOverlayOpen ? (
+        <Suspense fallback={null}>
+          <LazyHomeEntitySheets
+            actionTarget={entityActionTarget}
+            favoriteTarget={favoritePicker}
+            labelsEditorOpen={favoriteLabelsEditorOpen}
+            favoriteLabels={favoriteLabels}
+            favoriteLabelOverrides={homeEntityFavoriteLabels}
+            favoriteLabelDraft={favoriteLabelDraft}
+            selectedFavoriteTypes={selectedSheetFavoriteTypes}
+            favoriteSaving={sheetFavoriteSaving}
+            canSaveLabels={canSaveFavoriteLabels}
+            onClose={closeHomeEntitySheet}
+            onOpenFavorite={() => {
+              if (!entityActionTarget) {
+                return;
+              }
+              setFavoritePicker(entityActionTarget);
+              setEntityActionTarget(null);
+            }}
+            onSettingsIntent={() => {
+              if (entityActionTarget) {
+                prefetchEntitySettings(
+                  entityActionTarget.entityType,
+                  entityActionTarget.entity.id,
+                );
+              }
+            }}
+            onSettingsOpen={() => {
+              if (entityActionTarget) {
+                rememberEntity(entityActionTarget.entityType, entityActionTarget.entity);
+              }
+            }}
+            onToggleFavorite={(favoriteType) => {
+              if (favoritePicker) {
+                void handleToggleHomeEntityFavoriteType(
+                  favoritePicker.entityType,
+                  favoritePicker.entity.id,
+                  favoriteType,
+                );
+              }
+            }}
+            onFavoriteLabelChange={updateFavoriteLabelDraft}
+            onFavoriteLabelReset={resetFavoriteLabelDraft}
+            onFavoriteLabelsSave={saveFavoriteLabelDraft}
+          />
+        </Suspense>
+      ) : null}
 
       <GlassCard
         className={cn('chats-command', isForegroundSyncing && 'is-syncing')}
-        hidden={isLoading}
         padding="sm"
         elevated
       >
@@ -1376,6 +1302,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               title={homeSyncStatus.label}
             >
               <span className="chats-command__sync-dot" aria-hidden />
+              <span className="chats-command__sync-label">{homeSyncStatus.label}</span>
             </span>
             <button
               type="button"
@@ -1397,12 +1324,18 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           <div
             className="chats-command__progress"
             aria-label={`Синхронизация ${refreshProgressPercent}%`}
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={refreshProgressPercent}
             style={
               {
                 '--chats-sync-progress': `${refreshProgressPercent}%`,
               } as CSSProperties
             }
-          />
+          >
+            <span className="chats-command__sr">Обновлено на {refreshProgressPercent}%</span>
+          </div>
         ) : null}
 
         <div className="chats-command__search-row">
@@ -1434,7 +1367,12 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         </div>
 
         <div className="favorite-filter-bar">
-          <div className="favorite-filter" role="group" aria-label="Фильтр избранного">
+          <div
+            className="favorite-filter"
+            role="group"
+            aria-label="Фильтр избранного"
+            data-allow-horizontal-overflow
+          >
             <button
               type="button"
               className={cn(
@@ -1473,7 +1411,9 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             className="favorite-filter__settings"
             aria-label="Настроить категории"
             title="Настроить категории"
-            onClick={openFavoriteLabelsEditor}
+            onPointerEnter={() => void preloadHomeEntitySheets()}
+            onPointerDown={() => void preloadHomeEntitySheets()}
+            onClick={(event) => openFavoriteLabelsEditor(event.currentTarget)}
           >
             <SettingsGlyph aria-hidden />
           </button>
@@ -1563,7 +1503,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             api={api}
             entityType={activeTab}
             isFetching={isFetching}
-            isRefreshBlocked={isRefreshTemporarilyBlocked}
+            isRefreshBlocked={isManualRefreshBlocked}
+            refreshLabel={refreshButtonLabel}
             onRefresh={() => handleRefresh(activeTab, 'manual')}
           />
         </Suspense>

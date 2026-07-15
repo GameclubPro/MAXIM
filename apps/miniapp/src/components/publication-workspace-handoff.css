@@ -72,7 +72,7 @@
 
   .publication-workspace-handoff__copy small {
     overflow: hidden;
-    color: var(--color-ink-subtle);
+    color: var(--color-ink-muted);
     font-size: 0.74rem;
     font-weight: 650;
     line-height: 1.25;

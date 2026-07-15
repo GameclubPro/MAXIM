@@ -296,6 +296,7 @@ export function buildChatParticipantsPageCacheKey(
     String(query.limit),
     query.cursor ?? '',
     query.search ?? '',
+    query.roleFilter,
   ].join(':');
 }
 

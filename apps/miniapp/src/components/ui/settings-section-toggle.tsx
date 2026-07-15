@@ -35,26 +35,6 @@ type SettingsSectionToggleProps = {
   onClick: () => void;
 };
 
-function ChevronIcon() {
-  return (
-    <svg
-      className="settings-section__chevron-icon"
-      viewBox="0 0 16 16"
-      fill="none"
-      aria-hidden
-      focusable="false"
-    >
-      <path
-        d="m5 6 3 3 3-3"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
 export function SettingsSectionIcon({ name }: { name: SettingsSectionIconName }) {
   if (name === 'links') {
     return (
@@ -393,29 +373,19 @@ export function SettingsSectionIcon({ name }: { name: SettingsSectionIconName })
 
 export function SettingsSectionToggle({
   title,
-  summary,
-  status,
   icon,
   tone,
   open,
   controls,
-  hideChevron = false,
   onClick,
 }: SettingsSectionToggleProps) {
-  const trimmedSummary = summary?.trim() ?? '';
-  const trimmedStatus = status?.trim() ?? '';
-  const hasStatus = trimmedStatus.length > 0;
-  // A tile can omit the decorative chevron without losing its useful live status.
-  const showStatus = hasStatus;
-  const accessibleLabel = [title, trimmedStatus, trimmedSummary].filter(Boolean).join('. ');
-
   return (
     <button
       type="button"
-      className={cn('settings-section__toggle', !showStatus && 'is-stateless')}
+      className="settings-section__toggle is-stateless"
       aria-expanded={open}
       aria-controls={controls}
-      aria-label={accessibleLabel || title}
+      aria-label={title}
       onClick={onClick}
     >
       <span className={cn('settings-section__icon-badge', `is-${tone}`)} aria-hidden>
@@ -425,16 +395,6 @@ export function SettingsSectionToggle({
       <span className="settings-section__toggle-main">
         <h3>{title}</h3>
       </span>
-
-      {showStatus ? (
-        <span className={cn('settings-section__status-chip', `is-${tone}`)}>{trimmedStatus}</span>
-      ) : null}
-
-      {hideChevron ? null : (
-        <span className={cn('settings-section__chevron', open && 'is-open')} aria-hidden>
-          <ChevronIcon />
-        </span>
-      )}
     </button>
   );
 }

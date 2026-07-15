@@ -10,6 +10,7 @@ import { PersonAvatar } from '../ui/person-avatar';
 import { SegmentedControl } from '../ui/segmented-control';
 import { Spinner } from '../ui/spinner';
 import './membership-activity-feed.css';
+import './membership-activity-feed-theme.css';
 
 type MembershipActivityFeedProps = {
   title?: string | null;
@@ -136,6 +137,7 @@ export function MembershipActivityFeed({
           options={filterOptions}
           onChange={onFilterChange}
           className="membership-feed__filters"
+          ariaLabel="Фильтр событий входа и выхода"
         />
         {isReloading ? (
           <span className="membership-feed__badge">

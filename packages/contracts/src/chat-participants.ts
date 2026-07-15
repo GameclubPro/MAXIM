@@ -4,6 +4,9 @@ import { logsDashboardRangeSchema } from './core.js';
 export const chatParticipantRoleSchema = z.enum(['owner', 'admin', 'member']);
 export type ChatParticipantRole = z.infer<typeof chatParticipantRoleSchema>;
 
+export const chatParticipantRoleFilterSchema = z.enum(['all', 'admins', 'members', 'bots']);
+export type ChatParticipantRoleFilter = z.infer<typeof chatParticipantRoleFilterSchema>;
+
 export const chatParticipantImmunityModeSchema = z.enum(['limited', 'always']);
 export type ChatParticipantImmunityMode = z.infer<typeof chatParticipantImmunityModeSchema>;
 
@@ -78,6 +81,7 @@ export type ChatParticipantsPage = z.infer<typeof chatParticipantsPageSchema>;
 
 export const chatParticipantsQuerySchema = z.object({
   range: logsDashboardRangeSchema.default('7d'),
+  roleFilter: chatParticipantRoleFilterSchema.default('all'),
   limit: z.coerce.number().int().min(1).max(100).default(100),
   cursor: z.string().trim().min(1).optional(),
   search: z.string().trim().max(100).optional(),

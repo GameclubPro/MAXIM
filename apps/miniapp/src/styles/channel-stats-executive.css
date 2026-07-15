@@ -1925,4 +1925,109 @@ body.channel-stats-page-open .bottom-nav::after {
     padding: 7px 6px;
   }
 }
+
+.channel-insights__summary-metrics--compact {
+  grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: auto;
+  gap: 8px; height: auto;
+}
+
+.channel-summary-card--compact {
+  display: grid; align-content: start; gap: 5px; min-height: 86px; padding: 11px 12px;
+  border: 1px solid var(--border-subtle); border-radius: 8px;
+  background: var(--surface-card); box-shadow: var(--shadow-xs);
+}
+
+.channel-summary-card--compact > small {
+  color: var(--text-secondary); font-size: 0.72rem; font-weight: 760; line-height: 1.2;
+}
+
+.channel-summary-card--compact > strong {
+  color: var(--text-primary); font-size: clamp(1.35rem, 4vw, 1.75rem);
+  font-weight: 860; line-height: 1; font-variant-numeric: tabular-nums;
+}
+
+.channel-summary-card--compact > strong.is-positive { color: var(--success); }
+.channel-summary-card--compact > strong.is-negative { color: var(--danger); }
+
+.channel-summary-card--compact > span {
+  color: var(--text-secondary); font-size: 0.68rem; line-height: 1.25;
+}
+
+.channel-summary-table-card {
+  overflow: hidden; border: 1px solid var(--border-subtle); border-radius: 8px;
+  background: var(--surface-card); box-shadow: var(--shadow-xs);
+}
+
+.channel-summary-table-card > summary {
+  display: flex; align-items: center; min-height: 44px; padding: 0 12px;
+  color: var(--text-primary); font-size: 0.8rem; font-weight: 760; cursor: pointer;
+}
+
+.channel-summary-table-card > summary:focus-visible {
+  outline: 2px solid var(--app-focus-ring); outline-offset: -3px;
+}
+
+.channel-summary-table-card:not([open]) .channel-summary-table { display: none; }
+
+.channel-posts-chart__title { color: var(--text-primary); line-height: 1.3; }
+
+.channel-insights__section-tabs .segmented-control__item,
+.channel-insights__range .segmented-control__item,
+.channel-events-section .membership-feed__filters .segmented-control__item,
+.channel-posts-chart__row { min-height: 44px; }
+
+.channel-insights__section-tabs .segmented-control__item,
+.channel-insights__range .segmented-control__item { border-radius: 8px; }
+
+.channel-insights__section-tabs .segmented-control__item:focus-visible,
+.channel-insights__range .segmented-control__item:focus-visible,
+.channel-posts-chart__row:focus-visible,
+.channel-stats-graph__canvas:focus-visible {
+  outline: 2px solid var(--app-focus-ring); outline-offset: 2px;
+}
+
+.channel-summary-card--compact > small,
+.channel-summary-card--compact > span,
+.channel-events-section__balance small,
+.channel-events-section__balance span,
+.channel-events-section__metric small,
+.channel-posts-chart__metrics small,
+.channel-posts-chart__title,
+.channel-stats-graph__tooltip small,
+.channel-stats-graph__tooltip span,
+.channel-stats-graph__tooltip em { color: var(--text-secondary); }
+
+html[data-max-theme='dark'] .channel-summary-card--compact,
+html[data-max-theme='dark'] .channel-summary-table-card,
+html[data-max-theme='dark'] .channel-posts-chart__row,
+html[data-max-theme='dark'] .channel-best-windows__row,
+html[data-max-theme='dark'] .channel-events-section__balance,
+html[data-max-theme='dark'] .channel-events-section__metric,
+html[data-max-theme='dark'] .channel-insights__inline-state {
+  border-color: var(--border-subtle); background: var(--surface-card);
+  color: var(--text-primary); box-shadow: var(--shadow-xs);
+}
+
+html[data-max-theme='dark'] .channel-summary-table th,
+html[data-max-theme='dark'] .channel-summary-table td {
+  border-color: var(--border-subtle); background: transparent; color: var(--text-primary);
+}
+
+html[data-max-theme='dark'] .channel-summary-table th,
+html[data-max-theme='dark'] .channel-summary-card--compact > small,
+html[data-max-theme='dark'] .channel-summary-card--compact > span,
+html[data-max-theme='dark'] .channel-events-section__balance small,
+html[data-max-theme='dark'] .channel-events-section__balance span,
+html[data-max-theme='dark'] .channel-events-section__metric small,
+html[data-max-theme='dark'] .channel-posts-chart__metrics small,
+html[data-max-theme='dark'] .channel-posts-chart__title { color: var(--text-secondary); }
+
+html[data-max-theme='dark'] .channel-summary-card--compact > strong,
+html[data-max-theme='dark'] .channel-summary-table-card > summary,
+html[data-max-theme='dark'] .channel-posts-chart__metrics strong,
+html[data-max-theme='dark'] .channel-insights__panel-copy strong { color: var(--text-primary); }
+
+@media (max-width: 360px) {
+  .channel-insights__summary-metrics--compact { grid-template-columns: minmax(0, 1fr); }
+}
 }

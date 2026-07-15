@@ -66,6 +66,7 @@ export function useModerationFeed({
   const requestIdRef = useRef(0);
   const activeControllerRef = useRef<AbortController | null>(null);
   const feedRef = useRef(feed);
+  const scopeKeyRef = useRef(`${range}\u0000${filter}\u0000${limit}`);
   const runLoadPage = useEffectEvent(loadPage);
 
   useEffect(() => {
@@ -83,6 +84,10 @@ export function useModerationFeed({
       return;
     }
 
+    const scopeKey = `${range}\u0000${filter}\u0000${limit}`;
+    const scopeChanged = scopeKeyRef.current !== scopeKey;
+    scopeKeyRef.current = scopeKey;
+
     if (filter === 'ALL' && initialPage) {
       setFeed(toFeedState(initialPage));
       setError(null);
@@ -95,7 +100,7 @@ export function useModerationFeed({
     activeControllerRef.current = controller;
     setStatus('reloading');
     setError(null);
-    if (feedRef.current.items.length === 0) {
+    if (scopeChanged || feedRef.current.items.length === 0) {
       setFeed(EMPTY_FEED);
     }
 

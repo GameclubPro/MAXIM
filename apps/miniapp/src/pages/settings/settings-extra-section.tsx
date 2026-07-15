@@ -17,6 +17,8 @@ type SettingsExtraSectionProps = {
   openHintKey: HintKey | null;
   fieldErrors: FieldErrors;
   footer: ReactNode;
+  hasChanges: boolean;
+  onDiscardChanges: () => void;
   onToggleSection: () => void;
   onToggleHint: (key: HintKey) => void;
   onFieldChange: (
@@ -34,6 +36,8 @@ export function SettingsExtraSection({
   openHintKey,
   fieldErrors,
   footer,
+  hasChanges,
+  onDiscardChanges,
   onToggleSection,
   onToggleHint,
   onFieldChange,
@@ -67,7 +71,9 @@ export function SettingsExtraSection({
         tone="amber"
         className="settings-drilldown__panel--notice settings-drilldown__panel--extra"
         onClose={onToggleSection}
-        footer={footer}
+        confirmCloseWhen={hasChanges}
+        onDiscardChanges={onDiscardChanges}
+        footer={hasChanges ? footer : null}
       >
         <div
           id="settings-extra-content"

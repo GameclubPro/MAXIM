@@ -37,6 +37,10 @@
   padding: 8px 10px;
 }
 
+.settings-word-banlist__segments .segmented-control__item.is-active {
+  color: var(--text-primary);
+}
+
 .settings-word-banlist__mode-panel {
   min-width: 0;
   display: grid;
@@ -72,7 +76,7 @@
 
 .settings-word-banlist__add-row input {
   min-width: 0;
-  min-height: 40px;
+  min-height: 44px;
   border-radius: 14px;
   border: 1px solid rgba(62, 96, 127, 0.16);
   background: rgba(255, 255, 255, 0.92);
@@ -87,7 +91,7 @@
 }
 
 .settings-word-banlist__add-button {
-  min-height: 40px;
+  min-height: 44px;
   padding: 0 14px;
   border-radius: 14px;
   font-size: 0.78rem;
@@ -109,8 +113,8 @@
   flex-wrap: wrap;
 }
 
-.settings-word-banlist__chips-caption {
-  color: var(--text-muted);
+.settings-drilldown .settings-word-banlist__chips-caption {
+  color: var(--text-secondary);
   font-size: 0.74rem;
   font-weight: 700;
   line-height: 1.2;
@@ -121,7 +125,7 @@
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.82);
   color: var(--text-primary);
-  min-height: 30px;
+  min-height: 44px;
   padding: 0 12px;
   display: inline-flex;
   align-items: center;
@@ -140,7 +144,7 @@
   background: rgba(18, 30, 45, 0.92);
   color: #fff;
   padding: 0 12px;
-  min-height: 34px;
+  min-height: 44px;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -170,7 +174,6 @@
   background: rgba(255, 255, 255, 0.14);
   font-size: 0.78rem;
   line-height: 1;
-  transform: rotate(45deg);
 }
 
 @media (max-width: 560px) {
@@ -186,5 +189,30 @@
   .settings-word-banlist__add-button {
     width: 100%;
   }
+}
+
+html[data-max-theme='dark'] .settings-word-banlist {
+  border-color: var(--border-subtle);
+  background: var(--surface-card);
+  color: var(--text-primary);
+}
+
+html[data-max-theme='dark'] .settings-word-banlist__segments,
+html[data-max-theme='dark'] .settings-word-banlist__toggle {
+  border-color: var(--border-subtle);
+  background: var(--surface-card-muted);
+  color: var(--text-primary);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark'] .settings-word-banlist__add-row input {
+  border-color: var(--border-strong);
+  background: var(--surface-card-muted);
+  color: var(--text-primary);
+}
+
+html[data-max-theme='dark'] .settings-word-banlist__mode-title,
+html[data-max-theme='dark'] .settings-word-banlist__chips-caption {
+  color: var(--text-secondary);
 }
 }

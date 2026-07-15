@@ -1,9 +1,21 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '../../lib/cn';
 import { isTopmostModalDialog, useDialogFocusTrap } from '../../lib/dialog-focus';
 import { useNativeBackHandler } from '../../lib/native-back';
 import { useKeyboardOpen } from '../../lib/use-keyboard-open';
+
+const LazyActionConfirmSheet = lazy(() =>
+  import('./action-confirm-sheet').then((module) => ({ default: module.ActionConfirmSheet })),
+);
 
 type DrilldownScrollLockState = {
   bodyOverflow: string;
@@ -23,6 +35,8 @@ type SettingsDrilldownPanelProps = {
   overlayClassName?: string;
   footer?: ReactNode;
   keepFooterVisibleWhenKeyboardOpen?: boolean;
+  confirmCloseWhen?: boolean;
+  onDiscardChanges?: () => void;
 };
 
 let activeDrilldownLocks = 0;
@@ -118,16 +132,28 @@ export function SettingsDrilldownPanel({
   overlayClassName,
   footer,
   keepFooterVisibleWhenKeyboardOpen = false,
+  confirmCloseWhen = false,
+  onDiscardChanges,
 }: SettingsDrilldownPanelProps) {
   const backdropRef = useRef<HTMLButtonElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
+  const [discardConfirmationOpen, setDiscardConfirmationOpen] = useState(false);
   const isKeyboardOpen = useKeyboardOpen(120, open);
   useDialogFocusTrap(open, panelRef, closeButtonRef);
 
+  const requestClose = useCallback(() => {
+    if (confirmCloseWhen) {
+      setDiscardConfirmationOpen(true);
+      return;
+    }
+
+    onClose();
+  }, [confirmCloseWhen, onClose]);
+
   useNativeBackHandler(
     () => {
-      onClose();
+      requestClose();
       return true;
     },
     { enabled: open, priority: 620 },
@@ -158,7 +184,7 @@ export function SettingsDrilldownPanel({
         }
         event.preventDefault();
         event.stopImmediatePropagation();
-        onClose();
+        requestClose();
         return;
       }
     };
@@ -168,30 +194,13 @@ export function SettingsDrilldownPanel({
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [onClose, open]);
+  }, [open, requestClose]);
 
   useEffect(() => {
-    if (!open) {
-      return undefined;
+    if (!open || !confirmCloseWhen) {
+      setDiscardConfirmationOpen(false);
     }
-
-    const handleNativeClose = (event: Event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      onClose();
-    };
-
-    const backdrop = backdropRef.current;
-    const closeButton = closeButtonRef.current;
-
-    backdrop?.addEventListener('click', handleNativeClose);
-    closeButton?.addEventListener('click', handleNativeClose);
-
-    return () => {
-      backdrop?.removeEventListener('click', handleNativeClose);
-      closeButton?.removeEventListener('click', handleNativeClose);
-    };
-  }, [onClose, open]);
+  }, [confirmCloseWhen, open]);
 
   const portalTarget = open ? resolveDrilldownPortalTarget() : null;
   if (!open || !portalTarget) {
@@ -203,64 +212,91 @@ export function SettingsDrilldownPanel({
   const shouldRenderFooter =
     Boolean(footer) && (!isKeyboardOpen || keepFooterVisibleWhenKeyboardOpen);
 
-  return createPortal(
-    <div
-      className={cn(
-        'settings-drilldown',
-        variant === 'screen' && 'settings-drilldown--screen',
-        overlayClassName,
-      )}
-      aria-hidden={!open}
-    >
-      <button
-        ref={backdropRef}
-        type="button"
-        className="settings-drilldown__backdrop"
-        aria-label="Закрыть панель"
-        tabIndex={-1}
-      />
-
-      <section
-        ref={panelRef}
-        className={cn(
-          'settings-drilldown__panel',
-          `settings-drilldown__panel--tone-${tone}`,
-          className,
-        )}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        aria-describedby={summaryId}
-        tabIndex={-1}
-      >
-        <header className="settings-drilldown__header">
-          <div className="settings-drilldown__title-wrap">
-            <h3 id={titleId} className="settings-drilldown__title">
-              {title}
-            </h3>
-            {summary ? (
-              <p id={summaryId} className="settings-drilldown__summary">
-                {summary}
-              </p>
-            ) : null}
-          </div>
-
+  return (
+    <>
+      {createPortal(
+        <div
+          className={cn(
+            'settings-drilldown',
+            variant === 'screen' && 'settings-drilldown--screen',
+            overlayClassName,
+          )}
+          aria-hidden={!open}
+        >
           <button
-            ref={closeButtonRef}
+            ref={backdropRef}
             type="button"
-            className="settings-drilldown__close"
+            className="settings-drilldown__backdrop"
             aria-label="Закрыть панель"
-          >
-            <CloseIcon />
-          </button>
-        </header>
+            tabIndex={-1}
+            onClick={requestClose}
+          />
 
-        <div className="settings-drilldown__content">
-          <div className="settings-drilldown__body">{children}</div>
-          {shouldRenderFooter ? <div className="settings-drilldown__footer">{footer}</div> : null}
-        </div>
-      </section>
-    </div>,
-    portalTarget,
+          <section
+            ref={panelRef}
+            className={cn(
+              'settings-drilldown__panel',
+              `settings-drilldown__panel--tone-${tone}`,
+              className,
+            )}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={titleId}
+            aria-describedby={summaryId}
+            tabIndex={-1}
+          >
+            <header className="settings-drilldown__header">
+              <div className="settings-drilldown__title-wrap">
+                <h3 id={titleId} className="settings-drilldown__title">
+                  {title}
+                </h3>
+                {summary ? (
+                  <p id={summaryId} className="settings-drilldown__summary">
+                    {summary}
+                  </p>
+                ) : null}
+              </div>
+
+              <button
+                ref={closeButtonRef}
+                type="button"
+                className="settings-drilldown__close"
+                aria-label="Закрыть панель"
+                onClick={requestClose}
+              >
+                <CloseIcon />
+              </button>
+            </header>
+
+            <div className="settings-drilldown__content">
+              <div className="settings-drilldown__body">{children}</div>
+              {shouldRenderFooter ? (
+                <div className="settings-drilldown__footer">{footer}</div>
+              ) : null}
+            </div>
+          </section>
+        </div>,
+        portalTarget,
+      )}
+      {discardConfirmationOpen ? (
+        <Suspense fallback={null}>
+          <LazyActionConfirmSheet
+            id={`${id}-discard-confirmation`}
+            open
+            title="Не сохранять изменения?"
+            summary="Изменения в этом разделе будут отменены."
+            confirmLabel="Не сохранять"
+            cancelLabel="Продолжить настройку"
+            tone="danger"
+            onClose={() => setDiscardConfirmationOpen(false)}
+            onConfirm={() => {
+              setDiscardConfirmationOpen(false);
+              onDiscardChanges?.();
+              onClose();
+            }}
+          />
+        </Suspense>
+      ) : null}
+    </>
   );
 }

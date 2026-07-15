@@ -236,7 +236,7 @@
 .participants-roster__pill--owner {
   border-color: rgba(11, 132, 255, 0.16);
   background: rgba(232, 244, 255, 0.98);
-  color: #0a79db;
+  color: #075fae;
 }
 
 .participants-roster__pill--admin {
@@ -554,4 +554,5 @@
     justify-content: flex-start;
   }
 }
+
 }

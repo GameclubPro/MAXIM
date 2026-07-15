@@ -1,0 +1,106 @@
+@layer components {
+.settings-overview-search-wrap {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-overview-search {
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 0 13px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-card);
+  color: var(--text-secondary);
+}
+
+.settings-overview-search > svg {
+  width: 20px;
+  height: 20px;
+}
+
+.settings-overview-search input {
+  width: 100%;
+  min-width: 0;
+  min-height: 46px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.9rem;
+}
+
+.settings-overview-search input::placeholder {
+  color: var(--text-muted);
+  opacity: 1;
+}
+
+.settings-overview-search:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 54%, var(--border-subtle));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.settings-overview-search button {
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.settings-overview-search button svg {
+  width: 18px;
+  height: 18px;
+}
+
+.settings-overview-search__empty {
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border-subtle);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  background: var(--surface-card-muted);
+  font-size: 0.84rem;
+}
+
+.settings-overview-search__empty button {
+  min-height: 44px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 0 12px;
+  background: var(--surface-card);
+  color: var(--text-primary);
+  font: inherit;
+  font-weight: 700;
+}
+
+.settings-home-entry[hidden],
+.channel-settings-card[hidden],
+.settings-home-group-head[hidden] {
+  display: none;
+}
+
+html[data-max-theme='dark'] .settings-overview-search,
+html[data-max-theme='dark'] .settings-overview-search__empty,
+html[data-max-theme='dark'] .settings-overview-search__empty button {
+  border-color: var(--border-subtle);
+  background: var(--surface-card);
+  color: var(--text-primary);
+}
+
+html[data-max-theme='dark'] .settings-overview-search__empty {
+  background: var(--surface-card-muted);
+  color: var(--text-secondary);
+}
+}

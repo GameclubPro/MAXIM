@@ -49,6 +49,25 @@ import {
 const UNAVAILABLE_PARTICIPANT_CLEANUP_PAGE_LIMIT = 100;
 const UNAVAILABLE_PARTICIPANT_CLEANUP_PAGE_SAFETY_CAP = 500;
 
+export function matchesChatParticipantRoleFilter(
+  member: Pick<MaxChatRosterMember, 'isBot' | 'role'>,
+  roleFilter: ChatParticipantsQuery['roleFilter'],
+): boolean {
+  if (roleFilter === 'all') {
+    return true;
+  }
+  if (roleFilter === 'bots') {
+    return member.isBot;
+  }
+  if (member.isBot) {
+    return false;
+  }
+  if (roleFilter === 'admins') {
+    return member.role === 'owner' || member.role === 'admin';
+  }
+  return member.role === 'member';
+}
+
 export class AdminParticipantsRuntime {
   constructor(private readonly context: AdminParticipantsRuntimeContext) {}
 
@@ -219,8 +238,7 @@ export class AdminParticipantsRuntime {
       immunityMode === 'always'
         ? null
         : new Date(now.getTime() + parsed.data.durationHours! * ONE_HOUR_MS);
-    const dailyViolationLimit =
-      immunityMode === 'always' ? null : parsed.data.dailyViolationLimit!;
+    const dailyViolationLimit = immunityMode === 'always' ? null : parsed.data.dailyViolationLimit!;
     const nextUsageDateKey = immunityMode === 'always' ? null : usageDateKey;
     const immunity = await this.prisma.chatParticipantModerationImmunity.upsert({
       where: {
@@ -626,7 +644,10 @@ export class AdminParticipantsRuntime {
   }
 
   private isAddRemoveMembersPermission(permission: string): boolean {
-    const normalized = permission.trim().toLowerCase().replace(/[-\s]+/gu, '_');
+    const normalized = permission
+      .trim()
+      .toLowerCase()
+      .replace(/[-\s]+/gu, '_');
     return (
       normalized === 'add_remove_members' ||
       normalized === 'can_add_remove_members' ||
@@ -657,7 +678,7 @@ export class AdminParticipantsRuntime {
     const now = new Date();
     const from = this.resolveLogsDashboardFrom(query.range, now);
     const membersPagePromise = (
-      search
+      search || query.roleFilter !== 'all'
         ? this.searchChatParticipantsMembersPage(chatId, query, search, resolvedBotId)
         : this.loadChatParticipantsMembersPage(chatId, limit, query.cursor ?? null, resolvedBotId)
     ).catch((error: unknown) => {
@@ -852,7 +873,7 @@ export class AdminParticipantsRuntime {
     resolvedBotId: string | null,
   ): Promise<{ items: MaxChatRosterMember[]; nextMarker: string | null }> {
     const limit = Math.max(1, Math.min(100, query.limit));
-    const cursor = this.decodeChatParticipantsSearchCursor(query.cursor, search);
+    const cursor = this.decodeChatParticipantsSearchCursor(query.cursor, search, query.roleFilter);
     const items: MaxChatRosterMember[] = [];
     let marker = cursor?.marker ?? null;
     let skip = cursor?.skip ?? 0;
@@ -890,12 +911,15 @@ export class AdminParticipantsRuntime {
             marker: currentMarker,
             skip,
             search,
+            roleFilter: query.roleFilter,
           }),
         };
       }
       scannedRemotePages += 1;
-      const matches = membersPage.items.filter((member) =>
-        this.chatParticipantMatchesSearch(member, search),
+      const matches = membersPage.items.filter(
+        (member) =>
+          this.chatParticipantMatchesSearch(member, search) &&
+          matchesChatParticipantRoleFilter(member, query.roleFilter),
       );
       let matchIndex = 0;
 
@@ -920,6 +944,7 @@ export class AdminParticipantsRuntime {
               marker,
               skip,
               search,
+              roleFilter: query.roleFilter,
             }),
           };
         }
@@ -935,6 +960,7 @@ export class AdminParticipantsRuntime {
               marker: currentMarker,
               skip: matchIndex,
               search,
+              roleFilter: query.roleFilter,
             }),
           };
         }
@@ -950,6 +976,7 @@ export class AdminParticipantsRuntime {
                 marker: membersPage.nextMarker,
                 skip: 0,
                 search,
+                roleFilter: query.roleFilter,
               })
             : null,
         };
@@ -972,6 +999,7 @@ export class AdminParticipantsRuntime {
             marker,
             skip,
             search,
+            roleFilter: query.roleFilter,
           }),
         };
       }
@@ -979,6 +1007,10 @@ export class AdminParticipantsRuntime {
   }
 
   private chatParticipantMatchesSearch(member: MaxChatRosterMember, search: string): boolean {
+    if (!search) {
+      return true;
+    }
+
     const username = member.username?.replace(/^@+/u, '').trim() ?? '';
     const candidates = [
       member.displayName ?? '',
@@ -1013,6 +1045,7 @@ export class AdminParticipantsRuntime {
         marker: cursor.marker,
         skip: cursor.skip,
         search: cursor.search,
+        roleFilter: cursor.roleFilter ?? 'all',
       }),
       'utf8',
     ).toString('base64url');
@@ -1021,6 +1054,7 @@ export class AdminParticipantsRuntime {
   private decodeChatParticipantsSearchCursor(
     value: string | undefined,
     search: string,
+    queryRoleFilter: ChatParticipantsQuery['roleFilter'],
   ): ChatParticipantsSearchCursor | null {
     if (!value) {
       return null;
@@ -1043,8 +1077,14 @@ export class AdminParticipantsRuntime {
         typeof parsed.search === 'string'
           ? this.normalizeChatParticipantsSearchText(parsed.search)
           : '';
+      const cursorRoleFilter =
+        parsed.roleFilter === 'admins' ||
+        parsed.roleFilter === 'members' ||
+        parsed.roleFilter === 'bots'
+          ? parsed.roleFilter
+          : 'all';
 
-      if (parsed.v !== 1 || cursorSearch !== search) {
+      if (parsed.v !== 1 || cursorSearch !== search || cursorRoleFilter !== queryRoleFilter) {
         throw new Error('Invalid chat participants search cursor');
       }
 
@@ -1052,6 +1092,7 @@ export class AdminParticipantsRuntime {
         marker,
         skip,
         search,
+        roleFilter: queryRoleFilter,
       };
     } catch {
       throw new BadRequestException('Неверный cursor для поиска участников.');

@@ -33,7 +33,7 @@ export function SegmentedControl<T extends string>({
   options,
   onChange,
   className,
-  ariaLabel = 'Фильтр событий',
+  ariaLabel = 'Переключатель',
 }: SegmentedControlProps<T>) {
   const groupRef = useRef<HTMLDivElement | null>(null);
 

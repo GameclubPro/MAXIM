@@ -3,9 +3,9 @@ import type {
   ApplySettingsTarget,
 } from '@maxim/contracts/settings';
 import type { ManagedEntityFavoriteType } from '@maxim/contracts/managed-entities';
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
-import { XmarkGlyph } from '../../components/ui/compact-icons';
+import { HOME_ENTITY_FAVORITE_ICONS, XmarkGlyph } from '../../components/ui/compact-icons';
 import {
   HOME_ENTITY_FAVORITE_TITLES,
   HOME_ENTITY_FAVORITE_TYPES,
@@ -15,10 +15,10 @@ import {
   resolveHomeEntityFavoriteLabels,
 } from '../../lib/home-entity-favorites';
 import { cn } from '../../lib/cn';
+import { isTopmostModalDialog, useDialogFocusTrap } from '../../lib/dialog-focus';
 import { getInitDataUserId } from '../../lib/init-data';
 import { useNativeBackHandler } from '../../lib/native-back';
 import type { ApplySectionKey } from '../settings-page-state';
-import { APPLY_TARGET_FAVORITE_ICONS, SECTION_LABELS } from './settings-page-helpers';
 import './settings-apply-target-sheet.css';
 
 type ApplyTargetSheetState = {
@@ -31,6 +31,7 @@ type SettingsApplyTargetSheetProps = {
   preview: ApplySectionTargetPreviewResponse | null;
   previewLoading: boolean;
   previewError: string | null;
+  sectionLabel: string;
   overlayStyle: CSSProperties | undefined;
   isApplying: boolean;
   onClose: () => void;
@@ -58,12 +59,17 @@ export function SettingsApplyTargetSheet({
   preview,
   previewLoading,
   previewError,
+  sectionLabel,
   overlayStyle,
   isApplying,
   onClose,
   onTargetChange,
   onConfirm,
 }: SettingsApplyTargetSheetProps) {
+  const panelRef = useRef<HTMLElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const isOpen = Boolean(sheet);
+  useDialogFocusTrap(isOpen, panelRef, closeButtonRef);
   const favoriteStorageScope = useMemo(() => {
     const userId = getInitDataUserId()?.trim();
     return userId ? `u:${userId}` : getHomeEntityFavoritesFallbackScope();
@@ -102,6 +108,30 @@ export function SettingsApplyTargetSheet({
     };
   }, [favoriteStorageScope]);
 
+  useEffect(() => {
+    if (!isOpen) {
+      return undefined;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || isApplying) {
+        return;
+      }
+
+      const panel = panelRef.current;
+      if (!panel || !isTopmostModalDialog(panel)) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      onClose();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isApplying, isOpen, onClose]);
+
   if (!sheet) {
     return null;
   }
@@ -123,25 +153,39 @@ export function SettingsApplyTargetSheet({
     });
   }
 
+  const titleId = `settings-apply-target-${sheet.section}-title`;
+  const descriptionId = `settings-apply-target-${sheet.section}-description`;
   const content = (
-    <div className="settings-apply-target" style={overlayStyle} role="dialog" aria-modal="true">
+    <div className="settings-apply-target" style={overlayStyle}>
       <button
         type="button"
         className="settings-apply-target__backdrop"
         aria-label="Закрыть выбор чатов"
         onClick={onClose}
+        disabled={isApplying}
+        tabIndex={-1}
       />
-      <div className="settings-apply-target__panel">
+      <section
+        ref={panelRef}
+        className="settings-apply-target__panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={descriptionId}
+        tabIndex={-1}
+      >
         <div className="settings-apply-target__header">
           <div>
-            <strong>{SECTION_LABELS[sheet.section]}</strong>
+            <strong id={titleId}>Применить: {sectionLabel}</strong>
+            <span id={descriptionId}>Выберите чаты, в которых нужно заменить этот раздел.</span>
           </div>
           <button
+            ref={closeButtonRef}
             type="button"
             className="settings-apply-target__close"
-            aria-label="Закрыть"
-            title="Закрыть"
+            aria-label="Закрыть выбор чатов"
             onClick={onClose}
+            disabled={isApplying}
           >
             <XmarkGlyph aria-hidden />
           </button>
@@ -174,9 +218,9 @@ export function SettingsApplyTargetSheet({
           ))}
         </div>
 
-        <div className="settings-apply-target__favorites">
+        <div className="settings-apply-target__favorites" data-allow-horizontal-overflow>
           {HOME_ENTITY_FAVORITE_TYPES.map((favoriteType) => {
-            const FavoriteIcon = APPLY_TARGET_FAVORITE_ICONS[favoriteType];
+            const FavoriteIcon = HOME_ENTITY_FAVORITE_ICONS[favoriteType];
             const active =
               target.mode === 'favoriteTypes' && target.favoriteTypes.includes(favoriteType);
 
@@ -225,10 +269,12 @@ export function SettingsApplyTargetSheet({
             onClick={onConfirm}
             disabled={!canConfirm}
           >
-            {isApplying ? '...' : 'Применить'}
+            <span className="settings-apply-target__confirm-label">
+              {isApplying ? '...' : 'Применить'}
+            </span>
           </button>
         </div>
-      </div>
+      </section>
     </div>
   );
 

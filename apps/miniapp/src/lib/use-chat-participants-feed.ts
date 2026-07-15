@@ -12,6 +12,7 @@ type UseChatParticipantsFeedOptions = {
   refetchInitialPage?: boolean;
   loadPage: LoadChatParticipantsPage;
   range?: ChatParticipantsQuery['range'];
+  roleFilter?: ChatParticipantsQuery['roleFilter'];
   limit?: number;
   search?: string;
 };
@@ -72,6 +73,7 @@ export function useChatParticipantsFeed({
   refetchInitialPage = false,
   loadPage,
   range = '7d',
+  roleFilter = 'all',
   limit = 100,
   search = '',
 }: UseChatParticipantsFeedOptions) {
@@ -103,9 +105,8 @@ export function useChatParticipantsFeed({
       return;
     }
 
-    const queryKey = `${range}\u0000${requestLimit}\u0000${normalizedSearch}`;
-    const shouldClearItems =
-      feedRef.current.items.length === 0 || (!normalizedSearch && queryKeyRef.current !== queryKey);
+    const queryKey = `${range}\u0000${roleFilter}\u0000${requestLimit}\u0000${normalizedSearch}`;
+    const shouldClearItems = feedRef.current.items.length === 0 || queryKeyRef.current !== queryKey;
     queryKeyRef.current = queryKey;
 
     if (initialPage && !normalizedSearch) {
@@ -122,12 +123,12 @@ export function useChatParticipantsFeed({
     activeControllerRef.current = controller;
     setStatus('reloading');
     setError(null);
-    if (shouldClearItems) {
+    if (shouldClearItems && !initialPage) {
       setFeed(EMPTY_FEED);
     }
 
     void runLoadPage(
-      { limit: requestLimit, range, search: normalizedSearch || undefined },
+      { limit: requestLimit, range, roleFilter, search: normalizedSearch || undefined },
       { signal: controller.signal },
     )
       .then((page) => {
@@ -163,7 +164,7 @@ export function useChatParticipantsFeed({
         activeControllerRef.current = null;
       }
     };
-  }, [enabled, initialPage, normalizedSearch, range, requestLimit, refetchInitialPage]);
+  }, [enabled, initialPage, normalizedSearch, range, requestLimit, refetchInitialPage, roleFilter]);
 
   async function loadMore() {
     if (!enabled || status !== 'idle' || !feed.hasMore || !feed.nextCursor) {
@@ -183,6 +184,7 @@ export function useChatParticipantsFeed({
         {
           limit: requestLimit,
           range,
+          roleFilter,
           cursor: feed.nextCursor,
           search: normalizedSearch || undefined,
         },
@@ -242,7 +244,7 @@ export function useChatParticipantsFeed({
 
     try {
       const page = await runLoadPage(
-        { limit: requestLimit, range, search: normalizedSearch || undefined },
+        { limit: requestLimit, range, roleFilter, search: normalizedSearch || undefined },
         { signal: controller.signal },
       );
       if (requestId !== requestIdRef.current || controller.signal.aborted) {

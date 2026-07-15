@@ -52,6 +52,20 @@ function isAbortError(cause: unknown): boolean {
   );
 }
 
+export function shouldClearMembershipActivityFeed({
+  scopeChanged,
+  filter,
+  hasInitialPage,
+  itemCount,
+}: {
+  scopeChanged: boolean;
+  filter: MembershipActivityFilter;
+  hasInitialPage: boolean;
+  itemCount: number;
+}): boolean {
+  return (scopeChanged && (filter !== 'all' || !hasInitialPage)) || itemCount === 0;
+}
+
 export function useMembershipActivityFeed({
   enabled = true,
   range,
@@ -69,6 +83,7 @@ export function useMembershipActivityFeed({
   const requestIdRef = useRef(0);
   const activeControllerRef = useRef<AbortController | null>(null);
   const feedRef = useRef(feed);
+  const scopeKeyRef = useRef(`${range}\u0000${filter}\u0000${limit}`);
   const runLoadPage = useEffectEvent(loadPage);
 
   useEffect(() => {
@@ -98,6 +113,10 @@ export function useMembershipActivityFeed({
       return;
     }
 
+    const scopeKey = `${range}\u0000${filter}\u0000${limit}`;
+    const scopeChanged = scopeKeyRef.current !== scopeKey;
+    scopeKeyRef.current = scopeKey;
+
     if (filter === 'all') {
       if (initialPage && !refetchInitialPage) {
         return;
@@ -111,7 +130,14 @@ export function useMembershipActivityFeed({
     requestIdRef.current = requestId;
     setStatus('reloading');
     setError(null);
-    if (feedRef.current.items.length === 0) {
+    if (
+      shouldClearMembershipActivityFeed({
+        scopeChanged,
+        filter,
+        hasInitialPage: Boolean(initialPage),
+        itemCount: feedRef.current.items.length,
+      })
+    ) {
       setFeed(EMPTY_FEED);
     }
 

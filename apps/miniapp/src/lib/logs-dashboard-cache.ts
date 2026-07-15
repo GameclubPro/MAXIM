@@ -1,5 +1,6 @@
 import type {
   ChatParticipantsPage,
+  ChatParticipantRoleFilter,
   LogsDashboardRange,
   LogsDashboardResponse,
   MembershipActivityFilter,
@@ -48,9 +49,10 @@ export function buildChatParticipantsSnapshotParts(
   chatId: string,
   range: LogsDashboardRange,
   search: string,
+  roleFilter: ChatParticipantRoleFilter = 'all',
 ): readonly string[] {
   const normalizedSearch = search.trim();
-  return [chatId, range, normalizedSearch || 'all', 'first-page'];
+  return [chatId, range, roleFilter, normalizedSearch || 'all', 'first-page'];
 }
 
 export function isLogsDashboardResponseForRange(

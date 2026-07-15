@@ -877,19 +877,19 @@ export const LINK_POLICY_OPTIONS: Array<{
   {
     value: 'ALERT_ONLY',
     eyebrow: 'Наблюдение',
-    label: 'Не удалять',
+    label: 'Разрешать все',
     description: 'Ссылки остаются в чате, а блок санкций скрыт.',
   },
   {
     value: 'BLOCKLIST_ONLY',
     eyebrow: 'Жёсткий режим',
-    label: 'Удалять',
+    label: 'Удалять все',
     description: 'Любая ссылка удаляется сразу.',
   },
   {
     value: 'ALLOWLIST_ONLY',
     eyebrow: 'Разрешённые',
-    label: 'Белый список',
+    label: 'Только разрешённые',
     description: 'Удаляются все ссылки, кроме списка ниже.',
   },
 ];

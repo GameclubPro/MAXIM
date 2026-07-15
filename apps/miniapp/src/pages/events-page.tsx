@@ -6,6 +6,7 @@ import type {
   ManualModerationActionRequest,
   ManualModerationScope,
   ChatParticipantItem,
+  ChatParticipantRoleFilter,
   ChatParticipantsPage,
   GlobalSpammerReviewAction,
   GlobalSpammerReviewCandidate,
@@ -25,7 +26,7 @@ import {
   useMemo,
   useState,
 } from 'react';
-import { Link, useLocation, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ChatParticipantSheet } from '../components/dashboard/chat-participant-sheet';
 import { ChatParticipantsRoster } from '../components/dashboard/chat-participants-roster';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
@@ -74,6 +75,14 @@ import {
   readStatsSnapshotMirror,
   saveStatsSnapshot,
 } from '../lib/stats-snapshot-cache';
+import {
+  formatStatisticsRangeLabel,
+  resolveMembershipMovementShares,
+} from '../lib/statistics-display';
+import {
+  buildStatisticsRouteSearch,
+  parseChatStatisticsRouteQuery,
+} from '../lib/statistics-route-query';
 import { useChatParticipantsFeed } from '../lib/use-chat-participants-feed';
 import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 import { useModerationFeed } from '../lib/use-moderation-feed';
@@ -1917,18 +1926,6 @@ function formatViolationDate(value: string): string {
   });
 }
 
-function getInitialSection(search: string): EventsSection {
-  const value = new URLSearchParams(search).get('section');
-  if (value === 'events' || value === 'activity') {
-    return 'activity';
-  }
-  if (value === 'participants') {
-    return 'participants';
-  }
-
-  return 'moderation';
-}
-
 function useDebouncedValue(value: string, delayMs: number): string {
   const [debouncedValue, setDebouncedValue] = useState(value);
 
@@ -1977,10 +1974,19 @@ function readEventsDashboardPrefetchNetwork(): EventsDashboardPrefetchNetwork | 
 export function EventsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
   const location = useLocation();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
-  const [range, setRange] = useState<LogsDashboardRange>('24h');
-  const [section, setSection] = useState<EventsSection>(() => getInitialSection(location.search));
+  const [range, setRange] = useState<LogsDashboardRange>(
+    () => parseChatStatisticsRouteQuery(location.search).range,
+  );
+  const [section, setSection] = useState<EventsSection>(
+    () => parseChatStatisticsRouteQuery(location.search).section,
+  );
+  const routeQuery = useMemo(
+    () => parseChatStatisticsRouteQuery(location.search),
+    [location.search],
+  );
   const [eventsFilter, setEventsFilter] = useState<EventsFilter>('ALL');
   const [expandedViolationId, setExpandedViolationId] = useState<string | null>(null);
   const [spammerReviewOpen, setSpammerReviewOpen] = useState(false);
@@ -1993,6 +1999,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     string | null
   >(null);
   const [participantsSearch, setParticipantsSearch] = useState('');
+  const [participantsRoleFilter, setParticipantsRoleFilter] =
+    useState<ChatParticipantRoleFilter>('all');
   const [lastKnownParticipantsTotal, setLastKnownParticipantsTotal] = useState<{
     chatId: string | null;
     total: number;
@@ -2002,17 +2010,43 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     deferredParticipantsSearch.trim(),
     PARTICIPANTS_SEARCH_DEBOUNCE_MS,
   );
+
+  useEffect(() => {
+    startTransition(() => {
+      setSection(routeQuery.section);
+      setRange(routeQuery.range);
+    });
+
+    const nextSearch = buildStatisticsRouteSearch(location.search, routeQuery);
+    if (nextSearch === location.search) {
+      return;
+    }
+
+    navigate(
+      {
+        pathname: location.pathname,
+        search: nextSearch,
+        hash: location.hash,
+      },
+      { replace: true, state: location.state },
+    );
+  }, [location.hash, location.pathname, location.search, location.state, navigate, routeQuery]);
   const initialParticipantsPageSnapshot = useMemo(() => {
-    if (!chatId || section !== 'participants' || debouncedParticipantsSearch) {
+    if (
+      !chatId ||
+      section !== 'participants' ||
+      debouncedParticipantsSearch ||
+      participantsRoleFilter !== 'all'
+    ) {
       return null;
     }
 
     const snapshot = readStatsSnapshotMirror<ChatParticipantsPage>(
       'chat-participants-feed',
-      buildChatParticipantsSnapshotParts(chatId, range, ''),
+      buildChatParticipantsSnapshotParts(chatId, range, '', participantsRoleFilter),
     );
     return isChatParticipantsPage(snapshot) ? snapshot : null;
-  }, [chatId, debouncedParticipantsSearch, range, section]);
+  }, [chatId, debouncedParticipantsSearch, participantsRoleFilter, range, section]);
 
   const routeChatTitle = getRouteChatTitle(location.state);
   const routeChatAvatarUrl = getRouteChatAvatarUrl(location.state);
@@ -2106,7 +2140,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         includeModerationPreview,
       ),
     ).then((snapshot) => {
-      if (cancelled || !snapshot) {
+      if (cancelled || !isLogsDashboardResponseForRange(snapshot, chatId, range)) {
         return;
       }
 
@@ -2127,7 +2161,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   }, [chatId, includeActivityPreview, includeModerationPreview, queryClient, range, section]);
 
   useEffect(() => {
-    if (!chatId || !dashboardQuery.data) {
+    if (!chatId || !isLogsDashboardResponseForRange(dashboardQuery.data, chatId, range)) {
       return;
     }
 
@@ -2144,7 +2178,11 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   }, [chatId, dashboardQuery.data, includeActivityPreview, includeModerationPreview, range]);
 
   useEffect(() => {
-    if (!chatId || section === 'participants' || !dashboardQuery.data) {
+    if (
+      !chatId ||
+      section === 'participants' ||
+      !isLogsDashboardResponseForRange(dashboardQuery.data, chatId, range)
+    ) {
       return undefined;
     }
 
@@ -2230,8 +2268,13 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     saveChatTitle(chatId, chatTitle);
   }, [chatId, chatTitle]);
 
-  const dashboard = dashboardQuery.data ?? null;
-  const isDashboardPending = dashboardQuery.isLoading && !dashboard;
+  const dashboard =
+    chatId && isLogsDashboardResponseForRange(dashboardQuery.data, chatId, range)
+      ? dashboardQuery.data
+      : null;
+  const isDashboardPending =
+    !dashboard &&
+    (dashboardQuery.isLoading || dashboardQuery.isFetching || dashboardQuery.isPlaceholderData);
   const hasBlockingDashboardError = Boolean(dashboardQuery.error) && !dashboard;
   const membershipSummary = dashboard?.membership ?? {
     joinedUsers: 0,
@@ -2375,6 +2418,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const participantsFeed = useChatParticipantsFeed({
     enabled: Boolean(chatId) && section === 'participants',
     range,
+    roleFilter: participantsRoleFilter,
     search: debouncedParticipantsSearch,
     initialPage: initialParticipantsPageSnapshot,
     refetchInitialPage: Boolean(initialParticipantsPageSnapshot),
@@ -2383,7 +2427,12 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const fullParticipantsTotal = dashboard?.chat.participantsCount ?? participantsFeed.totalCount;
 
   useEffect(() => {
-    if (!chatId || section !== 'participants' || debouncedParticipantsSearch) {
+    if (
+      !chatId ||
+      section !== 'participants' ||
+      debouncedParticipantsSearch ||
+      participantsRoleFilter !== 'all'
+    ) {
       return;
     }
     if (participantsFeed.items.length === 0 && participantsFeed.totalCount === null) {
@@ -2392,7 +2441,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
     saveStatsSnapshot(
       'chat-participants-feed',
-      buildChatParticipantsSnapshotParts(chatId, range, ''),
+      buildChatParticipantsSnapshotParts(chatId, range, '', participantsRoleFilter),
       {
         items: participantsFeed.items.slice(0, 100),
         totalCount: participantsFeed.totalCount,
@@ -2407,6 +2456,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     participantsFeed.items,
     participantsFeed.nextCursor,
     participantsFeed.totalCount,
+    participantsRoleFilter,
     range,
     section,
   ]);
@@ -2736,6 +2786,14 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     startTransition(() => {
       setSection(nextSection);
     });
+    navigate(
+      {
+        pathname: location.pathname,
+        search: buildStatisticsRouteSearch(location.search, { section: nextSection, range }),
+        hash: location.hash,
+      },
+      { replace: true, state: location.state },
+    );
   };
   const handleRangeChange = (nextRange: LogsDashboardRange) => {
     if (nextRange === range) {
@@ -2745,6 +2803,14 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     startTransition(() => {
       setRange(nextRange);
     });
+    navigate(
+      {
+        pathname: location.pathname,
+        search: buildStatisticsRouteSearch(location.search, { section, range: nextRange }),
+        hash: location.hash,
+      },
+      { replace: true, state: location.state },
+    );
   };
   const handleEventsFilterChange = (nextFilter: EventsFilter) => {
     if (nextFilter === eventsFilter) {
@@ -2869,11 +2935,12 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       : membershipSummary.netUsers < 0
         ? 'danger'
         : 'neutral';
-  const activityMovementsTotal = membershipSummary.joinedUsers + membershipSummary.leftUsers;
-  const joinedShare = activityMovementsTotal
-    ? Math.round((membershipSummary.joinedUsers / activityMovementsTotal) * 100)
-    : 50;
-  const leftShare = activityMovementsTotal ? 100 - joinedShare : 50;
+  const movementShares = resolveMembershipMovementShares(
+    membershipSummary.joinedUsers,
+    membershipSummary.leftUsers,
+  );
+  const joinedShare = movementShares.joined;
+  const leftShare = movementShares.left;
   const activityBalanceLabel =
     membershipSummary.netUsers > 0
       ? 'Рост участников'
@@ -2891,7 +2958,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     tone: 'accent' as const,
   };
   const moderationHeroMetric = {
-    label: 'Нарушения',
+    label: 'Действия',
     value: String(violationsSummary.total),
     note: '',
     tone: 'accent' as const,
@@ -3034,14 +3101,13 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             }
           >
             <div className="events-dashboard__head">
-              {section !== 'participants' ? (
-                <SegmentedControl
-                  value={range}
-                  options={periodOptions}
-                  onChange={(next) => handleRangeChange(next as LogsDashboardRange)}
-                  className="events-dashboard__range"
-                />
-              ) : null}
+              <SegmentedControl
+                value={range}
+                options={periodOptions}
+                onChange={(next) => handleRangeChange(next as LogsDashboardRange)}
+                className="events-dashboard__range"
+                ariaLabel="Период статистики"
+              />
             </div>
 
             {section !== 'participants' && isDashboardPending ? (
@@ -3094,22 +3160,33 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                   <article className="events-dashboard__flow-card events-dashboard__flow-card--joined">
                     <small>Вошли</small>
                     <strong>{membershipSummary.joinedUsers}</strong>
-                    <span>{joinedShare}% всего движения</span>
+                    <span>
+                      {movementShares.hasMovement ? `${joinedShare}% движения` : 'Нет событий'}
+                    </span>
                   </article>
 
                   <article className="events-dashboard__flow-card events-dashboard__flow-card--left">
                     <small>Вышли</small>
                     <strong>{membershipSummary.leftUsers}</strong>
-                    <span>{leftShare}% всего движения</span>
+                    <span>
+                      {movementShares.hasMovement ? `${leftShare}% движения` : 'Нет событий'}
+                    </span>
                   </article>
 
-                  <div className="events-dashboard__flow-bar" aria-hidden="true">
+                  <div
+                    className={`events-dashboard__flow-bar ${
+                      movementShares.hasMovement ? '' : 'is-empty'
+                    }`.trim()}
+                    aria-hidden="true"
+                  >
                     <span style={{ width: `${joinedShare}%` }} />
                   </div>
 
                   <div className="events-dashboard__flow-meta">
-                    <small>Вошли {joinedShare}%</small>
-                    <small>Вышли {leftShare}%</small>
+                    <small>
+                      {movementShares.hasMovement ? `Вошли ${joinedShare}%` : 'Движения нет'}
+                    </small>
+                    {movementShares.hasMovement ? <small>Вышли {leftShare}%</small> : null}
                   </div>
                 </div>
               </div>
@@ -3140,24 +3217,19 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           </section>
 
           {section === 'moderation' && dashboard ? (
-            <div className="events-screen__filters" role="group" aria-label="Фильтр модерации">
-              {filterOptions.map((option) => {
-                const active = option.value === eventsFilter;
-
-                return (
-                  <button
-                    key={option.value}
-                    type="button"
-                    className={`events-filter-chip ${active ? 'is-active' : ''}`}
-                    onClick={() => handleEventsFilterChange(option.value)}
-                    aria-pressed={active}
-                  >
-                    <span>{option.label}</span>
-                    <small>{option.count}</small>
-                  </button>
-                );
-              })}
-            </div>
+            <label className="events-filter-menu">
+              <span>Тип события</span>
+              <select
+                value={eventsFilter}
+                onChange={(event) => handleEventsFilterChange(event.target.value as EventsFilter)}
+              >
+                {filterOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label} · {option.count}
+                  </option>
+                ))}
+              </select>
+            </label>
           ) : null}
         </div>
       </section>
@@ -3187,6 +3259,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         <ChatParticipantsRoster
           items={participantsFeed.items}
           search={participantsSearch}
+          rangeLabel={formatStatisticsRangeLabel(range)}
+          roleFilter={participantsRoleFilter}
+          onRoleFilterChange={setParticipantsRoleFilter}
           hasMore={participantsFeed.hasMore}
           isReloading={participantsFeed.isReloading}
           isLoadingMore={participantsFeed.isLoadingMore}
@@ -3514,7 +3589,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       <ChatParticipantSheet
         open={Boolean(selectedParticipant)}
         item={selectedParticipant}
-        rangeLabel={periodOptions.find((option) => option.value === range)?.label ?? range}
+        rangeLabel={formatStatisticsRangeLabel(range)}
         isSavingImmunity={
           participantImmunityMutation.isPending || participantImmunityClearMutation.isPending
         }

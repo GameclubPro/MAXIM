@@ -30,6 +30,12 @@ const membershipActivityFilters = new Set<MembershipActivityQuery['filter']>([
   'joined',
   'left',
 ]);
+const participantRoleFilters = new Set<ChatParticipantsQuery['roleFilter']>([
+  'all',
+  'admins',
+  'members',
+  'bots',
+]);
 const moderationFeedFilters = new Set<ModerationFeedQuery['filter']>([
   'ALL',
   'WARN',
@@ -155,14 +161,19 @@ function normalizeChatParticipantsQuery(
   query: Partial<ChatParticipantsQuery>,
 ): ChatParticipantsQuery {
   const range = query.range ?? '7d';
+  const roleFilter = query.roleFilter ?? 'all';
   if (!logsDashboardRanges.has(range)) {
     throw new Error('Invalid participants range');
+  }
+  if (!participantRoleFilters.has(roleFilter)) {
+    throw new Error('Invalid participant role filter');
   }
 
   const cursor = query.cursor?.trim();
   const search = query.search?.trim();
   return {
     range,
+    roleFilter,
     limit: normalizeLimit(query.limit, 100),
     ...(cursor ? { cursor } : {}),
     ...(search ? { search } : {}),
@@ -287,6 +298,7 @@ export async function getChatParticipantsPage(
   const validatedQuery = normalizeChatParticipantsQuery(query);
   const params = new URLSearchParams({
     range: validatedQuery.range,
+    roleFilter: validatedQuery.roleFilter,
     limit: String(validatedQuery.limit),
   });
 
@@ -377,9 +389,11 @@ export async function getGlobalSpammerReviewQueue(
 export async function getGlobalSpammerReviewMetrics(
   api: ApiTransport,
   chatId: string,
-  queryOrRequest: Partial<{
-    mode: 'summary' | 'full';
-  }> | Pick<RequestInit, 'signal'> = {},
+  queryOrRequest:
+    | Partial<{
+        mode: 'summary' | 'full';
+      }>
+    | Pick<RequestInit, 'signal'> = {},
   request: Pick<RequestInit, 'signal'> = hasRequestSignal(queryOrRequest) ? queryOrRequest : {},
 ): Promise<GlobalSpammerReviewMetrics> {
   const query = hasRequestSignal(queryOrRequest) ? {} : queryOrRequest;

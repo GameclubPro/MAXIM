@@ -1,9 +1,10 @@
-import type { ChatParticipantItem } from '@maxim/contracts';
-import { UserXmark as IconUserXmark } from 'iconoir-react';
+import type { ChatParticipantItem, ChatParticipantRoleFilter } from '@maxim/contracts';
+import { MoreHoriz as IconMoreHoriz, UserXmark as IconUserXmark } from 'iconoir-react';
 import { useEffect, useRef } from 'react';
 import { PersonAvatar } from '../ui/person-avatar';
 import { Spinner } from '../ui/spinner';
 import './chat-participants-roster.css';
+import './chat-participants-roster-theme.css';
 
 type ImmunityMode = 'limited' | 'always';
 type ChatParticipantImmunityView = Omit<
@@ -18,11 +19,14 @@ type ChatParticipantImmunityView = Omit<
 type ChatParticipantsRosterProps = {
   items: ChatParticipantItem[];
   search: string;
+  rangeLabel: string;
+  roleFilter: ChatParticipantRoleFilter;
   hasMore: boolean;
   isReloading: boolean;
   isLoadingMore: boolean;
   error: string | null;
   onSearchChange: (value: string) => void;
+  onRoleFilterChange: (value: ChatParticipantRoleFilter) => void;
   onLoadMore: () => void;
   onRetry: () => void;
   onParticipantActivate?: ((item: ChatParticipantItem) => void) | null;
@@ -185,7 +189,10 @@ export function ChatParticipantsRoster({
   isLoadingMore,
   error,
   search,
+  rangeLabel,
+  roleFilter,
   onSearchChange,
+  onRoleFilterChange,
   onLoadMore,
   onRetry,
   onParticipantActivate = null,
@@ -236,10 +243,17 @@ export function ChatParticipantsRoster({
     return () => observer.disconnect();
   }, [hasMore, isLoadingMore, isReloading, onLoadMore]);
 
-  const showSearch = items.length > 0 || isSearching || isReloading;
+  const showSearch = true;
   const showEmptySearch =
     !error && !isReloading && !isLoadingMore && !hasMore && isSearching && items.length === 0;
-  const showEmptyRoster = !error && !isReloading && !isSearching && items.length === 0;
+  const showEmptyRoster =
+    !error && !isReloading && !isSearching && !hasMore && items.length === 0;
+  const roleOptions: Array<{ value: ChatParticipantRoleFilter; label: string }> = [
+    { value: 'all', label: 'Все' },
+    { value: 'admins', label: 'Админы' },
+    { value: 'members', label: 'Участники' },
+    { value: 'bots', label: 'Боты' },
+  ];
 
   return (
     <section className="participants-roster" aria-label="Список участников">
@@ -263,20 +277,48 @@ export function ChatParticipantsRoster({
             ) : null}
           </label>
           {onCleanupUnavailable ? (
-            <button
-              type="button"
-              className="participants-roster__cleanup-button"
-              onClick={onCleanupUnavailable}
-              disabled={isCleanupUnavailableBusy || isReloading || isLoadingMore}
-              aria-label="Удалить заблокированные MAX аккаунты"
-              title="Удалить заблокированные MAX аккаунты"
-            >
-              <IconUserXmark width={17} height={17} strokeWidth={2.05} aria-hidden />
-              <span>{isCleanupUnavailableBusy ? 'Ищем...' : 'Удалить заблок.'}</span>
-            </button>
+            <details className="participants-roster__manage">
+              <summary aria-label="Управление участниками" title="Управление участниками">
+                <IconMoreHoriz width={20} height={20} strokeWidth={2.05} aria-hidden />
+              </summary>
+              <div className="participants-roster__manage-menu">
+                <button
+                  type="button"
+                  className="participants-roster__cleanup-button"
+                  onClick={onCleanupUnavailable}
+                  disabled={isCleanupUnavailableBusy || isReloading || isLoadingMore}
+                >
+                  <IconUserXmark width={18} height={18} strokeWidth={2.05} aria-hidden />
+                  <span>
+                    {isCleanupUnavailableBusy ? 'Проверяем...' : 'Удалить заблокированных'}
+                  </span>
+                </button>
+              </div>
+            </details>
           ) : null}
         </div>
       ) : null}
+
+      <div className="participants-roster__scope">
+        <div
+          className="participants-roster__role-filters"
+          role="group"
+          aria-label="Фильтр участников по роли"
+        >
+          {roleOptions.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              className={roleFilter === option.value ? 'is-active' : ''}
+              aria-pressed={roleFilter === option.value}
+              onClick={() => onRoleFilterChange(option.value)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+        <p>Нарушения {rangeLabel}</p>
+      </div>
 
       {error ? (
         <div className="participants-roster__status">
