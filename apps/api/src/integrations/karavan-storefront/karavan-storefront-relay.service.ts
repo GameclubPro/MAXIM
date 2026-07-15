@@ -52,7 +52,11 @@ const DEFAULT_CACHE_TTL_SEC = 120;
 const DEFAULT_RELAY_LOCK_TTL_SEC = 3_600;
 const RELAY_LOCK_PREFIX = 'karavan-storefront-relay:v1';
 const KARAVAN_STOREFRONT_RELAY_SOURCE_TAG = 'karavan_storefront_relay';
-const STOREFRONT_BUTTON_MESSAGE_TEXT = 'Витрина продавца';
+export const KARAVAN_STOREFRONT_BUTTON_MESSAGE_TEXT = 'Витрина продавца';
+
+export function isKaravanStorefrontRelayCompanionText(value: unknown): boolean {
+  return value === KARAVAN_STOREFRONT_BUTTON_MESSAGE_TEXT;
+}
 
 @Injectable()
 export class KaravanStorefrontRelayService {
@@ -124,7 +128,7 @@ export class KaravanStorefrontRelayService {
       const sent = await this.maxClient.sendCustomMessageImmediateWithResolvedLink(
         context.chatId,
         {
-          text: STOREFRONT_BUTTON_MESSAGE_TEXT,
+          text: KARAVAN_STOREFRONT_BUTTON_MESSAGE_TEXT,
           messageLink: {
             type: 'reply',
             mid: context.messageId!,

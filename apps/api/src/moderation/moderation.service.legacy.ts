@@ -363,7 +363,10 @@ import {
   type BotSpeechResolvedMedia,
 } from './bot-speech-media.service';
 import { NightModeTransitionEventService } from './night-mode-transition-event.service';
-import { KaravanStorefrontRelayService } from '../integrations/karavan-storefront/karavan-storefront-relay.service';
+import {
+  isKaravanStorefrontRelayCompanionText,
+  KaravanStorefrontRelayService,
+} from '../integrations/karavan-storefront/karavan-storefront-relay.service';
 import {
   WebhookCanonicalExecutionService,
   type WebhookCanonicalExecutionContext,
@@ -446,6 +449,7 @@ const VIOLATION_MESSAGE_PROCESSING_TTL_SEC = 8 * 24 * 60 * 60;
 const SERVICE_MEMBER_ACTION_TIMESTAMP_GRANULARITY_MS = 1_000;
 const SERVICE_MEMBER_ACTION_DEDUPE_WINDOW_MS = 30_000;
 const GREETING_MESSAGE_DEDUPE_WINDOW_MS = 10 * 60_000;
+const KARAVAN_STOREFRONT_RELAY_AUDIT_ACTION = 'KARAVAN_STOREFRONT_RELAY';
 const SHARED_CHAT_OWNER_EVENT_LOOKUP_WINDOW_MS = 15 * 60_000;
 const SHARED_CHAT_OWNER_EVENT_LOOKUP_LIMIT = 100;
 @Injectable()
@@ -6521,6 +6525,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }): Promise<
     | 'night_mode_notice'
     | 'greeting_message'
+    | 'karavan_storefront_relay'
     | 'managed_broadcast'
     | 'chat_auto_comment_replacement'
     | null
@@ -6549,6 +6554,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
     if (greetingEvent) {
       return 'greeting_message';
+    }
+
+    if (isKaravanStorefrontRelayCompanionText(params.text)) {
+      const storefrontRelayAudit = await this.prisma.auditLog?.findFirst?.({
+        where: {
+          chatId: params.chatId,
+          action: KARAVAN_STOREFRONT_RELAY_AUDIT_ACTION,
+          payload: {
+            path: ['companionMessageId'],
+            equals: params.messageId,
+          },
+        },
+        select: {
+          id: true,
+        },
+      });
+      if (storefrontRelayAudit) {
+        return 'karavan_storefront_relay';
+      }
     }
 
     const managedBroadcastDelivery = await this.prisma.managedBroadcastDelivery?.findFirst?.({

@@ -3423,6 +3423,9 @@ describe('ModerationService', () => {
         findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn(),
       },
+      auditLog: {
+        findFirst: jest.fn(),
+      },
       webhookEvent: {
         findUnique: jest.fn(),
         update: jest.fn(),
@@ -3475,6 +3478,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(prisma.auditLog.findFirst).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -3990,6 +3994,89 @@ describe('ModerationService', () => {
       },
     });
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.managedBroadcastDelivery.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('does not auto-delete a persisted Karavan storefront relay companion', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            deleteBotMessagesEnabled: true,
+            deleteBotMessagesDelayMinutes: 1,
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'storefront-relay-audit-1' }),
+      },
+      managedBroadcastDelivery: {
+        findFirst: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      globalSpammer: {
+        upsert: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn().mockReturnValue('id613002203036_bot'),
+      } as never,
+    );
+
+    await service.handleUpdate(
+      createOwnBotUpdateWithoutBotFlags('Витрина продавца', 'mid-storefront-button-1'),
+    );
+
+    expect(prisma.auditLog.findFirst).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-1',
+        action: 'KARAVAN_STOREFRONT_RELAY',
+        payload: {
+          path: ['companionMessageId'],
+          equals: 'mid-storefront-button-1',
+        },
+      },
+      select: {
+        id: true,
+      },
+    });
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
     expect(prisma.managedBroadcastDelivery.findFirst).not.toHaveBeenCalled();
   });
 
