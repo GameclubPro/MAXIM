@@ -483,7 +483,7 @@ describe('WebhookOutboxService', () => {
         message: { chatId: `received-chat-${index}`, messageId: `received-message-${index}` },
       },
     }));
-    const staleQueuedRows = Array.from({ length: 8 }, (_, index) => ({
+    const staleQueuedRows = Array.from({ length: 16 }, (_, index) => ({
       id: `evt-stale-${index}`,
       status: WebhookStatus.QUEUED,
       queueName: 'moderation-default-0',

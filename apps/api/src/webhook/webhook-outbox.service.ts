@@ -308,7 +308,26 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    return Array.from(uniqueById.values())
+    const orderedCandidates = Array.from(uniqueById.values()).sort(
+      (left, right) => left.createdAt.getTime() - right.createdAt.getTime(),
+    );
+    const receivedCandidates = orderedCandidates.filter(
+      (candidate) => candidate.status === WebhookStatus.RECEIVED,
+    );
+    const recoveryCandidates = orderedCandidates.filter(
+      (candidate) => candidate.status !== WebhookStatus.RECEIVED,
+    );
+    const receivedTake = this.resolveReceivedTake(receivedCandidates.length, take);
+    const selected = [
+      ...receivedCandidates.slice(0, receivedTake),
+      ...recoveryCandidates.slice(0, Math.max(0, take - receivedTake)),
+    ];
+
+    if (selected.length < take) {
+      selected.push(...receivedCandidates.slice(receivedTake, take));
+    }
+
+    return selected
       .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime())
       .slice(0, take);
   }
@@ -351,12 +370,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     const recoveryCandidates = prioritizedCandidates.filter(
       (candidate) => candidate.status !== WebhookStatus.RECEIVED,
     );
-    const receivedTake = Math.min(
-      receivedCandidates.length,
-      receivedCandidates.length > 0
-        ? Math.max(1, Math.ceil(this.batchSize * RECEIVED_BATCH_SHARE))
-        : 0,
-    );
+    const receivedTake = this.resolveReceivedTake(receivedCandidates.length, this.batchSize);
     const selected = [
       ...receivedCandidates.slice(0, receivedTake),
       ...recoveryCandidates.slice(0, Math.max(0, this.batchSize - receivedTake)),
@@ -379,6 +393,14 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     }
 
     return left.createdAt.getTime() - right.createdAt.getTime();
+  }
+
+  private resolveReceivedTake(receivedCount: number, take: number): number {
+    if (receivedCount === 0) {
+      return 0;
+    }
+
+    return Math.min(receivedCount, Math.max(1, Math.ceil(take * RECEIVED_BATCH_SHARE)));
   }
 
   private resolveCandidatePriority(
