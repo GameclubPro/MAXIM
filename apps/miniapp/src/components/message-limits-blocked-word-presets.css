@@ -202,4 +202,50 @@
     flex-basis: auto;
   }
 }
+
+html[data-max-theme='dark'] .settings-word-banlist__preset-card {
+  border-color: var(--color-border);
+  background: var(--color-surface-muted);
+  color: var(--text-primary);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark'] .settings-word-banlist__preset-card--gambling {
+  background: color-mix(in srgb, var(--color-warning) 8%, var(--color-surface-muted));
+}
+
+html[data-max-theme='dark'] .settings-word-banlist__preset-card--earnings {
+  background: color-mix(in srgb, var(--color-success) 8%, var(--color-surface-muted));
+}
+
+html[data-max-theme='dark'] .settings-word-banlist__preset-card--crypto {
+  background: color-mix(in srgb, var(--color-accent) 9%, var(--color-surface-muted));
+}
+
+html[data-max-theme='dark'] .settings-word-banlist__preset-card--accounts {
+  background: color-mix(in srgb, #a99bff 9%, var(--color-surface-muted));
+}
+
+html[data-max-theme='dark'] .settings-word-banlist__preset-card--tarot {
+  background: color-mix(in srgb, var(--color-danger) 9%, var(--color-surface-muted));
+}
+
+html[data-max-theme='dark'] .settings-word-banlist__preset-badge-mark,
+html[data-max-theme='dark'] .settings-word-banlist__preset-action--remove,
+html[data-max-theme='dark'] .settings-word-banlist__preset-sheet-word {
+  border-color: var(--color-border);
+  background: var(--color-surface-tint);
+  color: var(--text-secondary);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark'] .settings-word-banlist__preset-badge-text strong {
+  color: var(--text-primary);
+}
+
+html[data-max-theme='dark'] .settings-word-banlist__preset-sheet-word.is-active {
+  border-color: color-mix(in srgb, var(--color-accent) 42%, var(--color-border));
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
 }

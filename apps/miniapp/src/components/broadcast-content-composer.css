@@ -285,4 +285,49 @@
     width: 15px;
     height: 15px;
   }
+
+  html[data-max-theme='dark'] .broadcast-content-composer__tool {
+    border-color: var(--color-border);
+    background: var(--color-surface-tint);
+    color: var(--text-secondary);
+  }
+
+  html[data-max-theme='dark'] .broadcast-content-composer__tool.is-active {
+    border-color: color-mix(in srgb, var(--color-accent) 42%, var(--color-border));
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+  }
+
+  html[data-max-theme='dark'] .broadcast-content-composer__button-label {
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+  }
+
+  html[data-max-theme='dark'] .broadcast-content-composer__button-label.is-danger,
+  html[data-max-theme='dark'] .broadcast-content-composer__tool.is-danger {
+    background: color-mix(in srgb, var(--color-danger) 14%, var(--color-surface-tint));
+    color: var(--color-danger);
+  }
+
+  html[data-max-theme='dark'] .broadcast-message-card__media-grid .broadcast-message-card__media-frame,
+  html[data-max-theme='dark'] .broadcast-message-card__media-frame--loading {
+    border-color: var(--color-border);
+    background: var(--color-surface-muted);
+  }
+
+  html[data-max-theme='dark'] .broadcast-message-card__media-frame--loading {
+    background:
+      linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.08), transparent),
+      var(--color-surface-muted);
+    background-size:
+      180% 100%,
+      auto;
+  }
+
+  html[data-max-theme='dark'] .broadcast-message-card__media-remove {
+    border-color: var(--color-border-strong);
+    background: color-mix(in srgb, var(--color-surface) 92%, transparent);
+    color: var(--text-primary);
+    box-shadow: var(--shadow-sm);
+  }
 }

@@ -19,6 +19,10 @@ const LEGACY_ANDROID_CHROMIUM_MAJOR_MAX = 99;
 const KEYBOARD_OPEN_OVERLAP_THRESHOLD_PX = 120;
 const NATIVE_HAPTIC_DEDUPLICATE_MS = 80;
 const VISUAL_VIEWPORT_BOTTOM_INSET_MAX_PX = 96;
+const THEME_COLOR: Record<MaxTheme, string> = {
+  light: '#f3f6f8',
+  dark: '#0d141b',
+};
 
 function resolveBridge() {
   if (typeof window === 'undefined') {
@@ -338,6 +342,11 @@ function applyRootEnvironment(options: { previewDevice?: PreviewDevice | null } 
 
   root.dataset.maxPlatform = platform;
   root.dataset.maxTheme = theme;
+  const themeColorMeta =
+    typeof document.querySelector === 'function'
+      ? document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
+      : null;
+  themeColorMeta?.setAttribute('content', THEME_COLOR[theme]);
   root.dataset.maxClient = forceNativeVisualMode
     ? 'native'
     : previewPreset

@@ -3592,6 +3592,21 @@ html[data-max-theme='dark'] .events-dashboard__flow-card--loading {
   background: var(--surface-card-muted);
 }
 
+html[data-max-theme='dark'] .events-dashboard__body,
+html[data-max-theme='dark'] .events-dashboard__activity {
+  border-color: var(--border-subtle);
+  background: var(--surface-card-muted);
+}
+
+html[data-max-theme='dark'] .events-dashboard__stack {
+  border-left-color: var(--border-subtle);
+  background: var(--surface-card-muted);
+}
+
+html[data-max-theme='dark'] .events-dashboard__activity-balance--loading::before {
+  background: color-mix(in srgb, var(--text-muted) 22%, transparent);
+}
+
 html[data-max-theme='dark'] .events-dashboard__flow-bar--loading {
   background: color-mix(in srgb, var(--text-muted) 22%, transparent);
 }

@@ -510,4 +510,28 @@
     height: 46px;
   }
 }
+
+html[data-max-theme='dark'] .settings-drilldown .allowlist-item__action--schedule {
+  border-color: color-mix(in srgb, var(--color-accent) 34%, var(--color-border));
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+html[data-max-theme='dark'] .settings-drilldown .allowlist-item__action--schedule.is-open {
+  border-color: color-mix(in srgb, var(--color-accent) 54%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 20%, var(--color-surface-muted));
+  color: var(--color-accent);
+}
+
+html[data-max-theme='dark'] .settings-drilldown .allowlist-item__action--remove {
+  border-color: color-mix(in srgb, var(--color-danger) 34%, var(--color-border));
+  background: color-mix(in srgb, var(--color-danger) 13%, var(--color-surface-muted));
+  color: var(--color-danger);
+}
+
+html[data-max-theme='dark'] .settings-drilldown .allowlist-item__schedule-editor {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-muted);
+  color: var(--text-primary);
+}
 }

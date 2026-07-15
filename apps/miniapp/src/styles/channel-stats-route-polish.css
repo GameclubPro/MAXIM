@@ -816,6 +816,15 @@ html[data-max-theme='dark'] .channel-stats-graph__summary-date {
   color: var(--text-muted);
 }
 
+html[data-max-theme='dark']
+  .channel-insights__sticky-header
+  .compact-page-header__back {
+  border-color: var(--border-strong);
+  background: var(--surface-card-muted);
+  color: var(--text-secondary);
+  box-shadow: none;
+}
+
 html[data-max-theme='dark'] .channel-insights__section-tabs .segmented-control__item,
 html[data-max-theme='dark'] .channel-insights__chart-controls .segmented-control__item {
   color: var(--text-secondary);

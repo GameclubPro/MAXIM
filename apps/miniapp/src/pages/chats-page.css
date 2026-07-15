@@ -2761,6 +2761,37 @@ html[data-max-theme='dark'] .favorite-filter__chip {
   color: var(--text-secondary);
 }
 
+html[data-max-theme='dark'] .chats-home .favorite-filter__chip,
+html[data-max-theme='dark'] .chats-home .favorite-filter__settings {
+  border-color: var(--border-subtle);
+  background: var(--surface-card-muted);
+  color: var(--text-secondary);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark'] .chats-home .favorite-filter__chip strong {
+  background: color-mix(in srgb, var(--text-secondary) 16%, transparent);
+  color: var(--text-primary);
+}
+
+html[data-max-theme='dark'] .chats-home .favorite-filter__chip.is-active {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border-strong));
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+html[data-max-theme='dark'] .chats-home .favorite-filter__chip.is-active strong {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--accent);
+}
+
+html[data-max-theme='dark'] .chats-home .favorite-filter__settings:hover,
+html[data-max-theme='dark'] .chats-home .favorite-filter__settings:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border-strong));
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 html[data-max-theme='dark'] .chats-command__tab.is-active {
   color: var(--text-primary);
   background: var(--color-surface);

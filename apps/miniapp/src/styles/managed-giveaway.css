@@ -2643,4 +2643,75 @@ html[data-max-theme='dark'] .managed-giveaway__dashboard-prize-chip em {
   background: color-mix(in srgb, var(--color-accent) 18%, var(--color-surface-muted));
   color: var(--color-accent);
 }
+
+html[data-max-theme='dark']
+  .settings-drilldown__panel--required-subscription
+  .managed-giveaway__section-copy
+  :is(strong, small) {
+  border-color: color-mix(in srgb, var(--color-accent) 34%, var(--color-border));
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown__panel--required-subscription
+  .required-subscription__selection-card {
+  border-color: var(--color-border);
+  background: var(--color-surface-muted);
+  color: var(--text-primary);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown__panel--required-subscription
+  .required-subscription__selection-card.is-warning {
+  border-color: color-mix(in srgb, var(--color-warning) 34%, var(--color-border));
+  background: color-mix(in srgb, var(--color-warning) 10%, var(--color-surface-muted));
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown__panel--required-subscription
+  :is(
+    .required-subscription__selection-rank,
+    .required-subscription__selection-kind,
+    .required-subscription__selection-state
+  ) {
+  border-color: color-mix(in srgb, var(--color-accent) 30%, var(--color-border));
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown__panel--required-subscription
+  .required-subscription__selection-card.is-warning
+  :is(.required-subscription__selection-rank, .required-subscription__selection-state) {
+  border-color: color-mix(in srgb, var(--color-warning) 34%, var(--color-border));
+  background: color-mix(in srgb, var(--color-warning) 14%, var(--color-surface-muted));
+  color: var(--color-warning);
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown__panel--required-subscription
+  .required-subscription__selection-remove,
+html[data-max-theme='dark']
+  .settings-drilldown__panel--required-subscription
+  .required-subscription__selection-remove:hover {
+  border-color: var(--color-border);
+  background: var(--color-surface-tint);
+  color: var(--text-secondary);
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown__panel--required-subscription
+  .required-subscription__selection-empty,
+html[data-max-theme='dark']
+  .settings-drilldown__panel--required-subscription
+  .required-subscription__button-label,
+html[data-max-theme='dark']
+  .settings-drilldown__panel--required-subscription
+  .required-subscription__external-source {
+  border-color: var(--color-border);
+  background: var(--color-surface-muted);
+  color: var(--text-secondary);
+}
 }

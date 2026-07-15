@@ -13,6 +13,8 @@ type MockBridge = {
   init_data?: string | null;
   initDataUnsafe?: Record<string, unknown>;
   init_data_unsafe?: Record<string, unknown>;
+  colorScheme?: string;
+  platform?: string;
   ready?: () => void;
   close?: () => void;
   openLink?: (url: string) => void;
@@ -253,6 +255,99 @@ test('syncMaxNativeEnvironment can promote a late bridge from browser to native'
     (globalThis.document.documentElement.dataset as Record<string, string>).maxPlatform,
     'android',
   );
+});
+
+test('syncMaxNativeEnvironment keeps browser chrome aligned with the MAX theme', () => {
+  const assignedUrls: string[] = [];
+  setMockWindow(
+    {
+      platform: 'android',
+      initData: 'query_id=abc&hash=def',
+      colorScheme: 'dark',
+    },
+    assignedUrls,
+  );
+
+  const style = createMockStyle();
+  let themeColor = '#f3f6f8';
+  Object.assign(globalThis, {
+    document: {
+      documentElement: {
+        dataset: {},
+        style,
+      },
+      querySelector: () => ({
+        setAttribute: (name: string, value: string) => {
+          if (name === 'content') {
+            themeColor = value;
+          }
+        },
+      }),
+    },
+  });
+  globalThis.window.innerWidth = 390;
+  globalThis.window.innerHeight = 844;
+  globalThis.window.addEventListener = () => undefined;
+  globalThis.window.removeEventListener = () => undefined;
+
+  const cleanup = syncMaxNativeEnvironment();
+  cleanup();
+
+  assert.equal(
+    (globalThis.document.documentElement.dataset as Record<string, string>).maxTheme,
+    'dark',
+  );
+  assert.equal(themeColor, '#0d141b');
+});
+
+test('syncMaxNativeEnvironment lets the MAX light theme override a dark OS theme', () => {
+  const assignedUrls: string[] = [];
+  setMockWindow(
+    {
+      platform: 'android',
+      initData: 'query_id=abc&hash=def',
+      colorScheme: 'light',
+    },
+    assignedUrls,
+  );
+
+  globalThis.window.matchMedia = () =>
+    ({
+      matches: true,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    }) as unknown as MediaQueryList;
+
+  const style = createMockStyle();
+  let themeColor = '#0d141b';
+  Object.assign(globalThis, {
+    document: {
+      documentElement: {
+        dataset: {},
+        style,
+      },
+      querySelector: () => ({
+        setAttribute: (name: string, value: string) => {
+          if (name === 'content') {
+            themeColor = value;
+          }
+        },
+      }),
+    },
+  });
+  globalThis.window.innerWidth = 390;
+  globalThis.window.innerHeight = 844;
+  globalThis.window.addEventListener = () => undefined;
+  globalThis.window.removeEventListener = () => undefined;
+
+  const cleanup = syncMaxNativeEnvironment();
+  cleanup();
+
+  assert.equal(
+    (globalThis.document.documentElement.dataset as Record<string, string>).maxTheme,
+    'light',
+  );
+  assert.equal(themeColor, '#f3f6f8');
 });
 
 test('openMaxBotLink falls back to location assign when bridge is unavailable', () => {

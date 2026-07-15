@@ -4635,4 +4635,365 @@ body.channel-settings-page-open .app-shell {
     min-height: 64px;
   }
 }
+
+/* Dark settings drilldowns use the shared semantic palette instead of light-only polish colors. */
+html[data-max-theme='dark'] .settings-drilldown {
+  color-scheme: dark;
+  color: var(--text-primary);
+}
+
+html[data-max-theme='dark'] .settings-drilldown .settings-drilldown__backdrop {
+  background: var(--color-scrim);
+}
+
+html[data-max-theme='dark'] .settings-drilldown .settings-drilldown__panel {
+  border-color: var(--color-border);
+  background: var(--color-surface-raised);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-lg);
+}
+
+html[data-max-theme='dark'] .settings-drilldown .settings-drilldown__header {
+  border-bottom-color: var(--color-border);
+  background:
+    radial-gradient(
+      100% 150% at 100% 0%,
+      color-mix(in srgb, var(--color-accent) 10%, transparent),
+      transparent 42%
+    ),
+    color-mix(in srgb, var(--color-surface-raised) 96%, transparent);
+}
+
+html[data-max-theme='dark'] .settings-drilldown .settings-drilldown__header::before {
+  background: var(--color-border-strong);
+}
+
+html[data-max-theme='dark'] .settings-drilldown .settings-drilldown__content,
+html[data-max-theme='dark'] .settings-drilldown .settings-drilldown__body {
+  background: var(--color-surface-muted);
+}
+
+html[data-max-theme='dark'] .settings-drilldown .settings-drilldown__footer {
+  border-top-color: var(--color-border);
+  background: color-mix(in srgb, var(--color-surface-raised) 94%, transparent);
+}
+
+html[data-max-theme='dark'] .settings-drilldown .settings-drilldown__title {
+  color: var(--text-primary);
+}
+
+html[data-max-theme='dark'] .settings-drilldown .settings-drilldown__summary,
+html[data-max-theme='dark'] .settings-drilldown .settings-drilldown__close {
+  border-color: var(--color-border);
+  background: var(--color-surface-muted);
+  color: var(--text-secondary);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown
+  :is(
+    .settings-native-toggle,
+    .channel-settings-toggle-card,
+    .channel-settings-mode-card,
+    .field,
+    .allowlist-panel,
+    .allowlist-composer,
+    .allowlist-item,
+    .duplicate-stage,
+    .settings-word-banlist,
+    .policy-grid,
+    .policy-card,
+    .broadcast-stage-card,
+    .mailing-option-card,
+    .managed-broadcast-editor-note,
+    .managed-broadcast-card,
+    .required-subscription__summary-card,
+    .required-subscription__board,
+    .commercial-settings-panel,
+    .commercial-sensitivity-slider,
+    .bot-message-editor
+  ) {
+  border-color: var(--color-border);
+  background: var(--color-surface-raised);
+  color: var(--text-primary);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown
+  :is(.settings-native-toggle--nested, .allowlist-composer, .duplicate-stage, .policy-grid) {
+  background: var(--color-surface-muted);
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown
+  :is(
+    .settings-native-toggle:has(.settings-native-switch input:checked),
+    .channel-settings-toggle-card.is-on,
+    .policy-card.is-active
+  ) {
+  border-color: color-mix(in srgb, var(--color-accent) 42%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface-raised));
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown
+  :is(
+    .settings-native-toggle__title,
+    .channel-settings-toggle-card__copy strong,
+    .channel-settings-toggle-card__title-row strong,
+    .policy-card__title,
+    .required-subscription__selection-title
+  ) {
+  color: var(--text-primary);
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown
+  :is(
+    .channel-settings-toggle-card__copy > span,
+    .settings-native-toggle__hint,
+    .field__hint,
+    .policy-mode-hint,
+    .allowlist-empty
+  ) {
+  border-color: var(--color-border);
+  background: var(--color-surface-muted);
+  color: var(--text-secondary);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark'] .settings-drilldown .settings-subsection-divider::before {
+  border-top-color: var(--color-border);
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown
+  :is(.settings-subsection-divider span, .field > span, .field__label) {
+  border-color: var(--color-border);
+  background: transparent;
+  color: var(--text-secondary);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown
+  :is(.settings-info-button, .settings-edit-button, .channel-settings-hint-popover) {
+  border-color: var(--color-border);
+  background: var(--color-surface-muted);
+  color: var(--text-secondary);
+  box-shadow: var(--shadow-xs);
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown
+  :is(.settings-info-button.is-open, .settings-edit-button.is-open) {
+  border-color: color-mix(in srgb, var(--color-accent) 44%, var(--color-border));
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+html[data-max-theme='dark'] .settings-drilldown .toggle-switch {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-tint);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 8%, transparent);
+}
+
+html[data-max-theme='dark'] .settings-drilldown .toggle-switch__thumb {
+  background: var(--color-surface);
+  box-shadow: var(--shadow-xs);
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown
+  .settings-native-switch
+  input:checked
+  + .toggle-switch {
+  border-color: color-mix(in srgb, var(--color-accent) 58%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 42%, var(--color-surface-tint));
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown
+  :is(.settings-mode-segments, .allowlist-composer__mode, .segmented-control) {
+  border-color: var(--color-border);
+  background: var(--color-surface-muted);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown
+  :is(.settings-mode-segments, .allowlist-composer__mode, .segmented-control)
+  .segmented-control__item {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown
+  :is(.settings-mode-segments, .allowlist-composer__mode, .segmented-control)
+  .segmented-control__item:is(.is-active, [aria-checked='true']) {
+  border-color: color-mix(in srgb, var(--color-accent) 42%, var(--color-border));
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown
+  :is(
+    .field input,
+    .field select,
+    .field textarea,
+    .allowlist-add-row input,
+    .settings-word-banlist__add-row input,
+    .duplicate-stage__field input,
+    .bot-message-editor__field textarea,
+    .night-window-grid__field input,
+    .time-field__button
+  ) {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-muted);
+  color: var(--text-primary);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown
+  :is(.field input, .field select, .field textarea, .allowlist-add-row input):focus {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-soft);
+}
+
+html[data-max-theme='dark'] .settings-drilldown :is(input, textarea)::placeholder {
+  color: var(--text-muted);
+  opacity: 1;
+}
+
+html[data-max-theme='dark'] .settings-drilldown .time-field__icon {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown
+  :is(.settings-native-toggle__status, .settings-section__status-chip, .chip) {
+  border-color: var(--color-border);
+  background: var(--color-surface-muted);
+  color: var(--text-secondary);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown
+  :is(.settings-native-toggle__status.is-active, .chip--success) {
+  border-color: color-mix(in srgb, var(--color-success) 38%, var(--color-border));
+  background: color-mix(in srgb, var(--color-success) 14%, var(--color-surface-muted));
+  color: var(--color-success);
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown
+  :is(.settings-native-toggle__status.is-shadow, .chip--warning) {
+  border-color: color-mix(in srgb, var(--color-warning) 38%, var(--color-border));
+  background: color-mix(in srgb, var(--color-warning) 14%, var(--color-surface-muted));
+  color: var(--color-warning);
+}
+
+html[data-max-theme='dark'] .settings-drilldown .chip--danger {
+  border-color: color-mix(in srgb, var(--color-danger) 38%, var(--color-border));
+  background: color-mix(in srgb, var(--color-danger) 14%, var(--color-surface-muted));
+  color: var(--color-danger);
+}
+
+html[data-max-theme='dark'] .settings-drilldown .button--ghost {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-muted);
+  color: var(--text-primary);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark'] body.settings-drilldown-open .time-field-sheet__backdrop {
+  background: var(--color-scrim);
+}
+
+html[data-max-theme='dark'] body.settings-drilldown-open .time-field-sheet__panel {
+  border-color: var(--color-border);
+  background: var(--color-surface-raised);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-lg);
+}
+
+html[data-max-theme='dark']
+  body.settings-drilldown-open
+  :is(.time-field-sheet__head, .time-field-sheet__column-label, .time-field-sheet__divider) {
+  color: var(--text-secondary);
+}
+
+html[data-max-theme='dark'] body.settings-drilldown-open .time-field-sheet__head small,
+html[data-max-theme='dark'] body.settings-drilldown-open .time-field-sheet__head svg {
+  color: var(--color-accent);
+}
+
+html[data-max-theme='dark']
+  body.settings-drilldown-open
+  :is(
+    .time-field-sheet__option,
+    .time-field-sheet__button--ghost,
+    .time-field-sheet__button--clear
+  ) {
+  border-color: var(--color-border);
+  background: var(--color-surface-muted);
+  color: var(--text-secondary);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark'] body.settings-drilldown-open .time-field-sheet__option.is-active,
+html[data-max-theme='dark'] body.settings-drilldown-open .time-field-sheet__button--apply {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-surface-muted);
+  box-shadow: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  html:not([data-max-theme]) .settings-drilldown {
+    color-scheme: dark;
+    color: var(--text-primary);
+  }
+
+  html:not([data-max-theme]) .settings-drilldown .settings-drilldown__panel,
+  html:not([data-max-theme]) .settings-drilldown .settings-drilldown__header,
+  html:not([data-max-theme]) .settings-drilldown .settings-drilldown__footer {
+    border-color: var(--color-border);
+    background: var(--color-surface-raised);
+    color: var(--text-primary);
+    box-shadow: var(--shadow-sm);
+  }
+
+  html:not([data-max-theme]) .settings-drilldown .settings-drilldown__content,
+  html:not([data-max-theme]) .settings-drilldown .settings-drilldown__body {
+    background: var(--color-surface-muted);
+  }
+
+  html:not([data-max-theme])
+    .settings-drilldown
+    :is(.settings-native-toggle, .channel-settings-toggle-card, .field) {
+    border-color: var(--color-border);
+    background: var(--color-surface-raised);
+    color: var(--text-primary);
+    box-shadow: none;
+  }
+
+  html:not([data-max-theme])
+    .settings-drilldown
+    :is(.field input, .field select, .field textarea, .time-field__button) {
+    border-color: var(--color-border-strong);
+    background: var(--color-surface-muted);
+    color: var(--text-primary);
+    box-shadow: none;
+  }
+}
 }

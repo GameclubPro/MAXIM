@@ -89,6 +89,7 @@
   - `npm run emulator:miniapp -- --device iphone --reuse-server`
   - `npm run emulator:miniapp:android -- --reuse-server`
   - `npm run emulator:miniapp -- --device iphone-se --reuse-server`
+  - add `--theme dark` or set `MINIAPP_EMULATOR_COLOR_SCHEME=dark` to verify MAX dark-theme rendering
   - add `--route '<path>'` to jump directly to the screen under work
 - For material UI changes, verify in the emulator or screenshots instead of judging only by code.
 - Prefer checking both iPhone and Android sized previews, safe-area behavior, and keyboard behavior.

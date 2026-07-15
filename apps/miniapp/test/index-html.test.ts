@@ -16,3 +16,9 @@ test('viewport keeps browser zoom available', () => {
   assert.doesNotMatch(html, /maximum-scale\s*=/iu);
   assert.doesNotMatch(html, /user-scalable\s*=\s*no/iu);
 });
+
+test('initial browser chrome color matches the light theme page surface', () => {
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+
+  assert.match(html, /<meta\s+name="theme-color"\s+content="#f3f6f8"\s*\/>/u);
+});

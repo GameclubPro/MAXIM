@@ -18,13 +18,14 @@ const deviceProfiles = previewDevicePresets;
 
 function printUsage() {
   console.log(`Usage:
-  npm run emulator:miniapp -- [--device iphone|android|iphone-se] [--route '/'] [--target device|native] [--max-bridge|--no-max-bridge]
+  npm run emulator:miniapp -- [--device iphone|android|iphone-se] [--route '/'] [--theme light|dark] [--target device|native] [--max-bridge|--no-max-bridge]
   npm run emulator:miniapp -- [--base-url http://127.0.0.1:3000/app/] [--reuse-server]
 
 Environment:
   MINIAPP_EMULATOR_DEVICE
   MINIAPP_EMULATOR_ROUTE
   MINIAPP_EMULATOR_BASE_URL
+  MINIAPP_EMULATOR_COLOR_SCHEME=light|dark
   MINIAPP_EMULATOR_TARGET=device|native
   MINIAPP_EMULATOR_MAX_BRIDGE=1
   MINIAPP_EMULATOR_REUSE_SERVER=1
@@ -89,6 +90,12 @@ function parseArgs(argv) {
 
     if (arg === '--target') {
       options.target = nextValue;
+      index += 1;
+      continue;
+    }
+
+    if (arg === '--theme') {
+      options.colorScheme = nextValue;
       index += 1;
       continue;
     }
@@ -283,6 +290,13 @@ async function main() {
   const target = (args.target ?? process.env.MINIAPP_EMULATOR_TARGET ?? 'device')
     .trim()
     .toLowerCase();
+  const colorScheme = (
+    args.colorScheme ??
+    process.env.MINIAPP_EMULATOR_COLOR_SCHEME ??
+    'light'
+  )
+    .trim()
+    .toLowerCase();
   const envMaxBridge = optionalEnvFlag('MINIAPP_EMULATOR_MAX_BRIDGE');
   const maxBridgeEnabled = args.maxBridge ?? envMaxBridge ?? target === 'native';
   const reuseServer = args.reuseServer ?? envFlag('MINIAPP_EMULATOR_REUSE_SERVER');
@@ -297,6 +311,10 @@ async function main() {
 
   if (target !== 'device' && target !== 'native') {
     throw new Error('Target must be one of: device, native');
+  }
+
+  if (colorScheme !== 'light' && colorScheme !== 'dark') {
+    throw new Error('Theme must be one of: light, dark');
   }
 
   const device = devices[profile.viewportName];
@@ -349,7 +367,7 @@ async function main() {
 
     const context = await browser.newContext({
       ...device,
-      colorScheme: 'light',
+      colorScheme,
       locale: 'ru-RU',
       timezoneId: 'Europe/Moscow',
     });
@@ -361,6 +379,7 @@ async function main() {
         startParam: envString('MINIAPP_EMULATOR_START_PARAM'),
         userId: envNumber('MINIAPP_EMULATOR_USER_ID'),
         version: envString('MINIAPP_EMULATOR_MAX_VERSION'),
+        colorScheme,
       });
     }
 

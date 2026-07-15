@@ -168,6 +168,25 @@
   pointer-events: none;
 }
 
+html[data-max-theme='dark']
+  body:is(.settings-home-page-open, .channel-settings-page-open)
+  .bottom-nav::after {
+  z-index: 0;
+  inset: -1px;
+  height: auto;
+  border: 1px solid var(--nav-border);
+  border-radius: inherit;
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-sm);
+}
+
+html[data-max-theme='dark']
+  body:is(.settings-home-page-open, .channel-settings-page-open)
+  .bottom-nav__item {
+  position: relative;
+  z-index: 1;
+}
+
 .bottom-nav.is-keyboard-open,
 html[data-max-keyboard-open='true'] .bottom-nav {
   opacity: 0;

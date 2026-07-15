@@ -3607,4 +3607,36 @@ body.settings-drilldown-open .toast__close {
     white-space: nowrap;
   }
 }
+
+html[data-max-theme='dark']
+  .settings-drilldown
+  .settings-drilldown__panel--broadcast-screen
+  .broadcast-content-composer
+  .broadcast-message-card,
+html[data-max-theme='dark']
+  .settings-drilldown
+  .settings-drilldown__panel--broadcast-screen
+  .broadcast-content-composer.is-empty
+  .broadcast-message-card {
+  border-color: var(--color-border);
+  background: var(--color-surface-muted);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown
+  .settings-drilldown__panel--broadcast-screen
+  .broadcast-publish-bar
+  .broadcast-publish-bar__button:disabled,
+html[data-max-theme='dark']
+  .settings-drilldown
+  .settings-drilldown__panel--broadcast-screen
+  .broadcast-publish-bar
+  .broadcast-publish-bar__primary:disabled {
+  border-color: var(--color-border);
+  background: var(--color-surface-tint);
+  color: var(--text-muted);
+  box-shadow: none;
+  opacity: 1;
+}
 }
