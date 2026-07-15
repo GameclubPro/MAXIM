@@ -1050,8 +1050,9 @@ describe('WebhookService', () => {
     );
     expect(extractSqlText(membershipQuery)).toContain('ON CONFLICT DO NOTHING');
     expect(extractSqlText(membershipQuery)).toContain(
-      'COALESCE(BTRIM(existing."sender_name"), \'\') = \'\'',
+      "COALESCE(BTRIM(existing.\"sender_name\"), '') = ''",
     );
+    expect(extractSqlText(membershipQuery)).toMatch(/::timestamp\(3\)[\s\S]*::timestamp\(3\)/u);
     expect(snapshotQuery).toBeDefined();
     expect(extractSqlValues(snapshotQuery)).toEqual(
       expect.arrayContaining([

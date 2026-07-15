@@ -1781,8 +1781,8 @@ export class WebhookService {
             ${projection.eventType},
             ${projection.userId ?? null},
             ${projection.senderName ?? null},
-            ${projection.eventAt},
-            ${projection.createdAt}
+            ${projection.eventAt}::timestamp(3),
+            ${projection.createdAt}::timestamp(3)
           )`,
         ),
       )}

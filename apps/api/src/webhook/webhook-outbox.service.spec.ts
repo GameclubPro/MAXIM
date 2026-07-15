@@ -420,7 +420,7 @@ describe('WebhookOutboxService', () => {
     );
   });
 
-  it('also rechecks ancient queued rows by createdAt, not only by queuedAt', async () => {
+  it('uses queuedAt as the stale reference and falls back to createdAt only when it is missing', async () => {
     const { service, prisma } = createService();
 
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
@@ -436,7 +436,10 @@ describe('WebhookOutboxService', () => {
                 expect.objectContaining({
                   OR: expect.arrayContaining([
                     expect.objectContaining({ queuedAt: { lte: expect.any(Date) } }),
-                    expect.objectContaining({ createdAt: { lte: expect.any(Date) } }),
+                    expect.objectContaining({
+                      queuedAt: null,
+                      createdAt: { lte: expect.any(Date) },
+                    }),
                   ]),
                 }),
               ]),
@@ -445,6 +448,66 @@ describe('WebhookOutboxService', () => {
         ],
       ]),
     );
+  });
+
+  it('does not repeatedly repair a newly queued old event', async () => {
+    const { service, queues, prisma } = createService({
+      findManyResult: [
+        {
+          id: 'evt-old-but-freshly-queued',
+          status: WebhookStatus.QUEUED,
+          queueName: 'moderation-default-0',
+          createdAt: new Date(Date.now() - 60 * 60 * 1_000),
+          queuedAt: new Date(),
+          enqueueAttempts: 1,
+          normalizedPayload: { type: 'message_created', message: { chatId: 'chat-1' } },
+        },
+      ],
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    expect(queues['moderation-default-0'].add).not.toHaveBeenCalled();
+    expect(prisma.webhookEvent.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('reserves enqueue capacity for received events while repairing an old queue backlog', async () => {
+    const receivedRows = Array.from({ length: 4 }, (_, index) => ({
+      id: `evt-received-${index}`,
+      status: WebhookStatus.RECEIVED,
+      enqueueAttempts: 0,
+      createdAt: new Date(Date.now() - (4 - index) * 1_000),
+      normalizedPayload: {
+        updateId: `received-${index}`,
+        type: 'message_created',
+        message: { chatId: `received-chat-${index}`, messageId: `received-message-${index}` },
+      },
+    }));
+    const staleQueuedRows = Array.from({ length: 8 }, (_, index) => ({
+      id: `evt-stale-${index}`,
+      status: WebhookStatus.QUEUED,
+      queueName: 'moderation-default-0',
+      enqueueAttempts: 1,
+      createdAt: new Date(Date.now() - (60 + index) * 1_000),
+      queuedAt: new Date(Date.now() - 30_000),
+      normalizedPayload: {
+        updateId: `stale-${index}`,
+        type: 'message_callback',
+      },
+    }));
+    const { service, queues } = createService({
+      findManyResult: [...receivedRows, ...staleQueuedRows],
+      configOverrides: { ENQUEUE_BATCH_SIZE: 4 },
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    const enqueuedIds = Object.values(queues).flatMap((queue) =>
+      queue.add.mock.calls.map((call) => call[1].webhookEventId),
+    );
+    expect(enqueuedIds).toHaveLength(4);
+    expect(enqueuedIds.filter((id) => id.startsWith('evt-received-'))).toHaveLength(3);
+    expect(enqueuedIds.filter((id) => id.startsWith('evt-stale-'))).toHaveLength(1);
   });
 
   it('repairs stale queued user-facing rows after the fast repair window', async () => {

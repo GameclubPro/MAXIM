@@ -30,6 +30,7 @@ const USER_FACING_STALE_QUEUED_REPAIR_MS = 20_000;
 const BACKGROUND_STALE_QUEUED_REPAIR_MS = 120_000;
 const PRIORITY_SELECTION_WINDOW_MULTIPLIER = 3;
 const MAX_PRIORITY_SELECTION_WINDOW = 1_000;
+const RECEIVED_BATCH_SHARE = 0.75;
 const MANUAL_CLOSE_PRIORITY_CACHE_TTL_MS = 5_000;
 const MANUAL_CLOSE_PRIORITY_CACHE_PRUNE_THRESHOLD = 4_096;
 const WEBHOOK_FAILED_JOB_RETENTION = {
@@ -219,7 +220,10 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         {
           OR: [
             { queuedAt: { lte: staleUserFacingQueuedBefore } },
-            { createdAt: { lte: staleUserFacingQueuedBefore } },
+            {
+              queuedAt: null,
+              createdAt: { lte: staleUserFacingQueuedBefore },
+            },
           ],
         },
       ],
@@ -230,7 +234,10 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       queueName: WEBHOOK_QUEUE_BACKGROUND,
       OR: [
         { queuedAt: { lte: staleBackgroundQueuedBefore } },
-        { createdAt: { lte: staleBackgroundQueuedBefore } },
+        {
+          queuedAt: null,
+          createdAt: { lte: staleBackgroundQueuedBefore },
+        },
       ],
     };
 
@@ -332,20 +339,46 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       now,
     );
 
-    return enqueueableCandidates
+    const prioritizedCandidates = enqueueableCandidates
       .map((candidate) => ({
         ...candidate,
         priority: this.resolveCandidatePriority(candidate, manualCloseChatIds),
       }))
-      .sort((left, right) => {
-        const priorityDiff = left.priority - right.priority;
-        if (priorityDiff !== 0) {
-          return priorityDiff;
-        }
+      .sort((left, right) => this.comparePrioritizedCandidates(left, right));
+    const receivedCandidates = prioritizedCandidates.filter(
+      (candidate) => candidate.status === WebhookStatus.RECEIVED,
+    );
+    const recoveryCandidates = prioritizedCandidates.filter(
+      (candidate) => candidate.status !== WebhookStatus.RECEIVED,
+    );
+    const receivedTake = Math.min(
+      receivedCandidates.length,
+      receivedCandidates.length > 0
+        ? Math.max(1, Math.ceil(this.batchSize * RECEIVED_BATCH_SHARE))
+        : 0,
+    );
+    const selected = [
+      ...receivedCandidates.slice(0, receivedTake),
+      ...recoveryCandidates.slice(0, Math.max(0, this.batchSize - receivedTake)),
+    ];
 
-        return left.createdAt.getTime() - right.createdAt.getTime();
-      })
-      .slice(0, this.batchSize);
+    if (selected.length < this.batchSize) {
+      selected.push(...receivedCandidates.slice(receivedTake, this.batchSize));
+    }
+
+    return selected.sort((left, right) => this.comparePrioritizedCandidates(left, right));
+  }
+
+  private comparePrioritizedCandidates(
+    left: PrioritizedWebhookEnqueueCandidate,
+    right: PrioritizedWebhookEnqueueCandidate,
+  ): number {
+    const priorityDiff = left.priority - right.priority;
+    if (priorityDiff !== 0) {
+      return priorityDiff;
+    }
+
+    return left.createdAt.getTime() - right.createdAt.getTime();
   }
 
   private resolveCandidatePriority(
@@ -442,10 +475,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     }
 
     const thresholdMs = this.resolveStaleQueuedRepairThresholdMs(candidate.queueName);
-    const referenceMs = Math.min(
-      candidate.createdAt.getTime(),
-      candidate.queuedAt?.getTime() ?? Number.POSITIVE_INFINITY,
-    );
+    const referenceMs = candidate.queuedAt?.getTime() ?? candidate.createdAt.getTime();
     return now.getTime() - referenceMs >= thresholdMs;
   }
 
