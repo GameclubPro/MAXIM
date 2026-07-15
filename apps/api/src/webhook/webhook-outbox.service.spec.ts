@@ -237,11 +237,20 @@ function createService(params?: {
     webhookEvent: {
       findMany: jest
         .fn()
-        .mockImplementation(async (args?: { where?: Record<string, unknown>; take?: number }) =>
-          webhookRows
-            .filter((row) => matchesWebhookEventWhere(row, args?.where))
-            .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime())
-            .slice(0, args?.take ?? Number.POSITIVE_INFINITY),
+        .mockImplementation(
+          async (args?: {
+            where?: Record<string, unknown>;
+            take?: number;
+            orderBy?: { createdAt?: 'asc' | 'desc' };
+          }) => {
+            const rows = webhookRows
+              .filter((row) => matchesWebhookEventWhere(row, args?.where))
+              .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
+            if (args?.orderBy?.createdAt === 'desc') {
+              rows.reverse();
+            }
+            return rows.slice(0, args?.take ?? Number.POSITIVE_INFINITY);
+          },
         ),
       findFirst: jest
         .fn()
@@ -472,7 +481,7 @@ describe('WebhookOutboxService', () => {
   });
 
   it('reserves enqueue capacity for received events while repairing an old queue backlog', async () => {
-    const receivedRows = Array.from({ length: 4 }, (_, index) => ({
+    const receivedRows = Array.from({ length: 12 }, (_, index) => ({
       id: `evt-received-${index}`,
       status: WebhookStatus.RECEIVED,
       enqueueAttempts: 0,
@@ -508,6 +517,8 @@ describe('WebhookOutboxService', () => {
     expect(enqueuedIds).toHaveLength(4);
     expect(enqueuedIds.filter((id) => id.startsWith('evt-received-'))).toHaveLength(3);
     expect(enqueuedIds.filter((id) => id.startsWith('evt-stale-'))).toHaveLength(1);
+    expect(enqueuedIds).toContain('evt-received-0');
+    expect(enqueuedIds).toContain('evt-received-9');
   });
 
   it('repairs stale queued user-facing rows after the fast repair window', async () => {

@@ -31,6 +31,7 @@ const BACKGROUND_STALE_QUEUED_REPAIR_MS = 120_000;
 const PRIORITY_SELECTION_WINDOW_MULTIPLIER = 3;
 const MAX_PRIORITY_SELECTION_WINDOW = 1_000;
 const RECEIVED_BATCH_SHARE = 0.75;
+const RECENT_RECEIPT_BATCH_SHARE = 0.25;
 const MANUAL_CLOSE_PRIORITY_CACHE_TTL_MS = 5_000;
 const MANUAL_CLOSE_PRIORITY_CACHE_PRUNE_THRESHOLD = 4_096;
 const WEBHOOK_FAILED_JOB_RETENTION = {
@@ -47,6 +48,7 @@ type WebhookEnqueueCandidate = {
   createdAt: Date;
   queuedAt: Date | null;
   normalizedPayload: unknown;
+  isRecentReceipt?: boolean;
 };
 
 type PrioritizedWebhookEnqueueCandidate = WebhookEnqueueCandidate & {
@@ -206,6 +208,8 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
 
   private async selectEnqueueCandidates(now: Date): Promise<WebhookEnqueueCandidate[]> {
     const selectionWindowSize = this.resolvePrioritySelectionWindowSize();
+    const recentReceiptTake = this.resolveRecentReceiptTake(selectionWindowSize);
+    const backlogReceiptTake = selectionWindowSize - recentReceiptTake;
     const staleUserFacingQueuedBefore = new Date(
       now.getTime() - USER_FACING_STALE_QUEUED_REPAIR_MS,
     );
@@ -241,18 +245,22 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       ],
     };
 
+    const receivedWhere: Prisma.WebhookEventWhereInput = {
+      status: WebhookStatus.RECEIVED,
+      OR: [{ nextEnqueueAt: null }, { nextEnqueueAt: { lte: now } }],
+    };
     const [
-      receivedCandidates,
+      backlogReceiptCandidates,
+      recentReceiptCandidates,
       failedCandidates,
       staleUserFacingQueuedCandidates,
       staleBackgroundQueuedCandidates,
     ] = await Promise.all([
-      this.findEnqueueCandidates(
-        {
-          status: WebhookStatus.RECEIVED,
-          OR: [{ nextEnqueueAt: null }, { nextEnqueueAt: { lte: now } }],
-        },
-        selectionWindowSize,
+      backlogReceiptTake > 0
+        ? this.findEnqueueCandidates(receivedWhere, backlogReceiptTake)
+        : Promise.resolve([]),
+      this.findEnqueueCandidates(receivedWhere, recentReceiptTake, 'desc').then((candidates) =>
+        candidates.map((candidate) => ({ ...candidate, isRecentReceipt: true })),
       ),
       this.findEnqueueCandidates(
         {
@@ -267,7 +275,8 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
 
     return this.mergeEnqueueCandidates(
       [
-        ...receivedCandidates,
+        ...backlogReceiptCandidates,
+        ...recentReceiptCandidates,
         ...failedCandidates,
         ...staleUserFacingQueuedCandidates,
         ...staleBackgroundQueuedCandidates,
@@ -279,10 +288,11 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private async findEnqueueCandidates(
     where: Prisma.WebhookEventWhereInput,
     take: number,
+    orderDirection: 'asc' | 'desc' = 'asc',
   ): Promise<WebhookEnqueueCandidate[]> {
     return this.prisma.webhookEvent.findMany({
       where,
-      orderBy: { createdAt: 'asc' },
+      orderBy: { createdAt: orderDirection },
       take,
       select: {
         id: true,
@@ -303,31 +313,13 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   ): WebhookEnqueueCandidate[] {
     const uniqueById = new Map<string, WebhookEnqueueCandidate>();
     for (const candidate of candidates) {
-      if (!uniqueById.has(candidate.id)) {
+      const existing = uniqueById.get(candidate.id);
+      if (!existing || candidate.isRecentReceipt) {
         uniqueById.set(candidate.id, candidate);
       }
     }
 
-    const orderedCandidates = Array.from(uniqueById.values()).sort(
-      (left, right) => left.createdAt.getTime() - right.createdAt.getTime(),
-    );
-    const receivedCandidates = orderedCandidates.filter(
-      (candidate) => candidate.status === WebhookStatus.RECEIVED,
-    );
-    const recoveryCandidates = orderedCandidates.filter(
-      (candidate) => candidate.status !== WebhookStatus.RECEIVED,
-    );
-    const receivedTake = this.resolveReceivedTake(receivedCandidates.length, take);
-    const selected = [
-      ...receivedCandidates.slice(0, receivedTake),
-      ...recoveryCandidates.slice(0, Math.max(0, take - receivedTake)),
-    ];
-
-    if (selected.length < take) {
-      selected.push(...receivedCandidates.slice(receivedTake, take));
-    }
-
-    return selected
+    return this.selectCandidatesWithReceiptReserve(Array.from(uniqueById.values()), take)
       .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime())
       .slice(0, take);
   }
@@ -364,23 +356,57 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         priority: this.resolveCandidatePriority(candidate, manualCloseChatIds),
       }))
       .sort((left, right) => this.comparePrioritizedCandidates(left, right));
-    const receivedCandidates = prioritizedCandidates.filter(
-      (candidate) => candidate.status === WebhookStatus.RECEIVED,
+    return this.selectCandidatesWithReceiptReserve(prioritizedCandidates, this.batchSize).sort(
+      (left, right) => this.comparePrioritizedCandidates(left, right),
     );
-    const recoveryCandidates = prioritizedCandidates.filter(
+  }
+
+  private selectCandidatesWithReceiptReserve<T extends WebhookEnqueueCandidate>(
+    candidates: readonly T[],
+    take: number,
+  ): T[] {
+    const recentReceipts = candidates.filter(
+      (candidate) => candidate.status === WebhookStatus.RECEIVED && candidate.isRecentReceipt,
+    );
+    const backlogReceipts = candidates.filter(
+      (candidate) => candidate.status === WebhookStatus.RECEIVED && !candidate.isRecentReceipt,
+    );
+    const recoveryCandidates = candidates.filter(
       (candidate) => candidate.status !== WebhookStatus.RECEIVED,
     );
-    const receivedTake = this.resolveReceivedTake(receivedCandidates.length, this.batchSize);
-    const selected = [
-      ...receivedCandidates.slice(0, receivedTake),
-      ...recoveryCandidates.slice(0, Math.max(0, this.batchSize - receivedTake)),
+    const receivedTake = this.resolveReceivedTake(
+      recentReceipts.length + backlogReceipts.length,
+      take,
+    );
+    const recentReceiptTake = Math.min(
+      this.resolveRecentReceiptTake(take),
+      receivedTake,
+      recentReceipts.length,
+    );
+    const selectedReceipts = [
+      ...recentReceipts.slice(0, recentReceiptTake),
+      ...backlogReceipts.slice(0, Math.max(0, receivedTake - recentReceiptTake)),
+    ];
+    const unselectedReceipts = [
+      ...recentReceipts.slice(recentReceiptTake),
+      ...backlogReceipts.slice(Math.max(0, receivedTake - recentReceiptTake)),
     ];
 
-    if (selected.length < this.batchSize) {
-      selected.push(...receivedCandidates.slice(receivedTake, this.batchSize));
+    if (selectedReceipts.length < receivedTake) {
+      selectedReceipts.push(
+        ...unselectedReceipts.splice(0, receivedTake - selectedReceipts.length),
+      );
     }
 
-    return selected.sort((left, right) => this.comparePrioritizedCandidates(left, right));
+    const selected = [
+      ...selectedReceipts,
+      ...recoveryCandidates.slice(0, Math.max(0, take - selectedReceipts.length)),
+    ];
+    if (selected.length < take) {
+      selected.push(...unselectedReceipts.slice(0, take - selected.length));
+    }
+
+    return selected;
   }
 
   private comparePrioritizedCandidates(
@@ -401,6 +427,10 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     }
 
     return Math.min(receivedCount, Math.max(1, Math.ceil(take * RECEIVED_BATCH_SHARE)));
+  }
+
+  private resolveRecentReceiptTake(take: number): number {
+    return Math.min(take, Math.max(1, Math.ceil(take * RECENT_RECEIPT_BATCH_SHARE)));
   }
 
   private resolveCandidatePriority(
