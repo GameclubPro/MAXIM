@@ -1579,6 +1579,17 @@
     calc(6px + env(safe-area-inset-bottom, 0px) + min(var(--app-keyboard-overlap, 0px), 260px));
 }
 
+.design-preview__device-screen .broadcast-audience-sheet {
+  --app-viewport-height: 100%;
+  position: absolute;
+  inset: 0;
+}
+
+html[data-max-client='native'] .design-preview__device-screen .broadcast-audience-sheet {
+  --app-viewport-height: 100dvh;
+  position: fixed;
+}
+
 .broadcast-audience-sheet__backdrop {
   position: absolute;
   inset: 0;
@@ -2713,5 +2724,133 @@ html[data-max-theme='dark']
   border-color: var(--color-border);
   background: var(--color-surface-muted);
   color: var(--text-secondary);
+}
+
+html[data-max-theme='dark']
+  :is(.managed-giveaway-modal__checkbox, .broadcast-audience-sheet__checkbox) {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-tint);
+  color: transparent;
+  box-shadow: none;
+}
+
+html[data-max-theme='dark']
+  :is(
+    .managed-giveaway-modal__option.is-selected .managed-giveaway-modal__checkbox,
+    .broadcast-audience-sheet__option.is-selected .broadcast-audience-sheet__checkbox
+  ) {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--app-page-background);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark'] .broadcast-audience-sheet__backdrop {
+  background: var(--color-scrim);
+}
+
+html[data-max-theme='dark'] .broadcast-audience-sheet__panel {
+  background: transparent;
+}
+
+html[data-max-theme='dark'] .broadcast-audience-sheet__grabber {
+  background: var(--color-border-strong);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark'] .broadcast-audience-sheet__sheet {
+  border-color: var(--color-border);
+  background: var(--color-surface-raised);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-lg);
+}
+
+html[data-max-theme='dark']
+  .broadcast-audience-sheet__selected-strip
+  > span:not(.broadcast-audience-sheet__badge) {
+  border-color: var(--color-border);
+  background: var(--color-surface-tint);
+  color: var(--text-primary);
+}
+
+html[data-max-theme='dark']
+  .broadcast-audience-sheet
+  :is(
+    .broadcast-audience-sheet__badge,
+    .broadcast-audience-sheet__close,
+    .broadcast-audience-sheet__stat,
+    .broadcast-audience-sheet__search-shell,
+    .broadcast-audience-sheet__search-clear,
+    .broadcast-audience-sheet__quick-pill,
+    .broadcast-audience-sheet__option,
+    .broadcast-audience-sheet__option-chip,
+    .broadcast-audience-sheet__state,
+    .broadcast-audience-sheet__state-action,
+    .broadcast-audience-sheet__action-dock
+  ) {
+  border-color: var(--color-border);
+  background: var(--color-surface-muted);
+  color: var(--text-secondary);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark']
+  .broadcast-audience-sheet
+  :is(.broadcast-audience-sheet__stat.is-primary, .broadcast-audience-sheet__option.is-selected) {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-tint);
+  color: var(--color-accent);
+}
+
+html[data-max-theme='dark'] .broadcast-audience-sheet__option-glow {
+  background: none;
+}
+
+html[data-max-theme='dark']
+  .broadcast-audience-sheet
+  :is(
+    .broadcast-audience-sheet__hero-copy strong,
+    .broadcast-audience-sheet__option-row strong,
+    .broadcast-audience-sheet__state strong,
+    .broadcast-audience-sheet__action-copy strong
+  ) {
+  color: var(--text-primary);
+}
+
+html[data-max-theme='dark']
+  .broadcast-audience-sheet
+  :is(
+    .broadcast-audience-sheet__hero-copy span,
+    .broadcast-audience-sheet__option-row small,
+    .broadcast-audience-sheet__search-icon
+  ) {
+  color: var(--text-secondary);
+}
+
+html[data-max-theme='dark'] .broadcast-audience-sheet__search-shell input {
+  background: transparent;
+  color: var(--text-primary);
+}
+
+html[data-max-theme='dark'] .broadcast-audience-sheet__search-shell input::placeholder {
+  color: var(--text-muted);
+}
+
+html[data-max-theme='dark'] .broadcast-audience-sheet__avatar {
+  border-color: var(--color-border-strong);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark'] .broadcast-audience-sheet__state.is-danger {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-tint);
+  color: var(--color-danger);
+}
+
+html[data-max-theme='dark'] .broadcast-audience-sheet__actions .button--accent {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--app-page-background);
+  box-shadow: none;
 }
 }

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ChannelStatsResponse } from '@maxim/contracts/channel-stats';
+import type { ManagedEntityAccessDiagnostics } from '@maxim/contracts/managed-entities';
 import {
   closeChannelManagedPoll,
   createChannelManagedPoll,
@@ -255,6 +256,46 @@ test('preview settings include schema-complete managed broadcast summaries', asy
     quarantined: 0,
     unknown: 0,
   });
+});
+
+test('preview access query exposes deterministic lost and degraded settings diagnostics', async () => {
+  const endpoints = [
+    '/chats/preview-chat/settings-screen',
+    '/channels/preview-channel/settings-screen',
+  ];
+
+  for (const endpoint of endpoints) {
+    const lostApi = createPreviewApiTransport({ search: '?access=lost' });
+    const lostScreen = (await lostApi.request(endpoint)) as {
+      header: { accessDiagnostics: ManagedEntityAccessDiagnostics };
+    };
+
+    assert.deepEqual(lostScreen.header.accessDiagnostics, {
+      state: 'bot_access_lost',
+      lastDetectedAt: '2026-07-14T06:15:00.000Z',
+      lastCheckedAt: '2026-07-14T06:20:00.000Z',
+      freshUntil: null,
+      source: 'access_edge',
+      activeBotCount: 0,
+      lostBots: [
+        {
+          botId: '777001_bot',
+          botLabel: 'Майор Максимова',
+          reason: 'bot_removed',
+          detectedAt: '2026-07-14T06:15:00.000Z',
+        },
+      ],
+    });
+
+    const degradedApi = createPreviewApiTransport({ search: '?access=degraded' });
+    const degradedScreen = (await degradedApi.request(endpoint)) as {
+      header: { accessDiagnostics: ManagedEntityAccessDiagnostics };
+    };
+
+    assert.equal(degradedScreen.header.accessDiagnostics.state, 'bot_access_lost');
+    assert.equal(degradedScreen.header.accessDiagnostics.activeBotCount, 1);
+    assert.equal(degradedScreen.header.accessDiagnostics.lostBots[0]?.reason, 'bot_denied');
+  }
 });
 
 test('preview apply section without target stays scoped to current chat', async () => {

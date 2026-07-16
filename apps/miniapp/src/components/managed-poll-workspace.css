@@ -713,7 +713,7 @@
   html[data-max-theme='dark'] :is(.managed-poll-workspace__create, .managed-poll-editor__publish) {
     border-color: var(--success);
     background: var(--success);
-    color: var(--color-surface);
+    color: var(--app-page-background) !important;
   }
 
   html[data-max-theme='dark']
@@ -761,8 +761,50 @@
     color: var(--text-secondary);
   }
 
+  html[data-max-theme='dark']
+    :is(
+      .managed-poll-item__status,
+      .managed-poll-item__visibility,
+      .managed-poll-editor__head > div > span,
+      .managed-poll-editor__section-head > span
+    ) {
+    border: 1px solid var(--border-subtle);
+    background: var(--surface-card-muted);
+    color: var(--text-secondary);
+  }
+
+  html[data-max-theme='dark'] .managed-poll-item__status.is-active {
+    border-color: var(--border-strong);
+    background: var(--surface-card-muted);
+    color: var(--success);
+  }
+
+  html[data-max-theme='dark'] .managed-poll-item__status.is-draft {
+    border-color: var(--border-strong);
+    background: var(--surface-card-muted);
+    color: var(--warning);
+  }
+
+  html[data-max-theme='dark'] .managed-poll-item__status.is-pending,
+  html[data-max-theme='dark'] .managed-poll-item__visibility {
+    border-color: var(--border-strong);
+    background: var(--surface-card-muted);
+    color: var(--accent);
+  }
+
+  html[data-max-theme='dark'] .managed-poll-item__status.is-review {
+    border-color: var(--border-strong);
+    background: var(--surface-card-muted);
+    color: var(--danger);
+  }
+
   html[data-max-theme='dark'] :is(.managed-poll-result__track, .managed-poll-switch > span) {
     background: var(--surface-card-muted);
+  }
+
+  html[data-max-theme='dark'] .managed-poll-switch > span::after {
+    background: var(--text-muted);
+    box-shadow: none;
   }
 
   html[data-max-theme='dark']
@@ -775,6 +817,18 @@
     border-color: var(--border-strong);
     background: var(--surface-card-muted);
     color: var(--text-primary);
+  }
+
+  html[data-max-theme='dark'] .managed-poll-editor__option-index {
+    border: 1px solid var(--border-strong);
+    background: var(--surface-card-muted);
+    color: var(--success);
+  }
+
+  html[data-max-theme='dark'] .managed-poll-editor__add {
+    border-color: var(--border-strong);
+    background: var(--surface-card-muted);
+    color: var(--success);
   }
 
   html[data-max-theme='dark']
@@ -791,7 +845,7 @@
   }
 
   .managed-poll-editor__publish {
-    color: var(--color-surface);
+    color: var(--app-page-background);
     border-color: var(--success);
     background: var(--success);
   }

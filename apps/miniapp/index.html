@@ -3,7 +3,44 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" content="#f3f6f8" />
+    <style>
+      html,
+      body {
+        background: #f3f6f8;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        html:not([data-max-theme='light']),
+        html:not([data-max-theme='light']) body {
+          background: #0d141b;
+        }
+      }
+
+      html[data-max-theme='dark'],
+      html[data-max-theme='dark'] body {
+        background: #0d141b;
+      }
+    </style>
+    <script>
+      (() => {
+        const root = document.documentElement;
+        const normalizeTheme = (value) => {
+          const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+          return normalized === 'dark' || normalized === 'light' ? normalized : null;
+        };
+        const bridge = window.MAX?.WebApp ?? window.WebApp;
+        const theme =
+          normalizeTheme(root.dataset.maxTheme) ??
+          normalizeTheme(bridge?.colorScheme ?? bridge?.color_scheme ?? bridge?.theme) ??
+          (window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        root.dataset.maxTheme = theme;
+        document
+          .querySelector('meta[name="theme-color"]')
+          ?.setAttribute('content', theme === 'dark' ? '#0d141b' : '#f3f6f8');
+      })();
+    </script>
     <meta
       name="description"
       content="Майор Максимов: мини-приложение для управления чатами, каналами и настройками бота в MAX."

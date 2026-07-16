@@ -1,10 +1,10 @@
 import { useRef, type CSSProperties, type ReactNode, type SVGProps } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
+import { StatsUpSquare } from 'iconoir-react';
 import type { ChatSummary, ManagedEntityFavoriteType } from '@maxim/contracts';
 import {
   HOME_ENTITY_FAVORITE_ICONS,
-  SettingsGlyph,
   XmarkGlyph,
 } from '../components/ui/compact-icons';
 import { cn } from '../lib/cn';
@@ -36,8 +36,8 @@ type HomeEntitySheetsProps = {
   canSaveLabels: boolean;
   onClose: () => void;
   onOpenFavorite: () => void;
-  onSettingsIntent: () => void;
-  onSettingsOpen: () => void;
+  onActivityIntent: () => void;
+  onActivityOpen: () => void;
   onToggleFavorite: (favoriteType: ManagedEntityFavoriteType) => void;
   onFavoriteLabelChange: (favoriteType: ManagedEntityFavoriteType, value: string) => void;
   onFavoriteLabelReset: (favoriteType: ManagedEntityFavoriteType) => void;
@@ -66,10 +66,10 @@ function CheckGlyph(props: SVGProps<SVGSVGElement>) {
   );
 }
 
-function buildSettingsRoute(target: SheetTarget): string {
+function buildActivityRoute(target: SheetTarget): string {
   return target.entityType === 'channel'
-    ? `/channel/${target.entity.id}/settings`
-    : `/chat/${target.entity.id}/settings`;
+    ? `/channel/${target.entity.id}/stats?section=overview`
+    : `/chat/${target.entity.id}/events?section=activity`;
 }
 
 function buildRouteState(target: SheetTarget) {
@@ -268,25 +268,24 @@ export default function HomeEntitySheets(props: HomeEntitySheetsProps) {
     <HomeSheet
       key="actions"
       sheetKey="actions"
-      title="Действия"
-      subtitle={props.actionTarget.entity.title}
+      title={props.actionTarget.entity.title}
       panelClassName="home-actions__panel"
       overlayStyle={overlayStyle}
       onClose={props.onClose}
     >
       <div className="favorite-picker__grid home-actions__grid">
         <Link
-          to={buildSettingsRoute(props.actionTarget)}
+          to={buildActivityRoute(props.actionTarget)}
           state={buildRouteState(props.actionTarget)}
           className="favorite-picker__option home-actions__item"
-          onClick={props.onSettingsOpen}
-          onPointerEnter={props.onSettingsIntent}
-          onPointerDown={props.onSettingsIntent}
+          onClick={props.onActivityOpen}
+          onPointerEnter={props.onActivityIntent}
+          onPointerDown={props.onActivityIntent}
         >
           <span className="favorite-picker__icon">
-            <SettingsGlyph aria-hidden />
+            <StatsUpSquare aria-hidden focusable="false" />
           </span>
-          <strong>Настройки</strong>
+          <strong>Статистика</strong>
         </Link>
         <button
           type="button"

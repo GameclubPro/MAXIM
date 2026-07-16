@@ -106,6 +106,7 @@ import {
   type ManagedAutopostHubRuleDetails,
   type ManagedAutopostPayload,
   type ManagedEntityAssignedBot,
+  type ManagedEntityAccessDiagnostics,
   type ManagedEntityBotExecutionPlan,
   type ManagedEntityBotCapability,
   type ManagedEntityType,
@@ -228,6 +229,11 @@ type PreviewState = {
   channelPrimaryBotId: string | null;
   chatPartnerAssistEnabled: boolean;
   channelPartnerAssistEnabled: boolean;
+  accessDiagnostics: ManagedEntityAccessDiagnostics | null;
+};
+
+type PreviewApiTransportOptions = {
+  search?: string;
 };
 
 type PreviewDialogBucket = {
@@ -261,6 +267,46 @@ const PREVIEW_SCOUT_BOT_ID = '777004_bot';
 const PREVIEW_SCOUT_BOT_LABEL = 'Скаут Илья';
 const PREVIEW_BACKUP_BOT_ID = '777005_bot';
 const PREVIEW_BACKUP_BOT_LABEL = 'Резервный Максим';
+const PREVIEW_ACCESS_LOST_AT = '2026-07-14T06:15:00.000Z';
+const PREVIEW_ACCESS_CHECKED_AT = '2026-07-14T06:20:00.000Z';
+
+function readPreviewRouteSearch(): string {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+
+  const directSearch = window.location.search;
+  if (new URLSearchParams(directSearch).has('access')) {
+    return directSearch;
+  }
+
+  const hashQueryIndex = window.location.hash.indexOf('?');
+  return hashQueryIndex >= 0 ? window.location.hash.slice(hashQueryIndex) : directSearch;
+}
+
+function buildPreviewAccessDiagnostics(search: string): ManagedEntityAccessDiagnostics | null {
+  const variant = new URLSearchParams(search).get('access');
+  if (variant !== 'lost' && variant !== 'degraded') {
+    return null;
+  }
+
+  return {
+    state: 'bot_access_lost',
+    lastDetectedAt: PREVIEW_ACCESS_LOST_AT,
+    lastCheckedAt: PREVIEW_ACCESS_CHECKED_AT,
+    freshUntil: null,
+    source: 'access_edge',
+    activeBotCount: variant === 'degraded' ? 1 : 0,
+    lostBots: [
+      {
+        botId: PREVIEW_STANDBY_BOT_ID,
+        botLabel: PREVIEW_STANDBY_BOT_LABEL,
+        reason: variant === 'degraded' ? 'bot_denied' : 'bot_removed',
+        detectedAt: PREVIEW_ACCESS_LOST_AT,
+      },
+    ],
+  };
+}
 
 type PreviewBotFixture = {
   botId: string;
@@ -4076,7 +4122,7 @@ function createPreviewPublications(
   return result;
 }
 
-function createInitialState(): PreviewState {
+function createInitialState(search: string): PreviewState {
   const now = new Date();
   const chatSettings = chatSettingsSchema.parse({
     greetingEnabled: false,
@@ -4785,6 +4831,7 @@ function createInitialState(): PreviewState {
     channelPrimaryBotId: PREVIEW_PRIMARY_BOT_ID,
     chatPartnerAssistEnabled: false,
     channelPartnerAssistEnabled: false,
+    accessDiagnostics: buildPreviewAccessDiagnostics(search),
   };
 
   state.autopostRules = [
@@ -4881,6 +4928,7 @@ function buildChatSettingsScreen(state: PreviewState, chatId: string): ChatSetti
       sharedMode: 'owned',
       botCount: assignedBots.length,
       hasSharedAutomation: assignedBots.length > 1,
+      ...(state.accessDiagnostics ? { accessDiagnostics: state.accessDiagnostics } : {}),
     },
     botSpeechPreviewProfile: buildPreviewBotSpeechProfile(state.chatPrimaryBotId, assignedBots),
     requiredSubscriptionChannels: (state.chatSettings.requiredSubscriptionChannelIds ?? []).map(
@@ -4938,6 +4986,7 @@ function buildChannelSettingsScreen(
       sharedMode: buildPreviewSharedMode(state.channelPartnerAssistEnabled),
       botCount: assignedBots.length,
       hasSharedAutomation: assignedBots.length > 1,
+      ...(state.accessDiagnostics ? { accessDiagnostics: state.accessDiagnostics } : {}),
     },
     managedBroadcasts: state.channelBroadcasts.map(buildBroadcastSummary),
   });
@@ -8696,8 +8745,8 @@ function handleAutopostRulesRequest(
   throw new Error(`Preview transport does not implement ${method} ${url.pathname}`);
 }
 
-export function createPreviewApiTransport(): ApiTransport {
-  const state = createInitialState();
+export function createPreviewApiTransport(options: PreviewApiTransportOptions = {}): ApiTransport {
+  const state = createInitialState(options.search ?? readPreviewRouteSearch());
 
   return {
     async request(path: string, init: RequestInit = {}) {

@@ -189,7 +189,6 @@ import { maxNotify, openMaxBotLink, setMaxClosingConfirmation } from '../lib/max
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
-import { canUserAccessThematicFilters } from '../lib/thematic-filters-access';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 import { useManagedEntitiesSync } from '../lib/use-managed-entities-sync';
 import {
@@ -288,14 +287,12 @@ import {
   LINK_BOT_BUTTON_GROUP,
   GREETING_BOT_BUTTON_GROUP,
   TEXT_FILTERS_BOT_BUTTON_GROUP,
-  THEMATIC_FILTERS_BOT_BUTTON_GROUP,
   DUPLICATE_BOT_BUTTON_GROUP,
   MESSAGE_LIMITS_BOT_BUTTON_GROUP,
   NIGHT_MODE_BOT_BUTTON_GROUP,
   LINK_ADMIN_CONTACT_BUTTON_GROUP,
   PROFANITY_ADMIN_CONTACT_BUTTON_GROUP,
   TEXT_FILTERS_ADMIN_CONTACT_BUTTON_GROUP,
-  THEMATIC_FILTERS_ADMIN_CONTACT_BUTTON_GROUP,
   DUPLICATE_ADMIN_CONTACT_BUTTON_GROUP,
   MESSAGE_LIMITS_ADMIN_CONTACT_BUTTON_GROUP,
   REQUIRED_SUBSCRIPTION_ADMIN_CONTACT_BUTTON_GROUP,
@@ -1450,7 +1447,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const hasPendingHeaderChanges = hasChanges || hasRulesChanges;
   const showHeaderStatus = isHeaderSaving || hasPendingHeaderChanges;
   const compactHeaderStatusLabel = isHeaderSaving ? 'Сохр.' : 'Черн.';
-  const canSeeThematicFilters = canUserAccessThematicFilters(meQuery.data?.userId);
   const activeSpeechStyle = draft?.botSpeechStyle ?? null;
   const pendingSpeechStyleSamples = pendingSpeechStyle
     ? buildSpeechStylePreviewSamples(pendingSpeechStyle, botSpeechPreviewContext)
@@ -1536,6 +1532,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       const result = await applySettingsSectionToAll(api, chatId, section, target);
       return {
         ...result,
+        section,
         sourceSettings: savedSourceSettings,
       };
     },
@@ -2024,16 +2021,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     retry: 2,
     onSuccess: (broadcast) => {
       applyManagedBroadcastToMailingComposer(broadcast);
-      pushToast({
-        tone: 'info',
-        title: 'Редактирование автопостинга',
-        description: broadcast.nextSendAt
-          ? `Следующая отправка: ${formatRemovalDateTime(
-              broadcast.nextSendAt,
-              broadcast.scheduleTimezone,
-            )}.`
-          : 'Измените время и сохраните автопостинг.',
-      });
     },
     onError: (error) => {
       pushToast({
@@ -4154,17 +4141,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       ? validateBroadcastLinkButtons(draft?.textFiltersBotButtons ?? [])
       : [];
   const hasTextFiltersBotButtonError = Boolean(fieldErrors.textFiltersBotButtons);
-  const showThematicBotButtonErrors = Boolean(
-    draft?.thematicFiltersBotMessageEnabled && draft?.thematicFiltersBotButtonEnabled,
-  );
-  const thematicBotButtonErrors =
-    showThematicBotButtonErrors && fieldErrors.thematicFiltersBotButtons
-      ? validateBroadcastLinkButtons(draft?.thematicFiltersBotButtons ?? [])
-      : [];
-  const hasThematicBotButtonError = Boolean(fieldErrors.thematicFiltersBotButtons);
-  const thematicCodewordError = draft?.thematicCodewordEnabled
-    ? fieldErrors.thematicCodeword
-    : undefined;
   const showNightBotButtonErrors = Boolean(
     draft?.nightModeBotMessageEnabled && draft?.nightModeBotButtonEnabled,
   );
@@ -4434,15 +4410,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         draft?.textFiltersMuteEnabled,
       ].filter(Boolean).length
     : 0;
-  const thematicFiltersEnabledCount = draft?.thematicCodewordEnabled ? 1 : 0;
-  const thematicFiltersStagesEnabledCount = thematicFiltersEnabledCount
-    ? [
-        draft?.thematicFiltersBotMessageEnabled,
-        draft?.thematicFiltersWarnEnabled,
-        draft?.thematicFiltersBanEnabled,
-        draft?.thematicFiltersMuteEnabled,
-      ].filter(Boolean).length
-    : 0;
   const commercialSensitivitySliderValue = draft
     ? inferCommercialSensitivitySliderValue(draft)
     : 50;
@@ -4531,14 +4498,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : 'Выключено';
   const commercialFilterCardStatus = draft?.commercialAdsFilterEnabled
     ? `${textFiltersStagesEnabledCount}/4`
-    : 'Выкл';
-  const thematicFiltersHeaderSummary = thematicFiltersEnabledCount
-    ? `код: ${draft?.thematicCodeword?.trim() || 'не задан'} · ${thematicFiltersStagesEnabledCount}/4 ступени`
-    : 'Выключено';
-  const thematicFiltersCardStatus = thematicFiltersEnabledCount
-    ? draft?.thematicCodeword?.trim()
-      ? 'Код'
-      : 'Пусто'
     : 'Выкл';
   const extraEnabledCount = [
     draft?.deleteBotMessagesEnabled,
@@ -7451,284 +7410,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               </SettingsDrilldownPanel>
             </GlassCard>
 
-            {canSeeThematicFilters ? (
-              <GlassCard
-                className="settings-section settings-home-entry settings-home-entry--list stagger-in"
-                style={{ animationDelay: '157ms', order: 14 }}
-                aria-label="Кодовые слова"
-              >
-                <div
-                  className={cn('settings-section__head', 'settings-section__head--interactive')}
-                >
-                  <SettingsSectionToggle
-                    title="Кодовые слова"
-                    summary={thematicFiltersHeaderSummary}
-                    status={thematicFiltersCardStatus}
-                    icon="keywords"
-                    tone="sky"
-                    open={expandedSections.thematicFilters}
-                    controls="settings-thematic-filters-content"
-                    onClick={() => toggleSection('thematicFilters')}
-                    hideChevron
-                  />
-                </div>
-
-                <SettingsDrilldownPanel
-                  id="settings-thematic-filters-content"
-                  open={expandedSections.thematicFilters}
-                  title="Кодовые слова"
-                  summary={thematicFiltersHeaderSummary}
-                  tone="sky"
-                  className="settings-drilldown__panel--board settings-drilldown__panel--thematic"
-                  onClose={() => toggleSection('thematicFilters')}
-                  confirmCloseWhen={isSectionDirty('thematicFilters')}
-                  onDiscardChanges={() => discardSectionChanges('thematicFilters')}
-                  footer={renderSectionSaveFooter('thematicFilters')}
-                >
-                  <div
-                    id="settings-thematic-filters-content"
-                    className={cn(
-                      'settings-section__collapse',
-                      expandedSections.thematicFilters && 'is-open',
-                    )}
-                  >
-                    {expandedSections.thematicFilters ? (
-                      <div className="settings-section__collapse-inner">
-                        <p className="settings-native-toggle__hint">
-                          Проверка первого слова в длинных объявлениях.
-                        </p>
-
-                        <div className="settings-native-toggle text-filter-card">
-                          <div className="settings-native-toggle__row">
-                            <span className="settings-native-toggle__title">
-                              Фильтр по кодовому слову
-                            </span>
-
-                            <label
-                              className="settings-native-switch"
-                              aria-label="Включить фильтр по кодовому слову"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={draft.thematicCodewordEnabled}
-                                onChange={(event) => {
-                                  const enabled = event.target.checked;
-                                  setFieldValue('thematicCodewordEnabled', enabled);
-                                  if (enabled) {
-                                    setFieldValue('thematicFiltersBotMessageEnabled', true);
-                                  } else {
-                                    clearFieldError('thematicCodeword');
-                                  }
-                                }}
-                              />
-                              <span className="toggle-switch" aria-hidden>
-                                <span className="toggle-switch__thumb" />
-                              </span>
-                            </label>
-                          </div>
-                          <p className="settings-native-toggle__hint">
-                            Пример: <code>#недвижимость: продам квартиру...</code>
-                          </p>
-                        </div>
-
-                        {draft.thematicCodewordEnabled ? (
-                          <>
-                            <label
-                              className={cn(
-                                'field settings-text-field',
-                                thematicCodewordError && 'field--error',
-                              )}
-                            >
-                              <span className="field__label">Кодовое слово</span>
-                              <input
-                                type="text"
-                                value={draft.thematicCodeword}
-                                onChange={(event) =>
-                                  setFieldValue('thematicCodeword', event.target.value)
-                                }
-                                placeholder="недвижимость"
-                                maxLength={32}
-                                autoCapitalize="none"
-                                autoCorrect="off"
-                              />
-                              {thematicCodewordError ? (
-                                <small className="field__hint">{thematicCodewordError}</small>
-                              ) : (
-                                <small className="field__hint">
-                                  Одно слово без пробелов. Регистр, # и двоеточие не важны.
-                                </small>
-                              )}
-                            </label>
-
-                            <div
-                              className="settings-subsection-divider"
-                              role="separator"
-                              aria-label="Ступени тематического фильтра"
-                            >
-                              <span>Ступени санкций</span>
-                            </div>
-
-                            <div className="settings-native-toggle">
-                              <div className="settings-native-toggle__row">
-                                <span className="settings-native-toggle__title">1. Объяснение</span>
-
-                                <label
-                                  className="settings-native-switch"
-                                  aria-label="Включить объяснение для тематического фильтра"
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={draft.thematicFiltersBotMessageEnabled}
-                                    onChange={(event) => {
-                                      const enabled = event.target.checked;
-                                      setFieldValue('thematicFiltersBotMessageEnabled', enabled);
-                                      if (!enabled) {
-                                        setFieldValue('thematicFiltersBotButtonEnabled', false);
-                                        clearButtonGroupErrors(THEMATIC_FILTERS_BOT_BUTTON_GROUP);
-                                      }
-                                    }}
-                                  />
-                                  <span className="toggle-switch" aria-hidden>
-                                    <span className="toggle-switch__thumb" />
-                                  </span>
-                                </label>
-                              </div>
-                            </div>
-
-                            <div
-                              className={cn(
-                                'settings-native-toggle',
-                                'settings-native-toggle--nested',
-                                hasThematicBotButtonError && 'field--error',
-                              )}
-                            >
-                              <div className="settings-native-toggle__row">
-                                <span className="settings-native-toggle__title">
-                                  Кнопка в сообщении бота
-                                </span>
-
-                                <label
-                                  className="settings-native-switch"
-                                  aria-label="Добавить кнопку в сообщение бота для тематического фильтра"
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={draft.thematicFiltersBotButtonEnabled}
-                                    onChange={(event) => {
-                                      const enabled = event.target.checked;
-                                      if (enabled) {
-                                        setFieldValue('thematicFiltersBotMessageEnabled', true);
-                                      }
-                                      updateDraftButtonGroup(THEMATIC_FILTERS_BOT_BUTTON_GROUP, {
-                                        enabled,
-                                        ...(enabled && draft.thematicFiltersBotButtons.length === 0
-                                          ? { buttons: [createEmptyBroadcastLinkButton()] }
-                                          : {}),
-                                      });
-                                    }}
-                                  />
-                                  <span className="toggle-switch" aria-hidden>
-                                    <span className="toggle-switch__thumb" />
-                                  </span>
-                                </label>
-                              </div>
-                            </div>
-
-                            {draft.thematicFiltersBotButtonEnabled ? (
-                              <BroadcastLinkButtonsEditor
-                                api={api}
-                                buttons={draft.thematicFiltersBotButtons}
-                                errors={thematicBotButtonErrors}
-                                onChange={(nextButtons) =>
-                                  updateDraftButtonGroup(THEMATIC_FILTERS_BOT_BUTTON_GROUP, {
-                                    buttons: nextButtons,
-                                    enabled: nextButtons.length > 0,
-                                  })
-                                }
-                                urlPlaceholder="https://max.ru/channel/..."
-                                textPlaceholder="Открыть"
-                                title="Кнопки сообщения"
-                                subtitle="Название и ссылка"
-                              />
-                            ) : null}
-
-                            {renderAdminContactToggle(
-                              THEMATIC_FILTERS_ADMIN_CONTACT_BUTTON_GROUP,
-                              'Добавить связь с админом в сообщения тематического фильтра',
-                            )}
-
-                            <div className="settings-native-toggle settings-native-toggle--nested">
-                              <div className="settings-native-toggle__row">
-                                <span className="settings-native-toggle__title">
-                                  2. Предупреждение
-                                </span>
-
-                                <label
-                                  className="settings-native-switch"
-                                  aria-label="Включить предупреждение для тематического фильтра"
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={draft.thematicFiltersWarnEnabled}
-                                    onChange={(event) => {
-                                      const enabled = event.target.checked;
-                                      setFieldValue('thematicFiltersWarnEnabled', enabled);
-                                      if (enabled) {
-                                        setFieldValue('thematicFiltersBotMessageEnabled', true);
-                                      }
-                                    }}
-                                  />
-                                  <span className="toggle-switch" aria-hidden>
-                                    <span className="toggle-switch__thumb" />
-                                  </span>
-                                </label>
-                              </div>
-                            </div>
-
-                            {renderMuteStageToggle({
-                              enabledKey: 'thematicFiltersMuteEnabled',
-                              durationKey: 'thematicFiltersMuteDurationHours',
-                              title: '3. Мут',
-                              onEnable: () => {
-                                setFieldValue('thematicFiltersWarnEnabled', true);
-                                setFieldValue('thematicFiltersBotMessageEnabled', true);
-                              },
-                            })}
-
-                            <div className="settings-native-toggle settings-native-toggle--nested">
-                              <div className="settings-native-toggle__row">
-                                <span className="settings-native-toggle__title">4. Бан</span>
-
-                                <label
-                                  className="settings-native-switch"
-                                  aria-label="Включить бан для повторного нарушения тематического фильтра"
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={draft.thematicFiltersBanEnabled}
-                                    onChange={(event) => {
-                                      const enabled = event.target.checked;
-                                      setFieldValue('thematicFiltersBanEnabled', enabled);
-                                      if (enabled) {
-                                        setFieldValue('thematicFiltersWarnEnabled', true);
-                                        setFieldValue('thematicFiltersBotMessageEnabled', true);
-                                      }
-                                    }}
-                                  />
-                                  <span className="toggle-switch" aria-hidden>
-                                    <span className="toggle-switch__thumb" />
-                                  </span>
-                                </label>
-                              </div>
-                            </div>
-                          </>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
-                </SettingsDrilldownPanel>
-              </GlassCard>
-            ) : null}
 
             <GlassCard
               className="settings-section settings-home-entry settings-home-entry--list stagger-in"

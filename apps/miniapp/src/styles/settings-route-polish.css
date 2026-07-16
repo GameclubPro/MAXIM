@@ -3853,6 +3853,13 @@ body.channel-settings-page-open .bottom-nav {
     0 1px 0 rgba(255, 255, 255, 0.82) inset;
 }
 
+html[data-max-theme='dark'] body.settings-home-page-open .bottom-nav,
+html[data-max-theme='dark'] body.channel-settings-page-open .bottom-nav {
+  border-color: var(--color-border-strong);
+  background: var(--nav-surface);
+  box-shadow: var(--shadow-sm);
+}
+
 body.settings-home-page-open .bottom-nav::before,
 body.channel-settings-page-open .bottom-nav::before {
   display: none;
@@ -4731,8 +4738,8 @@ html[data-max-theme='dark']
     .channel-settings-toggle-card.is-on,
     .policy-card.is-active
   ) {
-  border-color: color-mix(in srgb, var(--color-accent) 42%, var(--color-border));
-  background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface-raised));
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-raised);
 }
 
 html[data-max-theme='dark']
@@ -4760,6 +4767,10 @@ html[data-max-theme='dark']
   background: var(--color-surface-muted);
   color: var(--text-secondary);
   box-shadow: none;
+}
+
+html[data-max-theme='dark'] .settings-drilldown .field__number-wrap small {
+  color: var(--text-secondary);
 }
 
 html[data-max-theme='dark'] .settings-drilldown .settings-subsection-divider::before {
@@ -4911,6 +4922,49 @@ html[data-max-theme='dark'] .settings-drilldown .button--ghost {
   background: var(--color-surface-muted);
   color: var(--text-primary);
   box-shadow: none;
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown
+  :is(.button--accent, .allowlist-add-row__button) {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--app-page-background);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark'] .settings-drilldown .button--danger {
+  border-color: var(--color-danger);
+  background: var(--color-danger);
+  color: var(--app-page-background);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown
+  :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
+  :is(.managed-giveaway__surface, .managed-giveaway__section) {
+  border-color: var(--color-border);
+  background: var(--color-surface-raised);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown
+  :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
+  .managed-giveaway__subsection {
+  border: 0;
+  border-top: 1px solid var(--color-border);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown
+  :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
+  .managed-giveaway__subsection:first-of-type {
+  border-top: 0;
 }
 
 html[data-max-theme='dark'] body.settings-drilldown-open .time-field-sheet__backdrop {

@@ -108,7 +108,6 @@ export type ChatSettingsButtonGroup = {
     | 'linkBotButtons'
     | 'greetingBotButtons'
     | 'textFiltersBotButtons'
-    | 'thematicFiltersBotButtons'
     | 'duplicateBotButtons'
     | 'messageLimitsBotButtons'
     | 'nightModeBotButtons';
@@ -116,7 +115,6 @@ export type ChatSettingsButtonGroup = {
     | 'linkBotButtonEnabled'
     | 'greetingBotButtonEnabled'
     | 'textFiltersBotButtonEnabled'
-    | 'thematicFiltersBotButtonEnabled'
     | 'duplicateBotButtonEnabled'
     | 'messageLimitsBotButtonEnabled'
     | 'nightModeBotButtonEnabled';
@@ -124,7 +122,6 @@ export type ChatSettingsButtonGroup = {
     | 'linkBotButtonUrl'
     | 'greetingBotButtonUrl'
     | 'textFiltersBotButtonUrl'
-    | 'thematicFiltersBotButtonUrl'
     | 'duplicateBotButtonUrl'
     | 'messageLimitsBotButtonUrl'
     | 'nightModeBotButtonUrl';
@@ -132,7 +129,6 @@ export type ChatSettingsButtonGroup = {
     | 'linkBotButtonText'
     | 'greetingBotButtonText'
     | 'textFiltersBotButtonText'
-    | 'thematicFiltersBotButtonText'
     | 'duplicateBotButtonText'
     | 'messageLimitsBotButtonText'
     | 'nightModeBotButtonText';
@@ -143,7 +139,6 @@ export type AdminContactButtonGroup = {
     | 'linkAdminContactButtonEnabled'
     | 'profanityAdminContactButtonEnabled'
     | 'textFiltersAdminContactButtonEnabled'
-    | 'thematicFiltersAdminContactButtonEnabled'
     | 'duplicateAdminContactButtonEnabled'
     | 'messageLimitsAdminContactButtonEnabled'
     | 'phoneNumbersAdminContactButtonEnabled'
@@ -153,7 +148,6 @@ export type AdminContactButtonGroup = {
     | 'linkAdminContactButtonUrl'
     | 'profanityAdminContactButtonUrl'
     | 'textFiltersAdminContactButtonUrl'
-    | 'thematicFiltersAdminContactButtonUrl'
     | 'duplicateAdminContactButtonUrl'
     | 'messageLimitsAdminContactButtonUrl'
     | 'phoneNumbersAdminContactButtonUrl'
@@ -339,12 +333,6 @@ export const TEXT_FILTERS_BOT_BUTTON_GROUP = {
   urlKey: 'textFiltersBotButtonUrl',
   textKey: 'textFiltersBotButtonText',
 } as const satisfies ChatSettingsButtonGroup;
-export const THEMATIC_FILTERS_BOT_BUTTON_GROUP = {
-  buttonsKey: 'thematicFiltersBotButtons',
-  enabledKey: 'thematicFiltersBotButtonEnabled',
-  urlKey: 'thematicFiltersBotButtonUrl',
-  textKey: 'thematicFiltersBotButtonText',
-} as const satisfies ChatSettingsButtonGroup;
 export const DUPLICATE_BOT_BUTTON_GROUP = {
   buttonsKey: 'duplicateBotButtons',
   enabledKey: 'duplicateBotButtonEnabled',
@@ -374,10 +362,6 @@ export const PROFANITY_ADMIN_CONTACT_BUTTON_GROUP = {
 export const TEXT_FILTERS_ADMIN_CONTACT_BUTTON_GROUP = {
   enabledKey: 'textFiltersAdminContactButtonEnabled',
   urlKey: 'textFiltersAdminContactButtonUrl',
-} as const satisfies AdminContactButtonGroup;
-export const THEMATIC_FILTERS_ADMIN_CONTACT_BUTTON_GROUP = {
-  enabledKey: 'thematicFiltersAdminContactButtonEnabled',
-  urlKey: 'thematicFiltersAdminContactButtonUrl',
 } as const satisfies AdminContactButtonGroup;
 export const DUPLICATE_ADMIN_CONTACT_BUTTON_GROUP = {
   enabledKey: 'duplicateAdminContactButtonEnabled',
@@ -582,8 +566,7 @@ export type AutoMuteDurationKey =
   | 'profanityMuteDurationHours'
   | 'requiredSubscriptionMuteDurationHours'
   | 'invitationAccessMuteDurationHours'
-  | 'textFiltersMuteDurationHours'
-  | 'thematicFiltersMuteDurationHours';
+  | 'textFiltersMuteDurationHours';
 export type AutoMuteEnabledKey =
   | 'duplicateMuteEnabled'
   | 'linkMuteEnabled'
@@ -592,8 +575,7 @@ export type AutoMuteEnabledKey =
   | 'profanityMuteEnabled'
   | 'requiredSubscriptionMuteEnabled'
   | 'invitationAccessMuteEnabled'
-  | 'textFiltersMuteEnabled'
-  | 'thematicFiltersMuteEnabled';
+  | 'textFiltersMuteEnabled';
 export type HintKey =
   | 'antiSpam'
   | 'antiDuplicate'
@@ -697,7 +679,6 @@ export const INITIAL_EXPANDED_SECTIONS: Record<SettingsSectionKey, boolean> = {
   greeting: false,
   profanityFilter: false,
   commercialFilter: false,
-  thematicFilters: false,
   duplicates: false,
   limits: false,
   stopWords: false,
@@ -717,7 +698,6 @@ export const SECTION_LABELS: Record<ApplySectionKey, string> = {
   greeting: 'Приветствие',
   profanityFilter: 'Мат и оскорбления',
   commercialFilter: 'Коммерческая реклама',
-  thematicFilters: 'Кодовые слова',
   duplicates: 'Повторы',
   limits: 'Ограничения',
   stopWords: 'Стоп-слова',

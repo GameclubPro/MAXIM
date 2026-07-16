@@ -7,7 +7,6 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type ElementType,
   type PointerEvent as ReactPointerEvent,
   type SVGProps,
 } from 'react';
@@ -89,16 +88,11 @@ import {
   preloadSettingsPage,
 } from './page-preloads';
 import './chats-page.css';
+import './chats-page-native.css';
 
 type ManagedTab = 'chat' | 'channel';
 type HomeSyncTone = 'ready' | 'syncing' | 'cache' | 'warning';
 type ManagedHomeEntity = ChatSummary;
-type EntitySignal = {
-  key: string;
-  label: string;
-  value?: string;
-  Icon: ElementType<SVGProps<SVGSVGElement>>;
-};
 type ManagedEntitiesReloadRequest = {
   nonce: number;
   behavior: 'default' | 'manual' | 'recovery';
@@ -116,7 +110,7 @@ const DEFAULT_CHANNEL_STATS_RANGE = '7d';
 const HOME_MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 2_000;
 const CHAT_LIST_VIRTUALIZATION_THRESHOLD = 80;
 const CHAT_LIST_VIRTUAL_OVERSCAN = 6;
-const CHAT_LIST_VIRTUAL_ROW_HEIGHT = 124;
+const CHAT_LIST_VIRTUAL_ROW_HEIGHT = 88;
 const CHAT_LIST_VIRTUAL_WINDOW_SIZE = 20;
 const FAVORITE_FILTER_ALL = 'all';
 type FavoriteLabelDraft = Record<ManagedEntityFavoriteType, string>;
@@ -224,36 +218,6 @@ function buildHomeSyncStatus(options: {
   return { label: 'Актуально', tone: 'ready' };
 }
 
-function buildEntitySignals(entity: ManagedHomeEntity, entityType: ManagedTab): EntitySignal[] {
-  if (entityType !== 'channel' || !entity.channelOverview) {
-    return [];
-  }
-
-  const signals: EntitySignal[] = [];
-  const secondarySignals: EntitySignal[] = [];
-  if (entity.channelOverview.enabledScenariosCount > 0) {
-    signals.push({
-      key: 'scenarios',
-      label: `Активные сценарии: ${entity.channelOverview.enabledScenariosCount}`,
-      value: String(entity.channelOverview.enabledScenariosCount),
-      Icon: SparksGlyph,
-    });
-  }
-  if (
-    entity.channelOverview.commentsEnabled ||
-    entity.channelOverview.postSuggestionsEnabled ||
-    entity.channelOverview.commentsModerationEnabled
-  ) {
-    secondarySignals.push({
-      key: 'live',
-      label: 'Активны обсуждения или предложка',
-      Icon: CommentsGlyph,
-    });
-  }
-
-  return [...signals, ...secondarySignals].slice(0, 2);
-}
-
 async function saveManagedEntityFavoriteTypes(
   api: ApiTransport,
   entityType: ManagedTab,
@@ -265,10 +229,10 @@ async function saveManagedEntityFavoriteTypes(
   return updateManagedEntityFavorites(api, entityType, entityId, favoriteTypes);
 }
 
-function buildEntityActivityRoute(entityType: ManagedTab, entityId: string): string {
+function buildEntitySettingsRoute(entityType: ManagedTab, entityId: string): string {
   return entityType === 'channel'
-    ? `/channel/${entityId}/stats?section=overview`
-    : `/chat/${entityId}/events?section=activity`;
+    ? `/channel/${entityId}/settings`
+    : `/chat/${entityId}/settings`;
 }
 
 function buildEntityRouteState(entityType: ManagedTab, entity: ManagedHomeEntity) {
@@ -284,25 +248,6 @@ function buildEntityRouteState(entityType: ManagedTab, entity: ManagedHomeEntity
     chatTitle: entity.title,
     avatarUrl: entity.avatarUrl ?? null,
   };
-}
-
-function SparksGlyph(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" {...props}>
-      <path d="M12 3.8l1.2 4.1 4 1.2-4 1.2-1.2 4.1-1.2-4.1-4-1.2 4-1.2L12 3.8Z" />
-      <path d="M18.2 13.8l.7 2.2 2.2.7-2.2.7-.7 2.2-.7-2.2-2.2-.7 2.2-.7.7-2.2Z" />
-      <path d="M5.8 14.5l.5 1.7 1.7.5-1.7.5-.5 1.7-.5-1.7-1.7-.5 1.7-.5.5-1.7Z" />
-    </svg>
-  );
-}
-
-function CommentsGlyph(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" {...props}>
-      <path d="M7 6h10a3 3 0 013 3v4.3a3 3 0 01-3 3h-4.6L8.6 19v-2.7H7a3 3 0 01-3-3V9a3 3 0 013-3Z" />
-      <path d="M8.5 10.2h7M8.5 13h4.8" />
-    </svg>
-  );
 }
 
 function MoreGlyph(props: SVGProps<SVGSVGElement>) {
@@ -1059,7 +1004,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
 
       void preloadHomeEntitySheets();
       for (const entityId of candidates) {
-        prefetchEntityActivity(activeTab, entityId);
+        prefetchEntitySettings(activeTab, entityId);
       }
     };
     const idleWindow = window as unknown as WindowWithIdleCallback;
@@ -1112,78 +1057,60 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       style = { animationDelay: `${staggerIndex * CHAT_CARD_STAGGER_STEP_MS}ms` };
     }
 
-    const activityRoute = buildEntityActivityRoute(activeTab, entity.id);
+    const settingsRoute = buildEntitySettingsRoute(activeTab, entity.id);
     const routeState = buildEntityRouteState(activeTab, entity);
-    const activityLabel = activeTab === 'channel' ? 'Обзор' : 'Статистика';
-    const entitySignals = buildEntitySignals(entity, activeTab);
 
     return (
       <GlassCard as="article" key={entity.id} className={className} style={style}>
-        <div className="chat-card__header">
-          <div className="chat-card__identity">
-            <EntityAvatar
-              title={entity.title}
-              entityType={activeTab}
-              avatarUrl={entity.avatarUrl ?? null}
-              className="chat-card__avatar"
-            />
-            <div className="chat-card__title-wrap">
-              <h3>{entity.title}</h3>
-              {entitySignals.length > 0 ? (
-                <div className="chat-card__meta">
-                  {entitySignals.map(({ key, label, value, Icon }) => (
-                    <span
-                      key={key}
-                      className="chat-card__signal"
-                      role="img"
-                      aria-label={label}
-                      title={label}
-                    >
-                      <Icon aria-hidden />
-                      {value ? <strong>{value}</strong> : null}
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-            </div>
+        <Link
+          to={settingsRoute}
+          className="chat-card__primary"
+          state={routeState}
+          onClick={() => {
+            rememberEntity(activeTab, entity);
+            prefetchEntitySettings(activeTab, entity.id);
+          }}
+          onPointerEnter={(event) => {
+            if (shouldPrefetchFromPointerEvent(event)) {
+              prefetchEntitySettings(activeTab, entity.id);
+            }
+          }}
+          onPointerDown={(event) => {
+            if (shouldPrefetchFromPressEvent(event)) {
+              prefetchEntitySettings(activeTab, entity.id);
+            }
+          }}
+          aria-label={`Открыть настройки: ${entity.title}`}
+        >
+          <EntityAvatar
+            title={entity.title}
+            entityType={activeTab}
+            avatarUrl={entity.avatarUrl ?? null}
+            className="chat-card__avatar"
+          />
+          <div className="chat-card__title-wrap">
+            <h3>{entity.title}</h3>
+            {favoriteTypes.length > 0 ? (
+              <span className="chat-card__favorite-label">
+                {favoriteLabels[favoriteTypes[0]]}
+              </span>
+            ) : null}
           </div>
-        </div>
+          <span className="chat-card__disclosure" aria-hidden />
+        </Link>
 
         <div className="chat-card__quick-actions">
-          <Link
-            to={activityRoute}
-            className="chat-card__open"
-            state={routeState}
-            onClick={() => {
-              rememberEntity(activeTab, entity);
-              prefetchEntityActivity(activeTab, entity.id);
-            }}
-            onPointerEnter={(event) => {
-              if (shouldPrefetchFromPointerEvent(event)) {
-                prefetchEntityActivity(activeTab, entity.id);
-              }
-            }}
-            onPointerDown={(event) => {
-              if (shouldPrefetchFromPressEvent(event)) {
-                prefetchEntityActivity(activeTab, entity.id);
-              }
-            }}
-            aria-label={`${activityLabel}: ${entity.title}`}
-          >
-            {activityLabel}
-          </Link>
-
           <button
             type="button"
             className="chat-card__more"
-            aria-label={`Действия: ${entity.title}`}
+            aria-label={`Ещё: ${entity.title}`}
             aria-haspopup="dialog"
             aria-controls="home-sheet-actions"
             aria-expanded={
               entityActionTarget?.entityType === activeTab &&
               entityActionTarget.entity.id === entity.id
             }
-            title="Другие действия"
+            title="Ещё"
             onPointerEnter={() => void preloadHomeEntitySheets()}
             onPointerDown={() => void preloadHomeEntitySheets()}
             onClick={(event) => {
@@ -1238,15 +1165,15 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               setFavoritePicker(entityActionTarget);
               setEntityActionTarget(null);
             }}
-            onSettingsIntent={() => {
+            onActivityIntent={() => {
               if (entityActionTarget) {
-                prefetchEntitySettings(
+                prefetchEntityActivity(
                   entityActionTarget.entityType,
                   entityActionTarget.entity.id,
                 );
               }
             }}
-            onSettingsOpen={() => {
+            onActivityOpen={() => {
               if (entityActionTarget) {
                 rememberEntity(entityActionTarget.entityType, entityActionTarget.entity);
               }

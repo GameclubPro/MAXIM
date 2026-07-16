@@ -1976,16 +1976,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     retry: 2,
     onSuccess: (broadcast) => {
       applyManagedBroadcastToComposer(broadcast);
-      pushToast({
-        tone: 'info',
-        title: 'Редактирование автопостинга',
-        description: broadcast.nextSendAt
-          ? `Следующая отправка: ${formatManagedBroadcastDateTime(
-              broadcast.nextSendAt,
-              broadcast.scheduleTimezone,
-            )}.`
-          : 'Измените время и сохраните.',
-      });
     },
     onError: (error) => {
       pushToast({

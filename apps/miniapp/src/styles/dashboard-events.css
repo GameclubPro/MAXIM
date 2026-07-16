@@ -3566,6 +3566,22 @@ html[data-max-theme='dark'] .logs-violation-item__quick-button {
   color: var(--text-secondary);
 }
 
+html[data-max-theme='dark'] .event-feed-item__toggle {
+  border-color: var(--border-strong);
+  background: var(--surface-card-muted);
+  color: var(--text-secondary);
+}
+
+html[data-max-theme='dark'] .event-feed-item.is-expanded .event-feed-item__toggle {
+  border-color: var(--border-strong);
+  background: var(--surface-card-muted);
+  color: var(--accent);
+}
+
+html[data-max-theme='dark'] .spammer-diagnostics__hero::before {
+  opacity: 0;
+}
+
 html[data-max-theme='dark'] .events-filter-chip small {
   color: var(--text-muted);
 }
@@ -3612,7 +3628,8 @@ html[data-max-theme='dark'] .events-dashboard__flow-card--loading {
 }
 
 html[data-max-theme='dark'] .events-dashboard__body,
-html[data-max-theme='dark'] .events-dashboard__activity {
+html[data-max-theme='dark'] .events-dashboard__activity,
+html[data-max-theme='dark'] .events-dashboard__activity-ledger {
   border-color: var(--border-subtle);
   background: var(--surface-card-muted);
 }
@@ -3622,12 +3639,22 @@ html[data-max-theme='dark'] .events-dashboard__stack {
   background: var(--surface-card-muted);
 }
 
+html[data-max-theme='dark'] .events-dashboard__metric + .events-dashboard__metric,
+html[data-max-theme='dark'] .events-dashboard__activity-balance,
+html[data-max-theme='dark'] .events-dashboard__flow-card--left {
+  border-color: var(--border-subtle);
+}
+
 html[data-max-theme='dark'] .events-dashboard__activity-balance--loading::before {
   background: color-mix(in srgb, var(--text-muted) 22%, transparent);
 }
 
 html[data-max-theme='dark'] .events-dashboard__flow-bar--loading {
   background: color-mix(in srgb, var(--text-muted) 22%, transparent);
+}
+
+html[data-max-theme='dark'] .events-dashboard__flow-bar:not(.events-dashboard__flow-bar--loading) {
+  background: var(--border-strong);
 }
 
 html[data-max-theme='dark'] .events-dashboard__skeleton-line {

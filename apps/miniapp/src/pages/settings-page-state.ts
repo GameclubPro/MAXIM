@@ -6,7 +6,6 @@ export type ApplySectionKey =
   | 'greeting'
   | 'profanityFilter'
   | 'commercialFilter'
-  | 'thematicFilters'
   | 'duplicates'
   | 'limits'
   | 'stopWords'
@@ -104,21 +103,6 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'textFiltersBotButtonText',
     'textFiltersAdminContactButtonEnabled',
     'textFiltersAdminContactButtonUrl',
-  ],
-  thematicFilters: [
-    'thematicCodewordEnabled',
-    'thematicCodeword',
-    'thematicFiltersBotMessageEnabled',
-    'thematicFiltersWarnEnabled',
-    'thematicFiltersMuteEnabled',
-    'thematicFiltersMuteDurationHours',
-    'thematicFiltersBanEnabled',
-    'thematicFiltersBotButtons',
-    'thematicFiltersBotButtonEnabled',
-    'thematicFiltersBotButtonUrl',
-    'thematicFiltersBotButtonText',
-    'thematicFiltersAdminContactButtonEnabled',
-    'thematicFiltersAdminContactButtonUrl',
   ],
   duplicates: [
     'antiDuplicateEnabled',

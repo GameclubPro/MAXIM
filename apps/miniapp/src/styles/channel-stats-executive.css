@@ -2027,6 +2027,138 @@ html[data-max-theme='dark'] .channel-summary-table-card > summary,
 html[data-max-theme='dark'] .channel-posts-chart__metrics strong,
 html[data-max-theme='dark'] .channel-insights__panel-copy strong { color: var(--text-primary); }
 
+/* Page-layer overrides must follow the light channel-events rules in the route bundle. */
+html[data-max-theme='dark'] .channel-events-section .membership-feed__toolbar,
+html[data-max-theme='dark'] .channel-events-section .membership-feed__day {
+  border-color: var(--border-subtle);
+  background: var(--surface-card-muted);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-xs);
+}
+
+html[data-max-theme='dark'] .channel-events-section .membership-feed__group-list,
+html[data-max-theme='dark'] .channel-events-section .membership-feed__status {
+  border-color: var(--border-subtle);
+  background: var(--surface-card);
+  color: var(--text-secondary);
+  box-shadow: var(--shadow-xs);
+}
+
+html[data-max-theme='dark']
+  .channel-events-section
+  .membership-feed__filters
+  .segmented-control__item {
+  border-color: var(--border-subtle);
+  background: var(--surface-card-muted);
+  color: var(--text-secondary);
+}
+
+html[data-max-theme='dark']
+  .channel-events-section
+  .membership-feed__filters
+  .segmented-control__item.is-active {
+  border-color: var(--border-strong);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+html[data-max-theme='dark'] .channel-events-section .membership-feed__card {
+  border-color: var(--border-subtle);
+  background: transparent;
+  color: var(--text-primary);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark'] .channel-events-section .membership-feed__avatar {
+  border-color: var(--border-strong);
+  background: var(--surface-card-muted);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-xs);
+}
+
+html[data-max-theme='dark'] .channel-events-section .membership-feed__name-link,
+html[data-max-theme='dark'] .channel-events-section .membership-feed__row strong,
+html[data-max-theme='dark'] .channel-events-section .membership-feed__day-label {
+  color: var(--text-primary);
+}
+
+html[data-max-theme='dark'] .channel-events-section .membership-feed__description,
+html[data-max-theme='dark'] .channel-events-section .membership-feed__day-copy small,
+html[data-max-theme='dark'] .channel-events-section .membership-feed__time,
+html[data-max-theme='dark'] .channel-events-section .membership-feed__render-status,
+html[data-max-theme='dark'] .channel-events-section .membership-feed__status p {
+  color: var(--text-secondary);
+}
+
+html[data-max-theme='dark'] .channel-events-section .membership-feed__day-pill--joined,
+html[data-max-theme='dark'] .channel-events-section .membership-feed__pill--joined {
+  background: var(--surface-card-muted);
+  color: var(--success);
+}
+
+html[data-max-theme='dark'] .channel-events-section .membership-feed__day-pill--left,
+html[data-max-theme='dark'] .channel-events-section .membership-feed__pill--left {
+  background: var(--surface-card-muted);
+  color: var(--danger);
+}
+
+html[data-max-theme='dark']
+  .channel-events-section
+  .membership-feed__item
+  + .membership-feed__item {
+  border-top-color: var(--border-subtle);
+}
+
+html[data-max-theme='dark'] .channel-events-section .membership-feed__rail::after {
+  background: var(--border-subtle);
+}
+
+html[data-max-theme='dark'] .channel-events-section .membership-feed__dot {
+  border-color: var(--surface-card);
+  background: var(--text-muted);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark']
+  .channel-events-section
+  .membership-feed__item--joined
+  .membership-feed__dot {
+  background: var(--success);
+}
+
+html[data-max-theme='dark']
+  .channel-events-section
+  .membership-feed__item--left
+  .membership-feed__dot {
+  background: var(--danger);
+}
+
+html[data-max-theme='dark'] .channel-events-section__metric {
+  border-color: var(--border-subtle);
+  background: var(--surface-card);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-xs);
+}
+
+html[data-max-theme='dark'] .channel-events-section__metric small {
+  color: var(--text-secondary);
+}
+
+html[data-max-theme='dark'] .channel-events-section__metric strong,
+html[data-max-theme='dark'] .channel-events-section__balance strong {
+  color: var(--text-primary);
+}
+
+html[data-max-theme='dark'] .channel-events-section__metric--joined strong,
+html[data-max-theme='dark'] .channel-events-section__balance--success strong {
+  color: var(--success);
+}
+
+html[data-max-theme='dark'] .channel-events-section__metric--left strong,
+html[data-max-theme='dark'] .channel-events-section__balance--danger strong {
+  color: var(--danger);
+}
+
 @media (max-width: 360px) {
   .channel-insights__summary-metrics--compact { grid-template-columns: minmax(0, 1fr); }
 }

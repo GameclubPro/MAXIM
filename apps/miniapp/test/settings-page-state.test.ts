@@ -118,7 +118,6 @@ test('SECTION_SETTING_KEYS includes button arrays for every multi-button section
   assert.ok(SECTION_SETTING_KEYS.links.includes('linkBotButtons'));
   assert.ok(SECTION_SETTING_KEYS.greeting.includes('greetingBotButtons'));
   assert.ok(SECTION_SETTING_KEYS.commercialFilter.includes('textFiltersBotButtons'));
-  assert.ok(SECTION_SETTING_KEYS.thematicFilters.includes('thematicFiltersBotButtons'));
   assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicateBotButtons'));
   assert.ok(SECTION_SETTING_KEYS.limits.includes('photoMessagesEnabled'));
   assert.ok(SECTION_SETTING_KEYS.limits.includes('messageLimitsBotButtons'));
@@ -147,9 +146,6 @@ test('SECTION_SETTING_KEYS includes admin contact toggles for sanction sections'
   assert.ok(SECTION_SETTING_KEYS.links.includes('linkAdminContactButtonEnabled'));
   assert.ok(SECTION_SETTING_KEYS.profanityFilter.includes('profanityAdminContactButtonEnabled'));
   assert.ok(SECTION_SETTING_KEYS.commercialFilter.includes('textFiltersAdminContactButtonEnabled'));
-  assert.ok(
-    SECTION_SETTING_KEYS.thematicFilters.includes('thematicFiltersAdminContactButtonEnabled'),
-  );
   assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicateAdminContactButtonEnabled'));
   assert.ok(SECTION_SETTING_KEYS.limits.includes('messageLimitsAdminContactButtonEnabled'));
   assert.ok(

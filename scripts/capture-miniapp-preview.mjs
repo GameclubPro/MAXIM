@@ -52,6 +52,102 @@ function parseOptionalEnvFlag(name) {
   return null;
 }
 
+async function openSettingsSection(page, name, panelSelector) {
+  await page.getByRole('button', { name, exact: true }).click();
+  await page.locator(panelSelector).waitFor({ state: 'visible' });
+  await page.waitForTimeout(350);
+}
+
+async function waitForModerationEventsReady(page) {
+  await page
+    .locator('.events-dashboard__body--moderation:not(.events-dashboard__body--loading)')
+    .waitFor({ state: 'visible' });
+  await page
+    .locator('.event-feed-item, .events-inline-state')
+    .first()
+    .waitFor({ state: 'visible' });
+}
+
+async function waitForActivityEventsReady(page) {
+  await page
+    .locator('.events-dashboard__activity:not(.events-dashboard__activity--loading)')
+    .waitFor({ state: 'visible' });
+}
+
+async function waitForChannelStatsReady(page) {
+  await page
+    .locator('.channel-insights__summary[aria-label="Сводка по каналу"]')
+    .waitFor({ state: 'visible' });
+}
+
+async function waitForChannelEventsReady(page) {
+  await page.locator('.channel-events-section').waitFor({ state: 'visible' });
+  await page
+    .locator('.channel-events-section__metrics[aria-busy="false"]')
+    .waitFor({ state: 'visible' });
+  await page
+    .locator(
+      '.channel-events-section .membership-feed__card, .channel-events-section .membership-feed__status',
+    )
+    .first()
+    .waitFor({ state: 'visible' });
+}
+
+async function openPreviewGiveawayEditor(page) {
+  const giveaway = page.locator('.managed-giveaway');
+  await giveaway.waitFor({ state: 'visible' });
+  const editButton = giveaway.getByRole('button', {
+    name: /(?:Редактировать|Продолжить сценарий|Продолжить)/u,
+  });
+  await editButton.first().waitFor({ state: 'visible' });
+  await editButton.first().click();
+  await page.locator('.managed-giveaway--step-basics').waitFor({ state: 'visible' });
+}
+
+async function setScrollPosition(scrollBody, top, label) {
+  await scrollBody.waitFor({ state: 'visible' });
+  const metrics = await scrollBody.evaluate((element, requestedTop) => {
+    const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    const nextTop = requestedTop === 'bottom' ? maxScrollTop : Math.min(requestedTop, maxScrollTop);
+    element.scrollTo({ top: nextTop, behavior: 'instant' });
+    return {
+      clientHeight: element.clientHeight,
+      maxScrollTop,
+      requestedTop: nextTop,
+    };
+  }, top);
+  await scrollBody.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  );
+  const scrollTop = await scrollBody.evaluate((element) => element.scrollTop);
+  if (Math.abs(scrollTop - metrics.requestedTop) > 1) {
+    throw new Error(
+      `${label} did not reach scroll position ${metrics.requestedTop} (actual ${scrollTop}).`,
+    );
+  }
+  return { ...metrics, scrollTop };
+}
+
+async function setSettingsDrilldownScroll(page, top) {
+  const scrollBody = page.locator('.settings-drilldown:visible .settings-drilldown__body').first();
+  return setScrollPosition(scrollBody, top, 'Settings drilldown');
+}
+
+async function scrollSettingsDrilldownToBottom(page) {
+  await setSettingsDrilldownScroll(page, 'bottom');
+  const nestedScrollSelectors = [
+    '.bot-message-editor-sheet:visible .bot-message-editor-sheet__body',
+    '.broadcast-audience-sheet:visible .broadcast-audience-sheet__scroll',
+    '.managed-giveaway-modal:visible .managed-giveaway-modal__sheet',
+  ];
+  for (const selector of nestedScrollSelectors) {
+    const scrollBody = page.locator(selector).first();
+    if ((await scrollBody.count()) > 0) {
+      await setScrollPosition(scrollBody, 'bottom', selector);
+    }
+  }
+}
+
 const scenarios = [
   {
     name: 'home',
@@ -148,11 +244,13 @@ const scenarios = [
   {
     name: 'events-moderation',
     path: '/chat/preview-chat/events',
+    beforeShot: waitForModerationEventsReady,
   },
   {
     name: 'events-moderation-scrolled',
     path: '/chat/preview-chat/events',
     beforeShot: async (page) => {
+      await waitForModerationEventsReady(page);
       await page.evaluate(() => window.scrollTo({ top: 360, behavior: 'instant' }));
       await page.waitForTimeout(250);
     },
@@ -161,6 +259,7 @@ const scenarios = [
     name: 'events-moderation-expanded',
     path: '/chat/preview-chat/events',
     beforeShot: async (page) => {
+      await waitForModerationEventsReady(page);
       await page.locator('.event-feed-item__trigger').first().click();
       await page.waitForTimeout(200);
     },
@@ -171,6 +270,7 @@ const scenarios = [
     searchParams: {
       section: 'activity',
     },
+    beforeShot: waitForActivityEventsReady,
   },
   {
     name: 'events-participants',
@@ -219,6 +319,94 @@ const scenarios = [
     path: '/chat/preview-chat/settings',
   },
   {
+    name: 'chat-settings-access-lost',
+    path: '/chat/preview-chat/settings',
+    searchParams: {
+      access: 'lost',
+    },
+    beforeShot: async (page) => {
+      await page.locator('.managed-access-alert').waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'chat-settings-rules',
+    path: '/chat/preview-chat/settings',
+    beforeShot: async (page) => {
+      await openSettingsSection(page, 'Правила', '.settings-drilldown__panel--rules');
+    },
+  },
+  {
+    name: 'chat-settings-greeting',
+    path: '/chat/preview-chat/settings',
+    beforeShot: async (page) => {
+      await openSettingsSection(page, 'Приветствие', '.settings-drilldown__panel--greeting');
+    },
+  },
+  {
+    name: 'chat-settings-profanity',
+    path: '/chat/preview-chat/settings',
+    beforeShot: async (page) => {
+      await openSettingsSection(page, 'Мат и оскорбления', '.settings-drilldown__panel--profanity');
+    },
+  },
+  {
+    name: 'chat-settings-commercial',
+    path: '/chat/preview-chat/settings',
+    beforeShot: async (page) => {
+      await openSettingsSection(
+        page,
+        'Коммерческая реклама',
+        '.settings-drilldown__panel--commercial',
+      );
+    },
+  },
+  {
+    name: 'chat-settings-duplicates',
+    path: '/chat/preview-chat/settings',
+    beforeShot: async (page) => {
+      await openSettingsSection(page, 'Повторы', '.settings-drilldown__panel--duplicates');
+    },
+  },
+  {
+    name: 'chat-settings-duplicates-duration',
+    path: '/chat/preview-chat/settings',
+    beforeShot: async (page) => {
+      const panel = page.locator('.settings-drilldown__panel--duplicates');
+      await openSettingsSection(page, 'Повторы', '.settings-drilldown__panel--duplicates');
+      await panel.locator('.settings-duration-editor__preset--trigger').click();
+      await panel.locator('.settings-duration-editor').waitFor({ state: 'visible' });
+      await page.waitForTimeout(350);
+    },
+  },
+  {
+    name: 'chat-settings-limits',
+    path: '/chat/preview-chat/settings',
+    beforeShot: async (page) => {
+      await openSettingsSection(page, 'Ограничения', '.settings-drilldown__panel--limits');
+    },
+  },
+  {
+    name: 'chat-settings-night',
+    path: '/chat/preview-chat/settings',
+    beforeShot: async (page) => {
+      await openSettingsSection(page, 'Ночной режим', '.settings-drilldown__panel--night');
+    },
+  },
+  {
+    name: 'chat-settings-commands',
+    path: '/chat/preview-chat/settings',
+    beforeShot: async (page) => {
+      await openSettingsSection(page, 'Команды', '.settings-drilldown__panel--commands');
+    },
+  },
+  {
+    name: 'chat-settings-extra',
+    path: '/chat/preview-chat/settings',
+    beforeShot: async (page) => {
+      await openSettingsSection(page, 'Сервис', '.settings-drilldown__panel--extra');
+    },
+  },
+  {
     name: 'chat-settings-speech-style',
     path: '/chat/preview-chat/settings',
     beforeShot: async (page) => {
@@ -247,6 +435,25 @@ const scenarios = [
     },
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
+    },
+  },
+  {
+    name: 'chat-settings-bot-message-editor',
+    path: '/chat/preview-chat/settings',
+    searchParams: {
+      focus: 'links',
+    },
+    beforeShot: async (page) => {
+      await page.locator('.settings-drilldown__panel--links').waitFor({ state: 'visible' });
+      const explanationToggle = page.getByLabel('Включить объяснение для модерации ссылок');
+      if (!(await explanationToggle.isChecked())) {
+        await explanationToggle.check();
+      }
+      await page
+        .getByRole('button', { name: 'Редактировать текст сообщения о ссылках', exact: true })
+        .click();
+      await page.locator('.bot-message-editor-sheet__panel').waitFor({ state: 'visible' });
+      await page.waitForTimeout(350);
     },
   },
   {
@@ -319,7 +526,7 @@ const scenarios = [
       focus: 'giveaway',
     },
     beforeShot: async (page) => {
-      await page.waitForTimeout(600);
+      await page.locator('.managed-giveaway--dashboard').waitFor({ state: 'visible' });
     },
   },
   {
@@ -329,14 +536,7 @@ const scenarios = [
       focus: 'giveaway',
     },
     beforeShot: async (page) => {
-      await page.waitForTimeout(650);
-      const editButton = page.locator('.managed-giveaway').getByRole('button', {
-        name: /(?:Редактировать|Продолжить сценарий|Продолжить)/u,
-      });
-      if ((await editButton.count()) > 0) {
-        await editButton.first().click();
-        await page.waitForTimeout(450);
-      }
+      await openPreviewGiveawayEditor(page);
     },
   },
   {
@@ -346,16 +546,9 @@ const scenarios = [
       focus: 'giveaway',
     },
     beforeShot: async (page) => {
-      await page.waitForTimeout(650);
-      const editButton = page.locator('.managed-giveaway').getByRole('button', {
-        name: /(?:Редактировать|Продолжить сценарий|Продолжить)/u,
-      });
-      if ((await editButton.count()) > 0) {
-        await editButton.first().click();
-        await page.waitForTimeout(350);
-      }
+      await openPreviewGiveawayEditor(page);
       await page.getByRole('button', { name: /(?:Далее: условия|К условиям)/u }).click();
-      await page.waitForTimeout(450);
+      await page.locator('.managed-giveaway--step-conditions').waitFor({ state: 'visible' });
     },
   },
   {
@@ -365,22 +558,15 @@ const scenarios = [
       focus: 'giveaway',
     },
     beforeShot: async (page) => {
-      await page.waitForTimeout(650);
-      const editButton = page.locator('.managed-giveaway').getByRole('button', {
-        name: /(?:Редактировать|Продолжить сценарий|Продолжить)/u,
-      });
-      if ((await editButton.count()) > 0) {
-        await editButton.first().click();
-        await page.waitForTimeout(350);
-      }
+      await openPreviewGiveawayEditor(page);
       await page.getByRole('button', { name: /(?:Далее: условия|К условиям)/u }).click();
-      await page.waitForTimeout(250);
+      await page.locator('.managed-giveaway--step-conditions').waitFor({ state: 'visible' });
       await page
         .getByRole('button', {
           name: /(?:Открыть список|Добавить свой канал|Выбрано)/u,
         })
         .click();
-      await page.waitForTimeout(450);
+      await page.locator('.managed-giveaway-modal__sheet').waitFor({ state: 'visible' });
     },
   },
   {
@@ -390,18 +576,11 @@ const scenarios = [
       focus: 'giveaway',
     },
     beforeShot: async (page) => {
-      await page.waitForTimeout(650);
-      const editButton = page.locator('.managed-giveaway').getByRole('button', {
-        name: /(?:Редактировать|Продолжить сценарий|Продолжить)/u,
-      });
-      if ((await editButton.count()) > 0) {
-        await editButton.first().click();
-        await page.waitForTimeout(350);
-      }
+      await openPreviewGiveawayEditor(page);
       await page.getByRole('button', { name: /(?:Далее: условия|К условиям)/u }).click();
-      await page.waitForTimeout(200);
+      await page.locator('.managed-giveaway--step-conditions').waitFor({ state: 'visible' });
       await page.getByRole('button', { name: /(?:Далее: призы|К призам)/u }).click();
-      await page.waitForTimeout(450);
+      await page.locator('.managed-giveaway--step-prizes').waitFor({ state: 'visible' });
     },
   },
   {
@@ -516,6 +695,20 @@ const scenarios = [
     },
   },
   {
+    name: 'chat-settings-broadcast-audience',
+    path: '/chat/preview-chat/settings',
+    searchParams: {
+      focus: 'broadcast',
+      handoff: '1',
+    },
+    beforeShot: async (page) => {
+      await page.locator('.broadcast-compose-flow').waitFor({ state: 'visible' });
+      await page.locator('.broadcast-audience-card__mode-tabs').getByRole('radio').nth(1).click();
+      await page.locator('.broadcast-audience-sheet__panel').waitFor({ state: 'visible' });
+      await page.waitForTimeout(350);
+    },
+  },
+  {
     name: 'chat-settings-broadcast-history',
     path: '/chat/preview-chat/settings',
     searchParams: {
@@ -541,6 +734,16 @@ const scenarios = [
   {
     name: 'channel-settings',
     path: '/channel/preview-channel/settings',
+  },
+  {
+    name: 'channel-settings-access-degraded',
+    path: '/channel/preview-channel/settings',
+    searchParams: {
+      access: 'degraded',
+    },
+    beforeShot: async (page) => {
+      await page.locator('.managed-access-alert').waitFor({ state: 'visible' });
+    },
   },
   {
     name: 'channel-settings-comments',
@@ -590,6 +793,38 @@ const scenarios = [
       await page.getByRole('button', { name: /Опросы/u }).click();
       await page.locator('.managed-poll-workspace').waitFor({ state: 'visible' });
       await page.waitForTimeout(350);
+    },
+  },
+  {
+    name: 'channel-settings-poll-editor',
+    path: '/channel/preview-channel/settings',
+    beforeShot: async (page) => {
+      await openSettingsSection(page, 'Опросы', '.managed-poll-workspace');
+      await page
+        .locator('.managed-poll-workspace')
+        .getByRole('button', { name: 'Закрыть', exact: true })
+        .click();
+      const confirm = page.getByRole('dialog', { name: 'Закрыть опрос?' });
+      await confirm.waitFor({ state: 'visible' });
+      await confirm.getByRole('button', { name: 'Закрыть', exact: true }).click();
+      await page.waitForFunction(() => {
+        const createButton = document.querySelector('.managed-poll-workspace__create');
+        return createButton instanceof HTMLButtonElement && !createButton.disabled;
+      });
+      const pollClosedToast = page.locator('.toast').filter({ hasText: 'Опрос закрыт' });
+      await pollClosedToast.waitFor({ state: 'visible' });
+      await pollClosedToast.getByRole('button', { name: 'Закрыть уведомление' }).click();
+      await pollClosedToast.waitFor({ state: 'detached' });
+      await page.locator('.managed-poll-workspace__create').click();
+      await page.locator('.managed-poll-editor').waitFor({ state: 'visible' });
+      await page.waitForTimeout(350);
+    },
+  },
+  {
+    name: 'channel-settings-giveaway',
+    path: '/channel/preview-channel/settings',
+    beforeShot: async (page) => {
+      await openSettingsSection(page, 'Розыгрыши', '.settings-drilldown__panel--channel-giveaway');
     },
   },
   {
@@ -653,6 +888,7 @@ const scenarios = [
   {
     name: 'channel-stats',
     path: '/channel/preview-channel/stats',
+    beforeShot: waitForChannelStatsReady,
   },
   {
     name: 'channel-stats-24h',
@@ -689,6 +925,7 @@ const scenarios = [
     searchParams: {
       section: 'events',
     },
+    beforeShot: waitForChannelEventsReady,
   },
   {
     name: 'legal-agreement',
@@ -774,6 +1011,78 @@ const scenarios = [
     },
   },
 ];
+
+const settingsBottomScenarioSources = [
+  'chat-settings-rules',
+  'chat-settings-profanity',
+  'chat-settings-commercial',
+  'chat-settings-duplicates',
+  'chat-settings-limits',
+  'chat-settings-night',
+  'chat-settings-commands',
+  'chat-settings-speech-style',
+  'chat-settings-stop-words',
+  'chat-settings-links',
+  'chat-settings-links-timer',
+  'chat-settings-bot-message-editor',
+  'chat-settings-required-subscription',
+  'chat-settings-vk-parsing',
+  'chat-settings-giveaway',
+  'chat-settings-giveaway-editor',
+  'chat-settings-giveaway-conditions-step',
+  'chat-settings-giveaway-channels-modal',
+  'chat-settings-giveaway-publish-step',
+  'chat-settings-broadcast-handoff',
+  'chat-settings-broadcast-editor',
+  'channel-settings-comments',
+  'channel-settings-post-suggestions',
+  'channel-settings-post-suggestions-off',
+  'channel-settings-vk-parsing',
+  'channel-settings-polls',
+  'channel-settings-poll-editor',
+  'channel-settings-giveaway',
+  'channel-settings-broadcast-handoff',
+  'channel-settings-broadcast-editor',
+];
+
+scenarios.push(
+  ...settingsBottomScenarioSources.map((sourceName) => {
+    const source = scenarios.find((scenario) => scenario.name === sourceName);
+    if (!source) {
+      throw new Error(`Missing source scenario for bottom screenshot: ${sourceName}`);
+    }
+    return {
+      ...source,
+      name: `${sourceName}-bottom`,
+      beforeShot: async (page) => {
+        if (source.beforeShot) {
+          await source.beforeShot(page);
+        }
+        await scrollSettingsDrilldownToBottom(page);
+      },
+    };
+  }),
+);
+
+const favoriteCategoriesScenario = scenarios.find(
+  (scenario) => scenario.name === 'home-favorite-categories',
+);
+if (!favoriteCategoriesScenario) {
+  throw new Error('Missing source scenario for bottom screenshot: home-favorite-categories');
+}
+scenarios.push({
+  ...favoriteCategoriesScenario,
+  name: 'home-favorite-categories-bottom',
+  beforeShot: async (page) => {
+    await favoriteCategoriesScenario.beforeShot?.(page);
+    await setScrollPosition(
+      page.locator('.favorite-picker:visible .favorite-picker__panel').first(),
+      'bottom',
+      'Favorite categories',
+    );
+  },
+});
+
 const requestedScenarioNames = (process.env.MINIAPP_SCREENSHOT_SCENARIOS ?? '')
   .split(',')
   .map((value) => value.trim())
@@ -920,15 +1229,17 @@ async function assertCommentsContentTopInset(page) {
 async function openBroadcastHistoryTab(page) {
   await page.waitForTimeout(900);
   const historyTab = page
-    .locator('.broadcast-studio-shell__tabs [role="tab"]')
-    .filter({ hasText: /^История/u })
+    .locator('.broadcast-studio-shell__tabs')
+    .getByRole('radio', { name: /^История/u })
     .first();
   await historyTab.waitFor({ state: 'visible', timeout: 10_000 });
   await historyTab.click();
-  await page
-    .locator('.broadcast-history-filters, .managed-broadcasts-list')
-    .first()
-    .waitFor({ state: 'visible', timeout: 10_000 });
+  await historyTab.waitFor({ state: 'visible' });
+  await page.waitForFunction(
+    (selector) => document.querySelector(selector)?.getAttribute('aria-checked') === 'true',
+    '.broadcast-studio-shell__tabs [data-segmented-value="history"]',
+  );
+  await page.locator('.broadcast-history-filters').waitFor({ state: 'visible', timeout: 10_000 });
   await page.waitForTimeout(500);
 }
 
@@ -1015,6 +1326,75 @@ async function assertStrictLayout(page, scenario) {
   await assertKeyboardState(page, scenario);
   await assertCriticalContrast(page, scenario);
   await assertCriticalAccessibility(page, scenario);
+  await assertSettingsDrilldownScrollContrast(page, scenario);
+}
+
+async function assertSettingsDrilldownScrollContrast(page, scenario) {
+  if (!strictContrast) {
+    return;
+  }
+
+  const scrollTargets = [
+    {
+      label: 'favorite picker',
+      locator: page.locator('.favorite-picker:visible .favorite-picker__panel').first(),
+    },
+    {
+      label: 'settings drilldown',
+      locator: page.locator('.settings-drilldown:visible .settings-drilldown__body').first(),
+    },
+    {
+      label: 'bot message editor',
+      locator: page
+        .locator('.bot-message-editor-sheet:visible .bot-message-editor-sheet__body')
+        .first(),
+    },
+    {
+      label: 'broadcast audience',
+      locator: page
+        .locator('.broadcast-audience-sheet:visible .broadcast-audience-sheet__scroll')
+        .first(),
+    },
+    {
+      label: 'giveaway modal',
+      locator: page
+        .locator('.managed-giveaway-modal:visible .managed-giveaway-modal__sheet')
+        .first(),
+    },
+  ];
+
+  for (const target of scrollTargets) {
+    if ((await target.locator.count()) === 0) {
+      continue;
+    }
+    const initial = await target.locator.evaluate((element) => ({
+      clientHeight: element.clientHeight,
+      maxScrollTop: Math.max(0, element.scrollHeight - element.clientHeight),
+      scrollTop: element.scrollTop,
+    }));
+    if (initial.maxScrollTop <= 1 || initial.clientHeight <= 1) {
+      continue;
+    }
+
+    const step = Math.max(1, Math.floor(initial.clientHeight * 0.72));
+    const positions = [];
+    for (let top = 0; top < initial.maxScrollTop; top += step) {
+      positions.push(top);
+    }
+    positions.push(initial.maxScrollTop);
+
+    try {
+      for (const top of positions) {
+        await setScrollPosition(target.locator, top, target.label);
+        await assertCriticalContrast(page, {
+          ...scenario,
+          name: `${scenario.name} at ${target.label} scroll ${top}/${initial.maxScrollTop}`,
+        });
+      }
+    } finally {
+      await setScrollPosition(target.locator, initial.scrollTop, target.label);
+    }
+  }
 }
 
 async function assertCriticalContrast(page, scenario) {
@@ -1032,6 +1412,8 @@ async function assertCriticalContrast(page, scenario) {
       '.channel-settings-card',
       '.settings-drilldown',
       '.settings-apply-target',
+      '.bot-message-editor-sheet',
+      '.broadcast-audience-sheet',
       '.managed-poll-workspace',
       '.events-screen',
       '.membership-activity-feed',
@@ -1068,9 +1450,7 @@ async function assertCriticalContrast(page, scenario) {
     const luminance = (color) => {
       const linearize = (channel) => {
         const normalized = channel / 255;
-        return normalized <= 0.04045
-          ? normalized / 12.92
-          : ((normalized + 0.055) / 1.055) ** 2.4;
+        return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
       };
       return (
         0.2126 * linearize(color.red) +
@@ -1131,11 +1511,11 @@ async function assertCriticalContrast(page, scenario) {
       );
     };
 
-    const roots = scopeSelectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)));
+    const roots = scopeSelectors.flatMap((selector) =>
+      Array.from(document.querySelectorAll(selector)),
+    );
     const candidates = Array.from(
-      new Set(
-        roots.flatMap((root) => [root, ...root.querySelectorAll('*')]),
-      ),
+      new Set(roots.flatMap((root) => [root, ...root.querySelectorAll('*')])),
     ).filter(
       (element) =>
         element instanceof HTMLElement &&
@@ -1144,41 +1524,45 @@ async function assertCriticalContrast(page, scenario) {
         !element.closest('[disabled], [aria-disabled="true"], [aria-hidden="true"]'),
     );
 
-    return candidates.flatMap((element) => {
-      const style = getComputedStyle(element);
-      const foreground = parseColor(style.color);
-      if (!foreground || foreground.alpha <= 0.05) {
-        return [];
-      }
-      const background = effectiveBackground(element);
-      const renderedForeground = composite(foreground, background);
-      const ratio = contrast(renderedForeground, background);
-      const fontSize = Number.parseFloat(style.fontSize) || 16;
-      const fontWeight = Number.parseInt(style.fontWeight, 10) || 400;
-      const isLarge = fontSize >= 24 || (fontSize >= 18.66 && fontWeight >= 700);
-      const requiredRatio = isLarge ? 3 : 4.5;
-      if (ratio + 0.05 >= requiredRatio) {
-        return [];
-      }
-      return [
-        {
-          tagName: element.tagName,
-          className: element.className?.toString() ?? '',
-          text: element.innerText.replace(/\s+/gu, ' ').trim().slice(0, 80),
-          ratio,
-          requiredRatio,
-        },
-      ];
-    }).slice(0, 5);
+    return candidates
+      .flatMap((element) => {
+        const style = getComputedStyle(element);
+        const foreground = parseColor(style.color);
+        if (!foreground || foreground.alpha <= 0.05) {
+          return [];
+        }
+        const background = effectiveBackground(element);
+        const renderedForeground = composite(foreground, background);
+        const ratio = contrast(renderedForeground, background);
+        const fontSize = Number.parseFloat(style.fontSize) || 16;
+        const fontWeight = Number.parseInt(style.fontWeight, 10) || 400;
+        const isLarge = fontSize >= 24 || (fontSize >= 18.66 && fontWeight >= 700);
+        const requiredRatio = isLarge ? 3 : 4.5;
+        if (ratio + 0.05 >= requiredRatio) {
+          return [];
+        }
+        return [
+          {
+            tagName: element.tagName,
+            className: element.className?.toString() ?? '',
+            text: element.innerText.replace(/\s+/gu, ' ').trim().slice(0, 80),
+            ratio,
+            requiredRatio,
+          },
+        ];
+      })
+      .slice(0, 5);
   });
 
   if (issues.length > 0) {
-    const first = issues[0];
-    throw new Error(
-      `Scenario ${scenario.name} has insufficient text contrast at ` +
-        `${first.tagName}.${first.className}: ${first.ratio.toFixed(2)} < ` +
-        `${first.requiredRatio.toFixed(1)} ("${first.text}").`,
-    );
+    const summary = issues
+      .map(
+        (issue) =>
+          `${issue.tagName}.${issue.className}: ${issue.ratio.toFixed(2)} < ` +
+          `${issue.requiredRatio.toFixed(1)} ("${issue.text}")`,
+      )
+      .join('; ');
+    throw new Error(`Scenario ${scenario.name} has insufficient text contrast at ${summary}.`);
   }
 }
 

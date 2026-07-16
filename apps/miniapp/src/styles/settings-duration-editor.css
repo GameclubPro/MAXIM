@@ -181,6 +181,43 @@
   font-weight: 700;
 }
 
+html[data-max-theme='dark'] .settings-duration-editor {
+  border-color: var(--color-border);
+  background: var(--color-surface-muted);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark']
+  :is(
+    .settings-duration-editor__preset,
+    .settings-duration-editor__hours-input input,
+    .ban-duration-stepper__button,
+    .ban-duration-stepper__value,
+    .duplicate-count-stepper__button,
+    .duplicate-count-stepper__value
+  ) {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-tint);
+  color: var(--text-primary);
+  box-shadow: none;
+}
+
+html[data-max-theme='dark'] .settings-duration-editor__preset {
+  color: var(--text-secondary);
+}
+
+html[data-max-theme='dark'] .settings-duration-editor__preset.is-active {
+  border-color: var(--color-border-strong);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+html[data-max-theme='dark'] .settings-duration-editor__hours-input input:focus {
+  border-color: var(--color-accent);
+  outline: 3px solid var(--color-accent-soft);
+  outline-offset: 1px;
+}
+
 @media (max-width: 430px) {
   .settings-duration-editor__presets {
     grid-template-columns: repeat(2, minmax(0, 1fr));

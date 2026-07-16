@@ -37,15 +37,21 @@ export function SafetyPanel({ sources, auditEvents, isRollingBack, onRollback }:
       <div className="vk-rollback-form">
         <input
           type="datetime-local"
+          aria-label="Начало периода отката"
           value={since}
           onChange={(event) => setSince(event.target.value)}
         />
         <input
           type="datetime-local"
+          aria-label="Конец периода отката"
           value={until}
           onChange={(event) => setUntil(event.target.value)}
         />
-        <select value={sourceId} onChange={(event) => setSourceId(event.target.value)}>
+        <select
+          aria-label="Источник для отката"
+          value={sourceId}
+          onChange={(event) => setSourceId(event.target.value)}
+        >
           <option value="">Все</option>
           {sources.map((source) => (
             <option key={source.id} value={source.id}>

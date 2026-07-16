@@ -298,6 +298,42 @@
     color: var(--color-accent);
   }
 
+  html[data-max-theme='dark']
+    .broadcast-content-composer
+    .broadcast-content-composer__editor {
+    border-color: var(--color-border);
+    background: var(--color-surface);
+    box-shadow: none;
+  }
+
+  html[data-max-theme='dark'] .broadcast-content-composer .broadcast-message-card {
+    border-color: var(--color-border);
+    background: var(--color-surface-muted);
+    box-shadow: none;
+  }
+
+  html[data-max-theme='dark']
+    .broadcast-content-composer
+    :is(.broadcast-message-card__bubble, .broadcast-message-card__tail) {
+    background: color-mix(in srgb, var(--color-accent) 13%, var(--color-surface-tint));
+    color: var(--text-primary);
+    box-shadow: none;
+  }
+
+  html[data-max-theme='dark'] .broadcast-content-composer__bar {
+    background: var(--color-surface-muted);
+  }
+
+  html[data-max-theme='dark'] .broadcast-content-composer__modifier {
+    border-color: var(--color-border);
+    background: var(--color-surface-tint);
+    color: var(--text-secondary);
+  }
+
+  .settings-drilldown .broadcast-content-composer__tool.has-label {
+    width: auto;
+  }
+
   html[data-max-theme='dark'] .broadcast-content-composer__button-label {
     background: var(--color-accent-soft);
     color: var(--color-accent);

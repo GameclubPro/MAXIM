@@ -98,6 +98,7 @@ export function QueueTimeline({
             </div>
             <input
               type="datetime-local"
+              aria-label={`Время публикации: ${post.sourceTitle}`}
               value={toDatetimeLocal(post.publishScheduledAt ?? post.publishQueuedAt)}
               disabled={schedulingPostId === post.id}
               onChange={(event) => onSchedulePost(post.id, fromDatetimeLocal(event.target.value))}

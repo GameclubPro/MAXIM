@@ -118,6 +118,11 @@
     transform: translateY(1px);
   }
 
+  html[data-max-theme='dark'] .publication-workspace-handoff__icon {
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+  }
+
   @media (max-width: 360px) {
     .publication-workspace-handoff__status {
       display: none;

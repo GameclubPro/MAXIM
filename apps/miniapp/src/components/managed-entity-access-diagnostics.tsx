@@ -3,6 +3,8 @@ import type {
   ManagedEntityAccessLossReason,
 } from '@maxim/contracts/managed-entities';
 import { cn } from '../lib/cn';
+import { formatManagedEntityAccessLossHeadline } from './managed-entity-access-diagnostics.model';
+import './managed-entity-access-diagnostics.css';
 
 const REASON_LABELS: Record<ManagedEntityAccessLossReason, string> = {
   chat_not_found: 'чат не найден',
@@ -67,24 +69,6 @@ export function ManagedEntityAccessDiagnosticsBanner({
   );
 }
 
-export function formatManagedEntityAccessLossHeadline(
-  diagnostics: Pick<ManagedEntityAccessDiagnostics, 'activeBotCount' | 'lostBots'>,
-  entityLabel: 'чат' | 'канал',
-): string {
-  const lostBotLabel = formatBotCount(diagnostics.lostBots.length);
-  const activeBotCount = Math.max(0, diagnostics.activeBotCount ?? 0);
-  if (activeBotCount > 0) {
-    return `${lostBotLabel} · ${formatActiveBotAccess(activeBotCount)}`;
-  }
-
-  return `${lostBotLabel} · ${entityLabel} недоступен`;
-}
-
-function formatActiveBotAccess(count: number): string {
-  const botLabel = formatBotCount(count);
-  return count === 1 ? `${botLabel} продолжает работать` : `${botLabel} продолжают работать`;
-}
-
 function formatLostBotIdentity(
   item: ManagedEntityAccessDiagnostics['lostBots'][number],
   index: number,
@@ -96,18 +80,6 @@ function formatLostBotIdentity(
   }
 
   return label || botId || `Бот ${index + 1}`;
-}
-
-function formatBotCount(count: number): string {
-  const mod10 = count % 10;
-  const mod100 = count % 100;
-  const noun =
-    mod10 === 1 && mod100 !== 11
-      ? 'бот'
-      : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)
-        ? 'бота'
-        : 'ботов';
-  return `${count} ${noun}`;
 }
 
 function formatDateTime(value: string): string {

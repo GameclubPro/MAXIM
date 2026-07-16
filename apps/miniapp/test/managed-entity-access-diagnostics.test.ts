@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ManagedEntityAccessDiagnostics } from '@maxim/contracts/managed-entities';
-import { formatManagedEntityAccessLossHeadline } from '../src/components/managed-entity-access-diagnostics';
+import { formatManagedEntityAccessLossHeadline } from '../src/components/managed-entity-access-diagnostics.model';
 
 function createDiagnostics(
   overrides: Partial<ManagedEntityAccessDiagnostics> = {},

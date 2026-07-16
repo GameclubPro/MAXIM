@@ -2466,13 +2466,20 @@ body.settings-drilldown-open .toast__close {
   min-width: 18px;
   height: 18px;
   background: var(--surface-card-muted);
-  color: var(--broadcast-polish-muted);
+  color: var(--text-secondary);
   font-size: 10px;
 }
 
 .settings-drilldown__panel--broadcast-screen .segmented-control__item.is-active small {
   background: var(--accent-soft);
   color: var(--broadcast-polish-accent-strong);
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown__panel--broadcast-screen
+  .segmented-control__item.is-active
+  small {
+  color: var(--text-primary);
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-shell-reset {

@@ -29,6 +29,14 @@ type BroadcastAudienceSheetProps = {
   onRefresh?: () => void;
 };
 
+function resolveBroadcastAudienceSheetPortalTarget(): Element | null {
+  if (typeof document === 'undefined') {
+    return null;
+  }
+
+  return document.querySelector('.design-preview__device-screen') ?? document.body;
+}
+
 function CloseIcon() {
   return (
     <svg viewBox="0 0 20 20" fill="none" aria-hidden>
@@ -143,7 +151,8 @@ export function BroadcastAudienceSheet({
     return orderedChoices.filter((chat) => favoriteIds.has(chat.id)).map((chat) => chat.id);
   }, [favoriteChatIds, orderedChoices]);
 
-  if (!open || typeof document === 'undefined') {
+  const portalTarget = open ? resolveBroadcastAudienceSheetPortalTarget() : null;
+  if (!open || !portalTarget) {
     return null;
   }
 
@@ -400,6 +409,6 @@ export function BroadcastAudienceSheet({
         </div>
       </section>
     </div>,
-    document.body,
+    portalTarget,
   );
 }

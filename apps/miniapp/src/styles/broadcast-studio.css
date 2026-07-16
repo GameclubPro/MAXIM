@@ -4995,6 +4995,38 @@ html[data-max-theme='dark']
 
 html[data-max-theme='dark']
   .settings-drilldown__panel--broadcast-screen
+  .managed-broadcast-card__badge.is-active {
+  border-color: color-mix(in srgb, var(--color-accent) 36%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 18%, var(--color-surface-tint));
+  color: var(--text-primary);
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown__panel--broadcast-screen
+  .managed-broadcast-card__badge.is-warning {
+  border-color: color-mix(in srgb, var(--color-warning) 36%, var(--color-border));
+  background: color-mix(in srgb, var(--color-warning) 14%, var(--color-surface-tint));
+  color: var(--color-warning);
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown__panel--broadcast-screen
+  .managed-broadcast-card__badge.is-danger {
+  border-color: color-mix(in srgb, var(--color-danger) 36%, var(--color-border));
+  background: color-mix(in srgb, var(--color-danger) 14%, var(--color-surface-tint));
+  color: var(--color-danger);
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown__panel--broadcast-screen
+  .managed-broadcast-card__badge.is-muted {
+  border-color: var(--color-border);
+  background: var(--color-surface-tint);
+  color: var(--text-secondary);
+}
+
+html[data-max-theme='dark']
+  .settings-drilldown__panel--broadcast-screen
   :is(.managed-broadcast-card__metric, .managed-broadcast-card__facts span) {
   border-color: var(--color-border);
   background: var(--color-surface-tint);
