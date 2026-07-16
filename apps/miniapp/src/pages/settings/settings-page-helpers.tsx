@@ -14,9 +14,6 @@ import {
 import { type BroadcastImage, type SendBroadcastResult } from '@maxim/contracts/broadcast';
 import {
   BOT_SPEECH_STYLE_OPTIONS,
-  getBotSpeechEditableTemplate,
-  getBotSpeechSystemTemplate,
-  type BotSpeechEditableFieldKey,
   type BotSpeechMediaFieldKey,
   type BotSpeechStyle,
 } from '@maxim/contracts/bot-speech';
@@ -45,6 +42,7 @@ import { cn } from '../../lib/cn';
 import type { SettingsWorkspaceState } from '../../lib/settings-workspace-state';
 import type { ApplySectionKey } from '../settings-page-state';
 export { createDefaultApplySettingsTarget } from './settings-apply-target';
+export { buildSpeechStylePreviewSamples } from '../../lib/bot-speech-style-preview';
 
 export type FieldErrors = Partial<Record<keyof ChatSettings, string>>;
 export type { BotSpeechMediaFieldKey, BotSpeechMediaImage };
@@ -912,98 +910,8 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-export function getSpeechTemplateFallback(
-  style: ChatSettings['botSpeechStyle'],
-  fieldKey: BotSpeechEditableFieldKey,
-  previewContext: BotSpeechPreviewContext = DEFAULT_BOT_SPEECH_PREVIEW_CONTEXT,
-): string {
-  return getBotSpeechEditableTemplate(style, fieldKey, previewContext.persona);
-}
-
-export function getSpeechSystemTemplateFallback(
-  style: ChatSettings['botSpeechStyle'],
-  templateKey: Parameters<typeof getBotSpeechSystemTemplate>[1],
-  previewContext: BotSpeechPreviewContext = DEFAULT_BOT_SPEECH_PREVIEW_CONTEXT,
-): string {
-  return getBotSpeechSystemTemplate(style, templateKey, previewContext.persona);
-}
-
 export function resolveBotMessageTemplate(customValue: string, fallbackTemplate: string): string {
   return customValue.length > 0 ? customValue : fallbackTemplate;
-}
-
-export function renderBotMessageTemplatePreview(
-  templateText: string,
-  replacements: Record<string, string>,
-  previewContext: BotSpeechPreviewContext = DEFAULT_BOT_SPEECH_PREVIEW_CONTEXT,
-): string {
-  let rendered = templateText;
-  const mergedReplacements: Record<string, string> = {
-    bot_character_name: previewContext.characterName,
-    ...replacements,
-  };
-  for (const [key, value] of Object.entries(mergedReplacements)) {
-    rendered = rendered.split(`{${key}}`).join(value);
-  }
-
-  return rendered;
-}
-
-export function buildSpeechStylePreviewSamples(
-  style: BotSpeechStyle,
-  previewContext: BotSpeechPreviewContext = DEFAULT_BOT_SPEECH_PREVIEW_CONTEXT,
-): {
-  greeting: string;
-  explanation: string;
-  warning: string;
-  mute: string;
-  ban: string;
-} {
-  return {
-    greeting: renderBotMessageTemplatePreview(
-      getSpeechTemplateFallback(style, 'greetingBotMessageText', previewContext),
-      {
-        user: 'Алексей',
-        greeting: 'добро пожаловать в чат',
-      },
-      previewContext,
-    ),
-    explanation: renderBotMessageTemplatePreview(
-      getSpeechTemplateFallback(style, 'linkBotMessageText', previewContext),
-      {
-        user: 'Алексей',
-        message_status: 'удалено',
-        reason: 'эта ссылка запрещена настройками чата',
-      },
-      previewContext,
-    ),
-    warning: renderBotMessageTemplatePreview(
-      getSpeechTemplateFallback(style, 'textFiltersWarnMessageText', previewContext),
-      {
-        user: 'Алексей',
-        warning: 'предупреждение за грубую лексику',
-        reason: 'грубая лексика запрещена правилами чата',
-      },
-      previewContext,
-    ),
-    mute: renderBotMessageTemplatePreview(
-      getSpeechSystemTemplateFallback(style, 'muteNotice', previewContext),
-      {
-        user: 'Алексей',
-        mute_duration: '24 часа',
-        ban_duration: '24 часа',
-      },
-      previewContext,
-    ),
-    ban: renderBotMessageTemplatePreview(
-      getSpeechSystemTemplateFallback(style, 'topicBan', previewContext),
-      {
-        user: 'Алексей',
-        reason: 'правила чата нарушены повторно',
-      },
-      previewContext,
-    ),
-  };
 }
 
 export function formatApiError(error: unknown): string {

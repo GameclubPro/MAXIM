@@ -137,15 +137,6 @@ function buildRulesTextItems(screen: RulesTextScreenState): string[] {
     items.push('Коммерческую рекламу публикуйте только по согласованию с администраторами.');
   }
 
-  if (settings.thematicCodewordEnabled) {
-    const codeword = settings.thematicCodeword.trim();
-    items.push(
-      codeword
-        ? `Если пишете по теме, начинайте сообщение со слова "${codeword}".`
-        : 'Если включён тематический фильтр, придерживайтесь темы чата.',
-    );
-  }
-
   if (settings.antiDuplicateEnabled) {
     const allowedCount = resolveDuplicateAllowedCount(settings);
     items.push(
@@ -232,19 +223,16 @@ function buildRulesSanctionsSummary(
     | 'linkWarnEnabled'
     | 'requiredSubscriptionWarnEnabled'
     | 'textFiltersWarnEnabled'
-    | 'thematicFiltersWarnEnabled'
     | 'messageLimitsWarnEnabled'
     | 'duplicateWarnEnabled'
     | 'linkMuteEnabled'
     | 'requiredSubscriptionMuteEnabled'
     | 'textFiltersMuteEnabled'
-    | 'thematicFiltersMuteEnabled'
     | 'messageLimitsMuteEnabled'
     | 'duplicateMuteEnabled'
     | 'linkBanEnabled'
     | 'requiredSubscriptionBanEnabled'
     | 'textFiltersBanEnabled'
-    | 'thematicFiltersBanEnabled'
     | 'messageLimitsBanEnabled'
     | 'duplicateBanEnabled'
   >,
@@ -255,7 +243,6 @@ function buildRulesSanctionsSummary(
     settings.linkWarnEnabled ||
     settings.requiredSubscriptionWarnEnabled ||
     settings.textFiltersWarnEnabled ||
-    settings.thematicFiltersWarnEnabled ||
     settings.messageLimitsWarnEnabled ||
     settings.duplicateWarnEnabled
   ) {
@@ -266,7 +253,6 @@ function buildRulesSanctionsSummary(
     settings.linkMuteEnabled ||
     settings.requiredSubscriptionMuteEnabled ||
     settings.textFiltersMuteEnabled ||
-    settings.thematicFiltersMuteEnabled ||
     settings.messageLimitsMuteEnabled ||
     settings.duplicateMuteEnabled
   ) {
@@ -277,7 +263,6 @@ function buildRulesSanctionsSummary(
     settings.linkBanEnabled ||
     settings.requiredSubscriptionBanEnabled ||
     settings.textFiltersBanEnabled ||
-    settings.thematicFiltersBanEnabled ||
     settings.messageLimitsBanEnabled ||
     settings.duplicateBanEnabled
   ) {

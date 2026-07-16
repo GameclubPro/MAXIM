@@ -209,7 +209,6 @@ import {
   DEFAULT_NIGHT_MODE_TIMEZONE,
   LINK_ESCALATION_WINDOW_HOURS,
   TEXT_FILTER_ESCALATION_WINDOW_HOURS,
-  TOPIC_FILTER_ESCALATION_WINDOW_HOURS,
   MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS,
   REQUIRED_SUBSCRIPTION_ESCALATION_WINDOW_HOURS,
   REQUIRED_SUBSCRIPTION_MEMBER_PRESENT_TTL_SEC,
@@ -309,7 +308,6 @@ import {
   NON_SANCTION_RULE_CODES,
   MESSAGE_LIMITS_RULE_CODES,
   TEXT_FILTER_RULE_CODES,
-  TOPIC_FILTER_RULE_CODES,
   isRequiredSubscriptionCurrentlyActive,
   isInvitationAccessCurrentlyActive,
   type ActiveMute,
@@ -1583,13 +1581,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
       this.markWebhookHotPathStage(hotPathProfile, 'rule-engine');
 
-      const violations = await this.reconcileLinkAllowlistViolations({
-        chatId,
-        text,
-        settings,
-        cachedDomainAllowlist: chat.domainAllowlist,
-        violations: detection.violations,
-      });
+      const violations = (
+        await this.reconcileLinkAllowlistViolations({
+          chatId,
+          text,
+          settings,
+          cachedDomainAllowlist: chat.domainAllowlist,
+          violations: detection.violations,
+        })
+      ).filter((violation) => violation.ruleCode !== 'TOPIC_FILTER_MISMATCH');
       const hasCompetingViolation = violations.length > 0;
       const latestManualReleaseAt =
         detection.duplicateDecision || detection.duplicateHit
@@ -1792,7 +1792,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         violations.find((item) => item.ruleCode === 'LINK_BLOCKED') ??
         violations.find((item) => item.ruleCode === 'COMMERCIAL_AD') ??
         violations.find((item) => item.ruleCode === 'PROFANITY') ??
-        violations.find((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH') ??
         violations.find((item) => item.ruleCode === 'MESSAGE_BLOCKED_WORD') ??
         violations.find((item) => item.ruleCode === 'MESSAGE_BLOCKED_DOMAIN') ??
         violations.find((item) => item.ruleCode === 'PHONE_NUMBER_BLOCKED') ??
@@ -1938,7 +1937,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         const isPhoneNumberHit = topViolation.ruleCode === 'PHONE_NUMBER_BLOCKED';
         const isTextFilterHit =
           this.isTextFilterViolation(topViolation.ruleCode) && !isCommercialReviewOnly;
-        const isTopicFilterHit = this.isTopicFilterViolation(topViolation.ruleCode);
         const isMessageLimitsHit =
           this.isMessageLimitsViolation(topViolation.ruleCode) && !isPhoneNumberHit;
         const messageLimitsBlockedWord = extractMessageLimitsBlockedToken(topViolation.metadata);
@@ -1981,26 +1979,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               rulesPublishedMessageId,
             )
           : null;
-        const topicMessageOptions = isTopicFilterHit
-          ? this.buildBotMessageOptions(
-              chatId,
-              settings.thematicFiltersBotButtons,
-              settings.thematicFiltersBotButtonEnabled,
-              settings.thematicFiltersBotButtonUrl,
-              settings.thematicFiltersBotButtonText,
-              settings.rulesAttachViolationsEnabled,
-              rulesPublishedUrl,
-              rulesPublishedMessageId,
-            )
-          : null;
         const textFilterViolationCount24h = isTextFilterHit
           ? await this.countRecentTextFilterViolations(chatId, senderId, topViolation.ruleCode, {
-              messageId,
-              updateType,
-            })
-          : null;
-        const topicFilterViolationCount24h = isTopicFilterHit
-          ? await this.countRecentTopicFilterViolations(chatId, senderId, topViolation.ruleCode, {
               messageId,
               updateType,
             })
@@ -2063,12 +2043,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             banEnabled: Boolean(textFilterEscalationSettings?.banEnabled),
             muteEnabled: Boolean(textFilterEscalationSettings?.muteEnabled),
           });
-        } else if (isTopicFilterHit) {
-          action = this.resolveTextFilterEscalationAction(topicFilterViolationCount24h ?? 1, {
-            warnEnabled: settings.thematicFiltersWarnEnabled,
-            banEnabled: settings.thematicFiltersBanEnabled,
-            muteEnabled: settings.thematicFiltersMuteEnabled,
-          });
         } else if (topViolation.ruleCode === 'MESSAGE_RATE_LIMIT') {
           // Burst flooding can starve moderation workers, so this guard is enforced as a hard ban.
           action = SanctionAction.BAN;
@@ -2089,7 +2063,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         const isFirstLinkViolation =
           topViolation.ruleCode === 'LINK_BLOCKED' && linkViolationCount24h === 1;
         const isFirstTextFilterViolation = isTextFilterHit && textFilterViolationCount24h === 1;
-        const isFirstTopicFilterViolation = isTopicFilterHit && topicFilterViolationCount24h === 1;
         const isFirstMessageLimitsViolation =
           isMessageLimitsHit && messageLimitsViolationCount12h === 1;
         const isFirstPhoneNumberViolation = isPhoneNumberHit && phoneNumbersViolationCount === 1;
@@ -2363,68 +2336,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           }
         }
 
-        if (isTopicFilterHit) {
-          if (
-            action === SanctionAction.NONE &&
-            isFirstTopicFilterViolation &&
-            settings.thematicFiltersBotMessageEnabled
-          ) {
-            try {
-              await sendChatBotMessage(
-                await this.appendAdminContactMarkdownLink(
-                  chatId,
-                  this.buildTopicFilterExplanation(
-                    userLabel,
-                    messageDeleted,
-                    this.extractTopicFilterRequiredCodeword(topViolation.metadata),
-                    settings.botSpeechStyle,
-                  ),
-                  settings.thematicFiltersAdminContactButtonEnabled,
-                  settings.thematicFiltersAdminContactButtonUrl,
-                ),
-                topicMessageOptions ?? undefined,
-              );
-            } catch (error: unknown) {
-              this.logger.warn(
-                {
-                  chatId,
-                  userId: senderId,
-                  messageId,
-                  ruleCode: topViolation.ruleCode,
-                  error: error instanceof Error ? error.message : 'Unknown error',
-                },
-                'Failed to send thematic filter explanation message',
-              );
-            }
-          } else if (action === SanctionAction.WARN) {
-            try {
-              await sendChatBotMessage(
-                await this.appendAdminContactMarkdownLink(
-                  chatId,
-                  this.buildTopicFilterWarnExplanation(
-                    userLabel,
-                    this.extractTopicFilterRequiredCodeword(topViolation.metadata),
-                    settings.botSpeechStyle,
-                  ),
-                  settings.thematicFiltersAdminContactButtonEnabled,
-                  settings.thematicFiltersAdminContactButtonUrl,
-                ),
-                topicMessageOptions ?? undefined,
-              );
-            } catch (error: unknown) {
-              this.logger.warn(
-                {
-                  chatId,
-                  userId: senderId,
-                  messageId,
-                  error: error instanceof Error ? error.message : 'Unknown error',
-                },
-                'Failed to send thematic filter warning message',
-              );
-            }
-          }
-        }
-
         if (action !== SanctionAction.NONE) {
           await this.applySanctionAction({
             chatId,
@@ -2438,15 +2349,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             botMessageOptions:
               topViolation.ruleCode === 'LINK_BLOCKED'
                 ? (linkMessageOptions ?? undefined)
-                : isTopicFilterHit
-                  ? (topicMessageOptions ?? undefined)
-                  : isPhoneNumberHit
-                    ? (phoneNumbersMessageOptions ?? undefined)
-                    : isMessageLimitsHit
-                      ? (limitsMessageOptions ?? undefined)
-                      : isTextFilterHit
-                        ? (textFilterMessageOptions ?? undefined)
-                        : undefined,
+                : isPhoneNumberHit
+                  ? (phoneNumbersMessageOptions ?? undefined)
+                  : isMessageLimitsHit
+                    ? (limitsMessageOptions ?? undefined)
+                    : isTextFilterHit
+                      ? (textFilterMessageOptions ?? undefined)
+                      : undefined,
             sanctionNoticeText:
               isPhoneNumberHit && action === SanctionAction.BAN
                 ? this.buildMessageLimitsBanExplanation(
@@ -2464,14 +2373,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                       messageLimitsBlockedWord,
                       settings.botSpeechStyle,
                     )
-                  : isTopicFilterHit && action === SanctionAction.BAN
-                    ? this.buildTopicFilterBanExplanation(
-                        userLabel,
-                        this.extractTopicFilterRequiredCodeword(topViolation.metadata),
-                        actionMuteDurationHours,
-                        settings.botSpeechStyle,
-                      )
-                    : undefined,
+                  : undefined,
             botSpeechStyle: settings.botSpeechStyle,
           });
 
@@ -2513,30 +2415,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                   error: error instanceof Error ? error.message : 'Unknown error',
                 },
                 'Failed to send text filter mute message',
-              );
-            }
-          }
-
-          if (isTopicFilterHit && action === SanctionAction.MUTE) {
-            try {
-              await sendChatBotMessage(
-                this.buildTopicFilterMuteExplanation(
-                  userLabel,
-                  this.extractTopicFilterRequiredCodeword(topViolation.metadata),
-                  settings.botSpeechStyle,
-                ),
-                topicMessageOptions ?? undefined,
-              );
-            } catch (error: unknown) {
-              this.logger.warn(
-                {
-                  chatId,
-                  userId: senderId,
-                  messageId,
-                  ruleCode: topViolation.ruleCode,
-                  error: error instanceof Error ? error.message : 'Unknown error',
-                },
-                'Failed to send thematic filter mute message',
               );
             }
           }
@@ -2625,12 +2503,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                 ? {
                     textFilterViolationCount24h,
                     textFilterEscalationWindowHours: TEXT_FILTER_ESCALATION_WINDOW_HOURS,
-                  }
-                : {}),
-              ...(isTopicFilterHit && topicFilterViolationCount24h !== null
-                ? {
-                    topicFilterViolationCount24h,
-                    topicFilterEscalationWindowHours: TOPIC_FILTER_ESCALATION_WINDOW_HOURS,
                   }
                 : {}),
               ...(isMessageLimitsHit && messageLimitsViolationCount12h !== null
@@ -3581,76 +3453,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  private buildTopicFilterExplanation(
-    userLabel: string,
-    canDeleteMessage: boolean,
-    requiredCodeword: string | null,
-    botSpeechStyle: BotSpeechStyle | null,
-  ): string {
-    const messageStatus = this.buildMessageStatusLabel(canDeleteMessage);
-    const reason = this.resolveTopicFilterRequirementLabel(requiredCodeword);
-    const templateKey = requiredCodeword ? 'topicExplainAnnouncement' : 'topicExplainMessage';
-
-    return this.renderSystemBotSpeechTemplate({
-      style: botSpeechStyle,
-      templateKey,
-      replacements: {
-        user: userLabel,
-        message_status: messageStatus,
-        reason,
-      },
-    });
-  }
-
-  private buildTopicFilterWarnExplanation(
-    userLabel: string,
-    requiredCodeword: string | null,
-    botSpeechStyle: BotSpeechStyle | null,
-  ): string {
-    const reason = this.resolveTopicFilterRequirementLabel(requiredCodeword);
-
-    return this.renderSystemBotSpeechTemplate({
-      style: botSpeechStyle,
-      templateKey: 'topicWarn',
-      replacements: {
-        user: userLabel,
-        reason,
-      },
-    });
-  }
-
-  private buildTopicFilterMuteExplanation(
-    userLabel: string,
-    requiredCodeword: string | null,
-    botSpeechStyle: BotSpeechStyle | null,
-  ): string {
-    return this.renderSystemBotSpeechTemplate({
-      style: botSpeechStyle,
-      templateKey: requiredCodeword ? 'topicMuteAnnouncement' : 'topicMuteMessage',
-      replacements: {
-        user: userLabel,
-      },
-    });
-  }
-
-  private buildTopicFilterBanExplanation(
-    userLabel: string,
-    requiredCodeword: string | null,
-    _muteDurationHours: number,
-    botSpeechStyle: BotSpeechStyle | null,
-  ): string {
-    const reason = this.resolveTopicFilterRequirementLabel(requiredCodeword);
-
-    return this.renderSystemBotSpeechTemplate({
-      style: botSpeechStyle,
-      templateKey: 'topicBan',
-      replacements: {
-        user: userLabel,
-        reason,
-      },
-    });
-  }
-
   private buildDuplicateExplanation(
     userLabel: string,
     decision: DuplicateDecision,
@@ -3796,21 +3598,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return rendered;
-  }
-
-  private resolveTopicFilterRequirementLabel(requiredCodeword: string | null): string {
-    if (requiredCodeword) {
-      return `объявление должно начинаться с кодового слова «${this.escapeMaxMarkdownText(requiredCodeword)}»`;
-    }
-
-    return 'сообщение не соответствует тематике чата';
-  }
-
-  private extractTopicFilterRequiredCodeword(metadata?: Record<string, unknown>): string | null {
-    const rawCodeword = metadata?.requiredCodeword;
-    return typeof rawCodeword === 'string' && rawCodeword.trim().length > 0
-      ? rawCodeword.trim()
-      : null;
   }
 
   private buildMessageStatusLabel(canDeleteMessage: boolean): string {
@@ -4589,10 +4376,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return settings.textFiltersMuteDurationHours;
     }
 
-    if (this.isTopicFilterViolation(ruleCode)) {
-      return settings.thematicFiltersMuteDurationHours;
-    }
-
     if (this.isMessageLimitsViolation(ruleCode)) {
       return settings.messageLimitsMuteDurationHours;
     }
@@ -4606,10 +4389,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private isTextFilterViolation(ruleCode: string): boolean {
     return TEXT_FILTER_RULE_CODES.has(ruleCode);
-  }
-
-  private isTopicFilterViolation(ruleCode: string): boolean {
-    return TOPIC_FILTER_RULE_CODES.has(ruleCode);
   }
 
   private buildTextFilterExplanation(
@@ -5633,51 +5412,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             chatId,
             userId,
             ruleCode: ruleCodeFilter,
-            createdAt: { gte: since },
-          },
-        });
-
-        return Number.isInteger(count) && count > 0 ? count : 1;
-      },
-    });
-  }
-
-  private async countRecentTopicFilterViolations(
-    chatId: string,
-    userId: string,
-    ruleCode: string,
-    context: { messageId?: string | null; updateType?: string | null } = {},
-  ): Promise<number> {
-    const windowMs = TOPIC_FILTER_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000;
-    return this.countRecentViolationsWithEscalationCounter({
-      chatId,
-      userId,
-      ruleKey: ruleCode,
-      windowMs,
-      messageId: context.messageId,
-      updateType: context.updateType,
-      loadCount: async () => {
-        const violationModel = this.prisma.violation as unknown as {
-          count?: (args: {
-            where: {
-              chatId: string;
-              userId: string;
-              ruleCode: string;
-              createdAt: { gte: Date };
-            };
-          }) => Promise<number>;
-        };
-
-        if (typeof violationModel.count !== 'function') {
-          return 1;
-        }
-
-        const since = await this.resolveViolationResetSince(chatId, userId, windowMs);
-        const count = await violationModel.count({
-          where: {
-            chatId,
-            userId,
-            ruleCode,
             createdAt: { gte: since },
           },
         });
@@ -16402,7 +16136,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       ...settings,
       commercialAdsFilterEnabled: false,
       russianProfanityFilterEnabled: false,
-      thematicCodewordEnabled: false,
     };
   }
 

@@ -266,7 +266,6 @@ export const RULES_CALLBACK_PAYLOAD = 'rules:open';
 export const DEFAULT_NIGHT_MODE_TIMEZONE = 'Europe/Moscow';
 export const LINK_ESCALATION_WINDOW_HOURS = 24;
 export const TEXT_FILTER_ESCALATION_WINDOW_HOURS = 24;
-export const TOPIC_FILTER_ESCALATION_WINDOW_HOURS = 24;
 export const MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS = 12;
 export const REQUIRED_SUBSCRIPTION_ESCALATION_WINDOW_HOURS = 24;
 export const REQUIRED_SUBSCRIPTION_MEMBER_PRESENT_TTL_SEC = 90;
@@ -424,7 +423,6 @@ export const NON_SANCTION_RULE_CODES = new Set([
   'LINK_BLOCKED',
   'PROFANITY',
   'COMMERCIAL_AD',
-  'TOPIC_FILTER_MISMATCH',
   'MESSAGE_BLOCKED_WORD',
   'MESSAGE_BLOCKED_DOMAIN',
   'PHONE_NUMBER_BLOCKED',
@@ -457,7 +455,6 @@ export type GlobalSpammerTrackingResult = {
   skipKnownSpammerCheck: boolean;
 };
 export const TEXT_FILTER_RULE_CODES = new Set(['PROFANITY', 'COMMERCIAL_AD']);
-export const TOPIC_FILTER_RULE_CODES = new Set(['TOPIC_FILTER_MISMATCH']);
 export type PrivateControlCommand = 'menu' | 'chats' | 'channels' | 'help';
 export type ActiveBotSpeechProfile = {
   persona: BotSpeechPersona;

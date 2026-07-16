@@ -29,7 +29,6 @@ import {
   markRuleEngineDetectStage,
   recordRuleEngineDetectProfile,
 } from './rule-engine-profile';
-import { detectTopicFilterMismatch } from './rule-engine-topic-filter';
 
 type ProfanityCandidate = {
   value: string;
@@ -1081,26 +1080,6 @@ export class RuleEngineService {
       }
     }
     markRuleEngineDetectStage(profile, 'commercial-ad');
-
-    const topicMismatch = detectTopicFilterMismatch({
-      rawText: text,
-      measuredLength: detectionContext.measuredLength,
-      settings,
-    });
-    if (topicMismatch) {
-      violations.push({
-        ruleCode: 'TOPIC_FILTER_MISMATCH',
-        score: 0.84,
-        reason: 'Message without required thematic markers',
-        metadata: {
-          mode: topicMismatch.mode,
-          messageLength: topicMismatch.messageLength,
-          requiredCodeword: topicMismatch.requiredCodeword,
-          messageFirstToken: topicMismatch.messageFirstToken,
-        },
-      });
-    }
-    markRuleEngineDetectStage(profile, 'topic-filter');
 
     const allowlistLinkMatcher =
       domainAllowlist.length > 0 ? createAllowlistLinkMatcher(domainAllowlist) : undefined;

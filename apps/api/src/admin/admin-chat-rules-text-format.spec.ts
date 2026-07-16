@@ -83,7 +83,7 @@ describe('admin chat rules text format helpers', () => {
   });
 
   it('uses a fallback allowlist rule when allowed domains are empty', () => {
-    const settings = chatSettingsSchema.parse({
+    const parsedSettings = chatSettingsSchema.parse({
       linkPolicy: 'ALLOWLIST_ONLY',
       antiSpamEnabled: false,
       antiDuplicateEnabled: false,
@@ -103,6 +103,14 @@ describe('admin chat rules text format helpers', () => {
       voiceMessagesEnabled: true,
       phoneNumbersEnabled: true,
     });
+    const settings = {
+      ...parsedSettings,
+      thematicCodewordEnabled: true,
+      thematicCodeword: 'Секрет',
+      thematicFiltersWarnEnabled: true,
+      thematicFiltersMuteEnabled: true,
+      thematicFiltersBanEnabled: true,
+    };
 
     expect(
       buildRulesTextFromSettings({
@@ -184,19 +192,16 @@ describe('admin chat rules text format helpers', () => {
       linkWarnEnabled: false,
       requiredSubscriptionWarnEnabled: false,
       textFiltersWarnEnabled: false,
-      thematicFiltersWarnEnabled: false,
       messageLimitsWarnEnabled: false,
       duplicateWarnEnabled: false,
       linkMuteEnabled: false,
       requiredSubscriptionMuteEnabled: false,
       textFiltersMuteEnabled: false,
-      thematicFiltersMuteEnabled: false,
       messageLimitsMuteEnabled: false,
       duplicateMuteEnabled: false,
       linkBanEnabled: false,
       requiredSubscriptionBanEnabled: false,
       textFiltersBanEnabled: false,
-      thematicFiltersBanEnabled: false,
       messageLimitsBanEnabled: false,
       duplicateBanEnabled: false,
     };

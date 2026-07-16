@@ -1911,21 +1911,28 @@ describe('PrivateControlService', () => {
   });
 
   it('builds rules text from current settings in the private bot', async () => {
-    const generatedSettings = chatSettingsSchema.parse({
-      linkPolicy: 'BLOCKLIST_ONLY',
-      requiredSubscriptionEnabled: true,
-      requiredSubscriptionChannelIds: ['channel-1', 'channel-2'],
-      maxMessageLengthEnabled: true,
-      maxMessageLength: 500,
-      messageLimitsBlockedWords: ['спам', 'капс'],
-      photoMessagesEnabled: false,
-      videoMessagesEnabled: false,
-      phoneNumbersEnabled: false,
-      nightModeEnabled: true,
-      nightModeStartTimeMinutes: 23 * 60,
-      nightModeEndTimeMinutes: 8 * 60,
-      nightModeTimezone: 'Europe/Moscow',
-    });
+    const generatedSettings = {
+      ...chatSettingsSchema.parse({
+        linkPolicy: 'BLOCKLIST_ONLY',
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1', 'channel-2'],
+        maxMessageLengthEnabled: true,
+        maxMessageLength: 500,
+        messageLimitsBlockedWords: ['спам', 'капс'],
+        photoMessagesEnabled: false,
+        videoMessagesEnabled: false,
+        phoneNumbersEnabled: false,
+        nightModeEnabled: true,
+        nightModeStartTimeMinutes: 23 * 60,
+        nightModeEndTimeMinutes: 8 * 60,
+        nightModeTimezone: 'Europe/Moscow',
+      }),
+      thematicCodewordEnabled: true,
+      thematicCodeword: 'Секрет',
+      thematicFiltersWarnEnabled: true,
+      thematicFiltersMuteEnabled: true,
+      thematicFiltersBanEnabled: true,
+    };
     const { service, adminSettingsService, maxClient, chats } = createHarness({
       settings: generatedSettings,
       rules: createRules({
@@ -2003,6 +2010,7 @@ describe('PrivateControlService', () => {
       'Ночью чат работает тише: ограничения действуют с 23:00 до 08:00.',
     );
     expect(String(updatePayload?.text ?? '')).not.toContain('Europe/Moscow');
+    expect(String(updatePayload?.text ?? '')).not.toContain('Секрет');
     expect(getLastUiText(maxClient)).toContain(
       'Пожалуйста, не отправляйте ссылки: бот их удаляет.',
     );
@@ -2019,7 +2027,6 @@ describe('PrivateControlService', () => {
       antiDuplicateEnabled: false,
       russianProfanityFilterEnabled: false,
       commercialAdsFilterEnabled: false,
-      thematicCodewordEnabled: false,
       messageCountLimitEnabled: false,
       maxMessageLengthEnabled: false,
       photoMessageCooldownEnabled: false,

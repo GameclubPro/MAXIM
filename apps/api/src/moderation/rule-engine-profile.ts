@@ -70,7 +70,6 @@ export function logSlowRuleEngineDetectIfNeeded(params: {
       linkPolicy: params.settings.linkPolicy,
       antiDuplicateEnabled: params.settings.antiDuplicateEnabled,
       commercialAdsFilterEnabled: params.settings.commercialAdsFilterEnabled,
-      thematicCodewordEnabled: params.settings.thematicCodewordEnabled,
       messageCountLimitEnabled: params.settings.messageCountLimitEnabled,
       russianProfanityFilterEnabled: params.settings.russianProfanityFilterEnabled,
       violationsCount: params.violationsCount,

@@ -168,3 +168,23 @@ test('buildRulesTextFromSettingsScreen treats legacy required subscription expir
   assert.match(text, /Чтобы писать в чат, сначала подпишитесь на: Новости проекта\./);
   assert.match(text, /Пожалуйста, не флудите и не спамьте\./);
 });
+
+test('buildRulesTextFromSettingsScreen does not inspect retired code-word settings', () => {
+  const screen = createScreen();
+  const retiredPrefix = ['thema', 'tic'].join('');
+  const guardedSettings = new Proxy(screen.settings, {
+    get(target, property, receiver) {
+      if (typeof property === 'string' && property.startsWith(retiredPrefix)) {
+        throw new Error(`Retired setting accessed: ${property}`);
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
+
+  assert.doesNotThrow(() =>
+    buildRulesTextFromSettingsScreen({
+      ...screen,
+      settings: guardedSettings,
+    }),
+  );
+});

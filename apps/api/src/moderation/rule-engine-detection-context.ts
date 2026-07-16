@@ -15,10 +15,7 @@ export function createRuleDetectionContext(params: {
   effectiveLength?: number;
 }): RuleDetectionContext {
   const { text, settings, effectiveLength } = params;
-  const needsNormalized =
-    settings.commercialAdsFilterEnabled ||
-    settings.thematicCodewordEnabled ||
-    settings.antiDuplicateEnabled;
+  const needsNormalized = settings.commercialAdsFilterEnabled || settings.antiDuplicateEnabled;
   const normalizedText = needsNormalized ? normalizeForDetection(text) : '';
 
   return {

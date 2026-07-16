@@ -281,26 +281,27 @@ export async function applySettingsSectionToAllChats(params: {
   if (!parsed.success) {
     throw new BadRequestException(parsed.error.format());
   }
+  const section = parsed.data.section;
 
   const sourceSettings = await params.getSourceSettings();
   const result = await params.applySettings(
     sourceSettings,
     parsed.data.target,
     [
-      ...SETTINGS_SECTION_KEYS[parsed.data.section],
-      ...(SETTINGS_SECTION_BOT_SPEECH_MEDIA_KEYS[parsed.data.section].length > 0
+      ...SETTINGS_SECTION_KEYS[section],
+      ...(SETTINGS_SECTION_BOT_SPEECH_MEDIA_KEYS[section].length > 0
         ? ['botSpeechMedia' as const]
         : []),
     ],
-    SETTINGS_SECTION_BOT_SPEECH_MEDIA_KEYS[parsed.data.section],
+    SETTINGS_SECTION_BOT_SPEECH_MEDIA_KEYS[section],
   );
 
-  if (parsed.data.section === 'links') {
+  if (section === 'links') {
     await params.syncDomainAllowlistToChats(result.appliedChatIds);
   }
 
   return applySectionToAllResponseSchema.parse({
-    section: parsed.data.section,
+    section,
     targetMode: parsed.data.target.mode,
     favoriteTypes: parsed.data.target.favoriteTypes,
     ...result,

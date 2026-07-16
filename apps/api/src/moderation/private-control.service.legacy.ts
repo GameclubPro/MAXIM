@@ -5534,15 +5534,6 @@ export class PrivateControlService {
       items.push('Коммерческую рекламу публикуйте только по согласованию с администраторами.');
     }
 
-    if (settings.thematicCodewordEnabled) {
-      const codeword = settings.thematicCodeword.trim();
-      items.push(
-        codeword
-          ? `Если пишете по теме, начинайте сообщение со слова "${codeword}".`
-          : 'Если включён тематический фильтр, придерживайтесь темы чата.',
-      );
-    }
-
     if (settings.antiDuplicateEnabled) {
       const allowedCount = resolvePrivateDuplicateAllowedCount(settings);
       items.push(
@@ -5639,19 +5630,16 @@ export class PrivateControlService {
       | 'linkWarnEnabled'
       | 'requiredSubscriptionWarnEnabled'
       | 'textFiltersWarnEnabled'
-      | 'thematicFiltersWarnEnabled'
       | 'messageLimitsWarnEnabled'
       | 'duplicateWarnEnabled'
       | 'linkMuteEnabled'
       | 'requiredSubscriptionMuteEnabled'
       | 'textFiltersMuteEnabled'
-      | 'thematicFiltersMuteEnabled'
       | 'messageLimitsMuteEnabled'
       | 'duplicateMuteEnabled'
       | 'linkBanEnabled'
       | 'requiredSubscriptionBanEnabled'
       | 'textFiltersBanEnabled'
-      | 'thematicFiltersBanEnabled'
       | 'messageLimitsBanEnabled'
       | 'duplicateBanEnabled'
     >,
@@ -5662,7 +5650,6 @@ export class PrivateControlService {
       settings.linkWarnEnabled ||
       settings.requiredSubscriptionWarnEnabled ||
       settings.textFiltersWarnEnabled ||
-      settings.thematicFiltersWarnEnabled ||
       settings.messageLimitsWarnEnabled ||
       settings.duplicateWarnEnabled
     ) {
@@ -5673,7 +5660,6 @@ export class PrivateControlService {
       settings.linkMuteEnabled ||
       settings.requiredSubscriptionMuteEnabled ||
       settings.textFiltersMuteEnabled ||
-      settings.thematicFiltersMuteEnabled ||
       settings.messageLimitsMuteEnabled ||
       settings.duplicateMuteEnabled
     ) {
@@ -5684,7 +5670,6 @@ export class PrivateControlService {
       settings.linkBanEnabled ||
       settings.requiredSubscriptionBanEnabled ||
       settings.textFiltersBanEnabled ||
-      settings.thematicFiltersBanEnabled ||
       settings.messageLimitsBanEnabled ||
       settings.duplicateBanEnabled
     ) {
@@ -6700,7 +6685,6 @@ export class PrivateControlService {
       greeting: ['приветствие', 'новичок'],
       profanity: ['мат', 'оскорб'],
       commercial: ['реклама', 'коммерция'],
-      thematic: ['тема', 'тематика', 'кодовое слово', 'кодслово', 'слово'],
       duplicate: ['дубль', 'повтор'],
       spam: ['спам'],
       night: ['ночной', 'тишина'],
@@ -6774,12 +6758,6 @@ export class PrivateControlService {
           `Пороги: WARN ${settings.commercialAdsWarnThreshold} • DELETE ${settings.commercialAdsDeleteThreshold}`,
           `Санкции: WARN ${this.describeBooleanCompact(settings.textFiltersWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.textFiltersMuteEnabled)} (${settings.textFiltersMuteDurationHours}ч) • BAN ${this.describeBooleanCompact(settings.textFiltersBanEnabled)}`,
           `Сообщение: ${this.describeBooleanCompact(settings.textFiltersBotMessageEnabled)} • кнопка ${this.describeBooleanCompact(settings.textFiltersBotButtonEnabled)}`,
-        ];
-      case 'thematicFilters':
-        return [
-          `Кодовое слово: ${settings.thematicCodewordEnabled ? settings.thematicCodeword || 'не задано' : 'выключено'}`,
-          `Санкции: объяснение ${this.describeBooleanCompact(settings.thematicFiltersBotMessageEnabled)} • WARN ${this.describeBooleanCompact(settings.thematicFiltersWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.thematicFiltersMuteEnabled)} (${settings.thematicFiltersMuteDurationHours}ч) • BAN ${this.describeBooleanCompact(settings.thematicFiltersBanEnabled)}`,
-          `Кнопка: ${this.describeBooleanCompact(settings.thematicFiltersBotButtonEnabled)}`,
         ];
       case 'duplicates': {
         const duplicateWindowSec = resolvePrivateDuplicateSharedWindowSec(settings);

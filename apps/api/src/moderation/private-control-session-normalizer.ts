@@ -26,7 +26,6 @@ const PRIVATE_SECTION_KEYS = [
   'greeting',
   'profanityFilter',
   'commercialFilter',
-  'thematicFilters',
   'duplicates',
   'limits',
   'night',

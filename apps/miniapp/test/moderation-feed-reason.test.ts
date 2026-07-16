@@ -69,3 +69,13 @@ test('explains duplicate moderation window', () => {
     'Повтор сообщения: 2/2 за 12ч.',
   );
 });
+
+test('keeps retired topic-filter violations readable in historical events', () => {
+  assert.equal(
+    resolveModerationFeedReason({
+      ruleCode: 'TOPIC_FILTER_MISMATCH',
+      metadata: { requiredCodeword: 'максим' },
+    }),
+    'Сообщение должно начинаться с кодового слова "максим".',
+  );
+});

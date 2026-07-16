@@ -4162,7 +4162,6 @@ function createInitialState(search: string): PreviewState {
     profanityMuteDurationHours: 6,
     requiredSubscriptionMuteDurationHours: 24,
     textFiltersMuteDurationHours: 24,
-    thematicFiltersMuteDurationHours: 12,
     commentsEnabled: true,
     commentsAdminsEnabled: true,
     commentsAllEnabled: false,

@@ -58,7 +58,6 @@ export const applySettingsSectionSchema = z.enum([
   'greeting',
   'profanityFilter',
   'commercialFilter',
-  'thematicFilters',
   'duplicates',
   'limits',
   'stopWords',
@@ -145,7 +144,6 @@ const deleteBotMessagesDelayMinutesSchema = z
 const botButtonUrlSchema = z.string().trim().max(2_048).default('');
 const botButtonTextSchema = z.string().trim().max(32).default(DEFAULT_BROADCAST_BUTTON_TEXT);
 const botMessageTextSchema = z.string().max(1_000).default('');
-const thematicCodewordSchema = z.string().trim().max(32).default('');
 const adminCommandNameSchema = z
   .string()
   .trim()
@@ -537,25 +535,6 @@ const chatRulesImageBase64Schema = z
 const chatRulesImageMimeTypeSchema = z.string().trim().max(128).default('');
 const chatRulesImageFileNameSchema = z.string().trim().max(128).default('');
 
-function normalizeThematicCodewordCandidate(value: string): string | null {
-  const normalized = value.trim().toLowerCase().replace(/ё/g, 'е');
-  if (!normalized) {
-    return null;
-  }
-
-  const parts = normalized.split(/\s+/u).filter(Boolean);
-  if (parts.length !== 1) {
-    return null;
-  }
-
-  const fragments = parts[0].match(/[\p{L}\p{N}]+/gu);
-  if (!fragments || fragments.length === 0) {
-    return null;
-  }
-
-  return fragments.join('');
-}
-
 export function normalizeMessageLimitsBlockedWordCandidate(value: string): string | null {
   const normalized = value.trim().toLowerCase().replace(/ё/g, 'е');
   if (!normalized) {
@@ -642,7 +621,6 @@ const CHAT_ADMIN_CONTACT_BUTTON_GROUPS = [
   ['phoneNumbersAdminContactButtonEnabled', 'phoneNumbersAdminContactButtonUrl'],
   ['profanityAdminContactButtonEnabled', 'profanityAdminContactButtonUrl'],
   ['textFiltersAdminContactButtonEnabled', 'textFiltersAdminContactButtonUrl'],
-  ['thematicFiltersAdminContactButtonEnabled', 'thematicFiltersAdminContactButtonUrl'],
   ['linkAdminContactButtonEnabled', 'linkAdminContactButtonUrl'],
   ['duplicateAdminContactButtonEnabled', 'duplicateAdminContactButtonUrl'],
 ] as const;
@@ -683,7 +661,6 @@ const AUTO_MUTE_DURATION_FIELD_KEYS = [
   'requiredSubscriptionMuteDurationHours',
   'invitationAccessMuteDurationHours',
   'textFiltersMuteDurationHours',
-  'thematicFiltersMuteDurationHours',
 ] as const;
 
 export const chatSettingsSchema = z
@@ -860,23 +837,6 @@ export const chatSettingsSchema = z
         .max(MAX_BROADCAST_LINK_BUTTONS)
         .default([]),
       textFiltersRulesButtonEnabled: z.boolean().default(false),
-      thematicCodewordEnabled: z.boolean().default(false),
-      thematicCodeword: thematicCodewordSchema,
-      thematicFiltersBotMessageEnabled: z.boolean().default(false),
-      thematicFiltersWarnEnabled: z.boolean().default(false),
-      thematicFiltersBanEnabled: z.boolean().default(false),
-      thematicFiltersMuteEnabled: z.boolean().default(false),
-      thematicFiltersMuteDurationHours: autoMuteDurationHoursSchema,
-      thematicFiltersAdminContactButtonEnabled: z.boolean().default(false),
-      thematicFiltersAdminContactButtonUrl: botButtonUrlSchema,
-      thematicFiltersBotButtonEnabled: z.boolean().default(false),
-      thematicFiltersBotButtonUrl: botButtonUrlSchema,
-      thematicFiltersBotButtonText: botButtonTextSchema,
-      thematicFiltersBotButtons: z
-        .array(storedLinkButtonDraftSchema)
-        .max(MAX_BROADCAST_LINK_BUTTONS)
-        .default([]),
-      thematicFiltersRulesButtonEnabled: z.boolean().default(false),
       nightModeEnabled: z.boolean().default(false),
       nightModeStartTimeMinutes: z
         .number()
@@ -1169,54 +1129,6 @@ export const chatSettingsSchema = z
       ctx,
     );
 
-    const thematicFiltersBotButtons = resolveStoredLinkButtons({
-      buttons: value.thematicFiltersBotButtons,
-      buttonUrl: value.thematicFiltersBotButtonUrl,
-      buttonText: value.thematicFiltersBotButtonText,
-    });
-    addStoredBotButtonGroupIssues(
-      {
-        enabled: value.thematicFiltersBotMessageEnabled && value.thematicFiltersBotButtonEnabled,
-        buttons: thematicFiltersBotButtons,
-        buttonsPath: 'thematicFiltersBotButtons',
-        buttonUrl: value.thematicFiltersBotButtonUrl,
-        buttonText: value.thematicFiltersBotButtonText,
-        buttonUrlPath: 'thematicFiltersBotButtonUrl',
-        buttonTextPath: 'thematicFiltersBotButtonText',
-      },
-      ctx,
-    );
-
-    if (value.thematicCodewordEnabled) {
-      const codeword = value.thematicCodeword.trim();
-      if (!codeword) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['thematicCodeword'],
-          message: 'Укажите кодовое слово.',
-        });
-      } else if (codeword.split(/\s+/u).filter(Boolean).length > 1) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['thematicCodeword'],
-          message: 'Кодовое слово должно быть одним словом без пробелов.',
-        });
-      } else {
-        const normalizedCodeword = normalizeThematicCodewordCandidate(codeword);
-        if (
-          !normalizedCodeword ||
-          normalizedCodeword.length < 2 ||
-          normalizedCodeword.length > 32
-        ) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ['thematicCodeword'],
-            message: 'Кодовое слово должно содержать 2-32 буквы или цифры.',
-          });
-        }
-      }
-    }
-
     if (!isValidIanaTimeZone(value.nightModeTimezone)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -1291,12 +1203,6 @@ export const chatSettingsSchema = z
       buttonUrl: value.textFiltersBotButtonUrl,
       buttonText: value.textFiltersBotButtonText,
     });
-    const thematicFiltersBotButtonState = buildStoredLinkButtonState({
-      buttons: value.thematicFiltersBotButtons,
-      buttonEnabled: value.thematicFiltersBotButtonEnabled,
-      buttonUrl: value.thematicFiltersBotButtonUrl,
-      buttonText: value.thematicFiltersBotButtonText,
-    });
     const nightModeBotButtonState = buildStoredLinkButtonState({
       buttons: value.nightModeBotButtons,
       buttonEnabled: value.nightModeBotButtonEnabled,
@@ -1333,10 +1239,6 @@ export const chatSettingsSchema = z
       textFiltersBotButtonEnabled: textFiltersBotButtonState.buttonEnabled,
       textFiltersBotButtonUrl: textFiltersBotButtonState.buttonUrl,
       textFiltersBotButtonText: textFiltersBotButtonState.buttonText,
-      thematicFiltersBotButtons: thematicFiltersBotButtonState.buttons,
-      thematicFiltersBotButtonEnabled: thematicFiltersBotButtonState.buttonEnabled,
-      thematicFiltersBotButtonUrl: thematicFiltersBotButtonState.buttonUrl,
-      thematicFiltersBotButtonText: thematicFiltersBotButtonState.buttonText,
       nightModeBotButtons: nightModeBotButtonState.buttons,
       nightModeBotButtonEnabled: nightModeBotButtonState.buttonEnabled,
       nightModeBotButtonUrl: nightModeBotButtonState.buttonUrl,

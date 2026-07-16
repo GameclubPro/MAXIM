@@ -230,6 +230,14 @@ describe('private control session normalizer', () => {
     });
 
     expect(normalizePrivateControlPendingInput({ kind: 'set_field', section: 'bad' })).toBeNull();
+    expect(
+      normalizePrivateControlPendingInput({
+        kind: 'set_field',
+        section: 'thematicFilters',
+        key: 'thematicCodewordEnabled',
+        type: 'boolean',
+      }),
+    ).toBeNull();
     expect(normalizePrivateControlPendingInput({ kind: 'channel_suggestion' })).toBeNull();
     expect(normalizePrivateControlPendingInput({ kind: 'unknown' })).toBeNull();
   });
@@ -262,7 +270,26 @@ describe('private control session normalizer', () => {
         section: 'bad',
       }),
     ).toBeNull();
+    expect(
+      normalizePrivateControlPendingMassAction({
+        kind: 'apply_section',
+        section: 'thematicFilters',
+        targetChats: 7,
+      }),
+    ).toBeNull();
     expect(normalizePrivateControlPendingMassAction({ kind: 'unknown' })).toBeNull();
+  });
+
+  it('drops a retired thematic section from persisted sessions', () => {
+    expect(
+      normalizePrivateControlSession(
+        {
+          screen: 'section',
+          section: 'thematicFilters',
+        },
+        defaultNormalizerDeps,
+      ).section,
+    ).toBeNull();
   });
 
   it('keeps legacy parser quirks centralized', () => {

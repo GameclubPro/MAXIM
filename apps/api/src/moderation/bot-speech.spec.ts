@@ -57,12 +57,6 @@ const EXPECTED_SYSTEM_PLACEHOLDERS = {
   textFiltersMuteCommercial: ['user'],
   textFiltersMuteProfanity: ['user'],
   textFiltersMuteGeneric: ['user'],
-  topicExplainAnnouncement: ['message_status', 'reason', 'user'],
-  topicExplainMessage: ['message_status', 'reason', 'user'],
-  topicWarn: ['reason', 'user'],
-  topicMuteAnnouncement: ['user'],
-  topicMuteMessage: ['user'],
-  topicBan: ['reason', 'user'],
   muteNotice: ['mute_duration', 'user'],
   permanentBanNotice: ['user'],
   messageLimitsWarn: ['reason', 'user'],
@@ -354,9 +348,7 @@ describe('bot speech styles', () => {
     ).toBe(
       '**Алексей**, сообщение удалено. Чтобы писать в чат, нужно пригласить 3 друзей. Прогресс: 2/3; осталось пригласить 1 друга.',
     );
-    expect(
-      (service as any).buildInvitationAccessMuteExplanation(userLabel, 3, 1, 'POLICE'),
-    ).toBe(
+    expect((service as any).buildInvitationAccessMuteExplanation(userLabel, 3, 1, 'POLICE')).toBe(
       '**Алексей**, условие по приглашениям не выполнено. Включён мут. Нужно пригласить 3 друзей; осталось пригласить 2 друзей.',
     );
     expect(
@@ -514,7 +506,7 @@ describe('bot speech styles', () => {
     ).toBe(true);
   });
 
-  it('keeps shared default templates accurate for ads, thematic mismatch and blocked content', () => {
+  it('keeps shared default templates accurate for ads and blocked content', () => {
     const service = createService();
     const userLabel = '**Алексей**';
 
@@ -522,9 +514,6 @@ describe('bot speech styles', () => {
       (service as any).buildTextFilterExplanation(userLabel, 'COMMERCIAL_AD', true, '', 'FRIENDLY'),
     ).toBe(
       '**Алексей**, сообщение удалено: коммерческая реклама запрещена правилами чата. Давайте дальше без этого.',
-    );
-    expect((service as any).buildTopicFilterExplanation(userLabel, true, null, 'POLICE')).toBe(
-      '**Алексей**, сообщение удалено: сообщение не соответствует тематике чата. Разговор возвращаем в русло.',
     );
     expect(
       (service as any).buildMessageLimitsExplanation(

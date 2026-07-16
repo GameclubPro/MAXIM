@@ -51,12 +51,6 @@ export const BOT_SPEECH_SYSTEM_TEMPLATE_KEYS = [
   'textFiltersMuteCommercial',
   'textFiltersMuteProfanity',
   'textFiltersMuteGeneric',
-  'topicExplainAnnouncement',
-  'topicExplainMessage',
-  'topicWarn',
-  'topicMuteAnnouncement',
-  'topicMuteMessage',
-  'topicBan',
   'muteNotice',
   'permanentBanNotice',
   'messageLimitsWarn',
@@ -153,12 +147,6 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
       textFiltersMuteCommercial: '{user}, за повторную рекламу включён мут.',
       textFiltersMuteProfanity: '{user}, за повторную грубую лексику включён мут.',
       textFiltersMuteGeneric: '{user}, за повторные нарушения текстовых правил включён мут.',
-      topicExplainAnnouncement: '{user}, объявление {message_status}: {reason}.',
-      topicExplainMessage: '{user}, сообщение {message_status}: {reason}.',
-      topicWarn: '{user}, предупреждение: {reason}.',
-      topicMuteAnnouncement: '{user}, за повторные объявления не по формату включён мут.',
-      topicMuteMessage: '{user}, за повторные сообщения не по теме включён мут.',
-      topicBan: '{user}, включён бан до ручного снятия. Причина: {reason}.',
       muteNotice:
         '{user}, включён мут на {mute_duration}. До конца срока новые сообщения будут удаляться.',
       permanentBanNotice: '{user}, включён бан до ручного снятия.',
@@ -219,14 +207,6 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
       textFiltersMuteProfanity: '{user}, за повторную грубую лексику включён мут.',
       textFiltersMuteGeneric:
         '{user}, из-за повторных нарушений текстовых правил пришлось включить мут.',
-      topicExplainAnnouncement:
-        '{user}, объявление {message_status}: {reason}. В следующих объявлениях соблюдайте этот формат.',
-      topicExplainMessage:
-        '{user}, сообщение {message_status}: {reason}. В следующих сообщениях придерживайтесь темы чата.',
-      topicWarn: '{user}, это предупреждение: {reason}.',
-      topicMuteAnnouncement: '{user}, за повторные объявления не по формату включён мут.',
-      topicMuteMessage: '{user}, за повторные сообщения не по теме включён мут.',
-      topicBan: '{user}, включён бан до ручного снятия. Причина: {reason}.',
       muteNotice:
         '{user}, мут включён на {mute_duration}. До конца срока новые сообщения будут удаляться.',
       permanentBanNotice: '{user}, включён бан до ручного снятия.',
@@ -244,8 +224,7 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
     editable: {
       greetingBotMessageText:
         'Приветствую, {user}. На связи {bot_character_name}. Здесь всё просто: соблюдаем правила, остальное разберём по факту.',
-      linkBotMessageText:
-        '{user}, сообщение {message_status}: {reason}. Без самодеятельности.',
+      linkBotMessageText: '{user}, сообщение {message_status}: {reason}. Без самодеятельности.',
       linkWarnMessageText:
         '{user}, предупреждение зафиксировано: {reason}. Дальше без запрещённых ссылок.',
       requiredSubscriptionBotMessageText:
@@ -271,10 +250,8 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
       nightModeOpenMessageText: '{opening_status} Возвращаемся к обычному режиму.',
     },
     system: {
-      linkEdited:
-        '{user}, сообщение {message_status}: {reason}. Правка правила не отменяет.',
-      linkEditedWarn:
-        '{user}, предупреждение зафиксировано: {reason}. Правка правила не отменяет.',
+      linkEdited: '{user}, сообщение {message_status}: {reason}. Правка правила не отменяет.',
+      linkEditedWarn: '{user}, предупреждение зафиксировано: {reason}. Правка правила не отменяет.',
       linkMute: '{user}, за запрещённую ссылку включён мут.',
       requiredSubscriptionMute:
         '{user}, сообщения без подписки на {channels} повторились. Включён мут.',
@@ -287,21 +264,11 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
       textFiltersMuteCommercial: '{user}, повторная реклама зафиксирована. Включён мут.',
       textFiltersMuteProfanity: '{user}, повторная грубая лексика зафиксирована. Включён мут.',
       textFiltersMuteGeneric: '{user}, серия текстовых нарушений зафиксирована. Включён мут.',
-      topicExplainAnnouncement:
-        '{user}, объявление {message_status}. Основание: {reason}. Исправьте по форме и отправьте снова.',
-      topicExplainMessage:
-        '{user}, сообщение {message_status}: {reason}. Разговор возвращаем в русло.',
-      topicWarn: '{user}, предупреждение зафиксировано. Основание: {reason}.',
-      topicMuteAnnouncement: '{user}, повторные объявления не по форме. Включён мут.',
-      topicMuteMessage: '{user}, повторные сообщения не по теме. Включён мут.',
-      topicBan:
-        '{user}, по материалам повторных нарушений включён бан до ручного снятия. Основание: {reason}.',
       muteNotice:
         '{user}, мут включён на {mute_duration}. До конца срока новые сообщения будут удаляться.',
       permanentBanNotice: '{user}, бан включён до ручного снятия.',
       messageLimitsWarn: '{user}, предупреждение зафиксировано. Основание: {reason}.',
-      messageLimitsMute:
-        '{user}, включён мут. Основание: {reason}.',
+      messageLimitsMute: '{user}, включён мут. Основание: {reason}.',
       messageLimitsBan: '{user}, бан включён до ручного снятия. Основание: {reason}.',
       duplicateWarn: 'Предупреждение за повтор зафиксировано.',
       duplicateMute: 'За повторные сообщения включён мут на {mute_duration}.',
@@ -361,16 +328,6 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
         '{user}, за повторную грубую лексику включён мут. Словарь ушёл на перерыв.',
       textFiltersMuteGeneric:
         '{user}, за повторные нарушения текстовых правил включён мут. Текстовый эксперимент поставлен на паузу.',
-      topicExplainAnnouncement:
-        '{user}, объявление {message_status}: {reason}. Кодовое слово здесь не для атмосферы.',
-      topicExplainMessage:
-        '{user}, сообщение {message_status}: {reason}. Тема чата всё-таки была подсказкой.',
-      topicWarn: '{user}, предупреждение: {reason}. Импровизация не отменяет правила.',
-      topicMuteAnnouncement:
-        '{user}, за повторные объявления не по формату включён мут. Импровизация берёт паузу.',
-      topicMuteMessage:
-        '{user}, за повторные сообщения не по теме включён мут. Побочная сюжетная линия поставлена на паузу.',
-      topicBan: '{user}, включён бан до ручного снятия. Причина: {reason}.',
       muteNotice:
         '{user}, мут включён на {mute_duration}. До конца срока новые сообщения будут удаляться.',
       permanentBanNotice: '{user}, включён бан до ручного снятия.',

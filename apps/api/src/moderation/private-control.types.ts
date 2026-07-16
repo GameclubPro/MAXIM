@@ -19,7 +19,6 @@ export type PrivateSectionKey =
   | 'greeting'
   | 'profanityFilter'
   | 'commercialFilter'
-  | 'thematicFilters'
   | 'duplicates'
   | 'limits'
   | 'night'

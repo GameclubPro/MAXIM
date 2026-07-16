@@ -74,6 +74,7 @@
   (for example API typecheck and API Jest); concurrent generation can corrupt the ignored
   generated client and cause a false Prisma output-path failure.
 - If `apps/api/prisma/schema.prisma` model/enum/database mappings change, include a migration before push; generator/datasource config-only changes do not need a migration.
+- For destructive Prisma column removals, use two runtime deploys because production migrations run before containers are recreated: first deploy a Prisma Client/schema that no longer selects the columns while leaving the database columns in place, then drop them in a later migration after every API role runs the compatible client.
 - Prisma 7 CLI commands must use `apps/api/prisma.config.ts` from repo root or `prisma.config.ts` inside `apps/api`; in API containers call the workspace binary at `./apps/api/node_modules/.bin/prisma` from repo root. Runtime code should import Prisma through `apps/api/src/prisma/prisma-client.ts`, not `@prisma/client`, because the generated client lives in ignored `apps/api/src/generated/prisma/`.
 
 ## Local development

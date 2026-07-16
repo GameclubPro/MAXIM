@@ -66,6 +66,15 @@ test('compact home controls keep 44px targets and category labels on narrow scre
     chatsPageCss,
     /\.favorite-filter__chip:not\(:first-child\) span,[\s\S]*?display: inline/u,
   );
+  assert.match(chatsPageCss, /\.favorite-filter \{[\s\S]*?overflow-x: auto;/u);
+  assert.match(
+    chatsPageNativeCss,
+    /\.favorite-filter \{[\s\S]*?padding-inline-end: 18px;[\s\S]*?mask-image: linear-gradient/u,
+  );
+  assert.match(
+    chatsPageSource,
+    /className="favorite-filter"[\s\S]*?role="group"[\s\S]*?data-allow-horizontal-overflow/u,
+  );
 });
 
 test('empty onboarding keeps the refresh action before optional detailed instructions', () => {

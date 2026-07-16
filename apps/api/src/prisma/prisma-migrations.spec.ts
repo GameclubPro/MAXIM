@@ -20,6 +20,37 @@ function readSchema(): string {
 }
 
 describe('Prisma migrations', () => {
+  it('resets every thematic codeword column before the later database drop', () => {
+    const migration = readMigration('20260716043000_retire_thematic_codeword_settings');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+    const resetAssignments = [
+      '"thematic_codeword_enabled" = false',
+      '"thematic_codeword" = \'\'',
+      '"thematic_filters_bot_message_enabled" = false',
+      '"thematic_filters_warn_enabled" = false',
+      '"thematic_filters_ban_enabled" = false',
+      '"thematic_filters_mute_enabled" = false',
+      '"thematic_filters_mute_duration_hours" = 6',
+      '"thematic_filters_admin_contact_button_enabled" = false',
+      '"thematic_filters_admin_contact_button_url" = \'\'',
+      '"thematic_filters_bot_button_enabled" = false',
+      '"thematic_filters_bot_button_url" = \'\'',
+      '"thematic_filters_bot_button_text" = \'Открыть\'',
+      '"thematic_filters_bot_buttons" = \'[]\'::jsonb',
+      '"thematic_filters_rules_button_enabled" = false',
+    ];
+
+    expect(compact).toContain('UPDATE "chat_settings" SET');
+    for (const assignment of resetAssignments) {
+      expect(compact).toContain(assignment);
+      expect(compact).toContain(`${assignment.split(' = ')[0]} IS DISTINCT FROM`);
+    }
+    expect(compact).not.toMatch(/\b(?:ALTER|CREATE|DROP|TRUNCATE|DELETE)\b/i);
+
+    const schema = readSchema();
+    expect(schema).not.toMatch(/\bthematic(?:Codeword|Filters)/);
+  });
+
   it('keeps the local display-name webhook lookup index aligned with the runtime SQL', () => {
     const migration = readMigration('20260707152000_optimize_local_display_name_lookup');
     const compact = migration.replace(/\s+/g, ' ').trim();

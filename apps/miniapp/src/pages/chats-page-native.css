@@ -312,7 +312,10 @@
   .favorite-filter {
     gap: 6px;
     padding: 0;
-    scroll-padding-inline: 4px;
+    padding-inline-end: 18px;
+    scroll-padding-inline: 4px 18px;
+    -webkit-mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 16px), transparent 100%);
+    mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 16px), transparent 100%);
   }
 
   .favorite-filter__chip,

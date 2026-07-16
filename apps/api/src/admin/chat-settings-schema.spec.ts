@@ -1,4 +1,5 @@
 import {
+  applySettingsSectionSchema,
   broadcastHandoffRequestSchema,
   chatSettingsSchema,
   sendBroadcastRequestSchema,
@@ -12,6 +13,19 @@ describe('chatSettingsSchema duplicate flow validation', () => {
     expect(settings.phoneNumbersEnabled).toBe(true);
     expect(settings.photoMessagesEnabled).toBe(true);
     expect(settings.duplicateDetectionPreset).toBe('STRICT');
+  });
+
+  it('strips retired thematic settings and rejects their apply section', () => {
+    const settings = chatSettingsSchema.parse({
+      thematicCodewordEnabled: true,
+      thematicCodeword: 'legacy',
+      thematicFiltersWarnEnabled: true,
+    }) as Record<string, unknown>;
+
+    expect(settings).not.toHaveProperty('thematicCodewordEnabled');
+    expect(settings).not.toHaveProperty('thematicCodeword');
+    expect(settings).not.toHaveProperty('thematicFiltersWarnEnabled');
+    expect(applySettingsSectionSchema.safeParse('thematicFilters').success).toBe(false);
   });
 
   it('allows duplicate thresholds to start from the first duplicate', () => {
@@ -342,10 +356,7 @@ describe('broadcast request schema normalization', () => {
     const handoffPayload = broadcastHandoffRequestSchema.parse({
       scheduleMode: 'calendar',
       scheduleTimezone: 'Europe/Moscow',
-      scheduledSlots: [
-        '2026-03-03T12:00:00Z',
-        '2026-03-03T12:00:00.000Z',
-      ],
+      scheduledSlots: ['2026-03-03T12:00:00Z', '2026-03-03T12:00:00.000Z'],
       replaceConflictingSlots: true,
     });
 
