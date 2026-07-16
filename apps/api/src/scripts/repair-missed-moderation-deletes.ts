@@ -78,8 +78,8 @@ async function loadCandidateBatch(
     WITH claim_batch AS MATERIALIZED (
       SELECT claim.*
       FROM "moderation_violation_message_claims" claim
-      WHERE claim."created_at" >= ${options.since}
-        AND claim."created_at" <= ${options.until}
+      WHERE claim."created_at" >= CAST(${options.since} AS TIMESTAMP)
+        AND claim."created_at" <= CAST(${options.until} AS TIMESTAMP)
         ${chatScopeSql}
         ${cursorSql}
       ORDER BY claim."created_at" ASC, claim."id" ASC
@@ -134,8 +134,8 @@ async function loadCandidateBatch(
       WHERE event."chat_id" = claim."chat_id"
         AND event."message_id" = claim."message_id"
         AND event."user_id" = claim."user_id"
-        AND event."created_at" >= ${options.since} - INTERVAL '5 minutes'
-        AND event."created_at" <= ${options.until} + INTERVAL '1 hour'
+        AND event."created_at" >= CAST(${options.since} AS TIMESTAMP) - INTERVAL '5 minutes'
+        AND event."created_at" <= CAST(${options.until} AS TIMESTAMP) + INTERVAL '1 hour'
         AND (
           event."rule_code" = claim."rule_code"
           OR LEFT(event."rule_code", CHAR_LENGTH(claim."rule_code") + 1) =
@@ -160,8 +160,8 @@ async function loadCandidateBatch(
       FROM "moderation_events" deleted
       WHERE deleted."chat_id" = claim."chat_id"
         AND deleted."message_id" = claim."message_id"
-        AND deleted."created_at" >= ${options.since} - INTERVAL '5 minutes'
-        AND deleted."created_at" <= ${options.until} + INTERVAL '24 hours'
+        AND deleted."created_at" >= CAST(${options.since} AS TIMESTAMP) - INTERVAL '5 minutes'
+        AND deleted."created_at" <= CAST(${options.until} AS TIMESTAMP) + INTERVAL '24 hours'
         AND deleted."action" = CAST('DELETE_MESSAGE' AS "SanctionAction")
         AND NULLIF(BTRIM(deleted."metadata"->>'moderationDeleteIntentId'), '') IS NOT NULL
       ORDER BY deleted."created_at" ASC, deleted."id" ASC

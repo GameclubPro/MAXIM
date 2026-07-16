@@ -128,6 +128,15 @@ describe('repair missed moderation deletes', () => {
     expect(source).toContain('${chatScopeSql}');
   });
 
+  it('types repair window parameters before timestamp arithmetic', () => {
+    const source = readFileSync(resolve(__dirname, 'repair-missed-moderation-deletes.ts'), 'utf8');
+
+    expect(source).toContain('CAST(${options.since} AS TIMESTAMP)');
+    expect(source).toContain('CAST(${options.until} AS TIMESTAMP)');
+    expect(source).not.toContain('${options.since} - INTERVAL');
+    expect(source).not.toContain('${options.until} + INTERVAL');
+  });
+
   it('keeps dry-run on direct Prisma and permits Nest bootstrap only for admin execute', () => {
     expect(resolveRepairBootstrapMode({ execute: false }, undefined)).toBe(
       'direct_prisma_read_only',
