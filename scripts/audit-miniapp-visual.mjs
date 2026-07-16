@@ -4,7 +4,8 @@ const DEFAULT_BASE_URLS = ['https://major-maksimov.ru/app/'];
 const DEFAULT_SCENARIOS = [
   'home',
   'home-channels',
-  'home-actions',
+  'home-filter',
+  'home-filter-active',
   'home-favorite-picker',
   'home-favorite-categories',
   'publications',

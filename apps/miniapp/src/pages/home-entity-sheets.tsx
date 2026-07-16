@@ -1,10 +1,10 @@
 import { useRef, type CSSProperties, type ReactNode, type SVGProps } from 'react';
 import { createPortal } from 'react-dom';
-import { Link } from 'react-router-dom';
-import { StatsUpSquare } from 'iconoir-react';
 import type { ChatSummary, ManagedEntityFavoriteType } from '@maxim/contracts';
 import {
+  FilterGlyph,
   HOME_ENTITY_FAVORITE_ICONS,
+  SettingsGlyph,
   XmarkGlyph,
 } from '../components/ui/compact-icons';
 import { cn } from '../lib/cn';
@@ -23,34 +23,28 @@ type SheetTarget = {
   entity: ChatSummary;
 };
 type FavoriteLabelDraft = Record<ManagedEntityFavoriteType, string>;
+type FavoriteFilter = ManagedEntityFavoriteType | 'all';
 
 type HomeEntitySheetsProps = {
-  actionTarget: SheetTarget | null;
   favoriteTarget: SheetTarget | null;
+  filterPickerOpen: boolean;
+  filterValue: FavoriteFilter;
   labelsEditorOpen: boolean;
   favoriteLabels: FavoriteLabelDraft;
+  favoriteCounts: Record<ManagedEntityFavoriteType, number>;
   favoriteLabelOverrides: HomeEntityFavoriteLabelOverrides;
   favoriteLabelDraft: FavoriteLabelDraft;
   selectedFavoriteTypes: ManagedEntityFavoriteType[];
   favoriteSaving: boolean;
   canSaveLabels: boolean;
   onClose: () => void;
-  onOpenFavorite: () => void;
-  onActivityIntent: () => void;
-  onActivityOpen: () => void;
+  onFilterChange: (filter: FavoriteFilter) => void;
+  onOpenLabelsEditor: () => void;
   onToggleFavorite: (favoriteType: ManagedEntityFavoriteType) => void;
   onFavoriteLabelChange: (favoriteType: ManagedEntityFavoriteType, value: string) => void;
   onFavoriteLabelReset: (favoriteType: ManagedEntityFavoriteType) => void;
   onFavoriteLabelsSave: () => void;
 };
-
-function PlusGlyph(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" {...props}>
-      <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 function CheckGlyph(props: SVGProps<SVGSVGElement>) {
   return (
@@ -64,20 +58,6 @@ function CheckGlyph(props: SVGProps<SVGSVGElement>) {
       />
     </svg>
   );
-}
-
-function buildActivityRoute(target: SheetTarget): string {
-  return target.entityType === 'channel'
-    ? `/channel/${target.entity.id}/stats?section=overview`
-    : `/chat/${target.entity.id}/events?section=activity`;
-}
-
-function buildRouteState(target: SheetTarget) {
-  return {
-    chatTitle: target.entity.title,
-    avatarUrl: target.entity.avatarUrl ?? null,
-    ...(target.entityType === 'channel' ? { chatLink: target.entity.link ?? '' } : {}),
-  };
 }
 
 function HomeSheet({
@@ -256,61 +236,82 @@ export default function HomeEntitySheets(props: HomeEntitySheetsProps) {
     );
   }
 
-  if (!props.actionTarget) {
-    return null;
+  if (props.filterPickerOpen) {
+    return (
+      <HomeSheet
+        key="filter"
+        sheetKey="filter"
+        title="Фильтр категорий"
+        panelClassName="home-filter__panel"
+        overlayStyle={overlayStyle}
+        onClose={props.onClose}
+      >
+        <div
+          className="favorite-picker__grid home-filter__grid"
+          role="group"
+          aria-label="Категория"
+        >
+          <button
+            type="button"
+            className={cn(
+              'favorite-picker__option home-filter__item',
+              props.filterValue === 'all' && 'is-active',
+            )}
+            aria-pressed={props.filterValue === 'all'}
+            onClick={() => props.onFilterChange('all')}
+          >
+            <span className="favorite-picker__icon">
+              <FilterGlyph aria-hidden focusable="false" />
+            </span>
+            <strong>Все</strong>
+            {props.filterValue === 'all' ? (
+              <CheckGlyph aria-hidden className="favorite-picker__check" />
+            ) : null}
+          </button>
+          {HOME_ENTITY_FAVORITE_TYPES.filter(
+            (favoriteType) =>
+              props.favoriteCounts[favoriteType] > 0 || props.filterValue === favoriteType,
+          ).map((favoriteType) => {
+            const FavoriteIcon = HOME_ENTITY_FAVORITE_ICONS[favoriteType];
+            const count = props.favoriteCounts[favoriteType];
+            const active = props.filterValue === favoriteType;
+            return (
+              <button
+                key={favoriteType}
+                type="button"
+                className={cn(
+                  'favorite-picker__option',
+                  'home-filter__item',
+                  `is-${favoriteType}`,
+                  active && 'is-active',
+                )}
+                aria-pressed={active}
+                disabled={count === 0 && !active}
+                onClick={() => props.onFilterChange(favoriteType)}
+              >
+                <span className="favorite-picker__icon">
+                  <FavoriteIcon aria-hidden />
+                </span>
+                <strong>{props.favoriteLabels[favoriteType]}</strong>
+                <small>{count}</small>
+                {active ? <CheckGlyph aria-hidden className="favorite-picker__check" /> : null}
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            className="favorite-picker__option home-filter__manage"
+            onClick={props.onOpenLabelsEditor}
+          >
+            <span className="favorite-picker__icon">
+              <SettingsGlyph aria-hidden focusable="false" />
+            </span>
+            <strong>Настроить названия</strong>
+          </button>
+        </div>
+      </HomeSheet>
+    );
   }
 
-  const favorite = props.selectedFavoriteTypes.length > 0;
-  const PrimaryFavoriteIcon = favorite
-    ? HOME_ENTITY_FAVORITE_ICONS[props.selectedFavoriteTypes[0]]
-    : PlusGlyph;
-  return (
-    <HomeSheet
-      key="actions"
-      sheetKey="actions"
-      title={props.actionTarget.entity.title}
-      panelClassName="home-actions__panel"
-      overlayStyle={overlayStyle}
-      onClose={props.onClose}
-    >
-      <div className="favorite-picker__grid home-actions__grid">
-        <Link
-          to={buildActivityRoute(props.actionTarget)}
-          state={buildRouteState(props.actionTarget)}
-          className="favorite-picker__option home-actions__item"
-          onClick={props.onActivityOpen}
-          onPointerEnter={props.onActivityIntent}
-          onPointerDown={props.onActivityIntent}
-        >
-          <span className="favorite-picker__icon">
-            <StatsUpSquare aria-hidden focusable="false" />
-          </span>
-          <strong>Статистика</strong>
-        </Link>
-        <button
-          type="button"
-          className={cn(
-            'favorite-picker__option home-actions__item',
-            favorite && 'is-active',
-            props.selectedFavoriteTypes[0] && `is-${props.selectedFavoriteTypes[0]}`,
-          )}
-          aria-haspopup="dialog"
-          disabled={props.favoriteSaving}
-          onClick={props.onOpenFavorite}
-        >
-          <span className="favorite-picker__icon">
-            <PrimaryFavoriteIcon aria-hidden />
-          </span>
-          <strong>{favorite ? 'Категория' : 'В избранное'}</strong>
-          {favorite ? (
-            <small>
-              {props.selectedFavoriteTypes
-                .map((favoriteType) => props.favoriteLabels[favoriteType])
-                .join(', ')}
-            </small>
-          ) : null}
-        </button>
-      </div>
-    </HomeSheet>
-  );
+  return null;
 }

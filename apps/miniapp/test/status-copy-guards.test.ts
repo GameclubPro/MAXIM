@@ -14,8 +14,9 @@ const channelSettingsSource = readFileSync(
   new URL('../src/pages/channel-settings-page.tsx', import.meta.url),
   'utf8',
 );
-const chatsPageCss = readFileSync(
-  new URL('../src/pages/chats-page.css', import.meta.url),
+const chatsPageCss = readFileSync(new URL('../src/pages/chats-page.css', import.meta.url), 'utf8');
+const chatsPageNativeCss = readFileSync(
+  new URL('../src/pages/chats-page-native.css', import.meta.url),
   'utf8',
 );
 const componentsCss = readFileSync(
@@ -32,23 +33,22 @@ test('settings headers do not expose abbreviated draft or saving statuses', () =
   assert.doesNotMatch(channelSettingsSource, /compactHeaderStatusLabel|headerStatusTone/u);
 });
 
-test('home uses a stable icon indicator without technical status copy', () => {
-  assert.match(chatsPageSource, /chats-command__sync-indicator/u);
-  assert.match(chatsPageSource, /chats-command__sync-check/u);
+test('home folds sync state into one refresh control without technical status copy', () => {
+  assert.match(chatsPageSource, /'chats-command__refresh'/u);
+  assert.match(chatsPageSource, /chats-command__sync-ring/u);
+  assert.doesNotMatch(chatsPageSource, /chats-command__sync-indicator|chats-command__sync-check/u);
   assert.doesNotMatch(chatsPageSource, /Пауза|Кэш|Сверяем|Готово ·/u);
   assert.match(
     chatsPageCss,
-    /\.chats-command__sync-indicator \{[\s\S]*?width: 44px;[\s\S]*?height: 44px;/u,
+    /\.chats-command__icon-button \{[\s\S]*?width: 44px;[\s\S]*?height: 44px;/u,
   );
+  assert.match(chatsPageNativeCss, /\.chats-command__refresh\.is-error/u);
   assert.match(chatsPageCss, /@keyframes chats-sync-indicator-spin/u);
   assert.match(
     chatsPageSource,
     /hasError: Boolean\(queryError\)[\s\S]*?isBackoffActive: activeEntitiesState\.isBackoffActive/u,
   );
-  assert.match(
-    chatsPageSource,
-    /isRefreshing: isFetching \|\| isManualRefreshInProgressByState/u,
-  );
+  assert.match(chatsPageSource, /isRefreshing: isFetching \|\| isManualRefreshInProgressByState/u);
   assert.match(
     chatsPageSource,
     /if \(options\.isLoading \|\| options\.isRefreshing\)[\s\S]*?if \(options\.hasError\)[\s\S]*?if \(options\.isBackoffActive\)/u,

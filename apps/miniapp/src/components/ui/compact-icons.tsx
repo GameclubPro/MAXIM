@@ -86,6 +86,59 @@ export function SettingsGlyph(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function FilterGlyph(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      {...props}
+    >
+      <path d="M4 6h16" />
+      <path d="M7 12h10" />
+      <path d="M10 18h4" />
+    </svg>
+  );
+}
+
+export function StatisticsGlyph(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      {...props}
+    >
+      <rect x="3.5" y="3.5" width="17" height="17" rx="2.2" />
+      <path d="M8 16v-3.5" />
+      <path d="M12 16V8" />
+      <path d="M16 16v-5.5" />
+    </svg>
+  );
+}
+
+export function PlusCircleGlyph(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      {...props}
+    >
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 8v8" />
+      <path d="M8 12h8" />
+    </svg>
+  );
+}
+
 export function WatchGlyph(props: SVGProps<SVGSVGElement>) {
   return (
     <svg viewBox="0 0 24 24" fill="none" {...props}>

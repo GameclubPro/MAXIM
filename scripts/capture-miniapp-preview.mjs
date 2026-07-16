@@ -161,18 +161,21 @@ const scenarios = [
     },
   },
   {
-    name: 'home-actions',
+    name: 'home-filter',
     path: '/',
+    searchParams: {
+      view: 'chat',
+    },
     beforeShot: async (page) => {
-      const trigger = page.locator('.chat-card__more').first();
-      const panel = page.locator('.home-actions__panel');
+      const trigger = page.locator('.favorite-filter__trigger');
+      const panel = page.locator('.home-filter__panel');
       await trigger.click();
       await panel.waitFor({ state: 'visible' });
       await page.locator('.favorite-picker__backdrop').click({ position: { x: 2, y: 2 } });
       await panel.waitFor({ state: 'detached' });
       await page.waitForTimeout(50);
       if (!(await trigger.evaluate((element) => element === document.activeElement))) {
-        throw new Error('Home action sheet did not restore focus after outside click.');
+        throw new Error('Home filter sheet did not restore focus after outside click.');
       }
       await trigger.click();
       await panel.waitFor({ state: 'visible' });
@@ -180,30 +183,57 @@ const scenarios = [
       await panel.waitFor({ state: 'detached' });
       await page.waitForTimeout(50);
       if (!(await trigger.evaluate((element) => element === document.activeElement))) {
-        throw new Error('Home action sheet did not restore focus after Escape.');
+        throw new Error('Home filter sheet did not restore focus after Escape.');
       }
       await trigger.click();
       await panel.waitFor({ state: 'visible' });
     },
   },
   {
+    name: 'home-filter-active',
+    path: '/',
+    searchParams: {
+      view: 'chat',
+    },
+    beforeShot: async (page) => {
+      const trigger = page.locator('.favorite-filter__trigger');
+      const panel = page.locator('.home-filter__panel');
+      await trigger.click();
+      await panel.waitFor({ state: 'visible' });
+      await panel.locator('.home-filter__item.is-important').click();
+      await panel.waitFor({ state: 'detached' });
+      await page.waitForTimeout(50);
+      if ((await trigger.getAttribute('aria-label')) !== 'Фильтр: Важные') {
+        throw new Error('Home filter trigger did not expose the selected category.');
+      }
+      if (!(await trigger.evaluate((element) => element === document.activeElement))) {
+        throw new Error('Home filter trigger did not regain focus after category selection.');
+      }
+      if ((await page.locator('.chat-card').count()) !== 1) {
+        throw new Error('Home category filter did not reduce the preview list to one entity.');
+      }
+    },
+  },
+  {
     name: 'home-favorite-picker',
     path: '/',
+    searchParams: {
+      view: 'chat',
+    },
     beforeShot: async (page) => {
-      await page.locator('.chat-card__more').first().click();
-      await page
-        .locator('.home-actions__item')
-        .filter({ hasText: /(?:Категория|В избранное)/u })
-        .first()
-        .click();
+      await page.locator('.chat-card__category').first().click();
       await page.locator('.favorite-picker__panel').waitFor({ state: 'visible' });
     },
   },
   {
     name: 'home-favorite-categories',
     path: '/',
+    searchParams: {
+      view: 'chat',
+    },
     beforeShot: async (page) => {
-      await page.getByRole('button', { name: 'Настроить категории' }).click();
+      await page.getByRole('button', { name: 'Фильтр категорий' }).click();
+      await page.getByRole('button', { name: 'Настроить названия' }).click();
       await page.locator('.favorite-label-editor__panel').waitFor({ state: 'visible' });
     },
   },
