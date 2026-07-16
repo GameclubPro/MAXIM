@@ -27,6 +27,7 @@ import {
 } from '../components/ui/compact-icons';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
+import { useToast } from '../components/ui/toast';
 import { describeApiError } from '../lib/api-error';
 import { getMe } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
@@ -87,6 +88,10 @@ import {
   preloadEventsPage,
   preloadSettingsPage,
 } from './page-preloads';
+import {
+  createHomeRefreshCooldownDeadline,
+  getHomeRefreshCooldownRemainingSec,
+} from './home-refresh-cooldown';
 import './chats-page.css';
 import './chats-page-native.css';
 
@@ -218,6 +223,48 @@ function buildHomeSyncStatus(options: {
   return { label: 'Актуально', tone: 'ready' };
 }
 
+function buildHomeSyncVisualLabel(options: {
+  tone: HomeSyncTone;
+  retryAfterSec: number | null;
+  manualRefreshBlockedReason: string | null;
+}): string {
+  if (options.manualRefreshBlockedReason === 'recent_sync' && options.retryAfterSec) {
+    return `Готово · ${options.retryAfterSec} с`;
+  }
+  if (options.tone === 'syncing') {
+    return 'Сверяем';
+  }
+  if (options.tone === 'cache') {
+    return 'Кэш';
+  }
+  if (options.tone === 'warning') {
+    return options.retryAfterSec ? `Пауза · ${options.retryAfterSec} с` : 'Пауза';
+  }
+
+  return 'Готово';
+}
+
+function buildHomeSyncAccessibleLabel(options: {
+  label: string;
+  isManualRefreshBlocked: boolean;
+  manualRefreshBlockedReason: string | null;
+}): string {
+  if (!options.isManualRefreshBlocked) {
+    return `Статус списка: ${options.label}`;
+  }
+  if (options.manualRefreshBlockedReason === 'recent_sync') {
+    return 'Статус списка: актуально, обновление временно недоступно';
+  }
+  if (options.manualRefreshBlockedReason === 'in_progress') {
+    return 'Статус списка: обновление выполняется';
+  }
+  if (options.manualRefreshBlockedReason === 'backoff') {
+    return 'Статус списка: MAX на паузе';
+  }
+
+  return `Статус списка: ${options.label}`;
+}
+
 async function saveManagedEntityFavoriteTypes(
   api: ApiTransport,
   entityType: ManagedTab,
@@ -262,6 +309,7 @@ function MoreGlyph(props: SVGProps<SVGSVGElement>) {
 
 export function ChatsPage({ api }: { api: ApiTransport }) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
   const [searchParams] = useSearchParams();
   const [query, setQuery] = useState('');
   const [currentUserId, setCurrentUserId] = useState<string | null>(() => getInitDataUserId());
@@ -372,11 +420,33 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const queryError = activeEntitiesState.error;
   const refreshState = activeEntitiesState.refreshState;
   const manualRefreshBlockedReason = refreshState?.manualRefreshBlockedReason ?? null;
-  const manualRefreshRetryAfterSec =
-    typeof refreshState?.manualRefreshRetryAfterMs === 'number' &&
-    refreshState.manualRefreshRetryAfterMs > 0
-      ? Math.max(1, Math.ceil(refreshState.manualRefreshRetryAfterMs / 1_000))
-      : null;
+  const [manualRefreshClockMs, setManualRefreshClockMs] = useState(() => Date.now());
+  const chatsManualRefreshCooldown = useMemo(() => {
+    const observedAtMs = Date.now();
+    return {
+      observedAtMs,
+      deadlineAtMs: createHomeRefreshCooldownDeadline(
+        chatsState.refreshState?.manualRefreshRetryAfterMs,
+        observedAtMs,
+      ),
+    };
+  }, [chatsState.refreshState]);
+  const channelsManualRefreshCooldown = useMemo(() => {
+    const observedAtMs = Date.now();
+    return {
+      observedAtMs,
+      deadlineAtMs: createHomeRefreshCooldownDeadline(
+        channelsState.refreshState?.manualRefreshRetryAfterMs,
+        observedAtMs,
+      ),
+    };
+  }, [channelsState.refreshState]);
+  const manualRefreshCooldown =
+    activeTab === 'chat' ? chatsManualRefreshCooldown : channelsManualRefreshCooldown;
+  const manualRefreshRetryAfterSec = getHomeRefreshCooldownRemainingSec(
+    manualRefreshCooldown.deadlineAtMs,
+    Math.max(manualRefreshClockMs, manualRefreshCooldown.observedAtMs),
+  );
   const isUserVisibleSyncSettled =
     activeEntitiesState.isSyncComplete ||
     activeEntitiesState.isUserVisibleComplete ||
@@ -393,6 +463,9 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     !activeEntitiesState.isUserVisibleComplete;
   const isManualRefreshBlocked =
     isRefreshTemporarilyBlocked || isManualRefreshCoolingDown || isManualRefreshInProgressByState;
+  const effectiveManualRefreshBlockedReason = isManualRefreshBlocked
+    ? manualRefreshBlockedReason
+    : null;
   const isForegroundSyncing = activeEntitiesState.isRefreshing && !isUserVisibleSyncSettled;
   const homeSyncStatus = buildHomeSyncStatus({
     isLoading,
@@ -402,7 +475,17 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     snapshotStale: activeEntitiesState.snapshot?.stale ?? null,
     isSyncComplete: isUserVisibleSyncSettled,
     retryAfterSec: manualRefreshRetryAfterSec,
-    manualRefreshBlockedReason,
+    manualRefreshBlockedReason: effectiveManualRefreshBlockedReason,
+  });
+  const homeSyncVisualLabel = buildHomeSyncVisualLabel({
+    tone: homeSyncStatus.tone,
+    retryAfterSec: manualRefreshRetryAfterSec,
+    manualRefreshBlockedReason: effectiveManualRefreshBlockedReason,
+  });
+  const homeSyncAccessibleLabel = buildHomeSyncAccessibleLabel({
+    label: homeSyncStatus.label,
+    isManualRefreshBlocked,
+    manualRefreshBlockedReason: effectiveManualRefreshBlockedReason,
   });
   const refreshProgressPercent =
     !activeEntitiesState.isUserVisibleComplete &&
@@ -524,6 +607,38 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       handleRefresh(activeTab, 'recovery');
     },
   });
+
+  useEffect(() => {
+    const deadlineAtMs = manualRefreshCooldown.deadlineAtMs;
+    if (deadlineAtMs === null) {
+      return undefined;
+    }
+
+    const remainingMs = deadlineAtMs - Date.now();
+    if (remainingMs <= 0) {
+      if (manualRefreshClockMs < deadlineAtMs) {
+        setManualRefreshClockMs(Date.now());
+      }
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(
+      () => setManualRefreshClockMs(Date.now()),
+      Math.min(1_000, remainingMs),
+    );
+    return () => window.clearTimeout(timeoutId);
+  }, [manualRefreshClockMs, manualRefreshCooldown.deadlineAtMs]);
+
+  useEffect(() => {
+    const updateClockWhenVisible = () => {
+      if (document.visibilityState === 'visible') {
+        setManualRefreshClockMs(Date.now());
+      }
+    };
+
+    document.addEventListener('visibilitychange', updateClockWhenVisible);
+    return () => document.removeEventListener('visibilitychange', updateClockWhenVisible);
+  }, []);
 
   function queueRefresh(tab: ManagedTab, behavior: ManagedEntitiesReloadRequest['behavior']) {
     noteRefreshRequested();
@@ -958,9 +1073,14 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         saveHomeEntityFavorites(favoriteStorageScope, next);
         return next;
       });
-    } catch {
+    } catch (error: unknown) {
       setHomeEntityFavorites(previousFavorites);
       saveHomeEntityFavorites(favoriteStorageScope, previousFavorites);
+      pushToast({
+        title: 'Не удалось сохранить категорию',
+        description: describeApiError(error, 'Попробуйте ещё раз.'),
+        tone: 'danger',
+      });
     } finally {
       setSavingFavoriteEntityKey((current) =>
         current === buildFavoriteEntityKey(entityType, entityId) ? null : current,
@@ -1027,13 +1147,18 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const searchPlaceholder = 'Поиск';
   const refreshButtonLabel = isFetching
     ? 'Обновление уже идёт'
-    : manualRefreshBlockedReason === 'recent_sync' && manualRefreshRetryAfterSec
+    : effectiveManualRefreshBlockedReason === 'recent_sync' && manualRefreshRetryAfterSec
       ? `Обновить можно через ${manualRefreshRetryAfterSec} с`
-      : manualRefreshBlockedReason === 'in_progress'
+      : effectiveManualRefreshBlockedReason === 'in_progress'
         ? 'Обновление уже выполняется'
-        : manualRefreshBlockedReason === 'backoff' && manualRefreshRetryAfterSec
+        : effectiveManualRefreshBlockedReason === 'backoff' && manualRefreshRetryAfterSec
           ? `MAX на паузе, повтор через ${manualRefreshRetryAfterSec} с`
           : 'Обновить';
+  const homeResultStatus = queryError
+    ? ''
+    : isLoading
+      ? `Загружаем ${tabLabel.toLowerCase()}.`
+      : `${tabLabel}: ${filteredEntities.length} из ${activeEntities?.length ?? 0}.`;
 
   function renderEntityCard(entity: ManagedHomeEntity, index: number) {
     const favorite = isHomeEntityFavorite(homeEntityFavorites, activeTab, entity.id);
@@ -1061,7 +1186,15 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     const routeState = buildEntityRouteState(activeTab, entity);
 
     return (
-      <GlassCard as="article" key={entity.id} className={className} style={style}>
+      <GlassCard
+        as="article"
+        key={entity.id}
+        className={className}
+        style={style}
+        role="listitem"
+        aria-posinset={index + 1}
+        aria-setsize={filteredEntities.length}
+      >
         <Link
           to={settingsRoute}
           className="chat-card__primary"
@@ -1200,6 +1333,9 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         elevated
       >
         <h1 className="chats-command__sr">{tabLabel}</h1>
+        <output className="chats-command__sr" aria-live="polite" aria-atomic="true">
+          {homeResultStatus}
+        </output>
         <div className="chats-command__topline">
           <nav className="chats-command__tabs" aria-label="Раздел">
             {(['chat', 'channel'] as const).map((tab) => {
@@ -1225,11 +1361,14 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           <div className="chats-command__meta">
             <span
               className={cn('chats-command__sync-chip', `is-${homeSyncStatus.tone}`)}
-              aria-label={`Статус списка: ${homeSyncStatus.label}`}
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+              aria-label={homeSyncAccessibleLabel}
               title={homeSyncStatus.label}
             >
               <span className="chats-command__sync-dot" aria-hidden />
-              <span className="chats-command__sync-label">{homeSyncStatus.label}</span>
+              <span className="chats-command__sync-label">{homeSyncVisualLabel}</span>
             </span>
             <button
               type="button"
@@ -1372,7 +1511,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       ) : null}
 
       {isLoading ? (
-        <section className="chat-grid" aria-label="Загрузка">
+        <section className="chat-grid" aria-label="Загрузка" role="status" aria-busy="true">
           {Array.from({ length: 4 }).map((_, index) => (
             <GlassCard key={index} as="article" className="chat-card">
               <SkeletonCard lines={3} />
@@ -1382,7 +1521,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       ) : null}
 
       {queryError ? (
-        <GlassCard>
+        <GlassCard role="alert" aria-live="assertive">
           <StatusState
             tone="danger"
             title="Не удалось загрузить список"
@@ -1459,7 +1598,9 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       {!isLoading && !queryError && !showEmptyState && filteredEntities.length > 0 ? (
         <section
           className={cn('chat-grid', shouldVirtualizeEntities && 'chat-grid--virtual')}
-          aria-label="Список"
+          role="list"
+          aria-label={`${tabLabel}: ${filteredEntities.length}`}
+          aria-busy={isForegroundSyncing || undefined}
           ref={shouldVirtualizeEntities ? virtualListViewportRef : undefined}
           onScroll={
             shouldVirtualizeEntities

@@ -399,10 +399,6 @@
   min-height: 42px;
 }
 
-@media (max-width: 420px) {
-  .participants-roster__toolbar { grid-template-columns: 1fr; }
-}
-
 .participants-roster__item {
   min-height: 62px;
 }

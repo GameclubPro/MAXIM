@@ -6,6 +6,7 @@ import {
   resolveAudienceChartDisplayValue,
   resolveAverageViewsFromSeries,
   resolveChannelStatsAverageViews,
+  resolveChannelStatsSliderIndex,
   resolveInitialAudienceChartIndex,
   shouldPreferMembershipFlowForAudienceChart,
   shouldRenderChannelStatsPointMarkers,
@@ -128,6 +129,34 @@ test('returns zero average views per post when period views are absent', () => {
   };
 
   assert.equal(resolveChannelStatsAverageViews(stats), 0);
+});
+
+test('does not render unavailable channel views as a real zero', () => {
+  const stats = {
+    official: {
+      content: {
+        views: 0,
+        posts: 0,
+      },
+    },
+    meta: {
+      viewsAvailable: false,
+    },
+  };
+
+  assert.equal(resolveChannelStatsAverageViews(stats), null);
+});
+
+test('channel chart slider supports arrows and boundary keys', () => {
+  assert.equal(resolveChannelStatsSliderIndex(2, 5, 'ArrowLeft'), 1);
+  assert.equal(resolveChannelStatsSliderIndex(2, 5, 'ArrowDown'), 1);
+  assert.equal(resolveChannelStatsSliderIndex(2, 5, 'ArrowRight'), 3);
+  assert.equal(resolveChannelStatsSliderIndex(2, 5, 'ArrowUp'), 3);
+  assert.equal(resolveChannelStatsSliderIndex(2, 5, 'Home'), 0);
+  assert.equal(resolveChannelStatsSliderIndex(2, 5, 'End'), 4);
+  assert.equal(resolveChannelStatsSliderIndex(2, 5, 'Enter'), null);
+  assert.equal(resolveChannelStatsSliderIndex(0, 5, 'ArrowLeft'), 0);
+  assert.equal(resolveChannelStatsSliderIndex(4, 5, 'ArrowRight'), 4);
 });
 
 test('derives average views from period content totals before graph points', () => {

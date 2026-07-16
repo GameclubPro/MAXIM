@@ -38,9 +38,16 @@ export type ViewsDisplayStats = {
       };
     };
   };
+  meta?: {
+    viewsAvailable?: boolean;
+  };
 };
 
-export function resolveChannelStatsAverageViews(stats: ViewsDisplayStats): number {
+export function resolveChannelStatsAverageViews(stats: ViewsDisplayStats): number | null {
+  if (stats.meta?.viewsAvailable === false) {
+    return null;
+  }
+
   const periodAverage = stats.comparison?.deltas?.averageViewsPerPost?.current;
   if (typeof periodAverage === 'number' && Number.isFinite(periodAverage) && periodAverage >= 0) {
     return Math.round(periodAverage);
@@ -62,6 +69,32 @@ export function resolveChannelStatsAverageViews(stats: ViewsDisplayStats): numbe
   }
 
   return 0;
+}
+
+export function resolveChannelStatsSliderIndex(
+  currentIndex: number,
+  pointCount: number,
+  key: string,
+): number | null {
+  if (pointCount <= 0) {
+    return null;
+  }
+
+  const lastIndex = pointCount - 1;
+  if (key === 'Home') {
+    return 0;
+  }
+  if (key === 'End') {
+    return lastIndex;
+  }
+  if (key === 'ArrowLeft' || key === 'ArrowDown') {
+    return Math.max(0, Math.min(lastIndex, currentIndex - 1));
+  }
+  if (key === 'ArrowRight' || key === 'ArrowUp') {
+    return Math.max(0, Math.min(lastIndex, currentIndex + 1));
+  }
+
+  return null;
 }
 
 export function resolveAudienceChartAverageGrowthLabel(bucket: string): 'В час' | 'В день' {

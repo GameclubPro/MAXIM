@@ -187,18 +187,27 @@
 
   .chats-command__sync-chip {
     position: relative;
+    width: auto;
+    min-width: 70px;
+    max-width: 104px;
     justify-content: center;
-    padding: 0;
+    gap: 6px;
+    padding: 0 9px;
     overflow: visible;
   }
 
   .chats-command__sync-label {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: -1px;
+    position: static;
+    width: auto;
+    min-width: 0;
+    height: auto;
+    margin: 0;
     overflow: hidden;
-    clip: rect(0, 0, 0, 0);
+    clip: auto;
+    font-size: 0.68rem;
+    font-weight: 760;
+    line-height: 1;
+    text-overflow: ellipsis;
     white-space: nowrap;
   }
 
@@ -211,25 +220,25 @@
   .chats-command__sync-chip.is-ready {
     border-color: var(--home-border-strong);
     background: var(--home-surface-muted);
-    color: var(--success);
+    color: color-mix(in srgb, var(--success) 68%, var(--home-ink));
   }
 
   .chats-command__sync-chip.is-syncing {
     border-color: var(--home-border-strong);
     background: var(--accent-soft);
-    color: var(--accent);
+    color: var(--home-action-ink);
   }
 
   .chats-command__sync-chip.is-cache {
     border-color: var(--home-border);
     background: var(--home-surface-muted);
-    color: var(--home-muted);
+    color: var(--home-ink);
   }
 
   .chats-command__sync-chip.is-warning {
     border-color: var(--home-border-strong);
     background: var(--home-surface-muted);
-    color: var(--warning);
+    color: color-mix(in srgb, var(--warning) 68%, var(--home-ink));
   }
 
   .chats-command__icon-button {
@@ -318,6 +327,10 @@
     mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 16px), transparent 100%);
   }
 
+  .favorite-filter__chip:focus-visible {
+    outline-offset: -3px;
+  }
+
   .favorite-filter__chip,
   .favorite-filter__settings {
     min-height: 44px;
@@ -374,7 +387,8 @@
     color: var(--accent);
   }
 
-  .chat-grid {
+  .chats-home .chat-grid {
+    grid-template-columns: minmax(0, 1fr);
     gap: 0;
   }
 
@@ -642,7 +656,7 @@
 
   .favorite-picker__header span {
     margin-top: 4px;
-    color: var(--home-subtle);
+    color: var(--home-muted);
     font-size: 0.72rem;
   }
 
@@ -727,7 +741,7 @@
 
   .home-actions__item small {
     grid-column: 2 / 3;
-    color: var(--home-subtle);
+    color: inherit;
   }
 
   html[data-max-theme='dark'] .chats-command.glass-card {
@@ -807,6 +821,16 @@
       min-width: 18px;
       height: 18px;
       font-size: 0.58rem;
+    }
+
+    .chats-command__sync-chip {
+      min-width: 64px;
+      max-width: 92px;
+      padding-inline: 7px;
+    }
+
+    .chats-command__sync-label {
+      font-size: 0.64rem;
     }
 
     .favorite-filter__chip span,

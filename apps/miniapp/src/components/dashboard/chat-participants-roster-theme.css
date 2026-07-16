@@ -87,7 +87,7 @@
     border-color: color-mix(in srgb, var(--danger) 38%, var(--border-subtle));
     background: color-mix(in srgb, var(--danger) 12%, var(--surface-card-muted)); color: var(--danger);
   }
-  @media (max-width: 380px) {
+  @media (max-width: 430px) {
     .participants-roster__role-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
 }

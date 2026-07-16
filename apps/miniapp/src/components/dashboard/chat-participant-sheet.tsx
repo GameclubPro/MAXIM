@@ -1,5 +1,5 @@
 import type { ChatParticipantItem } from '@maxim/contracts';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { useNativeBackHandler } from '../../lib/native-back';
 import { PersonAvatar } from '../ui/person-avatar';
 import { SettingsDrilldownPanel } from '../ui/settings-drilldown-panel';
@@ -12,6 +12,8 @@ const IMMUNITY_DURATION_MIN_DAYS = 1;
 const IMMUNITY_DURATION_MAX_DAYS = 30;
 const IMMUNITY_DAILY_LIMIT_MIN = 1;
 const IMMUNITY_DAILY_LIMIT_MAX = 10;
+const MUTE_COMPOSER_ID = 'participant-sheet-mute-composer';
+const IMMUNITY_COMPOSER_ID = 'participant-sheet-immunity-composer';
 
 type ImmunityMode = 'limited' | 'always';
 type ParticipantHintKey = 'immunity' | 'duration' | 'limit';
@@ -219,6 +221,26 @@ function createAlwaysImmunityPayload(): SaveImmunityPayload {
   return { mode: 'always' };
 }
 
+function resolveNextImmunityMode(mode: ImmunityMode, key: string): ImmunityMode | null {
+  if (key === 'Home') {
+    return 'limited';
+  }
+
+  if (key === 'End') {
+    return 'always';
+  }
+
+  if (key === 'ArrowLeft' || key === 'ArrowUp') {
+    return mode === 'limited' ? 'always' : 'limited';
+  }
+
+  if (key === 'ArrowRight' || key === 'ArrowDown') {
+    return mode === 'always' ? 'limited' : 'always';
+  }
+
+  return null;
+}
+
 function ShieldIcon() {
   return (
     <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
@@ -327,6 +349,7 @@ export function ChatParticipantSheet({
   const [immunityDurationDays, setImmunityDurationDays] = useState(3);
   const [dailyViolationLimit, setDailyViolationLimit] = useState(3);
   const [openHintKey, setOpenHintKey] = useState<ParticipantHintKey | null>(null);
+  const immunityModeGroupRef = useRef<HTMLDivElement | null>(null);
 
   useNativeBackHandler(
     () => {
@@ -396,6 +419,21 @@ export function ChatParticipantSheet({
   const isAlwaysMode = immunityMode === 'always';
   const toggleHint = (hintKey: ParticipantHintKey) => {
     setOpenHintKey((current) => (current === hintKey ? null : hintKey));
+  };
+  const handleImmunityModeKeyDown = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    mode: ImmunityMode,
+  ) => {
+    const nextMode = resolveNextImmunityMode(mode, event.key);
+    if (!nextMode) {
+      return;
+    }
+
+    event.preventDefault();
+    setImmunityMode(nextMode);
+    immunityModeGroupRef.current
+      ?.querySelector<HTMLButtonElement>(`[data-immunity-mode="${nextMode}"]`)
+      ?.focus();
   };
 
   return (
@@ -484,6 +522,8 @@ export function ChatParticipantSheet({
                 className={`participant-sheet__action participant-sheet__action--mute ${
                   isMuteComposerOpen ? 'is-active' : ''
                 }`}
+                aria-controls={MUTE_COMPOSER_ID}
+                aria-expanded={isMuteComposerOpen}
                 onClick={() => setActiveComposer((current) => (current === 'mute' ? null : 'mute'))}
                 disabled={isBusy}
               >
@@ -498,6 +538,8 @@ export function ChatParticipantSheet({
                 className={`participant-sheet__action participant-sheet__action--immunity ${
                   isImmunityComposerOpen ? 'is-active' : ''
                 }`}
+                aria-controls={IMMUNITY_COMPOSER_ID}
+                aria-expanded={isImmunityComposerOpen}
                 onClick={() =>
                   setActiveComposer((current) => (current === 'immunity' ? null : 'immunity'))
                 }
@@ -522,7 +564,7 @@ export function ChatParticipantSheet({
           </div>
 
           {canManageParticipant && isMuteComposerOpen ? (
-            <div className="participant-sheet__composer">
+            <div id={MUTE_COMPOSER_ID} className="participant-sheet__composer">
               <div className="participant-sheet__composer-head">
                 <span className="participant-sheet__composer-title">Мут</span>
                 <output aria-live="polite">{formatDuration(muteDurationHours)}</output>
@@ -556,7 +598,10 @@ export function ChatParticipantSheet({
           ) : null}
 
           {canManageParticipant && isImmunityComposerOpen ? (
-            <div className="participant-sheet__composer participant-sheet__composer--stack">
+            <div
+              id={IMMUNITY_COMPOSER_ID}
+              className="participant-sheet__composer participant-sheet__composer--stack"
+            >
               <div className="participant-sheet__composer-head">
                 <div className="participant-sheet__label-with-info">
                   <span className="participant-sheet__composer-title">Защита</span>
@@ -589,6 +634,7 @@ export function ChatParticipantSheet({
               ) : null}
 
               <div
+                ref={immunityModeGroupRef}
                 className="participant-sheet__mode-switch"
                 role="radiogroup"
                 aria-label="Режим защиты"
@@ -600,7 +646,10 @@ export function ChatParticipantSheet({
                   }`}
                   role="radio"
                   aria-checked={immunityMode === 'limited'}
+                  tabIndex={immunityMode === 'limited' ? 0 : -1}
+                  data-immunity-mode="limited"
                   onClick={() => setImmunityMode('limited')}
+                  onKeyDown={(event) => handleImmunityModeKeyDown(event, 'limited')}
                   disabled={isBusy}
                 >
                   Лимит
@@ -612,7 +661,10 @@ export function ChatParticipantSheet({
                   }`}
                   role="radio"
                   aria-checked={immunityMode === 'always'}
+                  tabIndex={immunityMode === 'always' ? 0 : -1}
+                  data-immunity-mode="always"
                   onClick={() => setImmunityMode('always')}
+                  onKeyDown={(event) => handleImmunityModeKeyDown(event, 'always')}
                   disabled={isBusy}
                 >
                   Всегда

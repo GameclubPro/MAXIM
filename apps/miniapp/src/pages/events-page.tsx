@@ -77,7 +77,9 @@ import {
 } from '../lib/stats-snapshot-cache';
 import {
   formatStatisticsRangeLabel,
+  resolveNullableMetricPresentation,
   resolveMembershipMovementShares,
+  resolveStatisticsTitle,
 } from '../lib/statistics-display';
 import {
   buildStatisticsRouteSearch,
@@ -2221,57 +2223,76 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     return () => window.clearTimeout(timeoutId);
   }, [api, chatId, dashboardQuery.data, queryClient, range, section]);
 
-  const chatTitle = useMemo(() => {
-    if (!chatId) {
-      return '';
-    }
-
-    if (routeChatTitle) {
-      return routeChatTitle;
-    }
-
-    const fromStorage = readChatTitle(chatId);
-    if (fromStorage) {
-      return fromStorage;
-    }
-
-    const fromDashboard = dashboardQuery.data?.chat.title?.trim();
-    if (fromDashboard) {
-      return fromDashboard;
-    }
-
-    return 'Чат без названия';
-  }, [chatId, dashboardQuery.data?.chat.title, routeChatTitle]);
+  const dashboard =
+    chatId && isLogsDashboardResponseForRange(dashboardQuery.data, chatId, range)
+      ? dashboardQuery.data
+      : null;
+  const currentDashboardIdentity =
+    dashboard && !dashboardQuery.isPlaceholderData ? dashboard : null;
+  const chatTitleResolution = useMemo(
+    () =>
+      resolveStatisticsTitle({
+        remoteTitle: currentDashboardIdentity?.chat.title,
+        remoteFallbackTitles: chatId
+          ? [
+              `Чат ${chatId}`,
+              `Chat ${chatId}`,
+              `Канал ${chatId}`,
+              `Channel ${chatId}`,
+            ]
+          : [],
+        routeTitle: routeChatTitle,
+        storedTitle: chatId ? readChatTitle(chatId) : null,
+        fallback: chatId ? 'Чат без названия' : '',
+      }),
+    [chatId, currentDashboardIdentity?.chat.title, routeChatTitle],
+  );
+  const chatTitle = chatTitleResolution.title;
 
   const chatAvatarUrl = useMemo(() => {
     if (!chatId) {
       return null;
     }
 
-    if (routeChatAvatarUrl) {
-      return routeChatAvatarUrl;
-    }
-
-    const fromDashboard = dashboardQuery.data?.chat.avatarUrl;
+    const fromDashboard = currentDashboardIdentity?.chat.avatarUrl;
     if (typeof fromDashboard === 'string' && fromDashboard.trim()) {
       return fromDashboard.trim();
     }
 
+    if (routeChatAvatarUrl) {
+      return routeChatAvatarUrl;
+    }
+
     return null;
-  }, [chatId, dashboardQuery.data?.chat.avatarUrl, routeChatAvatarUrl]);
+  }, [chatId, currentDashboardIdentity?.chat.avatarUrl, routeChatAvatarUrl]);
 
   useEffect(() => {
-    if (!chatId || !chatTitle) {
+    if (!chatId || !chatTitle || chatTitleResolution.source === 'fallback') {
+      return;
+    }
+
+    if (
+      chatTitleResolution.source === 'remote' &&
+      (!dashboardQuery.isSuccess ||
+        dashboardQuery.isFetching ||
+        dashboardQuery.isPlaceholderData ||
+        dashboardQuery.isRefetchError ||
+        dashboardQuery.dataUpdatedAt <= 0)
+    ) {
       return;
     }
 
     saveChatTitle(chatId, chatTitle);
-  }, [chatId, chatTitle]);
-
-  const dashboard =
-    chatId && isLogsDashboardResponseForRange(dashboardQuery.data, chatId, range)
-      ? dashboardQuery.data
-      : null;
+  }, [
+    chatId,
+    chatTitle,
+    chatTitleResolution.source,
+    dashboardQuery.dataUpdatedAt,
+    dashboardQuery.isFetching,
+    dashboardQuery.isPlaceholderData,
+    dashboardQuery.isRefetchError,
+    dashboardQuery.isSuccess,
+  ]);
   const isDashboardPending =
     !dashboard &&
     (dashboardQuery.isLoading || dashboardQuery.isFetching || dashboardQuery.isPlaceholderData);
@@ -2952,9 +2973,13 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     (lastKnownParticipantsTotal?.chatId === (chatId ?? null)
       ? lastKnownParticipantsTotal.total
       : null);
+  const participantsTotalPresentation = resolveNullableMetricPresentation(
+    participantsTotal,
+    participantsFeed.isReloading,
+  );
   const participantsHeroMetric = {
     label: 'Сейчас в чате',
-    value: typeof participantsTotal === 'number' ? String(participantsTotal) : null,
+    value: participantsTotalPresentation.value,
     tone: 'accent' as const,
   };
   const moderationHeroMetric = {
@@ -3031,7 +3056,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                 className="events-stage__entity-avatar"
               />
               <div className="events-stage__appbar-copy">
-                <strong>{chatTitle}</strong>
+                <h1 className="events-stage__appbar-title">{chatTitle}</h1>
                 <span className="events-stage__appbar-label">{dashboardTitle}</span>
               </div>
             </div>
@@ -3136,12 +3161,23 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                 >
                   <small>{participantsHeroMetric.label}</small>
                   <strong className="events-dashboard__hero-value">
-                    {participantsHeroMetric.value ?? (
+                    {participantsTotalPresentation.status === 'loading' ? (
                       <span
                         className="events-dashboard__hero-spinner"
                         role="status"
                         aria-label="Загружаем количество участников"
                       />
+                    ) : (
+                      <span
+                        className="events-dashboard__hero-number"
+                        aria-label={
+                          participantsTotalPresentation.status === 'unavailable'
+                            ? 'Количество участников недоступно'
+                            : undefined
+                        }
+                      >
+                        {participantsHeroMetric.value}
+                      </span>
                     )}
                   </strong>
                 </article>

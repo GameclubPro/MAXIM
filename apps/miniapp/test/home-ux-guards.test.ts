@@ -42,10 +42,12 @@ test('root navigation has one managed-entities destination and no remembered-ent
   const labels = shellSource.match(/className="bottom-nav__label"/gu) ?? [];
 
   assert.equal(labels.length, 2);
-  assert.match(shellSource, />Объекты</u);
+  assert.match(shellSource, />Главная</u);
   assert.match(shellSource, />Посты</u);
   assert.doesNotMatch(shellSource, /bottom-nav__label">Настройки/u);
   assert.doesNotMatch(shellSource, /bottom-nav__label">\{activityNavLabel\}/u);
+  assert.match(shellSource, /const shouldShowBottomNav = isChatsRoute \|\| isPublicationsRoute/u);
+  assert.match(shellSource, /\{shouldShowBottomNav \? \(/u);
 });
 
 test('home sheets are named, focus-trapped and leave the shell controls inert', () => {
@@ -74,6 +76,59 @@ test('compact home controls keep 44px targets and category labels on narrow scre
   assert.match(
     chatsPageSource,
     /className="favorite-filter"[\s\S]*?role="group"[\s\S]*?data-allow-horizontal-overflow/u,
+  );
+  assert.match(
+    chatsPageNativeCss,
+    /\.favorite-filter__chip:focus-visible \{[\s\S]*?outline-offset: -3px;/u,
+  );
+  assert.match(
+    chatsPageNativeCss,
+    /\.home-actions__item small \{\s*grid-column: 2 \/ 3;\s*color: inherit;/u,
+  );
+  assert.match(
+    chatsPageNativeCss,
+    /\.favorite-picker__header span \{[\s\S]*?color: var\(--home-muted\);/u,
+  );
+});
+
+test('home list keeps grouped rows at wide breakpoints', () => {
+  assert.match(
+    chatsPageNativeCss,
+    /\.chats-home \.chat-grid \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\);/u,
+  );
+});
+
+test('home exposes sync, result and virtual-list state to assistive technology', () => {
+  assert.match(
+    chatsPageSource,
+    /if \(!options\.isManualRefreshBlocked\) \{\s*return `Статус списка: \$\{options\.label\}`;/u,
+  );
+  assert.match(
+    chatsPageSource,
+    /buildHomeSyncAccessibleLabel\(\{\s*label: homeSyncStatus\.label,\s*isManualRefreshBlocked,/u,
+  );
+  assert.match(
+    chatsPageSource,
+    /className=\{cn\('chats-command__sync-chip'[\s\S]*?role="status"[\s\S]*?aria-live="polite"/u,
+  );
+  assert.match(chatsPageSource, /\{homeSyncVisualLabel\}/u);
+  assert.match(chatsPageSource, /<output[\s\S]*?aria-live="polite"[\s\S]*?homeResultStatus/u);
+  assert.match(
+    chatsPageSource,
+    /role="listitem"[\s\S]*?aria-posinset=\{index \+ 1\}[\s\S]*?aria-setsize=\{filteredEntities\.length\}/u,
+  );
+  assert.match(
+    chatsPageSource,
+    /role="list"[\s\S]*?aria-label=\{`\$\{tabLabel\}: \$\{filteredEntities\.length\}`\}[\s\S]*?aria-busy=/u,
+  );
+  assert.match(chatsPageSource, /<GlassCard role="alert" aria-live="assertive">/u);
+});
+
+test('home reports favorite persistence failures through the shared toast', () => {
+  assert.match(chatsPageSource, /const \{ pushToast \} = useToast\(\);/u);
+  assert.match(
+    chatsPageSource,
+    /catch \(error: unknown\)[\s\S]*?pushToast\(\{[\s\S]*?tone: 'danger'/u,
   );
 });
 

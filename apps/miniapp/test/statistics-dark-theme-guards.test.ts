@@ -39,6 +39,32 @@ test('chat activity dashboard keeps its dark loading ledger on semantic surfaces
   assert.match(darkOverrides, /\.spammer-diagnostics__hero::before \{\s*opacity: 0;/u);
 });
 
+test('chat activity dashboard restores semantic KPI colors after broad dark rules', () => {
+  const broadStrongRule = dashboardEventsCss.indexOf(
+    "html[data-max-theme='dark'] .events-dashboard__metric strong,",
+  );
+  const finalSemanticRules = dashboardEventsCss.lastIndexOf(
+    "html[data-max-theme='dark'] .events-dashboard__metric--success strong,",
+  );
+
+  assert.ok(broadStrongRule >= 0);
+  assert.ok(finalSemanticRules > broadStrongRule);
+
+  const finalOverrides = dashboardEventsCss.slice(finalSemanticRules);
+  assert.match(
+    finalOverrides,
+    /\.events-dashboard__metric--success strong,[\s\S]*?\.events-dashboard__activity-balance--success strong,[\s\S]*?\.events-dashboard__flow-card--joined strong \{\s*color: var\(--success\);/u,
+  );
+  assert.match(
+    finalOverrides,
+    /\.events-dashboard__metric--warning strong,[\s\S]*?\.events-dashboard__flow-card--left strong \{\s*color: var\(--warning\);/u,
+  );
+  assert.match(
+    finalOverrides,
+    /\.events-dashboard__metric--danger strong,[\s\S]*?\.events-dashboard__activity-balance--danger strong \{\s*color: var\(--danger\);/u,
+  );
+});
+
 test('channel event dark overrides stay in the last imported page stylesheet', () => {
   const baseImport = channelStatsPageSource.indexOf("import '../styles/channel-stats.css'");
   const polishImport = channelStatsPageSource.indexOf(
@@ -54,7 +80,7 @@ test('channel event dark overrides stay in the last imported page stylesheet', (
 
   const marker = '/* Page-layer overrides must follow the light channel-events rules';
   const start = channelStatsExecutiveCss.indexOf(marker);
-  const end = channelStatsExecutiveCss.indexOf('@media (max-width: 360px)', start);
+  const end = channelStatsExecutiveCss.indexOf('@media (max-width: 380px)', start);
   const darkOverrides = channelStatsExecutiveCss.slice(start, end);
 
   assert.ok(start >= 0);
@@ -90,4 +116,24 @@ test('channel event dark overrides stay in the last imported page stylesheet', (
   assert.match(darkOverrides, /color: var\(--success\);/u);
   assert.match(darkOverrides, /color: var\(--danger\);/u);
   assert.doesNotMatch(darkOverrides, /rgba\(|#[\da-f]{3,8}\b/iu);
+});
+
+test('channel compact metrics keep semantic colors after the broad dark value rule', () => {
+  const broadStrongRule = channelStatsExecutiveCss.indexOf(
+    "html[data-max-theme='dark'] .channel-summary-card--compact > strong,",
+  );
+  const positiveRule = channelStatsExecutiveCss.lastIndexOf(
+    "html[data-max-theme='dark'] .channel-summary-card--compact > strong.is-positive",
+  );
+  const negativeRule = channelStatsExecutiveCss.lastIndexOf(
+    "html[data-max-theme='dark'] .channel-summary-card--compact > strong.is-negative",
+  );
+
+  assert.ok(broadStrongRule >= 0);
+  assert.ok(positiveRule > broadStrongRule);
+  assert.ok(negativeRule > positiveRule);
+  assert.match(
+    channelStatsExecutiveCss.slice(positiveRule),
+    /strong\.is-positive \{\s*color: var\(--success\);\s*\}[\s\S]*?strong\.is-negative \{\s*color: var\(--danger\);/u,
+  );
 });

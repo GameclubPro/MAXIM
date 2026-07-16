@@ -220,6 +220,7 @@ export function MembershipActivityFeed({
                             href={profileHandoffUrl || profileUrl || '#'}
                             className="membership-feed__avatar-link"
                             aria-label={`Открыть профиль ${displayName} в MAX`}
+                            tabIndex={-1}
                             onClick={(event) =>
                               handleProfileLinkClick(event, item, onProfileActivate)
                             }

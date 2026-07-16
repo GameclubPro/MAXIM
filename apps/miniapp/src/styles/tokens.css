@@ -71,7 +71,7 @@
   --publication-ui-shadow: rgba(35, 65, 92, 0.06);
   --publication-ui-row-border: rgba(218, 229, 240, 0.66);
   --publication-ui-selected: rgba(235, 246, 255, 0.74);
-  --favorite-important-text: #9a6200;
+  --favorite-important-text: #805000;
   --favorite-important-bg: #fff0bd;
   --favorite-watch-text: #9a2f3f;
   --favorite-watch-bg: #ffe0e5;
@@ -204,6 +204,16 @@
   --suggest-polish-image-remove-bg: rgba(255, 255, 255, 0.94);
   --suggest-polish-image-remove-ink: #315b78;
   --suggest-polish-toolbar-mask: linear-gradient(90deg, #000 0 calc(100% - 10px), transparent 100%);
+}
+
+html[data-max-theme='dark'] {
+  --favorite-important-text: #9a6200;
+}
+
+@media (prefers-color-scheme: dark) {
+  html:not([data-max-theme]) {
+    --favorite-important-text: #9a6200;
+  }
 }
 
 html[data-max-theme='dark'] {

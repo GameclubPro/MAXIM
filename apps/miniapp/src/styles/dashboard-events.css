@@ -106,7 +106,9 @@
   font-weight: 760;
 }
 
-.events-stage__appbar-copy strong {
+.events-stage__appbar-copy strong,
+.events-stage__appbar-title {
+  margin: 0;
   min-width: 0;
   color: #17324a;
   font-weight: 830;
@@ -360,6 +362,12 @@
   display: inline-flex;
   min-height: 1em;
   align-items: center;
+}
+
+.events-dashboard__hero .events-dashboard__hero-number {
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
 }
 
 .events-dashboard__hero .events-dashboard__hero-spinner {
@@ -2949,7 +2957,8 @@ body.events-page-open .app-shell {
   border-radius: 11px;
 }
 
-.events-stage__appbar-copy strong {
+.events-stage__appbar-copy strong,
+.events-stage__appbar-title {
   font-size: 0.88rem;
 }
 
@@ -3282,7 +3291,8 @@ body.events-page-open .membership-feed--immersive .membership-feed__description 
 }
 
 @media (max-width: 380px) {
-  .events-stage__appbar-copy strong {
+  .events-stage__appbar-copy strong,
+  .events-stage__appbar-title {
     font-size: 0.82rem;
   }
 
@@ -3524,6 +3534,7 @@ html[data-max-theme='dark'] .logs-violation-item__ban-config {
 
 html[data-max-theme='dark'] .events-stage__back,
 html[data-max-theme='dark'] .events-stage__appbar-copy strong,
+html[data-max-theme='dark'] .events-stage__appbar-title,
 html[data-max-theme='dark'] .events-dashboard__head-copy strong,
 html[data-max-theme='dark'] .spammer-review__copy strong,
 html[data-max-theme='dark'] .events-dashboard__hero strong,
@@ -3975,6 +3986,31 @@ html[data-max-theme='dark'] .events-dashboard__skeleton-line {
   html[data-max-theme='dark'] .participant-sheet__action--ban {
     border-color: color-mix(in srgb, var(--danger) 38%, var(--border-subtle));
     background: color-mix(in srgb, var(--danger) 14%, var(--surface-card-muted));
+    color: var(--danger);
+  }
+
+  body.events-page-open .logs-violation-item__quick-button,
+  body.events-page-open .logs-violation-item__apply-button,
+  body.events-page-open
+    .membership-feed--immersive
+    .membership-feed__filters
+    .segmented-control__item {
+    min-height: 44px;
+  }
+
+  html[data-max-theme='dark'] .events-dashboard__metric--success strong,
+  html[data-max-theme='dark'] .events-dashboard__activity-balance--success strong,
+  html[data-max-theme='dark'] .events-dashboard__flow-card--joined strong {
+    color: var(--success);
+  }
+
+  html[data-max-theme='dark'] .events-dashboard__metric--warning strong,
+  html[data-max-theme='dark'] .events-dashboard__flow-card--left strong {
+    color: var(--warning);
+  }
+
+  html[data-max-theme='dark'] .events-dashboard__metric--danger strong,
+  html[data-max-theme='dark'] .events-dashboard__activity-balance--danger strong {
     color: var(--danger);
   }
 }

@@ -13,6 +13,76 @@ export type MembershipMovementShares = {
   hasMovement: boolean;
 };
 
+export type StatisticsTitleResolution = {
+  title: string;
+  source: 'remote' | 'route' | 'stored' | 'fallback';
+};
+
+export type NullableMetricPresentation = {
+  value: string;
+  status: 'ready' | 'loading' | 'unavailable';
+};
+
+type StatisticsTitleInput = {
+  remoteTitle?: string | null;
+  remoteFallbackTitles?: readonly string[];
+  routeTitle?: string | null;
+  storedTitle?: string | null;
+  fallback: string;
+};
+
+export function resolveStatisticsTitle({
+  remoteTitle,
+  remoteFallbackTitles = [],
+  routeTitle,
+  storedTitle,
+  fallback,
+}: StatisticsTitleInput): StatisticsTitleResolution {
+  const normalizedRemoteFallbackTitles = new Set(
+    [fallback, ...remoteFallbackTitles]
+      .map((title) => title.trim().toLocaleLowerCase('ru-RU'))
+      .filter(Boolean),
+  );
+  const candidates = [
+    ['remote', remoteTitle],
+    ['route', routeTitle],
+    ['stored', storedTitle],
+  ] as const;
+
+  for (const [source, candidate] of candidates) {
+    const title = candidate?.trim();
+    if (!title) {
+      continue;
+    }
+
+    if (
+      source === 'remote' &&
+      normalizedRemoteFallbackTitles.has(title.toLocaleLowerCase('ru-RU'))
+    ) {
+      continue;
+    }
+
+    return { title, source };
+  }
+
+  return { title: fallback, source: 'fallback' };
+}
+
+export function resolveNullableMetricPresentation(
+  value: number | null | undefined,
+  isLoading: boolean,
+): NullableMetricPresentation {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return { value: String(value), status: 'ready' };
+  }
+
+  if (isLoading) {
+    return { value: '', status: 'loading' };
+  }
+
+  return { value: '—', status: 'unavailable' };
+}
+
 export function buildMembershipMovementSummary(
   joinedRaw: number | null | undefined,
   leftRaw: number | null | undefined,

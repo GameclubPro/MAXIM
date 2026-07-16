@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { cn } from '../lib/cn';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
@@ -281,7 +281,6 @@ export function Shell() {
 
     return readChatTitle(resolvedChatId);
   }, [chatId, resolvedChatId, routeChatTitle]);
-  const isEntitiesNavRoute = isChatsRoute || isManagedEntityRoute;
   const isGiveawayRoute = location.pathname.includes('/giveaways/');
   const isLegalRoute = location.pathname.startsWith('/legal/');
   const isDialogRoute =
@@ -297,6 +296,7 @@ export function Shell() {
     location.pathname === '/publications' || location.pathname === '/autoposts';
   const isChannelStatsRoute =
     location.pathname.includes('/channel/') && location.pathname.includes('/stats');
+  const shouldShowBottomNav = isChatsRoute || isPublicationsRoute;
   const hasTopbar =
     !isChatsRoute &&
     !isPublicationsRoute &&
@@ -358,6 +358,11 @@ export function Shell() {
         isCommentsDialogRoute && 'app-shell--comments-dialog',
         isSuggestDialogRoute && 'app-shell--suggest-dialog',
       )}
+      style={
+        shouldShowBottomNav
+          ? undefined
+          : ({ '--bottom-nav-height': '0px', '--bottom-nav-offset': '0px' } as CSSProperties)
+      }
     >
       {hasTopbar ? (
         <header className="shell-topbar glass-card glass-card--sm">
@@ -378,7 +383,7 @@ export function Shell() {
         <Outlet />
       </main>
 
-      {!isDialogRoute && !isGiveawayRoute ? (
+      {shouldShowBottomNav ? (
         <nav
           className={cn(
             'bottom-nav bottom-nav--primary glass-card',
@@ -388,13 +393,13 @@ export function Shell() {
         >
           <Link
             to={homeRoute}
-            className={cn('bottom-nav__item', isEntitiesNavRoute && 'is-active')}
-            aria-current={isEntitiesNavRoute ? 'page' : undefined}
+            className={cn('bottom-nav__item', isChatsRoute && 'is-active')}
+            aria-current={isChatsRoute ? 'page' : undefined}
           >
             <span className="bottom-nav__icon" aria-hidden>
               <BottomNavIcon name="chats" />
             </span>
-            <span className="bottom-nav__label">Объекты</span>
+            <span className="bottom-nav__label">Главная</span>
           </Link>
 
           <NavLink

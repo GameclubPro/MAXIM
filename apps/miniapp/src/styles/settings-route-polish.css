@@ -4702,6 +4702,12 @@ html[data-max-theme='dark'] .settings-drilldown .settings-drilldown__close {
 }
 
 html[data-max-theme='dark']
+  .settings-drilldown__panel--post-suggestions-screen
+  :is(.channel-settings-mode-card__label, .field > span, .field__label) {
+  color: var(--text-secondary);
+}
+
+html[data-max-theme='dark']
   .settings-drilldown
   :is(
     .settings-native-toggle,
