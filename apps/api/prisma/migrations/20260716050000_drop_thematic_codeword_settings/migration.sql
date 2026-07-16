@@ -1,0 +1,15 @@
+ALTER TABLE "chat_settings"
+  DROP COLUMN "thematic_codeword_enabled",
+  DROP COLUMN "thematic_codeword",
+  DROP COLUMN "thematic_filters_bot_message_enabled",
+  DROP COLUMN "thematic_filters_warn_enabled",
+  DROP COLUMN "thematic_filters_ban_enabled",
+  DROP COLUMN "thematic_filters_mute_enabled",
+  DROP COLUMN "thematic_filters_mute_duration_hours",
+  DROP COLUMN "thematic_filters_admin_contact_button_enabled",
+  DROP COLUMN "thematic_filters_admin_contact_button_url",
+  DROP COLUMN "thematic_filters_bot_button_enabled",
+  DROP COLUMN "thematic_filters_bot_button_url",
+  DROP COLUMN "thematic_filters_bot_button_text",
+  DROP COLUMN "thematic_filters_bot_buttons",
+  DROP COLUMN "thematic_filters_rules_button_enabled";

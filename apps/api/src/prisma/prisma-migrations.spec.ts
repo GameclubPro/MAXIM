@@ -51,6 +51,33 @@ describe('Prisma migrations', () => {
     expect(schema).not.toMatch(/\bthematic(?:Codeword|Filters)/);
   });
 
+  it('drops every retired thematic codeword column after the compatible client deploy', () => {
+    const migration = readMigration('20260716050000_drop_thematic_codeword_settings');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+    const droppedColumns = [
+      'thematic_codeword_enabled',
+      'thematic_codeword',
+      'thematic_filters_bot_message_enabled',
+      'thematic_filters_warn_enabled',
+      'thematic_filters_ban_enabled',
+      'thematic_filters_mute_enabled',
+      'thematic_filters_mute_duration_hours',
+      'thematic_filters_admin_contact_button_enabled',
+      'thematic_filters_admin_contact_button_url',
+      'thematic_filters_bot_button_enabled',
+      'thematic_filters_bot_button_url',
+      'thematic_filters_bot_button_text',
+      'thematic_filters_bot_buttons',
+      'thematic_filters_rules_button_enabled',
+    ];
+
+    expect(compact).toMatch(/^ALTER TABLE "chat_settings" /);
+    for (const column of droppedColumns) {
+      expect(compact).toContain(`DROP COLUMN "${column}"`);
+    }
+    expect(compact).not.toMatch(/\b(?:UPDATE|CREATE|TRUNCATE|DELETE)\b/i);
+  });
+
   it('keeps the local display-name webhook lookup index aligned with the runtime SQL', () => {
     const migration = readMigration('20260707152000_optimize_local_display_name_lookup');
     const compact = migration.replace(/\s+/g, ' ').trim();
