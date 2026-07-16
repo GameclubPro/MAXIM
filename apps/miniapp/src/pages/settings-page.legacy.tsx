@@ -1445,8 +1445,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mutateRulesAsync = saveRulesMutation.mutateAsync;
   const isHeaderSaving = isSavingSettings || isSavingRules || isSavingSpeechStyle;
   const hasPendingHeaderChanges = hasChanges || hasRulesChanges;
-  const showHeaderStatus = isHeaderSaving || hasPendingHeaderChanges;
-  const compactHeaderStatusLabel = isHeaderSaving ? 'Сохр.' : 'Черн.';
   const activeSpeechStyle = draft?.botSpeechStyle ?? null;
   const pendingSpeechStyleSamples = pendingSpeechStyle
     ? buildSpeechStylePreviewSamples(pendingSpeechStyle, botSpeechPreviewContext)
@@ -5402,24 +5400,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             }
             compact={isHeaderCompact}
             className="settings-home-sticky-header stagger-in"
-            aside={
-              showHeaderStatus ? (
-                <span
-                  className={cn(
-                    'compact-page-header__status',
-                    isHeaderSaving
-                      ? 'compact-page-header__status--saving'
-                      : 'compact-page-header__status--draft',
-                  )}
-                  aria-label={
-                    isHeaderSaving ? 'Сохраняем изменения' : 'Есть несохранённые изменения'
-                  }
-                  title={isHeaderSaving ? 'Сохраняем изменения' : 'Есть несохранённые изменения'}
-                >
-                  {compactHeaderStatusLabel}
-                </span>
-              ) : null
-            }
           />
 
           {settingsScreenQuery.data?.header.accessDiagnostics?.state === 'bot_access_lost' ? (

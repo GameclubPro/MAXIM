@@ -96,7 +96,7 @@ import './chats-page.css';
 import './chats-page-native.css';
 
 type ManagedTab = 'chat' | 'channel';
-type HomeSyncTone = 'ready' | 'syncing' | 'cache' | 'warning';
+type HomeSyncTone = 'ready' | 'syncing' | 'error';
 type ManagedHomeEntity = ChatSummary;
 type ManagedEntitiesReloadRequest = {
   nonce: number;
@@ -175,94 +175,39 @@ function buildPendingSyncDescription(options: {
   const entityPlural = options.tab === 'chat' ? 'чаты' : 'каналы';
   const progress = formatRefreshProgress(options.refreshState);
 
-  if (!options.hasLoadedFromServer) {
-    return `Проверяем ${entityPlural} на сервере и подтягиваем контекст запуска.`;
-  }
   if (progress) {
-    return `Сверяем права администратора в MAX. Прогресс: ${progress}.`;
+    return `Проверено ${progress}.`;
   }
 
-  return 'Обновляем локальный список и сверяем права администратора в MAX.';
+  return options.hasLoadedFromServer
+    ? `Ищем новые ${entityPlural}.`
+    : `Ищем ваши ${entityPlural}.`;
 }
 
 function buildHomeSyncStatus(options: {
   isLoading: boolean;
   isRefreshing: boolean;
+  hasError: boolean;
   isBackoffActive: boolean;
   hasLoadedFromServer: boolean;
-  snapshotStale: boolean | null | undefined;
-  isSyncComplete: boolean;
-  retryAfterSec: number | null;
-  manualRefreshBlockedReason: string | null;
 }): { label: string; tone: HomeSyncTone } {
+  if (options.isLoading || options.isRefreshing) {
+    return { label: 'Обновляем список', tone: 'syncing' };
+  }
+
+  if (options.hasError) {
+    return { label: 'Не удалось обновить список', tone: 'error' };
+  }
+
   if (options.isBackoffActive) {
-    return {
-      label: options.retryAfterSec ? `Пауза ${options.retryAfterSec} с` : 'Пауза',
-      tone: 'warning',
-    };
+    return { label: 'Обновление продолжится автоматически', tone: 'syncing' };
   }
-  if (options.isLoading) {
-    return { label: 'Загружаем', tone: 'syncing' };
-  }
-  if (options.manualRefreshBlockedReason === 'in_progress') {
-    return { label: 'Обновление запущено', tone: 'syncing' };
-  }
-  if (options.manualRefreshBlockedReason === 'recent_sync' && options.retryAfterSec) {
-    return { label: `Повтор через ${options.retryAfterSec} с`, tone: 'ready' };
-  }
+
   if (!options.hasLoadedFromServer) {
-    return { label: 'Сохранённые данные', tone: 'cache' };
-  }
-  if (options.isRefreshing || options.snapshotStale === true) {
-    return { label: 'Обновляем', tone: 'syncing' };
-  }
-  if (options.isSyncComplete) {
-    return { label: 'Актуально', tone: 'ready' };
+    return { label: 'Обновляем список', tone: 'syncing' };
   }
 
-  return { label: 'Актуально', tone: 'ready' };
-}
-
-function buildHomeSyncVisualLabel(options: {
-  tone: HomeSyncTone;
-  retryAfterSec: number | null;
-  manualRefreshBlockedReason: string | null;
-}): string {
-  if (options.manualRefreshBlockedReason === 'recent_sync' && options.retryAfterSec) {
-    return `Готово · ${options.retryAfterSec} с`;
-  }
-  if (options.tone === 'syncing') {
-    return 'Сверяем';
-  }
-  if (options.tone === 'cache') {
-    return 'Кэш';
-  }
-  if (options.tone === 'warning') {
-    return options.retryAfterSec ? `Пауза · ${options.retryAfterSec} с` : 'Пауза';
-  }
-
-  return 'Готово';
-}
-
-function buildHomeSyncAccessibleLabel(options: {
-  label: string;
-  isManualRefreshBlocked: boolean;
-  manualRefreshBlockedReason: string | null;
-}): string {
-  if (!options.isManualRefreshBlocked) {
-    return `Статус списка: ${options.label}`;
-  }
-  if (options.manualRefreshBlockedReason === 'recent_sync') {
-    return 'Статус списка: актуально, обновление временно недоступно';
-  }
-  if (options.manualRefreshBlockedReason === 'in_progress') {
-    return 'Статус списка: обновление выполняется';
-  }
-  if (options.manualRefreshBlockedReason === 'backoff') {
-    return 'Статус списка: MAX на паузе';
-  }
-
-  return `Статус списка: ${options.label}`;
+  return { label: 'Список обновлён', tone: 'ready' };
 }
 
 async function saveManagedEntityFavoriteTypes(
@@ -463,30 +408,15 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     !activeEntitiesState.isUserVisibleComplete;
   const isManualRefreshBlocked =
     isRefreshTemporarilyBlocked || isManualRefreshCoolingDown || isManualRefreshInProgressByState;
-  const effectiveManualRefreshBlockedReason = isManualRefreshBlocked
-    ? manualRefreshBlockedReason
-    : null;
   const isForegroundSyncing = activeEntitiesState.isRefreshing && !isUserVisibleSyncSettled;
   const homeSyncStatus = buildHomeSyncStatus({
     isLoading,
-    isRefreshing: isForegroundSyncing,
+    isRefreshing: isFetching || isManualRefreshInProgressByState,
+    hasError: Boolean(queryError),
     isBackoffActive: activeEntitiesState.isBackoffActive,
     hasLoadedFromServer: activeEntitiesState.hasLoadedFromServer,
-    snapshotStale: activeEntitiesState.snapshot?.stale ?? null,
-    isSyncComplete: isUserVisibleSyncSettled,
-    retryAfterSec: manualRefreshRetryAfterSec,
-    manualRefreshBlockedReason: effectiveManualRefreshBlockedReason,
   });
-  const homeSyncVisualLabel = buildHomeSyncVisualLabel({
-    tone: homeSyncStatus.tone,
-    retryAfterSec: manualRefreshRetryAfterSec,
-    manualRefreshBlockedReason: effectiveManualRefreshBlockedReason,
-  });
-  const homeSyncAccessibleLabel = buildHomeSyncAccessibleLabel({
-    label: homeSyncStatus.label,
-    isManualRefreshBlocked,
-    manualRefreshBlockedReason: effectiveManualRefreshBlockedReason,
-  });
+  const homeSyncAccessibleLabel = `Статус списка: ${homeSyncStatus.label}`;
   const refreshProgressPercent =
     !activeEntitiesState.isUserVisibleComplete &&
     !activeEntitiesState.isBackoffActive &&
@@ -664,6 +594,23 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       return;
     }
     if (behavior !== 'recovery' && isManualRefreshBlocked) {
+      if (isManualRefreshCoolingDown) {
+        pushToast({
+          tone: 'info',
+          title: 'Список уже обновлён',
+          description: manualRefreshRetryAfterSec
+            ? `Повторить можно через ${manualRefreshRetryAfterSec} с.`
+            : undefined,
+        });
+      } else if (isRefreshTemporarilyBlocked) {
+        pushToast({
+          tone: 'info',
+          title: 'Обновление уже запланировано',
+          description: manualRefreshRetryAfterSec
+            ? `Повторим автоматически через ${manualRefreshRetryAfterSec} с.`
+            : 'Повторим автоматически.',
+        });
+      }
       return;
     }
 
@@ -1145,15 +1092,9 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const tabLabel = activeTab === 'chat' ? 'Чаты' : 'Каналы';
   const searchLabel = activeTab === 'chat' ? 'Поиск чата' : 'Поиск канала';
   const searchPlaceholder = 'Поиск';
-  const refreshButtonLabel = isFetching
-    ? 'Обновление уже идёт'
-    : effectiveManualRefreshBlockedReason === 'recent_sync' && manualRefreshRetryAfterSec
-      ? `Обновить можно через ${manualRefreshRetryAfterSec} с`
-      : effectiveManualRefreshBlockedReason === 'in_progress'
-        ? 'Обновление уже выполняется'
-        : effectiveManualRefreshBlockedReason === 'backoff' && manualRefreshRetryAfterSec
-          ? `MAX на паузе, повтор через ${manualRefreshRetryAfterSec} с`
-          : 'Обновить';
+  const refreshButtonLabel = isFetching || isManualRefreshInProgressByState
+    ? 'Обновление списка уже идёт'
+    : 'Обновить список';
   const homeResultStatus = queryError
     ? ''
     : isLoading
@@ -1169,8 +1110,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       favorite && 'is-favorite',
       favoriteTypes[0] && `is-${favoriteTypes[0]}`,
       staggerIndex !== null && 'stagger-in',
-      homeSyncStatus.tone === 'cache' && 'is-from-cache',
-      homeSyncStatus.tone === 'warning' && 'is-paused',
     );
     let style: CSSProperties | undefined;
     if (shouldVirtualizeEntities) {
@@ -1360,28 +1299,30 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
 
           <div className="chats-command__meta">
             <span
-              className={cn('chats-command__sync-chip', `is-${homeSyncStatus.tone}`)}
+              className={cn('chats-command__sync-indicator', `is-${homeSyncStatus.tone}`)}
               role="status"
               aria-live="polite"
               aria-atomic="true"
-              aria-label={homeSyncAccessibleLabel}
               title={homeSyncStatus.label}
             >
-              <span className="chats-command__sync-dot" aria-hidden />
-              <span className="chats-command__sync-label">{homeSyncVisualLabel}</span>
+              <span className="chats-command__sr">{homeSyncAccessibleLabel}</span>
+              {homeSyncStatus.tone === 'syncing' ? (
+                <span className="chats-command__sync-ring" aria-hidden />
+              ) : homeSyncStatus.tone === 'error' ? (
+                <XmarkGlyph aria-hidden />
+              ) : (
+                <span className="chats-command__sync-check" aria-hidden />
+              )}
             </span>
             <button
               type="button"
               className="chats-command__icon-button"
               onClick={() => handleRefresh(activeTab, 'manual')}
-              disabled={isFetching || isManualRefreshBlocked}
+              disabled={isFetching || isManualRefreshInProgressByState}
               aria-label={refreshButtonLabel}
               title={refreshButtonLabel}
             >
-              <RefreshGlyph
-                aria-hidden
-                className={isForegroundSyncing ? 'is-spinning' : undefined}
-              />
+              <RefreshGlyph aria-hidden />
             </button>
           </div>
         </div>
@@ -1389,7 +1330,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         {refreshProgressPercent !== null ? (
           <div
             className="chats-command__progress"
-            aria-label={`Синхронизация ${refreshProgressPercent}%`}
+            aria-label={`Обновляем список: ${refreshProgressPercent}%`}
             role="progressbar"
             aria-valuemin={0}
             aria-valuemax={100}
@@ -1400,7 +1341,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               } as CSSProperties
             }
           >
-            <span className="chats-command__sr">Обновлено на {refreshProgressPercent}%</span>
+            <span className="chats-command__sr">Обновлено {refreshProgressPercent}%</span>
           </div>
         ) : null}
 
@@ -1490,21 +1431,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         <GlassCard className="chats-transient-state">
           <StatusState
             tone="warning"
-            title="MAX на паузе"
+            title="Пока не удалось обновить список"
             description={
               manualRefreshRetryAfterSec
-                ? `Повтор через ${manualRefreshRetryAfterSec} сек.`
-                : 'Список восстановится автоматически.'
-            }
-            action={
-              <button
-                type="button"
-                className="button button--ghost"
-                onClick={() => handleRefresh(activeTab, 'recovery')}
-                disabled={isFetching || isRefreshTemporarilyBlocked}
-              >
-                Проверить
-              </button>
+                ? `Повторим автоматически через ${manualRefreshRetryAfterSec} с.`
+                : 'Повторим автоматически.'
             }
           />
         </GlassCard>
@@ -1543,7 +1474,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         <GlassCard>
           <StatusState
             tone="neutral"
-            title={`Синхронизируем ${tabLabel.toLowerCase()}`}
+            title={`Ищем ${tabLabel.toLowerCase()}`}
             description={buildPendingSyncDescription({
               tab: activeTab,
               refreshState,

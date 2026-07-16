@@ -36,6 +36,6 @@ test('home refresh cooldown catches up after a background-tab deadline expires',
   );
   assert.match(
     chatsPageSource,
-    /const effectiveManualRefreshBlockedReason = isManualRefreshBlocked[\s\S]*?\? manualRefreshBlockedReason[\s\S]*?: null;/u,
+    /disabled=\{isFetching \|\| isManualRefreshInProgressByState\}/u,
   );
 });

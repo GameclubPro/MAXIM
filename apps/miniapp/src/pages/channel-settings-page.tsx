@@ -10,7 +10,7 @@ import {
   type ManagedBroadcastDetails,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { StatsUpSquare } from 'iconoir-react';
+import { RefreshDouble as IconoirRefreshDouble, StatsUpSquare } from 'iconoir-react';
 import '../styles/settings-drilldown-core.css';
 import '../styles/settings-native-controls.css';
 import '../styles/settings-home-compact.css';
@@ -2130,17 +2130,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     );
   }
 
-  const headerStatusTone =
-    autosaveState === 'error'
-      ? 'error'
-      : autosaveState === 'saving'
-        ? 'saving'
-        : isDirty
-          ? 'draft'
-          : 'saved';
-  const showHeaderStatus = headerStatusTone !== 'saved';
-  const compactHeaderStatusLabel =
-    headerStatusTone === 'error' ? 'Ошибка' : headerStatusTone === 'saving' ? 'Сохр.' : 'Черн.';
+  const showHeaderSaveRetry = autosaveState === 'error';
   const normalizedBroadcastButtons = trimBroadcastLinkButtons(broadcastButtons);
   const broadcastSystemButtons = buildChannelBroadcastSystemButtons({
     commentsEnabled: draft.commentsEnabled,
@@ -3046,44 +3036,26 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         compact={isHeaderCompact}
         className="channel-settings-screen__sticky-header"
         aside={
-          showHeaderStatus ? (
-            <div className="compact-page-header__actions">
-              <span
-                className={cn(
-                  'compact-page-header__status',
-                  `compact-page-header__status--${headerStatusTone}`,
-                )}
-                aria-live="polite"
-                aria-label={
-                  headerStatusTone === 'error'
-                    ? 'Ошибка сохранения'
-                    : headerStatusTone === 'saving'
-                      ? 'Сохраняем изменения'
-                      : 'Есть несохранённые изменения'
-                }
-                title={
-                  headerStatusTone === 'error'
-                    ? 'Ошибка сохранения'
-                    : headerStatusTone === 'saving'
-                      ? 'Сохраняем изменения'
-                      : 'Есть несохранённые изменения'
-                }
+          showHeaderSaveRetry ? (
+            <div
+              className="compact-page-header__actions"
+              role="status"
+              aria-live="assertive"
+              aria-atomic="true"
+            >
+              <span className="compact-page-header__sr">Не удалось сохранить изменения.</span>
+              <button
+                type="button"
+                className="compact-page-header__retry"
+                onClick={() => {
+                  lastFailedDraftKeyRef.current = null;
+                  void saveCurrentDraft({ force: true });
+                }}
+                aria-label="Не удалось сохранить. Повторить"
+                title="Повторить сохранение"
               >
-                {compactHeaderStatusLabel}
-              </span>
-              {headerStatusTone === 'error' ? (
-                <button
-                  type="button"
-                  className="compact-page-header__retry"
-                  onClick={() => {
-                    lastFailedDraftKeyRef.current = null;
-                    void saveCurrentDraft({ force: true });
-                  }}
-                  aria-label="Повторить сохранение"
-                >
-                  ↻
-                </button>
-              ) : null}
+                <IconoirRefreshDouble aria-hidden focusable="false" />
+              </button>
             </div>
           ) : null
         }

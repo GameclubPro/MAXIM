@@ -101,17 +101,21 @@ test('home list keeps grouped rows at wide breakpoints', () => {
 test('home exposes sync, result and virtual-list state to assistive technology', () => {
   assert.match(
     chatsPageSource,
-    /if \(!options\.isManualRefreshBlocked\) \{\s*return `Статус списка: \$\{options\.label\}`;/u,
+    /const homeSyncAccessibleLabel = `Статус списка: \$\{homeSyncStatus\.label\}`;/u,
   );
   assert.match(
     chatsPageSource,
-    /buildHomeSyncAccessibleLabel\(\{\s*label: homeSyncStatus\.label,\s*isManualRefreshBlocked,/u,
+    /className=\{cn\('chats-command__sync-indicator'[\s\S]*?role="status"[\s\S]*?aria-live="polite"/u,
   );
   assert.match(
     chatsPageSource,
-    /className=\{cn\('chats-command__sync-chip'[\s\S]*?role="status"[\s\S]*?aria-live="polite"/u,
+    /homeSyncStatus\.tone === 'syncing'[\s\S]*?chats-command__sync-ring[\s\S]*?chats-command__sync-check/u,
   );
-  assert.match(chatsPageSource, /\{homeSyncVisualLabel\}/u);
+  assert.match(
+    chatsPageSource,
+    /<span className="chats-command__sr">\{homeSyncAccessibleLabel\}<\/span>/u,
+  );
+  assert.doesNotMatch(chatsPageSource, /homeSyncVisualLabel|Пауза ·|Готово ·|MAX на паузе/u);
   assert.match(chatsPageSource, /<output[\s\S]*?aria-live="polite"[\s\S]*?homeResultStatus/u);
   assert.match(
     chatsPageSource,
