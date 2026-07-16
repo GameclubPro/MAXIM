@@ -113,6 +113,7 @@ export type NightModeTransitionState = {
   status: 'open' | 'closed';
   sessionKey: string;
   closeNoticeMessageId?: string | null;
+  closeNoticeBotId?: string | null;
   updatedAt?: string;
 };
 
@@ -231,20 +232,10 @@ export type ForwardedRulesSource = {
 export const DEFAULT_MUTE_DURATION_HOURS = 6;
 export const MAX_ACTIVE_MUTE_DURATION_HOURS = 336;
 export const PERMANENT_MUTE_COMMAND_DURATION_HOURS = 88;
-export const DELETE_MESSAGE_PERMISSION_ALIASES = new Set([
-  'delete',
-  'delete_message',
-  'delete_messages',
-  'can_delete_message',
-  'can_delete_messages',
-  'post_edit_delete_message',
-  'post_edit_delete_messages',
-  'can_post_edit_delete_message',
-  'can_post_edit_delete_messages',
-]);
+export const DELETE_MESSAGE_PERMISSION_ALIASES = new Set(['delete', 'delete_message']);
 export const CHAT_DELETE_MESSAGE_PERMISSION_ALIASES = new Set([
-  ...DELETE_MESSAGE_PERMISSION_ALIASES,
   'write',
+  'post_edit_delete_message',
 ]);
 export const MODERATE_MEMBER_PERMISSION_ALIASES = new Set([
   'add_remove_members',
@@ -462,20 +453,13 @@ export type ActiveBotSpeechProfile = {
 };
 
 export function isRequiredSubscriptionCurrentlyActive(
-  settings: Pick<
-    ChatSettings,
-    | 'requiredSubscriptionEnabled'
-    | 'requiredSubscriptionChannelIds'
-  >,
+  settings: Pick<ChatSettings, 'requiredSubscriptionEnabled' | 'requiredSubscriptionChannelIds'>,
 ): boolean {
   const channelIds = Array.isArray(settings.requiredSubscriptionChannelIds)
     ? settings.requiredSubscriptionChannelIds
     : [];
 
-  return (
-    settings.requiredSubscriptionEnabled &&
-    channelIds.length > 0
-  );
+  return settings.requiredSubscriptionEnabled && channelIds.length > 0;
 }
 
 export function isInvitationAccessCurrentlyActive(

@@ -12,6 +12,29 @@ export class SafetyDeskController {
     return this.safetyDeskService.getQueue();
   }
 
+  @Get('runtime/deletes')
+  getDeleteRuntime() {
+    return this.safetyDeskService.getDeleteRuntime();
+  }
+
+  @Post('runtime/ambiguous-sends/:itemId/allow-retry')
+  clearAmbiguousSendFence(
+    @Param('itemId') itemId: string,
+    @Headers('x-remote-user') remoteUser: string | undefined,
+    @Body() body: unknown,
+  ) {
+    return this.safetyDeskService.clearAmbiguousSendFence(itemId, remoteUser ?? null, body);
+  }
+
+  @Post('runtime/deletes/:intentId/retry')
+  retryDeleteIntent(
+    @Param('intentId') intentId: string,
+    @Headers('x-remote-user') remoteUser: string | undefined,
+    @Body() body: unknown,
+  ) {
+    return this.safetyDeskService.retryDeleteIntent(intentId, remoteUser ?? null, body);
+  }
+
   @Post('items/:itemId/approve')
   approveItem(
     @Param('itemId') itemId: string,

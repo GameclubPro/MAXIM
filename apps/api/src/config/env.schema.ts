@@ -215,6 +215,26 @@ const envSchema = z.object({
   MAX_ROUTED_MUTATIONS_CANARY_PERCENT: z.coerce.number().min(0).max(100).default(1),
   MAX_ROUTED_MUTATIONS_CANARY_ENTITY_IDS: z.string().default(''),
   MAX_CROSS_BOT_EDIT_DELETE_ENABLED: envBoolean(false),
+  MODERATION_DELETE_INTENT_MODE: z.enum(['off', 'shadow', 'canary', 'on']).default('off'),
+  MODERATION_DELETE_INTENT_CANARY_CHAT_IDS: z.string().default(''),
+  MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS: z.string().default(''),
+  MODERATION_DELETE_INTENT_RETRY_HORIZON_MS: z.coerce.number().int().positive().default(86_400_000),
+  MODERATION_DELETE_INTENT_RETRY_BASE_MS: z.coerce.number().int().positive().default(5_000),
+  MODERATION_DELETE_INTENT_RETRY_MAX_MS: z.coerce.number().int().positive().default(300_000),
+  MODERATION_DELETE_INTENT_CAPABILITY_RETRY_MS: z.coerce.number().int().positive().default(30_000),
+  MODERATION_DELETE_INTENT_LEASE_MS: z.coerce.number().int().positive().default(60_000),
+  MODERATION_DELETE_INTENT_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
+  MODERATION_DELETE_INTENT_SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(1_000),
+  MODERATION_DELETE_INTENT_SWEEP_BATCH_SIZE: z.coerce.number().int().min(1).max(1_000).default(100),
+  MODERATION_DELETE_INTENT_RECOVERY_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(10),
+  MODERATION_DELETE_INTENT_CONCURRENCY: z.coerce.number().int().min(1).max(20).default(2),
+  MODERATION_DELETE_INTENT_RETENTION_DAYS: z.coerce.number().int().min(7).max(365).default(90),
+  MODERATION_DELETE_INTENT_PURGE_MAX_BATCHES: z.coerce.number().int().min(1).max(100).default(10),
+  MODERATION_DELETE_INTENT_CLEANUP_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(3_600_000),
   BACKGROUND_GOVERNOR_SOURCE_WINDOW_SEC: z.coerce.number().int().positive().default(60),
   BACKGROUND_GOVERNOR_CACHE_TTL_MS: z.coerce.number().int().positive().default(2_000),
   BACKGROUND_GOVERNOR_SOFT_QUEUE_LAG_SEC: z.coerce.number().positive().default(3),
@@ -366,6 +386,22 @@ export function validateEnv(config: Record<string, unknown>): EnvSchema {
       .map((issue) => `${issue.path.join('.')}: ${issue.message}`)
       .join('; ');
     throw new Error(`Environment validation failed: ${details}`);
+  }
+
+  if (
+    parsed.data.MODERATION_DELETE_INTENT_LEASE_MS <= parsed.data.MODERATION_DELETE_INTENT_TIMEOUT_MS
+  ) {
+    throw new Error(
+      'Environment validation failed: MODERATION_DELETE_INTENT_LEASE_MS must be greater than MODERATION_DELETE_INTENT_TIMEOUT_MS',
+    );
+  }
+  if (
+    parsed.data.MODERATION_DELETE_INTENT_RETRY_MAX_MS <
+    parsed.data.MODERATION_DELETE_INTENT_RETRY_BASE_MS
+  ) {
+    throw new Error(
+      'Environment validation failed: MODERATION_DELETE_INTENT_RETRY_MAX_MS must be greater than or equal to MODERATION_DELETE_INTENT_RETRY_BASE_MS',
+    );
   }
 
   if (parsed.data.KARAVAN_STOREFRONT_RELAY_ENABLED) {

@@ -8,7 +8,7 @@ import {
   MaxClientService,
   type MaxChatMemberAccess,
 } from './max-client.service';
-import { normalizePermissionName } from './max-bot-access-policy.util';
+import { hasConfirmedDeleteMessageAccess } from './max-delete-message-access.util';
 import { MaxBotLinkService } from './max-bot-link.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
 import { MaxChatAdminRosterSyncService } from './max-chat-admin-roster-sync.service';
@@ -28,18 +28,6 @@ const HANDSHAKE_ACCESS_TIMEOUT_MS = 1_500;
 const HANDSHAKE_SEND_TIMEOUT_MS = 1_500;
 const HANDSHAKE_DELETE_TIMEOUT_MS = 1_500;
 const HANDSHAKE_SOURCE = MANAGED_ENTITY_HANDSHAKE_SOURCE;
-const DELETE_MESSAGE_PERMISSION_ALIASES = new Set([
-  'delete',
-  'delete_message',
-  'delete_messages',
-  'can_delete_message',
-  'can_delete_messages',
-  'post_edit_delete_message',
-  'post_edit_delete_messages',
-  'can_post_edit_delete_message',
-  'can_post_edit_delete_messages',
-  'write',
-]);
 
 export type ManagedEntityHandshakeResult =
   | 'ignored'
@@ -207,7 +195,9 @@ export class ManagedEntityHandshakeService {
       if (!isManagedEntityHandshakeStartCommand(update)) {
         return null;
       }
-    } else if (this.readCallbackPayload(update) !== MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD) {
+    } else if (
+      this.readCallbackPayload(update) !== MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD
+    ) {
       return null;
     }
 
@@ -228,7 +218,8 @@ export class ManagedEntityHandshakeService {
     const senderId =
       rawSenderId && !this.maxBotRegistry.isKnownBotUserId(rawSenderId) ? rawSenderId : null;
     const entityType = update.message?.entityType === 'channel' ? 'channel' : 'chat';
-    const prismaEntityType = entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT;
+    const prismaEntityType =
+      entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT;
     const title =
       update.message?.chatTitle?.trim() ||
       (entityType === 'channel' ? `Channel ${chatId}` : `Chat ${chatId}`);
@@ -243,7 +234,7 @@ export class ManagedEntityHandshakeService {
       prismaEntityType,
       createdAt: update.message?.createdAt?.trim() || null,
       commandMessageId:
-        updateType === 'message_created' ? (update.message?.messageId?.trim() || null) : null,
+        updateType === 'message_created' ? update.message?.messageId?.trim() || null : null,
     };
   }
 
@@ -402,7 +393,7 @@ export class ManagedEntityHandshakeService {
       return;
     }
 
-    if (!this.canDeleteMessages(botAccess)) {
+    if (!this.canDeleteMessages(botAccess, context.prismaEntityType)) {
       this.logger.debug(
         {
           updateId: context.update.updateId,
@@ -439,23 +430,16 @@ export class ManagedEntityHandshakeService {
     }
   }
 
-  private canDeleteMessages(access: MaxChatMemberAccess): boolean {
-    if (access.isOwner === true) {
-      return true;
-    }
-
-    if (access.isAdmin !== true) {
-      return false;
-    }
-
-    const permissions = access.permissions
-      .map((permission) => normalizePermissionName(permission))
-      .filter((permission): permission is string => permission.length > 0);
-    if (permissions.length === 0) {
-      return true;
-    }
-
-    return permissions.some((permission) => DELETE_MESSAGE_PERMISSION_ALIASES.has(permission));
+  private canDeleteMessages(access: MaxChatMemberAccess, entityType: ChatEntityType): boolean {
+    return hasConfirmedDeleteMessageAccess(
+      {
+        checkedAt: null,
+        isAdmin: access.isAdmin,
+        isOwner: access.isOwner,
+        permissions: access.permissions,
+      },
+      entityType,
+    );
   }
 
   private async replySafely(

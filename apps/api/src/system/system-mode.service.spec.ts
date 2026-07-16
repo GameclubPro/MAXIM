@@ -325,6 +325,117 @@ describe('SystemModeService', () => {
     await service.onModuleDestroy();
   });
 
+  it('does not degrade for critical rate below the minimum sample and failure floors', async () => {
+    process.env.APP_ROLE = 'ingress';
+
+    const queueMetricsService = {
+      getSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
+    };
+    const actionHealthService = {
+      refreshSnapshots: jest.fn().mockResolvedValue(undefined),
+      getSnapshot: jest.fn().mockReturnValue({
+        windowSec: 60,
+        total: 58,
+        success: 52,
+        failure: 6,
+        critical: 6,
+        errorRate: 6 / 58,
+        criticalRate: 6 / 58,
+      }),
+    };
+
+    const service = new SystemModeService(
+      createConfigMock() as never,
+      queueMetricsService as never,
+      actionHealthService as never,
+    );
+
+    await service.evaluateAutoMode();
+
+    expect(service.getSnapshot()).toEqual(
+      expect.objectContaining({
+        mode: 'normal',
+        reason: 'system healthy',
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('does not degrade for critical rate below the minimum critical-failure count', async () => {
+    process.env.APP_ROLE = 'ingress';
+
+    const queueMetricsService = {
+      getSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
+    };
+    const actionHealthService = {
+      refreshSnapshots: jest.fn().mockResolvedValue(undefined),
+      getSnapshot: jest.fn().mockReturnValue({
+        windowSec: 60,
+        total: 150,
+        success: 146,
+        failure: 4,
+        critical: 4,
+        errorRate: 4 / 150,
+        criticalRate: 4 / 150,
+      }),
+    };
+
+    const service = new SystemModeService(
+      createConfigMock() as never,
+      queueMetricsService as never,
+      actionHealthService as never,
+    );
+
+    await service.evaluateAutoMode();
+
+    expect(service.getSnapshot()).toEqual(
+      expect.objectContaining({
+        mode: 'normal',
+        reason: 'system healthy',
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('reports critical rate only after the minimum sample and failure floors are reached', async () => {
+    process.env.APP_ROLE = 'ingress';
+
+    const queueMetricsService = {
+      getSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
+    };
+    const actionHealthService = {
+      refreshSnapshots: jest.fn().mockResolvedValue(undefined),
+      getSnapshot: jest.fn().mockReturnValue({
+        windowSec: 60,
+        total: 150,
+        success: 145,
+        failure: 5,
+        critical: 5,
+        errorRate: 5 / 150,
+        criticalRate: 5 / 150,
+      }),
+    };
+
+    const service = new SystemModeService(
+      createConfigMock() as never,
+      queueMetricsService as never,
+      actionHealthService as never,
+    );
+
+    await service.evaluateAutoMode();
+
+    expect(service.getSnapshot()).toEqual(
+      expect.objectContaining({
+        mode: 'degrade',
+        reason: expect.stringContaining('critical MAX API rate'),
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('marks the recovery window explicitly while waiting for stabilization', async () => {
     process.env.APP_ROLE = 'ingress';
     jest.useFakeTimers().setSystemTime(new Date('2026-03-29T11:00:00.000Z'));

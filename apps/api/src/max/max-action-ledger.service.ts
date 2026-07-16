@@ -88,6 +88,39 @@ export function markMaxSendDispatchLedgerFinalized<T extends Error>(error: T): T
 export class MaxActionLedgerService {
   constructor(private readonly prisma: PrismaService) {}
 
+  async hasActiveOrSucceededDelete(chatId: string, messageId: string): Promise<boolean> {
+    const normalizedChatId = this.nullableString(chatId);
+    const normalizedMessageId = this.nullableString(messageId);
+    if (!normalizedChatId || !normalizedMessageId) {
+      return false;
+    }
+
+    const row = await this.prisma.maxActionLedgerEntry.findFirst({
+      where: {
+        chatId: normalizedChatId,
+        actionType: 'DELETE_MESSAGE',
+        messageId: normalizedMessageId,
+        status: {
+          in: [
+            MaxActionLedgerStatus.ENQUEUED,
+            MaxActionLedgerStatus.IN_PROGRESS,
+            MaxActionLedgerStatus.SUCCEEDED,
+          ],
+        },
+        updatedAt: {
+          gte: new Date(Date.now() - 2 * 60 * 60 * 1_000),
+        },
+      },
+      select: {
+        id: true,
+      },
+      orderBy: {
+        updatedAt: 'desc',
+      },
+    });
+    return Boolean(row);
+  }
+
   isIrreversibleAction(actionType: MaxActionType): boolean {
     return IRREVERSIBLE_ACTION_TYPES.has(actionType);
   }

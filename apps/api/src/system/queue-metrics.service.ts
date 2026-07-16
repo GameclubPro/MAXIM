@@ -16,8 +16,8 @@ import {
   type MaxActionQueueName,
 } from '../max/max-action.queue';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
-import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from '../max/max-webhook-subscription.constants';
 import { GLOBAL_SPAMMER_DENORM_QUEUE } from '../moderation/global-spammer-denorm.queue';
+import { MODERATION_DELETE_INTENT_QUEUE } from '../moderation/moderation-delete-intent.queue';
 import { NIGHT_MODE_TRANSITION_QUEUE } from '../moderation/night-mode-transition.queue';
 import {
   DEFAULT_WEBHOOK_WORKER_GROUP_NAMES,
@@ -57,6 +57,7 @@ export const AUXILIARY_QUEUE_NAMES = [
   ADMIN_MANUAL_FANOUT_QUEUE,
   ADMIN_SUPER_BAN_QUEUE,
   ADMIN_SUGGESTION_DELIVERY_QUEUE,
+  MODERATION_DELETE_INTENT_QUEUE,
 ] as const;
 export type AuxiliaryQueueName = (typeof AUXILIARY_QUEUE_NAMES)[number];
 
@@ -202,7 +203,14 @@ const EMPTY_WEBHOOK_STATUS_METRICS: WebhookStatusMetrics = {
   oldestLagSec: 0,
 };
 const ACTIVE_FAILED_WEBHOOK_WINDOW_SEC = 6 * 60 * 60;
-const USER_FACING_WEBHOOK_TYPES = MAX_REQUIRED_WEBHOOK_UPDATE_TYPES;
+export const USER_FACING_WEBHOOK_UPDATE_TYPES = [
+  'message_created',
+  'message_edited',
+  'message_callback',
+  'user_added',
+  'bot_added',
+  'bot_started',
+] as const;
 
 @Injectable()
 export class QueueMetricsService {
@@ -386,9 +394,18 @@ export class QueueMetricsService {
         this.readWebhookStatusMetrics(WebhookStatus.RECEIVED),
         this.readWebhookStatusMetrics(WebhookStatus.QUEUED),
         this.readWebhookStatusMetrics(WebhookStatus.FAILED),
-        this.readWebhookStatusMetricsByTypes(WebhookStatus.RECEIVED, USER_FACING_WEBHOOK_TYPES),
-        this.readWebhookStatusMetricsByTypes(WebhookStatus.QUEUED, USER_FACING_WEBHOOK_TYPES),
-        this.readWebhookStatusMetricsByTypes(WebhookStatus.FAILED, USER_FACING_WEBHOOK_TYPES),
+        this.readWebhookStatusMetricsByTypes(
+          WebhookStatus.RECEIVED,
+          USER_FACING_WEBHOOK_UPDATE_TYPES,
+        ),
+        this.readWebhookStatusMetricsByTypes(
+          WebhookStatus.QUEUED,
+          USER_FACING_WEBHOOK_UPDATE_TYPES,
+        ),
+        this.readWebhookStatusMetricsByTypes(
+          WebhookStatus.FAILED,
+          USER_FACING_WEBHOOK_UPDATE_TYPES,
+        ),
       ]);
     const bots = await this.buildPerBotSnapshots(botIds);
     const actionLedgerWatchdog = this.actionLedgerWatchdogService
@@ -727,17 +744,17 @@ export class QueueMetricsService {
           this.readWebhookStatusMetricsForBot(WebhookStatus.FAILED, botId),
           this.readWebhookStatusMetricsByTypes(
             WebhookStatus.RECEIVED,
-            USER_FACING_WEBHOOK_TYPES,
+            USER_FACING_WEBHOOK_UPDATE_TYPES,
             botId,
           ),
           this.readWebhookStatusMetricsByTypes(
             WebhookStatus.QUEUED,
-            USER_FACING_WEBHOOK_TYPES,
+            USER_FACING_WEBHOOK_UPDATE_TYPES,
             botId,
           ),
           this.readWebhookStatusMetricsByTypes(
             WebhookStatus.FAILED,
-            USER_FACING_WEBHOOK_TYPES,
+            USER_FACING_WEBHOOK_UPDATE_TYPES,
             botId,
           ),
           this.readQueuedByQueue(botId),

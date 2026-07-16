@@ -8,6 +8,7 @@ import {
   buildDeveloperForcedGlobalSpammerWarmMarkerKey,
 } from './developer-forced-global-spammer-cache';
 import { ModerationService } from './moderation.service';
+import { resolveModerationDeleteIntentRollout } from './moderation-delete-intent-rollout.util';
 import {
   WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX,
   WebhookCanonicalExecutionService,
@@ -3475,16 +3476,269 @@ describe('ModerationService', () => {
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
     expect(prisma.auditLog.findFirst).not.toHaveBeenCalled();
-    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
-    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('keeps the legacy delete path mutually exclusive with an executing durable intent', async () => {
+    const maxClient = { deleteMessage: jest.fn() };
+    const deleteIntents = {
+      getRolloutForChat: jest.fn().mockReturnValue('execute'),
+      ensureIntent: jest.fn().mockResolvedValue({
+        intentId: 'intent-channel-copy-1',
+        rollout: 'execute',
+        status: 'PENDING',
+      }),
+      ensureAndAttempt: jest.fn().mockResolvedValue({
+        kind: 'pending',
+        confirmed: false,
+        intentId: 'intent-1',
+        status: 'RETRYABLE',
+      }),
+    };
+    const service = new ModerationService(
+      {} as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+    );
+    (service as any).moderationDeleteIntentService = deleteIntents;
+
+    const result = await (service as any).executeModerationDelete({
+      chatId: 'chat-1',
+      messageId: 'message-1',
+      reasonKey: 'PROFANITY:delete',
+      ruleCode: 'PROFANITY_DELETE',
+      subjectUserId: 'user-1',
+    });
+
+    expect(deleteIntents.ensureAndAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({
         chatId: 'chat-1',
-        userId: 'bot-1',
-        messageId: 'msg-bot-1',
-        ruleCode: 'BOT_MESSAGE_AUTO_DELETE',
-        action: SanctionAction.DELETE_MESSAGE,
+        messageId: 'message-1',
+        entityType: 'CHAT',
+        messageAuthorKind: 'user',
+        routingPolicy: 'origin_first',
+      }),
+    );
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      accepted: true,
+      gone: false,
+      deleted: false,
+      eventPersistedByIntent: false,
+    });
+  });
+
+  it('persists a duplicate delete intent before returning for an existing semantic claim', async () => {
+    const deleteIntents = {
+      getRolloutForChat: jest.fn().mockReturnValue('execute'),
+      ensureIntent: jest.fn().mockResolvedValue({
+        intentId: 'intent-duplicate',
+        rollout: 'execute',
+        status: 'PENDING',
+      }),
+      ensureAndAttempt: jest.fn(),
+    };
+    const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
+    (service as any).moderationDeleteIntentService = deleteIntents;
+    const claim = jest.fn().mockResolvedValue(false);
+    (service as any).claimMessageScopedModerationAction = claim;
+
+    await (service as any).handleDuplicateDecision({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      messageId: 'message-1',
+      text: 'same message',
+      createdAt: new Date().toISOString(),
+      decision: {
+        windowSec: 60,
+        count: 3,
+        threshold: 3,
+        action: 'WARN',
+        hash: 'duplicate-hash',
+        fingerprintType: 'exact',
+        nextAction: null,
+      },
+      userLabel: 'User',
+      muteDurationHours: 1,
+      botSpeechStyle: null,
+      botSpeechMedia: null,
+      duplicateBotMessageEnabled: false,
+      duplicateBotMessageText: '',
+      duplicateBotButtons: [],
+      duplicateBotButtonEnabled: false,
+      duplicateBotButtonUrl: '',
+      duplicateBotButtonText: '',
+      duplicateAdminContactButtonEnabled: false,
+      duplicateAdminContactButtonUrl: '',
+      rulesAttachViolationsEnabled: false,
+      rulesPublishedUrl: null,
+      rulesPublishedMessageId: null,
+      deleteBotMessagesEnabled: false,
+      deleteBotMessagesDelayMinutes: 0,
+      suppressNonEssentialMessages: true,
+    });
+
+    expect(deleteIntents.ensureIntent).toHaveBeenCalledTimes(1);
+    expect(claim).toHaveBeenCalledTimes(1);
+    expect(deleteIntents.ensureIntent.mock.invocationCallOrder[0]).toBeLessThan(
+      claim.mock.invocationCallOrder[0],
+    );
+    expect(deleteIntents.ensureAndAttempt).not.toHaveBeenCalled();
+  });
+
+  it('does not record delayed bot auto-delete before the durable intent succeeds', async () => {
+    const prisma = { moderationEvent: { create: jest.fn() } };
+    const maxClient = { deleteMessage: jest.fn() };
+    const deleteIntents = {
+      getRolloutForChat: jest.fn().mockReturnValue('execute'),
+      ensureIntent: jest.fn().mockResolvedValue({
+        intentId: 'intent-delayed',
+        rollout: 'execute',
+        status: 'PENDING',
+      }),
+      ensureAndAttempt: jest.fn().mockResolvedValue({
+        kind: 'pending',
+        confirmed: false,
+        intentId: 'intent-delayed',
+        status: 'PENDING',
+      }),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+    );
+    (service as any).moderationDeleteIntentService = deleteIntents;
+    (service as any).maxBotLinkService = {
+      resolveBotIdFromUserId: jest.fn().mockReturnValue('registry-bot-1'),
+    };
+    (service as any).claimMessageScopedModerationAction = jest.fn().mockResolvedValue(true);
+
+    await (service as any).handleBotMessageAutoDelete({
+      chatId: 'chat-1',
+      userId: 'bot-1',
+      messageId: 'message-bot-1',
+      text: 'temporary notice',
+      delayMinutes: 2,
+    });
+
+    expect(deleteIntents.ensureIntent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executeAt: expect.any(Date),
+        messageAuthorKind: 'bot',
+        originBotId: 'registry-bot-1',
+      }),
+    );
+    expect(deleteIntents.ensureAndAttempt).toHaveBeenCalledTimes(1);
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { mode: 'canary' as const, canaryChatIds: new Set(['chat-1']) },
+    { mode: 'on' as const, canaryChatIds: new Set<string>() },
+  ])(
+    'does not schedule a second own-bot delete from the webhook in $mode execute rollout',
+    async ({ mode, canaryChatIds }) => {
+      const deleteIntents = {
+        getRolloutForChat: jest.fn((chatId: string) =>
+          resolveModerationDeleteIntentRollout({ mode, canaryChatIds, chatId }),
+        ),
+        ensureIntent: jest.fn(),
+        ensureAndAttempt: jest.fn(),
+      };
+      const actionLedger = {
+        hasActiveOrSucceededDelete: jest.fn().mockResolvedValue(true),
+      };
+      const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
+      (service as any).moderationDeleteIntentService = deleteIntents;
+      (service as any).maxActionLedgerService = actionLedger;
+      (service as any).resolveOwnBotAutoDeleteSkipReason = jest.fn().mockResolvedValue(null);
+      const scheduleWebhookDelete = jest.fn();
+      (service as any).handleBotMessageAutoDelete = scheduleWebhookDelete;
+
+      await (service as any).handleOwnBotMessageAutoDelete({
+        chatId: 'chat-1',
+        userId: 'runtime-bot-user-1',
+        messageId: 'sent-message-1',
+        text: 'temporary runtime notice',
+        settings: createSettings({
+          deleteBotMessagesEnabled: true,
+          deleteBotMessagesDelayMinutes: 2,
+        }),
+      });
+
+      expect(actionLedger.hasActiveOrSucceededDelete).toHaveBeenCalledWith(
+        'chat-1',
+        'sent-message-1',
+      );
+      expect(scheduleWebhookDelete).not.toHaveBeenCalled();
+      expect(deleteIntents.ensureIntent).not.toHaveBeenCalled();
+      expect(deleteIntents.ensureAndAttempt).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps the legacy webhook owner in shadow rollout', async () => {
+    const deleteIntents = {
+      getRolloutForChat: jest.fn().mockReturnValue('observed'),
+    };
+    const actionLedger = {
+      hasActiveOrSucceededDelete: jest.fn().mockResolvedValue(true),
+    };
+    const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
+    (service as any).moderationDeleteIntentService = deleteIntents;
+    (service as any).maxActionLedgerService = actionLedger;
+    (service as any).resolveOwnBotAutoDeleteSkipReason = jest.fn().mockResolvedValue(null);
+    const scheduleWebhookDelete = jest.fn();
+    (service as any).handleBotMessageAutoDelete = scheduleWebhookDelete;
+
+    await (service as any).handleOwnBotMessageAutoDelete({
+      chatId: 'chat-1',
+      userId: 'runtime-bot-user-1',
+      messageId: 'sent-message-1',
+      text: 'temporary runtime notice',
+      settings: createSettings({
+        deleteBotMessagesEnabled: true,
+        deleteBotMessagesDelayMinutes: 2,
       }),
     });
+
+    expect(actionLedger.hasActiveOrSucceededDelete).not.toHaveBeenCalled();
+    expect(scheduleWebhookDelete).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      userId: 'runtime-bot-user-1',
+      messageId: 'sent-message-1',
+      text: 'temporary runtime notice',
+      delayMinutes: 2,
+    });
+  });
+
+  it('keeps durable own-bot cleanup when no active legacy delete owns the message', async () => {
+    const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
+    (service as any).moderationDeleteIntentService = {
+      getRolloutForChat: jest.fn().mockReturnValue('execute'),
+    };
+    (service as any).maxActionLedgerService = {
+      hasActiveOrSucceededDelete: jest.fn().mockResolvedValue(false),
+    };
+    (service as any).resolveOwnBotAutoDeleteSkipReason = jest.fn().mockResolvedValue(null);
+    const scheduleWebhookDelete = jest.fn();
+    (service as any).handleBotMessageAutoDelete = scheduleWebhookDelete;
+
+    await (service as any).handleOwnBotMessageAutoDelete({
+      chatId: 'chat-1',
+      userId: 'runtime-bot-user-1',
+      messageId: 'unowned-message-1',
+      text: 'message without a completed send ledger',
+      settings: createSettings({
+        deleteBotMessagesEnabled: true,
+        deleteBotMessagesDelayMinutes: 2,
+      }),
+    });
+
+    expect(scheduleWebhookDelete).toHaveBeenCalledTimes(1);
   });
 
   it('routes delayed own-bot auto-delete through a delete-capable fallback bot', async () => {
@@ -3545,6 +3799,7 @@ describe('ModerationService', () => {
       notifyModerators: jest.fn(),
     };
     const maxBotLinkService = {
+      resolveBotIdFromUserId: jest.fn().mockReturnValue('bot-2'),
       resolveBotRoutes: jest.fn().mockResolvedValue({
         purpose: 'moderation_action',
         chatId: 'chat-1',
@@ -3597,15 +3852,7 @@ describe('ModerationService', () => {
         sourceTag: 'moderation_delete',
       }),
     );
-    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        chatId: 'chat-1',
-        userId: 'bot-1',
-        messageId: 'msg-bot-1',
-        ruleCode: 'BOT_MESSAGE_AUTO_DELETE',
-        action: SanctionAction.DELETE_MESSAGE,
-      }),
-    });
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
   });
 
   it('does not auto-delete messages from another configured bot', async () => {
@@ -8467,7 +8714,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('deduplicates mirrored active-mute old-message moderator notifications', async () => {
+  it('deduplicates mirrored active-mute old-message deletion claims', async () => {
     const claimedKeys = new Set<string>();
     const prisma = {
       chat: {
@@ -8549,8 +8796,9 @@ describe('ModerationService', () => {
     });
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-    expect(maxClient.notifyModerators).toHaveBeenCalledTimes(1);
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-old-1');
+    expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
+    expect(maxClient.notifyModerators).not.toHaveBeenCalled();
     expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledTimes(2);
     expect(claimedKeys.size).toBe(1);
   });
@@ -9437,7 +9685,7 @@ describe('ModerationService', () => {
       expect(maxClient.deleteMessage).not.toHaveBeenCalled();
       expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
       expect(redisCounter.setStringWithTtl).not.toHaveBeenCalled();
-      expect(result).toEqual({ shouldEnqueueNext: false, messageId: null });
+      expect(result).toEqual({ shouldEnqueueNext: false, messageId: null, botId: null });
       expect(managedEntityAccessLossService.recordManagedEntityAccessLost).toHaveBeenCalledWith({
         chatId: 'chat-1',
         botId: 'bot-1',
@@ -10577,6 +10825,28 @@ describe('ModerationService', () => {
         action: SanctionAction.DELETE_MESSAGE,
       }),
     });
+  });
+
+  it('keeps local profanity and commercial filters enabled in degrade mode', () => {
+    const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
+    const settings = createSettings({
+      russianProfanityFilterEnabled: true,
+      commercialAdsFilterEnabled: true,
+    });
+
+    const effectiveSettings = (
+      service as unknown as {
+        applyDegradeSettings: (value: typeof settings, degradeMode: boolean) => typeof settings;
+      }
+    ).applyDegradeSettings(settings, true);
+
+    expect(effectiveSettings).toBe(settings);
+    expect(effectiveSettings).toEqual(
+      expect.objectContaining({
+        russianProfanityFilterEnabled: true,
+        commercialAdsFilterEnabled: true,
+      }),
+    );
   });
 
   it('does not apply night mode deletion to chat admins', async () => {
@@ -16704,15 +16974,15 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createOldUpdate());
 
-    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-    expect(maxClient.notifyModerators).toHaveBeenCalledTimes(1);
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-old-1');
+    expect(maxClient.notifyModerators).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      majorExplanation('Алексей', 'не удалено', 'эта ссылка запрещена настройками чата'),
+      majorExplanation('Алексей', 'удалено', 'эта ссылка запрещена настройками чата'),
     );
   });
 
@@ -19693,7 +19963,7 @@ describe('ModerationService', () => {
         expect(operation).toHaveBeenCalledWith('id613002203036_4_bot');
       });
 
-      it('treats MAX write permission as enough for refreshed chat delete access', async () => {
+      it('requires read-all plus MAX write permission for refreshed chat delete access', async () => {
         const prisma = {
           chat: {
             findUnique: jest.fn().mockResolvedValue({
@@ -19710,7 +19980,7 @@ describe('ModerationService', () => {
             userId: '613002203036_4',
             isAdmin: true,
             isOwner: false,
-            permissions: ['write'],
+            permissions: ['read_all_messages', 'write'],
           }),
         };
         const maxBotLinkService = {
@@ -19757,7 +20027,7 @@ describe('ModerationService', () => {
             permissionsSnapshot: expect.objectContaining({
               isAdmin: true,
               isOwner: false,
-              permissions: ['write'],
+              permissions: ['read_all_messages', 'write'],
               health: 'ok',
             }),
           }),
@@ -22740,7 +23010,7 @@ describe('ModerationService', () => {
       expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
     });
 
-    it('skips known-spammer fanout checks for a hot chat while the system is under pressure', async () => {
+    it('skips cross-chat tracking but still checks the known-spammer registry under pressure', async () => {
       const prisma = {
         chat: {
           upsert: jest.fn().mockResolvedValue({
@@ -22811,19 +23081,218 @@ describe('ModerationService', () => {
         undefined,
         redisCounter as never,
       );
+      const trackingSpy = jest.spyOn(
+        service as any,
+        'trackAndRegisterGlobalSpammerWithHotPathBudget',
+      );
       (service as any).webhookHotTimeoutChatBackoffUntilMs.set('chat-1', Date.now() + 60_000);
 
       await service.handleUpdate(createUpdate());
 
       expect(systemModeService.getEffectiveSnapshot).toHaveBeenCalled();
       expect(redisCounter.addToSetWithTtl).not.toHaveBeenCalled();
-      expect(prisma.globalSpammer.findUnique).not.toHaveBeenCalled();
+      expect(trackingSpy).not.toHaveBeenCalled();
+      expect(prisma.globalSpammer.findUnique).toHaveBeenCalledTimes(1);
       expect(prisma.moderationEvent.findFirst).toHaveBeenCalled();
-      expect(ruleEngine.detect).not.toHaveBeenCalled();
+      expect(ruleEngine.detect).toHaveBeenCalledWith(
+        expect.objectContaining({ skipDuplicateState: true }),
+      );
       expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     });
 
-    it('skips known-spammer checks when the hot-path budget is almost exhausted under pressure', async () => {
+    it('enforces a local admin block for a degraded hot chat without cross-chat tracking', async () => {
+      const prisma = {
+        chat: {
+          upsert: jest.fn().mockResolvedValue({
+            id: 'chat-1',
+            title: 'Chat 1',
+            settings: createSettings({ deleteSpammersEnabled: true }),
+            domains: [],
+            admins: [{ userId: 'owner-1' }],
+          }),
+        },
+        adminGlobalSpammerExemption: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              userId: 'user-1',
+              decision: 'BLOCK',
+              updatedAt: new Date(),
+            },
+          ]),
+        },
+        violation: {
+          create: jest.fn(),
+        },
+        moderationEvent: {
+          findFirst: jest.fn().mockResolvedValue(null),
+          create: jest.fn(),
+        },
+        webhookEvent: {
+          findUnique: jest.fn(),
+          update: jest.fn(),
+        },
+      };
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const maxClient = {
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+      const systemModeService = {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue({
+          mode: 'degrade',
+          source: 'auto',
+          reason: 'user-facing queue lag 18.0s',
+          updatedAt: new Date().toISOString(),
+          manualMode: null,
+          queueLagSec: 18,
+          action: {
+            windowSec: 60,
+            total: 20,
+            success: 16,
+            failure: 4,
+            critical: 0,
+            errorRate: 0.2,
+            criticalRate: 0,
+          },
+        }),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        systemModeService as never,
+      );
+      const trackingSpy = jest.spyOn(
+        service as any,
+        'trackAndRegisterGlobalSpammerWithHotPathBudget',
+      );
+      (service as any).webhookHotTimeoutChatBackoffUntilMs.set('chat-1', Date.now() + 60_000);
+
+      await service.handleUpdate(createUpdate());
+
+      expect(prisma.adminGlobalSpammerExemption.findMany).toHaveBeenCalledTimes(1);
+      expect(trackingSpy).not.toHaveBeenCalled();
+      expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+      expectImmediateKickMember(maxClient.kickMember, 'chat-1', 'user-1');
+      expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          messageId: 'msg-1',
+          ruleCode: 'LOCAL_ADMIN_BLOCK',
+          action: SanctionAction.KICK,
+        }),
+      });
+      expect(ruleEngine.detect).not.toHaveBeenCalled();
+    });
+
+    it('enforces an already-known spammer for a degraded hot chat without cross-chat tracking', async () => {
+      const prisma = {
+        chat: {
+          upsert: jest.fn().mockResolvedValue({
+            id: 'chat-1',
+            title: 'Chat 1',
+            settings: createSettings({ deleteSpammersEnabled: true }),
+            domains: [],
+            admins: [],
+          }),
+        },
+        violation: {
+          create: jest.fn(),
+        },
+        moderationEvent: {
+          findFirst: jest.fn().mockResolvedValue(null),
+          create: jest.fn(),
+        },
+        webhookEvent: {
+          findUnique: jest.fn(),
+          update: jest.fn(),
+        },
+      };
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const maxClient = {
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+      const systemModeService = {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue({
+          mode: 'degrade',
+          source: 'auto',
+          reason: 'user-facing queue lag 18.0s',
+          updatedAt: new Date().toISOString(),
+          manualMode: null,
+          queueLagSec: 18,
+          action: {
+            windowSec: 60,
+            total: 20,
+            success: 16,
+            failure: 4,
+            critical: 0,
+            errorRate: 0.2,
+            criticalRate: 0,
+          },
+        }),
+      };
+      const globalSpammerIntelligence = {
+        evaluatePolicy: jest.fn().mockResolvedValue({ action: 'DELETE_AND_KICK' }),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        systemModeService as never,
+      );
+      (service as any).globalSpammerIntelligence = globalSpammerIntelligence;
+      const trackingSpy = jest.spyOn(
+        service as any,
+        'trackAndRegisterGlobalSpammerWithHotPathBudget',
+      );
+      (service as any).webhookHotTimeoutChatBackoffUntilMs.set('chat-1', Date.now() + 60_000);
+
+      await service.handleUpdate(createUpdate());
+
+      expect(trackingSpy).not.toHaveBeenCalled();
+      expect(globalSpammerIntelligence.evaluatePolicy).toHaveBeenCalledWith({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'msg-1',
+        trigger: 'message',
+        deleteSpammersEnabled: true,
+        recordDecision: true,
+      });
+      expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+      expectImmediateKickMember(maxClient.kickMember, 'chat-1', 'user-1');
+      expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          messageId: 'msg-1',
+          ruleCode: 'GLOBAL_SPAMMER_KICK',
+          action: SanctionAction.KICK,
+        }),
+      });
+      expect(ruleEngine.detect).not.toHaveBeenCalled();
+    });
+
+    it('skips duplicate state but keeps the known-spammer check near the hot-path deadline', async () => {
       const prisma = {
         chat: {
           upsert: jest.fn().mockResolvedValue({
@@ -22905,15 +23374,13 @@ describe('ModerationService', () => {
       await service.handleUpdate(createUpdate(), hotPathProfile);
 
       expect(redisCounter.addToSetWithTtl).toHaveBeenCalled();
-      expect(prisma.globalSpammer.findUnique).not.toHaveBeenCalled();
+      expect(prisma.globalSpammer.findUnique).toHaveBeenCalledTimes(1);
       expect(ruleEngine.detect).toHaveBeenCalledWith(
-        expect.objectContaining({
-          skipDuplicateState: true,
-        }),
+        expect.objectContaining({ skipDuplicateState: true }),
       );
     });
 
-    it('skips ordinary message moderation entirely for a hot chat while the system is under pressure', async () => {
+    it('keeps local message moderation active for a hot chat while optional stages are throttled', async () => {
       const prisma = {
         chat: {
           upsert: jest.fn().mockResolvedValue({
@@ -22980,7 +23447,9 @@ describe('ModerationService', () => {
       await service.handleUpdate(createUpdate());
 
       expect(systemModeService.getEffectiveSnapshot).toHaveBeenCalled();
-      expect(ruleEngine.detect).not.toHaveBeenCalled();
+      expect(ruleEngine.detect).toHaveBeenCalledWith(
+        expect.objectContaining({ skipDuplicateState: true }),
+      );
       expect(maxClient.deleteMessage).not.toHaveBeenCalled();
       expect(maxClient.sendMessage).not.toHaveBeenCalled();
       expect(prisma.violation.create).not.toHaveBeenCalled();
@@ -23317,6 +23786,175 @@ describe('ModerationService', () => {
           messageId: 'mid-channel-1',
           source: 'poll',
           botId: 'scan-bot-2',
+        }),
+      }),
+    });
+  });
+
+  it('persists forwarded channel replacement cleanup as a durable delete intent', async () => {
+    const prisma = {
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const maxClient = {
+      sendMessageCopyWithInlineKeyboard: jest.fn().mockResolvedValue({
+        messageId: 'mid-channel-copy-1',
+        url: 'https://max.ru/chats/channel-1/message/mid-channel-copy-1',
+      }),
+      deleteMessage: jest.fn(),
+    };
+    const maxBotLinkService = {
+      resolveBotIdForCapability: jest.fn().mockResolvedValue('scan-bot-2'),
+      getBotTokenSync: jest.fn().mockReturnValue('test-bot-token'),
+      buildMiniappStartUrlSync: jest.fn().mockReturnValue('https://max.ru/bot?startapp=comments'),
+      buildEntryMiniappStartUrlSync: jest
+        .fn()
+        .mockReturnValue('https://max.ru/entry-bot?startapp=comments'),
+      resolveContactIdSync: jest.fn().mockReturnValue('990002'),
+    };
+    const deleteIntents = {
+      getRolloutForChat: jest.fn().mockReturnValue('execute'),
+      ensureIntent: jest.fn().mockResolvedValue({
+        intentId: 'intent-chat-copy-1',
+        rollout: 'execute',
+        status: 'PENDING',
+      }),
+      ensureAndAttempt: jest.fn().mockResolvedValue({
+        kind: 'pending',
+        confirmed: false,
+        intentId: 'intent-channel-copy-1',
+        status: 'RETRYABLE',
+      }),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      { get: jest.fn().mockReturnValue(undefined) } as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+    (service as any).moderationDeleteIntentService = deleteIntents;
+
+    await (service as any).tryAutoAttachChannelMessageButtons({
+      chatId: 'channel-1',
+      messageId: 'mid-channel-original-1',
+      text: 'Forwarded post',
+      linkType: 'forward',
+      managedChannel: {
+        channelSettings: {
+          updatedAt: new Date('2026-04-13T00:00:00.000Z'),
+          autoPostButtonsMode: 'COMMENTS',
+          commentsEnabled: true,
+          postSuggestionsEnabled: false,
+          postSuggestionsButtonText: '',
+        },
+        adminUserIds: ['admin-1'],
+      },
+      source: 'poll',
+      senderId: 'admin-1',
+    });
+
+    expect(deleteIntents.ensureAndAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'channel-1',
+        messageId: 'mid-channel-original-1',
+        entityType: 'CHANNEL',
+        messageAuthorKind: 'user',
+        originBotId: 'scan-bot-2',
+        routingPolicy: 'origin_only',
+        ruleCode: 'CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP',
+      }),
+    );
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        payload: expect.objectContaining({
+          messageId: 'mid-channel-original-1',
+          replacementMessageId: 'mid-channel-copy-1',
+          originalDeleted: false,
+        }),
+      }),
+    });
+  });
+
+  it('persists admin chat replacement cleanup as a durable delete intent', async () => {
+    const prisma = {
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const maxClient = {
+      sendMessageCopyWithInlineKeyboard: jest.fn().mockResolvedValue({
+        messageId: 'mid-chat-copy-1',
+        url: 'https://max.ru/chats/chat-1/message/mid-chat-copy-1',
+      }),
+      deleteMessage: jest.fn(),
+    };
+    const deleteIntents = {
+      getRolloutForChat: jest.fn().mockReturnValue('execute'),
+      ensureIntent: jest.fn().mockResolvedValue({
+        intentId: 'intent-chat-copy-1',
+        rollout: 'execute',
+        status: 'PENDING',
+      }),
+      ensureAndAttempt: jest.fn().mockResolvedValue({
+        kind: 'waiting_capability',
+        confirmed: false,
+        intentId: 'intent-chat-copy-1',
+        status: 'WAITING_CAPABILITY',
+      }),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+    );
+    (service as any).moderationDeleteIntentService = deleteIntents;
+    jest.spyOn(service as any, 'resolveAutoAttachMutationBotId').mockResolvedValue('chat-bot-2');
+    jest.spyOn(service as any, 'buildChatDialogButton').mockReturnValue({
+      type: 'link',
+      text: 'Comments',
+      url: 'https://max.ru/entry-bot?startapp=comments',
+    });
+
+    await (service as any).tryAutoAttachChatMessageComments({
+      chatId: 'chat-1',
+      messageId: 'mid-chat-original-1',
+      text: 'Admin post',
+      senderId: 'admin-1',
+      senderIsAdmin: true,
+      update: createUpdate(),
+    });
+
+    expect(deleteIntents.ensureAndAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'chat-1',
+        messageId: 'mid-chat-original-1',
+        entityType: 'CHAT',
+        messageAuthorKind: 'user',
+        originBotId: 'chat-bot-2',
+        routingPolicy: 'origin_first',
+        ruleCode: 'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP',
+      }),
+    );
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        payload: expect.objectContaining({
+          messageId: 'mid-chat-original-1',
+          replacementMessageId: 'mid-chat-copy-1',
+          originalDeleted: false,
         }),
       }),
     });

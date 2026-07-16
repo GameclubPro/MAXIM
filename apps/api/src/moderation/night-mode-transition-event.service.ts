@@ -5,13 +5,12 @@ import { PrismaService } from '../prisma/prisma.service';
 import { MaxBotContextService } from '../max/max-bot-context.service';
 import { formatNightModeMinutesAsTime } from './night-mode-transition-notice.util';
 
-export type NightModeTransitionEventRuleCode =
-  | 'NIGHT_MODE_CLOSE_NOTICE'
-  | 'NIGHT_MODE_OPEN_NOTICE';
+export type NightModeTransitionEventRuleCode = 'NIGHT_MODE_CLOSE_NOTICE' | 'NIGHT_MODE_OPEN_NOTICE';
 
 export type NightModeTransitionEventParams = {
   chatId: string;
   messageId: string | null;
+  botId?: string | null;
   ruleCode: NightModeTransitionEventRuleCode;
   sessionKey: string;
   timezone: string;
@@ -32,11 +31,13 @@ export class NightModeTransitionEventService {
   }
 
   async createTransitionEvent(params: NightModeTransitionEventParams): Promise<void> {
+    const botId = typeof params.botId === 'string' ? params.botId.trim() : '';
     await this.prisma.moderationEvent.create({
       data: this.withBotModerationEventData({
         chatId: params.chatId,
         userId: this.ownBotUserId ?? 'bot',
         messageId: params.messageId,
+        ...(botId ? { botId } : {}),
         eventType: EventType.SYSTEM,
         ruleCode: params.ruleCode,
         action: SanctionAction.NONE,

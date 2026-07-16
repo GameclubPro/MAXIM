@@ -6,12 +6,14 @@ import { MaxModule } from '../max/max.module';
 import { RedisCounterModule } from '../moderation/redis-counter.module';
 import { GlobalSpammerIntelligenceService } from '../moderation/global-spammer-intelligence.service';
 import { NightModeTransitionModule } from '../moderation/night-mode-transition.module';
+import { ModerationDeleteIntentModule } from '../moderation/moderation-delete-intent.module';
 import { getAppRole, roleRunsAction } from '../runtime/app-role';
 import { SystemModule } from '../system/system.module';
 import { AdminManagedEntitiesRefreshProcessor } from './admin-managed-entities-refresh.processor';
 import { ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE } from './admin-managed-entities-refresh.queue';
 import { AdminManualFanoutProcessor } from './admin-manual-fanout.processor';
 import { ADMIN_MANUAL_FANOUT_QUEUE } from './admin-manual-fanout.queue';
+import { AdminManualMessageCleanupService } from './admin-manual-message-cleanup.service';
 import { AdminSuggestionDeliveryProcessor } from './admin-suggestion-delivery.processor';
 import { ADMIN_SUGGESTION_DELIVERY_QUEUE } from './admin-suggestion-delivery.queue';
 import { AdminSuggestionDeliveryRecoveryService } from './admin-suggestion-delivery-recovery.service';
@@ -82,6 +84,7 @@ import { SupportRequestsService } from './support-requests.service';
     ChatContextModule,
     SystemModule,
     NightModeTransitionModule,
+    ModerationDeleteIntentModule,
     RedisCounterModule,
   ],
   controllers: [
@@ -100,6 +103,7 @@ import { SupportRequestsService } from './support-requests.service';
   ],
   providers: [
     AdminService,
+    AdminManualMessageCleanupService,
     AdminDialogLinkService,
     AdminSettingsService,
     ChannelDialogService,

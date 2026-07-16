@@ -234,6 +234,19 @@ enum MaxActionLedgerStatus {
   FAILED_TERMINAL
 }
 
+enum ModerationDeleteIntentStatus {
+  OBSERVED
+  PENDING
+  IN_PROGRESS
+  RETRYABLE
+  WAITING_CAPABILITY
+  AMBIGUOUS
+  SUCCEEDED
+  ALREADY_ABSENT
+  EXPIRED
+  FAILED_TERMINAL
+}
+
 enum ManagedAutopostRuleStatus {
   ACTIVE
   PAUSED
@@ -341,6 +354,7 @@ model Chat {
   violations                      Violation[]
   events                          ModerationEvent[]
   violationMessageClaims          ModerationViolationMessageClaim[]
+  moderationDeleteIntents         ModerationDeleteIntent[]
   auditLogs                       AuditLog[]
   channelAutoPostAttachMarkers    ChannelAutoPostAttachMarker[]
   chatAutoCommentAttachMarkers    ChatAutoCommentAttachMarker[]
@@ -671,11 +685,22 @@ model ChatRules {
   publishedBotId            String?   @map("published_bot_id")
   publishedUrl              String?   @map("published_url")
   publishedAt               DateTime? @map("published_at")
+  publishOperationId        String?   @map("publish_operation_id")
+  publishOperationBotId     String?   @map("publish_operation_bot_id")
+  publishSendStartedAt      DateTime? @map("publish_send_started_at")
+  pendingCleanupMessageId   String?   @map("pending_cleanup_message_id")
+  pendingCleanupBotId       String?   @map("pending_cleanup_bot_id")
+  pendingCleanupIntentId    String?   @map("pending_cleanup_intent_id")
+  pendingCleanupKind        String?   @map("pending_cleanup_kind")
   createdAt                 DateTime  @default(now()) @map("created_at")
   updatedAt                 DateTime  @updatedAt @map("updated_at")
 
-  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  chat                 Chat                    @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  pendingCleanupIntent ModerationDeleteIntent? @relation("ChatRulesPendingCleanupIntent", fields: [pendingCleanupIntentId], references: [id], onDelete: SetNull)
 
+  @@index([publishSendStartedAt], map: "chat_rules_publish_send_fence_idx")
+  @@index([pendingCleanupMessageId, pendingCleanupIntentId, updatedAt], map: "chat_rules_pending_cleanup_idx")
+  @@index([pendingCleanupIntentId], map: "chat_rules_pending_cleanup_intent_idx")
   @@map("chat_rules")
 }
 
@@ -1359,6 +1384,78 @@ model ModerationViolationMessageClaim {
   @@map("moderation_violation_message_claims")
 }
 
+model ModerationDeleteIntent {
+  id                         String                        @id
+  chatId                     String                        @map("chat_id")
+  messageId                  String                        @map("message_id")
+  subjectUserId              String?                       @map("subject_user_id")
+  sourceMessageAt            DateTime?                     @map("source_message_at")
+  entityType                 ChatEntityType?               @map("entity_type")
+  messageAuthorKind          String?                       @map("message_author_kind")
+  originBotId                String?                       @map("origin_bot_id")
+  routingPolicy              String                        @default("origin_only") @map("routing_policy")
+  status                     ModerationDeleteIntentStatus  @default(PENDING)
+  executeAt                  DateTime                      @default(now()) @map("execute_at")
+  nextAttemptAt              DateTime                      @default(now()) @map("next_attempt_at")
+  retryUntilAt               DateTime                      @map("retry_until_at")
+  attemptCount               Int                           @default(0) @map("attempt_count")
+  lastBotId                  String?                       @map("last_bot_id")
+  succeededBotId             String?                       @map("succeeded_bot_id")
+  deleteDispatchStartedAt    DateTime?                     @map("delete_dispatch_started_at")
+  deleteDispatchStartedBotId String?                       @map("delete_dispatch_started_bot_id")
+  remoteDeleteSucceededAt    DateTime?                     @map("remote_delete_succeeded_at")
+  remoteDeleteSucceededBotId String?                       @map("remote_delete_succeeded_bot_id")
+  candidateFailures          Json                          @default("{}") @map("candidate_failures")
+  lastStatusCode             Int?                          @map("last_status_code")
+  lastErrorCode              String?                       @map("last_error_code")
+  lastError                  String?                       @map("last_error")
+  firstAttemptAt             DateTime?                     @map("first_attempt_at")
+  lastAttemptAt              DateTime?                     @map("last_attempt_at")
+  completedAt                DateTime?                     @map("completed_at")
+  absenceVerifiedAt          DateTime?                     @map("absence_verified_at")
+  absenceVerifiedBotId       String?                       @map("absence_verified_bot_id")
+  absenceVerificationCode    String?                       @map("absence_verification_code")
+  leaseToken                 String?                       @map("lease_token")
+  leaseExpiresAt             DateTime?                     @map("lease_expires_at")
+  leasedFromStatus           ModerationDeleteIntentStatus? @map("leased_from_status")
+  createdAt                  DateTime                      @default(now()) @map("created_at")
+  updatedAt                  DateTime                      @updatedAt @map("updated_at")
+
+  chat                  Chat                           @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  reasons               ModerationDeleteIntentReason[]
+  channelCleanupMarkers ChannelAutoPostAttachMarker[]  @relation("ChannelAutoPostCleanupIntent")
+  chatCleanupMarkers    ChatAutoCommentAttachMarker[]  @relation("ChatAutoCommentCleanupIntent")
+  pendingChatRules      ChatRules[]                    @relation("ChatRulesPendingCleanupIntent")
+
+  @@unique([chatId, messageId], map: "moderation_delete_intents_chat_message_key")
+  @@index([status, nextAttemptAt, executeAt], map: "moderation_delete_intents_due_idx")
+  @@index([status, leaseExpiresAt], map: "moderation_delete_intents_lease_idx")
+  @@index([status, updatedAt], map: "moderation_delete_intents_retention_idx")
+  @@index([chatId, status, createdAt], map: "moderation_delete_intents_chat_status_created_idx")
+  @@map("moderation_delete_intents")
+}
+
+model ModerationDeleteIntentReason {
+  id                String     @id
+  intentId          String     @map("intent_id")
+  reasonKey         String     @map("reason_key")
+  userId            String?    @map("user_id")
+  eventType         EventType? @map("event_type")
+  ruleCode          String     @map("rule_code")
+  maskedExcerpt     String?    @map("masked_excerpt")
+  score             Float      @default(1)
+  metadata          Json?
+  moderationEventId String?    @unique(map: "moderation_delete_intent_reasons_event_id_key") @map("moderation_event_id")
+  createdAt         DateTime   @default(now()) @map("created_at")
+  updatedAt         DateTime   @updatedAt @map("updated_at")
+
+  intent ModerationDeleteIntent @relation(fields: [intentId], references: [id], onDelete: Cascade)
+
+  @@unique([intentId, reasonKey], map: "moderation_delete_intent_reasons_intent_reason_key")
+  @@index([intentId, moderationEventId], map: "moderation_delete_intent_reasons_event_idx")
+  @@map("moderation_delete_intent_reasons")
+}
+
 model WebhookEvent {
   id                String        @id @default(cuid())
   dedupKey          String        @unique @map("dedup_key")
@@ -1703,6 +1800,7 @@ model MaxActionLedgerEntry {
 
   @@index([status, terminal, updatedAt], map: "max_action_ledger_status_terminal_updated_idx")
   @@index([chatId, actionType, updatedAt], map: "max_action_ledger_chat_action_updated_idx")
+  @@index([chatId, actionType, messageId, status], map: "max_action_ledger_delete_owner_lookup_idx")
   @@index([botId, status, updatedAt], map: "max_action_ledger_bot_status_updated_idx")
   @@index([chatId, userId, actionType, updatedAt], map: "max_action_ledger_chat_user_action_updated_idx")
   @@index([actionType, dispatchStartedAt], map: "max_action_ledger_action_dispatch_started_idx")
@@ -1710,54 +1808,65 @@ model MaxActionLedgerEntry {
 }
 
 model ChannelAutoPostAttachMarker {
-  id                   String                      @id @default(cuid())
-  chatId               String                      @map("chat_id")
-  messageId            String                      @map("message_id")
-  status               ChannelAutoPostAttachStatus @default(IN_PROGRESS)
-  lockToken            String?                     @map("lock_token")
-  lockedAt             DateTime?                   @map("locked_at")
-  botId                String?                     @map("bot_id")
-  source               String
-  deliveryMode         String?                     @map("delivery_mode")
-  linkType             String?                     @map("link_type")
-  replacementMessageId String?                     @map("replacement_message_id")
-  publishedUrl         String?                     @map("published_url")
-  lastError            String?                     @map("last_error")
-  lastStatusCode       Int?                        @map("last_status_code")
-  createdAt            DateTime                    @default(now()) @map("created_at")
-  updatedAt            DateTime                    @updatedAt @map("updated_at")
+  id                       String                      @id @default(cuid())
+  chatId                   String                      @map("chat_id")
+  messageId                String                      @map("message_id")
+  status                   ChannelAutoPostAttachStatus @default(IN_PROGRESS)
+  lockToken                String?                     @map("lock_token")
+  lockedAt                 DateTime?                   @map("locked_at")
+  botId                    String?                     @map("bot_id")
+  source                   String
+  deliveryMode             String?                     @map("delivery_mode")
+  linkType                 String?                     @map("link_type")
+  replacementMessageId     String?                     @map("replacement_message_id")
+  publishedUrl             String?                     @map("published_url")
+  originalDeleted          Boolean                     @default(false) @map("original_deleted")
+  cleanupIntentId          String?                     @map("cleanup_intent_id")
+  replacementSendStartedAt DateTime?                   @map("replacement_send_started_at")
+  lastError                String?                     @map("last_error")
+  lastStatusCode           Int?                        @map("last_status_code")
+  createdAt                DateTime                    @default(now()) @map("created_at")
+  updatedAt                DateTime                    @updatedAt @map("updated_at")
 
-  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  chat          Chat                    @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  cleanupIntent ModerationDeleteIntent? @relation("ChannelAutoPostCleanupIntent", fields: [cleanupIntentId], references: [id], onDelete: SetNull)
 
   @@unique([chatId, messageId], map: "channel_auto_post_attach_markers_chat_message_key")
   @@index([status, lockedAt], map: "channel_auto_post_attach_markers_status_locked_at_idx")
+  @@index([originalDeleted, status, cleanupIntentId, updatedAt], map: "channel_auto_post_cleanup_recovery_idx")
+  @@index([cleanupIntentId], map: "channel_auto_post_cleanup_intent_idx")
   @@index([chatId, updatedAt(sort: Desc)], map: "channel_auto_post_attach_markers_chat_updated_idx")
   @@map("channel_auto_post_attach_markers")
 }
 
 model ChatAutoCommentAttachMarker {
-  id                   String                      @id @default(cuid())
-  chatId               String                      @map("chat_id")
-  messageId            String                      @map("message_id")
-  status               ChatAutoCommentAttachStatus @default(IN_PROGRESS)
-  lockToken            String?                     @map("lock_token")
-  lockedAt             DateTime?                   @map("locked_at")
-  botId                String?                     @map("bot_id")
-  source               String
-  deliveryMode         String?                     @map("delivery_mode")
-  replacementMessageId String?                     @map("replacement_message_id")
-  replyMessageId       String?                     @map("reply_message_id")
-  publishedUrl         String?                     @map("published_url")
-  originalDeleted      Boolean                     @default(false) @map("original_deleted")
-  lastError            String?                     @map("last_error")
-  lastStatusCode       Int?                        @map("last_status_code")
-  createdAt            DateTime                    @default(now()) @map("created_at")
-  updatedAt            DateTime                    @updatedAt @map("updated_at")
+  id                       String                      @id @default(cuid())
+  chatId                   String                      @map("chat_id")
+  messageId                String                      @map("message_id")
+  status                   ChatAutoCommentAttachStatus @default(IN_PROGRESS)
+  lockToken                String?                     @map("lock_token")
+  lockedAt                 DateTime?                   @map("locked_at")
+  botId                    String?                     @map("bot_id")
+  source                   String
+  deliveryMode             String?                     @map("delivery_mode")
+  replacementMessageId     String?                     @map("replacement_message_id")
+  replyMessageId           String?                     @map("reply_message_id")
+  publishedUrl             String?                     @map("published_url")
+  originalDeleted          Boolean                     @default(false) @map("original_deleted")
+  cleanupIntentId          String?                     @map("cleanup_intent_id")
+  replacementSendStartedAt DateTime?                   @map("replacement_send_started_at")
+  lastError                String?                     @map("last_error")
+  lastStatusCode           Int?                        @map("last_status_code")
+  createdAt                DateTime                    @default(now()) @map("created_at")
+  updatedAt                DateTime                    @updatedAt @map("updated_at")
 
-  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  chat          Chat                    @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  cleanupIntent ModerationDeleteIntent? @relation("ChatAutoCommentCleanupIntent", fields: [cleanupIntentId], references: [id], onDelete: SetNull)
 
   @@unique([chatId, messageId], map: "chat_auto_comment_attach_markers_chat_message_key")
   @@index([status, lockedAt], map: "chat_auto_comment_attach_markers_status_locked_at_idx")
+  @@index([originalDeleted, status, cleanupIntentId, updatedAt], map: "chat_auto_comment_cleanup_recovery_idx")
+  @@index([cleanupIntentId], map: "chat_auto_comment_cleanup_intent_idx")
   @@index([chatId, updatedAt(sort: Desc)], map: "chat_auto_comment_attach_markers_chat_updated_idx")
   @@index([chatId, replacementMessageId], map: "chat_auto_comment_attach_markers_chat_replacement_idx")
   @@map("chat_auto_comment_attach_markers")

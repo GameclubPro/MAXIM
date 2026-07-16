@@ -5,6 +5,7 @@ export type NightModeTransitionNoticeRuleCode =
 export type NightModeTransitionAcceptedNoticeDetails = {
   chatId: string;
   messageId: string;
+  botId: string | null;
   ruleCode: NightModeTransitionNoticeRuleCode;
   sessionKey: string;
   timezone: string;
@@ -42,6 +43,7 @@ export function isNightModeTransitionNoticeEventPersistenceError(
     record.name === 'NightModeTransitionNoticeEventPersistenceError' &&
     typeof record.details?.chatId === 'string' &&
     typeof record.details.messageId === 'string' &&
+    (record.details.botId === null || typeof record.details.botId === 'string') &&
     (record.details.ruleCode === 'NIGHT_MODE_CLOSE_NOTICE' ||
       record.details.ruleCode === 'NIGHT_MODE_OPEN_NOTICE') &&
     typeof record.details.sessionKey === 'string' &&

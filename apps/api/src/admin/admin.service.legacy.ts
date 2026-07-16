@@ -131,6 +131,7 @@ import {
 } from '../max/max-bot-link.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { MaxBotExecutionPlannerService } from '../max/max-bot-execution-planner.service';
+import { hasConfirmedDeleteMessageAccess } from '../max/max-delete-message-access.util';
 import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
 import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
 import { MaxRoutedPublicationService } from '../max/max-routed-publication.service';
@@ -148,6 +149,7 @@ import { ChannelStatsCollectorService } from './channel-stats-collector.service'
 import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
 import { GlobalSpammerIntelligenceService } from '../moderation/global-spammer-intelligence.service';
 import { buildModerationEscalationCounterPattern } from '../moderation/moderation-escalation-state.util';
+import { ModerationDeleteIntentService } from '../moderation/moderation-delete-intent.service';
 import {
   ACTIVE_MUTE_CACHE_SLACK_SEC,
   ACTIVE_MUTE_NEGATIVE_CACHE_TTL_SEC,
@@ -178,6 +180,7 @@ import {
   type AdminManualGroupModerationCommandJob,
   type AdminManualMuteFanoutJob,
 } from './admin-manual-fanout.queue';
+import { AdminManualMessageCleanupService } from './admin-manual-message-cleanup.service';
 import { ADMIN_SUPER_BAN_QUEUE, type AdminSuperBanJob } from './admin-super-ban.queue';
 import {
   ADMIN_SUGGESTION_DELIVERY_QUEUE,
@@ -304,7 +307,6 @@ import {
   RESOLVED_USER_PROFILE_CACHE_TTL_MS,
   ONE_HOUR_MS,
   TWENTY_FOUR_HOURS_MS,
-  MANUAL_BAN_RECENT_MESSAGE_DELETE_LIMIT,
   LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
   MANAGED_ENTITIES_DELTA_ADMIN_CHECK_SPACING_MS,
   MANAGED_ENTITIES_FULL_SCAN_ADMIN_CHECK_SPACING_MS,
@@ -708,6 +710,10 @@ export class AdminService implements OnModuleDestroy {
     private readonly managedEntityCandidateSyncService?: ManagedEntityCandidateSyncService,
     @Optional()
     private readonly maxRoutedPublicationService?: MaxRoutedPublicationService,
+    @Optional()
+    private readonly moderationDeleteIntentService?: ModerationDeleteIntentService,
+    @Optional()
+    private readonly manualMessageCleanupService?: AdminManualMessageCleanupService,
   ) {
     const configuredBotTokens = collectBotTokenSecrets(
       configService.getOrThrow<string>('MAX_BOT_TOKEN'),
@@ -6946,6 +6952,20 @@ export class AdminService implements OnModuleDestroy {
         this.buildFormattedChatRulesPublicationText(chatId, sourceText, options),
       sendPrivateConfirmation: (publishedUrl) =>
         this.sendPublishedChatRulesPrivateConfirmation(user, publishedUrl),
+      deletePreviousPublishedMessage: ({ chatId, messageId, botId, directOptions }) =>
+        this.getManualMessageCleanupService().deleteBotAuthoredMessage({
+          chatId,
+          messageId,
+          originBotId: botId,
+          reasonKey: 'chat_rules_republish_previous_message_cleanup',
+          ruleCode: 'CHAT_RULES_REPUBLISH_PREVIOUS_MESSAGE_CLEANUP',
+          metadata: {
+            source,
+            actorUserId: user.userId,
+            cleanupKind: 'chat_rules_republish',
+          },
+          directOptions,
+        }),
     });
   }
 
@@ -6959,10 +6979,25 @@ export class AdminService implements OnModuleDestroy {
       prisma: this.prisma,
       chatContextCache: this.chatContextCache,
       maxClient: this.maxClient,
+      logger: this.logger,
       chatId,
       actorUserId: user.userId,
       source,
       resolveBotId: () => this.resolveChatRulesActionBotId(chatId),
+      deletePublishedMessage: ({ chatId, messageId, botId, directOptions }) =>
+        this.getManualMessageCleanupService().deleteBotAuthoredMessage({
+          chatId,
+          messageId,
+          originBotId: botId,
+          reasonKey: 'chat_rules_reset_published_message_cleanup',
+          ruleCode: 'CHAT_RULES_RESET_PUBLISHED_MESSAGE_CLEANUP',
+          metadata: {
+            source,
+            actorUserId: user.userId,
+            cleanupKind: 'chat_rules_reset',
+          },
+          directOptions,
+        }),
     });
   }
 
@@ -10340,6 +10375,19 @@ export class AdminService implements OnModuleDestroy {
         allowRemoteLookup: false,
       }));
 
+    // FLAG: Persist cleanup before any irreversible super-ban side effect. Once these intents
+    // exist, their retry loop owns deletion and a later cleanup failure must not replay the ban.
+    const cleanupBotId = await this.resolveManualGroupCommandCleanupBotId(
+      job.sourceChatId,
+      job.commandBotId,
+    );
+    await this.deleteManualGroupCommandTargetMessage(job, { botId: cleanupBotId });
+    await this.deleteManualGroupCommandMessage(job.sourceChatId, job.commandMessageId, {
+      botId: cleanupBotId,
+      originBotId: job.commandBotId,
+      actorUserId: job.actor.userId,
+    });
+
     await this.recordDeveloperForcedGlobalBlacklistForJob(job, targetDisplayName);
     await this.rememberDeveloperForcedGlobalSpammer(job.targetUserId);
 
@@ -10353,15 +10401,6 @@ export class AdminService implements OnModuleDestroy {
         logMessage: 'Failed to clean source chat messages after developer super ban',
       });
     }
-
-    const cleanupBotId = await this.resolveManualGroupCommandCleanupBotId(
-      job.sourceChatId,
-      job.commandBotId,
-    );
-    await this.deleteManualGroupCommandTargetMessage(job, { botId: cleanupBotId });
-    await this.deleteManualGroupCommandMessage(job.sourceChatId, job.commandMessageId, {
-      botId: cleanupBotId,
-    });
 
     const estimatedManagedChatCount = await this.estimateDeveloperSuperBanManagedChatCount({
       sourceChatId: job.sourceChatId,
@@ -10919,6 +10958,8 @@ export class AdminService implements OnModuleDestroy {
     await this.deleteManualGroupCommandTargetMessage(job, { botId: cleanupBotId });
     await this.deleteManualGroupCommandMessage(job.sourceChatId, job.commandMessageId, {
       botId: cleanupBotId,
+      originBotId: job.commandBotId,
+      actorUserId: job.actor.userId,
     });
 
     const targetLabel = this.formatManualGroupCommandUserLabel(
@@ -10970,24 +11011,17 @@ export class AdminService implements OnModuleDestroy {
   private async deleteManualGroupCommandMessage(
     chatId: string,
     messageId: string,
-    options: { botId?: string } = {},
+    options: {
+      botId?: string;
+      originBotId?: string | null;
+      actorUserId?: string | null;
+    } = {},
   ): Promise<void> {
-    try {
-      await this.maxClient.deleteMessage(chatId, messageId, {
-        immediate: true,
-        trafficClass: 'interactive',
-        ...(options.botId ? { botId: options.botId } : {}),
-      });
-    } catch (error: unknown) {
-      this.logger.debug(
-        {
-          chatId,
-          messageId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to delete handled queued group admin command message',
-      );
-    }
+    await this.getManualMessageCleanupService().deleteGroupCommandMessage(
+      chatId,
+      messageId,
+      options,
+    );
   }
 
   private async deleteManualGroupCommandTargetMessage(
@@ -10999,33 +11033,21 @@ export class AdminService implements OnModuleDestroy {
     },
     options: { botId?: string } = {},
   ): Promise<void> {
-    if (!job.targetMessageId) {
-      return;
-    }
-
-    try {
-      await this.maxClient.deleteMessage(job.sourceChatId, job.targetMessageId, {
-        immediate: true,
-        trafficClass: 'interactive',
-        ...(options.botId ? { botId: options.botId } : {}),
-      });
-    } catch (error: unknown) {
-      this.logger.debug(
-        {
-          chatId: job.sourceChatId,
-          targetUserId: job.targetUserId,
-          targetMessageId: job.targetMessageId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to delete handled queued group admin command target message',
-      );
-    }
+    await this.getManualMessageCleanupService().deleteGroupCommandTargetMessage(job, options);
   }
 
   private async resolveManualGroupCommandCleanupBotId(
     chatId: string,
     preferredBotId?: string | null,
   ): Promise<string | undefined> {
+    const normalizedPreferredBotId = this.normalizeManualModerationBotId(preferredBotId);
+    if (
+      normalizedPreferredBotId &&
+      typeof (this.maxClient as Partial<MaxClientService>).getCurrentChatMemberAccess !== 'function'
+    ) {
+      return normalizedPreferredBotId;
+    }
+
     try {
       return await this.resolveManualModerationActionBotAssignment(chatId, 'delete_message', {
         preferredBotId: preferredBotId ?? null,
@@ -11039,7 +11061,7 @@ export class AdminService implements OnModuleDestroy {
         },
         'Failed to resolve queued group command cleanup bot',
       );
-      return this.normalizeManualModerationBotId(preferredBotId) ?? undefined;
+      return normalizedPreferredBotId ?? undefined;
     }
   }
 
@@ -12013,10 +12035,15 @@ export class AdminService implements OnModuleDestroy {
     failedMessageIds: string[];
   }> {
     try {
+      const canResolveDeleteBot =
+        typeof (this.maxClient as Partial<MaxClientService>).getCurrentChatMemberAccess ===
+        'function';
       return await this.deleteRecentTrackedMessagesForManualAction(chatId, targetUserId, {
         botId:
           botId ??
-          (await this.resolveManualModerationActionBotAssignment(chatId, 'delete_message')),
+          (canResolveDeleteBot
+            ? await this.resolveManualModerationActionBotAssignment(chatId, 'delete_message')
+            : undefined),
       });
     } catch (error: unknown) {
       this.logger.warn(
@@ -12613,99 +12640,21 @@ export class AdminService implements OnModuleDestroy {
     deletedMessageIds: string[];
     failedMessageIds: string[];
   }> {
-    const candidateMessageIds = await this.findRecentTrackedMessageIdsForUser(chatId, targetUserId);
-    const deletedMessageIds: string[] = [];
-    const failedMessageIds: string[] = [];
-
-    for (const [index, messageId] of candidateMessageIds.entries()) {
-      if (index > 0) {
-        await sleepIfNeeded(options.spacingMs ?? 0);
-      }
-
-      try {
-        if (options.botId) {
-          await this.maxClient.deleteMessage(chatId, messageId, {
-            immediate: true,
-            botId: options.botId,
-          });
-        } else {
-          await this.maxClient.deleteMessage(chatId, messageId, { immediate: true });
-        }
-        deletedMessageIds.push(messageId);
-      } catch (error: unknown) {
-        if (this.isMaxMessageMissingError(error)) {
-          deletedMessageIds.push(messageId);
-          continue;
-        }
-
-        failedMessageIds.push(messageId);
-        this.logger.warn(
-          {
-            chatId,
-            targetUserId,
-            messageId,
-            err:
-              this.extractMaxApiErrorMessage(error) ||
-              this.extractHttpErrorMessage(error) ||
-              String(error),
-          },
-          'Failed to delete tracked recent message during manual moderation cleanup',
-        );
-      }
-    }
-
-    return {
-      candidateMessageIds,
-      deletedMessageIds,
-      failedMessageIds,
-    };
+    return this.getManualMessageCleanupService().deleteRecentTrackedMessages(
+      chatId,
+      targetUserId,
+      options,
+    );
   }
 
-  private async findRecentTrackedMessageIdsForUser(
-    chatId: string,
-    targetUserId: string,
-  ): Promise<string[]> {
-    const normalizedChatId = chatId.trim();
-    const normalizedTargetUserId = targetUserId.trim();
-    if (!normalizedChatId || !normalizedTargetUserId) {
-      return [];
-    }
-
-    const since = new Date(Date.now() - TWENTY_FOUR_HOURS_MS);
-    const rows = await this.prisma.$queryRaw<Array<{ message_id: string | null }>>`
-      SELECT message_id
-      FROM (
-        SELECT DISTINCT ON (message_id)
-          message_id,
-          message_created_at
-        FROM (
-          SELECT
-            NULLIF(BTRIM(normalized_payload->'message'->>'messageId'), '') AS message_id,
-            COALESCE(
-              NULLIF(BTRIM(normalized_payload->'message'->>'createdAt'), '')::timestamptz,
-              created_at
-            ) AS message_created_at
-          FROM webhook_events
-          WHERE normalized_payload->>'type' = 'message_created'
-            AND normalized_payload->'message'->>'senderId' = ${normalizedTargetUserId}
-            AND normalized_payload->'message'->>'chatId' = ${normalizedChatId}
-            AND NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), '') IS NOT NULL
-            AND created_at >= ${since}
-        ) AS source_rows
-        WHERE message_id IS NOT NULL
-          AND message_created_at >= ${since}
-        ORDER BY message_id, message_created_at DESC
-      ) AS deduped_rows
-      ORDER BY message_created_at DESC
-      LIMIT ${MANUAL_BAN_RECENT_MESSAGE_DELETE_LIMIT}
-    `;
-
-    return Array.from(
-      new Set(
-        (Array.isArray(rows) ? rows : [])
-          .map((row) => (typeof row.message_id === 'string' ? row.message_id.trim() : ''))
-          .filter(Boolean),
-      ),
+  private getManualMessageCleanupService(): AdminManualMessageCleanupService {
+    return (
+      this.manualMessageCleanupService ??
+      new AdminManualMessageCleanupService(
+        this.prisma,
+        this.maxClient,
+        this.moderationDeleteIntentService,
+      )
     );
   }
 
@@ -12847,12 +12796,18 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
-  private async assertBotCanDeleteMessages(chatId: string, botId?: string): Promise<void> {
+  private async assertBotCanDeleteMessages(
+    chatId: string,
+    botId?: string,
+    entityType: ChatEntityType = ChatEntityType.CHAT,
+  ): Promise<void> {
     const maxClientWithAccess = this.maxClient as MaxClientService & {
       getCurrentChatMemberAccess?: MaxClientService['getCurrentChatMemberAccess'];
     };
     if (typeof maxClientWithAccess.getCurrentChatMemberAccess !== 'function') {
-      return;
+      throw new ServiceUnavailableException(
+        'Не удалось подтвердить право бота MAX удалять сообщения. Повторите попытку позже.',
+      );
     }
 
     let botAccess: MaxChatMemberAccess;
@@ -12871,21 +12826,23 @@ export class AdminService implements OnModuleDestroy {
       throw error;
     }
 
-    if (botAccess.isOwner) {
-      return;
-    }
-
-    if (!botAccess.isAdmin) {
+    if (
+      !hasConfirmedDeleteMessageAccess(
+        {
+          checkedAt: null,
+          isAdmin: botAccess.isAdmin,
+          isOwner: botAccess.isOwner,
+          permissions: botAccess.permissions,
+        },
+        entityType,
+      )
+    ) {
       throw new ForbiddenException(
-        'Для мута боту нужны права администратора этого чата MAX и возможность удалять сообщения.',
+        entityType === ChatEntityType.CHANNEL
+          ? 'Для удаления сообщений канала боту нужны read_all_messages и право delete.'
+          : 'Для удаления сообщений чата боту нужны read_all_messages и право write.',
       );
     }
-
-    /*
-     * MAX can omit delete_message from members/me for admins that are still able to
-     * delete chat messages. Do not block manual mute on the incomplete granular
-     * snapshot; active mute will exercise the real delete endpoint on new messages.
-     */
   }
 
   private async assertTargetUserCanBeModerated(
@@ -13158,27 +13115,6 @@ export class AdminService implements OnModuleDestroy {
       normalized === 'can_ban_users' ||
       normalized === 'delete_members' ||
       normalized === 'can_delete_members'
-    );
-  }
-
-  private isDeleteMessagesPermission(permission: string): boolean {
-    const normalized = permission
-      .trim()
-      .toLowerCase()
-      .replace(/[-\s]+/gu, '_');
-    return (
-      normalized === 'delete_message' ||
-      normalized === 'delete_messages' ||
-      normalized === 'can_delete_message' ||
-      normalized === 'can_delete_messages' ||
-      normalized === 'message_delete' ||
-      normalized === 'message_delete_any' ||
-      normalized === 'messages_delete' ||
-      normalized === 'post_delete' ||
-      normalized === 'post_edit_delete_message' ||
-      normalized === 'edit_delete_message' ||
-      normalized === 'moderate_messages' ||
-      normalized === 'can_moderate_messages'
     );
   }
 
@@ -13807,7 +13743,9 @@ export class AdminService implements OnModuleDestroy {
       );
     }
 
-    return this.resolveManualModerationActionBotAssignment(chatId, 'delete_message');
+    return this.resolveManualModerationActionBotAssignment(chatId, 'delete_message', {
+      entityType: ChatEntityType.CHANNEL,
+    });
   }
 
   async resolveChannelPollBotId(chatId: string): Promise<string | undefined> {
@@ -17277,13 +17215,7 @@ export class AdminService implements OnModuleDestroy {
         ),
       ]);
 
-      await this.safeUpdateCommentsButton(
-        chatId,
-        messageId,
-        buttons,
-        'chat',
-        botId,
-      );
+      await this.safeUpdateCommentsButton(chatId, messageId, buttons, 'chat', botId);
     }
   }
 
@@ -19709,49 +19641,52 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const preferredBotId = this.normalizeManualModerationBotId(options.preferredBotId);
+    const entityType = options.entityType ?? ChatEntityType.CHAT;
     const maxClientWithAccess = this.maxClient as MaxClientService & {
       getCurrentChatMemberAccess?: MaxClientService['getCurrentChatMemberAccess'];
     };
     if (preferredBotId) {
       if (typeof maxClientWithAccess.getCurrentChatMemberAccess !== 'function') {
-        return preferredBotId;
-      }
-
-      try {
-        const access = await maxClientWithAccess.getCurrentChatMemberAccess(normalizedChatId, {
-          trafficClass: 'critical',
-          actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
-          botId: preferredBotId,
-        });
-        if (this.hasManualModerationBotActionAccess(access, action)) {
+        if (action !== 'delete_message') {
           return preferredBotId;
         }
-      } catch (error: unknown) {
-        if (isBotAdminLookupDeniedError(error)) {
-          // Try the regular route below; another runtime bot may still be able to act.
-        } else if (isMaxApiThrottleError(error) || isMaxApiTimeoutError(error)) {
-          this.logger.debug(
-            {
-              chatId: normalizedChatId,
-              action,
-              botId: preferredBotId,
-              err: error instanceof Error ? error.message : String(error),
-            },
-            'Failed to verify preferred manual moderation bot after transient MAX API pressure',
-          );
-          throw new ServiceUnavailableException(
-            'Не удалось подтвердить права бота MAX для действия модерации. Повторите попытку позже.',
-          );
-        } else {
-          this.logger.debug(
-            {
-              chatId: normalizedChatId,
-              action,
-              botId: preferredBotId,
-              err: error instanceof Error ? error.message : String(error),
-            },
-            'Failed to verify preferred manual moderation bot candidate',
-          );
+      } else {
+        try {
+          const access = await maxClientWithAccess.getCurrentChatMemberAccess(normalizedChatId, {
+            trafficClass: 'critical',
+            actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+            botId: preferredBotId,
+          });
+          if (this.hasManualModerationBotActionAccess(access, action, entityType)) {
+            return preferredBotId;
+          }
+        } catch (error: unknown) {
+          if (isBotAdminLookupDeniedError(error)) {
+            // Try the regular route below; another runtime bot may still be able to act.
+          } else if (isMaxApiThrottleError(error) || isMaxApiTimeoutError(error)) {
+            this.logger.debug(
+              {
+                chatId: normalizedChatId,
+                action,
+                botId: preferredBotId,
+                err: error instanceof Error ? error.message : String(error),
+              },
+              'Failed to verify preferred manual moderation bot after transient MAX API pressure',
+            );
+            throw new ServiceUnavailableException(
+              'Не удалось подтвердить права бота MAX для действия модерации. Повторите попытку позже.',
+            );
+          } else {
+            this.logger.debug(
+              {
+                chatId: normalizedChatId,
+                action,
+                botId: preferredBotId,
+                err: error instanceof Error ? error.message : String(error),
+              },
+              'Failed to verify preferred manual moderation bot candidate',
+            );
+          }
         }
       }
     }
@@ -19832,10 +19767,19 @@ export class AdminService implements OnModuleDestroy {
     }
 
     if (candidateBotIds.length === 0 && !this.maxBotRegistry) {
-      return this.resolveManualActionBotAssignment(normalizedChatId);
+      return this.resolveLegacyManualModerationActionBotAssignment(
+        normalizedChatId,
+        action,
+        entityType,
+      );
     }
 
     if (typeof maxClientWithAccess.getCurrentChatMemberAccess !== 'function') {
+      if (action === 'delete_message') {
+        throw new ServiceUnavailableException(
+          'Не удалось подтвердить право бота MAX удалять сообщения. Повторите попытку позже.',
+        );
+      }
       return candidateBotIds[0];
     }
 
@@ -19848,10 +19792,12 @@ export class AdminService implements OnModuleDestroy {
         return;
       }
 
-      await this.persistRecoveredManualActionBotAssignment(normalizedChatId, candidateBotId);
+      await this.persistRecoveredManualActionBotAssignment(
+        normalizedChatId,
+        candidateBotId,
+        entityType,
+      );
     };
-
-    let softDeleteMessageBotId: string | null = null;
 
     for (const candidateBotId of candidateBotIds) {
       try {
@@ -19860,23 +19806,7 @@ export class AdminService implements OnModuleDestroy {
           actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
           botId: candidateBotId,
         });
-        if (action === 'delete_message') {
-          if (
-            access.isOwner ||
-            (access.isAdmin &&
-              access.permissions.some((permission) => this.isDeleteMessagesPermission(permission)))
-          ) {
-            await persistRecoveredCandidateIfNeeded(candidateBotId);
-            return candidateBotId;
-          }
-
-          if (access.isAdmin && !softDeleteMessageBotId) {
-            softDeleteMessageBotId = candidateBotId;
-          }
-          continue;
-        }
-
-        if (this.hasManualModerationBotActionAccess(access, action)) {
+        if (this.hasManualModerationBotActionAccess(access, action, entityType)) {
           await persistRecoveredCandidateIfNeeded(candidateBotId);
           return candidateBotId;
         }
@@ -19912,13 +19842,12 @@ export class AdminService implements OnModuleDestroy {
       }
     }
 
-    if (softDeleteMessageBotId) {
-      await persistRecoveredCandidateIfNeeded(softDeleteMessageBotId);
-      return softDeleteMessageBotId;
-    }
-
     if (!this.maxBotRegistry) {
-      return this.resolveManualActionBotAssignment(normalizedChatId);
+      return this.resolveLegacyManualModerationActionBotAssignment(
+        normalizedChatId,
+        action,
+        entityType,
+      );
     }
 
     throw new ForbiddenException(
@@ -19929,12 +19858,13 @@ export class AdminService implements OnModuleDestroy {
   private async persistRecoveredManualActionBotAssignment(
     chatId: string,
     botId: string,
+    entityType: ChatEntityType = ChatEntityType.CHAT,
   ): Promise<void> {
     try {
       if (this.maxBotLinkService?.bindChatToBot) {
         await this.maxBotLinkService.bindChatToBot({
           chatId,
-          entityType: ChatEntityType.CHAT,
+          entityType,
           botId,
         });
         return;
@@ -19945,7 +19875,7 @@ export class AdminService implements OnModuleDestroy {
         create: {
           id: chatId,
           title: `Chat ${chatId}`,
-          entityType: ChatEntityType.CHAT,
+          entityType,
           ...this.buildResolvedBotAssignmentData(botId),
         },
         update: this.buildResolvedBotAssignmentData(botId),
@@ -19965,7 +19895,19 @@ export class AdminService implements OnModuleDestroy {
   private hasManualModerationBotActionAccess(
     access: Pick<MaxChatMemberAccess, 'isAdmin' | 'isOwner' | 'permissions'>,
     action: ManualModerationBotAction,
+    entityType: ChatEntityType = ChatEntityType.CHAT,
   ): boolean {
+    if (action === 'delete_message') {
+      return hasConfirmedDeleteMessageAccess(
+        {
+          checkedAt: null,
+          isAdmin: access.isAdmin,
+          isOwner: access.isOwner,
+          permissions: access.permissions,
+        },
+        entityType,
+      );
+    }
     if (access.isOwner) {
       return true;
     }
@@ -19975,11 +19917,21 @@ export class AdminService implements OnModuleDestroy {
     if (access.permissions.length === 0) {
       return true;
     }
-    if (action === 'delete_message') {
-      return true;
+    return access.permissions.some((permission) => this.isAddRemoveMembersPermission(permission));
+  }
+
+  private async resolveLegacyManualModerationActionBotAssignment(
+    chatId: string,
+    action: ManualModerationBotAction,
+    entityType: ChatEntityType,
+  ): Promise<string | undefined> {
+    const botId = await this.resolveManualActionBotAssignment(chatId, entityType);
+    if (action !== 'delete_message') {
+      return botId;
     }
 
-    return access.permissions.some((permission) => this.isAddRemoveMembersPermission(permission));
+    await this.assertBotCanDeleteMessages(chatId, botId, entityType);
+    return botId;
   }
 
   private async resolveManualActionBotAssignment(

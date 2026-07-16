@@ -34,6 +34,13 @@ function createPersistedChatRules(overrides: Record<string, unknown> = {}) {
     publishedBotId: null,
     publishedUrl: null,
     publishedAt: null,
+    publishOperationId: null,
+    publishOperationBotId: null,
+    publishSendStartedAt: null,
+    pendingCleanupMessageId: null,
+    pendingCleanupBotId: null,
+    pendingCleanupIntentId: null,
+    pendingCleanupKind: null,
     createdAt: new Date('2026-03-09T09:00:00.000Z'),
     updatedAt: new Date('2026-03-09T09:00:00.000Z'),
     ...overrides,
@@ -293,6 +300,7 @@ function createService(
       update: jest
         .fn()
         .mockResolvedValue(options.persistedRulesUpdate ?? createPersistedChatRules()),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     auditLog: {
       create: jest.fn().mockResolvedValue({}),
@@ -1526,8 +1534,8 @@ describe('AdminSettingsService chat rules', () => {
         timeoutMs: 12000,
       }),
     );
-    expect(prisma.chatRules.update).toHaveBeenCalledWith({
-      where: { chatId: 'chat-1' },
+    expect(prisma.chatRules.updateMany).toHaveBeenCalledWith({
+      where: { chatId: 'chat-1', publishOperationId: expect.any(String) },
       data: expect.objectContaining({
         publishedMessageId: 'message-2',
         publishedBotId: 'bot-1',
@@ -1621,15 +1629,31 @@ describe('AdminSettingsService chat rules', () => {
       sourceTag: MAX_API_SOURCE_TAGS.CHAT_RULES,
       timeoutMs: 12000,
     });
-    expect(prisma.chatRules.update).toHaveBeenCalledWith({
-      where: { chatId: 'chat-1' },
-      data: {
-        publishedMessageId: null,
-        publishedBotId: null,
-        publishedUrl: null,
-        publishedAt: null,
-      },
-    });
+    expect(prisma.chatRules.updateMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: 'chat-1',
+          publishedMessageId: 'message-1',
+          pendingCleanupMessageId: null,
+        }),
+        data: expect.objectContaining({
+          pendingCleanupMessageId: 'message-1',
+          pendingCleanupKind: 'reset_current',
+        }),
+      }),
+    );
+    expect(prisma.chatRules.updateMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: { chatId: 'chat-1', publishedMessageId: 'message-1' },
+        data: expect.objectContaining({
+          publishedMessageId: null,
+          pendingCleanupMessageId: null,
+          pendingCleanupKind: null,
+        }),
+      }),
+    );
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
       data: {
         chatId: 'chat-1',
@@ -1637,6 +1661,7 @@ describe('AdminSettingsService chat rules', () => {
         action: 'RESET_CHAT_RULES_PUBLICATION',
         payload: {
           deletedPost: true,
+          cleanupOutcome: 'confirmed',
           messageId: 'message-1',
           botId: 'bot-1',
           source: 'miniapp',

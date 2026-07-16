@@ -32,6 +32,7 @@ import {
   type NightModeTransitionEventParams,
 } from './night-mode-transition-event.service';
 import { NightModeTransitionNoticeEventPersistenceError } from './night-mode-transition-notice-persistence-error';
+import { ModerationDeleteIntentService } from './moderation-delete-intent.service';
 
 export type NightModeTransitionDeliveryOperation =
   | 'send-close-notice'
@@ -65,14 +66,16 @@ export class NightModeTransitionDeliveryService {
     private readonly managedEntityAccessLossService?: ManagedEntityAccessLossService,
     @Optional()
     private readonly maxRoutedPublicationService?: MaxRoutedPublicationService,
+    @Optional()
+    private readonly moderationDeleteIntentService?: ModerationDeleteIntentService,
   ) {}
 
   createHooks(adapters: NightModeTransitionDeliveryAdapters): NightModeTransitionRuntimeHooks {
     return {
       sendClosedNotice: (settings, snapshot) => this.sendClosedNotice(settings, snapshot, adapters),
       sendOpenedNotice: (settings, snapshot) => this.sendOpenedNotice(settings, snapshot, adapters),
-      deleteClosedNotice: (chatId, messageId) =>
-        this.deleteClosedNotice(chatId, messageId, adapters),
+      deleteClosedNotice: (chatId, messageId, originBotId) =>
+        this.deleteClosedNotice(chatId, messageId, originBotId, adapters),
     };
   }
 
@@ -92,7 +95,7 @@ export class NightModeTransitionDeliveryService {
       });
     const messageOptions = adapters.buildClosedNoticeOptions(settings);
 
-    let sent: { messageId: string | null };
+    let sent: { messageId: string | null; botId: string | null };
     let attemptedBotId: string | null = null;
     try {
       sent = await this.sendNotice({
@@ -123,6 +126,7 @@ export class NightModeTransitionDeliveryService {
         return {
           ...terminalResult,
           messageId: null,
+          botId: null,
         };
       }
       throw error;
@@ -131,6 +135,7 @@ export class NightModeTransitionDeliveryService {
     await this.createEventAfterAcceptedNotice({
       chatId: settings.chatId,
       messageId: sent.messageId,
+      botId: sent.botId,
       ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
       sessionKey: snapshot.sessionKey,
       timezone: snapshot.timezone,
@@ -141,6 +146,7 @@ export class NightModeTransitionDeliveryService {
     return {
       ...NIGHT_MODE_TRANSITION_PROCESS_CONTINUE,
       messageId: sent.messageId,
+      botId: sent.botId,
     };
   }
 
@@ -161,7 +167,7 @@ export class NightModeTransitionDeliveryService {
         botSpeechStyle: settings.botSpeechStyle,
         activeBotSpeechProfile: adapters.getBotSpeechProfile(botId),
       });
-    let sent: { messageId: string | null };
+    let sent: { messageId: string | null; botId: string | null };
     let attemptedBotId: string | null = null;
     try {
       sent = await this.sendNotice({
@@ -197,6 +203,7 @@ export class NightModeTransitionDeliveryService {
     await this.createEventAfterAcceptedNotice({
       chatId: settings.chatId,
       messageId: sent.messageId,
+      botId: sent.botId,
       ruleCode: 'NIGHT_MODE_OPEN_NOTICE',
       sessionKey: snapshot.sessionKey,
       timezone: snapshot.timezone,
@@ -216,7 +223,7 @@ export class NightModeTransitionDeliveryService {
     mediaFieldKey: 'nightModeBotMessageText' | 'nightModeOpenMessageText';
     adapters: NightModeTransitionDeliveryAdapters;
     onDispatchAttempt: (botId: string | null) => void;
-  }): Promise<{ messageId: string | null }> {
+  }): Promise<{ messageId: string | null; botId: string | null }> {
     const baseOptions = this.withMarkdownMessageOptions(params.messageOptions ?? null);
     const media = this.botSpeechMediaService.resolveMedia(
       params.mediaSettings,
@@ -257,12 +264,16 @@ export class NightModeTransitionDeliveryService {
       media,
       { botId, sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION },
     );
-    return this.maxClient.sendMessageImmediateWithId(
+    const sent = await this.maxClient.sendMessageImmediateWithId(
       params.chatId,
       params.resolveMessageText?.(botId) ?? params.messageText,
       messageOptionsWithMedia,
       this.buildRequestOptions(botId),
     );
+    return {
+      messageId: sent.messageId,
+      botId,
+    };
   }
 
   private buildNoticeIdempotencyKey(
@@ -289,6 +300,7 @@ export class NightModeTransitionDeliveryService {
           {
             ...params,
             messageId,
+            botId: params.botId?.trim() || null,
           },
           error,
         );
@@ -300,9 +312,45 @@ export class NightModeTransitionDeliveryService {
   async deleteClosedNotice(
     chatId: string,
     messageId: string,
+    originBotId: string | null,
     adapters: NightModeTransitionDeliveryAdapters,
   ): Promise<NightModeTransitionProcessResult> {
-    const botId = await adapters.resolveBotId(chatId);
+    const persistedOriginBotId = originBotId?.trim() || null;
+    if (this.moderationDeleteIntentService && persistedOriginBotId) {
+      try {
+        const intent = await this.moderationDeleteIntentService.ensureIntent({
+          chatId,
+          messageId,
+          reasonKey: 'NIGHT_MODE_CLOSE_NOTICE_CLEANUP',
+          ruleCode: 'NIGHT_MODE_CLOSE_NOTICE_CLEANUP',
+          entityType: 'CHAT',
+          messageAuthorKind: 'bot',
+          originBotId: persistedOriginBotId,
+          routingPolicy: 'origin_only',
+        });
+        if (
+          intent.rollout === 'execute' ||
+          this.moderationDeleteIntentService.getRolloutForChat(chatId) === 'execute'
+        ) {
+          return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
+        }
+      } catch (error: unknown) {
+        if (this.moderationDeleteIntentService.getRolloutForChat(chatId) === 'execute') {
+          throw error;
+        }
+        this.logger.warn(
+          {
+            chatId,
+            messageId,
+            botId: persistedOriginBotId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to persist shadow night mode close notice delete intent; using legacy delete',
+        );
+      }
+    }
+
+    const botId = persistedOriginBotId ?? (await adapters.resolveBotId(chatId));
     try {
       await this.maxClient.deleteMessage(chatId, messageId, {
         immediate: true,
@@ -342,6 +390,12 @@ export class NightModeTransitionDeliveryService {
       classification,
     );
     if (!accessLossReason) {
+      if (
+        params.operation === 'delete-close-notice' &&
+        classification.kind !== 'message_not_found'
+      ) {
+        return null;
+      }
       return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
     }
 

@@ -49,6 +49,7 @@ import { SanctionService } from './sanction.service';
 import { BotSpeechMediaService } from './bot-speech-media.service';
 import { NightModeTransitionEventService } from './night-mode-transition-event.service';
 import { WebhookCanonicalExecutionService } from './webhook-canonical-execution.service';
+import { ModerationDeleteIntentModule } from './moderation-delete-intent.module';
 
 const enabledModerationQueues = getEnabledModerationProcessorQueues();
 const dynamicDefaultWorkerGroup = getWebhookDynamicLeasesWorkerGroup();
@@ -108,9 +109,15 @@ const moderationProviders = [
     NightModeTransitionModule,
     RedisCounterModule,
     KaravanStorefrontRelayModule,
+    ModerationDeleteIntentModule,
   ],
   controllers: [PrivateControlController],
   providers: moderationProviders,
-  exports: [ModerationExecutionService, ModerationService, GlobalSpammerIntelligenceService],
+  exports: [
+    ModerationExecutionService,
+    ModerationService,
+    ModerationDeleteIntentModule,
+    GlobalSpammerIntelligenceService,
+  ],
 })
 export class ModerationModule {}

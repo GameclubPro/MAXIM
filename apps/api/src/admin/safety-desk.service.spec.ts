@@ -63,8 +63,87 @@ function createReviewPost(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function createDeleteIntent(overrides: Record<string, unknown> = {}) {
+  const now = Date.now();
+  return {
+    id: 'delete-intent-1',
+    chatId: 'channel-1',
+    messageId: 'message-1',
+    subjectUserId: 'user-1',
+    entityType: ChatEntityType.CHANNEL,
+    originBotId: 'bot-1',
+    routingPolicy: 'origin_only',
+    messageAuthorKind: 'user',
+    status: 'WAITING_CAPABILITY',
+    executeAt: new Date(now - 20_000),
+    nextAttemptAt: new Date(now - 10_000),
+    retryUntilAt: new Date(now + 60_000),
+    attemptCount: 2,
+    lastBotId: 'bot-1',
+    succeededBotId: null,
+    lastStatusCode: 403,
+    lastErrorCode: 'access.denied',
+    lastError: 'Forbidden',
+    firstAttemptAt: new Date(now - 18_000),
+    lastAttemptAt: new Date(now - 12_000),
+    completedAt: null,
+    leaseExpiresAt: null,
+    deleteDispatchStartedAt: null,
+    deleteDispatchStartedBotId: null,
+    remoteDeleteSucceededAt: null,
+    remoteDeleteSucceededBotId: null,
+    createdAt: new Date(now - 30_000),
+    updatedAt: new Date(now - 10_000),
+    chat: {
+      title: 'Канал администраторов',
+      entityType: ChatEntityType.CHANNEL,
+      routingState: 'READY',
+      botMemberships: [
+        {
+          botId: 'bot-1',
+          role: 'PRIMARY',
+          permissionsSnapshot: {
+            checkedAt: new Date(now - 5_000).toISOString(),
+            isAdmin: true,
+            isOwner: false,
+            permissions: ['read_all_messages', 'write'],
+          },
+          botAccessState: 'CONFIRMED_ADMIN',
+          botAccessCheckedAt: new Date(now - 5_000),
+          botAccessExpiresAt: new Date(now + 60_000),
+        },
+        {
+          botId: 'bot-draining',
+          role: 'STANDBY',
+          permissionsSnapshot: {
+            checkedAt: new Date(now - 5_000).toISOString(),
+            isAdmin: true,
+            isOwner: false,
+            permissions: ['read_all_messages', 'delete'],
+          },
+          botAccessState: 'CONFIRMED_ADMIN',
+          botAccessCheckedAt: new Date(now - 5_000),
+          botAccessExpiresAt: new Date(now + 60_000),
+        },
+      ],
+    },
+    reasons: [
+      {
+        reasonKey: 'commercial:message-1',
+        ruleCode: 'COMMERCIAL',
+        userId: 'user-1',
+        score: 0.9,
+        createdAt: new Date(now - 30_000),
+      },
+    ],
+    ...overrides,
+  };
+}
+
 function createFixture() {
+  const transaction = jest.fn();
   const prisma = {
+    $transaction: transaction,
     vkParsingPost: {
       findMany: jest.fn().mockResolvedValue([]),
       findFirst: jest.fn(),
@@ -76,7 +155,39 @@ function createFixture() {
       findMany: jest.fn().mockResolvedValue([]),
       create: jest.fn().mockResolvedValue({ id: 'audit-1' }),
     },
+    moderationDeleteIntent: {
+      groupBy: jest.fn().mockResolvedValue([]),
+      aggregate: jest.fn(),
+      findMany: jest.fn().mockResolvedValue([]),
+      findUnique: jest.fn(),
+    },
+    channelAutoPostAttachMarker: {
+      aggregate: jest.fn().mockResolvedValue({
+        _count: { _all: 0 },
+        _min: { replacementSendStartedAt: null },
+      }),
+      findMany: jest.fn().mockResolvedValue([]),
+    },
+    chatAutoCommentAttachMarker: {
+      aggregate: jest.fn().mockResolvedValue({
+        _count: { _all: 0 },
+        _min: { replacementSendStartedAt: null },
+      }),
+      findMany: jest.fn().mockResolvedValue([]),
+    },
+    chatRules: {
+      aggregate: jest.fn().mockResolvedValue({
+        _count: { _all: 0 },
+        _min: { publishSendStartedAt: null },
+      }),
+      findMany: jest.fn().mockResolvedValue([]),
+      findUnique: jest.fn(),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
   };
+  transaction.mockImplementation(async (callback: (tx: typeof prisma) => unknown) =>
+    callback(prisma),
+  );
   const vkPublishService = {
     publishPost: jest.fn().mockResolvedValue({
       messageId: 'mid-1',
@@ -84,12 +195,388 @@ function createFixture() {
       post: {},
     }),
   };
-  const service = new SafetyDeskService(prisma as never, vkPublishService as never);
+  const configService = {
+    get: jest.fn((key: string) => {
+      if (key === 'MODERATION_DELETE_INTENT_MODE') {
+        return 'canary';
+      }
+      if (key === 'MODERATION_DELETE_INTENT_CANARY_CHAT_IDS') {
+        return 'channel-1';
+      }
+      return undefined;
+    }),
+  };
+  const maxBotRegistry = {
+    getBotById: jest.fn((botId: string) => ({
+      id: botId,
+      state: botId === 'bot-draining' ? 'draining' : 'active',
+    })),
+  };
+  const moderationDeleteIntents = {
+    retryTerminalIntent: jest.fn(),
+  };
+  const service = new SafetyDeskService(
+    prisma as never,
+    vkPublishService as never,
+    configService as never,
+    maxBotRegistry as never,
+    moderationDeleteIntents as never,
+  );
 
-  return { prisma, service, vkPublishService };
+  return {
+    configService,
+    maxBotRegistry,
+    moderationDeleteIntents,
+    prisma,
+    service,
+    vkPublishService,
+  };
 }
 
 describe('SafetyDeskService', () => {
+  it('reports bounded delete runtime diagnostics without treating READY routing as capability', async () => {
+    const { prisma, service } = createFixture();
+    const oldestOpen = new Date(Date.now() - 30_000);
+    const oldestDue = new Date(Date.now() - 5_000);
+    prisma.moderationDeleteIntent.groupBy.mockResolvedValue([
+      { status: 'WAITING_CAPABILITY', _count: { _all: 3 } },
+      { status: 'FAILED_TERMINAL', _count: { _all: 1 } },
+      { status: 'SUCCEEDED', _count: { _all: 1 } },
+    ]);
+    prisma.moderationDeleteIntent.aggregate
+      .mockResolvedValueOnce({ _count: { _all: 2 }, _min: { nextAttemptAt: oldestDue } })
+      .mockResolvedValueOnce({
+        _count: { _all: 1 },
+        _min: { leaseExpiresAt: new Date(Date.now() - 2_000) },
+      })
+      .mockResolvedValueOnce({ _min: { createdAt: oldestOpen } });
+    const attentionIntent = createDeleteIntent();
+    const completedIntent = createDeleteIntent({
+      id: 'delete-intent-succeeded',
+      status: 'SUCCEEDED',
+      completedAt: new Date(Date.now() - 40_000),
+      succeededBotId: 'bot-1',
+      remoteDeleteSucceededAt: new Date(Date.now() - 41_000),
+      remoteDeleteSucceededBotId: 'bot-1',
+      updatedAt: new Date(Date.now() - 40_000),
+      lastStatusCode: null,
+      lastErrorCode: null,
+      lastError: null,
+    });
+    prisma.moderationDeleteIntent.findMany
+      .mockResolvedValueOnce([attentionIntent])
+      .mockResolvedValueOnce([completedIntent]);
+    const ambiguousStartedAt = new Date(Date.now() - 45_000);
+    prisma.channelAutoPostAttachMarker.aggregate.mockResolvedValue({
+      _count: { _all: 2 },
+      _min: { replacementSendStartedAt: ambiguousStartedAt },
+    });
+    prisma.chatAutoCommentAttachMarker.aggregate.mockResolvedValue({
+      _count: { _all: 1 },
+      _min: { replacementSendStartedAt: new Date(Date.now() - 20_000) },
+    });
+    prisma.channelAutoPostAttachMarker.findMany.mockResolvedValue([
+      {
+        id: 'ambiguous-channel-send-1',
+        chatId: 'channel-1',
+        messageId: 'message-ambiguous-1',
+        botId: 'bot-1',
+        replacementSendStartedAt: ambiguousStartedAt,
+        lastError: '[max.send_ambiguous] request timed out',
+        updatedAt: new Date(Date.now() - 10_000),
+        chat: { title: 'Канал администраторов' },
+      },
+    ]);
+
+    const runtime = await service.getDeleteRuntime();
+
+    expect(runtime).toMatchObject({
+      rolloutMode: 'canary',
+      summary: {
+        total: 5,
+        open: 3,
+        failed: 1,
+        due: { count: 2, oldestAt: oldestDue.toISOString() },
+        staleLeases: { count: 1 },
+        ambiguousSends: {
+          count: 3,
+          oldestAt: ambiguousStartedAt.toISOString(),
+        },
+        statusCounts: {
+          WAITING_CAPABILITY: 3,
+          FAILED_TERMINAL: 1,
+          SUCCEEDED: 1,
+          ALREADY_ABSENT: 0,
+        },
+      },
+    });
+    expect(runtime.items[0]).toMatchObject({
+      chatId: 'channel-1',
+      routingState: 'READY',
+      rollout: 'execute',
+      capability: {
+        confirmed: false,
+        confirmedBotIds: [],
+        memberships: [
+          {
+            botId: 'bot-1',
+            botRuntimeState: 'active',
+            state: 'explicitly_incapable',
+            reason: 'missing_channel_delete_permission',
+          },
+          {
+            botId: 'bot-draining',
+            botRuntimeState: 'draining',
+            state: 'stale_or_unknown',
+            reason: 'bot_not_actionable',
+          },
+        ],
+      },
+      reasons: [{ ruleCode: 'COMMERCIAL' }],
+    });
+    expect(runtime.items.map((item) => item.status)).toEqual(['WAITING_CAPABILITY', 'SUCCEEDED']);
+    expect(runtime.items[1]).toMatchObject({ remoteDeleteSucceededBotId: 'bot-1' });
+    expect(runtime.items[1]?.remoteDeleteSucceededAt).not.toBeNull();
+    expect(runtime.ambiguousSends).toEqual([
+      expect.objectContaining({
+        source: 'channel_auto_post',
+        chatId: 'channel-1',
+        messageId: 'message-ambiguous-1',
+        botId: 'bot-1',
+      }),
+    ]);
+    expect(prisma.moderationDeleteIntent.findMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        take: 100,
+        select: expect.objectContaining({
+          chat: {
+            select: expect.objectContaining({
+              botMemberships: expect.objectContaining({
+                where: { status: 'ACTIVE' },
+                take: 20,
+              }),
+            }),
+          },
+          reasons: expect.objectContaining({ take: 10 }),
+        }),
+      }),
+    );
+    expect(prisma.moderationDeleteIntent.findMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: { status: { in: ['SUCCEEDED', 'ALREADY_ABSENT'] } },
+        take: 25,
+      }),
+    );
+    expect(prisma.moderationDeleteIntent.aggregate).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: {
+            in: ['PENDING', 'RETRYABLE', 'WAITING_CAPABILITY', 'AMBIGUOUS'],
+          },
+          OR: expect.arrayContaining([
+            expect.objectContaining({
+              deleteDispatchStartedAt: { not: null },
+              deleteDispatchStartedBotId: { not: null },
+            }),
+          ]),
+        }),
+      }),
+    );
+    expect(prisma.channelAutoPostAttachMarker.aggregate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: 'SKIPPED',
+          replacementMessageId: null,
+          replacementSendStartedAt: { not: null },
+        }),
+      }),
+    );
+  });
+
+  it('confirms only executable delete capability from fresh entity-specific snapshots', async () => {
+    const { prisma, service } = createFixture();
+    const now = Date.now();
+    const capable = createDeleteIntent({
+      entityType: ChatEntityType.CHAT,
+      originBotId: 'bot-chat',
+      chat: {
+        title: 'Рабочий чат',
+        entityType: ChatEntityType.CHAT,
+        routingState: 'NO_ELIGIBLE_BOT',
+        botMemberships: [
+          {
+            botId: 'bot-chat',
+            role: 'STANDBY',
+            permissionsSnapshot: {
+              checkedAt: new Date(now - 1_000).toISOString(),
+              isAdmin: true,
+              isOwner: false,
+              permissions: ['read_all_messages', 'write'],
+            },
+            botAccessState: 'CONFIRMED_ADMIN',
+            botAccessCheckedAt: new Date(now - 1_000),
+            botAccessExpiresAt: new Date(now + 60_000),
+          },
+          {
+            botId: 'bot-standby',
+            role: 'STANDBY',
+            permissionsSnapshot: {
+              checkedAt: new Date(now - 1_000).toISOString(),
+              isAdmin: true,
+              isOwner: false,
+              permissions: ['write'],
+            },
+            botAccessState: 'CONFIRMED_ADMIN',
+            botAccessCheckedAt: new Date(now - 1_000),
+            botAccessExpiresAt: new Date(now + 60_000),
+          },
+        ],
+      },
+    });
+    prisma.moderationDeleteIntent.aggregate
+      .mockResolvedValueOnce({ _count: { _all: 0 }, _min: { nextAttemptAt: null } })
+      .mockResolvedValueOnce({ _count: { _all: 0 }, _min: { leaseExpiresAt: null } })
+      .mockResolvedValueOnce({ _min: { createdAt: null } });
+    prisma.moderationDeleteIntent.findMany
+      .mockResolvedValueOnce([capable])
+      .mockResolvedValueOnce([]);
+
+    const runtime = await service.getDeleteRuntime();
+
+    expect(runtime.items[0]?.capability).toMatchObject({
+      confirmed: true,
+      confirmedBotIds: ['bot-chat'],
+      memberships: [
+        {
+          state: 'confirmed_capable',
+          reason: 'confirmed',
+        },
+        {
+          state: 'confirmed_capable',
+          reason: 'confirmed',
+        },
+      ],
+    });
+    expect(runtime.items[0]?.routingState).toBe('NO_ELIGIBLE_BOT');
+  });
+
+  it('clears only a stale chat-rules send fence and records the owner action', async () => {
+    const { prisma, service } = createFixture();
+    const startedAt = new Date(Date.now() - 20 * 60_000);
+    prisma.chatRules.findUnique.mockResolvedValue({
+      id: 'rules-1',
+      chatId: 'chat-1',
+      publishOperationId: 'publish-operation-1',
+      publishOperationBotId: 'bot-1',
+      publishSendStartedAt: startedAt,
+    });
+    jest.spyOn(service, 'getDeleteRuntime').mockResolvedValue({ generatedAt: 'test' } as never);
+
+    await service.clearAmbiguousSendFence('chat_rules:rules-1', 'owner', {
+      expectedOperationId: 'publish-operation-1',
+      expectedStartedAt: startedAt.toISOString(),
+    });
+
+    expect(prisma.chatRules.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'rules-1',
+        publishOperationId: 'publish-operation-1',
+        publishSendStartedAt: startedAt,
+      },
+      data: {
+        publishOperationId: null,
+        publishOperationBotId: null,
+        publishSendStartedAt: null,
+      },
+    });
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        actorUserId: 'owner',
+        action: 'SAFETY_DESK_CLEAR_AMBIGUOUS_SEND_FENCE',
+      }),
+    });
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not clear a newer ambiguous chat-rules operation from a stale Safety Desk view', async () => {
+    const { prisma, service } = createFixture();
+    const oldStartedAt = new Date(Date.now() - 30 * 60_000);
+    prisma.chatRules.findUnique.mockResolvedValue({
+      id: 'rules-1',
+      chatId: 'chat-1',
+      publishOperationId: 'publish-operation-new',
+      publishOperationBotId: 'bot-1',
+      publishSendStartedAt: new Date(Date.now() - 20 * 60_000),
+    });
+
+    await expect(
+      service.clearAmbiguousSendFence('chat_rules:rules-1', 'owner', {
+        expectedOperationId: 'publish-operation-old',
+        expectedStartedAt: oldStartedAt.toISOString(),
+      }),
+    ).rejects.toThrow('Состояние публикации изменилось');
+    expect(prisma.chatRules.updateMany).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('retries a terminal delete only inside execute rollout with a CAS status', async () => {
+    const { moderationDeleteIntents, prisma, service } = createFixture();
+    prisma.moderationDeleteIntent.findUnique.mockResolvedValue({
+      id: 'delete-intent-1',
+      chatId: 'channel-1',
+      status: 'EXPIRED',
+      updatedAt: new Date('2026-07-16T12:00:00.000Z'),
+      attemptCount: 2,
+    });
+    moderationDeleteIntents.retryTerminalIntent.mockResolvedValue({
+      reopened: true,
+      intent: { id: 'delete-intent-1', status: 'PENDING' },
+    });
+    prisma.moderationDeleteIntent.aggregate
+      .mockResolvedValueOnce({ _count: { _all: 0 }, _min: { nextAttemptAt: null } })
+      .mockResolvedValueOnce({ _count: { _all: 0 }, _min: { leaseExpiresAt: null } })
+      .mockResolvedValueOnce({ _min: { createdAt: null } });
+
+    await expect(
+      service.retryDeleteIntent('delete-intent-1', 'owner', {
+        expectedStatus: 'EXPIRED',
+        expectedUpdatedAt: '2026-07-16T12:00:00.000Z',
+        expectedAttemptCount: 2,
+      }),
+    ).resolves.toMatchObject({ rolloutMode: 'canary' });
+
+    expect(moderationDeleteIntents.retryTerminalIntent).toHaveBeenCalledWith(
+      'delete-intent-1',
+      'EXPIRED',
+      { updatedAt: new Date('2026-07-16T12:00:00.000Z'), attemptCount: 2 },
+      { actorUserId: 'owner' },
+    );
+  });
+
+  it('rejects a stale terminal delete retry without dispatching it', async () => {
+    const { moderationDeleteIntents, prisma, service } = createFixture();
+    prisma.moderationDeleteIntent.findUnique.mockResolvedValue({
+      id: 'delete-intent-1',
+      chatId: 'channel-1',
+      status: 'PENDING',
+      updatedAt: new Date('2026-07-16T12:00:00.000Z'),
+      attemptCount: 3,
+    });
+
+    await expect(
+      service.retryDeleteIntent('delete-intent-1', 'owner', {
+        expectedStatus: 'EXPIRED',
+        expectedUpdatedAt: '2026-07-16T12:00:00.000Z',
+        expectedAttemptCount: 2,
+      }),
+    ).rejects.toThrow('Состояние удаления изменилось');
+    expect(moderationDeleteIntents.retryTerminalIntent).not.toHaveBeenCalled();
+  });
+
   it('builds a visible review queue from real VK review posts', async () => {
     const { prisma, service } = createFixture();
     prisma.vkParsingPost.findMany.mockResolvedValue([createReviewPost()]);
@@ -265,9 +752,7 @@ describe('SafetyDeskService', () => {
       }),
     );
 
-    await expect(service.approveItem('post-1', 'maxim', {})).rejects.toThrow(
-      BadRequestException,
-    );
+    await expect(service.approveItem('post-1', 'maxim', {})).rejects.toThrow(BadRequestException);
     expect(vkPublishService.publishPost).not.toHaveBeenCalled();
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
@@ -315,9 +800,7 @@ describe('SafetyDeskService', () => {
   it('rejects bulk approval without an explicit item scope', async () => {
     const { prisma, service, vkPublishService } = createFixture();
 
-    await expect(service.approveAllReviewItems('maxim', {})).rejects.toThrow(
-      BadRequestException,
-    );
+    await expect(service.approveAllReviewItems('maxim', {})).rejects.toThrow(BadRequestException);
     await expect(service.approveAllReviewItems('maxim', { itemIds: [] })).rejects.toThrow(
       BadRequestException,
     );

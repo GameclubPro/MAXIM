@@ -963,7 +963,12 @@ export class RuleEngineService {
     private readonly redisCounter: RedisCounterService,
     @Optional() private readonly runtimeDiagnosticsService?: RuntimeDiagnosticsService,
   ) {
-    this.duplicateDetector = new RuleEngineDuplicateDetector(redisCounter);
+    this.duplicateDetector = new RuleEngineDuplicateDetector(redisCounter, () => {
+      void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+        stage: 'rule-engine.duplicate-state',
+        outcome: 'timeout',
+      });
+    });
     this.messageLimitsDetector = new RuleEngineMessageLimitsDetector(redisCounter);
   }
 

@@ -62,7 +62,7 @@ function createFixture() {
       userId: 'bot-1',
       isAdmin: true,
       isOwner: false,
-      permissions: ['delete_messages'],
+      permissions: ['read_all_messages', 'write'],
     }),
     getChatMembersAccess: jest.fn().mockResolvedValue(
       new Map([
@@ -199,9 +199,7 @@ describe('ManagedEntityHandshakeService', () => {
       'granted',
     );
     expect(fixture.chatContextCache.rememberChatAdminUser).toHaveBeenCalledWith('-100', 'admin-1');
-    expect(
-      fixture.chatContextCache.setAdminAccess.mock.invocationCallOrder[0],
-    ).toBeLessThan(
+    expect(fixture.chatContextCache.setAdminAccess.mock.invocationCallOrder[0]).toBeLessThan(
       fixture.chatContextCache.setManagedEntitiesPublishedSnapshot.mock.invocationCallOrder[0],
     );
     const rosterJob = {
@@ -747,7 +745,7 @@ describe('ManagedEntityHandshakeService', () => {
     );
   });
 
-  it('treats MAX write permission as enough to delete the Старт message', async () => {
+  it('uses chat write permission to delete a Старт message without requiring read-all', async () => {
     const fixture = createFixture();
     fixture.maxClient.getCurrentChatMemberAccess.mockResolvedValueOnce({
       userId: 'bot-1',
@@ -766,6 +764,78 @@ describe('ManagedEntityHandshakeService', () => {
         botId: 'bot-1',
         sourceTag: 'managed_handshake',
       }),
+    );
+  });
+
+  it('does not delete when an owner snapshot has no confirmed permissions', async () => {
+    const fixture = createFixture();
+    fixture.maxClient.getCurrentChatMemberAccess.mockResolvedValueOnce({
+      userId: 'bot-1',
+      isAdmin: false,
+      isOwner: true,
+      permissions: [],
+    });
+
+    await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('connected');
+
+    expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('does not treat channel write as delete capability', async () => {
+    const fixture = createFixture();
+    fixture.maxClient.getCurrentChatMemberAccess.mockResolvedValueOnce({
+      userId: 'bot-1',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['read_all_messages', 'write'],
+    });
+
+    await expect(
+      fixture.service.handleWebhookUpdate(
+        createUpdate({
+          message: {
+            messageId: 'm-channel-command-1',
+            chatId: '-200',
+            chatTitle: 'Канал MAX',
+            entityType: 'channel',
+            senderId: 'admin-1',
+            text: 'Старт',
+          },
+        }),
+      ),
+    ).resolves.toBe('connected');
+
+    expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('deletes a channel Старт message only with channel delete capability', async () => {
+    const fixture = createFixture();
+    fixture.maxClient.getCurrentChatMemberAccess.mockResolvedValueOnce({
+      userId: 'bot-1',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['delete'],
+    });
+
+    await expect(
+      fixture.service.handleWebhookUpdate(
+        createUpdate({
+          message: {
+            messageId: 'm-channel-command-2',
+            chatId: '-200',
+            chatTitle: 'Канал MAX',
+            entityType: 'channel',
+            senderId: 'admin-1',
+            text: 'Старт',
+          },
+        }),
+      ),
+    ).resolves.toBe('connected');
+
+    expect(fixture.maxClient.deleteMessage).toHaveBeenCalledWith(
+      '-200',
+      'm-channel-command-2',
+      expect.objectContaining({ botId: 'bot-1' }),
     );
   });
 

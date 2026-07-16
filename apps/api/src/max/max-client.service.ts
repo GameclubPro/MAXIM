@@ -69,6 +69,8 @@ export type MaxChannelMessageSnapshot = {
   reactions: MaxChannelMessageReaction[];
 };
 
+export type MaxExactMessagePresence = 'present' | 'absent';
+
 export type MaxChannelMessageReaction = {
   emoji: string;
   count: number;
@@ -143,8 +145,32 @@ const MAX_UPLOAD_BINARY_TIMEOUT_MS = 30_000;
 const MAX_UPLOAD_FILENAME_MAX_LENGTH = 180;
 const MAX_LIST_BOT_CHATS_UNSUPPORTED_IN_PRODUCTION =
   'MAX API GET /chats is not supported in production; use webhook/subscription managed chat catalog instead. See https://dev.max.ru/docs-api/methods/GET/chats';
+const MAX_MESSAGE_SEND_ATTEMPTED = Symbol('max-message-send-attempted');
 
-class MaxApiRequestRejectedError extends Error {
+export function wasMaxMessageSendAttempted(error: unknown): boolean {
+  return Boolean(
+    error &&
+    typeof error === 'object' &&
+    (error as { [MAX_MESSAGE_SEND_ATTEMPTED]?: unknown })[MAX_MESSAGE_SEND_ATTEMPTED] === true,
+  );
+}
+
+function markMaxMessageSendAttempted(error: unknown): unknown {
+  if (error && typeof error === 'object') {
+    Object.defineProperty(error, MAX_MESSAGE_SEND_ATTEMPTED, {
+      configurable: false,
+      enumerable: false,
+      value: true,
+      writable: false,
+    });
+    return error;
+  }
+  const wrapped = new Error(String(error));
+  Object.defineProperty(wrapped, MAX_MESSAGE_SEND_ATTEMPTED, { value: true });
+  return wrapped;
+}
+
+export class MaxApiRequestRejectedError extends Error {
   readonly response: {
     status: number;
     data: unknown;
@@ -275,6 +301,10 @@ export type MaxSendMessageOptions = {
     screen?: string;
     action?: string;
   };
+};
+
+type MaxImmediateSendMessageOptions = MaxSendMessageOptions & {
+  beforeSend?: () => Promise<void>;
 };
 
 export type MaxCustomMessagePayload = {
@@ -789,7 +819,7 @@ export class MaxClientService implements OnModuleDestroy {
   async sendMessageImmediateWithId(
     chatId: string,
     text: string,
-    options?: MaxSendMessageOptions,
+    options?: MaxImmediateSendMessageOptions,
     requestOptions: MaxApiRequestOptions = {},
   ): Promise<MaxPublishedMessage> {
     const attachments = this.buildMessageAttachments(options);
@@ -798,6 +828,7 @@ export class MaxClientService implements OnModuleDestroy {
     const sendResponse = await this.executeMutation(
       chatId,
       async () => {
+        await options?.beforeSend?.();
         return this.request<Record<string, unknown>>('post', '/messages', {
           params: {
             chat_id: chatId,
@@ -816,7 +847,9 @@ export class MaxClientService implements OnModuleDestroy {
 
     const messageId = this.extractMessageIdFromSendResponse(sendResponse);
     if (!messageId) {
-      throw new Error('MAX send response is missing message id');
+      throw markMaxMessageSendAttempted(
+        new Error('Ambiguous MAX send response is missing message id'),
+      );
     }
 
     const resolvedChatId = this.extractChatIdFromSendResponse(sendResponse);
@@ -857,7 +890,9 @@ export class MaxClientService implements OnModuleDestroy {
 
     const messageId = this.extractMessageIdFromSendResponse(sendResponse);
     if (!messageId) {
-      throw new Error('MAX send response is missing message id');
+      throw markMaxMessageSendAttempted(
+        new Error('Ambiguous MAX send response is missing message id'),
+      );
     }
 
     const resolvedChatId = this.extractChatIdFromSendResponse(sendResponse);
@@ -871,7 +906,7 @@ export class MaxClientService implements OnModuleDestroy {
   async sendMessageImmediateWithResolvedLink(
     chatId: string,
     text: string,
-    options?: MaxSendMessageOptions,
+    options?: MaxImmediateSendMessageOptions,
     requestOptions: MaxApiRequestOptions = {},
   ): Promise<MaxPublishedMessage> {
     const {
@@ -899,6 +934,7 @@ export class MaxClientService implements OnModuleDestroy {
     chatId: string,
     payload: MaxCustomMessagePayload,
     requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = {},
+    beforeSend?: () => Promise<void>,
   ): Promise<Record<string, unknown>> {
     const normalizedRequestOptions = this.normalizeReadRequestOptions(requestOptions);
     const attachments = Array.isArray(payload.attachments)
@@ -917,6 +953,7 @@ export class MaxClientService implements OnModuleDestroy {
     return this.executeMutation(
       chatId,
       async () => {
+        await beforeSend?.();
         return this.request<Record<string, unknown>>('post', '/messages', {
           params: {
             chat_id: chatId,
@@ -970,7 +1007,9 @@ export class MaxClientService implements OnModuleDestroy {
     const sendResponse = await this.sendCustomMessageImmediate(chatId, payload, requestOptions);
     const messageId = this.extractMessageIdFromSendResponse(sendResponse);
     if (!messageId) {
-      throw new Error('MAX send response is missing message id');
+      throw markMaxMessageSendAttempted(
+        new Error('Ambiguous MAX send response is missing message id'),
+      );
     }
 
     const directUrl = this.parseChatLink(sendResponse);
@@ -995,7 +1034,9 @@ export class MaxClientService implements OnModuleDestroy {
     chatId: string,
     sourceMessageId: string,
     fallbackText: string | null,
-    options?: Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'debugContext' | 'textFormat'>,
+    options?: Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'debugContext' | 'textFormat'> & {
+      beforeSend?: () => Promise<void>;
+    },
     requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = {},
   ): Promise<MaxPublishedMessage> {
     const sourceMessage = await this.getMessageById(sourceMessageId, requestOptions);
@@ -1006,22 +1047,34 @@ export class MaxClientService implements OnModuleDestroy {
       fallbackText,
       options?.textFormat ?? null,
     );
-    const sendResponse = await this.sendCustomMessageImmediate(
-      chatId,
-      {
-        ...(typeof messageTextPayload.text === 'string' && messageTextPayload.text.length > 0
-          ? { text: messageTextPayload.text }
-          : {}),
-        ...(messageTextPayload.textFormat ? { textFormat: messageTextPayload.textFormat } : {}),
-        ...(attachments.length > 0 ? { attachments } : {}),
-        ...(replyLink ? { messageLink: replyLink } : {}),
-      },
-      requestOptions,
-    );
+    let sendResponse: Record<string, unknown>;
+    let sendAttempted = false;
+    try {
+      sendResponse = await this.sendCustomMessageImmediate(
+        chatId,
+        {
+          ...(typeof messageTextPayload.text === 'string' && messageTextPayload.text.length > 0
+            ? { text: messageTextPayload.text }
+            : {}),
+          ...(messageTextPayload.textFormat ? { textFormat: messageTextPayload.textFormat } : {}),
+          ...(attachments.length > 0 ? { attachments } : {}),
+          ...(replyLink ? { messageLink: replyLink } : {}),
+        },
+        requestOptions,
+        async () => {
+          await options?.beforeSend?.();
+          sendAttempted = true;
+        },
+      );
+    } catch (error: unknown) {
+      throw sendAttempted ? markMaxMessageSendAttempted(error) : error;
+    }
 
     const messageId = this.extractMessageIdFromSendResponse(sendResponse);
     if (!messageId) {
-      throw new Error('MAX send response is missing message id');
+      throw markMaxMessageSendAttempted(
+        new Error('Ambiguous MAX send response is missing message id'),
+      );
     }
 
     const resolvedChatId = this.extractChatIdFromSendResponse(sendResponse);
@@ -1174,7 +1227,9 @@ export class MaxClientService implements OnModuleDestroy {
 
     const replyMessageId = this.extractMessageIdFromSendResponse(sendResponse);
     if (!replyMessageId) {
-      throw new Error('MAX send response is missing message id');
+      throw markMaxMessageSendAttempted(
+        new Error('Ambiguous MAX send response is missing message id'),
+      );
     }
 
     const resolvedChatId = this.extractChatIdFromSendResponse(sendResponse);
@@ -1336,6 +1391,75 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     return this.parseMessageSnapshot(normalizedChatId, message);
+  }
+
+  async getExactMessagePresence(
+    chatId: string,
+    messageId: string,
+    options: MaxApiRequestOptions | MaxApiTrafficClass = {},
+  ): Promise<MaxExactMessagePresence> {
+    const normalizedChatId = chatId.trim();
+    const normalizedMessageId = messageId.trim();
+    if (!normalizedChatId || !normalizedMessageId) {
+      throw new Error('chatId and messageId are required for exact MAX message presence');
+    }
+
+    try {
+      const data = await this.executeChatRequest(
+        normalizedChatId,
+        () =>
+          this.request<Record<string, unknown>>('get', '/messages', {
+            params: { message_ids: normalizedMessageId },
+          }),
+        options,
+      );
+      const messages = Array.isArray(data.messages) ? data.messages : [];
+      const exactListMatch = messages.some(
+        (message) =>
+          message !== null &&
+          typeof message === 'object' &&
+          !Array.isArray(message) &&
+          this.extractMessageIdFromSendResponse(message) === normalizedMessageId,
+      );
+      if (exactListMatch) {
+        return 'present';
+      }
+    } catch (error: unknown) {
+      if (this.isExactMessageNotFoundError(error)) {
+        return 'absent';
+      }
+      throw error;
+    }
+
+    try {
+      const data = await this.executeChatRequest(
+        normalizedChatId,
+        () =>
+          this.request<Record<string, unknown>>(
+            'get',
+            `/messages/${encodeURIComponent(normalizedMessageId)}`,
+          ),
+        options,
+      );
+      const nestedMessage =
+        data.message && typeof data.message === 'object' && !Array.isArray(data.message)
+          ? data.message
+          : null;
+      const exactDirectMatch = [data, nestedMessage].some(
+        (message) =>
+          message !== null &&
+          this.extractMessageIdFromSendResponse(message) === normalizedMessageId,
+      );
+      if (exactDirectMatch) {
+        return 'present';
+      }
+      throw new Error('MAX exact message lookup returned a response without the requested id');
+    } catch (error: unknown) {
+      if (this.isExactMessageNotFoundError(error)) {
+        return 'absent';
+      }
+      throw error;
+    }
   }
 
   async listWebhookSubscriptions(
@@ -1718,13 +1842,13 @@ export class MaxClientService implements OnModuleDestroy {
           await this.executeMutation(
             action.chatId,
             async () => {
-              await this.request('delete', '/messages', {
+              const response = await this.request<Record<string, unknown>>('delete', '/messages', {
                 params: {
                   message_id: action.messageId,
-                  chat_id: action.chatId,
                 },
                 ...(mutationOptions.timeoutMs ? { timeout: mutationOptions.timeoutMs } : {}),
               });
+              this.assertSuccessfulDeleteMessageResponse(response);
             },
             mutationOptions,
           );
@@ -6106,6 +6230,23 @@ export class MaxClientService implements OnModuleDestroy {
     );
   }
 
+  private assertSuccessfulDeleteMessageResponse(payload: unknown): void {
+    if (
+      payload &&
+      typeof payload === 'object' &&
+      !Array.isArray(payload) &&
+      (payload as Record<string, unknown>).success === true
+    ) {
+      return;
+    }
+
+    throw new MaxApiRequestRejectedError(
+      DEFAULT_SUCCESS_FALSE_STATUS,
+      payload,
+      'MAX API DELETE /messages response must contain success=true',
+    );
+  }
+
   private isAlreadyOutsideChatError(error: unknown): boolean {
     const status = this.extractStatusCode(error);
     const message = this.extractErrorMessage(error);
@@ -6131,6 +6272,21 @@ export class MaxClientService implements OnModuleDestroy {
       message.includes('not a chat member') ||
       message.includes('not active chat member') ||
       message.includes('not found')
+    );
+  }
+
+  private isExactMessageNotFoundError(error: unknown): boolean {
+    if (this.extractStatusCode(error) !== 404) {
+      return false;
+    }
+    const code = this.extractErrorCode(error);
+    const message = this.extractErrorMessage(error);
+    return (
+      code === 'message.not.found' ||
+      code === 'message_not_found' ||
+      code === 'message.not_found' ||
+      message.includes('message not found') ||
+      message.includes('message.not.found')
     );
   }
 

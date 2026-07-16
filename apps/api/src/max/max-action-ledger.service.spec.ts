@@ -23,6 +23,7 @@ function createJob(overrides: Partial<MaxActionJob> = {}): MaxActionJob {
 function createService(row: unknown = null) {
   const prisma = {
     maxActionLedgerEntry: {
+      findFirst: jest.fn().mockResolvedValue(row),
       findUnique: jest.fn().mockResolvedValue(row),
       upsert: jest.fn().mockResolvedValue(undefined),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -35,6 +36,47 @@ function createService(row: unknown = null) {
 }
 
 describe('MaxActionLedgerService', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('recognizes an active delete job that already owns the exact message cleanup', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-16T12:00:00.000Z'));
+    const { service, prisma } = createService({ id: 'delete-job-1' });
+
+    await expect(service.hasActiveOrSucceededDelete(' chat-1 ', ' message-1 ')).resolves.toBe(true);
+
+    expect(prisma.maxActionLedgerEntry.findFirst).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-1',
+        actionType: 'DELETE_MESSAGE',
+        messageId: 'message-1',
+        status: {
+          in: [
+            MaxActionLedgerStatus.ENQUEUED,
+            MaxActionLedgerStatus.IN_PROGRESS,
+            MaxActionLedgerStatus.SUCCEEDED,
+          ],
+        },
+        updatedAt: {
+          gte: new Date('2026-07-16T10:00:00.000Z'),
+        },
+      },
+      select: {
+        id: true,
+      },
+      orderBy: {
+        updatedAt: 'desc',
+      },
+    });
+  });
+
+  it('does not claim delete ownership without an active exact ledger row', async () => {
+    const { service } = createService(null);
+
+    await expect(service.hasActiveOrSucceededDelete('chat-1', 'message-1')).resolves.toBe(false);
+  });
+
   it('blocks enqueue when an irreversible job is already quarantined as ambiguous', async () => {
     const { service } = createService({
       status: MaxActionLedgerStatus.AMBIGUOUS,

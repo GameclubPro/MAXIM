@@ -24,6 +24,8 @@ const SYSTEM_MODE_EFFECTIVE_CACHE_TTL_MS = 30_000;
 const DEFAULT_SYSTEM_MODE_QUEUE_SNAPSHOT_MAX_AGE_MS = 15_000;
 const ACTION_ERROR_RATE_MIN_TOTAL = 100;
 const ACTION_ERROR_RATE_MIN_FAILURES = 5;
+const ACTION_CRITICAL_RATE_MIN_TOTAL = 100;
+const ACTION_CRITICAL_RATE_MIN_FAILURES = 5;
 const RECOVERY_WINDOW_REASON = 'recovery window in progress';
 export const SYSTEM_MODE_RECOVERY_WINDOW_REASON = RECOVERY_WINDOW_REASON;
 
@@ -125,10 +127,11 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
       await this.actionHealthService.refreshSnapshots(60);
       const action = this.getUserFacingActionSnapshot();
       const actionErrorRateDegraded = this.shouldDegradeForActionErrorRate(action);
+      const actionCriticalRateDegraded = this.shouldDegradeForActionCriticalRate(action);
       const shouldDegrade =
         queueLagSec > this.queueLagThresholdSec ||
         actionErrorRateDegraded ||
-        action.criticalRate > this.actionCriticalThreshold;
+        actionCriticalRateDegraded;
 
       if (shouldDegrade) {
         this.healthySinceMs = null;
@@ -139,7 +142,7 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
         if (actionErrorRateDegraded) {
           reasons.push(`user-facing action error rate ${(action.errorRate * 100).toFixed(2)}%`);
         }
-        if (action.criticalRate > this.actionCriticalThreshold) {
+        if (actionCriticalRateDegraded) {
           reasons.push(`critical MAX API rate ${(action.criticalRate * 100).toFixed(2)}%`);
         }
         this.applyMode('degrade', reasons.join('; '));
@@ -253,6 +256,14 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
       action.errorRate > this.actionErrorThreshold &&
       action.total >= ACTION_ERROR_RATE_MIN_TOTAL &&
       action.failure >= ACTION_ERROR_RATE_MIN_FAILURES
+    );
+  }
+
+  private shouldDegradeForActionCriticalRate(action: ActionHealthSnapshot): boolean {
+    return (
+      action.criticalRate > this.actionCriticalThreshold &&
+      action.total >= ACTION_CRITICAL_RATE_MIN_TOTAL &&
+      action.critical >= ACTION_CRITICAL_RATE_MIN_FAILURES
     );
   }
 

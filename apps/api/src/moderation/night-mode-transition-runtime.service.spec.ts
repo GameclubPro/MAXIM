@@ -53,6 +53,7 @@ function createHooks(
     sendClosedNotice: jest.fn().mockResolvedValue({
       ...NIGHT_MODE_TRANSITION_PROCESS_CONTINUE,
       messageId: null,
+      botId: null,
     }),
     sendOpenedNotice: jest.fn().mockResolvedValue(NIGHT_MODE_TRANSITION_PROCESS_CONTINUE),
     deleteClosedNotice: jest.fn().mockResolvedValue(NIGHT_MODE_TRANSITION_PROCESS_CONTINUE),
@@ -107,7 +108,10 @@ describe('NightModeTransitionRuntimeService', () => {
   it('repairs a missed opening from the persisted close notice after Redis state loss', async () => {
     const findFirst = jest
       .fn()
-      .mockResolvedValueOnce({ messageId: 'night-close-persisted-1' })
+      .mockResolvedValueOnce({
+        messageId: 'night-close-persisted-1',
+        botId: 'origin-bot-1',
+      })
       .mockResolvedValueOnce(null);
     const prisma = createPrisma({ findFirst });
     const redisCounter = createRedisCounterMock();
@@ -121,7 +125,11 @@ describe('NightModeTransitionRuntimeService', () => {
       NIGHT_MODE_TRANSITION_PROCESS_CONTINUE,
     );
 
-    expect(hooks.deleteClosedNotice).toHaveBeenCalledWith('chat-1', 'night-close-persisted-1');
+    expect(hooks.deleteClosedNotice).toHaveBeenCalledWith(
+      'chat-1',
+      'night-close-persisted-1',
+      'origin-bot-1',
+    );
     expect(hooks.sendOpenedNotice).toHaveBeenCalledWith(
       expect.objectContaining({ chatId: 'chat-1' }),
       expect.objectContaining({
@@ -152,7 +160,10 @@ describe('NightModeTransitionRuntimeService', () => {
   it('does not resend a persisted opening when Redis state is missing', async () => {
     const findFirst = jest
       .fn()
-      .mockResolvedValueOnce({ messageId: 'night-close-persisted-1' })
+      .mockResolvedValueOnce({
+        messageId: 'night-close-persisted-1',
+        botId: 'origin-bot-1',
+      })
       .mockResolvedValueOnce({ id: 'night-open-event-1' });
     const prisma = createPrisma({ findFirst });
     const redisCounter = createRedisCounterMock();
@@ -164,7 +175,11 @@ describe('NightModeTransitionRuntimeService', () => {
 
     await service.processNightModeTransitionJob(OPEN_JOB, hooks);
 
-    expect(hooks.deleteClosedNotice).toHaveBeenCalledWith('chat-1', 'night-close-persisted-1');
+    expect(hooks.deleteClosedNotice).toHaveBeenCalledWith(
+      'chat-1',
+      'night-close-persisted-1',
+      'origin-bot-1',
+    );
     expect(hooks.sendOpenedNotice).not.toHaveBeenCalled();
     expect(redisCounter.setStringWithTtl).toHaveBeenCalledWith(
       'night-mode-transition-state:v1:chat-1',
@@ -196,7 +211,7 @@ describe('NightModeTransitionRuntimeService', () => {
       NIGHT_MODE_TRANSITION_PROCESS_CONTINUE,
     );
 
-    expect(hooks.deleteClosedNotice).toHaveBeenCalledWith('chat-1', 'night-close-1');
+    expect(hooks.deleteClosedNotice).toHaveBeenCalledWith('chat-1', 'night-close-1', null);
     expect(hooks.sendOpenedNotice).toHaveBeenCalledTimes(1);
   });
 
@@ -257,7 +272,7 @@ describe('NightModeTransitionRuntimeService', () => {
       NIGHT_MODE_TRANSITION_PROCESS_CONTINUE,
     );
 
-    expect(hooks.deleteClosedNotice).toHaveBeenCalledWith('chat-1', 'night-close-1');
+    expect(hooks.deleteClosedNotice).toHaveBeenCalledWith('chat-1', 'night-close-1', null);
     expect(hooks.sendOpenedNotice).toHaveBeenCalledTimes(1);
   });
 

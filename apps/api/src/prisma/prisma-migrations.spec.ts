@@ -315,4 +315,31 @@ describe('Prisma migrations', () => {
     expect(compact).not.toMatch(/\bDROP\s+(?:TABLE|COLUMN|TYPE)\b/i);
     expect(compact).not.toMatch(/\b(?:TRUNCATE\s+TABLE|DELETE\s+FROM)\b/i);
   });
+
+  it('keeps replacement cleanup recovery referential without trusting legacy delete flags', () => {
+    const foundation = readMigration('20260716190000_add_moderation_delete_intents');
+    const tracking = readMigration('20260716191000_track_channel_replacement_cleanup');
+    const indexes = readMigration('20260716191500_add_replacement_cleanup_indexes');
+    const compactTracking = tracking.replace(/\s+/g, ' ').trim();
+
+    expect(foundation).toContain('"delete_dispatch_started_at" TIMESTAMP(3)');
+    expect(foundation).toContain('"delete_dispatch_started_bot_id" TEXT');
+    expect(foundation).toContain('"moderation_delete_intents_dispatch_pair_check"');
+    expect(compactTracking).not.toContain(
+      'UPDATE "channel_auto_post_attach_markers" marker SET "original_deleted" = true',
+    );
+    expect(compactTracking).toContain(
+      'UPDATE "chat_auto_comment_attach_markers" SET "original_deleted" = false',
+    );
+    for (const constraint of [
+      'channel_auto_post_attach_markers_cleanup_intent_id_fkey',
+      'chat_auto_comment_attach_markers_cleanup_intent_id_fkey',
+      'chat_rules_pending_cleanup_intent_id_fkey',
+    ]) {
+      expect(compactTracking).toContain(`ADD CONSTRAINT "${constraint}"`);
+    }
+    expect(compactTracking.match(/ON DELETE SET NULL ON UPDATE CASCADE/g)).toHaveLength(3);
+    expect(indexes).toContain('CREATE INDEX CONCURRENTLY');
+    expect(indexes).not.toMatch(/\bBEGIN\b|\bCOMMIT\b/i);
+  });
 });

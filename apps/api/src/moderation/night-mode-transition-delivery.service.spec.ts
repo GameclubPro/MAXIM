@@ -137,7 +137,11 @@ describe('NightModeTransitionDeliveryService', () => {
         },
         adapters,
       ),
-    ).resolves.toEqual({ shouldEnqueueNext: true, messageId: 'msg-routed-close-1' });
+    ).resolves.toEqual({
+      shouldEnqueueNext: true,
+      messageId: 'msg-routed-close-1',
+      botId: 'bot-survivor',
+    });
 
     expect(maxRoutedPublicationService.publish).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -240,7 +244,11 @@ describe('NightModeTransitionDeliveryService', () => {
         },
         adapters,
       ),
-    ).resolves.toEqual({ shouldEnqueueNext: true, messageId: 'msg-close-1' });
+    ).resolves.toEqual({
+      shouldEnqueueNext: true,
+      messageId: 'msg-close-1',
+      botId: 'bot-1',
+    });
 
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       'chat-1',
@@ -269,6 +277,7 @@ describe('NightModeTransitionDeliveryService', () => {
     expect(eventService.createTransitionEvent).toHaveBeenCalledWith({
       chatId: 'chat-1',
       messageId: 'msg-close-1',
+      botId: 'bot-1',
       ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
       sessionKey: 'session-1',
       timezone: 'Europe/Moscow',
@@ -313,6 +322,7 @@ describe('NightModeTransitionDeliveryService', () => {
       details: {
         chatId: 'chat-1',
         messageId: 'msg-close-1',
+        botId: 'bot-1',
         ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
         sessionKey: 'session-1',
         timezone: 'Europe/Moscow',
@@ -408,7 +418,7 @@ describe('NightModeTransitionDeliveryService', () => {
         },
         createAdapters(),
       ),
-    ).resolves.toEqual({ shouldEnqueueNext: false, messageId: null });
+    ).resolves.toEqual({ shouldEnqueueNext: false, messageId: null, botId: null });
 
     expect(accessLoss.recordManagedEntityAccessLost).toHaveBeenCalledWith({
       chatId: 'chat-1',
@@ -421,7 +431,104 @@ describe('NightModeTransitionDeliveryService', () => {
     });
   });
 
-  it('continues when deleting an old close notice returns message.not.found', async () => {
+  it('hands close notice cleanup to a durable origin-only intent in execute rollout', async () => {
+    const maxClient = {
+      sendMessageImmediateWithId: jest.fn(),
+      deleteMessage: jest.fn(),
+    };
+    const eventService = createEventService();
+    const deleteIntents = {
+      getRolloutForChat: jest.fn().mockReturnValue('execute'),
+      ensureIntent: jest.fn().mockResolvedValue({
+        intentId: 'intent-close-notice-1',
+        rollout: 'execute',
+        status: 'PENDING',
+      }),
+    };
+    const service = new NightModeTransitionDeliveryService(
+      maxClient as never,
+      {
+        resolveMedia: jest.fn().mockReturnValue(null),
+        withMediaOptions: jest.fn(async (options) => options),
+      } as never,
+      eventService as never,
+      undefined,
+      undefined,
+      deleteIntents as never,
+    );
+
+    await expect(
+      service.deleteClosedNotice('chat-1', 'close-message-1', 'origin-bot-1', createAdapters()),
+    ).resolves.toEqual({ shouldEnqueueNext: true });
+
+    expect(deleteIntents.ensureIntent).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      messageId: 'close-message-1',
+      reasonKey: 'NIGHT_MODE_CLOSE_NOTICE_CLEANUP',
+      ruleCode: 'NIGHT_MODE_CLOSE_NOTICE_CLEANUP',
+      entityType: 'CHAT',
+      messageAuthorKind: 'bot',
+      originBotId: 'origin-bot-1',
+      routingPolicy: 'origin_only',
+    });
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(eventService.createTransitionEvent).not.toHaveBeenCalled();
+  });
+
+  it('does not create an origin-only intent when a historical close notice has no author bot', async () => {
+    const maxClient = {
+      sendMessageImmediateWithId: jest.fn(),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const deleteIntents = {
+      getRolloutForChat: jest.fn().mockReturnValue('execute'),
+      ensureIntent: jest.fn(),
+    };
+    const service = new NightModeTransitionDeliveryService(
+      maxClient as never,
+      {
+        resolveMedia: jest.fn().mockReturnValue(null),
+        withMediaOptions: jest.fn(async (options) => options),
+      } as never,
+      createEventService() as never,
+      undefined,
+      undefined,
+      deleteIntents as never,
+    );
+
+    await expect(
+      service.deleteClosedNotice('chat-1', 'historical-close-1', null, createAdapters()),
+    ).resolves.toEqual({ shouldEnqueueNext: true });
+
+    expect(deleteIntents.ensureIntent).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'historical-close-1',
+      expect.objectContaining({ botId: 'bot-1', immediate: true }),
+    );
+  });
+
+  it('does not treat an arbitrary 404 as successful historical notice deletion', async () => {
+    const error = createMaxApiError(404, 'Request failed with status code 404');
+    const maxClient = {
+      sendMessageImmediateWithId: jest.fn(),
+      deleteMessage: jest.fn().mockRejectedValue(error),
+    };
+    const service = new NightModeTransitionDeliveryService(
+      maxClient as never,
+      {
+        resolveMedia: jest.fn().mockReturnValue(null),
+        withMediaOptions: jest.fn(async (options) => options),
+      } as never,
+      createEventService() as never,
+    );
+
+    await expect(
+      service.deleteClosedNotice('chat-1', 'historical-close-1', null, createAdapters()),
+    ).rejects.toBe(error);
+  });
+
+  it('keeps direct close-notice deletion as the shadow fallback', async () => {
     const maxClient = {
       sendMessageImmediateWithId: jest.fn(),
       deleteMessage: jest
@@ -433,6 +540,14 @@ describe('NightModeTransitionDeliveryService', () => {
     const accessLoss = {
       recordManagedEntityAccessLost: jest.fn(),
     };
+    const deleteIntents = {
+      getRolloutForChat: jest.fn().mockReturnValue('observed'),
+      ensureIntent: jest.fn().mockResolvedValue({
+        intentId: 'intent-close-notice-shadow-1',
+        rollout: 'observed',
+        status: 'OBSERVED',
+      }),
+    };
     const service = new NightModeTransitionDeliveryService(
       maxClient as never,
       {
@@ -441,12 +556,22 @@ describe('NightModeTransitionDeliveryService', () => {
       } as never,
       createEventService() as never,
       accessLoss as never,
+      undefined,
+      deleteIntents as never,
     );
 
     await expect(
-      service.deleteClosedNotice('chat-1', 'close-message-1', createAdapters()),
+      service.deleteClosedNotice('chat-1', 'close-message-1', 'origin-bot-1', createAdapters()),
     ).resolves.toEqual({ shouldEnqueueNext: true });
 
+    expect(deleteIntents.ensureIntent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'chat-1',
+        messageId: 'close-message-1',
+        originBotId: 'origin-bot-1',
+        routingPolicy: 'origin_only',
+      }),
+    );
     expect(maxClient.deleteMessage).toHaveBeenCalledWith(
       'chat-1',
       'close-message-1',
@@ -456,7 +581,7 @@ describe('NightModeTransitionDeliveryService', () => {
         actionHealthLane: 'background',
         sourceTag: 'night_mode_transition',
         ignoreFailureMetricStatuses: [403, 404],
-        botId: 'bot-1',
+        botId: 'origin-bot-1',
       }),
     );
     expect(accessLoss.recordManagedEntityAccessLost).not.toHaveBeenCalled();

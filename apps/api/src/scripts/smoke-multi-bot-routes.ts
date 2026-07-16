@@ -450,7 +450,7 @@ function deleteOnlySnapshot() {
     checkedAt: '2026-07-06T10:00:00.000Z',
     isAdmin: true,
     isOwner: false,
-    permissions: ['delete_messages'],
+    permissions: ['read_all_messages', 'delete'],
   };
 }
 

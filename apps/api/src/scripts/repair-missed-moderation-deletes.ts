@@ -1,324 +1,402 @@
-import { EventType, Operator, Prisma, SanctionAction } from '../prisma/prisma-client';
-import { NestFactory } from '@nestjs/core';
-import { Logger } from 'nestjs-pino';
-import { AppModule } from '../app.module';
-import { MaxBotLinkService } from '../max/max-bot-link.service';
-import { MaxClientService } from '../max/max-client.service';
-import { PrismaService } from '../prisma/prisma.service';
+import { config as loadEnv } from 'dotenv';
+import { resolve } from 'node:path';
 
-const DEFAULT_SINCE = '2026-04-06T21:58:00.000Z';
-const DEFAULT_UNTIL = '2026-04-07T06:10:00.000Z';
-const DEFAULT_CONCURRENCY = 3;
-const PROGRESS_EVERY = 25;
-const MAX_DELETE_WINDOW_MS = 24 * 60 * 60 * 1000;
-const REPAIR_REASON =
-  'Repair delete for moderation messages missed during MAX permissions-gating incident';
+import { createPrismaClient, Prisma, type PrismaClient } from '../prisma/prisma-client';
+import {
+  buildRepairIntentInput,
+  evaluateRepairCandidate,
+  readRepairCliOptions,
+  REPAIR_MISSED_DELETES_USAGE,
+  resolveRepairBootstrapMode,
+  SCHEDULED_BOT_DELETE_REASON,
+  type RepairCandidateRow,
+  type RepairCliOptions,
+} from './repair-missed-moderation-deletes.util';
 
-type RepairCandidateRow = {
-  id: string;
+for (const envPath of new Set([
+  resolve(process.cwd(), '.env'),
+  resolve(process.cwd(), '../../.env'),
+  resolve(__dirname, '../../../../.env'),
+  resolve(__dirname, '../../../../../../../.env'),
+])) {
+  loadEnv({ path: envPath, override: false, quiet: true });
+}
+
+type RepairCursor = {
   createdAt: Date;
-  chatId: string;
-  userId: string;
-  messageId: string;
-  ruleCode: string;
-  action: SanctionAction;
-  botId: string | null;
-  maskedExcerpt: string | null;
-  score: number;
+  id: string;
 };
 
 type RepairStats = {
-  totalCandidates: number;
-  deleted: number;
-  alreadyResolved: number;
-  tooOld: number;
-  noPermission: number;
-  failed: number;
+  scannedRows: number;
+  eligibleReasons: number;
+  acceptedMessages: number;
+  acceptedReasons: number;
+  perChatCappedMessages: number;
+  globalCappedMessages: number;
+  ensuredReasons: number;
+  observedReasons: number;
+  executableReasons: number;
+  failedReasons: number;
+  outsideExecutionRolloutReasons: number;
+  skippedByPolicy: Record<string, number>;
+  scanCapReached: boolean;
 };
 
-type CliOptions = {
-  since: Date;
-  until: Date;
-  dryRun: boolean;
-  limit?: number;
-  concurrency: number;
+type RepairIntentRuntime = {
+  rolloutMode: string;
+  getRolloutForChat(chatId: string): 'off' | 'observed' | 'execute';
+  ensureIntent(
+    input: ReturnType<typeof buildRepairIntentInput>,
+  ): Promise<{ rollout: 'off' | 'observed' | 'execute' }>;
 };
 
-function readCliOptions(argv: readonly string[]): CliOptions {
-  const args = [...argv];
-  const dryRun = args.includes('--dry-run');
-  const since = readDateOption(args, '--since', DEFAULT_SINCE);
-  const until = readDateOption(args, '--until', DEFAULT_UNTIL);
-  const limit = readPositiveIntOption(args, '--limit');
-  const concurrency = readPositiveIntOption(args, '--concurrency') ?? DEFAULT_CONCURRENCY;
+type RepairLogger = {
+  log(context: Record<string, unknown>, message: string): void;
+  error(context: Record<string, unknown>, message: string): void;
+};
 
-  if (since.getTime() > until.getTime()) {
-    throw new Error('--since must be earlier than or equal to --until');
-  }
+type ExecuteRuntime = {
+  intentService: RepairIntentRuntime;
+  logger: RepairLogger;
+};
 
-  return {
-    since,
-    until,
-    dryRun,
-    ...(limit ? { limit } : {}),
-    concurrency,
-  };
-}
-
-function readDateOption(args: readonly string[], name: string, fallback: string): Date {
-  const value = readOptionValue(args, name) ?? fallback;
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    throw new Error(`${name} must be a valid ISO-8601 date`);
-  }
-
-  return parsed;
-}
-
-function readPositiveIntOption(args: readonly string[], name: string): number | undefined {
-  const value = readOptionValue(args, name);
-  if (!value) {
-    return undefined;
-  }
-
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`${name} must be a positive integer`);
-  }
-
-  return parsed;
-}
-
-function readOptionValue(args: readonly string[], name: string): string | undefined {
-  const index = args.findIndex((arg) => arg === name);
-  if (index < 0) {
-    return undefined;
-  }
-
-  const value = args[index + 1];
-  if (!value || value.startsWith('--')) {
-    throw new Error(`${name} requires a value`);
-  }
-
-  return value;
-}
-
-async function loadCandidates(
-  prisma: PrismaService,
-  options: CliOptions,
+async function loadCandidateBatch(
+  prisma: PrismaClient,
+  options: RepairCliOptions,
+  cursor: RepairCursor | null,
+  limit: number,
 ): Promise<RepairCandidateRow[]> {
-  const limitSql =
-    typeof options.limit === 'number' ? Prisma.sql`limit ${options.limit}` : Prisma.sql``;
-
+  const cursorSql = cursor
+    ? Prisma.sql`AND (claim."created_at", claim."id") > (${cursor.createdAt}, ${cursor.id})`
+    : Prisma.sql``;
+  const chatScopeSql =
+    options.chatIds.length > 0
+      ? Prisma.sql`AND claim."chat_id" IN (${Prisma.join(options.chatIds)})`
+      : Prisma.sql``;
   return prisma.$queryRaw<RepairCandidateRow[]>(Prisma.sql`
-    with base as (
-      select distinct on (e.chat_id, e.message_id, e.rule_code)
-        e.id,
-        e.created_at as "createdAt",
-        e.chat_id as "chatId",
-        e.user_id as "userId",
-        e.message_id as "messageId",
-        e.rule_code as "ruleCode",
-        e.action,
-        e.bot_id as "botId",
-        e.masked_excerpt as "maskedExcerpt",
-        e.score
-      from moderation_events e
-      where e.created_at >= ${options.since}
-        and e.created_at <= ${options.until}
-        and e.rule_code in ('LINK_BLOCKED', 'COMMERCIAL_AD')
-        and e.message_id is not null
-      order by e.chat_id, e.message_id, e.rule_code, e.created_at asc
+    WITH claim_batch AS MATERIALIZED (
+      SELECT claim.*
+      FROM "moderation_violation_message_claims" claim
+      WHERE claim."created_at" >= ${options.since}
+        AND claim."created_at" <= ${options.until}
+        ${chatScopeSql}
+        ${cursorSql}
+      ORDER BY claim."created_at" ASC, claim."id" ASC
+      LIMIT ${limit}
     )
-    select *
-    from base
-    where not exists (
-      select 1
-      from moderation_events d
-      where d.chat_id = base."chatId"
-        and d.message_id = base."messageId"
-        and d.rule_code = base."ruleCode" || '_DELETE'
-        and d.action = 'DELETE_MESSAGE'
-    )
-    order by "createdAt" asc
-    ${limitSql}
+    SELECT
+      claim."id" AS "claimId",
+      claim."created_at" AS "claimCreatedAt",
+      claim."chat_id" AS "chatId",
+      claim."user_id" AS "userId",
+      claim."message_id" AS "messageId",
+      claim."rule_code" AS "claimRuleCode",
+      claim."update_type" AS "updateType",
+      chat."entity_type" AS "entityType",
+      chat."bot_id" AS "chatBotId",
+      chat."primary_bot_id" AS "chatPrimaryBotId",
+      evidence."id" AS "evidenceEventId",
+      evidence."created_at" AS "evidenceCreatedAt",
+      evidence."bot_id" AS "evidenceBotId",
+      evidence."event_type" AS "evidenceEventType",
+      evidence."rule_code" AS "evidenceRuleCode",
+      evidence."action" AS "evidenceAction",
+      evidence."masked_excerpt" AS "evidenceMaskedExcerpt",
+      evidence."score" AS "evidenceScore",
+      evidence."metadata" AS "evidenceMetadata",
+      confirmed_delete."id" AS "confirmedDeleteEventId",
+      intent."id" AS "existingIntentId",
+      intent."status" AS "existingIntentStatus",
+      intent."execute_at" AS "existingIntentExecuteAt",
+      intent."origin_bot_id" AS "existingIntentOriginBotId",
+      COALESCE(intent_reasons."items", '[]'::jsonb) AS "existingIntentReasons"
+    FROM claim_batch claim
+    JOIN "chats" chat ON chat."id" = claim."chat_id"
+    LEFT JOIN "moderation_delete_intents" intent
+      ON intent."chat_id" = claim."chat_id"
+      AND intent."message_id" = claim."message_id"
+    LEFT JOIN LATERAL (
+      SELECT jsonb_agg(
+        jsonb_build_object(
+          'reasonKey', reason."reason_key",
+          'ruleCode', reason."rule_code",
+          'metadata', reason."metadata"
+        )
+        ORDER BY reason."created_at" ASC, reason."id" ASC
+      ) AS "items"
+      FROM "moderation_delete_intent_reasons" reason
+      WHERE reason."intent_id" = intent."id"
+    ) intent_reasons ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT event.*
+      FROM "moderation_events" event
+      WHERE event."chat_id" = claim."chat_id"
+        AND event."message_id" = claim."message_id"
+        AND event."user_id" = claim."user_id"
+        AND event."created_at" >= ${options.since} - INTERVAL '5 minutes'
+        AND event."created_at" <= ${options.until} + INTERVAL '1 hour'
+        AND (
+          event."rule_code" = claim."rule_code"
+          OR LEFT(event."rule_code", CHAR_LENGTH(claim."rule_code") + 1) =
+            claim."rule_code" || '_'
+        )
+        AND (
+          event."action" <> CAST('DELETE_MESSAGE' AS "SanctionAction")
+          OR (
+            event."rule_code" = 'BOT_MESSAGE_AUTO_DELETE'
+            AND event."metadata"->>'reason' = ${SCHEDULED_BOT_DELETE_REASON}
+            AND event."metadata"->>'moderationDeleteIntentId' IS NULL
+          )
+        )
+      ORDER BY
+        CASE WHEN event."rule_code" = claim."rule_code" THEN 0 ELSE 1 END,
+        event."created_at" ASC,
+        event."id" ASC
+      LIMIT 1
+    ) evidence ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT deleted."id"
+      FROM "moderation_events" deleted
+      WHERE deleted."chat_id" = claim."chat_id"
+        AND deleted."message_id" = claim."message_id"
+        AND deleted."created_at" >= ${options.since} - INTERVAL '5 minutes'
+        AND deleted."created_at" <= ${options.until} + INTERVAL '24 hours'
+        AND deleted."action" = CAST('DELETE_MESSAGE' AS "SanctionAction")
+        AND NULLIF(BTRIM(deleted."metadata"->>'moderationDeleteIntentId'), '') IS NOT NULL
+      ORDER BY deleted."created_at" ASC, deleted."id" ASC
+      LIMIT 1
+    ) confirmed_delete ON TRUE
+    ORDER BY claim."created_at" ASC, claim."id" ASC
   `);
 }
 
-async function main() {
-  const options = readCliOptions(process.argv.slice(2));
-  const app = await NestFactory.createApplicationContext(AppModule, {
-    bufferLogs: true,
-  });
-  app.useLogger(app.get(Logger));
+async function runRepair(
+  prisma: PrismaClient,
+  options: RepairCliOptions,
+  executeRuntime: ExecuteRuntime | null,
+): Promise<RepairStats> {
+  const intentService = executeRuntime?.intentService ?? null;
+  const logger = executeRuntime?.logger ?? createConsoleRepairLogger();
+  const stats: RepairStats = {
+    scannedRows: 0,
+    eligibleReasons: 0,
+    acceptedMessages: 0,
+    acceptedReasons: 0,
+    perChatCappedMessages: 0,
+    globalCappedMessages: 0,
+    ensuredReasons: 0,
+    observedReasons: 0,
+    executableReasons: 0,
+    failedReasons: 0,
+    outsideExecutionRolloutReasons: 0,
+    skippedByPolicy: {},
+    scanCapReached: false,
+  };
+  const acceptedMessageKeys = new Set<string>();
+  const rejectedMessageKeys = new Set<string>();
+  const perChatMessages = new Map<string, number>();
+  let cursor: RepairCursor | null = null;
+  let exhausted = false;
 
-  try {
-    const logger = app.get(Logger);
-    const prisma = app.get(PrismaService);
-    const maxClient = app.get(MaxClientService);
-    const maxBotLink = app.get(MaxBotLinkService);
-    const candidates = await loadCandidates(prisma, options);
-    const stats: RepairStats = {
-      totalCandidates: candidates.length,
-      deleted: 0,
-      alreadyResolved: 0,
-      tooOld: 0,
-      noPermission: 0,
-      failed: 0,
-    };
-
-    logger.log(
-      {
-        since: options.since.toISOString(),
-        until: options.until.toISOString(),
-        dryRun: options.dryRun,
-        limit: options.limit ?? null,
-        concurrency: options.concurrency,
-        candidateCount: candidates.length,
-      },
-      'Loaded repair candidates for missed moderation deletes',
+  if (options.execute && !intentService) {
+    throw new Error('Execute runtime is required for --execute');
+  }
+  if (
+    options.execute &&
+    intentService &&
+    intentService.rolloutMode !== 'canary' &&
+    intentService.rolloutMode !== 'on'
+  ) {
+    throw new Error(
+      `--execute requires MODERATION_DELETE_INTENT_MODE=canary or on; current mode is ${intentService.rolloutMode}`,
     );
+  }
 
-    if (options.dryRun || candidates.length === 0) {
-      logger.log(
-        {
-          since: options.since.toISOString(),
-          until: options.until.toISOString(),
-          dryRun: options.dryRun,
-          stats,
-        },
-        'Missed moderation delete repair finished',
-      );
-      return;
+  logger.log(
+    {
+      since: options.since.toISOString(),
+      until: options.until.toISOString(),
+      execute: options.execute,
+      chatIds: options.chatIds,
+      globalCap: options.globalCap,
+      perChatCap: options.perChatCap,
+      batchSize: options.batchSize,
+      scanCap: options.scanCap,
+      rolloutMode: intentService?.rolloutMode ?? 'dry-run-direct-prisma',
+    },
+    'Starting bounded moderation delete repair intake',
+  );
+
+  while (!exhausted && stats.scannedRows < options.scanCap) {
+    const remainingScanRows = options.scanCap - stats.scannedRows;
+    const rows = await loadCandidateBatch(
+      prisma,
+      options,
+      cursor,
+      Math.min(options.batchSize, remainingScanRows),
+    );
+    if (rows.length === 0) {
+      exhausted = true;
+      break;
     }
+    const last = rows[rows.length - 1];
+    cursor = { createdAt: last.claimCreatedAt, id: last.claimId };
+    stats.scannedRows += rows.length;
 
-    let nextIndex = 0;
-    let processed = 0;
-
-    const processCandidate = async (candidate: RepairCandidateRow): Promise<void> => {
-      const ageMs = Date.now() - new Date(candidate.createdAt).getTime();
-      if (ageMs > MAX_DELETE_WINDOW_MS) {
-        stats.tooOld += 1;
-        return;
+    for (const candidate of rows) {
+      const decision = evaluateRepairCandidate(candidate);
+      if (!decision.eligible) {
+        stats.skippedByPolicy[decision.reason] = (stats.skippedByPolicy[decision.reason] ?? 0) + 1;
+        continue;
+      }
+      stats.eligibleReasons += 1;
+      if (
+        options.execute &&
+        intentService &&
+        intentService.getRolloutForChat(candidate.chatId) !== 'execute'
+      ) {
+        stats.outsideExecutionRolloutReasons += 1;
+        continue;
       }
 
-      const actionBotId = await maxBotLink.resolveBotIdForModerationAction({
-        chatId: candidate.chatId,
-        action: 'delete_message',
-        fallbackToPrimary: false,
-      });
-      if (!actionBotId) {
-        stats.noPermission += 1;
-        return;
+      const messageKey = `${candidate.chatId}\u0000${candidate.messageId}`;
+      if (rejectedMessageKeys.has(messageKey)) {
+        continue;
       }
+      if (!acceptedMessageKeys.has(messageKey)) {
+        if (stats.acceptedMessages >= options.globalCap) {
+          rejectedMessageKeys.add(messageKey);
+          stats.globalCappedMessages += 1;
+          continue;
+        }
+        const currentChatCount = perChatMessages.get(candidate.chatId) ?? 0;
+        if (currentChatCount >= options.perChatCap) {
+          rejectedMessageKeys.add(messageKey);
+          stats.perChatCappedMessages += 1;
+          continue;
+        }
+        acceptedMessageKeys.add(messageKey);
+        perChatMessages.set(candidate.chatId, currentChatCount + 1);
+        stats.acceptedMessages += 1;
+      }
+      stats.acceptedReasons += 1;
 
+      if (!options.execute) {
+        continue;
+      }
       try {
-        await maxClient.deleteMessage(candidate.chatId, candidate.messageId, {
-          botId: actionBotId,
-          immediate: true,
-          trafficClass: 'background',
-          actionHealthLane: 'background',
-          sourceTag: 'repair_missed_moderation_deletes',
-          ignoreFailureMetricStatuses: [403, 404],
-        });
-
-        await prisma.moderationEvent.create({
-          data: {
-            chatId: candidate.chatId,
-            botId: actionBotId,
-            userId: candidate.userId,
-            messageId: candidate.messageId,
-            eventType: EventType.MESSAGE,
-            ruleCode: `${candidate.ruleCode}_DELETE`,
-            action: SanctionAction.DELETE_MESSAGE,
-            maskedExcerpt: candidate.maskedExcerpt,
-            score: candidate.score,
-            operator: Operator.BOT,
-            metadata: {
-              reason: REPAIR_REASON,
-              repaired: true,
-              originalEventId: candidate.id,
-              originalAction: candidate.action,
-              originalBotId: candidate.botId,
-              deletedWithoutBotMessage: true,
-              repairWindow: {
-                since: options.since.toISOString(),
-                until: options.until.toISOString(),
-              },
-            },
-          },
-        });
-
-        stats.deleted += 1;
+        const ensured = await intentService!.ensureIntent(
+          buildRepairIntentInput(candidate, decision),
+        );
+        stats.ensuredReasons += 1;
+        if (ensured.rollout === 'execute') {
+          stats.executableReasons += 1;
+        } else {
+          stats.observedReasons += 1;
+        }
       } catch (error: unknown) {
-        const statusValue = (error as { response?: { status?: unknown } } | null)?.response?.status;
-        const status = typeof statusValue === 'number' ? statusValue : null;
-
-        if (status === 404) {
-          stats.alreadyResolved += 1;
-          return;
-        }
-
-        if (status === 403) {
-          stats.noPermission += 1;
-          return;
-        }
-
-        stats.failed += 1;
+        stats.failedReasons += 1;
         logger.error(
           {
+            claimId: candidate.claimId,
             chatId: candidate.chatId,
-            userId: candidate.userId,
             messageId: candidate.messageId,
-            ruleCode: candidate.ruleCode,
-            status,
-            error: error instanceof Error ? error.message : 'Unknown error',
+            ruleCode: candidate.claimRuleCode,
+            err: error instanceof Error ? error.message : String(error),
           },
-          'Failed to repair missed moderation delete',
+          'Failed to intake moderation delete repair candidate',
         );
       }
-    };
+    }
 
-    const worker = async () => {
-      while (true) {
-        const currentIndex = nextIndex;
-        nextIndex += 1;
-        if (currentIndex >= candidates.length) {
-          return;
-        }
+    if (rows.length < Math.min(options.batchSize, remainingScanRows)) {
+      exhausted = true;
+    }
+  }
+  stats.scanCapReached = !exhausted && stats.scannedRows >= options.scanCap;
 
-        await processCandidate(candidates[currentIndex]);
-        processed += 1;
+  logger.log(
+    {
+      since: options.since.toISOString(),
+      until: options.until.toISOString(),
+      execute: options.execute,
+      chatIds: options.chatIds,
+      stats,
+    },
+    options.execute
+      ? 'Moderation delete repair intake finished'
+      : 'Moderation delete repair dry-run finished; rerun with --execute to persist intents',
+  );
+  return stats;
+}
 
-        if (processed % PROGRESS_EVERY === 0 || processed === candidates.length) {
-          logger.log(
-            {
-              processed,
-              total: candidates.length,
-              stats,
-            },
-            'Missed moderation delete repair progress',
-          );
-        }
+function createConsoleRepairLogger(): RepairLogger {
+  return {
+    log: (context, message) => {
+      process.stdout.write(`${JSON.stringify({ level: 'info', message, ...context })}\n`);
+    },
+    error: (context, message) => {
+      process.stderr.write(`${JSON.stringify({ level: 'error', message, ...context })}\n`);
+    },
+  };
+}
+
+async function main(): Promise<void> {
+  const options = readRepairCliOptions(process.argv.slice(2));
+  if (options.help) {
+    process.stdout.write(`${REPAIR_MISSED_DELETES_USAGE}\n`);
+    return;
+  }
+  const bootstrapMode = resolveRepairBootstrapMode(options, process.env.APP_ROLE);
+  if (bootstrapMode === 'direct_prisma_read_only') {
+    const prisma = createPrismaClient(undefined, {
+      application_name: 'moderation-delete-repair-dry-run',
+      max: 1,
+    });
+    try {
+      const stats = await runRepair(prisma, options, null);
+      if (stats.failedReasons > 0) {
+        process.exitCode = 1;
       }
-    };
+    } finally {
+      await prisma.$disconnect();
+    }
+    return;
+  }
 
-    await Promise.all(
-      Array.from({ length: Math.min(options.concurrency, candidates.length) }, () => worker()),
-    );
-
-    logger.log(
-      {
-        since: options.since.toISOString(),
-        until: options.until.toISOString(),
-        dryRun: options.dryRun,
-        stats,
-      },
-      'Missed moderation delete repair finished',
-    );
+  const [
+    { NestFactory },
+    { Logger },
+    { AppModule },
+    { ModerationDeleteIntentService },
+    { PrismaService },
+  ] = await Promise.all([
+    import('@nestjs/core'),
+    import('nestjs-pino'),
+    import('../app.module'),
+    import('../moderation/moderation-delete-intent.service'),
+    import('../prisma/prisma.service'),
+  ]);
+  const app = await NestFactory.createApplicationContext(AppModule, { bufferLogs: true });
+  app.useLogger(app.get(Logger));
+  try {
+    const stats = await runRepair(app.get(PrismaService), options, {
+      intentService: app.get(ModerationDeleteIntentService),
+      logger: app.get(Logger),
+    });
+    if (stats.failedReasons > 0) {
+      process.exitCode = 1;
+    }
   } finally {
     await app.close();
   }
 }
 
-void main();
+if (require.main === module) {
+  void main().catch((error: unknown) => {
+    const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    console.error(message);
+    process.exitCode = 1;
+  });
+}

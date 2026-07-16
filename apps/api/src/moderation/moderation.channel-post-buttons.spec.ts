@@ -573,6 +573,7 @@ describe('ModerationService channel auto post buttons', () => {
         trafficClass: 'background',
         actionHealthLane: 'background',
         sourceTag: 'channel_auto_post',
+        timeoutMs: 2_000,
       },
     );
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
@@ -669,6 +670,7 @@ describe('ModerationService channel auto post buttons', () => {
         trafficClass: 'background',
         actionHealthLane: 'background',
         sourceTag: 'channel_auto_post',
+        timeoutMs: 2_000,
       },
     );
   });
@@ -1797,6 +1799,7 @@ describe('ModerationService channel auto post buttons', () => {
       trafficClass: 'background',
       actionHealthLane: 'background',
       sourceTag: 'channel_auto_post',
+      timeoutMs: 2_000,
     });
   });
 
@@ -2593,10 +2596,7 @@ describe('ModerationService channel auto post buttons', () => {
   it('claims channel auto-post markers with skipDuplicates to avoid unique constraint noise', async () => {
     const markerDelegate = {
       findUnique: jest.fn().mockResolvedValue(null),
-      createMany: jest
-        .fn()
-        .mockResolvedValueOnce({ count: 1 })
-        .mockResolvedValueOnce({ count: 0 }),
+      createMany: jest.fn().mockResolvedValueOnce({ count: 1 }).mockResolvedValueOnce({ count: 0 }),
       create: jest.fn(),
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
     };
@@ -2617,7 +2617,7 @@ describe('ModerationService channel auto post buttons', () => {
     );
 
     await expect(
-      (service as any).claimChannelAutoPostAttachMarker({
+      (service as any).replacementAttachMarkerStore.claimChannelAutoPost({
         chatId: 'channel-1',
         messageId: 'mid-post-race',
         source: 'webhook',
@@ -2626,7 +2626,7 @@ describe('ModerationService channel auto post buttons', () => {
       }),
     ).resolves.toEqual({ status: 'claimed', lockToken: expect.any(String) });
     await expect(
-      (service as any).claimChannelAutoPostAttachMarker({
+      (service as any).replacementAttachMarkerStore.claimChannelAutoPost({
         chatId: 'channel-1',
         messageId: 'mid-post-race',
         source: 'webhook',
@@ -2751,7 +2751,7 @@ describe('ModerationService channel auto post buttons', () => {
     ).toEqual([]);
   });
 
-  it('keeps the durable marker retryable when audit persistence fails after delivery', async () => {
+  it('completes the durable marker and does not retry when audit persistence fails', async () => {
     const markerRows = new Map<string, any>();
     const prisma = {
       auditLog: {
@@ -2794,33 +2794,234 @@ describe('ModerationService channel auto post buttons', () => {
       createAdminServiceMock() as never,
     );
 
-    await expect(
-      (service as any).tryAutoAttachChannelMessageButtons({
-        chatId: 'channel-1',
-        messageId: 'mid-audit-failure-1',
-        text: 'Пост',
-        linkType: null,
-        managedChannel: {
-          channelSettings: {
-            autoPostButtonsMode: 'COMMENTS',
-            commentsEnabled: true,
-            postSuggestionsEnabled: false,
-            postSuggestionsButtonText: '',
-          },
-          adminUserIds: ['admin-1'],
+    const request = {
+      chatId: 'channel-1',
+      messageId: 'mid-audit-failure-1',
+      text: 'Пост',
+      linkType: null,
+      managedChannel: {
+        channelSettings: {
+          autoPostButtonsMode: 'COMMENTS',
+          commentsEnabled: true,
+          postSuggestionsEnabled: false,
+          postSuggestionsButtonText: '',
         },
-        source: 'poll',
-        senderId: null,
-      }),
-    ).rejects.toThrow('audit unavailable');
+        adminUserIds: ['admin-1'],
+      },
+      source: 'poll',
+      senderId: null,
+    };
+
+    await expect((service as any).tryAutoAttachChannelMessageButtons(request)).resolves.toBe(
+      'attached',
+    );
+    await expect((service as any).tryAutoAttachChannelMessageButtons(request)).resolves.toBe(
+      'skipped',
+    );
 
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
     expect(markerRows.get('channel-1:mid-audit-failure-1')).toEqual(
       expect.objectContaining({
-        status: 'IN_PROGRESS',
-        lockToken: expect.any(String),
-        lockedAt: expect.any(Date),
+        status: 'SUCCEEDED',
+        lockToken: null,
+        lockedAt: null,
       }),
     );
+  });
+
+  it.each([
+    {
+      label: 'the send-start fence',
+      replacementMessageId: null,
+      replacementSendStartedAt: new Date('2026-03-30T02:00:00.000Z'),
+    },
+    {
+      label: 'a persisted replacement id',
+      replacementMessageId: 'mid-copy-from-crashed-worker',
+      replacementSendStartedAt: null,
+    },
+  ])('does not reclaim a stale channel replacement marker with $label', async (markerState) => {
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const prisma = {
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+      channelAutoPostAttachMarker: {
+        findUnique: jest.fn().mockResolvedValue({
+          status: 'IN_PROGRESS',
+          lockedAt: new Date('2026-03-30T02:00:00.000Z'),
+          ...markerState,
+        }),
+        createMany: jest.fn(),
+        updateMany,
+      },
+    };
+    const maxClient = {
+      sendMessageCopyWithInlineKeyboard: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
+    );
+
+    await expect(
+      (service as any).replacementAttachMarkerStore.claimChannelAutoPost({
+        chatId: 'channel-1',
+        messageId: 'mid-stale-replacement-fence',
+        source: 'poll',
+        botId: 'bot-1',
+        linkType: 'forward',
+      }),
+    ).resolves.toEqual({ status: 'in_progress' });
+
+    expect(updateMany).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageCopyWithInlineKeyboard).not.toHaveBeenCalled();
+  });
+
+  it('requires ownership when persisting the channel replacement send fence', async () => {
+    const updateMany = jest.fn().mockResolvedValue({ count: 0 });
+    const service = new ModerationService(
+      {
+        channelAutoPostAttachMarker: { updateMany },
+      } as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
+    );
+
+    await expect(
+      (service as any).replacementAttachMarkerStore.recordChannelReplacementSendStarted({
+        chatId: 'channel-1',
+        messageId: 'mid-lost-lock',
+        lockToken: 'lost-lock',
+      }),
+    ).rejects.toThrow('Failed to persist the channel auto-post replacement send fence');
+    expect(updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          lockToken: 'lost-lock',
+          replacementMessageId: null,
+          replacementSendStartedAt: null,
+        }),
+      }),
+    );
+  });
+
+  it('retains a delivered channel copy when its first marker finalization loses ownership', async () => {
+    let row: Record<string, any> | null = null;
+    let rejectFirstDeliveredMarker = true;
+    const markerDelegate = {
+      findUnique: jest.fn().mockImplementation(async () => row),
+      createMany: jest.fn().mockImplementation(async ({ data }: any) => {
+        row = {
+          ...data[0],
+          replacementMessageId: null,
+          replacementSendStartedAt: null,
+          publishedUrl: null,
+          originalDeleted: false,
+        };
+        return { count: 1 };
+      }),
+      updateMany: jest.fn().mockImplementation(async ({ where, data }: any) => {
+        if (!row || row.lockToken !== where.lockToken || row.status !== where.status) {
+          return { count: 0 };
+        }
+        if (where.replacementMessageId === null && row.replacementMessageId !== null) {
+          return { count: 0 };
+        }
+        if (where.replacementSendStartedAt === null && row.replacementSendStartedAt !== null) {
+          return { count: 0 };
+        }
+        if (data.replacementMessageId && rejectFirstDeliveredMarker) {
+          rejectFirstDeliveredMarker = false;
+          return { count: 0 };
+        }
+        row = { ...row, ...data };
+        return { count: 1 };
+      }),
+    };
+    const prisma = {
+      auditLog: { findFirst: jest.fn().mockResolvedValue(null) },
+      channelAutoPostAttachMarker: markerDelegate,
+    };
+    const maxClient = {
+      sendMessageCopyWithInlineKeyboard: jest.fn().mockImplementation(async (...args: any[]) => {
+        await args[3]?.beforeSend?.();
+        return {
+          messageId: 'mid-delivered-copy',
+          url: 'https://max.ru/chats/channel-1/message/mid-delivered-copy',
+        };
+      }),
+    };
+    const maxBotLinkService = {
+      resolveBotIdForCapability: jest.fn().mockResolvedValue('bot-1'),
+      buildEntryMiniappStartUrlSync: jest
+        .fn()
+        .mockImplementation((value: string) => `https://max.ru/bot-1?startapp=${value}`),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
+      undefined,
+      maxBotLinkService as never,
+    );
+    const input = {
+      chatId: 'channel-1',
+      messageId: 'mid-forward-marker-failure',
+      text: 'Пересланный пост',
+      textFormat: null,
+      linkType: 'forward',
+      managedChannel: {
+        channelSettings: {
+          updatedAt: new Date(),
+          autoPostButtonsMode: 'COMMENTS',
+          commentsEnabled: true,
+          postSuggestionsEnabled: false,
+          postSuggestionsEntryMode: 'MINIAPP',
+          postSuggestionsButtonText: '',
+        },
+        adminUserIds: ['admin-1'],
+      },
+      source: 'poll',
+      senderId: null,
+    } as const;
+
+    await expect((service as any).tryAutoAttachChannelMessageButtons(input)).resolves.toBe(
+      'attached',
+    );
+    await expect((service as any).tryAutoAttachChannelMessageButtons(input)).resolves.toBe(
+      'skipped',
+    );
+
+    expect(maxClient.sendMessageCopyWithInlineKeyboard).toHaveBeenCalledTimes(1);
+    expect(row).toMatchObject({
+      status: 'SUCCEEDED',
+      replacementMessageId: 'mid-delivered-copy',
+      replacementSendStartedAt: expect.any(Date),
+      originalDeleted: false,
+      lastError: expect.stringContaining('marker persistence failed'),
+    });
   });
 });

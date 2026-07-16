@@ -40,7 +40,6 @@ import {
   Prisma,
   SanctionAction,
   WebhookStatus,
-  type ChannelAutoPostAttachStatus,
   type ChannelSettings as PersistedChannelSettings,
   type ChatSettings,
 } from '../prisma/prisma-client';
@@ -49,13 +48,19 @@ import { createHash, createHmac, randomUUID } from 'node:crypto';
 import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,
+  wasMaxMessageSendAttempted,
   type MaxActionDispatchOptions,
   type MaxChatMemberAccess,
   type MaxLinkButton,
   type MaxMessageButton,
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
+import {
+  isAmbiguousMaxSendError,
+  MAX_SEND_AMBIGUOUS_ERROR_PREFIX,
+} from '../max/max-send-ambiguity.util';
 import { MaxBotContextService } from '../max/max-bot-context.service';
+import { MaxActionLedgerService } from '../max/max-action-ledger.service';
 import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
 import {
   isValidMaxBotStartPayload,
@@ -69,6 +74,7 @@ import {
 } from '../max/max-bot-link.service';
 import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
+import { hasConfirmedDeleteMessageAccess } from '../max/max-delete-message-access.util';
 import { AdminDialogLinkService } from '../admin/admin-dialog-link.service';
 import { ManualModerationService } from '../admin/manual-moderation.service';
 import { ManagedPollService } from '../admin/managed-poll.service';
@@ -98,6 +104,13 @@ import {
 } from '../system/system-mode.service';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { ModerationExecutionService } from './moderation-execution.service';
+import { ModerationDeleteIntentService } from './moderation-delete-intent.service';
+import type { EnsureModerationDeleteIntentInput } from './moderation-delete-intent.types';
+import {
+  CHANNEL_AUTO_POST_ATTACH_STATUS,
+  CHAT_AUTO_COMMENT_ATTACH_STATUS,
+  ReplacementAttachMarkerStore,
+} from './replacement-attach-marker.store';
 import {
   buildMessageLimitsExplanationReplacements,
   buildLegacyDuplicatePassiveSanctionLabel,
@@ -409,40 +422,6 @@ type RequiredSubscriptionMembershipResult = {
 
 type ChannelAutoPostAttachOutcome = 'attached' | 'skipped' | 'noop' | 'in_progress';
 
-type ChannelAutoPostAttachClaim =
-  | {
-      status: 'claimed';
-      lockToken: string;
-    }
-  | {
-      status: 'done' | 'in_progress';
-    };
-
-type ChatAutoCommentAttachStatus = 'IN_PROGRESS' | 'SUCCEEDED' | 'SKIPPED';
-
-type ChatAutoCommentAttachClaim =
-  | {
-      status: 'claimed';
-      lockToken: string;
-    }
-  | {
-      status: 'done' | 'in_progress';
-    };
-
-const CHANNEL_AUTO_POST_ATTACH_STATUS = {
-  IN_PROGRESS: 'IN_PROGRESS',
-  SUCCEEDED: 'SUCCEEDED',
-  SKIPPED: 'SKIPPED',
-} as const satisfies Record<string, ChannelAutoPostAttachStatus>;
-
-const CHAT_AUTO_COMMENT_ATTACH_STATUS = {
-  IN_PROGRESS: 'IN_PROGRESS',
-  SUCCEEDED: 'SUCCEEDED',
-  SKIPPED: 'SKIPPED',
-} as const satisfies Record<string, ChatAutoCommentAttachStatus>;
-
-const CHANNEL_AUTO_POST_ATTACH_LOCK_TTL_MS = 2 * 60_000;
-const CHAT_AUTO_COMMENT_ATTACH_LOCK_TTL_MS = 2 * 60_000;
 const VIOLATION_MESSAGE_PROCESSING_TTL_SEC = 8 * 24 * 60 * 60;
 const SERVICE_MEMBER_ACTION_TIMESTAMP_GRANULARITY_MS = 1_000;
 const SERVICE_MEMBER_ACTION_DEDUPE_WINDOW_MS = 30_000;
@@ -450,10 +429,19 @@ const GREETING_MESSAGE_DEDUPE_WINDOW_MS = 10 * 60_000;
 const KARAVAN_STOREFRONT_RELAY_AUDIT_ACTION = 'KARAVAN_STOREFRONT_RELAY';
 const SHARED_CHAT_OWNER_EVENT_LOOKUP_WINDOW_MS = 15 * 60_000;
 const SHARED_CHAT_OWNER_EVENT_LOOKUP_LIMIT = 100;
+
+type ModerationDeleteExecutionResult = {
+  accepted: boolean;
+  gone: boolean;
+  deleted: boolean;
+  eventPersistedByIntent: boolean;
+};
+
 @Injectable()
 export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly blockedDomainDetector = new MessageLimitsBlockedDomainDetector();
   private readonly logger = new Logger(ModerationService.name);
+  private readonly replacementAttachMarkerStore: ReplacementAttachMarkerStore;
   private readonly destructiveAdminRosterRefreshScheduledAtMs = new Map<string, number>();
   private readonly requiredSubscriptionMembershipCache = new Map<
     string,
@@ -592,7 +580,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     private readonly managedPollService?: ManagedPollService,
     @Optional()
     private readonly injectedWebhookCanonicalExecutionService?: WebhookCanonicalExecutionService,
+    @Optional()
+    private readonly moderationDeleteIntentService?: ModerationDeleteIntentService,
+    @Optional()
+    private readonly maxActionLedgerService?: MaxActionLedgerService,
   ) {
+    this.replacementAttachMarkerStore = new ReplacementAttachMarkerStore(prisma);
     this.maxBotToken = this.normalizeSecret(configService?.get<string>('MAX_BOT_TOKEN'));
     this.ownBotUserId = this.normalizeOwnBotUserId(configService?.get<string>('MAX_BOT_ID'));
     this.ownBotUserIdVariants = this.buildBotIdVariants(this.ownBotUserId);
@@ -1380,52 +1373,43 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      const deferHotChatModerationSkipUntilAfterAccessGates =
-        hotChatBackoffActive &&
-        (isRequiredSubscriptionCurrentlyActive(settings) ||
-          isInvitationAccessCurrentlyActive(settings));
-      if (
-        this.shouldSkipHotChatModeration(mode, hotChatBackoffActive) &&
-        !deferHotChatModerationSkipUntilAfterAccessGates
-      ) {
-        this.logHotChatModerationSkip(chatId, senderId, mode);
-        this.markWebhookHotPathStage(hotPathProfile, 'hot-chat-skip');
-        void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
-          stage: 'hot-chat-skip',
-          outcome: 'skip',
-          failOpen: true,
-        });
-        return;
+      const skipOptionalHotChatStages = this.shouldSkipOptionalHotChatStages(
+        mode,
+        hotChatBackoffActive,
+      );
+      if (skipOptionalHotChatStages) {
+        this.logOptionalHotChatStageSkip(chatId, senderId, mode);
       }
 
       const mediaFlags = detectMediaFlags(update);
       const skipAntiSpamBurstLimit = shouldSkipAntiSpamBurstForForward(update);
-      if (!deferHotChatModerationSkipUntilAfterAccessGates) {
-        this.markWebhookHotPathStage(hotPathProfile, 'global-spammer-exempt');
-        const globalSpammerAdminDecisions = settings.deleteSpammersEnabled
-          ? await this.resolveGlobalSpammerAdminDecisionsWithHotPathBudget(
-              [senderId],
-              chat.adminUserIds,
-              {
-                chatId,
-                userId: senderId,
-                messageId,
-              },
-            )
-          : new Map<string, LocalGlobalSpammerAdminDecision>();
-        const globalSpammerAdminDecision = globalSpammerAdminDecisions.get(senderId) ?? null;
-        if (globalSpammerAdminDecision === 'BLOCK') {
-          const handled = await this.handleLocalAdminBlockedSenderMessage({
-            chatId,
-            userId: senderId,
-            messageId,
-            text,
-          });
-          if (handled) {
-            return;
-          }
+      this.markWebhookHotPathStage(hotPathProfile, 'global-spammer-exempt');
+      const globalSpammerAdminDecisions = settings.deleteSpammersEnabled
+        ? await this.resolveGlobalSpammerAdminDecisionsWithHotPathBudget(
+            [senderId],
+            chat.adminUserIds,
+            {
+              chatId,
+              userId: senderId,
+              messageId,
+            },
+          )
+        : new Map<string, LocalGlobalSpammerAdminDecision>();
+      const globalSpammerAdminDecision = globalSpammerAdminDecisions.get(senderId) ?? null;
+      if (globalSpammerAdminDecision === 'BLOCK') {
+        const handled = await this.handleLocalAdminBlockedSenderMessage({
+          chatId,
+          userId: senderId,
+          messageId,
+          text,
+        });
+        if (handled) {
+          return;
         }
-        const isGlobalSpammerExempt = globalSpammerAdminDecision === 'ALLOW';
+      }
+      const isGlobalSpammerExempt = globalSpammerAdminDecision === 'ALLOW';
+      let skipKnownSpammerCheck = false;
+      if (!skipOptionalHotChatStages) {
         this.markWebhookHotPathStage(hotPathProfile, 'global-spammer-track');
         const globalSpammerTracking = await this.trackAndRegisterGlobalSpammerWithHotPathBudget({
           chatId,
@@ -1438,36 +1422,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         if (globalSpammerTracking.handled) {
           return;
         }
+        skipKnownSpammerCheck = globalSpammerTracking.skipKnownSpammerCheck;
+      }
 
-        if (
-          settings.deleteSpammersEnabled &&
-          !globalSpammerTracking.skipKnownSpammerCheck &&
-          !isGlobalSpammerExempt
-        ) {
-          const knownSpammerSkipReason = this.resolveOptionalWebhookStageSkipReason({
-            stage: 'known-spammer-check',
-            hotPathProfile,
-            systemMode: mode,
-            hotChatBackoffActive,
-          });
-          if (knownSpammerSkipReason) {
-            this.recordOptionalWebhookStageSkip({
-              stage: 'known-spammer-check',
-              reason: knownSpammerSkipReason,
-              failOpen: true,
-            });
-          } else {
-            const handled = await this.handleKnownSpammerSenderMessage({
-              chatId,
-              userId: senderId,
-              messageId,
-              text,
-            });
-            this.markWebhookHotPathStage(hotPathProfile, 'known-spammer-check');
-            if (handled) {
-              return;
-            }
-          }
+      if (settings.deleteSpammersEnabled && !skipKnownSpammerCheck && !isGlobalSpammerExempt) {
+        const handled = await this.handleKnownSpammerSenderMessage({
+          chatId,
+          userId: senderId,
+          messageId,
+          text,
+        });
+        this.markWebhookHotPathStage(hotPathProfile, 'known-spammer-check');
+        if (handled) {
+          return;
         }
       }
 
@@ -1510,28 +1477,24 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      if (deferHotChatModerationSkipUntilAfterAccessGates) {
-        this.logHotChatModerationSkip(chatId, senderId, mode);
-        this.markWebhookHotPathStage(hotPathProfile, 'hot-chat-skip');
-        void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
-          stage: 'hot-chat-skip',
-          outcome: 'skip',
-          failOpen: true,
-        });
-        return;
-      }
-
       const effectiveMessageLength = calculateEffectiveMessageLength(update);
-      const duplicateStateSkipReason = this.resolveOptionalWebhookStageSkipReason({
-        stage: 'rule-engine.duplicate-state',
-        hotPathProfile,
-        systemMode: mode,
-        hotChatBackoffActive,
-      });
+      const skipDuplicateStateForPressure =
+        skipOptionalHotChatStages || (mode.mode === 'degrade' && !isSystemModeRecoveryWindow(mode));
+      const duplicateStateSkipReason =
+        this.resolveOptionalWebhookStageSkipReason({
+          stage: 'rule-engine.duplicate-state',
+          hotPathProfile,
+          systemMode: mode,
+          hotChatBackoffActive,
+        }) ??
+        (skipDuplicateStateForPressure
+          ? `rule-engine.duplicate-state throttled during runtime pressure (${mode.reason || mode.mode})`
+          : null);
       if (duplicateStateSkipReason) {
         this.recordOptionalWebhookStageSkip({
           stage: 'rule-engine.duplicate-state',
           reason: duplicateStateSkipReason,
+          failOpen: true,
         });
       }
       const commercialCampaignSkipReason = settings.commercialAdsFilterEnabled
@@ -1827,6 +1790,40 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           : true;
       const isCommercialReviewOnly =
         topViolation.ruleCode === 'COMMERCIAL_AD' && !commercialRecordable;
+      const shouldDeleteByCommercialPolicy =
+        topViolation.ruleCode !== 'COMMERCIAL_AD' ||
+        (commercialActionable &&
+          (commercialActionBand === 'WARN' ||
+            commercialActionBand === 'DELETE' ||
+            commercialActionBand === 'DELETE_AND_ESCALATE'));
+      const violationDeleteIntent: EnsureModerationDeleteIntentInput | null =
+        shouldDeleteByCommercialPolicy
+          ? {
+              chatId,
+              messageId,
+              reasonKey: `${topViolation.ruleCode}:violation-delete`,
+              ruleCode: `${topViolation.ruleCode}_DELETE`,
+              subjectUserId: senderId,
+              sourceMessageAt: createdAt,
+              entityType: 'CHAT',
+              messageAuthorKind: 'user',
+              event: {
+                userId: senderId,
+                eventType: 'MESSAGE',
+                maskedExcerpt: maskText(text),
+                score: topViolation.score,
+                metadata: {
+                  reason: topViolation.reason,
+                  ...(topViolation.metadata && typeof topViolation.metadata === 'object'
+                    ? topViolation.metadata
+                    : {}),
+                },
+              },
+            }
+          : null;
+      if (violationDeleteIntent) {
+        await this.ensureModerationDeleteIntent(violationDeleteIntent);
+      }
       const violationClaimed = await this.claimMessageViolationProcessing({
         chatId,
         userId: senderId,
@@ -1867,21 +1864,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         );
       }
 
-      const messageAgeMs = Date.now() - new Date(createdAt).getTime();
-      const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
-      const shouldDeleteByCommercialPolicy =
-        topViolation.ruleCode !== 'COMMERCIAL_AD' ||
-        (commercialActionable &&
-          (commercialActionBand === 'WARN' ||
-            commercialActionBand === 'DELETE' ||
-            commercialActionBand === 'DELETE_AND_ESCALATE'));
-      const shouldDeleteViolationMessage = canDeleteMessage && shouldDeleteByCommercialPolicy;
       let messageDeleted = false;
 
-      if (shouldDeleteViolationMessage) {
+      if (violationDeleteIntent) {
         this.markWebhookHotPathStage(hotPathProfile, 'violation-delete');
-        messageDeleted = await this.deleteMessageImmediately(chatId, messageId);
-        if (messageDeleted) {
+        const deleteResult = await this.executeModerationDelete(violationDeleteIntent);
+        messageDeleted = deleteResult.gone;
+        if (deleteResult.deleted && !deleteResult.eventPersistedByIntent) {
           await this.createBotModerationEvent({
             data: {
               chatId,
@@ -1901,13 +1890,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               },
             },
           });
+        }
+        if (messageDeleted) {
           this.markWebhookHotPathSuccessBoundary(hotPathProfile, 'violation-delete');
         }
-      } else if (!canDeleteMessage && shouldDeleteByCommercialPolicy) {
-        await this.maxClient.notifyModerators(
-          chatId,
-          `Нарушение ${topViolation.ruleCode} от ${senderId}, но сообщение старше 24 часов и не может быть удалено`,
-        );
       }
 
       this.markWebhookHotPathStage(hotPathProfile, 'violation-follow-up');
@@ -2716,9 +2702,30 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       suppressNonEssentialMessages,
       hotPathProfile,
     } = params;
-    const messageAgeMs = Date.now() - new Date(createdAt).getTime();
-    const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
     let messageDeleted = false;
+    const deleteIntent: EnsureModerationDeleteIntentInput = {
+      chatId,
+      messageId,
+      reasonKey: 'DUPLICATE:decision-delete',
+      ruleCode: 'DUPLICATE_DELETE',
+      subjectUserId: userId,
+      sourceMessageAt: createdAt,
+      entityType: 'CHAT',
+      messageAuthorKind: 'user',
+      event: {
+        userId,
+        eventType: 'MESSAGE',
+        maskedExcerpt: maskText(text),
+        score: 0.8,
+        metadata: {
+          windowSec: decision.windowSec,
+          count: decision.count,
+          threshold: decision.threshold,
+          reason: 'Duplicate message removed',
+        },
+      },
+    };
+    await this.ensureModerationDeleteIntent(deleteIntent);
 
     const claimed = await this.claimMessageScopedModerationAction({
       chatId,
@@ -2730,47 +2737,43 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    if (canDeleteMessage) {
-      try {
-        this.markWebhookHotPathStage(hotPathProfile, 'duplicate-delete');
-        messageDeleted = await this.deleteMessageImmediately(chatId, messageId);
-        if (messageDeleted) {
-          await this.createBotModerationEvent({
-            data: {
-              chatId,
-              userId,
-              messageId,
-              eventType: EventType.MESSAGE,
-              ruleCode: 'DUPLICATE_DELETE',
-              action: SanctionAction.DELETE_MESSAGE,
-              maskedExcerpt: maskText(text),
-              score: 0.8,
-              operator: Operator.BOT,
-              metadata: {
-                windowSec: decision.windowSec,
-                count: decision.count,
-                threshold: decision.threshold,
-                reason: 'Duplicate message removed',
-              },
-            },
-          });
-          this.markWebhookHotPathSuccessBoundary(hotPathProfile, 'duplicate-delete');
-        }
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
+    try {
+      this.markWebhookHotPathStage(hotPathProfile, 'duplicate-delete');
+      const deleteResult = await this.executeModerationDelete(deleteIntent);
+      messageDeleted = deleteResult.gone;
+      if (deleteResult.deleted && !deleteResult.eventPersistedByIntent) {
+        await this.createBotModerationEvent({
+          data: {
             chatId,
             userId,
             messageId,
-            error: error instanceof Error ? error.message : 'Unknown error',
+            eventType: EventType.MESSAGE,
+            ruleCode: 'DUPLICATE_DELETE',
+            action: SanctionAction.DELETE_MESSAGE,
+            maskedExcerpt: maskText(text),
+            score: 0.8,
+            operator: Operator.BOT,
+            metadata: {
+              windowSec: decision.windowSec,
+              count: decision.count,
+              threshold: decision.threshold,
+              reason: 'Duplicate message removed',
+            },
           },
-          'Failed to delete duplicate message',
-        );
+        });
       }
-    } else {
-      await this.maxClient.notifyModerators(
-        chatId,
-        `Нарушение DUPLICATE от ${userId}, но сообщение старше 24 часов и не может быть удалено`,
+      if (messageDeleted) {
+        this.markWebhookHotPathSuccessBoundary(hotPathProfile, 'duplicate-delete');
+      }
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          messageId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to delete duplicate message',
       );
     }
 
@@ -2929,9 +2932,29 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       suppressNonEssentialMessages,
       hotPathProfile,
     } = params;
-    const messageAgeMs = Date.now() - new Date(createdAt).getTime();
-    const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
     let messageDeleted = false;
+    const deleteIntent: EnsureModerationDeleteIntentInput = {
+      chatId,
+      messageId,
+      reasonKey: 'DUPLICATE:hit-delete',
+      ruleCode: 'DUPLICATE_DELETE',
+      subjectUserId: userId,
+      sourceMessageAt: createdAt,
+      entityType: 'CHAT',
+      messageAuthorKind: 'user',
+      event: {
+        userId,
+        eventType: 'MESSAGE',
+        maskedExcerpt: maskText(text),
+        score: 0.8,
+        metadata: {
+          windowSec: hit.windowSec,
+          count: hit.count,
+          reason: 'Duplicate message removed',
+        },
+      },
+    };
+    await this.ensureModerationDeleteIntent(deleteIntent);
 
     const claimed = await this.claimMessageScopedModerationAction({
       chatId,
@@ -2943,46 +2966,42 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    if (canDeleteMessage) {
-      try {
-        this.markWebhookHotPathStage(hotPathProfile, 'duplicate-delete');
-        messageDeleted = await this.deleteMessageImmediately(chatId, messageId);
-        if (messageDeleted) {
-          await this.createBotModerationEvent({
-            data: {
-              chatId,
-              userId,
-              messageId,
-              eventType: EventType.MESSAGE,
-              ruleCode: 'DUPLICATE_DELETE',
-              action: SanctionAction.DELETE_MESSAGE,
-              maskedExcerpt: maskText(text),
-              score: 0.8,
-              operator: Operator.BOT,
-              metadata: {
-                windowSec: hit.windowSec,
-                count: hit.count,
-                reason: 'Duplicate message removed',
-              },
-            },
-          });
-          this.markWebhookHotPathSuccessBoundary(hotPathProfile, 'duplicate-delete');
-        }
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
+    try {
+      this.markWebhookHotPathStage(hotPathProfile, 'duplicate-delete');
+      const deleteResult = await this.executeModerationDelete(deleteIntent);
+      messageDeleted = deleteResult.gone;
+      if (deleteResult.deleted && !deleteResult.eventPersistedByIntent) {
+        await this.createBotModerationEvent({
+          data: {
             chatId,
             userId,
             messageId,
-            error: error instanceof Error ? error.message : 'Unknown error',
+            eventType: EventType.MESSAGE,
+            ruleCode: 'DUPLICATE_DELETE',
+            action: SanctionAction.DELETE_MESSAGE,
+            maskedExcerpt: maskText(text),
+            score: 0.8,
+            operator: Operator.BOT,
+            metadata: {
+              windowSec: hit.windowSec,
+              count: hit.count,
+              reason: 'Duplicate message removed',
+            },
           },
-          'Failed to delete duplicate message',
-        );
+        });
       }
-    } else {
-      await this.maxClient.notifyModerators(
-        chatId,
-        `Нарушение DUPLICATE от ${userId}, но сообщение старше 24 часов и не может быть удалено`,
+      if (messageDeleted) {
+        this.markWebhookHotPathSuccessBoundary(hotPathProfile, 'duplicate-delete');
+      }
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          messageId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to delete duplicate message',
       );
     }
 
@@ -3899,7 +3918,106 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  private async deleteMessageImmediately(
+  private async executeModerationDelete(
+    input: EnsureModerationDeleteIntentInput,
+    options?: Omit<MaxActionDispatchOptions, 'immediate'>,
+  ): Promise<ModerationDeleteExecutionResult> {
+    const preparedInput = this.prepareModerationDeleteIntentInput(input, options);
+    if (this.moderationDeleteIntentService) {
+      try {
+        const result = await this.moderationDeleteIntentService.ensureAndAttempt(preparedInput);
+        const rollout = this.moderationDeleteIntentService.getRolloutForChat(input.chatId);
+        const executeExclusively = rollout === 'execute';
+        if (result.kind !== 'off' && result.kind !== 'observed') {
+          return {
+            accepted: result.kind !== 'expired' && result.kind !== 'terminal',
+            gone: result.confirmed,
+            deleted: result.kind === 'confirmed',
+            eventPersistedByIntent: result.kind === 'confirmed',
+          };
+        }
+        if (executeExclusively) {
+          return {
+            accepted: true,
+            gone: false,
+            deleted: false,
+            eventPersistedByIntent: false,
+          };
+        }
+      } catch (error: unknown) {
+        if (this.moderationDeleteIntentService.getRolloutForChat(input.chatId) === 'execute') {
+          throw error;
+        }
+        this.logger.warn(
+          {
+            chatId: input.chatId,
+            messageId: input.messageId,
+            ruleCode: input.ruleCode ?? input.reasonKey,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to persist shadow moderation delete intent; using legacy delete path',
+        );
+      }
+    }
+
+    const scheduled = Boolean(options?.delayMs && options.delayMs > 0);
+    const accepted = await this.deleteMessageImmediatelyLegacy(
+      preparedInput.chatId,
+      preparedInput.messageId,
+      options,
+    );
+    return {
+      accepted,
+      gone: accepted && !scheduled,
+      deleted: accepted && !scheduled,
+      eventPersistedByIntent: false,
+    };
+  }
+
+  private async ensureModerationDeleteIntent(
+    input: EnsureModerationDeleteIntentInput,
+    options?: Omit<MaxActionDispatchOptions, 'immediate'>,
+  ): Promise<void> {
+    if (!this.moderationDeleteIntentService) {
+      return;
+    }
+    try {
+      await this.moderationDeleteIntentService.ensureIntent(
+        this.prepareModerationDeleteIntentInput(input, options),
+      );
+    } catch (error: unknown) {
+      if (this.moderationDeleteIntentService.getRolloutForChat(input.chatId) === 'execute') {
+        throw error;
+      }
+      this.logger.warn(
+        {
+          chatId: input.chatId,
+          messageId: input.messageId,
+          ruleCode: input.ruleCode ?? input.reasonKey,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to persist shadow moderation delete intent before semantic claim',
+      );
+    }
+  }
+
+  private prepareModerationDeleteIntentInput(
+    input: EnsureModerationDeleteIntentInput,
+    options?: Omit<MaxActionDispatchOptions, 'immediate'>,
+  ): EnsureModerationDeleteIntentInput {
+    const delayMs = options?.delayMs && options.delayMs > 0 ? options.delayMs : 0;
+    const activeBotId = this.maxBotContextService?.getActiveBotId() ?? null;
+    return {
+      ...input,
+      entityType: input.entityType ?? 'CHAT',
+      messageAuthorKind: input.messageAuthorKind ?? 'user',
+      originBotId: input.originBotId ?? activeBotId,
+      routingPolicy: input.routingPolicy ?? 'origin_first',
+      ...(input.executeAt || delayMs === 0 ? {} : { executeAt: new Date(Date.now() + delayMs) }),
+    };
+  }
+
+  private async deleteMessageImmediatelyLegacy(
     chatId: string,
     messageId: string,
     options?: Omit<MaxActionDispatchOptions, 'immediate'>,
@@ -5940,7 +6058,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private async deleteAdminCommandMessage(chatId: string, messageId: string): Promise<void> {
     try {
-      await this.deleteMessageImmediately(chatId, messageId);
+      await this.executeModerationDelete({
+        chatId,
+        messageId,
+        reasonKey: 'ADMIN_COMMAND_CLEANUP',
+        ruleCode: 'ADMIN_COMMAND_CLEANUP',
+        entityType: 'CHAT',
+        messageAuthorKind: 'user',
+      });
     } catch (error: unknown) {
       this.logger.debug(
         {
@@ -6010,26 +6135,31 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     mute: ActiveMute;
   }) {
     const { chatId, userId, messageId, text, createdAt, mute } = params;
-    const messageAgeMs = Date.now() - new Date(createdAt).getTime();
-    const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
-
-    if (!canDeleteMessage) {
-      const claimed = await this.claimMessageScopedModerationAction({
-        chatId,
+    const deleteIntent: EnsureModerationDeleteIntentInput = {
+      chatId,
+      messageId,
+      reasonKey: 'MUTE_ACTIVE_DELETE',
+      ruleCode: 'MUTE_ACTIVE_DELETE',
+      subjectUserId: userId,
+      sourceMessageAt: createdAt,
+      entityType: 'CHAT',
+      messageAuthorKind: 'user',
+      event: {
         userId,
-        messageId,
-        ruleCode: 'MUTE_ACTIVE_DELETE',
-      });
-      if (!claimed) {
-        return;
-      }
-
-      await this.maxClient.notifyModerators(
-        chatId,
-        `Сообщение от ${userId} попало под активный мут, но старше 24 часов и не может быть удалено`,
-      );
-      return;
-    }
+        eventType: 'MESSAGE',
+        maskedExcerpt: maskText(text),
+        score: 1,
+        metadata: {
+          reason: 'Message removed during active mute window',
+          muteEventId: mute.eventId,
+          muteIssuedAt: mute.issuedAt.toISOString(),
+          mutePermanent: mute.permanent,
+          ...(mute.expiresAt ? { muteExpiresAt: mute.expiresAt.toISOString() } : {}),
+          ...(mute.durationHours !== null ? { muteDurationHours: mute.durationHours } : {}),
+        },
+      },
+    };
+    await this.ensureModerationDeleteIntent(deleteIntent);
 
     const claimed = await this.claimMessageScopedModerationAction({
       chatId,
@@ -6042,7 +6172,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      if (await this.deleteMessageImmediately(chatId, messageId)) {
+      const deleteResult = await this.executeModerationDelete(deleteIntent);
+      if (deleteResult.deleted && !deleteResult.eventPersistedByIntent) {
         await this.createBotModerationEvent({
           data: {
             chatId,
@@ -6097,6 +6228,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    const deleteIntent: EnsureModerationDeleteIntentInput = {
+      chatId,
+      messageId,
+      reasonKey: 'BOT_ACCOUNT_MESSAGE_DELETE',
+      ruleCode: 'BOT_ACCOUNT_MESSAGE_DELETE',
+      entityType: 'CHAT',
+      messageAuthorKind: 'bot',
+      originBotId:
+        this.maxBotLinkService?.resolveBotIdFromUserId(userId) ??
+        this.maxBotContextService?.getActiveBotId() ??
+        null,
+      routingPolicy: 'origin_only',
+    };
+    await this.ensureModerationDeleteIntent(deleteIntent);
+
     const claimed = await this.claimMessageScopedModerationAction({
       chatId,
       userId,
@@ -6108,7 +6254,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      await this.deleteMessageImmediately(chatId, messageId);
+      await this.executeModerationDelete(deleteIntent);
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -6162,6 +6308,34 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }) {
     const { chatId, userId, messageId, text, delayMinutes } = params;
     const safeDelayMinutes = normalizeDeleteBotMessagesDelayMinutes(delayMinutes);
+    const delayMs = safeDelayMinutes * 60 * 1000;
+    const deleteOptions = { delayMs };
+    const deleteIntent: EnsureModerationDeleteIntentInput = {
+      chatId,
+      messageId,
+      reasonKey: 'BOT_MESSAGE_AUTO_DELETE',
+      ruleCode: 'BOT_MESSAGE_AUTO_DELETE',
+      subjectUserId: userId,
+      entityType: 'CHAT',
+      messageAuthorKind: 'bot',
+      originBotId:
+        this.maxBotLinkService?.resolveBotIdFromUserId(userId) ??
+        this.maxBotContextService?.getActiveBotId() ??
+        null,
+      routingPolicy: 'origin_only',
+      executeAt: new Date(Date.now() + delayMs),
+      event: {
+        userId,
+        eventType: 'MESSAGE',
+        maskedExcerpt: maskText(text),
+        score: 0.5,
+        metadata: {
+          reason: 'Bot-authored message deleted after configured delay',
+          delayMinutes: safeDelayMinutes,
+        },
+      },
+    };
+    await this.ensureModerationDeleteIntent(deleteIntent, deleteOptions);
 
     const claimed = await this.claimMessageScopedModerationAction({
       chatId,
@@ -6174,29 +6348,29 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      const scheduled = await this.deleteMessageImmediately(chatId, messageId, {
-        delayMs: safeDelayMinutes * 60 * 1000,
-      });
-      if (!scheduled) {
+      const deleteResult = await this.executeModerationDelete(deleteIntent, deleteOptions);
+      if (!deleteResult.accepted) {
         return;
       }
-      await this.createBotModerationEvent({
-        data: {
-          chatId,
-          userId,
-          messageId,
-          eventType: EventType.MESSAGE,
-          ruleCode: 'BOT_MESSAGE_AUTO_DELETE',
-          action: SanctionAction.DELETE_MESSAGE,
-          maskedExcerpt: maskText(text),
-          score: 0.5,
-          operator: Operator.BOT,
-          metadata: {
-            reason: 'Bot-authored message scheduled for delayed auto-delete',
-            delayMinutes: safeDelayMinutes,
+      if (deleteResult.deleted && !deleteResult.eventPersistedByIntent) {
+        await this.createBotModerationEvent({
+          data: {
+            chatId,
+            userId,
+            messageId,
+            eventType: EventType.MESSAGE,
+            ruleCode: 'BOT_MESSAGE_AUTO_DELETE',
+            action: SanctionAction.DELETE_MESSAGE,
+            maskedExcerpt: maskText(text),
+            score: 0.5,
+            operator: Operator.BOT,
+            metadata: {
+              reason: 'Bot-authored message deleted after configured delay',
+              delayMinutes: safeDelayMinutes,
+            },
           },
-        },
-      });
+        });
+      }
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -6242,6 +6416,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    if (await this.sendSideOwnBotAutoDeleteAlreadyOwned(chatId, messageId)) {
+      this.logger.debug(
+        {
+          chatId,
+          messageId,
+        },
+        'Skipped duplicate webhook auto-delete for sent bot message',
+      );
+      return;
+    }
+
     await this.handleBotMessageAutoDelete({
       chatId,
       userId,
@@ -6249,6 +6434,33 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       text,
       delayMinutes: settings.deleteBotMessagesDelayMinutes,
     });
+  }
+
+  private async sendSideOwnBotAutoDeleteAlreadyOwned(
+    chatId: string,
+    messageId: string,
+  ): Promise<boolean> {
+    if (
+      !this.moderationDeleteIntentService ||
+      this.moderationDeleteIntentService.getRolloutForChat(chatId) !== 'execute' ||
+      !this.maxActionLedgerService
+    ) {
+      return false;
+    }
+
+    try {
+      return await this.maxActionLedgerService.hasActiveOrSucceededDelete(chatId, messageId);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          messageId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to verify send-side bot auto-delete ownership; keeping durable webhook cleanup',
+      );
+      return false;
+    }
   }
 
   private async resolveOwnBotAutoDeleteSkipReason(params: {
@@ -6894,6 +7106,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
 
+    const deleteIntent: EnsureModerationDeleteIntentInput = {
+      chatId,
+      messageId,
+      reasonKey: 'GLOBAL_SPAMMER:known-message-delete',
+      ruleCode: 'GLOBAL_SPAMMER_MESSAGE_DELETE',
+      subjectUserId: userId,
+      entityType: 'CHAT',
+      messageAuthorKind: 'user',
+      event: {
+        userId,
+        eventType: null,
+        metadata: { reason: 'Sender exists in global spammer registry' },
+      },
+    };
+    await this.ensureModerationDeleteIntent(deleteIntent);
+
     const claimed = await this.claimMessageScopedModerationAction({
       chatId,
       userId,
@@ -6905,7 +7133,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      await this.deleteMessageImmediately(chatId, messageId);
+      await this.executeModerationDelete(deleteIntent);
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -6940,6 +7168,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
 
+    const deleteIntent: EnsureModerationDeleteIntentInput = {
+      chatId,
+      messageId,
+      reasonKey: 'LOCAL_ADMIN_BLOCK:message-delete',
+      ruleCode: 'LOCAL_ADMIN_BLOCK_MESSAGE_DELETE',
+      subjectUserId: userId,
+      entityType: 'CHAT',
+      messageAuthorKind: 'user',
+      event: {
+        userId,
+        eventType: null,
+        metadata: { reason: 'Local admin block for this admin scope' },
+      },
+    };
+    await this.ensureModerationDeleteIntent(deleteIntent);
+
     const claimed = await this.claimMessageScopedModerationAction({
       chatId,
       userId,
@@ -6951,7 +7195,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      await this.deleteMessageImmediately(chatId, messageId);
+      await this.executeModerationDelete(deleteIntent);
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -7364,10 +7608,27 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       messageId?: string | null;
     } = {},
   ): Promise<Map<string, LocalGlobalSpammerAdminDecision>> {
-    if (
-      Array.isArray(adminUserIds) &&
-      adminUserIds.length > GLOBAL_SPAMMER_EXEMPTION_HOT_PATH_MAX_ADMIN_IDS
-    ) {
+    const normalizedAdminUserIds = Array.isArray(adminUserIds)
+      ? [...new Set(adminUserIds.map((item) => item.trim()).filter(Boolean))].sort()
+      : [];
+    const cachedDecisions = new Map<string, LocalGlobalSpammerAdminDecision>();
+    if (normalizedAdminUserIds.length > 0) {
+      const cacheScopeKey = this.buildGlobalSpammerExemptionCacheScopeKey(
+        options.chatId ?? null,
+        normalizedAdminUserIds,
+      );
+      for (const rawUserId of userIds) {
+        const userId = rawUserId.trim();
+        if (!userId) {
+          continue;
+        }
+        const cached = this.readGlobalSpammerExemptionCache(cacheScopeKey, userId);
+        if (cached) {
+          cachedDecisions.set(userId, cached);
+        }
+      }
+    }
+    if (normalizedAdminUserIds.length > GLOBAL_SPAMMER_EXEMPTION_HOT_PATH_MAX_ADMIN_IDS) {
       void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
         stage: 'global-spammer-exempt.budget',
         outcome: 'skip',
@@ -7378,12 +7639,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           chatId: options.chatId ?? null,
           userId: options.userId ?? null,
           messageId: options.messageId ?? null,
-          adminCount: adminUserIds.length,
+          adminCount: normalizedAdminUserIds.length,
           maxAdminCount: GLOBAL_SPAMMER_EXEMPTION_HOT_PATH_MAX_ADMIN_IDS,
         },
         'Skipped global spammer admin exemption lookup because the admin roster is too large for the hot path',
       );
-      return new Map();
+      return cachedDecisions;
     }
 
     let timedOut = false;
@@ -7395,7 +7656,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       timeoutMs: GLOBAL_SPAMMER_EXEMPTION_HOT_PATH_TIMEOUT_MS,
       onTimeout: () => {
         timedOut = true;
-        return new Map<string, LocalGlobalSpammerAdminDecision>();
+        return cachedDecisions;
       },
     });
     if (timedOut) {
@@ -7445,6 +7706,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    const deleteIntent: EnsureModerationDeleteIntentInput = {
+      chatId,
+      messageId,
+      reasonKey: 'GLOBAL_SPAMMER:detected-message-delete',
+      ruleCode: 'GLOBAL_SPAMMER_MESSAGE_DELETE',
+      subjectUserId: userId,
+      entityType: 'CHAT',
+      messageAuthorKind: 'user',
+      event: {
+        userId,
+        eventType: null,
+        metadata: { reason },
+      },
+    };
+    await this.ensureModerationDeleteIntent(deleteIntent);
+
     const claimed = await this.claimMessageScopedModerationAction({
       chatId,
       userId,
@@ -7456,7 +7733,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      await this.deleteMessageImmediately(chatId, messageId);
+      await this.executeModerationDelete(deleteIntent);
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -8545,39 +8822,42 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const startMinutes = this.normalizeDayMinutes(nightModeStartTimeMinutes, 23 * 60);
     const endMinutes = this.normalizeDayMinutes(nightModeEndTimeMinutes, 8 * 60);
     const timezone = this.normalizeNightModeTimezone(nightModeTimezone);
-    const messageAgeMs = Date.now() - new Date(createdAt).getTime();
-    const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
-
-    if (canDeleteMessage) {
-      const claimed = await this.claimMessageScopedModerationAction({
-        chatId,
+    const deleteIntent: EnsureModerationDeleteIntentInput = {
+      chatId,
+      messageId,
+      reasonKey: 'NIGHT_MODE_DELETE',
+      ruleCode: 'NIGHT_MODE_DELETE',
+      subjectUserId: userId,
+      sourceMessageAt: createdAt,
+      entityType: 'CHAT',
+      messageAuthorKind: 'user',
+      event: {
         userId,
-        messageId,
-        ruleCode: 'NIGHT_MODE_DELETE',
-      });
-      if (!claimed) {
-        return;
-      }
+        eventType: 'MESSAGE',
+        maskedExcerpt: maskText(text),
+        score: 0.6,
+        metadata: {
+          reason: 'Message removed while chat is closed for the night',
+          nightModeTimezone: timezone,
+          nightModeStartTime: this.formatMinutesAsTime(startMinutes),
+          nightModeEndTime: this.formatMinutesAsTime(endMinutes),
+        },
+      },
+    };
+    await this.ensureModerationDeleteIntent(deleteIntent);
+    const claimed = await this.claimMessageScopedModerationAction({
+      chatId,
+      userId,
+      messageId,
+      ruleCode: 'NIGHT_MODE_DELETE',
+    });
+    if (!claimed) {
+      return;
+    }
 
-      try {
-        const messageDeleted = await this.deleteMessageImmediately(chatId, messageId);
-        if (!messageDeleted) {
-          return;
-        }
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
-            chatId,
-            userId,
-            messageId,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          },
-          'Failed to delete message during night mode',
-        );
-        return;
-      }
-
-      try {
+    try {
+      const deleteResult = await this.executeModerationDelete(deleteIntent);
+      if (deleteResult.deleted && !deleteResult.eventPersistedByIntent) {
         await this.createBotModerationEvent({
           data: {
             chatId,
@@ -8597,25 +8877,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             },
           },
         });
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
-            chatId,
-            userId,
-            messageId,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          },
-          'Failed to persist night mode deletion event',
-        );
       }
-    } else {
-      this.logger.debug(
+    } catch (error: unknown) {
+      this.logger.warn(
         {
           chatId,
           userId,
           messageId,
+          error: error instanceof Error ? error.message : 'Unknown error',
         },
-        'Skipped night mode deletion for message older than 24 hours',
+        'Failed to delete message during night mode',
       );
     }
   }
@@ -8630,62 +8901,71 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     nightModeForceCloseUntil: string;
   }) {
     const { chatId, userId, messageId, text, createdAt } = params;
-    const messageAgeMs = Date.now() - new Date(createdAt).getTime();
-    const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
-
-    if (canDeleteMessage) {
-      const claimed = await this.claimMessageScopedModerationAction({
-        chatId,
+    const deleteIntent: EnsureModerationDeleteIntentInput = {
+      chatId,
+      messageId,
+      reasonKey: 'MANUAL_GROUP_CLOSE_DELETE',
+      ruleCode: 'MANUAL_GROUP_CLOSE_DELETE',
+      subjectUserId: userId,
+      sourceMessageAt: createdAt,
+      entityType: 'CHAT',
+      messageAuthorKind: 'user',
+      event: {
         userId,
-        messageId,
-        ruleCode: 'MANUAL_GROUP_CLOSE_DELETE',
-      });
-      if (!claimed) {
-        return;
-      }
+        eventType: 'MESSAGE',
+        maskedExcerpt: maskText(text),
+        score: 0.6,
+        metadata: {
+          reason: 'Message removed while group is manually closed',
+          closeMode: params.nightModeForceCloseForever ? 'forever' : 'timed',
+          closeUntil: params.nightModeForceCloseForever ? null : params.nightModeForceCloseUntil,
+        },
+      },
+    };
+    await this.ensureModerationDeleteIntent(deleteIntent);
+    const claimed = await this.claimMessageScopedModerationAction({
+      chatId,
+      userId,
+      messageId,
+      ruleCode: 'MANUAL_GROUP_CLOSE_DELETE',
+    });
+    if (!claimed) {
+      return;
+    }
 
-      try {
-        if (await this.deleteMessageImmediately(chatId, messageId)) {
-          await this.createBotModerationEvent({
-            data: {
-              chatId,
-              userId,
-              messageId,
-              eventType: EventType.MESSAGE,
-              ruleCode: 'MANUAL_GROUP_CLOSE_DELETE',
-              action: SanctionAction.DELETE_MESSAGE,
-              maskedExcerpt: maskText(text),
-              score: 0.6,
-              operator: Operator.BOT,
-              metadata: {
-                reason: 'Message removed while group is manually closed',
-                closeMode: params.nightModeForceCloseForever ? 'forever' : 'timed',
-                closeUntil: params.nightModeForceCloseForever
-                  ? null
-                  : params.nightModeForceCloseUntil,
-              },
-            },
-          });
-        }
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
+    try {
+      const deleteResult = await this.executeModerationDelete(deleteIntent);
+      if (deleteResult.deleted && !deleteResult.eventPersistedByIntent) {
+        await this.createBotModerationEvent({
+          data: {
             chatId,
             userId,
             messageId,
-            error: error instanceof Error ? error.message : 'Unknown error',
+            eventType: EventType.MESSAGE,
+            ruleCode: 'MANUAL_GROUP_CLOSE_DELETE',
+            action: SanctionAction.DELETE_MESSAGE,
+            maskedExcerpt: maskText(text),
+            score: 0.6,
+            operator: Operator.BOT,
+            metadata: {
+              reason: 'Message removed while group is manually closed',
+              closeMode: params.nightModeForceCloseForever ? 'forever' : 'timed',
+              closeUntil: params.nightModeForceCloseForever
+                ? null
+                : params.nightModeForceCloseUntil,
+            },
           },
-          'Failed to delete message during manual group close',
-        );
+        });
       }
-    } else {
-      this.logger.debug(
+    } catch (error: unknown) {
+      this.logger.warn(
         {
           chatId,
           userId,
           messageId,
+          error: error instanceof Error ? error.message : 'Unknown error',
         },
-        'Skipped manual group close deletion for message older than 24 hours',
+        'Failed to delete message during manual group close',
       );
     }
   }
@@ -8766,36 +9046,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
 
-    const messageAgeMs = Date.now() - new Date(params.createdAt).getTime();
-    const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1_000;
-    if (!canDeleteMessage) {
-      this.logger.warn(
-        {
-          chatId: params.chatId,
-          userId: params.userId,
-          messageId: params.messageId,
-        },
-        'Required subscription violation arrived too late to delete message',
-      );
-      return false;
-    }
-
-    const claimed = await this.claimMessageScopedModerationAction({
-      chatId: params.chatId,
-      userId: params.userId,
-      messageId: params.messageId,
-      ruleCode: REQUIRED_SUBSCRIPTION_RULE_CODE,
-    });
-    if (!claimed) {
-      return true;
-    }
-
-    const messageDeleted = await this.deleteMessageImmediately(params.chatId, params.messageId);
-    this.markWebhookHotPathStage(params.hotPathProfile, 'required-subscription.delete');
-    if (messageDeleted) {
-      this.markWebhookHotPathSuccessBoundary(params.hotPathProfile, 'required-subscription.delete');
-    }
-
     const missingChannelIdsNeedingRefresh = allowInitialRequiredSubscriptionMetadataFetch
       ? []
       : membership.missingChannelIds.filter((channelId) => {
@@ -8817,6 +9067,45 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const missingChannelTitles = missingChannels
       .map((channel) => this.readRequiredSubscriptionChannelTitle(channel.id, channel.title))
       .filter((title) => title.length > 0);
+    const deleteIntent: EnsureModerationDeleteIntentInput = {
+      chatId: params.chatId,
+      messageId: params.messageId,
+      reasonKey: `${REQUIRED_SUBSCRIPTION_RULE_CODE}:message-delete`,
+      ruleCode: `${REQUIRED_SUBSCRIPTION_RULE_CODE}_DELETE`,
+      subjectUserId: params.userId,
+      sourceMessageAt: params.createdAt,
+      entityType: 'CHAT',
+      messageAuthorKind: 'user',
+      event: {
+        userId: params.userId,
+        eventType: 'MESSAGE',
+        maskedExcerpt: maskText(params.text),
+        score: 1,
+        metadata: {
+          action: SanctionAction.DELETE_MESSAGE,
+          ...requiredSubscriptionChannelMetadata,
+          missingChannelTitles,
+        },
+      },
+    };
+    await this.ensureModerationDeleteIntent(deleteIntent);
+
+    const claimed = await this.claimMessageScopedModerationAction({
+      chatId: params.chatId,
+      userId: params.userId,
+      messageId: params.messageId,
+      ruleCode: REQUIRED_SUBSCRIPTION_RULE_CODE,
+    });
+    if (!claimed) {
+      return true;
+    }
+
+    const deleteResult = await this.executeModerationDelete(deleteIntent);
+    const messageDeleted = deleteResult.gone;
+    this.markWebhookHotPathStage(params.hotPathProfile, 'required-subscription.delete');
+    if (messageDeleted) {
+      this.markWebhookHotPathSuccessBoundary(params.hotPathProfile, 'required-subscription.delete');
+    }
 
     this.markWebhookHotPathStage(params.hotPathProfile, 'required-subscription.follow-up');
     const runRequiredSubscriptionFollowUp = async () => {
@@ -8839,7 +9128,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           muteEnabled: params.settings.requiredSubscriptionMuteEnabled,
         },
       );
-      if (messageDeleted) {
+      if (deleteResult.deleted && !deleteResult.eventPersistedByIntent) {
         await this.createBotModerationEvent({
           data: {
             chatId: params.chatId,
@@ -9189,19 +9478,29 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
 
-    const messageAgeMs = Date.now() - new Date(params.createdAt).getTime();
-    const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1_000;
-    if (!canDeleteMessage) {
-      this.logger.warn(
-        {
-          chatId: params.chatId,
-          userId: params.userId,
-          messageId: params.messageId,
+    const deleteIntent: EnsureModerationDeleteIntentInput = {
+      chatId: params.chatId,
+      messageId: params.messageId,
+      reasonKey: `${INVITATION_ACCESS_RULE_CODE}:message-delete`,
+      ruleCode: `${INVITATION_ACCESS_RULE_CODE}_DELETE`,
+      subjectUserId: params.userId,
+      sourceMessageAt: params.createdAt,
+      entityType: 'CHAT',
+      messageAuthorKind: 'user',
+      event: {
+        userId: params.userId,
+        eventType: 'MESSAGE',
+        maskedExcerpt: maskText(params.text),
+        score: 1,
+        metadata: {
+          action: SanctionAction.DELETE_MESSAGE,
+          invitedCount: progress.invitedCount,
+          requiredCount,
+          remainingInvites: Math.max(0, requiredCount - progress.invitedCount),
         },
-        'Invitation access violation arrived too late to delete message',
-      );
-      return false;
-    }
+      },
+    };
+    await this.ensureModerationDeleteIntent(deleteIntent);
 
     const claimed = await this.claimMessageScopedModerationAction({
       chatId: params.chatId,
@@ -9213,7 +9512,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return true;
     }
 
-    const messageDeleted = await this.deleteMessageImmediately(params.chatId, params.messageId);
+    const deleteResult = await this.executeModerationDelete(deleteIntent);
+    const messageDeleted = deleteResult.gone;
     this.markWebhookHotPathStage(params.hotPathProfile, 'invitation-access.delete');
 
     await this.prisma.violation.create({
@@ -9239,7 +9539,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
     const isFirstInvitationAccessViolation = invitationAccessViolationCount24h === 1;
 
-    if (messageDeleted) {
+    if (deleteResult.deleted && !deleteResult.eventPersistedByIntent) {
       await this.createBotModerationEvent({
         data: {
           chatId: params.chatId,
@@ -12384,6 +12684,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
 
+    if (action === 'delete_message') {
+      return hasConfirmedDeleteMessageAccess(
+        {
+          checkedAt: null,
+          isAdmin: access.isAdmin,
+          isOwner: access.isOwner,
+          permissions: [...access.permissions],
+        },
+        options?.entityType ?? null,
+      );
+    }
+
     if (access.isOwner === true) {
       return true;
     }
@@ -14235,7 +14547,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return 'noop';
     }
 
-    const claim = await this.claimChannelAutoPostAttachMarker({
+    const claim = await this.replacementAttachMarkerStore.claimChannelAutoPost({
       chatId,
       messageId,
       source,
@@ -14262,7 +14574,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       autoAttachBotId,
     );
     if (buttons.length === 0) {
-      await this.completeChannelAutoPostAttachMarker({
+      await this.replacementAttachMarkerStore.completeChannelAutoPost({
         chatId,
         messageId,
         lockToken: claim.lockToken,
@@ -14284,6 +14596,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     let publishedUrl: string | null =
       linkType === 'forward' ? null : this.buildMaxMessageFallbackUrl(chatId, messageId);
     let originalDeleted = false;
+    let originalCleanupError: string | null = null;
+    let originalCleanupStatusCode: number | null = null;
+    let replacementSendStarted = false;
 
     try {
       if (linkType === 'forward') {
@@ -14294,6 +14609,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           {
             buttons,
             ...(textFormat ? { textFormat } : {}),
+            beforeSend: async () => {
+              await this.replacementAttachMarkerStore.recordChannelReplacementSendStarted({
+                chatId,
+                messageId,
+                lockToken: claim.lockToken,
+              });
+              replacementSendStarted = true;
+            },
             debugContext: {
               screen: 'channel-auto-post',
               action:
@@ -14308,13 +14631,48 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         publishedUrl = sent.url ?? this.buildMaxMessageFallbackUrl(chatId, sent.messageId);
         deliveryMode = 'replace_with_bot_message';
 
+        // FLAG: Persist the delivered copy before cleanup so recovery never republishes it.
+        await this.replacementAttachMarkerStore.recordChannelReplacementMessage({
+          chatId,
+          messageId,
+          lockToken: claim.lockToken,
+          replacementMessageId,
+          publishedUrl,
+        });
+
         try {
-          await this.maxClient.deleteMessage(chatId, messageId, {
-            immediate: true,
-            ...(mutationRequestOptions ?? {}),
-          });
-          originalDeleted = true;
+          const cleanupInput: EnsureModerationDeleteIntentInput = {
+            chatId,
+            messageId,
+            reasonKey: 'channel_auto_post_forward_replacement_cleanup',
+            ruleCode: 'CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP',
+            subjectUserId: senderId,
+            entityType: 'CHANNEL',
+            messageAuthorKind: 'user',
+            originBotId: autoAttachBotId,
+            routingPolicy: 'origin_only',
+            event: {
+              eventType: null,
+              metadata: {
+                source,
+                cleanupKind: 'channel_auto_post_forward_replacement',
+                replacementMessageId,
+              },
+            },
+          };
+          await this.ensureModerationDeleteIntent(cleanupInput, mutationRequestOptions);
+          const cleanup = await this.executeModerationDelete(cleanupInput, mutationRequestOptions);
+          originalDeleted = cleanup.gone;
+          if (!cleanup.accepted) {
+            originalCleanupError = 'Durable cleanup reached a terminal state';
+            this.logger.warn(
+              { chatId, messageId, replacementMessageId },
+              'Durable cleanup could not accept original forwarded channel post deletion',
+            );
+          }
         } catch (deleteError: unknown) {
+          originalCleanupError = this.extractErrorSummary(deleteError);
+          originalCleanupStatusCode = this.extractStatusCode(deleteError);
           this.logger.warn(
             {
               chatId,
@@ -14344,6 +14702,63 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
     } catch (error: unknown) {
       const status = this.extractStatusCode(error);
+      if (linkType === 'forward' && replacementMessageId) {
+        this.logger.error(
+          {
+            chatId,
+            messageId,
+            replacementMessageId,
+            status,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'Quarantined delivered channel replacement after marker persistence failure',
+        );
+        await this.replacementAttachMarkerStore.completeChannelAutoPost({
+          chatId,
+          messageId,
+          lockToken: claim.lockToken,
+          status: CHANNEL_AUTO_POST_ATTACH_STATUS.SUCCEEDED,
+          source,
+          botId: autoAttachBotId,
+          linkType,
+          deliveryMode: 'replace_with_bot_message',
+          replacementMessageId,
+          publishedUrl,
+          lastError: `Delivered replacement marker persistence failed: ${this.extractErrorSummary(error)}`,
+          lastStatusCode: status,
+        });
+        return 'attached';
+      }
+      if (
+        linkType === 'forward' &&
+        (replacementSendStarted || wasMaxMessageSendAttempted(error)) &&
+        isAmbiguousMaxSendError(error)
+      ) {
+        await this.recordChannelAutoPostTerminalSkip({
+          chatId,
+          messageId,
+          senderId,
+          botId: autoAttachBotId,
+          linkType,
+          source,
+          deliveryMode: 'replace_with_bot_message',
+          status,
+          error,
+        });
+        await this.replacementAttachMarkerStore.completeChannelAutoPost({
+          chatId,
+          messageId,
+          lockToken: claim.lockToken,
+          status: CHANNEL_AUTO_POST_ATTACH_STATUS.SKIPPED,
+          source,
+          botId: autoAttachBotId,
+          linkType,
+          deliveryMode: 'replace_with_bot_message',
+          lastError: `${MAX_SEND_AMBIGUOUS_ERROR_PREFIX} Ambiguous replacement send: ${this.extractErrorSummary(error)}`,
+          lastStatusCode: status,
+        });
+        return 'skipped';
+      }
       if (
         source === 'poll' &&
         (await this.recordChannelAutoPostAccessLossIfTerminal({
@@ -14354,7 +14769,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           error,
         }))
       ) {
-        await this.completeChannelAutoPostAttachMarker({
+        await this.replacementAttachMarkerStore.completeChannelAutoPost({
           chatId,
           messageId,
           lockToken: claim.lockToken,
@@ -14392,7 +14807,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             status,
             error,
           });
-          await this.completeChannelAutoPostAttachMarker({
+          await this.replacementAttachMarkerStore.completeChannelAutoPost({
             chatId,
             messageId,
             lockToken: claim.lockToken,
@@ -14418,7 +14833,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           status,
           error,
         });
-        await this.completeChannelAutoPostAttachMarker({
+        await this.replacementAttachMarkerStore.completeChannelAutoPost({
           chatId,
           messageId,
           lockToken: claim.lockToken,
@@ -14432,7 +14847,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         });
         return 'skipped';
       }
-      await this.releaseChannelAutoPostAttachMarker({
+      await this.replacementAttachMarkerStore.releaseChannelAutoPost({
         chatId,
         messageId,
         lockToken: claim.lockToken,
@@ -14445,31 +14860,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       throw error;
     }
 
-    await this.prisma.auditLog.create({
-      data: {
-        chatId,
-        actorUserId: senderId ?? 'system',
-        action: CHANNEL_DIALOG_AUTO_ATTACH_ACTION,
-        payload: {
-          messageId,
-          threadId,
-          includeCommentsButton,
-          includeSuggestButton,
-          autoPostButtonsMode: managedChannel.channelSettings.autoPostButtonsMode ?? 'OFF',
-          suggestionEntryMode: managedChannel.channelSettings.postSuggestionsEntryMode,
-          deliveryMode,
-          linkType,
-          replacementMessageId,
-          ...(publishedUrl ? { publishedUrl } : {}),
-          ...(replyMessageId ? { replyMessageId } : {}),
-          ...(text?.trim() ? { text } : {}),
-          originalDeleted,
-          source,
-          ...(autoAttachBotId ? { botId: autoAttachBotId } : {}),
-        },
-      },
-    });
-    await this.completeChannelAutoPostAttachMarker({
+    await this.replacementAttachMarkerStore.completeChannelAutoPost({
       chatId,
       messageId,
       lockToken: claim.lockToken,
@@ -14480,9 +14871,48 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       deliveryMode,
       replacementMessageId,
       publishedUrl,
-      lastError: null,
-      lastStatusCode: null,
+      originalDeleted,
+      lastError: originalCleanupError,
+      lastStatusCode: originalCleanupStatusCode,
     });
+    try {
+      await this.prisma.auditLog.create({
+        data: {
+          chatId,
+          actorUserId: senderId ?? 'system',
+          action: CHANNEL_DIALOG_AUTO_ATTACH_ACTION,
+          payload: {
+            messageId,
+            threadId,
+            includeCommentsButton,
+            includeSuggestButton,
+            autoPostButtonsMode: managedChannel.channelSettings.autoPostButtonsMode ?? 'OFF',
+            suggestionEntryMode: managedChannel.channelSettings.postSuggestionsEntryMode,
+            deliveryMode,
+            linkType,
+            replacementMessageId,
+            ...(publishedUrl ? { publishedUrl } : {}),
+            ...(replyMessageId ? { replyMessageId } : {}),
+            ...(text?.trim() ? { text } : {}),
+            originalDeleted,
+            cleanupState: originalDeleted ? 'confirmed' : originalCleanupError ? 'failed' : 'owned',
+            ...(originalCleanupError ? { cleanupError: originalCleanupError } : {}),
+            source,
+            ...(autoAttachBotId ? { botId: autoAttachBotId } : {}),
+          },
+        },
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          messageId,
+          replacementMessageId,
+          error: this.extractErrorSummary(error),
+        },
+        'Failed to persist channel auto-post attach audit after durable completion',
+      );
+    }
     return 'attached';
   }
 
@@ -14496,516 +14926,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return `https://max.ru/chats/${encodeURIComponent(normalizedChatId)}/message/${encodeURIComponent(
       normalizedMessageId,
     )}`;
-  }
-
-  private getChannelAutoPostAttachMarkerDelegate(): {
-    findUnique?: (args: unknown) => Promise<{
-      status: ChannelAutoPostAttachStatus;
-      lockedAt: Date | null;
-    } | null>;
-    create?: (args: unknown) => Promise<unknown>;
-    createMany?: (args: unknown) => Promise<{ count: number }>;
-    update?: (args: unknown) => Promise<unknown>;
-    updateMany?: (args: unknown) => Promise<{ count: number }>;
-  } | null {
-    return (
-      (
-        this.prisma as unknown as {
-          channelAutoPostAttachMarker?: {
-            findUnique?: (args: unknown) => Promise<{
-              status: ChannelAutoPostAttachStatus;
-              lockedAt: Date | null;
-            } | null>;
-            create?: (args: unknown) => Promise<unknown>;
-            createMany?: (args: unknown) => Promise<{ count: number }>;
-            update?: (args: unknown) => Promise<unknown>;
-            updateMany?: (args: unknown) => Promise<{ count: number }>;
-          };
-        }
-      ).channelAutoPostAttachMarker ?? null
-    );
-  }
-
-  private async claimChannelAutoPostAttachMarker(params: {
-    chatId: string;
-    messageId: string;
-    source: 'webhook' | 'poll';
-    botId: string | null;
-    linkType: string | null;
-  }): Promise<ChannelAutoPostAttachClaim> {
-    if (await this.hasCompletedChannelAutoPostAttachMarker(params.chatId, params.messageId)) {
-      return { status: 'done' };
-    }
-
-    const delegate = this.getChannelAutoPostAttachMarkerDelegate();
-    const lockToken = randomUUID();
-    const now = new Date();
-    if (
-      !delegate?.findUnique ||
-      (!delegate.create && !delegate.createMany) ||
-      !delegate.updateMany
-    ) {
-      return { status: 'claimed', lockToken };
-    }
-
-    const existing = await delegate.findUnique({
-      where: {
-        chatId_messageId: {
-          chatId: params.chatId,
-          messageId: params.messageId,
-        },
-      },
-      select: {
-        status: true,
-        lockedAt: true,
-      },
-    });
-
-    if (
-      existing?.status === CHANNEL_AUTO_POST_ATTACH_STATUS.SUCCEEDED ||
-      existing?.status === CHANNEL_AUTO_POST_ATTACH_STATUS.SKIPPED
-    ) {
-      return { status: 'done' };
-    }
-
-    if (!existing) {
-      const createData = {
-        chatId: params.chatId,
-        messageId: params.messageId,
-        status: CHANNEL_AUTO_POST_ATTACH_STATUS.IN_PROGRESS,
-        lockToken,
-        lockedAt: now,
-        source: params.source,
-        botId: params.botId,
-        linkType: params.linkType,
-      };
-      if (delegate.createMany) {
-        const created = await delegate.createMany({
-          data: [createData],
-          skipDuplicates: true,
-        });
-        if (created.count > 0) {
-          return { status: 'claimed', lockToken };
-        }
-      } else if (delegate.create) {
-        try {
-          await delegate.create({
-            data: createData,
-          });
-          return { status: 'claimed', lockToken };
-        } catch (error: unknown) {
-          if (!this.isPrismaKnownError(error, 'P2002')) {
-            throw error;
-          }
-        }
-      }
-    }
-
-    const staleLockedBefore = new Date(Date.now() - CHANNEL_AUTO_POST_ATTACH_LOCK_TTL_MS);
-    const claimed = await delegate.updateMany({
-      where: {
-        chatId: params.chatId,
-        messageId: params.messageId,
-        status: CHANNEL_AUTO_POST_ATTACH_STATUS.IN_PROGRESS,
-        OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockedBefore } }],
-      },
-      data: {
-        lockToken,
-        lockedAt: now,
-        source: params.source,
-        botId: params.botId,
-        linkType: params.linkType,
-      },
-    });
-
-    return claimed.count > 0 ? { status: 'claimed', lockToken } : { status: 'in_progress' };
-  }
-
-  private async hasCompletedChannelAutoPostAttachMarker(
-    chatId: string,
-    messageId: string,
-  ): Promise<boolean> {
-    const delegate = this.getChannelAutoPostAttachMarkerDelegate();
-    if (delegate?.findUnique) {
-      const marker = await delegate.findUnique({
-        where: {
-          chatId_messageId: {
-            chatId,
-            messageId,
-          },
-        },
-        select: {
-          status: true,
-          lockedAt: true,
-        },
-      });
-      if (
-        marker?.status === CHANNEL_AUTO_POST_ATTACH_STATUS.SUCCEEDED ||
-        marker?.status === CHANNEL_AUTO_POST_ATTACH_STATUS.SKIPPED
-      ) {
-        return true;
-      }
-    }
-
-    const alreadyAttached = await this.prisma.auditLog.findFirst({
-      where: {
-        chatId,
-        action: {
-          in: [CHANNEL_DIALOG_AUTO_ATTACH_ACTION, CHANNEL_DIALOG_AUTO_ATTACH_SKIP_ACTION],
-        },
-        payload: {
-          path: ['messageId'],
-          equals: messageId,
-        },
-      },
-      select: {
-        id: true,
-      },
-    });
-    return Boolean(alreadyAttached);
-  }
-
-  private async completeChannelAutoPostAttachMarker(params: {
-    chatId: string;
-    messageId: string;
-    lockToken: string;
-    status:
-      | typeof CHANNEL_AUTO_POST_ATTACH_STATUS.SUCCEEDED
-      | typeof CHANNEL_AUTO_POST_ATTACH_STATUS.SKIPPED;
-    source: 'webhook' | 'poll';
-    botId: string | null;
-    linkType: string | null;
-    deliveryMode: string | null;
-    replacementMessageId?: string | null;
-    publishedUrl?: string | null;
-    lastError: string | null;
-    lastStatusCode: number | null;
-  }): Promise<void> {
-    const delegate = this.getChannelAutoPostAttachMarkerDelegate();
-    if (!delegate?.updateMany) {
-      return;
-    }
-
-    await delegate.updateMany({
-      where: {
-        chatId: params.chatId,
-        messageId: params.messageId,
-        lockToken: params.lockToken,
-        status: CHANNEL_AUTO_POST_ATTACH_STATUS.IN_PROGRESS,
-      },
-      data: {
-        status: params.status,
-        lockToken: null,
-        lockedAt: null,
-        source: params.source,
-        botId: params.botId,
-        linkType: params.linkType,
-        deliveryMode: params.deliveryMode,
-        replacementMessageId: params.replacementMessageId ?? null,
-        publishedUrl: params.publishedUrl ?? null,
-        lastError: params.lastError,
-        lastStatusCode: params.lastStatusCode,
-      },
-    });
-  }
-
-  private async releaseChannelAutoPostAttachMarker(params: {
-    chatId: string;
-    messageId: string;
-    lockToken: string;
-    source: 'webhook' | 'poll';
-    botId: string | null;
-    linkType: string | null;
-    lastError: string | null;
-    lastStatusCode: number | null;
-  }): Promise<void> {
-    const delegate = this.getChannelAutoPostAttachMarkerDelegate();
-    if (!delegate?.updateMany) {
-      return;
-    }
-
-    await delegate.updateMany({
-      where: {
-        chatId: params.chatId,
-        messageId: params.messageId,
-        lockToken: params.lockToken,
-        status: CHANNEL_AUTO_POST_ATTACH_STATUS.IN_PROGRESS,
-      },
-      data: {
-        lockToken: null,
-        lockedAt: null,
-        source: params.source,
-        botId: params.botId,
-        linkType: params.linkType,
-        lastError: params.lastError,
-        lastStatusCode: params.lastStatusCode,
-      },
-    });
-  }
-
-  private getChatAutoCommentAttachMarkerDelegate(): {
-    findUnique?: (args: unknown) => Promise<{
-      status: ChatAutoCommentAttachStatus;
-      lockedAt: Date | null;
-    } | null>;
-    create?: (args: unknown) => Promise<unknown>;
-    createMany?: (args: unknown) => Promise<{ count: number }>;
-    updateMany?: (args: unknown) => Promise<{ count: number }>;
-  } | null {
-    return (
-      (
-        this.prisma as unknown as {
-          chatAutoCommentAttachMarker?: {
-            findUnique?: (args: unknown) => Promise<{
-              status: ChatAutoCommentAttachStatus;
-              lockedAt: Date | null;
-            } | null>;
-            create?: (args: unknown) => Promise<unknown>;
-            createMany?: (args: unknown) => Promise<{ count: number }>;
-            updateMany?: (args: unknown) => Promise<{ count: number }>;
-          };
-        }
-      ).chatAutoCommentAttachMarker ?? null
-    );
-  }
-
-  private async claimChatAutoCommentAttachMarker(params: {
-    chatId: string;
-    messageId: string;
-    source: 'webhook';
-    botId: string | null;
-  }): Promise<ChatAutoCommentAttachClaim> {
-    if (await this.hasCompletedChatAutoCommentAttachMarker(params.chatId, params.messageId)) {
-      return { status: 'done' };
-    }
-
-    const delegate = this.getChatAutoCommentAttachMarkerDelegate();
-    const lockToken = randomUUID();
-    const now = new Date();
-    if (
-      !delegate?.findUnique ||
-      (!delegate.create && !delegate.createMany) ||
-      !delegate.updateMany
-    ) {
-      return { status: 'claimed', lockToken };
-    }
-
-    const existing = await delegate.findUnique({
-      where: {
-        chatId_messageId: {
-          chatId: params.chatId,
-          messageId: params.messageId,
-        },
-      },
-      select: {
-        status: true,
-        lockedAt: true,
-      },
-    });
-
-    if (
-      existing?.status === CHAT_AUTO_COMMENT_ATTACH_STATUS.SUCCEEDED ||
-      existing?.status === CHAT_AUTO_COMMENT_ATTACH_STATUS.SKIPPED
-    ) {
-      return { status: 'done' };
-    }
-
-    if (!existing) {
-      const createData = {
-        chatId: params.chatId,
-        messageId: params.messageId,
-        status: CHAT_AUTO_COMMENT_ATTACH_STATUS.IN_PROGRESS,
-        lockToken,
-        lockedAt: now,
-        source: params.source,
-        botId: params.botId,
-      };
-      if (delegate.createMany) {
-        const created = await delegate.createMany({
-          data: [createData],
-          skipDuplicates: true,
-        });
-        if (created.count > 0) {
-          return { status: 'claimed', lockToken };
-        }
-      } else if (delegate.create) {
-        try {
-          await delegate.create({
-            data: createData,
-          });
-          return { status: 'claimed', lockToken };
-        } catch (error: unknown) {
-          if (!this.isPrismaKnownError(error, 'P2002')) {
-            throw error;
-          }
-        }
-      }
-    }
-
-    const staleLockedBefore = new Date(Date.now() - CHAT_AUTO_COMMENT_ATTACH_LOCK_TTL_MS);
-    const claimed = await delegate.updateMany({
-      where: {
-        chatId: params.chatId,
-        messageId: params.messageId,
-        status: CHAT_AUTO_COMMENT_ATTACH_STATUS.IN_PROGRESS,
-        OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockedBefore } }],
-      },
-      data: {
-        lockToken,
-        lockedAt: now,
-        source: params.source,
-        botId: params.botId,
-      },
-    });
-
-    return claimed.count > 0 ? { status: 'claimed', lockToken } : { status: 'in_progress' };
-  }
-
-  private async hasCompletedChatAutoCommentAttachMarker(
-    chatId: string,
-    messageId: string,
-  ): Promise<boolean> {
-    const delegate = this.getChatAutoCommentAttachMarkerDelegate();
-    if (delegate?.findUnique) {
-      const marker = await delegate.findUnique({
-        where: {
-          chatId_messageId: {
-            chatId,
-            messageId,
-          },
-        },
-        select: {
-          status: true,
-          lockedAt: true,
-        },
-      });
-      if (
-        marker?.status === CHAT_AUTO_COMMENT_ATTACH_STATUS.SUCCEEDED ||
-        marker?.status === CHAT_AUTO_COMMENT_ATTACH_STATUS.SKIPPED
-      ) {
-        return true;
-      }
-    }
-
-    const alreadyAttached = await this.prisma.auditLog.findFirst({
-      where: {
-        chatId,
-        action: CHAT_DIALOG_AUTO_ATTACH_ACTION,
-        payload: {
-          path: ['messageId'],
-          equals: messageId,
-        },
-      },
-      select: {
-        id: true,
-      },
-    });
-    return Boolean(alreadyAttached);
-  }
-
-  private async completeChatAutoCommentAttachMarker(params: {
-    chatId: string;
-    messageId: string;
-    lockToken: string;
-    status:
-      | typeof CHAT_AUTO_COMMENT_ATTACH_STATUS.SUCCEEDED
-      | typeof CHAT_AUTO_COMMENT_ATTACH_STATUS.SKIPPED;
-    source: 'webhook';
-    botId: string | null;
-    deliveryMode: string | null;
-    replacementMessageId?: string | null;
-    replyMessageId?: string | null;
-    publishedUrl?: string | null;
-    originalDeleted: boolean;
-    lastError: string | null;
-    lastStatusCode: number | null;
-  }): Promise<void> {
-    const delegate = this.getChatAutoCommentAttachMarkerDelegate();
-    if (!delegate?.updateMany) {
-      return;
-    }
-
-    await delegate.updateMany({
-      where: {
-        chatId: params.chatId,
-        messageId: params.messageId,
-        lockToken: params.lockToken,
-        status: CHAT_AUTO_COMMENT_ATTACH_STATUS.IN_PROGRESS,
-      },
-      data: {
-        status: params.status,
-        lockToken: null,
-        lockedAt: null,
-        source: params.source,
-        botId: params.botId,
-        deliveryMode: params.deliveryMode,
-        replacementMessageId: params.replacementMessageId ?? null,
-        replyMessageId: params.replyMessageId ?? null,
-        publishedUrl: params.publishedUrl ?? null,
-        originalDeleted: params.originalDeleted,
-        lastError: params.lastError,
-        lastStatusCode: params.lastStatusCode,
-      },
-    });
-  }
-
-  private async recordChatAutoCommentReplacementMessage(params: {
-    chatId: string;
-    messageId: string;
-    lockToken: string;
-    replacementMessageId: string;
-  }): Promise<void> {
-    const delegate = this.getChatAutoCommentAttachMarkerDelegate();
-    if (!delegate?.updateMany) {
-      return;
-    }
-
-    const updated = await delegate.updateMany({
-      where: {
-        chatId: params.chatId,
-        messageId: params.messageId,
-        lockToken: params.lockToken,
-        status: CHAT_AUTO_COMMENT_ATTACH_STATUS.IN_PROGRESS,
-      },
-      data: {
-        replacementMessageId: params.replacementMessageId,
-      },
-    });
-    if (updated.count !== 1) {
-      throw new Error('Failed to persist the chat auto-comment replacement message marker');
-    }
-  }
-
-  private async releaseChatAutoCommentAttachMarker(params: {
-    chatId: string;
-    messageId: string;
-    lockToken: string;
-    source: 'webhook';
-    botId: string | null;
-    lastError: string | null;
-    lastStatusCode: number | null;
-  }): Promise<void> {
-    const delegate = this.getChatAutoCommentAttachMarkerDelegate();
-    if (!delegate?.updateMany) {
-      return;
-    }
-
-    await delegate.updateMany({
-      where: {
-        chatId: params.chatId,
-        messageId: params.messageId,
-        lockToken: params.lockToken,
-        status: CHAT_AUTO_COMMENT_ATTACH_STATUS.IN_PROGRESS,
-      },
-      data: {
-        lockToken: null,
-        lockedAt: null,
-        source: params.source,
-        botId: params.botId,
-        lastError: params.lastError,
-        lastStatusCode: params.lastStatusCode,
-      },
-    });
   }
 
   private async recordChannelAutoPostTerminalSkip(params: {
@@ -15252,7 +15172,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const claim = await this.claimChatAutoCommentAttachMarker({
+    const claim = await this.replacementAttachMarkerStore.claimChatAutoComment({
       chatId,
       messageId,
       source: 'webhook',
@@ -15283,6 +15203,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     let replyMessageId: string | null = null;
     let publishedUrl: string | null = null;
     let originalDeleted = false;
+    let originalCleanupError: string | null = null;
+    let originalCleanupStatusCode: number | null = null;
+    let replacementSendStarted = false;
+    let replySendStarted = false;
 
     if (senderIsAdmin) {
       try {
@@ -15292,6 +15216,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           text,
           {
             buttons,
+            beforeSend: async () => {
+              await this.replacementAttachMarkerStore.recordChatReplacementSendStarted({
+                chatId,
+                messageId,
+                lockToken: claim.lockToken,
+              });
+              replacementSendStarted = true;
+            },
             debugContext: {
               screen: 'chat-auto-comments',
               action: 'replace-admin-message-with-bot-copy',
@@ -15304,6 +15236,33 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         deliveryMode = 'replace_with_bot_message';
       } catch (error: unknown) {
         const status = this.extractStatusCode(error);
+        if (
+          (replacementSendStarted || wasMaxMessageSendAttempted(error)) &&
+          isAmbiguousMaxSendError(error)
+        ) {
+          this.logger.error(
+            {
+              chatId,
+              messageId,
+              status,
+              error: error instanceof Error ? error.message : String(error),
+            },
+            'Quarantined ambiguous admin chat replacement send without automatic retry',
+          );
+          await this.replacementAttachMarkerStore.completeChatAutoComment({
+            chatId,
+            messageId,
+            lockToken: claim.lockToken,
+            status: CHAT_AUTO_COMMENT_ATTACH_STATUS.SKIPPED,
+            source: 'webhook',
+            botId: autoAttachBotId,
+            deliveryMode: 'replace_with_bot_message',
+            originalDeleted: false,
+            lastError: `${MAX_SEND_AMBIGUOUS_ERROR_PREFIX} Ambiguous replacement send: ${this.extractErrorSummary(error)}`,
+            lastStatusCode: status,
+          });
+          return;
+        }
         if (status && status < 500 && status !== 429) {
           this.logger.warn(
             {
@@ -15314,7 +15273,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             },
             'Failed to publish bot copy for admin chat message; skipping retry',
           );
-          await this.completeChatAutoCommentAttachMarker({
+          await this.replacementAttachMarkerStore.completeChatAutoComment({
             chatId,
             messageId,
             lockToken: claim.lockToken,
@@ -15328,7 +15287,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           });
           return;
         }
-        await this.releaseChatAutoCommentAttachMarker({
+        await this.replacementAttachMarkerStore.releaseChatAutoComment({
           chatId,
           messageId,
           lockToken: claim.lockToken,
@@ -15342,20 +15301,74 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       // FLAG: Persist the copy ID before awaiting the original deletion. Its webhook can run
       // in another worker immediately after send succeeds.
-      await this.recordChatAutoCommentReplacementMessage({
-        chatId,
-        messageId,
-        lockToken: claim.lockToken,
-        replacementMessageId,
-      });
+      try {
+        await this.replacementAttachMarkerStore.recordChatReplacementMessage({
+          chatId,
+          messageId,
+          lockToken: claim.lockToken,
+          replacementMessageId,
+          publishedUrl,
+        });
+      } catch (error: unknown) {
+        this.logger.error(
+          {
+            chatId,
+            messageId,
+            replacementMessageId,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'Quarantined delivered chat replacement after marker persistence failure',
+        );
+        await this.replacementAttachMarkerStore.completeChatAutoComment({
+          chatId,
+          messageId,
+          lockToken: claim.lockToken,
+          status: CHAT_AUTO_COMMENT_ATTACH_STATUS.SUCCEEDED,
+          source: 'webhook',
+          botId: autoAttachBotId,
+          deliveryMode: 'replace_with_bot_message',
+          replacementMessageId,
+          publishedUrl,
+          originalDeleted: false,
+          lastError: `Delivered replacement marker persistence failed: ${this.extractErrorSummary(error)}`,
+          lastStatusCode: this.extractStatusCode(error),
+        });
+        return;
+      }
 
       try {
-        await this.maxClient.deleteMessage(chatId, messageId, {
-          immediate: true,
-          ...(mutationRequestOptions ?? {}),
-        });
-        originalDeleted = true;
+        const cleanupInput: EnsureModerationDeleteIntentInput = {
+          chatId,
+          messageId,
+          reasonKey: 'chat_auto_comment_admin_message_replacement_cleanup',
+          ruleCode: 'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP',
+          subjectUserId: senderId,
+          entityType: 'CHAT',
+          messageAuthorKind: 'user',
+          originBotId: autoAttachBotId,
+          routingPolicy: 'origin_first',
+          event: {
+            eventType: null,
+            metadata: {
+              source: 'webhook',
+              cleanupKind: 'chat_auto_comment_admin_message_replacement',
+              replacementMessageId,
+            },
+          },
+        };
+        await this.ensureModerationDeleteIntent(cleanupInput, mutationRequestOptions);
+        const cleanup = await this.executeModerationDelete(cleanupInput, mutationRequestOptions);
+        originalDeleted = cleanup.gone;
+        if (!cleanup.accepted) {
+          originalCleanupError = 'Durable cleanup reached a terminal state';
+          this.logger.warn(
+            { chatId, messageId, replacementMessageId },
+            'Durable cleanup could not accept original admin chat message deletion',
+          );
+        }
       } catch (deleteError: unknown) {
+        originalCleanupError = this.extractErrorSummary(deleteError);
+        originalCleanupStatusCode = this.extractStatusCode(deleteError);
         this.logger.warn(
           {
             chatId,
@@ -15368,7 +15381,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         );
       }
 
-      await this.completeChatAutoCommentAttachMarker({
+      await this.replacementAttachMarkerStore.completeChatAutoComment({
         chatId,
         messageId,
         lockToken: claim.lockToken,
@@ -15379,8 +15392,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         replacementMessageId,
         publishedUrl,
         originalDeleted,
-        lastError: null,
-        lastStatusCode: null,
+        lastError: originalCleanupError,
+        lastStatusCode: originalCleanupStatusCode,
       });
 
       await this.prisma.auditLog.create({
@@ -15396,6 +15409,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             replacementMessageId,
             ...(publishedUrl ? { publishedUrl } : {}),
             originalDeleted,
+            cleanupState: originalDeleted ? 'confirmed' : originalCleanupError ? 'failed' : 'owned',
+            ...(originalCleanupError ? { cleanupError: originalCleanupError } : {}),
             ...(autoAttachBotId ? { botId: autoAttachBotId } : {}),
           },
         },
@@ -15439,6 +15454,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                 type: 'reply',
                 mid: messageId,
               },
+              beforeSend: async () => {
+                await this.replacementAttachMarkerStore.recordChatReplySendStarted({
+                  chatId,
+                  messageId,
+                  lockToken: claim.lockToken,
+                });
+                replySendStarted = true;
+              },
             },
             mutationRequestOptions,
           );
@@ -15446,6 +15469,34 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           replyMessageId = sent.messageId;
         } catch (fallbackError: unknown) {
           const fallbackStatus = this.extractStatusCode(fallbackError);
+          if (
+            (replySendStarted || wasMaxMessageSendAttempted(fallbackError)) &&
+            isAmbiguousMaxSendError(fallbackError)
+          ) {
+            this.logger.error(
+              {
+                chatId,
+                messageId,
+                status: fallbackStatus,
+                error:
+                  fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+              },
+              'Quarantined ambiguous fallback chat comments reply without automatic retry',
+            );
+            await this.replacementAttachMarkerStore.completeChatAutoComment({
+              chatId,
+              messageId,
+              lockToken: claim.lockToken,
+              status: CHAT_AUTO_COMMENT_ATTACH_STATUS.SKIPPED,
+              source: 'webhook',
+              botId: autoAttachBotId,
+              deliveryMode: 'reply_message',
+              originalDeleted: false,
+              lastError: `${MAX_SEND_AMBIGUOUS_ERROR_PREFIX} Ambiguous fallback reply send: ${this.extractErrorSummary(fallbackError)}`,
+              lastStatusCode: fallbackStatus,
+            });
+            return;
+          }
           if (fallbackStatus && fallbackStatus < 500 && fallbackStatus !== 429) {
             this.logger.warn(
               {
@@ -15456,7 +15507,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               },
               'Failed to send fallback chat comments reply; skipping retry',
             );
-            await this.completeChatAutoCommentAttachMarker({
+            await this.replacementAttachMarkerStore.completeChatAutoComment({
               chatId,
               messageId,
               lockToken: claim.lockToken,
@@ -15470,7 +15521,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             });
             return;
           }
-          await this.releaseChatAutoCommentAttachMarker({
+          await this.replacementAttachMarkerStore.releaseChatAutoComment({
             chatId,
             messageId,
             lockToken: claim.lockToken,
@@ -15481,8 +15532,41 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           });
           throw fallbackError;
         }
+
+        try {
+          await this.replacementAttachMarkerStore.recordChatReplyMessage({
+            chatId,
+            messageId,
+            lockToken: claim.lockToken,
+            replyMessageId,
+          });
+        } catch (markerError: unknown) {
+          this.logger.error(
+            {
+              chatId,
+              messageId,
+              replyMessageId,
+              error: markerError instanceof Error ? markerError.message : String(markerError),
+            },
+            'Quarantined delivered fallback chat comments reply after marker persistence failure',
+          );
+          await this.replacementAttachMarkerStore.completeChatAutoComment({
+            chatId,
+            messageId,
+            lockToken: claim.lockToken,
+            status: CHAT_AUTO_COMMENT_ATTACH_STATUS.SUCCEEDED,
+            source: 'webhook',
+            botId: autoAttachBotId,
+            deliveryMode: 'reply_message',
+            replyMessageId,
+            originalDeleted: false,
+            lastError: `Delivered fallback reply marker persistence failed: ${this.extractErrorSummary(markerError)}`,
+            lastStatusCode: this.extractStatusCode(markerError),
+          });
+          return;
+        }
       } else {
-        await this.releaseChatAutoCommentAttachMarker({
+        await this.replacementAttachMarkerStore.releaseChatAutoComment({
           chatId,
           messageId,
           lockToken: claim.lockToken,
@@ -15495,7 +15579,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    await this.completeChatAutoCommentAttachMarker({
+    await this.replacementAttachMarkerStore.completeChatAutoComment({
       chatId,
       messageId,
       lockToken: claim.lockToken,
@@ -16127,16 +16211,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return resolvedUrl;
   }
 
-  private applyDegradeSettings(settings: ChatSettings, degradeMode: boolean): ChatSettings {
-    if (!degradeMode) {
-      return settings;
-    }
-
-    return {
-      ...settings,
-      commercialAdsFilterEnabled: false,
-      russianProfanityFilterEnabled: false,
-    };
+  private applyDegradeSettings(settings: ChatSettings, _degradeMode: boolean): ChatSettings {
+    return settings;
   }
 
   private readLowerString(value: unknown): string | null {
@@ -16540,7 +16616,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return !latestStage || !WEBHOOK_HOT_TIMEOUT_BACKOFF_SUPPRESSED_STAGES.has(latestStage);
   }
 
-  private shouldSkipHotChatModeration(
+  private shouldSkipOptionalHotChatStages(
     mode: SystemModeSnapshot,
     hotChatBackoffActive: boolean,
   ): boolean {
@@ -16555,7 +16631,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return mode.queueLagSec >= REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC;
   }
 
-  private logHotChatModerationSkip(chatId: string, userId: string, mode: SystemModeSnapshot): void {
+  private logOptionalHotChatStageSkip(
+    chatId: string,
+    userId: string,
+    mode: SystemModeSnapshot,
+  ): void {
     const now = Date.now();
     if (now - this.webhookHotChatSkipLogAtMs < WEBHOOK_HOT_CHAT_SKIP_LOG_INTERVAL_MS) {
       return;
@@ -16570,7 +16650,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         mode: mode.mode,
         reason: mode.reason || 'system pressure',
       },
-      'Skipped ordinary chat moderation because the chat is in hot-timeout backoff',
+      'Skipped optional remote moderation stages because the chat is in hot-timeout backoff',
     );
   }
 

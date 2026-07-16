@@ -1014,6 +1014,7 @@ function createPrismaMock() {
       }),
       findUnique: jest.fn().mockResolvedValue(null),
       update: jest.fn().mockResolvedValue(undefined),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     channelStatsSyncState: {
       findUnique: jest.fn().mockResolvedValue(null),
@@ -6344,6 +6345,12 @@ describe('AdminService.applyManualModerationAction', () => {
     const prisma = createPrismaMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['read_all_messages', 'write'],
+      }),
       cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
       kickMember: jest.fn().mockResolvedValue(undefined),
     };
@@ -6426,6 +6433,12 @@ describe('AdminService.applyManualModerationAction', () => {
     prisma.$queryRaw.mockResolvedValueOnce([{ user_id: 'user-2', sender_name: 'Мария' }]);
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['read_all_messages', 'write'],
+      }),
       cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
       kickMember: jest.fn().mockResolvedValue(undefined),
     };
@@ -6483,7 +6496,7 @@ describe('AdminService.applyManualModerationAction', () => {
         userId: 'bot-1',
         isAdmin: true,
         isOwner: false,
-        permissions: ['add_remove_members'],
+        permissions: ['add_remove_members', 'read_all_messages', 'write'],
       }),
       getChatMemberAccess: jest.fn().mockResolvedValue({
         userId: 'user-3',
@@ -6550,6 +6563,12 @@ describe('AdminService.applyManualModerationAction', () => {
     const prisma = createPrismaMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['read_all_messages', 'write'],
+      }),
       getChatMemberAccess: jest.fn().mockResolvedValue({
         userId: 'user-2',
         isAdmin: false,
@@ -6635,6 +6654,12 @@ describe('AdminService.applyManualModerationAction', () => {
       .mockResolvedValueOnce([{ message_id: 'mid-source-1' }]);
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['read_all_messages', 'write'],
+      }),
       getChatMemberAccess: jest.fn().mockResolvedValue({
         userId: 'user-2',
         isAdmin: false,
@@ -6731,6 +6756,12 @@ describe('AdminService.applyManualModerationAction', () => {
     prisma.$queryRaw.mockResolvedValueOnce([{ message_id: 'mid-source-1' }]);
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['read_all_messages', 'write'],
+      }),
       getChatMemberAccess: jest.fn().mockResolvedValue({
         userId: 'user-2',
         isAdmin: false,
@@ -6975,7 +7006,8 @@ describe('AdminService.applyManualModerationAction', () => {
             userId: botId,
             isAdmin: true,
             isOwner: false,
-            permissions: botId === 'standby-bot' ? ['delete_message'] : ['read_all_messages'],
+            permissions:
+              botId === 'standby-bot' ? ['read_all_messages', 'write'] : ['read_all_messages'],
           };
         }),
       getChatMemberAccess: jest.fn().mockResolvedValue({
@@ -7052,7 +7084,7 @@ describe('AdminService.applyManualModerationAction', () => {
     );
   });
 
-  it('allows manual mute when MAX omits explicit delete_message for an admin bot', async () => {
+  it('rejects manual mute when MAX omits confirmed chat delete capability', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
@@ -7103,35 +7135,22 @@ describe('AdminService.applyManualModerationAction', () => {
       maxBotRegistry as never,
     );
 
-    await service.applyManualModerationAction(
-      'chat-1',
-      'user-2',
-      {
-        userId: 'admin-1',
-        username: null,
-        displayName: null,
-        chatTitle: null,
-      },
-      { action: 'MUTE', muteDurationHours: 6 },
-    );
+    await expect(
+      service.applyManualModerationAction(
+        'chat-1',
+        'user-2',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { action: 'MUTE', muteDurationHours: 6 },
+      ),
+    ).rejects.toThrow('Не найден бот MAX с подтвержденным правом выполнить действие модерации');
 
-    expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith(
-      'chat-1',
-      'user-2',
-      expect.objectContaining({
-        botId: 'primary-bot',
-      }),
-    );
-    expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          chatId: 'chat-1',
-          userId: 'user-2',
-          ruleCode: 'MANUAL_MUTE',
-          action: 'MUTE',
-        }),
-      }),
-    );
+    expect(maxClient.getChatMemberAccess).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
   });
 
   it('rejects manual ban when no live-verified bot has add_remove_members', async () => {
@@ -7525,7 +7544,7 @@ describe('AdminService.applyManualModerationAction', () => {
         userId: 'bot-1',
         isAdmin: true,
         isOwner: false,
-        permissions: ['add_remove_members'],
+        permissions: ['add_remove_members', 'read_all_messages', 'write'],
       }),
       getChatMemberAccess: jest.fn().mockResolvedValue({
         userId: 'user-3',
@@ -8959,7 +8978,7 @@ describe('AdminService.applyManualSystemBan', () => {
         userId: 'bot-1',
         isAdmin: true,
         isOwner: false,
-        permissions: ['add_remove_members'],
+        permissions: ['add_remove_members', 'read_all_messages', 'write'],
       }),
       getChatMemberAccess: jest.fn().mockResolvedValue({
         userId: 'user-3',
@@ -9061,7 +9080,7 @@ describe('AdminService.applyManualSystemBan', () => {
         userId: 'bot-1-user',
         isAdmin: true,
         isOwner: false,
-        permissions: ['add_remove_members'],
+        permissions: ['add_remove_members', 'read_all_messages', 'write'],
       }),
       getChatMemberAccess: jest.fn().mockResolvedValue({
         userId: 'user-3',
@@ -9129,6 +9148,12 @@ describe('AdminService.applyManualSystemBan', () => {
     const prisma = createPrismaMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['read_all_messages', 'write'],
+      }),
       getChatMemberAccess: jest.fn().mockResolvedValue({
         userId: 'user-2',
         isAdmin: false,
@@ -9411,6 +9436,67 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
+  it('does not replay irreversible super-ban work when cleanup intent intake fails', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const ensureAndAttempt = jest.fn().mockRejectedValue(new Error('intent database unavailable'));
+    (service as any).moderationDeleteIntentService = {
+      getRolloutForChat: jest.fn().mockReturnValue('execute'),
+      ensureAndAttempt,
+    };
+    jest
+      .spyOn(service as any, 'resolveManualGroupCommandCleanupBotId')
+      .mockResolvedValue('command-bot');
+    const recordBlacklist = jest.spyOn(
+      service as any,
+      'recordDeveloperForcedGlobalBlacklistForJob',
+    );
+    const applySourceBan = jest.spyOn(service as any, 'applyDeveloperSuperBanSourceChat');
+
+    await expect(
+      service.processDeveloperSuperBanJob({
+        kind: 'developer_super_ban',
+        jobId: 'developer-super-ban-cleanup-intake-failure',
+        sourceChatId: 'chat-1',
+        commandBotId: 'command-bot',
+        targetUserId: 'user-2',
+        targetSenderName: 'Нарушитель',
+        targetMessageId: 'mid-target-1',
+        commandMessageId: 'mid-command-1',
+        actor: {
+          userId: '98315271',
+          username: null,
+          displayName: 'Разработчик',
+          chatId: 'chat-1',
+          chatTitle: 'Chat 1',
+        },
+        deleteBotMessagesEnabled: true,
+        deleteBotMessagesDelayMinutes: 3,
+      }),
+    ).rejects.toThrow('intent database unavailable');
+
+    expect(ensureAndAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'chat-1',
+        messageId: 'mid-target-1',
+        ruleCode: 'MANUAL_GROUP_COMMAND_TARGET_MESSAGE_CLEANUP',
+      }),
+    );
+    expect(recordBlacklist).not.toHaveBeenCalled();
+    expect(applySourceBan).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+  });
+
   it('records developer super ban blacklist and skips managed-chat fanout', async () => {
     const prisma = createPrismaMock();
     prisma.$queryRaw
@@ -9566,7 +9652,7 @@ describe('AdminService.applyManualSystemBan', () => {
             userId: botId,
             isAdmin: botId !== 'command-bot',
             isOwner: false,
-            permissions: botId === 'bot-6' ? ['delete_messages'] : ['read_all_messages'],
+            permissions: botId === 'bot-6' ? ['read_all_messages', 'write'] : ['read_all_messages'],
           };
         }),
     };
@@ -9963,6 +10049,205 @@ describe('AdminService.applyManualSystemBan', () => {
     );
   });
 
+  it('accepts pending durable group-command cleanup without issuing a second direct delete', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const deleteIntents = {
+      getRolloutForChat: jest.fn().mockReturnValue('execute'),
+      ensureAndAttempt: jest.fn().mockResolvedValue({
+        kind: 'pending',
+        confirmed: false,
+        intentId: 'intent-command-1',
+        status: 'RETRYABLE',
+      }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    (service as any).moderationDeleteIntentService = deleteIntents;
+
+    await (service as any).deleteManualGroupCommandMessage('chat-1', 'mid-command-1', {
+      botId: 'bot-2',
+      originBotId: 'bot-1',
+      actorUserId: 'admin-1',
+    });
+
+    expect(deleteIntents.ensureAndAttempt).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      messageId: 'mid-command-1',
+      reasonKey: 'manual_group_command_message_cleanup',
+      ruleCode: 'MANUAL_GROUP_COMMAND_MESSAGE_CLEANUP',
+      subjectUserId: 'admin-1',
+      entityType: 'CHAT',
+      messageAuthorKind: 'user',
+      originBotId: 'bot-1',
+      routingPolicy: 'origin_first',
+      event: {
+        userId: 'admin-1',
+        eventType: null,
+        metadata: {
+          source: 'admin_manual_action',
+          cleanupKind: 'group_command',
+          messageRole: 'command',
+        },
+      },
+    });
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the legacy direct delete after recording a shadow intent', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const deleteIntents = {
+      getRolloutForChat: jest.fn().mockReturnValue('observed'),
+      ensureAndAttempt: jest.fn().mockResolvedValue({
+        kind: 'observed',
+        confirmed: false,
+        intentId: 'intent-target-1',
+        status: 'OBSERVED',
+      }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    (service as any).moderationDeleteIntentService = deleteIntents;
+
+    await (service as any).deleteManualGroupCommandTargetMessage(
+      {
+        sourceChatId: 'chat-1',
+        commandBotId: 'origin-bot',
+        targetUserId: 'user-2',
+        targetMessageId: 'mid-target-1',
+      },
+      { botId: 'delete-bot' },
+    );
+
+    expect(deleteIntents.ensureAndAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: 'mid-target-1',
+        subjectUserId: 'user-2',
+        originBotId: 'origin-bot',
+        reasonKey: 'manual_group_command_target_message_cleanup',
+      }),
+    );
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-target-1', {
+      immediate: true,
+      trafficClass: 'interactive',
+      botId: 'delete-bot',
+    });
+  });
+
+  it('propagates execute-rollout intent persistence failures to the queue worker', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      deleteMessage: jest.fn(),
+    };
+    const deleteIntents = {
+      getRolloutForChat: jest.fn().mockReturnValue('execute'),
+      ensureAndAttempt: jest.fn().mockRejectedValue(new Error('database unavailable')),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    (service as any).moderationDeleteIntentService = deleteIntents;
+    jest.spyOn((service as any).logger, 'error').mockImplementation(() => undefined);
+
+    await expect(
+      (service as any).deleteManualGroupCommandMessage('chat-1', 'mid-command-1'),
+    ).rejects.toThrow('database unavailable');
+
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('counts waiting durable recent-message cleanup as accepted for eventual deletion', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw.mockResolvedValue([{ message_id: 'mid-recent-1' }]);
+    const maxClient = {
+      deleteMessage: jest.fn(),
+    };
+    const deleteIntents = {
+      getRolloutForChat: jest.fn().mockReturnValue('execute'),
+      ensureAndAttempt: jest.fn().mockResolvedValue({
+        kind: 'waiting_capability',
+        confirmed: false,
+        intentId: 'intent-recent-1',
+        status: 'WAITING_CAPABILITY',
+      }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    (service as any).moderationDeleteIntentService = deleteIntents;
+
+    await expect(
+      (service as any).deleteRecentTrackedMessagesForManualAction('chat-1', 'user-2', {
+        botId: 'origin-bot',
+      }),
+    ).resolves.toEqual({
+      candidateMessageIds: ['mid-recent-1'],
+      deletedMessageIds: ['mid-recent-1'],
+      failedMessageIds: [],
+    });
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(deleteIntents.ensureAndAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subjectUserId: 'user-2',
+        originBotId: 'origin-bot',
+        routingPolicy: 'origin_first',
+      }),
+    );
+  });
+
+  it('uses entity-specific strict permissions in manual delete assertions', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getCurrentChatMemberAccess: jest
+        .fn()
+        .mockResolvedValueOnce({
+          userId: 'bot-1',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages', 'write'],
+        })
+        .mockResolvedValueOnce({
+          userId: 'bot-1',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages', 'delete'],
+        }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      (service as any).assertBotCanDeleteMessages('channel-1', 'bot-1', ChatEntityType.CHANNEL),
+    ).rejects.toThrow('право delete');
+    await expect(
+      (service as any).assertBotCanDeleteMessages('channel-1', 'bot-1', ChatEntityType.CHANNEL),
+    ).resolves.toBeUndefined();
+  });
+
   it('uses a delete-capable bot for queued group command message cleanup after action reroute', async () => {
     const prisma = createPrismaMock();
     const candidateBotIds = ['bot-2', 'bot-3', 'bot-4', 'bot-5', 'bot-6'];
@@ -9977,7 +10262,7 @@ describe('AdminService.applyManualSystemBan', () => {
             userId: botId,
             isAdmin: botId !== 'bot-2',
             isOwner: false,
-            permissions: botId === 'bot-6' ? ['delete_messages'] : ['read_all_messages'],
+            permissions: botId === 'bot-6' ? ['read_all_messages', 'write'] : ['read_all_messages'],
           };
         }),
     };
@@ -10443,6 +10728,12 @@ describe('AdminService.applyManualSystemBan', () => {
     prisma.$queryRaw.mockResolvedValueOnce([{ message_id: 'mid-source-1' }]);
 
     const maxClient = {
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['read_all_messages', 'write'],
+      }),
       getChatMemberAccess: jest.fn().mockResolvedValue({
         userId: 'user-2',
         isAdmin: false,
@@ -10618,7 +10909,7 @@ describe('AdminService.applyManualSystemBan', () => {
         userId: 'bot-1',
         isAdmin: true,
         isOwner: false,
-        permissions: ['add_remove_members'],
+        permissions: ['add_remove_members', 'read_all_messages', 'write'],
       }),
       getChatMemberAccess: jest.fn().mockResolvedValue({
         userId: 'user-3',
@@ -10881,12 +11172,15 @@ describe('AdminService.applyManualSystemBan', () => {
     ]);
 
     const maxClient = {
-      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
-        userId: 'bot-2',
-        isAdmin: false,
-        isOwner: false,
-        permissions: [],
-      }),
+      getCurrentChatMemberAccess: jest
+        .fn()
+        .mockResolvedValueOnce({
+          userId: 'bot-2',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages', 'write'],
+        })
+        .mockRejectedValue(Object.assign(new Error('timeout'), { code: 'ECONNABORTED' })),
       getChatMemberAccess: jest.fn().mockResolvedValue({
         userId: 'user-2',
         isAdmin: false,
@@ -10957,7 +11251,7 @@ describe('AdminService.applyManualSystemBan', () => {
         userId: 'bot-2',
         isAdmin: true,
         isOwner: false,
-        permissions: ['delete_messages'],
+        permissions: ['read_all_messages', 'write'],
       }),
       getChatMemberAccess: jest.fn().mockResolvedValue({
         userId: 'user-2',
@@ -34629,8 +34923,8 @@ describe('AdminService chat rules', () => {
       },
       expectChatRulesSendOptions(),
     );
-    expect(prisma.chatRules.update).toHaveBeenCalledWith({
-      where: { chatId: 'chat-1' },
+    expect(prisma.chatRules.updateMany).toHaveBeenCalledWith({
+      where: { chatId: 'chat-1', publishOperationId: expect.any(String) },
       data: expect.objectContaining({
         publishedMessageId: 'mid-rules-2',
         publishedUrl: 'https://max.ru/chats/chat-1/message/456',
@@ -34727,8 +35021,8 @@ describe('AdminService chat rules', () => {
       },
       expectChatRulesSendOptions(),
     );
-    expect(prisma.chatRules.update).toHaveBeenCalledWith({
-      where: { chatId: 'chat-1' },
+    expect(prisma.chatRules.updateMany).toHaveBeenCalledWith({
+      where: { chatId: 'chat-1', publishOperationId: expect.any(String) },
       data: expect.objectContaining({
         text: expect.stringContaining('Пожалуйста, без мата и грубой лексики.'),
         publishedMessageId: 'mid-rules-auto-1',
@@ -34797,8 +35091,8 @@ describe('AdminService chat rules', () => {
       chatTitle: null,
     });
 
-    expect(prisma.chatRules.update).toHaveBeenCalledWith({
-      where: { chatId: 'chat-1' },
+    expect(prisma.chatRules.updateMany).toHaveBeenCalledWith({
+      where: { chatId: 'chat-1', publishOperationId: expect.any(String) },
       data: expect.objectContaining({
         publishedMessageId: 'mid-rules-3',
         publishedUrl: null,
@@ -35176,7 +35470,7 @@ describe('AdminService chat rules', () => {
     );
   });
 
-  it('deletes the previous published rules post after a successful republish', async () => {
+  it('records durable cleanup for the previous rules post after a successful republish', async () => {
     const prisma = createPrismaMock();
     prisma.chatRules.upsert.mockResolvedValue({
       id: 'rules-1',
@@ -35211,6 +35505,7 @@ describe('AdminService chat rules', () => {
     const chatContextCache = {
       invalidate: jest.fn(),
     };
+    const deleteBotAuthoredMessage = jest.fn().mockResolvedValue('accepted');
 
     const service = new AdminService(
       prisma as never,
@@ -35218,6 +35513,7 @@ describe('AdminService chat rules', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
+    (service as any).manualMessageCleanupService = { deleteBotAuthoredMessage };
     jest.spyOn(service as any, 'resolveManualActionBotAssignment').mockResolvedValue('chat-bot-2');
 
     await service.publishRules('chat-1', {
@@ -35228,13 +35524,22 @@ describe('AdminService chat rules', () => {
       chatTitle: null,
     });
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
-      'chat-1',
-      'mid-rules-old-1',
-      expectChatRulesDeleteOptions({ botId: 'old-rules-bot' }),
-    );
-    expect(prisma.chatRules.update).toHaveBeenCalledWith({
-      where: { chatId: 'chat-1' },
+    expect(deleteBotAuthoredMessage).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      messageId: 'mid-rules-old-1',
+      originBotId: 'old-rules-bot',
+      reasonKey: 'chat_rules_republish_previous_message_cleanup',
+      ruleCode: 'CHAT_RULES_REPUBLISH_PREVIOUS_MESSAGE_CLEANUP',
+      metadata: {
+        source: 'miniapp',
+        actorUserId: 'admin-1',
+        cleanupKind: 'chat_rules_republish',
+      },
+      directOptions: expectChatRulesDeleteOptions({ botId: 'old-rules-bot' }),
+    });
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.chatRules.updateMany).toHaveBeenCalledWith({
+      where: { chatId: 'chat-1', publishOperationId: expect.any(String) },
       data: expect.objectContaining({
         publishedMessageId: 'mid-rules-new-2',
         publishedBotId: 'chat-bot-2',
@@ -35435,15 +35740,31 @@ describe('AdminService chat rules', () => {
       'mid-rules-4',
       expectChatRulesDeleteOptions({ botId: 'rules-author-bot' }),
     );
-    expect(prisma.chatRules.update).toHaveBeenCalledWith({
-      where: { chatId: 'chat-1' },
-      data: {
-        publishedMessageId: null,
-        publishedBotId: null,
-        publishedUrl: null,
-        publishedAt: null,
-      },
-    });
+    expect(prisma.chatRules.updateMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: 'chat-1',
+          publishedMessageId: 'mid-rules-4',
+          pendingCleanupMessageId: null,
+        }),
+        data: expect.objectContaining({
+          pendingCleanupMessageId: 'mid-rules-4',
+          pendingCleanupKind: 'reset_current',
+        }),
+      }),
+    );
+    expect(prisma.chatRules.updateMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: { chatId: 'chat-1', publishedMessageId: 'mid-rules-4' },
+        data: expect.objectContaining({
+          publishedMessageId: null,
+          pendingCleanupMessageId: null,
+          pendingCleanupKind: null,
+        }),
+      }),
+    );
     expect(result).toEqual({
       text: 'Правила чата',
       imageBase64: '',
@@ -40520,6 +40841,12 @@ describe('AdminService.publishChannelEngagementMessage', () => {
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['read_all_messages', 'delete'],
+      }),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
       sendMessageImmediateWithResolvedLink: jest
         .fn()

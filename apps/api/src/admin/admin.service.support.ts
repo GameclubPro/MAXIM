@@ -238,6 +238,7 @@ export type ManualModerationExecutionOptions = {
 };
 export type ResolveManualModerationActionBotAssignmentOptions = {
   preferredBotId?: string | null;
+  entityType?: ChatEntityType;
 };
 
 export type ResolvedUserProfile = {

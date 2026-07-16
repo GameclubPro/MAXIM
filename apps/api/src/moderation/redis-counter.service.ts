@@ -25,6 +25,30 @@ end
 return {1, count}
 `;
 
+// FLAG: The deadline check must remain before INCR/SET. Callers may stop awaiting at the same
+// deadline, so a late script must be read-only and a completed write must remain replayable.
+const REPLAYABLE_INCREMENT_BEFORE_DEADLINE_SCRIPT = `
+local replayed_count = redis.call('GET', KEYS[2])
+if replayed_count then
+  return {2, tonumber(replayed_count) or -1}
+end
+
+local redis_time = redis.call('TIME')
+local now_ms = (tonumber(redis_time[1]) * 1000) + math.floor(tonumber(redis_time[2]) / 1000)
+if now_ms >= tonumber(ARGV[2]) then
+  return {0, 0}
+end
+
+local count = redis.call('INCR', KEYS[1])
+local full_ttl_ms = tonumber(ARGV[1]) * 1000
+local counter_pttl = redis.call('PTTL', KEYS[1])
+if counter_pttl < 0 then
+  redis.call('PEXPIRE', KEYS[1], full_ttl_ms)
+end
+redis.call('SET', KEYS[2], tostring(count), 'PX', full_ttl_ms)
+return {1, count}
+`;
+
 const INCREMENT_BY_WITH_TTL_SCRIPT = `
 local count = redis.call('INCRBY', KEYS[1], ARGV[1])
 local ttl = redis.call('TTL', KEYS[1])
@@ -50,6 +74,10 @@ if redis.call('get', KEYS[1]) == ARGV[1] then
 end
 return 0
 `;
+
+export type ReplayableDeadlineIncrementResult =
+  | { kind: 'deadline_exceeded' }
+  | { kind: 'inserted' | 'replayed'; count: number };
 
 @Injectable()
 export class RedisCounterService implements OnModuleDestroy {
@@ -85,6 +113,42 @@ export class RedisCounterService implements OnModuleDestroy {
       inserted: Number(result?.[0] ?? 0) > 0,
       count: Number(result?.[1] ?? 0),
     };
+  }
+
+  async incrementOncePerMemberWithTtlBeforeDeadline(
+    counterKey: string,
+    memberKey: string,
+    ttlSeconds: number,
+    deadlineAtMs: number,
+  ): Promise<ReplayableDeadlineIncrementResult> {
+    const normalizedTtlSeconds = Math.trunc(ttlSeconds);
+    const normalizedDeadlineAtMs = Math.trunc(deadlineAtMs);
+    if (
+      !Number.isFinite(normalizedTtlSeconds) ||
+      normalizedTtlSeconds <= 0 ||
+      !Number.isFinite(normalizedDeadlineAtMs) ||
+      normalizedDeadlineAtMs <= 0
+    ) {
+      throw new Error('Replayable counter TTL and deadline must be valid positive values');
+    }
+
+    const result = (await this.redis.eval(
+      REPLAYABLE_INCREMENT_BEFORE_DEADLINE_SCRIPT,
+      2,
+      counterKey,
+      memberKey,
+      String(normalizedTtlSeconds),
+      String(normalizedDeadlineAtMs),
+    )) as [number | string, number | string];
+    const status = Number(result?.[0]);
+    const count = Number(result?.[1]);
+    if (status === 0) {
+      return { kind: 'deadline_exceeded' };
+    }
+    if ((status === 1 || status === 2) && Number.isSafeInteger(count) && count > 0) {
+      return { kind: status === 1 ? 'inserted' : 'replayed', count };
+    }
+    throw new Error('Redis returned an invalid replayable counter result');
   }
 
   async incrementByWithTtl(key: string, amount: number, ttlSeconds: number): Promise<number> {

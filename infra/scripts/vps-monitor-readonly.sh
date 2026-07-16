@@ -396,6 +396,7 @@ queues=(
   max-actions-interactive
   max-actions-background
   night-mode-transitions
+  moderation-delete-intents
   managed-broadcast
   admin-managed-entities-refresh
   max-chat-admin-roster-sync

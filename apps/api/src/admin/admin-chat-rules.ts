@@ -12,14 +12,17 @@ import {
 } from '@maxim/contracts';
 import { BadRequestException } from '@nestjs/common';
 import type { Logger } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import type {
+  MaxActionDispatchOptions,
   MaxClientService,
   MaxMessageButton,
   MaxPublishedMessage,
   MaxSendMessageOptions,
 } from '../max/max-client.service';
 import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
+import { isAmbiguousMaxSendError } from '../max/max-send-ambiguity.util';
 import type { ChatRules as PersistedChatRules } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 import { normalizeLegacyProfileButtonUrl } from './admin-profile-links';
@@ -38,6 +41,14 @@ type ChatRulesFormattedPublication = {
   text: string;
   textFormat: MaxSendMessageOptions['textFormat'];
 };
+
+type ChatRulesDeleteOutcome = 'confirmed' | 'accepted' | 'failed';
+type DeletePublishedChatRulesMessage = (params: {
+  chatId: string;
+  messageId: string;
+  botId?: string;
+  directOptions: MaxActionDispatchOptions;
+}) => Promise<ChatRulesDeleteOutcome>;
 
 const CHAT_RULES_LINK_TIMEOUT_MS = 2_500;
 const CHAT_RULES_SEND_TIMEOUT_MS = 12_000;
@@ -78,6 +89,26 @@ function buildChatRulesDeleteOptions(botId?: string) {
     immediate: true,
     ...buildChatRulesSendOptions(botId),
   };
+}
+
+async function deletePublishedChatRulesMessage(params: {
+  maxClient: Pick<MaxClientService, 'deleteMessage'>;
+  deleteMessage?: DeletePublishedChatRulesMessage;
+  chatId: string;
+  messageId: string;
+  botId?: string;
+}): Promise<ChatRulesDeleteOutcome> {
+  const directOptions = buildChatRulesDeleteOptions(params.botId);
+  if (params.deleteMessage) {
+    return params.deleteMessage({
+      chatId: params.chatId,
+      messageId: params.messageId,
+      botId: params.botId,
+      directOptions,
+    });
+  }
+  await params.maxClient.deleteMessage(params.chatId, params.messageId, directOptions);
+  return 'confirmed';
 }
 
 export function decodeRulesImageBase64(value: string): Buffer {
@@ -284,13 +315,33 @@ export function extractMaxApiErrorMessage(error: unknown): string {
 
 export function isMaxMessageMissingError(error: unknown): boolean {
   const status = (error as { response?: { status?: number } })?.response?.status;
-  if (status === 404) {
-    return true;
+  const responseData = (error as { response?: { data?: unknown } })?.response?.data;
+  if (!responseData || typeof responseData !== 'object' || Array.isArray(responseData)) {
+    return false;
   }
 
-  const responseData = (error as { response?: { data?: unknown } })?.response?.data;
-  const normalized = JSON.stringify(responseData ?? '').toLowerCase();
-  return normalized.includes('not found') || normalized.includes('message_not_found');
+  const row = responseData as Record<string, unknown>;
+  const nestedError =
+    row.error && typeof row.error === 'object' && !Array.isArray(row.error)
+      ? (row.error as Record<string, unknown>)
+      : null;
+  const code = String(nestedError?.code ?? row.code ?? '')
+    .trim()
+    .toLowerCase();
+  const message = String(nestedError?.message ?? row.message ?? '')
+    .trim()
+    .toLowerCase();
+  const exactMessageCode = new Set([
+    'message.not.found',
+    'message_not_found',
+    'message.not_found',
+  ]).has(code);
+  const exactMessageText =
+    message.includes('message not found') || message.includes('message.not.found');
+
+  return (
+    (exactMessageCode && (status === 404 || status === 200)) || (status === 404 && exactMessageText)
+  );
 }
 
 export function resolveRulesImageFileName(fileName: string, mimeType: string): string {
@@ -563,6 +614,7 @@ export async function publishChatRules(params: {
     },
   ) => Promise<ChatRulesFormattedPublication>;
   sendPrivateConfirmation: (publishedUrl: string | null) => Promise<void>;
+  deletePreviousPublishedMessage?: DeletePublishedChatRulesMessage;
   sleep?: (ms: number) => Promise<void>;
 }): Promise<PublishChatRulesResult> {
   const rules = await ensureChatRules({
@@ -626,6 +678,24 @@ export async function publishChatRules(params: {
     adminContactButtonEnabled: rules.adminContactButtonEnabled,
     adminContactButtonUrl: rules.adminContactButtonUrl,
   });
+  const publishOperationId = randomUUID();
+  const claimed = await params.prisma.chatRules.updateMany({
+    where: {
+      chatId: params.chatId,
+      publishSendStartedAt: null,
+      pendingCleanupMessageId: null,
+    },
+    data: {
+      publishOperationId,
+      publishOperationBotId: resolvedBotId ?? null,
+      publishSendStartedAt: new Date(),
+    },
+  });
+  if (claimed.count !== 1) {
+    throw new BadRequestException(
+      'Предыдущая публикация правил имеет неопределённый результат. Проверьте Safety Desk перед повтором.',
+    );
+  }
   try {
     published = await publishChatRulesMessageWithRetry({
       maxClient: params.maxClient,
@@ -640,20 +710,108 @@ export async function publishChatRules(params: {
       sleep: params.sleep,
     });
   } catch (error: unknown) {
+    if (!isAmbiguousMaxSendError(error)) {
+      await params.prisma.chatRules
+        .updateMany({
+          where: { chatId: params.chatId, publishOperationId },
+          data: {
+            publishOperationId: null,
+            publishOperationBotId: null,
+            publishSendStartedAt: null,
+          },
+        })
+        .catch((releaseError: unknown) => {
+          params.logger.warn(
+            {
+              chatId: params.chatId,
+              actorUserId: params.actorUserId,
+              err: releaseError instanceof Error ? releaseError.message : String(releaseError),
+            },
+            'Failed to release a safely rejected chat rules publish fence',
+          );
+        });
+    }
     const maxApiMessage = extractMaxApiErrorMessage(error);
     throw new BadRequestException(maxApiMessage || 'Не удалось опубликовать правила.');
   }
 
+  const publishedAt = new Date();
+  const needsPreviousCleanup = Boolean(
+    previousPublishedMessageId && previousPublishedMessageId !== published.messageId,
+  );
+  try {
+    const finalized = await params.prisma.chatRules.updateMany({
+      where: {
+        chatId: params.chatId,
+        publishOperationId,
+      },
+      data: {
+        ...(autofilledText !== null ? { text: autofilledText } : {}),
+        publishedMessageId: published.messageId,
+        publishedBotId: resolvedBotId ?? null,
+        publishedUrl: published.url,
+        publishedAt,
+        publishOperationId: null,
+        publishOperationBotId: null,
+        publishSendStartedAt: null,
+        pendingCleanupMessageId: needsPreviousCleanup ? previousPublishedMessageId : null,
+        pendingCleanupBotId: needsPreviousCleanup
+          ? (previousPublishedBotId ?? resolvedBotId ?? null)
+          : null,
+        pendingCleanupIntentId: null,
+        pendingCleanupKind: needsPreviousCleanup ? 'republish_previous' : null,
+      },
+    });
+    if (finalized.count !== 1) {
+      throw new Error('Chat rules publish fence ownership was lost before finalization');
+    }
+  } catch (error: unknown) {
+    params.logger.warn(
+      {
+        chatId: params.chatId,
+        actorUserId: params.actorUserId,
+        messageId: published.messageId,
+        err: error instanceof Error ? error.message : String(error),
+      },
+      'MAX accepted chat rules, but the publication state could not be finalized',
+    );
+    throw new BadRequestException(
+      'MAX принял публикацию, но её результат не удалось сохранить. Повтор не выполняйте; проверьте Safety Desk.',
+    );
+  }
+
+  let previousCleanupOutcome: ChatRulesDeleteOutcome | 'not_needed' = 'not_needed';
+  let previousCleanupError: string | null = null;
+  let previousCleanupBotId: string | null = null;
   if (previousPublishedMessageId && previousPublishedMessageId !== published.messageId) {
     const deleteBotId = previousPublishedBotId ?? resolvedBotId;
+    previousCleanupBotId = deleteBotId ?? null;
     try {
-      await params.maxClient.deleteMessage(
-        params.chatId,
-        previousPublishedMessageId,
-        buildChatRulesDeleteOptions(deleteBotId),
-      );
+      const outcome = await deletePublishedChatRulesMessage({
+        maxClient: params.maxClient,
+        deleteMessage: params.deletePreviousPublishedMessage,
+        chatId: params.chatId,
+        messageId: previousPublishedMessageId,
+        botId: deleteBotId,
+      });
+      previousCleanupOutcome = outcome;
+      if (outcome === 'failed') {
+        previousCleanupError = 'Durable cleanup reached a terminal state';
+        params.logger.warn(
+          {
+            chatId: params.chatId,
+            actorUserId: params.actorUserId,
+            messageId: previousPublishedMessageId,
+          },
+          'Durable cleanup could not accept previous published chat rules post deletion',
+        );
+      }
     } catch (error: unknown) {
-      if (!isMaxMessageMissingError(error)) {
+      if (isMaxMessageMissingError(error)) {
+        previousCleanupOutcome = 'confirmed';
+      } else {
+        previousCleanupOutcome = 'failed';
+        previousCleanupError = error instanceof Error ? error.message : String(error);
         params.logger.warn(
           {
             chatId: params.chatId,
@@ -666,61 +824,133 @@ export async function publishChatRules(params: {
       }
     }
   }
+  if (previousCleanupOutcome === 'confirmed' && previousPublishedMessageId) {
+    await params.prisma.chatRules
+      .updateMany({
+        where: {
+          chatId: params.chatId,
+          pendingCleanupMessageId: previousPublishedMessageId,
+        },
+        data: {
+          pendingCleanupMessageId: null,
+          pendingCleanupBotId: null,
+          pendingCleanupIntentId: null,
+          pendingCleanupKind: null,
+        },
+      })
+      .catch((error: unknown) => {
+        params.logger.warn(
+          {
+            chatId: params.chatId,
+            messageId: previousPublishedMessageId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to finalize confirmed previous rules cleanup state',
+        );
+      });
+  }
 
-  const publishedAt = new Date();
-  await params.prisma.chatRules.update({
-    where: { chatId: params.chatId },
-    data: {
-      ...(autofilledText !== null ? { text: autofilledText } : {}),
-      publishedMessageId: published.messageId,
-      publishedBotId: resolvedBotId ?? null,
-      publishedUrl: published.url,
-      publishedAt,
-    },
-  });
-
-  await params.prisma.auditLog.create({
-    data: {
-      chatId: params.chatId,
-      actorUserId: params.actorUserId,
-      action: 'PUBLISH_CHAT_RULES',
-      payload: {
-        messageId: published.messageId,
-        botId: resolvedBotId ?? null,
-        url: published.url,
-        publishedAt: publishedAt.toISOString(),
-        buttonEnabled: rules.buttonEnabled,
-        adminContactButtonEnabled: rules.adminContactButtonEnabled,
-        hasImage: Boolean(imagePayload),
-        autofilledTextApplied: autofilledText !== null,
-        replacedPreviousPost: Boolean(
-          previousPublishedMessageId && previousPublishedMessageId !== published.messageId,
-        ),
-        source: params.source,
+  try {
+    await params.prisma.auditLog.create({
+      data: {
+        chatId: params.chatId,
+        actorUserId: params.actorUserId,
+        action: 'PUBLISH_CHAT_RULES',
+        payload: {
+          messageId: published.messageId,
+          botId: resolvedBotId ?? null,
+          url: published.url,
+          publishedAt: publishedAt.toISOString(),
+          buttonEnabled: rules.buttonEnabled,
+          adminContactButtonEnabled: rules.adminContactButtonEnabled,
+          hasImage: Boolean(imagePayload),
+          autofilledTextApplied: autofilledText !== null,
+          replacedPreviousPost: Boolean(
+            previousPublishedMessageId && previousPublishedMessageId !== published.messageId,
+          ),
+          previousPublishedMessageId,
+          previousPublishedBotId: previousCleanupBotId,
+          previousCleanupOutcome,
+          ...(previousCleanupError ? { previousCleanupError } : {}),
+          source: params.source,
+        },
       },
-    },
-  });
+    });
+  } catch (error: unknown) {
+    params.logger.warn(
+      {
+        chatId: params.chatId,
+        messageId: published.messageId,
+        err: error instanceof Error ? error.message : String(error),
+      },
+      'Failed to persist post-commit chat rules publish audit',
+    );
+  }
 
-  const hydratedRules = await hydratePublishedRulesUrl({
-    prisma: params.prisma,
-    chatContextCache: params.chatContextCache,
-    maxClient: params.maxClient,
-    logger: params.logger,
-    chatId: params.chatId,
-    rules: {
-      ...rules,
-      ...(autofilledText !== null ? { text: autofilledText } : {}),
-      publishedMessageId: published.messageId,
-      publishedBotId: resolvedBotId ?? null,
-      publishedUrl: published.url,
-      publishedAt,
-    },
-    resolveBotId: () => resolvedBotId,
-  });
-  await params.chatContextCache.invalidate(params.chatId);
+  const committedRules: PersistedChatRules = {
+    ...rules,
+    ...(autofilledText !== null ? { text: autofilledText } : {}),
+    publishedMessageId: published.messageId,
+    publishedBotId: resolvedBotId ?? null,
+    publishedUrl: published.url,
+    publishedAt,
+    publishOperationId: null,
+    publishOperationBotId: null,
+    publishSendStartedAt: null,
+    pendingCleanupMessageId: needsPreviousCleanup ? previousPublishedMessageId : null,
+    pendingCleanupBotId: needsPreviousCleanup
+      ? (previousPublishedBotId ?? resolvedBotId ?? null)
+      : null,
+    pendingCleanupIntentId: null,
+    pendingCleanupKind: needsPreviousCleanup ? 'republish_previous' : null,
+  };
+  let hydratedRules = committedRules;
+  try {
+    hydratedRules = await hydratePublishedRulesUrl({
+      prisma: params.prisma,
+      chatContextCache: params.chatContextCache,
+      maxClient: params.maxClient,
+      logger: params.logger,
+      chatId: params.chatId,
+      rules: committedRules,
+      resolveBotId: () => resolvedBotId,
+    });
+  } catch (error: unknown) {
+    params.logger.warn(
+      {
+        chatId: params.chatId,
+        messageId: published.messageId,
+        err: error instanceof Error ? error.message : String(error),
+      },
+      'Failed to hydrate committed chat rules publication url',
+    );
+  }
+  try {
+    await params.chatContextCache.invalidate(params.chatId);
+  } catch (error: unknown) {
+    params.logger.warn(
+      {
+        chatId: params.chatId,
+        messageId: published.messageId,
+        err: error instanceof Error ? error.message : String(error),
+      },
+      'Failed to invalidate chat rules cache after committed publish',
+    );
+  }
 
   if (params.source === 'miniapp') {
-    await params.sendPrivateConfirmation(hydratedRules.publishedUrl);
+    try {
+      await params.sendPrivateConfirmation(hydratedRules.publishedUrl);
+    } catch (error: unknown) {
+      params.logger.warn(
+        {
+          chatId: params.chatId,
+          messageId: published.messageId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to send post-commit chat rules publication confirmation',
+      );
+    }
   }
 
   return publishChatRulesResultSchema.parse({
@@ -735,10 +965,12 @@ export async function resetPublishedChatRules(params: {
   prisma: PrismaService;
   chatContextCache: Pick<ChatContextCacheService, 'invalidate'>;
   maxClient: Pick<MaxClientService, 'deleteMessage'>;
+  logger: Pick<Logger, 'warn'>;
   chatId: string;
   actorUserId: string;
   source: AdminActionSource;
   resolveBotId: () => Promise<string | undefined> | string | undefined;
+  deletePublishedMessage?: DeletePublishedChatRulesMessage;
 }): Promise<ChatRules> {
   const rules = await ensureChatRules({
     prisma: params.prisma,
@@ -747,16 +979,49 @@ export async function resetPublishedChatRules(params: {
   const publishedMessageId = rules.publishedMessageId?.trim() ?? '';
   const resolvedBotId = normalizeOptionalBotId(await params.resolveBotId());
   const deleteBotId = normalizeOptionalBotId(rules.publishedBotId) ?? resolvedBotId;
+  let cleanupOutcome: ChatRulesDeleteOutcome | 'not_needed' = 'not_needed';
 
   if (publishedMessageId) {
+    const alreadyOwned =
+      rules.pendingCleanupKind === 'reset_current' &&
+      rules.pendingCleanupMessageId === publishedMessageId;
+    if (!alreadyOwned) {
+      const claimed = await params.prisma.chatRules.updateMany({
+        where: {
+          chatId: params.chatId,
+          publishedMessageId,
+          publishSendStartedAt: null,
+          pendingCleanupMessageId: null,
+        },
+        data: {
+          pendingCleanupMessageId: publishedMessageId,
+          pendingCleanupBotId: deleteBotId ?? null,
+          pendingCleanupIntentId: null,
+          pendingCleanupKind: 'reset_current',
+        },
+      });
+      if (claimed.count !== 1) {
+        throw new BadRequestException(
+          'Публикация или очистка правил уже выполняется. Обновите данные и повторите позже.',
+        );
+      }
+    }
+
     try {
-      await params.maxClient.deleteMessage(
-        params.chatId,
-        publishedMessageId,
-        buildChatRulesDeleteOptions(deleteBotId),
-      );
+      cleanupOutcome = await deletePublishedChatRulesMessage({
+        maxClient: params.maxClient,
+        deleteMessage: params.deletePublishedMessage,
+        chatId: params.chatId,
+        messageId: publishedMessageId,
+        botId: deleteBotId,
+      });
+      if (cleanupOutcome === 'failed') {
+        throw new Error('Durable chat rules cleanup reached a terminal state');
+      }
     } catch (error: unknown) {
-      if (!isMaxMessageMissingError(error)) {
+      if (isMaxMessageMissingError(error)) {
+        cleanupOutcome = 'confirmed';
+      } else {
         const maxApiMessage = extractMaxApiErrorMessage(error);
         throw new BadRequestException(
           maxApiMessage || 'Не удалось удалить опубликованный пост правил.',
@@ -765,30 +1030,86 @@ export async function resetPublishedChatRules(params: {
     }
   }
 
-  const updatedRules = await params.prisma.chatRules.update({
-    where: { chatId: params.chatId },
-    data: {
-      publishedMessageId: null,
-      publishedBotId: null,
-      publishedUrl: null,
-      publishedAt: null,
-    },
-  });
+  let updatedRules = rules;
+  if (cleanupOutcome === 'confirmed' && publishedMessageId) {
+    try {
+      const cleared = await params.prisma.chatRules.updateMany({
+        where: {
+          chatId: params.chatId,
+          publishedMessageId,
+        },
+        data: {
+          publishedMessageId: null,
+          publishedBotId: null,
+          publishedUrl: null,
+          publishedAt: null,
+          pendingCleanupMessageId: null,
+          pendingCleanupBotId: null,
+          pendingCleanupIntentId: null,
+          pendingCleanupKind: null,
+        },
+      });
+      if (cleared.count === 1) {
+        updatedRules = {
+          ...rules,
+          publishedMessageId: null,
+          publishedBotId: null,
+          publishedUrl: null,
+          publishedAt: null,
+          pendingCleanupMessageId: null,
+          pendingCleanupBotId: null,
+          pendingCleanupIntentId: null,
+          pendingCleanupKind: null,
+        };
+      }
+    } catch (error: unknown) {
+      params.logger.warn(
+        {
+          chatId: params.chatId,
+          messageId: publishedMessageId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to finalize confirmed chat rules reset state',
+      );
+    }
+  }
 
-  await params.prisma.auditLog.create({
-    data: {
-      chatId: params.chatId,
-      actorUserId: params.actorUserId,
-      action: 'RESET_CHAT_RULES_PUBLICATION',
-      payload: {
-        deletedPost: Boolean(publishedMessageId),
-        messageId: publishedMessageId || null,
-        botId: deleteBotId ?? null,
-        source: params.source,
+  try {
+    await params.prisma.auditLog.create({
+      data: {
+        chatId: params.chatId,
+        actorUserId: params.actorUserId,
+        action: 'RESET_CHAT_RULES_PUBLICATION',
+        payload: {
+          deletedPost: cleanupOutcome === 'confirmed',
+          cleanupOutcome,
+          messageId: publishedMessageId || null,
+          botId: deleteBotId ?? null,
+          source: params.source,
+        },
       },
-    },
-  });
-  await params.chatContextCache.invalidate(params.chatId);
+    });
+  } catch (error: unknown) {
+    params.logger.warn(
+      {
+        chatId: params.chatId,
+        messageId: publishedMessageId || null,
+        err: error instanceof Error ? error.message : String(error),
+      },
+      'Failed to persist post-commit chat rules reset audit',
+    );
+  }
+  try {
+    await params.chatContextCache.invalidate(params.chatId);
+  } catch (error: unknown) {
+    params.logger.warn(
+      {
+        chatId: params.chatId,
+        err: error instanceof Error ? error.message : String(error),
+      },
+      'Failed to invalidate chat rules cache after reset',
+    );
+  }
 
   return mapChatRules(updatedRules);
 }

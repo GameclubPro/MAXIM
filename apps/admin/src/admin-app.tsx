@@ -13,11 +13,15 @@ import {
 } from 'iconoir-react';
 import {
   safetyDeskDecisionResponseSchema,
+  safetyDeskDeleteRuntimeResponseSchema,
   safetyDeskQueueResponseSchema,
   supportRequestDecisionResponseSchema,
   supportRequestQueueResponseSchema,
   type SafetyDeskAuditEntry,
   type SafetyDeskDecisionResponse,
+  type SafetyDeskDeleteIntentItem,
+  type SafetyDeskDeleteIntentStatus,
+  type SafetyDeskDeleteRuntimeResponse,
   type SafetyDeskQueueItem,
   type SafetyDeskQueueResponse,
   type SupportRequestAttachment,
@@ -29,11 +33,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { readJsonResponse } from './api-response';
 import { readSessionStorageItem, writeSessionStorageItem } from './safe-storage';
 
-type DeskView = 'review' | 'support';
+type DeskView = 'review' | 'support' | 'deletes';
 type RiskLevel = 'low' | 'medium' | 'high' | 'blocked';
 type QueueStatus = 'review' | 'approved' | 'rejected' | 'blocked';
 type QueueSource = 'manual' | 'scheduled' | 'vk';
 type SupportStatus = 'new' | 'closed';
+type DeleteFilter = 'attention' | 'waiting' | 'failed' | 'observed' | 'all';
 
 type ModerationItem = {
   id: string;
@@ -114,19 +119,25 @@ export function AdminApp() {
   const [view, setView] = useState<DeskView>('review');
   const [filter, setFilter] = useState<'all' | QueueStatus>('all');
   const [supportFilter, setSupportFilter] = useState<'all' | SupportStatus>('new');
+  const [deleteFilter, setDeleteFilter] = useState<DeleteFilter>('attention');
   const [query, setQuery] = useState('');
   const [supportQuery, setSupportQuery] = useState('');
+  const [deleteQuery, setDeleteQuery] = useState('');
   const [queueItems, setQueueItems] = useState<ModerationItem[]>([]);
   const [supportItems, setSupportItems] = useState<SupportTicket[]>([]);
+  const [deleteRuntime, setDeleteRuntime] = useState<SafetyDeskDeleteRuntimeResponse | null>(null);
   const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
   const [metrics, setMetrics] = useState<Metrics>(emptyMetrics);
   const [supportMetrics, setSupportMetrics] = useState<SupportMetrics>(emptySupportMetrics);
   const [selectedId, setSelectedId] = useState('');
   const [supportSelectedId, setSupportSelectedId] = useState('');
+  const [deleteSelectedId, setDeleteSelectedId] = useState('');
   const [notice, setNotice] = useState('Готово к проверке');
   const [loading, setLoading] = useState(false);
   const [busyItemId, setBusyItemId] = useState<string | null>(null);
   const [busySupportId, setBusySupportId] = useState<string | null>(null);
+  const [busyAmbiguousSendId, setBusyAmbiguousSendId] = useState<string | null>(null);
+  const [busyDeleteIntentId, setBusyDeleteIntentId] = useState<string | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
 
   useEffect(() => {
@@ -167,13 +178,47 @@ export function AdminApp() {
     });
   }, [supportFilter, supportItems, supportQuery]);
 
+  const visibleDeleteItems = useMemo(() => {
+    const normalizedQuery = deleteQuery.trim().toLowerCase();
+    return (deleteRuntime?.items ?? []).filter((item) => {
+      const matchesStatus = matchesDeleteFilter(item.status, deleteFilter);
+      const matchesQuery =
+        normalizedQuery.length === 0 ||
+        [
+          item.id,
+          item.chatId,
+          item.chatTitle,
+          item.messageId,
+          item.subjectUserId ?? '',
+          item.originBotId ?? '',
+          item.effectiveRoutingPolicy,
+          item.lastBotId ?? '',
+          item.deleteDispatchStartedBotId ?? '',
+          item.remoteDeleteSucceededBotId ?? '',
+          item.lastErrorCode ?? '',
+          item.lastError ?? '',
+          ...item.reasons.flatMap((reason) => [reason.reasonKey, reason.ruleCode]),
+          ...item.capability.memberships.flatMap((membership) => [
+            membership.botId,
+            membership.reason,
+          ]),
+        ]
+          .join(' ')
+          .toLowerCase()
+          .includes(normalizedQuery);
+
+      return matchesStatus && matchesQuery;
+    });
+  }, [deleteFilter, deleteQuery, deleteRuntime]);
+
   const selectedItem = visibleItems.find((item) => item.id === selectedId) ?? visibleItems[0];
   const selectedSupportItem =
     visibleSupportItems.find((item) => item.id === supportSelectedId) ?? visibleSupportItems[0];
+  const selectedDeleteItem =
+    visibleDeleteItems.find((item) => item.id === deleteSelectedId) ?? visibleDeleteItems[0];
   const isReviewScopeFiltered = filter !== 'all' || query.trim().length > 0;
   const visibleReviewItems = useMemo(
-    () =>
-      visibleItems.filter((item) => item.status === 'review' && !getApproveBlockReason(item)),
+    () => visibleItems.filter((item) => item.status === 'review' && !getApproveBlockReason(item)),
     [visibleItems],
   );
   const bulkReviewCount = visibleReviewItems.length;
@@ -197,9 +242,10 @@ export function AdminApp() {
   async function refreshQueue(successMessage = 'Очередь обновлена с сервера') {
     setLoading(true);
     try {
-      const [queueResult, supportResult] = await Promise.allSettled([
+      const [queueResult, supportResult, deleteResult] = await Promise.allSettled([
         fetchQueue(),
         fetchSupportQueue(),
+        fetchDeleteRuntime(),
       ]);
       if (queueResult.status === 'fulfilled') {
         applyQueueResponse(queueResult.value);
@@ -207,18 +253,26 @@ export function AdminApp() {
       if (supportResult.status === 'fulfilled') {
         applySupportQueueResponse(supportResult.value);
       }
+      if (deleteResult.status === 'fulfilled') {
+        applyDeleteRuntimeResponse(deleteResult.value);
+      }
 
-      if (queueResult.status === 'fulfilled' && supportResult.status === 'fulfilled') {
+      if (
+        queueResult.status === 'fulfilled' &&
+        supportResult.status === 'fulfilled' &&
+        deleteResult.status === 'fulfilled'
+      ) {
         setNotice(successMessage);
         return;
       }
 
-      const errors = [queueResult, supportResult]
+      const errors = [queueResult, supportResult, deleteResult]
         .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
         .map((result) => readErrorMessage(result.reason));
       const loaded = [
         queueResult.status === 'fulfilled' ? 'публикации' : null,
         supportResult.status === 'fulfilled' ? 'обращения' : null,
+        deleteResult.status === 'fulfilled' ? 'удаления' : null,
       ].filter(Boolean);
       setNotice(
         loaded.length > 0
@@ -258,6 +312,57 @@ export function AdminApp() {
     await runDecision(itemId, 'recheck', 'Возвращаю материал на повторную проверку');
   }
 
+  async function allowAmbiguousSendRetry(
+    item: SafetyDeskDeleteRuntimeResponse['ambiguousSends'][number],
+  ) {
+    if (
+      !window.confirm(
+        'Разрешить повторную публикацию? Сначала убедитесь в MAX, что предыдущая отправка не появилась.',
+      )
+    ) {
+      return;
+    }
+    if (!item.messageId) {
+      setNotice('У операции отсутствует идентификатор отправки');
+      return;
+    }
+    setBusyAmbiguousSendId(item.id);
+    setNotice('Снимаю блокировку повторной публикации');
+    try {
+      applyDeleteRuntimeResponse(await postAllowAmbiguousSendRetry(item));
+      setNotice('Повторная публикация правил разрешена');
+    } catch (error) {
+      setNotice(readErrorMessage(error));
+    } finally {
+      setBusyAmbiguousSendId(null);
+    }
+  }
+
+  async function retryDeleteIntent(item: SafetyDeskDeleteIntentItem) {
+    if (item.status !== 'EXPIRED' && item.status !== 'FAILED_TERMINAL') {
+      return;
+    }
+    if (
+      !window.confirm(
+        'Поставить удаление в очередь повторно? Действие будет записано в аудит и не обходит проверку MAX.',
+      )
+    ) {
+      return;
+    }
+    setBusyDeleteIntentId(item.id);
+    setNotice('Возвращаю удаление в безопасную очередь');
+    try {
+      applyDeleteRuntimeResponse(
+        await postRetryDeleteIntent(item.id, item.status, item.updatedAt, item.attemptCount),
+      );
+      setNotice('Удаление возвращено в очередь');
+    } catch (error) {
+      setNotice(readErrorMessage(error));
+    } finally {
+      setBusyDeleteIntentId(null);
+    }
+  }
+
   async function approveAllVisible() {
     const reviewCount = bulkReviewCount;
     if (reviewCount === 0) {
@@ -266,9 +371,7 @@ export function AdminApp() {
     }
 
     const itemIds = visibleReviewItems.map((item) => item.id);
-    const scopeLabel = isReviewScopeFiltered
-      ? 'видимые материалы'
-      : 'загруженную очередь проверки';
+    const scopeLabel = isReviewScopeFiltered ? 'видимые материалы' : 'загруженную очередь проверки';
     if (!window.confirm(`Одобрить ${scopeLabel}? Материалов: ${reviewCount}.`)) {
       return;
     }
@@ -334,18 +437,28 @@ export function AdminApp() {
     setSupportSelectedId(hasPreferred ? preferredId : (nextItems[0]?.id ?? ''));
   }
 
+  function applyDeleteRuntimeResponse(
+    response: SafetyDeskDeleteRuntimeResponse,
+    preferredId = deleteSelectedId,
+  ) {
+    setDeleteRuntime(response);
+    const hasPreferred = preferredId && response.items.some((item) => item.id === preferredId);
+    setDeleteSelectedId(hasPreferred ? preferredId : (response.items[0]?.id ?? ''));
+  }
+
   function exportForMax() {
-    const payload = {
-      exportedAt: new Date().toISOString(),
-      summary: metrics,
-      queue: queueItems,
-      audit: auditEntries,
-    };
+    const exportedAt = new Date().toISOString();
+    const payload =
+      view === 'deletes'
+        ? { exportedAt, deleteRuntime }
+        : view === 'support'
+          ? { exportedAt, summary: supportMetrics, queue: supportItems }
+          : { exportedAt, summary: metrics, queue: queueItems, audit: auditEntries };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `maxim-safety-desk-${new Date().toISOString().slice(0, 10)}.json`;
+    link.download = `maxim-safety-desk-${view}-${new Date().toISOString().slice(0, 10)}.json`;
     link.click();
     URL.revokeObjectURL(url);
     setNotice('Экспорт текущей очереди подготовлен и скачан');
@@ -405,6 +518,7 @@ export function AdminApp() {
           <button
             className={view === 'review' ? 'is-active' : ''}
             type="button"
+            aria-pressed={view === 'review'}
             onClick={() => setView('review')}
           >
             Публикации
@@ -412,9 +526,18 @@ export function AdminApp() {
           <button
             className={view === 'support' ? 'is-active' : ''}
             type="button"
+            aria-pressed={view === 'support'}
             onClick={() => setView('support')}
           >
             Обращения
+          </button>
+          <button
+            className={view === 'deletes' ? 'is-active' : ''}
+            type="button"
+            aria-pressed={view === 'deletes'}
+            onClick={() => setView('deletes')}
+          >
+            Удаления
           </button>
         </div>
         <div className="desk-metrics" aria-label="Сводка">
@@ -425,10 +548,53 @@ export function AdminApp() {
               <Metric label="Стоп" value={String(metrics.stopped)} tone="danger" />
               <Metric label="Сервис" value={String(metrics.servicePosts)} tone="neutral" />
             </>
-          ) : (
+          ) : view === 'support' ? (
             <>
               <Metric label="Новые" value={String(supportMetrics.new)} tone="warning" />
               <Metric label="Закрытые" value={String(supportMetrics.closed)} tone="success" />
+            </>
+          ) : (
+            <>
+              <Metric
+                label="Режим"
+                value={deleteRolloutModeLabel(deleteRuntime?.rolloutMode ?? 'off')}
+                tone="neutral"
+              />
+              <Metric
+                label="Открыто"
+                value={String(deleteRuntime?.summary.open ?? 0)}
+                tone="warning"
+              />
+              <Metric
+                label="Просрочено"
+                value={String(deleteRuntime?.summary.due.count ?? 0)}
+                tone="danger"
+              />
+              <Metric
+                label="Зависло"
+                value={String(deleteRuntime?.summary.staleLeases.count ?? 0)}
+                tone="danger"
+              />
+              <Metric
+                label="Неясные отправки"
+                value={String(deleteRuntime?.summary.ambiguousSends.count ?? 0)}
+                tone="danger"
+              />
+              <Metric
+                label="Ошибки"
+                value={String(deleteRuntime?.summary.failed ?? 0)}
+                tone="danger"
+              />
+              <Metric
+                label="Старейшее"
+                value={
+                  deleteRuntime?.summary.oldestOpen.ageMs === null ||
+                  deleteRuntime?.summary.oldestOpen.ageMs === undefined
+                    ? 'Нет'
+                    : formatDuration(deleteRuntime.summary.oldestOpen.ageMs)
+                }
+                tone="neutral"
+              />
             </>
           )}
         </div>
@@ -476,7 +642,7 @@ export function AdminApp() {
           onReject={rejectItem}
           onSelect={setSelectedId}
         />
-      ) : (
+      ) : view === 'support' ? (
         <SupportDesk
           busyItemId={busySupportId}
           filter={supportFilter}
@@ -487,6 +653,21 @@ export function AdminApp() {
           onFilterChange={setSupportFilter}
           onQueryChange={setSupportQuery}
           onSelect={setSupportSelectedId}
+        />
+      ) : (
+        <DeleteDesk
+          busyAmbiguousSendId={busyAmbiguousSendId}
+          busyDeleteIntentId={busyDeleteIntentId}
+          filter={deleteFilter}
+          query={deleteQuery}
+          runtime={deleteRuntime}
+          selectedItem={selectedDeleteItem}
+          visibleItems={visibleDeleteItems}
+          onFilterChange={setDeleteFilter}
+          onAllowAmbiguousSendRetry={allowAmbiguousSendRetry}
+          onQueryChange={setDeleteQuery}
+          onSelect={setDeleteSelectedId}
+          onRetryDeleteIntent={retryDeleteIntent}
         />
       )}
     </main>
@@ -721,6 +902,336 @@ function SupportDesk({
         )}
       </section>
     </section>
+  );
+}
+
+function DeleteDesk({
+  busyAmbiguousSendId,
+  busyDeleteIntentId,
+  filter,
+  query,
+  runtime,
+  selectedItem,
+  visibleItems,
+  onFilterChange,
+  onAllowAmbiguousSendRetry,
+  onQueryChange,
+  onRetryDeleteIntent,
+  onSelect,
+}: {
+  busyAmbiguousSendId: string | null;
+  busyDeleteIntentId: string | null;
+  filter: DeleteFilter;
+  query: string;
+  runtime: SafetyDeskDeleteRuntimeResponse | null;
+  selectedItem: SafetyDeskDeleteIntentItem | undefined;
+  visibleItems: SafetyDeskDeleteIntentItem[];
+  onFilterChange: (filter: DeleteFilter) => void;
+  onAllowAmbiguousSendRetry: (
+    item: SafetyDeskDeleteRuntimeResponse['ambiguousSends'][number],
+  ) => void;
+  onQueryChange: (query: string) => void;
+  onRetryDeleteIntent: (item: SafetyDeskDeleteIntentItem) => void;
+  onSelect: (itemId: string) => void;
+}) {
+  return (
+    <section className="desk-grid delete-grid">
+      <section className="queue-panel" aria-label="Диагностика удалений">
+        <div className="queue-toolbar delete-toolbar">
+          <label className="search-field">
+            <Search width={17} height={17} />
+            <input
+              value={query}
+              onChange={(event) => onQueryChange(event.target.value)}
+              placeholder="Чат, сообщение, ошибка"
+            />
+          </label>
+          <div className="segmented" aria-label="Фильтр удалений">
+            {[
+              ['attention', 'Открытые'],
+              ['waiting', 'Права'],
+              ['failed', 'Ошибки'],
+              ['observed', 'Shadow'],
+              ['all', 'Все'],
+            ].map(([value, label]) => (
+              <button
+                key={value}
+                className={filter === value ? 'is-active' : ''}
+                type="button"
+                aria-pressed={filter === value}
+                onClick={() => onFilterChange(value as DeleteFilter)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="queue-list">
+          {runtime && runtime.ambiguousSends.length > 0 && (
+            <section className="ambiguous-send-strip" aria-label="Неясные отправки MAX">
+              <header>
+                <strong>Неясные отправки MAX</strong>
+                <span>{runtime.ambiguousSends.length}</span>
+              </header>
+              <div>
+                {runtime.ambiguousSends.slice(0, 10).map((item) => (
+                  <article className="ambiguous-send-row" key={item.id} title={item.lastError}>
+                    <span className="risk-dot is-high" />
+                    <span>
+                      <strong>{item.chatTitle || item.chatId}</strong>
+                      <small>
+                        {ambiguousSendSourceLabel(item.source)} ·{' '}
+                        {item.messageId || 'ID не получен'}
+                      </small>
+                    </span>
+                    <span className="ambiguous-send-row__actions">
+                      <code>{item.botId || 'bot неизвестен'}</code>
+                      {item.source === 'chat_rules' && (
+                        <button
+                          className="icon-action"
+                          type="button"
+                          disabled={busyAmbiguousSendId === item.id || !item.messageId}
+                          title="Разрешить повторную публикацию после проверки MAX"
+                          aria-label="Разрешить повторную публикацию после проверки MAX"
+                          onClick={() => onAllowAmbiguousSendRetry(item)}
+                        >
+                          <Refresh width={15} height={15} />
+                        </button>
+                      )}
+                    </span>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
+          {visibleItems.map((item) => (
+            <button
+              key={item.id}
+              className={`queue-item delete-queue-item ${selectedItem?.id === item.id ? 'is-selected' : ''}`}
+              type="button"
+              aria-pressed={selectedItem?.id === item.id}
+              onClick={() => onSelect(item.id)}
+            >
+              <span className={`risk-dot is-${deleteStatusTone(item.status)}`} />
+              <span className="queue-item__body">
+                <span className="queue-item__title">{item.chatTitle || item.chatId}</span>
+                <span className="queue-item__meta">
+                  {formatDuration(item.ageMs)} · попыток {item.attemptCount}
+                </span>
+              </span>
+              <DeleteStatusBadge status={item.status} />
+            </button>
+          ))}
+          {visibleItems.length === 0 && (
+            <div className="queue-empty">
+              {runtime ? 'Под выбранный фильтр записей нет.' : 'Диагностика загружается.'}
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section className="delete-detail-column" aria-label="Состояние удаления">
+        {selectedItem ? (
+          <DeleteDetails
+            item={selectedItem}
+            busy={busyDeleteIntentId === selectedItem.id}
+            onRetry={onRetryDeleteIntent}
+          />
+        ) : (
+          <article className="empty-card">
+            <h2>Пусто</h2>
+            <p>Открытых или завершившихся ошибкой удалений нет.</p>
+          </article>
+        )}
+      </section>
+    </section>
+  );
+}
+
+function DeleteDetails({
+  item,
+  busy,
+  onRetry,
+}: {
+  item: SafetyDeskDeleteIntentItem;
+  busy: boolean;
+  onRetry: (item: SafetyDeskDeleteIntentItem) => void;
+}) {
+  const terminal = item.status === 'EXPIRED' || item.status === 'FAILED_TERMINAL';
+  return (
+    <article className="review-card delete-card" aria-label="Детали удаления">
+      <header className="review-card__header">
+        <div className="review-card__title">
+          <div className="badge-row">
+            <DeleteStatusBadge status={item.status} />
+            <span className={`risk-badge ${item.capability.confirmed ? 'is-low' : 'is-high'}`}>
+              {item.capability.confirmed ? 'Право подтверждено' : 'Нет подтвержденного права'}
+            </span>
+            <span className="risk-badge is-neutral">{deleteRolloutLabel(item.rollout)}</span>
+          </div>
+          <h2>{item.chatTitle || item.chatId}</h2>
+        </div>
+      </header>
+
+      <div className="review-meta delete-meta">
+        <InfoCell label="Чат" value={item.chatId} />
+        <InfoCell label="Сообщение" value={item.messageId} />
+        <InfoCell label="Возраст" value={formatDuration(item.ageMs)} />
+        <InfoCell label="Попытки" value={String(item.attemptCount)} />
+        <InfoCell label="Тип" value={item.entityType ?? 'Не определен'} />
+        <InfoCell label="Маршрут" value={item.routingState} />
+        <InfoCell
+          label="Эффективная политика"
+          value={deleteRoutingPolicyLabel(item.effectiveRoutingPolicy)}
+        />
+        <InfoCell label="Заданная политика" value={deleteRoutingPolicyLabel(item.routingPolicy)} />
+        <InfoCell label="Cross-bot" value={item.crossBotEnabled ? 'Разрешён' : 'Выключен'} />
+        <InfoCell label="Исходный бот" value={item.originBotId || 'Не указан'} />
+      </div>
+
+      <div className="delete-detail-scroll">
+        <section className="delete-section">
+          <div className="delete-section__head">
+            <h3>Активные боты</h3>
+            <span>{item.capability.activeMembershipCount}</span>
+          </div>
+          <div className="delete-capability-list">
+            {item.capability.memberships.length > 0 ? (
+              item.capability.memberships.map((membership) => (
+                <div className="delete-capability-row" key={membership.botId}>
+                  <div>
+                    <strong>{membership.botId}</strong>
+                    <span>{membership.role === 'PRIMARY' ? 'Основной' : 'Резервный'}</span>
+                  </div>
+                  <div>
+                    <strong>{deleteCapabilityStateLabel(membership.state)}</strong>
+                    <span>{deleteCapabilityReasonLabel(membership.reason)}</span>
+                  </div>
+                  <div>
+                    <strong>{membership.accessState}</strong>
+                    <span>
+                      Runtime {membership.botRuntimeState} ·{' '}
+                      {membership.checkedAt
+                        ? `проверено ${formatDateTime(new Date(membership.checkedAt))}`
+                        : 'время проверки неизвестно'}
+                    </span>
+                  </div>
+                  <code>{membership.permissions.join(', ') || 'нет permissions'}</code>
+                </div>
+              ))
+            ) : (
+              <div className="delete-empty-line">Активных membership нет.</div>
+            )}
+          </div>
+        </section>
+
+        <section className="delete-section delete-section--split">
+          <div>
+            <div className="delete-section__head">
+              <h3>Причины</h3>
+              <span>{item.reasons.length}</span>
+            </div>
+            <div className="delete-reason-list">
+              {item.reasons.length > 0 ? (
+                item.reasons.map((reason) => (
+                  <div key={`${reason.reasonKey}-${reason.createdAt}`}>
+                    <strong>{reason.ruleCode}</strong>
+                    <span>{reason.reasonKey}</span>
+                  </div>
+                ))
+              ) : (
+                <div className="delete-empty-line">Причины не записаны.</div>
+              )}
+            </div>
+          </div>
+          <div>
+            <div className="delete-section__head">
+              <h3>Последняя ошибка</h3>
+              {item.lastStatusCode !== null && <span>HTTP {item.lastStatusCode}</span>}
+            </div>
+            <div className="delete-error">
+              <strong>{item.lastErrorCode || 'Нет кода ошибки'}</strong>
+              <p>{item.lastError || 'Ошибка не зафиксирована.'}</p>
+            </div>
+          </div>
+        </section>
+
+        <section className="delete-section">
+          <div className="delete-section__head">
+            <h3>Временная шкала</h3>
+          </div>
+          <dl className="delete-timeline">
+            <div>
+              <dt>Создано</dt>
+              <dd>{formatDateTime(new Date(item.createdAt))}</dd>
+            </div>
+            <div>
+              <dt>Следующая попытка</dt>
+              <dd>{formatDateTime(new Date(item.nextAttemptAt))}</dd>
+            </div>
+            <div>
+              <dt>Повторять до</dt>
+              <dd>{formatDateTime(new Date(item.retryUntilAt))}</dd>
+            </div>
+            <div>
+              <dt>Последняя попытка</dt>
+              <dd>
+                {item.lastAttemptAt ? formatDateTime(new Date(item.lastAttemptAt)) : 'Еще не было'}
+              </dd>
+            </div>
+            <div>
+              <dt>Lease до</dt>
+              <dd>
+                {item.leaseExpiresAt
+                  ? formatDateTime(new Date(item.leaseExpiresAt))
+                  : 'Нет активного lease'}
+              </dd>
+            </div>
+            <div>
+              <dt>Незакрытый dispatch</dt>
+              <dd>
+                {item.deleteDispatchStartedAt
+                  ? `${formatDateTime(new Date(item.deleteDispatchStartedAt))} · ${item.deleteDispatchStartedBotId || 'бот неизвестен'}`
+                  : 'Нет'}
+              </dd>
+            </div>
+            <div>
+              <dt>Подтверждение MAX</dt>
+              <dd>
+                {item.remoteDeleteSucceededAt
+                  ? `${formatDateTime(new Date(item.remoteDeleteSucceededAt))} · ${item.remoteDeleteSucceededBotId || 'бот неизвестен'}`
+                  : 'Не зафиксировано'}
+              </dd>
+            </div>
+            <div>
+              <dt>Последний бот</dt>
+              <dd>{item.lastBotId || 'Не выбран'}</dd>
+            </div>
+          </dl>
+        </section>
+      </div>
+      {terminal && (
+        <footer className="review-actions">
+          <div className="action-status" aria-live="polite">
+            {item.rollout === 'execute'
+              ? busy
+                ? 'Возвращаю в очередь...'
+                : 'Повтор сохранит историю попыток и dispatch fence.'
+              : 'Сначала включите chat в canary или global rollout.'}
+          </div>
+          <button
+            className="primary-action"
+            type="button"
+            disabled={busy || item.rollout !== 'execute'}
+            onClick={() => onRetry(item)}
+          >
+            <Refresh width={18} height={18} />
+            {busy ? 'Возвращаю' : 'Повторить удаление'}
+          </button>
+        </footer>
+      )}
+    </article>
   );
 }
 
@@ -1017,7 +1528,7 @@ function InfoCell({ label, value }: { label: string; value: string }) {
   return (
     <div className="info-cell">
       <span>{label}</span>
-      <strong>{value}</strong>
+      <strong title={value}>{value}</strong>
     </div>
   );
 }
@@ -1040,6 +1551,24 @@ function SupportStatusBadge({ status }: { status: SupportStatus }) {
   };
 
   return <span className={`status-badge is-${status}`}>{labels[status]}</span>;
+}
+
+function DeleteStatusBadge({ status }: { status: SafetyDeskDeleteIntentStatus }) {
+  const labels: Record<SafetyDeskDeleteIntentStatus, string> = {
+    OBSERVED: 'Shadow',
+    PENDING: 'Ожидает',
+    IN_PROGRESS: 'Выполняется',
+    RETRYABLE: 'Повтор',
+    WAITING_CAPABILITY: 'Нет права',
+    AMBIGUOUS: 'Неясно',
+    SUCCEEDED: 'Удалено',
+    ALREADY_ABSENT: 'Уже отсутствует',
+    EXPIRED: 'Истекло',
+    FAILED_TERMINAL: 'Ошибка',
+  };
+  const statusClass = status.toLowerCase().replaceAll('_', '-');
+
+  return <span className={`status-badge is-delete-${statusClass}`}>{labels[status]}</span>;
 }
 
 function RiskBadge({ risk }: { risk: RiskLevel }) {
@@ -1071,6 +1600,60 @@ async function fetchQueue(): Promise<SafetyDeskQueueResponse> {
     headers: { Accept: 'application/json' },
   });
   return safetyDeskQueueResponseSchema.parse(await readJsonResponse(response));
+}
+
+async function fetchDeleteRuntime(): Promise<SafetyDeskDeleteRuntimeResponse> {
+  const response = await fetch(`${safetyDeskApiBase}/runtime/deletes`, {
+    credentials: 'same-origin',
+    headers: { Accept: 'application/json' },
+  });
+  return safetyDeskDeleteRuntimeResponseSchema.parse(await readJsonResponse(response));
+}
+
+async function postAllowAmbiguousSendRetry(
+  item: SafetyDeskDeleteRuntimeResponse['ambiguousSends'][number],
+): Promise<SafetyDeskDeleteRuntimeResponse> {
+  const response = await fetch(
+    `${safetyDeskApiBase}/runtime/ambiguous-sends/${encodeURIComponent(item.id)}/allow-retry`,
+    {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        expectedOperationId: item.messageId,
+        expectedStartedAt: item.startedAt,
+      }),
+    },
+  );
+  return safetyDeskDeleteRuntimeResponseSchema.parse(await readJsonResponse(response));
+}
+
+async function postRetryDeleteIntent(
+  intentId: string,
+  expectedStatus: 'EXPIRED' | 'FAILED_TERMINAL',
+  expectedUpdatedAt: string,
+  expectedAttemptCount: number,
+): Promise<SafetyDeskDeleteRuntimeResponse> {
+  const response = await fetch(
+    `${safetyDeskApiBase}/runtime/deletes/${encodeURIComponent(intentId)}/retry`,
+    {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        expectedStatus,
+        expectedUpdatedAt,
+        expectedAttemptCount,
+      }),
+    },
+  );
+  return safetyDeskDeleteRuntimeResponseSchema.parse(await readJsonResponse(response));
 }
 
 async function fetchSupportQueue(): Promise<SupportRequestQueueResponse> {
@@ -1215,6 +1798,129 @@ function getApproveBlockReason(item: ModerationItem): string | null {
   }
 
   return null;
+}
+
+function matchesDeleteFilter(status: SafetyDeskDeleteIntentStatus, filter: DeleteFilter): boolean {
+  if (filter === 'all') {
+    return true;
+  }
+  if (filter === 'observed') {
+    return status === 'OBSERVED';
+  }
+  if (filter === 'waiting') {
+    return status === 'WAITING_CAPABILITY';
+  }
+  if (filter === 'failed') {
+    return status === 'EXPIRED' || status === 'FAILED_TERMINAL';
+  }
+  return ['PENDING', 'IN_PROGRESS', 'RETRYABLE', 'WAITING_CAPABILITY', 'AMBIGUOUS'].includes(
+    status,
+  );
+}
+
+function deleteStatusTone(
+  status: SafetyDeskDeleteIntentStatus,
+): 'low' | 'medium' | 'high' | 'neutral' {
+  if (status === 'SUCCEEDED' || status === 'ALREADY_ABSENT') {
+    return 'low';
+  }
+  if (status === 'OBSERVED') {
+    return 'neutral';
+  }
+  if (status === 'PENDING' || status === 'IN_PROGRESS' || status === 'RETRYABLE') {
+    return 'medium';
+  }
+  return 'high';
+}
+
+function deleteRolloutModeLabel(mode: SafetyDeskDeleteRuntimeResponse['rolloutMode']): string {
+  const labels: Record<SafetyDeskDeleteRuntimeResponse['rolloutMode'], string> = {
+    off: 'Выкл',
+    shadow: 'Shadow',
+    canary: 'Canary',
+    on: 'Вкл',
+  };
+  return labels[mode];
+}
+
+function ambiguousSendSourceLabel(
+  source: SafetyDeskDeleteRuntimeResponse['ambiguousSends'][number]['source'],
+): string {
+  const labels: Record<typeof source, string> = {
+    channel_auto_post: 'Копия поста канала',
+    chat_auto_comment: 'Копия сообщения чата',
+    chat_rules: 'Публикация правил',
+  };
+  return labels[source];
+}
+
+function deleteRolloutLabel(rollout: SafetyDeskDeleteIntentItem['rollout']): string {
+  if (rollout === 'execute') {
+    return 'Исполнение';
+  }
+  if (rollout === 'observed') {
+    return 'Наблюдение';
+  }
+  return 'Выключено';
+}
+
+function deleteRoutingPolicyLabel(policy: SafetyDeskDeleteIntentItem['routingPolicy']): string {
+  if (policy === 'delete_capable') {
+    return 'Любой с правом';
+  }
+  if (policy === 'origin_first') {
+    return 'Сначала исходный';
+  }
+  return 'Только исходный';
+}
+
+function deleteCapabilityStateLabel(
+  state: SafetyDeskDeleteIntentItem['capability']['memberships'][number]['state'],
+): string {
+  if (state === 'confirmed_capable') {
+    return 'Может удалить';
+  }
+  if (state === 'explicitly_incapable') {
+    return 'Не может удалить';
+  }
+  return 'Нужна свежая проверка';
+}
+
+function deleteCapabilityReasonLabel(
+  reason: SafetyDeskDeleteIntentItem['capability']['memberships'][number]['reason'],
+): string {
+  const labels: Record<
+    SafetyDeskDeleteIntentItem['capability']['memberships'][number]['reason'],
+    string
+  > = {
+    confirmed: 'Права подтверждены',
+    snapshot_missing: 'Нет снимка прав',
+    snapshot_stale: 'Снимок прав устарел',
+    access_denied: 'Доступ потерян или запрещен',
+    access_state_unconfirmed: 'Статус администратора не подтвержден',
+    bot_not_actionable: 'Бот не исполняет действия',
+    not_admin_or_owner: 'Бот не администратор',
+    missing_chat_delete_permission: 'Нет write для чата',
+    missing_channel_delete_permission: 'Нет delete для канала',
+  };
+  return labels[reason];
+}
+
+function formatDuration(durationMs: number): string {
+  const seconds = Math.max(0, Math.floor(durationMs / 1_000));
+  if (seconds < 60) {
+    return `${seconds} сек`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) {
+    return `${minutes} мин`;
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return `${hours} ч ${minutes % 60} мин`;
+  }
+  const days = Math.floor(hours / 24);
+  return `${days} д ${hours % 24} ч`;
 }
 
 function formatDateTime(date: Date): string {

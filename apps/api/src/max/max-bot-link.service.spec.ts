@@ -522,6 +522,42 @@ describe('MaxBotLinkService', () => {
     );
   });
 
+  it('reactivates a removed origin membership only for an explicitly authorized live probe', async () => {
+    const fixture = createServiceFixture();
+    const membership = createActiveMembership('chat-access-recovery', fixture.bots[0]!.id, 0, {
+      status: ChatBotMembershipStatus.REMOVED,
+      role: ChatBotMembershipRole.STANDBY,
+      lifecycleEventAt: new Date('2026-05-09T09:55:00.000Z'),
+      lifecycleEventType: 'bot_removed',
+      lifecycleSource: 'webhook',
+    });
+    fixture.memberships.push(membership);
+
+    await expect(
+      fixture.service.recordBotAccessProbe({
+        chatId: 'chat-access-recovery',
+        botId: fixture.bots[0]!.id,
+        access: {
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['write'],
+        },
+        source: 'moderation_delete_intent_probe',
+        allowMembershipRecovery: true,
+      }),
+    ).resolves.toBe(true);
+
+    expect(membership).toEqual(
+      expect.objectContaining({
+        status: ChatBotMembershipStatus.ACTIVE,
+        lifecycleEventType: 'live_probe',
+        lifecycleSource: 'live_probe',
+        botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+        botAccessSource: 'moderation_delete_intent_probe',
+      }),
+    );
+  });
+
   it('binds a new chat through a duplicate-safe insert instead of a noisy create', async () => {
     const fixture = createServiceFixture();
 
@@ -2266,7 +2302,7 @@ describe('MaxBotLinkService', () => {
     );
   });
 
-  it('prefers a bot with an explicit delete alias when the primary snapshot lacks it', async () => {
+  it('prefers a bot with complete chat delete access when the primary snapshot lacks it', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('chat-3', {
       id: 'chat-3',
@@ -2300,7 +2336,7 @@ describe('MaxBotLinkService', () => {
           checkedAt: '2026-04-06T21:00:01.000Z',
           isAdmin: true,
           isOwner: false,
-          permissions: ['delete_messages'],
+          permissions: ['read_all_messages', 'post_edit_delete_message'],
         },
         createdAt: new Date('2026-04-06T21:00:01.000Z'),
         updatedAt: new Date('2026-04-06T21:00:01.000Z'),
@@ -2318,74 +2354,313 @@ describe('MaxBotLinkService', () => {
     ).resolves.toBe('id613002203036_4_bot');
   });
 
-  it('treats MAX write permission as delete-capable for chat moderation', async () => {
+  it.each([
+    {
+      label: 'accepts chat admin write access',
+      entityType: ChatEntityType.CHAT,
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['read_all_messages', 'write'],
+      expected: true,
+    },
+    {
+      label: 'accepts the legacy chat post-edit-delete permission for an owner',
+      entityType: ChatEntityType.CHAT,
+      isAdmin: false,
+      isOwner: true,
+      permissions: ['read_all_messages', 'post_edit_delete_message'],
+      expected: true,
+    },
+    {
+      label: 'rejects delete-only access in a chat',
+      entityType: ChatEntityType.CHAT,
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['read_all_messages', 'delete'],
+      expected: false,
+    },
+    {
+      label: 'accepts chat write access without read-all',
+      entityType: ChatEntityType.CHAT,
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+      expected: true,
+    },
+    {
+      label: 'rejects a non-admin chat member with both action permissions',
+      entityType: ChatEntityType.CHAT,
+      isAdmin: false,
+      isOwner: false,
+      permissions: ['read_all_messages', 'write'],
+      expected: false,
+    },
+    {
+      label: 'accepts channel admin delete access',
+      entityType: ChatEntityType.CHANNEL,
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['read_all_messages', 'delete'],
+      expected: true,
+    },
+    {
+      label: 'accepts the legacy channel delete-message permission for an owner',
+      entityType: ChatEntityType.CHANNEL,
+      isAdmin: false,
+      isOwner: true,
+      permissions: ['read_all_messages', 'delete_message'],
+      expected: true,
+    },
+    {
+      label: 'rejects channel write access',
+      entityType: ChatEntityType.CHANNEL,
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['read_all_messages', 'write'],
+      expected: false,
+    },
+    {
+      label: 'rejects the chat legacy permission in a channel',
+      entityType: ChatEntityType.CHANNEL,
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['read_all_messages', 'post_edit_delete_message'],
+      expected: false,
+    },
+    {
+      label: 'accepts channel delete access without read-all',
+      entityType: ChatEntityType.CHANNEL,
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['delete'],
+      expected: true,
+    },
+  ])('$label', async ({ entityType, isAdmin, isOwner, permissions, expected }) => {
     const fixture = createServiceFixture();
-    fixture.chats.set('chat-write-delete', {
-      id: 'chat-write-delete',
-      title: 'Moderated chat',
+    const chatId = `delete-matrix-${entityType}-${permissions.join('-')}-${String(isOwner)}`;
+    fixture.chats.set(chatId, {
+      id: chatId,
+      title: 'Delete capability matrix',
       botId: 'id613002203036_bot',
       primaryBotId: 'id613002203036_bot',
-      entityType: 'CHAT',
+      entityType,
     });
     fixture.memberships.push({
-      chatId: 'chat-write-delete',
+      chatId,
       botId: 'id613002203036_bot',
       role: ChatBotMembershipRole.PRIMARY,
       status: ChatBotMembershipStatus.ACTIVE,
       permissionsSnapshot: {
-        checkedAt: '2026-04-06T21:00:00.000Z',
-        isAdmin: true,
-        isOwner: false,
-        permissions: ['read_all_messages', 'write'],
+        checkedAt: '2026-05-09T10:04:00.000Z',
+        isAdmin,
+        isOwner,
+        permissions,
       },
-      createdAt: new Date('2026-04-06T21:00:00.000Z'),
-      updatedAt: new Date('2026-04-06T21:00:00.000Z'),
-      lastSeenAt: new Date('2026-04-06T21:00:00.000Z'),
-      lastWebhookAt: new Date('2026-04-06T21:00:00.000Z'),
+      createdAt: new Date('2026-05-09T10:04:00.000Z'),
+      updatedAt: new Date('2026-05-09T10:04:00.000Z'),
+      lastSeenAt: new Date('2026-05-09T10:04:00.000Z'),
+      lastWebhookAt: new Date('2026-05-09T10:04:00.000Z'),
     });
 
     await expect(
       fixture.service.resolveBotIdForModerationAction({
-        chatId: 'chat-write-delete',
+        chatId,
         action: 'delete_message',
         fallbackToPrimary: false,
       }),
-    ).resolves.toBe('id613002203036_bot');
+    ).resolves.toBe(expected ? 'id613002203036_bot' : null);
   });
 
-  it('does not treat MAX write permission as post-delete permission for channels', async () => {
+  it('routes through a fresh confirmed capability even while stored routing is not ready', async () => {
     const fixture = createServiceFixture();
-    fixture.chats.set('channel-write-only', {
-      id: 'channel-write-only',
-      title: 'Moderated channel',
+    const chatId = 'chat-fresh-delete-capability';
+    fixture.chats.set(chatId, {
+      id: chatId,
+      title: 'Fresh delete capability',
       botId: 'id613002203036_bot',
       primaryBotId: 'id613002203036_bot',
-      entityType: 'CHANNEL',
+      entityType: ChatEntityType.CHAT,
+      routingState: ChatRoutingState.NO_ELIGIBLE_BOT,
+      routingVersion: 9,
     });
-    fixture.memberships.push({
-      chatId: 'channel-write-only',
-      botId: 'id613002203036_bot',
-      role: ChatBotMembershipRole.PRIMARY,
-      status: ChatBotMembershipStatus.ACTIVE,
-      permissionsSnapshot: {
-        checkedAt: '2026-04-06T21:00:00.000Z',
-        isAdmin: true,
-        isOwner: false,
-        permissions: ['write'],
-      },
-      createdAt: new Date('2026-04-06T21:00:00.000Z'),
-      updatedAt: new Date('2026-04-06T21:00:00.000Z'),
-      lastSeenAt: new Date('2026-04-06T21:00:00.000Z'),
-      lastWebhookAt: new Date('2026-04-06T21:00:00.000Z'),
-    });
+    fixture.memberships.push(
+      createActiveMembership(chatId, 'id613002203036_bot', 0, {
+        botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+        botAccessCheckedAt: new Date('2026-05-09T10:04:00.000Z'),
+        botAccessExpiresAt: new Date('2026-05-09T10:19:00.000Z'),
+        permissionsSnapshot: {
+          checkedAt: '2026-05-09T10:04:00.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages', 'write'],
+        },
+      }),
+    );
 
     await expect(
-      fixture.service.resolveBotIdForModerationAction({
-        chatId: 'channel-write-only',
-        action: 'delete_message',
-        fallbackToPrimary: false,
+      fixture.service.resolveDeleteMessageBotRoute({ chatId, requireFreshSnapshot: true }),
+    ).resolves.toMatchObject({
+      botId: 'id613002203036_bot',
+      candidateBotIds: ['id613002203036_bot'],
+      routingState: ChatRoutingState.NO_ELIGIBLE_BOT,
+      routingVersion: 9,
+      capabilityState: 'confirmed_capable',
+      capabilityReason: 'confirmed',
+      checkedAt: '2026-05-09T10:04:00.000Z',
+      expiresAt: '2026-05-09T10:19:00.000Z',
+      candidateCapabilities: [
+        expect.objectContaining({
+          botId: 'id613002203036_bot',
+          state: 'confirmed_capable',
+          reason: 'confirmed',
+          routeEligible: true,
+        }),
+      ],
+    });
+  });
+
+  it('distinguishes a stale capability and only exposes it through an explicit soft fallback', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'chat-stale-delete-capability';
+    fixture.chats.set(chatId, {
+      id: chatId,
+      title: 'Stale delete capability',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+      entityType: ChatEntityType.CHAT,
+      routingState: ChatRoutingState.READY,
+    });
+    fixture.memberships.push(
+      createActiveMembership(chatId, 'id613002203036_bot', 0, {
+        botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+        botAccessCheckedAt: new Date('2026-05-09T09:00:00.000Z'),
+        botAccessExpiresAt: new Date('2026-05-09T09:15:00.000Z'),
+        permissionsSnapshot: {
+          checkedAt: '2026-05-09T09:00:00.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages', 'write'],
+        },
       }),
-    ).resolves.toBeNull();
+    );
+
+    const strictRoute = await fixture.service.resolveDeleteMessageBotRoute({
+      chatId,
+      requireFreshSnapshot: true,
+    });
+    const softRoute = await fixture.service.resolveDeleteMessageBotRoute({
+      chatId,
+      requireFreshSnapshot: false,
+    });
+
+    expect(strictRoute).toMatchObject({
+      botId: null,
+      candidateBotIds: [],
+      capabilityState: 'stale_or_unknown',
+      capabilityReason: 'snapshot_stale',
+    });
+    expect(softRoute).toMatchObject({
+      botId: 'id613002203036_bot',
+      candidateBotIds: ['id613002203036_bot'],
+      reason: 'primary_soft',
+      capabilityState: 'stale_or_unknown',
+      capabilityReason: 'snapshot_stale',
+    });
+  });
+
+  it('prefers a fresh confirmed alternate over a stale primary in soft-fallback mode', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'chat-mixed-delete-capabilities';
+    fixture.chats.set(chatId, {
+      id: chatId,
+      title: 'Mixed delete capabilities',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+      entityType: ChatEntityType.CHAT,
+      routingState: ChatRoutingState.READY,
+    });
+    fixture.memberships.push(
+      createActiveMembership(chatId, 'id613002203036_bot', 0, {
+        botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+        botAccessCheckedAt: new Date('2026-05-09T09:00:00.000Z'),
+        botAccessExpiresAt: new Date('2026-05-09T09:15:00.000Z'),
+        permissionsSnapshot: {
+          checkedAt: '2026-05-09T09:00:00.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages', 'write'],
+        },
+      }),
+      createActiveMembership(chatId, 'id613002203036_4_bot', 1, {
+        botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+        botAccessCheckedAt: new Date('2026-05-09T10:04:00.000Z'),
+        botAccessExpiresAt: new Date('2026-05-09T10:19:00.000Z'),
+        permissionsSnapshot: {
+          checkedAt: '2026-05-09T10:04:00.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages', 'write'],
+        },
+      }),
+    );
+
+    await expect(
+      fixture.service.resolveDeleteMessageBotRoute({
+        chatId,
+        requireFreshSnapshot: false,
+      }),
+    ).resolves.toMatchObject({
+      botId: 'id613002203036_4_bot',
+      candidateBotIds: ['id613002203036_4_bot', 'id613002203036_bot'],
+      reason: 'alternate_confirmed',
+      capabilityState: 'confirmed_capable',
+      capabilityReason: 'confirmed',
+    });
+  });
+
+  it('keeps a fresh explicit channel permission failure out of strict and soft routes', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'channel-explicit-delete-incapable';
+    fixture.chats.set(chatId, {
+      id: chatId,
+      title: 'Write-only channel',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+      entityType: ChatEntityType.CHANNEL,
+      routingState: ChatRoutingState.READY,
+    });
+    fixture.memberships.push(
+      createActiveMembership(chatId, 'id613002203036_bot', 0, {
+        botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+        botAccessCheckedAt: new Date('2026-05-09T10:04:00.000Z'),
+        botAccessExpiresAt: new Date('2026-05-09T10:19:00.000Z'),
+        permissionsSnapshot: {
+          checkedAt: '2026-05-09T10:04:00.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages', 'write'],
+        },
+      }),
+    );
+
+    await expect(
+      fixture.service.resolveDeleteMessageBotRoute({
+        chatId,
+        requireFreshSnapshot: false,
+      }),
+    ).resolves.toMatchObject({
+      botId: null,
+      candidateBotIds: [],
+      capabilityState: 'explicitly_incapable',
+      capabilityReason: 'missing_channel_delete_permission',
+      candidateCapabilities: [
+        expect.objectContaining({
+          routeEligible: false,
+          state: 'explicitly_incapable',
+          reason: 'missing_channel_delete_permission',
+        }),
+      ],
+    });
   });
 
   it('requires an explicit MAX edit permission for channel post edits', async () => {
@@ -2760,7 +3035,7 @@ describe('MaxBotLinkService', () => {
           checkedAt: '2026-04-07T00:40:01.000Z',
           isAdmin: true,
           isOwner: false,
-          permissions: ['delete_messages'],
+          permissions: ['read_all_messages', 'write'],
         },
         createdAt: new Date('2026-04-07T00:40:01.000Z'),
         updatedAt: new Date('2026-04-07T00:40:01.000Z'),
@@ -2817,7 +3092,7 @@ describe('MaxBotLinkService', () => {
           checkedAt: '2026-05-26T09:00:01.000Z',
           isAdmin: true,
           isOwner: false,
-          permissions: ['delete_messages'],
+          permissions: ['read_all_messages', 'write'],
         },
         createdAt: new Date('2026-05-26T09:00:01.000Z'),
         updatedAt: new Date('2026-05-26T09:00:01.000Z'),
@@ -2915,7 +3190,7 @@ describe('MaxBotLinkService', () => {
           checkedAt: '2026-04-07T00:40:01.000Z',
           isAdmin: true,
           isOwner: false,
-          permissions: ['delete_messages'],
+          permissions: ['read_all_messages', 'write'],
         },
         createdAt: new Date('2026-04-07T00:40:01.000Z'),
         updatedAt: new Date('2026-04-07T00:40:01.000Z'),

@@ -5,6 +5,7 @@ import {
 } from './commercial-real-world.fixture';
 import type { CommercialCampaignContext } from './commercial-campaign.util';
 import { PROFANITY_EXACT_VARIANT_COUNT, TARGETED_INSULT_VARIANT_COUNT } from './profanity-lexicon';
+import { DUPLICATE_STATE_BUDGET_MS } from './rule-engine-duplicate-detector';
 import { RuleEngineService } from './rule-engine.service';
 
 class MockRedisCounterService {
@@ -313,22 +314,20 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
   });
 
-  it('fails open when duplicate-state lookup stalls', async () => {
+  it('propagates a bounded duplicate-state timeout so the webhook retries', async () => {
     jest.useFakeTimers();
     const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
-    try {
-      const redisCounter = {
-        incrementWithTtl: jest.fn().mockImplementation(
-          () =>
-            new Promise<number>(() => {
-              // Intentionally never resolves.
-            }),
-        ),
-      };
-      const service = new RuleEngineService(redisCounter as never);
-      const resultPromise = service.detect({
+    const redisCounter = {
+      incrementOncePerMemberWithTtlBeforeDeadline: jest.fn().mockImplementation(
+        () => new Promise<never>(() => undefined),
+      ),
+    };
+    const service = new RuleEngineService(redisCounter as never);
+    const resultPromise = service
+      .detect({
         chatId: 'chat-1',
         userId: 'u-1',
+        messageId: 'message-1',
         text: DUPLICATE_SPAM_TEXT,
         settings: buildSettings({
           antiDuplicateEnabled: true,
@@ -338,17 +337,17 @@ describe('RuleEngineService', () => {
         }),
         domainAllowlist: [],
       });
+    const rejected = expect(resultPromise).rejects.toMatchObject({
+      code: 'DUPLICATE_STATE_BUDGET_EXCEEDED',
+      retryable: true,
+    });
 
-      await jest.advanceTimersByTimeAsync(300);
-      const result = await resultPromise;
+    await jest.advanceTimersByTimeAsync(DUPLICATE_STATE_BUDGET_MS);
 
-      expect(result.duplicateDecision).toBeUndefined();
-      expect(result.duplicateHit).toBeUndefined();
-      expect(redisCounter.incrementWithTtl).toHaveBeenCalledTimes(1);
-    } finally {
-      consoleWarnSpy.mockRestore();
-      jest.useRealTimers();
-    }
+    await rejected;
+    expect(redisCounter.incrementOncePerMemberWithTtlBeforeDeadline).toHaveBeenCalledTimes(1);
+    consoleWarnSpy.mockRestore();
+    jest.useRealTimers();
   });
 
   it('fails open when anti-spam burst lookup stalls', async () => {

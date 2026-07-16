@@ -31,20 +31,14 @@ import {
   buildBotAccessSnapshotPersistence,
   type BotAccessSnapshotInput,
 } from './bot-access-snapshot.util';
+import {
+  hasConfirmedDeleteMessageAccess,
+  resolveDeleteMessageAccessFailure,
+  type MaxDeleteMessageAccessFailureReason,
+} from './max-delete-message-access.util';
 
 const CHAT_BOT_CACHE_TTL_MS = 10 * 60 * 1_000;
 const OBSERVED_WEBHOOK_TOUCH_TTL_MS = 60 * 1_000;
-const DELETE_MESSAGE_PERMISSION_ALIASES = new Set([
-  'delete',
-  'delete_message',
-  'delete_messages',
-  'can_delete_message',
-  'can_delete_messages',
-  'post_edit_delete_message',
-  'post_edit_delete_messages',
-  'can_post_edit_delete_message',
-  'can_post_edit_delete_messages',
-]);
 const EDIT_MESSAGE_PERMISSION_ALIASES = new Set([
   'edit',
   'edit_message',
@@ -57,10 +51,6 @@ const EDIT_MESSAGE_PERMISSION_ALIASES = new Set([
   'can_post_edit_delete_messages',
 ]);
 const WRITE_MESSAGE_PERMISSION_ALIASES = new Set(['write', 'can_write']);
-const CHAT_DELETE_MESSAGE_PERMISSION_ALIASES = new Set([
-  ...DELETE_MESSAGE_PERMISSION_ALIASES,
-  'write',
-]);
 const MODERATE_MEMBER_PERMISSION_ALIASES = new Set([
   'add_remove_members',
   'can_add_remove_members',
@@ -187,6 +177,48 @@ export type MaxBotRouteRequest =
       capability: ManagedEntityBotCapability;
       fallbackToPrimary?: boolean;
     };
+
+export type MaxDeleteMessageCapabilityState =
+  | 'confirmed_capable'
+  | 'stale_or_unknown'
+  | 'explicitly_incapable';
+
+export type MaxDeleteMessageCapabilityReason =
+  | MaxDeleteMessageAccessFailureReason
+  | 'confirmed'
+  | 'chat_not_found'
+  | 'no_active_membership'
+  | 'snapshot_stale'
+  | 'access_state_unconfirmed'
+  | 'access_denied'
+  | 'bot_not_actionable';
+
+export type MaxDeleteMessageCandidateCapability = {
+  botId: string;
+  state: MaxDeleteMessageCapabilityState;
+  reason: MaxDeleteMessageCapabilityReason;
+  checkedAt: string | null;
+  expiresAt: string | null;
+  routeEligible: boolean;
+};
+
+export type MaxDeleteMessageBotRoute = {
+  purpose: 'moderation_action';
+  action: 'delete_message';
+  chatId: string | null;
+  entityType: ChatEntityType | null;
+  routingState: ChatRoutingState | null;
+  routingVersion: number | null;
+  primaryBotId: string | null;
+  botId: string | null;
+  candidateBotIds: string[];
+  reason: MaxBotRouteReason | null;
+  capabilityState: MaxDeleteMessageCapabilityState;
+  capabilityReason: MaxDeleteMessageCapabilityReason;
+  checkedAt: string | null;
+  expiresAt: string | null;
+  candidateCapabilities: MaxDeleteMessageCandidateCapability[];
+};
 
 type ResolvedChatRouteMembership = {
   botId: string;
@@ -495,6 +527,7 @@ export class MaxBotLinkService {
     access: BotAccessSnapshotInput;
     source: string;
     checkedAt?: Date;
+    allowMembershipRecovery?: boolean;
   }): Promise<boolean> {
     const chatId = params.chatId.trim();
     const botId = this.resolveOperationalBotId(params.botId);
@@ -503,7 +536,7 @@ export class MaxBotLinkService {
     }
 
     const checkedAt = params.checkedAt ?? new Date();
-    const result = await this.prisma.chatBotMembership.updateMany({
+    let result = await this.prisma.chatBotMembership.updateMany({
       where: {
         chatId,
         botId,
@@ -517,6 +550,33 @@ export class MaxBotLinkService {
         lastSeenAt: checkedAt,
       },
     });
+    if (result.count === 0 && params.allowMembershipRecovery === true && params.access) {
+      const membership = await this.upsertChatBotMembership(chatId, botId, {
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        lastSeenAt: checkedAt,
+        lifecycleEventAt: checkedAt,
+        lifecycleEventType: 'live_probe',
+        lifecycleSource: 'live_probe',
+        allowReactivation: true,
+      });
+      if (membership.active) {
+        result = await this.prisma.chatBotMembership.updateMany({
+          where: {
+            chatId,
+            botId,
+            status: ChatBotMembershipStatus.ACTIVE,
+          },
+          data: {
+            ...buildBotAccessSnapshotPersistence(params.access, {
+              source: params.source,
+              now: checkedAt,
+            }),
+            lastSeenAt: checkedAt,
+          },
+        });
+      }
+    }
     if (result.count > 0) {
       await this.reconcileChatPrimaryByAccess({ chatId });
     }
@@ -1077,6 +1137,98 @@ export class MaxBotLinkService {
       fallbackToPrimary: params.fallbackToPrimary,
     });
     return route.candidateBotIds;
+  }
+
+  async resolveDeleteMessageBotRoute(params: {
+    chatId: string;
+    requireFreshSnapshot?: boolean;
+  }): Promise<MaxDeleteMessageBotRoute> {
+    const chatId = params.chatId.trim();
+    if (!chatId) {
+      return this.buildEmptyDeleteMessageBotRoute(null, 'chat_not_found');
+    }
+
+    const state = await this.loadChatRouteState(chatId);
+    if (!state) {
+      return this.buildEmptyDeleteMessageBotRoute(chatId, 'chat_not_found');
+    }
+
+    const requireFreshSnapshot = params.requireFreshSnapshot !== false;
+    const actionableBotIds = new Set(
+      state.activeActionableMemberships.map((membership) => membership.botId),
+    );
+    const candidateCapabilities = state.activeKnownMemberships
+      .map((membership) =>
+        this.assessDeleteMessageCandidateCapability(
+          membership,
+          state.entityType,
+          actionableBotIds.has(membership.botId),
+        ),
+      )
+      .map((candidate) => ({
+        ...candidate,
+        routeEligible:
+          candidate.routeEligible &&
+          (candidate.state === 'confirmed_capable' ||
+            (!requireFreshSnapshot && state.routingState === ChatRoutingState.READY)),
+      }))
+      .sort((left, right) => {
+        if (left.botId === state.primaryBotId) {
+          return -1;
+        }
+        if (right.botId === state.primaryBotId) {
+          return 1;
+        }
+        return 0;
+      });
+    const routeCandidates = candidateCapabilities
+      .filter((candidate) => candidate.routeEligible)
+      .sort((left, right) => {
+        const leftConfirmed = left.state === 'confirmed_capable';
+        const rightConfirmed = right.state === 'confirmed_capable';
+        if (leftConfirmed !== rightConfirmed) {
+          return leftConfirmed ? -1 : 1;
+        }
+        if (left.botId === state.primaryBotId) {
+          return -1;
+        }
+        if (right.botId === state.primaryBotId) {
+          return 1;
+        }
+        return 0;
+      });
+    const selected = routeCandidates[0] ?? null;
+    const aggregate =
+      candidateCapabilities.find((candidate) => candidate.state === 'confirmed_capable') ??
+      candidateCapabilities.find((candidate) => candidate.state === 'stale_or_unknown') ??
+      candidateCapabilities[0] ??
+      null;
+
+    return {
+      purpose: 'moderation_action',
+      action: 'delete_message',
+      chatId,
+      entityType: state.entityType,
+      routingState: state.routingState,
+      routingVersion: state.routingVersion,
+      primaryBotId: state.primaryBotId,
+      botId: selected?.botId ?? null,
+      candidateBotIds: routeCandidates.map((candidate) => candidate.botId),
+      reason: selected
+        ? selected.botId === state.primaryBotId
+          ? selected.state === 'confirmed_capable'
+            ? 'primary_confirmed'
+            : 'primary_soft'
+          : selected.state === 'confirmed_capable'
+            ? 'alternate_confirmed'
+            : 'alternate_soft'
+        : null,
+      capabilityState: aggregate?.state ?? 'stale_or_unknown',
+      capabilityReason: aggregate?.reason ?? 'no_active_membership',
+      checkedAt: aggregate?.checkedAt ?? null,
+      expiresAt: aggregate?.expiresAt ?? null,
+      candidateCapabilities,
+    };
   }
 
   async resolveBotIdForCapability(params: {
@@ -2352,10 +2504,14 @@ export class MaxBotLinkService {
   private hasModerationActionPermission(
     snapshot: MembershipAccessSnapshot | null,
     action: ModerationActionPermission,
-    _entityType: ChatEntityType | null,
+    entityType: ChatEntityType | null,
   ): boolean {
     if (!snapshot) {
       return false;
+    }
+
+    if (action === 'delete_message') {
+      return hasConfirmedDeleteMessageAccess(snapshot, entityType);
     }
 
     if (snapshot.isOwner) {
@@ -2367,8 +2523,96 @@ export class MaxBotLinkService {
     }
 
     return snapshot.permissions.some((permission) =>
-      this.isModerationActionPermission(permission, action, _entityType),
+      this.isModerationActionPermission(permission, action, entityType),
     );
+  }
+
+  private assessDeleteMessageCandidateCapability(
+    membership: ResolvedChatRouteMembership,
+    entityType: ChatEntityType | null,
+    actionable: boolean,
+  ): MaxDeleteMessageCandidateCapability {
+    const snapshot = normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
+    const snapshotCheckedAtMs = snapshot?.checkedAt ? Date.parse(snapshot.checkedAt) : Number.NaN;
+    const membershipCheckedAtMs = membership.botAccessCheckedAt?.getTime() ?? Number.NaN;
+    const checkedAtMs = Number.isFinite(membershipCheckedAtMs)
+      ? membershipCheckedAtMs
+      : snapshotCheckedAtMs;
+    const expiresAtMs = membership.botAccessExpiresAt?.getTime() ?? Number.NaN;
+    const checkedAt = Number.isFinite(checkedAtMs) ? new Date(checkedAtMs).toISOString() : null;
+    const expiresAt = Number.isFinite(expiresAtMs) ? new Date(expiresAtMs).toISOString() : null;
+    const result = (
+      state: MaxDeleteMessageCapabilityState,
+      reason: MaxDeleteMessageCapabilityReason,
+      routeEligible = false,
+    ): MaxDeleteMessageCandidateCapability => ({
+      botId: membership.botId,
+      state,
+      reason,
+      checkedAt,
+      expiresAt,
+      routeEligible,
+    });
+
+    if (
+      membership.botAccessState === ChatBotAccessState.DENIED ||
+      membership.botAccessState === ChatBotAccessState.LOST
+    ) {
+      return result('explicitly_incapable', 'access_denied');
+    }
+    if (!snapshot) {
+      return result('stale_or_unknown', 'snapshot_missing', actionable);
+    }
+
+    const nowMs = Date.now();
+    const fresh =
+      Number.isFinite(checkedAtMs) &&
+      checkedAtMs <= nowMs &&
+      (Number.isFinite(expiresAtMs)
+        ? expiresAtMs > nowMs
+        : isFreshMembershipAccessSnapshot(snapshot, { nowMs }));
+    if (!fresh) {
+      return result('stale_or_unknown', 'snapshot_stale', actionable);
+    }
+
+    const permissionFailure = resolveDeleteMessageAccessFailure(snapshot, entityType);
+    if (permissionFailure) {
+      return result('explicitly_incapable', permissionFailure);
+    }
+    if (
+      membership.botAccessState !== ChatBotAccessState.CONFIRMED_ADMIN &&
+      membership.botAccessState !== ChatBotAccessState.CONFIRMED_OWNER
+    ) {
+      return result('stale_or_unknown', 'access_state_unconfirmed', actionable);
+    }
+    if (!actionable) {
+      return result('stale_or_unknown', 'bot_not_actionable');
+    }
+
+    return result('confirmed_capable', 'confirmed', true);
+  }
+
+  private buildEmptyDeleteMessageBotRoute(
+    chatId: string | null,
+    reason: 'chat_not_found' | 'no_active_membership',
+  ): MaxDeleteMessageBotRoute {
+    return {
+      purpose: 'moderation_action',
+      action: 'delete_message',
+      chatId,
+      entityType: null,
+      routingState: null,
+      routingVersion: null,
+      primaryBotId: null,
+      botId: null,
+      candidateBotIds: [],
+      reason: null,
+      capabilityState: 'stale_or_unknown',
+      capabilityReason: reason,
+      checkedAt: null,
+      expiresAt: null,
+      candidateCapabilities: [],
+    };
   }
 
   private hasConfirmedSendMessageAccess(
@@ -2410,11 +2654,15 @@ export class MaxBotLinkService {
   private membershipExplicitlyLacksModerationAction(
     value: unknown,
     action: ModerationActionPermission,
-    _entityType: ChatEntityType | null,
+    entityType: ChatEntityType | null,
   ): boolean {
     const snapshot = normalizeMembershipAccessSnapshot(value);
     if (!snapshot) {
       return false;
+    }
+
+    if (action === 'delete_message') {
+      return !hasConfirmedDeleteMessageAccess(snapshot, entityType);
     }
 
     if (snapshot.isOwner) {
@@ -2426,7 +2674,7 @@ export class MaxBotLinkService {
     }
 
     return !snapshot.permissions.some((permission) =>
-      this.isModerationActionPermission(permission, action, _entityType),
+      this.isModerationActionPermission(permission, action, entityType),
     );
   }
 
@@ -2451,7 +2699,7 @@ export class MaxBotLinkService {
   private isModerationActionPermission(
     permission: string,
     action: ModerationActionPermission,
-    entityType?: ChatEntityType | null,
+    _entityType?: ChatEntityType | null,
   ): boolean {
     const normalized = normalizePermissionName(permission);
     if (!normalized) {
@@ -2459,11 +2707,7 @@ export class MaxBotLinkService {
     }
 
     if (action === 'delete_message') {
-      const aliases =
-        entityType === ChatEntityType.CHAT
-          ? CHAT_DELETE_MESSAGE_PERMISSION_ALIASES
-          : DELETE_MESSAGE_PERMISSION_ALIASES;
-      return aliases.has(normalized);
+      return false;
     }
 
     if (action === 'edit_message') {

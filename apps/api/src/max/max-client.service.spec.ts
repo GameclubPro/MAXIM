@@ -1,7 +1,9 @@
 import {
   MAX_API_SOURCE_TAGS,
   MaxApiCircuitOpenError,
+  MaxApiRequestRejectedError,
   MaxClientService,
+  wasMaxMessageSendAttempted,
 } from './max-client.service';
 import { from, of, throwError } from 'rxjs';
 import Redis from 'ioredis';
@@ -557,13 +559,51 @@ describe('MaxClientService inline keyboard guardrails', () => {
       createdAt: new Date().toISOString(),
     });
 
-    expect(httpService.request).toHaveBeenCalledWith(
-      expect.objectContaining({
-        method: 'delete',
-        url: 'https://platform-api2.max.ru/messages',
-        timeout: 1_234,
-      }),
-    );
+    expect(httpService.request).toHaveBeenCalledWith({
+      method: 'delete',
+      url: 'https://platform-api2.max.ru/messages',
+      params: {
+        message_id: 'mid-delete-timeout-1',
+      },
+      timeout: 1_234,
+      headers: {
+        Authorization: 'test-token',
+      },
+    });
+
+    await service.onModuleDestroy();
+  });
+
+  it.each([
+    { label: 'success=false', payload: { success: false } },
+    { label: 'missing success', payload: {} },
+  ])('rejects a 200 delete response with $label', async ({ payload }) => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: payload,
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    const deletion = service.executeActionJob({
+      actionType: 'DELETE_MESSAGE',
+      chatId: 'chat-1',
+      messageId: 'mid-delete-rejected-1',
+      attempt: 1,
+      idempotencyKey: 'delete-rejected',
+      createdAt: new Date().toISOString(),
+    });
+
+    await expect(deletion).rejects.toBeInstanceOf(MaxApiRequestRejectedError);
+    await expect(deletion).rejects.toMatchObject({
+      response: {
+        status: 200,
+        data: payload,
+      },
+    });
 
     await service.onModuleDestroy();
   });
@@ -1910,6 +1950,142 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('runs the replacement send fence after source preparation and immediately before POST', async () => {
+    const order: string[] = [];
+    const httpService = {
+      request: jest
+        .fn()
+        .mockImplementationOnce(() => {
+          order.push('get');
+          return of({
+            status: 200,
+            data: {
+              messages: [{ body: { mid: 'mid-source-fence', text: 'Source', attachments: [] } }],
+            },
+          });
+        })
+        .mockImplementationOnce(() => {
+          order.push('post');
+          return of({ status: 200, data: { mid: 'mid-copy-fence' } });
+        }),
+    };
+    const service = createService(httpService);
+
+    await service.sendMessageCopyWithInlineKeyboard('chat-1', 'mid-source-fence', 'Source', {
+      beforeSend: async () => {
+        order.push('fence');
+      },
+    });
+
+    expect(order).toEqual(['get', 'fence', 'post']);
+    await service.onModuleDestroy();
+  });
+
+  it('does not run the replacement send fence when reading the source message fails', async () => {
+    const beforeSend = jest.fn();
+    const httpService = {
+      request: jest.fn().mockReturnValue(
+        throwError(() => ({
+          response: { status: 404, data: { code: 'message.not.found' } },
+          message: 'Source message not found',
+        })),
+      ),
+    };
+    const service = createService(httpService);
+
+    const error = await service
+      .sendMessageCopyWithInlineKeyboard('chat-1', 'mid-source-missing', 'Source', { beforeSend })
+      .catch((caught: unknown) => caught);
+
+    expect(beforeSend).not.toHaveBeenCalled();
+    expect(httpService.request).toHaveBeenCalledTimes(1);
+    expect(wasMaxMessageSendAttempted(error)).toBe(false);
+    await service.onModuleDestroy();
+  });
+
+  it('does not POST when the replacement send fence cannot be persisted', async () => {
+    const fenceError = new Error('marker unavailable');
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            messages: [{ body: { mid: 'mid-source-no-post', text: 'Source', attachments: [] } }],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    const error = await service
+      .sendMessageCopyWithInlineKeyboard('chat-1', 'mid-source-no-post', 'Source', {
+        beforeSend: async () => {
+          throw fenceError;
+        },
+      })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBe(fenceError);
+    expect(httpService.request).toHaveBeenCalledTimes(1);
+    expect(wasMaxMessageSendAttempted(error)).toBe(false);
+    await service.onModuleDestroy();
+  });
+
+  it('marks a replacement POST timeout as an attempted MAX send', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              messages: [{ body: { mid: 'mid-source-timeout', text: 'Source', attachments: [] } }],
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          throwError(() => Object.assign(new Error('send timed out'), { code: 'ETIMEDOUT' })),
+        ),
+    };
+    const service = createService(httpService);
+
+    const error = await service
+      .sendMessageCopyWithInlineKeyboard('chat-1', 'mid-source-timeout', 'Source', {
+        beforeSend: async () => undefined,
+      })
+      .catch((caught: unknown) => caught);
+
+    expect(wasMaxMessageSendAttempted(error)).toBe(true);
+    await service.onModuleDestroy();
+  });
+
+  it('marks a replacement response without a message id as an attempted MAX send', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              messages: [{ body: { mid: 'mid-source-no-id', text: 'Source', attachments: [] } }],
+            },
+          }),
+        )
+        .mockReturnValueOnce(of({ status: 200, data: { success: true } })),
+    };
+    const service = createService(httpService);
+
+    const error = await service
+      .sendMessageCopyWithInlineKeyboard('chat-1', 'mid-source-no-id', 'Source', {
+        beforeSend: async () => undefined,
+      })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(wasMaxMessageSendAttempted(error)).toBe(true);
+    await service.onModuleDestroy();
+  });
+
   it('uses fallback text and linked attachments when reposting a forwarded message', async () => {
     const httpService = {
       request: jest
@@ -2731,6 +2907,51 @@ describe('MaxClientService inline keyboard guardrails', () => {
     });
     expect(httpService.request).toHaveBeenCalledTimes(1);
 
+    await service.onModuleDestroy();
+  });
+
+  it('runs an immediate send fence before the MAX POST', async () => {
+    const order: string[] = [];
+    const httpService = {
+      request: jest.fn().mockImplementationOnce(() => {
+        order.push('post');
+        return of({
+          status: 200,
+          data: {
+            message_id: 'mid-fenced-reply',
+            url: 'https://max.ru/chats/chat-1/message/fenced-reply',
+          },
+        });
+      }),
+    };
+    const service = createService(httpService);
+
+    await service.sendMessageImmediateWithResolvedLink('chat-1', 'Reply', {
+      beforeSend: async () => {
+        order.push('fence');
+      },
+    });
+
+    expect(order).toEqual(['fence', 'post']);
+    await service.onModuleDestroy();
+  });
+
+  it('does not POST an immediate send when its fence cannot be persisted', async () => {
+    const fenceError = new Error('reply marker unavailable');
+    const httpService = { request: jest.fn() };
+    const service = createService(httpService);
+
+    const error = await service
+      .sendMessageImmediateWithResolvedLink('chat-1', 'Reply', {
+        beforeSend: async () => {
+          throw fenceError;
+        },
+      })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBe(fenceError);
+    expect(httpService.request).not.toHaveBeenCalled();
+    expect(wasMaxMessageSendAttempted(error)).toBe(false);
     await service.onModuleDestroy();
   });
 
@@ -3804,6 +4025,66 @@ describe('MaxClientService inline keyboard guardrails', () => {
         },
       }),
     );
+
+    await service.onModuleDestroy();
+  });
+
+  it('reports an exact raw message as present even when snapshot fields are malformed', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          data: {
+            messages: [
+              {
+                body: { mid: 'mid-malformed-snapshot' },
+                timestamp: 'not-a-timestamp',
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await expect(
+      service.getExactMessagePresence('chat-1', 'mid-malformed-snapshot', {
+        botId: '777000_bot',
+      }),
+    ).resolves.toBe('present');
+    expect(httpService.request).toHaveBeenCalledTimes(1);
+
+    await service.onModuleDestroy();
+  });
+
+  it('reports absence only for an exact message-not-found response', async () => {
+    const exactNotFound = {
+      response: {
+        status: 404,
+        data: { code: 'message.not.found', message: 'Message not found' },
+      },
+    };
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(throwError(() => exactNotFound)),
+    };
+    const service = createService(httpService);
+
+    await expect(
+      service.getExactMessagePresence('chat-1', 'mid-absent', { botId: '777000_bot' }),
+    ).resolves.toBe('absent');
+
+    await service.onModuleDestroy();
+  });
+
+  it('does not treat a bare 404 as exact message absence', async () => {
+    const bareNotFound = { response: { status: 404, data: {} } };
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(throwError(() => bareNotFound)),
+    };
+    const service = createService(httpService);
+
+    await expect(
+      service.getExactMessagePresence('chat-1', 'mid-unknown', { botId: '777000_bot' }),
+    ).rejects.toBe(bareNotFound);
 
     await service.onModuleDestroy();
   });
@@ -5231,7 +5512,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       request: jest.fn().mockReturnValueOnce(
         of({
           status: 200,
-          data: {},
+          data: { success: true },
         }),
       ),
     };

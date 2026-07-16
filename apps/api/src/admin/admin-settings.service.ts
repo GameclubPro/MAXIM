@@ -36,6 +36,7 @@ import {
   previewApplySettingsSectionTarget as previewApplySettingsSectionTargetValue,
 } from './admin-settings-apply';
 import { AdminService } from './admin.service';
+import { AdminManualMessageCleanupService } from './admin-manual-message-cleanup.service';
 import { sanitizePublicManagedEntityHeader } from './admin-managed-entity-header';
 import {
   type AdminActionSource,
@@ -67,6 +68,8 @@ export class AdminSettingsService {
     private readonly managedBroadcastService: ManagedBroadcastService,
     @Optional()
     private readonly nightModeTransitionScheduler?: NightModeTransitionSchedulerService,
+    @Optional()
+    private readonly manualMessageCleanupService?: AdminManualMessageCleanupService,
   ) {}
 
   async getSettings(
@@ -246,6 +249,29 @@ export class AdminSettingsService {
         this.legacyAdminService.buildFormattedChatRulesPublicationText(chatId, sourceText, options),
       sendPrivateConfirmation: (publishedUrl) =>
         this.legacyAdminService.sendPublishedChatRulesPrivateConfirmation(user, publishedUrl),
+      ...(this.manualMessageCleanupService
+        ? {
+            deletePreviousPublishedMessage: ({
+              chatId: targetChatId,
+              messageId,
+              botId,
+              directOptions,
+            }) =>
+              this.manualMessageCleanupService!.deleteBotAuthoredMessage({
+                chatId: targetChatId,
+                messageId,
+                originBotId: botId,
+                reasonKey: 'chat_rules_republish_previous_message_cleanup',
+                ruleCode: 'CHAT_RULES_REPUBLISH_PREVIOUS_MESSAGE_CLEANUP',
+                metadata: {
+                  source,
+                  actorUserId: user.userId,
+                  cleanupKind: 'chat_rules_republish',
+                },
+                directOptions,
+              }),
+          }
+        : {}),
     });
   }
 
@@ -259,10 +285,29 @@ export class AdminSettingsService {
       prisma: this.prisma,
       chatContextCache: this.chatContextCache,
       maxClient: this.maxClient,
+      logger: this.logger,
       chatId,
       actorUserId: user.userId,
       source,
       resolveBotId: () => this.legacyAdminService.resolveChatRulesActionBotId(chatId),
+      ...(this.manualMessageCleanupService
+        ? {
+            deletePublishedMessage: ({ chatId: targetChatId, messageId, botId, directOptions }) =>
+              this.manualMessageCleanupService!.deleteBotAuthoredMessage({
+                chatId: targetChatId,
+                messageId,
+                originBotId: botId,
+                reasonKey: 'chat_rules_reset_published_message_cleanup',
+                ruleCode: 'CHAT_RULES_RESET_PUBLISHED_MESSAGE_CLEANUP',
+                metadata: {
+                  source,
+                  actorUserId: user.userId,
+                  cleanupKind: 'chat_rules_reset',
+                },
+                directOptions,
+              }),
+          }
+        : {}),
     });
   }
 

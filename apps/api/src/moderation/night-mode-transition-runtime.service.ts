@@ -26,6 +26,7 @@ import { RedisCounterService } from './redis-counter.service';
 
 export type NightModeTransitionNoticeResult = NightModeTransitionProcessResult & {
   messageId: string | null;
+  botId: string | null;
 };
 
 export type NightModeTransitionRuntimeSettings = Pick<
@@ -80,7 +81,11 @@ export type NightModeTransitionRuntimeHooks = {
       sessionKey: string;
     },
   ): Promise<NightModeTransitionProcessResult>;
-  deleteClosedNotice(chatId: string, messageId: string): Promise<NightModeTransitionProcessResult>;
+  deleteClosedNotice(
+    chatId: string,
+    messageId: string,
+    originBotId: string | null,
+  ): Promise<NightModeTransitionProcessResult>;
 };
 
 type NightModeTransitionLock = {
@@ -208,15 +213,25 @@ export class NightModeTransitionRuntimeService {
         let closeNoticeMessageId = alreadyClosedForSession
           ? (currentState.closeNoticeMessageId ?? null)
           : null;
+        let closeNoticeBotId = alreadyClosedForSession
+          ? (currentState.closeNoticeBotId ?? null)
+          : null;
         if (
           snapshot.isCloseBoundary &&
           settings.nightModeBotMessageEnabled &&
-          !closeNoticeMessageId
+          (!closeNoticeMessageId || !closeNoticeBotId)
         ) {
-          closeNoticeMessageId = await this.findPersistedCloseNoticeMessageId(
+          const persistedCloseNotice = await this.findPersistedCloseNotice(
             settings.chatId,
             snapshot.sessionKey,
           );
+          closeNoticeMessageId = closeNoticeMessageId ?? persistedCloseNotice?.messageId ?? null;
+          if (
+            persistedCloseNotice?.messageId === closeNoticeMessageId &&
+            persistedCloseNotice.botId
+          ) {
+            closeNoticeBotId = persistedCloseNotice.botId;
+          }
         }
         if (
           snapshot.isCloseBoundary &&
@@ -232,12 +247,14 @@ export class NightModeTransitionRuntimeService {
             return noticeResult;
           }
           closeNoticeMessageId = noticeResult.messageId;
+          closeNoticeBotId = noticeResult.botId;
         }
 
         await this.writeNightModeTransitionState(settings.chatId, {
           status: 'closed',
           sessionKey: snapshot.sessionKey,
           closeNoticeMessageId,
+          closeNoticeBotId,
           updatedAt: new Date().toISOString(),
         });
         return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
@@ -247,13 +264,28 @@ export class NightModeTransitionRuntimeService {
         currentState?.status === 'closed' && currentState.sessionKey === snapshot.sessionKey
           ? currentState.closeNoticeMessageId
           : null;
+      let previousCloseNoticeBotId =
+        currentState?.status === 'closed' && currentState.sessionKey === snapshot.sessionKey
+          ? currentState.closeNoticeBotId
+          : null;
       let transitionAlreadyRecorded =
         currentState?.status === 'open' && currentState.sessionKey === snapshot.sessionKey;
-      if (!previousCloseNoticeMessageId && !transitionAlreadyRecorded) {
-        previousCloseNoticeMessageId = await this.findPersistedCloseNoticeMessageId(
+      if (
+        (!previousCloseNoticeMessageId || !previousCloseNoticeBotId) &&
+        !transitionAlreadyRecorded
+      ) {
+        const persistedCloseNotice = await this.findPersistedCloseNotice(
           settings.chatId,
           snapshot.sessionKey,
         );
+        previousCloseNoticeMessageId =
+          previousCloseNoticeMessageId ?? persistedCloseNotice?.messageId ?? null;
+        if (
+          persistedCloseNotice?.messageId === previousCloseNoticeMessageId &&
+          persistedCloseNotice.botId
+        ) {
+          previousCloseNoticeBotId = persistedCloseNotice.botId;
+        }
       }
       if (
         !transitionAlreadyRecorded &&
@@ -272,6 +304,7 @@ export class NightModeTransitionRuntimeService {
           deleteResult = await hooks.deleteClosedNotice(
             settings.chatId,
             previousCloseNoticeMessageId,
+            previousCloseNoticeBotId ?? null,
           );
           if (!deleteResult.shouldEnqueueNext) {
             this.logger.warn(
@@ -315,6 +348,7 @@ export class NightModeTransitionRuntimeService {
         status: 'open',
         sessionKey: snapshot.sessionKey,
         closeNoticeMessageId: null,
+        closeNoticeBotId: null,
         updatedAt: new Date().toISOString(),
       });
       if (deleteResult && !deleteResult.shouldEnqueueNext && !sentOpenedNotice) {
@@ -347,10 +381,10 @@ export class NightModeTransitionRuntimeService {
     return `night-mode-transition-lock:v1:${chatId}`;
   }
 
-  private async findPersistedCloseNoticeMessageId(
+  private async findPersistedCloseNotice(
     chatId: string,
     sessionKey: string,
-  ): Promise<string | null> {
+  ): Promise<{ messageId: string; botId: string | null } | null> {
     if (typeof this.prisma.moderationEvent?.findFirst !== 'function') {
       return null;
     }
@@ -369,13 +403,20 @@ export class NightModeTransitionRuntimeService {
       },
       select: {
         messageId: true,
+        botId: true,
       },
       orderBy: {
         createdAt: 'desc',
       },
     });
     const messageId = event?.messageId?.trim() ?? '';
-    return messageId ? messageId : null;
+    if (!messageId) {
+      return null;
+    }
+    return {
+      messageId,
+      botId: event?.botId?.trim() || null,
+    };
   }
 
   private async hasPersistedOpenNotice(chatId: string, sessionKey: string): Promise<boolean> {
@@ -422,6 +463,7 @@ export class NightModeTransitionRuntimeService {
           status: 'closed',
           sessionKey: snapshot.sessionKey,
           closeNoticeMessageId: error.details.messageId,
+          closeNoticeBotId: error.details.botId,
           updatedAt: new Date().toISOString(),
         });
       }
@@ -444,6 +486,7 @@ export class NightModeTransitionRuntimeService {
           status: 'open',
           sessionKey: snapshot.sessionKey,
           closeNoticeMessageId: null,
+          closeNoticeBotId: null,
           updatedAt: new Date().toISOString(),
         });
       }
@@ -524,6 +567,10 @@ export class NightModeTransitionRuntimeService {
       typeof record.closeNoticeMessageId === 'string' && record.closeNoticeMessageId.trim()
         ? record.closeNoticeMessageId.trim()
         : null;
+    const closeNoticeBotId =
+      typeof record.closeNoticeBotId === 'string' && record.closeNoticeBotId.trim()
+        ? record.closeNoticeBotId.trim()
+        : null;
     const updatedAt =
       typeof record.updatedAt === 'string' && record.updatedAt.trim()
         ? record.updatedAt.trim()
@@ -533,6 +580,7 @@ export class NightModeTransitionRuntimeService {
       status,
       sessionKey,
       closeNoticeMessageId,
+      closeNoticeBotId,
       ...(updatedAt ? { updatedAt } : {}),
     };
   }

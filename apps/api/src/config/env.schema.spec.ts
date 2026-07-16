@@ -117,6 +117,48 @@ describe('validateEnv boolean parsing', () => {
     ).toThrow(/MAX_ROUTED_MUTATIONS_CANARY_PERCENT/u);
   });
 
+  it('defaults durable moderation delete intents to a non-executing rollout', () => {
+    const defaults = validateEnv(createValidEnv());
+    expect(defaults.MODERATION_DELETE_INTENT_MODE).toBe('off');
+    expect(defaults.MODERATION_DELETE_INTENT_CANARY_CHAT_IDS).toBe('');
+    expect(defaults.MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS).toBe('');
+    expect(defaults.MODERATION_DELETE_INTENT_RETRY_HORIZON_MS).toBe(86_400_000);
+    expect(defaults.MODERATION_DELETE_INTENT_RECOVERY_BATCH_SIZE).toBe(10);
+    expect(defaults.MODERATION_DELETE_INTENT_RETENTION_DAYS).toBe(90);
+    expect(defaults.MODERATION_DELETE_INTENT_PURGE_MAX_BATCHES).toBe(10);
+    expect(defaults.MODERATION_DELETE_INTENT_LEASE_MS).toBeGreaterThan(
+      defaults.MODERATION_DELETE_INTENT_TIMEOUT_MS,
+    );
+
+    const canary = validateEnv(
+      createValidEnv({
+        MODERATION_DELETE_INTENT_MODE: 'canary',
+        MODERATION_DELETE_INTENT_CANARY_CHAT_IDS: 'chat-1',
+        MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS: 'chat-1',
+      }),
+    );
+    expect(canary.MODERATION_DELETE_INTENT_MODE).toBe('canary');
+    expect(canary.MODERATION_DELETE_INTENT_CANARY_CHAT_IDS).toBe('chat-1');
+    expect(canary.MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS).toBe('chat-1');
+
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          MODERATION_DELETE_INTENT_LEASE_MS: '1000',
+          MODERATION_DELETE_INTENT_TIMEOUT_MS: '1000',
+        }),
+      ),
+    ).toThrow(/MODERATION_DELETE_INTENT_LEASE_MS/u);
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          MODERATION_DELETE_INTENT_RETRY_BASE_MS: '10000',
+          MODERATION_DELETE_INTENT_RETRY_MAX_MS: '5000',
+        }),
+      ),
+    ).toThrow(/MODERATION_DELETE_INTENT_RETRY_MAX_MS/u);
+  });
+
   it('defaults the action ledger watchdog to shadow rollout', () => {
     const defaults = validateEnv(createValidEnv());
     expect(defaults.MAX_ACTION_LEDGER_WATCHDOG_MODE).toBe('shadow');

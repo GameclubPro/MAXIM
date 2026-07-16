@@ -31,15 +31,44 @@ type DuplicateFingerprint = {
   value: string;
 };
 
-const DUPLICATE_STATE_LOOKUP_TIMEOUT_MS = 250;
 const PHONE_NUMBER_PATTERN = /(?:^|[^\d+])(\+?\d[\d\s().-]{7,}\d)(?=$|[^\d])/gu;
 const NEAR_DUPLICATE_MIN_TOKEN_COUNT = 6;
 const NEAR_DUPLICATE_MIN_UNIQUE_TOKENS = 5;
+export const DUPLICATE_STATE_BUDGET_MS = 250;
+
+export type DuplicateStateBudgetExceededEvent = {
+  chatId: string;
+  userId: string;
+  timeoutMs: number;
+  source: 'caller_deadline' | 'redis_deadline';
+};
+
+export class DuplicateStateBudgetExceededError extends Error {
+  readonly code = 'DUPLICATE_STATE_BUDGET_EXCEEDED';
+  readonly retryable = true;
+
+  constructor(readonly source: DuplicateStateBudgetExceededEvent['source']) {
+    super(`Duplicate state budget exceeded after ${DUPLICATE_STATE_BUDGET_MS}ms`);
+    this.name = 'DuplicateStateBudgetExceededError';
+  }
+}
+
+type DuplicateBudgetContext = {
+  reported: boolean;
+};
+
+type DuplicateFingerprintCountResult =
+  | { kind: 'deadline_exceeded' }
+  | { kind: 'skipped' }
+  | { kind: 'inserted' | 'replayed'; count: number };
 
 export class RuleEngineDuplicateDetector {
-  private duplicateTimeoutWarnAtMs = 0;
+  private duplicateBudgetWarnAtMs: number | null = null;
 
-  constructor(private readonly redisCounter: RedisCounterService) {}
+  constructor(
+    private readonly redisCounter: RedisCounterService,
+    private readonly onBudgetExceeded?: (event: DuplicateStateBudgetExceededEvent) => void,
+  ) {}
 
   async detectWithin(params: {
     chatId: string;
@@ -48,34 +77,39 @@ export class RuleEngineDuplicateDetector {
     rawText: string;
     compactText: string;
     settings: ChatSettings;
-  }): Promise<
-    | {
-        hit?: DuplicateHit;
-        decision?: DuplicateDecision;
-      }
-    | undefined
-  > {
-    const operationPromise = this.detectState(params);
-
-    const result = await raceWithTimeout({
-      operation: operationPromise,
-      timeoutMs: DUPLICATE_STATE_LOOKUP_TIMEOUT_MS,
-      onTimeout: () => undefined,
-    });
-    if (typeof result === 'undefined') {
-      this.logStateTimeout(params.chatId, params.userId);
+  }): Promise<{
+    hit?: DuplicateHit;
+    decision?: DuplicateDecision;
+  }> {
+    const messageId = params.messageId?.trim();
+    const deadlineMutation = this.redisCounter.incrementOncePerMemberWithTtlBeforeDeadline;
+    if (!messageId || typeof deadlineMutation !== 'function') {
+      return this.detectState(params);
     }
-    return result;
+
+    const deadlineAtMs = Date.now() + DUPLICATE_STATE_BUDGET_MS;
+    const budgetContext: DuplicateBudgetContext = { reported: false };
+    return raceWithTimeout({
+      operation: () => this.detectState(params, deadlineAtMs, budgetContext),
+      timeoutMs: DUPLICATE_STATE_BUDGET_MS,
+      onTimeout: () => {
+        throw this.createBudgetExceededError(params, 'caller_deadline', budgetContext);
+      },
+    });
   }
 
-  private async detectState(params: {
-    chatId: string;
-    userId: string;
-    messageId?: string;
-    rawText: string;
-    compactText: string;
-    settings: ChatSettings;
-  }): Promise<{
+  private async detectState(
+    params: {
+      chatId: string;
+      userId: string;
+      messageId?: string;
+      rawText: string;
+      compactText: string;
+      settings: ChatSettings;
+    },
+    deadlineAtMs?: number,
+    budgetContext?: DuplicateBudgetContext,
+  ): Promise<{
     hit?: DuplicateHit;
     decision?: DuplicateDecision;
   }> {
@@ -95,8 +129,16 @@ export class RuleEngineDuplicateDetector {
         fingerprintType: fingerprint.type,
         messageId: params.messageId,
         ttlSec: flow.windowSec + 1,
+        deadlineAtMs,
       });
-      if (!countResult.inserted) {
+      if (countResult.kind === 'deadline_exceeded') {
+        throw this.createBudgetExceededError(
+          params,
+          'redis_deadline',
+          budgetContext ?? { reported: false },
+        );
+      }
+      if (countResult.kind === 'skipped') {
         continue;
       }
       const total = countResult.count;
@@ -153,11 +195,12 @@ export class RuleEngineDuplicateDetector {
     fingerprintType: DuplicateFingerprintType;
     messageId?: string;
     ttlSec: number;
-  }): Promise<{ inserted: boolean; count: number }> {
+    deadlineAtMs?: number;
+  }): Promise<DuplicateFingerprintCountResult> {
     const messageId = params.messageId?.trim();
     if (!messageId) {
       return {
-        inserted: true,
+        kind: 'inserted',
         count: await this.redisCounter.incrementWithTtl(params.flowKey, params.ttlSec),
       };
     }
@@ -167,12 +210,69 @@ export class RuleEngineDuplicateDetector {
       params.chatId,
       params.userId,
       params.hash,
-      `flow:${params.fingerprintType}:msg:${messageHash}`,
+      `flow:${params.fingerprintType}:msg:v2:${messageHash}`,
     );
-    return this.redisCounter.incrementOncePerMemberWithTtl(
+    const deadlineMutation = this.redisCounter.incrementOncePerMemberWithTtlBeforeDeadline;
+    if (params.deadlineAtMs !== undefined && typeof deadlineMutation === 'function') {
+      return deadlineMutation.call(
+        this.redisCounter,
+        params.flowKey,
+        messageKey,
+        params.ttlSec,
+        params.deadlineAtMs,
+      );
+    }
+
+    const legacyResult = await this.redisCounter.incrementOncePerMemberWithTtl(
       params.flowKey,
       messageKey,
       params.ttlSec,
+    );
+    return legacyResult.inserted
+      ? { kind: 'inserted', count: legacyResult.count }
+      : { kind: 'skipped' };
+  }
+
+  private createBudgetExceededError(
+    params: { chatId: string; userId: string },
+    source: DuplicateStateBudgetExceededEvent['source'],
+    context: DuplicateBudgetContext,
+  ): DuplicateStateBudgetExceededError {
+    if (!context.reported) {
+      context.reported = true;
+      const event: DuplicateStateBudgetExceededEvent = {
+        chatId: params.chatId,
+        userId: params.userId,
+        timeoutMs: DUPLICATE_STATE_BUDGET_MS,
+        source,
+      };
+      try {
+        this.onBudgetExceeded?.(event);
+      } catch {
+        // Diagnostics must not replace the retryable moderation error.
+      }
+      this.logBudgetExceeded(event);
+    }
+    return new DuplicateStateBudgetExceededError(source);
+  }
+
+  private logBudgetExceeded(event: DuplicateStateBudgetExceededEvent): void {
+    const now = Date.now();
+    if (
+      this.duplicateBudgetWarnAtMs !== null &&
+      now - this.duplicateBudgetWarnAtMs < 30_000
+    ) {
+      return;
+    }
+    this.duplicateBudgetWarnAtMs = now;
+    console.warn(
+      JSON.stringify({
+        level: 'warn',
+        context: 'RuleEngineService',
+        ...event,
+        retryable: true,
+        msg: 'Duplicate state budget exceeded; retrying webhook without acknowledging partial work',
+      }),
     );
   }
 
@@ -380,25 +480,6 @@ export class RuleEngineDuplicateDetector {
     }
 
     return null;
-  }
-
-  private logStateTimeout(chatId: string, userId: string): void {
-    const now = Date.now();
-    if (now - this.duplicateTimeoutWarnAtMs < 30_000) {
-      return;
-    }
-
-    this.duplicateTimeoutWarnAtMs = now;
-    console.warn(
-      JSON.stringify({
-        level: 'warn',
-        context: 'RuleEngineService',
-        chatId,
-        userId,
-        timeoutMs: DUPLICATE_STATE_LOOKUP_TIMEOUT_MS,
-        msg: 'Duplicate state lookup timed out; skipping duplicate enforcement in hot path',
-      }),
-    );
   }
 }
 

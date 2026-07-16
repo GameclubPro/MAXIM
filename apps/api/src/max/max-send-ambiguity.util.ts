@@ -1,3 +1,6 @@
+export const MAX_SEND_AMBIGUOUS_ERROR_PREFIX = '[max.send_ambiguous]';
+export const MAX_SEND_FENCE_STALE_MS = 10 * 60_000;
+
 export function isAmbiguousMaxMutationError(error: unknown): boolean {
   const status = (error as { response?: { status?: number } })?.response?.status;
   if (status === 408 || status === 504) {

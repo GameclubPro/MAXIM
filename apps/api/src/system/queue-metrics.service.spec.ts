@@ -1,7 +1,10 @@
 import { WebhookStatus } from '../prisma/prisma-client';
 import { getQueueToken } from '@nestjs/bullmq';
-import { AUXILIARY_QUEUE_NAMES, QueueMetricsService } from './queue-metrics.service';
-import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from '../max/max-webhook-subscription.constants';
+import {
+  AUXILIARY_QUEUE_NAMES,
+  QueueMetricsService,
+  USER_FACING_WEBHOOK_UPDATE_TYPES,
+} from './queue-metrics.service';
 import {
   MAX_ACTION_BACKGROUND_QUEUE,
   MAX_ACTION_CRITICAL_QUEUE,
@@ -9,6 +12,7 @@ import {
   MAX_ACTION_LEGACY_QUEUE,
 } from '../max/max-action.queue';
 import { DEFAULT_WEBHOOK_QUEUE_NAMES } from '../webhook/webhook-queues';
+import { MODERATION_DELETE_INTENT_QUEUE } from '../moderation/moderation-delete-intent.queue';
 
 function createQueueMock(counts: {
   waiting: number;
@@ -121,6 +125,14 @@ describe('QueueMetricsService', () => {
         failed: 2,
         completed: 80,
       }),
+      [MODERATION_DELETE_INTENT_QUEUE]: createQueueMock({
+        waiting: 6,
+        prioritized: 1,
+        active: 2,
+        delayed: 9,
+        failed: 3,
+        completed: 44,
+      }),
     };
     const queueProviders: Record<string, ReturnType<typeof createQueueMock> | undefined> = {
       ...Object.fromEntries(
@@ -131,6 +143,8 @@ describe('QueueMetricsService', () => {
       ),
       [getQueueToken('admin-managed-entities-refresh')]:
         auxiliaryQueues['admin-managed-entities-refresh'],
+      [getQueueToken(MODERATION_DELETE_INTENT_QUEUE)]:
+        auxiliaryQueues[MODERATION_DELETE_INTENT_QUEUE],
       [getQueueToken(MAX_ACTION_CRITICAL_QUEUE)]: createQueueMock({
         waiting: 2,
         prioritized: 0,
@@ -320,6 +334,14 @@ describe('QueueMetricsService', () => {
       delayed: 0,
       failed: 0,
       completed: 0,
+    });
+    expect(snapshot.auxiliaryQueues[MODERATION_DELETE_INTENT_QUEUE]).toEqual({
+      waiting: 6,
+      prioritized: 1,
+      active: 2,
+      delayed: 9,
+      failed: 3,
+      completed: 44,
     });
     expect(Object.keys(snapshot.auxiliaryQueues).sort()).toEqual([...AUXILIARY_QUEUE_NAMES].sort());
     expect(snapshot.webhookDefaultShards['moderation-default-0']).toEqual({
@@ -584,8 +606,18 @@ describe('QueueMetricsService', () => {
     });
 
     expect(queryTexts.some((text) => text.includes('FROM filtered'))).toBe(true);
-    for (const updateType of MAX_REQUIRED_WEBHOOK_UPDATE_TYPES) {
+    for (const updateType of USER_FACING_WEBHOOK_UPDATE_TYPES) {
       expect(queryValues).toContain(updateType);
+    }
+    for (const lifecycleType of [
+      'message_removed',
+      'user_removed',
+      'bot_removed',
+      'bot_stopped',
+      'dialog_removed',
+      'chat_title_changed',
+    ]) {
+      expect(queryValues).not.toContain(lifecycleType);
     }
   });
 

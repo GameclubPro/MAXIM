@@ -1,11 +1,13 @@
 import { EventType, Operator, SanctionAction } from '../prisma/prisma-client';
 import { NightModeTransitionEventService } from './night-mode-transition-event.service';
 
-function createService(params: {
-  botId?: string | null;
-  activeBotId?: string | null;
-  create?: jest.Mock;
-} = {}) {
+function createService(
+  params: {
+    botId?: string | null;
+    activeBotId?: string | null;
+    create?: jest.Mock;
+  } = {},
+) {
   const create = params.create ?? jest.fn().mockResolvedValue({});
   const service = new NightModeTransitionEventService(
     {
@@ -33,6 +35,7 @@ describe('NightModeTransitionEventService', () => {
     await service.createTransitionEvent({
       chatId: 'chat-1',
       messageId: 'message-close-1',
+      botId: ' origin-bot-2 ',
       ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
       sessionKey: 'session-1',
       timezone: 'Europe/Moscow',
@@ -51,7 +54,7 @@ describe('NightModeTransitionEventService', () => {
         maskedExcerpt: null,
         score: 0.1,
         operator: Operator.BOT,
-        botId: 'runtime-bot-1',
+        botId: 'origin-bot-2',
         metadata: {
           reason: 'Night mode close notice sent by schedule',
           sessionKey: 'session-1',
