@@ -10,6 +10,6 @@ const settingsRoutePolishCss = readFileSync(
 test('link action titles wrap only between words on narrow settings screens', () => {
   assert.match(
     settingsRoutePolishCss,
-    /\.settings-drilldown__panel--links \.settings-native-toggle__title \{\s*overflow-wrap: normal;\s*word-break: normal;\s*hyphens: none;\s*\}/u,
+    /\.settings-drilldown \.settings-drilldown__panel--links \.settings-native-toggle__title \{\s*overflow-wrap: normal;\s*word-break: normal;\s*hyphens: none;\s*\}/u,
   );
 });

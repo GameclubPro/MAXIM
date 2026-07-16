@@ -3576,7 +3576,7 @@ body.channel-settings-page-open {
   gap: 6px;
 }
 
-.settings-drilldown__panel--links .settings-native-toggle__title {
+.settings-drilldown .settings-drilldown__panel--links .settings-native-toggle__title {
   overflow-wrap: normal;
   word-break: normal;
   hyphens: none;
