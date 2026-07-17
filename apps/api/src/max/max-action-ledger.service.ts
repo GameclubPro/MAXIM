@@ -175,7 +175,16 @@ export class MaxActionLedgerService {
       lastErrorCode: null,
       lastError: null,
     };
-    await this.createLedgerIfAbsent(job, mutation);
+    const created = await this.createLedgerIfAbsent(job, mutation);
+    if (created) {
+      return;
+    }
+
+    await this.updateUnattemptedEnqueueState(
+      job,
+      [MaxActionLedgerStatus.FAILED_RETRYABLE],
+      mutation,
+    );
   }
 
   async recordEnqueueFailedIfAbsent(job: MaxActionJob, error: unknown): Promise<void> {
@@ -201,7 +210,16 @@ export class MaxActionLedgerService {
       lastErrorCode: 'queue.enqueue_ambiguous',
       lastError: this.extractErrorMessage(error),
     };
-    await this.createLedgerIfAbsent(job, mutation);
+    const created = await this.createLedgerIfAbsent(job, mutation);
+    if (created) {
+      return;
+    }
+
+    await this.updateUnattemptedEnqueueState(
+      job,
+      [MaxActionLedgerStatus.ENQUEUED, MaxActionLedgerStatus.FAILED_RETRYABLE],
+      mutation,
+    );
   }
 
   async hasExecutionEvidenceSince(jobId: string, since: Date): Promise<boolean> {
@@ -578,6 +596,8 @@ export class MaxActionLedgerService {
       where: {
         jobId: job.idempotencyKey,
         remoteMessageId: null,
+        ambiguous: false,
+        terminal: false,
       },
       data: {
         ...this.buildUpdateInput(job),
@@ -589,8 +609,8 @@ export class MaxActionLedgerService {
   private async createLedgerIfAbsent(
     job: MaxActionJob,
     mutation?: MaxActionLedgerMutation,
-  ): Promise<void> {
-    await this.prisma.maxActionLedgerEntry.createMany({
+  ): Promise<boolean> {
+    const result = await this.prisma.maxActionLedgerEntry.createMany({
       data: [
         {
           ...this.buildCreateInput(job),
@@ -598,6 +618,35 @@ export class MaxActionLedgerService {
         },
       ],
       skipDuplicates: true,
+    });
+    return result.count > 0;
+  }
+
+  // FLAG: Enqueue reconciliation must never cross evidence that a worker started execution.
+  private async updateUnattemptedEnqueueState(
+    job: MaxActionJob,
+    statuses: readonly MaxActionLedgerStatus[],
+    mutation: MaxActionLedgerMutation,
+  ): Promise<void> {
+    await this.prisma.maxActionLedgerEntry.updateMany({
+      where: {
+        jobId: job.idempotencyKey,
+        status: { in: [...statuses] },
+        ambiguous: false,
+        terminal: false,
+        attemptCount: 0,
+        firstAttemptAt: null,
+        lastAttemptAt: null,
+        dispatchToken: null,
+        dispatchStartedAt: null,
+        dispatchBotId: null,
+        remoteMessageId: null,
+        completedAt: null,
+      },
+      data: {
+        ...this.buildUpdateInput(job),
+        ...this.buildPlainMutationInput(mutation),
+      },
     });
   }
 

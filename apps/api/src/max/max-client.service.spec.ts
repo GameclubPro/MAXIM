@@ -4971,6 +4971,116 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await secondService.onModuleDestroy();
   });
 
+  it.each([
+    ['connection reset', 'ECONNRESET'],
+    ['DNS lookup failure', 'ENOTFOUND'],
+    ['connection refusal', 'ECONNREFUSED'],
+    ['TLS certificate failure', 'ERR_TLS_CERT_ALTNAME_INVALID'],
+  ])('opens the shared circuit after a %s without an HTTP response', async (_label, code) => {
+    const transportFailure = Object.assign(new Error(`MAX transport failed: ${code}`), { code });
+    const firstService = createService(
+      {
+        request: jest.fn().mockReturnValue(throwError(() => transportFailure)),
+      },
+      {
+        MAX_API_CIRCUIT_FAILURE_THRESHOLD: '1',
+        MAX_API_CIRCUIT_WINDOW_SEC: '30',
+        MAX_API_CIRCUIT_OPEN_SEC: '2',
+      },
+    );
+    const secondHttpService = { request: jest.fn() };
+    const secondService = createService(secondHttpService, {
+      MAX_API_CIRCUIT_FAILURE_THRESHOLD: '1',
+      MAX_API_CIRCUIT_WINDOW_SEC: '30',
+      MAX_API_CIRCUIT_OPEN_SEC: '2',
+    });
+
+    await expect(firstService.getChatSnapshot('chat-transport')).rejects.toBe(transportFailure);
+    await expect(secondService.getChatSnapshot('chat-transport')).rejects.toBeInstanceOf(
+      MaxApiCircuitOpenError,
+    );
+    expect(secondHttpService.request).not.toHaveBeenCalled();
+
+    await firstService.onModuleDestroy();
+    await secondService.onModuleDestroy();
+  });
+
+  it('keeps a half-open circuit open when its probe times out', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-11T10:07:00.000Z'));
+    const config = {
+      MAX_API_CIRCUIT_FAILURE_THRESHOLD: '1',
+      MAX_API_CIRCUIT_WINDOW_SEC: '30',
+      MAX_API_CIRCUIT_OPEN_SEC: '1',
+      MAX_API_CIRCUIT_HALF_OPEN_PROBE_SEC: '60',
+    };
+    const initialFailure = Object.assign(new Error('MAX unavailable'), {
+      response: { status: 500 },
+    });
+    const timeoutFailure = Object.assign(new Error('request timed out'), {
+      code: 'ETIMEDOUT',
+    });
+    const firstService = createService(
+      {
+        request: jest.fn().mockReturnValue(throwError(() => initialFailure)),
+      },
+      config,
+    );
+    const probeService = createService(
+      {
+        request: jest.fn().mockReturnValue(throwError(() => timeoutFailure)),
+      },
+      config,
+    );
+    const blockedHttpService = { request: jest.fn() };
+    const blockedService = createService(blockedHttpService, config);
+
+    await expect(firstService.getChatSnapshot('chat-probe')).rejects.toBe(initialFailure);
+    jest.advanceTimersByTime(1_000);
+    await expect(probeService.getChatSnapshot('chat-probe')).rejects.toBe(timeoutFailure);
+    await expect(blockedService.getChatSnapshot('chat-probe')).rejects.toBeInstanceOf(
+      MaxApiCircuitOpenError,
+    );
+    expect(blockedHttpService.request).not.toHaveBeenCalled();
+
+    await firstService.onModuleDestroy();
+    await probeService.onModuleDestroy();
+    await blockedService.onModuleDestroy();
+  });
+
+  it('closes a half-open circuit after an ordinary HTTP 4xx response', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-11T10:08:00.000Z'));
+    const config = {
+      MAX_API_CIRCUIT_FAILURE_THRESHOLD: '1',
+      MAX_API_CIRCUIT_WINDOW_SEC: '30',
+      MAX_API_CIRCUIT_OPEN_SEC: '1',
+      MAX_API_CIRCUIT_HALF_OPEN_PROBE_SEC: '60',
+    };
+    const firstService = createService({}, config);
+    const initialPermit = await (firstService as any).acquireCircuitPermit('777000_bot');
+    await (firstService as any).registerCriticalFailure('777000_bot', initialPermit);
+    jest.advanceTimersByTime(1_000);
+
+    const forbidden = Object.assign(new Error('forbidden'), {
+      response: { status: 403 },
+    });
+    const probeService = createService(
+      {
+        request: jest.fn().mockReturnValue(throwError(() => forbidden)),
+      },
+      config,
+    );
+    await expect(probeService.getChatSnapshot('chat-forbidden')).rejects.toBe(forbidden);
+
+    const nextService = createService({}, config);
+    await expect((nextService as any).acquireCircuitPermit('777000_bot')).resolves.toEqual({
+      halfOpenProbeToken: null,
+    });
+
+    await firstService.onModuleDestroy();
+    await probeService.onModuleDestroy();
+    await nextService.onModuleDestroy();
+  });
+
   it('allows only one shared half-open probe and closes it with a fenced token', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-07-11T10:10:00.000Z'));
     const config = {

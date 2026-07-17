@@ -191,6 +191,27 @@ describe('MaxActionLedgerService', () => {
     expect(prisma.maxActionLedgerEntry.createMany).toHaveBeenCalledWith(
       expect.objectContaining({ skipDuplicates: true }),
     );
+    expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith({
+      where: {
+        jobId: 'job-1',
+        status: { in: [MaxActionLedgerStatus.FAILED_RETRYABLE] },
+        ambiguous: false,
+        terminal: false,
+        attemptCount: 0,
+        firstAttemptAt: null,
+        lastAttemptAt: null,
+        dispatchToken: null,
+        dispatchStartedAt: null,
+        dispatchBotId: null,
+        remoteMessageId: null,
+        completedAt: null,
+      },
+      data: expect.objectContaining({
+        status: MaxActionLedgerStatus.ENQUEUED,
+        ambiguous: false,
+        terminal: false,
+      }),
+    });
   });
 
   it('records enqueue failure only when the worker has not created the ledger row', async () => {
@@ -233,6 +254,41 @@ describe('MaxActionLedgerService', () => {
         ],
       }),
     );
+  });
+
+  it('quarantines an existing unattempted enqueue after BullMQ ownership becomes unknown', async () => {
+    const { service, prisma } = createService();
+    prisma.maxActionLedgerEntry.createMany.mockResolvedValueOnce({ count: 0 });
+
+    await service.recordEnqueueAmbiguousIfAbsent(
+      createJob(),
+      new Error('queue ownership is unknown'),
+    );
+
+    expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith({
+      where: {
+        jobId: 'job-1',
+        status: {
+          in: [MaxActionLedgerStatus.ENQUEUED, MaxActionLedgerStatus.FAILED_RETRYABLE],
+        },
+        ambiguous: false,
+        terminal: false,
+        attemptCount: 0,
+        firstAttemptAt: null,
+        lastAttemptAt: null,
+        dispatchToken: null,
+        dispatchStartedAt: null,
+        dispatchBotId: null,
+        remoteMessageId: null,
+        completedAt: null,
+      },
+      data: expect.objectContaining({
+        status: MaxActionLedgerStatus.AMBIGUOUS,
+        ambiguous: true,
+        terminal: true,
+        lastErrorCode: 'queue.enqueue_ambiguous',
+      }),
+    });
   });
 
   it('finds execution evidence produced after an ambiguous queue add', async () => {
@@ -627,10 +683,36 @@ describe('MaxActionLedgerService', () => {
     );
     expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: {
+        where: expect.objectContaining({
           jobId: 'job-1',
           remoteMessageId: null,
-        },
+          ambiguous: false,
+          terminal: false,
+        }),
+      }),
+    );
+  });
+
+  it('keeps terminal queue ambiguity monotonic when a later SEND_MESSAGE failure is recorded', async () => {
+    const { service, prisma } = createService({
+      status: MaxActionLedgerStatus.AMBIGUOUS,
+      ambiguous: true,
+      terminal: true,
+      remoteMessageId: null,
+    });
+    prisma.maxActionLedgerEntry.createMany.mockResolvedValueOnce({ count: 0 });
+    prisma.maxActionLedgerEntry.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    await service.recordFailed(createJob(), new Error('later worker failure'));
+
+    expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          jobId: 'job-1',
+          remoteMessageId: null,
+          ambiguous: false,
+          terminal: false,
+        }),
       }),
     );
   });

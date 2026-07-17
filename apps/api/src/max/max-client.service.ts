@@ -463,6 +463,22 @@ const MAX_API_RATE_LIMIT_OUTCOME_KEY_PREFIX = 'maxapi:rate-limit:v1';
 const MAX_API_RATE_LIMIT_LOG_COALESCE_MS = 60_000;
 const MAX_API_CIRCUIT_KEY_PREFIX = 'maxapi:circuit:v1';
 const DEFAULT_MAX_API_CIRCUIT_HALF_OPEN_PROBE_SEC = 60;
+const MAX_API_CRITICAL_NETWORK_ERROR_CODES: ReadonlySet<string> = new Set([
+  'CERT_HAS_EXPIRED',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'EAI_AGAIN',
+  'ECONNREFUSED',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'EPROTO',
+  'ERR_NETWORK',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+  'ERR_TLS_HANDSHAKE_TIMEOUT',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'UNABLE_TO_GET_ISSUER_CERT',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+]);
 const DEFAULT_MAX_ACTION_FAILED_RETENTION_AGE_SEC = 7 * 24 * 60 * 60;
 const DEFAULT_MAX_ACTION_FAILED_RETENTION_COUNT = 1_000;
 const MAX_API_RATE_LIMIT_RESERVATION_SCRIPT = `
@@ -5249,7 +5265,10 @@ export class MaxClientService implements OnModuleDestroy {
         await this.closeCircuitAfterSuccessfulProbe(bot.id, circuitPermit);
         throw error;
       }
-      const isCritical = status === 429 || (typeof status === 'number' && status >= 500);
+      const isCritical =
+        status === 429 ||
+        (typeof status === 'number' && status >= 500) ||
+        this.isCriticalNetworkFailure(error);
       this.actionHealthService.recordFailureForLane(actionHealthLane, isCritical, bot.id);
       if (isCritical) {
         await this.registerCriticalFailure(bot.id, circuitPermit);
@@ -6198,6 +6217,18 @@ export class MaxClientService implements OnModuleDestroy {
 
   private isAmbiguousQueuedMutationTransportError(error: unknown): boolean {
     return isAmbiguousMaxMutationError(error);
+  }
+
+  private isCriticalNetworkFailure(error: unknown): boolean {
+    if (isAmbiguousMaxMutationError(error)) {
+      return true;
+    }
+
+    const code = (error as { code?: unknown })?.code;
+    return (
+      typeof code === 'string' &&
+      MAX_API_CRITICAL_NETWORK_ERROR_CODES.has(code.trim().toUpperCase())
+    );
   }
 
   private createAmbiguousQueuedMutationError(message: string, cause: unknown): UnrecoverableError {
