@@ -49,6 +49,7 @@ import './settings/settings-duplicate-stage.css';
 import '../styles/broadcast-autopost-polish.css';
 import '../styles/settings-tile-grid.css';
 import '../styles/settings-native-polish.css';
+import '../styles/settings-experience.css';
 import {
   Suspense,
   lazy,

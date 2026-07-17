@@ -102,6 +102,7 @@
 - Prefer local iteration for mini app CSS/TSX work. Avoid full Docker rebuilds unless container parity is the point of the task.
 - The Major static build bakes an absolute `VITE_API_BASE`; when changing mini app budget guards, validate with `VITE_API_BASE=https://major-maksimov.ru/api/v1` as well as the default local build.
 - Direct mini app CSS imports from TS/TSX must be fully wrapped in an explicit `@layer` block; `apps/miniapp/src/styles.css` is the only global CSS entrypoint and must keep imports as `@import ... layer(...)`. Use `npm run check:miniapp-css` for the focused guard.
+- Lazy-route CSS remains loaded for the rest of the SPA session. Scope route polish to route-specific body/root selectors, and verify both cold loads and navigation between routes.
 - For Android MAX WebView file pickers, use a real transparent `<input type="file">` overlay on the tapped control; hidden 1px inputs plus programmatic `click()`/`showPicker()` can fail to open the picker. Keep that overlay input in the tab order with an accessible label and a visible `:focus-within` indicator.
 - Keep `BroadcastContentComposer` Android file-input styles in its component CSS: `/publications` does not load legacy broadcast-studio styles.
 - For Android MAX WebView image payloads, prefer `Blob.arrayBuffer()` before `FileReader`; gallery-selected blobs can fail in `FileReader` after a successful picker selection, so retain `FileReader` only as a legacy fallback.

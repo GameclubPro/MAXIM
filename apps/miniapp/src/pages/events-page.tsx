@@ -16,7 +16,9 @@ import type {
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import '../styles/settings-drilldown-core.css';
+import '../styles/settings-experience.css';
 import '../styles/dashboard-events.css';
+import '../styles/statistics-experience.css';
 import {
   startTransition,
   type CSSProperties,

@@ -19,6 +19,7 @@ import {
 import '../styles/channel-stats.css';
 import '../styles/channel-stats-route-polish.css';
 import '../styles/channel-stats-executive.css';
+import '../styles/statistics-experience.css';
 import type { CSSProperties, PointerEvent } from 'react';
 import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';

@@ -25,6 +25,7 @@ const DEFAULT_SCENARIOS = [
   'events-activity',
   'events-participants',
   'events-participant-sheet',
+  'events-participant-controls',
   'events-spam-review',
   'events-spam-diagnostics',
   'channel-dialog-comments',

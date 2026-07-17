@@ -378,6 +378,25 @@ const scenarios = [
     },
   },
   {
+    name: 'events-participant-controls',
+    path: '/chat/preview-chat/events',
+    searchParams: {
+      section: 'participants',
+    },
+    beforeShot: async (page) => {
+      const manageableParticipant = page
+        .locator('.participants-roster__item--interactive')
+        .filter({ hasText: '@sergey-market' })
+        .first();
+      await manageableParticipant.waitFor({ state: 'visible' });
+      await manageableParticipant.click();
+      await page.locator('.participant-sheet').waitFor({ state: 'visible' });
+      await page.locator('.participant-sheet__action--immunity').click();
+      await page.locator('#participant-sheet-immunity-composer').waitFor({ state: 'visible' });
+      await scrollSettingsDrilldownToBottom(page);
+    },
+  },
+  {
     name: 'events-spam-review',
     path: '/chat/preview-chat/events',
     beforeShot: async (page) => {

@@ -10,6 +10,10 @@ const channelStatsExecutiveCss = readFileSync(
   new URL('../src/styles/channel-stats-executive.css', import.meta.url),
   'utf8',
 );
+const statisticsExperienceCss = readFileSync(
+  new URL('../src/styles/statistics-experience.css', import.meta.url),
+  'utf8',
+);
 const channelStatsPageSource = readFileSync(
   new URL('../src/pages/channel-stats-page.tsx', import.meta.url),
   'utf8',
@@ -65,7 +69,7 @@ test('chat activity dashboard restores semantic KPI colors after broad dark rule
   );
 });
 
-test('channel event dark overrides stay in the last imported page stylesheet', () => {
+test('channel event dark overrides keep their semantic final-layer import order', () => {
   const baseImport = channelStatsPageSource.indexOf("import '../styles/channel-stats.css'");
   const polishImport = channelStatsPageSource.indexOf(
     "import '../styles/channel-stats-route-polish.css'",
@@ -73,10 +77,14 @@ test('channel event dark overrides stay in the last imported page stylesheet', (
   const executiveImport = channelStatsPageSource.indexOf(
     "import '../styles/channel-stats-executive.css'",
   );
+  const experienceImport = channelStatsPageSource.indexOf(
+    "import '../styles/statistics-experience.css'",
+  );
 
   assert.ok(baseImport >= 0);
   assert.ok(polishImport > baseImport);
   assert.ok(executiveImport > polishImport);
+  assert.ok(experienceImport > executiveImport);
 
   const marker = '/* Page-layer overrides must follow the light channel-events rules';
   const start = channelStatsExecutiveCss.indexOf(marker);
@@ -116,6 +124,10 @@ test('channel event dark overrides stay in the last imported page stylesheet', (
   assert.match(darkOverrides, /color: var\(--success\);/u);
   assert.match(darkOverrides, /color: var\(--danger\);/u);
   assert.doesNotMatch(darkOverrides, /rgba\(|#[\da-f]{3,8}\b/iu);
+  assert.match(
+    statisticsExperienceCss,
+    /html\[data-max-theme='dark'\][\s\S]*?\.channel-insights__section-tabs[\s\S]*?background: var\(--accent\);[\s\S]*?color: var\(--color-surface\);/u,
+  );
 });
 
 test('channel compact metrics keep semantic colors after the broad dark value rule', () => {
