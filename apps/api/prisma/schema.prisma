@@ -2204,6 +2204,7 @@ model ManagedBroadcastDelivery {
   @@unique([broadcastId, occurrenceIndex, targetChatId], map: "managed_broadcast_deliveries_broadcast_occurrence_target_key")
   @@index([broadcastId, occurrenceIndex, status], map: "managed_broadcast_deliveries_broadcast_occurrence_status_idx")
   @@index([status, lockedAt], map: "managed_broadcast_deliveries_status_locked_at_idx")
+  @@index([targetChatId, remoteMessageId], map: "managed_broadcast_deliveries_target_remote_message_idx")
   @@index([publicationOccurrenceId, createdAt(sort: Desc), id(sort: Desc)], map: "managed_broadcast_deliveries_pub_occurrence_created_id_idx")
   @@map("managed_broadcast_deliveries")
 }

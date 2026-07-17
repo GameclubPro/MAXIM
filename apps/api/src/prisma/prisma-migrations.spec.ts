@@ -273,6 +273,23 @@ describe('Prisma migrations', () => {
     expect(compact).not.toMatch(/\b(?:TRUNCATE\s+TABLE|DELETE\s+FROM)\b/i);
   });
 
+  it('indexes exact managed broadcast message ownership lookups', () => {
+    const schema = readSchema();
+    const migration = readMigration(
+      '20260717132000_optimize_managed_broadcast_remote_message_lookup',
+    );
+    const compact = migration.replace(/\s+/g, ' ').trim();
+
+    expect(schema).toContain(
+      '@@index([targetChatId, remoteMessageId], map: "managed_broadcast_deliveries_target_remote_message_idx")',
+    );
+    expect(compact).toBe(
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "managed_broadcast_deliveries_target_remote_message_idx" ON "managed_broadcast_deliveries"("target_chat_id", "remote_message_id");',
+    );
+    expect(compact).not.toMatch(/\bBEGIN\b|\bCOMMIT\b/i);
+    expect(compact).not.toMatch(/\b(?:DROP|TRUNCATE|DELETE|UPDATE)\b/i);
+  });
+
   it('adds a conservative persistent chat routing state fence', () => {
     const schema = readSchema();
     const migration = readMigration('20260711123000_chat_routing_state');
