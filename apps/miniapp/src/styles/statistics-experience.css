@@ -1002,8 +1002,10 @@
     color: var(--danger);
   }
 
-  .channel-insights__chart-card--executive,
-  .channel-insights__summary--command > .channel-insights__chart-card--executive {
+  body.channel-stats-page-open
+    .channel-insights
+    .channel-insights__summary--command
+    .channel-insights__chart-card--executive {
     isolation: auto;
     overflow: visible;
     width: 100%;
@@ -1016,7 +1018,11 @@
     box-shadow: none;
   }
 
-  .channel-insights__chart-card--executive::before {
+  body.channel-stats-page-open
+    .channel-insights
+    .channel-insights__summary--command
+    .channel-insights__chart-card--executive::before {
+    content: none;
     display: none;
   }
 
@@ -1777,8 +1783,8 @@
   }
 
   @media (max-width: 360px) {
-    .events-stage__appbar-bar {
-      column-gap: 10px;
+    body.events-page-open .events-stage__appbar-bar {
+      column-gap: 14px;
     }
 
     .events-stage__appbar-bar,
@@ -1798,6 +1804,19 @@
       width: 34px;
       min-width: 34px;
       height: 34px;
+    }
+
+    body.events-page-open
+      .participants-roster__item:has(
+        > .participants-roster__aside > .participants-roster__chevron:only-child
+      ) {
+      grid-template-columns: auto minmax(0, 1fr) auto;
+    }
+
+    body.events-page-open
+      .participants-roster__aside:has(> .participants-roster__chevron:only-child) {
+      grid-column: auto;
+      justify-content: flex-end;
     }
 
     .events-primary-tab {

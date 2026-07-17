@@ -425,10 +425,18 @@
     min-height: 104px;
   }
 
-  .settings-drilldown .field__label {
+  body.settings-drilldown-open .settings-drilldown :is(.field > span, .field__label) {
+    min-height: 0;
+    padding: 0 2px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
     color: var(--text-secondary);
     font-size: 0.76rem;
     font-weight: 700;
+    letter-spacing: 0;
+    text-transform: none;
   }
 
   .settings-drilldown .segmented-control,
@@ -445,18 +453,31 @@
     box-shadow: none;
   }
 
-  .settings-drilldown .settings-subsection-divider {
+  body.settings-drilldown-open .settings-drilldown .settings-subsection-divider {
+    height: auto;
     min-height: 28px;
+    justify-content: flex-start;
     margin: 5px 0 0;
     padding: 0 2px;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    text-align: left;
   }
 
-  .settings-drilldown .settings-subsection-divider::before {
+  body.settings-drilldown-open .settings-drilldown .settings-subsection-divider::before {
+    content: none;
     display: none;
+    border: 0;
   }
 
-  .settings-drilldown .settings-subsection-divider span {
+  body.settings-drilldown-open .settings-drilldown .settings-subsection-divider span {
+    min-height: 0;
     padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
     color: var(--text-primary);
     font-size: 0.74rem;
     font-weight: 750;
@@ -476,6 +497,13 @@
     min-height: 46px;
     border-radius: 8px;
     box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__footer-actions
+    .button--accent {
+    border-color: transparent;
   }
 
   html[data-max-theme='dark'] .settings-home-sticky-header .compact-page-header__bar,
@@ -1122,6 +1150,18 @@
     border-radius: 8px;
     background: var(--surface-card);
     box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    :is(
+      .settings-drilldown__panel--channel-comments,
+      .settings-drilldown__panel--post-suggestions,
+      .settings-drilldown__panel--post-suggestions-screen
+    )
+    .channel-settings-toggle-card::before {
+    content: none;
+    display: none;
   }
 
   body.settings-drilldown-open
