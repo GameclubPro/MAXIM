@@ -20,6 +20,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { Trash } from 'iconoir-react';
 import { getChannels } from '../lib/api/root-client';
 import {
   cancelManagedGiveaway,
@@ -36,6 +37,7 @@ import {
 } from '../lib/api/managed-giveaway-client';
 import type { ApiTransport } from '../lib/api/transport';
 import type { UpdateManagedGiveawayPayload } from '../lib/api/shared-types';
+import { describeUserFacingError } from '../lib/user-facing-error';
 import { cn } from '../lib/cn';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import {
@@ -48,6 +50,7 @@ import {
 import { useNativeBackHandler } from '../lib/native-back';
 import { queryKeys } from '../lib/query-keys';
 import { TimeField } from './ui/time-field';
+import { DateField } from './ui/date-field';
 import { useToast } from './ui/toast';
 
 const MIN_CLAIM_HOURS = 1;
@@ -173,21 +176,7 @@ function GiveawayHintAnchor({
 }
 
 function formatApiError(error: unknown, fallback: string): string {
-  if (!(error instanceof Error)) {
-    return fallback;
-  }
-
-  const text = error.message.trim();
-  if (!text) {
-    return fallback;
-  }
-
-  if (text.startsWith('API request failed:')) {
-    const details = text.replace(/^API request failed:\s*\d+\s*/u, '').trim();
-    return details || fallback;
-  }
-
-  return text;
+  return describeUserFacingError(error, fallback);
 }
 
 function buildStatusLabel(status: ManagedGiveawaySummary['status']): string {
@@ -324,20 +313,6 @@ function toDateTimeInputFromIso(value: string | null): string {
   }
 
   return formatDateTimeInputValue(parsed);
-}
-
-function formatCompactInputDateTime(value: string, fallback = 'не задано'): string {
-  const parsed = parseDateTimeInput(value);
-  if (!parsed) {
-    return fallback;
-  }
-
-  return parsed.toLocaleString('ru-RU', {
-    day: '2-digit',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
 }
 
 function addHours(base: Date, hours: number): Date {
@@ -590,6 +565,14 @@ function resolveValidationFocusTarget(issue: {
   return 'endsAt';
 }
 
+function isFinishAtValidationMessage(message: string): boolean {
+  return (
+    message === 'Укажите дату и время финиша.' ||
+    message === 'Проверьте дату финиша.' ||
+    message === 'Финиш должен быть позже старта.'
+  );
+}
+
 function areStringListsEqual(left: string[], right: string[]): boolean {
   if (left.length !== right.length) {
     return false;
@@ -654,30 +637,6 @@ function toUpdatePayload(draft: GiveawayEditorDraft): UpdateManagedGiveawayPaylo
   };
 }
 
-function buildEditorStatusLabel(params: {
-  mode: GiveawayEditorMode;
-  busy: boolean;
-  isDirty: boolean;
-  loadingDetails: boolean;
-}): string {
-  if (params.mode === 'closed') {
-    return '';
-  }
-  if (params.loadingDetails) {
-    return 'Загружаем...';
-  }
-  if (params.busy) {
-    return 'Сохраняем…';
-  }
-  if (params.mode === 'create') {
-    return 'Заполните и публикуйте';
-  }
-  if (params.isDirty) {
-    return 'Есть изменения';
-  }
-  return 'Сохранено';
-}
-
 function buildCurrentSubtitle(item: ManagedGiveawaySummary): string {
   if (item.status === 'DRAFT') {
     return `Черновик. Финиш: ${formatDateTime(item.endsAt)}.`;
@@ -708,7 +667,7 @@ function buildWinnerStatusLabel(status: ManagedGiveawayWinner['status']): string
     return 'Новый победитель';
   }
   if (status === 'EXPIRED') {
-    return 'Нужен реролл';
+    return 'Нужен другой победитель';
   }
   return 'Архив';
 }
@@ -1101,6 +1060,8 @@ export function ManagedGiveawayCard({
       : editorStep === 'conditions'
         ? conditionsValidation
         : prizesValidation;
+  const finishAtValidationError =
+    !basicsValidation.valid && isFinishAtValidationMessage(validationHint) ? validationHint : '';
   const firstConfigIssue = !basicsValidation.valid
     ? { step: 'basics' as GiveawayEditorStepId, message: basicsValidation.message }
     : !conditionsValidation.valid
@@ -1577,14 +1538,14 @@ export function ManagedGiveawayCard({
       await refetchManagedGiveaways();
       pushToast({
         tone: 'success',
-        title: 'Реролл выполнен',
+        title: 'Выбран другой победитель',
       });
       return true;
     } catch (error: unknown) {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось сделать реролл',
-        description: formatApiError(error, 'Не удалось сделать реролл.'),
+        title: 'Не удалось выбрать другого победителя',
+        description: formatApiError(error, 'Не удалось выбрать другого победителя.'),
       });
       return false;
     }
@@ -1720,7 +1681,7 @@ export function ManagedGiveawayCard({
     }
 
     if (!draft.description.trim()) {
-      const message = 'Добавьте текст публикации прямо в mini app перед публикацией.';
+      const message = 'Добавьте текст публикации перед запуском розыгрыша.';
       setEditorStep('prizes');
       setValidationHint(message);
       pushToast({
@@ -1999,7 +1960,7 @@ export function ManagedGiveawayCard({
     setPendingConfirmation({
       kind: 'delete',
       giveawayId: featuredItem.id,
-      title: featuredItem.title.trim() || 'Этот сценарий',
+      title: featuredItem.title.trim() || 'Этот розыгрыш',
     });
   };
 
@@ -2060,12 +2021,6 @@ export function ManagedGiveawayCard({
     clearEditor();
   };
 
-  const editorStatusLabel = buildEditorStatusLabel({
-    mode: editorMode,
-    busy: isBusy,
-    isDirty,
-    loadingDetails: draftDetailsQuery.isLoading,
-  });
   const isEditingOpen = editorMode !== 'closed';
   useEffect(() => {
     void import('./ui/action-confirm-sheet');
@@ -2207,8 +2162,8 @@ export function ManagedGiveawayCard({
           <div className="managed-giveaway__hero-head">
             <div className="managed-giveaway__hero-copy">
               <span className="managed-giveaway__eyebrow">Розыгрыши</span>
-              <h2>Подгружаем сценарии</h2>
-              <p>Проверяем активный сценарий.</p>
+              <h2>Загружаем розыгрыши</h2>
+              <p>Проверяем активный розыгрыш.</p>
             </div>
             <div className="managed-giveaway__hero-badges">
               <span className="managed-giveaway__badge is-muted">Загрузка</span>
@@ -2249,7 +2204,7 @@ export function ManagedGiveawayCard({
           ? 'Текущий розыгрыш'
           : featuredItem.status === 'COMPLETED'
             ? 'Последний завершённый'
-            : 'Последний сценарий';
+            : 'Последний розыгрыш';
 
       return (
         <div className="managed-giveaway__surface managed-giveaway__surface--dashboard">
@@ -2311,7 +2266,7 @@ export function ManagedGiveawayCard({
                     ? 'розыгрыш остановлен'
                     : currentIsDraft
                       ? 'можно донастроить и опубликовать'
-                      : 'актуальный тайминг сценария'}
+                      : 'актуальные сроки розыгрыша'}
               </small>
             </div>
           </div>
@@ -2406,7 +2361,7 @@ export function ManagedGiveawayCard({
                 disabled={isBusy}
                 onClick={startCreate}
               >
-                Новый сценарий
+                Новый розыгрыш
               </button>
             ) : null}
             {canDeleteFeatured ? (
@@ -2416,7 +2371,7 @@ export function ManagedGiveawayCard({
                 disabled={isBusy}
                 onClick={requestDeleteFeaturedGiveaway}
               >
-                {deleteMutation.isPending ? 'Удаляем…' : 'Удалить сценарий'}
+                {deleteMutation.isPending ? 'Удаляем…' : 'Удалить розыгрыш'}
               </button>
             ) : null}
           </div>
@@ -2485,7 +2440,7 @@ export function ManagedGiveawayCard({
                                 disabled={isBusy}
                                 onClick={() => requestRerollFeaturedWinner(winner)}
                               >
-                                {rerollMutation.isPending ? 'Рероллим…' : 'Реролл'}
+                                {rerollMutation.isPending ? 'Выбираем…' : 'Выбрать другого'}
                               </button>
                             ) : null}
                           </div>
@@ -2515,8 +2470,8 @@ export function ManagedGiveawayCard({
         <div className="managed-giveaway__hero-head">
           <div className="managed-giveaway__hero-copy">
             <span className="managed-giveaway__eyebrow">Розыгрыши</span>
-            <h2>Соберите сценарий</h2>
-            <p>Запуск и итоги внутри mini app.</p>
+            <h2>Создайте розыгрыш</h2>
+            <p>Настройте сроки, условия и призы.</p>
           </div>
           <div className="managed-giveaway__hero-badges">
             <GiveawayHintAnchor
@@ -2525,7 +2480,7 @@ export function ManagedGiveawayCard({
               onToggleHint={toggleHint}
               label="Как устроен запуск розыгрыша"
             >
-              Здесь настраиваются тайминг, условия, призы и публикация.
+              Розыгрыш можно запустить сразу или запланировать на нужную дату.
             </GiveawayHintAnchor>
           </div>
         </div>
@@ -2537,7 +2492,7 @@ export function ManagedGiveawayCard({
             disabled={isBusy}
             onClick={startCreate}
           >
-            Новый сценарий
+            Новый розыгрыш
           </button>
         </div>
       </div>
@@ -2551,7 +2506,7 @@ export function ManagedGiveawayCard({
           <div className="managed-giveaway__hero-head">
             <div className="managed-giveaway__hero-copy">
               <span className="managed-giveaway__eyebrow">Черновик</span>
-              <h2>Открываем сценарий</h2>
+              <h2>Открываем розыгрыш</h2>
               <p>Подтягиваем актуальные данные и возвращаем вас на первый шаг.</p>
             </div>
             <div className="managed-giveaway__hero-badges">
@@ -2567,46 +2522,45 @@ export function ManagedGiveawayCard({
     return (
       <div className="managed-giveaway__surface managed-giveaway__surface--editor">
         <div className="managed-giveaway__hero-head">
-          <div className="managed-giveaway__hero-copy">
+          <div className="managed-giveaway__hero-copy managed-giveaway__hero-copy--editor">
             <span className="managed-giveaway__eyebrow">
               Шаг {activeEditorStepIndex + 1} из {editorSteps.length}
             </span>
-            <h2>{activeEditorStep.title}</h2>
-          </div>
-          <div className="managed-giveaway__hero-badges">
-            <span
-              className={cn(
-                'managed-giveaway__badge',
-                isDirty || editorMode === 'create' ? 'is-warning' : 'is-success',
-              )}
-            >
-              {editorStatusLabel}
-            </span>
-            {canSaveEditor ? (
+            <div className="managed-giveaway__hero-title-row">
+              <h2>{activeEditorStep.title}</h2>
               <button
                 type="button"
-                className="button button--ghost managed-giveaway__hero-button"
-                onClick={() => {
-                  void saveEditor();
-                }}
+                className="button button--ghost managed-giveaway__hero-button managed-giveaway__hero-button--danger"
+                onClick={requestCancelEditorDraft}
                 disabled={isBusy}
+                aria-label={editorMode === 'create' ? 'Сбросить черновик' : 'Удалить розыгрыш'}
+                title={editorMode === 'create' ? 'Сбросить черновик' : 'Удалить розыгрыш'}
               >
-                {createMutation.isPending || updateMutation.isPending ? 'Сохраняем…' : 'Сохранить'}
+                <Trash aria-hidden />
               </button>
-            ) : null}
-            <button
-              type="button"
-              className="button button--ghost managed-giveaway__hero-button managed-giveaway__hero-button--danger"
-              onClick={requestCancelEditorDraft}
-              disabled={isBusy}
-            >
-              {cancelMutation.isPending
-                ? 'Удаляем…'
-                : editorMode === 'create'
-                  ? 'Сбросить'
-                  : 'Удалить'}
-            </button>
+            </div>
           </div>
+          {(isDirty && editorMode === 'edit') || canSaveEditor ? (
+            <div className="managed-giveaway__hero-badges">
+              {isDirty && editorMode === 'edit' ? (
+                <span className="managed-giveaway__badge is-warning">Не сохранено</span>
+              ) : null}
+              {canSaveEditor ? (
+                <button
+                  type="button"
+                  className="button button--ghost managed-giveaway__hero-button"
+                  onClick={() => {
+                    void saveEditor();
+                  }}
+                  disabled={isBusy}
+                >
+                  {createMutation.isPending || updateMutation.isPending
+                    ? 'Сохраняем…'
+                    : 'Сохранить'}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
         <div className="managed-giveaway__step-strip" aria-label="Прогресс по шагам">
@@ -2634,28 +2588,13 @@ export function ManagedGiveawayCard({
         {editorStep === 'basics' ? (
           <div className="managed-giveaway__step-stage">
             <div className="managed-giveaway__section">
-              <div className="managed-giveaway__title-row">
-                <div className="managed-giveaway__section-copy">
-                  <strong>Как называется розыгрыш</strong>
-                </div>
-                <div className="managed-giveaway__section-actions">
-                  <span className="managed-giveaway__chip">
+              <label className="field managed-giveaway__counted-field">
+                <span className="managed-giveaway__counted-label">
+                  <span>Название</span>
+                  <small>
                     {draft.title.length}/{MANAGED_GIVEAWAY_TITLE_MAX_LENGTH}
-                  </span>
-                  <GiveawayHintAnchor
-                    hintKey="title"
-                    openHintKey={openHintKey}
-                    onToggleHint={toggleHint}
-                    label="Подсказка по названию розыгрыша"
-                  >
-                    Короткое название показывается в списке, карточке и публикации. Лучше держать
-                    его коротким и сразу понятным.
-                  </GiveawayHintAnchor>
-                </div>
-              </div>
-
-              <label className="field">
-                <span>Название</span>
+                  </small>
+                </span>
                 <input
                   ref={titleInputRef}
                   type="text"
@@ -2680,37 +2619,12 @@ export function ManagedGiveawayCard({
                 <div className="managed-giveaway__section-copy">
                   <strong>Когда проходит</strong>
                 </div>
-                <div className="managed-giveaway__section-actions">
-                  <GiveawayHintAnchor
-                    hintKey="timing"
-                    openHintKey={openHintKey}
-                    onToggleHint={toggleHint}
-                    label="Подсказка по таймингу розыгрыша"
-                  >
-                    Здесь задаются старт, финиш и срок на подтверждение приза. Быстрые чипы ускоряют
-                    типовые сценарии, а ниже можно вручную уточнить дату и время.
-                  </GiveawayHintAnchor>
-                </div>
               </div>
 
               <div className="managed-giveaway__subsection">
                 <div className="managed-giveaway__subsection-row">
                   <div className="managed-giveaway__subsection-copy">
                     <strong>Старт</strong>
-                  </div>
-                  <div className="managed-giveaway__section-actions">
-                    <span className="managed-giveaway__chip">
-                      {isScheduledStart ? 'По времени' : 'Сразу'}
-                    </span>
-                    <GiveawayHintAnchor
-                      hintKey="start"
-                      openHintKey={openHintKey}
-                      onToggleHint={toggleHint}
-                      label="Подсказка по старту розыгрыша"
-                    >
-                      Можно запустить розыгрыш сразу после финального шага или отложить его на
-                      конкретную дату и время.
-                    </GiveawayHintAnchor>
                   </div>
                 </div>
 
@@ -2748,15 +2662,12 @@ export function ManagedGiveawayCard({
 
                 {isScheduledStart ? (
                   <div className="managed-giveaway__split-fields">
-                    <label className="field">
-                      <span>Дата старта</span>
-                      <input
-                        type="date"
-                        value={readDateInputPart(draft.startsAtLocal)}
-                        onChange={(event) => updateStartDate(event.target.value)}
-                        disabled={isBusy}
-                      />
-                    </label>
+                    <DateField
+                      label="Дата старта"
+                      value={readDateInputPart(draft.startsAtLocal)}
+                      onChange={updateStartDate}
+                      disabled={isBusy}
+                    />
                     <div className="field">
                       <TimeField
                         label="Время"
@@ -2775,20 +2686,6 @@ export function ManagedGiveawayCard({
                   <div className="managed-giveaway__subsection-copy">
                     <strong>Финиш</strong>
                   </div>
-                  <div className="managed-giveaway__section-actions">
-                    <span className="managed-giveaway__chip">
-                      {formatCompactInputDateTime(draft.endsAtLocal, 'Не задан')}
-                    </span>
-                    <GiveawayHintAnchor
-                      hintKey="finish"
-                      openHintKey={openHintKey}
-                      onToggleHint={toggleHint}
-                      label="Подсказка по завершению розыгрыша"
-                    >
-                      Быстрые чипы ставят типовой срок. Если нужно, ниже можно вручную задать точную
-                      дату и время завершения.
-                    </GiveawayHintAnchor>
-                  </div>
                 </div>
 
                 <div className="managed-giveaway__quick-actions">
@@ -2806,20 +2703,14 @@ export function ManagedGiveawayCard({
                 </div>
 
                 <div className="managed-giveaway__split-fields">
-                  <label className="field">
-                    <span>Дата финиша</span>
-                    <input
-                      ref={endDateInputRef}
-                      type="date"
-                      value={readDateInputPart(draft.endsAtLocal)}
-                      onChange={(event) => updateEndDate(event.target.value)}
-                      aria-invalid={!basicsValidation.valid}
-                      aria-describedby={
-                        validationHint ? 'managed-giveaway-editor-alert' : undefined
-                      }
-                      disabled={isBusy}
-                    />
-                  </label>
+                  <DateField
+                    ref={endDateInputRef}
+                    label="Дата финиша"
+                    value={readDateInputPart(draft.endsAtLocal)}
+                    onChange={updateEndDate}
+                    error={finishAtValidationError || undefined}
+                    disabled={isBusy}
+                  />
                   <div className="field">
                     <TimeField
                       label="Время"
@@ -3116,7 +3007,7 @@ export function ManagedGiveawayCard({
                       ref={firstPrizeInputRef}
                       type="text"
                       value={draft.samePrizeTitle}
-                      placeholder="Прикормка"
+                      placeholder="Подарок"
                       maxLength={MANAGED_GIVEAWAY_PRIZE_TITLE_MAX_LENGTH}
                       aria-label="Одинаковый приз для всех мест"
                       aria-invalid={!prizesValidation.valid}
@@ -3276,7 +3167,7 @@ export function ManagedGiveawayCard({
           </div>
         ) : null}
 
-        {validationHint ? (
+        {validationHint && !(editorStep === 'basics' && finishAtValidationError) ? (
           <div
             id="managed-giveaway-editor-alert"
             className="managed-giveaway__error-inline"
@@ -3519,10 +3410,10 @@ export function ManagedGiveawayCard({
         };
       case 'reroll':
         return {
-          title: 'Провести реролл?',
-          summary: `Победитель «${pendingConfirmation.winnerName}» будет заменён. Вернуть результат реролла нельзя.`,
-          confirmLabel: 'Провести реролл',
-          confirmBusyLabel: 'Рероллим…',
+          title: 'Выбрать другого победителя?',
+          summary: `Победитель «${pendingConfirmation.winnerName}» будет заменён. Отменить это действие нельзя.`,
+          confirmLabel: 'Выбрать другого',
+          confirmBusyLabel: 'Выбираем…',
           cancelLabel: 'Не сейчас',
           tone: 'danger' as const,
         };
@@ -3537,9 +3428,9 @@ export function ManagedGiveawayCard({
         };
       case 'delete':
         return {
-          title: 'Удалить сценарий?',
+          title: 'Удалить розыгрыш?',
           summary: `«${pendingConfirmation.title}» будет удалён без возможности восстановления.`,
-          confirmLabel: 'Удалить сценарий',
+          confirmLabel: 'Удалить розыгрыш',
           confirmBusyLabel: 'Удаляем…',
           cancelLabel: 'Не удалять',
           tone: 'danger' as const,

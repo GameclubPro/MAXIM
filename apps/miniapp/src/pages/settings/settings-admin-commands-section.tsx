@@ -59,31 +59,31 @@ const commandCategories: AdminCommandCategory[] = [
     items: [
       {
         key: 'adminBanCommandName',
-        title: 'Бан',
+        title: 'Заблокировать',
         caption: 'Для нарушителя в текущем чате.',
         defaultValue: ADMIN_BAN_COMMAND_NAME_DEFAULT,
       },
       {
         key: 'adminBanAllCommandName',
-        title: 'Бан!',
+        title: 'Заблокировать во всех чатах',
         caption: 'Во всех чатах, где вы админ.',
         defaultValue: ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT,
       },
       {
         key: 'adminMuteCommandName',
-        title: 'Мут',
+        title: 'Запретить писать',
         caption: 'Пауза в сообщениях, обычно на 6 часов.',
         defaultValue: ADMIN_MUTE_COMMAND_NAME_DEFAULT,
       },
       {
         key: 'adminPermanentMuteCommandName',
-        title: 'Бессрочный мут',
+        title: 'Запретить писать навсегда',
         caption: 'Молчание без срока окончания.',
         defaultValue: ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT,
       },
       {
         key: 'adminSilenceCommandName',
-        title: 'Тишина',
+        title: 'Закрыть чат',
         caption: 'Временно закрывает чат для участников.',
         defaultValue: ADMIN_SILENCE_COMMAND_NAME_DEFAULT,
       },
@@ -100,7 +100,7 @@ const commandCategories: AdminCommandCategory[] = [
     items: [
       {
         key: 'adminRulesCommandName',
-        title: 'Правило',
+        title: 'Сохранить правила',
         caption: 'Сохраняет сообщение как правила чата.',
         defaultValue: ADMIN_RULES_COMMAND_NAME_DEFAULT,
       },

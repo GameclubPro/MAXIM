@@ -83,32 +83,30 @@ export default function SettingsSpeechStylePanel({
       confirmCloseWhen={isDirty}
       onDiscardChanges={onDiscard}
       footer={
-        <div className="settings-drilldown__footer-actions">
-          <button
-            type="button"
-            className="button button--ghost"
-            onClick={onCancel}
-            disabled={isSaving}
-          >
-            Отмена
-          </button>
-          <button
-            type="button"
-            className="button button--accent"
-            onClick={() => onSave(selectedStyle)}
-            disabled={isSaving || !isDirty}
-          >
-            {isSaving ? 'Сохраняем...' : isDirty ? 'Сохранить' : 'Сохранено'}
-          </button>
-        </div>
+        isDirty ? (
+          <div className="settings-drilldown__footer-actions">
+            <button
+              type="button"
+              className="button button--ghost"
+              onClick={onCancel}
+              disabled={isSaving}
+            >
+              Отмена
+            </button>
+            <button
+              type="button"
+              className="button button--accent"
+              onClick={() => onSave(selectedStyle)}
+              disabled={isSaving || !isDirty}
+            >
+              {isSaving ? 'Сохраняем...' : isDirty ? 'Сохранить' : 'Сохранено'}
+            </button>
+          </div>
+        ) : null
       }
     >
       <div id="settings-bot-speech-style" className="settings-speech-preview">
-        <div
-          className="settings-speech-style-grid"
-          role="radiogroup"
-          aria-label="Стиль речи бота"
-        >
+        <div className="settings-speech-style-grid" role="radiogroup" aria-label="Стиль речи бота">
           {BOT_SPEECH_STYLE_OPTIONS.map((option) => (
             <button
               key={option.value}
@@ -159,8 +157,8 @@ export default function SettingsSpeechStylePanel({
         {[
           ['1. Объяснение', samples.explanation],
           ['2. Предупреждение', samples.warning],
-          ['3. Мут', samples.mute],
-          ['4. Бан', samples.ban],
+          ['3. Ограничение', samples.mute],
+          ['4. Блокировка', samples.ban],
         ].map(([title, text], index) => (
           <div
             key={title}

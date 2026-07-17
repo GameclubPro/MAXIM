@@ -455,6 +455,15 @@
     gap: 8px;
   }
 
+  .settings-drilldown__panel--extra .settings-native-toggle__row:has(.ban-duration-stepper) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-drilldown__panel--extra .ban-duration-stepper {
+    width: 100%;
+    grid-template-columns: 40px minmax(0, 1fr) 40px;
+  }
+
   .settings-drilldown__panel--commands .settings-admin-commands {
     gap: 14px;
   }
@@ -688,6 +697,28 @@
     align-items: center;
   }
 
+  .settings-drilldown__panel--required-subscription .required-subscription__heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+  }
+
+  .settings-drilldown__panel--required-subscription .required-subscription__heading small {
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .settings-drilldown__panel--required-subscription .required-subscription__selection-body {
+    gap: 4px;
+  }
+
+  .settings-drilldown__panel--required-subscription .required-subscription__selection-meta {
+    order: 2;
+  }
+
   .settings-speech-style-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 6px;
@@ -767,6 +798,30 @@
     border-radius: 0;
     background: transparent;
     box-shadow: none;
+  }
+
+  .settings-drilldown .managed-giveaway__counted-label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .settings-drilldown .managed-giveaway__counted-label small {
+    color: var(--text-secondary);
+    font-size: 0.68rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .settings-drilldown .managed-giveaway__hero-button--danger:has(svg) {
+    width: 40px;
+    min-width: 40px;
+    padding: 0;
+  }
+
+  .settings-drilldown .managed-giveaway__hero-button--danger svg {
+    width: 18px;
+    height: 18px;
   }
 
   .vk-autopost-panel,
@@ -944,8 +999,26 @@
   }
 
   .settings-drilldown__panel--broadcast-screen .broadcast-studio-screen__nav {
+    grid-template-columns: minmax(0, 1fr);
     gap: 8px;
     padding-inline: 10px;
+  }
+
+  .settings-drilldown__panel--broadcast-screen .broadcast-studio-shell__topbar-actions {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  .settings-drilldown__panel--broadcast-screen .broadcast-studio-shell__handoff.is-compact {
+    min-width: 0;
+    margin: 0;
+  }
+
+  .settings-drilldown__panel--broadcast-screen .broadcast-content-composer__button-label {
+    display: none;
   }
 
   .settings-drilldown__panel--broadcast-screen .broadcast-shell-reset {
@@ -1141,5 +1214,61 @@
     .vk-source-card__summary-row {
       grid-template-columns: minmax(124px, 0.82fr) minmax(0, 1.18fr);
     }
+  }
+
+  .settings-drilldown__panel--vk-parsing .vk-source-card__summary-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 7px;
+  }
+
+  .settings-drilldown__panel--vk-parsing .vk-source-mode-control {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 3px;
+    padding: 3px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card-muted);
+  }
+
+  .settings-drilldown__panel--vk-parsing .vk-source-mode-control button {
+    min-width: 0;
+    min-height: 44px;
+    padding: 0 6px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: 0.72rem;
+    font-weight: 720;
+  }
+
+  .settings-drilldown__panel--vk-parsing .vk-source-mode-control button.is-active {
+    background: var(--surface-card);
+    color: var(--accent);
+    box-shadow: var(--shadow-xs);
+  }
+
+  html[data-max-theme='dark'] .settings-drilldown__panel--vk-parsing .vk-source-mode-control {
+    border-color: var(--color-border);
+    background: var(--color-surface-muted);
+  }
+
+  html[data-max-theme='dark']
+    .settings-drilldown__panel--vk-parsing
+    .vk-source-mode-control
+    button.is-active {
+    background: var(--color-surface-raised);
+  }
+
+  .settings-drilldown__panel--links .allowlist-add-row > input:only-child {
+    grid-column: 1 / -1;
+  }
+
+  .settings-drilldown__panel--links .allowlist-add-row input,
+  .settings-drilldown__panel--links .allowlist-add-row__button {
+    min-height: 44px;
+    height: 44px;
   }
 }

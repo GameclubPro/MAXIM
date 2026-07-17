@@ -21,8 +21,8 @@ export const VK_PARSING_STATUS_FILTERS: Array<{
   { value: 'NEW', label: 'Новые' },
   { value: 'QUEUED', label: 'Очередь' },
   { value: 'FAILED', label: 'Ошибки' },
-  { value: 'PUBLISHED', label: 'Вышло' },
-  { value: 'SKIPPED', label: 'Пропуск' },
+  { value: 'PUBLISHED', label: 'Опубликовано' },
+  { value: 'SKIPPED', label: 'Пропущено' },
   { value: 'CHANGED_AFTER_PUBLISH', label: 'Изменено' },
 ];
 

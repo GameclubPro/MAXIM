@@ -14,19 +14,12 @@ type SettingsHandoffStateProps = {
 export default function SettingsHandoffState({
   entityType = 'chat',
   mode,
-  retryCount = 0,
   onRetry,
   backTo,
 }: SettingsHandoffStateProps) {
   const entityLabel = entityType === 'channel' ? 'канал' : 'чат';
-  const settingsLabel = entityType === 'channel' ? 'настройки канала' : 'настройки чата';
   const fallbackBackTo = entityType === 'channel' ? '/?view=channel' : '/?view=chat';
   const isError = mode === 'error';
-  const statusText = isError
-    ? 'MAX ещё подтверждает доступ.'
-    : retryCount > 0
-      ? 'MAX применяет права. Пробуем снова...'
-      : 'Обычно это занимает несколько секунд.';
 
   return (
     <GlassCard className={cn('settings-handoff-card', isError && 'is-error')} elevated>
@@ -42,32 +35,8 @@ export default function SettingsHandoffState({
         </div>
 
         <div className="settings-handoff__copy">
-          <span className="settings-handoff__eyebrow">Подключение</span>
-          <h3>
-            {isError ? `${capitalizeFirst(entityLabel)} пока не готов` : `Готовим ${settingsLabel}`}
-          </h3>
-          <p>
-            {isError
-              ? 'Вернитесь к списку и попробуйте открыть экран ещё раз через несколько секунд.'
-              : 'Проверяем права бота и загружаем экран управления.'}
-          </p>
+          <h3>{isError ? `${capitalizeFirst(entityLabel)} недоступен` : 'Загружаем настройки'}</h3>
         </div>
-
-        <div className="settings-handoff__steps" aria-hidden>
-          <span className="settings-handoff__step is-complete">
-            {entityType === 'channel' ? 'Канал' : 'Чат'}
-          </span>
-          <span className={cn('settings-handoff__step', isError ? 'is-error' : 'is-active')}>
-            Права
-          </span>
-          <span
-            className={cn('settings-handoff__step', !isError && retryCount === 0 && 'is-pending')}
-          >
-            Настройки
-          </span>
-        </div>
-
-        <p className="settings-handoff__status">{statusText}</p>
 
         {isError ? (
           <div className="settings-handoff__actions">

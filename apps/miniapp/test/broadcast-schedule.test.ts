@@ -11,6 +11,7 @@ import {
   resolveBroadcastHandoffSchedule,
   resolveBroadcastCycleLastSendAt,
   resolveBroadcastCycleSendAt,
+  resolveBroadcastScheduleConflict,
   sortAndUniqueBroadcastSlots,
 } from '../src/lib/broadcast-schedule';
 
@@ -44,6 +45,21 @@ test('keeps handoff loading and refetch errors ahead of cached data', () => {
     }),
     null,
   );
+});
+
+test('detects schedule conflicts before user-facing error sanitization', () => {
+  assert.equal(
+    resolveBroadcastScheduleConflict(new Error('BROADCAST_TARGET_SLOT_CONFLICT')),
+    'target',
+  );
+  assert.equal(
+    resolveBroadcastScheduleConflict(
+      new Error('API request failed: 409 {"message":"BROADCAST_SLOT_CONFLICT"}'),
+    ),
+    'slot',
+  );
+  assert.equal(resolveBroadcastScheduleConflict(new Error('Выбранное время уже занято.')), 'slot');
+  assert.equal(resolveBroadcastScheduleConflict(new Error('Нет соединения.')), null);
 });
 
 test('defaults cycle drafts to a channel-safe daily cadence', () => {

@@ -1,4 +1,5 @@
 import type { ManagedEntityHeader } from '@maxim/contracts/managed-entities';
+import { RefreshCircle, Search, Xmark } from 'iconoir-react';
 import {
   useEffect,
   useDeferredValue,
@@ -58,24 +59,6 @@ function formatSourceLinkPreview(value: string | null | undefined): string | nul
 
 function formatSourceTypeLabel(entityType: ManagedEntityHeader['entityType']): string {
   return entityType === 'channel' ? 'Канал' : 'Чат';
-}
-
-function formatSourceCount(count: number, fallback: string): string {
-  if (count <= 0) {
-    return fallback;
-  }
-
-  const normalized = Math.max(0, Math.trunc(count));
-  const mod10 = normalized % 10;
-  const mod100 = normalized % 100;
-  const noun =
-    mod10 === 1 && mod100 !== 11
-      ? 'источник'
-      : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)
-        ? 'источника'
-        : 'источников';
-
-  return `${normalized} ${noun}`;
 }
 
 function getFilteredChoices(
@@ -146,9 +129,9 @@ const RequiredSubscriptionSourceRow = memo(function RequiredSubscriptionSourceRo
           <strong className="required-subscription__source-title">{choice.title}</strong>
           <span className="required-subscription__source-meta">
             <span className="required-subscription__source-type">{typeLabel}</span>
-            <span className="required-subscription__source-link">
-              {linkPreview ?? choice.id}
-            </span>
+            {linkPreview ? (
+              <span className="required-subscription__source-link">{linkPreview}</span>
+            ) : null}
           </span>
         </span>
         <span className="required-subscription__source-add" aria-hidden="true">
@@ -228,10 +211,6 @@ export function RequiredSubscriptionSourcePicker({
     ? filteredChoices.slice(virtualRange.startIndex, virtualRange.endIndex)
     : filteredChoices;
   const visibleOffset = virtualRange.startIndex * SOURCE_PICKER_ROW_HEIGHT;
-  const visibleFrom = filteredChoices.length === 0 ? 0 : virtualRange.startIndex + 1;
-  const visibleTo = shouldVirtualize
-    ? Math.min(virtualRange.endIndex, filteredChoices.length)
-    : filteredChoices.length;
   const statusText = loading
     ? 'Загружаем...'
     : syncing
@@ -241,13 +220,9 @@ export function RequiredSubscriptionSourcePicker({
         : backoffActive
           ? 'Повторите позже.'
           : hasReachedLimit
-            ? `Лимит ${maxSelectedCount}.`
-            : shouldVirtualize && filteredChoices.length > 0
-              ? `${formatSourceCount(filteredChoices.length, emptyState)} · ${visibleFrom}-${visibleTo}`
-              : formatSourceCount(filteredChoices.length, emptyState);
-  const emptySearchText = trimmedQuery
-    ? 'Очистите поиск или добавьте ссылку ниже.'
-    : emptyState;
+            ? `Можно выбрать до ${maxSelectedCount}`
+            : null;
+  const emptySearchText = trimmedQuery ? 'Попробуйте другой запрос.' : emptyState;
 
   useEffect(() => {
     setScrollTop(0);
@@ -301,24 +276,32 @@ export function RequiredSubscriptionSourcePicker({
   return (
     <div className="required-subscription__source-picker">
       <div className="required-subscription__source-toolbar">
-        <label className="required-subscription__source-search">
-          <span className="sr-only">Поиск чата или канала</span>
+        <div className="required-subscription__source-search">
+          <Search aria-hidden focusable="false" />
           <input
             type="search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Поиск"
+            placeholder="Найти чат или канал"
+            aria-label="Найти чат или канал"
             autoComplete="off"
           />
-        </label>
-        <button
-          type="button"
-          className="button button--ghost required-subscription__source-refresh"
-          disabled={loading || syncing}
-          onClick={onRefresh}
-        >
-          {syncing ? 'Обновляем...' : 'Обновить'}
-        </button>
+          {trimmedQuery ? (
+            <button type="button" onClick={() => setQuery('')} aria-label="Очистить поиск">
+              <Xmark aria-hidden focusable="false" />
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className={cn(syncing && 'is-syncing')}
+            disabled={loading || syncing}
+            onClick={onRefresh}
+            aria-label={syncing ? 'Обновляем список' : 'Обновить список'}
+            title={syncing ? 'Обновляем список' : 'Обновить список'}
+          >
+            <RefreshCircle aria-hidden focusable="false" />
+          </button>
+        </div>
       </div>
 
       <SegmentedControl
@@ -329,21 +312,18 @@ export function RequiredSubscriptionSourcePicker({
         ariaLabel="Фильтр источников обязательной подписки"
       />
 
-      <div
-        className={cn(
-          'required-subscription__source-status',
-          error && 'is-danger',
-          backoffActive && !error && 'is-warning',
-        )}
-        aria-live="polite"
-      >
-        <span>{statusText}</span>
-        {trimmedQuery ? (
-          <button type="button" onClick={() => setQuery('')}>
-            Очистить
-          </button>
-        ) : null}
-      </div>
+      {statusText ? (
+        <div
+          className={cn(
+            'required-subscription__source-status',
+            error && 'is-danger',
+            backoffActive && !error && 'is-warning',
+          )}
+          aria-live="polite"
+        >
+          <span>{statusText}</span>
+        </div>
+      ) : null}
 
       {loading ? (
         <div className="required-subscription__source-skeleton" aria-hidden="true">
@@ -356,10 +336,7 @@ export function RequiredSubscriptionSourcePicker({
       {!loading && !error && filteredChoices.length > 0 ? (
         <div
           ref={scrollRef}
-          className={cn(
-            'required-subscription__source-list',
-            !shouldVirtualize && 'is-static',
-          )}
+          className={cn('required-subscription__source-list', !shouldVirtualize && 'is-static')}
           style={
             {
               '--required-subscription-source-list-height': shouldVirtualize

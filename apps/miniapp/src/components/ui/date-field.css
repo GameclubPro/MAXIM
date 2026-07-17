@@ -1,0 +1,91 @@
+@layer components {
+  .date-field {
+    min-width: 0;
+    display: grid;
+    gap: 7px;
+  }
+
+  .date-field__label,
+  .date-field__error {
+    color: var(--text-secondary);
+    font-size: 0.76rem;
+    font-weight: 700;
+    line-height: 1.25;
+  }
+
+  .date-field__control {
+    position: relative;
+    min-width: 0;
+    min-height: 52px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 12px;
+    overflow: hidden;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card-muted);
+    color: var(--text-primary);
+  }
+
+  .date-field__control > svg {
+    width: 20px;
+    height: 20px;
+    color: var(--accent);
+  }
+
+  .date-field__value {
+    min-width: 0;
+    overflow: hidden;
+    font-size: 0.94rem;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.15;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .date-field.is-empty .date-field__value {
+    color: var(--text-muted);
+    font-weight: 650;
+  }
+
+  .date-field__control input {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    border: 0;
+    opacity: 0;
+    cursor: pointer;
+  }
+
+  .date-field__control:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--app-focus-ring);
+  }
+
+  .date-field__control input:focus-visible {
+    outline: 0;
+  }
+
+  .date-field.has-error .date-field__control {
+    border-color: var(--danger);
+  }
+
+  .date-field.is-disabled {
+    opacity: 0.6;
+  }
+
+  .date-field.is-disabled .date-field__control input {
+    cursor: not-allowed;
+  }
+
+  html[data-max-theme='dark'] .date-field__control {
+    border-color: var(--color-border);
+    background: var(--color-surface-tint);
+    color: var(--text-primary);
+  }
+}

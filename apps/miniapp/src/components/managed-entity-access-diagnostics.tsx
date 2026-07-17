@@ -1,17 +1,7 @@
-import type {
-  ManagedEntityAccessDiagnostics,
-  ManagedEntityAccessLossReason,
-} from '@maxim/contracts/managed-entities';
+import type { ManagedEntityAccessDiagnostics } from '@maxim/contracts/managed-entities';
 import { cn } from '../lib/cn';
 import { formatManagedEntityAccessLossHeadline } from './managed-entity-access-diagnostics.model';
 import './managed-entity-access-diagnostics.css';
-
-const REASON_LABELS: Record<ManagedEntityAccessLossReason, string> = {
-  chat_not_found: 'чат не найден',
-  bot_denied: 'доступ запрещен',
-  bot_removed: 'бот удален',
-  chat_inaccessible: 'чат недоступен',
-};
 
 export function ManagedEntityAccessDiagnosticsBanner({
   diagnostics,
@@ -28,31 +18,14 @@ export function ManagedEntityAccessDiagnosticsBanner({
     return null;
   }
 
-  const lostBots = diagnostics.lostBots;
-  const lostCount = lostBots.length;
+  const lostCount = diagnostics.lostBots.length;
   const headline = formatManagedEntityAccessLossHeadline(diagnostics, entityLabel);
 
   return (
     <section className="managed-access-alert" aria-live="polite">
       <div className="managed-access-alert__copy">
-        <span className="managed-access-alert__kicker">
-          {lostCount > 1 ? 'Боты потеряли доступ' : 'Бот потерял доступ'}
-        </span>
         <strong>{headline}</strong>
-        <ul className="managed-access-alert__bots" aria-label="Причины потери доступа">
-          {lostBots.map((item, index) => (
-            <li key={`${item.botId ?? 'unknown'}:${item.reason}:${item.detectedAt}:${index}`}>
-              <span>{formatLostBotIdentity(item, index)}</span>
-              <span>
-                {REASON_LABELS[item.reason]} · {formatDateTime(item.detectedAt)}
-              </span>
-            </li>
-          ))}
-        </ul>
-        <span>
-          Верните {lostCount > 1 ? 'ботов' : 'бота'} в администраторы MAX, затем поставьте проверку
-          в очередь
-        </span>
+        <span>Верните {lostCount > 1 ? 'ботов' : 'бота'} в администраторы и проверьте снова.</span>
       </div>
       <button
         type="button"
@@ -63,35 +36,8 @@ export function ManagedEntityAccessDiagnosticsBanner({
         disabled={isRechecking}
         onClick={onRecheck}
       >
-        {isRechecking ? 'Ставим в очередь' : 'Проверить снова'}
+        {isRechecking ? 'Проверяем...' : 'Проверить снова'}
       </button>
     </section>
   );
-}
-
-function formatLostBotIdentity(
-  item: ManagedEntityAccessDiagnostics['lostBots'][number],
-  index: number,
-): string {
-  const label = typeof item.botLabel === 'string' ? item.botLabel.trim() : '';
-  const botId = typeof item.botId === 'string' ? item.botId.trim() : '';
-  if (label && botId && label !== botId) {
-    return `${label} (${botId})`;
-  }
-
-  return label || botId || `Бот ${index + 1}`;
-}
-
-function formatDateTime(value: string): string {
-  const timestamp = Date.parse(value);
-  if (Number.isNaN(timestamp)) {
-    return value;
-  }
-
-  return new Intl.DateTimeFormat('ru-RU', {
-    day: '2-digit',
-    month: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(new Date(timestamp));
 }

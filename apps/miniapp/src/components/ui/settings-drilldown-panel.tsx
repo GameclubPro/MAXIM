@@ -130,11 +130,10 @@ export function SettingsDrilldownPanel({
   onDiscardChanges,
 }: SettingsDrilldownPanelProps) {
   const backdropRef = useRef<HTMLButtonElement | null>(null);
-  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
   const [discardConfirmationOpen, setDiscardConfirmationOpen] = useState(false);
   const isKeyboardOpen = useKeyboardOpen(120, open);
-  useDialogFocusTrap(open, panelRef, closeButtonRef);
+  useDialogFocusTrap(open, panelRef, panelRef);
 
   const requestClose = useCallback(() => {
     if (confirmCloseWhen) {
@@ -254,7 +253,6 @@ export function SettingsDrilldownPanel({
               <div className="settings-drilldown__header-actions">
                 {headerAction}
                 <button
-                  ref={closeButtonRef}
                   type="button"
                   className="settings-drilldown__close"
                   aria-label="Закрыть панель"

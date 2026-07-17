@@ -35,7 +35,7 @@ const MESSAGE_LIMITS_BLOCKED_WORD_PRESET_COMPACT_TITLES: Record<
   string
 > = {
   gambling: 'Казино',
-  earnings: 'Таски',
+  earnings: 'Заработок',
   crypto: 'Крипта',
   accounts: 'Аккаунты',
   tarot: 'Таро',

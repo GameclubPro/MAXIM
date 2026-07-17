@@ -37,9 +37,9 @@ function normalizeLink(link: string | null | undefined): string | null {
 function createUnavailableChannel(channelId: string): RequiredSubscriptionUnavailableChannel {
   return {
     id: channelId,
-    title: channelId,
+    title: 'Недоступный источник',
     reason: 'unavailable',
-    description: 'Обновите список и проверьте права.',
+    description: 'Ссылка недоступна.',
   };
 }
 

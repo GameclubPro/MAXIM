@@ -48,7 +48,11 @@
   border-radius: 26px;
   border-color: var(--settings-panel-accent-border);
   background:
-    radial-gradient(140% 130% at 0% 0%, var(--settings-panel-accent-soft-strong), transparent 48%),
+    radial-gradient(
+      140% 130% at 0% 0%,
+      var(--settings-panel-accent-soft-strong),
+      transparent 48%
+    ),
     linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(243, 248, 254, 0.94));
   box-shadow:
     0 18px 38px rgba(29, 73, 109, 0.12),
@@ -290,7 +294,7 @@
 .allowlist-item__header {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
+  align-items: center;
   gap: 8px;
 }
 
@@ -329,17 +333,17 @@
 }
 
 .allowlist-item__actions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  display: flex;
+  align-items: center;
   gap: 8px;
 }
 
 .allowlist-item__action {
   border-radius: 12px;
-  min-height: 40px;
-  padding: 8px 10px;
-  font-size: 0.76rem;
-  font-weight: 700;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -353,8 +357,8 @@
 }
 
 .allowlist-item__action svg {
-  width: 15px;
-  height: 15px;
+  width: 18px;
+  height: 18px;
 }
 
 .allowlist-item__action:hover:not(:disabled) {
@@ -455,15 +459,7 @@
 
 @media (max-width: 560px) {
   .allowlist-item__header {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .allowlist-item__status {
-    justify-self: start;
-  }
-
-  .allowlist-item__actions {
-    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
   }
 }
 

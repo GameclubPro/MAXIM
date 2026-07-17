@@ -53,7 +53,7 @@ export function SettingsExtraSection({
     >
       <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
         <SettingsSectionToggle
-          title="Сервис"
+          title="Сообщения и боты"
           summary={summary}
           status={status}
           icon="tools"
@@ -68,7 +68,7 @@ export function SettingsExtraSection({
       <SettingsDrilldownPanel
         id="settings-extra-content"
         open={expanded}
-        title="Сервис"
+        title="Сообщения и боты"
         summary={summary}
         tone="amber"
         className="settings-drilldown__panel--notice settings-drilldown__panel--extra"
@@ -87,7 +87,7 @@ export function SettingsExtraSection({
               <div className="settings-native-toggle">
                 <div className="settings-native-toggle__row">
                   <div className="settings-native-toggle__title-wrap">
-                    <span className="settings-native-toggle__title">Удалять свои сообщения</span>
+                    <span className="settings-native-toggle__title">Удалять сообщения бота</span>
                     <button
                       type="button"
                       className={cn(
@@ -142,7 +142,7 @@ export function SettingsExtraSection({
               <div className="settings-native-toggle">
                 <div className="settings-native-toggle__row">
                   <div className="settings-native-toggle__title-wrap">
-                    <span className="settings-native-toggle__title">Удалять ботов из группы</span>
+                    <span className="settings-native-toggle__title">Удалять других ботов</span>
                     <button
                       type="button"
                       className={cn(

@@ -80,7 +80,9 @@ import {
   updateChannelSettings,
 } from '../lib/api/channel-settings-client';
 import type { ApiTransport } from '../lib/api/transport';
+import { describeUserFacingError } from '../lib/user-facing-error';
 import { buildBroadcastSendFeedback } from '../lib/broadcast-send-feedback';
+import { describeVkParsingCapability } from '../lib/vk-parsing-capability';
 import type { BroadcastHandoffPayload, SendBroadcastPayload } from '../lib/api/shared-types';
 import {
   buildBroadcastLinkButtonLegacyFields,
@@ -107,6 +109,7 @@ import {
   resolveBroadcastHandoffLoadMode,
   resolveBroadcastHandoffSchedule,
   resolveBroadcastCycleSendAt,
+  resolveBroadcastScheduleConflict,
   resolveBroadcastScheduleTimezone,
   sortAndUniqueBroadcastSlots,
   type BroadcastCycleDraft,
@@ -221,8 +224,8 @@ const CHANNEL_SUGGESTION_ENTRY_MODE_OPTIONS: Array<{
   value: ChannelSuggestionEntryMode;
   label: string;
 }> = [
-  { value: 'MINIAPP', label: 'Мини-апп' },
-  { value: 'BOT', label: 'Бот' },
+  { value: 'MINIAPP', label: 'В приложении' },
+  { value: 'BOT', label: 'В боте' },
 ];
 const DESKTOP_TOGGLE_ROW_BLOCKERS = [
   'a',
@@ -404,21 +407,7 @@ function resolveDesktopToggleRowLabel(target: EventTarget | null): HTMLLabelElem
 }
 
 function normalizeApiError(error: unknown): string {
-  if (!(error instanceof Error)) {
-    return 'Не удалось сохранить настройки.';
-  }
-
-  const text = error.message.trim();
-  if (!text) {
-    return 'Не удалось сохранить настройки.';
-  }
-
-  if (text.startsWith('API request failed:')) {
-    const details = text.replace(/^API request failed:\s*\d+\s*/u, '').trim();
-    return details || 'Не удалось сохранить настройки.';
-  }
-
-  return text;
+  return describeUserFacingError(error, 'Не удалось выполнить действие.');
 }
 
 function formatChannelCountLabel(
@@ -1039,17 +1028,15 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       maxNotify(cleanupFailed ? 'warning' : feedback.notification);
     },
     onError: (error) => {
+      const scheduleConflict = resolveBroadcastScheduleConflict(error);
       const description = normalizeApiError(error);
-      if (description.includes('BROADCAST_TARGET_SLOT_CONFLICT')) {
+      if (scheduleConflict === 'target') {
         setBroadcastScheduleError('Занято у получателя.');
         void queryClient.invalidateQueries({ queryKey: queryKeys.channelSettingsScreen(chatId) });
         void queryClient.invalidateQueries({
           queryKey: queryKeys.channelManagedBroadcastCalendar(chatId),
         });
-      } else if (
-        description.includes('выбранное время') ||
-        description.includes('BROADCAST_SLOT_CONFLICT')
-      ) {
+      } else if (scheduleConflict === 'slot') {
         setBroadcastScheduleError('Занято.');
         void queryClient.invalidateQueries({ queryKey: queryKeys.channelSettingsScreen(chatId) });
         void queryClient.invalidateQueries({
@@ -1842,17 +1829,15 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       });
     },
     onError: (error) => {
+      const scheduleConflict = resolveBroadcastScheduleConflict(error);
       const description = normalizeApiError(error);
-      if (description.includes('BROADCAST_TARGET_SLOT_CONFLICT')) {
+      if (scheduleConflict === 'target') {
         setBroadcastScheduleError('Занято у получателя.');
         void queryClient.invalidateQueries({ queryKey: queryKeys.channelSettingsScreen(chatId) });
         void queryClient.invalidateQueries({
           queryKey: queryKeys.channelManagedBroadcastCalendar(chatId),
         });
-      } else if (
-        description.includes('выбранное время') ||
-        description.includes('BROADCAST_SLOT_CONFLICT')
-      ) {
+      } else if (scheduleConflict === 'slot') {
         setBroadcastScheduleError('Занято.');
         void queryClient.invalidateQueries({ queryKey: queryKeys.channelSettingsScreen(chatId) });
         void queryClient.invalidateQueries({
@@ -2152,7 +2137,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       ? [
           {
             value: 'SUGGEST' as const,
-            label: 'Предложка',
+            label: 'Предложения',
             disabled: !draft.postSuggestionsEnabled,
           },
         ]
@@ -2383,9 +2368,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       ? 'Модерация'
       : 'Вкл';
   const postSuggestionsEntryLabel =
-    draft.postSuggestionsEntryMode === 'MINIAPP' ? 'Мини-апп' : 'Бот';
+    draft.postSuggestionsEntryMode === 'MINIAPP' ? 'Приложение' : 'Бот';
   const postSuggestionsCardSummary = draft.postSuggestionsEnabled
-    ? `${postSuggestionsEntryLabel} · ${draft.postSuggestionsDailyLimit}/24ч`
+    ? `${postSuggestionsEntryLabel} · до ${draft.postSuggestionsDailyLimit} в сутки`
     : 'Выключено';
   const postSuggestionsCardStatus = draft.postSuggestionsEnabled
     ? postSuggestionsEntryLabel
@@ -3114,9 +3099,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             {expandedSections.comments ? (
               <div className="settings-section__collapse-inner">
                 <ChannelSettingsToggleCard
-                  title="Обсуждение"
-                  description="Тред под постами через бота. Нативные комментарии MAX не меняются."
-                  hintKey="commentsEnabled"
+                  title="Комментарии под постами"
                   openHintKey={openHintKey}
                   onToggleHint={toggleHint}
                   checked={draft.commentsEnabled}
@@ -3126,19 +3109,17 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                 {draft.commentsEnabled ? (
                   <div className="channel-settings-stack channel-settings-stack--form">
                     <label className="field channel-settings-field--wide">
-                      <span>Текст</span>
+                      <span>Сообщение перед комментариями</span>
                       <textarea
-                        rows={3}
+                        rows={2}
                         value={draft.commentsMessageText}
                         onChange={(event) => patchDraft('commentsMessageText', event.target.value)}
-                        placeholder="О чём оставить комментарий"
+                        placeholder="О чём обсуждение"
                       />
                     </label>
 
                     <ChannelSettingsToggleCard
-                      title="Модерация"
-                      description="Проверка комментариев перед публикацией."
-                      hintKey="commentsModerationEnabled"
+                      title="Проверять комментарии"
                       openHintKey={openHintKey}
                       onToggleHint={toggleHint}
                       checked={draft.commentsModerationEnabled}
@@ -3148,9 +3129,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                     {draft.commentsModerationEnabled ? (
                       <div className="channel-settings-stack channel-settings-toggle-grid">
                         <ChannelSettingsToggleCard
-                          title="Без ссылок"
-                          description="Комментарии со ссылками блокируются."
-                          hintKey="commentsBlockLinksEnabled"
+                          title="Запрещать ссылки"
                           openHintKey={openHintKey}
                           onToggleHint={toggleHint}
                           checked={draft.commentsBlockLinksEnabled}
@@ -3160,9 +3139,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                         />
 
                         <ChannelSettingsToggleCard
-                          title="Антиспам"
-                          description="Блокирует частые повторы."
-                          hintKey="commentsAntiSpamEnabled"
+                          title="Защита от повторов"
                           openHintKey={openHintKey}
                           onToggleHint={toggleHint}
                           checked={draft.commentsAntiSpamEnabled}
@@ -3170,9 +3147,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                         />
 
                         <ChannelSettingsToggleCard
-                          title="Два подряд"
-                          description="Третий подряд блокируется."
-                          hintKey="commentsLimitTwoInRowEnabled"
+                          title="Не больше двух подряд"
                           openHintKey={openHintKey}
                           onToggleHint={toggleHint}
                           checked={draft.commentsLimitTwoInRowEnabled}
@@ -3194,7 +3169,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         <GlassCard className="channel-settings-card" elevated>
           <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
             <SettingsSectionToggle
-              title="ВК-парсинг"
+              title="Посты из VK"
               summary=""
               status="Импорт"
               icon="links"
@@ -3208,7 +3183,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           <SettingsDrilldownPanel
             id="channel-settings-vk-parsing"
             open={expandedSections.vkParsing}
-            title="ВК-парсинг"
+            title="Посты из VK"
             tone="ink"
             className="settings-drilldown__panel--campaign settings-drilldown__panel--vk-parsing"
             onClose={() => toggleSection('vkParsing')}
@@ -3230,11 +3205,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                   ) : vkParsingCapability ? (
                     <StatusState
                       tone="warning"
-                      title="VK-парсинг не настроен"
-                      description={
-                        vkParsingCapability.reason ??
-                        'VK-парсинг временно недоступен. Обратитесь к администратору сервиса.'
-                      }
+                      title="Импорт из VK не настроен"
+                      description={describeVkParsingCapability(vkParsingCapability)}
                       action={
                         <button
                           type="button"
@@ -3257,7 +3229,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       <GlassCard className="channel-settings-card" elevated>
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
           <SettingsSectionToggle
-            title="Предложка"
+            title="Предложения"
             summary=""
             status={postSuggestionsCardStatus}
             icon="spark"
@@ -3271,7 +3243,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         <SettingsDrilldownPanel
           id="channel-settings-post-suggestions"
           open={expandedSections.postSuggestions}
-          title="Предложка"
+          title="Предложения"
           summary={postSuggestionsCardSummary}
           variant="screen"
           tone="mint"
@@ -3292,9 +3264,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             {expandedSections.postSuggestions ? (
               <div className="settings-section__collapse-inner">
                 <ChannelSettingsToggleCard
-                  title="Приём предложек"
-                  description="Кнопка предложки под новыми постами."
-                  hintKey="postSuggestionsEnabled"
+                  title="Принимать предложения"
                   openHintKey={openHintKey}
                   onToggleHint={toggleHint}
                   checked={draft.postSuggestionsEnabled}
@@ -3303,70 +3273,74 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
                 {draft.postSuggestionsEnabled ? (
                   <>
-                <div className="channel-settings-mode-card channel-settings-mode-card--suggestion">
-                  <span className="channel-settings-mode-card__label">Отправка</span>
-                  <SegmentedControl<ChannelSuggestionEntryMode>
-                    value={draft.postSuggestionsEntryMode}
-                    options={CHANNEL_SUGGESTION_ENTRY_MODE_OPTIONS}
-                    onChange={(value) => patchDraft('postSuggestionsEntryMode', value)}
-                    className="channel-settings-mode-card__control"
-                    ariaLabel="Способ отправки предложки"
-                  />
-                </div>
-
-                <div className="channel-settings-stack channel-settings-form-grid">
-                  <label className="field">
-                    <span>Кнопка</span>
-                    <input
-                      type="text"
-                      value={draft.postSuggestionsButtonText}
-                      onChange={(event) =>
-                        patchDraft('postSuggestionsButtonText', event.target.value)
-                      }
-                      placeholder="Предложить пост"
-                      maxLength={32}
-                    />
-                  </label>
-
-                  <label className="field channel-settings-field--wide">
-                    <span>Требования</span>
-                    <textarea
-                      rows={4}
-                      value={draft.postSuggestionsText}
-                      onChange={(event) => patchDraft('postSuggestionsText', event.target.value)}
-                      placeholder="Опишите, что пользователь должен прислать боту после нажатия кнопки."
-                    />
-                  </label>
-
-                  <label className="field channel-settings-field--wide">
-                    <span>Пост с кнопками</span>
-                    <textarea
-                      rows={3}
-                      value={draft.engagementMessageText}
-                      onChange={(event) => patchDraft('engagementMessageText', event.target.value)}
-                      placeholder="Есть идея или обратная связь? Нажмите кнопку ниже."
-                    />
-                  </label>
-
-                  <label className="field">
-                    <span>Лимит</span>
-                    <div className="field__number-wrap">
-                      <select
-                        value={String(draft.postSuggestionsDailyLimit)}
-                        onChange={(event) =>
-                          patchDraft('postSuggestionsDailyLimit', Number(event.target.value))
-                        }
-                      >
-                        {CHANNEL_SUGGESTION_DAILY_LIMIT_OPTIONS.map((value) => (
-                          <option key={value} value={value}>
-                            {value}
-                          </option>
-                        ))}
-                      </select>
-                      <small>/ 24ч</small>
+                    <div className="channel-settings-mode-card channel-settings-mode-card--suggestion">
+                      <span className="channel-settings-mode-card__label">Отправка</span>
+                      <SegmentedControl<ChannelSuggestionEntryMode>
+                        value={draft.postSuggestionsEntryMode}
+                        options={CHANNEL_SUGGESTION_ENTRY_MODE_OPTIONS}
+                        onChange={(value) => patchDraft('postSuggestionsEntryMode', value)}
+                        className="channel-settings-mode-card__control"
+                        ariaLabel="Способ отправки предложения"
+                      />
                     </div>
-                  </label>
-                </div>
+
+                    <div className="channel-settings-stack channel-settings-form-grid">
+                      <label className="field">
+                        <span>Текст кнопки</span>
+                        <input
+                          type="text"
+                          value={draft.postSuggestionsButtonText}
+                          onChange={(event) =>
+                            patchDraft('postSuggestionsButtonText', event.target.value)
+                          }
+                          placeholder="Предложить пост"
+                          maxLength={32}
+                        />
+                      </label>
+
+                      <label className="field channel-settings-field--wide">
+                        <span>Что нужно прислать</span>
+                        <textarea
+                          rows={4}
+                          value={draft.postSuggestionsText}
+                          onChange={(event) =>
+                            patchDraft('postSuggestionsText', event.target.value)
+                          }
+                          placeholder="Например: идея поста или важная новость"
+                        />
+                      </label>
+
+                      <label className="field channel-settings-field--wide">
+                        <span>Текст перед кнопками</span>
+                        <textarea
+                          rows={3}
+                          value={draft.engagementMessageText}
+                          onChange={(event) =>
+                            patchDraft('engagementMessageText', event.target.value)
+                          }
+                          placeholder="Есть идея или обратная связь? Нажмите кнопку ниже."
+                        />
+                      </label>
+
+                      <label className="field">
+                        <span>От одного пользователя</span>
+                        <div className="field__number-wrap">
+                          <select
+                            value={String(draft.postSuggestionsDailyLimit)}
+                            onChange={(event) =>
+                              patchDraft('postSuggestionsDailyLimit', Number(event.target.value))
+                            }
+                          >
+                            {CHANNEL_SUGGESTION_DAILY_LIMIT_OPTIONS.map((value) => (
+                              <option key={value} value={value}>
+                                {value}
+                              </option>
+                            ))}
+                          </select>
+                          <small>в сутки</small>
+                        </div>
+                      </label>
+                    </div>
                   </>
                 ) : null}
               </div>
@@ -3838,7 +3812,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             <SettingsSectionToggle
               title="Розыгрыши"
               summary=""
-              status="Мини"
+              status=""
               icon="gift"
               tone="amber"
               open={expandedSections.giveaway}

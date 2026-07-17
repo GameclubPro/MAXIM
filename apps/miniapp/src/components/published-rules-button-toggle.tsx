@@ -11,6 +11,17 @@ export default function PublishedRulesButtonToggle({
   hasRules,
   onChange,
 }: PublishedRulesButtonToggleProps) {
+  if (!hasRules && !enabled) {
+    return (
+      <div className="settings-native-toggle settings-native-toggle--nested">
+        <div className="settings-native-toggle__row">
+          <span className="settings-native-toggle__title">Кнопка «Правила»</span>
+        </div>
+        <p className="settings-native-toggle__hint">Сначала опубликуйте правила.</p>
+      </div>
+    );
+  }
+
   return (
     <div className="settings-native-toggle settings-native-toggle--nested">
       <div className="settings-native-toggle__row">
@@ -29,13 +40,9 @@ export default function PublishedRulesButtonToggle({
           </span>
         </label>
       </div>
-
-      <p className="settings-native-toggle__hint">
-        Кнопка использует опубликованные правила из блока «Правила».
-        {hasRules
-          ? ' Сейчас публикация найдена.'
-          : ' Сейчас публикации нет, поэтому кнопка пока не появится.'}
-      </p>
+      {!hasRules ? (
+        <p className="settings-native-toggle__hint">Сначала опубликуйте правила.</p>
+      ) : null}
     </div>
   );
 }

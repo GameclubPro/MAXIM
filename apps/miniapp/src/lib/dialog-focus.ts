@@ -9,6 +9,30 @@ function getDialogFocusableElements(scope: HTMLElement): HTMLElement[] {
   );
 }
 
+export function resolveDialogTabWrapTarget(
+  panel: HTMLElement,
+  activeElement: Element | null,
+  focusable: readonly HTMLElement[],
+  reverse: boolean,
+): HTMLElement | null {
+  if (focusable.length === 0) {
+    return panel;
+  }
+
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const focusAtPanel = activeElement === panel;
+  const focusOutside = !panel.contains(activeElement);
+
+  if (reverse && (focusAtPanel || activeElement === first || focusOutside)) {
+    return last ?? panel;
+  }
+  if (!reverse && (focusAtPanel || activeElement === last || focusOutside)) {
+    return first ?? panel;
+  }
+  return null;
+}
+
 export function isTopmostModalDialog(panel: HTMLElement): boolean {
   const modalDialogs = Array.from(
     document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]'),
@@ -48,20 +72,15 @@ export function useDialogFocusTrap<T extends HTMLElement>(
         return;
       }
       const focusable = getDialogFocusableElements(panel);
-      if (focusable.length === 0) {
+      const focusTarget = resolveDialogTabWrapTarget(
+        panel,
+        document.activeElement,
+        focusable,
+        event.shiftKey,
+      );
+      if (focusTarget) {
         event.preventDefault();
-        panel.focus();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      const focusOutside = !panel.contains(document.activeElement);
-      if (event.shiftKey && (document.activeElement === first || focusOutside)) {
-        event.preventDefault();
-        last?.focus();
-      } else if (!event.shiftKey && (document.activeElement === last || focusOutside)) {
-        event.preventDefault();
-        first?.focus();
+        focusTarget.focus();
       }
     };
 

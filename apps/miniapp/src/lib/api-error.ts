@@ -114,7 +114,7 @@ export function buildApiErrorMessage(
   contentType: string | null = null,
 ): string {
   const trimmedPayload = payload.trim();
-  if (status === 401 || status === 403) {
+  if (status === 401 || status === 403 || status === 413) {
     return formatStatusFallback(status);
   }
 

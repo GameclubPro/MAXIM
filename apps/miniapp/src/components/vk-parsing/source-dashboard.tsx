@@ -1,8 +1,6 @@
 import {
   Clock,
   OpenNewWindow,
-  Pause,
-  Play,
   PlusCircle,
   RefreshCircle,
   Settings,
@@ -18,6 +16,7 @@ import type {
 } from '@maxim/contracts';
 import { cn } from '../../lib/cn';
 import { TimeField } from '../ui/time-field';
+import { formatVkSourceProblem } from './format';
 
 type SourceDashboardProps = {
   sourceUrl: string;
@@ -66,59 +65,43 @@ const SOURCE_MODE_OPTIONS: Array<{ value: SourceModeValue; label: string }> = [
   { value: 'REVIEW', label: 'Проверка' },
 ];
 
-function NativeSwitch({
-  checked,
-  disabled,
-  onChange,
-  label,
-}: {
-  checked: boolean;
-  disabled: boolean;
-  onChange: (checked: boolean) => void;
-  label: string;
-}) {
-  return (
-    <label className="settings-native-switch" aria-label={label}>
-      <input
-        type="checkbox"
-        checked={checked}
-        disabled={disabled}
-        onChange={(event) => onChange(event.target.checked)}
-      />
-      <span className="toggle-switch" aria-hidden>
-        <span className="toggle-switch__thumb" />
-      </span>
-    </label>
-  );
-}
+type SourceRunMode = 'manual' | 'auto' | 'pause';
 
-function SourceAutoControl({
+function SourceModeControl({
   source,
   disabled,
   onChange,
 }: {
   source: VkParsingSource;
   disabled: boolean;
-  onChange: (checked: boolean) => void;
+  onChange: (mode: SourceRunMode) => void;
 }) {
-  const active = source.importEnabled && source.autoPublishEnabled;
+  const mode: SourceRunMode = !source.importEnabled
+    ? 'pause'
+    : source.autoPublishEnabled
+      ? 'auto'
+      : 'manual';
+
   return (
-    <label
-      className={cn(
-        'vk-source-auto-control',
-        active && 'is-on',
-        !source.importEnabled && 'is-paused',
-      )}
-      title="Автопостинг источника"
-    >
-      <b>{active ? 'Авто' : source.importEnabled ? 'Ручной' : 'Пауза'}</b>
-      <NativeSwitch
-        checked={active}
-        disabled={disabled || !source.importEnabled}
-        label={`Автопостинг ${source.title}`}
-        onChange={onChange}
-      />
-    </label>
+    <div className="vk-source-mode-control" role="radiogroup" aria-label={`Режим ${source.title}`}>
+      {[
+        { value: 'manual' as const, label: 'Ручной' },
+        { value: 'auto' as const, label: 'Авто' },
+        { value: 'pause' as const, label: 'Пауза' },
+      ].map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          role="radio"
+          aria-checked={mode === option.value}
+          className={cn(mode === option.value && 'is-active')}
+          disabled={disabled}
+          onClick={() => onChange(option.value)}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -198,29 +181,10 @@ function resolveSourceLabel(source: VkParsingSource): string {
   return 'Активно';
 }
 
-function formatSourceProblem(source: VkParsingSource): string | null {
-  if (source.lastError) {
-    return source.lastError;
-  }
-  if (source.circuitReason) {
-    return source.circuitReason;
-  }
-  if (source.autoPublishPausedReason === 'circuit_breaker') {
-    return 'Автопостинг остановлен защитой';
-  }
-  if (source.syncStatus === 'ERROR') {
-    return 'Источник требует внимания';
-  }
-  if (source.syncStatus === 'BACKOFF') {
-    return 'Повтор после ограничения VK';
-  }
-  return null;
-}
-
 function formatSourceNextRun(source: VkParsingSource): string {
   const value = source.nextRetryAt ?? source.nextSyncAt;
   if (!value) {
-    return 'Готово';
+    return 'Сейчас';
   }
 
   return new Intl.DateTimeFormat('ru-RU', {
@@ -355,7 +319,7 @@ export function SourceDashboard({
             const selected = selectedSourceId === source.id;
             const bulkSelected = selectedBulkSourceIds.includes(source.id);
             const frequencyPreset = resolveFrequencyPreset(source.publishIntervalMinutes);
-            const problem = formatSourceProblem(source);
+            const problem = formatVkSourceProblem(source);
             const nextRun = formatSourceNextRun(source);
             const workCount = source.newPostCount + source.queuedPostCount;
             const statusLabel = resolveSourceLabel(source);
@@ -379,22 +343,12 @@ export function SourceDashboard({
                     <span>{source.screenName}</span>
                   </button>
                   <div className="vk-source-card__tools">
-                    <span className="vk-source-status" title={statusLabel}>
-                      {tone === 'danger' ? <WarningCircle aria-hidden /> : <Clock aria-hidden />}
-                      {statusLabel}
-                    </span>
-                    <button
-                      type="button"
-                      className="vk-parsing-icon-button vk-source-card__pause"
-                      aria-label={source.importEnabled ? 'Поставить на паузу' : 'Включить'}
-                      title={source.importEnabled ? 'Пауза' : 'Включить'}
-                      disabled={isSavingSource}
-                      onClick={() =>
-                        onUpdateSource(source.id, { importEnabled: !source.importEnabled })
-                      }
-                    >
-                      {source.importEnabled ? <Pause aria-hidden /> : <Play aria-hidden />}
-                    </button>
+                    {tone === 'warning' || tone === 'danger' ? (
+                      <span className="vk-source-status" title={statusLabel}>
+                        {tone === 'danger' ? <WarningCircle aria-hidden /> : <Clock aria-hidden />}
+                        {statusLabel}
+                      </span>
+                    ) : null}
                     <button
                       type="button"
                       className={cn(
@@ -411,17 +365,20 @@ export function SourceDashboard({
                 </header>
 
                 <div className="vk-source-card__summary-row">
-                  <SourceAutoControl
+                  <SourceModeControl
                     source={source}
-                    disabled={isSavingSource || !source.importEnabled}
-                    onChange={(checked) =>
-                      onUpdateSource(source.id, { autoPublishEnabled: checked })
+                    disabled={isSavingSource}
+                    onChange={(mode) =>
+                      onUpdateSource(source.id, {
+                        importEnabled: mode !== 'pause',
+                        autoPublishEnabled: mode === 'auto',
+                      })
                     }
                   />
                   <div className="vk-source-card__metrics" aria-label="Сводка источника">
                     <span title="Следующее обновление">
                       <b>{nextRun}</b>
-                      <small>Обновление</small>
+                      <small>Следующее</small>
                     </span>
                     <span title="Новые посты и очередь">
                       <b>{workCount}</b>

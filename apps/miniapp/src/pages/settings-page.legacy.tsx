@@ -78,6 +78,7 @@ import {
 import { PublicationWorkspaceHandoff } from '../components/publication-workspace-handoff';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
+import { DateField } from '../components/ui/date-field';
 import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl, type SegmentedOption } from '../components/ui/segmented-control';
 import { ResetIcon } from '../components/ui/reset-icon';
@@ -116,6 +117,7 @@ import {
   updateSettings,
 } from '../lib/api/chat-settings-client';
 import { getVkParsingCapability } from '../lib/api/vk-parsing-client';
+import { describeVkParsingCapability } from '../lib/vk-parsing-capability';
 import { buildBroadcastSendFeedback } from '../lib/broadcast-send-feedback';
 import { getGlobalSpammerReviewMetrics } from '../lib/api/spammer-review-client';
 import { getMe } from '../lib/api/root-client';
@@ -151,6 +153,7 @@ import {
   resolveBroadcastHandoffLoadMode,
   resolveBroadcastHandoffSchedule,
   resolveBroadcastCycleSendAt,
+  resolveBroadcastScheduleConflict,
   resolveBroadcastScheduleTimezone,
   sortAndUniqueBroadcastSlots,
   type BroadcastCycleDraft,
@@ -332,7 +335,6 @@ import {
   parseIsoToLocalDateTime,
   formatRemovalDateTime,
   formatAllowlistModeLabel,
-  formatAllowlistMetaLabel,
   ALLOWLIST_MATCH_OPTIONS,
   formatCompactBroadcastDateTime,
   formatRussianCountLabel,
@@ -1469,7 +1471,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       pushToast({
         tone: 'success',
         title: 'Правила опубликованы',
-        description: 'Пост опубликован.',
       });
       maxNotify('success');
     },
@@ -1497,14 +1498,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
       pushToast({
         tone: 'success',
-        title: 'Публикация правил сброшена',
-        description: 'Ранее опубликованный пост удален, статус очищен.',
+        title: 'Пост правил удалён',
       });
     },
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось сбросить публикацию',
+        title: 'Не удалось удалить пост правил',
         description: formatApiError(error),
       });
     },
@@ -1613,8 +1613,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         tone: 'success',
         title:
           payload.matchType === 'DOMAIN'
-            ? 'Домен добавлен в белый список'
-            : 'Ссылка добавлена в белый список',
+            ? 'Домен добавлен в разрешённые'
+            : 'Ссылка добавлена в разрешённые',
       });
     },
     onError: (error) => {
@@ -1633,7 +1633,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       setScheduleDomain(null);
       setScheduleError('');
       void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
-      pushToast({ tone: 'success', title: 'Правило удалено из белого списка' });
+      pushToast({ tone: 'success', title: 'Удалено из разрешённых ссылок' });
     },
     onError: (error) => {
       pushToast({
@@ -2138,7 +2138,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     group: AdminContactButtonGroup,
     ariaLabel = 'Добавить связь с админом в сообщение бота',
   ) {
-    if (!draft) {
+    if (!draft || (!adminContactProfileUrl && !draft[group.enabledKey])) {
       return null;
     }
 
@@ -2215,7 +2215,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     if (!normalizedValue) {
       setRequiredSubscriptionExternalChannelError(
-        'Укажите публичную ссылку, ссылку на чат/пост MAX или ID чата/канала.',
+        'Укажите публичную ссылку на чат, канал или пост MAX.',
       );
       return;
     }
@@ -3021,10 +3021,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    if (
-      typeof window !== 'undefined' &&
-      !window.confirm('Удалить опубликованный пост правил и снять статус публикации?')
-    ) {
+    if (typeof window !== 'undefined' && !window.confirm('Удалить опубликованный пост правил?')) {
       return;
     }
 
@@ -3141,6 +3138,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function reportMailingAudienceApiError(error: unknown) {
+    const scheduleConflict = resolveBroadcastScheduleConflict(error);
     const message = formatApiError(error);
     if (
       message.toLowerCase().includes('выбранные чаты') ||
@@ -3148,14 +3146,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     ) {
       setMailingAudienceError('Обновите выбор чатов.');
     }
-    if (message.includes('BROADCAST_TARGET_SLOT_CONFLICT')) {
+    if (scheduleConflict === 'target') {
       setMailingScheduleError('Занято у получателя.');
       void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
       void queryClient.invalidateQueries({ queryKey: ['managed-broadcast-calendar', chatId] });
-    } else if (
-      message.toLowerCase().includes('выбранное время') ||
-      message.includes('BROADCAST_SLOT_CONFLICT')
-    ) {
+    } else if (scheduleConflict === 'slot') {
       setMailingScheduleError('Занято.');
       void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
       void queryClient.invalidateQueries({ queryKey: ['managed-broadcast-calendar', chatId] });
@@ -3847,7 +3842,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           </label>
         </div>
 
-        {renderMuteDurationEditor(params.durationKey, 'Срок мута')}
+        {renderMuteDurationEditor(params.durationKey, 'Срок ограничения')}
 
         {error ? <small className="field__hint">{error}</small> : null}
       </div>
@@ -3875,7 +3870,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }> = [
       {
         key: params.windowKey,
-        label: 'Окно',
+        label: 'Период',
         suffix: 'ч',
         min: 1,
         max: 168,
@@ -3889,14 +3884,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       },
       {
         key: params.muteKey,
-        label: 'Мут',
+        label: 'Ограничение',
         suffix: 'раз',
         min: 1,
         max: 20,
       },
       {
         key: params.banKey,
-        label: 'Бан',
+        label: 'Блокировка',
         suffix: 'раз',
         min: 1,
         max: 20,
@@ -4105,7 +4100,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       : `Все ${formatRussianCountLabel(messageLimitsBlockedDomains.length, 'домен', 'домена', 'доменов')}`;
   const stopWordsError =
     stopWordsMode === 'words' ? messageLimitsBlockedWordsError : messageLimitsBlockedDomainsError;
-  const stopWordsTotalCount = messageLimitsBlockedWords.length + messageLimitsBlockedDomains.length;
   const stopWordsSegmentOptions = useMemo<Array<SegmentedOption<StopWordsMode>>>(
     () => [
       { value: 'words', label: 'Слова', count: messageLimitsBlockedWords.length },
@@ -4169,36 +4163,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     draft?.linkPolicy === 'ALERT_ONLY'
       ? 'Ссылки не удаляются'
       : draft?.linkPolicy === 'ALLOWLIST_ONLY'
-        ? `Не удалять: ${allowlistEntries.length}`
-        : `${linkStagesEnabledCount}/4 ступени включено`;
+        ? `Разрешено: ${allowlistEntries.length}`
+        : `${linkStagesEnabledCount} действия из 4`;
   const linksCardStatus =
     draft?.linkPolicy === 'ALERT_ONLY'
       ? 'Без удаления'
       : draft?.linkPolicy === 'ALLOWLIST_ONLY'
         ? allowlistEntries.length > 0
           ? `${allowlistEntries.length}`
-          : 'Белый список'
+          : 'Пусто'
         : `${linkStagesEnabledCount}/4`;
-  const allowlistCountLabel =
-    allowlistEntries.length === 1
-      ? '1 правило'
-      : `${allowlistEntries.length} ${allowlistEntries.length < 5 ? 'правила' : 'правил'}`;
-  const allowlistComposerExamples =
-    domainInputMode === 'DOMAIN'
-      ? [
-          { label: 'example.com', value: 'example.com' },
-          { label: 'docs.max.ru', value: 'docs.max.ru' },
-        ]
-      : [
-          {
-            label: 'https://example.com/path',
-            value: 'https://example.com/path',
-          },
-          {
-            label: 'https://docs.max.ru/',
-            value: 'https://docs.max.ru/',
-          },
-        ];
   const rulesPublishedAtLabel = formatRemovalDateTime(
     rulesDraft?.publishedAt ?? rulesQuery.data?.publishedAt ?? null,
   );
@@ -4209,7 +4183,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : rulesDraft?.text.trim()
       ? `Черновик · ${rulesDraft.text.trim().length}/${MAX_CHAT_RULES_TEXT_LENGTH}`
       : rulesDraft?.autoTextEnabled
-        ? 'Автотекст'
+        ? 'Из настроек'
         : 'Не настроено';
   const rulesCardStatus = hasPublishedRules
     ? 'Пост'
@@ -4243,11 +4217,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     ? 'Включена'
     : 'Выключена';
   const rulesFooterTitle =
-    rulesPublishIssueLabels.length > 0
-      ? `Нужно: ${rulesPublishIssueLabels.join(' · ')}`
-      : hasPublishedRules
-        ? 'Переиздать правила'
-        : 'Опубликовать правила';
+    rulesPublishIssueLabels.length > 0 ? `Проверьте: ${rulesPublishIssueLabels.join(' · ')}` : '';
   const rulesFooterMeta = [
     normalizedRulesText ? `${normalizedRulesText.length}/${MAX_CHAT_RULES_TEXT_LENGTH}` : null,
     rulesDraft?.autoTextEnabled ? 'Авто' : null,
@@ -4311,17 +4281,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         hasPublishedRules && 'rules-publish-bar--with-reset',
       )}
     >
-      <div className="broadcast-publish-bar__copy">
-        <strong>{rulesFooterTitle}</strong>
-        <small>{rulesFooterMeta || 'Черновик'}</small>
-        {rulesPublishIssueLabels.length > 0 && !isRulesBusy ? (
-          <span className="broadcast-publish-bar__issues" aria-label="Не готово">
-            {rulesPublishIssueLabels.map((label) => (
-              <span key={`rules-publish-issue-${label}`}>{label}</span>
-            ))}
-          </span>
-        ) : null}
-      </div>
+      {rulesPublishIssueLabels.length > 0 ? (
+        <div className="broadcast-publish-bar__copy">
+          <strong>{rulesFooterTitle}</strong>
+          {rulesPublishIssueLabels.length > 0 && !isRulesBusy ? (
+            <span className="broadcast-publish-bar__issues" aria-label="Не готово">
+              {rulesPublishIssueLabels.map((label) => (
+                <span key={`rules-publish-issue-${label}`}>{label}</span>
+              ))}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
 
       {rulesPublishedUrl ? (
         <button
@@ -4329,7 +4300,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           className="button button--ghost broadcast-publish-bar__test"
           onClick={(event) => handleManagedPostLinkClick(event, rulesPublishedUrl)}
         >
-          <span>Пост</span>
+          <span>Открыть</span>
         </button>
       ) : null}
 
@@ -4358,20 +4329,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             : isSavingRules
               ? 'Сохраняем...'
               : hasPublishedRules
-                ? 'Переиздать'
+                ? 'Обновить'
                 : 'Опубликовать'}
         </span>
       </button>
     </div>
   ) : null;
-  const greetingHeaderSummary = draft?.greetingEnabled
-    ? draft?.greetingBotMessageEnabled
+  const greetingHeaderSummary =
+    draft?.greetingEnabled && draft?.greetingBotMessageEnabled
       ? draft?.greetingBotButtonEnabled || draft?.greetingRulesButtonEnabled
         ? 'Сообщение + кнопки'
         : 'Только сообщение'
-      : 'Сообщение выключено'
-    : 'Выключено';
-  const greetingCardStatus = draft?.greetingEnabled ? 'Вкл' : 'Выкл';
+      : 'Выключено';
+  const greetingCardStatus =
+    draft?.greetingEnabled && draft?.greetingBotMessageEnabled ? 'Вкл' : 'Выкл';
   const duplicateAllowedCount = draft ? resolveDuplicateAllowedCount(draft) : 1;
   const duplicateSharedWindowHours = draft
     ? secondsToHours(resolveDuplicateSharedWindowSec(draft))
@@ -4427,6 +4398,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     draft ? !draft.phoneNumbersEnabled : false,
   ].filter(Boolean).length;
   const limitsCardStatus = limitsRulesEnabledCount > 0 ? `${limitsRulesEnabledCount}` : 'Выкл';
+  const stopWordsTotalCount = messageLimitsBlockedWords.length + messageLimitsBlockedDomains.length;
   const stopWordsHeaderSummary =
     stopWordsTotalCount > 0
       ? `Слова: ${messageLimitsBlockedWords.length} · Домены: ${messageLimitsBlockedDomains.length}`
@@ -4485,13 +4457,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         ? `${requiredSubscriptionSelectedCount}`
         : '0';
   const profanityFilterHeaderSummary = draft?.russianProfanityFilterEnabled
-    ? `${profanityStagesEnabledCount}/4 ступени включено`
+    ? `${profanityStagesEnabledCount} действия из 4`
     : 'Выключено';
   const profanityFilterCardStatus = draft?.russianProfanityFilterEnabled
     ? `${profanityStagesEnabledCount}/4`
     : 'Выкл';
   const commercialFilterHeaderSummary = draft?.commercialAdsFilterEnabled
-    ? `${textFiltersStagesEnabledCount}/4 ступени · ${commercialSensitivityLabel.toLowerCase()}`
+    ? `${textFiltersStagesEnabledCount} действия из 4 · ${commercialSensitivityLabel.toLowerCase()}`
     : 'Выключено';
   const commercialFilterCardStatus = draft?.commercialAdsFilterEnabled
     ? `${textFiltersStagesEnabledCount}/4`
@@ -4990,6 +4962,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       }
     },
   }));
+  const mailingFooterIssueActions = showMailingResetAction ? mailingPublishIssueActions : [];
   const mailingPrimaryActionLabel = editingManagedBroadcast
     ? 'Сохранить'
     : editingManagedAutopostRule
@@ -5023,31 +4996,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : editingManagedAutopostRule
       ? 'Сбросить изменения'
       : 'Очистить автопостинг';
-  const mailingFooterScheduleLabel =
-    mailingTimingMode === 'now'
-      ? 'Сейчас'
-      : mailingTimingMode === 'cycle'
-        ? formatBroadcastCycleSummary(mailingNormalizedCycle, mailingNowMs)
-        : mailingSelectionSummary || mailingSlotsLabel;
-  const mailingFooterTitle = [
-    mailingHeaderTargetLabel,
-    mailingFooterScheduleLabel,
-    editingManagedBroadcast || editingManagedAutopostRule ? 'Правка' : null,
-  ]
-    .filter(Boolean)
-    .join(' · ');
-  const mailingFooterMeta = [
-    mailingImageLabel,
-    editingMailingHasVideo ? 'Видео' : null,
-    mailingHasVisibleButtons ? mailingVisibleButtonStatus : null,
-  ]
-    .filter(Boolean)
-    .join(' · ');
   const mailingDrilldownFooter = (
     <BroadcastPublishBar
-      title={mailingFooterTitle}
-      meta={mailingFooterMeta}
-      issues={mailingPublishIssueActions}
+      title={mailingFooterIssueActions.length > 0 ? 'Проверьте публикацию' : ''}
+      issues={mailingFooterIssueActions}
       busy={isMailingBusy}
       testLabel={sendBroadcastTestMutation.isPending ? 'Тест...' : 'Тест'}
       testAriaLabel={sendBroadcastTestMutation.isPending ? 'Отправляем тест' : 'Отправить тест'}
@@ -5407,16 +5359,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       {!settingsHandoffMode && !settingsQuery.isLoading && !settingsQuery.error && draft ? (
         <section
           className="settings-sections settings-sections--chat-home"
-          aria-label="Настройки модерации"
+          aria-label="Настройки чата"
           onClickCapture={handleDesktopToggleRowClick}
         >
           <CompactStickyHeader
             backTo={managedChatsRoute}
             backLabel="Назад к чатам"
-            title={chatTitle || chatId || 'Настройки'}
+            title={chatTitle || 'Настройки чата'}
             avatar={
               <EntityAvatar
-                title={chatTitle || chatId || 'Настройки'}
+                title={chatTitle || 'Настройки чата'}
                 entityType="chat"
                 avatarUrl={chatHeaderQuery.data?.avatarUrl ?? routeChatAvatarUrl ?? null}
                 className="compact-page-header__entity-avatar"
@@ -5553,39 +5505,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               )}
                             >
                               <div className="allowlist-panel__head">
-                                <div className="allowlist-panel__title-block">
-                                  <div className="allowlist-panel__title-row">
-                                    <span className="field__label">Белый список</span>
-                                    <SettingsHintAnchor
-                                      hintKey="linkAllowlistScope"
-                                      openHintKey={openHintKey}
-                                      onToggleHint={toggleHint}
-                                      label="Пояснение по белому списку ссылок и доменов"
-                                    >
-                                      Выберите точную ссылку или весь домен. Доменные правила не
-                                      удаляют все пути этого хоста и его поддомены.
-                                    </SettingsHintAnchor>
-                                  </div>
-                                </div>
-                                <span className="chip chip--success">
-                                  {allowlistEntries.length}
-                                </span>
+                                <span className="field__label">Разрешённые ссылки</span>
                               </div>
 
                               <div className="allowlist-composer">
-                                <div className="allowlist-composer__head">
-                                  <span className="allowlist-composer__label">Что не удалять</span>
-                                  <SettingsHintAnchor
-                                    hintKey="linkAllowlistMode"
-                                    openHintKey={openHintKey}
-                                    onToggleHint={toggleHint}
-                                    label="Пояснение по режиму разрешения ссылки"
-                                  >
-                                    {domainInputMode === 'DOMAIN'
-                                      ? 'Не удалять весь хост, например `example.com`.'
-                                      : 'Не удалять только один конкретный URL, включая путь и параметры.'}
-                                  </SettingsHintAnchor>
-                                </div>
                                 <SegmentedControl
                                   value={domainInputMode}
                                   options={ALLOWLIST_MATCH_OPTIONS}
@@ -5622,39 +5545,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     }
                                     aria-label={
                                       domainInputMode === 'DOMAIN'
-                                        ? 'Домен для белого списка'
-                                        : 'Точная ссылка для белого списка'
+                                        ? 'Разрешённый домен'
+                                        : 'Разрешённая ссылка'
                                     }
                                   />
 
-                                  <button
-                                    type="button"
-                                    className="button button--accent allowlist-add-row__button"
-                                    onClick={handleAddDomain}
-                                    disabled={isDomainMutationPending}
-                                  >
-                                    {addDomainMutation.isPending ? 'Добавляем...' : 'Добавить'}
-                                  </button>
-                                </div>
-
-                                <div
-                                  className="allowlist-composer__examples"
-                                  aria-label="Быстрые примеры"
-                                >
-                                  {allowlistComposerExamples.map((example) => (
+                                  {domainInput.trim() ? (
                                     <button
-                                      key={example.value}
                                       type="button"
-                                      className="allowlist-composer__example"
-                                      title={example.label}
-                                      onClick={() => {
-                                        setDomainInput(example.value);
-                                        setDomainInputError('');
-                                      }}
+                                      className="button button--accent allowlist-add-row__button"
+                                      onClick={handleAddDomain}
+                                      disabled={isDomainMutationPending}
                                     >
-                                      {example.label}
+                                      {addDomainMutation.isPending ? 'Добавляем...' : 'Добавить'}
                                     </button>
-                                  ))}
+                                  ) : null}
                                 </div>
                               </div>
 
@@ -5663,7 +5568,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               ) : null}
 
                               {domainsQuery.isLoading ? (
-                                <p className="allowlist-empty">Загрузка белого списка...</p>
+                                <p className="allowlist-empty">Загрузка...</p>
                               ) : null}
 
                               {domainsQuery.error ? (
@@ -5675,14 +5580,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               {!domainsQuery.isLoading && !domainsQuery.error ? (
                                 allowlistEntries.length > 0 ? (
                                   <div className="allowlist-results">
-                                    <div className="allowlist-results__head">
-                                      <span className="allowlist-results__title">Не удаляются</span>
-                                      <small>{allowlistCountLabel}</small>
-                                    </div>
-
                                     <ul
                                       className="allowlist-list"
-                                      aria-label="Ссылки и домены, которые не удаляются"
+                                      aria-label="Разрешённые ссылки и домены"
                                     >
                                       {allowlistEntries.map((entry) => {
                                         const isScheduleOpen =
@@ -5712,68 +5612,59 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                                     {entry.domain}
                                                   </span>
                                                   <small className="allowlist-item__type">
-                                                    {formatAllowlistModeLabel(entry.matchType)}
+                                                    {formatAllowlistModeLabel(entry.matchType)} ·{' '}
+                                                    {scheduledAtLabel
+                                                      ? `до ${scheduledAtLabel}`
+                                                      : 'без срока'}
                                                   </small>
                                                 </div>
-                                                <span
-                                                  className={cn(
-                                                    'chip',
-                                                    'allowlist-item__status',
-                                                    scheduledAtLabel
-                                                      ? 'chip--warning'
-                                                      : 'chip--success',
-                                                  )}
-                                                >
-                                                  {scheduledAtLabel ? 'По таймеру' : 'Без таймера'}
-                                                </span>
-                                              </div>
-
-                                              <small className="allowlist-item__meta">
-                                                {formatAllowlistMetaLabel(entry, scheduledAtLabel)}
-                                              </small>
-
-                                              <div className="allowlist-item__actions">
-                                                <button
-                                                  type="button"
-                                                  className={cn(
-                                                    'allowlist-item__action',
-                                                    'allowlist-item__action--schedule',
-                                                    isScheduleOpen && 'is-open',
-                                                  )}
-                                                  aria-label={`Запланировать удаление ${entry.domain}`}
-                                                  title="Запланировать удаление"
-                                                  onClick={() => toggleDomainScheduleEditor(entry)}
-                                                  disabled={isDomainMutationPending}
-                                                >
-                                                  <CalendarIcon />
-                                                  <span>
-                                                    {scheduledAtLabel
-                                                      ? isScheduleOpen
-                                                        ? 'Свернуть таймер'
-                                                        : 'Изменить таймер'
-                                                      : isScheduleOpen
-                                                        ? 'Свернуть таймер'
-                                                        : 'Поставить таймер'}
-                                                  </span>
-                                                </button>
-                                                <button
-                                                  type="button"
-                                                  className={cn(
-                                                    'allowlist-item__action',
-                                                    'allowlist-item__action--remove',
-                                                  )}
-                                                  onClick={() =>
-                                                    removeDomainMutation.mutate(
-                                                      entry.normalizedValue,
-                                                    )
-                                                  }
-                                                  disabled={isDomainMutationPending}
-                                                  aria-label={`Удалить ${entry.domain} из белого списка`}
-                                                  title="Удалить правило"
-                                                >
-                                                  <TrashIcon />
-                                                  <span>Удалить</span>
-                                                </button>
+                                                <div className="allowlist-item__actions">
+                                                  <button
+                                                    type="button"
+                                                    className={cn(
+                                                      'allowlist-item__action',
+                                                      'allowlist-item__action--schedule',
+                                                      isScheduleOpen && 'is-open',
+                                                    )}
+                                                    aria-label={
+                                                      isScheduleOpen
+                                                        ? `Закрыть выбор срока для ${entry.domain}`
+                                                        : scheduledAtLabel
+                                                          ? `Изменить срок для ${entry.domain}`
+                                                          : `Задать срок для ${entry.domain}`
+                                                    }
+                                                    title={
+                                                      isScheduleOpen
+                                                        ? 'Закрыть'
+                                                        : scheduledAtLabel
+                                                          ? 'Изменить срок'
+                                                          : 'Задать срок'
+                                                    }
+                                                    onClick={() =>
+                                                      toggleDomainScheduleEditor(entry)
+                                                    }
+                                                    disabled={isDomainMutationPending}
+                                                  >
+                                                    <CalendarIcon />
+                                                  </button>
+                                                  <button
+                                                    type="button"
+                                                    className={cn(
+                                                      'allowlist-item__action',
+                                                      'allowlist-item__action--remove',
+                                                    )}
+                                                    onClick={() =>
+                                                      removeDomainMutation.mutate(
+                                                        entry.normalizedValue,
+                                                      )
+                                                    }
+                                                    disabled={isDomainMutationPending}
+                                                    aria-label={`Удалить ${entry.domain}`}
+                                                    title="Удалить"
+                                                  >
+                                                    <TrashIcon />
+                                                  </button>
+                                                </div>
                                               </div>
 
                                               {isScheduleOpen ? (
@@ -5783,24 +5674,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                                   aria-label={`План удаления ${entry.domain}`}
                                                 >
                                                   <div className="allowlist-item__schedule-fields">
-                                                    <label
-                                                      className="field allowlist-item__schedule-field"
-                                                      htmlFor={`domain-schedule-date-${entryIdSuffix}`}
-                                                    >
-                                                      <span className="field__label">
-                                                        День удаления
-                                                      </span>
-                                                      <input
-                                                        id={`domain-schedule-date-${entryIdSuffix}`}
-                                                        type="date"
-                                                        value={scheduleDate}
-                                                        min={toLocalDateInputValue(new Date())}
-                                                        onChange={(event) => {
-                                                          setScheduleDate(event.target.value);
-                                                          setScheduleError('');
-                                                        }}
-                                                      />
-                                                    </label>
+                                                    <DateField
+                                                      className="allowlist-item__schedule-field"
+                                                      label="День удаления"
+                                                      value={scheduleDate}
+                                                      min={toLocalDateInputValue(new Date())}
+                                                      onChange={(nextValue) => {
+                                                        setScheduleDate(nextValue);
+                                                        setScheduleError('');
+                                                      }}
+                                                    />
                                                     <div className="field allowlist-item__schedule-field">
                                                       <Suspense fallback={null}>
                                                         <LazySettingsTimeFields
@@ -5856,10 +5739,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     </ul>
                                   </div>
                                 ) : (
-                                  <p className="allowlist-empty">
-                                    Белый список пуст. Добавьте ссылку или домен, которые бот не
-                                    будет удалять.
-                                  </p>
+                                  <p className="allowlist-empty">Пока пусто</p>
                                 )
                               ) : null}
                             </div>
@@ -5869,8 +5749,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         {shouldShowLinkStages ? (
                           <>
                             {renderEscalationTuning({
-                              title: 'Пороги ссылок',
-                              ariaLabelPrefix: 'Пороги ссылок',
+                              title: 'Повторные ссылки',
+                              ariaLabelPrefix: 'Повторные ссылки',
                               windowKey: 'linkEscalationWindowHours',
                               warnKey: 'linkWarnMaxCount',
                               muteKey: 'linkMuteMaxCount',
@@ -5998,7 +5878,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             {renderMuteStageToggle({
                               enabledKey: 'linkMuteEnabled',
                               durationKey: 'linkMuteDurationHours',
-                              title: '3. Мут',
+                              title: '3. Ограничение',
                               onEnable: () => {
                                 setFieldValue('linkWarnEnabled', true);
                                 setFieldValue('linkBotMessageEnabled', true);
@@ -6007,11 +5887,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                             <div className="settings-native-toggle settings-native-toggle--nested">
                               <div className="settings-native-toggle__row">
-                                <span className="settings-native-toggle__title">4. Бан</span>
+                                <span className="settings-native-toggle__title">4. Блокировка</span>
 
                                 <label
                                   className="settings-native-switch"
-                                  aria-label="Включить бан за повторные ссылки"
+                                  aria-label="Включить блокировку за повторные ссылки"
                                 >
                                   <input
                                     type="checkbox"
@@ -6261,7 +6141,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       <div className="settings-native-toggle__title-wrap">
                                         <div className="rules-native-card__copy">
                                           <span className="settings-native-toggle__title">
-                                            Автотекст из настроек
+                                            Составлять из настроек
                                           </span>
                                           <span className="rules-native-card__meta">
                                             {rulesAutoFillSummary}
@@ -6318,21 +6198,24 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     </div>
                                   </div>
 
-                                  <AdminContactToggle
-                                    title={ADMIN_CONTACT_BUTTON_TEXT}
-                                    checked={Boolean(rulesDraft.adminContactButtonEnabled)}
-                                    onChange={handleRulesAdminContactButtonChange}
-                                    ariaLabel="Добавить связь с админом в пост правил"
-                                    meta={rulesAdminContactButtonSummary}
-                                    className="rules-native-card"
-                                  />
+                                  {adminContactProfileUrl ||
+                                  rulesDraft.adminContactButtonEnabled ? (
+                                    <AdminContactToggle
+                                      title={ADMIN_CONTACT_BUTTON_TEXT}
+                                      checked={Boolean(rulesDraft.adminContactButtonEnabled)}
+                                      onChange={handleRulesAdminContactButtonChange}
+                                      ariaLabel="Добавить связь с админом в пост правил"
+                                      meta={rulesAdminContactButtonSummary}
+                                      className="rules-native-card"
+                                    />
+                                  ) : null}
 
                                   <div className="settings-native-toggle rules-native-card">
                                     <div className="settings-native-toggle__row">
                                       <div className="settings-native-toggle__title-wrap">
                                         <div className="rules-native-card__copy">
                                           <span className="settings-native-toggle__title">
-                                            Кнопка в нарушениях
+                                            Показывать при нарушении
                                           </span>
                                           <span className="rules-native-card__meta">
                                             {rulesViolationButtonSummary}
@@ -6381,8 +6264,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 >
                   <SettingsSectionToggle
                     title="Розыгрыши"
-                    summary="Запуск, итоги и реролл в mini app"
-                    status="Мини"
+                    summary=""
+                    status=""
                     icon="gift"
                     tone="amber"
                     open={expandedSections.giveaway}
@@ -6396,7 +6279,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   id="settings-giveaway-content"
                   open={expandedSections.giveaway}
                   title="Розыгрыши"
-                  summary="Запуск, итоги и реролл в mini app"
+                  summary=""
                   tone="amber"
                   className="settings-drilldown__panel--campaign settings-drilldown__panel--giveaway"
                   onClose={() => toggleSection('giveaway')}
@@ -6486,13 +6369,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           >
                             <input
                               type="checkbox"
-                              checked={draft.greetingEnabled}
+                              checked={draft.greetingEnabled && draft.greetingBotMessageEnabled}
                               onChange={(event) => {
                                 const enabled = event.target.checked;
                                 setFieldValue('greetingEnabled', enabled);
-                                if (enabled) {
-                                  setFieldValue('greetingBotMessageEnabled', true);
-                                }
+                                setFieldValue('greetingBotMessageEnabled', enabled);
                                 if (!enabled) {
                                   setFieldValue('greetingBotButtonEnabled', false);
                                   setFieldValue('greetingRulesButtonEnabled', false);
@@ -6514,72 +6395,25 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         ) : null}
                       </div>
 
-                      {draft.greetingEnabled ? (
+                      {draft.greetingEnabled && draft.greetingBotMessageEnabled ? (
                         <>
                           <div className="settings-native-toggle settings-native-toggle--nested">
                             <div className="settings-native-toggle__row">
                               <div className="settings-native-toggle__title-wrap">
                                 <span className="settings-native-toggle__title">
-                                  Сообщение от бота
+                                  Текст приветствия
                                 </span>
                                 <div className="settings-native-toggle__title-actions">
                                   <EditToggleButton
                                     label="Редактировать текст приветствия"
                                     onClick={() => toggleBotMessageEditor('greeting')}
-                                    disabled={!draft.greetingBotMessageEnabled}
                                     isOpen={openBotEditorKey === 'greeting'}
                                   />
-                                  <button
-                                    type="button"
-                                    className={cn(
-                                      'settings-info-button',
-                                      openHintKey === 'greetingBotMessage' && 'is-open',
-                                    )}
-                                    aria-label="Пояснение для сообщения приветствия"
-                                    aria-controls="greeting-bot-message-hint"
-                                    aria-expanded={openHintKey === 'greetingBotMessage'}
-                                    onClick={() => toggleHint('greetingBotMessage')}
-                                  >
-                                    <span aria-hidden>i</span>
-                                  </button>
                                 </div>
                               </div>
-
-                              <label
-                                className="settings-native-switch"
-                                aria-label="Включить сообщение от бота для приветствия"
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={draft.greetingBotMessageEnabled}
-                                  onChange={(event) => {
-                                    const enabled = event.target.checked;
-                                    setFieldValue('greetingBotMessageEnabled', enabled);
-                                    if (!enabled) {
-                                      setFieldValue('greetingBotButtonEnabled', false);
-                                      setFieldValue('greetingRulesButtonEnabled', false);
-                                      clearFieldError('greetingRulesButtonEnabled');
-                                      clearButtonGroupErrors(GREETING_BOT_BUTTON_GROUP);
-                                    }
-                                  }}
-                                />
-                                <span className="toggle-switch" aria-hidden>
-                                  <span className="toggle-switch__thumb" />
-                                </span>
-                              </label>
                             </div>
 
-                            {openHintKey === 'greetingBotMessage' ? (
-                              <p
-                                id="greeting-bot-message-hint"
-                                className="settings-native-toggle__hint"
-                              >
-                                Текст приветствия отправляется только для обычных пользователей,
-                                боты исключаются.
-                              </p>
-                            ) : null}
-
-                            {draft.greetingBotMessageEnabled && openBotEditorKey === 'greeting' ? (
+                            {openBotEditorKey === 'greeting' ? (
                               <LazyBotMessageEditor
                                 editorKey="greeting"
                                 {...botSpeechEditorProps!}
@@ -6803,16 +6637,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       <div className="settings-native-toggle text-filter-card">
                         <div className="settings-native-toggle__row">
                           <div className="settings-native-toggle__title-wrap">
-                            <span className="settings-native-toggle__title">
-                              Нецензурная лексика (RU)
-                            </span>
+                            <span className="settings-native-toggle__title">Фильтр мата</span>
                             <button
                               type="button"
                               className={cn(
                                 'settings-info-button',
                                 openHintKey === 'textFiltersProfanity' && 'is-open',
                               )}
-                              aria-label='Пояснение для "Нецензурная лексика (RU)"'
+                              aria-label="Пояснение для фильтра мата"
                               aria-controls="russian-profanity-filter-enabled-hint"
                               aria-expanded={openHintKey === 'textFiltersProfanity'}
                               onClick={() => toggleHint('textFiltersProfanity')}
@@ -6823,7 +6655,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                           <label
                             className="settings-native-switch"
-                            aria-label="Нецензурная лексика (RU)"
+                            aria-label="Включить фильтр мата"
                           >
                             <input
                               type="checkbox"
@@ -6859,7 +6691,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             role="separator"
                             aria-label="Действия бота для нецензурной лексики"
                           >
-                            <span>Действия бота · Нецензурная лексика</span>
+                            <span>Действия бота</span>
                           </div>
 
                           <div className="settings-native-toggle">
@@ -6918,7 +6750,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           {renderMuteStageToggle({
                             enabledKey: 'profanityMuteEnabled',
                             durationKey: 'profanityMuteDurationHours',
-                            title: '3. Мут',
+                            title: '3. Ограничение',
                             onEnable: () => {
                               setFieldValue('profanityWarnEnabled', true);
                               setFieldValue('profanityBotMessageEnabled', true);
@@ -6927,11 +6759,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                           <div className="settings-native-toggle settings-native-toggle--nested">
                             <div className="settings-native-toggle__row">
-                              <span className="settings-native-toggle__title">4. Бан</span>
+                              <span className="settings-native-toggle__title">4. Блокировка</span>
 
                               <label
                                 className="settings-native-switch"
-                                aria-label="Включить бан за повторную нецензурную лексику"
+                                aria-label="Включить блокировку за повторный мат"
                               >
                                 <input
                                   type="checkbox"
@@ -7118,11 +6950,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 id="commercial-sensitivity-hint"
                                 className="settings-native-toggle__hint"
                               >
-                                Сейчас бот считает объявление подозрительным с{' '}
-                                {draft.commercialAdsWarnThreshold} баллов, а как явную рекламу
-                                удаляет с {draft.commercialAdsDeleteThreshold}. `Мягко` реже трогает
-                                спорные частные объявления, `Строго` быстрее режет саморекламу и
-                                повторные коммерческие посты.
+                                Мягкий режим реже блокирует спорные объявления, строгий быстрее
+                                удаляет рекламу.
                               </p>
                             ) : null}
                           </div>
@@ -7189,8 +7018,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 id="text-filters-bot-message-hint"
                                 className="settings-native-toggle__hint"
                               >
-                                Санкции усиливаются по ступеням, если пользователь повторно нарушает
-                                коммерческий фильтр в течение 24 часов.
+                                При повторных нарушениях действие бота усиливается.
                               </p>
                             ) : null}
 
@@ -7293,7 +7121,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           {renderMuteStageToggle({
                             enabledKey: 'textFiltersMuteEnabled',
                             durationKey: 'textFiltersMuteDurationHours',
-                            title: '3. Мут',
+                            title: '3. Ограничение',
                             onEnable: () => {
                               setFieldValue('textFiltersWarnEnabled', true);
                               setFieldValue('textFiltersBotMessageEnabled', true);
@@ -7302,11 +7130,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                           <div className="settings-native-toggle settings-native-toggle--nested">
                             <div className="settings-native-toggle__row">
-                              <span className="settings-native-toggle__title">4. Бан</span>
+                              <span className="settings-native-toggle__title">4. Блокировка</span>
 
                               <label
                                 className="settings-native-switch"
-                                aria-label="Включить бан за повторное нарушение коммерческого фильтра"
+                                aria-label="Включить блокировку за повторную рекламу"
                               >
                                 <input
                                   type="checkbox"
@@ -7461,17 +7289,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       <div className="settings-native-toggle">
                         <div className="settings-native-toggle__row">
                           <div className="settings-native-toggle__title-wrap">
-                            <span className="settings-native-toggle__title">Антидубль</span>
+                            <span className="settings-native-toggle__title">Удалять повторы</span>
                             <SettingsHintAnchor
                               hintKey="antiDuplicate"
                               openHintKey={openHintKey}
                               onToggleHint={toggleHint}
                               label="Пояснение для антидубля"
                             >
-                              Удаляет повтор и применяет ступени ниже к автору.
+                              Удаляет повтор. При новых нарушениях действие бота усиливается.
                             </SettingsHintAnchor>
                           </div>
-                          <label className="settings-native-switch" aria-label="Включить антидубль">
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Включить удаление повторов"
+                          >
                             <input
                               type="checkbox"
                               checked={draft.antiDuplicateEnabled}
@@ -7489,23 +7320,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       {draft.antiDuplicateEnabled ? (
                         <div className="settings-policy">
                           <div className="settings-policy__label-row">
-                            <span className="field__label">Режим распознавания</span>
-                            <SettingsHintAnchor
-                              hintKey="duplicateDetectionMode"
-                              openHintKey={openHintKey}
-                              onToggleHint={toggleHint}
-                              label="Пояснение для режима распознавания дублей"
-                            >
-                              Строгий: похожий текст. Точный: сообщение целиком. Свой: ручные
-                              правила.
-                            </SettingsHintAnchor>
+                            <span className="field__label">Какие сообщения считать повторами</span>
                           </div>
                           <SegmentedControl
                             value={draft.duplicateDetectionPreset}
                             options={DUPLICATE_DETECTION_OPTIONS}
                             onChange={applyDuplicateDetectionPreset}
                             className="settings-mode-segments"
-                            ariaLabel="Режим распознавания дублей"
+                            ariaLabel="Какие сообщения считать повторами"
                           />
                         </div>
                       ) : null}
@@ -7766,8 +7588,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   onToggleHint={toggleHint}
                                   label="Пояснение для порога дублей"
                                 >
-                                  Интервал: окно поиска. Разрешено дублей: сколько пропустить до
-                                  ступеней.
+                                  За какой срок считать повторы и сколько одинаковых сообщений
+                                  пропустить.
                                 </SettingsHintAnchor>
                               </div>
                             </div>
@@ -7902,7 +7724,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           >
                             <div className="settings-native-toggle__row">
                               <div className="settings-native-toggle__title-wrap">
-                                <span className="settings-native-toggle__title">3. Мут</span>
+                                <span className="settings-native-toggle__title">
+                                  3. Ограничение
+                                </span>
                                 <div className="settings-native-toggle__title-actions">
                                   <button
                                     type="button"
@@ -7927,7 +7751,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                               <label
                                 className="settings-native-switch"
-                                aria-label="Включить мут за повторы"
+                                aria-label="Включить ограничение сообщений за повторы"
                               >
                                 <input
                                   type="checkbox"
@@ -7944,7 +7768,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               </label>
                             </div>
 
-                            {renderMuteDurationEditor('duplicateMuteDurationHours', 'Срок мута')}
+                            {renderMuteDurationEditor(
+                              'duplicateMuteDurationHours',
+                              'Срок ограничения',
+                            )}
 
                             {fieldErrors.duplicateMuteDurationHours ? (
                               <small className="field__hint">
@@ -7955,11 +7782,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                           <div className="settings-native-toggle settings-native-toggle--nested">
                             <div className="settings-native-toggle__row">
-                              <span className="settings-native-toggle__title">4. Бан</span>
+                              <span className="settings-native-toggle__title">4. Блокировка</span>
 
                               <label
                                 className="settings-native-switch"
-                                aria-label="Включить бан за повторы"
+                                aria-label="Включить блокировку за повторы"
                               >
                                 <input
                                   type="checkbox"
@@ -8057,8 +7884,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                         {openHintKey === 'antiSpam' ? (
                           <p id="anti-spam-hint" className="settings-native-toggle__hint">
-                            Системная защита от скоростного флуда: при опасном всплеске бот удаляет
-                            сообщение и банит отправителя. Порог не настраивается через UI.
+                            При резкой серии сообщений бот удалит спам и заблокирует отправителя.
                           </p>
                         ) : null}
                       </div>
@@ -8752,7 +8578,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       {renderMuteStageToggle({
                         enabledKey: 'messageLimitsMuteEnabled',
                         durationKey: 'messageLimitsMuteDurationHours',
-                        title: '3. Мут',
+                        title: '3. Ограничение',
                         onEnable: () => {
                           setFieldValue('messageLimitsWarnEnabled', true);
                           setFieldValue('messageLimitsBotMessageEnabled', true);
@@ -8761,11 +8587,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                       <div className="settings-native-toggle settings-native-toggle--nested">
                         <div className="settings-native-toggle__row">
-                          <span className="settings-native-toggle__title">4. Бан</span>
+                          <span className="settings-native-toggle__title">4. Блокировка</span>
 
                           <label
                             className="settings-native-switch"
-                            aria-label="Включить бан за повторные нарушения ограничений сообщений"
+                            aria-label="Включить блокировку за повторные нарушения"
                           >
                             <input
                               type="checkbox"
@@ -8921,13 +8747,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           stopWordsError && 'settings-word-banlist--error',
                         )}
                       >
-                        <div className="settings-word-banlist__head">
-                          <span className="settings-native-toggle__title">Стоп-слова</span>
-                          {stopWordsTotalCount > 0 ? (
-                            <span className="chip chip--danger">{stopWordsTotalCount}</span>
-                          ) : null}
-                        </div>
-
                         <SegmentedControl
                           value={stopWordsMode}
                           options={stopWordsSegmentOptions}
@@ -8964,27 +8783,31 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     addMessageLimitsBlockedWords();
                                   }
                                 }}
-                                placeholder="Слово, +слово или -слово"
+                                placeholder="Слова через запятую"
                                 maxLength={240}
-                                aria-label="Изменить стоп-слова"
+                                aria-label="Добавить стоп-слова"
                               />
-                              <button
-                                type="button"
-                                className="button button--accent settings-word-banlist__add-button"
-                                onClick={addMessageLimitsBlockedWords}
-                                disabled={isMessageLimitsBlockedWordsApplyDisabled}
-                              >
-                                Применить
-                              </button>
+                              {messageLimitsBlockedWordsInput.trim() ? (
+                                <button
+                                  type="button"
+                                  className="button button--accent settings-word-banlist__add-button"
+                                  onClick={addMessageLimitsBlockedWords}
+                                  disabled={isMessageLimitsBlockedWordsApplyDisabled}
+                                >
+                                  {hasMessageLimitsBlockedWordsRemoveInputActions
+                                    ? 'Применить'
+                                    : 'Добавить'}
+                                </button>
+                              ) : null}
                             </div>
 
                             {messageLimitsBlockedWords.length > 0 ? (
                               <>
-                                <div className="settings-word-banlist__chips-head">
-                                  <small className="settings-word-banlist__chips-caption">
-                                    {messageLimitsBlockedWordsCaption}
-                                  </small>
-                                  {hasMessageLimitsBlockedWordsOverflow ? (
+                                {hasMessageLimitsBlockedWordsOverflow ? (
+                                  <div className="settings-word-banlist__chips-head">
+                                    <small className="settings-word-banlist__chips-caption">
+                                      {messageLimitsBlockedWordsCaption}
+                                    </small>
                                     <button
                                       type="button"
                                       className="settings-word-banlist__toggle"
@@ -8998,8 +8821,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                         ? 'Свернуть'
                                         : `Показать все ${messageLimitsBlockedWords.length}`}
                                     </button>
-                                  ) : null}
-                                </div>
+                                  </div>
+                                ) : null}
 
                                 <div
                                   className="settings-word-banlist__chips"
@@ -9309,7 +9132,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           </div>
 
                           <label className={cn('field', nightTimezoneError && 'field--error')}>
-                            <span className="field__label">Часовой пояс России</span>
+                            <span className="field__label">Часовой пояс</span>
                             <select
                               value={draft.nightModeTimezone}
                               onChange={(event) =>
@@ -9324,11 +9147,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             </select>
                             {nightTimezoneError ? (
                               <small className="field__hint">{nightTimezoneError}</small>
-                            ) : (
-                              <small className="field__hint">
-                                По умолчанию используется Москва (UTC+3).
-                              </small>
-                            )}
+                            ) : null}
                           </label>
                         </div>
                       ) : null}
@@ -9643,7 +9462,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           <div
                             className="settings-subsection-divider"
                             role="separator"
-                            aria-label="Блок ручного закрытия группы"
+                            aria-label="Блок ручного закрытия чата"
                           >
                             <span>Ручное закрытие</span>
                           </div>
@@ -9651,16 +9470,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           <div className="settings-native-toggle">
                             <div className="settings-native-toggle__row">
                               <div className="settings-native-toggle__title-wrap">
-                                <span className="settings-native-toggle__title">
-                                  Закрыть группу
-                                </span>
+                                <span className="settings-native-toggle__title">Закрыть чат</span>
                                 <button
                                   type="button"
                                   className={cn(
                                     'settings-info-button',
                                     openHintKey === 'nightForceClose' && 'is-open',
                                   )}
-                                  aria-label="Пояснение для ручного закрытия группы"
+                                  aria-label="Пояснение для ручного закрытия чата"
                                   aria-controls="night-force-close-hint"
                                   aria-expanded={openHintKey === 'nightForceClose'}
                                   onClick={() => toggleHint('nightForceClose')}
@@ -9671,7 +9488,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                               <label
                                 className="settings-native-switch"
-                                aria-label="Включить ручное закрытие группы"
+                                aria-label="Включить ручное закрытие чата"
                               >
                                 <input
                                   type="checkbox"
@@ -10300,13 +10117,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <GlassCard
                 className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
                 style={{ animationDelay: '326ms', order: 6 }}
-                aria-label="ВК-парсинг"
+                aria-label="Посты из VK"
               >
                 <div
                   className={cn('settings-section__head', 'settings-section__head--interactive')}
                 >
                   <SettingsSectionToggle
-                    title="ВК-парсинг"
+                    title="Посты из VK"
                     summary=""
                     status="Импорт"
                     icon="links"
@@ -10321,7 +10138,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 <SettingsDrilldownPanel
                   id="settings-vk-parsing-content"
                   open={expandedSections.vkParsing}
-                  title="ВК-парсинг"
+                  title="Посты из VK"
                   tone="ink"
                   className="settings-drilldown__panel--campaign settings-drilldown__panel--vk-parsing"
                   onClose={() => toggleSection('vkParsing')}
@@ -10347,11 +10164,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         ) : vkParsingCapability ? (
                           <StatusState
                             tone="warning"
-                            title="VK-парсинг не настроен"
-                            description={
-                              vkParsingCapability.reason ??
-                              'VK-парсинг временно недоступен. Обратитесь к администратору сервиса.'
-                            }
+                            title="Импорт из VK не настроен"
+                            description={describeVkParsingCapability(vkParsingCapability)}
                             action={
                               <button
                                 type="button"
@@ -10446,27 +10260,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     <div className="settings-section__collapse-inner managed-giveaway required-subscription__workspace">
                       <div className="managed-giveaway__section required-subscription__board">
                         <div className="managed-giveaway__title-row">
-                          <div className="managed-giveaway__section-copy">
+                          <div className="managed-giveaway__section-copy required-subscription__heading">
                             <strong>Источники</strong>
                             <small>
-                              {requiredSubscriptionSelectedCount} из{' '}
+                              {requiredSubscriptionSelectedCount}/
                               {REQUIRED_SUBSCRIPTION_MAX_CHANNELS}
                             </small>
                           </div>
                         </div>
-
-                        <label className="field settings-text-field required-subscription__button-label">
-                          <span>Название кнопки</span>
-                          <input
-                            type="text"
-                            value={draft.requiredSubscriptionButtonText}
-                            onChange={(event) =>
-                              setFieldValue('requiredSubscriptionButtonText', event.target.value)
-                            }
-                            maxLength={32}
-                            placeholder="По умолчанию: канал"
-                          />
-                        </label>
 
                         {requiredSubscriptionStaleCount > 0 ? (
                           <p
@@ -10507,6 +10308,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     className="required-subscription__selection-body"
                                     title={channel.link || channel.title}
                                   >
+                                    <strong className="required-subscription__selection-title">
+                                      {channel.title}
+                                    </strong>
                                     <div className="required-subscription__selection-meta">
                                       <span className="required-subscription__selection-kind">
                                         {formatRequiredSubscriptionEntityLabel(channel.entityType)}
@@ -10517,9 +10321,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                         </span>
                                       ) : null}
                                     </div>
-                                    <strong className="required-subscription__selection-title">
-                                      {channel.title}
-                                    </strong>
                                   </div>
                                   <button
                                     type="button"
@@ -10559,7 +10360,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       </span>
                                     </div>
                                     <strong className="required-subscription__selection-title">
-                                      {channel.title}
+                                      Недоступный источник{' '}
+                                      {selectedRequiredSubscriptionChannels.length + index + 1}
                                     </strong>
                                     <small className="required-subscription__selection-detail">
                                       {channel.description}
@@ -10569,7 +10371,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     type="button"
                                     className="required-subscription__selection-remove"
                                     onClick={() => removeRequiredSubscriptionChannel(channel.id)}
-                                    aria-label={`Удалить недоступный чат или канал ${channel.title}`}
+                                    aria-label={`Удалить недоступный источник ${selectedRequiredSubscriptionChannels.length + index + 1}`}
                                   >
                                     <TrashIcon />
                                   </button>
@@ -10612,40 +10414,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           />
                         </Suspense>
 
-                        {unavailableManagedRequiredSubscriptionChannels.length > 0 ? (
-                          <>
-                            <small className="field__hint">Недоступные элементы</small>
-                            <div className="managed-giveaway__prize-editor-list">
-                              {unavailableManagedRequiredSubscriptionChannels.map(
-                                (channel, index) => (
-                                  <div
-                                    key={`required-subscription-unavailable-${channel.id}`}
-                                    className="managed-giveaway__prize-editor-row"
-                                  >
-                                    <span className="managed-giveaway__prize-position">
-                                      {index + 1}
-                                    </span>
-                                    <span
-                                      className={cn(
-                                        'managed-giveaway__selected-channel',
-                                        'managed-giveaway__selected-channel--multiline',
-                                      )}
-                                      title={channel.description}
-                                    >
-                                      <strong className="managed-giveaway__selected-channel-label">
-                                        {channel.title}
-                                      </strong>
-                                      <small className="managed-giveaway__selected-channel-detail">
-                                        {channel.description}
-                                      </small>
-                                    </span>
-                                  </div>
-                                ),
-                              )}
-                            </div>
-                          </>
-                        ) : null}
-
                         <div className="required-subscription__external-source">
                           <div className="managed-giveaway__editor-grid">
                             <label
@@ -10654,7 +10422,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 requiredSubscriptionExternalChannelError && 'field--error',
                               )}
                             >
-                              <span>Ссылка на чат или канал</span>
+                              <span>Добавить по ссылке</span>
                               <input
                                 type="text"
                                 value={requiredSubscriptionExternalChannelValue}
@@ -10670,7 +10438,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     handleResolveRequiredSubscriptionExternalChannel();
                                   }
                                 }}
-                                placeholder="https://max.ru/... или id чата/канала"
+                                placeholder="https://max.ru/..."
                                 disabled={isResolvingRequiredSubscriptionChannel}
                               />
                               {requiredSubscriptionExternalChannelError ? (
@@ -10697,6 +10465,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             </div>
                           </div>
                         </div>
+
+                        <label className="field settings-text-field required-subscription__button-label">
+                          <span>Текст кнопки</span>
+                          <input
+                            type="text"
+                            value={draft.requiredSubscriptionButtonText}
+                            onChange={(event) =>
+                              setFieldValue('requiredSubscriptionButtonText', event.target.value)
+                            }
+                            maxLength={32}
+                            placeholder="Канал"
+                          />
+                        </label>
                       </div>
 
                       <div
@@ -10821,7 +10602,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       {renderMuteStageToggle({
                         enabledKey: 'requiredSubscriptionMuteEnabled',
                         durationKey: 'requiredSubscriptionMuteDurationHours',
-                        title: '3. Мут',
+                        title: '3. Ограничение',
                         onEnable: () => {
                           setFieldValue('requiredSubscriptionWarnEnabled', true);
                           setFieldValue('requiredSubscriptionBotMessageEnabled', true);
@@ -10830,11 +10611,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                       <div className="settings-native-toggle settings-native-toggle--nested">
                         <div className="settings-native-toggle__row">
-                          <span className="settings-native-toggle__title">4. Бан</span>
+                          <span className="settings-native-toggle__title">4. Блокировка</span>
 
                           <label
                             className="settings-native-switch"
-                            aria-label="Включить бан за повторные сообщения без подписки"
+                            aria-label="Включить блокировку за сообщения без подписки"
                           >
                             <input
                               type="checkbox"

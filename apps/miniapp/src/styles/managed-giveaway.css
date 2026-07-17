@@ -46,6 +46,29 @@
   gap: 3px;
 }
 
+.managed-giveaway__hero-copy--editor {
+  flex: 1 1 auto;
+}
+
+.managed-giveaway__hero-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.managed-giveaway__hero-title-row .managed-giveaway__hero-button--danger {
+  width: 40px;
+  min-width: 40px;
+  padding: 0;
+  flex: 0 0 40px;
+}
+
+.managed-giveaway__hero-title-row .managed-giveaway__hero-button--danger svg {
+  width: 18px;
+  height: 18px;
+}
+
 .managed-giveaway__hero-copy h2 {
   margin: 0;
   color: var(--text-primary);

@@ -50,6 +50,21 @@ test('keeps bot template placeholders literal when requested', () => {
   );
 });
 
+test('renders bot placeholders as readable editor tokens without changing their keys', () => {
+  assert.equal(
+    renderSupportedMarkdownAsHtml('{user}, сообщение {message_status}: {reason}.', {
+      blockMode: 'inline',
+      preserveCurlyBracePlaceholders: true,
+      curlyBracePlaceholderLabels: {
+        user: 'Имя',
+        message_status: 'Статус',
+        reason: 'Причина',
+      },
+    }),
+    '<span class="max-rich-text-editor__placeholder-token" data-max-placeholder="user" contenteditable="false">Имя</span>, сообщение <span class="max-rich-text-editor__placeholder-token" data-max-placeholder="message_status" contenteditable="false">Статус</span>: <span class="max-rich-text-editor__placeholder-token" data-max-placeholder="reason" contenteditable="false">Причина</span>.',
+  );
+});
+
 function buildNestedModifierSamples(): string[] {
   const wrappers: Array<[string, string]> = [
     ['**', '**'],

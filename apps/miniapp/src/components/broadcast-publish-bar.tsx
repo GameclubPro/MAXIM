@@ -52,24 +52,26 @@ export function BroadcastPublishBar({
         showSecondary && 'has-secondary',
       )}
     >
-      <div className={cn('broadcast-publish-bar__copy', showIssues && 'has-issues')}>
-        <strong>{title}</strong>
-        {meta ? <small>{meta}</small> : null}
-        {showIssues ? (
-          <span className="broadcast-publish-bar__issues" aria-label="Не готово">
-            {issues.map((issue) => (
-              <button
-                key={`broadcast-publish-issue-${issue.label}`}
-                type="button"
-                className="broadcast-publish-bar__issue"
-                onClick={issue.onClick}
-              >
-                {issue.label}
-              </button>
-            ))}
-          </span>
-        ) : null}
-      </div>
+      {title || meta || showIssues ? (
+        <div className={cn('broadcast-publish-bar__copy', showIssues && 'has-issues')}>
+          {title ? <strong>{title}</strong> : null}
+          {meta ? <small>{meta}</small> : null}
+          {showIssues ? (
+            <span className="broadcast-publish-bar__issues" aria-label="Не готово">
+              {issues.map((issue) => (
+                <button
+                  key={`broadcast-publish-issue-${issue.label}`}
+                  type="button"
+                  className="broadcast-publish-bar__issue"
+                  onClick={issue.onClick}
+                >
+                  {issue.label}
+                </button>
+              ))}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
 
       <button
         type="button"

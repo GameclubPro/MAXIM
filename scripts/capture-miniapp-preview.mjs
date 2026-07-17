@@ -104,6 +104,58 @@ async function openPreviewGiveawayEditor(page) {
   await page.locator('.managed-giveaway--step-basics').waitFor({ state: 'visible' });
 }
 
+async function assertBotMessagePlaceholderRoundTrip(page) {
+  const expectedKeys = ['user', 'message_status', 'reason'];
+  const editor = page.locator('.max-rich-text-editor__surface');
+  const readEditorState = () =>
+    editor.evaluate((element) => ({
+      keys: Array.from(element.querySelectorAll('[data-max-placeholder]')).map(
+        (token) => token.getAttribute('data-max-placeholder') ?? '',
+      ),
+      text: element.textContent ?? '',
+    }));
+
+  const initialState = await readEditorState();
+  if (JSON.stringify(initialState.keys) !== JSON.stringify(expectedKeys)) {
+    throw new Error(`Bot message placeholders are incomplete: ${JSON.stringify(initialState)}.`);
+  }
+
+  await editor.evaluate((element) => {
+    element.focus();
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    range.collapse(false);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
+  await page.keyboard.insertText(' Проверка');
+  await page.getByRole('button', { name: 'Готово', exact: true }).click();
+  await page.locator('.bot-message-editor-sheet__panel').waitFor({ state: 'detached' });
+
+  await page
+    .getByRole('button', { name: 'Редактировать текст сообщения о ссылках', exact: true })
+    .click();
+  await page.locator('.bot-message-editor-sheet__panel').waitFor({ state: 'visible' });
+  const reopenedState = await readEditorState();
+  if (
+    JSON.stringify(reopenedState.keys) !== JSON.stringify(expectedKeys) ||
+    !reopenedState.text.includes('Проверка')
+  ) {
+    throw new Error(`Bot message placeholder round-trip failed: ${JSON.stringify(reopenedState)}.`);
+  }
+
+  await page.getByRole('button', { name: 'Сбросить', exact: true }).click();
+  await page.getByRole('button', { name: 'Сбросить', exact: true }).waitFor({ state: 'detached' });
+  const resetState = await readEditorState();
+  if (
+    JSON.stringify(resetState.keys) !== JSON.stringify(expectedKeys) ||
+    resetState.text.includes('Проверка')
+  ) {
+    throw new Error(`Bot message reset lost placeholders: ${JSON.stringify(resetState)}.`);
+  }
+}
+
 async function setScrollPosition(scrollBody, top, label) {
   await scrollBody.waitFor({ state: 'visible' });
   const metrics = await scrollBody.evaluate((element, requestedTop) => {
@@ -433,7 +485,7 @@ const scenarios = [
     name: 'chat-settings-extra',
     path: '/chat/preview-chat/settings',
     beforeShot: async (page) => {
-      await openSettingsSection(page, 'Сервис', '.settings-drilldown__panel--extra');
+      await openSettingsSection(page, 'Сообщения и боты', '.settings-drilldown__panel--extra');
     },
   },
   {
@@ -483,6 +535,7 @@ const scenarios = [
         .getByRole('button', { name: 'Редактировать текст сообщения о ссылках', exact: true })
         .click();
       await page.locator('.bot-message-editor-sheet__panel').waitFor({ state: 'visible' });
+      await assertBotMessagePlaceholderRoundTrip(page);
       await page.waitForTimeout(350);
     },
   },
@@ -700,6 +753,29 @@ const scenarios = [
       }
       await page.getByRole('button', { name: /Применить к другим чатам/u }).click();
       await page.locator('.settings-apply-target__panel').waitFor({ state: 'visible' });
+      await page.getByRole('button', { name: 'Категории', exact: true }).click();
+      const categories = page.getByRole('group', { name: 'Категории избранного' });
+      await categories.waitFor({ state: 'visible' });
+      const categoryGrid = await categories.evaluate((element) => {
+        const buttons = Array.from(element.querySelectorAll('button'));
+        return {
+          buttonCount: buttons.length,
+          selectedCount: buttons.filter((button) => button.getAttribute('aria-pressed') === 'true')
+            .length,
+          columnCount: getComputedStyle(element)
+            .gridTemplateColumns.split(/\s+/u)
+            .filter(Boolean).length,
+        };
+      });
+      if (
+        categoryGrid.buttonCount !== 6 ||
+        categoryGrid.selectedCount !== 6 ||
+        categoryGrid.columnCount !== 2
+      ) {
+        throw new Error(
+          `Apply-target category grid is incomplete: ${JSON.stringify(categoryGrid)}.`,
+        );
+      }
     },
   },
   {
@@ -787,7 +863,7 @@ const scenarios = [
     name: 'channel-settings-post-suggestions',
     path: '/channel/preview-channel/settings',
     beforeShot: async (page) => {
-      await page.getByRole('button', { name: /Предложка/u }).click();
+      await page.getByRole('button', { name: /Предложения/u }).click();
       await page.waitForTimeout(300);
     },
   },
@@ -795,8 +871,8 @@ const scenarios = [
     name: 'channel-settings-post-suggestions-off',
     path: '/channel/preview-channel/settings',
     beforeShot: async (page) => {
-      await page.getByRole('button', { name: /Предложка/u }).click();
-      const toggle = page.getByRole('checkbox', { name: 'Приём предложек', exact: true });
+      await page.getByRole('button', { name: /Предложения/u }).click();
+      const toggle = page.getByRole('checkbox', { name: 'Принимать предложения', exact: true });
       if (await toggle.isChecked()) {
         await toggle.uncheck();
       }
@@ -832,16 +908,16 @@ const scenarios = [
       await openSettingsSection(page, 'Опросы', '.managed-poll-workspace');
       await page
         .locator('.managed-poll-workspace')
-        .getByRole('button', { name: 'Закрыть', exact: true })
+        .getByRole('button', { name: 'Завершить', exact: true })
         .click();
-      const confirm = page.getByRole('dialog', { name: 'Закрыть опрос?' });
+      const confirm = page.getByRole('dialog', { name: 'Завершить опрос?' });
       await confirm.waitFor({ state: 'visible' });
-      await confirm.getByRole('button', { name: 'Закрыть', exact: true }).click();
+      await confirm.getByRole('button', { name: 'Завершить', exact: true }).click();
       await page.waitForFunction(() => {
         const createButton = document.querySelector('.managed-poll-workspace__create');
         return createButton instanceof HTMLButtonElement && !createButton.disabled;
       });
-      const pollClosedToast = page.locator('.toast').filter({ hasText: 'Опрос закрыт' });
+      const pollClosedToast = page.locator('.toast').filter({ hasText: 'Опрос завершён' });
       await pollClosedToast.waitFor({ state: 'visible' });
       await pollClosedToast.getByRole('button', { name: 'Закрыть уведомление' }).click();
       await pollClosedToast.waitFor({ state: 'detached' });

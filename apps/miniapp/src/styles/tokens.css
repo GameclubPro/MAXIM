@@ -634,6 +634,72 @@ html[data-max-theme='dark'] {
   --theme-surface-tint: #1e2c37;
   --theme-border: rgba(198, 215, 229, 0.15);
   --theme-border-strong: rgba(206, 222, 234, 0.25);
+  --favorite-important-dark-accent: #f0b84c;
+  --favorite-important-dark-surface: color-mix(
+    in srgb,
+    var(--favorite-important-dark-accent) 16%,
+    var(--theme-surface-tint)
+  );
+  --favorite-important-dark-border: color-mix(
+    in srgb,
+    var(--favorite-important-dark-accent) 54%,
+    var(--theme-border)
+  );
+  --favorite-watch-dark-accent: #ef7f94;
+  --favorite-watch-dark-surface: color-mix(
+    in srgb,
+    var(--favorite-watch-dark-accent) 16%,
+    var(--theme-surface-tint)
+  );
+  --favorite-watch-dark-border: color-mix(
+    in srgb,
+    var(--favorite-watch-dark-accent) 54%,
+    var(--theme-border)
+  );
+  --favorite-broadcast-dark-accent: #6fb8ed;
+  --favorite-broadcast-dark-surface: color-mix(
+    in srgb,
+    var(--favorite-broadcast-dark-accent) 16%,
+    var(--theme-surface-tint)
+  );
+  --favorite-broadcast-dark-border: color-mix(
+    in srgb,
+    var(--favorite-broadcast-dark-accent) 54%,
+    var(--theme-border)
+  );
+  --favorite-test-dark-accent: #b6cc5d;
+  --favorite-test-dark-surface: color-mix(
+    in srgb,
+    var(--favorite-test-dark-accent) 16%,
+    var(--theme-surface-tint)
+  );
+  --favorite-test-dark-border: color-mix(
+    in srgb,
+    var(--favorite-test-dark-accent) 54%,
+    var(--theme-border)
+  );
+  --favorite-partner-dark-accent: #bd91e6;
+  --favorite-partner-dark-surface: color-mix(
+    in srgb,
+    var(--favorite-partner-dark-accent) 16%,
+    var(--theme-surface-tint)
+  );
+  --favorite-partner-dark-border: color-mix(
+    in srgb,
+    var(--favorite-partner-dark-accent) 54%,
+    var(--theme-border)
+  );
+  --favorite-service-dark-accent: #71c2ad;
+  --favorite-service-dark-surface: color-mix(
+    in srgb,
+    var(--favorite-service-dark-accent) 16%,
+    var(--theme-surface-tint)
+  );
+  --favorite-service-dark-border: color-mix(
+    in srgb,
+    var(--favorite-service-dark-accent) 54%,
+    var(--theme-border)
+  );
   --theme-scrim: rgba(0, 0, 0, 0.66);
   --theme-glass-bg: rgba(21, 31, 41, 0.92);
   --theme-shadow-xs: 0 4px 12px rgba(0, 0, 0, 0.2);

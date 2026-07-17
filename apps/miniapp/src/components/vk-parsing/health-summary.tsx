@@ -44,7 +44,7 @@ export function HealthSummary({ summary }: HealthSummaryProps) {
   ];
 
   return (
-    <div className="vk-parsing-summary" aria-label="Состояние VK-парсинга">
+    <div className="vk-parsing-summary" aria-label="Состояние импорта из VK">
       {items.map((item) => (
         <span
           key={item.label}

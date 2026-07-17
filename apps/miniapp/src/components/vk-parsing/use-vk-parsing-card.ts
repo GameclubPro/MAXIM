@@ -2,7 +2,6 @@ import { type FormEvent, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   BulkUpdateVkParsingSourcesRequest,
-  RollbackVkParsingRequest,
   UpdateVkParsingSettingsRequest,
   UpdateVkParsingSourceRequest,
   VkParsingFeedQuery,
@@ -20,7 +19,6 @@ import {
   refreshVkParsing,
   refreshVkParsingSource,
   removeVkParsingSource,
-  rollbackVkParsingAutopublish,
   retryVkParsingPost,
   scheduleVkParsingPost,
   updateVkParsingReviewDraft,
@@ -228,13 +226,13 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
       setSelectedBulkSourceIds([]);
       queryClient.setQueryData(queryKeys.vkParsing(entityType, chatId, feedQueryScope), nextFeed);
       void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
-      pushToast({ tone: 'success', title: 'Пресет применён' });
+      pushToast({ tone: 'success', title: 'Настройки применены' });
       maxNotify('success');
     },
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Пресет не применён',
+        title: 'Настройки не применены',
         description: normalizeApiError(error),
       });
       maxNotify('error');
@@ -378,28 +376,6 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     },
   });
 
-  const rollbackMutation = useMutation({
-    mutationFn: (payload: RollbackVkParsingRequest) =>
-      rollbackVkParsingAutopublish(api, entityType, chatId, payload),
-    onSuccess: (result) => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
-      pushToast({
-        tone: result.failed > 0 ? 'info' : 'success',
-        title: `Rollback: ${result.matched}`,
-        description: result.deleted > 0 ? `Удалено: ${result.deleted}` : undefined,
-      });
-      maxNotify(result.failed > 0 ? 'warning' : 'success');
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Rollback не выполнен',
-        description: normalizeApiError(error),
-      });
-      maxNotify('error');
-    },
-  });
-
   const feed = feedQuery.data;
   const settings = feed?.settings ?? {
     chatId,
@@ -508,8 +484,8 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
       if (dryRun.eligibleNow > 0) {
         pushToast({
           tone: 'danger',
-          title: `Dry-run: ${dryRun.eligibleNow}`,
-          description: 'Старые посты не будут включены автоматически.',
+          title: 'Автопубликация пока не включена',
+          description: `Сначала проверьте старые посты: ${dryRun.eligibleNow} готовы к публикации.`,
         });
         maxNotify('warning');
         return;
@@ -527,8 +503,8 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
       if (dryRun.eligibleNow > 0) {
         pushToast({
           tone: 'danger',
-          title: `Dry-run: ${dryRun.eligibleNow}`,
-          description: 'Старые посты не будут включены автоматически.',
+          title: 'Автопубликация пока не включена',
+          description: `Сначала проверьте старые посты: ${dryRun.eligibleNow} готовы к публикации.`,
         });
         maxNotify('warning');
         return;
@@ -606,7 +582,6 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     publishingNowPostId: publishNowMutation.isPending
       ? (publishNowMutation.variables ?? null)
       : null,
-    isRollingBack: rollbackMutation.isPending,
     setSourceUrl,
     setDraftText,
     setPageOffset,
@@ -638,7 +613,6 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
       scheduleMutation.mutate({ postId, scheduledAt }),
     cancelScheduledPost: (postId: string) => cancelPostMutation.mutate(postId),
     publishPostNow: (postId: string) => publishNowMutation.mutate(postId),
-    rollback: (payload: RollbackVkParsingRequest) => rollbackMutation.mutate(payload),
     startEditing,
     cancelEditing: () => setEditingPostId(null),
     publishEditingPost,

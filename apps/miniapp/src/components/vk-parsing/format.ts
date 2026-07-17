@@ -1,4 +1,5 @@
-import type { VkParsingPost } from '@maxim/contracts';
+import type { VkParsingPost, VkParsingSource } from '@maxim/contracts';
+import { describeApiError } from '../../lib/api-error';
 
 export type VkParsingPublishState = {
   label: string;
@@ -11,6 +12,28 @@ export type VkParsingPostIssue = {
   detail: string;
   isMediaIssue: boolean;
 };
+
+const UNSUPPORTED_ATTACHMENT_LABELS: Record<string, string> = {
+  article: 'Статья',
+  audio: 'Аудио',
+  audio_playlist: 'Плейлист',
+  clip: 'Клип',
+  copy_history: 'Репост',
+  doc: 'Документ',
+  event: 'Событие',
+  market: 'Товар',
+  market_album: 'Подборка товаров',
+  page: 'Страница',
+  photo: 'Фото',
+  photos_list: 'Список фото',
+  podcast: 'Подкаст',
+  poll: 'Опрос',
+  video: 'Видео',
+  video_playlist: 'Плейлист видео',
+};
+
+const TECHNICAL_ERROR_PATTERN =
+  /\b(?:api|rps|p95|worker|rollback|dry[- ]?run|prisma|redis|bullmq|sql|stack|exception|invalid|failed|content-length|econn\w*|etimedout|statuscode)\b|[{}[\]<>]/iu;
 
 export function formatVkPostDate(value: string | null): string {
   if (!value) {
@@ -107,22 +130,57 @@ export function formatUnsupportedAttachmentSummary(post: VkParsingPost): string 
     .slice(0, 3)
     .map((item) => {
       const count = item.count > 1 ? ` x${item.count}` : '';
-      return `${item.label || item.type}${count}`;
+      const label = UNSUPPORTED_ATTACHMENT_LABELS[item.type.toLowerCase()] ?? 'Вложение';
+      return `${label}${count}`;
     })
     .join(', ');
 }
 
 export function normalizeApiError(error: unknown): string {
-  if (!(error instanceof Error)) {
-    return 'Не удалось выполнить действие.';
+  const text = describeApiError(error, '').trim();
+  const normalized = text.toLowerCase();
+
+  if (/rate[ _-]?limit|too many requests|\b429\b|ограничил(?:а|и)?\s+запрос/iu.test(text)) {
+    return 'VK временно ограничил запросы. Повторите позже.';
+  }
+  if (
+    /нет связи|не отвечает|network|failed to fetch|load failed|timeout|timed out|econn/iu.test(text)
+  ) {
+    return 'Нет связи с сервисом. Повторите.';
+  }
+  if (/unauthori[sz]ed|forbidden|\b(?:401|403)\b|сессия истекла/iu.test(text)) {
+    return 'Не удалось подтвердить доступ. Откройте приложение заново.';
+  }
+  if (
+    text &&
+    /[А-Яа-яЁё]/u.test(text) &&
+    !TECHNICAL_ERROR_PATTERN.test(text) &&
+    !normalized.startsWith('api request failed:') &&
+    text.length <= 180
+  ) {
+    return text;
   }
 
-  const text = error.message.trim();
-  if (text.startsWith('API request failed:')) {
-    return text.replace(/^API request failed:\s*\d+\s*/u, '').trim() || 'Ошибка API.';
+  return 'Не удалось выполнить действие. Повторите.';
+}
+
+export function formatVkSourceProblem(
+  source: Pick<
+    VkParsingSource,
+    'autoPublishPausedReason' | 'circuitOpenedAt' | 'circuitReason' | 'lastError' | 'syncStatus'
+  >,
+): string | null {
+  if (source.autoPublishPausedReason === 'circuit_breaker' || source.circuitOpenedAt) {
+    return 'Автопубликация приостановлена.';
+  }
+  if (source.syncStatus === 'BACKOFF') {
+    return 'VK временно ограничил обновление. Повторим автоматически.';
+  }
+  if (source.syncStatus === 'ERROR' || source.lastError || source.circuitReason) {
+    return 'Не удалось обновить источник.';
   }
 
-  return text || 'Не удалось выполнить действие.';
+  return null;
 }
 
 export function formatVkSkipReason(reason: VkParsingPost['skipReason']): string | null {
@@ -160,12 +218,11 @@ export function formatVkPostStatus(post: VkParsingPost): string | null {
 }
 
 export function formatVkPublishState(post: VkParsingPost): VkParsingPublishState | null {
-  const attemptText = post.publishAttemptCount > 0 ? `, попыток: ${post.publishAttemptCount}` : '';
-
   if (post.publishLockedAt) {
+    const startedAt = formatVkPostDate(post.publishLockedAt);
     return {
       label: 'Публикуется',
-      title: `Забрано воркером ${formatVkPostDate(post.publishLockedAt)}${attemptText}`,
+      title: startedAt ? `Публикация началась ${startedAt}` : 'Публикация началась',
       tone: 'warning',
     };
   }
@@ -173,18 +230,18 @@ export function formatVkPublishState(post: VkParsingPost): VkParsingPublishState
   if (post.publishQueuedAt) {
     const scheduled = post.publishScheduledAt ? formatVkPostDate(post.publishScheduledAt) : '';
     return {
-      label: post.publishAttemptCount > 0 ? 'Повтор в очереди' : 'В очереди',
+      label: 'В очереди',
       title: scheduled
-        ? `Запланирован на ${scheduled}${attemptText}`
-        : `Ждёт публикации с ${formatVkPostDate(post.publishQueuedAt)}${attemptText}`,
+        ? `Запланирован на ${scheduled}`
+        : `Ждёт публикации с ${formatVkPostDate(post.publishQueuedAt)}`,
       tone: 'warning',
     };
   }
 
   if (post.status === 'FAILED' && post.publishAttemptCount > 0) {
     return {
-      label: `Попыток ${post.publishAttemptCount}`,
-      title: post.lastError ?? post.autoPublishError ?? 'Публикация завершилась ошибкой',
+      label: 'Не опубликован',
+      title: 'Проверьте пост и повторите публикацию.',
       tone: 'danger',
     };
   }
@@ -197,15 +254,16 @@ export function formatVkPostIssue(post: VkParsingPost): VkParsingPostIssue | nul
     return null;
   }
 
-  const rawDetail = post.autoPublishError ?? post.lastError ?? 'Публикация завершилась ошибкой.';
-  const detail = rawDetail.length > 110 ? `${rawDetail.slice(0, 107)}...` : rawDetail;
+  const rawDetail = post.autoPublishError ?? post.lastError ?? '';
   const isMediaIssue =
     /\b(media|upload|photo|image|attachment)\b|медиа|фото|изображ|вложени/iu.test(rawDetail) ||
     post.photoUrls.length > 0;
 
   return {
     title: isMediaIssue ? 'Медиа не загрузилось' : 'Публикация не прошла',
-    detail,
+    detail: isMediaIssue
+      ? 'Попробуйте ещё раз или уберите недоступное вложение.'
+      : 'Проверьте пост и повторите публикацию.',
     isMediaIssue,
   };
 }

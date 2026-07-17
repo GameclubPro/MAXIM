@@ -26,6 +26,7 @@ type MaxRichTextEditorProps = {
   placeholder: string;
   disabled?: boolean;
   preserveCurlyBracePlaceholders?: boolean;
+  curlyBracePlaceholderLabels?: Readonly<Record<string, string>>;
   ariaLabel: string;
   className?: string;
   onPasteFiles?: (files: File[]) => void;
@@ -53,6 +54,7 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
       placeholder,
       disabled = false,
       preserveCurlyBracePlaceholders = false,
+      curlyBracePlaceholderLabels,
       ariaLabel,
       className,
       onPasteFiles,
@@ -76,8 +78,9 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
           blockMode: 'inline',
           linkMode: 'anchor',
           preserveCurlyBracePlaceholders,
+          curlyBracePlaceholderLabels,
         }),
-      [preserveCurlyBracePlaceholders, value],
+      [curlyBracePlaceholderLabels, preserveCurlyBracePlaceholders, value],
     );
 
     const emitCurrentMarkdown = useCallback(() => {
@@ -352,6 +355,7 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
                   pastedMarkdown &&
                   insertSupportedMarkdownAtCurrentRange(pastedMarkdown, {
                     preserveCurlyBracePlaceholders,
+                    curlyBracePlaceholderLabels,
                   })
                 ) {
                   emitCurrentMarkdown();
@@ -568,6 +572,7 @@ function insertPlainTextAtCurrentRange(text: string): void {
 
 type RichTextSerializationOptions = {
   preserveCurlyBracePlaceholders?: boolean;
+  curlyBracePlaceholderLabels?: Readonly<Record<string, string>>;
 };
 
 function insertSupportedMarkdownAtCurrentRange(
@@ -587,6 +592,7 @@ function insertSupportedMarkdownAtCurrentRange(
     blockMode: 'inline',
     linkMode: 'anchor',
     preserveCurlyBracePlaceholders: options.preserveCurlyBracePlaceholders,
+    curlyBracePlaceholderLabels: options.curlyBracePlaceholderLabels,
   });
   if (!html) {
     return false;
@@ -697,6 +703,11 @@ function serializeNode(node: Node, options: RichTextSerializationOptions = {}): 
 
   const element = node as HTMLElement;
   const tagName = element.tagName.toLowerCase();
+
+  if (options.preserveCurlyBracePlaceholders && element.dataset.maxPlaceholder) {
+    const placeholderKey = element.dataset.maxPlaceholder;
+    return /^[A-Za-z0-9_]+$/u.test(placeholderKey) ? `{${placeholderKey}}` : '';
+  }
 
   if (tagName === 'br') {
     return '\n';

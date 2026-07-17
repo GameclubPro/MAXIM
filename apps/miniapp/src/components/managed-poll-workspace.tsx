@@ -41,7 +41,6 @@ import {
   useState,
   type RefObject,
 } from 'react';
-import { describeApiError } from '../lib/api-error';
 import { stripSupportedMarkdownToPlainText } from '../lib/max-markdown';
 import {
   closeChannelManagedPoll,
@@ -59,6 +58,7 @@ import type { ApiTransport } from '../lib/api/transport';
 import { channelPollQueryKeys } from '../lib/channel-poll-query-keys';
 import { openMaxBotLink } from '../lib/max-bridge';
 import { useNativeBackHandler } from '../lib/native-back';
+import { describeUserFacingError } from '../lib/user-facing-error';
 import { ActionConfirmSheet } from './ui/action-confirm-sheet';
 import { BroadcastContentComposer } from './broadcast-content-composer';
 import { MaxMarkdownPreview } from './max-markdown-preview';
@@ -322,7 +322,7 @@ function resolveVoterName(voter: {
   if (username) {
     return `@${username}`;
   }
-  return voter.userId ? `ID ${voter.userId}` : 'Участник';
+  return 'Участник';
 }
 
 function PollVoterDetails({
@@ -369,7 +369,9 @@ function PollVoterDetails({
       ) : null}
       {votersInitialError ? (
         <div className="managed-poll-voters__error">
-          <span>{describeApiError(votersInitialError, 'Не удалось загрузить участников.')}</span>
+          <span>
+            {describeUserFacingError(votersInitialError, 'Не удалось загрузить участников.')}
+          </span>
           <button type="button" onClick={() => void votersQuery.refetch()}>
             Повторить
           </button>
@@ -487,7 +489,7 @@ function PollResultCard({
             {statusLabel}
           </span>
           <span className="managed-poll-item__visibility">
-            {poll.visibility === 'ANONYMOUS' ? 'Анонимный' : 'Открытый'}
+            {poll.visibility === 'ANONYMOUS' ? 'Имена скрыты' : 'Имена видны'}
           </span>
         </div>
         <span className="managed-poll-item__date">{date}</span>
@@ -591,7 +593,7 @@ function PollResultCard({
               disabled={busy}
             >
               <CheckCircle aria-hidden />
-              Закрыть
+              Завершить
             </button>
           ) : null}
           {poll.renderRepairNeeded ? (
@@ -613,7 +615,7 @@ function PollResultCard({
               disabled={busy}
             >
               <RefreshCircle aria-hidden />
-              Поста нет
+              Вернуть в черновики
             </button>
           ) : null}
         </div>
@@ -680,8 +682,10 @@ function PollEditor({
           className="managed-poll-editor__back"
           onClick={onBack}
           disabled={busy}
+          aria-label="Назад к списку"
+          title="Назад к списку"
         >
-          <NavArrowLeft aria-hidden />К списку
+          <NavArrowLeft aria-hidden />
         </button>
         <div>
           <h2>{draft.pollId ? 'Черновик' : 'Новый опрос'}</h2>
@@ -708,7 +712,7 @@ function PollEditor({
             messageAriaLabel="Вопрос опроса"
             textPlaceholder="Ваш вопрос"
             textAriaLabel="Вопрос опроса"
-            showToolLabels
+            showToolLabels={false}
             disabled={busy}
             textError={errors.question}
             onTextChange={(question) =>
@@ -724,7 +728,7 @@ function PollEditor({
 
         <label className="managed-poll-editor__privacy">
           <span>
-            <strong>{draft.visibility === 'ANONYMOUS' ? 'Анонимный' : 'Открытый'}</strong>
+            <strong>Анонимный опрос</strong>
             <small>{draft.visibility === 'ANONYMOUS' ? 'Имена скрыты' : 'Имена видны'}</small>
           </span>
           <span className="managed-poll-switch">
@@ -929,7 +933,7 @@ export const ManagedPollWorkspace = forwardRef<
       pushToast({
         tone: 'danger',
         title: 'Не удалось открыть черновик',
-        description: describeApiError(error, 'Повторите позже.'),
+        description: describeUserFacingError(error, 'Повторите позже.'),
       });
     },
   });
@@ -947,7 +951,7 @@ export const ManagedPollWorkspace = forwardRef<
       pushToast({
         tone: 'danger',
         title: 'Не удалось сохранить',
-        description: describeApiError(error, 'Повторите позже.'),
+        description: describeUserFacingError(error, 'Повторите позже.'),
       });
     },
   });
@@ -986,7 +990,7 @@ export const ManagedPollWorkspace = forwardRef<
       pushToast({
         tone: 'danger',
         title: 'Не удалось опубликовать',
-        description: describeApiError(error, 'Повторите позже.'),
+        description: describeUserFacingError(error, 'Повторите позже.'),
       });
     },
   });
@@ -1004,10 +1008,10 @@ export const ManagedPollWorkspace = forwardRef<
         closed.renderRepairNeeded
           ? {
               tone: 'info',
-              title: 'Опрос закрыт',
+              title: 'Опрос завершён',
               description: 'Пост не обновился. Повторите.',
             }
-          : { tone: 'success', title: 'Опрос закрыт' },
+          : { tone: 'success', title: 'Опрос завершён' },
       );
     },
     onError: (error) => {
@@ -1015,7 +1019,7 @@ export const ManagedPollWorkspace = forwardRef<
       pushToast({
         tone: 'danger',
         title: 'Не удалось закрыть',
-        description: describeApiError(error, 'Повторите позже.'),
+        description: describeUserFacingError(error, 'Повторите позже.'),
       });
     },
   });
@@ -1034,7 +1038,7 @@ export const ManagedPollWorkspace = forwardRef<
       pushToast({
         tone: 'danger',
         title: 'Не удалось обновить пост',
-        description: describeApiError(error, 'Повторите позже.'),
+        description: describeUserFacingError(error, 'Повторите позже.'),
       });
     },
   });
@@ -1044,14 +1048,14 @@ export const ManagedPollWorkspace = forwardRef<
     onSuccess: (reset) => {
       applyPoll(reset);
       setConfirmState(null);
-      pushToast({ tone: 'success', title: 'Публикация сброшена' });
+      pushToast({ tone: 'success', title: 'Опрос снова в черновиках' });
     },
     onError: (error) => {
       setConfirmState(null);
       pushToast({
         tone: 'danger',
         title: 'Не удалось сбросить',
-        description: describeApiError(error, 'Повторите позже.'),
+        description: describeUserFacingError(error, 'Повторите позже.'),
       });
     },
   });
@@ -1087,7 +1091,7 @@ export const ManagedPollWorkspace = forwardRef<
       pushToast({
         tone: 'danger',
         title: 'Не удалось удалить',
-        description: describeApiError(error, 'Повторите позже.'),
+        description: describeUserFacingError(error, 'Повторите позже.'),
       });
     },
   });
@@ -1354,16 +1358,17 @@ export const ManagedPollWorkspace = forwardRef<
           onChange={setTab}
           ariaLabel="Опросы"
         />
-        <button
-          type="button"
-          className="managed-poll-workspace__create"
-          onClick={startNewPoll}
-          disabled={currentPolls.length > 0}
-          title={currentPolls.length > 0 ? 'Сначала завершите текущий опрос' : undefined}
-        >
-          <Plus aria-hidden />
-          Новый
-        </button>
+        {!pollsQuery.isLoading && !pollsInitialError && currentPolls.length === 0 ? (
+          <button
+            type="button"
+            className="managed-poll-workspace__create"
+            onClick={startNewPoll}
+            disabled={isBusy}
+          >
+            <Plus aria-hidden />
+            Новый
+          </button>
+        ) : null}
       </div>
 
       {pollsQuery.isLoading ? <SkeletonCard lines={5} /> : null}
@@ -1371,7 +1376,7 @@ export const ManagedPollWorkspace = forwardRef<
         <StatusState
           tone="danger"
           title="Опросы не загрузились"
-          description={describeApiError(pollsInitialError, 'Повторите позже.')}
+          description={describeUserFacingError(pollsInitialError, 'Повторите позже.')}
           action={
             <button
               type="button"
@@ -1394,17 +1399,7 @@ export const ManagedPollWorkspace = forwardRef<
       ) : null}
 
       {!pollsQuery.isLoading && !pollsInitialError && visiblePolls.length === 0 ? (
-        <StatusState
-          title={tab === 'current' ? 'Нет текущих опросов' : 'Архив пуст'}
-          action={
-            tab === 'current' ? (
-              <button type="button" className="managed-poll-action-button" onClick={startNewPoll}>
-                <Plus aria-hidden />
-                Создать
-              </button>
-            ) : undefined
-          }
-        />
+        <StatusState title={tab === 'current' ? 'Нет текущих опросов' : 'Архив пуст'} />
       ) : null}
 
       {visiblePolls.length > 0 ? (
@@ -1446,9 +1441,9 @@ export const ManagedPollWorkspace = forwardRef<
         open={confirmState !== null}
         title={
           confirmState?.kind === 'close'
-            ? 'Закрыть опрос?'
+            ? 'Завершить опрос?'
             : confirmState?.kind === 'reset-publication'
-              ? 'Поста нет в канале?'
+              ? 'Вернуть опрос в черновики?'
               : 'Удалить черновик?'
         }
         summary={
@@ -1461,16 +1456,16 @@ export const ManagedPollWorkspace = forwardRef<
         previewTitle={confirmQuestionPreview}
         confirmLabel={
           confirmState?.kind === 'close'
-            ? 'Закрыть'
+            ? 'Завершить'
             : confirmState?.kind === 'reset-publication'
-              ? 'Разблокировать'
+              ? 'Вернуть'
               : 'Удалить'
         }
         confirmBusyLabel={
           confirmState?.kind === 'close'
-            ? 'Закрываем...'
+            ? 'Завершаем...'
             : confirmState?.kind === 'reset-publication'
-              ? 'Сбрасываем...'
+              ? 'Возвращаем...'
               : 'Удаляем...'
         }
         tone="danger"

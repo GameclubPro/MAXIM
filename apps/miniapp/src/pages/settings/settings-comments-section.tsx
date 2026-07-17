@@ -125,10 +125,7 @@ export function SettingsCommentsSection({
                         onToggleHint={onToggleHint}
                         label="Как работают комментарии в чатах"
                       >
-                        В MAX нет нативных комментариев под сообщениями в чатах, поэтому бот сам
-                        публикует сообщение с кнопкой комментариев. Для постов админа бот отправляет
-                        копию с той же разметкой и удаляет исходное сообщение, а для автопостинга
-                        кнопка ставится сразу на сообщение бота.
+                        Бот добавляет кнопку комментариев к выбранным публикациям.
                       </SettingsHintAnchor>
                     </div>
                   </div>
@@ -154,19 +151,7 @@ export function SettingsCommentsSection({
                   <div className="settings-native-toggle">
                     <div className="settings-native-toggle__row">
                       <div className="settings-native-toggle__title-wrap">
-                        <span className="settings-native-toggle__title">Только у админов</span>
-                        <div className="settings-native-toggle__title-actions">
-                          <SettingsHintAnchor
-                            hintKey="commentsAdmins"
-                            openHintKey={openHintKey}
-                            onToggleHint={onToggleHint}
-                            label="Как работают комментарии для постов админов"
-                          >
-                            Когда пишет админ, бот публикует такое же сообщение от себя с кнопкой
-                            комментариев и удаляет исходное. Это нужно, потому что MAX не умеет
-                            вешать кнопку прямо под сообщением человека в чате.
-                          </SettingsHintAnchor>
-                        </div>
+                        <span className="settings-native-toggle__title">Под постами админов</span>
                       </div>
 
                       <label
@@ -176,9 +161,13 @@ export function SettingsCommentsSection({
                         <input
                           type="checkbox"
                           checked={draft.commentsAdminsEnabled}
-                          onChange={(event) =>
-                            onFieldChange('commentsAdminsEnabled', event.target.checked)
-                          }
+                          onChange={(event) => {
+                            if (!event.target.checked && !draft.commentsChatBroadcastsEnabled) {
+                              onToggleCommentsEnabled(false);
+                              return;
+                            }
+                            onFieldChange('commentsAdminsEnabled', event.target.checked);
+                          }}
                         />
                         <span className="toggle-switch" aria-hidden>
                           <span className="toggle-switch__thumb" />
@@ -190,18 +179,7 @@ export function SettingsCommentsSection({
                   <div className="settings-native-toggle">
                     <div className="settings-native-toggle__row">
                       <div className="settings-native-toggle__title-wrap">
-                        <span className="settings-native-toggle__title">Для автопостинга</span>
-                        <div className="settings-native-toggle__title-actions">
-                          <SettingsHintAnchor
-                            hintKey="commentsChatBroadcasts"
-                            openHintKey={openHintKey}
-                            onToggleHint={onToggleHint}
-                            label="Как работают комментарии для автопостинга"
-                          >
-                            Для автопостинга бот публикует сообщение сам и сразу добавляет в него
-                            кнопку комментариев. Сообщения участников чата при этом не заменяются.
-                          </SettingsHintAnchor>
-                        </div>
+                        <span className="settings-native-toggle__title">Под публикациями бота</span>
                       </div>
 
                       <label
@@ -211,9 +189,13 @@ export function SettingsCommentsSection({
                         <input
                           type="checkbox"
                           checked={draft.commentsChatBroadcastsEnabled}
-                          onChange={(event) =>
-                            onFieldChange('commentsChatBroadcastsEnabled', event.target.checked)
-                          }
+                          onChange={(event) => {
+                            if (!event.target.checked && !draft.commentsAdminsEnabled) {
+                              onToggleCommentsEnabled(false);
+                              return;
+                            }
+                            onFieldChange('commentsChatBroadcastsEnabled', event.target.checked);
+                          }}
                         />
                         <span className="toggle-switch" aria-hidden>
                           <span className="toggle-switch__thumb" />

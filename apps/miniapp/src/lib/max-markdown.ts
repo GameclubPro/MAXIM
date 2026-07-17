@@ -1,5 +1,6 @@
 type InlineToken =
   | { type: 'text'; content: string }
+  | { type: 'placeholder'; key: string; raw: string }
   | { type: 'bold' | 'italic' | 'underline' | 'strike'; children: InlineToken[] }
   | { type: 'code'; content: string }
   | { type: 'link'; href: string; children: InlineToken[] };
@@ -8,6 +9,7 @@ type RenderMarkdownOptions = {
   linkMode?: 'anchor' | 'underline';
   blockMode?: 'paragraphs' | 'raw' | 'inline';
   preserveCurlyBracePlaceholders?: boolean;
+  curlyBracePlaceholderLabels?: Readonly<Record<string, string>>;
 };
 
 const SAFE_LINK_PATTERN = /^(https?:\/\/|max:\/\/)/iu;
@@ -277,8 +279,14 @@ function parseInlineTokens(source: string, options: RenderMarkdownOptions = {}):
     if (options.preserveCurlyBracePlaceholders) {
       const placeholderMatch = CURLY_BRACE_PLACEHOLDER_PATTERN.exec(source.slice(cursor));
       if (placeholderMatch) {
-        plainText += placeholderMatch[0];
-        cursor += placeholderMatch[0].length;
+        const raw = placeholderMatch[0];
+        flushPlainText();
+        tokens.push({
+          type: 'placeholder',
+          key: raw.slice(1, -1),
+          raw,
+        });
+        cursor += raw.length;
         continue;
       }
     }
@@ -410,6 +418,8 @@ function renderInlineTokensAsPlainText(tokens: InlineToken[]): string {
       switch (token.type) {
         case 'text':
           return token.content;
+        case 'placeholder':
+          return token.raw;
         case 'code':
           return token.content;
         case 'bold':
@@ -429,6 +439,12 @@ function renderInlineTokens(tokens: InlineToken[], options: RenderMarkdownOption
       switch (token.type) {
         case 'text':
           return escapeHtmlPreservingWhitespace(token.content);
+        case 'placeholder': {
+          const label = options.curlyBracePlaceholderLabels?.[token.key];
+          return label
+            ? `<span class="max-rich-text-editor__placeholder-token" data-max-placeholder="${escapeAttribute(token.key)}" contenteditable="false">${escapeHtml(label)}</span>`
+            : escapeHtml(token.raw);
+        }
         case 'code':
           return `<code>${escapeHtmlPreservingWhitespace(token.content)}</code>`;
         case 'bold':

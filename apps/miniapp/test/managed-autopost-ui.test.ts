@@ -45,7 +45,7 @@ test('buildManagedAutopostRuleFacts names all-chat rules explicitly', () => {
       }),
       'Текущий чат',
     ),
-    ['Все чаты', '1 слот'],
+    ['Все чаты', '1 публикация'],
   );
 });
 
@@ -60,6 +60,6 @@ test('buildManagedAutopostRuleFacts keeps selected-chat counts compact', () => {
       }),
       'Текущий чат',
     ),
-    ['3 чата', '2 слота'],
+    ['3 чата', '2 публикации'],
   );
 });

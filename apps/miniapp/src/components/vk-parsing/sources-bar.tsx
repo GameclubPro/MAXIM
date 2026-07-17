@@ -2,7 +2,7 @@ import { type FormEvent } from 'react';
 import { InfoCircleSolid, PlusCircle, RefreshCircle, Trash } from 'iconoir-react';
 import type { VkParsingSource } from '@maxim/contracts';
 import { cn } from '../../lib/cn';
-import { formatVkSourceSyncLabel } from './format';
+import { formatVkSourceProblem, formatVkSourceSyncLabel } from './format';
 import { SOURCE_HINT, type VkParsingHintKey } from './types';
 
 type SourcesBarProps = {
@@ -20,16 +20,6 @@ type SourcesBarProps = {
   onSelectSource: (sourceId: string | null) => void;
   onRemoveSource: (sourceId: string) => void;
 };
-
-function formatSourceErrorTitle(source: VkParsingSource): string | undefined {
-  const reasonCode = source.circuitReasonCode ?? source.lastErrorCode;
-  const reason = source.circuitReason ?? source.lastError;
-  if (!reason && !reasonCode) {
-    return undefined;
-  }
-
-  return [reasonCode, reason].filter(Boolean).join(': ');
-}
 
 export function SourcesBar({
   sourceUrl,
@@ -120,7 +110,7 @@ export function SourcesBar({
           ) : null}
           {sources.map((source) => {
             const syncLabel = formatVkSourceSyncLabel(source);
-            const errorTitle = formatSourceErrorTitle(source);
+            const errorTitle = formatVkSourceProblem(source);
             return (
               <span
                 key={source.id}

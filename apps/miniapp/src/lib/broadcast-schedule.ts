@@ -1,3 +1,5 @@
+import { describeApiError } from './api-error';
+
 export const BROADCAST_SCHEDULE_MAX_DAYS = 31;
 export const BROADCAST_SCHEDULE_STEP_MINUTES = 30;
 export const BROADCAST_CYCLE_MIN_HOURS = 1;
@@ -9,6 +11,7 @@ export const BROADCAST_CYCLE_INTERVAL_OPTIONS = [1, 2, 6, 12, 24, 48, 72, 168] a
 
 export type BroadcastTimingMode = 'now' | 'scheduled' | 'cycle';
 export type BroadcastCycleStartMode = 'now' | 'later';
+export type BroadcastScheduleConflict = 'target' | 'slot';
 
 export type BroadcastCycleDraft = {
   startMode: BroadcastCycleStartMode;
@@ -28,6 +31,24 @@ export type BroadcastScheduleHandoffState = {
   cycleCount?: number;
   hasContent?: boolean;
 };
+
+export function resolveBroadcastScheduleConflict(
+  error: unknown,
+): BroadcastScheduleConflict | null {
+  const message = describeApiError(error, '');
+  if (message.includes('BROADCAST_TARGET_SLOT_CONFLICT')) {
+    return 'target';
+  }
+
+  if (
+    message.includes('BROADCAST_SLOT_CONFLICT') ||
+    message.toLocaleLowerCase('ru').includes('выбранное время')
+  ) {
+    return 'slot';
+  }
+
+  return null;
+}
 
 export function resolveBroadcastHandoffLoadMode(params: {
   requested: boolean;
@@ -397,7 +418,7 @@ export function countBroadcastScheduleDays(values: string[]): number {
 export function formatBroadcastScheduleSummary(values: string[]): string {
   const slots = sortAndUniqueBroadcastSlots(values);
   if (slots.length === 0) {
-    return 'слоты не выбраны';
+    return 'время не выбрано';
   }
 
   const first = formatBroadcastScheduleSlot(slots[0]);

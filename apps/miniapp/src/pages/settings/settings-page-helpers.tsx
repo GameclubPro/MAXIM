@@ -28,6 +28,7 @@ import type { PublishedRulesButtonToggleProps } from '../../components/published
 import { HOME_ENTITY_FAVORITE_ICONS } from '../../components/ui/compact-icons';
 import { formatBroadcastButtonsStatus } from '../../lib/broadcast-link-buttons';
 import { buildBroadcastAudiencePresentation } from '../../lib/broadcast-audience-presentation';
+import { describeUserFacingError } from '../../lib/user-facing-error';
 import {
   DEFAULT_BOT_SPEECH_PREVIEW_CONTEXT,
   resolveBotSpeechPreviewContext,
@@ -856,7 +857,7 @@ export const LINK_POLICY_OPTIONS: Array<{
     value: 'ALERT_ONLY',
     eyebrow: 'Наблюдение',
     label: 'Разрешать все',
-    description: 'Ссылки остаются в чате, а блок санкций скрыт.',
+    description: 'Ссылки остаются в чате.',
   },
   {
     value: 'BLOCKLIST_ONLY',
@@ -915,53 +916,7 @@ export function resolveBotMessageTemplate(customValue: string, fallbackTemplate:
 }
 
 export function formatApiError(error: unknown): string {
-  const rawMessage = error instanceof Error ? error.message : '';
-  const normalized = rawMessage.toLowerCase();
-  const trimmedMessage = rawMessage.trim();
-
-  const statusMatch = rawMessage.match(/api request failed:\s*(\d+)/i);
-  const statusCode = statusMatch ? Number.parseInt(statusMatch[1], 10) : null;
-
-  if (statusCode === 413) {
-    return 'Файл слишком большой для сервера. Уменьшите фото.';
-  }
-
-  const payloadMessageMatch = rawMessage.match(/"message":"([^"]+)"/i);
-  if (payloadMessageMatch?.[1]) {
-    return payloadMessageMatch[1];
-  }
-
-  if (
-    normalized.includes('internal server error') ||
-    normalized.includes('statuscode":500') ||
-    normalized.includes('api request failed: 500')
-  ) {
-    return 'Ошибка сервера. Повторите позже.';
-  }
-
-  if (
-    normalized.includes('failed to fetch') ||
-    normalized.includes('load failed') ||
-    normalized.includes('networkerror') ||
-    normalized.includes('network error')
-  ) {
-    return 'Нет соединения с сервером.';
-  }
-
-  if (
-    normalized.includes('aborterror') ||
-    normalized.includes('aborted') ||
-    normalized.includes('signal is aborted') ||
-    normalized.includes('cancelled')
-  ) {
-    return 'Запрос был прерван. Повторите попытку.';
-  }
-
-  if (trimmedMessage && !normalized.startsWith('api request failed:')) {
-    return trimmedMessage;
-  }
-
-  return trimmedMessage ? 'Не удалось выполнить запрос.' : 'Неизвестная ошибка.';
+  return describeUserFacingError(error, 'Не удалось выполнить действие.');
 }
 
 export function normalizeDayMinutes(value: number, fallback = 0): number {
@@ -1086,7 +1041,7 @@ export function formatMiniappBroadcastResultDescription(result: SendBroadcastRes
       ? `${result.failedChatPreviews[0]?.title}${result.failedChatOverflowCount > 0 ? ` +${result.failedChatOverflowCount}` : ''}`
       : '';
   if (result.sentChats === 0 && result.nextSendAt) {
-    return `Первый слот: ${formatRemovalDateTime(result.nextSendAt, result.scheduleTimezone)}.`;
+    return `Первая публикация: ${formatRemovalDateTime(result.nextSendAt, result.scheduleTimezone)}.`;
   }
 
   if (result.failedChats > 0) {
@@ -1097,7 +1052,7 @@ export function formatMiniappBroadcastResultDescription(result: SendBroadcastRes
   }
 
   if (result.nextSendAt && result.scheduledOccurrences > 0) {
-    return `Следующий слот: ${formatRemovalDateTime(result.nextSendAt, result.scheduleTimezone)}.`;
+    return `Следующая публикация: ${formatRemovalDateTime(result.nextSendAt, result.scheduleTimezone)}.`;
   }
 
   return sentTargetLabel
@@ -1179,7 +1134,7 @@ export function formatBroadcastPayloadScheduleLabel(payload: SendBroadcastPayloa
       return formatCompactBroadcastDateTime(slots[0], payload.scheduleTimezone);
     }
 
-    return formatRussianCountLabel(slots.length, 'слот', 'слота', 'слотов');
+    return formatRussianCountLabel(slots.length, 'публикация', 'публикации', 'публикаций');
   }
 
   if (payload.cycleEnabled) {
@@ -1347,7 +1302,12 @@ export function buildManagedBroadcastFactChips(broadcast: ManagedBroadcastListIt
   const scopeLabel = resolveManagedBroadcastScopeLabel(broadcast);
   const scheduleLabel =
     broadcast.scheduleMode === 'calendar'
-      ? formatRussianCountLabel(broadcast.scheduledSlots.length, 'слот', 'слота', 'слотов')
+      ? formatRussianCountLabel(
+          broadcast.scheduledSlots.length,
+          'публикация',
+          'публикации',
+          'публикаций',
+        )
       : broadcast.cycleEnabled
         ? `Цикл ${broadcast.sentCount}/${broadcast.cycleCount}`
         : '1 отправка';

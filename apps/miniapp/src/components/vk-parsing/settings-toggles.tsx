@@ -34,7 +34,7 @@ export function SettingsToggles({
   onToggleSetting,
 }: SettingsTogglesProps) {
   return (
-    <div className="vk-parsing-settings" aria-label="Настройки VK-парсинга">
+    <div className="vk-parsing-settings" aria-label="Настройки импорта из VK">
       {VK_PARSING_SETTING_TOGGLES.map((item) => (
         <div
           key={item.key}

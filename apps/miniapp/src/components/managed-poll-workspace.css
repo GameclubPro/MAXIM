@@ -458,8 +458,11 @@
   }
 
   .managed-poll-editor__back {
+    width: 44px;
     min-height: 44px;
-    padding-inline: 9px;
+    padding: 0;
+    display: grid;
+    place-items: center;
   }
 
   .managed-poll-editor__head > div {
@@ -499,11 +502,18 @@
   }
 
   .managed-poll-editor__composer .broadcast-message-card--editable {
-    min-height: 148px;
+    min-height: 118px;
+    padding: 8px;
   }
 
   .managed-poll-editor__composer .broadcast-message-card--editable .broadcast-message-card__phone {
-    min-height: 124px;
+    min-height: 96px;
+  }
+
+  .managed-poll-editor__composer
+    .broadcast-message-card--editable.is-empty
+    .broadcast-message-card__bubble {
+    min-height: 92px;
   }
 
   .managed-poll-editor__question.is-error .broadcast-message-card__bubble {
@@ -902,7 +912,7 @@
     }
 
     .managed-poll-editor__head {
-      grid-template-columns: minmax(0, 1fr);
+      grid-template-columns: auto minmax(0, 1fr);
     }
 
     .managed-poll-editor__back {
@@ -914,7 +924,7 @@
     }
 
     .managed-poll-editor__actions {
-      grid-template-columns: minmax(0, 1fr);
+      grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
     }
   }
 

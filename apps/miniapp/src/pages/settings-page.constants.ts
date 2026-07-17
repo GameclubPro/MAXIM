@@ -8,22 +8,22 @@ export const DUPLICATE_DETECTION_OPTIONS: Array<{
 }> = [
   {
     value: 'STRICT',
-    label: 'Строгий',
+    label: 'Похожие',
   },
   {
     value: 'STANDARD',
-    label: 'Точный',
+    label: 'Одинаковые',
   },
   {
     value: 'CUSTOM',
-    label: 'Свой',
+    label: 'Настроить',
   },
 ];
 
 export const DUPLICATE_DETECTION_LABELS: Record<DuplicateDetectionPreset, string> = {
-  STANDARD: 'Точный',
-  STRICT: 'Строгий',
-  CUSTOM: 'Свой',
+  STANDARD: 'Одинаковые',
+  STRICT: 'Похожие',
+  CUSTOM: 'Настроить',
 };
 
 export type NumericChatSettingKey =

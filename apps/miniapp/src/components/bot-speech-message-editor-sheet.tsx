@@ -24,6 +24,23 @@ type BotSpeechMessageEditorSheetProps = {
 
 const BOT_MESSAGE_EDITOR_MAX_LENGTH = 1000;
 const BOT_MESSAGE_EDITOR_IMAGE_MAX_BYTES = 4_000_000;
+const BOT_MESSAGE_PLACEHOLDER_LABELS: Readonly<Record<string, string>> = {
+  user: 'Имя',
+  bot_character_name: 'Имя бота',
+  message_status: 'Статус',
+  reason: 'Причина',
+  channels: 'Каналы',
+  required_invites: 'Нужно пригласить',
+  required_invites_count: 'Нужно всего',
+  invited_count: 'Приглашено',
+  remaining_invites: 'Осталось',
+  sanction: 'Действие',
+  mute_duration: 'Срок ограничения',
+  night_status: 'Статус чата',
+  night_window: 'Расписание',
+  night_timezone: 'Часовой пояс',
+  opening_status: 'Статус открытия',
+};
 
 function resolveBotMessageEditorPortalTarget(): Element | null {
   if (typeof document === 'undefined') {
@@ -169,10 +186,17 @@ export function BotSpeechMessageEditorSheet({
       >
         <header className="bot-message-editor-sheet__header">
           <div className="bot-message-editor-sheet__title-wrap">
-            <span className="bot-message-editor-sheet__status">
-              {isDefaultTemplate ? 'Готовый текст' : 'Свой текст'}
-            </span>
             <h2>{title}</h2>
+            <span
+              className={cn(
+                'bot-message-editor-sheet__counter',
+                isNearLimit && 'is-warning',
+                remainingLength < 0 && 'is-limit',
+              )}
+              aria-live="polite"
+            >
+              {editorValue.length}/{BOT_MESSAGE_EDITOR_MAX_LENGTH}
+            </span>
           </div>
           <button
             type="button"
@@ -184,19 +208,6 @@ export function BotSpeechMessageEditorSheet({
           </button>
         </header>
 
-        <div className="bot-message-editor-sheet__meta">
-          <span
-            className={cn(
-              'bot-message-editor-sheet__counter',
-              isNearLimit && 'is-warning',
-              remainingLength < 0 && 'is-limit',
-            )}
-            aria-live="polite"
-          >
-            {editorValue.length}/{BOT_MESSAGE_EDITOR_MAX_LENGTH}
-          </span>
-        </div>
-
         <div className="bot-message-editor-sheet__body">
           <MaxRichTextEditor
             ref={editorRef}
@@ -207,6 +218,7 @@ export function BotSpeechMessageEditorSheet({
             preserveCurlyBracePlaceholders
             ariaLabel={title}
             className="bot-message-editor-sheet__rich-editor"
+            curlyBracePlaceholderLabels={BOT_MESSAGE_PLACEHOLDER_LABELS}
           />
 
           {onImageChange ? (
@@ -321,20 +333,21 @@ export function BotSpeechMessageEditorSheet({
         </div>
 
         <footer className="bot-message-editor-sheet__actions">
-          <button
-            type="button"
-            className="button button--ghost bot-message-editor-sheet__reset"
-            onClick={() => {
-              setImageError('');
-              if (hasImage) {
-                onImageChange?.(null);
-              }
-              onReset();
-            }}
-            disabled={!canReset}
-          >
-            Сбросить
-          </button>
+          {canReset ? (
+            <button
+              type="button"
+              className="button button--ghost bot-message-editor-sheet__reset"
+              onClick={() => {
+                setImageError('');
+                if (hasImage) {
+                  onImageChange?.(null);
+                }
+                onReset();
+              }}
+            >
+              Сбросить
+            </button>
+          ) : null}
           <button
             type="button"
             className="button button--accent bot-message-editor-sheet__done"

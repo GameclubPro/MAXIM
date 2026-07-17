@@ -56,7 +56,12 @@ export function buildManagedAutopostRuleFacts(
 
   return [
     scopeLabel,
-    formatRussianCountLabel(rule.scheduledSlots.length, 'слот', 'слота', 'слотов'),
+    formatRussianCountLabel(
+      rule.scheduledSlots.length,
+      'публикация',
+      'публикации',
+      'публикаций',
+    ),
     rule.buttons.length > 0 ? formatBroadcastButtonsStatus(rule.buttons) : null,
     rule.hasVideo
       ? 'Видео'

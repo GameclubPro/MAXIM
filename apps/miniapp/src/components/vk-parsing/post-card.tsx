@@ -125,7 +125,6 @@ export function PostCard({
                 post.status === 'SKIPPED' && 'is-muted',
                 post.status === 'CHANGED_AFTER_PUBLISH' && 'is-warning',
               )}
-              title={post.autoPublishError ?? post.lastError ?? undefined}
             >
               {renderStatusIcon(post)}
               {visibleStatusLabel}
@@ -224,12 +223,14 @@ export function PostCard({
                 )}
               </span>
               <strong>
-                {unsupportedVideoFallbackUrl ? 'VK-клип доступен ссылкой' : 'Видео недоступно'}
+                {unsupportedVideoFallbackUrl
+                  ? 'Видео будет опубликовано ссылкой'
+                  : 'Видео недоступно'}
               </strong>
               <small>
                 {unsupportedVideoFallbackUrl
-                  ? 'VK API не отдает прямой MP4, пост опубликуется ссылкой на оригинал.'
-                  : (unsupportedVideo.reason ?? 'VK не отдал прямой файл видео.')}
+                  ? 'В публикации останется ссылка на оригинал.'
+                  : 'Это видео нельзя перенести автоматически.'}
               </small>
               {unsupportedVideoFallbackUrl ? (
                 <a
@@ -275,7 +276,7 @@ export function PostCard({
               {post.isAdvertising ? (
                 <span
                   className="vk-parsing-status-pill is-warning"
-                  title={post.advertisingMarkers.join(', ') || undefined}
+                  title="В посте есть признаки рекламы"
                 >
                   <ShieldCheck aria-hidden />
                   Реклама

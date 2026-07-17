@@ -182,7 +182,7 @@ export function SchedulerPanel({
           </span>
           <span>
             <b>{publishedCount}</b>
-            <small>Вышло</small>
+            <small>Опубликовано</small>
           </span>
         </div>
 

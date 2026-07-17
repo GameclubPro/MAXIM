@@ -144,7 +144,7 @@
 
 .settings-apply-target__mode {
   min-height: 44px;
-  padding: 8px;
+  padding: 7px 4px;
   text-align: center;
 }
 
@@ -163,30 +163,36 @@
 }
 
 .settings-apply-target__mode strong {
-  font-size: 0.78rem;
+  font-size: 0.66rem;
 }
 
 .settings-apply-target__favorites {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
-  overflow-x: auto;
-  scrollbar-width: none;
   padding: 10px 1px 2px;
 }
 
-.settings-apply-target__favorites::-webkit-scrollbar {
-  display: none;
+.settings-apply-target__favorite {
+  min-width: 0;
+  min-height: 56px;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 6px 4px;
+  font: inherit;
+  font-size: 0.68rem;
+  text-align: center;
 }
 
-.settings-apply-target__favorite {
-  min-width: max-content;
-  min-height: 44px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 10px;
-  font: inherit;
-  font-size: 0.76rem;
+.settings-apply-target__favorite span {
+  min-width: 0;
+  line-height: 1.15;
+  overflow-wrap: normal;
+  word-break: normal;
+  white-space: normal;
 }
 
 .settings-apply-target__preview {
@@ -247,7 +253,11 @@ html[data-max-theme='dark'] .settings-apply-target__header span {
 
 html[data-max-theme='dark']
   .settings-apply-target
-  :is(.settings-apply-target__close, .settings-apply-target__mode, .settings-apply-target__favorite) {
+  :is(
+    .settings-apply-target__close,
+    .settings-apply-target__mode:not(.is-active),
+    .settings-apply-target__favorite:not(.is-active)
+  ) {
   border-color: var(--border-subtle);
   background: var(--surface-card-muted);
   color: var(--text-primary);
@@ -257,6 +267,56 @@ html[data-max-theme='dark'] .settings-apply-target__mode.is-active {
   border-color: color-mix(in srgb, var(--accent) 48%, var(--border-subtle));
   background: color-mix(in srgb, var(--accent) 16%, var(--surface-card-muted));
   color: var(--accent);
+}
+
+html[data-max-theme='dark'] .settings-apply-target__favorite.is-important {
+  --apply-category-accent: var(--favorite-important-dark-accent);
+  --apply-category-surface: var(--favorite-important-dark-surface);
+  --apply-category-border: var(--favorite-important-dark-border);
+}
+
+html[data-max-theme='dark'] .settings-apply-target__favorite.is-watch {
+  --apply-category-accent: var(--favorite-watch-dark-accent);
+  --apply-category-surface: var(--favorite-watch-dark-surface);
+  --apply-category-border: var(--favorite-watch-dark-border);
+}
+
+html[data-max-theme='dark'] .settings-apply-target__favorite.is-broadcast {
+  --apply-category-accent: var(--favorite-broadcast-dark-accent);
+  --apply-category-surface: var(--favorite-broadcast-dark-surface);
+  --apply-category-border: var(--favorite-broadcast-dark-border);
+}
+
+html[data-max-theme='dark'] .settings-apply-target__favorite.is-test {
+  --apply-category-accent: var(--favorite-test-dark-accent);
+  --apply-category-surface: var(--favorite-test-dark-surface);
+  --apply-category-border: var(--favorite-test-dark-border);
+}
+
+html[data-max-theme='dark'] .settings-apply-target__favorite.is-partner {
+  --apply-category-accent: var(--favorite-partner-dark-accent);
+  --apply-category-surface: var(--favorite-partner-dark-surface);
+  --apply-category-border: var(--favorite-partner-dark-border);
+}
+
+html[data-max-theme='dark'] .settings-apply-target__favorite.is-service {
+  --apply-category-accent: var(--favorite-service-dark-accent);
+  --apply-category-surface: var(--favorite-service-dark-surface);
+  --apply-category-border: var(--favorite-service-dark-border);
+}
+
+html[data-max-theme='dark'] .settings-apply-target__favorite.is-active {
+  border-color: var(--apply-category-border);
+  background: var(--apply-category-surface);
+  color: var(--text-primary);
+}
+
+html[data-max-theme='dark'] .settings-apply-target__favorite.is-active span {
+  color: var(--text-primary);
+}
+
+html[data-max-theme='dark'] .settings-apply-target__favorite.is-active svg {
+  color: var(--apply-category-accent);
 }
 
 html[data-max-theme='dark'] .settings-apply-target__preview {

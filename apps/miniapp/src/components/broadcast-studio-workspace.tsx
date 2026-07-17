@@ -128,42 +128,40 @@ export function BroadcastWorkspaceChrome({
     onChange('autoposts');
   }, [chatId, location.search, onChange, showTabs]);
 
-  return (
-    <>
-      {chatId ? (
-        <div className={`broadcast-studio-shell__handoff${showTabs ? ' is-compact' : ''}`}>
-          <PublicationWorkspaceHandoff entityType={entityType} entityId={chatId} />
-        </div>
+  return showTabs || showReset || chatId ? (
+    <div className="broadcast-studio-shell__topbar broadcast-studio-screen__nav">
+      {showTabs ? (
+        <BroadcastWorkspaceTabs
+          value={value}
+          autopostCount={autopostCount}
+          historyCount={historyCount}
+          compatibilityOnly={compatibilityOnly}
+          disabled={disabled}
+          onChange={onChange}
+        />
       ) : null}
-      {showTabs || showReset ? (
-        <div className="broadcast-studio-shell__topbar broadcast-studio-screen__nav">
-          {showTabs ? (
-            <BroadcastWorkspaceTabs
-              value={value}
-              autopostCount={autopostCount}
-              historyCount={historyCount}
-              compatibilityOnly={compatibilityOnly}
-              disabled={disabled}
-              onChange={onChange}
-            />
-          ) : null}
 
-          {showReset ? (
-            <button
-              type="button"
-              className="broadcast-shell-reset"
-              onClick={onReset}
-              disabled={disabled}
-              aria-label={effectiveResetLabel}
-              title={effectiveResetLabel}
-            >
-              <ResetIcon />
-            </button>
-          ) : null}
-        </div>
-      ) : null}
-    </>
-  );
+      <div className="broadcast-studio-shell__topbar-actions">
+        {chatId ? (
+          <div className="broadcast-studio-shell__handoff is-compact">
+            <PublicationWorkspaceHandoff entityType={entityType} entityId={chatId} />
+          </div>
+        ) : null}
+        {showReset ? (
+          <button
+            type="button"
+            className="broadcast-shell-reset"
+            onClick={onReset}
+            disabled={disabled}
+            aria-label={effectiveResetLabel}
+            title={effectiveResetLabel}
+          >
+            <ResetIcon />
+          </button>
+        ) : null}
+      </div>
+    </div>
+  ) : null;
 }
 
 export function BroadcastHistoryFilterTabs({

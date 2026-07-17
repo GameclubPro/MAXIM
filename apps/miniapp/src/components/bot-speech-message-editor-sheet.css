@@ -31,11 +31,11 @@ html[data-max-client='native'] .design-preview__device-screen .bot-message-edito
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
   gap: 10px;
   width: min(100%, 580px);
-  max-height: min(86dvh, 720px);
-  min-height: min(560px, 86dvh);
+  max-height: min(82dvh, 650px);
+  min-height: min(460px, 78dvh);
   overflow: hidden;
   border: 1px solid rgba(142, 162, 178, 0.28);
   border-radius: 26px 26px 0 0;
@@ -48,7 +48,6 @@ html[data-max-client='native'] .design-preview__device-screen .bot-message-edito
 }
 
 .bot-message-editor-sheet__header,
-.bot-message-editor-sheet__meta,
 .bot-message-editor-sheet__actions {
   display: flex;
   align-items: center;
@@ -62,7 +61,6 @@ html[data-max-client='native'] .design-preview__device-screen .bot-message-edito
   gap: 4px;
 }
 
-.bot-message-editor-sheet__status,
 .bot-message-editor-sheet__counter {
   width: fit-content;
   border: 1px solid rgba(132, 152, 169, 0.22);
@@ -167,14 +165,14 @@ html[data-max-client='native'] .design-preview__device-screen .bot-message-edito
 
 .bot-message-editor-sheet__rich-editor {
   width: min(100%, 430px);
-  min-height: clamp(220px, 42dvh, 390px);
+  min-height: clamp(128px, 24dvh, 220px);
   border-radius: 18px 18px 6px 18px;
   background: #dff4ff;
   padding: 12px 12px 18px;
 }
 
 .bot-message-editor-sheet__rich-editor .max-rich-text-editor__surface {
-  min-height: clamp(190px, 36dvh, 340px);
+  min-height: clamp(108px, 20dvh, 196px);
 }
 
 .bot-message-editor-sheet__media {
@@ -286,7 +284,7 @@ html[data-max-client='native'] .design-preview__device-screen .bot-message-edito
 
 .bot-message-editor-sheet__loading {
   width: min(100%, 430px);
-  min-height: clamp(220px, 42dvh, 390px);
+  min-height: clamp(128px, 24dvh, 220px);
   border-radius: 18px 18px 6px 18px;
   background:
     linear-gradient(
@@ -326,7 +324,6 @@ html[data-max-theme='dark'] .bot-message-editor-sheet__panel {
 
 html[data-max-theme='dark']
   :is(
-    .bot-message-editor-sheet__status,
     .bot-message-editor-sheet__counter,
     .bot-message-editor-sheet__close,
     .bot-message-editor-sheet__tool,
@@ -433,7 +430,7 @@ html[data-max-theme='dark'] .bot-message-editor-sheet .button--accent:disabled {
   .bot-message-editor-sheet__panel {
     border-radius: 26px;
     max-height: min(82dvh, 700px);
-    min-height: min(600px, 82dvh);
+    min-height: min(520px, 78dvh);
   }
 }
 }

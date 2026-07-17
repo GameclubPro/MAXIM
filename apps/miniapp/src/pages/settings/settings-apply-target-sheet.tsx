@@ -67,9 +67,8 @@ export function SettingsApplyTargetSheet({
   onConfirm,
 }: SettingsApplyTargetSheetProps) {
   const panelRef = useRef<HTMLElement | null>(null);
-  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const isOpen = Boolean(sheet);
-  useDialogFocusTrap(isOpen, panelRef, closeButtonRef);
+  useDialogFocusTrap(isOpen, panelRef, panelRef);
   const favoriteStorageScope = useMemo(() => {
     const userId = getInitDataUserId()?.trim();
     return userId ? `u:${userId}` : getHomeEntityFavoritesFallbackScope();
@@ -141,13 +140,21 @@ export function SettingsApplyTargetSheet({
     !previewLoading && !previewError && !isApplying && (preview?.updatedChats ?? 0) > 0;
 
   function updateFavoriteType(favoriteType: ManagedEntityFavoriteType) {
-    const currentTypes = target.favoriteTypes;
+    const currentTypes =
+      target.mode === 'allFavorites' ? [...HOME_ENTITY_FAVORITE_TYPES] : target.favoriteTypes;
     const nextTypes = currentTypes.includes(favoriteType)
       ? currentTypes.filter((item) => item !== favoriteType)
       : [...currentTypes, favoriteType];
 
+    if (nextTypes.length === 0) {
+      return;
+    }
+
     onTargetChange({
-      mode: nextTypes.length > 0 ? 'favoriteTypes' : 'allFavorites',
+      mode:
+        nextTypes.length === HOME_ENTITY_FAVORITE_TYPES.length
+          ? 'allFavorites'
+          : 'favoriteTypes',
       favoriteTypes: nextTypes,
       chatIds: [],
     });
@@ -176,11 +183,10 @@ export function SettingsApplyTargetSheet({
       >
         <div className="settings-apply-target__header">
           <div>
-            <strong id={titleId}>Применить: {sectionLabel}</strong>
-            <span id={descriptionId}>Выберите чаты, в которых нужно заменить этот раздел.</span>
+            <strong id={titleId}>Куда применить: {sectionLabel}</strong>
+            <span id={descriptionId}>Настройки заменятся в выбранных чатах.</span>
           </div>
           <button
-            ref={closeButtonRef}
             type="button"
             className="settings-apply-target__close"
             aria-label="Закрыть выбор чатов"
@@ -193,18 +199,23 @@ export function SettingsApplyTargetSheet({
 
         <div className="settings-apply-target__modes" role="group" aria-label="Область применения">
           {[
-            { mode: 'current' as const, title: 'Текущий' },
-            { mode: 'all' as const, title: 'Все' },
-            { mode: 'allFavorites' as const, title: 'Избранные' },
+            { mode: 'current' as const, title: 'Этот чат' },
+            { mode: 'all' as const, title: 'Все чаты' },
+            { mode: 'allFavorites' as const, title: 'Категории' },
           ].map((item) => (
             <button
               key={item.mode}
               type="button"
               className={cn(
                 'settings-apply-target__mode',
-                target.mode === item.mode && 'is-active',
+                (target.mode === item.mode ||
+                  (item.mode === 'allFavorites' && target.mode === 'favoriteTypes')) &&
+                  'is-active',
               )}
-              aria-pressed={target.mode === item.mode}
+              aria-pressed={
+                target.mode === item.mode ||
+                (item.mode === 'allFavorites' && target.mode === 'favoriteTypes')
+              }
               onClick={() =>
                 onTargetChange({
                   mode: item.mode,
@@ -218,35 +229,41 @@ export function SettingsApplyTargetSheet({
           ))}
         </div>
 
-        <div className="settings-apply-target__favorites" data-allow-horizontal-overflow>
-          {HOME_ENTITY_FAVORITE_TYPES.map((favoriteType) => {
-            const FavoriteIcon = HOME_ENTITY_FAVORITE_ICONS[favoriteType];
-            const active =
-              target.mode === 'favoriteTypes' && target.favoriteTypes.includes(favoriteType);
+        {target.mode === 'allFavorites' || target.mode === 'favoriteTypes' ? (
+          <div
+            className="settings-apply-target__favorites"
+            role="group"
+            aria-label="Категории избранного"
+          >
+            {HOME_ENTITY_FAVORITE_TYPES.map((favoriteType) => {
+              const FavoriteIcon = HOME_ENTITY_FAVORITE_ICONS[favoriteType];
+              const active =
+                target.mode === 'allFavorites' || target.favoriteTypes.includes(favoriteType);
 
-            return (
-              <button
-                key={favoriteType}
-                type="button"
-                className={cn(
-                  'settings-apply-target__favorite',
-                  `is-${favoriteType}`,
-                  active && 'is-active',
-                )}
-                aria-pressed={active}
-                title={HOME_ENTITY_FAVORITE_TITLES[favoriteType]}
-                onClick={() => updateFavoriteType(favoriteType)}
-              >
-                <FavoriteIcon aria-hidden />
-                <span>{favoriteLabels[favoriteType]}</span>
-              </button>
-            );
-          })}
-        </div>
+              return (
+                <button
+                  key={favoriteType}
+                  type="button"
+                  className={cn(
+                    'settings-apply-target__favorite',
+                    `is-${favoriteType}`,
+                    active && 'is-active',
+                  )}
+                  aria-pressed={active}
+                  title={HOME_ENTITY_FAVORITE_TITLES[favoriteType]}
+                  onClick={() => updateFavoriteType(favoriteType)}
+                >
+                  <FavoriteIcon aria-hidden />
+                  <span>{favoriteLabels[favoriteType]}</span>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
 
         <div className="settings-apply-target__preview">
           {previewLoading ? (
-            <span>...</span>
+            <span>Считаем…</span>
           ) : previewError ? (
             <span className="is-danger">{previewError}</span>
           ) : (
@@ -270,7 +287,7 @@ export function SettingsApplyTargetSheet({
             disabled={!canConfirm}
           >
             <span className="settings-apply-target__confirm-label">
-              {isApplying ? '...' : 'Применить'}
+              {isApplying ? 'Применяем…' : 'Применить'}
             </span>
           </button>
         </div>

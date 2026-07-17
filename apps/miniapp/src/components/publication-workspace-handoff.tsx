@@ -48,7 +48,7 @@ export function PublicationWorkspaceHandoff({
           <span className="publication-workspace-handoff__status">Открыть</span>
         </>
       ) : (
-        <span>Создать новый пост</span>
+        <span>Открыть публикации</span>
       )}
       {variant === 'settings-tile' ? null : <NavArrowRight aria-hidden />}
     </Link>

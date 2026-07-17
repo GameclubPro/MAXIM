@@ -1,11 +1,9 @@
 import type { VkParsingSettings, VkParsingSource } from '@maxim/contracts';
 import type { VkParsingEntityType } from '../lib/api/vk-parsing-client';
 import type { ApiTransport } from '../lib/api/transport';
-import { HealthSummary } from './vk-parsing/health-summary';
 import { Pagination } from './vk-parsing/pagination';
 import { PostList } from './vk-parsing/post-list';
 import { QueueTimeline } from './vk-parsing/queue-timeline';
-import { SafetyPanel } from './vk-parsing/safety-panel';
 import {
   SchedulerPanel,
   type AutopostStatusModel,
@@ -119,7 +117,7 @@ function buildAutopostStatus(
 
   if (isPaused) {
     title = 'Пауза';
-    reason = 'Стоп включён';
+    reason = 'Автопубликация приостановлена';
     tone = 'danger';
   } else if (hasSourceError) {
     title = 'Ошибка';
@@ -127,7 +125,7 @@ function buildAutopostStatus(
     tone = 'danger';
   } else if (!settings.autoPublishEnabled) {
     title = 'Ручной';
-    reason = 'Общий тумблер выключен';
+    reason = 'Автопубликация выключена';
   } else if (activeSourceCount === 0) {
     title = 'Ручной';
     reason = 'Нет активных источников';
@@ -137,11 +135,11 @@ function buildAutopostStatus(
     reason = 'Авто выключено у источников';
     tone = 'warning';
   } else if (!timeWindow.ready) {
-    title = 'Пауза';
-    reason = 'Тихие часы';
+    title = 'Авто';
+    reason = 'Пауза по расписанию';
     tone = 'warning';
   } else if (isWorking) {
-    title = 'Работает';
+    title = 'Авто';
     reason = 'Готово к публикации';
     tone = 'success';
   }
@@ -262,31 +260,18 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
         />
       </section>
 
-      {feed ? (
-        <section className="vk-parsing-service-section" aria-label="Служебные действия">
-          {feed.queue.length > 0 ? (
-            <details className="vk-parsing-fold vk-parsing-fold--secondary">
-              <summary>Очередь · {feed.queue.length}</summary>
-              <QueueTimeline
-                posts={feed.queue}
-                schedulingPostId={state.schedulingPostId}
-                cancelingPostId={state.cancelingPostId}
-                publishingNowPostId={state.publishingNowPostId}
-                onSchedulePost={state.schedulePost}
-                onCancelPost={state.cancelScheduledPost}
-                onPublishNow={state.publishPostNow}
-              />
-            </details>
-          ) : null}
-
+      {feed && feed.queue.length > 0 ? (
+        <section className="vk-parsing-service-section" aria-label="Запланированные публикации">
           <details className="vk-parsing-fold vk-parsing-fold--secondary">
-            <summary>Состояние и откат</summary>
-            <HealthSummary summary={feed.summary} />
-            <SafetyPanel
-              sources={sources}
-              auditEvents={feed.auditEvents}
-              isRollingBack={state.isRollingBack}
-              onRollback={state.rollback}
+            <summary>Очередь · {feed.queue.length}</summary>
+            <QueueTimeline
+              posts={feed.queue}
+              schedulingPostId={state.schedulingPostId}
+              cancelingPostId={state.cancelingPostId}
+              publishingNowPostId={state.publishingNowPostId}
+              onSchedulePost={state.schedulePost}
+              onCancelPost={state.cancelScheduledPost}
+              onPublishNow={state.publishPostNow}
             />
           </details>
         </section>
