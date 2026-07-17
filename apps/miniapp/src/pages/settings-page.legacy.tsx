@@ -4824,8 +4824,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     !mailingVideoCleared &&
     mailingVideoSource?.mediaType === 'video' &&
     Boolean(mailingVideoSource.mediaPayload);
-  const mailingImageLabel =
-    mailingImages.length > 1 ? `${mailingImages.length} фото` : mailingImageEnabled ? 'Фото' : null;
   const mailingHasDirectContent = Boolean(
     normalizedMailingText || mailingImageEnabled || editingMailingHasVideo,
   );
@@ -4846,21 +4844,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         : mailingScheduledSlots.length > 0
           ? mailingSlotsLabel
           : 'Без времени';
-  const mailingSelectionSummary = [
-    mailingPlannerState.selectedDayCount > 0
-      ? formatRussianCountLabel(mailingPlannerState.selectedDayCount, 'день', 'дня', 'дней')
-      : null,
-    mailingPlannerState.futureSlotCount > 0
-      ? formatRussianCountLabel(
-          mailingPlannerState.futureSlotCount,
-          'отправка',
-          'отправки',
-          'отправок',
-        )
-      : null,
-  ]
-    .filter(Boolean)
-    .join(' · ');
   const mailingHeaderSummary = [mailingHeaderTargetLabel, mailingTimingSummary]
     .filter(Boolean)
     .join(' · ');
@@ -5590,10 +5573,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                         const scheduledAtLabel = formatRemovalDateTime(
                                           entry.removeAfterAt,
                                         );
-                                        const entryIdSuffix = encodeURIComponent(
-                                          entry.normalizedValue,
-                                        );
-
                                         return (
                                           <li
                                             key={entry.normalizedValue}
