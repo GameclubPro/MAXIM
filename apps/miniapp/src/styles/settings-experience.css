@@ -509,6 +509,1298 @@
     color: var(--text-primary);
   }
 
+  /* Deep settings use native grouped surfaces instead of nested decorative cards. */
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--ladder
+    .settings-native-toggle,
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--ladder
+    .settings-native-toggle:has(.settings-native-switch input:checked) {
+    min-height: 52px;
+    padding: 8px 10px;
+    border-color: var(--border-subtle);
+    background: var(--surface-card);
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    :is(.settings-drilldown__panel--comments, .settings-drilldown__panel--extra)
+    .settings-section__collapse-inner {
+    gap: 0;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    :is(.settings-drilldown__panel--comments, .settings-drilldown__panel--extra)
+    .settings-native-toggle {
+    border-radius: 0;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    :is(.settings-drilldown__panel--comments, .settings-drilldown__panel--extra)
+    .settings-native-toggle:first-child {
+    border-radius: 8px 8px 0 0;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    :is(.settings-drilldown__panel--comments, .settings-drilldown__panel--extra)
+    .settings-native-toggle:last-child {
+    border-radius: 0 0 8px 8px;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    :is(.settings-drilldown__panel--comments, .settings-drilldown__panel--extra)
+    .settings-native-toggle
+    + .settings-native-toggle {
+    border-top: 0;
+  }
+
+  /* Link moderation has one surface for entry and one grouped list for results. */
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    :is(.settings-policy, .allowlist-panel) {
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    :is(.settings-policy > .field__label, .allowlist-panel__head .field__label) {
+    min-height: 0;
+    padding: 0 2px;
+    color: var(--text-secondary);
+    font-size: 0.76rem;
+    font-weight: 720;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    .allowlist-composer {
+    gap: 8px;
+    padding: 9px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card-muted);
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    .allowlist-list {
+    gap: 0;
+    overflow: hidden;
+    margin: 0;
+    padding: 0;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card);
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    .allowlist-item {
+    padding: 9px 10px;
+    border: 0;
+    border-bottom: 1px solid var(--border-subtle);
+    border-radius: 0;
+    background: var(--surface-card);
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    .allowlist-item:last-child {
+    border-bottom: 0;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    .allowlist-item::before {
+    content: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    :is(.settings-mode-segments, .allowlist-composer__mode),
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    .allowlist-add-row
+    input {
+    border-radius: 8px;
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    .allowlist-item__schedule-editor {
+    margin-top: 8px;
+    padding: 9px 0 0;
+    border: 0;
+    border-top: 1px solid var(--border-subtle);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    .allowlist-item__schedule-field {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    :is(.allowlist-item__action, .allowlist-add-row__button) {
+    border-radius: 8px;
+    box-shadow: none;
+  }
+
+  /* Night schedule keeps both times visible and removes the redundant field shells. */
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--night
+    .settings-native-toggle:has(> .night-window-grid) {
+    gap: 8px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--night
+    .night-window-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    border: 0;
+    background: transparent;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--night
+    .night-window-grid__field {
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--night
+    .night-window-grid__field
+    .time-field__button {
+    min-height: 68px;
+    gap: 6px;
+    padding: 8px 8px 8px 10px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card);
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--night
+    .night-window-grid__field
+    .time-field__icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 7px;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--night
+    .night-window-grid__field
+    .time-field__label {
+    color: var(--text-secondary);
+    font-size: 0.69rem;
+    line-height: 1.15;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--night
+    .night-window-grid__field
+    .time-field__value {
+    font-size: 1rem;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--night
+    .settings-native-toggle:has(> .night-window-grid)
+    > .field {
+    gap: 6px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--night
+    .settings-native-toggle:has(> .night-window-grid)
+    > .field
+    select {
+    min-height: 46px;
+    border-radius: 8px;
+    background: var(--surface-card-muted);
+    box-shadow: none;
+  }
+
+  /* Expanded duplicate and commercial controls remain inline with their grouped rows. */
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--duplicates
+    .settings-policy {
+    gap: 6px;
+    padding: 0 0 8px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--duplicates
+    .duplicate-stage {
+    padding: 10px;
+    border: 0;
+    border-bottom: 1px solid var(--border-subtle);
+    border-radius: 0;
+    background: var(--surface-card);
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--duplicates
+    .duplicate-stage__field {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--duplicates
+    .duplicate-stage__field
+    input,
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--duplicates
+    :is(.duplicate-count-stepper__button, .duplicate-count-stepper__value) {
+    border-radius: 8px;
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--duplicates
+    .settings-duration-editor {
+    margin-top: 8px;
+    padding: 9px 0 0;
+    border: 0;
+    border-top: 1px solid var(--border-subtle);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--commercial
+    .commercial-sensitivity-slider {
+    padding: 9px 0 0;
+    border: 0;
+    border-top: 1px solid var(--border-subtle);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--commercial
+    .commercial-sensitivity-slider__head
+    .chip,
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--limits
+    .settings-native-toggle__status {
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  /* Required subscription keeps the picker as the only framed tool. */
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__board {
+    gap: 10px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__heading
+    :is(strong, small),
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--required-subscription
+    :is(
+      .required-subscription__selection-kind,
+      .required-subscription__selection-state,
+      .required-subscription__source-type
+    ) {
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    color: var(--text-secondary);
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--required-subscription
+    :is(.required-subscription__selection-list, .required-subscription__source-list.is-static) {
+    gap: 0;
+    overflow: hidden;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card);
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__source-list.is-static
+    .required-subscription__source-row {
+    height: auto;
+    padding-bottom: 0;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__selection-card,
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__source-list.is-static
+    .required-subscription__source-card {
+    border: 0;
+    border-bottom: 1px solid var(--border-subtle);
+    border-radius: 0;
+    background: var(--surface-card);
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__selection-list
+    > .required-subscription__selection-card:last-child,
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__source-list.is-static
+    > .required-subscription__source-row:last-child
+    .required-subscription__source-card {
+    border-bottom: 0;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__source-picker {
+    gap: 8px;
+    padding: 8px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card-muted);
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--required-subscription
+    :is(.required-subscription__source-add, .required-subscription__selection-remove) {
+    border-radius: 8px;
+    letter-spacing: 0;
+    text-transform: none;
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__external-source,
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__button-label {
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__external-source
+    .field {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  /* Rules are a workspace, but their simple settings still read as one grouped list. */
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--rules-screen
+    :is(.broadcast-stage-card--message, .broadcast-stage-card--rules-settings) {
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--rules-screen
+    .broadcast-stage-card--rules-settings
+    .broadcast-stage-card__body {
+    gap: 0;
+    overflow: hidden;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card);
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--rules-screen
+    .rules-native-card {
+    border: 0;
+    border-bottom: 1px solid var(--border-subtle);
+    border-radius: 0;
+    background: var(--surface-card);
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--rules-screen
+    .rules-native-card:last-child {
+    border-bottom: 0;
+  }
+
+  /* Compact channel sheets and neutral rows avoid empty or accent-filled screens. */
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel:is(
+      .settings-drilldown__panel--channel-comments,
+      .settings-drilldown__panel--channel-giveaway
+    ) {
+    min-height: 0;
+    height: auto;
+    max-height: calc(var(--app-viewport-height) - var(--settings-drilldown-top-offset));
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel:is(
+      .settings-drilldown__panel--channel-comments,
+      .settings-drilldown__panel--channel-giveaway
+    )
+    .settings-drilldown__content {
+    flex: 0 1 auto;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--post-suggestions-screen:has(
+      .channel-settings-toggle-card:not(.is-on)
+    ) {
+    width: min(100%, 760px);
+    min-height: 0;
+    height: auto;
+    max-height: calc(var(--app-viewport-height) - var(--settings-drilldown-top-offset));
+    margin: auto 0 0;
+    border-radius: 14px 14px 0 0;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--post-suggestions-screen:has(
+      .channel-settings-toggle-card:not(.is-on)
+    )
+    .settings-drilldown__content {
+    flex: 0 1 auto;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    :is(
+      .settings-drilldown__panel--channel-comments,
+      .settings-drilldown__panel--post-suggestions-screen
+    )
+    .channel-settings-toggle-card,
+  body.settings-drilldown-open
+    .settings-drilldown
+    :is(
+      .settings-drilldown__panel--channel-comments,
+      .settings-drilldown__panel--post-suggestions-screen
+    )
+    .channel-settings-toggle-card.is-on {
+    min-height: 52px;
+    padding: 8px 10px;
+    border-color: var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card);
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    :is(
+      .settings-drilldown__panel--channel-comments,
+      .settings-drilldown__panel--post-suggestions-screen
+    )
+    .field {
+    gap: 6px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    :is(
+      .settings-drilldown__panel--channel-comments,
+      .settings-drilldown__panel--post-suggestions-screen
+    )
+    .field
+    > span {
+    min-height: 0;
+    padding: 0 2px;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--post-suggestions-screen
+    .field__number-wrap
+    small {
+    color: var(--text-secondary);
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--channel-comments
+    .channel-settings-toggle-grid {
+    gap: 0;
+    overflow: hidden;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card);
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--channel-comments
+    .channel-settings-toggle-grid
+    .channel-settings-toggle-card {
+    border: 0;
+    border-bottom: 1px solid var(--border-subtle);
+    border-radius: 0;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--channel-comments
+    .channel-settings-toggle-grid
+    .channel-settings-toggle-card:last-child {
+    border-bottom: 0;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--channel-giveaway
+    .managed-giveaway__surface {
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  /* Poll results stay on one action row; the editor exposes only its real input surface. */
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--polls
+    .managed-poll-editor__composer
+    .broadcast-message-card--editable {
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--polls
+    .managed-poll-editor__composer
+    .broadcast-message-card__phone,
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--polls
+    .managed-poll-editor__composer
+    .broadcast-message-card__bubble {
+    min-height: 112px;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--polls
+    .managed-poll-editor__composer
+    .broadcast-message-card__phone {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--polls
+    .managed-poll-editor__composer
+    .broadcast-message-card__bubble {
+    width: 100%;
+    border-radius: 8px;
+    background: var(--surface-card-muted);
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--polls
+    .managed-poll-editor__composer
+    .broadcast-content-composer__editor--rich {
+    padding: 0;
+    overflow: hidden;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card-muted);
+    box-shadow: none;
+  }
+
+  /* Full-screen routes use the viewport edge as their frame. */
+  body.settings-drilldown-open
+    .settings-drilldown.settings-drilldown--screen
+    > .settings-drilldown__panel {
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--post-suggestions-screen:has(
+      .channel-settings-toggle-card:not(.is-on)
+    ) {
+    position: absolute;
+    inset: auto 0 0;
+    margin: 0 auto;
+  }
+
+  html:not([data-max-theme='dark'])
+    body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--channel-giveaway
+    .managed-giveaway__badge.is-warning {
+    color: var(--text-primary);
+  }
+
+  html[data-max-theme='dark']
+    body.settings-drilldown-open
+    .settings-drilldown
+    .toggle-switch__thumb {
+    background: var(--color-on-accent);
+    box-shadow: none;
+  }
+
+  /* Link schedules keep date and time in one compact, legible row. */
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    .allowlist-item__schedule-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    .allowlist-item__schedule-field
+    :is(.date-field__label, .time-field__label) {
+    min-height: 0;
+    padding: 0 2px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    .allowlist-item__schedule-field
+    :is(.date-field__control, .time-field__button) {
+    min-height: 52px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card-muted);
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    .allowlist-item__schedule-field
+    .date-field__control {
+    grid-template-columns: minmax(0, 1fr) 14px;
+    gap: 2px;
+    padding-inline: 6px;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    .allowlist-item__schedule-field
+    .date-field__value {
+    font-size: 0.76rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    .allowlist-item__schedule-field
+    .date-field__control
+    svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    .allowlist-item__schedule-actions {
+    grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+    gap: 8px;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    .allowlist-item__schedule-actions
+    .button {
+    min-height: 44px;
+    border-radius: 8px;
+    box-shadow: none;
+  }
+
+  /* The link button editor is a form section, not another stack of cards. */
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    .settings-native-toggle:has(> .broadcast-link-editor) {
+    margin-left: 0;
+    padding: 9px 10px;
+    border: 1px solid var(--border-subtle);
+    background: var(--surface-card);
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    .broadcast-link-editor {
+    gap: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    .broadcast-link-editor__count {
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    .broadcast-link-editor__preview {
+    gap: 6px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    .broadcast-link-editor__preview-pill {
+    min-height: 36px;
+    border-color: var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card-muted);
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    .broadcast-link-editor__card {
+    gap: 7px;
+    padding: 8px 0 0;
+    border: 0;
+    border-top: 1px solid var(--border-subtle);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    .broadcast-link-editor__badge {
+    display: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    .broadcast-link-editor
+    .field {
+    gap: 5px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    .broadcast-link-editor
+    .field__label {
+    min-height: 0;
+    padding: 0 2px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    .broadcast-link-editor
+    .field
+    input {
+    min-height: 44px;
+    height: 44px;
+    border-color: var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card-muted);
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--links
+    :is(.broadcast-link-editor__add, .broadcast-link-editor__add.is-spotlighted) {
+    min-height: 44px;
+    padding: 7px 8px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card-muted);
+    box-shadow: none;
+  }
+
+  /* Audience selection behaves like a bounded native bottom sheet. */
+  body.settings-drilldown-open .broadcast-audience-sheet__backdrop {
+    background: var(--color-scrim);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+  }
+
+  body.settings-drilldown-open .broadcast-audience-sheet__panel {
+    height: auto;
+    min-height: 0;
+    max-height: calc(
+      var(--app-viewport-height, 100dvh) - 12px - env(safe-area-inset-bottom, 0px) -
+        min(var(--app-keyboard-overlap, 0px), 260px)
+    );
+  }
+
+  body.settings-drilldown-open .broadcast-audience-sheet__grabber {
+    width: 32px;
+    height: 3px;
+    margin-bottom: 6px;
+    background: var(--border-strong);
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open .broadcast-audience-sheet__sheet {
+    height: auto;
+    min-height: 0;
+    max-height: 100%;
+    gap: 8px;
+    padding: 10px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 14px;
+    background: var(--surface-card);
+    box-shadow: var(--shadow-md);
+  }
+
+  body.settings-drilldown-open .broadcast-audience-sheet__sticky {
+    gap: 8px;
+  }
+
+  body.settings-drilldown-open
+    :is(
+      .broadcast-audience-sheet__close,
+      .broadcast-audience-sheet__search-shell,
+      .broadcast-audience-sheet__quick-pill
+    ) {
+    border-radius: 8px;
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open .broadcast-audience-sheet__close {
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+  }
+
+  body.settings-drilldown-open .broadcast-audience-sheet__search-shell {
+    min-height: 46px;
+    background: var(--surface-card-muted);
+  }
+
+  body.settings-drilldown-open .broadcast-audience-sheet__scroll {
+    max-height: min(36dvh, 320px);
+  }
+
+  body.settings-drilldown-open .broadcast-audience-sheet__list {
+    gap: 0;
+    overflow: hidden;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card);
+  }
+
+  body.settings-drilldown-open
+    :is(.broadcast-audience-sheet__option, .broadcast-audience-sheet__option.is-selected) {
+    min-height: 58px;
+    padding: 8px 10px;
+    border: 0;
+    border-bottom: 1px solid var(--border-subtle);
+    border-radius: 0;
+    background: var(--surface-card);
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open .broadcast-audience-sheet__option.is-selected {
+    background: var(--surface-card-muted);
+  }
+
+  body.settings-drilldown-open .broadcast-audience-sheet__option:last-child {
+    border-bottom: 0;
+  }
+
+  body.settings-drilldown-open .broadcast-audience-sheet__option-glow {
+    display: none;
+  }
+
+  body.settings-drilldown-open .broadcast-audience-sheet__avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 8px;
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open .broadcast-audience-sheet__action-dock {
+    gap: 8px;
+    margin: 0;
+    padding: 8px 0 0;
+    border: 0;
+    border-top: 1px solid var(--border-subtle);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open .broadcast-audience-sheet__actions {
+    gap: 8px;
+  }
+
+  body.settings-drilldown-open .broadcast-audience-sheet__actions .button {
+    min-height: 46px;
+    border-radius: 8px;
+    box-shadow: none;
+  }
+
+  /* Speech presets and dependent options remain scannable on narrow screens. */
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--speech
+    .settings-speech-preview {
+    gap: 0;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--speech
+    .settings-speech-style-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+    margin-bottom: 8px;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--speech
+    .settings-speech-style-option {
+    min-height: 72px;
+    gap: 5px;
+    padding: 7px 3px 6px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card);
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--speech
+    .settings-speech-style-option.is-active {
+    border-color: var(--accent);
+    background: var(--surface-card-muted);
+    box-shadow: inset 0 0 0 1px var(--accent);
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--speech
+    .settings-speech-style-option__icon {
+    width: 34px;
+    height: 34px;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--speech
+    .settings-speech-style-option__badge {
+    top: 4px;
+    right: 4px;
+    width: 18px;
+    height: 18px;
+    background: var(--success);
+    color: var(--color-on-accent);
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--speech
+    .settings-subsection-divider {
+    min-height: 24px;
+    margin: 8px 2px 4px;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--speech
+    .settings-native-toggle {
+    min-height: 0;
+    gap: 0;
+    margin-left: 0;
+    padding: 8px 10px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card);
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--speech
+    .settings-native-toggle__row {
+    min-height: 0;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--speech
+    .settings-native-toggle:has(+ .settings-native-toggle--nested) {
+    border-radius: 8px 8px 0 0;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--speech
+    .settings-native-toggle--nested {
+    border-top: 0;
+    border-left-width: 1px;
+    border-radius: 0;
+    background: var(--surface-card);
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--speech
+    .settings-native-toggle--nested:last-child {
+    border-radius: 0 0 8px 8px;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--speech
+    .settings-native-toggle__hint {
+    margin: 6px 0 0;
+    padding: 6px 0 0;
+    border: 0;
+    border-top: 1px solid var(--border-subtle);
+    border-radius: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    box-shadow: none;
+    font-size: 0.74rem;
+    line-height: 1.35;
+  }
+
+  /* VK parsing shares the surrounding settings surface language in both themes. */
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--vk-parsing
+    .vk-parsing-card {
+    --vk-bg: var(--surface-page);
+    --vk-surface: var(--surface-card);
+    --vk-soft: var(--surface-card-muted);
+    --vk-line: var(--border-subtle);
+    --vk-line-strong: var(--border-strong);
+    --vk-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel.settings-drilldown__panel--vk-parsing {
+    border-color: var(--border-subtle);
+    background: var(--surface-page);
+    box-shadow: var(--shadow-md);
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel.settings-drilldown__panel--vk-parsing
+    :is(.settings-drilldown__header, .settings-drilldown__footer) {
+    border-color: var(--border-subtle);
+    background: var(--surface-card);
+    box-shadow: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel.settings-drilldown__panel--vk-parsing
+    :is(.settings-drilldown__content, .settings-drilldown__body) {
+    background: var(--surface-page);
+  }
+
   @media (max-width: 380px) {
     .settings-home-sticky-header .compact-page-header__bar,
     .channel-settings-screen__sticky-header .compact-page-header__bar {
@@ -548,6 +1840,75 @@
 
     .settings-drilldown__header-action {
       max-width: 88px;
+    }
+
+    body.settings-drilldown-open
+      .settings-drilldown
+      .settings-drilldown__panel--polls
+      .managed-poll-item__actions {
+      display: grid;
+      grid-template-columns: 44px minmax(0, 1fr) minmax(0, 1fr);
+      gap: 6px;
+      width: 100%;
+    }
+
+    body.settings-drilldown-open
+      .settings-drilldown
+      .settings-drilldown__panel--polls
+      .managed-poll-item__actions
+      :is(.managed-poll-action-button, .managed-poll-icon-button) {
+      min-width: 0;
+      width: 100%;
+      padding-inline: 4px;
+      font-size: 0.72rem;
+    }
+
+    body.settings-drilldown-open
+      .settings-drilldown
+      .settings-drilldown__panel--duplicates
+      .duplicate-stage__controls {
+      grid-template-columns: minmax(0, 1fr) minmax(112px, 0.72fr);
+      gap: 6px;
+    }
+
+    body.settings-drilldown-open
+      .settings-drilldown
+      .settings-drilldown__panel--duplicates
+      .duplicate-stage__field
+      input {
+      padding-right: 50px;
+    }
+
+    body.settings-drilldown-open
+      .settings-drilldown
+      .settings-drilldown__panel--duplicates
+      .duplicate-stage__suffix {
+      right: 8px;
+      font-size: 0.66rem;
+    }
+
+    body.settings-drilldown-open
+      .settings-drilldown
+      .settings-drilldown__panel--duplicates
+      .duplicate-count-stepper {
+      width: 100%;
+      grid-template-columns: 34px minmax(34px, 1fr) 34px;
+      gap: 4px;
+    }
+
+    body.settings-drilldown-open
+      .settings-drilldown
+      .settings-drilldown__panel--duplicates
+      .duplicate-count-stepper__button {
+      width: 34px;
+      height: 34px;
+    }
+
+    body.settings-drilldown-open
+      .settings-drilldown
+      .settings-drilldown__panel--duplicates
+      .duplicate-count-stepper__value {
+      min-width: 0;
     }
   }
 }

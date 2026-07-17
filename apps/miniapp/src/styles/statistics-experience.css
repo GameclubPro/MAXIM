@@ -1682,6 +1682,52 @@
     border-radius: 8px;
   }
 
+  body.events-page-open .participants-roster__role-filters {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 2px;
+    padding: 3px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card-muted);
+  }
+
+  body.events-page-open .participants-roster__role-filters button {
+    min-height: 44px;
+    padding-inline: 3px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    font-size: 0.68rem;
+  }
+
+  body.events-page-open .participants-roster__role-filters button.is-active {
+    background: var(--surface-card);
+    color: var(--accent);
+    box-shadow: inset 0 0 0 1px var(--border-subtle);
+  }
+
+  body.channel-stats-page-open .channel-audience-board__metrics,
+  body.channel-stats-page-open .channel-audience-board__legend {
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  html[data-max-theme='dark'] body.events-page-open .events-primary-tab.is-active,
+  html[data-max-theme='dark']
+    body.events-page-open
+    .events-dashboard__range
+    .segmented-control__item:is(.is-active, [aria-checked='true']),
+  html[data-max-theme='dark']
+    body.channel-stats-page-open
+    .channel-insights__section-tabs
+    .segmented-control__item:is(.is-active, [aria-checked='true']) {
+    background: var(--accent-soft);
+    color: var(--accent);
+    box-shadow: inset 0 0 0 1px var(--border-strong);
+  }
+
   .events-stage__back:focus-visible,
   .events-primary-tab:focus-visible,
   .events-dashboard__range .segmented-control__item:focus-visible,
@@ -1731,6 +1777,10 @@
   }
 
   @media (max-width: 360px) {
+    .events-stage__appbar-bar {
+      column-gap: 10px;
+    }
+
     .events-stage__appbar-bar,
     .channel-insights__sticky-header .compact-page-header__bar,
     .channel-insights__sticky-header.compact-page-header.is-compact .compact-page-header__bar {
