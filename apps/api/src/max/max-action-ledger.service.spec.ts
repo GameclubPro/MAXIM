@@ -25,6 +25,7 @@ function createService(row: unknown = null) {
     maxActionLedgerEntry: {
       findFirst: jest.fn().mockResolvedValue(row),
       findUnique: jest.fn().mockResolvedValue(row),
+      createMany: jest.fn().mockResolvedValue({ count: 1 }),
       upsert: jest.fn().mockResolvedValue(undefined),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
@@ -145,12 +146,9 @@ describe('MaxActionLedgerService', () => {
 
     await service.recordEnqueuedIfAbsent(job);
 
-    expect(prisma.maxActionLedgerEntry.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          jobId: 'job-1',
-        },
-        create: expect.objectContaining({
+    expect(prisma.maxActionLedgerEntry.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
           jobId: 'job-1',
           actionType: 'SEND_MESSAGE',
           chatId: 'chat-1',
@@ -168,11 +166,11 @@ describe('MaxActionLedgerService', () => {
             }),
           }),
         }),
-        update: {},
-      }),
-    );
+      ],
+      skipDuplicates: true,
+    });
     expect(prisma.maxActionLedgerEntry.updateMany).not.toHaveBeenCalled();
-    const create = prisma.maxActionLedgerEntry.upsert.mock.calls[0][0].create;
+    const create = prisma.maxActionLedgerEntry.createMany.mock.calls[0][0].data[0];
     expect(create).toEqual(
       expect.objectContaining({
         status: MaxActionLedgerStatus.ENQUEUED,
@@ -184,21 +182,33 @@ describe('MaxActionLedgerService', () => {
     expect(JSON.stringify(create.metadata)).not.toContain('hello');
   });
 
+  it('treats a concurrent ledger insert as an idempotent enqueue success', async () => {
+    const { service, prisma } = createService();
+    prisma.maxActionLedgerEntry.createMany.mockResolvedValueOnce({ count: 0 });
+
+    await expect(service.recordEnqueuedIfAbsent(createJob())).resolves.toBeUndefined();
+
+    expect(prisma.maxActionLedgerEntry.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({ skipDuplicates: true }),
+    );
+  });
+
   it('records enqueue failure only when the worker has not created the ledger row', async () => {
     const { service, prisma } = createService();
     const error = Object.assign(new Error('redis unavailable'), { code: 'ECONNRESET' });
 
     await service.recordEnqueueFailedIfAbsent(createJob(), error);
 
-    expect(prisma.maxActionLedgerEntry.upsert).toHaveBeenCalledWith(
+    expect(prisma.maxActionLedgerEntry.createMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        create: expect.objectContaining({
-          status: MaxActionLedgerStatus.FAILED_RETRYABLE,
-          terminal: false,
-          lastErrorCode: 'econnreset',
-          lastError: 'redis unavailable',
-        }),
-        update: {},
+        data: [
+          expect.objectContaining({
+            status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+            terminal: false,
+            lastErrorCode: 'econnreset',
+            lastError: 'redis unavailable',
+          }),
+        ],
       }),
     );
   });
@@ -211,15 +221,16 @@ describe('MaxActionLedgerService', () => {
       new Error('queue ownership is unknown'),
     );
 
-    expect(prisma.maxActionLedgerEntry.upsert).toHaveBeenCalledWith(
+    expect(prisma.maxActionLedgerEntry.createMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        create: expect.objectContaining({
-          status: MaxActionLedgerStatus.AMBIGUOUS,
-          ambiguous: true,
-          terminal: true,
-          lastErrorCode: 'queue.enqueue_ambiguous',
-        }),
-        update: {},
+        data: [
+          expect.objectContaining({
+            status: MaxActionLedgerStatus.AMBIGUOUS,
+            ambiguous: true,
+            terminal: true,
+            lastErrorCode: 'queue.enqueue_ambiguous',
+          }),
+        ],
       }),
     );
   });
@@ -243,12 +254,16 @@ describe('MaxActionLedgerService', () => {
     });
   });
 
-  it('increments attempts when recording worker start', async () => {
+  it('increments attempts when recording worker start after a concurrent ledger insert', async () => {
     const { service, prisma } = createService();
     const job = createJob({ attempt: 3 });
+    prisma.maxActionLedgerEntry.createMany.mockResolvedValueOnce({ count: 0 });
 
     await service.recordStarted(job);
 
+    expect(prisma.maxActionLedgerEntry.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({ skipDuplicates: true }),
+    );
     expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
@@ -417,7 +432,7 @@ describe('MaxActionLedgerService', () => {
     const error = await service.recordPrepared(createJob()).catch((caught: unknown) => caught);
     await service.recordFailed(createJob(), error);
 
-    expect(prisma.maxActionLedgerEntry.upsert).not.toHaveBeenCalled();
+    expect(prisma.maxActionLedgerEntry.createMany).not.toHaveBeenCalled();
     expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledTimes(1);
   });
 
@@ -589,7 +604,7 @@ describe('MaxActionLedgerService', () => {
 
     await service.recordFailed(createJob(), error);
 
-    expect(prisma.maxActionLedgerEntry.upsert).not.toHaveBeenCalled();
+    expect(prisma.maxActionLedgerEntry.createMany).not.toHaveBeenCalled();
     expect(prisma.maxActionLedgerEntry.updateMany).not.toHaveBeenCalled();
   });
 
@@ -607,10 +622,8 @@ describe('MaxActionLedgerService', () => {
       new UnrecoverableError('Ambiguous MAX SEND_MESSAGE transport failure'),
     );
 
-    expect(prisma.maxActionLedgerEntry.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        update: {},
-      }),
+    expect(prisma.maxActionLedgerEntry.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({ skipDuplicates: true }),
     );
     expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -652,39 +665,45 @@ describe('MaxActionLedgerService', () => {
       { exhausted: true },
     );
 
-    expect(prisma.maxActionLedgerEntry.upsert).toHaveBeenNthCalledWith(
+    expect(prisma.maxActionLedgerEntry.createMany).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
-        create: expect.objectContaining({
-          status: MaxActionLedgerStatus.AMBIGUOUS,
-          ambiguous: true,
-          terminal: true,
-        }),
+        data: [
+          expect.objectContaining({
+            status: MaxActionLedgerStatus.AMBIGUOUS,
+            ambiguous: true,
+            terminal: true,
+          }),
+        ],
       }),
     );
-    expect(prisma.maxActionLedgerEntry.upsert).toHaveBeenNthCalledWith(
+    expect(prisma.maxActionLedgerEntry.createMany).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
-        create: expect.objectContaining({
-          status: MaxActionLedgerStatus.FAILED_RETRYABLE,
-          ambiguous: false,
-          terminal: false,
-          lastStatusCode: 500,
-          lastErrorCode: 'server.failure',
-        }),
+        data: [
+          expect.objectContaining({
+            status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+            ambiguous: false,
+            terminal: false,
+            lastStatusCode: 500,
+            lastErrorCode: 'server.failure',
+          }),
+        ],
       }),
     );
-    expect(prisma.maxActionLedgerEntry.upsert).toHaveBeenNthCalledWith(
+    expect(prisma.maxActionLedgerEntry.createMany).toHaveBeenNthCalledWith(
       3,
       expect.objectContaining({
-        create: expect.objectContaining({
-          status: MaxActionLedgerStatus.FAILED_RETRYABLE,
-          ambiguous: false,
-          terminal: true,
-          lastStatusCode: 500,
-          lastErrorCode: 'server.failure',
-          completedAt: expect.any(Date),
-        }),
+        data: [
+          expect.objectContaining({
+            status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+            ambiguous: false,
+            terminal: true,
+            lastStatusCode: 500,
+            lastErrorCode: 'server.failure',
+            completedAt: expect.any(Date),
+          }),
+        ],
       }),
     );
   });

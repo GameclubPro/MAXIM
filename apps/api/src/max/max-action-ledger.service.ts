@@ -175,16 +175,7 @@ export class MaxActionLedgerService {
       lastErrorCode: null,
       lastError: null,
     };
-    await this.prisma.maxActionLedgerEntry.upsert({
-      where: {
-        jobId: job.idempotencyKey,
-      },
-      create: {
-        ...this.buildCreateInput(job),
-        ...this.buildPlainMutationInput(mutation),
-      },
-      update: {},
-    });
+    await this.createLedgerIfAbsent(job, mutation);
   }
 
   async recordEnqueueFailedIfAbsent(job: MaxActionJob, error: unknown): Promise<void> {
@@ -197,16 +188,7 @@ export class MaxActionLedgerService {
       lastErrorCode: this.extractErrorCode(error),
       lastError: this.extractErrorMessage(error),
     };
-    await this.prisma.maxActionLedgerEntry.upsert({
-      where: {
-        jobId: job.idempotencyKey,
-      },
-      create: {
-        ...this.buildCreateInput(job),
-        ...this.buildPlainMutationInput(mutation),
-      },
-      update: {},
-    });
+    await this.createLedgerIfAbsent(job, mutation);
   }
 
   async recordEnqueueAmbiguousIfAbsent(job: MaxActionJob, error: unknown): Promise<void> {
@@ -219,16 +201,7 @@ export class MaxActionLedgerService {
       lastErrorCode: 'queue.enqueue_ambiguous',
       lastError: this.extractErrorMessage(error),
     };
-    await this.prisma.maxActionLedgerEntry.upsert({
-      where: {
-        jobId: job.idempotencyKey,
-      },
-      create: {
-        ...this.buildCreateInput(job),
-        ...this.buildPlainMutationInput(mutation),
-      },
-      update: {},
-    });
+    await this.createLedgerIfAbsent(job, mutation);
   }
 
   async hasExecutionEvidenceSince(jobId: string, since: Date): Promise<boolean> {
@@ -577,13 +550,7 @@ export class MaxActionLedgerService {
     job: MaxActionJob,
     mutation: MaxActionLedgerMutation,
   ): Promise<void> {
-    await this.prisma.maxActionLedgerEntry.upsert({
-      where: {
-        jobId: job.idempotencyKey,
-      },
-      create: this.buildCreateInput(job),
-      update: {},
-    });
+    await this.createLedgerIfAbsent(job);
     await this.prisma.maxActionLedgerEntry.updateMany({
       where: {
         jobId: job.idempotencyKey,
@@ -606,16 +573,7 @@ export class MaxActionLedgerService {
     job: MaxActionJob,
     mutation: MaxActionLedgerMutation,
   ): Promise<void> {
-    await this.prisma.maxActionLedgerEntry.upsert({
-      where: {
-        jobId: job.idempotencyKey,
-      },
-      create: {
-        ...this.buildCreateInput(job),
-        ...this.buildPlainMutationInput(mutation),
-      },
-      update: {},
-    });
+    await this.createLedgerIfAbsent(job, mutation);
     await this.prisma.maxActionLedgerEntry.updateMany({
       where: {
         jobId: job.idempotencyKey,
@@ -625,6 +583,21 @@ export class MaxActionLedgerService {
         ...this.buildUpdateInput(job),
         ...this.buildPlainMutationInput(mutation),
       },
+    });
+  }
+
+  private async createLedgerIfAbsent(
+    job: MaxActionJob,
+    mutation?: MaxActionLedgerMutation,
+  ): Promise<void> {
+    await this.prisma.maxActionLedgerEntry.createMany({
+      data: [
+        {
+          ...this.buildCreateInput(job),
+          ...(mutation ? this.buildPlainMutationInput(mutation) : {}),
+        },
+      ],
+      skipDuplicates: true,
     });
   }
 
