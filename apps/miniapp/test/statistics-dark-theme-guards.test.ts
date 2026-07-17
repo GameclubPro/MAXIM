@@ -149,3 +149,14 @@ test('channel compact metrics keep semantic colors after the broad dark value ru
     /strong\.is-positive \{\s*color: var\(--success\);\s*\}[\s\S]*?strong\.is-negative \{\s*color: var\(--danger\);/u,
   );
 });
+
+test('participant action buttons keep semantic contrast after settings CSS is bundled', () => {
+  assert.match(
+    statisticsExperienceCss,
+    /html\[data-max-theme='dark'\][\s\S]*?\.participant-sheet[\s\S]*?\.participant-sheet__row-actions[\s\S]*?\.button--accent \{[\s\S]*?background: var\(--accent\);[\s\S]*?color: var\(--color-surface\);/u,
+  );
+  assert.match(
+    statisticsExperienceCss,
+    /html\[data-max-theme='dark'\][\s\S]*?\.participant-sheet[\s\S]*?\.participant-sheet__row-actions[\s\S]*?\.button--ghost \{[\s\S]*?background: var\(--surface-card\);[\s\S]*?color: var\(--text-primary\);/u,
+  );
+});

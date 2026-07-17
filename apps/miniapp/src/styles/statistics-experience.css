@@ -830,6 +830,26 @@
     color: var(--text-primary);
   }
 
+  html[data-max-theme='dark']
+    .participant-sheet
+    .participant-sheet__row-actions
+    .button--accent {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--color-surface);
+    box-shadow: none;
+  }
+
+  html[data-max-theme='dark']
+    .participant-sheet
+    .participant-sheet__row-actions
+    .button--ghost {
+    border-color: var(--border-strong);
+    background: var(--surface-card);
+    color: var(--text-primary);
+    box-shadow: none;
+  }
+
   /* Channel statistics */
   .channel-insights__sticky-header.compact-page-header {
     --compact-page-header-height: 58px;
