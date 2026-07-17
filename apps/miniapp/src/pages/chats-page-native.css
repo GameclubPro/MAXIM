@@ -280,7 +280,7 @@
 
   .chats-command__tools {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 44px;
+    grid-template-columns: minmax(0, 1fr) repeat(2, 44px);
     align-items: center;
     gap: 7px;
   }

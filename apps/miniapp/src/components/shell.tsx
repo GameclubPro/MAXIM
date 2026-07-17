@@ -392,14 +392,31 @@ export function Shell() {
           aria-label="Навигация приложения"
         >
           <Link
-            to={homeRoute}
-            className={cn('bottom-nav__item', isChatsRoute && 'is-active')}
-            aria-current={isChatsRoute ? 'page' : undefined}
+            to={buildManagedEntitiesRoute('chat')}
+            className={cn(
+              'bottom-nav__item',
+              isChatsRoute && selectedRootEntityType === 'chat' && 'is-active',
+            )}
+            aria-current={isChatsRoute && selectedRootEntityType === 'chat' ? 'page' : undefined}
           >
             <span className="bottom-nav__icon" aria-hidden>
               <BottomNavIcon name="chats" />
             </span>
-            <span className="bottom-nav__label">Главная</span>
+            <span className="bottom-nav__label">Чаты</span>
+          </Link>
+
+          <Link
+            to={buildManagedEntitiesRoute('channel')}
+            className={cn(
+              'bottom-nav__item',
+              isChatsRoute && selectedRootEntityType === 'channel' && 'is-active',
+            )}
+            aria-current={isChatsRoute && selectedRootEntityType === 'channel' ? 'page' : undefined}
+          >
+            <span className="bottom-nav__icon" aria-hidden>
+              <BottomNavIcon name="channels" />
+            </span>
+            <span className="bottom-nav__label">Каналы</span>
           </Link>
 
           <NavLink

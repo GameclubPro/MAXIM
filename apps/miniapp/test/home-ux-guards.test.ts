@@ -41,12 +41,18 @@ test('entity cards expose direct settings, statistics and category actions', () 
   assert.doesNotMatch(sheetsSource, /home-actions__panel|<strong>Статистика<\/strong>/u);
 });
 
-test('root navigation has one managed-entities destination and no remembered-entity shortcuts', () => {
+test('root navigation exposes chats, channels and posts as primary destinations', () => {
   const labels = shellSource.match(/className="bottom-nav__label"/gu) ?? [];
 
-  assert.equal(labels.length, 2);
-  assert.match(shellSource, />Главная</u);
+  assert.equal(labels.length, 3);
+  assert.match(shellSource, /buildManagedEntitiesRoute\('chat'\)/u);
+  assert.match(shellSource, /buildManagedEntitiesRoute\('channel'\)/u);
+  assert.match(shellSource, />Чаты</u);
+  assert.match(shellSource, />Каналы</u);
   assert.match(shellSource, />Посты</u);
+  assert.match(shellSource, /selectedRootEntityType === 'chat'/u);
+  assert.match(shellSource, /selectedRootEntityType === 'channel'/u);
+  assert.doesNotMatch(chatsPageSource, /chats-command__tabs/u);
   assert.doesNotMatch(shellSource, /bottom-nav__label">Настройки/u);
   assert.doesNotMatch(shellSource, /bottom-nav__label">\{activityNavLabel\}/u);
   assert.match(shellSource, /const shouldShowBottomNav = isChatsRoute \|\| isPublicationsRoute/u);
@@ -70,7 +76,7 @@ test('compact home controls keep direct 44px actions and one filter control', ()
   assert.match(chatsPageNativeCss, /\.chat-card__action \{[\s\S]*?min-width: 44px/u);
   assert.match(
     chatsPageNativeCss,
-    /\.chats-command__tools \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\) 44px/u,
+    /\.chats-command__tools \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\) repeat\(2, 44px\)/u,
   );
   assert.match(chatsPageNativeCss, /\.chat-card__category span \{[\s\S]*?text-overflow: ellipsis/u);
   assert.match(

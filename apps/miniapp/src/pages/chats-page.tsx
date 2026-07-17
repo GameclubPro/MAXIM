@@ -63,7 +63,6 @@ import {
 } from '../lib/home-entity-favorites';
 import { getInitDataUserId } from '../lib/init-data';
 import {
-  buildManagedEntitiesRoute,
   buildHomeView,
   normalizeEntityType,
   readLastEntityType,
@@ -459,13 +458,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     );
   }, [activeEntities, activeTab, homeEntityFavorites]);
   const hasSearchQuery = query.trim().length > 0;
-  const tabCounts = useMemo(
-    () => ({
-      chat: Array.isArray(chatsState.data) ? chatsState.data.length : null,
-      channel: Array.isArray(channelsState.data) ? channelsState.data.length : null,
-    }),
-    [channelsState.data, chatsState.data],
-  );
   const showEmptyState = isNoEntitiesForTab;
   const limitedStagger =
     filteredEntities.length > CHAT_CARD_STAGGER_THRESHOLD ? CHAT_CARD_STAGGER_LIMIT : null;
@@ -1324,54 +1316,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         <output className="chats-command__sr" aria-live="polite" aria-atomic="true">
           {homeResultStatus}
         </output>
-        <div className="chats-command__topline">
-          <nav className="chats-command__tabs" aria-label="Раздел">
-            {(['chat', 'channel'] as const).map((tab) => {
-              const count = tabCounts[tab];
-              return (
-                <Link
-                  key={tab}
-                  to={buildManagedEntitiesRoute(tab)}
-                  className={cn('chats-command__tab', activeTab === tab && 'is-active')}
-                  aria-current={activeTab === tab ? 'page' : undefined}
-                >
-                  <span className="chats-command__tab-label">
-                    {tab === 'chat' ? 'Чаты' : 'Каналы'}
-                  </span>
-                  {count !== null ? (
-                    <strong className="chats-command__tab-count">{count}</strong>
-                  ) : null}
-                </Link>
-              );
-            })}
-          </nav>
-
-          <div className="chats-command__meta">
-            <span className="chats-command__sr" role="status" aria-live="polite" aria-atomic="true">
-              {homeSyncAccessibleLabel}
-            </span>
-            <button
-              type="button"
-              className={cn(
-                'chats-command__icon-button',
-                'chats-command__refresh',
-                `is-${homeSyncStatus.tone}`,
-              )}
-              onClick={() => handleRefresh(activeTab, 'manual')}
-              disabled={isFetching || isManualRefreshInProgressByState}
-              aria-label={refreshButtonLabel}
-              title={refreshButtonLabel}
-            >
-              {homeSyncStatus.tone === 'syncing' ? (
-                <span className="chats-command__sync-ring" aria-hidden />
-              ) : homeSyncStatus.tone === 'error' ? (
-                <XmarkGlyph aria-hidden />
-              ) : (
-                <RefreshGlyph aria-hidden />
-              )}
-            </button>
-          </div>
-        </div>
 
         {refreshProgressPercent !== null ? (
           <div
@@ -1392,6 +1336,9 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         ) : null}
 
         <div className="chats-command__tools">
+          <span className="chats-command__sr" role="status" aria-live="polite" aria-atomic="true">
+            {homeSyncAccessibleLabel}
+          </span>
           <label className="field field--search chats-command__field" htmlFor="chat-search">
             <span>{searchLabel}</span>
             <div className="chats-command__field-shell">
@@ -1434,6 +1381,26 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             onClick={(event) => openFavoriteFilterPicker(event.currentTarget)}
           >
             <FavoriteFilterIcon aria-hidden focusable="false" />
+          </button>
+          <button
+            type="button"
+            className={cn(
+              'chats-command__icon-button',
+              'chats-command__refresh',
+              `is-${homeSyncStatus.tone}`,
+            )}
+            onClick={() => handleRefresh(activeTab, 'manual')}
+            disabled={isFetching || isManualRefreshInProgressByState}
+            aria-label={refreshButtonLabel}
+            title={refreshButtonLabel}
+          >
+            {homeSyncStatus.tone === 'syncing' ? (
+              <span className="chats-command__sync-ring" aria-hidden />
+            ) : homeSyncStatus.tone === 'error' ? (
+              <XmarkGlyph aria-hidden />
+            ) : (
+              <RefreshGlyph aria-hidden />
+            )}
           </button>
         </div>
       </GlassCard>
