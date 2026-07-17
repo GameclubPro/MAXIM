@@ -9,6 +9,7 @@ import {
   COMMERCIAL_BENCHMARK_WRAPPER_NONCE_ENV,
   evaluateCommercialBenchmarkGate,
   parseCommercialBenchmarkReport,
+  resolveCommercialBenchmarkProfile,
   type CommercialBenchmarkReport,
 } from './commercial-benchmark-ci.util';
 
@@ -18,7 +19,11 @@ const JEST_CONFIG = resolve(API_ROOT, 'jest.config.cjs');
 const BENCHMARK_SPEC = resolve(API_ROOT, 'src/moderation/commercial-benchmark.spec.ts');
 
 export function runCommercialBenchmarkCi(): void {
+  const profile = resolveCommercialBenchmarkProfile(process.env);
   const reports: CommercialBenchmarkReport[] = [];
+  process.stdout.write(
+    `Commercial benchmark profile=${profile.name}, limits: ${formatReport(profile.limits)}\n`,
+  );
 
   for (let attempt = 1; attempt <= COMMERCIAL_BENCHMARK_ATTEMPT_COUNT; attempt += 1) {
     process.stdout.write(
@@ -81,7 +86,7 @@ export function runCommercialBenchmarkCi(): void {
   }
 
   const medianReport = aggregateCommercialBenchmarkReports(reports);
-  const gate = evaluateCommercialBenchmarkGate(medianReport);
+  const gate = evaluateCommercialBenchmarkGate(medianReport, profile.limits);
   process.stdout.write(`\nCommercial benchmark median: ${formatReport(medianReport)}\n`);
   if (!gate.passed) {
     throw new Error(`Commercial benchmark median gate failed: ${gate.failures.join('; ')}`);

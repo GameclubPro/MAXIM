@@ -1,7 +1,7 @@
 import type { ChatSettings } from '../prisma/prisma-client';
 import type { CommercialCampaignContext } from './commercial-campaign.util';
 import {
-  COMMERCIAL_BENCHMARK_LIMITS,
+  COMMERCIAL_BENCHMARK_LOCAL_LIMITS,
   COMMERCIAL_BENCHMARK_REPORT_PREFIX,
   isCommercialBenchmarkMedianGateEnabled,
   type CommercialBenchmarkPercentiles,
@@ -398,8 +398,8 @@ describe('commercial deterministic benchmark', () => {
 
     hotPathMetrics = { p95Ms: p95, p99Ms: p99 };
     if (!useMedianGate) {
-      expect(p95).toBeLessThanOrEqual(COMMERCIAL_BENCHMARK_LIMITS.hotPath.p95Ms);
-      expect(p99).toBeLessThanOrEqual(COMMERCIAL_BENCHMARK_LIMITS.hotPath.p99Ms);
+      expect(p95).toBeLessThanOrEqual(COMMERCIAL_BENCHMARK_LOCAL_LIMITS.hotPath.p95Ms);
+      expect(p99).toBeLessThanOrEqual(COMMERCIAL_BENCHMARK_LOCAL_LIMITS.hotPath.p99Ms);
     }
   });
 
@@ -443,8 +443,8 @@ describe('commercial deterministic benchmark', () => {
 
     adversarialMetrics = { p95Ms: p95, p99Ms: p99 };
     if (!useMedianGate) {
-      expect(p95).toBeLessThanOrEqual(COMMERCIAL_BENCHMARK_LIMITS.adversarial.p95Ms);
-      expect(p99).toBeLessThanOrEqual(COMMERCIAL_BENCHMARK_LIMITS.adversarial.p99Ms);
+      expect(p95).toBeLessThanOrEqual(COMMERCIAL_BENCHMARK_LOCAL_LIMITS.adversarial.p95Ms);
+      expect(p99).toBeLessThanOrEqual(COMMERCIAL_BENCHMARK_LOCAL_LIMITS.adversarial.p99Ms);
     }
   });
 });

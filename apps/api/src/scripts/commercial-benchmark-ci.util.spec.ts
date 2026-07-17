@@ -2,14 +2,18 @@ import {
   aggregateCommercialBenchmarkReports,
   COMMERCIAL_BENCHMARK_ATTEMPT_COUNT,
   COMMERCIAL_BENCHMARK_ATTEMPT_TIMEOUT_MS,
-  COMMERCIAL_BENCHMARK_LIMITS,
+  COMMERCIAL_BENCHMARK_GITHUB_HOSTED_LIMITS,
+  COMMERCIAL_BENCHMARK_GITHUB_HOSTED_PROFILE,
+  COMMERCIAL_BENCHMARK_LOCAL_LIMITS,
   COMMERCIAL_BENCHMARK_MEDIAN_GATE_ENV,
+  COMMERCIAL_BENCHMARK_PROFILE_ENV,
   COMMERCIAL_BENCHMARK_REPORT_PREFIX,
   COMMERCIAL_BENCHMARK_WRAPPER_NONCE_ENV,
   evaluateCommercialBenchmarkGate,
   isCommercialBenchmarkMedianGateEnabled,
   median,
   parseCommercialBenchmarkReport,
+  resolveCommercialBenchmarkProfile,
   type CommercialBenchmarkReport,
 } from './commercial-benchmark-ci.util';
 
@@ -103,10 +107,10 @@ describe('commercial benchmark CI aggregation', () => {
     ).toBe(true);
   });
 
-  it('keeps the original p95 and p99 budgets as the median gate', () => {
+  it('keeps the original direct/local p95 and p99 budgets', () => {
     expect(COMMERCIAL_BENCHMARK_ATTEMPT_COUNT).toBe(3);
     expect(COMMERCIAL_BENCHMARK_ATTEMPT_TIMEOUT_MS).toBe(240_000);
-    expect(COMMERCIAL_BENCHMARK_LIMITS).toEqual({
+    expect(COMMERCIAL_BENCHMARK_LOCAL_LIMITS).toEqual({
       hotPath: { p95Ms: 6.25, p99Ms: 15 },
       adversarial: { p95Ms: 75, p99Ms: 100 },
     });
@@ -117,7 +121,10 @@ describe('commercial benchmark CI aggregation', () => {
       adversarialP95: 75,
       adversarialP99: 100,
     });
-    expect(evaluateCommercialBenchmarkGate(atLimits)).toEqual({ passed: true, failures: [] });
+    expect(evaluateCommercialBenchmarkGate(atLimits, COMMERCIAL_BENCHMARK_LOCAL_LIMITS)).toEqual({
+      passed: true,
+      failures: [],
+    });
 
     const overLimits = report({
       hotP95: 6.251,
@@ -125,8 +132,71 @@ describe('commercial benchmark CI aggregation', () => {
       adversarialP95: 75.001,
       adversarialP99: 100.001,
     });
-    const gate = evaluateCommercialBenchmarkGate(overLimits);
+    const gate = evaluateCommercialBenchmarkGate(overLimits, COMMERCIAL_BENCHMARK_LOCAL_LIMITS);
     expect(gate.passed).toBe(false);
     expect(gate.failures).toHaveLength(4);
+  });
+
+  it('applies the evidence-based github-hosted boundaries', () => {
+    expect(COMMERCIAL_BENCHMARK_GITHUB_HOSTED_LIMITS).toEqual({
+      hotPath: { p95Ms: 10.5, p99Ms: 10.75 },
+      adversarial: { p95Ms: 127, p99Ms: 128 },
+    });
+
+    const atLimits = report({
+      hotP95: 10.5,
+      hotP99: 10.75,
+      adversarialP95: 127,
+      adversarialP99: 128,
+    });
+    expect(
+      evaluateCommercialBenchmarkGate(atLimits, COMMERCIAL_BENCHMARK_GITHUB_HOSTED_LIMITS),
+    ).toEqual({ passed: true, failures: [] });
+
+    const overLimits = report({
+      hotP95: 10.501,
+      hotP99: 10.751,
+      adversarialP95: 127.001,
+      adversarialP99: 128.001,
+    });
+    const gate = evaluateCommercialBenchmarkGate(
+      overLimits,
+      COMMERCIAL_BENCHMARK_GITHUB_HOSTED_LIMITS,
+    );
+    expect(gate.passed).toBe(false);
+    expect(gate.failures).toHaveLength(4);
+  });
+
+  it('accepts the observed github-hosted median only under its explicit profile', () => {
+    const observedMedian = report({
+      hotP95: 8.467,
+      hotP99: 8.559,
+      adversarialP95: 107.401,
+      adversarialP99: 108.333,
+    });
+    const profile = resolveCommercialBenchmarkProfile({
+      [COMMERCIAL_BENCHMARK_PROFILE_ENV]: COMMERCIAL_BENCHMARK_GITHUB_HOSTED_PROFILE,
+    });
+
+    expect(profile).toEqual({
+      name: COMMERCIAL_BENCHMARK_GITHUB_HOSTED_PROFILE,
+      limits: COMMERCIAL_BENCHMARK_GITHUB_HOSTED_LIMITS,
+    });
+    expect(evaluateCommercialBenchmarkGate(observedMedian, profile.limits)).toEqual({
+      passed: true,
+      failures: [],
+    });
+    expect(
+      evaluateCommercialBenchmarkGate(observedMedian, COMMERCIAL_BENCHMARK_LOCAL_LIMITS).passed,
+    ).toBe(false);
+  });
+
+  it('fails closed for missing or unknown wrapper profiles', () => {
+    expect(() => resolveCommercialBenchmarkProfile({})).toThrow(
+      `Missing required ${COMMERCIAL_BENCHMARK_PROFILE_ENV}`,
+    );
+    expect(() =>
+      resolveCommercialBenchmarkProfile({ [COMMERCIAL_BENCHMARK_PROFILE_ENV]: 'local' }),
+    ).toThrow('Unsupported commercial benchmark profile: local');
   });
 });
