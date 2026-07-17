@@ -207,6 +207,8 @@
 ## MAX integration
 
 - For MAX Bot API, Mini Apps, `init_data`, webhook behavior, and deep links, verify against current official MAX docs instead of memory.
+- MAX removed the bot-wide `GET /chats` endpoint in June 2026. Keep any remaining
+  `listBotChats` compatibility path out of production discovery, and do not build new flows on it.
 - Source priority:
   1. `https://dev.max.ru/docs/`
   2. `https://dev.max.ru/docs-api/`
