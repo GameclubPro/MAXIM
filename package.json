@@ -37,6 +37,8 @@
     "test": "npm run test:api && npm run test:miniapp && npm run test:admin",
     "test:admin": "npm run test --workspace @maxim/admin",
     "test:api": "npm run test --workspace @maxim/api",
+    "test:api:ci": "npm run test:ci --workspace @maxim/api",
+    "test:api:commercial-benchmark:ci": "npm run test:commercial-benchmark:ci --workspace @maxim/api",
     "test:miniapp": "npm run test --workspace @maxim/miniapp",
     "format": "prettier --check .",
     "format:write": "prettier --write .",

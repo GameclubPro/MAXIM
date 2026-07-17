@@ -19,6 +19,8 @@
     "start:action": "APP_ROLE=action node dist/main.js",
     "typecheck": "npm run build --workspace @maxim/contracts && npm run prisma:generate && tsc -p tsconfig.json --noEmit",
     "test": "npm run build --workspace @maxim/contracts && npm run prisma:generate && jest --config jest.config.cjs --runInBand --detectOpenHandles",
+    "test:ci": "npm run build --workspace @maxim/contracts && npm run prisma:generate && jest --config jest.config.cjs --runInBand --detectOpenHandles --testPathIgnorePatterns=commercial-benchmark.spec.ts",
+    "test:commercial-benchmark:ci": "npm run build --workspace @maxim/contracts && npm run prisma:generate && tsx src/scripts/run-commercial-benchmark-ci.ts",
     "test:watch": "npm run build --workspace @maxim/contracts && npm run prisma:generate && jest --config jest.config.cjs --watch",
     "test:postgres-races": "npm run build --workspace @maxim/contracts && npm run prisma:generate && jest --config jest.config.cjs --runInBand --detectOpenHandles --runTestsByPath src/max/chat-routing-postgres-races.spec.ts",
     "prisma:generate": "prisma generate --config prisma.config.ts",

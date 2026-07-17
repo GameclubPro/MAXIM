@@ -1,5 +1,11 @@
 import type { ChatSettings } from '../prisma/prisma-client';
 import type { CommercialCampaignContext } from './commercial-campaign.util';
+import {
+  COMMERCIAL_BENCHMARK_LIMITS,
+  COMMERCIAL_BENCHMARK_REPORT_PREFIX,
+  isCommercialBenchmarkMedianGateEnabled,
+  type CommercialBenchmarkPercentiles,
+} from '../scripts/commercial-benchmark-ci.util';
 import { COMMERCIAL_NEGATIVE_CASES } from './commercial-negative.fixture';
 import { COMMERCIAL_POSITIVE_CASES } from './commercial-positive.fixture';
 import {
@@ -107,6 +113,25 @@ function readCommercialSubtype(value: unknown): CommercialSubtype | null {
 }
 
 describe('commercial deterministic benchmark', () => {
+  const useMedianGate = isCommercialBenchmarkMedianGateEnabled(process.env);
+  let hotPathMetrics: CommercialBenchmarkPercentiles | null = null;
+  let adversarialMetrics: CommercialBenchmarkPercentiles | null = null;
+
+  afterAll(() => {
+    if (!useMedianGate) {
+      return;
+    }
+    if (!hotPathMetrics || !adversarialMetrics) {
+      throw new Error('Commercial benchmark did not produce both performance reports');
+    }
+    process.stdout.write(
+      `${COMMERCIAL_BENCHMARK_REPORT_PREFIX}${JSON.stringify({
+        hotPath: hotPathMetrics,
+        adversarial: adversarialMetrics,
+      })}\n`,
+    );
+  });
+
   it('warms service-phone commercial paths before the first measured detection', async () => {
     const service = createRuleEngine();
     const startedAt = performance.now();
@@ -371,8 +396,11 @@ describe('commercial deterministic benchmark', () => {
     const p95 = timings[Math.floor(timings.length * 0.95)] ?? 0;
     const p99 = timings[Math.floor(timings.length * 0.99)] ?? 0;
 
-    expect(p95).toBeLessThanOrEqual(6.25);
-    expect(p99).toBeLessThanOrEqual(15);
+    hotPathMetrics = { p95Ms: p95, p99Ms: p99 };
+    if (!useMedianGate) {
+      expect(p95).toBeLessThanOrEqual(COMMERCIAL_BENCHMARK_LIMITS.hotPath.p95Ms);
+      expect(p99).toBeLessThanOrEqual(COMMERCIAL_BENCHMARK_LIMITS.hotPath.p99Ms);
+    }
   });
 
   it('keeps adversarial commercial near-misses within the deterministic perf budget', async () => {
@@ -413,7 +441,10 @@ describe('commercial deterministic benchmark', () => {
     const p95 = timings[Math.floor(timings.length * 0.95)] ?? 0;
     const p99 = timings[Math.floor(timings.length * 0.99)] ?? 0;
 
-    expect(p95).toBeLessThanOrEqual(75);
-    expect(p99).toBeLessThanOrEqual(100);
+    adversarialMetrics = { p95Ms: p95, p99Ms: p99 };
+    if (!useMedianGate) {
+      expect(p95).toBeLessThanOrEqual(COMMERCIAL_BENCHMARK_LIMITS.adversarial.p95Ms);
+      expect(p99).toBeLessThanOrEqual(COMMERCIAL_BENCHMARK_LIMITS.adversarial.p99Ms);
+    }
   });
 });

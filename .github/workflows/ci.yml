@@ -31,7 +31,10 @@ jobs:
         run: npm run typecheck
 
       - name: Test API
-        run: npm run test:api
+        run: npm run test:api:ci
+
+      - name: Benchmark commercial moderation
+        run: npm run test:api:commercial-benchmark:ci
 
       - name: Test mini app
         run: npm run test:miniapp
