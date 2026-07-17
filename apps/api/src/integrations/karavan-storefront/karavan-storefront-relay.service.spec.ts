@@ -161,6 +161,76 @@ describe('KaravanStorefrontRelayService', () => {
     }
   });
 
+  it('resolves the active storefront again for every dollar-prefixed message', async () => {
+    const fixture = createService();
+    fixture.fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: jest.fn().mockResolvedValue({
+          exists: true,
+          store: {
+            id: 'store-1',
+            slug: 'severnaya-lavka',
+            name: 'Северная лавка',
+            sellerAccountId: 'seller-1',
+            url: 'https://max.ru/se13381675_1_bot?startapp=s_severnaya-lavka__r_seller-1',
+            inviteUrl: 'https://api2.major-maksimov.ru/karavan/api/v1/public/stores/severnaya-lavka/invite',
+          },
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: jest.fn().mockResolvedValue({
+          exists: true,
+          store: {
+            id: 'store-2',
+            slug: 'tsvety-max',
+            name: 'Цветы MAX',
+            sellerAccountId: 'seller-1',
+            url: 'https://max.ru/se13381675_1_bot?startapp=s_tsvety-max__r_seller-1',
+            inviteUrl: 'https://api2.major-maksimov.ru/karavan/api/v1/public/stores/tsvety-max/invite',
+          },
+        }),
+      });
+
+    try {
+      await expect(fixture.service.handleMessageCreated(baseContext)).resolves.toBe('handled');
+      await expect(fixture.service.handleMessageCreated({
+        ...baseContext,
+        messageId: 'mid-source-2',
+      })).resolves.toBe('handled');
+
+      expect(fixture.fetchMock).toHaveBeenCalledTimes(2);
+      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenLastCalledWith(
+        'chat-1',
+        expect.objectContaining({
+          attachments: [
+            {
+              type: 'inline_keyboard',
+              payload: {
+                buttons: [
+                  [
+                    {
+                      type: 'link',
+                      text: 'Открыть витрину',
+                      url: 'https://max.ru/se13381675_1_bot?startapp=s_tsvety-max__r_seller-1',
+                    },
+                  ],
+                ],
+              },
+            },
+          ],
+        }),
+        expect.objectContaining({
+          immediate: true,
+          trafficClass: 'interactive',
+        }),
+      );
+    } finally {
+      fixture.restore();
+    }
+  });
+
   it('ignores messages without a dollar marker', async () => {
     const fixture = createService();
 

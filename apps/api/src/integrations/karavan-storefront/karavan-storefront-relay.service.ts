@@ -110,7 +110,9 @@ export class KaravanStorefrontRelayService {
       return 'noop';
     }
 
-    const store = await this.lookupStorefront(context.senderId);
+    // `$` is an explicit seller action, so the button must reflect the active
+    // storefront at this message rather than a previous cached selection.
+    const store = await this.lookupStorefront(context.senderId, { fresh: true });
     if (store === undefined) {
       return 'failed';
     }
@@ -281,14 +283,19 @@ export class KaravanStorefrontRelayService {
     return /^\d+$/u.test(chatId.trim());
   }
 
-  private async lookupStorefront(maxUserId: string): Promise<LookupStore | null | undefined> {
+  private async lookupStorefront(
+    maxUserId: string,
+    options: { fresh?: boolean } = {},
+  ): Promise<LookupStore | null | undefined> {
     const normalizedMaxUserId = maxUserId.trim();
-    const cached = this.cache.get(normalizedMaxUserId);
+    const cached = options.fresh ? undefined : this.cache.get(normalizedMaxUserId);
     if (cached && cached.expiresAtMs > Date.now()) {
       return cached.response.exists ? cached.response.store : null;
     }
 
-    const existing = this.inFlightLookups.get(normalizedMaxUserId);
+    const existing = options.fresh
+      ? undefined
+      : this.inFlightLookups.get(normalizedMaxUserId);
     if (existing) {
       const response = await existing;
       if (!response) {
@@ -309,10 +316,14 @@ export class KaravanStorefrontRelayService {
         return null;
       })
       .finally(() => {
-        this.inFlightLookups.delete(normalizedMaxUserId);
+        if (!options.fresh) {
+          this.inFlightLookups.delete(normalizedMaxUserId);
+        }
       });
 
-    this.inFlightLookups.set(normalizedMaxUserId, lookup);
+    if (!options.fresh) {
+      this.inFlightLookups.set(normalizedMaxUserId, lookup);
+    }
     const response = await lookup;
     if (!response) {
       return undefined;
