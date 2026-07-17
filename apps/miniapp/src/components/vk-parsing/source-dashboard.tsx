@@ -15,6 +15,7 @@ import type {
   VkParsingSource,
 } from '@maxim/contracts';
 import { cn } from '../../lib/cn';
+import { AsyncRadioGroup } from '../ui/async-radio-group';
 import { TimeField } from '../ui/time-field';
 import { formatVkSourceProblem } from './format';
 
@@ -35,7 +36,10 @@ type SourceDashboardProps = {
   onToggleBulkSource: (sourceId: string) => void;
   onSelectAllBulkSources: () => void;
   onApplyPreset: (preset: BulkUpdateVkParsingSourcesRequest['preset']) => void;
-  onUpdateSource: (sourceId: string, payload: UpdateVkParsingSourceRequest) => void;
+  onUpdateSource: (
+    sourceId: string,
+    payload: UpdateVkParsingSourceRequest,
+  ) => Promise<boolean>;
   onRefresh: () => void;
   onRefreshSource: (sourceId: string) => void;
   onRemoveSource: (sourceId: string) => void;
@@ -67,6 +71,19 @@ const SOURCE_MODE_OPTIONS: Array<{ value: SourceModeValue; label: string }> = [
 
 type SourceRunMode = 'manual' | 'auto' | 'pause';
 
+const SOURCE_RUN_MODE_OPTIONS: ReadonlyArray<{ value: SourceRunMode; label: string }> = [
+  { value: 'manual', label: 'Ручной' },
+  { value: 'auto', label: 'Авто' },
+  { value: 'pause', label: 'Пауза' },
+];
+
+function resolveSourceRunMode(source: VkParsingSource): SourceRunMode {
+  if (!source.importEnabled) {
+    return 'pause';
+  }
+  return source.autoPublishEnabled ? 'auto' : 'manual';
+}
+
 function SourceModeControl({
   source,
   disabled,
@@ -74,34 +91,17 @@ function SourceModeControl({
 }: {
   source: VkParsingSource;
   disabled: boolean;
-  onChange: (mode: SourceRunMode) => void;
+  onChange: (mode: SourceRunMode) => Promise<boolean>;
 }) {
-  const mode: SourceRunMode = !source.importEnabled
-    ? 'pause'
-    : source.autoPublishEnabled
-      ? 'auto'
-      : 'manual';
-
   return (
-    <div className="vk-source-mode-control" role="radiogroup" aria-label={`Режим ${source.title}`}>
-      {[
-        { value: 'manual' as const, label: 'Ручной' },
-        { value: 'auto' as const, label: 'Авто' },
-        { value: 'pause' as const, label: 'Пауза' },
-      ].map((option) => (
-        <button
-          key={option.value}
-          type="button"
-          role="radio"
-          aria-checked={mode === option.value}
-          className={cn(mode === option.value && 'is-active')}
-          disabled={disabled}
-          onClick={() => onChange(option.value)}
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
+    <AsyncRadioGroup
+      className="vk-source-mode-control"
+      ariaLabel={`Режим ${source.title}`}
+      value={resolveSourceRunMode(source)}
+      options={SOURCE_RUN_MODE_OPTIONS}
+      disabled={disabled}
+      onChange={onChange}
+    />
   );
 }
 

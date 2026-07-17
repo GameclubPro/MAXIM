@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useMemo, useState } from 'react';
+import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   BulkUpdateVkParsingSourcesRequest,
@@ -59,6 +59,10 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
   const [pageOffset, setPageOffset] = useState(0);
   const [openHintKey, setOpenHintKey] = useState<VkParsingHintKey | null>(null);
   const [selectedBulkSourceIds, setSelectedBulkSourceIds] = useState<string[]>([]);
+  const settingsUpdateInFlightRef = useRef(false);
+  const [isSettingsUpdateInFlight, setIsSettingsUpdateInFlight] = useState(false);
+  const sourceUpdateInFlightRef = useRef(false);
+  const [isSourceUpdateInFlight, setIsSourceUpdateInFlight] = useState(false);
 
   const feedQueryScope = useMemo<Partial<VkParsingFeedQuery>>(
     () => ({
@@ -468,55 +472,116 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
   }
 
   function toggleSetting(key: VkParsingSettingKey, checked: boolean) {
-    if (updateSettingsMutation.isPending) {
-      return;
-    }
-
-    updateSettingsMutation.mutate({ [key]: checked });
+    void updateSetting({ [key]: checked });
   }
 
-  async function updateSetting(payload: UpdateVkParsingSettingsRequest) {
-    if (updateSettingsMutation.isPending) {
-      return;
+  async function updateSetting(payload: UpdateVkParsingSettingsRequest): Promise<boolean> {
+    if (settingsUpdateInFlightRef.current || updateSettingsMutation.isPending) {
+      return false;
     }
-    if (payload.autoPublishEnabled === true) {
-      const dryRun = await dryRunVkParsingAutopublish(api, entityType, chatId);
-      if (dryRun.eligibleNow > 0) {
-        pushToast({
-          tone: 'danger',
-          title: 'Автопубликация пока не включена',
-          description: `Сначала проверьте старые посты: ${dryRun.eligibleNow} готовы к публикации.`,
-        });
-        maxNotify('warning');
-        return;
+
+    settingsUpdateInFlightRef.current = true;
+    setIsSettingsUpdateInFlight(true);
+    try {
+      if (payload.autoPublishEnabled === true) {
+        const dryRun = await dryRunVkParsingAutopublish(api, entityType, chatId).catch(
+          (error: unknown) => {
+            pushToast({
+              tone: 'danger',
+              title: 'Настройки не сохранены',
+              description: normalizeApiError(error),
+            });
+            maxNotify('error');
+            return null;
+          },
+        );
+        if (!dryRun) {
+          return false;
+        }
+        if (dryRun.eligibleNow > 0) {
+          pushToast({
+            tone: 'danger',
+            title: 'Автопубликация пока не включена',
+            description: `Сначала проверьте старые посты: ${dryRun.eligibleNow} готовы к публикации.`,
+          });
+          maxNotify('warning');
+          return false;
+        }
       }
+
+      try {
+        await updateSettingsMutation.mutateAsync(payload);
+        return true;
+      } catch {
+        return false;
+      }
+    } finally {
+      settingsUpdateInFlightRef.current = false;
+      setIsSettingsUpdateInFlight(false);
     }
-    updateSettingsMutation.mutate(payload);
   }
 
-  async function updateSource(sourceId: string, payload: UpdateVkParsingSourceRequest) {
-    if (updateSourceMutation.isPending || updateSourcesMutation.isPending) {
-      return;
+  async function updateSource(
+    sourceId: string,
+    payload: UpdateVkParsingSourceRequest,
+  ): Promise<boolean> {
+    if (
+      sourceUpdateInFlightRef.current ||
+      updateSourceMutation.isPending ||
+      updateSourcesMutation.isPending
+    ) {
+      return false;
     }
-    if (payload.autoPublishEnabled === true) {
-      const dryRun = await dryRunVkParsingAutopublish(api, entityType, chatId, sourceId);
-      if (dryRun.eligibleNow > 0) {
-        pushToast({
-          tone: 'danger',
-          title: 'Автопубликация пока не включена',
-          description: `Сначала проверьте старые посты: ${dryRun.eligibleNow} готовы к публикации.`,
+
+    sourceUpdateInFlightRef.current = true;
+    setIsSourceUpdateInFlight(true);
+    try {
+      if (payload.autoPublishEnabled === true) {
+        const dryRun = await dryRunVkParsingAutopublish(
+          api,
+          entityType,
+          chatId,
+          sourceId,
+        ).catch((error: unknown) => {
+          pushToast({
+            tone: 'danger',
+            title: 'Источник не сохранён',
+            description: normalizeApiError(error),
+          });
+          maxNotify('error');
+          return null;
         });
-        maxNotify('warning');
-        return;
+        if (!dryRun) {
+          return false;
+        }
+        if (dryRun.eligibleNow > 0) {
+          pushToast({
+            tone: 'danger',
+            title: 'Автопубликация пока не включена',
+            description: `Сначала проверьте старые посты: ${dryRun.eligibleNow} готовы к публикации.`,
+          });
+          maxNotify('warning');
+          return false;
+        }
       }
+
+      try {
+        await updateSourceMutation.mutateAsync({ sourceId, payload });
+        return true;
+      } catch {
+        return false;
+      }
+    } finally {
+      sourceUpdateInFlightRef.current = false;
+      setIsSourceUpdateInFlight(false);
     }
-    updateSourceMutation.mutate({ sourceId, payload });
   }
 
   function updateSources(sourceIds: string[], payload: UpdateVkParsingSourceRequest) {
     if (
       updateSourceMutation.isPending ||
       updateSourcesMutation.isPending ||
+      sourceUpdateInFlightRef.current ||
       sourceIds.length === 0
     ) {
       return;
@@ -572,8 +637,9 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     refreshingSourceId: refreshSourceMutation.isPending
       ? (refreshSourceMutation.variables ?? null)
       : null,
-    isSavingSettings: updateSettingsMutation.isPending,
-    isSavingSource: updateSourceMutation.isPending || updateSourcesMutation.isPending,
+    isSavingSettings: isSettingsUpdateInFlight || updateSettingsMutation.isPending,
+    isSavingSource:
+      isSourceUpdateInFlight || updateSourceMutation.isPending || updateSourcesMutation.isPending,
     isApplyingPreset: sourcePresetMutation.isPending,
     schedulingPostId: scheduleMutation.isPending
       ? (scheduleMutation.variables?.postId ?? null)

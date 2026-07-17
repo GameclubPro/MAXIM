@@ -7,6 +7,7 @@ import type {
   VkParsingSource,
 } from '@maxim/contracts';
 import { cn } from '../../lib/cn';
+import { AsyncRadioGroup } from '../ui/async-radio-group';
 import { TimeField } from '../ui/time-field';
 
 type SchedulerPanelProps = {
@@ -17,7 +18,7 @@ type SchedulerPanelProps = {
   publishedCount: number;
   isSaving: boolean;
   isSavingSource: boolean;
-  onUpdateSetting: (payload: UpdateVkParsingSettingsRequest) => void;
+  onUpdateSetting: (payload: UpdateVkParsingSettingsRequest) => Promise<boolean>;
   onUpdateSources: (sourceIds: string[], payload: UpdateVkParsingSourceRequest) => void;
   onApplyPreset: (preset: BulkUpdateVkParsingSourcesRequest['preset']) => void;
 };
@@ -32,7 +33,7 @@ export type AutopostStatusModel = {
 
 type AutopostMode = 'manual' | 'auto' | 'pause';
 
-const AUTOPOST_MODES: Array<{ value: AutopostMode; label: string }> = [
+const AUTOPOST_MODES: ReadonlyArray<{ value: AutopostMode; label: string }> = [
   { value: 'manual', label: 'Ручной' },
   { value: 'auto', label: 'Авто' },
   { value: 'pause', label: 'Пауза' },
@@ -186,26 +187,19 @@ export function SchedulerPanel({
           </span>
         </div>
 
-        <div className="vk-autopost-mode" role="radiogroup" aria-label="Режим автопостинга">
-          {AUTOPOST_MODES.map((mode) => (
-            <button
-              key={mode.value}
-              type="button"
-              role="radio"
-              aria-checked={autopostMode === mode.value}
-              className={cn(autopostMode === mode.value && 'is-active')}
-              disabled={isSaving}
-              onClick={() =>
-                onUpdateSetting({
-                  autoPublishEnabled: mode.value !== 'manual',
-                  autoPublishKillSwitchEnabled: mode.value === 'pause',
-                })
-              }
-            >
-              {mode.label}
-            </button>
-          ))}
-        </div>
+        <AsyncRadioGroup
+          className="vk-autopost-mode"
+          ariaLabel="Режим автопостинга"
+          value={autopostMode}
+          options={AUTOPOST_MODES}
+          disabled={isSaving}
+          onChange={(mode) =>
+            onUpdateSetting({
+              autoPublishEnabled: mode !== 'manual',
+              autoPublishKillSwitchEnabled: mode === 'pause',
+            })
+          }
+        />
       </div>
 
       <details className="vk-autopost-advanced">
