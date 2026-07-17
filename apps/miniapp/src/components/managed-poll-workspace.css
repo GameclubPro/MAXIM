@@ -67,9 +67,9 @@
   }
 
   .managed-poll-workspace__create {
-    color: var(--color-surface);
-    border-color: var(--success);
-    background: var(--success);
+    color: var(--publication-on-accent);
+    border-color: var(--publication-success-ink);
+    background: var(--publication-success-ink);
   }
 
   .managed-poll-workspace__more {
@@ -710,12 +710,6 @@
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--success) 36%, var(--border-subtle));
   }
 
-  html[data-max-theme='dark'] :is(.managed-poll-workspace__create, .managed-poll-editor__publish) {
-    border-color: var(--success);
-    background: var(--success);
-    color: var(--app-page-background) !important;
-  }
-
   html[data-max-theme='dark']
     :is(.managed-poll-item h3, .managed-poll-editor__head h2, .managed-poll-result__meta strong) {
     color: var(--text-primary);
@@ -845,9 +839,15 @@
   }
 
   .managed-poll-editor__publish {
-    color: var(--app-page-background);
+    color: var(--publication-on-accent);
+    border-color: var(--publication-success-ink);
+    background: var(--publication-success-ink);
+  }
+
+  html[data-max-theme='dark'] :is(.managed-poll-workspace__create, .managed-poll-editor__publish) {
     border-color: var(--success);
     background: var(--success);
+    color: var(--app-page-background);
   }
 
   @media (max-width: 430px) {

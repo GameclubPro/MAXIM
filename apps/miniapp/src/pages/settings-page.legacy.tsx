@@ -48,6 +48,7 @@ import './settings/settings-word-banlist.css';
 import './settings/settings-duplicate-stage.css';
 import '../styles/broadcast-autopost-polish.css';
 import '../styles/settings-tile-grid.css';
+import '../styles/settings-native-polish.css';
 import {
   Suspense,
   lazy,
@@ -384,9 +385,7 @@ const LazySettingsOverviewSearch = lazy(() =>
     default: module.SettingsOverviewSearch,
   })),
 );
-const LazySettingsSpeechStylePanel = lazy(
-  () => import('./settings/settings-speech-style-panel'),
-);
+const LazySettingsSpeechStylePanel = lazy(() => import('./settings/settings-speech-style-panel'));
 
 export function SettingsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
@@ -5300,10 +5299,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     options?: {
       note?: string | null;
       saveLabel?: string;
-      applyToAllLabel?: string;
-      emphasize?: 'save' | 'apply';
     },
   ) {
+    if (!isSectionDirty(section)) {
+      return null;
+    }
+
     return (
       <SettingsSectionSaveFooter
         section={section}
@@ -5312,11 +5313,34 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         savingSection={savingSection}
         isApplyingSectionToAll={isApplyingSectionToAll}
         applyingSection={applyingSection}
-        canApplyToAllChats={canApplyToAllChats}
-        isSectionDirty={isSectionDirty}
         onSaveSection={(targetSection) => void handleSaveSection(targetSection)}
-        onOpenApplyTarget={openApplyTargetSheet}
       />
+    );
+  }
+
+  function renderApplyTargetHeaderAction(section: ApplySectionKey) {
+    if (!canApplyToAllChats) {
+      return null;
+    }
+
+    const isApplying = isApplyingSectionToAll && applyingSection === section;
+    return (
+      <button
+        type="button"
+        className="settings-drilldown__header-action"
+        aria-label="Применить к другим чатам"
+        onClick={() => openApplyTargetSheet(section)}
+        disabled={isSavingSettings || isApplyingSectionToAll}
+      >
+        {isApplying ? (
+          'Применяем...'
+        ) : (
+          <>
+            <span className="settings-drilldown__header-action-label--full">Другие чаты</span>
+            <span className="settings-drilldown__header-action-label--compact">Ещё чаты</span>
+          </>
+        )}
+      </button>
     );
   }
 
@@ -5458,7 +5482,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             <div className="settings-home-group-head stagger-in" style={{ order: 30 }}>
               <h2 className="settings-home-group-head__title">Бот</h2>
             </div>
-
             <GlassCard
               className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
               style={{ order: 1 }}
@@ -5485,6 +5508,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 tone="sky"
                 className="settings-drilldown__panel--board settings-drilldown__panel--links"
                 onClose={() => toggleSection('links')}
+                headerAction={renderApplyTargetHeaderAction('links')}
                 confirmCloseWhen={isSectionDirty('links')}
                 onDiscardChanges={() => discardSectionChanges('links')}
                 footer={renderSectionSaveFooter('links', {
@@ -6423,6 +6447,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 tone="mint"
                 className="settings-drilldown__panel--notice settings-drilldown__panel--greeting"
                 onClose={() => toggleSection('greeting')}
+                headerAction={renderApplyTargetHeaderAction('greeting')}
                 confirmCloseWhen={isSectionDirty('greeting')}
                 onDiscardChanges={() => discardSectionChanges('greeting')}
                 footer={renderSectionSaveFooter('greeting')}
@@ -6761,6 +6786,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 tone="rose"
                 className="settings-drilldown__panel--ladder settings-drilldown__panel--profanity"
                 onClose={() => toggleSection('profanityFilter')}
+                headerAction={renderApplyTargetHeaderAction('profanityFilter')}
                 confirmCloseWhen={isSectionDirty('profanityFilter')}
                 onDiscardChanges={() => discardSectionChanges('profanityFilter')}
                 footer={renderSectionSaveFooter('profanityFilter')}
@@ -6965,6 +6991,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 tone="amber"
                 className="settings-drilldown__panel--ladder settings-drilldown__panel--commercial"
                 onClose={() => toggleSection('commercialFilter')}
+                headerAction={renderApplyTargetHeaderAction('commercialFilter')}
                 confirmCloseWhen={isSectionDirty('commercialFilter')}
                 onDiscardChanges={() => discardSectionChanges('commercialFilter')}
                 footer={renderSectionSaveFooter('commercialFilter')}
@@ -7390,7 +7417,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               </SettingsDrilldownPanel>
             </GlassCard>
 
-
             <GlassCard
               className="settings-section settings-home-entry settings-home-entry--list stagger-in"
               style={{ animationDelay: '180ms', order: 15 }}
@@ -7418,6 +7444,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 tone="rose"
                 className="settings-drilldown__panel--ladder settings-drilldown__panel--duplicates"
                 onClose={() => toggleSection('duplicates')}
+                headerAction={renderApplyTargetHeaderAction('duplicates')}
                 confirmCloseWhen={isSectionDirty('duplicates')}
                 onDiscardChanges={() => discardSectionChanges('duplicates')}
                 footer={renderSectionSaveFooter('duplicates')}
@@ -7984,6 +8011,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 tone="ink"
                 className="settings-drilldown__panel--ladder settings-drilldown__panel--limits"
                 onClose={() => toggleSection('limits')}
+                headerAction={renderApplyTargetHeaderAction('limits')}
                 confirmCloseWhen={isSectionDirty('limits')}
                 onDiscardChanges={() => discardSectionChanges('limits')}
                 footer={renderSectionSaveFooter('limits')}
@@ -8873,6 +8901,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 tone="rose"
                 className="settings-drilldown__panel--board settings-drilldown__panel--stop-words"
                 onClose={() => toggleSection('stopWords')}
+                headerAction={renderApplyTargetHeaderAction('stopWords')}
                 confirmCloseWhen={isSectionDirty('stopWords')}
                 onDiscardChanges={() => discardSectionChanges('stopWords')}
                 footer={renderSectionSaveFooter('stopWords')}
@@ -8993,9 +9022,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               </>
                             ) : null}
 
-                            <small className="field__hint">
-                              {messageLimitsBlockedWordsError ?? 'Слово, +слово или -слово.'}
-                            </small>
+                            {messageLimitsBlockedWordsError ? (
+                              <small className="field__hint">
+                                {messageLimitsBlockedWordsError}
+                              </small>
+                            ) : null}
                           </div>
                         ) : (
                           <div
@@ -9003,20 +9034,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             role="tabpanel"
                             aria-label="Запрещенные домены"
                           >
-                            <div className="settings-word-banlist__mode-head">
-                              <span className="settings-word-banlist__mode-title">
-                                Ручное добавление
-                              </span>
-                              <SettingsHintAnchor
-                                hintKey="stopWordsDomains"
-                                openHintKey={openHintKey}
-                                onToggleHint={toggleHint}
-                                label="Как добавлять домены"
-                              >
-                                Можно ввести site.com или вставить ссылку. Сохраним только домен,
-                                без пути и параметров. Поддомены тоже блокируются.
-                              </SettingsHintAnchor>
-                            </div>
                             <div className="settings-word-banlist__add-row">
                               <input
                                 type="text"
@@ -9093,10 +9110,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               </>
                             ) : null}
 
-                            <small className="field__hint">
-                              {messageLimitsBlockedDomainsError ??
-                                'Вводите домен руками или вставляйте ссылку.'}
-                            </small>
+                            {messageLimitsBlockedDomainsError ? (
+                              <small className="field__hint">
+                                {messageLimitsBlockedDomainsError}
+                              </small>
+                            ) : null}
                           </div>
                         )}
                       </div>
@@ -9205,6 +9223,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 tone="ink"
                 className="settings-drilldown__panel--time settings-drilldown__panel--night"
                 onClose={() => toggleSection('night')}
+                headerAction={renderApplyTargetHeaderAction('night')}
                 confirmCloseWhen={isSectionDirty('night')}
                 onDiscardChanges={() => discardSectionChanges('night')}
                 footer={renderSectionSaveFooter('night')}
@@ -10411,12 +10430,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 tone="sky"
                 className="settings-drilldown__panel--ladder settings-drilldown__panel--required-subscription"
                 onClose={() => toggleSection('requiredSubscription')}
+                headerAction={renderApplyTargetHeaderAction('requiredSubscription')}
                 confirmCloseWhen={isSectionDirty('requiredSubscription')}
                 onDiscardChanges={() => discardSectionChanges('requiredSubscription')}
-                footer={renderSectionSaveFooter('requiredSubscription', {
-                  applyToAllLabel: 'Выбрать чаты',
-                  emphasize: 'save',
-                })}
+                footer={renderSectionSaveFooter('requiredSubscription')}
               >
                 <div
                   id="settings-required-subscription-content"
@@ -10430,9 +10447,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       <div className="managed-giveaway__section required-subscription__board">
                         <div className="managed-giveaway__title-row">
                           <div className="managed-giveaway__section-copy">
-                            <strong>Источники подписки</strong>
+                            <strong>Источники</strong>
                             <small>
-                              {requiredSubscriptionSelectedCount}/
+                              {requiredSubscriptionSelectedCount} из{' '}
                               {REQUIRED_SUBSCRIPTION_MAX_CHANNELS}
                             </small>
                           </div>
@@ -10848,12 +10865,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 draft={draft}
                 expanded={expandedSections.commands}
                 fieldErrors={fieldErrors}
-                openHintKey={openHintKey}
+                headerAction={renderApplyTargetHeaderAction('commands')}
                 footer={renderSectionSaveFooter('commands')}
                 hasChanges={isSectionDirty('commands')}
                 onDiscardChanges={() => discardSectionChanges('commands')}
                 onToggleSection={() => toggleSection('commands')}
-                onToggleHint={toggleHint}
                 onFieldChange={(key, value) => setFieldValue(key, value)}
               />
             </Suspense>
@@ -10865,6 +10881,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               status={extraCardStatus}
               openHintKey={openHintKey}
               fieldErrors={fieldErrors}
+              headerAction={renderApplyTargetHeaderAction('extra')}
               footer={renderSectionSaveFooter('extra')}
               hasChanges={isSectionDirty('extra')}
               onDiscardChanges={() => discardSectionChanges('extra')}

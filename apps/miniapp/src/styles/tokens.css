@@ -17,6 +17,8 @@
   --color-ink-subtle: var(--text-muted);
   --color-accent: var(--accent);
   --color-accent-soft: var(--accent-soft);
+  --color-accent-strong: #075b9f;
+  --color-on-accent: #ffffff;
   --color-success: var(--success);
   --color-warning: var(--warning);
   --color-danger: var(--danger);

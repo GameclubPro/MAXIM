@@ -13,7 +13,7 @@ import { GlassCard } from '../../components/ui/glass-card';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
 import { SettingsSectionToggle } from '../../components/ui/settings-section-toggle';
 import { cn } from '../../lib/cn';
-import type { FieldErrors, HintKey } from './settings-page-helpers';
+import type { FieldErrors } from './settings-page-helpers';
 import '../../styles/settings-admin-commands.css';
 
 type AdminCommandNameKey =
@@ -27,21 +27,9 @@ type AdminCommandNameKey =
 
 type AdminCommandConfig = {
   key: AdminCommandNameKey;
-  hintKey: Extract<
-    HintKey,
-    | 'adminBanCommand'
-    | 'adminBanAllCommand'
-    | 'adminMuteCommand'
-    | 'adminPermanentMuteCommand'
-    | 'adminRulesCommand'
-    | 'adminSilenceCommand'
-    | 'adminOpenChatCommand'
-  >;
   title: string;
   caption: string;
   defaultValue: string;
-  examples: (value: string) => string[];
-  hint: (value: string) => string;
 };
 
 type AdminCommandCategory = {
@@ -53,12 +41,11 @@ type SettingsAdminCommandsSectionProps = {
   draft: ChatSettings;
   expanded: boolean;
   fieldErrors: FieldErrors;
-  openHintKey: HintKey | null;
+  headerAction?: ReactNode;
   footer: ReactNode;
   hasChanges: boolean;
   onDiscardChanges: () => void;
   onToggleSection: () => void;
-  onToggleHint: (key: HintKey) => void;
   onFieldChange: (key: AdminCommandNameKey, value: string) => void;
 };
 
@@ -72,62 +59,39 @@ const commandCategories: AdminCommandCategory[] = [
     items: [
       {
         key: 'adminBanCommandName',
-        hintKey: 'adminBanCommand',
         title: 'Бан',
         caption: 'Для нарушителя в текущем чате.',
         defaultValue: ADMIN_BAN_COMMAND_NAME_DEFAULT,
-        examples: (value) => [value],
-        hint: () =>
-          'Ответьте этой командой на сообщение нарушителя или перешлите его сообщение в чат. Бот забанит пользователя только в этом чате.',
       },
       {
         key: 'adminBanAllCommandName',
-        hintKey: 'adminBanAllCommand',
         title: 'Бан!',
         caption: 'Во всех чатах, где вы админ.',
         defaultValue: ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT,
-        examples: (value) => [value],
-        hint: () =>
-          'Команда для серьезных случаев: бот забанит пользователя во всех чатах, где вы админ и где бот может выполнять действия.',
       },
       {
         key: 'adminMuteCommandName',
-        hintKey: 'adminMuteCommand',
         title: 'Мут',
         caption: 'Пауза в сообщениях, обычно на 6 часов.',
         defaultValue: ADMIN_MUTE_COMMAND_NAME_DEFAULT,
-        examples: (value) => [value, `${value} 12`],
-        hint: () =>
-          'Ограничивает сообщения пользователя на время. Без числа мут длится 6 часов, с числом можно выбрать срок от 1 до 336 часов.',
       },
       {
         key: 'adminPermanentMuteCommandName',
-        hintKey: 'adminPermanentMuteCommand',
         title: 'Бессрочный мут',
         caption: 'Молчание без срока окончания.',
         defaultValue: ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT,
-        examples: (value) => [value],
-        hint: () =>
-          'Оставляет пользователя в чате, но закрывает ему возможность писать без срока окончания.',
       },
       {
         key: 'adminSilenceCommandName',
-        hintKey: 'adminSilenceCommand',
         title: 'Тишина',
         caption: 'Временно закрывает чат для участников.',
         defaultValue: ADMIN_SILENCE_COMMAND_NAME_DEFAULT,
-        examples: (value) => [value, `${value} 12`],
-        hint: () =>
-          'Временно закрывает чат для участников: их сообщения будут удаляться, а админы смогут писать как обычно. Без числа включается на 6 часов.',
       },
       {
         key: 'adminOpenChatCommandName',
-        hintKey: 'adminOpenChatCommand',
         title: 'Открыть чат',
         caption: 'Возвращает чат в обычный режим.',
         defaultValue: ADMIN_OPEN_CHAT_COMMAND_NAME_DEFAULT,
-        examples: (value) => [value],
-        hint: () => 'Снимает тишину сразу. После этого участники снова смогут писать в чат.',
       },
     ],
   },
@@ -136,13 +100,9 @@ const commandCategories: AdminCommandCategory[] = [
     items: [
       {
         key: 'adminRulesCommandName',
-        hintKey: 'adminRulesCommand',
         title: 'Правило',
         caption: 'Сохраняет сообщение как правила чата.',
         defaultValue: ADMIN_RULES_COMMAND_NAME_DEFAULT,
-        examples: (value) => [value, `ответ + ${value}`],
-        hint: () =>
-          'Ответьте этой командой на сообщение с правилами или перешлите его вместе с командой. Бот сохранит сообщение как правила чата.',
       },
     ],
   },
@@ -152,12 +112,11 @@ export function SettingsAdminCommandsSection({
   draft,
   expanded,
   fieldErrors,
-  openHintKey,
+  headerAction,
   footer,
   hasChanges,
   onDiscardChanges,
   onToggleSection,
-  onToggleHint,
   onFieldChange,
 }: SettingsAdminCommandsSectionProps) {
   const filledCount = commandCategories
@@ -199,6 +158,7 @@ export function SettingsAdminCommandsSection({
         tone="ink"
         className="settings-drilldown__panel--notice settings-drilldown__panel--commands"
         onClose={onToggleSection}
+        headerAction={headerAction}
         confirmCloseWhen={hasChanges}
         onDiscardChanges={onDiscardChanges}
         footer={hasChanges ? footer : null}
@@ -214,9 +174,6 @@ export function SettingsAdminCommandsSection({
                   <h3>{category.title}</h3>
                   <div className="settings-admin-commands__grid">
                     {category.items.map((item) => {
-                      const value = readCommandName(draft[item.key], item.defaultValue);
-                      const hintId = `${item.key}-hint`;
-                      const isHintOpen = openHintKey === item.hintKey;
                       const error = fieldErrors[item.key];
 
                       return (
@@ -224,49 +181,18 @@ export function SettingsAdminCommandsSection({
                           className={cn('settings-command-card', error && 'field--error')}
                           key={item.key}
                         >
-                          <div className="settings-command-card__head">
-                            <div className="settings-command-card__copy">
+                          <label className="settings-command-card__row">
+                            <span className="settings-command-card__copy">
                               <strong>{item.title}</strong>
-                              <span>{item.caption}</span>
-                            </div>
-                            <button
-                              type="button"
-                              className={cn('settings-info-button', isHintOpen && 'is-open')}
-                              aria-label={`Пояснение: ${item.title}`}
-                              aria-controls={hintId}
-                              aria-expanded={isHintOpen}
-                              onClick={() => onToggleHint(item.hintKey)}
-                            >
-                              <span aria-hidden>i</span>
-                            </button>
-                          </div>
-
-                          <label className="field settings-command-card__field">
-                            <span>Название команды</span>
+                              <small>{item.caption}</small>
+                            </span>
                             <input
                               value={draft[item.key]}
                               onChange={(event) => onFieldChange(item.key, event.target.value)}
                               placeholder={item.defaultValue}
+                              aria-label={`Команда «${item.title}»`}
                             />
                           </label>
-
-                          <div
-                            className="settings-command-card__examples"
-                            aria-label={`Примеры: ${item.title}`}
-                          >
-                            {item.examples(value).map((example) => (
-                              <code key={example}>{example}</code>
-                            ))}
-                          </div>
-
-                          {isHintOpen ? (
-                            <p
-                              id={hintId}
-                              className="settings-native-toggle__hint settings-command-card__hint"
-                            >
-                              {item.hint(value)}
-                            </p>
-                          ) : null}
 
                           {error ? <small className="field__hint">{error}</small> : null}
                         </div>
@@ -275,9 +201,6 @@ export function SettingsAdminCommandsSection({
                   </div>
                 </section>
               ))}
-              <p className="settings-admin-commands__case-note">
-                Команды можно писать маленькими или большими буквами.
-              </p>
             </div>
           ) : null}
         </div>

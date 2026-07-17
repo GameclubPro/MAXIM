@@ -20,52 +20,14 @@ type MessageLimitsBlockedWordPresetsProps = {
   onApplyWords: (nextWords: string[]) => void;
 };
 
-function PlusIcon() {
-  return (
-    <svg viewBox="0 0 16 16" fill="none" aria-hidden focusable="false">
-      <path
-        d="M8 3.25V12.75M3.25 8H12.75"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function MinusIcon() {
-  return (
-    <svg viewBox="0 0 16 16" fill="none" aria-hidden focusable="false">
-      <path
-        d="M3.25 8H12.75"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function formatPresetDelta(
-  addableCount: number,
-  removableCount: number,
-  remainingSlots: number,
-): string {
-  if (addableCount > 0 && removableCount > 0) {
-    return `+${addableCount} · -${removableCount}`;
+function formatPresetState(selectedCount: number, totalCount: number): string {
+  if (selectedCount === 0) {
+    return `${totalCount} слов`;
   }
-
-  if (addableCount > 0) {
-    return `+${addableCount}`;
+  if (selectedCount === totalCount) {
+    return 'Добавлен';
   }
-
-  if (removableCount > 0) {
-    return `-${removableCount}`;
-  }
-
-  return remainingSlots === 0 ? 'лимит' : 'без изменений';
+  return `${selectedCount} из ${totalCount}`;
 }
 
 const MESSAGE_LIMITS_BLOCKED_WORD_PRESET_COMPACT_TITLES: Record<
@@ -159,65 +121,41 @@ export default function MessageLimitsBlockedWordPresets({
               className={cn(
                 'settings-word-banlist__preset-card',
                 `settings-word-banlist__preset-card--${preset.id}`,
+                removableCount > 0 && 'is-selected',
               )}
             >
               <div className="settings-word-banlist__preset-head">
-                <div className="settings-word-banlist__preset-badge-copy">
-                  <span className="settings-word-banlist__preset-badge-mark" aria-hidden>
-                    ±
-                  </span>
+                <button
+                  type="button"
+                  className="settings-word-banlist__preset-open"
+                  onClick={() => setActivePresetId(preset.id)}
+                  aria-label={`Открыть набор «${preset.title}»`}
+                >
                   <div className="settings-word-banlist__preset-badge-text">
                     <strong>{compactTitle}</strong>
-                    <small>
-                      {formatPresetDelta(addableCount, removableCount, remainingSlots)} из{' '}
-                      {presetWords.length}
-                    </small>
+                    <small>{formatPresetState(removableCount, presetWords.length)}</small>
                   </div>
-                </div>
+                  <span className="settings-word-banlist__preset-chevron" aria-hidden>
+                    ›
+                  </span>
+                </button>
 
                 <div className="settings-word-banlist__preset-actions">
                   <button
                     type="button"
-                    className={cn(
-                      'settings-info-button',
-                      activePresetId === preset.id && 'is-open',
-                    )}
-                    aria-label={`Открыть полный список слов пакета ${preset.title}`}
+                    className="settings-word-banlist__preset-toggle"
                     onClick={() =>
-                      setActivePresetId((current) => (current === preset.id ? null : preset.id))
+                      missingWords.length > 0 ? applyPreset(preset) : removePreset(preset)
                     }
+                    disabled={missingWords.length > 0 && addableCount === 0}
                   >
-                    <span aria-hidden>i</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    className="settings-word-banlist__preset-action settings-word-banlist__preset-action--remove"
-                    onClick={() => removePreset(preset)}
-                    disabled={removableCount === 0}
-                    aria-label={
-                      removableCount > 0
-                        ? `Убрать слова пакета ${preset.title}`
-                        : `Из пакета ${preset.title} нечего убирать`
-                    }
-                  >
-                    <MinusIcon />
-                  </button>
-
-                  <button
-                    type="button"
-                    className="settings-word-banlist__preset-action settings-word-banlist__preset-action--add"
-                    onClick={() => applyPreset(preset)}
-                    disabled={addableCount === 0}
-                    aria-label={
-                      addableCount > 0
-                        ? `Добавить пакет ${preset.title}`
+                    {missingWords.length === 0
+                      ? 'Убрать'
+                      : removableCount > 0
+                        ? 'Дополнить'
                         : remainingSlots === 0
-                          ? `Лимит стоп-слов достигнут для пакета ${preset.title}`
-                          : `Пакет ${preset.title} уже добавлен`
-                    }
-                  >
-                    <PlusIcon />
+                          ? 'Лимит'
+                          : 'Добавить'}
                   </button>
                 </div>
               </div>
@@ -245,9 +183,7 @@ export default function MessageLimitsBlockedWordPresets({
                 }}
                 disabled={activePresetRemovableCount === 0}
               >
-                {activePresetRemovableCount > 0
-                  ? `Убрать ${activePresetRemovableCount} слов`
-                  : 'Убирать нечего'}
+                {activePresetRemovableCount > 0 ? 'Убрать' : 'Не добавлен'}
               </button>
               <button
                 type="button"
@@ -259,26 +195,15 @@ export default function MessageLimitsBlockedWordPresets({
                 disabled={activePresetAddableCount === 0}
               >
                 {activePresetAddableCount > 0
-                  ? `Добавить ${activePresetAddableCount} слов в стоп-лист`
+                  ? 'Добавить'
                   : remainingSlots === 0
-                    ? 'Лимит стоп-слов уже достигнут'
-                    : 'Все слова уже добавлены'}
+                    ? 'Лимит достигнут'
+                    : 'Уже добавлен'}
               </button>
             </div>
           }
         >
           <div className="settings-word-banlist__preset-sheet">
-            <div className="settings-word-banlist__preset-sheet-facts">
-              <span className="chip">{activePresetWords.length} слов</span>
-              <span className="chip">Новых: {activePresetAddableCount}</span>
-              <span className="chip">В списке: {activePresetRemovableCount}</span>
-            </div>
-
-            <p className="settings-word-banlist__preset-sheet-note">
-              Пакет можно добавить поверх текущего списка или целиком убрать из него. Перед
-              применением можно просмотреть все слова ниже.
-            </p>
-
             <div
               className="settings-word-banlist__preset-sheet-words"
               aria-label={`Полный список слов пакета ${activePreset.title}`}

@@ -698,7 +698,7 @@ const scenarios = [
       if (!(await explanationToggle.isChecked())) {
         await explanationToggle.check();
       }
-      await page.getByRole('button', { name: /Выбрать чаты/u }).click();
+      await page.getByRole('button', { name: /Применить к другим чатам/u }).click();
       await page.locator('.settings-apply-target__panel').waitFor({ state: 'visible' });
     },
   },

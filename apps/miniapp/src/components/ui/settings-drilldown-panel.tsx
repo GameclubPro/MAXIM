@@ -1,12 +1,4 @@
-import {
-  Suspense,
-  lazy,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from 'react';
+import { Suspense, lazy, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '../../lib/cn';
 import { isTopmostModalDialog, useDialogFocusTrap } from '../../lib/dialog-focus';
@@ -33,6 +25,7 @@ type SettingsDrilldownPanelProps = {
   children: ReactNode;
   className?: string;
   overlayClassName?: string;
+  headerAction?: ReactNode;
   footer?: ReactNode;
   keepFooterVisibleWhenKeyboardOpen?: boolean;
   confirmCloseWhen?: boolean;
@@ -130,6 +123,7 @@ export function SettingsDrilldownPanel({
   children,
   className,
   overlayClassName,
+  headerAction,
   footer,
   keepFooterVisibleWhenKeyboardOpen = false,
   confirmCloseWhen = false,
@@ -257,15 +251,18 @@ export function SettingsDrilldownPanel({
                 ) : null}
               </div>
 
-              <button
-                ref={closeButtonRef}
-                type="button"
-                className="settings-drilldown__close"
-                aria-label="Закрыть панель"
-                onClick={requestClose}
-              >
-                <CloseIcon />
-              </button>
+              <div className="settings-drilldown__header-actions">
+                {headerAction}
+                <button
+                  ref={closeButtonRef}
+                  type="button"
+                  className="settings-drilldown__close"
+                  aria-label="Закрыть панель"
+                  onClick={requestClose}
+                >
+                  <CloseIcon />
+                </button>
+              </div>
             </header>
 
             <div className="settings-drilldown__content">

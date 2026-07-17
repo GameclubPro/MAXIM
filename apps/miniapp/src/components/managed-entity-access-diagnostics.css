@@ -30,7 +30,7 @@
   }
 
   .managed-access-alert__kicker {
-    color: var(--color-warning);
+    color: var(--text-primary);
     font-weight: 800;
   }
 

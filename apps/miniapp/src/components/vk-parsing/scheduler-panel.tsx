@@ -30,6 +30,14 @@ export type AutopostStatusModel = {
   tone: AutopostStatusTone;
 };
 
+type AutopostMode = 'manual' | 'auto' | 'pause';
+
+const AUTOPOST_MODES: Array<{ value: AutopostMode; label: string }> = [
+  { value: 'manual', label: 'Ручной' },
+  { value: 'auto', label: 'Авто' },
+  { value: 'pause', label: 'Пауза' },
+];
+
 const SOURCE_MODE_OPTIONS: Array<{
   value: NonNullable<UpdateVkParsingSourceRequest['publishMode']>;
   label: string;
@@ -147,6 +155,11 @@ export function SchedulerPanel({
   const customInterval = commonInterval ?? CUSTOM_FREQUENCY_MINUTES;
   const sourceControlsDisabled = sourceIds.length === 0 || isSavingSource;
   const presetDisabled = sourceIds.length === 0 || isSavingSource || isSaving;
+  const autopostMode: AutopostMode = settings.autoPublishKillSwitchEnabled
+    ? 'pause'
+    : settings.autoPublishEnabled
+      ? 'auto'
+      : 'manual';
 
   return (
     <section
@@ -173,23 +186,25 @@ export function SchedulerPanel({
           </span>
         </div>
 
-        <div className="vk-autopost-switches" aria-label="Включение автопостинга">
-          <SwitchRow
-            id="vk-parsing-automation-switch"
-            label="Авто"
-            checked={settings.autoPublishEnabled}
-            disabled={isSaving || settings.autoPublishKillSwitchEnabled}
-            title="Общее включение автоматической публикации"
-            onChange={(checked) => onUpdateSetting({ autoPublishEnabled: checked })}
-          />
-          <SwitchRow
-            label="Стоп"
-            checked={settings.autoPublishKillSwitchEnabled}
-            disabled={isSaving}
-            danger
-            title="Остановить автопубликацию"
-            onChange={(checked) => onUpdateSetting({ autoPublishKillSwitchEnabled: checked })}
-          />
+        <div className="vk-autopost-mode" role="radiogroup" aria-label="Режим автопостинга">
+          {AUTOPOST_MODES.map((mode) => (
+            <button
+              key={mode.value}
+              type="button"
+              role="radio"
+              aria-checked={autopostMode === mode.value}
+              className={cn(autopostMode === mode.value && 'is-active')}
+              disabled={isSaving}
+              onClick={() =>
+                onUpdateSetting({
+                  autoPublishEnabled: mode.value !== 'manual',
+                  autoPublishKillSwitchEnabled: mode.value === 'pause',
+                })
+              }
+            >
+              {mode.label}
+            </button>
+          ))}
         </div>
       </div>
 
