@@ -1,0 +1,112 @@
+import pino from 'pino';
+import { HTTP_LOG_REDACT_PATHS } from './http-log-redaction';
+
+describe('HTTP log redaction', () => {
+  it('redacts request credentials and signed launch payloads while preserving useful context', () => {
+    const output: string[] = [];
+    const logger = pino(
+      {
+        base: null,
+        timestamp: false,
+        redact: HTTP_LOG_REDACT_PATHS,
+      },
+      {
+        write(chunk: string) {
+          output.push(chunk);
+        },
+      },
+    );
+
+    logger.info({
+      req: {
+        method: 'GET',
+        url: '/api/admin/dialog?token=signed-dialog-token&screen=messages',
+        query: {
+          token: 'signed-dialog-token',
+          access_token: 'access-token',
+          initData: 'signed-max-init-data',
+          signature: 'request-signature',
+          startapp: 'signed-miniapp-start-payload',
+          start_param: 'signed-start-payload',
+          screen: 'messages',
+          page: '2',
+        },
+        headers: {
+          authorization: 'InitData signed-max-init-data',
+          referer: 'https://major-maksimov.ru/app/?startapp=signed-miniapp-start-payload',
+          'user-agent': 'MAX WebView',
+          'x-request-id': 'request-123',
+        },
+      },
+    });
+
+    const record = JSON.parse(output.join('')) as {
+      req: {
+        method: string;
+        url: string;
+        query: Record<string, string>;
+        headers: Record<string, string>;
+      };
+    };
+
+    expect(record.req).toEqual({
+      method: 'GET',
+      url: '[Redacted]',
+      query: {
+        token: '[Redacted]',
+        access_token: '[Redacted]',
+        initData: '[Redacted]',
+        signature: '[Redacted]',
+        startapp: '[Redacted]',
+        start_param: '[Redacted]',
+        screen: 'messages',
+        page: '2',
+      },
+      headers: {
+        authorization: '[Redacted]',
+        referer: '[Redacted]',
+        'user-agent': 'MAX WebView',
+        'x-request-id': 'request-123',
+      },
+    });
+  });
+
+  it.each([
+    'token',
+    'access_token',
+    'accessToken',
+    'auth',
+    'authorization',
+    'hash',
+    'init_data',
+    'initData',
+    'secret',
+    'signature',
+    'start',
+    'startapp',
+    'startApp',
+    'start_param',
+    'startParam',
+    'webAppData',
+    'WebAppData',
+    'webAppStartParam',
+    'WebAppStartParam',
+  ])('redacts the %s query key', (key) => {
+    const output: string[] = [];
+    const logger = pino(
+      { base: null, timestamp: false, redact: HTTP_LOG_REDACT_PATHS },
+      {
+        write(chunk: string) {
+          output.push(chunk);
+        },
+      },
+    );
+
+    logger.info({ req: { query: { [key]: 'credential', filter: 'active' } } });
+
+    const record = JSON.parse(output.join('')) as {
+      req: { query: Record<string, string> };
+    };
+    expect(record.req.query).toEqual({ [key]: '[Redacted]', filter: 'active' });
+  });
+});

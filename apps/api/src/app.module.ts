@@ -3,6 +3,7 @@ import { Module, RequestMethod } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { LoggerModule } from 'nestjs-pino';
 import { AdminModule } from './admin/admin.module';
+import { HTTP_LOG_REDACT_PATHS } from './common/http-log-redaction';
 import { validateEnv } from './config/env.schema';
 import { HealthModule } from './health/health.module';
 import { MaxBotModule } from './max/max-bot.module';
@@ -32,18 +33,7 @@ import { WebhookModule } from './webhook/webhook.module';
                   singleLine: true,
                 },
               },
-        redact: [
-          'req.headers.authorization',
-          'req.headers.x-max-secret',
-          'req.headers.x-max-bot-api-secret',
-          'req.url',
-          'err.config.headers.Authorization',
-          'err.config.headers.authorization',
-          'err.request._header',
-          'err.response.config.headers.Authorization',
-          'err.response.config.headers.authorization',
-          'err.response.request._header',
-        ],
+        redact: HTTP_LOG_REDACT_PATHS,
       },
     }),
     BullModule.forRootAsync({
