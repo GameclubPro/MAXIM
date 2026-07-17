@@ -1,6 +1,10 @@
 import { ChatBotMembershipStatus, WebhookStatus } from '../prisma/prisma-client';
 import type { MaxUpdate } from '@maxim/contracts';
 import { ModerationService } from './moderation.service';
+import {
+  SHARED_CHAT_EXECUTION_LOCK_AMBIGUOUS_RETRY_AFTER_MS,
+  SHARED_CHAT_EXECUTION_LOCK_TTL_MS,
+} from './moderation.service.support';
 
 function createGroupMessageUpdate(type = 'message_created', botId?: string): MaxUpdate {
   return {
@@ -568,53 +572,85 @@ describe('ModerationService shared chat ownership', () => {
     }
   });
 
-  it('falls back to memory lock when redis shared execution lock acquisition stalls', async () => {
-    const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((
-      callback: TimerHandler,
-    ) => {
-      const timer = { unref: jest.fn() } as unknown as NodeJS.Timeout;
-      queueMicrotask(() => {
-        if (typeof callback === 'function') {
-          callback();
-        }
-      });
-      return timer;
-    }) as unknown as typeof setTimeout);
-    const clearTimeoutSpy = jest
-      .spyOn(global, 'clearTimeout')
-      .mockImplementation((() => undefined) as unknown as typeof clearTimeout);
+  it('uses the caller token and Redis deadline for a shared execution lock', async () => {
     const redisCounter = {
-      acquireLock: jest.fn().mockImplementation(() => new Promise(() => undefined)),
+      acquireLockBeforeDeadline: jest.fn().mockResolvedValue({ kind: 'acquired' }),
+      releaseLock: jest.fn().mockResolvedValue(undefined),
     };
-    const configService = {
-      get: jest.fn((key: string) => {
-        if (key === 'SHARED_CHAT_EXECUTION_LOCK_TIMEOUT_MS') {
-          return 50;
-        }
-        return undefined;
-      }),
+    const service = new ModerationService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      redisCounter as never,
+    );
+
+    const startedAtMs = Date.now();
+    const lock = await (
+      service as unknown as {
+        acquireSharedChatExecutionLock: (
+          update: MaxUpdate,
+          chatId: string,
+          guard: SharedChatLockGuard,
+        ) => Promise<{ key: string; token: string; mode: 'redis' | 'memory' } | null>;
+        releaseSharedChatExecutionLock: (lock: {
+          key: string;
+          token: string;
+          mode: 'redis' | 'memory';
+        }) => Promise<void>;
+      }
+    ).acquireSharedChatExecutionLock(createGroupMessageUpdate(), '-100123', {
+      mode: 'allow',
+      activeBotId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+      assignedBotIds: ['id613002203036_bot', 'id613002203036_4_bot'],
+      requiresExecutionLock: true,
+    });
+
+    expect(lock).toMatchObject({ mode: 'redis', token: expect.any(String) });
+    expect(redisCounter.acquireLockBeforeDeadline).toHaveBeenCalledWith(
+      lock!.key,
+      lock!.token,
+      SHARED_CHAT_EXECUTION_LOCK_TTL_MS,
+      expect.any(Number),
+    );
+    const deadlineAtMs = redisCounter.acquireLockBeforeDeadline.mock.calls[0]?.[3] as number;
+    expect(deadlineAtMs).toBeGreaterThanOrEqual(startedAtMs + 1_000);
+    expect(deadlineAtMs).toBeLessThanOrEqual(Date.now() + 1_000);
+
+    await (
+      service as unknown as {
+        releaseSharedChatExecutionLock: (lock: {
+          key: string;
+          token: string;
+          mode: 'redis' | 'memory';
+        }) => Promise<void>;
+      }
+    ).releaseSharedChatExecutionLock(lock!);
+    expect(redisCounter.releaseLock).toHaveBeenCalledWith(lock!.key, lock!.token);
+  });
+
+  it('keeps Redis contention as a duplicate skip without reentrant acquisition', async () => {
+    const redisCounter = {
+      acquireLockBeforeDeadline: jest.fn().mockResolvedValue({ kind: 'busy' }),
+      releaseLock: jest.fn().mockResolvedValue(undefined),
     };
+    const service = new ModerationService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      redisCounter as never,
+    );
 
-    try {
-      const service = new ModerationService(
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        undefined,
-        undefined,
-        configService as never,
-        redisCounter as never,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        {
-          getActiveBotId: jest.fn().mockReturnValue('id613002203036_bot'),
-        } as never,
-      );
-
-      const lock = await (
+    await expect(
+      (
         service as unknown as {
           acquireSharedChatExecutionLock: (
             update: MaxUpdate,
@@ -628,17 +664,178 @@ describe('ModerationService shared chat ownership', () => {
         primaryBotId: 'id613002203036_bot',
         assignedBotIds: ['id613002203036_bot', 'id613002203036_4_bot'],
         requiresExecutionLock: true,
-      });
+      }),
+    ).resolves.toBeNull();
 
-      expect(lock).toMatchObject({
-        mode: 'memory',
-      });
-      expect(redisCounter.acquireLock).toHaveBeenCalledTimes(1);
-      expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
-      expect(clearTimeoutSpy).toHaveBeenCalledTimes(1);
-    } finally {
-      setTimeoutSpy.mockRestore();
-      clearTimeoutSpy.mockRestore();
-    }
+    expect(redisCounter.acquireLockBeforeDeadline).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      SHARED_CHAT_EXECUTION_LOCK_TTL_MS,
+      expect.any(Number),
+    );
+    expect(redisCounter.releaseLock).not.toHaveBeenCalled();
+  });
+
+  it('retries when Redis rejects the acquisition at the server deadline', async () => {
+    const redisCounter = {
+      acquireLockBeforeDeadline: jest.fn().mockResolvedValue({ kind: 'deadline_exceeded' }),
+      releaseLock: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new ModerationService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      redisCounter as never,
+    );
+
+    await expect(
+      (
+        service as unknown as {
+          acquireSharedChatExecutionLock: (
+            update: MaxUpdate,
+            chatId: string,
+            guard: SharedChatLockGuard,
+          ) => Promise<{ key: string; token: string; mode: 'redis' | 'memory' } | null>;
+        }
+      ).acquireSharedChatExecutionLock(createGroupMessageUpdate(), '-100123', {
+        mode: 'allow',
+        activeBotId: 'id613002203036_bot',
+        primaryBotId: 'id613002203036_bot',
+        assignedBotIds: ['id613002203036_bot', 'id613002203036_4_bot'],
+        requiresExecutionLock: true,
+      }),
+    ).rejects.toMatchObject({
+      code: 'ECONNABORTED',
+      retryAfterMs: SHARED_CHAT_EXECUTION_LOCK_AMBIGUOUS_RETRY_AFTER_MS,
+    });
+
+    await Promise.resolve();
+    const [key, token] = redisCounter.acquireLockBeforeDeadline.mock.calls[0]!;
+    expect(redisCounter.releaseLock).toHaveBeenCalledWith(key, token);
+  });
+
+  it('does not use a process-local lock when Redis acquisition stalls', async () => {
+    let resolveAcquisition!: (result: { kind: 'acquired' }) => void;
+    const redisCounter = {
+      acquireLockBeforeDeadline: jest.fn().mockImplementation(
+        () =>
+          new Promise<{ kind: 'acquired' }>((resolve) => {
+            resolveAcquisition = resolve;
+          }),
+      ),
+      releaseLock: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new ModerationService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      redisCounter as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        getActiveBotId: jest.fn().mockReturnValue('id613002203036_bot'),
+      } as never,
+    );
+    const timeoutError = Object.assign(new Error('lock timed out'), {
+      code: 'ECONNABORTED',
+    });
+    (service as any).executeSharedChatOperationWithGuard = jest.fn(
+      async (operation: () => Promise<unknown>) => {
+        void operation();
+        throw timeoutError;
+      },
+    );
+
+    const lockPromise = (
+      service as unknown as {
+        acquireSharedChatExecutionLock: (
+          update: MaxUpdate,
+          chatId: string,
+          guard: SharedChatLockGuard,
+        ) => Promise<{ key: string; token: string; mode: 'redis' | 'memory' } | null>;
+      }
+    ).acquireSharedChatExecutionLock(createGroupMessageUpdate(), '-100123', {
+      mode: 'allow',
+      activeBotId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+      assignedBotIds: ['id613002203036_bot', 'id613002203036_4_bot'],
+      requiresExecutionLock: true,
+    });
+
+    await expect(lockPromise).rejects.toMatchObject({
+      code: 'ECONNABORTED',
+      retryAfterMs: SHARED_CHAT_EXECUTION_LOCK_AMBIGUOUS_RETRY_AFTER_MS,
+      sharedChatExecutionLockRetryable: true,
+    });
+    await Promise.resolve();
+
+    expect(redisCounter.acquireLockBeforeDeadline).toHaveBeenCalledTimes(1);
+    const [key, token, ttlMs, deadlineAtMs] = redisCounter.acquireLockBeforeDeadline.mock.calls[0]!;
+    expect(ttlMs).toBe(SHARED_CHAT_EXECUTION_LOCK_TTL_MS);
+    expect(deadlineAtMs).toBeGreaterThan(0);
+    expect(redisCounter.releaseLock).toHaveBeenCalledTimes(1);
+    expect(redisCounter.releaseLock).toHaveBeenCalledWith(key, token);
+
+    resolveAcquisition({ kind: 'acquired' });
+    await Promise.resolve();
+    expect(redisCounter.releaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not use a process-local lock after a Redis acquisition rejection', async () => {
+    const transportError = Object.freeze(
+      Object.assign(new Error('redis unavailable'), { code: 'ECONNRESET' }),
+    );
+    const redisCounter = {
+      acquireLockBeforeDeadline: jest.fn().mockRejectedValue(transportError),
+      releaseLock: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new ModerationService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      redisCounter as never,
+    );
+
+    await expect(
+      (
+        service as unknown as {
+          acquireSharedChatExecutionLock: (
+            update: MaxUpdate,
+            chatId: string,
+            guard: SharedChatLockGuard,
+          ) => Promise<{ key: string; token: string; mode: 'redis' | 'memory' } | null>;
+        }
+      ).acquireSharedChatExecutionLock(createGroupMessageUpdate(), '-100123', {
+        mode: 'allow',
+        activeBotId: 'id613002203036_bot',
+        primaryBotId: 'id613002203036_bot',
+        assignedBotIds: ['id613002203036_bot', 'id613002203036_4_bot'],
+        requiresExecutionLock: true,
+      }),
+    ).rejects.toMatchObject({
+      message: 'redis unavailable',
+      code: 'ECONNRESET',
+      retryAfterMs: SHARED_CHAT_EXECUTION_LOCK_AMBIGUOUS_RETRY_AFTER_MS,
+      sharedChatExecutionLockRetryable: true,
+      cause: transportError,
+    });
+
+    await Promise.resolve();
+    const [key, token] = redisCounter.acquireLockBeforeDeadline.mock.calls[0]!;
+    expect(redisCounter.releaseLock).toHaveBeenCalledWith(key, token);
   });
 });

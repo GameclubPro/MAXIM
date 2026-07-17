@@ -25,6 +25,7 @@ import {
   MODERATION_ACTION_ACCESS_LOSS_HOT_PATH_TIMEOUT_MS,
   MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
   REQUIRED_SUBSCRIPTION_MEMBERSHIP_HOT_PATH_TIMEOUT_MS,
+  SHARED_CHAT_EXECUTION_LOCK_AMBIGUOUS_RETRY_AFTER_MS,
 } from './moderation.service.support';
 
 declare global {
@@ -236,6 +237,14 @@ function createRedisCounterMock() {
 
       locks.add(key);
       return `lock-${key}`;
+    }),
+    acquireLockBeforeDeadline: jest.fn(async (key: string) => {
+      if (locks.has(key)) {
+        return { kind: 'busy' as const };
+      }
+
+      locks.add(key);
+      return { kind: 'acquired' as const };
     }),
     releaseLock: jest.fn(async (key: string) => {
       locks.delete(key);
@@ -2035,6 +2044,62 @@ describe('ModerationService', () => {
         nextEnqueueAt: expect.any(Date),
       }),
     });
+  });
+
+  it('honors an extended retry delay for an ambiguous shared lock acquisition', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-07-17T12:00:00.000Z'));
+    const nowMs = Date.now();
+    const prisma = {
+      webhookEvent: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'event-shared-lock-timeout-1',
+          botId: null,
+          normalizedPayload: createUpdate(),
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+    );
+    const lockError = Object.assign(new Error('shared lock acquisition was ambiguous'), {
+      retryAfterMs: SHARED_CHAT_EXECUTION_LOCK_AMBIGUOUS_RETRY_AFTER_MS,
+      sharedChatExecutionLockRetryable: true,
+    });
+    jest.spyOn(service, 'handleUpdate').mockRejectedValue(lockError);
+
+    try {
+      await expect(service.processWebhookEvent('event-shared-lock-timeout-1')).rejects.toThrow(
+        'shared lock acquisition was ambiguous',
+      );
+
+      expect(prisma.webhookEvent.update).toHaveBeenCalledWith({
+        where: { id: 'event-shared-lock-timeout-1' },
+        data: expect.objectContaining({
+          status: 'FAILED',
+          nextEnqueueAt: new Date(nowMs + SHARED_CHAT_EXECUTION_LOCK_AMBIGUOUS_RETRY_AFTER_MS),
+        }),
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not apply arbitrary domain retryAfterMs values to webhook re-enqueue', () => {
+    const service = new ModerationService(
+      {} as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+    );
+
+    expect(
+      (service as any).readWebhookProcessingRetryAfterMs({ retryAfterMs: 180_000 }),
+    ).toBeUndefined();
   });
 
   it('quarantines a hot-path timeout until detached work completes successfully', async () => {

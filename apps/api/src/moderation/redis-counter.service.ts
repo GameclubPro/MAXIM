@@ -75,9 +75,30 @@ end
 return 0
 `;
 
+// FLAG: Keep the Redis TIME deadline check before SET. A caller may stop awaiting this command at
+// the same deadline, so a command that reaches Redis late must never create an orphaned lock.
+const ACQUIRE_LOCK_BEFORE_DEADLINE_SCRIPT = `
+local redis_time = redis.call('TIME')
+local now_ms = (tonumber(redis_time[1]) * 1000) + math.floor(tonumber(redis_time[2]) / 1000)
+if now_ms >= tonumber(ARGV[3]) then
+  return 0
+end
+
+local acquired = redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2], 'NX')
+if acquired then
+  return 1
+end
+return 2
+`;
+
 export type ReplayableDeadlineIncrementResult =
   | { kind: 'deadline_exceeded' }
   | { kind: 'inserted' | 'replayed'; count: number };
+
+export type DeadlineLockAcquireResult =
+  | { kind: 'acquired' }
+  | { kind: 'busy' }
+  | { kind: 'deadline_exceeded' };
 
 @Injectable()
 export class RedisCounterService implements OnModuleDestroy {
@@ -246,6 +267,49 @@ export class RedisCounterService implements OnModuleDestroy {
     const token = randomUUID();
     const acquired = await this.redis.set(key, token, 'PX', Math.trunc(ttlMs), 'NX');
     return acquired === 'OK' ? token : null;
+  }
+
+  async acquireLockBeforeDeadline(
+    key: string,
+    token: string,
+    ttlMs: number,
+    deadlineAtMs: number,
+  ): Promise<DeadlineLockAcquireResult> {
+    const normalizedKey = key.trim();
+    const normalizedToken = token.trim();
+    const normalizedTtlMs = Math.trunc(ttlMs);
+    const normalizedDeadlineAtMs = Math.trunc(deadlineAtMs);
+    if (
+      !normalizedKey ||
+      !normalizedToken ||
+      !Number.isFinite(normalizedTtlMs) ||
+      normalizedTtlMs <= 0 ||
+      !Number.isFinite(normalizedDeadlineAtMs) ||
+      normalizedDeadlineAtMs <= 0
+    ) {
+      throw new Error('Deadline lock key, token, TTL, and deadline must be valid');
+    }
+
+    const status = Number(
+      await this.redis.eval(
+        ACQUIRE_LOCK_BEFORE_DEADLINE_SCRIPT,
+        1,
+        normalizedKey,
+        normalizedToken,
+        String(normalizedTtlMs),
+        String(normalizedDeadlineAtMs),
+      ),
+    );
+    if (status === 0) {
+      return { kind: 'deadline_exceeded' };
+    }
+    if (status === 1) {
+      return { kind: 'acquired' };
+    }
+    if (status === 2) {
+      return { kind: 'busy' };
+    }
+    throw new Error('Redis returned an invalid deadline lock acquisition result');
   }
 
   async releaseLock(key: string, token: string): Promise<void> {

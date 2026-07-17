@@ -221,9 +221,15 @@ export class WebhookCanonicalExecutionService {
 
   async failExecution(
     context: WebhookCanonicalExecutionContext,
-    params: { errorMessage: string; terminal: boolean },
+    params: { errorMessage: string; terminal: boolean; retryAfterMs?: number },
   ): Promise<void> {
     await this.releaseBusinessLease(context);
+
+    const requestedRetryAfterMs = Math.trunc(params.retryAfterMs ?? 0);
+    const retryAfterMs =
+      Number.isFinite(requestedRetryAfterMs) && requestedRetryAfterMs > 0
+        ? requestedRetryAfterMs
+        : 15_000;
 
     const recoveredRawPayload =
       context.update.raw &&
@@ -236,7 +242,7 @@ export class WebhookCanonicalExecutionService {
       data: {
         status: WebhookStatus.FAILED,
         errorMessage: params.errorMessage,
-        nextEnqueueAt: params.terminal ? null : new Date(Date.now() + 15_000),
+        nextEnqueueAt: params.terminal ? null : new Date(Date.now() + retryAfterMs),
         ...(recoveredRawPayload
           ? { rawPayload: recoveredRawPayload as Prisma.InputJsonValue }
           : {}),

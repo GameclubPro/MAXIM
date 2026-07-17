@@ -282,6 +282,7 @@ import {
   CHANNEL_DIALOG_START_PARAM_PREFIX,
   CHANNEL_DIALOG_TOKEN_PREFIX,
   SHARED_CHAT_EXECUTION_LOCK_TTL_MS,
+  SHARED_CHAT_EXECUTION_LOCK_AMBIGUOUS_RETRY_AFTER_MS,
   DEFAULT_SHARED_CHAT_EXECUTION_LOOKUP_TIMEOUT_MS,
   DEFAULT_SHARED_CHAT_EXECUTION_LOCK_TIMEOUT_MS,
   DEFAULT_WEBHOOK_USER_FACING_TIMEOUT_MS,
@@ -934,6 +935,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         await this.webhookCanonicalExecutionService.failExecution(execution, {
           errorMessage: this.formatWebhookProcessingErrorMessage(error),
           terminal: this.isTerminalWebhookProcessingError(error),
+          retryAfterMs: this.readWebhookProcessingRetryAfterMs(error),
         });
       }
       throw error;
@@ -11376,19 +11378,31 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return `shared-chat-execution:v1:${ownerBotId}:${chatId}:${discriminator}`;
   }
 
+  // FLAG: This is the cross-process fence for mirrored webhooks. A Redis timeout must retry after
+  // the maximum orphan lifetime; never replace it with a process-local lock or a reentrant token.
   private async acquireSharedChatExecutionLock(
     update: MaxUpdate,
     chatId: string,
     guard: Extract<SharedChatExecutionGuard, { mode: 'allow' }>,
   ): Promise<{ key: string; token: string; mode: 'redis' | 'memory' } | null> {
     const key = this.buildSharedChatExecutionLockKey(update, chatId, guard);
-    const acquireLock = (this.redisCounter as Partial<RedisCounterService> | undefined)
-      ?.acquireLock;
+    const acquireLockBeforeDeadline = (
+      this.redisCounter as Partial<RedisCounterService> | undefined
+    )?.acquireLockBeforeDeadline;
 
-    if (acquireLock && this.redisCounter) {
+    if (acquireLockBeforeDeadline && this.redisCounter) {
+      const token = randomUUID();
+      const deadlineAtMs = Date.now() + this.sharedChatExecutionLockTimeoutMs;
       try {
-        const token = await this.executeSharedChatOperationWithGuard(
-          () => acquireLock.call(this.redisCounter, key, SHARED_CHAT_EXECUTION_LOCK_TTL_MS),
+        const acquisition = await this.executeSharedChatOperationWithGuard(
+          () =>
+            acquireLockBeforeDeadline.call(
+              this.redisCounter,
+              key,
+              token,
+              SHARED_CHAT_EXECUTION_LOCK_TTL_MS,
+              deadlineAtMs,
+            ),
           this.sharedChatExecutionLockTimeoutMs,
           {
             operation: 'lock',
@@ -11398,8 +11412,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             lockKey: key,
           },
         );
-        if (!token) {
+        if (acquisition.kind === 'busy') {
           return null;
+        }
+        if (acquisition.kind === 'deadline_exceeded') {
+          throw this.createSharedChatExecutionTimeoutError(
+            {
+              operation: 'lock',
+              chatId,
+              activeBotId: guard.activeBotId,
+              updateId: update.updateId,
+              lockKey: key,
+            },
+            this.sharedChatExecutionLockTimeoutMs,
+          );
         }
 
         return {
@@ -11408,16 +11434,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           mode: 'redis',
         };
       } catch (error: unknown) {
+        void this.releaseSharedChatExecutionLock({ key, token, mode: 'redis' });
+        const retryError = this.createSharedChatExecutionLockRetryError(error);
         this.logger.warn(
           {
             key,
             chatId,
             updateId: update.updateId,
             activeBotId: guard.activeBotId,
-            error: error instanceof Error ? error.message : 'Unknown error',
+            retryAfterMs: retryError.retryAfterMs,
+            error: retryError.message,
           },
-          'Failed to acquire redis shared chat execution lock in time; falling back to memory lock',
+          'Failed to acquire redis shared chat execution lock safely; deferring webhook retry',
         );
+        throw retryError;
       }
     }
 
@@ -11431,6 +11461,36 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       key,
       token,
       mode: 'memory',
+    };
+  }
+
+  private createSharedChatExecutionLockRetryError(error: unknown): Error & {
+    retryAfterMs: number;
+    sharedChatExecutionLockRetryable: true;
+  } {
+    const sourceError = error instanceof Error ? error : new Error('Unknown error');
+    const retryError = new Error(sourceError.message, { cause: error }) as Error & {
+      code?: string;
+      retryAfterMs: number;
+      sharedChatExecutionLockRetryable?: boolean;
+    };
+    const sourceDetails = sourceError as Error & {
+      code?: unknown;
+      retryAfterMs?: unknown;
+    };
+    if (typeof sourceDetails.code === 'string') {
+      retryError.code = sourceDetails.code;
+    }
+    retryError.retryAfterMs = Math.max(
+      typeof sourceDetails.retryAfterMs === 'number' && Number.isFinite(sourceDetails.retryAfterMs)
+        ? Math.trunc(sourceDetails.retryAfterMs)
+        : 0,
+      SHARED_CHAT_EXECUTION_LOCK_AMBIGUOUS_RETRY_AFTER_MS,
+    );
+    retryError.sharedChatExecutionLockRetryable = true;
+    return retryError as Error & {
+      retryAfterMs: number;
+      sharedChatExecutionLockRetryable: true;
     };
   }
 
@@ -16305,6 +16365,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private isTerminalWebhookProcessingError(error: unknown): boolean {
+    if (
+      (error as { sharedChatExecutionLockRetryable?: unknown } | null)
+        ?.sharedChatExecutionLockRetryable === true
+    ) {
+      return false;
+    }
+
     if (error instanceof UnrecoverableError) {
       return true;
     }
@@ -16329,6 +16396,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       message.includes('not accessible') ||
       message.includes('chat not found')
     );
+  }
+
+  private readWebhookProcessingRetryAfterMs(error: unknown): number | undefined {
+    const retryError = error as {
+      retryAfterMs?: unknown;
+      sharedChatExecutionLockRetryable?: unknown;
+    } | null;
+    if (retryError?.sharedChatExecutionLockRetryable !== true) {
+      return undefined;
+    }
+    const retryAfterMs = retryError.retryAfterMs;
+    if (typeof retryAfterMs !== 'number' || !Number.isFinite(retryAfterMs) || retryAfterMs <= 0) {
+      return undefined;
+    }
+    return Math.trunc(retryAfterMs);
   }
 
   private isWebhookHotPathTimeoutError(error: unknown): boolean {
