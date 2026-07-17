@@ -5756,8 +5756,10 @@ describe('MaxClientService delayed member actions', () => {
     queue: { add: jest.Mock; getJob: jest.Mock },
     actionLedgerService?: {
       assertCanEnqueue?: jest.Mock;
-      recordEnqueued?: jest.Mock;
-      recordFailed?: jest.Mock;
+      recordEnqueuedIfAbsent?: jest.Mock;
+      recordEnqueueFailedIfAbsent?: jest.Mock;
+      recordEnqueueAmbiguousIfAbsent?: jest.Mock;
+      hasExecutionEvidenceSince?: jest.Mock;
     },
     maxBotLinkService?: {
       resolveBotRoute?: jest.Mock;
@@ -6182,15 +6184,16 @@ describe('MaxClientService delayed member actions', () => {
     await service.onModuleDestroy();
   });
 
-  it('records queued actions in the durable ledger before BullMQ add', async () => {
+  it('records queued actions only after BullMQ accepts the job', async () => {
     const queue = {
       add: jest.fn().mockResolvedValue(undefined),
       getJob: jest.fn().mockResolvedValue(null),
     };
     const actionLedgerService = {
       assertCanEnqueue: jest.fn().mockResolvedValue(undefined),
-      recordEnqueued: jest.fn().mockResolvedValue(undefined),
-      recordFailed: jest.fn().mockResolvedValue(undefined),
+      recordEnqueuedIfAbsent: jest.fn().mockResolvedValue(undefined),
+      recordEnqueueFailedIfAbsent: jest.fn().mockResolvedValue(undefined),
+      hasExecutionEvidenceSince: jest.fn().mockResolvedValue(false),
     };
     const service = createServiceWithQueue(queue, actionLedgerService);
 
@@ -6201,12 +6204,36 @@ describe('MaxClientService delayed member actions', () => {
 
     const job = queue.add.mock.calls[0][1];
     expect(actionLedgerService.assertCanEnqueue).toHaveBeenCalledWith(job);
-    expect(actionLedgerService.recordEnqueued).toHaveBeenCalledWith(job);
+    expect(actionLedgerService.recordEnqueuedIfAbsent).toHaveBeenCalledWith(job);
     expect(queue.add).toHaveBeenCalledTimes(1);
-    expect(actionLedgerService.recordEnqueued.mock.invocationCallOrder[0]).toBeLessThan(
-      queue.add.mock.invocationCallOrder[0],
+    expect(queue.add.mock.invocationCallOrder[0]).toBeLessThan(
+      actionLedgerService.recordEnqueuedIfAbsent.mock.invocationCallOrder[0],
     );
-    expect(actionLedgerService.recordFailed).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordEnqueueFailedIfAbsent).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('keeps an accepted BullMQ action when create-only ledger bookkeeping fails', async () => {
+    const queue = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(null),
+    };
+    const actionLedgerService = {
+      assertCanEnqueue: jest.fn().mockResolvedValue(undefined),
+      recordEnqueuedIfAbsent: jest.fn().mockRejectedValue(new Error('database unavailable')),
+      recordEnqueueFailedIfAbsent: jest.fn().mockResolvedValue(undefined),
+      hasExecutionEvidenceSince: jest.fn().mockResolvedValue(false),
+    };
+    const service = createServiceWithQueue(queue, actionLedgerService);
+
+    await expect(service.banMember('chat-1', 'user-1')).resolves.toBeUndefined();
+
+    expect(queue.add).toHaveBeenCalledTimes(1);
+    expect(actionLedgerService.recordEnqueuedIfAbsent).toHaveBeenCalledWith(
+      queue.add.mock.calls[0][1],
+    );
+    expect(actionLedgerService.recordEnqueueFailedIfAbsent).not.toHaveBeenCalled();
 
     await service.onModuleDestroy();
   });
@@ -6218,8 +6245,9 @@ describe('MaxClientService delayed member actions', () => {
     };
     const actionLedgerService = {
       assertCanEnqueue: jest.fn().mockRejectedValue(new UnrecoverableError('manual review')),
-      recordEnqueued: jest.fn().mockResolvedValue(undefined),
-      recordFailed: jest.fn().mockResolvedValue(undefined),
+      recordEnqueuedIfAbsent: jest.fn().mockResolvedValue(undefined),
+      recordEnqueueFailedIfAbsent: jest.fn().mockResolvedValue(undefined),
+      hasExecutionEvidenceSince: jest.fn().mockResolvedValue(false),
     };
     const service = createServiceWithQueue(queue, actionLedgerService);
 
@@ -6227,8 +6255,8 @@ describe('MaxClientService delayed member actions', () => {
 
     expect(queue.getJob).not.toHaveBeenCalled();
     expect(queue.add).not.toHaveBeenCalled();
-    expect(actionLedgerService.recordEnqueued).not.toHaveBeenCalled();
-    expect(actionLedgerService.recordFailed).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordEnqueuedIfAbsent).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordEnqueueFailedIfAbsent).not.toHaveBeenCalled();
 
     await service.onModuleDestroy();
   });
@@ -6241,16 +6269,161 @@ describe('MaxClientService delayed member actions', () => {
     };
     const actionLedgerService = {
       assertCanEnqueue: jest.fn().mockResolvedValue(undefined),
-      recordEnqueued: jest.fn().mockResolvedValue(undefined),
-      recordFailed: jest.fn().mockResolvedValue(undefined),
+      recordEnqueuedIfAbsent: jest.fn().mockResolvedValue(undefined),
+      recordEnqueueFailedIfAbsent: jest.fn().mockResolvedValue(undefined),
+      hasExecutionEvidenceSince: jest.fn().mockResolvedValue(false),
     };
     const service = createServiceWithQueue(queue, actionLedgerService);
 
     await expect(service.banMember('chat-1', 'user-1')).rejects.toBe(error);
 
     const job = queue.add.mock.calls[0][1];
-    expect(actionLedgerService.recordEnqueued).toHaveBeenCalledWith(job);
-    expect(actionLedgerService.recordFailed).toHaveBeenCalledWith(job, error);
+    expect(actionLedgerService.recordEnqueuedIfAbsent).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordEnqueueFailedIfAbsent).toHaveBeenCalledWith(job, error);
+
+    await service.onModuleDestroy();
+  });
+
+  it('recovers an ambiguous BullMQ add when the deterministic job is retained', async () => {
+    const error = new Error('redis reply lost');
+    const retainedJob = {
+      id: 'retained-job',
+      getState: jest.fn().mockResolvedValue('waiting'),
+    };
+    const queue = {
+      add: jest.fn().mockRejectedValue(error),
+      getJob: jest.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(retainedJob),
+    };
+    const actionLedgerService = {
+      assertCanEnqueue: jest.fn().mockResolvedValue(undefined),
+      recordEnqueuedIfAbsent: jest.fn().mockResolvedValue(undefined),
+      recordEnqueueFailedIfAbsent: jest.fn().mockResolvedValue(undefined),
+      hasExecutionEvidenceSince: jest.fn().mockResolvedValue(false),
+    };
+    const service = createServiceWithQueue(queue, actionLedgerService);
+
+    await expect(service.banMember('chat-1', 'user-1')).resolves.toBeUndefined();
+
+    const job = queue.add.mock.calls[0][1];
+    expect(queue.getJob).toHaveBeenLastCalledWith(job.idempotencyKey);
+    expect(actionLedgerService.hasExecutionEvidenceSince).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordEnqueueFailedIfAbsent).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordEnqueuedIfAbsent).toHaveBeenCalledWith(job);
+
+    await service.onModuleDestroy();
+  });
+
+  it('recovers an ambiguous BullMQ add when a fast worker already recorded execution', async () => {
+    const error = new Error('redis reply lost after completion');
+    const queue = {
+      add: jest.fn().mockRejectedValue(error),
+      getJob: jest.fn().mockResolvedValue(null),
+    };
+    const actionLedgerService = {
+      assertCanEnqueue: jest.fn().mockResolvedValue(undefined),
+      recordEnqueuedIfAbsent: jest.fn().mockResolvedValue(undefined),
+      recordEnqueueFailedIfAbsent: jest.fn().mockResolvedValue(undefined),
+      hasExecutionEvidenceSince: jest.fn().mockResolvedValue(true),
+    };
+    const service = createServiceWithQueue(queue, actionLedgerService);
+
+    await expect(service.banMember('chat-1', 'user-1')).resolves.toBeUndefined();
+
+    const job = queue.add.mock.calls[0][1];
+    expect(actionLedgerService.hasExecutionEvidenceSince).toHaveBeenCalledWith(
+      job.idempotencyKey,
+      expect.any(Date),
+    );
+    expect(actionLedgerService.recordEnqueueFailedIfAbsent).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordEnqueuedIfAbsent).toHaveBeenCalledWith(job);
+
+    await service.onModuleDestroy();
+  });
+
+  it('retries the same job id when BullMQ ownership lookup is unavailable', async () => {
+    const error = new Error('redis response was lost');
+    const queue = {
+      add: jest.fn().mockRejectedValueOnce(error).mockResolvedValueOnce(undefined),
+      getJob: jest
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockRejectedValueOnce(new Error('redis lookup unavailable')),
+    };
+    const actionLedgerService = {
+      assertCanEnqueue: jest.fn().mockResolvedValue(undefined),
+      recordEnqueuedIfAbsent: jest.fn().mockResolvedValue(undefined),
+      recordEnqueueFailedIfAbsent: jest.fn().mockResolvedValue(undefined),
+      recordEnqueueAmbiguousIfAbsent: jest.fn().mockResolvedValue(undefined),
+      hasExecutionEvidenceSince: jest.fn().mockResolvedValue(false),
+    };
+    const service = createServiceWithQueue(queue, actionLedgerService);
+
+    await expect(service.banMember('chat-1', 'user-1')).resolves.toBeUndefined();
+
+    expect(queue.add).toHaveBeenCalledTimes(2);
+    expect(queue.add.mock.calls[0][2].jobId).toBe(queue.add.mock.calls[1][2].jobId);
+    expect(actionLedgerService.recordEnqueueFailedIfAbsent).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordEnqueuedIfAbsent).toHaveBeenCalledTimes(1);
+
+    await service.onModuleDestroy();
+  });
+
+  it('quarantines SEND_MESSAGE when both add attempts and ownership lookup are ambiguous', async () => {
+    const error = new Error('redis response was lost');
+    const queue = {
+      add: jest.fn().mockRejectedValue(error),
+      getJob: jest.fn().mockRejectedValue(new Error('redis lookup unavailable')),
+    };
+    const actionLedgerService = {
+      assertCanEnqueue: jest.fn().mockResolvedValue(undefined),
+      recordEnqueuedIfAbsent: jest.fn().mockResolvedValue(undefined),
+      recordEnqueueFailedIfAbsent: jest.fn().mockResolvedValue(undefined),
+      recordEnqueueAmbiguousIfAbsent: jest.fn().mockResolvedValue(undefined),
+      hasExecutionEvidenceSince: jest.fn().mockResolvedValue(false),
+    };
+    const service = createServiceWithQueue(queue, actionLedgerService);
+
+    await expect(service.sendMessage('chat-1', 'notice')).rejects.toBeInstanceOf(
+      UnrecoverableError,
+    );
+
+    expect(queue.add).toHaveBeenCalledTimes(2);
+    expect(queue.add.mock.calls[0][2].jobId).toBe(queue.add.mock.calls[1][2].jobId);
+    expect(actionLedgerService.recordEnqueueAmbiguousIfAbsent).toHaveBeenCalledWith(
+      expect.objectContaining({ actionType: 'SEND_MESSAGE' }),
+      expect.any(UnrecoverableError),
+    );
+    expect(actionLedgerService.recordEnqueueFailedIfAbsent).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordEnqueuedIfAbsent).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('does not accept a retained final job without fresh execution evidence', async () => {
+    const error = new Error('redis add failed');
+    const retainedJob = {
+      getState: jest.fn().mockResolvedValue('failed'),
+    };
+    const queue = {
+      add: jest.fn().mockRejectedValue(error),
+      getJob: jest.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(retainedJob),
+    };
+    const actionLedgerService = {
+      assertCanEnqueue: jest.fn().mockResolvedValue(undefined),
+      recordEnqueuedIfAbsent: jest.fn().mockResolvedValue(undefined),
+      recordEnqueueFailedIfAbsent: jest.fn().mockResolvedValue(undefined),
+      hasExecutionEvidenceSince: jest.fn().mockResolvedValue(false),
+    };
+    const service = createServiceWithQueue(queue, actionLedgerService);
+
+    await expect(service.banMember('chat-1', 'user-1')).rejects.toBe(error);
+
+    expect(queue.add).toHaveBeenCalledTimes(1);
+    expect(actionLedgerService.recordEnqueueFailedIfAbsent).toHaveBeenCalledWith(
+      expect.any(Object),
+      error,
+    );
+    expect(actionLedgerService.recordEnqueuedIfAbsent).not.toHaveBeenCalled();
 
     await service.onModuleDestroy();
   });

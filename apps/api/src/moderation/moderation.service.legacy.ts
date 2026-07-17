@@ -6449,7 +6449,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      return await this.maxActionLedgerService.hasActiveOrSucceededDelete(chatId, messageId);
+      return await this.maxActionLedgerService.hasSucceededDelete(chatId, messageId);
     } catch (error: unknown) {
       this.logger.warn(
         {

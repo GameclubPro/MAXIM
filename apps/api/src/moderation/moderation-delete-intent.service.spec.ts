@@ -308,6 +308,21 @@ describe('ModerationDeleteIntentService', () => {
     );
   });
 
+  it('rejects executable origin-only intents without an origin bot', () => {
+    const { service } = createService();
+
+    expect(() =>
+      (service as unknown as ServiceInternals).normalizeInput({
+        chatId: 'chat-1',
+        messageId: 'message-1',
+        reasonKey: 'BOT_NOTICE_DELETE',
+        entityType: 'CHAT',
+        messageAuthorKind: 'bot',
+        routingPolicy: 'origin_only',
+      }),
+    ).toThrow('originBotId is required');
+  });
+
   it('uses the current cross-bot gate instead of a permissive stored policy', () => {
     const disabled = createService().service as unknown as ServiceInternals;
     const enabled = createService({
@@ -409,6 +424,7 @@ describe('ModerationDeleteIntentService', () => {
       messageId: 'message-1',
       reasonKey: 'ADMIN_CLEANUP',
       subjectUserId: 'user-1',
+      originBotId: 'bot-1',
       event: { eventType: null },
     });
 

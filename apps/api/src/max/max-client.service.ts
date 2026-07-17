@@ -436,6 +436,13 @@ export const MAX_API_SOURCE_TAGS = {
 const MAX_ACTION_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
 const MAX_ACTION_IDEMPOTENCY_KEY_PART_MAX_LENGTH = 48;
 const MAX_ACTION_IDEMPOTENCY_KEY_READABLE_MAX_LENGTH = 160;
+const LIVE_MAX_ACTION_JOB_STATES = new Set([
+  'active',
+  'delayed',
+  'prioritized',
+  'waiting',
+  'waiting-children',
+]);
 const DEFAULT_MAX_API_GLOBAL_RPS = 30;
 const DEFAULT_MAX_API_LIST_BOT_CHATS_CACHE_SEC = 15;
 const DEFAULT_MAX_API_CHAT_SNAPSHOT_CACHE_SEC = 10;
@@ -3916,33 +3923,126 @@ export class MaxClientService implements OnModuleDestroy {
         }
       }
 
-      await this.actionLedgerService?.recordEnqueued(job);
+      const queueJobOptions = {
+        jobId: job.idempotencyKey,
+        attempts: 5,
+        removeOnComplete: true,
+        removeOnFail: this.actionFailedJobRetention,
+        ...(delayMs > 0 ? { delay: delayMs } : {}),
+        backoff: {
+          type: 'exponential' as const,
+          delay: 1_000,
+        },
+      };
+      const targetActionQueue = actionQueue;
+      const addActionJob = () => targetActionQueue.add('execute-max-action', job, queueJobOptions);
+      const enqueueAttemptStartedAt = new Date();
       try {
-        await actionQueue.add('execute-max-action', job, {
-          jobId: job.idempotencyKey,
-          attempts: 5,
-          removeOnComplete: true,
-          removeOnFail: this.actionFailedJobRetention,
-          ...(delayMs > 0 ? { delay: delayMs } : {}),
-          backoff: {
-            type: 'exponential',
-            delay: 1_000,
-          },
-        });
+        await addActionJob();
       } catch (error: unknown) {
-        await this.actionLedgerService?.recordFailed(job, error).catch((ledgerError: unknown) => {
-          this.logger.warn(
-            {
-              actionType: job.actionType,
-              chatId: job.chatId,
-              botId: job.botId,
-              error: ledgerError instanceof Error ? ledgerError.message : 'Unknown error',
-            },
-            'Failed to record MAX action enqueue failure',
-          );
-        });
-        throw error;
+        const queueObservation = await this.observeActionQueueJob(
+          targetActionQueue,
+          job.idempotencyKey,
+        );
+        let executionObserved =
+          queueObservation === 'live'
+            ? false
+            : (await this.actionLedgerService
+                ?.hasExecutionEvidenceSince(job.idempotencyKey, enqueueAttemptStartedAt)
+                .catch(() => false)) === true;
+        let queueAccepted = queueObservation === 'live' || executionObserved;
+        let recoveryEvidence = queueObservation === 'live' ? 'bullmq_job' : 'ledger_execution';
+
+        if (!queueAccepted && queueObservation === 'unknown') {
+          try {
+            await addActionJob();
+            queueAccepted = true;
+            recoveryEvidence = 'bullmq_retry';
+          } catch (retryError: unknown) {
+            executionObserved =
+              (await this.actionLedgerService
+                ?.hasExecutionEvidenceSince(job.idempotencyKey, enqueueAttemptStartedAt)
+                .catch(() => false)) === true;
+            if (!executionObserved && job.actionType === 'SEND_MESSAGE') {
+              const ambiguousError = new UnrecoverableError(
+                `Ambiguous BullMQ ownership for MAX SEND_MESSAGE ${job.idempotencyKey}; manual review is required before retry`,
+              );
+              await this.actionLedgerService
+                ?.recordEnqueueAmbiguousIfAbsent(job, ambiguousError)
+                .catch((ledgerError: unknown) => {
+                  this.logger.warn(
+                    {
+                      actionType: job.actionType,
+                      chatId: job.chatId,
+                      botId: job.botId,
+                      error: this.extractErrorMessage(ledgerError),
+                    },
+                    'Failed to quarantine ambiguous MAX SEND_MESSAGE queue ownership',
+                  );
+                });
+              throw ambiguousError;
+            }
+            if (!executionObserved) {
+              await this.actionLedgerService
+                ?.recordEnqueueFailedIfAbsent(job, retryError)
+                .catch((ledgerError: unknown) => {
+                  this.logger.warn(
+                    {
+                      actionType: job.actionType,
+                      chatId: job.chatId,
+                      botId: job.botId,
+                      error: this.extractErrorMessage(ledgerError),
+                    },
+                    'Failed to record MAX action enqueue failure',
+                  );
+                });
+              throw retryError;
+            }
+            queueAccepted = true;
+          }
+        }
+
+        if (!queueAccepted) {
+          await this.actionLedgerService
+            ?.recordEnqueueFailedIfAbsent(job, error)
+            .catch((ledgerError: unknown) => {
+              this.logger.warn(
+                {
+                  actionType: job.actionType,
+                  chatId: job.chatId,
+                  botId: job.botId,
+                  error: this.extractErrorMessage(ledgerError),
+                },
+                'Failed to record MAX action enqueue failure',
+              );
+            });
+          throw error;
+        }
+
+        this.logger.warn(
+          {
+            actionType: job.actionType,
+            chatId: job.chatId,
+            botId: job.botId,
+            evidence: recoveryEvidence,
+            error: this.extractErrorMessage(error),
+          },
+          'Recovered MAX action after an ambiguous BullMQ add failure',
+        );
       }
+
+      // FLAG: BullMQ must own the action before best-effort ledger bookkeeping.
+      await this.actionLedgerService?.recordEnqueuedIfAbsent(job).catch((ledgerError: unknown) => {
+        this.logger.warn(
+          {
+            actionType: job.actionType,
+            chatId: job.chatId,
+            botId: job.botId,
+            error: this.extractErrorMessage(ledgerError),
+          },
+          'Failed to record queued MAX action after BullMQ accepted it',
+        );
+      });
       return;
     }
 
@@ -4182,6 +4282,22 @@ export class MaxClientService implements OnModuleDestroy {
   private async removeQueuedActionJob(jobId: string) {
     const existingJobs = await this.findActionJobs(jobId);
     await Promise.all(existingJobs.map((job) => job.remove()));
+  }
+
+  private async observeActionQueueJob(
+    queue: Queue<MaxActionJob>,
+    jobId: string,
+  ): Promise<'missing' | 'live' | 'final' | 'unknown'> {
+    try {
+      const retainedJob = await queue.getJob(jobId);
+      if (!retainedJob) {
+        return 'missing';
+      }
+      const state = await retainedJob.getState();
+      return LIVE_MAX_ACTION_JOB_STATES.has(state) ? 'live' : 'final';
+    } catch {
+      return 'unknown';
+    }
   }
 
   private async removeRetainedFailedActionJob(

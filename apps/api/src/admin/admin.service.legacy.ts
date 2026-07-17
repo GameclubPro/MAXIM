@@ -9381,6 +9381,7 @@ export class AdminService implements OnModuleDestroy {
               sourceMessageCleanup: this.summarizeManualModerationCleanup({
                 candidateMessageIds: [],
                 deletedMessageIds: [],
+                pendingMessageIds: [],
                 failedMessageIds: [],
               }),
               crossChatMuteFanout: this.summarizeManualMuteFanout({
@@ -9619,6 +9620,7 @@ export class AdminService implements OnModuleDestroy {
               sourceMessageCleanup: this.summarizeManualModerationCleanup({
                 candidateMessageIds: [],
                 deletedMessageIds: [],
+                pendingMessageIds: [],
                 failedMessageIds: [],
               }),
               crossChatFanout: this.summarizeManualBanFanout({
@@ -9995,6 +9997,7 @@ export class AdminService implements OnModuleDestroy {
     let recentMessageCleanup = this.summarizeManualModerationCleanup({
       candidateMessageIds: [],
       deletedMessageIds: [],
+      pendingMessageIds: [],
       failedMessageIds: [],
     });
     let crossChatFanout = this.summarizeManualBanFanout({
@@ -11290,6 +11293,7 @@ export class AdminService implements OnModuleDestroy {
     let sourceCleanup = {
       candidateMessageIds: [] as string[],
       deletedMessageIds: [] as string[],
+      pendingMessageIds: [] as string[],
       failedMessageIds: [] as string[],
     };
     try {
@@ -11496,6 +11500,7 @@ export class AdminService implements OnModuleDestroy {
       jobId,
       candidateCount: 0,
       deletedCount: 0,
+      pendingCount: 0,
       failedCount: 0,
     };
   }
@@ -11953,6 +11958,7 @@ export class AdminService implements OnModuleDestroy {
   ): Promise<{
     candidateMessageIds: string[];
     deletedMessageIds: string[];
+    pendingMessageIds: string[];
     failedMessageIds: string[];
   }> {
     return this.runDeferredManualModerationSourceCleanup(
@@ -11976,6 +11982,7 @@ export class AdminService implements OnModuleDestroy {
   }): Promise<{
     candidateMessageIds: string[];
     deletedMessageIds: string[];
+    pendingMessageIds: string[];
     failedMessageIds: string[];
   }> {
     const operationKey = this.buildManualModerationFanoutOperationKey({
@@ -12004,6 +12011,7 @@ export class AdminService implements OnModuleDestroy {
       return {
         candidateMessageIds: [],
         deletedMessageIds: [],
+        pendingMessageIds: [],
         failedMessageIds: [],
       };
     }
@@ -12032,6 +12040,7 @@ export class AdminService implements OnModuleDestroy {
   ): Promise<{
     candidateMessageIds: string[];
     deletedMessageIds: string[];
+    pendingMessageIds: string[];
     failedMessageIds: string[];
   }> {
     try {
@@ -12058,6 +12067,7 @@ export class AdminService implements OnModuleDestroy {
       return {
         candidateMessageIds: [],
         deletedMessageIds: [],
+        pendingMessageIds: [],
         failedMessageIds: [],
       };
     }
@@ -12638,6 +12648,7 @@ export class AdminService implements OnModuleDestroy {
   ): Promise<{
     candidateMessageIds: string[];
     deletedMessageIds: string[];
+    pendingMessageIds: string[];
     failedMessageIds: string[];
   }> {
     return this.getManualMessageCleanupService().deleteRecentTrackedMessages(
@@ -12661,11 +12672,13 @@ export class AdminService implements OnModuleDestroy {
   private summarizeManualModerationCleanup(result: {
     candidateMessageIds: string[];
     deletedMessageIds: string[];
+    pendingMessageIds: string[];
     failedMessageIds: string[];
   }) {
     return {
       candidateCount: result.candidateMessageIds.length,
       deletedCount: result.deletedMessageIds.length,
+      pendingCount: result.pendingMessageIds.length,
       failedCount: result.failedMessageIds.length,
     };
   }

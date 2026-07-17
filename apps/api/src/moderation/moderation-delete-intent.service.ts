@@ -436,6 +436,7 @@ export class ModerationDeleteIntentService {
             await this.recordCandidateFailure(intent.id, leaseToken, botId, lastAccessFailure);
             route = await this.maxBotLinkService.resolveDeleteMessageBotRoute({
               chatId: intent.chatId,
+              expectedEntityType: intent.entityType,
               requireFreshSnapshot: true,
             });
             for (const nextBotId of this.filterAndOrderRouteCandidates(intent, route)) {
@@ -537,6 +538,7 @@ export class ModerationDeleteIntentService {
           );
           route = await this.maxBotLinkService.resolveDeleteMessageBotRoute({
             chatId: intent.chatId,
+            expectedEntityType: intent.entityType,
             requireFreshSnapshot: true,
           });
           for (const nextBotId of this.filterAndOrderRouteCandidates(intent, route)) {
@@ -1960,6 +1962,7 @@ export class ModerationDeleteIntentService {
   ): Promise<MaxDeleteMessageBotRoute> {
     let route = await this.maxBotLinkService.resolveDeleteMessageBotRoute({
       chatId: intent.chatId,
+      expectedEntityType: intent.entityType,
       requireFreshSnapshot: true,
     });
     if (this.filterAndOrderRouteCandidates(intent, route).length > 0) {
@@ -1979,6 +1982,7 @@ export class ModerationDeleteIntentService {
       await this.refreshCandidateAccess(intent, originRecoveryBotId, heartbeat);
       route = await this.maxBotLinkService.resolveDeleteMessageBotRoute({
         chatId: intent.chatId,
+        expectedEntityType: intent.entityType,
         requireFreshSnapshot: true,
       });
       if (this.filterAndOrderRouteCandidates(intent, route).length > 0) {
@@ -2002,6 +2006,7 @@ export class ModerationDeleteIntentService {
     if (probeCandidates.length > 0) {
       route = await this.maxBotLinkService.resolveDeleteMessageBotRoute({
         chatId: intent.chatId,
+        expectedEntityType: intent.entityType,
         requireFreshSnapshot: true,
       });
     }
@@ -2061,6 +2066,7 @@ export class ModerationDeleteIntentService {
     }
     const route = await this.maxBotLinkService.resolveDeleteMessageBotRoute({
       chatId: intent.chatId,
+      expectedEntityType: intent.entityType,
       requireFreshSnapshot: true,
     });
     const exactCapability = route.candidateCapabilities.find(
@@ -2649,6 +2655,21 @@ export class ModerationDeleteIntentService {
           ? 'MESSAGE'
           : null
         : input.event.eventType;
+    const entityType =
+      input.entityType === 'CHAT' || input.entityType === 'CHANNEL' ? input.entityType : null;
+    const messageAuthorKind =
+      input.messageAuthorKind === 'user' || input.messageAuthorKind === 'bot'
+        ? input.messageAuthorKind
+        : null;
+    const originBotId = this.optionalString(input.originBotId);
+    const routingPolicy = this.resolveRoutingPolicy(input, chatId);
+    if (
+      this.getRolloutForChat(chatId) === 'execute' &&
+      routingPolicy === 'origin_only' &&
+      !originBotId
+    ) {
+      throw new Error('originBotId is required for executable origin-only delete intent');
+    }
     return {
       chatId,
       messageId,
@@ -2656,14 +2677,10 @@ export class ModerationDeleteIntentService {
       ruleCode,
       subjectUserId,
       sourceMessageAt,
-      entityType:
-        input.entityType === 'CHAT' || input.entityType === 'CHANNEL' ? input.entityType : null,
-      messageAuthorKind:
-        input.messageAuthorKind === 'user' || input.messageAuthorKind === 'bot'
-          ? input.messageAuthorKind
-          : null,
-      originBotId: this.optionalString(input.originBotId),
-      routingPolicy: this.resolveRoutingPolicy(input, chatId),
+      entityType,
+      messageAuthorKind,
+      originBotId,
+      routingPolicy,
       executeAt,
       retryUntilAt,
       event: {

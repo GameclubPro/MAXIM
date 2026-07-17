@@ -88,7 +88,7 @@ export function markMaxSendDispatchLedgerFinalized<T extends Error>(error: T): T
 export class MaxActionLedgerService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async hasActiveOrSucceededDelete(chatId: string, messageId: string): Promise<boolean> {
+  async hasSucceededDelete(chatId: string, messageId: string): Promise<boolean> {
     const normalizedChatId = this.nullableString(chatId);
     const normalizedMessageId = this.nullableString(messageId);
     if (!normalizedChatId || !normalizedMessageId) {
@@ -100,13 +100,7 @@ export class MaxActionLedgerService {
         chatId: normalizedChatId,
         actionType: 'DELETE_MESSAGE',
         messageId: normalizedMessageId,
-        status: {
-          in: [
-            MaxActionLedgerStatus.ENQUEUED,
-            MaxActionLedgerStatus.IN_PROGRESS,
-            MaxActionLedgerStatus.SUCCEEDED,
-          ],
-        },
+        status: MaxActionLedgerStatus.SUCCEEDED,
         updatedAt: {
           gte: new Date(Date.now() - 2 * 60 * 60 * 1_000),
         },
@@ -170,7 +164,7 @@ export class MaxActionLedgerService {
     );
   }
 
-  async recordEnqueued(job: MaxActionJob): Promise<void> {
+  async recordEnqueuedIfAbsent(job: MaxActionJob): Promise<void> {
     const mutation: MaxActionLedgerMutation = {
       status: MaxActionLedgerStatus.ENQUEUED,
       ambiguous: false,
@@ -181,11 +175,82 @@ export class MaxActionLedgerService {
       lastErrorCode: null,
       lastError: null,
     };
-    if (job.actionType === 'SEND_MESSAGE') {
-      await this.recordProtectedSendTransition(job, mutation);
-      return;
+    await this.prisma.maxActionLedgerEntry.upsert({
+      where: {
+        jobId: job.idempotencyKey,
+      },
+      create: {
+        ...this.buildCreateInput(job),
+        ...this.buildPlainMutationInput(mutation),
+      },
+      update: {},
+    });
+  }
+
+  async recordEnqueueFailedIfAbsent(job: MaxActionJob, error: unknown): Promise<void> {
+    const mutation: MaxActionLedgerMutation = {
+      status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+      ambiguous: false,
+      terminal: false,
+      completedAt: null,
+      lastStatusCode: this.extractStatusCode(error),
+      lastErrorCode: this.extractErrorCode(error),
+      lastError: this.extractErrorMessage(error),
+    };
+    await this.prisma.maxActionLedgerEntry.upsert({
+      where: {
+        jobId: job.idempotencyKey,
+      },
+      create: {
+        ...this.buildCreateInput(job),
+        ...this.buildPlainMutationInput(mutation),
+      },
+      update: {},
+    });
+  }
+
+  async recordEnqueueAmbiguousIfAbsent(job: MaxActionJob, error: unknown): Promise<void> {
+    const mutation: MaxActionLedgerMutation = {
+      status: MaxActionLedgerStatus.AMBIGUOUS,
+      ambiguous: true,
+      terminal: true,
+      completedAt: new Date(),
+      lastStatusCode: null,
+      lastErrorCode: 'queue.enqueue_ambiguous',
+      lastError: this.extractErrorMessage(error),
+    };
+    await this.prisma.maxActionLedgerEntry.upsert({
+      where: {
+        jobId: job.idempotencyKey,
+      },
+      create: {
+        ...this.buildCreateInput(job),
+        ...this.buildPlainMutationInput(mutation),
+      },
+      update: {},
+    });
+  }
+
+  async hasExecutionEvidenceSince(jobId: string, since: Date): Promise<boolean> {
+    const normalizedJobId = this.nullableString(jobId);
+    if (!normalizedJobId || !Number.isFinite(since.getTime())) {
+      return false;
     }
-    await this.upsert(job, mutation);
+
+    const row = await this.prisma.maxActionLedgerEntry.findFirst({
+      where: {
+        jobId: normalizedJobId,
+        OR: [
+          { firstAttemptAt: { gte: since } },
+          { lastAttemptAt: { gte: since } },
+          { dispatchStartedAt: { gte: since } },
+        ],
+      },
+      select: {
+        id: true,
+      },
+    });
+    return Boolean(row);
   }
 
   async recordStarted(job: MaxActionJob): Promise<void> {

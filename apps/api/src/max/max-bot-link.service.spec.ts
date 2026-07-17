@@ -2663,6 +2663,45 @@ describe('MaxBotLinkService', () => {
     });
   });
 
+  it('uses the delete intent entity type when persisted chat metadata is stale', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'stale-chat-record-for-channel';
+    fixture.chats.set(chatId, {
+      id: chatId,
+      title: 'Stale chat record',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+      entityType: ChatEntityType.CHAT,
+      routingState: ChatRoutingState.READY,
+    });
+    fixture.memberships.push(
+      createActiveMembership(chatId, 'id613002203036_bot', 0, {
+        botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+        botAccessCheckedAt: new Date('2026-05-09T10:04:00.000Z'),
+        botAccessExpiresAt: new Date('2026-05-09T10:19:00.000Z'),
+        permissionsSnapshot: {
+          checkedAt: '2026-05-09T10:04:00.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages', 'write'],
+        },
+      }),
+    );
+
+    await expect(
+      fixture.service.resolveDeleteMessageBotRoute({
+        chatId,
+        expectedEntityType: ChatEntityType.CHANNEL,
+        requireFreshSnapshot: true,
+      }),
+    ).resolves.toMatchObject({
+      entityType: ChatEntityType.CHANNEL,
+      botId: null,
+      candidateBotIds: [],
+      capabilityReason: 'missing_channel_delete_permission',
+    });
+  });
+
   it('requires an explicit MAX edit permission for channel post edits', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('channel-edit', {

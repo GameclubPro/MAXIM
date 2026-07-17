@@ -181,6 +181,7 @@ export type RepairCandidateDecision =
         | 'commercial_unknown_action_band'
         | 'bot_auto_delete_missing_schedule_evidence'
         | 'confirmed_delete_event'
+        | 'missing_origin_bot'
         | 'terminal_intent'
         | 'unsupported_rule_update_pair'
         | 'ambiguous_delete_evidence';
@@ -265,6 +266,9 @@ export function evaluateRepairCandidate(candidate: RepairCandidateRow): RepairCa
   const policy = resolveDeleteCandidatePolicy(candidate);
   if (!policy) {
     return { eligible: false, reason: 'unsupported_rule_update_pair' };
+  }
+  if (!resolveRepairOriginBotId(candidate)) {
+    return { eligible: false, reason: 'missing_origin_bot' };
   }
   const existingReason = findExistingIntentReason(candidate, policy.intentRuleCode);
   const evidenceMetadata = asRecord(candidate.evidenceMetadata);
@@ -353,12 +357,7 @@ export function buildRepairIntentInput(
   candidate: RepairCandidateRow,
   decision: Extract<RepairCandidateDecision, { eligible: true }>,
 ): EnsureModerationDeleteIntentInput {
-  const originBotId =
-    candidate.existingIntentOriginBotId ??
-    candidate.evidenceBotId ??
-    candidate.chatPrimaryBotId ??
-    candidate.chatBotId ??
-    null;
+  const originBotId = resolveRepairOriginBotId(candidate);
   return {
     chatId: candidate.chatId,
     messageId: candidate.messageId,
@@ -401,6 +400,16 @@ export function buildRepairIntentInput(
       },
     },
   };
+}
+
+function resolveRepairOriginBotId(candidate: RepairCandidateRow): string | null {
+  return (
+    candidate.existingIntentOriginBotId ??
+    candidate.evidenceBotId ??
+    candidate.chatPrimaryBotId ??
+    candidate.chatBotId ??
+    null
+  );
 }
 
 export function toDeleteRuleCode(ruleCode: string): string {

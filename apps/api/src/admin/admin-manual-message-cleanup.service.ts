@@ -14,6 +14,7 @@ import {
 export type AdminManualMessageCleanupResult = {
   candidateMessageIds: string[];
   deletedMessageIds: string[];
+  pendingMessageIds: string[];
   failedMessageIds: string[];
 };
 
@@ -152,6 +153,7 @@ export class AdminManualMessageCleanupService {
   ): Promise<AdminManualMessageCleanupResult> {
     const candidateMessageIds = await this.findRecentTrackedMessageIds(chatId, targetUserId);
     const deletedMessageIds: string[] = [];
+    const pendingMessageIds: string[] = [];
     const failedMessageIds: string[] = [];
 
     for (const [index, messageId] of candidateMessageIds.entries()) {
@@ -176,7 +178,13 @@ export class AdminManualMessageCleanupService {
             ...(options.botId ? { botId: options.botId } : {}),
           },
         });
-        (outcome === 'failed' ? failedMessageIds : deletedMessageIds).push(messageId);
+        if (outcome === 'confirmed') {
+          deletedMessageIds.push(messageId);
+        } else if (outcome === 'accepted') {
+          pendingMessageIds.push(messageId);
+        } else {
+          failedMessageIds.push(messageId);
+        }
       } catch (error: unknown) {
         if (this.isExecutionEnabled(chatId)) {
           this.logger.error(
@@ -198,7 +206,7 @@ export class AdminManualMessageCleanupService {
       }
     }
 
-    return { candidateMessageIds, deletedMessageIds, failedMessageIds };
+    return { candidateMessageIds, deletedMessageIds, pendingMessageIds, failedMessageIds };
   }
 
   async deleteBotAuthoredMessage(params: {

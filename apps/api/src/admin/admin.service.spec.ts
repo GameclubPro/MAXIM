@@ -7626,6 +7626,7 @@ describe('AdminService.applyManualModerationAction', () => {
             sourceMessageCleanup: {
               candidateCount: 2,
               deletedCount: 2,
+              pendingCount: 0,
               failedCount: 0,
             },
             crossChatFanout: expect.objectContaining({
@@ -9034,6 +9035,7 @@ describe('AdminService.applyManualSystemBan', () => {
             recentMessageCleanup: {
               candidateCount: 2,
               deletedCount: 2,
+              pendingCount: 0,
               failedCount: 0,
             },
             crossChatFanout: expect.objectContaining({
@@ -10173,7 +10175,7 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
   });
 
-  it('counts waiting durable recent-message cleanup as accepted for eventual deletion', async () => {
+  it('reports waiting durable recent-message cleanup as pending, not deleted', async () => {
     const prisma = createPrismaMock();
     prisma.$queryRaw.mockResolvedValue([{ message_id: 'mid-recent-1' }]);
     const maxClient = {
@@ -10202,7 +10204,8 @@ describe('AdminService.applyManualSystemBan', () => {
       }),
     ).resolves.toEqual({
       candidateMessageIds: ['mid-recent-1'],
-      deletedMessageIds: ['mid-recent-1'],
+      deletedMessageIds: [],
+      pendingMessageIds: ['mid-recent-1'],
       failedMessageIds: [],
     });
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();

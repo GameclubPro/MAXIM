@@ -40,24 +40,18 @@ describe('MaxActionLedgerService', () => {
     jest.useRealTimers();
   });
 
-  it('recognizes an active delete job that already owns the exact message cleanup', async () => {
+  it('recognizes only a succeeded delete as confirmed exact message cleanup', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-07-16T12:00:00.000Z'));
     const { service, prisma } = createService({ id: 'delete-job-1' });
 
-    await expect(service.hasActiveOrSucceededDelete(' chat-1 ', ' message-1 ')).resolves.toBe(true);
+    await expect(service.hasSucceededDelete(' chat-1 ', ' message-1 ')).resolves.toBe(true);
 
     expect(prisma.maxActionLedgerEntry.findFirst).toHaveBeenCalledWith({
       where: {
         chatId: 'chat-1',
         actionType: 'DELETE_MESSAGE',
         messageId: 'message-1',
-        status: {
-          in: [
-            MaxActionLedgerStatus.ENQUEUED,
-            MaxActionLedgerStatus.IN_PROGRESS,
-            MaxActionLedgerStatus.SUCCEEDED,
-          ],
-        },
+        status: MaxActionLedgerStatus.SUCCEEDED,
         updatedAt: {
           gte: new Date('2026-07-16T10:00:00.000Z'),
         },
@@ -71,10 +65,10 @@ describe('MaxActionLedgerService', () => {
     });
   });
 
-  it('does not claim delete ownership without an active exact ledger row', async () => {
+  it('does not claim delete ownership without a succeeded exact ledger row', async () => {
     const { service } = createService(null);
 
-    await expect(service.hasActiveOrSucceededDelete('chat-1', 'message-1')).resolves.toBe(false);
+    await expect(service.hasSucceededDelete('chat-1', 'message-1')).resolves.toBe(false);
   });
 
   it('blocks enqueue when an irreversible job is already quarantined as ambiguous', async () => {
@@ -149,7 +143,7 @@ describe('MaxActionLedgerService', () => {
       },
     });
 
-    await service.recordEnqueued(job);
+    await service.recordEnqueuedIfAbsent(job);
 
     expect(prisma.maxActionLedgerEntry.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -177,23 +171,76 @@ describe('MaxActionLedgerService', () => {
         update: {},
       }),
     );
-    expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith(
+    expect(prisma.maxActionLedgerEntry.updateMany).not.toHaveBeenCalled();
+    const create = prisma.maxActionLedgerEntry.upsert.mock.calls[0][0].create;
+    expect(create).toEqual(
       expect.objectContaining({
-        where: expect.objectContaining({
-          jobId: 'job-1',
-          dispatchToken: null,
-          remoteMessageId: null,
-        }),
-        data: expect.objectContaining({
-          status: MaxActionLedgerStatus.ENQUEUED,
-          ambiguous: false,
-          terminal: false,
-          enqueuedAt: expect.any(Date),
-        }),
+        status: MaxActionLedgerStatus.ENQUEUED,
+        ambiguous: false,
+        terminal: false,
+        enqueuedAt: expect.any(Date),
       }),
     );
-    const create = prisma.maxActionLedgerEntry.upsert.mock.calls[0][0].create;
     expect(JSON.stringify(create.metadata)).not.toContain('hello');
+  });
+
+  it('records enqueue failure only when the worker has not created the ledger row', async () => {
+    const { service, prisma } = createService();
+    const error = Object.assign(new Error('redis unavailable'), { code: 'ECONNRESET' });
+
+    await service.recordEnqueueFailedIfAbsent(createJob(), error);
+
+    expect(prisma.maxActionLedgerEntry.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+          terminal: false,
+          lastErrorCode: 'econnreset',
+          lastError: 'redis unavailable',
+        }),
+        update: {},
+      }),
+    );
+  });
+
+  it('quarantines ambiguous SEND_MESSAGE queue ownership without overwriting worker state', async () => {
+    const { service, prisma } = createService();
+
+    await service.recordEnqueueAmbiguousIfAbsent(
+      createJob(),
+      new Error('queue ownership is unknown'),
+    );
+
+    expect(prisma.maxActionLedgerEntry.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          status: MaxActionLedgerStatus.AMBIGUOUS,
+          ambiguous: true,
+          terminal: true,
+          lastErrorCode: 'queue.enqueue_ambiguous',
+        }),
+        update: {},
+      }),
+    );
+  });
+
+  it('finds execution evidence produced after an ambiguous queue add', async () => {
+    const { service, prisma } = createService({ id: 'ledger-1' });
+    const since = new Date('2026-07-16T12:00:00.000Z');
+
+    await expect(service.hasExecutionEvidenceSince(' job-1 ', since)).resolves.toBe(true);
+
+    expect(prisma.maxActionLedgerEntry.findFirst).toHaveBeenCalledWith({
+      where: {
+        jobId: 'job-1',
+        OR: [
+          { firstAttemptAt: { gte: since } },
+          { lastAttemptAt: { gte: since } },
+          { dispatchStartedAt: { gte: since } },
+        ],
+      },
+      select: { id: true },
+    });
   });
 
   it('increments attempts when recording worker start', async () => {

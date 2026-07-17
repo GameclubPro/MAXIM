@@ -3650,7 +3650,7 @@ describe('ModerationService', () => {
         ensureAndAttempt: jest.fn(),
       };
       const actionLedger = {
-        hasActiveOrSucceededDelete: jest.fn().mockResolvedValue(true),
+        hasSucceededDelete: jest.fn().mockResolvedValue(true),
       };
       const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
       (service as any).moderationDeleteIntentService = deleteIntents;
@@ -3670,7 +3670,7 @@ describe('ModerationService', () => {
         }),
       });
 
-      expect(actionLedger.hasActiveOrSucceededDelete).toHaveBeenCalledWith(
+      expect(actionLedger.hasSucceededDelete).toHaveBeenCalledWith(
         'chat-1',
         'sent-message-1',
       );
@@ -3685,7 +3685,7 @@ describe('ModerationService', () => {
       getRolloutForChat: jest.fn().mockReturnValue('observed'),
     };
     const actionLedger = {
-      hasActiveOrSucceededDelete: jest.fn().mockResolvedValue(true),
+      hasSucceededDelete: jest.fn().mockResolvedValue(true),
     };
     const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
     (service as any).moderationDeleteIntentService = deleteIntents;
@@ -3705,7 +3705,7 @@ describe('ModerationService', () => {
       }),
     });
 
-    expect(actionLedger.hasActiveOrSucceededDelete).not.toHaveBeenCalled();
+    expect(actionLedger.hasSucceededDelete).not.toHaveBeenCalled();
     expect(scheduleWebhookDelete).toHaveBeenCalledWith({
       chatId: 'chat-1',
       userId: 'runtime-bot-user-1',
@@ -3715,13 +3715,13 @@ describe('ModerationService', () => {
     });
   });
 
-  it('keeps durable own-bot cleanup when no active legacy delete owns the message', async () => {
+  it('keeps durable own-bot cleanup when no succeeded legacy delete confirms cleanup', async () => {
     const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
     (service as any).moderationDeleteIntentService = {
       getRolloutForChat: jest.fn().mockReturnValue('execute'),
     };
     (service as any).maxActionLedgerService = {
-      hasActiveOrSucceededDelete: jest.fn().mockResolvedValue(false),
+      hasSucceededDelete: jest.fn().mockResolvedValue(false),
     };
     (service as any).resolveOwnBotAutoDeleteSkipReason = jest.fn().mockResolvedValue(null);
     const scheduleWebhookDelete = jest.fn();

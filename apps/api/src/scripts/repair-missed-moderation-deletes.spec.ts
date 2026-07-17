@@ -210,6 +210,19 @@ describe('repair missed moderation deletes', () => {
     }
   });
 
+  it('rejects repair candidates that cannot identify the original bot', () => {
+    expect(
+      evaluateRepairCandidate(
+        candidate({
+          existingIntentOriginBotId: null,
+          evidenceBotId: null,
+          chatPrimaryBotId: null,
+          chatBotId: null,
+        }),
+      ),
+    ).toEqual({ eligible: false, reason: 'missing_origin_bot' });
+  });
+
   it('requires the exact update type for every supported family', () => {
     expect(
       evaluateRepairCandidate(

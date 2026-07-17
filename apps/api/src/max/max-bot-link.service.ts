@@ -1141,6 +1141,7 @@ export class MaxBotLinkService {
 
   async resolveDeleteMessageBotRoute(params: {
     chatId: string;
+    expectedEntityType?: ChatEntityType | null;
     requireFreshSnapshot?: boolean;
   }): Promise<MaxDeleteMessageBotRoute> {
     const chatId = params.chatId.trim();
@@ -1152,6 +1153,17 @@ export class MaxBotLinkService {
     if (!state) {
       return this.buildEmptyDeleteMessageBotRoute(chatId, 'chat_not_found');
     }
+    const entityType = params.expectedEntityType ?? state.entityType;
+    if (params.expectedEntityType && params.expectedEntityType !== state.entityType) {
+      this.logger.warn(
+        {
+          chatId,
+          expectedEntityType: params.expectedEntityType,
+          persistedEntityType: state.entityType,
+        },
+        'Using delete-intent entity type over stale managed chat metadata',
+      );
+    }
 
     const requireFreshSnapshot = params.requireFreshSnapshot !== false;
     const actionableBotIds = new Set(
@@ -1161,7 +1173,7 @@ export class MaxBotLinkService {
       .map((membership) =>
         this.assessDeleteMessageCandidateCapability(
           membership,
-          state.entityType,
+          entityType,
           actionableBotIds.has(membership.botId),
         ),
       )
@@ -1208,7 +1220,7 @@ export class MaxBotLinkService {
       purpose: 'moderation_action',
       action: 'delete_message',
       chatId,
-      entityType: state.entityType,
+      entityType,
       routingState: state.routingState,
       routingVersion: state.routingVersion,
       primaryBotId: state.primaryBotId,
