@@ -331,15 +331,16 @@ describe('Prisma migrations', () => {
     );
     expect(compact.indexOf(revisionBackfill)).toBeLessThan(compact.indexOf(integrityGuard));
     expect(compact).toContain(
-      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "managed_broadcast_deliveries_content_revision_idx" ON "managed_broadcast_deliveries"("content_revision_id")',
+      'CREATE INDEX IF NOT EXISTS "managed_broadcast_deliveries_content_revision_idx" ON "managed_broadcast_deliveries"("content_revision_id")',
     );
+    expect(compact).not.toContain('CREATE INDEX CONCURRENTLY');
     expect(compact).toContain(
       'ADD CONSTRAINT "managed_broadcast_deliveries_content_revision_id_fkey" FOREIGN KEY ("content_revision_id") REFERENCES "publication_content_revisions"("id") ON DELETE SET NULL ON UPDATE CASCADE NOT VALID',
     );
     expect(compact).toContain(
       'VALIDATE CONSTRAINT "managed_broadcast_deliveries_content_revision_id_fkey"',
     );
-    expect(compact.indexOf('CREATE INDEX CONCURRENTLY')).toBeLessThan(
+    expect(compact.indexOf('CREATE INDEX IF NOT EXISTS')).toBeLessThan(
       compact.indexOf('ADD CONSTRAINT "managed_broadcast_deliveries_content_revision_id_fkey"'),
     );
     expect(migration).not.toMatch(

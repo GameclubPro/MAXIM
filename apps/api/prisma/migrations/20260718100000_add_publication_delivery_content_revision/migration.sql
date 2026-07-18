@@ -92,9 +92,9 @@ BEGIN
 END;
 $$;
 
--- FLAG: Keep this migration free of explicit transaction control. PostgreSQL
--- requires concurrent index builds to run outside a transaction block.
-CREATE INDEX CONCURRENTLY IF NOT EXISTS "managed_broadcast_deliveries_content_revision_idx"
+-- FLAG: Prisma executes this multi-statement migration in one transaction. Keep
+-- this index non-concurrent; CONCURRENTLY would abort the entire migration.
+CREATE INDEX IF NOT EXISTS "managed_broadcast_deliveries_content_revision_idx"
 ON "managed_broadcast_deliveries"("content_revision_id");
 
 ALTER TABLE "managed_broadcast_deliveries"
