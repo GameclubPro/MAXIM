@@ -8288,8 +8288,8 @@ export class PrivateControlService {
       const resolvedDisplayName = readPrivateControlString(profiles.get(userId)?.displayName);
       if (resolvedDisplayName) {
         await this.persistResolvedProfileDisplayName(sourceChatId, userId, resolvedDisplayName);
+        return resolvedDisplayName;
       }
-      return resolvedDisplayName || fallback;
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -8299,7 +8299,44 @@ export class PrivateControlService {
         },
         'Failed to resolve compact profile mention display name from MAX',
       );
-      return fallback;
+    }
+
+    return (await this.resolveLocalProfileMentionDisplayName(sourceChatId, userId)) || fallback;
+  }
+
+  private async resolveLocalProfileMentionDisplayName(
+    sourceChatId: string,
+    userId: string,
+  ): Promise<string | null> {
+    const normalizedChatId = sourceChatId.trim();
+    const normalizedUserId = userId.trim();
+    if (!this.prisma || !normalizedChatId || !normalizedUserId) {
+      return null;
+    }
+
+    try {
+      const snapshot = await this.prisma.chatUserDisplayName.findUnique({
+        where: {
+          chatId_userId: {
+            chatId: normalizedChatId,
+            userId: normalizedUserId,
+          },
+        },
+        select: {
+          displayName: true,
+        },
+      });
+      return readPrivateControlString(snapshot?.displayName);
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId: normalizedChatId,
+          userId: normalizedUserId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve profile handoff display name from local snapshot',
+      );
+      return null;
     }
   }
 

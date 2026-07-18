@@ -35,7 +35,6 @@ import {
   getChannelActivityFeed,
   getChannelStats,
   handoffChannelMemberProfile,
-  handoffChannelMemberProfileKeepalive,
 } from '../lib/api/channel-stats-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
@@ -2019,19 +2018,12 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
 
   const activateChannelProfile = (item: MembershipActivityItem) => {
     const normalizedUserId = item.userId.trim();
-    if (!normalizedUserId || !chatId) {
+    if (!normalizedUserId || !chatId || profileHandoffMutation.isPending) {
       return;
     }
 
     const displayName = item.userDisplayName.trim() || 'Участник';
-    const handoffUrl = item.profileHandoffUrl?.trim() ?? '';
-    if (handoffUrl) {
-      handoffChannelMemberProfileKeepalive(api, chatId, normalizedUserId, { displayName });
-      if (openMaxBotLinkAndClose(handoffUrl)) {
-        return;
-      }
-    }
-
+    // FLAG: Persist the name before opening MAX; bot_started can otherwise win this race.
     profileHandoffMutation.mutate({
       userId: normalizedUserId,
       displayName,

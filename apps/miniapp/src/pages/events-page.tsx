@@ -54,7 +54,6 @@ import {
   getGlobalSpammerUserDiagnostics,
   getLogsDashboard,
   handoffChatMemberProfile,
-  handoffChatMemberProfileKeepalive,
   reviewGlobalSpammerCandidate,
   updateChatParticipantImmunity,
 } from '../lib/api/events-client';
@@ -1369,11 +1368,7 @@ function SpammerDiagnosticsSheet({
   onRetry: () => void;
   onReview: (userId: string, action: GlobalSpammerReviewAction) => void;
   onBan: (userId: string) => void;
-  onProfileActivate: (
-    userId: string,
-    displayName: string,
-    profileHandoffUrl: string | null | undefined,
-  ) => void;
+  onProfileActivate: (userId: string, displayName: string) => void;
 }) {
   const errorMessage = error ? normalizeLoadErrorMessage(error) : null;
   const signalGroups = diagnostics ? buildDiagnosticsSignalGroups(diagnostics) : [];
@@ -1485,7 +1480,7 @@ function SpammerDiagnosticsSheet({
                 aria-label={`Открыть профиль ${profileDisplayName} в MAX`}
                 onClick={(event) =>
                   handleProfileLinkClick(event, () =>
-                    onProfileActivate(profileUserId, profileDisplayName, profileHandoffUrl),
+                    onProfileActivate(profileUserId, profileDisplayName),
                   )
                 }
               >
@@ -1510,7 +1505,7 @@ function SpammerDiagnosticsSheet({
                   className="spammer-diagnostics__profile-name"
                   onClick={(event) =>
                     handleProfileLinkClick(event, () =>
-                      onProfileActivate(profileUserId, profileDisplayName, profileHandoffUrl),
+                      onProfileActivate(profileUserId, profileDisplayName),
                     )
                   }
                 >
@@ -3006,27 +3001,14 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   ];
   const dashboardTitle =
     section === 'activity' ? 'События' : section === 'participants' ? 'Участники' : 'Модерация';
-  const activateProfile = (
-    userId: string,
-    displayName: string,
-    handoffUrl: string | null | undefined,
-  ) => {
+  const activateProfile = (userId: string, displayName: string) => {
     const normalizedUserId = userId.trim();
-    if (!normalizedUserId || !chatId) {
+    if (!normalizedUserId || !chatId || profileHandoffMutation.isPending) {
       return;
     }
 
     const normalizedDisplayName = displayName.trim() || 'Пользователь';
-    const normalizedHandoffUrl = handoffUrl?.trim() ?? '';
-    if (normalizedHandoffUrl) {
-      handoffChatMemberProfileKeepalive(api, chatId, normalizedUserId, {
-        displayName: normalizedDisplayName,
-      });
-      if (openMaxBotLinkAndClose(normalizedHandoffUrl)) {
-        return;
-      }
-    }
-
+    // FLAG: Persist the name before opening MAX; bot_started can otherwise win this race.
     profileHandoffMutation.mutate({
       userId: normalizedUserId,
       displayName: normalizedDisplayName,
@@ -3288,7 +3270,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           onLoadMore={() => void activityFeed.loadMore()}
           onRetry={() => void activityFeed.retry()}
           onProfileActivate={(item: MembershipActivityItem) =>
-            activateProfile(item.userId, item.userDisplayName, item.profileHandoffUrl)
+            activateProfile(item.userId, item.userDisplayName)
           }
         />
       ) : null}
@@ -3423,7 +3405,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                             aria-label={`Открыть профиль ${displayName} в MAX`}
                             onClick={(event) =>
                               handleProfileLinkClick(event, () =>
-                                activateProfile(violation.userId, displayName, profileHandoffUrl),
+                                activateProfile(violation.userId, displayName),
                               )
                             }
                           >
@@ -3657,11 +3639,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             return;
           }
 
-          activateProfile(
-            selectedParticipant.userId,
-            selectedParticipant.userDisplayName,
-            selectedParticipant.profileHandoffUrl,
-          );
+          activateProfile(selectedParticipant.userId, selectedParticipant.userDisplayName);
         }}
         onSpammerDiagnostics={() => {
           if (!selectedParticipant) {

@@ -30,7 +30,7 @@ export function renderPrivateProfileMentionMessage(
   )}">${escapePrivateHtml(payload.displayName)}</a>`;
 
   return {
-    text: `<p><strong>${escapePrivateHtml('Профиль пользователя')}</strong></p><p>${mentionText}</p>`,
+    text: `<strong>${escapePrivateHtml('Профиль пользователя')}</strong>\n${mentionText}`,
     options: {
       textFormat: 'html',
     },

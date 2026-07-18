@@ -31,8 +31,8 @@ describe('private control profile mention handoff', () => {
 
     expect(message).toEqual({
       text:
-        '<p><strong>Профиль пользователя</strong></p><p>' +
-        '<a href="max://user/user%2055%2F%D1%82%D0%B5%D1%81%D1%82">Анна &lt;Admin&gt; &amp; Co</a></p>',
+        '<strong>Профиль пользователя</strong>\n' +
+        '<a href="max://user/user%2055%2F%D1%82%D0%B5%D1%81%D1%82">Анна &lt;Admin&gt; &amp; Co</a>',
       options: {
         textFormat: 'html',
       },

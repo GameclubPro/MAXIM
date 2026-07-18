@@ -118,19 +118,3 @@ export async function handoffChannelMemberProfile(
   );
   return response as BroadcastHandoffResponse;
 }
-
-export function handoffChannelMemberProfileKeepalive(
-  api: ApiTransport,
-  chatId: string,
-  userId: string,
-  payload: ProfileMentionHandoffRequest,
-): void {
-  const requestBody = payload;
-  api.requestKeepalive(
-    `/channels/${chatId}/members/${encodeURIComponent(userId)}/profile/handoff`,
-    {
-      method: 'POST',
-      body: JSON.stringify(requestBody),
-    },
-  );
-}

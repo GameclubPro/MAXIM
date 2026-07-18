@@ -517,16 +517,3 @@ export async function handoffChatMemberProfile(
   );
   return response as BroadcastHandoffResponse;
 }
-
-export function handoffChatMemberProfileKeepalive(
-  api: ApiTransport,
-  chatId: string,
-  userId: string,
-  payload: ProfileMentionHandoffRequest,
-): void {
-  const requestBody = payload;
-  api.requestKeepalive(`/chats/${chatId}/members/${encodeURIComponent(userId)}/profile/handoff`, {
-    method: 'POST',
-    body: JSON.stringify(requestBody),
-  });
-}

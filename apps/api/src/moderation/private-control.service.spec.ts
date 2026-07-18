@@ -11,6 +11,7 @@ import {
   USER_AGREEMENT_SHORT_NOTICE,
   USER_AGREEMENT_START_NOTICE,
 } from '../common/user-agreement-notice';
+import { buildCompactProfileMentionStartPayload } from '../max/max-deep-link.util';
 import { createDefaultPrivateControlSession } from './private-control-session-normalizer';
 import { PrivateControlService } from './private-control.service';
 
@@ -4226,7 +4227,7 @@ describe('PrivateControlService', () => {
       createBotStartedPrivateUpdate(extractStartPayload(result.botUrl)),
     );
 
-    expect(getLastSentText(maxClient)).toContain('<p><strong>Профиль пользователя</strong></p>');
+    expect(getLastSentText(maxClient)).toContain('<strong>Профиль пользователя</strong>\n');
     expect(getLastSentText(maxClient)).toContain('<a href="max://user/user-42">Юлия Максимова</a>');
     expect(getLastSendOptions(maxClient)).toEqual(
       expect.objectContaining({
@@ -4335,6 +4336,44 @@ describe('PrivateControlService', () => {
     );
 
     expect(getLastSentText(maxClient)).toContain('<a href="max://user/user-99">Без username</a>');
+  });
+
+  it('uses a local display name snapshot when a compact handoff targets a former member', async () => {
+    const findUnique = jest.fn().mockResolvedValue({ displayName: 'Анна Ушедшая' });
+    const { service, maxClient, chats } = createHarness({
+      prisma: {
+        chatUserDisplayName: {
+          findUnique,
+        },
+      },
+    });
+    const startPayload = buildCompactProfileMentionStartPayload(
+      {
+        chatId: chats[0].id,
+        entityType: 'chat',
+        userId: 'user-removed',
+      },
+      'test-token',
+    );
+    expect(startPayload).not.toBeNull();
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate(startPayload!));
+
+    expect(findUnique).toHaveBeenCalledWith({
+      where: {
+        chatId_userId: {
+          chatId: chats[0].id,
+          userId: 'user-removed',
+        },
+      },
+      select: {
+        displayName: true,
+      },
+    });
+    expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith(chats[0].id, ['user-removed']);
+    expect(getLastSentText(maxClient)).toContain(
+      '<a href="max://user/user-removed">Анна Ушедшая</a>',
+    );
   });
 
   it('proactively delivers profile mention handoff into a known private chat and skips duplicate bot_started reply', async () => {
