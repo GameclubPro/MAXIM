@@ -3,11 +3,9 @@ WORKDIR /app
 
 ARG ADMIN_BASE_PATH=/
 ARG VITE_PUBLIC_BASE_PATH=/
-ARG VITE_ADMIN_ACCESS_CODE
 
 ENV ADMIN_BASE_PATH=${ADMIN_BASE_PATH}
 ENV VITE_PUBLIC_BASE_PATH=${VITE_PUBLIC_BASE_PATH}
-ENV VITE_ADMIN_ACCESS_CODE=${VITE_ADMIN_ACCESS_CODE}
 
 COPY package.json package-lock.json ./
 COPY apps/admin/package.json apps/admin/package.json
@@ -20,7 +18,6 @@ COPY tsconfig.base.json ./
 COPY packages/contracts packages/contracts
 COPY apps/admin apps/admin
 
-RUN node -e 'const code = process.env.VITE_ADMIN_ACCESS_CODE; if (!code || code === "change-me") process.exit(1)'
 RUN npm run build --workspace @maxim/admin
 
 FROM nginx:1.27-alpine AS runtime

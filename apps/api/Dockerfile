@@ -20,6 +20,7 @@ RUN npm prune --omit=dev
 FROM node:24-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
+ENV HOME=/home/node
 ENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/russian-trusted-ca-bundle.crt
 
 COPY infra/certs/russian-trusted-root-ca.pem /usr/local/share/ca-certificates/russian-trusted-root-ca.crt
@@ -30,6 +31,7 @@ RUN apk add --no-cache ca-certificates \
   && printf '\n' >> /usr/local/share/ca-certificates/russian-trusted-ca-bundle.crt \
   && cat /usr/local/share/ca-certificates/russian-trusted-sub-ca.crt \
     >> /usr/local/share/ca-certificates/russian-trusted-ca-bundle.crt \
+  && chmod 0644 /usr/local/share/ca-certificates/russian-trusted-ca-bundle.crt \
   && update-ca-certificates
 
 COPY --from=prod-deps /app/node_modules ./node_modules
@@ -43,4 +45,5 @@ COPY --from=prod-deps /app/packages/contracts/node_modules ./packages/contracts/
 COPY --from=base /app/packages/contracts/package.json ./packages/contracts/package.json
 
 EXPOSE 3001
+USER node
 CMD ["node", "apps/api/dist/apps/api/src/main.js"]

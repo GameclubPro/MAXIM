@@ -4,6 +4,7 @@ import {
   GatewayTimeoutException,
   Get,
   Headers,
+  type OnModuleDestroy,
   Query,
   Res,
   UseGuards,
@@ -12,12 +13,17 @@ import type { FastifyReply } from 'fastify';
 import { createHash } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
 import { InitDataGuard } from '../auth/init-data.guard';
+import { CurrentUser, type AuthUser } from '../common/decorators/current-user.decorator';
+import {
+  ChunkedMutationTunnelUploadStore,
+  DEFAULT_CHUNKED_MUTATION_TUNNEL_UPLOAD_LIMITS,
+} from './chunked-mutation-tunnel-upload.store';
 
 const ALLOWED_TUNNEL_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const MAX_TUNNEL_BODY_LENGTH = 128 * 1024;
-const MAX_CHUNKED_TUNNEL_BODY_LENGTH = 34 * 1024 * 1024;
-const MAX_CHUNKED_TUNNEL_CHUNKS = 8_192;
-const CHUNKED_TUNNEL_TTL_MS = 3 * 60 * 1_000;
+const MAX_CHUNKED_TUNNEL_BODY_LENGTH = DEFAULT_CHUNKED_MUTATION_TUNNEL_UPLOAD_LIMITS.maxBodyBytes;
+const MAX_CHUNKED_TUNNEL_CHUNKS = 9_000;
+const MAX_CHUNKED_TUNNEL_CHUNK_ENCODED_LENGTH = 6 * 1024;
 const TUNNEL_TIMEOUT_MS = 25_000;
 
 type TunnelRouteRule = {
@@ -311,40 +317,32 @@ type MutationTunnelQuery = {
   commit?: string;
 };
 
-type ChunkedTunnelUpload = {
-  method: string;
-  path: string;
-  contentType: string | undefined;
-  authHash: string;
-  chunkCount: number;
-  chunks: Array<Buffer | undefined>;
-  receivedCount: number;
-  receivedBytes: number;
-  expiresAtMs: number;
-};
-
-const chunkedUploads = new Map<string, ChunkedTunnelUpload>();
-
 @Controller('v1')
 @UseGuards(InitDataGuard)
-export class MiniappMutationTunnelController {
+export class MiniappMutationTunnelController implements OnModuleDestroy {
+  private readonly chunkedUploadStore = new ChunkedMutationTunnelUploadStore();
+
+  onModuleDestroy(): void {
+    this.chunkedUploadStore.dispose();
+  }
+
   @Get('_mutation-tunnel')
   async tunnel(
     @Query() query: MutationTunnelQuery,
     @Headers('authorization') authorization: string | undefined,
+    @CurrentUser() user: AuthUser,
     @Res() reply: FastifyReply,
   ): Promise<void> {
-    this.cleanupExpiredChunkedUploads();
     const method = this.normalizeMethod(query.method);
     const target = this.normalizePath(query.path, method);
 
     if (query.uploadId) {
       if (this.isTruthy(query.commit)) {
-        await this.commitChunkedTunnel(query, authorization, reply, method, target);
+        await this.commitChunkedTunnel(query, authorization, user, reply, method, target);
         return;
       }
 
-      this.storeChunkedTunnelPart(query, authorization, reply, method, target);
+      this.storeChunkedTunnelPart(query, authorization, user, reply, method, target);
       return;
     }
 
@@ -363,7 +361,7 @@ export class MiniappMutationTunnelController {
   private async forwardMutation(params: {
     method: string;
     target: string;
-    body: string | undefined;
+    body: string | Buffer | undefined;
     contentType: string | undefined;
     authorization: string | undefined;
     reply: FastifyReply;
@@ -374,7 +372,8 @@ export class MiniappMutationTunnelController {
     try {
       const response = await fetch(this.buildInternalUrl(params.target), {
         method: params.method,
-        body: params.body,
+        // Node fetch accepts Buffer bodies even though the DOM BodyInit declaration omits them.
+        body: params.body as BodyInit | undefined,
         signal: controller.signal,
         headers: {
           Authorization: params.authorization ?? '',
@@ -411,6 +410,7 @@ export class MiniappMutationTunnelController {
   private storeChunkedTunnelPart(
     query: MutationTunnelQuery,
     authorization: string | undefined,
+    user: AuthUser,
     reply: FastifyReply,
     method: string,
     target: string,
@@ -425,44 +425,19 @@ export class MiniappMutationTunnelController {
     const chunk = this.decodeChunk(query.chunk);
     const contentType = this.normalizeContentType(query.contentType, '');
     const authHash = this.hashAuthorization(authorization);
-    let upload = chunkedUploads.get(uploadId);
-    if (!upload) {
-      upload = {
+    const progress = this.chunkedUploadStore.storeChunk({
+      uploadId,
+      metadata: {
         method,
         path: target,
         contentType,
         authHash,
+        authUserKey: user.userId,
         chunkCount,
-        chunks: new Array<Buffer | undefined>(chunkCount),
-        receivedCount: 0,
-        receivedBytes: 0,
-        expiresAtMs: Date.now() + CHUNKED_TUNNEL_TTL_MS,
-      };
-      chunkedUploads.set(uploadId, upload);
-    }
-
-    this.assertChunkedUploadMatches(upload, {
-      method,
-      target,
-      contentType,
-      authHash,
-      chunkCount,
+      },
+      chunkIndex,
+      chunk,
     });
-
-    if (!upload.chunks[chunkIndex]) {
-      upload.receivedCount += 1;
-      upload.receivedBytes += chunk.length;
-      if (upload.receivedBytes > MAX_CHUNKED_TUNNEL_BODY_LENGTH) {
-        chunkedUploads.delete(uploadId);
-        throw new BadRequestException('Tunnel body is too large');
-      }
-    } else {
-      upload.receivedBytes -= upload.chunks[chunkIndex]?.length ?? 0;
-      upload.receivedBytes += chunk.length;
-    }
-
-    upload.chunks[chunkIndex] = chunk;
-    upload.expiresAtMs = Date.now() + CHUNKED_TUNNEL_TTL_MS;
 
     this.applyNoStoreHeaders(reply);
     reply.header('Content-Type', 'application/json; charset=utf-8');
@@ -470,8 +445,8 @@ export class MiniappMutationTunnelController {
     reply.send(
       JSON.stringify({
         ok: true,
-        received: upload.receivedCount,
-        total: upload.chunkCount,
+        received: progress.receivedCount,
+        total: progress.chunkCount,
       }),
     );
   }
@@ -479,44 +454,41 @@ export class MiniappMutationTunnelController {
   private async commitChunkedTunnel(
     query: MutationTunnelQuery,
     authorization: string | undefined,
+    user: AuthUser,
     reply: FastifyReply,
     method: string,
     target: string,
   ): Promise<void> {
     const uploadId = this.normalizeUploadId(query.uploadId);
-    const upload = chunkedUploads.get(uploadId);
-    if (!upload) {
-      throw new BadRequestException('Tunnel upload was not found');
-    }
-
+    const chunkCount = this.normalizeChunkCount(query.chunkCount);
     const authHash = this.hashAuthorization(authorization);
     const contentType = this.normalizeContentType(query.contentType, '');
-    this.assertChunkedUploadMatches(upload, {
+    const upload = this.chunkedUploadStore.beginCompletedUpload(uploadId, {
       method,
-      target,
+      path: target,
       contentType,
       authHash,
-      chunkCount: upload.chunkCount,
+      authUserKey: user.userId,
+      chunkCount,
     });
 
-    if (upload.receivedCount !== upload.chunkCount || upload.chunks.some((chunk) => !chunk)) {
-      throw new BadRequestException('Tunnel upload is incomplete');
-    }
+    try {
+      const body = Buffer.concat(upload.chunks as Buffer[], upload.receivedBytes);
+      if (body.length > MAX_CHUNKED_TUNNEL_BODY_LENGTH) {
+        throw new BadRequestException('Tunnel body is too large');
+      }
 
-    chunkedUploads.delete(uploadId);
-    const body = Buffer.concat(upload.chunks as Buffer[]).toString('utf8');
-    if (body.length > MAX_CHUNKED_TUNNEL_BODY_LENGTH) {
-      throw new BadRequestException('Tunnel body is too large');
+      await this.forwardMutation({
+        method,
+        target,
+        body,
+        contentType: upload.contentType,
+        authorization,
+        reply,
+      });
+    } finally {
+      this.chunkedUploadStore.deleteUpload(uploadId);
     }
-
-    await this.forwardMutation({
-      method,
-      target,
-      body,
-      contentType: upload.contentType,
-      authorization,
-      reply,
-    });
   }
 
   private normalizeMethod(value: string | undefined): string {
@@ -579,12 +551,12 @@ export class MiniappMutationTunnelController {
     }
 
     const decoded = this.decodeBase64Url(encodedValue);
-    const body = gzipValue ? this.gunzipBody(decoded) : decoded.toString('utf8');
-    if (body.length > MAX_TUNNEL_BODY_LENGTH) {
+    const bodyBuffer = gzipValue ? this.gunzipBody(decoded) : decoded;
+    if (bodyBuffer.length > MAX_TUNNEL_BODY_LENGTH) {
       throw new BadRequestException('Tunnel body is too large');
     }
 
-    return body;
+    return bodyBuffer.toString('utf8');
   }
 
   private decodeBase64Url(value: string): Buffer {
@@ -596,9 +568,9 @@ export class MiniappMutationTunnelController {
     return Buffer.from(padded.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
   }
 
-  private gunzipBody(value: Buffer): string {
+  private gunzipBody(value: Buffer): Buffer {
     try {
-      return gunzipSync(value).toString('utf8');
+      return gunzipSync(value, { maxOutputLength: MAX_TUNNEL_BODY_LENGTH });
     } catch {
       throw new BadRequestException('Invalid tunnel body');
     }
@@ -652,6 +624,9 @@ export class MiniappMutationTunnelController {
     if (!chunk) {
       throw new BadRequestException('Invalid tunnel chunk');
     }
+    if (chunk.length > MAX_CHUNKED_TUNNEL_CHUNK_ENCODED_LENGTH) {
+      throw new BadRequestException('Tunnel chunk is too large');
+    }
 
     return this.decodeBase64Url(chunk);
   }
@@ -664,36 +639,6 @@ export class MiniappMutationTunnelController {
     return createHash('sha256')
       .update(value ?? '')
       .digest('hex');
-  }
-
-  private assertChunkedUploadMatches(
-    upload: ChunkedTunnelUpload,
-    next: {
-      method: string;
-      target: string;
-      contentType: string | undefined;
-      authHash: string;
-      chunkCount: number;
-    },
-  ): void {
-    if (
-      upload.method !== next.method ||
-      upload.path !== next.target ||
-      upload.contentType !== next.contentType ||
-      upload.authHash !== next.authHash ||
-      upload.chunkCount !== next.chunkCount
-    ) {
-      throw new BadRequestException('Tunnel upload metadata mismatch');
-    }
-  }
-
-  private cleanupExpiredChunkedUploads(): void {
-    const now = Date.now();
-    for (const [uploadId, upload] of chunkedUploads.entries()) {
-      if (upload.expiresAtMs <= now) {
-        chunkedUploads.delete(uploadId);
-      }
-    }
   }
 
   private buildInternalUrl(target: string): string {

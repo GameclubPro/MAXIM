@@ -29,8 +29,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
+      - name: Resolve the requested deploy commit
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.branch }}
+          fetch-depth: 1
+
       - name: Setup SSH key
-        uses: webfactory/ssh-agent@v0.9.0
+        uses: webfactory/ssh-agent@dc588b651fe13675774614f8e6a936a468676387 # v0.9.0
         with:
           ssh-private-key: ${{ secrets.VPS_SSH_KEY }}
 
@@ -79,6 +85,12 @@ jobs:
             exit 2
           fi
 
+          DEPLOY_SHA="$(git rev-parse HEAD)"
+          if [[ ! "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Could not resolve the requested deploy branch to a full commit SHA."
+            exit 2
+          fi
+
           SSH_OPTS=(
             -o BatchMode=yes
             -o StrictHostKeyChecking=yes
@@ -96,6 +108,7 @@ jobs:
           fi
 
           printf -v remote_command "%q " "${remote_args[@]}"
+          remote_command="MAXIM_EXPECTED_DEPLOY_SHA=$(printf '%q' "$DEPLOY_SHA") $remote_command"
           if [[ "$DEPLOY_BRANCH" != "main" ]]; then
             remote_command="MAXIM_ALLOW_NON_MAIN_DEPLOY=1 $remote_command"
           fi

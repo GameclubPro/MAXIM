@@ -22,6 +22,7 @@ import {
   type SafetyDeskDeleteIntentItem,
   type SafetyDeskDeleteIntentStatus,
   type SafetyDeskDeleteRuntimeResponse,
+  type SafetyDeskGiveawayWinnerNotificationDeadEndItem,
   type SafetyDeskQueueItem,
   type SafetyDeskQueueResponse,
   type SupportRequestAttachment,
@@ -29,9 +30,14 @@ import {
   type SupportRequestItem,
   type SupportRequestQueueResponse,
 } from '@maxim/contracts';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
+import { createAdminRequestHeaders } from './admin-request';
 import { readJsonResponse } from './api-response';
-import { readSessionStorageItem, writeSessionStorageItem } from './safe-storage';
+import {
+  giveawayWinnerNotificationEventAt,
+  giveawayWinnerNotificationStatusLabel,
+  matchesGiveawayWinnerNotificationQuery,
+} from './giveaway-notification-observability';
 
 type DeskView = 'review' | 'support' | 'deletes';
 type RiskLevel = 'low' | 'medium' | 'high' | 'blocked';
@@ -93,9 +99,6 @@ type SupportTicket = {
   closedAt: string;
 };
 
-const configuredAccessCode = import.meta.env.VITE_ADMIN_ACCESS_CODE?.trim() ?? '';
-const accessCode = configuredAccessCode || (import.meta.env.DEV ? 'maxim-local' : '');
-const isAccessCodeConfigured = accessCode.length > 0;
 const safetyDeskApiBase = '/api/v1/safety-desk';
 const supportRequestsApiBase = '/api/v1/support-requests';
 
@@ -112,10 +115,9 @@ const emptySupportMetrics: SupportMetrics = {
 };
 
 export function AdminApp() {
-  const [unlocked, setUnlocked] = useState(
-    () => isAccessCodeConfigured && readSessionStorageItem('maxim-admin') === '1',
-  );
+  const [unlocked, setUnlocked] = useState(false);
   const [code, setCode] = useState('');
+  const [verifiedAccessCode, setVerifiedAccessCode] = useState('');
   const [view, setView] = useState<DeskView>('review');
   const [filter, setFilter] = useState<'all' | QueueStatus>('all');
   const [supportFilter, setSupportFilter] = useState<'all' | SupportStatus>('new');
@@ -139,14 +141,6 @@ export function AdminApp() {
   const [busyAmbiguousSendId, setBusyAmbiguousSendId] = useState<string | null>(null);
   const [busyDeleteIntentId, setBusyDeleteIntentId] = useState<string | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
-
-  useEffect(() => {
-    if (!unlocked) {
-      return;
-    }
-
-    void refreshQueue('Очередь загружена');
-  }, [unlocked]);
 
   const visibleItems = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -223,29 +217,38 @@ export function AdminApp() {
   );
   const bulkReviewCount = visibleReviewItems.length;
 
-  function unlock() {
-    if (!isAccessCodeConfigured) {
-      setNotice('Код доступа не настроен');
+  async function unlock() {
+    const candidate = code.trim();
+    if (!candidate) {
+      setNotice('Введите код доступа');
       return;
     }
 
-    if (code.trim() === accessCode) {
-      writeSessionStorageItem('maxim-admin', '1');
+    const loaded = await refreshQueue('Очередь загружена', candidate);
+    if (loaded) {
+      setVerifiedAccessCode(candidate);
       setUnlocked(true);
-      setNotice('Загружаю живую очередь проверки');
+      setCode('');
       return;
     }
 
-    setNotice('Неверный код доступа');
+    setNotice('Неверный код доступа или API недоступен');
   }
 
-  async function refreshQueue(successMessage = 'Очередь обновлена с сервера') {
+  async function refreshQueue(
+    successMessage = 'Очередь обновлена с сервера',
+    requestAccessCode = verifiedAccessCode,
+  ): Promise<boolean> {
+    if (!requestAccessCode) {
+      setNotice('Введите код доступа');
+      return false;
+    }
     setLoading(true);
     try {
       const [queueResult, supportResult, deleteResult] = await Promise.allSettled([
-        fetchQueue(),
-        fetchSupportQueue(),
-        fetchDeleteRuntime(),
+        fetchQueue(requestAccessCode),
+        fetchSupportQueue(requestAccessCode),
+        fetchDeleteRuntime(requestAccessCode),
       ]);
       if (queueResult.status === 'fulfilled') {
         applyQueueResponse(queueResult.value);
@@ -263,7 +266,7 @@ export function AdminApp() {
         deleteResult.status === 'fulfilled'
       ) {
         setNotice(successMessage);
-        return;
+        return true;
       }
 
       const errors = [queueResult, supportResult, deleteResult]
@@ -279,8 +282,10 @@ export function AdminApp() {
           ? `Частично обновлено: ${loaded.join(', ')}. ${errors.join('; ')}`
           : errors.join('; '),
       );
+      return loaded.length > 0;
     } catch (error) {
       setNotice(readErrorMessage(error));
+      return false;
     } finally {
       setLoading(false);
     }
@@ -290,7 +295,7 @@ export function AdminApp() {
     setBusySupportId(itemId);
     setNotice('Закрываю обращение');
     try {
-      const response = await postSupportDecision(itemId, 'close');
+      const response = await postSupportDecision(itemId, 'close', verifiedAccessCode);
       applySupportQueueResponse(response.queue, response.item?.id ?? itemId);
       setNotice(response.message);
     } catch (error) {
@@ -329,7 +334,7 @@ export function AdminApp() {
     setBusyAmbiguousSendId(item.id);
     setNotice('Снимаю блокировку повторной публикации');
     try {
-      applyDeleteRuntimeResponse(await postAllowAmbiguousSendRetry(item));
+      applyDeleteRuntimeResponse(await postAllowAmbiguousSendRetry(item, verifiedAccessCode));
       setNotice('Повторная публикация правил разрешена');
     } catch (error) {
       setNotice(readErrorMessage(error));
@@ -353,7 +358,13 @@ export function AdminApp() {
     setNotice('Возвращаю удаление в безопасную очередь');
     try {
       applyDeleteRuntimeResponse(
-        await postRetryDeleteIntent(item.id, item.status, item.updatedAt, item.attemptCount),
+        await postRetryDeleteIntent(
+          item.id,
+          item.status,
+          item.updatedAt,
+          item.attemptCount,
+          verifiedAccessCode,
+        ),
       );
       setNotice('Удаление возвращено в очередь');
     } catch (error) {
@@ -379,7 +390,7 @@ export function AdminApp() {
     setBulkBusy(true);
     setNotice(isReviewScopeFiltered ? 'Одобряю видимые материалы' : 'Одобряю материалы из очереди');
     try {
-      const response = await postApproveAll(itemIds);
+      const response = await postApproveAll(itemIds, verifiedAccessCode);
       applyQueueResponse(response.queue);
       setNotice(response.message);
     } catch (error) {
@@ -397,7 +408,7 @@ export function AdminApp() {
     setBusyItemId(itemId);
     setNotice(progressMessage);
     try {
-      const response = await postDecision(itemId, action);
+      const response = await postDecision(itemId, action, verifiedAccessCode);
       applyQueueResponse(response.queue, response.item?.id ?? itemId);
       setNotice(response.message);
     } catch (error) {
@@ -472,9 +483,9 @@ export function AdminApp() {
             <Lock width={24} height={24} />
           </div>
           <h1 id="auth-title">Safety Desk</h1>
-          {!isAccessCodeConfigured && (
-            <p className="auth-alert" role="alert">
-              Код доступа не настроен.
+          {notice !== 'Готово к проверке' && (
+            <p className="auth-alert" aria-live="polite">
+              {notice}
             </p>
           )}
           <label className="auth-field">
@@ -484,20 +495,20 @@ export function AdminApp() {
               onChange={(event) => setCode(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter') {
-                  unlock();
+                  void unlock();
                 }
               }}
               type="password"
               autoComplete="current-password"
               placeholder="Введите код"
-              disabled={!isAccessCodeConfigured}
+              disabled={loading}
             />
           </label>
           <button
             className="primary-action"
             type="button"
-            disabled={!isAccessCodeConfigured}
-            onClick={unlock}
+            disabled={loading}
+            onClick={() => void unlock()}
           >
             <Check width={18} height={18} />
             Войти
@@ -578,6 +589,11 @@ export function AdminApp() {
               <Metric
                 label="Неясные отправки"
                 value={String(deleteRuntime?.summary.ambiguousSends.count ?? 0)}
+                tone="danger"
+              />
+              <Metric
+                label="DM победителям"
+                value={String(deleteRuntime?.summary.giveawayWinnerNotificationDeadEnds.count ?? 0)}
                 tone="danger"
               />
               <Metric
@@ -934,6 +950,10 @@ function DeleteDesk({
   onRetryDeleteIntent: (item: SafetyDeskDeleteIntentItem) => void;
   onSelect: (itemId: string) => void;
 }) {
+  const giveawayWinnerNotificationDeadEnds = (
+    runtime?.giveawayWinnerNotificationDeadEnds ?? []
+  ).filter((item) => matchesGiveawayWinnerNotificationQuery(item, query));
+
   return (
     <section className="desk-grid delete-grid">
       <section className="queue-panel" aria-label="Диагностика удалений">
@@ -968,6 +988,49 @@ function DeleteDesk({
         </div>
 
         <div className="queue-list">
+          {runtime && runtime.summary.giveawayWinnerNotificationDeadEnds.count > 0 && (
+            <section
+              className="ambiguous-send-strip giveaway-notification-strip"
+              aria-label="Сбои уведомлений победителям"
+            >
+              <header>
+                <strong>Уведомления победителям</strong>
+                <span>{runtime.summary.giveawayWinnerNotificationDeadEnds.count}</span>
+              </header>
+              <div>
+                {giveawayWinnerNotificationDeadEnds.map((item) => (
+                  <article
+                    className="ambiguous-send-row giveaway-notification-row"
+                    key={item.notificationId}
+                    title={item.lastError ?? undefined}
+                  >
+                    <span className="risk-dot is-high" />
+                    <span>
+                      <strong>{item.giveawayTitle || item.giveawayId}</strong>
+                      <small>
+                        Чат {item.sourceChatId} · пользователь {item.userId}
+                      </small>
+                      <small>
+                        notification {item.notificationId} · winner {item.winnerId}
+                      </small>
+                      <small>{item.lastError || 'Ошибка не зафиксирована'}</small>
+                    </span>
+                    <span className="giveaway-notification-row__meta">
+                      <GiveawayWinnerNotificationStatusBadge status={item.status} />
+                      <code>{item.botId || 'bot неизвестен'}</code>
+                      <small>
+                        попыток {item.attemptCount} ·{' '}
+                        {formatDateTime(new Date(giveawayWinnerNotificationEventAt(item)))}
+                      </small>
+                    </span>
+                  </article>
+                ))}
+                {giveawayWinnerNotificationDeadEnds.length === 0 && (
+                  <div className="delete-empty-line">Под строку поиска уведомлений нет.</div>
+                )}
+              </div>
+            </section>
+          )}
           {runtime && runtime.ambiguousSends.length > 0 && (
             <section className="ambiguous-send-strip" aria-label="Неясные отправки MAX">
               <header>
@@ -1571,6 +1634,19 @@ function DeleteStatusBadge({ status }: { status: SafetyDeskDeleteIntentStatus })
   return <span className={`status-badge is-delete-${statusClass}`}>{labels[status]}</span>;
 }
 
+function GiveawayWinnerNotificationStatusBadge({
+  status,
+}: {
+  status: SafetyDeskGiveawayWinnerNotificationDeadEndItem['status'];
+}) {
+  const statusClass = status.toLowerCase().replaceAll('_', '-');
+  return (
+    <span className={`status-badge is-delete-${statusClass}`}>
+      {giveawayWinnerNotificationStatusLabel(status)}
+    </span>
+  );
+}
+
 function RiskBadge({ risk }: { risk: RiskLevel }) {
   const labels: Record<RiskLevel, string> = {
     low: 'Низкий риск',
@@ -1594,34 +1670,32 @@ function sourceLabel(source: QueueSource) {
   return 'Ручная публикация';
 }
 
-async function fetchQueue(): Promise<SafetyDeskQueueResponse> {
+async function fetchQueue(accessCode: string): Promise<SafetyDeskQueueResponse> {
   const response = await fetch(`${safetyDeskApiBase}/queue`, {
     credentials: 'same-origin',
-    headers: { Accept: 'application/json' },
+    headers: createAdminRequestHeaders(accessCode),
   });
   return safetyDeskQueueResponseSchema.parse(await readJsonResponse(response));
 }
 
-async function fetchDeleteRuntime(): Promise<SafetyDeskDeleteRuntimeResponse> {
+async function fetchDeleteRuntime(accessCode: string): Promise<SafetyDeskDeleteRuntimeResponse> {
   const response = await fetch(`${safetyDeskApiBase}/runtime/deletes`, {
     credentials: 'same-origin',
-    headers: { Accept: 'application/json' },
+    headers: createAdminRequestHeaders(accessCode),
   });
   return safetyDeskDeleteRuntimeResponseSchema.parse(await readJsonResponse(response));
 }
 
 async function postAllowAmbiguousSendRetry(
   item: SafetyDeskDeleteRuntimeResponse['ambiguousSends'][number],
+  accessCode: string,
 ): Promise<SafetyDeskDeleteRuntimeResponse> {
   const response = await fetch(
     `${safetyDeskApiBase}/runtime/ambiguous-sends/${encodeURIComponent(item.id)}/allow-retry`,
     {
       method: 'POST',
       credentials: 'same-origin',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-      },
+      headers: createAdminRequestHeaders(accessCode, { json: true }),
       body: JSON.stringify({
         expectedOperationId: item.messageId,
         expectedStartedAt: item.startedAt,
@@ -1636,16 +1710,14 @@ async function postRetryDeleteIntent(
   expectedStatus: 'EXPIRED' | 'FAILED_TERMINAL',
   expectedUpdatedAt: string,
   expectedAttemptCount: number,
+  accessCode: string,
 ): Promise<SafetyDeskDeleteRuntimeResponse> {
   const response = await fetch(
     `${safetyDeskApiBase}/runtime/deletes/${encodeURIComponent(intentId)}/retry`,
     {
       method: 'POST',
       credentials: 'same-origin',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-      },
+      headers: createAdminRequestHeaders(accessCode, { json: true }),
       body: JSON.stringify({
         expectedStatus,
         expectedUpdatedAt,
@@ -1656,10 +1728,10 @@ async function postRetryDeleteIntent(
   return safetyDeskDeleteRuntimeResponseSchema.parse(await readJsonResponse(response));
 }
 
-async function fetchSupportQueue(): Promise<SupportRequestQueueResponse> {
+async function fetchSupportQueue(accessCode: string): Promise<SupportRequestQueueResponse> {
   const response = await fetch(`${supportRequestsApiBase}/queue`, {
     credentials: 'same-origin',
-    headers: { Accept: 'application/json' },
+    headers: createAdminRequestHeaders(accessCode),
   });
   return supportRequestQueueResponseSchema.parse(await readJsonResponse(response));
 }
@@ -1667,30 +1739,28 @@ async function fetchSupportQueue(): Promise<SupportRequestQueueResponse> {
 async function postDecision(
   itemId: string,
   action: 'approve' | 'reject' | 'recheck',
+  accessCode: string,
 ): Promise<SafetyDeskDecisionResponse> {
   const response = await fetch(
     `${safetyDeskApiBase}/items/${encodeURIComponent(itemId)}/${action}`,
     {
       method: 'POST',
       credentials: 'same-origin',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-      },
+      headers: createAdminRequestHeaders(accessCode, { json: true }),
       body: JSON.stringify({}),
     },
   );
   return safetyDeskDecisionResponseSchema.parse(await readJsonResponse(response));
 }
 
-async function postApproveAll(itemIds: string[]): Promise<SafetyDeskDecisionResponse> {
+async function postApproveAll(
+  itemIds: string[],
+  accessCode: string,
+): Promise<SafetyDeskDecisionResponse> {
   const response = await fetch(`${safetyDeskApiBase}/queue/approve-all`, {
     method: 'POST',
     credentials: 'same-origin',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-    },
+    headers: createAdminRequestHeaders(accessCode, { json: true }),
     body: JSON.stringify({ itemIds }),
   });
   return safetyDeskDecisionResponseSchema.parse(await readJsonResponse(response));
@@ -1699,16 +1769,14 @@ async function postApproveAll(itemIds: string[]): Promise<SafetyDeskDecisionResp
 async function postSupportDecision(
   itemId: string,
   action: 'close',
+  accessCode: string,
 ): Promise<SupportRequestDecisionResponse> {
   const response = await fetch(
     `${supportRequestsApiBase}/items/${encodeURIComponent(itemId)}/${action}`,
     {
       method: 'POST',
       credentials: 'same-origin',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-      },
+      headers: createAdminRequestHeaders(accessCode, { json: true }),
       body: JSON.stringify({}),
     },
   );

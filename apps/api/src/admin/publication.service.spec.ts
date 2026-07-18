@@ -28,11 +28,31 @@ function createService(prismaOverrides: Record<string, unknown> = {}) {
   };
   const contentService = new PublicationContentService(prisma as never);
   const presenter = new PublicationPresenterService(prisma as never);
+  const managedEntitiesService = {
+    listChats: jest.fn().mockResolvedValue([
+      {
+        id: 'chat-1',
+        entityType: 'chat',
+        title: 'Чат 1',
+        avatarUrl: null,
+        link: null,
+      },
+    ]),
+    listChannels: jest.fn().mockResolvedValue([
+      {
+        id: 'channel-1',
+        entityType: 'channel',
+        title: 'Канал 1',
+        avatarUrl: null,
+        link: null,
+      },
+    ]),
+  };
   const service = new PublicationService(
     prisma as never,
     contentService,
     presenter,
-    {} as never,
+    managedEntitiesService as never,
     {} as never,
     {} as never,
     {} as never,
@@ -97,6 +117,7 @@ function createOriginalRetryService(
         version: 7,
         lifecycle: PublicationLifecycle.ERROR,
         canonicalContentRevisionId: 'content-latest',
+        targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT }],
       }),
     },
     publicationOccurrence: {
@@ -562,6 +583,111 @@ describe('PublicationService', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  it('rejects an update when the owner no longer administers a persisted target', async () => {
+    const transaction = jest.fn();
+    const { service } = createService({
+      publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
+      publication: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'publication-revoked',
+          actorUserId: 'user-1',
+          version: 2,
+          lifecycle: PublicationLifecycle.ACTIVE,
+          audienceSelection: 'SELECTED',
+          audienceMode: 'SNAPSHOT',
+          schedule: null,
+          targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT, position: 0 }],
+        }),
+      },
+      $transaction: transaction,
+    });
+    (service as any).managedEntitiesService = {
+      listChats: jest.fn().mockResolvedValue([]),
+      listChannels: jest.fn().mockResolvedValue([]),
+    };
+
+    await expect(
+      service.update(
+        'publication-revoked',
+        { userId: 'user-1', username: null, displayName: null },
+        {
+          requestId: 'update-revoked-001',
+          expectedRevision: 2,
+          title: 'Новый заголовок',
+        },
+      ),
+    ).rejects.toThrow('больше недоступны');
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it('allows an explicit audience update to remove a target whose access was revoked', async () => {
+    const tx = createPublicationUpdateTransaction();
+    tx.publicationOccurrence.findMany.mockResolvedValue([]);
+    const { service } = createService({
+      publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
+      publication: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'publication-replace-revoked',
+          actorUserId: 'user-1',
+          version: 2,
+          lifecycle: PublicationLifecycle.DRAFT,
+          audienceSelection: 'SELECTED',
+          audienceMode: 'SNAPSHOT',
+          canonicalContentRevisionId: 'content-2',
+          canonicalContentRevision: { id: 'content-2' },
+          schedule: null,
+          targets: [{ targetChatId: 'chat-revoked', entityType: ChatEntityType.CHAT, position: 0 }],
+        }),
+      },
+      $transaction: jest.fn((callback: (client: typeof tx) => unknown) => callback(tx)),
+    });
+    const listChats = jest.fn().mockResolvedValue([]);
+    const listChannels = jest.fn().mockResolvedValue([
+      {
+        id: 'channel-1',
+        entityType: 'channel',
+        title: 'Канал 1',
+        avatarUrl: null,
+        link: null,
+      },
+    ]);
+    (service as any).managedEntitiesService = { listChats, listChannels };
+    jest.spyOn(service, 'get').mockResolvedValue({ id: 'publication-replace-revoked' } as never);
+
+    await expect(
+      service.update(
+        'publication-replace-revoked',
+        { userId: 'user-1', username: null, displayName: null },
+        {
+          requestId: 'update-remove-revoked-001',
+          expectedRevision: 2,
+          audience: {
+            selection: 'SELECTED',
+            mode: 'SNAPSHOT',
+            targets: [{ chatId: 'channel-1', entityType: 'channel' }],
+          },
+          intent: 'draft',
+        },
+      ),
+    ).resolves.toEqual({ id: 'publication-replace-revoked' });
+
+    expect(listChats).toHaveBeenCalledTimes(1);
+    expect(listChannels).toHaveBeenCalledTimes(1);
+    expect(tx.publicationTarget.deleteMany).toHaveBeenCalledWith({
+      where: { publicationId: 'publication-replace-revoked' },
+    });
+    expect(tx.publicationTarget.createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          publicationId: 'publication-replace-revoked',
+          targetChatId: 'channel-1',
+          entityType: ChatEntityType.CHANNEL,
+          position: 0,
+        },
+      ],
+    });
   });
 
   it('keeps a finite recurrence revision and occurrence count on a semantic no-op edit', async () => {
@@ -1632,6 +1758,23 @@ describe('PublicationService', () => {
     });
   });
 
+  it('fails closed when a background occurrence target is no longer administered', async () => {
+    const { service } = createService();
+    (service as any).managedEntitiesService = {
+      listChats: jest.fn().mockResolvedValue([]),
+      listChannels: jest.fn().mockResolvedValue([]),
+    };
+
+    await expect(
+      (service as any).resolveOccurrenceTargets({
+        actorUserId: 'user-1',
+        audienceMode: 'SNAPSHOT',
+        audienceSelection: 'SELECTED',
+        targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT }],
+      }),
+    ).rejects.toThrow('больше недоступны');
+  });
+
   it('does not materialize recurrence slots after a stale schedule claim', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-07-10T09:00:00.000Z'));
     try {
@@ -1806,6 +1949,7 @@ describe('PublicationService', () => {
           version: 7,
           lifecycle: PublicationLifecycle.ERROR,
           canonicalContentRevisionId: 'content-latest',
+          targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT }],
         }),
       },
       publicationOccurrence: {
@@ -1932,6 +2076,7 @@ describe('PublicationService', () => {
           version: 8,
           lifecycle: PublicationLifecycle.ERROR,
           canonicalContentRevisionId: 'content-latest',
+          targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT }],
         }),
       },
       publicationContentRevision: {
@@ -2233,6 +2378,7 @@ describe('PublicationService', () => {
           version: 7,
           lifecycle: PublicationLifecycle.ERROR,
           canonicalContentRevisionId: 'content-latest',
+          targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT }],
         }),
       },
       publicationOccurrence: {
@@ -2264,6 +2410,26 @@ describe('PublicationService', () => {
     expect(tx.managedBroadcastDelivery.updateMany).not.toHaveBeenCalled();
   });
 
+  it('rejects a delivery retry when access to a persisted target was revoked', async () => {
+    const tx = { $executeRaw: jest.fn() };
+    const { service, transaction, failedDeliveryCount } = createOriginalRetryService(tx);
+    (service as any).managedEntitiesService = {
+      listChats: jest.fn().mockResolvedValue([]),
+      listChannels: jest.fn().mockResolvedValue([]),
+    };
+
+    await expect(
+      service.retryOccurrence(
+        'publication-1',
+        'occurrence-1',
+        { userId: 'user-1', username: null, displayName: null },
+        { requestId: 'retry-revoked-001' },
+      ),
+    ).rejects.toThrow('больше недоступны');
+    expect(failedDeliveryCount).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['pause', PublicationLifecycle.DRAFT],
     ['resume', PublicationLifecycle.ACTIVE],
@@ -2283,6 +2449,35 @@ describe('PublicationService', () => {
         { requestId: `action-${action}`, expectedRevision: 1 },
       ),
     ).rejects.toThrow();
+  });
+
+  it('rejects resume when access to a persisted target was revoked', async () => {
+    const transaction = jest.fn();
+    const { service } = createService({
+      publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
+      publication: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'publication-1',
+          version: 1,
+          lifecycle: PublicationLifecycle.PAUSED,
+          targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT }],
+        }),
+      },
+      $transaction: transaction,
+    });
+    (service as any).managedEntitiesService = {
+      listChats: jest.fn().mockResolvedValue([]),
+      listChannels: jest.fn().mockResolvedValue([]),
+    };
+
+    await expect(
+      service.resume(
+        'publication-1',
+        { userId: 'user-1', username: null, displayName: null },
+        { requestId: 'resume-revoked-001', expectedRevision: 1 },
+      ),
+    ).rejects.toThrow('больше недоступны');
+    expect(transaction).not.toHaveBeenCalled();
   });
 
   it('removes only unsent canceled envelopes from future scheduled occurrences before resume', async () => {

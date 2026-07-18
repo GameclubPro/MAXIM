@@ -394,6 +394,27 @@ describe('Prisma migrations', () => {
     expect(compact).not.toMatch(/\b(?:TRUNCATE\s+TABLE|DELETE\s+FROM)\b/i);
   });
 
+  it('adds a durable managed giveaway winner notification outbox', () => {
+    const schema = readSchema();
+    const migration = readMigration('20260718143000_managed_giveaway_winner_notification_outbox');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+
+    expect(schema).toContain('enum ManagedGiveawayWinnerNotificationStatus {');
+    expect(schema).toContain('model ManagedGiveawayWinnerNotification {');
+    expect(compact).toContain(
+      `CREATE TYPE "ManagedGiveawayWinnerNotificationStatus" AS ENUM ( 'PENDING', 'RETRYABLE', 'DISPATCHING', 'SENT', 'AMBIGUOUS', 'FAILED_TERMINAL', 'CANCELED' )`,
+    );
+    expect(compact).toContain('CREATE TABLE "managed_giveaway_winner_notifications"');
+    expect(compact).toContain('"remote_message_id" TEXT');
+    expect(compact).toContain('"managed_giveaway_winner_notifications_sent_pair_check"');
+    expect(compact).toContain(
+      'FOREIGN KEY ("winner_id") REFERENCES "managed_giveaway_winners"("id") ON DELETE CASCADE ON UPDATE CASCADE',
+    );
+    expect(compact).not.toMatch(
+      /\b(?:DROP\s+(?:TABLE|COLUMN|TYPE)|TRUNCATE\s+TABLE|DELETE\s+FROM)\b/i,
+    );
+  });
+
   it('keeps replacement cleanup recovery referential without trusting legacy delete flags', () => {
     const foundation = readMigration('20260716190000_add_moderation_delete_intents');
     const tracking = readMigration('20260716191000_track_channel_replacement_cleanup');

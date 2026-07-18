@@ -29,6 +29,7 @@ import {
   GiveawayEligibilityState,
   ManagedEntityAccessState,
   ManagedGiveawayStatus,
+  ManagedGiveawayWinnerNotificationStatus,
   ManagedGiveawayWinnerStatus,
   Prisma,
 } from '../prisma/prisma-client';
@@ -41,7 +42,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
 import { type AuthUser } from '../common/decorators/current-user.decorator';
@@ -59,6 +60,7 @@ import {
   type MaxActionJob,
   type MaxMessageButton,
   type MaxSendMessageOptions,
+  wasMaxMessageSendAttempted,
 } from '../max/max-client.service';
 import { MaxActionLedgerService } from '../max/max-action-ledger.service';
 import {
@@ -99,6 +101,10 @@ const GIVEAWAY_IMAGE_MAX_BYTES = Math.floor((MAX_BROADCAST_IMAGE_BASE64_LENGTH *
 const GIVEAWAY_LOCK_STALE_MS = 60_000;
 const GIVEAWAY_DUE_BATCH_SIZE = 20;
 const GIVEAWAY_DUE_FETCH_BATCH_SIZE = GIVEAWAY_DUE_BATCH_SIZE * 4;
+const GIVEAWAY_WINNER_NOTIFICATION_BATCH_SIZE = 20;
+const GIVEAWAY_WINNER_NOTIFICATION_MAX_ATTEMPTS = 5;
+const GIVEAWAY_WINNER_NOTIFICATION_RETRY_BASE_MS = 30_000;
+const GIVEAWAY_WINNER_NOTIFICATION_RETRY_MAX_MS = 30 * 60_000;
 const GIVEAWAY_START_PARAM_PREFIX = 'gg-';
 const GIVEAWAY_CLAIM_START_PREFIX = 'ggc-';
 const GIVEAWAY_RUNNER_LOOKUP_RETRY_MESSAGE =
@@ -130,6 +136,21 @@ const MANAGED_GIVEAWAY_INCLUDE = {
     orderBy: [{ selectedAt: 'asc' }],
   },
 } as const satisfies Prisma.ManagedGiveawayInclude;
+const MANAGED_GIVEAWAY_WINNER_NOTIFICATION_INCLUDE = {
+  winner: {
+    include: {
+      giveaway: {
+        include: {
+          prizes: {
+            orderBy: { position: 'asc' },
+          },
+        },
+      },
+      prize: true,
+      entry: true,
+    },
+  },
+} as const satisfies Prisma.ManagedGiveawayWinnerNotificationInclude;
 
 type PersistedGiveawayWithRelations = Prisma.ManagedGiveawayGetPayload<{
   include: typeof MANAGED_GIVEAWAY_INCLUDE;
@@ -138,6 +159,25 @@ type PersistedManagedGiveaway = Prisma.ManagedGiveawayGetPayload<Record<string, 
 type PersistedManagedGiveawayPrize = Prisma.ManagedGiveawayPrizeGetPayload<Record<string, never>>;
 type PersistedManagedGiveawayEntry = Prisma.ManagedGiveawayEntryGetPayload<Record<string, never>>;
 type PersistedManagedGiveawayWinner = Prisma.ManagedGiveawayWinnerGetPayload<Record<string, never>>;
+type PersistedManagedGiveawayWinnerNotification =
+  Prisma.ManagedGiveawayWinnerNotificationGetPayload<{
+    include: typeof MANAGED_GIVEAWAY_WINNER_NOTIFICATION_INCLUDE;
+  }>;
+type WinnerNotificationOutboxOptions = {
+  notificationIds?: readonly string[];
+  winnerIds?: readonly string[];
+  synchronizeResultsBeforeDispatch?: boolean;
+};
+type GiveawayResultsTextPayload = {
+  text: string;
+  textFormat?: MaxSendMessageOptions['textFormat'];
+};
+type GiveawayWinnerNotificationGiveaway = Pick<
+  PersistedManagedGiveaway,
+  'id' | 'sourceChatId' | 'title' | 'publicationUrl' | 'resultsUrl'
+> & {
+  prizes: PersistedManagedGiveawayPrize[];
+};
 type GiveawayRerollCandidate = {
   entry: PersistedManagedGiveawayEntry;
   drawRank: string;
@@ -743,6 +783,7 @@ export class ManagedGiveawayService {
 
     const now = new Date();
     const claimDeadlineAt = this.buildGiveawayClaimDeadlineAt(giveaway, now);
+    const nextWinnerId = randomUUID();
     const updated = await this.prisma.$transaction(async (tx) => {
       await tx.managedGiveawayEntry.update({
         where: { id: nextEntry.entry.id },
@@ -757,8 +798,26 @@ export class ManagedGiveawayService {
         },
       });
 
+      await tx.managedGiveawayWinnerNotification.updateMany({
+        where: {
+          winnerId: winner.id,
+          status: {
+            in: [
+              ManagedGiveawayWinnerNotificationStatus.PENDING,
+              ManagedGiveawayWinnerNotificationStatus.RETRYABLE,
+            ],
+          },
+        },
+        data: {
+          status: ManagedGiveawayWinnerNotificationStatus.CANCELED,
+          lockedAt: null,
+          nextAttemptAt: now,
+        },
+      });
+
       await tx.managedGiveawayWinner.create({
         data: {
+          id: nextWinnerId,
           giveawayId: giveaway.id,
           prizeId: winner.prizeId,
           entryId: nextEntry.entry.id,
@@ -773,6 +832,13 @@ export class ManagedGiveawayService {
         },
       });
 
+      await tx.managedGiveawayWinnerNotification.create({
+        data: {
+          winnerId: nextWinnerId,
+          nextAttemptAt: now,
+        },
+      });
+
       return tx.managedGiveaway.findUniqueOrThrow({
         where: { id: giveaway.id },
         include: MANAGED_GIVEAWAY_INCLUDE,
@@ -780,13 +846,16 @@ export class ManagedGiveawayService {
     });
 
     await this.editGiveawayPublicationIfNeeded(updated, ManagedGiveawayStatus.COMPLETED, source);
-    await this.republishGiveawayResults(updated, source);
+    const resultsConfirmed = await this.republishGiveawayResults(updated, source);
     const refreshed = await this.findGiveawayById(updated.id);
-    await this.sendWinnerDirectMessages(
-      refreshed,
-      [this.buildWinnerNotificationKey(nextEntry.entry.id, winner.prizeId)],
-      source,
-    );
+    if (resultsConfirmed) {
+      await this.processWinnerNotificationOutbox(
+        source,
+        refreshed.id,
+        GIVEAWAY_WINNER_NOTIFICATION_BATCH_SIZE,
+        { winnerIds: [nextWinnerId] },
+      );
+    }
     await this.writeAuditLog(sourceChatId, user.userId, 'REROLL_GIVEAWAY_WINNER', {
       giveawayId,
       winnerId: winner.id,
@@ -1190,6 +1259,14 @@ export class ManagedGiveawayService {
     }
 
     const now = new Date();
+    await this.processWinnerNotificationOutbox(
+      'runner',
+      undefined,
+      decision.action === 'slow'
+        ? Math.max(1, Math.floor(GIVEAWAY_WINNER_NOTIFICATION_BATCH_SIZE / 2))
+        : GIVEAWAY_WINNER_NOTIFICATION_BATCH_SIZE,
+      { synchronizeResultsBeforeDispatch: true },
+    );
     await this.expireDueGiveawayClaims(now);
     const staleLockBefore = new Date(now.getTime() - GIVEAWAY_LOCK_STALE_MS);
     const rows = await this.prisma.managedGiveaway.findMany({
@@ -2218,10 +2295,9 @@ export class ManagedGiveawayService {
     };
   }
 
-  private buildGiveawayResultsTextPayload(giveaway: PersistedGiveawayWithRelations): {
-    text: string;
-    textFormat?: MaxSendMessageOptions['textFormat'];
-  } {
+  private buildGiveawayResultsTextPayload(
+    giveaway: PersistedGiveawayWithRelations,
+  ): GiveawayResultsTextPayload {
     const text = this.buildGiveawayResultsText(giveaway);
     return containsSupportedMarkdownSyntax(text) ? { text, textFormat: 'markdown' } : { text };
   }
@@ -2324,12 +2400,8 @@ export class ManagedGiveawayService {
     };
   }
 
-  private buildWinnerNotificationKey(entryId: string, prizeId: string): string {
-    return `${entryId}:${prizeId}`;
-  }
-
   private buildGiveawayWinnerDirectMessageText(
-    giveaway: PersistedGiveawayWithRelations,
+    giveaway: GiveawayWinnerNotificationGiveaway,
     winner: PersistedManagedGiveawayWinner & {
       prize: PersistedManagedGiveawayPrize;
       entry: PersistedManagedGiveawayEntry;
@@ -2360,7 +2432,7 @@ export class ManagedGiveawayService {
   }
 
   private buildGiveawayWinnerDirectMessageOptions(
-    giveaway: PersistedGiveawayWithRelations,
+    giveaway: GiveawayWinnerNotificationGiveaway,
     winner: PersistedManagedGiveawayWinner,
     botId?: string | null,
   ): MaxSendMessageOptions | undefined {
@@ -2399,55 +2471,451 @@ export class ManagedGiveawayService {
     return buttons.length > 0 ? { buttons } : undefined;
   }
 
-  private async sendWinnerDirectMessages(
-    giveaway: PersistedGiveawayWithRelations,
-    targetWinnerKeys: string[],
-    source: GiveawayActionSource = 'miniapp',
+  private async processWinnerNotificationOutbox(
+    source: GiveawayActionSource,
+    giveawayId?: string,
+    batchSize = GIVEAWAY_WINNER_NOTIFICATION_BATCH_SIZE,
+    options: WinnerNotificationOutboxOptions = {},
   ): Promise<void> {
-    const targetKeys = new Set(targetWinnerKeys);
-    if (targetKeys.size === 0) {
+    const now = new Date();
+    const staleLockBefore = new Date(now.getTime() - GIVEAWAY_LOCK_STALE_MS);
+    const notificationIds = this.normalizeWinnerNotificationIds(options.notificationIds);
+    const winnerIds = this.normalizeWinnerNotificationIds(options.winnerIds);
+    if (notificationIds?.length === 0 || winnerIds?.length === 0) {
       return;
     }
 
-    const winners = giveaway.winners.filter(
-      (winner) =>
-        winner.status !== ManagedGiveawayWinnerStatus.REROLLED &&
-        targetKeys.has(this.buildWinnerNotificationKey(winner.entryId, winner.prizeId)),
-    );
-    const notificationBotId = await this.resolveGiveawayPublicationBotId(giveaway.sourceChatId);
+    let notifications: PersistedManagedGiveawayWinnerNotification[];
 
-    for (const winner of winners) {
+    try {
+      await this.prisma.managedGiveawayWinnerNotification.updateMany({
+        where: {
+          ...(notificationIds ? { id: { in: notificationIds } } : {}),
+          ...(winnerIds ? { winnerId: { in: winnerIds } } : {}),
+          status: ManagedGiveawayWinnerNotificationStatus.DISPATCHING,
+          lockedAt: { lt: staleLockBefore },
+          ...(giveawayId ? { winner: { giveawayId } } : {}),
+        },
+        data: {
+          status: ManagedGiveawayWinnerNotificationStatus.AMBIGUOUS,
+          ambiguousAt: now,
+          lockedAt: null,
+          lastError:
+            'Winner notification dispatch lease expired after outbound dispatch started; manual verification is required.',
+        },
+      });
+
+      await this.prisma.managedGiveawayWinnerNotification.updateMany({
+        where: {
+          ...(notificationIds ? { id: { in: notificationIds } } : {}),
+          ...(winnerIds ? { winnerId: { in: winnerIds } } : {}),
+          status: {
+            in: [
+              ManagedGiveawayWinnerNotificationStatus.PENDING,
+              ManagedGiveawayWinnerNotificationStatus.RETRYABLE,
+            ],
+          },
+          attemptCount: { gte: GIVEAWAY_WINNER_NOTIFICATION_MAX_ATTEMPTS },
+          OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
+          ...(giveawayId ? { winner: { giveawayId } } : {}),
+        },
+        data: {
+          status: ManagedGiveawayWinnerNotificationStatus.FAILED_TERMINAL,
+          lockedAt: null,
+        },
+      });
+
+      notifications = await this.findDueWinnerNotifications({
+        now,
+        staleLockBefore,
+        giveawayId,
+        batchSize,
+        notificationIds,
+        winnerIds,
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          giveawayId: giveawayId ?? null,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to load the managed giveaway winner notification outbox',
+      );
+      return;
+    }
+
+    if (options.synchronizeResultsBeforeDispatch) {
+      await this.synchronizeResultsAndProcessWinnerNotifications(notifications, source);
+      return;
+    }
+
+    await this.processWinnerNotifications(notifications, source);
+  }
+
+  private async findDueWinnerNotifications(params: {
+    now: Date;
+    staleLockBefore: Date;
+    giveawayId?: string;
+    batchSize: number;
+    notificationIds: string[] | null;
+    winnerIds: string[] | null;
+  }): Promise<PersistedManagedGiveawayWinnerNotification[]> {
+    return this.prisma.managedGiveawayWinnerNotification.findMany({
+      where: {
+        ...(params.notificationIds ? { id: { in: params.notificationIds } } : {}),
+        ...(params.winnerIds ? { winnerId: { in: params.winnerIds } } : {}),
+        status: {
+          in: [
+            ManagedGiveawayWinnerNotificationStatus.PENDING,
+            ManagedGiveawayWinnerNotificationStatus.RETRYABLE,
+          ],
+        },
+        nextAttemptAt: { lte: params.now },
+        attemptCount: { lt: GIVEAWAY_WINNER_NOTIFICATION_MAX_ATTEMPTS },
+        OR: [{ lockedAt: null }, { lockedAt: { lt: params.staleLockBefore } }],
+        winner: {
+          status: { not: ManagedGiveawayWinnerStatus.REROLLED },
+          giveaway: {
+            status: ManagedGiveawayStatus.COMPLETED,
+            ...(params.giveawayId ? { id: params.giveawayId } : {}),
+          },
+        },
+      },
+      include: MANAGED_GIVEAWAY_WINNER_NOTIFICATION_INCLUDE,
+      orderBy: [{ nextAttemptAt: 'asc' }, { createdAt: 'asc' }],
+      take: Math.max(1, Math.min(GIVEAWAY_WINNER_NOTIFICATION_BATCH_SIZE, params.batchSize)),
+    });
+  }
+
+  private async synchronizeResultsAndProcessWinnerNotifications(
+    notifications: PersistedManagedGiveawayWinnerNotification[],
+    source: GiveawayActionSource,
+  ): Promise<void> {
+    const notificationIdsByGiveawayId = new Map<string, string[]>();
+    for (const notification of notifications) {
+      const giveawayId = notification.winner.giveaway.id;
+      const ids = notificationIdsByGiveawayId.get(giveawayId) ?? [];
+      ids.push(notification.id);
+      notificationIdsByGiveawayId.set(giveawayId, ids);
+    }
+
+    for (const [giveawayId, notificationIds] of notificationIdsByGiveawayId) {
+      let resultsConfirmed = false;
       try {
-        const text = this.buildGiveawayWinnerDirectMessageText(giveaway, winner);
-        const options = this.buildGiveawayWinnerDirectMessageOptions(
-          giveaway,
-          winner,
-          notificationBotId,
+        const giveaway = await this.findGiveawayById(giveawayId);
+        resultsConfirmed = await this.republishGiveawayResults(giveaway, source);
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            giveawayId,
+            notificationIds,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to synchronize giveaway results before winner notification dispatch',
         );
-        if (notificationBotId) {
-          await this.maxClient.sendMessageImmediateToUser(winner.entry.userId, text, options, {
-            ...buildManagedGiveawayMaxApiOptions(source, 'send', notificationBotId),
+      }
+
+      if (!resultsConfirmed) {
+        await this.deferWinnerNotificationsAfterResultsSyncFailure(notificationIds);
+        continue;
+      }
+
+      const dispatchNow = new Date();
+      try {
+        const refreshed = await this.findDueWinnerNotifications({
+          now: dispatchNow,
+          staleLockBefore: new Date(dispatchNow.getTime() - GIVEAWAY_LOCK_STALE_MS),
+          giveawayId,
+          batchSize: notificationIds.length,
+          notificationIds,
+          winnerIds: null,
+        });
+        await this.processWinnerNotifications(refreshed, source);
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            giveawayId,
+            notificationIds,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to reload winner notifications after giveaway results synchronization',
+        );
+      }
+    }
+  }
+
+  private async deferWinnerNotificationsAfterResultsSyncFailure(
+    notificationIds: readonly string[],
+  ): Promise<void> {
+    if (notificationIds.length === 0) {
+      return;
+    }
+
+    const deferredAt = new Date();
+    const staleLockBefore = new Date(deferredAt.getTime() - GIVEAWAY_LOCK_STALE_MS);
+    try {
+      await this.prisma.managedGiveawayWinnerNotification.updateMany({
+        where: {
+          id: { in: [...notificationIds] },
+          status: {
+            in: [
+              ManagedGiveawayWinnerNotificationStatus.PENDING,
+              ManagedGiveawayWinnerNotificationStatus.RETRYABLE,
+            ],
+          },
+          nextAttemptAt: { lte: deferredAt },
+          OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
+        },
+        data: {
+          nextAttemptAt: new Date(
+            deferredAt.getTime() + GIVEAWAY_WINNER_NOTIFICATION_RETRY_BASE_MS,
+          ),
+        },
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          notificationIds,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to defer winner notifications after giveaway results synchronization failure',
+      );
+    }
+  }
+
+  private normalizeWinnerNotificationIds(values: readonly string[] | undefined): string[] | null {
+    if (values === undefined) {
+      return null;
+    }
+
+    return Array.from(
+      new Set(values.map((value) => value.trim()).filter((value) => value.length > 0)),
+    );
+  }
+
+  private async processWinnerNotifications(
+    notifications: PersistedManagedGiveawayWinnerNotification[],
+    source: GiveawayActionSource,
+  ): Promise<void> {
+    for (const notification of notifications) {
+      try {
+        await this.processWinnerNotification(notification, source);
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            notificationId: notification.id,
+            winnerId: notification.winnerId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to process managed giveaway winner notification outbox row',
+        );
+      }
+    }
+  }
+
+  private async processWinnerNotification(
+    notification: PersistedManagedGiveawayWinnerNotification,
+    source: GiveawayActionSource,
+  ): Promise<void> {
+    const attemptStartedAt = new Date();
+    const staleLockBefore = new Date(attemptStartedAt.getTime() - GIVEAWAY_LOCK_STALE_MS);
+    const leaseAt = new Date();
+    const claimed = await this.prisma.managedGiveawayWinnerNotification.updateMany({
+      where: {
+        id: notification.id,
+        status: notification.status,
+        nextAttemptAt: { lte: attemptStartedAt },
+        attemptCount: { lt: GIVEAWAY_WINNER_NOTIFICATION_MAX_ATTEMPTS },
+        OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
+      },
+      data: {
+        lockedAt: leaseAt,
+        attemptCount: { increment: 1 },
+      },
+    });
+    if (claimed.count === 0) {
+      return;
+    }
+
+    const attemptCount = notification.attemptCount + 1;
+    const winner = notification.winner;
+    const giveaway = winner.giveaway;
+    let dispatchStarted = false;
+    let notificationBotId: string | undefined;
+    let acceptedRemoteMessageId: string | null = null;
+
+    // FLAG: DISPATCHING is a one-way automatic-retry fence. Once beforeSend succeeds,
+    // every unconfirmed outcome must remain SENT or AMBIGUOUS and must never return to RETRYABLE.
+    try {
+      notificationBotId = await this.resolveGiveawayPublicationBotId(giveaway.sourceChatId);
+      const text = this.buildGiveawayWinnerDirectMessageText(giveaway, winner);
+      const baseOptions = this.buildGiveawayWinnerDirectMessageOptions(
+        giveaway,
+        winner,
+        notificationBotId,
+      );
+      const options = {
+        ...(baseOptions ?? {}),
+        beforeSend: async () => {
+          const dispatchedAt = new Date();
+          const transitioned = await this.prisma.managedGiveawayWinnerNotification.updateMany({
+            where: {
+              id: notification.id,
+              status: notification.status,
+              lockedAt: leaseAt,
+            },
+            data: {
+              status: ManagedGiveawayWinnerNotificationStatus.DISPATCHING,
+              dispatchedAt,
+              botId: notificationBotId ?? null,
+              lastError: null,
+            },
           });
-        } else {
-          await this.maxClient.sendMessageImmediateToUser(
+          if (transitioned.count === 0) {
+            throw new Error('Managed giveaway winner notification dispatch lease was lost');
+          }
+          dispatchStarted = true;
+        },
+      };
+      const sent = notificationBotId
+        ? await this.maxClient.sendMessageImmediateToUser(
+            winner.entry.userId,
+            text,
+            options,
+            buildManagedGiveawayMaxApiOptions(source, 'send', notificationBotId),
+          )
+        : await this.maxClient.sendMessageImmediateToUser(
             winner.entry.userId,
             text,
             options,
             buildManagedGiveawayMaxApiOptions(source, 'send'),
           );
-        }
-      } catch (error: unknown) {
+      acceptedRemoteMessageId = sent.messageId;
+      const completedAt = new Date();
+      const saved = await this.prisma.managedGiveawayWinnerNotification.updateMany({
+        where: {
+          id: notification.id,
+          status: ManagedGiveawayWinnerNotificationStatus.DISPATCHING,
+          lockedAt: leaseAt,
+        },
+        data: {
+          status: ManagedGiveawayWinnerNotificationStatus.SENT,
+          remoteMessageId: sent.messageId,
+          sentAt: completedAt,
+          lockedAt: null,
+          nextAttemptAt: completedAt,
+          lastError: null,
+        },
+      });
+      if (saved.count === 0) {
         this.logger.warn(
           {
+            notificationId: notification.id,
+            giveawayId: giveaway.id,
+            winnerId: winner.id,
+            remoteMessageId: sent.messageId,
+          },
+          'Winner notification was accepted by MAX but its outbox completion fence was lost',
+        );
+      }
+    } catch (error: unknown) {
+      if (acceptedRemoteMessageId) {
+        const completedAt = new Date();
+        await this.prisma.managedGiveawayWinnerNotification.updateMany({
+          where: {
+            id: notification.id,
+            status: ManagedGiveawayWinnerNotificationStatus.DISPATCHING,
+            lockedAt: leaseAt,
+          },
+          data: {
+            status: ManagedGiveawayWinnerNotificationStatus.SENT,
+            remoteMessageId: acceptedRemoteMessageId,
+            sentAt: completedAt,
+            lockedAt: null,
+            nextAttemptAt: completedAt,
+            lastError: null,
+          },
+        });
+        return;
+      }
+
+      const attempted = dispatchStarted || wasMaxMessageSendAttempted(error);
+      const lastError = this.formatWinnerNotificationError(error);
+      const failedAt = new Date();
+      if (attempted) {
+        await this.prisma.managedGiveawayWinnerNotification.updateMany({
+          where: {
+            id: notification.id,
+            lockedAt: leaseAt,
+            status: {
+              in: [notification.status, ManagedGiveawayWinnerNotificationStatus.DISPATCHING],
+            },
+          },
+          data: {
+            status: ManagedGiveawayWinnerNotificationStatus.AMBIGUOUS,
+            ambiguousAt: failedAt,
+            botId: notificationBotId ?? null,
+            lockedAt: null,
+            lastError,
+          },
+        });
+        this.logger.warn(
+          {
+            notificationId: notification.id,
             giveawayId: giveaway.id,
             winnerId: winner.id,
             userId: winner.entry.userId,
-            err: error instanceof Error ? error.message : String(error),
+            err: lastError,
           },
-          'Failed to send direct giveaway winner message',
+          'Managed giveaway winner notification send is ambiguous; automatic retry is blocked',
         );
+        return;
       }
+
+      const terminal = attemptCount >= GIVEAWAY_WINNER_NOTIFICATION_MAX_ATTEMPTS;
+      await this.prisma.managedGiveawayWinnerNotification.updateMany({
+        where: {
+          id: notification.id,
+          status: notification.status,
+          lockedAt: leaseAt,
+        },
+        data: {
+          status: terminal
+            ? ManagedGiveawayWinnerNotificationStatus.FAILED_TERMINAL
+            : ManagedGiveawayWinnerNotificationStatus.RETRYABLE,
+          nextAttemptAt: terminal
+            ? failedAt
+            : new Date(failedAt.getTime() + this.winnerNotificationRetryDelayMs(attemptCount)),
+          lockedAt: null,
+          lastError,
+        },
+      });
+      this.logger.warn(
+        {
+          notificationId: notification.id,
+          giveawayId: giveaway.id,
+          winnerId: winner.id,
+          userId: winner.entry.userId,
+          attemptCount,
+          terminal,
+          err: lastError,
+        },
+        'Failed before dispatching managed giveaway winner notification',
+      );
     }
+  }
+
+  private winnerNotificationRetryDelayMs(attemptCount: number): number {
+    const exponent = Math.max(0, Math.min(10, attemptCount - 1));
+    return Math.min(
+      GIVEAWAY_WINNER_NOTIFICATION_RETRY_MAX_MS,
+      GIVEAWAY_WINNER_NOTIFICATION_RETRY_BASE_MS * 2 ** exponent,
+    );
+  }
+
+  private formatWinnerNotificationError(error: unknown): string {
+    const message = error instanceof Error && error.message.trim() ? error.message : String(error);
+    return message.slice(0, 2_000);
   }
 
   private async editGiveawayPublicationIfNeeded(
@@ -2702,7 +3170,7 @@ export class ManagedGiveawayService {
   private async republishGiveawayResults(
     giveaway: PersistedGiveawayWithRelations,
     source: GiveawayActionSource = 'miniapp',
-  ): Promise<void> {
+  ): Promise<boolean> {
     const resultsTextPayload = this.buildGiveawayResultsTextPayload(giveaway);
     const resultsSendLockKey = this.buildGiveawaySendLockKey(giveaway.id, 'results');
     if (!giveaway.resultsMessageId?.trim()) {
@@ -2739,15 +3207,27 @@ export class ManagedGiveawayService {
               },
               'Recovered managed giveaway results publication from the durable send ledger',
             );
+            return this.editGiveawayResultsMessage(
+              {
+                ...giveaway,
+                resultsMessageId: reconciliation.messageId,
+                resultsBotId: reconciliation.botId,
+                resultsUrl: reconciliation.url,
+                lockedAt: null,
+                sendLockKey: null,
+              },
+              resultsTextPayload,
+              source,
+            );
           }
-          return;
+          return false;
         }
         if (reconciliation.kind !== 'retryable') {
           this.logger.warn(
             { giveawayId: giveaway.id, sourceChatId: giveaway.sourceChatId },
             'Managed giveaway results send is locked for manual verification',
           );
-          return;
+          return false;
         }
       }
 
@@ -2764,19 +3244,21 @@ export class ManagedGiveawayService {
         },
       });
       if (lock.count === 0) {
-        return;
+        return false;
       }
 
-      const resultsBotId = this.maxRoutedPublicationService
-        ? null
-        : (this.normalizeNonEmptyString(giveaway.resultsBotId) ??
-          this.normalizeNonEmptyString(giveaway.publicationBotId) ??
-          (await this.resolveGiveawayPublicationBotId(giveaway.sourceChatId)) ??
-          null);
+      let resultsBotId: string | null = null;
       let maxSendAttempted = false;
       let maxSendAccepted = false;
-      let dispatchedResultsBotId = resultsBotId;
+      let dispatchedResultsBotId: string | null = null;
       try {
+        resultsBotId = this.maxRoutedPublicationService
+          ? null
+          : (this.normalizeNonEmptyString(giveaway.resultsBotId) ??
+            this.normalizeNonEmptyString(giveaway.publicationBotId) ??
+            (await this.resolveGiveawayPublicationBotId(giveaway.sourceChatId)) ??
+            null);
+        dispatchedResultsBotId = resultsBotId;
         const sendOptions = buildManagedGiveawayMaxApiOptions(source, 'send');
         const result = this.maxRoutedPublicationService
           ? await this.maxRoutedPublicationService.publish({
@@ -2833,6 +3315,21 @@ export class ManagedGiveawayService {
             sendLockKey: null,
           },
         });
+        if (this.maxRoutedPublicationService) {
+          return this.editGiveawayResultsMessage(
+            {
+              ...giveaway,
+              resultsMessageId: result.messageId,
+              resultsBotId: dispatchedResultsBotId,
+              resultsUrl: result.url,
+              lockedAt: null,
+              sendLockKey: null,
+            },
+            resultsTextPayload,
+            source,
+          );
+        }
+        return true;
       } catch (error: unknown) {
         const shouldQuarantine =
           maxSendAccepted || (maxSendAttempted && isAmbiguousMaxSendError(error));
@@ -2866,23 +3363,39 @@ export class ManagedGiveawayService {
             });
           }
         }
+        return false;
       }
-      return;
     }
 
-    const publicationBotId =
+    return this.editGiveawayResultsMessage(giveaway, resultsTextPayload, source);
+  }
+
+  private async editGiveawayResultsMessage(
+    giveaway: PersistedGiveawayWithRelations,
+    resultsTextPayload: GiveawayResultsTextPayload,
+    source: GiveawayActionSource,
+  ): Promise<boolean> {
+    const resultsMessageId = giveaway.resultsMessageId?.trim();
+    if (!resultsMessageId) {
+      return false;
+    }
+
+    let resultsBotId =
+      this.normalizeNonEmptyString(giveaway.resultsBotId) ??
       this.normalizeNonEmptyString(giveaway.publicationBotId) ??
-      (await this.resolveGiveawayPublicationBotId(giveaway.sourceChatId));
-    const resultsBotId = this.normalizeNonEmptyString(giveaway.resultsBotId) ?? publicationBotId;
-    const resultOptions = this.mergeMessageOptionsWithTextFormat(
-      await this.buildGiveawayResultsMessageOptions(giveaway, resultsBotId),
-      resultsTextPayload.textFormat,
-    );
+      undefined;
     try {
+      if (!resultsBotId) {
+        resultsBotId = await this.resolveGiveawayPublicationBotId(giveaway.sourceChatId);
+      }
+      const resultOptions = this.mergeMessageOptionsWithTextFormat(
+        await this.buildGiveawayResultsMessageOptions(giveaway, resultsBotId),
+        resultsTextPayload.textFormat,
+      );
       if (resultsBotId) {
         await this.maxClient.editMessageInlineKeyboard(
           giveaway.sourceChatId,
-          giveaway.resultsMessageId,
+          resultsMessageId,
           resultsTextPayload.text,
           resultOptions,
           buildManagedGiveawayMaxApiOptions(source, 'send', resultsBotId),
@@ -2890,12 +3403,13 @@ export class ManagedGiveawayService {
       } else {
         await this.maxClient.editMessageInlineKeyboard(
           giveaway.sourceChatId,
-          giveaway.resultsMessageId,
+          resultsMessageId,
           resultsTextPayload.text,
           resultOptions,
           buildManagedGiveawayMaxApiOptions(source, 'send'),
         );
       }
+      return true;
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -2911,6 +3425,7 @@ export class ManagedGiveawayService {
         operation: 'edit',
         error,
       });
+      return false;
     }
   }
 
@@ -3826,6 +4341,7 @@ export class ManagedGiveawayService {
     const giveaway = drawClaim.giveaway;
     const drawSeed = drawClaim.drawSeed;
     let winnersToCreate: Array<{
+      winnerId: ReturnType<typeof randomUUID>;
       prize: PersistedManagedGiveawayPrize;
       rankedEntry: { entry: PersistedManagedGiveawayEntry; drawRank: string };
       rank: number;
@@ -3877,6 +4393,7 @@ export class ManagedGiveawayService {
         .slice()
         .sort((left, right) => left.position - right.position)
         .map((prize, index) => ({
+          winnerId: randomUUID(),
           prize,
           rankedEntry: rankedEntries[index] ?? null,
           rank: index + 1,
@@ -3885,6 +4402,7 @@ export class ManagedGiveawayService {
           (
             item,
           ): item is {
+            winnerId: ReturnType<typeof randomUUID>;
             prize: PersistedManagedGiveawayPrize;
             rankedEntry: { entry: PersistedManagedGiveawayEntry; drawRank: string };
             rank: number;
@@ -3912,6 +4430,7 @@ export class ManagedGiveawayService {
         if (winnersToCreate.length > 0) {
           await tx.managedGiveawayWinner.createMany({
             data: winnersToCreate.map((row) => ({
+              id: row.winnerId,
               giveawayId: giveaway.id,
               prizeId: row.prize.id,
               entryId: row.rankedEntry.entry.id,
@@ -3919,6 +4438,12 @@ export class ManagedGiveawayService {
               status: ManagedGiveawayWinnerStatus.SELECTED,
               selectedAt: now,
               claimDeadlineAt,
+            })),
+          });
+          await tx.managedGiveawayWinnerNotification.createMany({
+            data: winnersToCreate.map((row) => ({
+              winnerId: row.winnerId,
+              nextAttemptAt: now,
             })),
           });
         }
@@ -3957,15 +4482,16 @@ export class ManagedGiveawayService {
     }
 
     await this.editGiveawayPublicationIfNeeded(completed, ManagedGiveawayStatus.COMPLETED, source);
-    await this.republishGiveawayResults(completed, source);
+    const resultsConfirmed = await this.republishGiveawayResults(completed, source);
     const refreshed = await this.findGiveawayById(completed.id);
-    await this.sendWinnerDirectMessages(
-      refreshed,
-      winnersToCreate.map((row) =>
-        this.buildWinnerNotificationKey(row.rankedEntry.entry.id, row.prize.id),
-      ),
-      source,
-    );
+    if (resultsConfirmed && winnersToCreate.length > 0) {
+      await this.processWinnerNotificationOutbox(
+        source,
+        refreshed.id,
+        GIVEAWAY_WINNER_NOTIFICATION_BATCH_SIZE,
+        { winnerIds: winnersToCreate.map((row) => row.winnerId) },
+      );
+    }
     await this.writeAuditLog(
       giveaway.sourceChatId,
       actorUserId ?? giveaway.actorUserId,

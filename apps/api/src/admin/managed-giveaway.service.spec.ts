@@ -4,6 +4,7 @@ import {
   GiveawayEligibilityState,
   ManagedEntityAccessState,
   ManagedGiveawayStatus,
+  ManagedGiveawayWinnerNotificationStatus,
   ManagedGiveawayWinnerStatus,
 } from '../prisma/prisma-client';
 import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
@@ -62,6 +63,12 @@ function createPrismaMock() {
       deleteMany: jest.fn(),
       create: jest.fn(),
       createMany: jest.fn(),
+    },
+    managedGiveawayWinnerNotification: {
+      create: jest.fn(),
+      createMany: jest.fn(),
+      findMany: jest.fn().mockResolvedValue([]),
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     chat: {
       upsert: jest.fn().mockResolvedValue(undefined),
@@ -342,6 +349,45 @@ function createSecondWinner(overrides: Record<string, unknown> = {}) {
     prize,
     entry,
     ...overrides,
+  };
+}
+
+function createWinnerNotification(overrides: Record<string, unknown> = {}) {
+  const { winner: winnerOverride, ...notificationOverrides } = overrides;
+  const winner = {
+    ...createWinner(),
+    ...((winnerOverride as Record<string, unknown> | undefined) ?? {}),
+  };
+  const giveaway = {
+    ...createGiveaway({
+      status: ManagedGiveawayStatus.COMPLETED,
+      prizes: [winner.prize],
+    }),
+    ...(((winnerOverride as { giveaway?: Record<string, unknown> } | undefined)?.giveaway ?? {}) as
+      | Record<string, unknown>
+      | undefined),
+  };
+
+  return {
+    id: 'winner-notification-1',
+    winnerId: winner.id,
+    status: ManagedGiveawayWinnerNotificationStatus.PENDING,
+    nextAttemptAt: new Date('2026-03-21T12:00:00.000Z'),
+    attemptCount: 0,
+    lockedAt: null,
+    dispatchedAt: null,
+    botId: null,
+    remoteMessageId: null,
+    lastError: null,
+    sentAt: null,
+    ambiguousAt: null,
+    createdAt: new Date('2026-03-21T12:00:00.000Z'),
+    updatedAt: new Date('2026-03-21T12:00:00.000Z'),
+    winner: {
+      ...winner,
+      giveaway,
+    },
+    ...notificationOverrides,
   };
 }
 
@@ -1183,8 +1229,9 @@ describe('ManagedGiveawayService', () => {
       url: 'https://max.ru/channels/source-1/messages/results-1',
     });
 
-    await (service as any).republishGiveawayResults(giveaway);
+    const resultsConfirmed = await (service as any).republishGiveawayResults(giveaway);
 
+    expect(resultsConfirmed).toBe(true);
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'source-1',
       expect.stringContaining('🏆 Победитель:\n\n1. [CEO](max://user/winner-1)'),
@@ -1303,8 +1350,9 @@ describe('ManagedGiveawayService', () => {
       winners: [createWinner({ status: ManagedGiveawayWinnerStatus.CLAIMED })],
     });
 
-    await (service as any).republishGiveawayResults(giveaway);
+    const resultsConfirmed = await (service as any).republishGiveawayResults(giveaway);
 
+    expect(resultsConfirmed).toBe(true);
     expect(maxActionLedgerService.getCompletedSendDispatchResult).toHaveBeenCalledWith(
       expect.objectContaining({
         actionType: 'SEND_MESSAGE',
@@ -1315,6 +1363,13 @@ describe('ManagedGiveawayService', () => {
     expect(maxActionLedgerService.assertCanEnqueue).not.toHaveBeenCalled();
     expect(maxRoutedPublicationService.publish).not.toHaveBeenCalled();
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'source-1',
+      'results-recovered-1',
+      expect.stringContaining('🏆 Победитель:'),
+      expect.objectContaining({ textFormat: 'markdown' }),
+      expectManagedGiveawaySendOptions({ botId: 'dispatch-bot-2' }),
+    );
     expect(prisma.managedGiveaway.updateMany).toHaveBeenCalledWith({
       where: {
         id: 'giveaway-1',
@@ -1357,8 +1412,9 @@ describe('ManagedGiveawayService', () => {
     prisma.managedGiveaway.updateMany.mockResolvedValue({ count: 1 });
     maxClient.sendMessageImmediateWithResolvedLink.mockRejectedValue(timeoutError);
 
-    await (service as any).republishGiveawayResults(giveaway);
+    const resultsConfirmed = await (service as any).republishGiveawayResults(giveaway);
 
+    expect(resultsConfirmed).toBe(false);
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
     expect(prisma.managedGiveaway.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -2435,9 +2491,28 @@ describe('ManagedGiveawayService', () => {
     );
   });
 
-  it('sends a direct message to each freshly selected winner', async () => {
+  it('stores the remote message id after a durable winner notification send', async () => {
     const prisma = createPrismaMock();
     const maxClient = createMaxClientMock();
+    const notification = createWinnerNotification({
+      winner: {
+        giveaway: {
+          publicationUrl: 'https://max.ru/chats/chat-1/message/1',
+          resultsUrl: 'https://max.ru/chats/chat-1/message/2',
+        },
+      },
+    });
+    prisma.managedGiveawayWinnerNotification.findMany.mockResolvedValue([notification]);
+    prisma.managedGiveawayWinnerNotification.updateMany
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 1 });
+    maxClient.sendMessageImmediateToUser.mockImplementation(async (_userId, _text, options) => {
+      await options.beforeSend();
+      return { messageId: 'winner-dm-1', url: null };
+    });
     const service = new ManagedGiveawayService(
       prisma as never,
       maxClient as never,
@@ -2446,19 +2521,7 @@ describe('ManagedGiveawayService', () => {
       createConfigMock() as never,
     );
 
-    await (service as any).sendWinnerDirectMessages(
-      createGiveaway({
-        status: ManagedGiveawayStatus.COMPLETED,
-        publicationUrl: 'https://max.ru/chats/chat-1/message/1',
-        resultsUrl: 'https://max.ru/chats/chat-1/message/2',
-        winners: [
-          createWinner({
-            status: ManagedGiveawayWinnerStatus.SELECTED,
-          }),
-        ],
-      }),
-      ['entry-winner-1:prize-1'],
-    );
+    await (service as any).processWinnerNotificationOutbox('miniapp', 'giveaway-1');
 
     expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledWith(
       'winner-1',
@@ -2474,6 +2537,21 @@ describe('ManagedGiveawayService', () => {
       }),
       expectManagedGiveawaySendOptions(),
     );
+    expect(prisma.managedGiveawayWinnerNotification.updateMany).toHaveBeenLastCalledWith({
+      where: {
+        id: 'winner-notification-1',
+        status: ManagedGiveawayWinnerNotificationStatus.DISPATCHING,
+        lockedAt: expect.any(Date),
+      },
+      data: {
+        status: ManagedGiveawayWinnerNotificationStatus.SENT,
+        remoteMessageId: 'winner-dm-1',
+        sentAt: expect.any(Date),
+        lockedAt: null,
+        nextAttemptAt: expect.any(Date),
+        lastError: null,
+      },
+    });
   });
 
   it('keeps published-message edits and winner DMs outside the routed SEND executor', async () => {
@@ -2501,9 +2579,27 @@ describe('ManagedGiveawayService', () => {
       resultsBotId: 'results-author-bot',
       winners: [winner],
     });
+    prisma.managedGiveawayWinnerNotification.findMany.mockResolvedValue([
+      createWinnerNotification({
+        winner: {
+          ...winner,
+          giveaway,
+        },
+      }),
+    ]);
+    prisma.managedGiveawayWinnerNotification.updateMany
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 1 });
+    maxClient.sendMessageImmediateToUser.mockImplementation(async (_userId, _text, options) => {
+      await options.beforeSend();
+      return { messageId: 'winner-dm-1', url: null };
+    });
 
     await (service as any).republishGiveawayResults(giveaway);
-    await (service as any).sendWinnerDirectMessages(giveaway, ['entry-winner-1:prize-1']);
+    await (service as any).processWinnerNotificationOutbox('miniapp', giveaway.id);
 
     expect(maxRoutedPublicationService.publish).not.toHaveBeenCalled();
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
@@ -2543,18 +2639,27 @@ describe('ManagedGiveawayService', () => {
       maxBotLinkService as never,
     );
 
-    await (service as any).sendWinnerDirectMessages(
-      createGiveaway({
-        sourceChatId: '-70000000000001',
-        status: ManagedGiveawayStatus.COMPLETED,
-        winners: [
-          createWinner({
-            status: ManagedGiveawayWinnerStatus.SELECTED,
-          }),
-        ],
+    prisma.managedGiveawayWinnerNotification.findMany.mockResolvedValue([
+      createWinnerNotification({
+        winner: {
+          giveaway: {
+            sourceChatId: '-70000000000001',
+          },
+        },
       }),
-      ['entry-winner-1:prize-1'],
-    );
+    ]);
+    prisma.managedGiveawayWinnerNotification.updateMany
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 1 });
+    maxClient.sendMessageImmediateToUser.mockImplementation(async (_userId, _text, options) => {
+      await options.beforeSend();
+      return { messageId: 'winner-dm-route-1', url: null };
+    });
+
+    await (service as any).processWinnerNotificationOutbox('miniapp', 'giveaway-1');
 
     expect(maxBotLinkService.getBotTokenSync).toHaveBeenCalledWith('888000_bot');
     expect(maxBotLinkService.buildBotStartUrlSync).toHaveBeenCalledWith(
@@ -2576,6 +2681,386 @@ describe('ManagedGiveawayService', () => {
       }),
       expectManagedGiveawaySendOptions({ botId: '888000_bot' }),
     );
+  });
+
+  it('quarantines a winner notification after outbound dispatch starts', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    prisma.managedGiveawayWinnerNotification.findMany.mockResolvedValue([
+      createWinnerNotification(),
+    ]);
+    prisma.managedGiveawayWinnerNotification.updateMany
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 1 });
+    maxClient.sendMessageImmediateToUser.mockImplementation(async (_userId, _text, options) => {
+      await options.beforeSend();
+      throw new Error('MAX request timed out after dispatch');
+    });
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+
+    await (service as any).processWinnerNotificationOutbox('runner');
+
+    expect(prisma.managedGiveawayWinnerNotification.updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: ManagedGiveawayWinnerNotificationStatus.AMBIGUOUS,
+          ambiguousAt: expect.any(Date),
+          lockedAt: null,
+        }),
+      }),
+    );
+    expect(prisma.managedGiveawayWinnerNotification.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: ManagedGiveawayWinnerNotificationStatus.RETRYABLE,
+        }),
+      }),
+    );
+  });
+
+  it('backs off a clearly pre-dispatch winner notification failure', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-21T13:00:00.000Z'));
+
+    try {
+      const prisma = createPrismaMock();
+      const maxClient = createMaxClientMock();
+      prisma.managedGiveawayWinnerNotification.findMany.mockResolvedValue([
+        createWinnerNotification(),
+      ]);
+      prisma.managedGiveawayWinnerNotification.updateMany
+        .mockResolvedValueOnce({ count: 0 })
+        .mockResolvedValueOnce({ count: 0 })
+        .mockResolvedValueOnce({ count: 1 })
+        .mockResolvedValueOnce({ count: 1 });
+      maxClient.sendMessageImmediateToUser.mockImplementation(async () => {
+        jest.setSystemTime(new Date('2026-03-21T13:02:00.000Z'));
+        throw new Error('background action lane unavailable before send');
+      });
+      const service = new ManagedGiveawayService(
+        prisma as never,
+        maxClient as never,
+        { invalidate: jest.fn() } as never,
+        {} as never,
+        createConfigMock() as never,
+      );
+
+      await (service as any).processWinnerNotificationOutbox('runner');
+
+      expect(prisma.managedGiveawayWinnerNotification.updateMany).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: ManagedGiveawayWinnerNotificationStatus.RETRYABLE,
+            nextAttemptAt: new Date('2026-03-21T13:02:30.000Z'),
+            lockedAt: null,
+          }),
+        }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('stops retrying pre-dispatch winner notification failures after five attempts', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    prisma.managedGiveawayWinnerNotification.findMany.mockResolvedValue([
+      createWinnerNotification({
+        status: ManagedGiveawayWinnerNotificationStatus.RETRYABLE,
+        attemptCount: 4,
+      }),
+    ]);
+    prisma.managedGiveawayWinnerNotification.updateMany
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 1 });
+    maxClient.sendMessageImmediateToUser.mockRejectedValue(
+      new Error('background action lane unavailable before send'),
+    );
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+
+    await (service as any).processWinnerNotificationOutbox('runner');
+
+    expect(prisma.managedGiveawayWinnerNotification.updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: ManagedGiveawayWinnerNotificationStatus.FAILED_TERMINAL,
+          lockedAt: null,
+        }),
+      }),
+    );
+  });
+
+  it('quarantines stale dispatching winner notifications without sending again', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-21T13:00:00.000Z'));
+
+    try {
+      const prisma = createPrismaMock();
+      const maxClient = createMaxClientMock();
+      const service = new ManagedGiveawayService(
+        prisma as never,
+        maxClient as never,
+        { invalidate: jest.fn() } as never,
+        {} as never,
+        createConfigMock() as never,
+      );
+
+      await (service as any).processWinnerNotificationOutbox('runner');
+
+      expect(prisma.managedGiveawayWinnerNotification.updateMany).toHaveBeenNthCalledWith(1, {
+        where: {
+          status: ManagedGiveawayWinnerNotificationStatus.DISPATCHING,
+          lockedAt: { lt: new Date('2026-03-21T12:59:00.000Z') },
+        },
+        data: {
+          status: ManagedGiveawayWinnerNotificationStatus.AMBIGUOUS,
+          ambiguousAt: new Date('2026-03-21T13:00:00.000Z'),
+          lockedAt: null,
+          lastError: expect.stringContaining('manual verification'),
+        },
+      });
+      expect(maxClient.sendMessageImmediateToUser).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('synchronizes results once per giveaway and reloads only the bounded notification snapshot', async () => {
+    const prisma = createPrismaMock();
+    const giveaway = createGiveaway({
+      status: ManagedGiveawayStatus.COMPLETED,
+      resultsMessageId: 'results-1',
+    });
+    const first = createWinnerNotification({
+      winner: { giveaway },
+    });
+    const secondWinner = createSecondWinner();
+    const second = createWinnerNotification({
+      id: 'winner-notification-2',
+      winnerId: secondWinner.id,
+      winner: { ...secondWinner, giveaway },
+    });
+    prisma.managedGiveawayWinnerNotification.findMany
+      .mockResolvedValueOnce([first, second])
+      .mockResolvedValueOnce([first, second]);
+    prisma.managedGiveaway.findUnique.mockResolvedValue(giveaway);
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      createMaxClientMock() as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+    const resultsSpy = jest
+      .spyOn(service as any, 'republishGiveawayResults')
+      .mockResolvedValue(true);
+    const dispatchSpy = jest
+      .spyOn(service as any, 'processWinnerNotification')
+      .mockResolvedValue(undefined);
+
+    await (service as any).processWinnerNotificationOutbox('runner', undefined, 20, {
+      synchronizeResultsBeforeDispatch: true,
+    });
+
+    expect(resultsSpy).toHaveBeenCalledTimes(1);
+    expect(resultsSpy).toHaveBeenCalledWith(giveaway, 'runner');
+    expect(prisma.managedGiveawayWinnerNotification.findMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: { in: ['winner-notification-1', 'winner-notification-2'] },
+          winner: expect.objectContaining({
+            giveaway: expect.objectContaining({ id: 'giveaway-1' }),
+          }),
+        }),
+        take: 2,
+      }),
+    );
+    expect(dispatchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('defers only the selected notifications when results cannot be confirmed', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-21T13:00:00.000Z'));
+
+    try {
+      const prisma = createPrismaMock();
+      const notification = createWinnerNotification();
+      prisma.managedGiveawayWinnerNotification.findMany.mockResolvedValueOnce([notification]);
+      prisma.managedGiveaway.findUnique.mockResolvedValue(notification.winner.giveaway);
+      const service = new ManagedGiveawayService(
+        prisma as never,
+        createMaxClientMock() as never,
+        { invalidate: jest.fn() } as never,
+        {} as never,
+        createConfigMock() as never,
+      );
+      jest.spyOn(service as any, 'republishGiveawayResults').mockResolvedValue(false);
+      const dispatchSpy = jest
+        .spyOn(service as any, 'processWinnerNotification')
+        .mockResolvedValue(undefined);
+
+      await (service as any).processWinnerNotificationOutbox('runner', undefined, 20, {
+        synchronizeResultsBeforeDispatch: true,
+      });
+
+      expect(prisma.managedGiveawayWinnerNotification.findMany).toHaveBeenCalledTimes(1);
+      expect(dispatchSpy).not.toHaveBeenCalled();
+      expect(prisma.managedGiveawayWinnerNotification.updateMany).toHaveBeenLastCalledWith({
+        where: {
+          id: { in: ['winner-notification-1'] },
+          status: {
+            in: [
+              ManagedGiveawayWinnerNotificationStatus.PENDING,
+              ManagedGiveawayWinnerNotificationStatus.RETRYABLE,
+            ],
+          },
+          nextAttemptAt: { lte: new Date('2026-03-21T13:00:00.000Z') },
+          OR: [{ lockedAt: null }, { lockedAt: { lt: new Date('2026-03-21T12:59:00.000Z') } }],
+        },
+        data: {
+          nextAttemptAt: new Date('2026-03-21T13:00:30.000Z'),
+        },
+      });
+      expect(prisma.managedGiveawayWinnerNotification.updateMany).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ attemptCount: expect.anything() }),
+        }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('creates the replacement winner notification in the reroll transaction', async () => {
+    const prisma = createPrismaMock();
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      createMaxClientMock() as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+    const oldWinner = createWinner({ status: ManagedGiveawayWinnerStatus.EXPIRED });
+    const nextEntry = createEntry({
+      id: 'entry-reroll-next',
+      userId: 'winner-reroll-next',
+      eligibilityState: GiveawayEligibilityState.VERIFIED,
+      drawRank: 'rank-reroll-next',
+    });
+    const giveaway = createGiveaway({
+      status: ManagedGiveawayStatus.COMPLETED,
+      drawSeed: 'reroll-seed',
+      prizes: [oldWinner.prize],
+      entries: [oldWinner.entry, nextEntry],
+      winners: [oldWinner],
+    });
+    const replacementWinner = createWinner({
+      id: 'winner-reroll-next',
+      entryId: nextEntry.id,
+      entry: nextEntry,
+    });
+    const updated = createGiveaway({
+      ...giveaway,
+      winners: [{ ...oldWinner, status: ManagedGiveawayWinnerStatus.REROLLED }, replacementWinner],
+    });
+    const txWinnerCreate = jest.fn().mockResolvedValue(replacementWinner);
+    const txNotificationCreate = jest.fn().mockResolvedValue(undefined);
+    const txNotificationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    prisma.$transaction.mockImplementation(async (callback) =>
+      callback({
+        managedGiveawayEntry: {
+          update: jest.fn().mockResolvedValue(nextEntry),
+        },
+        managedGiveawayWinner: {
+          update: jest.fn().mockResolvedValue(oldWinner),
+          create: txWinnerCreate,
+        },
+        managedGiveawayWinnerNotification: {
+          updateMany: txNotificationUpdateMany,
+          create: txNotificationCreate,
+        },
+        managedGiveaway: {
+          findUniqueOrThrow: jest.fn().mockResolvedValue(updated),
+        },
+      }),
+    );
+    jest.spyOn(service as any, 'assertAdminEntityAccess').mockResolvedValue(undefined);
+    jest.spyOn(service as any, 'findGiveawayForSource').mockResolvedValue(giveaway);
+    jest.spyOn(service as any, 'pickNextRerollCandidate').mockReturnValue({
+      entry: nextEntry,
+      drawRank: 'rank-reroll-next',
+    });
+    jest.spyOn(service as any, 'editGiveawayPublicationIfNeeded').mockResolvedValue(undefined);
+    const resultsSpy = jest
+      .spyOn(service as any, 'republishGiveawayResults')
+      .mockResolvedValue(true);
+    jest.spyOn(service as any, 'findGiveawayById').mockResolvedValue(updated);
+    const outboxSpy = jest
+      .spyOn(service as any, 'processWinnerNotificationOutbox')
+      .mockResolvedValue(undefined);
+    jest.spyOn(service as any, 'writeAuditLog').mockResolvedValue(undefined);
+
+    await service.rerollManagedGiveawayWinner(
+      'source-1',
+      'giveaway-1',
+      user as never,
+      { winnerId: oldWinner.id },
+      'channel',
+    );
+
+    expect(txNotificationUpdateMany).toHaveBeenCalledWith({
+      where: {
+        winnerId: oldWinner.id,
+        status: {
+          in: [
+            ManagedGiveawayWinnerNotificationStatus.PENDING,
+            ManagedGiveawayWinnerNotificationStatus.RETRYABLE,
+          ],
+        },
+      },
+      data: {
+        status: ManagedGiveawayWinnerNotificationStatus.CANCELED,
+        lockedAt: null,
+        nextAttemptAt: expect.any(Date),
+      },
+    });
+    const replacementWinnerId = txWinnerCreate.mock.calls[0][0].data.id;
+    expect(replacementWinnerId).toEqual(expect.any(String));
+    expect(txNotificationCreate).toHaveBeenCalledWith({
+      data: {
+        winnerId: replacementWinnerId,
+        nextAttemptAt: expect.any(Date),
+      },
+    });
+    expect(outboxSpy).toHaveBeenCalledWith('miniapp', 'giveaway-1', 20, {
+      winnerIds: [replacementWinnerId],
+    });
+
+    outboxSpy.mockClear();
+    resultsSpy.mockResolvedValue(false);
+    await service.rerollManagedGiveawayWinner(
+      'source-1',
+      'giveaway-1',
+      user as never,
+      { winnerId: oldWinner.id },
+      'channel',
+    );
+    expect(outboxSpy).not.toHaveBeenCalled();
   });
 
   it('accepts giveaway claim payloads signed with the previous bot token', () => {
@@ -2720,6 +3205,8 @@ describe('ManagedGiveawayService', () => {
       ...data,
     }));
     const txWinnerCreateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const txNotificationCreateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const outboxSpy = jest.spyOn(service as any, 'processWinnerNotificationOutbox');
 
     prisma.managedGiveaway.updateMany.mockResolvedValueOnce({ count: 1 });
     prisma.managedGiveaway.findUnique
@@ -2739,6 +3226,9 @@ describe('ManagedGiveawayService', () => {
         managedGiveawayWinner: {
           deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
           createMany: txWinnerCreateMany,
+        },
+        managedGiveawayWinnerNotification: {
+          createMany: txNotificationCreateMany,
         },
       }),
     );
@@ -2768,10 +3258,22 @@ describe('ManagedGiveawayService', () => {
     expect(txWinnerCreateMany).toHaveBeenCalledWith({
       data: [
         expect.objectContaining({
+          id: expect.any(String),
           entryId: 'entry-active',
           prizeId: 'prize-1',
         }),
       ],
+    });
+    expect(txNotificationCreateMany).toHaveBeenCalledWith({
+      data: [
+        {
+          winnerId: txWinnerCreateMany.mock.calls[0][0].data[0].id,
+          nextAttemptAt: new Date('2026-03-21T13:00:00.000Z'),
+        },
+      ],
+    });
+    expect(outboxSpy).toHaveBeenCalledWith('runner', 'giveaway-1', 20, {
+      winnerIds: [txWinnerCreateMany.mock.calls[0][0].data[0].id],
     });
   });
 
@@ -2846,6 +3348,8 @@ describe('ManagedGiveawayService', () => {
       ...data,
     }));
     const txWinnerCreateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const txNotificationCreateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const outboxSpy = jest.spyOn(service as any, 'processWinnerNotificationOutbox');
 
     prisma.managedGiveaway.updateMany.mockResolvedValueOnce({ count: 1 });
     prisma.managedGiveaway.findUnique
@@ -2866,10 +3370,15 @@ describe('ManagedGiveawayService', () => {
           deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
           createMany: txWinnerCreateMany,
         },
+        managedGiveawayWinnerNotification: {
+          createMany: txNotificationCreateMany,
+        },
       }),
     );
     maxClient.hasChatMember.mockRejectedValueOnce(new Error('temporary MAX failure'));
-    maxClient.editMessageInlineKeyboard.mockResolvedValue(undefined);
+    maxClient.editMessageInlineKeyboard.mockRejectedValue(
+      new Error('giveaway results edit unavailable'),
+    );
     maxClient.sendMessageImmediateToUser.mockResolvedValue(undefined);
 
     await (service as any).drawGiveaway('giveaway-1', 'runner');
@@ -2885,11 +3394,21 @@ describe('ManagedGiveawayService', () => {
     expect(txWinnerCreateMany).toHaveBeenCalledWith({
       data: [
         expect.objectContaining({
+          id: expect.any(String),
           entryId: 'entry-verified',
           prizeId: 'prize-1',
         }),
       ],
     });
+    expect(txNotificationCreateMany).toHaveBeenCalledWith({
+      data: [
+        {
+          winnerId: txWinnerCreateMany.mock.calls[0][0].data[0].id,
+          nextAttemptAt: new Date('2026-03-21T13:05:00.000Z'),
+        },
+      ],
+    });
+    expect(outboxSpy).not.toHaveBeenCalled();
   });
 
   it('uses shared batch membership lookups during draw when the lookup service is available', async () => {
@@ -2987,6 +3506,9 @@ describe('ManagedGiveawayService', () => {
           deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
           createMany: jest.fn().mockResolvedValue({ count: 1 }),
         },
+        managedGiveawayWinnerNotification: {
+          createMany: jest.fn().mockResolvedValue({ count: 1 }),
+        },
       }),
     );
     maxClient.editMessageInlineKeyboard.mockResolvedValue(undefined);
@@ -3016,6 +3538,27 @@ describe('ManagedGiveawayService', () => {
       },
     );
     expect(maxClient.hasChatMember).not.toHaveBeenCalled();
+  });
+
+  it('drains completed winner notification intents on every runner pass', async () => {
+    const prisma = createPrismaMock();
+    prisma.managedGiveaway.findMany.mockResolvedValue([]);
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      createMaxClientMock() as never,
+      createChatContextCacheMock() as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+    const outboxSpy = jest
+      .spyOn(service as any, 'processWinnerNotificationOutbox')
+      .mockResolvedValue(undefined);
+
+    await service.processDueManagedGiveaways('scheduled');
+
+    expect(outboxSpy).toHaveBeenCalledWith('runner', undefined, 20, {
+      synchronizeResultsBeforeDispatch: true,
+    });
   });
 
   it('skips due giveaways that are already under retry backoff', async () => {

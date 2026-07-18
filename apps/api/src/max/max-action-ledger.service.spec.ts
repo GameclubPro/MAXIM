@@ -127,6 +127,48 @@ describe('MaxActionLedgerService', () => {
     );
   });
 
+  it('blocks execution when a recovered BullMQ job races with terminal ledger state', async () => {
+    const { service } = createService({
+      status: MaxActionLedgerStatus.FAILED_TERMINAL,
+      ambiguous: false,
+      terminal: true,
+      dispatchToken: null,
+      dispatchStartedAt: null,
+      remoteMessageId: null,
+    });
+
+    await expect(
+      service.assertCanExecute(
+        createJob({
+          actionType: 'KICK_MEMBER',
+          userId: 'user-1',
+          text: undefined,
+        }),
+      ),
+    ).rejects.toBeInstanceOf(UnrecoverableError);
+  });
+
+  it('allows execution of a nonterminal retryable limiter row', async () => {
+    const { service } = createService({
+      status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+      ambiguous: false,
+      terminal: false,
+      dispatchToken: null,
+      dispatchStartedAt: null,
+      remoteMessageId: null,
+    });
+
+    await expect(
+      service.assertCanExecute(
+        createJob({
+          actionType: 'BAN_MEMBER',
+          userId: 'user-1',
+          text: undefined,
+        }),
+      ),
+    ).resolves.toBeUndefined();
+  });
+
   it('records enqueue metadata without storing message text', async () => {
     const { service, prisma } = createService();
     const job = createJob({
@@ -332,6 +374,47 @@ describe('MaxActionLedgerService', () => {
             increment: 1,
           },
           status: MaxActionLedgerStatus.IN_PROGRESS,
+        }),
+      }),
+    );
+  });
+
+  it('does not revive a terminal member action when recording worker start loses the CAS race', async () => {
+    const terminalRow = {
+      status: MaxActionLedgerStatus.FAILED_TERMINAL,
+      ambiguous: false,
+      terminal: true,
+      dispatchToken: null,
+      dispatchStartedAt: null,
+      remoteMessageId: null,
+    };
+    const { service, prisma } = createService(terminalRow);
+    prisma.maxActionLedgerEntry.updateMany.mockResolvedValue({ count: 0 });
+    prisma.maxActionLedgerEntry.createMany.mockResolvedValue({ count: 0 });
+
+    await expect(
+      service.recordStarted(
+        createJob({
+          actionType: 'KICK_MEMBER',
+          userId: 'user-1',
+          text: undefined,
+        }),
+      ),
+    ).rejects.toBeInstanceOf(UnrecoverableError);
+
+    expect(prisma.maxActionLedgerEntry.upsert).not.toHaveBeenCalled();
+    expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          terminal: false,
+          ambiguous: false,
+          status: {
+            in: [
+              MaxActionLedgerStatus.ENQUEUED,
+              MaxActionLedgerStatus.IN_PROGRESS,
+              MaxActionLedgerStatus.FAILED_RETRYABLE,
+            ],
+          },
         }),
       }),
     );
@@ -788,5 +871,62 @@ describe('MaxActionLedgerService', () => {
         ],
       }),
     );
+  });
+
+  it('terminally classifies deterministic local payload and definitive member failures', async () => {
+    const { service, prisma } = createService();
+
+    await service.recordFailed(
+      createJob({ idempotencyKey: 'job-upload' }),
+      new Error('MAX upload payload is missing'),
+    );
+    await service.recordFailed(
+      createJob({
+        idempotencyKey: 'job-member-absent',
+        actionType: 'KICK_MEMBER',
+        userId: 'user-1',
+        text: undefined,
+      }),
+      {
+        response: {
+          status: 200,
+          data: {
+            message: 'User already deleted or bot has insufficient rights',
+          },
+        },
+      },
+    );
+    await service.recordFailed(
+      createJob({
+        idempotencyKey: 'job-chat-missing',
+        actionType: 'BAN_MEMBER',
+        userId: 'user-1',
+        text: undefined,
+      }),
+      {
+        response: {
+          status: 404,
+          data: {
+            code: 'chat.not.found',
+            message: 'Chat not found',
+          },
+        },
+      },
+    );
+
+    for (const call of prisma.maxActionLedgerEntry.createMany.mock.calls.slice(-3)) {
+      expect(call[0]).toEqual(
+        expect.objectContaining({
+          data: [
+            expect.objectContaining({
+              status: MaxActionLedgerStatus.FAILED_TERMINAL,
+              ambiguous: false,
+              terminal: true,
+              completedAt: expect.any(Date),
+            }),
+          ],
+        }),
+      );
+    }
   });
 });

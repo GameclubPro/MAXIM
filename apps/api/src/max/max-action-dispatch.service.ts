@@ -104,6 +104,7 @@ export class MaxActionDispatchService {
         botId: completedSendDispatch?.dispatchBotId ?? job.botId?.trim() ?? null,
       };
     }
+    await this.actionLedgerService?.assertCanExecute?.(job);
     const routedMutationEnforced = this.shouldEnforceRoutedFailover(job);
     const crossBotOperationAllowed =
       job.actionType !== 'DELETE_MESSAGE' || this.crossBotEditDeleteEnabled;

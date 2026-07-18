@@ -15,6 +15,17 @@ function createCandidate(
     dispatchStartedAt: Date | null;
     dispatchBotId: string | null;
     remoteMessageId: string | null;
+    botId: string | null;
+    messageId: string | null;
+    userId: string | null;
+    sourceTag: string | null;
+    trafficClass: string | null;
+    actionHealthLane: string | null;
+    lastStatusCode: number | null;
+    lastErrorCode: string | null;
+    lastError: string | null;
+    metadata: Record<string, unknown> | null;
+    createdAt: Date;
     updatedAt: Date;
   }> = {},
 ) {
@@ -31,6 +42,29 @@ function createCandidate(
     dispatchStartedAt: null,
     dispatchBotId: null,
     remoteMessageId: null,
+    botId: 'bot-1',
+    messageId: null,
+    userId: null,
+    sourceTag: 'moderation',
+    trafficClass: 'critical',
+    actionHealthLane: 'critical',
+    lastStatusCode: null,
+    lastErrorCode: null,
+    lastError: null,
+    metadata: {
+      createdAt: new Date(Date.now() - 12 * 60_000).toISOString(),
+      candidateBotIds: ['bot-1', 'bot-2'],
+      attemptedBotIds: ['bot-1'],
+      routing: {
+        purpose: 'moderation_action',
+        primaryBotId: 'bot-1',
+        action: 'moderate_member',
+        routingVersion: 2,
+      },
+      ledgerContext: { source: 'participant_cleanup' },
+      ignoreFailureMetricStatuses: [403, 404],
+    },
+    createdAt: new Date(Date.now() - 12 * 60_000),
     updatedAt: new Date(Date.now() - 10 * 60_000),
     ...overrides,
   };
@@ -48,6 +82,8 @@ function createHarness(
     canaryPercent?: number;
     canaryEntityIds?: string;
     findMany?: jest.Mock;
+    updateCount?: number;
+    addError?: Error;
     persistedCursor?: { id: string; updatedAt: Date } | null;
   } = {},
 ) {
@@ -55,7 +91,7 @@ function createHarness(
   const prisma = {
     maxActionLedgerEntry: {
       findMany: options.findMany ?? jest.fn().mockResolvedValueOnce(rows).mockResolvedValueOnce([]),
-      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      updateMany: jest.fn().mockResolvedValue({ count: options.updateCount ?? 1 }),
     },
   };
   const redis = {
@@ -77,15 +113,21 @@ function createHarness(
   };
   const queue = {
     getJob: jest.fn().mockResolvedValue(options.job ?? null),
+    add: jest.fn().mockResolvedValue({ remove: jest.fn().mockResolvedValue(undefined) }),
   };
   const criticalQueue = {
     getJob: jest.fn().mockResolvedValue(options.criticalJob ?? null),
+    add: options.addError
+      ? jest.fn().mockRejectedValue(options.addError)
+      : jest.fn().mockResolvedValue({ remove: jest.fn().mockResolvedValue(undefined) }),
   };
   const interactiveQueue = {
     getJob: jest.fn().mockResolvedValue(options.interactiveJob ?? null),
+    add: jest.fn().mockResolvedValue({ remove: jest.fn().mockResolvedValue(undefined) }),
   };
   const backgroundQueue = {
     getJob: jest.fn().mockResolvedValue(options.backgroundJob ?? null),
+    add: jest.fn().mockResolvedValue({ remove: jest.fn().mockResolvedValue(undefined) }),
   };
   const config = {
     get: jest.fn((key: string) => {
@@ -156,7 +198,7 @@ describe('MaxActionLedgerWatchdogService', () => {
         lastErrorCode: 'ledger.watchdog.pre_dispatch_orphan',
       }),
     });
-    expect(queue).not.toHaveProperty('add');
+    expect(queue.add).not.toHaveBeenCalled();
 
     const snapshot = await service.getSnapshot();
     expect(snapshot).toEqual(
@@ -168,6 +210,224 @@ describe('MaxActionLedgerWatchdogService', () => {
         lastTerminalFailedCount: 1,
         lastQuarantinedCount: 0,
         lastError: null,
+      }),
+    );
+  });
+
+  it('scans retryable rows and requeues a recent proven limiter orphan in the critical lane', async () => {
+    const row = createCandidate({
+      actionType: 'KICK_MEMBER',
+      status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+      userId: 'user-1',
+      attemptCount: 1,
+      firstAttemptAt: new Date(Date.now() - 11 * 60_000),
+      lastAttemptAt: new Date(Date.now() - 10 * 60_000),
+      lastErrorCode: 'max_api_internal_rate_limit',
+      lastError: 'per-chat MAX limiter is saturated',
+    });
+    const { service, prisma, criticalQueue } = createHarness({ rows: [row] });
+
+    await service.runNow();
+
+    expect(prisma.maxActionLedgerEntry.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: {
+            in: [
+              MaxActionLedgerStatus.ENQUEUED,
+              MaxActionLedgerStatus.IN_PROGRESS,
+              MaxActionLedgerStatus.FAILED_RETRYABLE,
+            ],
+          },
+        }),
+      }),
+    );
+    expect(criticalQueue.add).toHaveBeenCalledWith(
+      'execute-max-action',
+      expect.objectContaining({
+        actionType: 'KICK_MEMBER',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1', 'bot-2'],
+        idempotencyKey: 'job-1',
+      }),
+      expect.objectContaining({
+        jobId: 'job-1',
+        attempts: 5,
+        removeOnComplete: true,
+        backoff: { type: 'exponential', delay: 1_000 },
+      }),
+    );
+    expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'ledger-1',
+        status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+        terminal: false,
+        updatedAt: row.updatedAt,
+      },
+      data: expect.objectContaining({
+        status: MaxActionLedgerStatus.ENQUEUED,
+        terminal: false,
+        enqueuedAt: expect.any(Date),
+        lastErrorCode: null,
+      }),
+    });
+    expect(await service.getSnapshot()).toEqual(
+      expect.objectContaining({
+        staleCount: 1,
+        staleRetryableCount: 1,
+        lastRequeuedCount: 1,
+        lastReconciledCount: 1,
+        lastRetryOrphanTerminalizedCount: 0,
+      }),
+    );
+  });
+
+  it('retries one matching retained failed BullMQ job instead of adding a duplicate', async () => {
+    const row = createCandidate({
+      actionType: 'BAN_MEMBER',
+      status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+      userId: 'user-1',
+      lastErrorCode: 'max_api_internal_rate_limit',
+      lastError: 'per-chat MAX limiter is saturated',
+    });
+    const retainedJob = {
+      data: {
+        actionType: 'BAN_MEMBER',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        idempotencyKey: 'job-1',
+      },
+      getState: jest.fn().mockResolvedValue('failed'),
+      retry: jest.fn().mockResolvedValue(undefined),
+      processedOn: Date.now() - 10 * 60_000,
+      attemptsMade: 1,
+    };
+    const { service, criticalQueue } = createHarness({
+      rows: [row],
+      criticalJob: retainedJob,
+    });
+
+    await service.runNow();
+
+    expect(retainedJob.retry).toHaveBeenCalledTimes(1);
+    expect(criticalQueue.add).not.toHaveBeenCalled();
+    expect((await service.getSnapshot()).lastRequeuedCount).toBe(1);
+  });
+
+  it('classifies a recent limiter orphan in shadow mode without queue or database mutation', async () => {
+    const row = createCandidate({
+      actionType: 'UNBAN_MEMBER',
+      status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+      userId: 'user-1',
+      lastErrorCode: 'max_api_internal_rate_limit',
+      lastError: 'per-chat MAX limiter is saturated',
+    });
+    const harness = createHarness({ rows: [row], mode: 'shadow' });
+
+    await harness.service.runNow();
+
+    expect(harness.criticalQueue.add).not.toHaveBeenCalled();
+    expect(harness.prisma.maxActionLedgerEntry.updateMany).not.toHaveBeenCalled();
+    expect(await harness.service.getSnapshot()).toEqual(
+      expect.objectContaining({
+        staleRetryableCount: 1,
+        lastShadowClassifiedCount: 1,
+        lastWouldRequeueCount: 1,
+        lastRequeuedCount: 0,
+      }),
+    );
+  });
+
+  it('terminalizes an expired limiter orphan without historical replay', async () => {
+    const row = createCandidate({
+      actionType: 'KICK_MEMBER',
+      status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+      userId: 'user-1',
+      lastErrorCode: 'max_api_internal_rate_limit',
+      lastError: 'per-chat MAX limiter is saturated',
+      updatedAt: new Date(Date.now() - 31 * 60_000),
+    });
+    const { service, prisma, criticalQueue } = createHarness({ rows: [row] });
+
+    await service.runNow();
+
+    expect(criticalQueue.add).not.toHaveBeenCalled();
+    expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: MaxActionLedgerStatus.FAILED_TERMINAL,
+          lastErrorCode: 'ledger.watchdog.retry_orphan_expired',
+        }),
+      }),
+    );
+    expect(await service.getSnapshot()).toEqual(
+      expect.objectContaining({
+        lastRetryOrphanTerminalizedCount: 1,
+        lastRequeuedCount: 0,
+      }),
+    );
+  });
+
+  it('never requeues a retryable SEND_MESSAGE orphan', async () => {
+    const row = createCandidate({
+      status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+      lastErrorCode: 'max_api_internal_rate_limit',
+      lastError: 'MAX upload payload is missing',
+    });
+    const { service, prisma, interactiveQueue } = createHarness({ rows: [row] });
+
+    await service.runNow();
+
+    expect(interactiveQueue.add).not.toHaveBeenCalled();
+    expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: MaxActionLedgerStatus.FAILED_TERMINAL,
+        }),
+      }),
+    );
+    expect((await service.getSnapshot()).lastRequeuedCount).toBe(0);
+  });
+
+  it('does not update the ledger when recovery queue ownership fails', async () => {
+    const row = createCandidate({
+      actionType: 'KICK_MEMBER',
+      status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+      userId: 'user-1',
+      lastErrorCode: 'max_api_internal_rate_limit',
+      lastError: 'per-chat MAX limiter is saturated',
+    });
+    const { service, prisma } = createHarness({
+      rows: [row],
+      addError: new Error('queue add failed'),
+    });
+
+    await service.runNow();
+
+    expect(prisma.maxActionLedgerEntry.updateMany).not.toHaveBeenCalled();
+    expect((await service.getSnapshot()).lastError).toBe('queue add failed');
+  });
+
+  it('reports a CAS conflict after queue ownership without overwriting concurrent ledger state', async () => {
+    const row = createCandidate({
+      actionType: 'KICK_MEMBER',
+      status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+      userId: 'user-1',
+      lastErrorCode: 'max_api_internal_rate_limit',
+      lastError: 'per-chat MAX limiter is saturated',
+    });
+    const { service, prisma, criticalQueue } = createHarness({ rows: [row], updateCount: 0 });
+
+    await service.runNow();
+
+    expect(criticalQueue.add).toHaveBeenCalledTimes(1);
+    expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledTimes(1);
+    expect(await service.getSnapshot()).toEqual(
+      expect.objectContaining({
+        lastConflictCount: 1,
+        lastRequeuedCount: 0,
       }),
     );
   });

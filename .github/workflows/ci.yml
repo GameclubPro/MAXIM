@@ -5,12 +5,29 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   ci:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: race_test
+          POSTGRES_USER: maxim_ci
+          POSTGRES_PASSWORD: maxim_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready --username=maxim_ci --dbname=race_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -33,6 +50,17 @@ jobs:
       - name: Test API
         run: npm run test:api:ci
 
+      - name: Migrate disposable PostgreSQL race-test database
+        env:
+          DATABASE_URL: postgresql://maxim_ci:maxim_ci@127.0.0.1:5432/race_test?schema=public
+        run: npm run prisma:migrate:deploy --workspace @maxim/api
+
+      - name: Test PostgreSQL routing races
+        env:
+          DATABASE_URL: postgresql://maxim_ci:maxim_ci@127.0.0.1:5432/race_test?schema=public
+          CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL: postgresql://maxim_ci:maxim_ci@127.0.0.1:5432/race_test?schema=public
+        run: npm run test:postgres-races --workspace @maxim/api
+
       - name: Benchmark commercial moderation
         env:
           COMMERCIAL_BENCHMARK_PROFILE: github-hosted
@@ -40,6 +68,9 @@ jobs:
 
       - name: Test mini app
         run: npm run test:miniapp
+
+      - name: Test Safety Desk
+        run: npm run test:admin
 
       - name: Build
         run: npm run build

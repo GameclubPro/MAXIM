@@ -42,7 +42,7 @@
 - `./infra/scripts/local-commit-push.sh` excludes `AGENTS.md` by default. Use `--include-agents` only when you intentionally want to commit agent-note changes. In a dirty tree it stages tracked changes broadly, so for partial commits use explicit `git add <paths> && git commit && git push`.
 - Rebuild only changed services. In practice that is usually `miniapp-static` and/or the shared API image.
 - `https://major-maksimov.ru/app/` is served by `miniapp-major-static`; `miniapp-static` serves `https://maxim.play-team.ru/app/`. For routine mini app production deploys while Major is primary, deploy `miniapp-major-static`.
-- For closed admin/Safety Desk changes, deploy `admin-static`. It is intentionally built without Docker cache during VPS deploys so the Vite-baked `ADMIN_ACCESS_CODE` from `/var/www/Chat_bot/.env` is refreshed; do not print that code. Server Basic Auth password is stored on the VPS at `/root/maxim-admin-basic-auth-password.txt`.
+- For closed admin/Safety Desk UI changes, deploy `admin-static`. `ADMIN_ACCESS_CODE` is validated server-side by the API and must never be baked into the Vite bundle or printed; API auth changes require the shared API roles too. Server Basic Auth password is stored on the VPS at `/root/maxim-admin-basic-auth-password.txt`.
 - Closed Safety Desk/support API calls use same-origin `https://admin.major-maksimov.ru/api/v1/...`, proxied by `infra/nginx/admin.major-maksimov.ru.conf` to `api-admin`; the API guard requires admin nginx `X-Forwarded-Host` plus Basic Auth `X-Remote-User`, and public nginx sites must keep `/api/v1/safety-desk` and `/api/v1/support-requests` denied before the generic `/api/v1/` proxy. Apply the admin nginx config separately with `./infra/scripts/vps-apply-major-admin-site.sh maxim-vps` when changing that route.
 - If shared API code or `packages/contracts` changed, recreate every prod API role that uses that image:
   - `api-ingress`
@@ -165,6 +165,10 @@
 - Keep postgres `shm_size` in compose comfortably above `shared_buffers` (currently `512m` for
   `shared_buffers=128MB`); reducing it can surface PostgreSQL `53100` shared-memory errors under
   admin/suggestion queries.
+- PostgreSQL full-backup and restore-smoke timers are installed disabled by default. Configure
+  `/etc/maxim-postgres-backup.env` to use separate persistent/disposable volumes with enough free
+  space for the live database, pass the script preflights, and run each service once successfully
+  before enabling its timer; never place a full restore in Docker's production root filesystem.
 - Keep production API Prisma pool caps aligned with `apps/api/src/config/production-compose-prisma-pool.spec.ts`;
   for `api-action` pressure incidents, prefer lowering concurrency/batch sizes and adding governor
   checks before raising Postgres connection caps.

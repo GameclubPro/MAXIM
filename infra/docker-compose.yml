@@ -10,6 +10,12 @@ x-spammer-read-model-shadow-env: &spammer-read-model-shadow-env
   MODERATION_DELETE_INTENT_CANARY_CHAT_IDS: ${MODERATION_DELETE_INTENT_CANARY_CHAT_IDS:-}
   MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS: ${MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS:-}
 
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: '${DOCKER_LOG_MAX_SIZE:-10m}'
+    max-file: '${DOCKER_LOG_MAX_FILE:-5}'
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -35,6 +41,7 @@ services:
       context: ..
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
+    logging: *default-logging
     env_file:
       - ../.env
     environment:
@@ -63,6 +70,7 @@ services:
       context: ..
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
+    logging: *default-logging
     env_file:
       - ../.env
     environment:
@@ -92,6 +100,7 @@ services:
       context: ..
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
+    logging: *default-logging
     env_file:
       - ../.env
     environment:
@@ -121,6 +130,7 @@ services:
       context: ..
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
+    logging: *default-logging
     env_file:
       - ../.env
     environment:
@@ -162,6 +172,7 @@ services:
       context: ..
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
+    logging: *default-logging
     env_file:
       - ../.env
     environment:
@@ -202,6 +213,7 @@ services:
       context: ..
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
+    logging: *default-logging
     env_file:
       - ../.env
     environment:
@@ -241,6 +253,7 @@ services:
       context: ..
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
+    logging: *default-logging
     env_file:
       - ../.env
     environment:
@@ -282,6 +295,7 @@ services:
       context: ..
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
+    logging: *default-logging
     env_file:
       - ../.env
     environment:
@@ -325,6 +339,7 @@ services:
       context: ..
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
+    logging: *default-logging
     env_file:
       - ../.env
     environment:
@@ -366,6 +381,7 @@ services:
       context: ..
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
+    logging: *default-logging
     env_file:
       - ../.env
     environment:
@@ -417,6 +433,7 @@ services:
       context: ..
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
+    logging: *default-logging
     env_file:
       - ../.env
     environment:
@@ -464,6 +481,7 @@ services:
       args:
         VITE_APP_CANONICAL_URL: https://maxim.play-team.ru/app/
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - '127.0.0.1:3000:3000'
 
@@ -475,6 +493,7 @@ services:
         VITE_APP_CANONICAL_URL: https://major-maksimov.ru/app/
         VITE_API_BASE: https://major-maksimov.ru/api/v1
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - '127.0.0.1:3003:3000'
 
@@ -485,8 +504,8 @@ services:
       args:
         ADMIN_BASE_PATH: /
         VITE_PUBLIC_BASE_PATH: /
-        VITE_ADMIN_ACCESS_CODE: ${ADMIN_ACCESS_CODE:-}
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - '127.0.0.1:3004:3000'
 

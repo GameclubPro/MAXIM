@@ -18,6 +18,7 @@ COMPOSE_FILES=(--env-file ".env" -p "$MAIN_PROJECT_NAME" -f "infra/docker-compos
 ALTERNATE_COMPOSE_FILES=(-p "$SCALE_PROJECT_NAME" -f "infra/docker-compose.scale.yml")
 BRANCH="${1:-main}"
 PRE_PULL_HEAD=""
+EXPECTED_DEPLOY_SHA="${MAXIM_EXPECTED_DEPLOY_SHA:-}"
 PUBLIC_HEALTH_URL="${MAXIM_VPS_PUBLIC_URL:-${MAXIM_PUBLIC_HEALTH_URL:-https://major-maksimov.ru}}"
 PUBLIC_HEALTH_URL="${PUBLIC_HEALTH_URL%/}"
 
@@ -161,6 +162,32 @@ EOF
   exit 2
 }
 
+verify_expected_deploy_sha() {
+  local actual_sha
+
+  if [[ -z "$EXPECTED_DEPLOY_SHA" ]]; then
+    return 0
+  fi
+
+  if [[ ! "$EXPECTED_DEPLOY_SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+    echo "MAXIM_EXPECTED_DEPLOY_SHA must be a full lowercase Git object id." >&2
+    exit 2
+  fi
+
+  actual_sha="$(git rev-parse HEAD)"
+  if [[ "$actual_sha" != "$EXPECTED_DEPLOY_SHA" ]]; then
+    cat >&2 <<EOF
+Refusing deploy because the synchronized VPS commit does not match the local requested commit.
+Expected: $EXPECTED_DEPLOY_SHA
+Actual:   $actual_sha
+Update/push the local branch or choose the intended branch, then retry.
+EOF
+    exit 2
+  fi
+
+  echo "Deploy commit verified: $actual_sha"
+}
+
 ensure_service_requested_if_down() {
   local service="$1"
 
@@ -262,6 +289,43 @@ ensure_compose_env() {
   echo "Missing /var/www/Chat_bot/.env and no running API container is available for restore."
   echo "Create .env manually, then rerun the deploy."
   return 1
+}
+
+validate_admin_access_code() {
+  local code
+  local normalized
+
+  code="$(
+    awk '
+      /^[[:space:]]*ADMIN_ACCESS_CODE[[:space:]]*=/ {
+        sub(/^[[:space:]]*ADMIN_ACCESS_CODE[[:space:]]*=[[:space:]]*/, "")
+        value = $0
+      }
+      END { print value }
+    ' .env
+  )"
+  code="${code%$'\r'}"
+  code="$(printf '%s' "$code" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  if ((${#code} >= 2)) && [[ "$code" == \"*\" && "$code" == *\" ]]; then
+    code="${code:1:${#code}-2}"
+  elif ((${#code} >= 2)) && [[ "$code" == \'*\' && "$code" == *\' ]]; then
+    code="${code:1:${#code}-2}"
+  fi
+  code="$(printf '%s' "$code" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  normalized="${code,,}"
+
+  if ((${#code} < 6 || ${#code} > 256)); then
+    echo "Refusing deploy: ADMIN_ACCESS_CODE must contain 6-256 characters." >&2
+    return 1
+  fi
+  case "$normalized" in
+    change-me|changeme|replace-me|replace-with-random-admin-code)
+      echo "Refusing deploy: ADMIN_ACCESS_CODE still uses a documented placeholder." >&2
+      return 1
+      ;;
+  esac
+
+  echo "Safety Desk server-side access code preflight passed."
 }
 
 warn_postgres_password_fallback() {
@@ -497,8 +561,10 @@ fi
 require_production_branch_confirmation
 acquire_deploy_lock
 sync_branch
+verify_expected_deploy_sha
 reexec_if_current_script_changed
 ensure_compose_env
+validate_admin_access_code
 warn_postgres_password_fallback
 check_deploy_disk_capacity
 stop_conflicting_stacks
@@ -560,7 +626,7 @@ if [[ "${#SERVICES_TO_BUILD[@]}" -gt 0 ]]; then
 fi
 
 if [[ "$BUILD_ADMIN_STATIC_IMAGE" -eq 1 ]]; then
-  docker compose "${COMPOSE_FILES[@]}" build --no-cache admin-static
+  docker compose "${COMPOSE_FILES[@]}" build admin-static
 fi
 
 ensure_compose_env

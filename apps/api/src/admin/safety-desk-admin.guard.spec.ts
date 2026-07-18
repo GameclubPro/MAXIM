@@ -9,7 +9,9 @@ function createContext(headers: Record<string, string>): ExecutionContext {
   } as unknown as ExecutionContext;
 }
 
-function createGuard(options: { allowedHosts?: string; nodeEnv?: string } = {}) {
+function createGuard(
+  options: { accessCode?: string; allowedHosts?: string; nodeEnv?: string } = {},
+) {
   return new SafetyDeskAdminGuard({
     get: jest.fn((key: string) => {
       if (key === 'SAFETY_DESK_ALLOWED_HOSTS') {
@@ -18,6 +20,10 @@ function createGuard(options: { allowedHosts?: string; nodeEnv?: string } = {}) 
 
       if (key === 'NODE_ENV') {
         return options.nodeEnv ?? 'production';
+      }
+
+      if (key === 'ADMIN_ACCESS_CODE') {
+        return options.accessCode ?? 'server-admin-code';
       }
 
       return undefined;
@@ -30,6 +36,7 @@ function createAdminHeaders(host = 'admin.major-maksimov.ru') {
     host,
     'x-forwarded-host': host,
     'x-remote-user': 'owner',
+    'x-admin-access-code': 'server-admin-code',
   };
 }
 
@@ -121,6 +128,7 @@ describe('SafetyDeskAdminGuard', () => {
         createContext({
           host: 'admin.major-maksimov.ru',
           'x-forwarded-host': 'admin.major-maksimov.ru',
+          'x-admin-access-code': 'server-admin-code',
         }),
       ),
     ).toThrow(ForbiddenException);
@@ -141,10 +149,18 @@ describe('SafetyDeskAdminGuard', () => {
   });
 
   it('allows localhost in non-production for local development', () => {
-    const guard = createGuard({ nodeEnv: 'development' });
+    const guard = createGuard({ accessCode: '', nodeEnv: 'development' });
 
-    expect(guard.canActivate(createContext({ host: 'localhost:3002' }))).toBe(true);
-    expect(guard.canActivate(createContext({ host: '[::1]:3002' }))).toBe(true);
+    expect(
+      guard.canActivate(
+        createContext({ host: 'localhost:3002', 'x-admin-access-code': 'maxim-local' }),
+      ),
+    ).toBe(true);
+    expect(
+      guard.canActivate(
+        createContext({ host: '[::1]:3002', 'x-admin-access-code': 'maxim-local' }),
+      ),
+    ).toBe(true);
   });
 
   it('allows explicitly configured production hosts with admin proxy headers', () => {
@@ -159,5 +175,36 @@ describe('SafetyDeskAdminGuard', () => {
     expect(() => guard.canActivate(createContext({ host: 'localhost' }))).toThrow(
       ForbiddenException,
     );
+  });
+
+  it('rejects a missing or incorrect server-side access code', () => {
+    const guard = createGuard({ accessCode: 'expected-admin-code' });
+
+    expect(() =>
+      guard.canActivate(
+        createContext({
+          ...createAdminHeaders(),
+          'x-admin-access-code': 'incorrect-admin-code',
+        }),
+      ),
+    ).toThrow(ForbiddenException);
+    expect(() =>
+      guard.canActivate(
+        createContext({
+          host: 'admin.major-maksimov.ru',
+          'x-forwarded-host': 'admin.major-maksimov.ru',
+          'x-remote-user': 'owner',
+        }),
+      ),
+    ).toThrow(ForbiddenException);
+  });
+
+  it('fails closed when the production access code is missing or left at its placeholder', () => {
+    for (const accessCode of ['', 'change-me', 'replace-with-random-admin-code']) {
+      const guard = createGuard({ accessCode });
+      expect(() => guard.canActivate(createContext(createAdminHeaders()))).toThrow(
+        ForbiddenException,
+      );
+    }
   });
 });

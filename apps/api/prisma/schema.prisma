@@ -190,6 +190,16 @@ enum ManagedGiveawayWinnerStatus {
   REROLLED
 }
 
+enum ManagedGiveawayWinnerNotificationStatus {
+  PENDING
+  RETRYABLE
+  DISPATCHING
+  SENT
+  AMBIGUOUS
+  FAILED_TERMINAL
+  CANCELED
+}
+
 enum ManagedBroadcastStatus {
   ACTIVE
   PARTIAL
@@ -2523,15 +2533,40 @@ model ManagedGiveawayWinner {
   createdAt       DateTime                    @default(now()) @map("created_at")
   updatedAt       DateTime                    @updatedAt @map("updated_at")
 
-  giveaway ManagedGiveaway      @relation(fields: [giveawayId], references: [id], onDelete: Cascade)
-  prize    ManagedGiveawayPrize @relation(fields: [prizeId], references: [id], onDelete: Cascade)
-  entry    ManagedGiveawayEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  giveaway     ManagedGiveaway                    @relation(fields: [giveawayId], references: [id], onDelete: Cascade)
+  prize        ManagedGiveawayPrize               @relation(fields: [prizeId], references: [id], onDelete: Cascade)
+  entry        ManagedGiveawayEntry               @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  notification ManagedGiveawayWinnerNotification?
 
   @@index([giveawayId, status], map: "managed_giveaway_winners_giveaway_id_status_idx")
   @@index([giveawayId, prizeId], map: "managed_giveaway_winners_giveaway_id_prize_id_idx")
   @@index([status, claimDeadlineAt], map: "managed_giveaway_winners_status_claim_deadline_at_idx")
   @@index([entryId], map: "managed_giveaway_winners_entry_id_idx")
   @@map("managed_giveaway_winners")
+}
+
+model ManagedGiveawayWinnerNotification {
+  id              String                                  @id @default(cuid())
+  winnerId        String                                  @unique @map("winner_id")
+  status          ManagedGiveawayWinnerNotificationStatus @default(PENDING)
+  nextAttemptAt   DateTime                                @default(now()) @map("next_attempt_at")
+  attemptCount    Int                                     @default(0) @map("attempt_count")
+  lockedAt        DateTime?                               @map("locked_at")
+  dispatchedAt    DateTime?                               @map("dispatched_at")
+  botId           String?                                 @map("bot_id")
+  remoteMessageId String?                                 @map("remote_message_id")
+  lastError       String?                                 @map("last_error")
+  sentAt          DateTime?                               @map("sent_at")
+  ambiguousAt     DateTime?                               @map("ambiguous_at")
+  createdAt       DateTime                                @default(now()) @map("created_at")
+  updatedAt       DateTime                                @updatedAt @map("updated_at")
+
+  winner ManagedGiveawayWinner @relation(fields: [winnerId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt, lockedAt], map: "managed_giveaway_winner_notifications_due_idx")
+  @@index([status, lockedAt], map: "managed_giveaway_winner_notifications_stale_idx")
+  @@index([status, updatedAt(sort: Desc), id(sort: Desc)], map: "managed_giveaway_winner_notifications_diagnostic_idx")
+  @@map("managed_giveaway_winner_notifications")
 }
 
 model ChannelAudienceSnapshot {

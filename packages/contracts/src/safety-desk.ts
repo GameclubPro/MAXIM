@@ -144,6 +144,36 @@ export const safetyDeskAmbiguousSendItemSchema = z.object({
 });
 export type SafetyDeskAmbiguousSendItem = z.infer<typeof safetyDeskAmbiguousSendItemSchema>;
 
+export const safetyDeskGiveawayWinnerNotificationDeadEndStatusSchema = z.enum([
+  'AMBIGUOUS',
+  'FAILED_TERMINAL',
+]);
+export type SafetyDeskGiveawayWinnerNotificationDeadEndStatus = z.infer<
+  typeof safetyDeskGiveawayWinnerNotificationDeadEndStatusSchema
+>;
+
+export const safetyDeskGiveawayWinnerNotificationDeadEndItemSchema = z.object({
+  notificationId: z.string(),
+  giveawayId: z.string(),
+  giveawayTitle: z.string(),
+  sourceChatId: z.string(),
+  winnerId: z.string(),
+  userId: z.string(),
+  botId: z.string().nullable(),
+  status: safetyDeskGiveawayWinnerNotificationDeadEndStatusSchema,
+  attemptCount: z.number().int().nonnegative(),
+  lastError: z.string().max(1_000).nullable(),
+  nextAttemptAt: z.string().datetime(),
+  lockedAt: z.string().datetime().nullable(),
+  dispatchedAt: z.string().datetime().nullable(),
+  ambiguousAt: z.string().datetime().nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+export type SafetyDeskGiveawayWinnerNotificationDeadEndItem = z.infer<
+  typeof safetyDeskGiveawayWinnerNotificationDeadEndItemSchema
+>;
+
 const safetyDeskDeleteRuntimeWindowSchema = z.object({
   count: z.number().int().nonnegative(),
   oldestAt: z.string().datetime().nullable(),
@@ -160,6 +190,12 @@ export const safetyDeskDeleteRuntimeResponseSchema = z.object({
     due: safetyDeskDeleteRuntimeWindowSchema,
     staleLeases: safetyDeskDeleteRuntimeWindowSchema,
     ambiguousSends: safetyDeskDeleteRuntimeWindowSchema,
+    giveawayWinnerNotificationDeadEnds: z.object({
+      count: z.number().int().nonnegative(),
+      ambiguous: z.number().int().nonnegative(),
+      failedTerminal: z.number().int().nonnegative(),
+      oldestAt: z.string().datetime().nullable(),
+    }),
     oldestOpen: z.object({
       createdAt: z.string().datetime().nullable(),
       ageMs: z.number().int().nonnegative().nullable(),
@@ -167,6 +203,10 @@ export const safetyDeskDeleteRuntimeResponseSchema = z.object({
   }),
   items: z.array(safetyDeskDeleteIntentItemSchema).default([]),
   ambiguousSends: z.array(safetyDeskAmbiguousSendItemSchema).default([]),
+  giveawayWinnerNotificationDeadEnds: z
+    .array(safetyDeskGiveawayWinnerNotificationDeadEndItemSchema)
+    .max(50)
+    .default([]),
 });
 export type SafetyDeskDeleteRuntimeResponse = z.infer<typeof safetyDeskDeleteRuntimeResponseSchema>;
 

@@ -140,6 +140,33 @@ function createDeleteIntent(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function createGiveawayWinnerNotificationDeadEnd(overrides: Record<string, unknown> = {}) {
+  const now = Date.now();
+  return {
+    id: 'winner-notification-1',
+    winnerId: 'winner-1',
+    status: 'AMBIGUOUS',
+    nextAttemptAt: new Date(now - 20_000),
+    attemptCount: 2,
+    lockedAt: null,
+    dispatchedAt: new Date(now - 18_000),
+    botId: 'bot-1',
+    lastError: 'MAX send timed out',
+    ambiguousAt: new Date(now - 15_000),
+    createdAt: new Date(now - 30_000),
+    updatedAt: new Date(now - 15_000),
+    winner: {
+      entry: { userId: 'user-1' },
+      giveaway: {
+        id: 'giveaway-1',
+        title: 'Главный приз',
+        sourceChatId: 'channel-1',
+      },
+    },
+    ...overrides,
+  };
+}
+
 function createFixture() {
   const transaction = jest.fn();
   const prisma = {
@@ -183,6 +210,10 @@ function createFixture() {
       findMany: jest.fn().mockResolvedValue([]),
       findUnique: jest.fn(),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    managedGiveawayWinnerNotification: {
+      groupBy: jest.fn().mockResolvedValue([]),
+      findMany: jest.fn().mockResolvedValue([]),
     },
   };
   transaction.mockImplementation(async (callback: (tx: typeof prisma) => unknown) =>
@@ -287,6 +318,24 @@ describe('SafetyDeskService', () => {
         chat: { title: 'Канал администраторов' },
       },
     ]);
+    const oldestNotificationDeadEndAt = new Date(Date.now() - 60_000);
+    prisma.managedGiveawayWinnerNotification.groupBy.mockResolvedValue([
+      {
+        status: 'AMBIGUOUS',
+        _count: { _all: 1 },
+        _min: { updatedAt: oldestNotificationDeadEndAt },
+      },
+      {
+        status: 'FAILED_TERMINAL',
+        _count: { _all: 2 },
+        _min: { updatedAt: new Date(Date.now() - 30_000) },
+      },
+    ]);
+    prisma.managedGiveawayWinnerNotification.findMany.mockResolvedValue([
+      createGiveawayWinnerNotificationDeadEnd({
+        lastError: `Authorization: Bearer winner-secret {"token":"json-secret"} https://example.test/send?access_token=query-secret ${'x'.repeat(1_200)}`,
+      }),
+    ]);
 
     const runtime = await service.getDeleteRuntime();
 
@@ -301,6 +350,12 @@ describe('SafetyDeskService', () => {
         ambiguousSends: {
           count: 3,
           oldestAt: ambiguousStartedAt.toISOString(),
+        },
+        giveawayWinnerNotificationDeadEnds: {
+          count: 3,
+          ambiguous: 1,
+          failedTerminal: 2,
+          oldestAt: oldestNotificationDeadEndAt.toISOString(),
         },
         statusCounts: {
           WAITING_CAPABILITY: 3,
@@ -345,6 +400,26 @@ describe('SafetyDeskService', () => {
         botId: 'bot-1',
       }),
     ]);
+    expect(runtime.giveawayWinnerNotificationDeadEnds).toEqual([
+      expect.objectContaining({
+        notificationId: 'winner-notification-1',
+        giveawayId: 'giveaway-1',
+        giveawayTitle: 'Главный приз',
+        sourceChatId: 'channel-1',
+        winnerId: 'winner-1',
+        userId: 'user-1',
+        botId: 'bot-1',
+        status: 'AMBIGUOUS',
+        attemptCount: 2,
+      }),
+    ]);
+    expect(runtime.giveawayWinnerNotificationDeadEnds[0]?.lastError).toContain('[redacted]');
+    expect(runtime.giveawayWinnerNotificationDeadEnds[0]?.lastError).not.toContain('winner-secret');
+    expect(runtime.giveawayWinnerNotificationDeadEnds[0]?.lastError).not.toContain('query-secret');
+    expect(runtime.giveawayWinnerNotificationDeadEnds[0]?.lastError).not.toContain('json-secret');
+    expect(runtime.giveawayWinnerNotificationDeadEnds[0]?.lastError?.length).toBeLessThanOrEqual(
+      1_000,
+    );
     expect(prisma.moderationDeleteIntent.findMany).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
@@ -391,6 +466,28 @@ describe('SafetyDeskService', () => {
           status: 'SKIPPED',
           replacementMessageId: null,
           replacementSendStartedAt: { not: null },
+        }),
+      }),
+    );
+    expect(prisma.managedGiveawayWinnerNotification.groupBy).toHaveBeenCalledWith({
+      by: ['status'],
+      where: { status: { in: ['AMBIGUOUS', 'FAILED_TERMINAL'] } },
+      _count: { _all: true },
+      _min: { updatedAt: true },
+    });
+    expect(prisma.managedGiveawayWinnerNotification.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { status: { in: ['AMBIGUOUS', 'FAILED_TERMINAL'] } },
+        orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+        take: 50,
+        select: expect.objectContaining({
+          lastError: true,
+          winner: {
+            select: {
+              entry: { select: { userId: true } },
+              giveaway: { select: { id: true, title: true, sourceChatId: true } },
+            },
+          },
         }),
       }),
     );

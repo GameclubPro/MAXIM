@@ -25,6 +25,70 @@ ssh "$HOST" "DOMAIN='${DOMAIN}' REMOTE_TMP='${REMOTE_TMP}' REMOTE_CONF='${REMOTE
 set -euo pipefail
 
 CERT_DIR="/etc/letsencrypt/live/${DOMAIN}"
+BACKUP_DIR="$(mktemp -d /tmp/maxim-admin-nginx.XXXXXX)"
+CONF_BACKED_UP=0
+ENABLED_BACKED_UP=0
+
+cleanup_backup() {
+  sudo rm -rf "${BACKUP_DIR}" || true
+}
+
+restore_previous_nginx() {
+  local restore_failed=0
+
+  echo "Restoring the previous ${DOMAIN} nginx configuration..." >&2
+  sudo rm -f "${REMOTE_CONF}" || restore_failed=1
+  if [[ "${CONF_BACKED_UP}" == "1" ]]; then
+    sudo cp -a "${BACKUP_DIR}/site-conf" "${REMOTE_CONF}" || restore_failed=1
+  fi
+
+  sudo rm -f "${REMOTE_ENABLED}" || restore_failed=1
+  if [[ "${ENABLED_BACKED_UP}" == "1" ]]; then
+    sudo cp -a "${BACKUP_DIR}/site-enabled" "${REMOTE_ENABLED}" || restore_failed=1
+  fi
+
+  if [[ "${restore_failed}" == "0" ]] && sudo nginx -t; then
+    if ! sudo systemctl reload nginx; then
+      echo "Previous nginx configuration was restored, but nginx reload failed." >&2
+      restore_failed=1
+    fi
+  else
+    echo "Previous nginx configuration could not be restored cleanly." >&2
+    restore_failed=1
+  fi
+
+  return "${restore_failed}"
+}
+
+validate_and_reload_nginx() {
+  if ! sudo nginx -t; then
+    echo "New nginx configuration failed validation." >&2
+    if ! restore_previous_nginx; then
+      echo "Automatic nginx rollback failed; inspect the host before retrying." >&2
+    fi
+    return 1
+  fi
+
+  if ! sudo systemctl reload nginx; then
+    echo "Nginx reload failed after applying the new configuration." >&2
+    if ! restore_previous_nginx; then
+      echo "Automatic nginx rollback failed; inspect the host before retrying." >&2
+    fi
+    return 1
+  fi
+}
+
+trap cleanup_backup EXIT
+
+if sudo test -e "${REMOTE_CONF}" || sudo test -L "${REMOTE_CONF}"; then
+  sudo cp -a "${REMOTE_CONF}" "${BACKUP_DIR}/site-conf"
+  CONF_BACKED_UP=1
+fi
+
+if sudo test -e "${REMOTE_ENABLED}" || sudo test -L "${REMOTE_ENABLED}"; then
+  sudo cp -a "${REMOTE_ENABLED}" "${BACKUP_DIR}/site-enabled"
+  ENABLED_BACKED_UP=1
+fi
 
 sudo mkdir -p "${REMOTE_WEBROOT}/.well-known/acme-challenge"
 
@@ -71,8 +135,7 @@ server {
 HTTP_ONLY
 
   sudo ln -sfn "${REMOTE_CONF}" "${REMOTE_ENABLED}"
-  sudo nginx -t
-  sudo systemctl reload nginx
+  validate_and_reload_nginx
 
   if ! command -v certbot >/dev/null 2>&1; then
     echo "certbot not found; install certbot or issue ${DOMAIN} certificate manually" >&2
@@ -92,8 +155,7 @@ fi
 sudo install -m 644 "${REMOTE_TMP}" "${REMOTE_CONF}"
 sudo ln -sfn "${REMOTE_CONF}" "${REMOTE_ENABLED}"
 rm -f "${REMOTE_TMP}"
-sudo nginx -t
-sudo systemctl reload nginx
+validate_and_reload_nginx
 REMOTE
 
 echo "Done: admin.major-maksimov.ru nginx config applied on ${HOST}"

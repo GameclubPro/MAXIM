@@ -14,6 +14,30 @@ function createValidEnv(overrides: Record<string, unknown> = {}) {
 }
 
 describe('validateEnv boolean parsing', () => {
+  it('retains the server-side Safety Desk access code', () => {
+    expect(
+      validateEnv(createValidEnv({ ADMIN_ACCESS_CODE: 'server-admin-code' })).ADMIN_ACCESS_CODE,
+    ).toBe('server-admin-code');
+    expect(validateEnv(createValidEnv({ ADMIN_ACCESS_CODE: 'abc123' })).ADMIN_ACCESS_CODE).toBe(
+      'abc123',
+    );
+    expect(() => validateEnv(createValidEnv({ ADMIN_ACCESS_CODE: 'short' }))).toThrow(
+      /ADMIN_ACCESS_CODE/u,
+    );
+    expect(() =>
+      validateEnv(createValidEnv({ ADMIN_ACCESS_CODE: 'replace-with-random-admin-code' })),
+    ).toThrow(/ADMIN_ACCESS_CODE/u);
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          NODE_ENV: 'production',
+          MAX_WEBHOOK_SECRET_PATH: 'prod-secret-path-1',
+          MAX_WEBHOOK_HEADER_SECRET: 'prod-header-secret-1',
+        }),
+      ),
+    ).toThrow(/ADMIN_ACCESS_CODE is required in production/u);
+  });
+
   it('defaults durable webhook ingress persistence target to two seconds', () => {
     expect(validateEnv(createValidEnv()).SYSTEM_WEBHOOK_INGRESS_SLO_TARGET_MS).toBe(2_000);
     expect(
@@ -279,6 +303,7 @@ describe('validateEnv boolean parsing', () => {
   it('requires production public origins to use https on the default port', () => {
     const productionSecrets = {
       NODE_ENV: 'production',
+      ADMIN_ACCESS_CODE: 'server-admin-code',
       MAX_WEBHOOK_SECRET_PATH: 'prod-secret-path-1',
       MAX_WEBHOOK_HEADER_SECRET: 'prod-header-secret-1',
     };
@@ -325,6 +350,7 @@ describe('validateEnv boolean parsing', () => {
   it('rejects the deprecated MAX API host in production', () => {
     const productionSecrets = {
       NODE_ENV: 'production',
+      ADMIN_ACCESS_CODE: 'server-admin-code',
       MAX_WEBHOOK_SECRET_PATH: 'prod-secret-path-1',
       MAX_WEBHOOK_HEADER_SECRET: 'prod-header-secret-1',
     };

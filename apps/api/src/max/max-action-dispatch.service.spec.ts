@@ -68,6 +68,41 @@ describe('MaxActionDispatchService', () => {
     expect(actionLedgerService.recordFailed).not.toHaveBeenCalled();
   });
 
+  it('does not reach MAX when ledger execution guard rejects a terminal race', async () => {
+    const maxClient = {
+      executeActionJob: jest.fn(),
+    };
+    const terminalRace = new UnrecoverableError('ledger is terminal');
+    const actionLedgerService = {
+      getCompletedSendDispatchResult: jest.fn().mockResolvedValue(null),
+      assertCanExecute: jest.fn().mockRejectedValue(terminalRace),
+      recordStarted: jest.fn(),
+      recordSucceeded: jest.fn(),
+      recordSkipped: jest.fn(),
+      recordFailed: jest.fn(),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      undefined,
+      actionLedgerService as never,
+    );
+    const job = {
+      actionType: 'KICK_MEMBER',
+      chatId: 'chat-1',
+      botId: 'bot-1',
+      userId: 'user-1',
+      attempt: 2,
+      idempotencyKey: 'job-kick-terminal-race',
+      createdAt: '2026-07-06T20:00:00.000Z',
+    } as MaxActionJob;
+
+    await expect(service.execute(job)).rejects.toBe(terminalRace);
+
+    expect(actionLedgerService.assertCanExecute).toHaveBeenCalledWith(job);
+    expect(actionLedgerService.recordStarted).not.toHaveBeenCalled();
+    expect(maxClient.executeActionJob).not.toHaveBeenCalled();
+  });
+
   it('does not retry an already executed action when success ledger recording fails', async () => {
     const maxClient = {
       executeActionJob: jest.fn().mockResolvedValue(undefined),

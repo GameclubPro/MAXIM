@@ -240,10 +240,17 @@ open_shell() {
 
 deploy_main() {
   local branch="${1:-main}"
+  local expected_sha
   local remote_command
   shift || true
 
+  if ! expected_sha="$(git rev-parse --verify --end-of-options "${branch}^{commit}" 2>/dev/null)"; then
+    echo "Cannot resolve local deploy branch to an exact commit: ${branch}" >&2
+    exit 2
+  fi
+
   remote_command="$(shell_quote_args ./infra/scripts/vps-pull-build-up.sh "$branch" "$@")"
+  remote_command="MAXIM_EXPECTED_DEPLOY_SHA=$(printf '%q' "$expected_sha") $remote_command"
   if [[ "$branch" != "main" ]]; then
     case "${MAXIM_ALLOW_NON_MAIN_DEPLOY:-0}" in
       1|true|TRUE|yes|YES)

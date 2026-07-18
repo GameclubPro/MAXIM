@@ -15,6 +15,7 @@ import {
   type SafetyDeskDeleteIntentStatusCounts,
   type SafetyDeskDeleteMembershipCapability,
   type SafetyDeskDeleteRuntimeResponse,
+  type SafetyDeskGiveawayWinnerNotificationDeadEndStatus,
   type SafetyDeskQueueItem,
   type SafetyDeskQueueResponse,
   type SafetyDeskRiskLevel,
@@ -131,6 +132,8 @@ const SAFETY_DESK_TRUSTED_DOMAIN_ROOTS = ['max.ru', 'vk.ru', 'vk.com'];
 const DELETE_INTENT_ATTENTION_LIMIT = 100;
 const DELETE_INTENT_COMPLETED_LIMIT = 25;
 const AMBIGUOUS_SEND_LIMIT = 100;
+const GIVEAWAY_WINNER_NOTIFICATION_DEAD_END_LIMIT = 50;
+const SAFETY_DESK_LAST_ERROR_LIMIT = 1_000;
 const DELETE_INTENT_REASON_LIMIT = 10;
 const DELETE_INTENT_MEMBERSHIP_LIMIT = 20;
 const DELETE_INTENT_STATUSES = [
@@ -168,6 +171,10 @@ const DELETE_INTENT_COMPLETED_STATUSES = [
   'SUCCEEDED',
   'ALREADY_ABSENT',
 ] as const satisfies readonly SafetyDeskDeleteIntentStatus[];
+const GIVEAWAY_WINNER_NOTIFICATION_DEAD_END_STATUSES = [
+  'AMBIGUOUS',
+  'FAILED_TERMINAL',
+] as const satisfies readonly SafetyDeskGiveawayWinnerNotificationDeadEndStatus[];
 const DELETE_INTENT_DIAGNOSTIC_SELECT = {
   id: true,
   chatId: true,
@@ -229,6 +236,35 @@ const DELETE_INTENT_DIAGNOSTIC_SELECT = {
     },
   },
 } satisfies Prisma.ModerationDeleteIntentSelect;
+const GIVEAWAY_WINNER_NOTIFICATION_DIAGNOSTIC_SELECT = {
+  id: true,
+  winnerId: true,
+  status: true,
+  nextAttemptAt: true,
+  attemptCount: true,
+  lockedAt: true,
+  dispatchedAt: true,
+  botId: true,
+  lastError: true,
+  ambiguousAt: true,
+  createdAt: true,
+  updatedAt: true,
+  winner: {
+    select: {
+      entry: { select: { userId: true } },
+      giveaway: {
+        select: {
+          id: true,
+          title: true,
+          sourceChatId: true,
+        },
+      },
+    },
+  },
+} satisfies Prisma.ManagedGiveawayWinnerNotificationSelect;
+type GiveawayWinnerNotificationDiagnosticRow = Prisma.ManagedGiveawayWinnerNotificationGetPayload<{
+  select: typeof GIVEAWAY_WINNER_NOTIFICATION_DIAGNOSTIC_SELECT;
+}>;
 const SAFETY_DESK_BLOCKED_APPROVE_MESSAGE =
   'Этот материал нельзя опубликовать автоматически: есть неподдерживаемые вложения или после фильтрации не осталось текста, фото или ссылок.';
 
@@ -300,6 +336,8 @@ export class SafetyDeskService {
       recentChannelAmbiguousSends,
       recentChatAmbiguousSends,
       recentRulesAmbiguousSends,
+      giveawayWinnerNotificationDeadEndGroups,
+      giveawayWinnerNotificationDeadEndRows,
     ] = await Promise.all([
       this.prisma.moderationDeleteIntent.groupBy({
         by: ['status'],
@@ -428,6 +466,22 @@ export class SafetyDeskService {
           chat: { select: { title: true } },
         },
       }),
+      this.prisma.managedGiveawayWinnerNotification.groupBy({
+        by: ['status'],
+        where: {
+          status: { in: [...GIVEAWAY_WINNER_NOTIFICATION_DEAD_END_STATUSES] },
+        },
+        _count: { _all: true },
+        _min: { updatedAt: true },
+      }),
+      this.prisma.managedGiveawayWinnerNotification.findMany({
+        where: {
+          status: { in: [...GIVEAWAY_WINNER_NOTIFICATION_DEAD_END_STATUSES] },
+        },
+        orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+        take: GIVEAWAY_WINNER_NOTIFICATION_DEAD_END_LIMIT,
+        select: GIVEAWAY_WINNER_NOTIFICATION_DIAGNOSTIC_SELECT,
+      }),
     ]);
 
     const statusCounts = this.buildDeleteIntentStatusCounts(statusGroups);
@@ -484,6 +538,49 @@ export class SafetyDeskService {
     ]
       .sort((left, right) => right.detectedAt.localeCompare(left.detectedAt))
       .slice(0, AMBIGUOUS_SEND_LIMIT);
+    const giveawayWinnerNotificationDeadEndCounts: Record<
+      SafetyDeskGiveawayWinnerNotificationDeadEndStatus,
+      number
+    > = {
+      AMBIGUOUS: 0,
+      FAILED_TERMINAL: 0,
+    };
+    let oldestGiveawayWinnerNotificationDeadEndAt: Date | null = null;
+    for (const group of giveawayWinnerNotificationDeadEndGroups) {
+      if (group.status in giveawayWinnerNotificationDeadEndCounts) {
+        giveawayWinnerNotificationDeadEndCounts[
+          group.status as SafetyDeskGiveawayWinnerNotificationDeadEndStatus
+        ] = Math.max(0, group._count._all);
+      }
+      const updatedAt = group._min.updatedAt;
+      if (
+        updatedAt &&
+        (!oldestGiveawayWinnerNotificationDeadEndAt ||
+          updatedAt < oldestGiveawayWinnerNotificationDeadEndAt)
+      ) {
+        oldestGiveawayWinnerNotificationDeadEndAt = updatedAt;
+      }
+    }
+    const giveawayWinnerNotificationDeadEnds = (
+      giveawayWinnerNotificationDeadEndRows as GiveawayWinnerNotificationDiagnosticRow[]
+    ).map((row) => ({
+      notificationId: row.id,
+      giveawayId: row.winner.giveaway.id,
+      giveawayTitle: row.winner.giveaway.title,
+      sourceChatId: row.winner.giveaway.sourceChatId,
+      winnerId: row.winnerId,
+      userId: row.winner.entry.userId,
+      botId: row.botId,
+      status: row.status,
+      attemptCount: row.attemptCount,
+      lastError: this.sanitizeSafetyDeskLastError(row.lastError),
+      nextAttemptAt: row.nextAttemptAt.toISOString(),
+      lockedAt: row.lockedAt?.toISOString() ?? null,
+      dispatchedAt: row.dispatchedAt?.toISOString() ?? null,
+      ambiguousAt: row.ambiguousAt?.toISOString() ?? null,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+    }));
 
     return safetyDeskDeleteRuntimeResponseSchema.parse({
       generatedAt: now.toISOString(),
@@ -508,6 +605,14 @@ export class SafetyDeskService {
             rulesAmbiguousSends._count._all,
           oldestAt: oldestAmbiguousSendAt?.toISOString() ?? null,
         },
+        giveawayWinnerNotificationDeadEnds: {
+          count:
+            giveawayWinnerNotificationDeadEndCounts.AMBIGUOUS +
+            giveawayWinnerNotificationDeadEndCounts.FAILED_TERMINAL,
+          ambiguous: giveawayWinnerNotificationDeadEndCounts.AMBIGUOUS,
+          failedTerminal: giveawayWinnerNotificationDeadEndCounts.FAILED_TERMINAL,
+          oldestAt: oldestGiveawayWinnerNotificationDeadEndAt?.toISOString() ?? null,
+        },
         oldestOpen: {
           createdAt: oldestOpenAt?.toISOString() ?? null,
           ageMs: oldestOpenAt ? Math.max(0, now.getTime() - oldestOpenAt.getTime()) : null,
@@ -515,6 +620,7 @@ export class SafetyDeskService {
       },
       items,
       ambiguousSends,
+      giveawayWinnerNotificationDeadEnds,
     });
   }
 
@@ -1204,6 +1310,24 @@ export class SafetyDeskService {
       }
     }
     return counts;
+  }
+
+  private sanitizeSafetyDeskLastError(value: string | null): string | null {
+    const normalized = value?.trim().replace(/\s+/gu, ' ') ?? '';
+    if (!normalized) {
+      return null;
+    }
+
+    const redacted = normalized
+      .replace(/\bhttps?:\/\/[^\s?]+\?[^\s]+/giu, (url) => `${url.split('?')[0]}?[redacted]`)
+      .replace(/\b(authorization\s*[:=]\s*(?:bearer|initdata)\s+)[^\s,;]+/giu, '$1[redacted]')
+      .replace(/\b(bearer|initdata)\s+[^\s,;]+/giu, '$1 [redacted]')
+      .replace(
+        /(\b(?:authorization|x-admin-access-code|access[_-]?token|refresh[_-]?token|init[_-]?data|secret|token)\b["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu,
+        '$1[redacted]',
+      );
+
+    return redacted.slice(0, SAFETY_DESK_LAST_ERROR_LIMIT);
   }
 
   private mapDeleteIntent(row: DeleteIntentDiagnosticRow, now: Date): SafetyDeskDeleteIntentItem {

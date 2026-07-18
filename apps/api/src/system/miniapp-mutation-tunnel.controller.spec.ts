@@ -1,5 +1,11 @@
 import { BadRequestException, GatewayTimeoutException } from '@nestjs/common';
 import { gzipSync } from 'node:zlib';
+import type { AuthUser } from '../common/decorators/current-user.decorator';
+import {
+  ChunkedMutationTunnelUploadStore,
+  DEFAULT_CHUNKED_MUTATION_TUNNEL_UPLOAD_LIMITS,
+  type ChunkedMutationTunnelUploadMetadata,
+} from './chunked-mutation-tunnel-upload.store';
 import { MiniappMutationTunnelController } from './miniapp-mutation-tunnel.controller';
 
 type ReplyMock = {
@@ -16,6 +22,26 @@ function createReply(): ReplyMock {
   };
 }
 
+const TEST_USER: AuthUser = {
+  userId: 'user-1',
+  username: null,
+  displayName: 'Test User',
+};
+
+function createUploadMetadata(
+  overrides: Partial<ChunkedMutationTunnelUploadMetadata> = {},
+): ChunkedMutationTunnelUploadMetadata {
+  return {
+    method: 'POST',
+    path: '/channels/channel-1/broadcast',
+    contentType: 'application/json',
+    authHash: 'auth-hash-1',
+    authUserKey: 'user-key-1',
+    chunkCount: 1,
+    ...overrides,
+  };
+}
+
 describe('MiniappMutationTunnelController', () => {
   const originalFetch = global.fetch;
 
@@ -23,6 +49,17 @@ describe('MiniappMutationTunnelController', () => {
     global.fetch = originalFetch;
     jest.restoreAllMocks();
     jest.useRealTimers();
+  });
+
+  it('accepts enough chunks for the full 34 MiB client payload budget', () => {
+    const controller = new MiniappMutationTunnelController();
+    const fullBudgetChunkCount = Math.ceil((34 * 1024 * 1024) / 4_200);
+
+    expect((controller as any).normalizeChunkCount(String(fullBudgetChunkCount))).toBe(
+      fullBudgetChunkCount,
+    );
+    expect(() => (controller as any).normalizeChunkCount('9001')).toThrow(BadRequestException);
+    controller.onModuleDestroy();
   });
 
   it('forwards mutation requests to the local API with the original authorization header', async () => {
@@ -49,6 +86,7 @@ describe('MiniappMutationTunnelController', () => {
         contentType: 'application/json',
       },
       'InitData auth_date=1&hash=test',
+      TEST_USER,
       reply as never,
     );
 
@@ -101,6 +139,7 @@ describe('MiniappMutationTunnelController', () => {
         contentType: 'application/json',
       },
       'InitData auth_date=1&hash=test',
+      TEST_USER,
       reply as never,
     );
 
@@ -137,6 +176,7 @@ describe('MiniappMutationTunnelController', () => {
         contentType: 'application/json',
       },
       'InitData auth_date=1&hash=test',
+      TEST_USER,
       reply as never,
     );
 
@@ -179,6 +219,7 @@ describe('MiniappMutationTunnelController', () => {
         contentType: 'application/json',
       },
       'InitData auth_date=1&hash=test',
+      TEST_USER,
       reply as never,
     );
 
@@ -239,6 +280,7 @@ describe('MiniappMutationTunnelController', () => {
         contentType: 'application/json',
       },
       'InitData auth_date=1&hash=test',
+      TEST_USER,
       reply as never,
     );
 
@@ -275,6 +317,7 @@ describe('MiniappMutationTunnelController', () => {
         contentType: 'application/json',
       },
       'InitData auth_date=1&hash=test',
+      TEST_USER,
       reply as never,
     );
 
@@ -289,6 +332,64 @@ describe('MiniappMutationTunnelController', () => {
     expect(reply.send).toHaveBeenCalledWith();
   });
 
+  it('rejects gzip bodies whose decompressed output exceeds the tunnel limit', async () => {
+    const controller = new MiniappMutationTunnelController();
+    const bodyGzip = gzipSync(Buffer.from('x'.repeat(128 * 1024 + 1), 'utf8'))
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/u, '');
+    global.fetch = jest.fn() as typeof fetch;
+
+    await expect(
+      controller.tunnel(
+        {
+          method: 'PUT',
+          path: '/chats/chat-1/settings',
+          bodyGzip,
+          contentType: 'application/json',
+        },
+        'InitData auth_date=1&hash=test',
+        TEST_USER,
+        createReply() as never,
+      ),
+    ).rejects.toThrow(BadRequestException);
+
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('bounds active chunked uploads per validated user and across the process', async () => {
+    const controller = new MiniappMutationTunnelController();
+    const storePart = async (index: number, userId: string) =>
+      controller.tunnel(
+        {
+          method: 'POST',
+          path: '/channels/channel-1/broadcast',
+          contentType: 'application/json',
+          uploadId: `active-upload-${String(index).padStart(4, '0')}`,
+          chunkIndex: '0',
+          chunkCount: '2',
+          chunk: 'eA',
+        },
+        `InitData auth_date=${index + 1}&hash=test-${index}`,
+        { ...TEST_USER, userId },
+        createReply() as never,
+      );
+
+    try {
+      await storePart(0, 'same-user');
+      await storePart(1, 'same-user');
+      await expect(storePart(2, 'same-user')).rejects.toThrow(BadRequestException);
+
+      for (let index = 2; index < 16; index += 1) {
+        await storePart(index, `user-${index}`);
+      }
+      await expect(storePart(16, 'user-16')).rejects.toThrow(BadRequestException);
+    } finally {
+      controller.onModuleDestroy();
+    }
+  });
+
   it('assembles chunked tunnel bodies before forwarding the mutation', async () => {
     const controller = new MiniappMutationTunnelController();
     const reply = createReply();
@@ -301,7 +402,9 @@ describe('MiniappMutationTunnelController', () => {
       .replace(/\+/g, '-')
       .replace(/\//g, '_')
       .replace(/=+$/u, '');
-    const chunks = [encoded.slice(0, 7_000), encoded.slice(7_000)];
+    const chunks = Array.from({ length: Math.ceil(encoded.length / 4_200) }, (_, index) =>
+      encoded.slice(index * 4_200, (index + 1) * 4_200),
+    );
 
     global.fetch = jest.fn().mockResolvedValue(
       new Response(JSON.stringify({ ok: true }), {
@@ -323,6 +426,7 @@ describe('MiniappMutationTunnelController', () => {
           chunk,
         },
         'InitData auth_date=1&hash=test',
+        TEST_USER,
         chunkReply as never,
       );
       expect(chunkReply.status).toHaveBeenCalledWith(200);
@@ -338,6 +442,7 @@ describe('MiniappMutationTunnelController', () => {
         commit: '1',
       },
       'InitData auth_date=1&hash=test',
+      TEST_USER,
       reply as never,
     );
 
@@ -346,7 +451,7 @@ describe('MiniappMutationTunnelController', () => {
       'http://127.0.0.1:3001/api/v1/channels/channel-1/broadcast',
       expect.objectContaining({
         method: 'POST',
-        body: payload,
+        body: Buffer.from(payload, 'utf8'),
         headers: expect.objectContaining({
           Authorization: 'InitData auth_date=1&hash=test',
           'Content-Type': 'application/json',
@@ -371,6 +476,7 @@ describe('MiniappMutationTunnelController', () => {
           bodyGzip: 'e30',
         },
         'InitData auth_date=1&hash=test',
+        TEST_USER,
         createReply() as never,
       ),
     ).rejects.toThrow(BadRequestException);
@@ -384,6 +490,7 @@ describe('MiniappMutationTunnelController', () => {
       controller.tunnel(
         { method: 'POST', path: '/_mutation-tunnel' },
         'InitData auth_date=1&hash=test',
+        TEST_USER,
         createReply() as never,
       ),
     ).rejects.toThrow(BadRequestException);
@@ -397,6 +504,7 @@ describe('MiniappMutationTunnelController', () => {
       controller.tunnel(
         { method: 'POST', path: '/mode' },
         'InitData auth_date=1&hash=test',
+        TEST_USER,
         createReply() as never,
       ),
     ).rejects.toThrow(BadRequestException);
@@ -411,6 +519,7 @@ describe('MiniappMutationTunnelController', () => {
       controller.tunnel(
         { method: 'PUT', path: '/chats/chat-1/settings', body: 'not-valid*' },
         'InitData auth_date=1&hash=test',
+        TEST_USER,
         createReply() as never,
       ),
     ).rejects.toThrow(BadRequestException);
@@ -434,11 +543,149 @@ describe('MiniappMutationTunnelController', () => {
     const request = controller.tunnel(
       { method: 'PUT', path: '/channels/channel-1/settings', body: 'e30' },
       'InitData auth_date=1&hash=test',
+      TEST_USER,
       reply as never,
     );
     const assertion = expect(request).rejects.toThrow(GatewayTimeoutException);
 
     await jest.advanceTimersByTimeAsync(25_000);
     await assertion;
+  });
+});
+
+describe('ChunkedMutationTunnelUploadStore', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('retains the full 34 MiB product payload budget', () => {
+    expect(DEFAULT_CHUNKED_MUTATION_TUNNEL_UPLOAD_LIMITS.maxBodyBytes).toBe(34 * 1024 * 1024);
+    expect(DEFAULT_CHUNKED_MUTATION_TUNNEL_UPLOAD_LIMITS.maxRetainedBytes).toBeGreaterThanOrEqual(
+      DEFAULT_CHUNKED_MUTATION_TUNNEL_UPLOAD_LIMITS.maxBodyBytes,
+    );
+  });
+
+  it('enforces aggregate bytes and keeps replacement accounting atomic', () => {
+    const store = new ChunkedMutationTunnelUploadStore({
+      maxActiveUploads: 4,
+      maxActiveUploadsPerUser: 4,
+      maxBodyBytes: 10,
+      maxRetainedBytes: 10,
+      ttlMs: 60_000,
+    });
+    const uploadAMetadata = createUploadMetadata();
+    const uploadBMetadata = createUploadMetadata({
+      authHash: 'auth-hash-2',
+      authUserKey: 'user-key-2',
+    });
+
+    try {
+      store.storeChunk({
+        uploadId: 'upload-a',
+        metadata: uploadAMetadata,
+        chunkIndex: 0,
+        chunk: Buffer.alloc(8, 1),
+      });
+      expect(() =>
+        store.storeChunk({
+          uploadId: 'upload-b',
+          metadata: uploadBMetadata,
+          chunkIndex: 0,
+          chunk: Buffer.alloc(3, 2),
+        }),
+      ).toThrow(BadRequestException);
+      expect(store.getUsage()).toMatchObject({ activeUploads: 1, retainedBytes: 8 });
+
+      store.storeChunk({
+        uploadId: 'upload-b',
+        metadata: uploadBMetadata,
+        chunkIndex: 0,
+        chunk: Buffer.alloc(2, 2),
+      });
+      expect(() =>
+        store.storeChunk({
+          uploadId: 'upload-a',
+          metadata: uploadAMetadata,
+          chunkIndex: 0,
+          chunk: Buffer.alloc(9, 3),
+        }),
+      ).toThrow(BadRequestException);
+      expect(store.getUsage()).toMatchObject({ activeUploads: 2, retainedBytes: 10 });
+
+      const committed = store.beginCompletedUpload('upload-a', uploadAMetadata);
+      expect(committed.chunks[0]).toEqual(Buffer.alloc(8, 1));
+      expect(store.getUsage()).toMatchObject({ activeUploads: 2, retainedBytes: 10 });
+      expect(store.deleteUpload('upload-a')).toBe(true);
+      expect(store.getUsage()).toMatchObject({ activeUploads: 1, retainedBytes: 2 });
+      expect(store.deleteUpload('upload-b')).toBe(true);
+      expect(store.getUsage()).toMatchObject({ activeUploads: 0, retainedBytes: 0 });
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('rejects an oversized replacement without discarding the accepted chunk', () => {
+    const store = new ChunkedMutationTunnelUploadStore({
+      maxActiveUploads: 2,
+      maxActiveUploadsPerUser: 2,
+      maxBodyBytes: 8,
+      maxRetainedBytes: 20,
+      ttlMs: 60_000,
+    });
+    const metadata = createUploadMetadata();
+
+    try {
+      store.storeChunk({
+        uploadId: 'upload-a',
+        metadata,
+        chunkIndex: 0,
+        chunk: Buffer.alloc(8, 1),
+      });
+      expect(() =>
+        store.storeChunk({
+          uploadId: 'upload-a',
+          metadata,
+          chunkIndex: 0,
+          chunk: Buffer.alloc(9, 2),
+        }),
+      ).toThrow(BadRequestException);
+
+      expect(store.getUsage()).toMatchObject({ activeUploads: 1, retainedBytes: 8 });
+      expect(store.beginCompletedUpload('upload-a', metadata).chunks[0]).toEqual(
+        Buffer.alloc(8, 1),
+      );
+      expect(store.deleteUpload('upload-a')).toBe(true);
+      expect(store.getUsage()).toMatchObject({ activeUploads: 0, retainedBytes: 0 });
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('expires uploads and releases count and byte budgets without another request', async () => {
+    jest.useFakeTimers();
+    const store = new ChunkedMutationTunnelUploadStore({
+      maxActiveUploads: 1,
+      maxActiveUploadsPerUser: 1,
+      maxBodyBytes: 4,
+      maxRetainedBytes: 4,
+      ttlMs: 1_000,
+    });
+
+    try {
+      store.storeChunk({
+        uploadId: 'upload-a',
+        metadata: createUploadMetadata({ chunkCount: 2 }),
+        chunkIndex: 0,
+        chunk: Buffer.alloc(4, 1),
+      });
+      expect(store.getUsage()).toMatchObject({ activeUploads: 1, retainedBytes: 4 });
+
+      await jest.advanceTimersByTimeAsync(1_000);
+
+      expect(store.getUsage()).toMatchObject({ activeUploads: 0, retainedBytes: 0 });
+      expect(store.getUsage().activeUploadsByUser.size).toBe(0);
+    } finally {
+      store.dispose();
+    }
   });
 });

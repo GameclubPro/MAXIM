@@ -1076,13 +1076,13 @@ export class SystemDashboardService {
       `mode ${snapshot.mode}`,
       snapshot.lastError ? `последняя ошибка: ${snapshot.lastError}` : null,
       snapshot.staleCount > 0
-        ? `stale: ${snapshot.staleCount} (enqueued ${snapshot.staleEnqueuedCount}, in-progress ${snapshot.staleInProgressCount}), oldest ${snapshot.oldestStaleAgeSec.toFixed(1)} сек`
+        ? `stale: ${snapshot.staleCount} (enqueued ${snapshot.staleEnqueuedCount}, in-progress ${snapshot.staleInProgressCount}, retryable ${snapshot.staleRetryableCount}), oldest ${snapshot.oldestStaleAgeSec.toFixed(1)} сек`
         : null,
       snapshot.lastReconciledCount > 0
-        ? `reconciled ${snapshot.lastReconciledCount}, quarantined ${snapshot.lastQuarantinedCount}, terminal failed ${snapshot.lastTerminalFailedCount}`
+        ? `reconciled ${snapshot.lastReconciledCount}, requeued ${snapshot.lastRequeuedCount}, retry orphans terminalized ${snapshot.lastRetryOrphanTerminalizedCount}, quarantined ${snapshot.lastQuarantinedCount}, terminal failed ${snapshot.lastTerminalFailedCount}`
         : null,
       snapshot.lastShadowClassifiedCount > 0
-        ? `shadow classified ${snapshot.lastShadowClassifiedCount}, would quarantine ${snapshot.lastWouldQuarantineCount}, would terminal-fail ${snapshot.lastWouldTerminalFailCount}, would recover ${snapshot.lastWouldRecoverSucceededCount}`
+        ? `shadow classified ${snapshot.lastShadowClassifiedCount}, would requeue ${snapshot.lastWouldRequeueCount}, would quarantine ${snapshot.lastWouldQuarantineCount}, would terminal-fail ${snapshot.lastWouldTerminalFailCount}, would recover ${snapshot.lastWouldRecoverSucceededCount}`
         : null,
       snapshot.lastRunAt ? `last run ${snapshot.lastRunAt}` : 'watchdog ещё не запускался',
     ].filter((item): item is string => item !== null);
@@ -1096,7 +1096,7 @@ export class SystemDashboardService {
       detail: details.join('; '),
       recommendedAction: quarantined
         ? 'Не повторяйте действие автоматически. Сверьте MAX, логи и объект назначения до ручного решения.'
-        : 'Проверьте BullMQ action queues и состояние PostgreSQL; watchdog не создаёт повторные jobs.',
+        : 'Проверьте BullMQ action queues и состояние PostgreSQL; автоматическое восстановление ограничено свежими pre-dispatch member actions.',
     };
   }
 

@@ -769,6 +769,14 @@ export class PublicationService {
       });
     }
 
+    const audienceChanged =
+      request.audience !== undefined &&
+      !this.isPublicationAudienceEquivalent(request.audience, existing);
+    const targets =
+      audienceChanged && request.audience
+        ? await this.resolveAudienceTargets(user, request.audience)
+        : await this.resolvePersistedPublicationTargets(user, existing.targets);
+
     const now = new Date();
     const existingSchedule =
       existing.schedule && existing.schedule.status !== PublicationScheduleStatus.DRAFT
@@ -787,24 +795,11 @@ export class PublicationService {
     }
 
     const currentIntent = existing.lifecycle === PublicationLifecycle.DRAFT ? 'draft' : 'publish';
-    const audienceChanged =
-      request.audience !== undefined &&
-      !this.isPublicationAudienceEquivalent(request.audience, existing);
     const scheduleChanged =
       request.schedule !== undefined &&
       !this.arePublicationSchedulesEquivalent(existingSchedule, schedule);
     const intentChanged = desiredIntent !== currentIntent;
     const shouldRebuildSchedule = audienceChanged || scheduleChanged || intentChanged;
-    const targets =
-      audienceChanged && request.audience
-        ? await this.resolveAudienceTargets(user, request.audience)
-        : existing.targets.map((target) => ({
-            chatId: target.targetChatId,
-            entityType: this.fromPrismaEntityType(target.entityType),
-            title: '',
-            avatarUrl: null,
-            link: null,
-          }));
     const initialSlots =
       desiredIntent === 'publish' && schedule && shouldRebuildSchedule
         ? this.expandInitialSchedule(schedule, now)
@@ -1210,6 +1205,7 @@ export class PublicationService {
       return this.get(publicationId, user);
     }
     const publication = await this.assertPublicationOwner(publicationId, user.userId);
+    await this.resolvePersistedPublicationTargets(user, publication.targets);
     if (
       publication.lifecycle !== PublicationLifecycle.ACTIVE &&
       publication.lifecycle !== PublicationLifecycle.ERROR
@@ -2633,6 +2629,9 @@ export class PublicationService {
         currentRevision: publication.version,
       });
     }
+    if (action === 'resume') {
+      await this.resolvePersistedPublicationTargets(user, publication.targets);
+    }
     const now = new Date();
     const nextVersion = publication.version + 1;
 
@@ -2812,32 +2811,35 @@ export class PublicationService {
   }
 
   private async resolveOccurrenceTargets(publication: any): Promise<ResolvedPublicationTarget[]> {
-    if (
-      publication.audienceMode === PublicationAudienceMode.SNAPSHOT ||
-      publication.audienceSelection === PublicationAudienceSelection.SELECTED
-    ) {
-      const chats = await this.prisma.chat.findMany({
-        where: { id: { in: publication.targets.map((target: any) => target.targetChatId) } },
-        select: { id: true, title: true, entityType: true },
-      });
-      const chatById = new Map(chats.map((chat) => [chat.id, chat]));
-      return publication.targets.map((target: any) => ({
-        chatId: target.targetChatId,
-        entityType: this.fromPrismaEntityType(target.entityType),
-        title: chatById.get(target.targetChatId)?.title ?? target.targetChatId,
-        avatarUrl: null,
-        link: null,
-      }));
-    }
     const user: AuthUser = {
       userId: publication.actorUserId,
       username: null,
       displayName: null,
     };
+    if (
+      publication.audienceMode === PublicationAudienceMode.SNAPSHOT ||
+      publication.audienceSelection === PublicationAudienceSelection.SELECTED
+    ) {
+      return this.resolvePersistedPublicationTargets(user, publication.targets);
+    }
     return this.resolveAudienceTargets(user, {
       selection: publication.audienceSelection,
       mode: publication.audienceMode,
       targets: [],
+    });
+  }
+
+  private resolvePersistedPublicationTargets(
+    user: AuthUser,
+    targets: Array<{ targetChatId: string; entityType: ChatEntityType }>,
+  ): Promise<ResolvedPublicationTarget[]> {
+    return this.resolveAudienceTargets(user, {
+      selection: 'SELECTED',
+      mode: 'SNAPSHOT',
+      targets: targets.map((target) => ({
+        chatId: target.targetChatId,
+        entityType: this.fromPrismaEntityType(target.entityType),
+      })),
     });
   }
 
@@ -3737,6 +3739,10 @@ export class PublicationService {
         version: true,
         lifecycle: true,
         canonicalContentRevisionId: true,
+        targets: {
+          orderBy: { position: 'asc' },
+          select: { targetChatId: true, entityType: true },
+        },
       },
     });
     if (!publication) {

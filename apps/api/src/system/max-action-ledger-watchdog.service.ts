@@ -13,7 +13,13 @@ import {
   MAX_ACTION_CRITICAL_QUEUE,
   MAX_ACTION_INTERACTIVE_QUEUE,
   MAX_ACTION_LEGACY_QUEUE,
+  resolveMaxActionQueueName,
 } from '../max/max-action.queue';
+import type {
+  MaxActionJob,
+  MaxActionLedgerContext,
+  MaxActionRoutingMetadata,
+} from '../max/max-client.service';
 
 const WATCHDOG_LOCK_KEY = 'system:max-action-ledger:watchdog:lock:v1';
 const WATCHDOG_STATUS_KEY = 'system:max-action-ledger:watchdog:status:v1';
@@ -25,6 +31,9 @@ const WATCHDOG_STARTUP_DELAY_MS = 10_000;
 const WATCHDOG_LOCK_TTL_MS = 2 * 60_000;
 const WATCHDOG_BATCH_SIZE = 100;
 const WATCHDOG_MAX_ROWS_PER_RUN = 1_000;
+const WATCHDOG_RETRY_RECOVERY_MAX_AGE_MS = 30 * 60_000;
+const DEFAULT_MAX_ACTION_FAILED_RETENTION_AGE_SEC = 7 * 24 * 60 * 60;
+const DEFAULT_MAX_ACTION_FAILED_RETENTION_COUNT = 1_000;
 
 const LIVE_QUEUE_STATES: ReadonlySet<JobState | 'unknown'> = new Set([
   'waiting',
@@ -34,6 +43,10 @@ const LIVE_QUEUE_STATES: ReadonlySet<JobState | 'unknown'> = new Set([
 ]);
 
 const AMBIGUOUS_CAPABLE_ACTION_TYPES: ReadonlySet<string> = new Set(['KICK_MEMBER', 'BAN_MEMBER']);
+const RECOVERABLE_MEMBER_ACTION_TYPES = new Set(['KICK_MEMBER', 'BAN_MEMBER', 'UNBAN_MEMBER']);
+const RECOVERABLE_PRE_DISPATCH_ERROR_CODES = new Set(['max_api_internal_rate_limit']);
+
+type RecoverableMemberActionType = 'KICK_MEMBER' | 'BAN_MEMBER' | 'UNBAN_MEMBER';
 
 type WatchdogRunReason = 'startup' | 'scheduled' | 'manual';
 type WatchdogRolloutMode = 'off' | 'shadow' | 'canary' | 'on';
@@ -56,6 +69,17 @@ type LedgerCandidate = {
   dispatchStartedAt: Date | null;
   dispatchBotId: string | null;
   remoteMessageId: string | null;
+  botId: string | null;
+  messageId: string | null;
+  userId: string | null;
+  sourceTag: string | null;
+  trafficClass: string | null;
+  actionHealthLane: string | null;
+  lastStatusCode: number | null;
+  lastErrorCode: string | null;
+  lastError: string | null;
+  metadata: unknown;
+  createdAt: Date;
   updatedAt: Date;
 };
 
@@ -69,18 +93,22 @@ type WatchdogPersistentState = {
   staleCount: number;
   staleEnqueuedCount: number;
   staleInProgressCount: number;
+  staleRetryableCount: number;
   oldestStaleAgeSec: number;
   lastScannedCount: number;
   lastReconciledCount: number;
   lastQuarantinedCount: number;
   lastTerminalFailedCount: number;
   lastRecoveredSucceededCount: number;
+  lastRequeuedCount: number;
+  lastRetryOrphanTerminalizedCount: number;
   lastDeferredCount: number;
   lastConflictCount: number;
   lastShadowClassifiedCount: number;
   lastWouldQuarantineCount: number;
   lastWouldTerminalFailCount: number;
   lastWouldRecoverSucceededCount: number;
+  lastWouldRequeueCount: number;
   lastScanTruncated: boolean;
 };
 
@@ -93,18 +121,22 @@ const EMPTY_RUN_SUMMARY: WatchdogRunSummary = {
   staleCount: 0,
   staleEnqueuedCount: 0,
   staleInProgressCount: 0,
+  staleRetryableCount: 0,
   oldestStaleAgeSec: 0,
   lastScannedCount: 0,
   lastReconciledCount: 0,
   lastQuarantinedCount: 0,
   lastTerminalFailedCount: 0,
   lastRecoveredSucceededCount: 0,
+  lastRequeuedCount: 0,
+  lastRetryOrphanTerminalizedCount: 0,
   lastDeferredCount: 0,
   lastConflictCount: 0,
   lastShadowClassifiedCount: 0,
   lastWouldQuarantineCount: 0,
   lastWouldTerminalFailCount: 0,
   lastWouldRecoverSucceededCount: 0,
+  lastWouldRequeueCount: 0,
   lastScanTruncated: false,
 };
 
@@ -115,6 +147,7 @@ export class MaxActionLedgerWatchdogService implements OnModuleInit, OnModuleDes
   private readonly rolloutMode: WatchdogRolloutMode;
   private readonly canaryPercent: number;
   private readonly canaryEntityIds: ReadonlySet<string>;
+  private readonly actionFailedJobRetention: { age: number; count: number };
   private readonly state: WatchdogPersistentState = {
     lastRunAt: null,
     lastSuccessAt: null,
@@ -150,6 +183,16 @@ export class MaxActionLedgerWatchdogService implements OnModuleInit, OnModuleDes
     this.canaryEntityIds = this.parseCanaryEntityIds(
       configService?.get('MAX_ACTION_LEDGER_WATCHDOG_CANARY_ENTITY_IDS'),
     );
+    this.actionFailedJobRetention = {
+      age: this.normalizePositiveInteger(
+        configService?.get('MAX_ACTION_FAILED_RETENTION_AGE_SEC'),
+        DEFAULT_MAX_ACTION_FAILED_RETENTION_AGE_SEC,
+      ),
+      count: this.normalizePositiveInteger(
+        configService?.get('MAX_ACTION_FAILED_RETENTION_COUNT'),
+        DEFAULT_MAX_ACTION_FAILED_RETENTION_COUNT,
+      ),
+    };
   }
 
   onModuleInit(): void {
@@ -222,10 +265,13 @@ export class MaxActionLedgerWatchdogService implements OnModuleInit, OnModuleDes
             quarantined: summary.lastQuarantinedCount,
             terminalFailed: summary.lastTerminalFailedCount,
             recoveredSucceeded: summary.lastRecoveredSucceededCount,
+            requeued: summary.lastRequeuedCount,
+            retryOrphanTerminalized: summary.lastRetryOrphanTerminalizedCount,
             shadowClassified: summary.lastShadowClassifiedCount,
             wouldQuarantine: summary.lastWouldQuarantineCount,
             wouldTerminalFail: summary.lastWouldTerminalFailCount,
             wouldRecoverSucceeded: summary.lastWouldRecoverSucceededCount,
+            wouldRequeue: summary.lastWouldRequeueCount,
             deferred: summary.lastDeferredCount,
           },
           summary.lastReconciledCount > 0
@@ -277,7 +323,11 @@ export class MaxActionLedgerWatchdogService implements OnModuleInit, OnModuleDes
         where: {
           terminal: false,
           status: {
-            in: [MaxActionLedgerStatus.ENQUEUED, MaxActionLedgerStatus.IN_PROGRESS],
+            in: [
+              MaxActionLedgerStatus.ENQUEUED,
+              MaxActionLedgerStatus.IN_PROGRESS,
+              MaxActionLedgerStatus.FAILED_RETRYABLE,
+            ],
           },
           updatedAt: {
             lte: cutoff,
@@ -306,6 +356,17 @@ export class MaxActionLedgerWatchdogService implements OnModuleInit, OnModuleDes
           dispatchStartedAt: true,
           dispatchBotId: true,
           remoteMessageId: true,
+          botId: true,
+          messageId: true,
+          userId: true,
+          sourceTag: true,
+          trafficClass: true,
+          actionHealthLane: true,
+          lastStatusCode: true,
+          lastErrorCode: true,
+          lastError: true,
+          metadata: true,
+          createdAt: true,
           updatedAt: true,
         },
       });
@@ -345,8 +406,10 @@ export class MaxActionLedgerWatchdogService implements OnModuleInit, OnModuleDes
     summary.staleCount += 1;
     if (row.status === MaxActionLedgerStatus.ENQUEUED) {
       summary.staleEnqueuedCount += 1;
-    } else {
+    } else if (row.status === MaxActionLedgerStatus.IN_PROGRESS) {
       summary.staleInProgressCount += 1;
+    } else {
+      summary.staleRetryableCount += 1;
     }
     summary.oldestStaleAgeSec = Math.max(
       summary.oldestStaleAgeSec,
@@ -390,6 +453,35 @@ export class MaxActionLedgerWatchdogService implements OnModuleInit, OnModuleDes
     }
 
     this.observeStaleCandidate(summary, row);
+    if (row.status === MaxActionLedgerStatus.FAILED_RETRYABLE) {
+      if (this.isIntrinsicallyTerminalRetryableFailure(row)) {
+        await this.applyOutcome(row, MaxActionLedgerStatus.FAILED_TERMINAL, summary, {
+          ambiguous: false,
+          errorCode: 'ledger.watchdog.retry_orphan_non_retryable',
+          error: `Retryable ${row.actionType} ledger entry has a definitive non-retryable outcome; no action was requeued. Previous error: ${row.lastError ?? 'unknown'}`,
+          outcome: 'terminal_failed',
+          retryOrphanTerminalized: true,
+        });
+        return;
+      }
+
+      if (this.isRecoverablePreDispatchMemberFailure(row, observations)) {
+        if (Date.now() - row.updatedAt.getTime() > WATCHDOG_RETRY_RECOVERY_MAX_AGE_MS) {
+          await this.applyOutcome(row, MaxActionLedgerStatus.FAILED_TERMINAL, summary, {
+            ambiguous: false,
+            errorCode: 'ledger.watchdog.retry_orphan_expired',
+            error: `Pre-dispatch ${row.actionType} retry orphan exceeded the bounded recovery horizon and was not requeued.`,
+            outcome: 'terminal_failed',
+            retryOrphanTerminalized: true,
+          });
+          return;
+        }
+
+        await this.requeueRetryableMemberAction(row, observations, summary);
+        return;
+      }
+    }
+
     const mayHaveStarted = this.mayHaveStarted(row, observations);
     if (mayHaveStarted && AMBIGUOUS_CAPABLE_ACTION_TYPES.has(row.actionType)) {
       await this.applyOutcome(row, MaxActionLedgerStatus.AMBIGUOUS, summary, {
@@ -410,6 +502,7 @@ export class MaxActionLedgerWatchdogService implements OnModuleInit, OnModuleDes
         ? `Stale ${row.actionType} ledger entry has no confirmed BullMQ outcome; no action was requeued.`
         : `Pre-dispatch ${row.actionType} ledger entry has no BullMQ job or attempt markers; no action was requeued.`,
       outcome: 'terminal_failed',
+      retryOrphanTerminalized: row.status === MaxActionLedgerStatus.FAILED_RETRYABLE,
     });
   }
 
@@ -465,7 +558,166 @@ export class MaxActionLedgerWatchdogService implements OnModuleInit, OnModuleDes
         ? 'BullMQ completed MAX SEND_MESSAGE without a durable remote message id or dispatch fence; the action was not marked successful and was not requeued.'
         : `Pre-dispatch MAX SEND_MESSAGE ledger entry has no retained dispatch fence; BullMQ states ${this.formatJobStates(observations)}. The action was not requeued.`,
       outcome: 'terminal_failed',
+      retryOrphanTerminalized: row.status === MaxActionLedgerStatus.FAILED_RETRYABLE,
     });
+  }
+
+  // FLAG: Recovery is restricted to a local limiter failure that proves MAX was not called.
+  private isRecoverablePreDispatchMemberFailure(
+    row: LedgerCandidate,
+    observations: readonly ActionJobObservation[],
+  ): row is LedgerCandidate & { actionType: RecoverableMemberActionType; userId: string } {
+    return (
+      RECOVERABLE_MEMBER_ACTION_TYPES.has(row.actionType) &&
+      Boolean(row.userId?.trim()) &&
+      Boolean(row.chatId.trim()) &&
+      Boolean(row.jobId.trim()) &&
+      (Boolean(row.botId?.trim()) ||
+        this.readStringArray(this.asRecord(row.metadata)?.candidateBotIds).length > 0) &&
+      RECOVERABLE_PRE_DISPATCH_ERROR_CODES.has(row.lastErrorCode ?? '') &&
+      !row.dispatchToken &&
+      !row.dispatchStartedAt &&
+      !row.dispatchBotId &&
+      !row.remoteMessageId &&
+      observations.length <= 1 &&
+      observations.every(({ state }) => state === 'failed')
+    );
+  }
+
+  private isIntrinsicallyTerminalRetryableFailure(row: LedgerCandidate): boolean {
+    const error = row.lastError?.toLowerCase() ?? '';
+    const code = row.lastErrorCode?.toLowerCase() ?? '';
+    if (row.lastStatusCode === 404 || code === 'chat.not.found') {
+      return true;
+    }
+    if (
+      row.lastStatusCode === 200 &&
+      (error.includes('already deleted') ||
+        error.includes('already been deleted') ||
+        error.includes('sufficient rights'))
+    ) {
+      return true;
+    }
+    return row.actionType === 'SEND_MESSAGE' && error.includes('max upload payload is missing');
+  }
+
+  private async requeueRetryableMemberAction(
+    row: LedgerCandidate & { actionType: RecoverableMemberActionType; userId: string },
+    observations: readonly ActionJobObservation[],
+    summary: WatchdogRunSummary,
+  ): Promise<void> {
+    if (observations.length === 1 && !this.retainedJobMatchesCandidate(observations[0]!.job, row)) {
+      await this.applyOutcome(row, MaxActionLedgerStatus.FAILED_TERMINAL, summary, {
+        ambiguous: false,
+        errorCode: 'ledger.watchdog.retry_job_mismatch',
+        error: `Retained BullMQ job does not match retryable ${row.actionType} ledger ownership; no action was requeued.`,
+        outcome: 'terminal_failed',
+        retryOrphanTerminalized: true,
+      });
+      return;
+    }
+
+    if (!this.shouldEnforceOutcome(row)) {
+      summary.lastShadowClassifiedCount += 1;
+      summary.lastWouldRequeueCount += 1;
+      return;
+    }
+
+    if (observations.length === 1) {
+      const retainedJob = observations[0]!.job;
+      await retainedJob.retry();
+    } else {
+      const queue = this.resolveActionQueue(row);
+      if (!queue) {
+        throw new Error(`MAX action queue is unavailable for retryable ${row.actionType}`);
+      }
+      await queue.add('execute-max-action', this.reconstructMemberActionJob(row), {
+        jobId: row.jobId,
+        attempts: 5,
+        removeOnComplete: true,
+        removeOnFail: this.actionFailedJobRetention,
+        backoff: {
+          type: 'exponential',
+          delay: 1_000,
+        },
+      });
+    }
+
+    // FLAG: BullMQ ownership precedes ledger bookkeeping; worker execution is guarded by ledger CAS.
+    const requeuedAt = new Date();
+    const result = await this.prisma.maxActionLedgerEntry.updateMany({
+      where: {
+        id: row.id,
+        status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+        terminal: false,
+        updatedAt: row.updatedAt,
+      },
+      data: {
+        status: MaxActionLedgerStatus.ENQUEUED,
+        ambiguous: false,
+        terminal: false,
+        enqueuedAt: requeuedAt,
+        completedAt: null,
+        lastStatusCode: null,
+        lastErrorCode: null,
+        lastError: null,
+      },
+    });
+    if (result.count === 0) {
+      summary.lastConflictCount += 1;
+      return;
+    }
+
+    summary.lastReconciledCount += 1;
+    summary.lastRequeuedCount += 1;
+  }
+
+  private retainedJobMatchesCandidate(
+    job: Job,
+    row: LedgerCandidate & { actionType: RecoverableMemberActionType; userId: string },
+  ): boolean {
+    const data = this.asRecord(job.data);
+    return (
+      data?.actionType === row.actionType &&
+      data.chatId === row.chatId &&
+      data.userId === row.userId &&
+      data.idempotencyKey === row.jobId
+    );
+  }
+
+  private reconstructMemberActionJob(
+    row: LedgerCandidate & { actionType: RecoverableMemberActionType; userId: string },
+  ): MaxActionJob {
+    const metadata = this.asRecord(row.metadata);
+    const candidateBotIds = this.readStringArray(metadata?.candidateBotIds);
+    const attemptedBotIds = this.readStringArray(metadata?.attemptedBotIds);
+    const parsedRouting = this.readRoutingMetadata(metadata?.routing);
+    const routing = parsedRouting?.purpose === 'moderation_action' ? parsedRouting : null;
+    const ledgerContext = this.asRecord(metadata?.ledgerContext) as MaxActionLedgerContext | null;
+    const ignoreFailureMetricStatuses = this.readIntegerArray(
+      metadata?.ignoreFailureMetricStatuses,
+    );
+    const createdAt = this.readString(metadata?.createdAt) ?? row.createdAt.toISOString();
+
+    return {
+      actionType: row.actionType,
+      chatId: row.chatId,
+      userId: row.userId,
+      ...(row.botId ? { botId: row.botId } : {}),
+      ...(candidateBotIds.length > 0 ? { candidateBotIds } : {}),
+      ...(attemptedBotIds.length > 0 ? { attemptedBotIds } : {}),
+      ...(routing ? { routing } : {}),
+      ...(this.isTrafficClass(row.trafficClass) ? { trafficClass: row.trafficClass } : {}),
+      ...(this.isTrafficClass(row.actionHealthLane)
+        ? { actionHealthLane: row.actionHealthLane }
+        : {}),
+      ...(row.sourceTag ? { sourceTag: row.sourceTag } : {}),
+      ...(ignoreFailureMetricStatuses.length > 0 ? { ignoreFailureMetricStatuses } : {}),
+      ...(ledgerContext ? { ledgerContext } : {}),
+      attempt: Math.max(1, row.attemptCount + 1),
+      idempotencyKey: row.jobId,
+      createdAt,
+    };
   }
 
   private mayHaveStarted(
@@ -509,6 +761,24 @@ export class MaxActionLedgerWatchdogService implements OnModuleInit, OnModuleDes
     );
   }
 
+  private resolveActionQueue(
+    row: Pick<LedgerCandidate, 'actionType' | 'trafficClass'>,
+  ): Queue<MaxActionJob> | undefined {
+    const queueName = resolveMaxActionQueueName(row);
+    const laneQueue = (() => {
+      switch (queueName) {
+        case MAX_ACTION_CRITICAL_QUEUE:
+          return this.criticalActionQueue;
+        case MAX_ACTION_BACKGROUND_QUEUE:
+          return this.backgroundActionQueue;
+        case MAX_ACTION_INTERACTIVE_QUEUE:
+        default:
+          return this.interactiveActionQueue;
+      }
+    })();
+    return (laneQueue ?? this.actionQueue) as Queue<MaxActionJob> | undefined;
+  }
+
   private async findActionJobObservations(jobId: string): Promise<ActionJobObservation[]> {
     const jobs = await Promise.all(this.getActionQueues().map((queue) => queue.getJob(jobId)));
     const existingJobs = jobs.filter((job): job is Job => Boolean(job));
@@ -538,6 +808,7 @@ export class MaxActionLedgerWatchdogService implements OnModuleInit, OnModuleDes
       errorCode: string | null;
       error: string | null;
       outcome: 'succeeded' | 'quarantined' | 'terminal_failed';
+      retryOrphanTerminalized?: boolean;
     },
   ): Promise<void> {
     if (!this.shouldEnforceOutcome(row)) {
@@ -578,6 +849,9 @@ export class MaxActionLedgerWatchdogService implements OnModuleInit, OnModuleDes
       summary.lastQuarantinedCount += 1;
     } else if (options.outcome === 'terminal_failed') {
       summary.lastTerminalFailedCount += 1;
+      if (options.retryOrphanTerminalized) {
+        summary.lastRetryOrphanTerminalizedCount += 1;
+      }
     } else {
       summary.lastRecoveredSucceededCount += 1;
     }
@@ -622,6 +896,78 @@ export class MaxActionLedgerWatchdogService implements OnModuleInit, OnModuleDes
   private normalizeCanaryPercent(value: unknown): number {
     const numericValue = typeof value === 'number' ? value : Number(value);
     return Number.isFinite(numericValue) ? Math.max(0, Math.min(100, numericValue)) : 1;
+  }
+
+  private normalizePositiveInteger(value: unknown, fallback: number): number {
+    const numericValue = typeof value === 'number' ? value : Number(value);
+    return Number.isFinite(numericValue) && numericValue > 0 ? Math.trunc(numericValue) : fallback;
+  }
+
+  private isTrafficClass(value: unknown): value is 'critical' | 'interactive' | 'background' {
+    return value === 'critical' || value === 'interactive' || value === 'background';
+  }
+
+  private readRoutingMetadata(value: unknown): MaxActionRoutingMetadata | null {
+    const routing = this.asRecord(value);
+    if (
+      routing?.purpose !== 'send_message' &&
+      routing?.purpose !== 'moderation_action' &&
+      routing?.purpose !== 'channel_poll'
+    ) {
+      return null;
+    }
+
+    const action =
+      routing.action === 'delete_message' || routing.action === 'moderate_member'
+        ? routing.action
+        : undefined;
+    const routingVersion =
+      typeof routing.routingVersion === 'number' && Number.isFinite(routing.routingVersion)
+        ? Math.trunc(routing.routingVersion)
+        : undefined;
+    return {
+      purpose: routing.purpose,
+      ...(this.readString(routing.primaryBotId)
+        ? { primaryBotId: this.readString(routing.primaryBotId) }
+        : {}),
+      ...(this.readString(routing.reason) ? { reason: this.readString(routing.reason) } : {}),
+      ...(action ? { action } : {}),
+      ...(routingVersion !== undefined ? { routingVersion } : {}),
+    };
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> | null {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  }
+
+  private readString(value: unknown): string | null {
+    return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+  }
+
+  private readStringArray(value: unknown): string[] {
+    return Array.isArray(value)
+      ? Array.from(
+          new Set(
+            value
+              .map((item) => this.readString(item))
+              .filter((item): item is string => Boolean(item)),
+          ),
+        )
+      : [];
+  }
+
+  private readIntegerArray(value: unknown): number[] {
+    return Array.isArray(value)
+      ? Array.from(
+          new Set(
+            value.filter(
+              (item): item is number => typeof item === 'number' && Number.isInteger(item),
+            ),
+          ),
+        )
+      : [];
   }
 
   private parseCanaryEntityIds(value: unknown): ReadonlySet<string> {

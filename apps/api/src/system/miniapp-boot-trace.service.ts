@@ -1,5 +1,7 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { RedisCounterService } from '../moderation/redis-counter.service';
 
 const MAX_PHASE_LENGTH = 80;
 const MAX_SESSION_ID_LENGTH = 128;
@@ -14,6 +16,10 @@ const MAX_DETAILS_DEPTH = 4;
 const MAX_DETAILS_OBJECT_KEYS = 30;
 const MAX_DETAILS_ARRAY_ITEMS = 20;
 const MAX_DETAILS_STRING_LENGTH = 500;
+const BOOT_TRACE_RATE_WINDOW_SECONDS = 60;
+const BOOT_TRACE_GLOBAL_RATE_LIMIT = 300;
+const BOOT_TRACE_SOURCE_SESSION_RATE_LIMIT = 30;
+const MAX_LOCAL_RATE_BUCKETS = 2_048;
 const REDACTED = '[redacted]';
 
 const sensitiveKeyFragments = [
@@ -61,10 +67,88 @@ export type MiniappBootTraceLogPayload = {
 @Injectable()
 export class MiniappBootTraceService {
   private readonly logger = new Logger(MiniappBootTraceService.name);
+  private readonly localRateBuckets = new Map<string, { count: number; expiresAtMs: number }>();
 
-  record(payload: unknown): void {
+  constructor(@Optional() private readonly redisCounter?: RedisCounterService) {}
+
+  async record(payload: unknown, source = 'unknown'): Promise<boolean> {
     const trace = parseMiniappBootTracePayload(payload);
+    if (!(await this.shouldLog(source, trace.sessionId))) {
+      return false;
+    }
     this.logger.log({ trace }, 'Mini app boot trace');
+    return true;
+  }
+
+  private async shouldLog(source: string, sessionId: string | undefined): Promise<boolean> {
+    const sourceSessionHash = createHash('sha256')
+      .update(source.trim() || 'unknown')
+      .update('\0')
+      .update(sessionId ?? 'anonymous')
+      .digest('hex');
+    const globalKey = 'maxim:miniapp-boot-trace:v1:global';
+    const sourceKey = `maxim:miniapp-boot-trace:v1:source:${sourceSessionHash}`;
+
+    if (this.redisCounter) {
+      try {
+        const globalCount = await this.redisCounter.incrementWithTtl(
+          globalKey,
+          BOOT_TRACE_RATE_WINDOW_SECONDS,
+        );
+        if (globalCount > BOOT_TRACE_GLOBAL_RATE_LIMIT) {
+          return false;
+        }
+
+        const sourceCount = await this.redisCounter.incrementWithTtl(
+          sourceKey,
+          BOOT_TRACE_RATE_WINDOW_SECONDS,
+        );
+        return sourceCount <= BOOT_TRACE_SOURCE_SESSION_RATE_LIMIT;
+      } catch {
+        // The diagnostic endpoint must not depend on Redis availability.
+      }
+    }
+
+    if (this.incrementLocalRateBucket(globalKey) > BOOT_TRACE_GLOBAL_RATE_LIMIT) {
+      return false;
+    }
+
+    return this.incrementLocalRateBucket(sourceKey) <= BOOT_TRACE_SOURCE_SESSION_RATE_LIMIT;
+  }
+
+  private incrementLocalRateBucket(key: string): number {
+    const now = Date.now();
+    const current = this.localRateBuckets.get(key);
+    if (current && current.expiresAtMs > now) {
+      current.count += 1;
+      return current.count;
+    }
+    if (current) {
+      this.localRateBuckets.delete(key);
+    }
+
+    if (this.localRateBuckets.size >= MAX_LOCAL_RATE_BUCKETS) {
+      for (const [bucketKey, bucket] of this.localRateBuckets) {
+        if (bucket.expiresAtMs <= now) {
+          this.localRateBuckets.delete(bucketKey);
+        }
+      }
+    }
+    const boundedKey =
+      this.localRateBuckets.has(key) || this.localRateBuckets.size < MAX_LOCAL_RATE_BUCKETS
+        ? key
+        : 'maxim:miniapp-boot-trace:v1:source:overflow';
+    const boundedCurrent = this.localRateBuckets.get(boundedKey);
+    if (boundedCurrent && boundedCurrent.expiresAtMs > now) {
+      boundedCurrent.count += 1;
+      return boundedCurrent.count;
+    }
+
+    this.localRateBuckets.set(boundedKey, {
+      count: 1,
+      expiresAtMs: now + BOOT_TRACE_RATE_WINDOW_SECONDS * 1_000,
+    });
+    return 1;
   }
 }
 

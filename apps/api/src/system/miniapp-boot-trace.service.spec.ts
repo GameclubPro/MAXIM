@@ -1,5 +1,8 @@
 import { BadRequestException } from '@nestjs/common';
-import { parseMiniappBootTracePayload } from './miniapp-boot-trace.service';
+import {
+  MiniappBootTraceService,
+  parseMiniappBootTracePayload,
+} from './miniapp-boot-trace.service';
 
 function encodeBase64Url(value: unknown): string {
   return Buffer.from(JSON.stringify(value), 'utf8').toString('base64url');
@@ -184,5 +187,36 @@ describe('parseMiniappBootTracePayload', () => {
         details: { value: 'x'.repeat(9 * 1_024) },
       }),
     ).toThrow(BadRequestException);
+  });
+});
+
+describe('MiniappBootTraceService rate limiting', () => {
+  it('suppresses logs when the Redis-backed global limit is exceeded', async () => {
+    const incrementWithTtl = jest.fn(async (key: string) => (key.endsWith(':global') ? 301 : 1));
+    const service = new MiniappBootTraceService({ incrementWithTtl } as never);
+    const log = jest.fn();
+    (service as any).logger = { log };
+
+    await expect(
+      service.record({ phase: 'ready', sessionId: 'session-1' }, '203.0.113.10'),
+    ).resolves.toBe(false);
+    expect(log).not.toHaveBeenCalled();
+    expect(incrementWithTtl).toHaveBeenCalledTimes(1);
+    expect(incrementWithTtl).toHaveBeenCalledWith('maxim:miniapp-boot-trace:v1:global', 60);
+  });
+
+  it('uses a bounded local fallback when Redis is unavailable', async () => {
+    const service = new MiniappBootTraceService({
+      incrementWithTtl: jest.fn().mockRejectedValue(new Error('redis unavailable')),
+    } as never);
+    const log = jest.fn();
+    (service as any).logger = { log };
+
+    for (let index = 0; index < 31; index += 1) {
+      await service.record({ phase: 'ready', sessionId: 'session-1' }, '203.0.113.10');
+    }
+
+    expect(log).toHaveBeenCalledTimes(30);
+    expect((service as any).localRateBuckets.size).toBeLessThanOrEqual(2_048);
   });
 });

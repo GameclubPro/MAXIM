@@ -33,6 +33,7 @@ describe('HTTP log redaction', () => {
         },
         headers: {
           authorization: 'InitData signed-max-init-data',
+          'x-admin-access-code': 'server-admin-code',
           referer: 'https://major-maksimov.ru/app/?startapp=signed-miniapp-start-payload',
           'user-agent': 'MAX WebView',
           'x-request-id': 'request-123',
@@ -64,6 +65,7 @@ describe('HTTP log redaction', () => {
       },
       headers: {
         authorization: '[Redacted]',
+        'x-admin-access-code': '[Redacted]',
         referer: '[Redacted]',
         'user-agent': 'MAX WebView',
         'x-request-id': 'request-123',

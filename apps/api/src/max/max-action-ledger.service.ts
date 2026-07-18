@@ -10,6 +10,11 @@ const IRREVERSIBLE_ACTION_TYPES: ReadonlySet<MaxActionType> = new Set([
   'KICK_MEMBER',
   'BAN_MEMBER',
 ]);
+const EXECUTABLE_LEDGER_STATUSES: ReadonlySet<MaxActionLedgerStatus> = new Set([
+  MaxActionLedgerStatus.ENQUEUED,
+  MaxActionLedgerStatus.IN_PROGRESS,
+  MaxActionLedgerStatus.FAILED_RETRYABLE,
+]);
 
 type MaxActionLedgerMutation = {
   status: MaxActionLedgerStatus;
@@ -164,6 +169,38 @@ export class MaxActionLedgerService {
     );
   }
 
+  async assertCanExecute(job: MaxActionJob): Promise<void> {
+    const row = await this.prisma.maxActionLedgerEntry.findUnique({
+      where: {
+        jobId: job.idempotencyKey,
+      },
+      select: {
+        status: true,
+        ambiguous: true,
+        terminal: true,
+        dispatchToken: true,
+        dispatchStartedAt: true,
+        remoteMessageId: true,
+      },
+    });
+    if (!row || (job.actionType === 'SEND_MESSAGE' && row.remoteMessageId)) {
+      return;
+    }
+
+    if (
+      !row.terminal &&
+      !row.ambiguous &&
+      EXECUTABLE_LEDGER_STATUSES.has(row.status) &&
+      (job.actionType !== 'SEND_MESSAGE' || (!row.dispatchToken && !row.dispatchStartedAt))
+    ) {
+      return;
+    }
+
+    throw new UnrecoverableError(
+      `MAX ${job.actionType} ledger entry ${job.idempotencyKey} is no longer executable (${row.status})`,
+    );
+  }
+
   async recordEnqueuedIfAbsent(job: MaxActionJob): Promise<void> {
     const mutation: MaxActionLedgerMutation = {
       status: MaxActionLedgerStatus.ENQUEUED,
@@ -259,7 +296,7 @@ export class MaxActionLedgerService {
       await this.recordProtectedSendTransition(job, mutation);
       return;
     }
-    await this.upsert(job, mutation);
+    await this.recordGuardedStart(job, mutation);
   }
 
   async recordPrepared(job: MaxActionJob): Promise<void> {
@@ -522,14 +559,21 @@ export class MaxActionLedgerService {
       return;
     }
     const ambiguous = this.isAmbiguousFailure(error);
-    const terminal = ambiguous || error instanceof UnrecoverableError || options.exhausted === true;
+    const intrinsicallyTerminal = !ambiguous && this.isIntrinsicallyTerminalFailure(job, error);
+    const terminal =
+      ambiguous ||
+      intrinsicallyTerminal ||
+      error instanceof UnrecoverableError ||
+      options.exhausted === true;
     const mutation: MaxActionLedgerMutation = {
       status: ambiguous
         ? MaxActionLedgerStatus.AMBIGUOUS
         : terminal
           ? error instanceof UnrecoverableError
             ? MaxActionLedgerStatus.FAILED_TERMINAL
-            : MaxActionLedgerStatus.FAILED_RETRYABLE
+            : intrinsicallyTerminal
+              ? MaxActionLedgerStatus.FAILED_TERMINAL
+              : MaxActionLedgerStatus.FAILED_RETRYABLE
           : MaxActionLedgerStatus.FAILED_RETRYABLE,
       ambiguous,
       terminal,
@@ -564,12 +608,67 @@ export class MaxActionLedgerService {
     });
   }
 
+  // FLAG: A BullMQ retry must not revive a terminal or ambiguous ledger outcome.
+  private async recordGuardedStart(
+    job: MaxActionJob,
+    mutation: MaxActionLedgerMutation,
+  ): Promise<void> {
+    if (await this.updateExecutableStart(job, mutation)) {
+      return;
+    }
+
+    const created = await this.prisma.maxActionLedgerEntry.createMany({
+      data: [
+        {
+          ...this.buildCreateInput(job),
+          ...this.buildPlainMutationInput(mutation),
+          attemptCount: Math.max(1, job.attempt),
+        },
+      ],
+      skipDuplicates: true,
+    });
+    if (created.count > 0 || (await this.updateExecutableStart(job, mutation))) {
+      return;
+    }
+
+    await this.assertCanExecute(job);
+    throw new UnrecoverableError(
+      `MAX ${job.actionType} ledger entry ${job.idempotencyKey} changed before execution claim`,
+    );
+  }
+
+  private async updateExecutableStart(
+    job: MaxActionJob,
+    mutation: MaxActionLedgerMutation,
+  ): Promise<boolean> {
+    const result = await this.prisma.maxActionLedgerEntry.updateMany({
+      where: {
+        jobId: job.idempotencyKey,
+        status: {
+          in: [
+            MaxActionLedgerStatus.ENQUEUED,
+            MaxActionLedgerStatus.IN_PROGRESS,
+            MaxActionLedgerStatus.FAILED_RETRYABLE,
+          ],
+        },
+        ambiguous: false,
+        terminal: false,
+      },
+      data: {
+        ...this.buildUpdateInput(job),
+        ...this.buildPlainMutationInput(mutation),
+        attemptCount: { increment: 1 },
+      },
+    });
+    return result.count === 1;
+  }
+
   private async recordProtectedSendTransition(
     job: MaxActionJob,
     mutation: MaxActionLedgerMutation,
   ): Promise<void> {
     await this.createLedgerIfAbsent(job);
-    await this.prisma.maxActionLedgerEntry.updateMany({
+    const updated = await this.prisma.maxActionLedgerEntry.updateMany({
       where: {
         jobId: job.idempotencyKey,
         dispatchToken: null,
@@ -585,6 +684,14 @@ export class MaxActionLedgerService {
         ...(mutation.incrementAttempt ? { attemptCount: { increment: 1 } } : {}),
       },
     });
+    if (updated.count === 1) {
+      return;
+    }
+
+    await this.assertCanExecute(job);
+    throw new UnrecoverableError(
+      `MAX SEND_MESSAGE ledger entry ${job.idempotencyKey} changed before execution claim`,
+    );
   }
 
   private async recordProtectedSendFailure(
@@ -731,6 +838,27 @@ export class MaxActionLedgerService {
 
   private isAmbiguousFailure(error: unknown): boolean {
     return this.extractErrorMessage(error).includes('ambiguous max');
+  }
+
+  private isIntrinsicallyTerminalFailure(job: MaxActionJob, error: unknown): boolean {
+    const statusCode = this.extractStatusCode(error);
+    const errorCode = this.extractErrorCode(error);
+    const message = this.extractErrorMessage(error);
+    if (statusCode === 404 || errorCode === 'chat.not.found') {
+      return true;
+    }
+    if (
+      (job.actionType === 'KICK_MEMBER' ||
+        job.actionType === 'BAN_MEMBER' ||
+        job.actionType === 'UNBAN_MEMBER') &&
+      statusCode === 200 &&
+      (message.includes('already deleted') ||
+        message.includes('already been deleted') ||
+        message.includes('sufficient rights'))
+    ) {
+      return true;
+    }
+    return job.actionType === 'SEND_MESSAGE' && message.includes('max upload payload is missing');
   }
 
   private isSendDispatchLedgerFinalizedError(error: unknown): boolean {

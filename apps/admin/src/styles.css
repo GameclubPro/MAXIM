@@ -1051,6 +1051,29 @@ button:disabled {
   color: #991b1b;
 }
 
+.giveaway-notification-strip {
+  border-bottom-color: #fdba74;
+  background: #fffaf5;
+}
+
+.giveaway-notification-row {
+  min-height: 78px;
+  border-top-color: #ffedd5;
+}
+
+.giveaway-notification-row__meta {
+  min-width: 128px;
+  max-width: 150px;
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+}
+
+.giveaway-notification-row__meta small {
+  max-width: 150px;
+  text-align: right;
+}
+
 .delete-queue-item .status-badge {
   max-width: 112px;
   overflow: hidden;
