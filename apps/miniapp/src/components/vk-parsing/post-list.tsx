@@ -4,10 +4,12 @@ import { PostCard } from './post-card';
 type PostListProps = {
   posts: VkParsingPost[];
   settings: VkParsingSettings;
+  channelLinkUrl?: string;
   editingPostId: string | null;
   publishingPostId: string | null;
   retryingPostId: string | null;
   draftText: string;
+  draftTextFormat: VkParsingPost['textFormat'];
   selectedPhotoUrls: string[];
   selectedVideoUrls: string[];
   selectedLinkUrls: string[];
@@ -24,10 +26,12 @@ type PostListProps = {
 export function PostList({
   posts,
   settings,
+  channelLinkUrl,
   editingPostId,
   publishingPostId,
   retryingPostId,
   draftText,
+  draftTextFormat,
   selectedPhotoUrls,
   selectedVideoUrls,
   selectedLinkUrls,
@@ -51,10 +55,12 @@ export function PostList({
           key={post.id}
           post={post}
           settings={settings}
+          channelLinkUrl={channelLinkUrl}
           isEditing={editingPostId === post.id}
           isPublishing={publishingPostId === post.id}
           isRetrying={retryingPostId === post.id}
           draftText={draftText}
+          draftTextFormat={draftTextFormat}
           selectedPhotoUrls={selectedPhotoUrls}
           selectedVideoUrls={selectedVideoUrls}
           selectedLinkUrls={selectedLinkUrls}

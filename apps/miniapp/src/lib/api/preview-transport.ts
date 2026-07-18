@@ -1630,6 +1630,8 @@ function createPreviewVkParsingFeed(chatId: string, now: Date): VkParsingFeed {
     autoPublishKillSwitchEnabled: false,
     stripLinksEnabled: true,
     skipAdsEnabled: true,
+    appendChannelLinkEnabled: false,
+    channelLinkText: 'Подписаться на канал',
     schedulerTimezone: 'Europe/Moscow',
     quietHoursStart: '23:00',
     quietHoursEnd: '08:00',
@@ -2326,6 +2328,7 @@ function handleVkParsingPreviewRequest(
     const updatedPost: VkParsingPost = {
       ...post,
       text: payload.text,
+      textFormat: payload.textFormat,
       photoUrls: payload.photoUrls,
       videoUrls: payload.videoUrls,
       linkUrls: payload.linkUrls,
@@ -2365,6 +2368,7 @@ function handleVkParsingPreviewRequest(
     const updatedPost: VkParsingPost = {
       ...post,
       text: payload.text,
+      textFormat: payload.textFormat,
       photoUrls: payload.photoUrls,
       videoUrls: payload.videoUrls,
       linkUrls: payload.linkUrls,

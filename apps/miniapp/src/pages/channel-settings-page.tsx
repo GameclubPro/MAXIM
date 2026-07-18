@@ -3201,6 +3201,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                         api={api}
                         chatId={chatId}
                         active={expandedSections.vkParsing}
+                        channelLinkUrl={resolvedChannelLink}
                       />
                     </Suspense>
                   ) : vkParsingCapability ? (

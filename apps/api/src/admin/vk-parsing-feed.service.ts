@@ -1,4 +1,5 @@
 import {
+  VK_PARSING_DEFAULT_CHANNEL_LINK_TEXT,
   type VkParsingCapability,
   type VkParsingFeed,
   type VkParsingFeedQuery,
@@ -35,6 +36,8 @@ type VkParsingSettingsLike = {
   autoPublishKillSwitchEnabled: boolean;
   stripLinksEnabled: boolean;
   skipAdsEnabled: boolean;
+  appendChannelLinkEnabled: boolean;
+  channelLinkText: string;
   schedulerTimezone: string;
   quietHoursStart: string | null;
   quietHoursEnd: string | null;
@@ -348,6 +351,7 @@ export class VkParsingFeedService {
       vkPostId: post.vkPostId,
       vkPublishedAt: post.vkPublishedAt ? post.vkPublishedAt.toISOString() : null,
       text: post.text,
+      textFormat: post.textFormat === 'markdown' ? 'markdown' : 'plain',
       url: post.url,
       photoUrls: this.readStringArray(post.photoUrls),
       videoUrls: this.readStringArray(post.videoUrls),
@@ -404,6 +408,8 @@ export class VkParsingFeedService {
       autoPublishKillSwitchEnabled: settings?.autoPublishKillSwitchEnabled ?? false,
       stripLinksEnabled: settings?.stripLinksEnabled ?? false,
       skipAdsEnabled: settings?.skipAdsEnabled ?? false,
+      appendChannelLinkEnabled: settings?.appendChannelLinkEnabled ?? false,
+      channelLinkText: settings?.channelLinkText ?? VK_PARSING_DEFAULT_CHANNEL_LINK_TEXT,
       schedulerTimezone: settings?.schedulerTimezone ?? 'Europe/Moscow',
       quietHoursStart: settings?.quietHoursStart ?? null,
       quietHoursEnd: settings?.quietHoursEnd ?? null,

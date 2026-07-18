@@ -56,6 +56,7 @@ type ModerationItem = {
   author: string;
   scheduledAt: string;
   text: string;
+  previewHtml: string;
   domains: string[];
   photoUrls: string[];
   videoUrls: string[];
@@ -1525,7 +1526,14 @@ function PublicationPreview({ item }: { item: ModerationItem }) {
           <span />
           <strong>{item.entity}</strong>
         </div>
-        <p>{item.text || 'Текст отсутствует.'}</p>
+        {item.previewHtml ? (
+          <div
+            className="message-preview__body"
+            dangerouslySetInnerHTML={{ __html: item.previewHtml }}
+          />
+        ) : (
+          <p>{item.text || 'Текст отсутствует.'}</p>
+        )}
       </article>
 
       {item.photoUrls.length > 0 && (
@@ -1796,6 +1804,7 @@ function mapQueueItem(item: SafetyDeskQueueItem): ModerationItem {
       ? formatDateTime(new Date(item.scheduledAt))
       : `Импортировано ${formatDateTime(new Date(item.createdAt))}`,
     text: item.text,
+    previewHtml: item.previewHtml,
     domains: item.domains,
     photoUrls: item.photoUrls,
     videoUrls: item.videoUrls,

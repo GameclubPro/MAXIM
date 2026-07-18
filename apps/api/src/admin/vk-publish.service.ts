@@ -2,6 +2,8 @@ import {
   publishVkParsingPostRequestSchema,
   rollbackVkParsingResultSchema,
   retryVkParsingPostResultSchema,
+  VK_PARSING_DEFAULT_CHANNEL_LINK_TEXT,
+  VK_PARSING_MAX_CHANNEL_LINK_URL_LENGTH,
   VK_PARSING_MAX_LINKS,
   VK_PARSING_MAX_PHOTOS,
   VK_PARSING_MAX_PUBLISH_TEXT_LENGTH,
@@ -23,6 +25,10 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
 import type { Queue } from 'bullmq';
+import {
+  containsSupportedMarkdownUrl,
+  renderSupportedMarkdownAsHtml,
+} from '../common/max-markdown.util';
 import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,
@@ -86,6 +92,8 @@ type VkParsingSettingsLike = {
   autoPublishKillSwitchEnabled: boolean;
   stripLinksEnabled: boolean;
   skipAdsEnabled: boolean;
+  appendChannelLinkEnabled: boolean;
+  channelLinkText: string;
   schedulerTimezone: string;
   quietHoursStart: string | null;
   quietHoursEnd: string | null;
@@ -97,6 +105,20 @@ type VkParsingSettingsLike = {
   circuitBreakerWindowMinutes: number;
   circuitBreakerPostLimit: number;
   updatedAt: Date | null;
+};
+
+type VkParsingMaxMessageText = {
+  text: string;
+  textFormat: MaxSendMessageOptions['textFormat'];
+  engagementText: string;
+};
+
+type VkParsingStoredDraft = {
+  text: string;
+  textFormat: 'plain' | 'markdown';
+  photoUrls: string[];
+  videoUrls: string[];
+  linkUrls: string[];
 };
 
 type VkParsingPhotoPublishMedia = {
@@ -172,6 +194,13 @@ export class VkPublishService {
       configService.get<number>('VK_PARSING_MEDIA_PREFLIGHT_TTL_MS') ?? 86_400_000,
       configService.get<number>('VK_PARSING_MEDIA_FAILED_PREFLIGHT_TTL_MS') ?? 120_000,
     );
+  }
+
+  async assertChannelLinkAvailable(
+    chatId: string,
+    trafficClass: MaxApiTrafficClass = 'interactive',
+  ): Promise<void> {
+    await this.resolveChannelLink(chatId, trafficClass);
   }
 
   async recoverStalePublishJobs(): Promise<number> {
@@ -292,9 +321,17 @@ export class VkPublishService {
     const linkUrls = this.assertSelectedUrls(parsed.data.linkUrls, storedLinkUrls, 'ссылку');
     const settings = await this.getSettingsForChat(chatId);
     const preservedLinkUrls = this.resolveStripPreservedLinkUrls(post);
+    const storedDraft: VkParsingStoredDraft = {
+      text: parsed.data.text,
+      textFormat: parsed.data.textFormat,
+      photoUrls,
+      videoUrls,
+      linkUrls,
+    };
     const prepared = prepareVkParsingPublishPayload(
       {
         text: parsed.data.text,
+        textFormat: parsed.data.textFormat,
         photoUrls,
         videoUrls,
         linkUrls,
@@ -304,10 +341,10 @@ export class VkPublishService {
     );
     const skipReason = resolveVkParsingPostSkipReason(
       {
-        text: post.text,
-        photoUrls: storedPhotoUrls,
-        videoUrls: storedVideoUrls,
-        linkUrls: storedLinkUrls,
+        text: parsed.data.text,
+        photoUrls,
+        videoUrls,
+        linkUrls,
         attachments: this.readAttachments(post.attachments),
         raw: this.asRecord(post.raw) ?? {},
         isAdvertising: post.isAdvertising,
@@ -321,16 +358,36 @@ export class VkPublishService {
       throw new BadRequestException(describeVkParsingSkipReason(skipReason));
     }
     this.assertPreparedPublishPayload(prepared);
-    const locked = await this.lockManualPublishPost(post.id, chatId);
-    if (!locked) {
+    const publishLockAt = await this.lockManualPublishPost(post.id, chatId, storedDraft);
+    if (!publishLockAt) {
       throw new BadRequestException('Этот VK-пост уже публикуется.');
     }
+    let maxMessage: VkParsingMaxMessageText;
+    try {
+      maxMessage = await this.prepareMaxMessageText(chatId, prepared, settings, 'interactive');
+    } catch (error) {
+      try {
+        await this.releaseManualPublishLock(
+          post.id,
+          chatId,
+          publishLockAt,
+          post.publishReason,
+        );
+      } catch (releaseError) {
+        this.logger.warn(
+          { postId: post.id, chatId, err: releaseError },
+          'Failed to release VK manual publish lock after message preparation error',
+        );
+      }
+      throw error;
+    }
 
-    return this.publishPreparedPostToMax(post, prepared, {
+    return this.publishPreparedPostToMax(post, prepared, maxMessage, {
       actorUserId,
       trafficClass: 'interactive',
       debugAction: 'publish_post',
       auto: false,
+      storedDraft,
     });
   }
 
@@ -820,18 +877,20 @@ export class VkPublishService {
   private async publishPreparedPostToMax(
     post: VkParsingPostWithSource,
     payload: PreparedVkPublishPayload,
+    maxMessage: VkParsingMaxMessageText,
     params: {
       actorUserId: string;
       trafficClass: MaxApiTrafficClass;
       debugAction: string;
       auto: boolean;
+      storedDraft?: VkParsingStoredDraft;
     },
   ): Promise<PublishVkParsingPostResult> {
     const storedPhotoUrls = this.readStringArray(post.photoUrls);
     const storedVideoUrls = this.readStringArray(post.videoUrls);
     const storedLinkUrls = this.readStringArray(post.linkUrls);
-    const entityType = await this.accessService.resolvePublicationEntityType(post.chatId);
     const baseOptions: MaxSendMessageOptions = {
+      ...(maxMessage.textFormat ? { textFormat: maxMessage.textFormat } : {}),
       debugContext: {
         screen: 'vk_parsing',
         action: params.debugAction,
@@ -854,12 +913,14 @@ export class VkPublishService {
 
     let maxSendAttempted = false;
     let attemptedBotId: string | null = null;
+    let entityType: ChatEntityType | null = null;
     try {
+      entityType = await this.accessService.resolvePublicationEntityType(post.chatId);
       const result = await this.sendMessageWithAttachmentRetry({
         postId: post.id,
         chatId: post.chatId,
-        logicalIdempotencyKey: this.buildMaxPublicationIdempotencyKey(post, payload),
-        text: payload.text,
+        logicalIdempotencyKey: this.buildMaxPublicationIdempotencyKey(post, payload, maxMessage),
+        text: maxMessage.text,
         baseOptions,
         trafficClass: params.trafficClass,
         prepareAttempt: async (botId) => {
@@ -892,7 +953,7 @@ export class VkPublishService {
               {
                 allowPartialFailures: params.auto,
                 canPublishWithoutPhotos:
-                  payload.text.trim().length > 0 || payload.linkUrls.length > 0,
+                  maxMessage.text.trim().length > 0 || payload.linkUrls.length > 0,
               },
               photoMediaByUrl,
             );
@@ -932,7 +993,7 @@ export class VkPublishService {
           chatId: post.chatId,
           actorUserId: params.actorUserId,
           messageId: result.messageId,
-          text: payload.text,
+          text: maxMessage.engagementText,
           publishedUrl: result.url,
           engagementContext,
           botId: result.botId,
@@ -949,6 +1010,7 @@ export class VkPublishService {
         });
       const publishedPost = {
         ...post,
+        ...(params.storedDraft ?? {}),
         status: VK_POST_STATUS_PUBLISHED,
         publishedContentHash,
         publishedMessageId: result.messageId,
@@ -973,6 +1035,7 @@ export class VkPublishService {
           status: { notIn: [VK_POST_STATUS_PUBLISHED, VK_POST_STATUS_UNAVAILABLE] },
         },
         data: {
+          ...(params.storedDraft ?? {}),
           status: VK_POST_STATUS_PUBLISHED,
           publishedContentHash,
           publishedMessageId: result.messageId,
@@ -1038,7 +1101,7 @@ export class VkPublishService {
         (error as { maxManagedEntityAccessLossRecorded?: unknown })
           .maxManagedEntityAccessLossRecorded === true;
       const accessLossResult =
-        routedAccessLossRecorded || !maxSendAttempted
+        routedAccessLossRecorded || !maxSendAttempted || entityType === null
           ? null
           : await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost?.({
               chatId: post.chatId,
@@ -1199,7 +1262,12 @@ export class VkPublishService {
     throw lastError instanceof Error ? lastError : new Error('MAX attachment is not ready.');
   }
 
-  private async lockManualPublishPost(postId: string, chatId: string): Promise<boolean> {
+  private async lockManualPublishPost(
+    postId: string,
+    chatId: string,
+    storedDraft: VkParsingStoredDraft,
+  ): Promise<Date | null> {
+    const publishLockAt = new Date();
     const locked = await this.prisma.vkParsingPost.updateMany({
       where: {
         id: postId,
@@ -1208,11 +1276,32 @@ export class VkPublishService {
         publishLockedAt: null,
       },
       data: {
-        publishLockedAt: new Date(),
+        ...storedDraft,
+        manualContentEditedAt: publishLockAt,
+        publishLockedAt: publishLockAt,
         publishReason: 'manual-retry',
       },
     });
-    return locked.count > 0;
+    return locked.count > 0 ? publishLockAt : null;
+  }
+
+  private async releaseManualPublishLock(
+    postId: string,
+    chatId: string,
+    publishLockAt: Date,
+    previousPublishReason: string | null,
+  ): Promise<void> {
+    await this.prisma.vkParsingPost.updateMany({
+      where: {
+        id: postId,
+        chatId,
+        publishLockedAt: publishLockAt,
+      },
+      data: {
+        publishLockedAt: null,
+        publishReason: previousPublishReason,
+      },
+    });
   }
 
   private async enqueuePostPublish(
@@ -1754,6 +1843,7 @@ export class VkPublishService {
     const prepared = prepareVkParsingPublishPayload(
       {
         text: post.text,
+        textFormat: post.textFormat === 'markdown' ? 'markdown' : 'plain',
         photoUrls,
         videoUrls,
         linkUrls,
@@ -1766,8 +1856,14 @@ export class VkPublishService {
       return;
     }
     this.assertPreparedPublishPayload(prepared);
+    const maxMessage = await this.prepareMaxMessageText(
+      post.chatId,
+      prepared,
+      settings,
+      'background',
+    );
 
-    await this.publishPreparedPostToMax(post, prepared, {
+    await this.publishPreparedPostToMax(post, prepared, maxMessage, {
       actorUserId: VK_PARSING_SYSTEM_ACTOR_USER_ID,
       trafficClass: 'background',
       debugAction: 'auto_publish_post',
@@ -1904,6 +2000,7 @@ export class VkPublishService {
   private buildMaxPublicationIdempotencyKey(
     post: VkParsingPostWithSource,
     payload: PreparedVkPublishPayload,
+    maxMessage: VkParsingMaxMessageText,
   ): string {
     const intentKey =
       post.publishIdempotencyKey?.trim() ||
@@ -1911,6 +2008,9 @@ export class VkPublishService {
         .update(
           JSON.stringify({
             text: payload.text,
+            textFormat: payload.textFormat,
+            maxText: maxMessage.text,
+            maxTextFormat: maxMessage.textFormat ?? null,
             photoUrls: payload.photoUrls,
             videoUrls: payload.videoUrls,
             linkUrls: payload.linkUrls,
@@ -2517,6 +2617,132 @@ export class VkPublishService {
     }
   }
 
+  private async prepareMaxMessageText(
+    chatId: string,
+    payload: PreparedVkPublishPayload,
+    settings: Pick<VkParsingSettingsLike, 'appendChannelLinkEnabled' | 'channelLinkText'>,
+    trafficClass: MaxApiTrafficClass,
+  ): Promise<VkParsingMaxMessageText> {
+    const usesRichText = payload.textFormat === 'markdown';
+    const renderedText = usesRichText
+      ? renderSupportedMarkdownAsHtml(payload.text, { blockMode: 'raw' })
+      : payload.text;
+    const missingLinkUrls = usesRichText
+      ? payload.linkUrls.filter((url) => !containsSupportedMarkdownUrl(payload.text, url))
+      : [];
+    const renderedLinkHtml = missingLinkUrls.map(
+      (url) =>
+        `<a href="${escapeMaxHtmlAttribute(url)}">${escapeMaxHtmlText(url)}</a>`,
+    );
+    const contentHtml = usesRichText
+      ? [renderedText.trim(), ...renderedLinkHtml].filter(Boolean).join('\n')
+      : renderedText;
+    const engagementText = usesRichText
+      ? [
+          payload.text.trim(),
+          ...missingLinkUrls.map(
+            (url) => `[${escapeMarkdownLinkLabel(url)}](${url})`,
+          ),
+        ]
+          .filter(Boolean)
+          .join('\n')
+      : payload.text;
+
+    if (!settings.appendChannelLinkEnabled) {
+      this.assertMaxMessageTextLength(contentHtml);
+      return {
+        text: contentHtml,
+        textFormat: usesRichText ? 'html' : undefined,
+        engagementText,
+      };
+    }
+
+    const linkText = settings.channelLinkText.trim();
+    if (!linkText) {
+      throw new BadRequestException('Укажите текст ссылки на канал.');
+    }
+    const channelLink = await this.resolveChannelLink(chatId, trafficClass);
+    const baseHtml = usesRichText ? contentHtml : escapeMaxHtmlText(renderedText);
+    const signatureHtml = `<a href="${escapeMaxHtmlAttribute(channelLink)}">${escapeMaxHtmlText(
+      linkText,
+    )}</a>`;
+    const text = [baseHtml.trim(), signatureHtml].filter(Boolean).join('\n\n');
+    const engagementTextWithSignature = [
+      engagementText.trim(),
+      `[${escapeMarkdownLinkLabel(linkText)}](${channelLink})`,
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+
+    this.assertMaxMessageTextLength(text);
+    return {
+      text,
+      textFormat: 'html',
+      engagementText: engagementTextWithSignature,
+    };
+  }
+
+  private assertMaxMessageTextLength(text: string): void {
+    if (text.length > VK_PARSING_MAX_PUBLISH_TEXT_LENGTH) {
+      throw new BadRequestException(
+        `Текст вместе со ссылкой слишком длинный. Максимум ${VK_PARSING_MAX_PUBLISH_TEXT_LENGTH} символов.`,
+      );
+    }
+  }
+
+  private async resolveChannelLink(
+    chatId: string,
+    trafficClass: MaxApiTrafficClass,
+  ): Promise<string> {
+    const entityType = await this.accessService.resolvePublicationEntityType(chatId);
+    if (entityType !== ChatEntityType.CHANNEL) {
+      throw new BadRequestException('Ссылка в конце доступна только для канала.');
+    }
+
+    const catalogDelegate = this.prisma.managedBotChatCatalog;
+    if (catalogDelegate && typeof catalogDelegate.findFirst === 'function') {
+      try {
+        const catalogEntry = await catalogDelegate.findFirst({
+          where: {
+            chatId,
+            entityType: ChatEntityType.CHANNEL,
+            status: 'ACTIVE',
+            link: { not: null },
+          },
+          orderBy: [{ lastSeenAt: 'desc' }, { updatedAt: 'desc' }],
+          select: { link: true },
+        });
+        const knownLink = normalizeMaxChannelLink(catalogEntry?.link);
+        if (knownLink) {
+          return knownLink;
+        }
+      } catch (error) {
+        this.logger.warn({ chatId, err: error }, 'Failed to read cached MAX channel link');
+      }
+    }
+
+    try {
+      const botId = await this.maxBotLinkService.resolveBotIdForSend({ chatId });
+      if (!botId || typeof this.maxClient.getChatSnapshot !== 'function') {
+        throw new Error('No bot can resolve the MAX channel link');
+      }
+      const snapshot = await this.maxClient.getChatSnapshot(chatId, {
+        botId,
+        trafficClass,
+        sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+      });
+      const resolvedLink = normalizeMaxChannelLink(snapshot.link);
+      if (snapshot.entityType === 'channel' && resolvedLink) {
+        return resolvedLink;
+      }
+    } catch (error) {
+      this.logger.warn({ chatId, err: error }, 'Failed to resolve MAX channel link for VK parsing');
+      throw new ServiceUnavailableException('Не удалось получить ссылку канала. Повторите позже.');
+    }
+
+    throw new BadRequestException('У канала нет публичной ссылки MAX.');
+  }
+
   private isEmptyPublishPayload(payload: PreparedVkPublishPayload): boolean {
     return (
       payload.text.trim().length === 0 &&
@@ -2660,6 +2886,8 @@ export class VkPublishService {
       autoPublishKillSwitchEnabled: false,
       stripLinksEnabled: false,
       skipAdsEnabled: false,
+      appendChannelLinkEnabled: false,
+      channelLinkText: VK_PARSING_DEFAULT_CHANNEL_LINK_TEXT,
       schedulerTimezone: 'Europe/Moscow',
       quietHoursStart: null,
       quietHoursEnd: null,
@@ -2756,4 +2984,49 @@ export class VkPublishService {
   private formatError(error: unknown): string {
     return formatVkParsingError(error);
   }
+}
+
+function normalizeMaxChannelLink(value: string | null | undefined): string | null {
+  const normalized = value?.trim();
+  if (!normalized || normalized.length > VK_PARSING_MAX_CHANNEL_LINK_URL_LENGTH) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(normalized);
+    const hostname = parsed.hostname.toLowerCase();
+    if (
+      (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') ||
+      (hostname !== 'max.ru' && hostname !== 'www.max.ru') ||
+      Boolean(parsed.username || parsed.password || parsed.port) ||
+      parsed.pathname === '/'
+    ) {
+      return null;
+    }
+    parsed.protocol = 'https:';
+    parsed.hostname = 'max.ru';
+    parsed.hash = '';
+    parsed.search = '';
+    const canonical = parsed.toString();
+    return escapeMaxHtmlAttribute(canonical).length <= VK_PARSING_MAX_CHANNEL_LINK_URL_LENGTH
+      ? canonical
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function escapeMaxHtmlText(value: string): string {
+  return value.replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;');
+}
+
+function escapeMaxHtmlAttribute(value: string): string {
+  return escapeMaxHtmlText(value).replace(/"/gu, '&quot;');
+}
+
+function escapeMarkdownLinkLabel(value: string): string {
+  return value
+    .replace(/\\/gu, '\\\\')
+    .replace(/\[/gu, '\\[')
+    .replace(/\]/gu, '\\]');
 }

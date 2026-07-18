@@ -3,6 +3,7 @@ import type { VkParsingPostFilterStatus } from '@maxim/contracts';
 export type PublishPayload = {
   postId: string;
   text: string;
+  textFormat: 'plain' | 'markdown';
   photoUrls: string[];
   videoUrls: string[];
   linkUrls: string[];

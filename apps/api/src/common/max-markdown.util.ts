@@ -164,6 +164,46 @@ export function stripSupportedMarkdownToPlainText(source: string): string {
   return blocks.join('\n\n');
 }
 
+export function extractSupportedMarkdownLinks(source: string): string[] {
+  const links = new Set<string>();
+  const lines = source.replace(/\r/g, '').split('\n');
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const fencedCodeBlock = readFencedCodeBlock(lines, index);
+    if (fencedCodeBlock) {
+      index = fencedCodeBlock.nextIndex - 1;
+      continue;
+    }
+
+    collectInlineTokenLinks(parseInlineTokens(lines[index] ?? ''), links);
+  }
+
+  return [...links];
+}
+
+export function containsSupportedMarkdownUrl(source: string, url: string): boolean {
+  if (!url) {
+    return false;
+  }
+  return (
+    extractSupportedMarkdownLinks(source).includes(url) ||
+    stripSupportedMarkdownToPlainText(source).includes(url)
+  );
+}
+
+function collectInlineTokenLinks(tokens: InlineToken[], links: Set<string>): void {
+  for (const token of tokens) {
+    if (token.type === 'link') {
+      links.add(token.href);
+      collectInlineTokenLinks(token.children, links);
+      continue;
+    }
+    if ('children' in token) {
+      collectInlineTokenLinks(token.children, links);
+    }
+  }
+}
+
 function renderHeadingHtml(content: string): string {
   return `<strong>${content}</strong>`;
 }

@@ -5,6 +5,7 @@ import {
   scheduleVkParsingPostRequestSchema,
   updateVkParsingSettingsRequestSchema,
   updateVkParsingSourceRequestSchema,
+  VK_PARSING_DEFAULT_CHANNEL_LINK_TEXT,
   type PublishVkParsingPostResult,
   type RollbackVkParsingResult,
   type RetryVkParsingPostResult,
@@ -69,6 +70,18 @@ export class VkParsingService {
     const now = new Date();
     const nextAutoPublishEnabled =
       parsed.data.autoPublishEnabled ?? existingSettings?.autoPublishEnabled ?? false;
+    const nextAppendChannelLinkEnabled =
+      parsed.data.appendChannelLinkEnabled ?? existingSettings?.appendChannelLinkEnabled ?? false;
+    const nextChannelLinkText =
+      parsed.data.channelLinkText ??
+      existingSettings?.channelLinkText ??
+      VK_PARSING_DEFAULT_CHANNEL_LINK_TEXT;
+    if (nextAppendChannelLinkEnabled && !nextChannelLinkText.trim()) {
+      throw new BadRequestException('Укажите текст ссылки на канал.');
+    }
+    if (parsed.data.appendChannelLinkEnabled === true) {
+      await this.publishService.assertChannelLinkAvailable(chatId, 'interactive');
+    }
     const autoPublishEnabledAt =
       typeof parsed.data.autoPublishEnabled === 'boolean'
         ? parsed.data.autoPublishEnabled
@@ -91,6 +104,8 @@ export class VkParsingService {
         autoPublishKillSwitchEnabled: parsed.data.autoPublishKillSwitchEnabled ?? false,
         stripLinksEnabled: parsed.data.stripLinksEnabled ?? false,
         skipAdsEnabled: parsed.data.skipAdsEnabled ?? false,
+        appendChannelLinkEnabled: nextAppendChannelLinkEnabled,
+        channelLinkText: nextChannelLinkText,
         schedulerTimezone: parsed.data.schedulerTimezone ?? 'Europe/Moscow',
         quietHoursStart: parsed.data.quietHoursStart ?? null,
         quietHoursEnd: parsed.data.quietHoursEnd ?? null,
@@ -234,8 +249,10 @@ export class VkParsingService {
     }
 
     const storedPhotoUrls = this.readStringArray(post.photoUrls);
+    const storedVideoUrls = this.readStringArray(post.videoUrls);
     const storedLinkUrls = this.readStringArray(post.linkUrls);
     const photoUrls = this.assertSelectedUrls(parsed.data.photoUrls, storedPhotoUrls, 'фото');
+    const videoUrls = this.assertSelectedUrls(parsed.data.videoUrls, storedVideoUrls, 'видео');
     const linkUrls = this.assertSelectedUrls(parsed.data.linkUrls, storedLinkUrls, 'ссылку');
 
     const updated = await this.prisma.vkParsingPost.updateMany({
@@ -251,7 +268,10 @@ export class VkParsingService {
       data: {
         status: 'NEW',
         text: parsed.data.text,
+        textFormat: parsed.data.textFormat,
+        manualContentEditedAt: new Date(),
         photoUrls,
+        videoUrls,
         linkUrls,
         publishLockedAt: null,
         publishQueuedAt: null,

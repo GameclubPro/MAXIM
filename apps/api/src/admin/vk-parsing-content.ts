@@ -8,6 +8,7 @@ export type VkParsingSkipReason = 'AD' | 'EMPTY_AFTER_LINK_FILTER' | 'NO_SUPPORT
 
 export type PreparedVkPublishPayload = {
   text: string;
+  textFormat: 'plain' | 'markdown';
   photoUrls: string[];
   videoUrls: string[];
   linkUrls: string[];
@@ -51,11 +52,12 @@ export type VkParsingPostContentHashInput = {
 export const VK_POST_SKIP_REASON_AD: VkParsingSkipReason = 'AD';
 export const VK_POST_SKIP_REASON_EMPTY_AFTER_LINK_FILTER: VkParsingSkipReason =
   'EMPTY_AFTER_LINK_FILTER';
-export const VK_POST_SKIP_REASON_NO_SUPPORTED_CONTENT: VkParsingSkipReason =
-  'NO_SUPPORTED_CONTENT';
+export const VK_POST_SKIP_REASON_NO_SUPPORTED_CONTENT: VkParsingSkipReason = 'NO_SUPPORTED_CONTENT';
 
 const VK_INLINE_LINK_PATTERN =
-  /(?:https?:\/\/|www\.)[^\s<>()\]["'`{}]+|(?:vk\.cc|vk\.com|vk\.ru|t\.me|telegram\.me|wa\.me|max\.ru)\/[^\s<>()\]["'`{}]+/giu;
+  /(?:https?:\/\/|www\.|(?:vk\.cc|vk\.com|vk\.ru|t\.me|telegram\.me|wa\.me|max\.ru)\/)(?:\\[\\`*_[\]()~+]|[^\s<>()\]["'`{}])+/giu;
+const VK_MARKDOWN_LINK_PATTERN =
+  /\[([^\]\n]+)\]\((?:https?:\/\/|max:\/\/)[^\s)]+\)/giu;
 
 export function composeVkParsingPublishText(text: string, linkUrls: string[]): string {
   const base = text.trim();
@@ -76,7 +78,11 @@ export function prepareVkParsingPublishPayload(
     ? payload.linkUrls.filter((url) => preservedLinks.has(url))
     : payload.linkUrls;
   return {
-    text: composeVkParsingPublishText(text, linkUrls),
+    text:
+      payload.textFormat === 'markdown'
+        ? text.trim()
+        : composeVkParsingPublishText(text, linkUrls),
+    textFormat: payload.textFormat,
     photoUrls: payload.photoUrls,
     videoUrls: payload.videoUrls,
     linkUrls,
@@ -84,8 +90,10 @@ export function prepareVkParsingPublishPayload(
 }
 
 export function stripVkParsingLinksFromText(text: string): string {
+  VK_MARKDOWN_LINK_PATTERN.lastIndex = 0;
   VK_INLINE_LINK_PATTERN.lastIndex = 0;
   return text
+    .replace(VK_MARKDOWN_LINK_PATTERN, '$1')
     .replace(VK_INLINE_LINK_PATTERN, '')
     .replace(/[ \t]+\n/gu, '\n')
     .replace(/\n[ \t]+/gu, '\n')

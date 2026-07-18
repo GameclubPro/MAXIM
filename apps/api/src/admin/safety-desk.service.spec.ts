@@ -11,6 +11,8 @@ function createReviewPost(overrides: Record<string, unknown> = {}) {
     vkPostId: 101,
     vkPublishedAt: new Date('2026-06-27T10:00:00.000Z'),
     text: 'Проверяем публикацию\nhttps://example.com/post',
+    textFormat: 'plain',
+    manualContentEditedAt: null,
     url: 'https://vk.ru/wall-36819802_101',
     photoUrls: ['https://cdn.example.com/photo.jpg'],
     videoUrls: [],
@@ -51,6 +53,7 @@ function createReviewPost(overrides: Record<string, unknown> = {}) {
     chat: {
       title: 'Канал администраторов',
       entityType: ChatEntityType.CHANNEL,
+      vkParsingSettings: null,
     },
     source: {
       id: 'source-1',
@@ -701,6 +704,7 @@ describe('SafetyDeskService', () => {
     const { prisma, service } = createFixture();
     prisma.vkParsingPost.findMany.mockResolvedValue([
       createReviewPost({
+        text: 'Проверяем публикацию',
         url: 'https://vk.com/wall-36819802_101',
         linkUrls: [
           'https://vk.ru/club1',
@@ -721,6 +725,67 @@ describe('SafetyDeskService', () => {
       state: 'PASSED',
     });
     expect(queue.items[0]?.risk).toBe('LOW');
+  });
+
+  it('reviews markdown hyperlinks and the configured channel signature in the final preview', async () => {
+    const { prisma, service } = createFixture();
+    prisma.vkParsingPost.findMany.mockResolvedValue([
+      createReviewPost({
+        text:
+          '**Новость** [витрина](https://shop.example/catalog) [Профиль](max://user/42)',
+        textFormat: 'markdown',
+        photoUrls: [],
+        videoUrls: [],
+        linkUrls: ['https://fallback.example/a_b'],
+        chat: {
+          title: 'Канал администраторов',
+          entityType: ChatEntityType.CHANNEL,
+          vkParsingSettings: {
+            stripLinksEnabled: false,
+            skipAdsEnabled: false,
+            appendChannelLinkEnabled: true,
+            channelLinkText: 'Наш канал',
+          },
+        },
+      }),
+    ]);
+
+    const queue = await service.getQueue();
+
+    expect(queue.items[0]).toMatchObject({
+      textFormat: 'markdown',
+      domains: ['fallback.example', 'shop.example'],
+      linkUrls: [
+        'https://fallback.example/a_b',
+        'https://shop.example/catalog',
+        'max://user/42',
+      ],
+      risk: 'MEDIUM',
+    });
+    expect(queue.items[0]?.previewHtml).toBe(
+      '<p><strong>Новость</strong> <u>витрина</u> <u>Профиль</u></p><p><u>https://fallback.example/a_b</u></p><p><u>Наш канал</u></p>',
+    );
+  });
+
+  it('includes manually entered bare links in Safety Desk risk domains', async () => {
+    const { prisma, service } = createFixture();
+    prisma.vkParsingPost.findMany.mockResolvedValue([
+      createReviewPost({
+        text: 'Проверить https://evil.example/path и risky.example/offer',
+        textFormat: 'markdown',
+        photoUrls: [],
+        videoUrls: [],
+        linkUrls: [],
+      }),
+    ]);
+
+    const queue = await service.getQueue();
+
+    expect(queue.items[0]).toMatchObject({
+      domains: ['evil.example', 'risky.example'],
+      linkUrls: ['https://evil.example/path', 'https://risky.example/offer'],
+      risk: 'MEDIUM',
+    });
   });
 
   it('keeps posts with unsupported attachments out of the owner review queue', async () => {
@@ -805,6 +870,24 @@ describe('SafetyDeskService', () => {
       }),
     );
     expect(result.message).toContain('опубликован');
+  });
+
+  it('preserves markdown format when Safety Desk approves an edited review draft', async () => {
+    const { prisma, service, vkPublishService } = createFixture();
+    const post = createReviewPost({ text: '**Готово**', textFormat: 'markdown' });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+
+    await service.approveItem('post-1', 'maxim', {});
+
+    expect(vkPublishService.publishPost).toHaveBeenCalledWith(
+      'channel-1',
+      'post-1',
+      'safety-desk-owner',
+      expect.objectContaining({
+        text: '**Готово**',
+        textFormat: 'markdown',
+      }),
+    );
   });
 
   it('keeps VK video review posts visible and passes videoUrls to publish', async () => {

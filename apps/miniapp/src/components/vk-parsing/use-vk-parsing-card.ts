@@ -31,6 +31,7 @@ import { maxNotify } from '../../lib/max-bridge';
 import { queryKeys } from '../../lib/query-keys';
 import { useToast } from '../ui/toast';
 import { normalizeApiError, toggleValue } from './format';
+import { resolveVkParsingInitialLinkSelection } from './link-selection';
 import {
   VK_PARSING_PAGE_SIZE,
   type PublishPayload,
@@ -51,6 +52,7 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
   const [sourceUrl, setSourceUrl] = useState('');
   const [editingPostId, setEditingPostId] = useState<string | null>(null);
   const [draftText, setDraftText] = useState('');
+  const [draftTextFormat, setDraftTextFormat] = useState<VkParsingPost['textFormat']>('plain');
   const [selectedPhotoUrls, setSelectedPhotoUrls] = useState<string[]>([]);
   const [selectedVideoUrls, setSelectedVideoUrls] = useState<string[]>([]);
   const [selectedLinkUrls, setSelectedLinkUrls] = useState<string[]>([]);
@@ -267,6 +269,7 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     mutationFn: (payload: PublishPayload) =>
       publishVkParsingPost(api, entityType, chatId, payload.postId, {
         text: payload.text,
+        textFormat: payload.textFormat,
         photoUrls: payload.photoUrls,
         videoUrls: payload.videoUrls,
         linkUrls: payload.linkUrls,
@@ -291,6 +294,7 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     mutationFn: (payload: PublishPayload) =>
       updateVkParsingReviewDraft(api, entityType, chatId, payload.postId, {
         text: payload.text,
+        textFormat: payload.textFormat,
         photoUrls: payload.photoUrls,
         videoUrls: payload.videoUrls,
         linkUrls: payload.linkUrls,
@@ -388,6 +392,8 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     autoPublishKillSwitchEnabled: false,
     stripLinksEnabled: false,
     skipAdsEnabled: false,
+    appendChannelLinkEnabled: false,
+    channelLinkText: 'Подписаться на канал',
     schedulerTimezone: 'Europe/Moscow',
     quietHoursStart: null,
     quietHoursEnd: null,
@@ -435,9 +441,10 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     const initialVideoUrls = post.videoUrls.slice(0, 1);
     setEditingPostId(post.id);
     setDraftText(post.text);
+    setDraftTextFormat(post.textFormat);
     setSelectedPhotoUrls(initialVideoUrls.length > 0 ? [] : post.photoUrls);
     setSelectedVideoUrls(initialVideoUrls);
-    setSelectedLinkUrls(settings.stripLinksEnabled ? [] : post.linkUrls);
+    setSelectedLinkUrls(resolveVkParsingInitialLinkSelection(post, settings.stripLinksEnabled));
   }
 
   function submitSource(event: FormEvent<HTMLFormElement>) {
@@ -458,6 +465,7 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     const payload = {
       postId: editingPost.id,
       text: draftText,
+      textFormat: draftTextFormat,
       photoUrls: selectedPhotoUrls,
       videoUrls: selectedVideoUrls,
       linkUrls: selectedLinkUrls,
@@ -537,20 +545,17 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     setIsSourceUpdateInFlight(true);
     try {
       if (payload.autoPublishEnabled === true) {
-        const dryRun = await dryRunVkParsingAutopublish(
-          api,
-          entityType,
-          chatId,
-          sourceId,
-        ).catch((error: unknown) => {
-          pushToast({
-            tone: 'danger',
-            title: 'Источник не сохранён',
-            description: normalizeApiError(error),
-          });
-          maxNotify('error');
-          return null;
-        });
+        const dryRun = await dryRunVkParsingAutopublish(api, entityType, chatId, sourceId).catch(
+          (error: unknown) => {
+            pushToast({
+              tone: 'danger',
+              title: 'Источник не сохранён',
+              description: normalizeApiError(error),
+            });
+            maxNotify('error');
+            return null;
+          },
+        );
         if (!dryRun) {
           return false;
         }
@@ -622,6 +627,7 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     selectedBulkSourceIds,
     editingPostId,
     draftText,
+    draftTextFormat,
     selectedPhotoUrls,
     selectedVideoUrls,
     selectedLinkUrls,
@@ -649,7 +655,10 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
       ? (publishNowMutation.variables ?? null)
       : null,
     setSourceUrl,
-    setDraftText,
+    updateDraftText: (value: string) => {
+      setDraftText(value);
+      setDraftTextFormat('markdown');
+    },
     setPageOffset,
     submitSource,
     refreshSources: () => refreshMutation.mutate(),

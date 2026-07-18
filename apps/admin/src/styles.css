@@ -668,6 +668,39 @@ button:disabled {
   white-space: pre-wrap;
 }
 
+.message-preview__body {
+  min-height: 0;
+  overflow: auto;
+  padding: 14px;
+  color: #111827;
+  font-size: 15px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.message-preview__body :is(p, pre) {
+  margin: 0 0 10px;
+}
+
+.message-preview__body :is(p, pre):last-child {
+  margin-bottom: 0;
+}
+
+.message-preview__body :is(code, pre) {
+  border-radius: 4px;
+  background: #eef1f5;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.message-preview__body code {
+  padding: 1px 4px;
+}
+
+.message-preview__body pre {
+  padding: 8px;
+  white-space: pre-wrap;
+}
+
 .media-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));

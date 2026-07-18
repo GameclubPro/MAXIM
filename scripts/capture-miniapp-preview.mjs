@@ -964,6 +964,32 @@ const scenarios = [
     },
   },
   {
+    name: 'channel-settings-vk-parsing-editor',
+    path: '/channel/preview-channel/settings',
+    searchParams: {
+      focus: 'vkParsing',
+    },
+    beforeShot: async (page) => {
+      const card = page.locator('.settings-drilldown__panel--vk-parsing .vk-parsing-card');
+      await card.waitFor({ state: 'visible' });
+      const channelLinkToggle = card.getByRole('checkbox', {
+        name: 'Добавлять ссылку на канал в конце поста',
+      });
+      await channelLinkToggle.check();
+      await card.getByRole('textbox', { name: 'Текст ссылки на канал' }).fill('Наш канал');
+      await card.getByRole('button', { name: 'Редактировать', exact: true }).first().click();
+      await card.locator('.vk-parsing-editor__composer').waitFor({ state: 'visible' });
+      await card.getByRole('button', { name: 'Форматирование', exact: true }).click();
+      await card.locator('.vk-parsing-editor__format-tools').waitFor({ state: 'visible' });
+      await page.waitForTimeout(350);
+      const toastCloseButtons = page.getByRole('button', { name: 'Закрыть уведомление' });
+      while ((await toastCloseButtons.count()) > 0) {
+        await toastCloseButtons.first().click();
+      }
+      await page.waitForTimeout(350);
+    },
+  },
+  {
     name: 'channel-settings-polls',
     path: '/channel/preview-channel/settings',
     beforeShot: async (page) => {

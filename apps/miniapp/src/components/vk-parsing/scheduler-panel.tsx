@@ -9,6 +9,8 @@ import type {
 import { cn } from '../../lib/cn';
 import { AsyncRadioGroup } from '../ui/async-radio-group';
 import { TimeField } from '../ui/time-field';
+import type { VkParsingEntityType } from '../../lib/api/vk-parsing-client';
+import { ChannelLinkSetting } from './channel-link-setting';
 
 type SchedulerPanelProps = {
   settings: VkParsingSettings;
@@ -18,6 +20,7 @@ type SchedulerPanelProps = {
   publishedCount: number;
   isSaving: boolean;
   isSavingSource: boolean;
+  entityType: VkParsingEntityType;
   onUpdateSetting: (payload: UpdateVkParsingSettingsRequest) => Promise<boolean>;
   onUpdateSources: (sourceIds: string[], payload: UpdateVkParsingSourceRequest) => void;
   onApplyPreset: (preset: BulkUpdateVkParsingSourcesRequest['preset']) => void;
@@ -145,6 +148,7 @@ export function SchedulerPanel({
   publishedCount,
   isSaving,
   isSavingSource,
+  entityType,
   onUpdateSetting,
   onUpdateSources,
   onApplyPreset,
@@ -165,9 +169,9 @@ export function SchedulerPanel({
   return (
     <section
       className={`vk-scheduler-panel vk-autopost-panel vk-autopost-panel--${status.tone}`}
-      aria-label="Автопостинг"
+      aria-label="Публикация VK"
     >
-      <div className="vk-autopost-panel__main">
+      <div className="vk-autopost-panel__main" aria-label="Автопостинг">
         <div className="vk-autopost-status" aria-label="Статус автопостинга">
           <span className="vk-autopost-status__icon">{renderAutopostStatusIcon(status.tone)}</span>
           <span className="vk-autopost-status__copy">
@@ -201,6 +205,10 @@ export function SchedulerPanel({
           }
         />
       </div>
+
+      {entityType === 'channel' ? (
+        <ChannelLinkSetting settings={settings} disabled={isSaving} onUpdate={onUpdateSetting} />
+      ) : null}
 
       <details className="vk-autopost-advanced">
         <summary>Параметры</summary>

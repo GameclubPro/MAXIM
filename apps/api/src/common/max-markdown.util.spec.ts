@@ -1,4 +1,6 @@
 import {
+  containsSupportedMarkdownUrl,
+  extractSupportedMarkdownLinks,
   renderSupportedMarkdownAsHtml,
   stripSupportedMarkdownToPlainText,
 } from './max-markdown.util';
@@ -111,6 +113,28 @@ describe('renderSupportedMarkdownAsHtml', () => {
         '**Заголовок**\nТекст с _курсивом_, ++подчеркиванием++, ~~зачеркиванием~~ и `кодом`.\n\n[Открыть MAX](https://max.ru/)',
       ),
     ).toBe('Заголовок\nТекст с курсивом, подчеркиванием, зачеркиванием и кодом.\n\nОткрыть MAX');
+  });
+
+  it('extracts safe markdown links while ignoring code and unsupported schemes', () => {
+    expect(
+      extractSupportedMarkdownLinks(
+        '[Витрина](https://shop.example/path) `https://code.example`\n```\n[x](https://hidden.example)\n```\n[Профиль](max://user/42) [bad](javascript:alert(1))',
+      ),
+    ).toEqual(['https://shop.example/path', 'max://user/42']);
+  });
+
+  it('finds URLs in link hrefs and Markdown-escaped visible text', () => {
+    expect(
+      containsSupportedMarkdownUrl('[Сайт](https://site.example/a_b)', 'https://site.example/a_b'),
+    ).toBe(true);
+    for (const [source, url] of [
+      ['https://site.example/a\\_b', 'https://site.example/a_b'],
+      ['https://site.example/a\\(b\\)', 'https://site.example/a(b)'],
+      ['https://site.example/a\\+b', 'https://site.example/a+b'],
+      ['https://site.example/a\\~b', 'https://site.example/a~b'],
+    ]) {
+      expect(containsSupportedMarkdownUrl(source, url)).toBe(true);
+    }
   });
 });
 

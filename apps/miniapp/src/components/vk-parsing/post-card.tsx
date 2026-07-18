@@ -10,6 +10,7 @@ import {
   WarningCircle,
 } from 'iconoir-react';
 import type { VkParsingPost, VkParsingSettings } from '@maxim/contracts';
+import { lazy, Suspense } from 'react';
 import { cn } from '../../lib/cn';
 import { MaxMarkdownPreview } from '../max-markdown-preview';
 import {
@@ -19,16 +20,24 @@ import {
   formatVkPostStatus,
   formatVkPublishState,
 } from './format';
-import { PostEditor } from './post-editor';
+import { resolveVkParsingFallbackLink } from './link-selection';
 import { PostVideoPreview } from './post-video-preview';
+
+const loadPostEditor = () => import('./post-editor');
+const LazyPostEditor = lazy(async () => {
+  const module = await loadPostEditor();
+  return { default: module.PostEditor };
+});
 
 type PostCardProps = {
   post: VkParsingPost;
   settings: VkParsingSettings;
+  channelLinkUrl?: string;
   isEditing: boolean;
   isPublishing: boolean;
   isRetrying: boolean;
   draftText: string;
+  draftTextFormat: VkParsingPost['textFormat'];
   selectedPhotoUrls: string[];
   selectedVideoUrls: string[];
   selectedLinkUrls: string[];
@@ -62,10 +71,12 @@ function renderStatusIcon(post: VkParsingPost) {
 export function PostCard({
   post,
   settings,
+  channelLinkUrl,
   isEditing,
   isPublishing,
   isRetrying,
   draftText,
+  draftTextFormat,
   selectedPhotoUrls,
   selectedVideoUrls,
   selectedLinkUrls,
@@ -87,9 +98,10 @@ export function PostCard({
   const linkCount = post.linkUrls.length;
   const unsupportedSummary = formatUnsupportedAttachmentSummary(post);
   const unsupportedVideo =
-    videoCount === 0 ? post.unsupportedAttachments.find((item) => item.type === 'video') : null;
-  const unsupportedVideoFallbackUrl =
-    unsupportedVideo && post.linkUrls.includes(post.url) ? post.url : null;
+    videoCount === 0
+      ? post.unsupportedAttachments.find((item) => item.type === 'video' || item.type === 'clip')
+      : null;
+  const unsupportedVideoFallbackUrl = resolveVkParsingFallbackLink(post);
   const visiblePhotoUrls = post.photoUrls.slice(0, 4);
   const extraPhotoCount = Math.max(0, post.photoUrls.length - visiblePhotoUrls.length);
   const isReviewMode =
@@ -154,29 +166,50 @@ export function PostCard({
       ) : null}
 
       {isEditing ? (
-        <PostEditor
-          post={post}
-          draftText={draftText}
-          selectedPhotoUrls={selectedPhotoUrls}
-          selectedVideoUrls={selectedVideoUrls}
-          selectedLinkUrls={selectedLinkUrls}
-          stripLinksEnabled={settings.stripLinksEnabled}
-          isPublishing={isPublishing}
-          onDraftTextChange={onDraftTextChange}
-          onTogglePhoto={onTogglePhoto}
-          onToggleVideo={onToggleVideo}
-          onToggleLink={onToggleLink}
-          onCancel={onCancelEditing}
-          onPublish={onPublishEditingPost}
-          submitLabel={isReviewMode ? 'Сохранить' : 'Опубликовать'}
-          pendingLabel={isReviewMode ? 'Сохраняем...' : 'Публикуем...'}
-        />
+        <Suspense
+          fallback={
+            <div
+              className="vk-parsing-editor__loading"
+              role="status"
+              aria-label="Загрузка редактора"
+            >
+              <span />
+              <span />
+              <span />
+            </div>
+          }
+        >
+          <LazyPostEditor
+            post={post}
+            draftText={draftText}
+            draftTextFormat={draftTextFormat}
+            selectedPhotoUrls={selectedPhotoUrls}
+            selectedVideoUrls={selectedVideoUrls}
+            selectedLinkUrls={selectedLinkUrls}
+            stripLinksEnabled={settings.stripLinksEnabled}
+            appendChannelLinkEnabled={settings.appendChannelLinkEnabled}
+            channelLinkText={settings.channelLinkText}
+            channelLinkUrl={channelLinkUrl}
+            preserveLinkUrls={
+              unsupportedVideoFallbackUrl ? [unsupportedVideoFallbackUrl] : undefined
+            }
+            isPublishing={isPublishing}
+            onDraftTextChange={onDraftTextChange}
+            onTogglePhoto={onTogglePhoto}
+            onToggleVideo={onToggleVideo}
+            onToggleLink={onToggleLink}
+            onCancel={onCancelEditing}
+            onPublish={onPublishEditingPost}
+            submitLabel={isReviewMode ? 'Сохранить' : 'Опубликовать'}
+            pendingLabel={isReviewMode ? 'Сохраняем...' : 'Публикуем...'}
+          />
+        </Suspense>
       ) : (
         <>
           <MaxMarkdownPreview
             value={post.text}
+            sourceFormat={post.textFormat}
             className="vk-parsing-post-card__text max-markdown-preview--clamp-3"
-            normalizeWhitespace
             fallback={
               post.photoUrls.length > 0
                 ? 'Фото без текста'
@@ -340,6 +373,8 @@ export function PostCard({
               <button
                 type="button"
                 className="button button--ghost vk-parsing-action-button vk-parsing-action-button--primary"
+                onPointerDown={() => void loadPostEditor()}
+                onFocus={() => void loadPostEditor()}
                 onClick={() => onStartEditing(post)}
               >
                 <EditPencil aria-hidden />

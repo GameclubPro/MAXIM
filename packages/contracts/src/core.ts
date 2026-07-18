@@ -113,6 +113,9 @@ export const VK_PARSING_MAX_PHOTOS = 10,
   VK_PARSING_MAX_VIDEOS = 1,
   VK_PARSING_MAX_LINKS = 20;
 export const VK_PARSING_MAX_PUBLISH_TEXT_LENGTH = 4_000;
+export const VK_PARSING_MAX_CHANNEL_LINK_TEXT_LENGTH = 120;
+export const VK_PARSING_MAX_CHANNEL_LINK_URL_LENGTH = 256;
+export const VK_PARSING_DEFAULT_CHANNEL_LINK_TEXT = 'Подписаться на канал';
 export const BOT_SPEECH_MEDIA_IMAGE_BASE64_MAX_LENGTH = MAX_BROADCAST_IMAGE_BASE64_LENGTH;
 const duplicateWindowSecSchema = z.number().int().min(3_600).max(604_800);
 const duplicateMaxCountSchema = z.number().int().min(1).max(20);
@@ -2764,6 +2767,12 @@ export const vkParsingSettingsSchema = z.object({
   autoPublishKillSwitchEnabled: z.boolean().default(false),
   stripLinksEnabled: z.boolean().default(false),
   skipAdsEnabled: z.boolean().default(false),
+  appendChannelLinkEnabled: z.boolean().default(false),
+  channelLinkText: z
+    .string()
+    .trim()
+    .max(VK_PARSING_MAX_CHANNEL_LINK_TEXT_LENGTH)
+    .default(VK_PARSING_DEFAULT_CHANNEL_LINK_TEXT),
   schedulerTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
   quietHoursStart: vkParsingTimeOfDaySchema.nullable().default(null),
   quietHoursEnd: vkParsingTimeOfDaySchema.nullable().default(null),
@@ -2843,6 +2852,7 @@ export const vkParsingPostSchema = z.object({
   vkPostId: z.number().int(),
   vkPublishedAt: z.string().datetime().nullable(),
   text: z.string(),
+  textFormat: broadcastTextFormatSchema.default('plain'),
   url: z.string().url(),
   photoUrls: z.array(z.string().url()).max(VK_PARSING_MAX_PHOTOS).default([]),
   videoUrls: z.array(z.string().url()).max(VK_PARSING_MAX_VIDEOS).default([]),
@@ -2937,6 +2947,8 @@ export const vkParsingFeedSchema = z.object({
     autoPublishKillSwitchEnabled: false,
     stripLinksEnabled: false,
     skipAdsEnabled: false,
+    appendChannelLinkEnabled: false,
+    channelLinkText: VK_PARSING_DEFAULT_CHANNEL_LINK_TEXT,
     schedulerTimezone: 'Europe/Moscow',
     quietHoursStart: null,
     quietHoursEnd: null,
@@ -2988,6 +3000,8 @@ export const updateVkParsingSettingsRequestSchema = z
     autoPublishKillSwitchEnabled: z.boolean().optional(),
     stripLinksEnabled: z.boolean().optional(),
     skipAdsEnabled: z.boolean().optional(),
+    appendChannelLinkEnabled: z.boolean().optional(),
+    channelLinkText: z.string().trim().max(VK_PARSING_MAX_CHANNEL_LINK_TEXT_LENGTH).optional(),
     schedulerTimezone: z.string().trim().min(1).max(64).optional(),
     quietHoursStart: vkParsingTimeOfDaySchema.nullable().optional(),
     quietHoursEnd: vkParsingTimeOfDaySchema.nullable().optional(),
@@ -3037,6 +3051,7 @@ export type AddVkParsingSourceRequest = z.infer<typeof addVkParsingSourceRequest
 export const publishVkParsingPostRequestSchema = z
   .object({
     text: z.string().max(VK_PARSING_MAX_PUBLISH_TEXT_LENGTH).default(''),
+    textFormat: broadcastTextFormatSchema.default('plain'),
     photoUrls: z.array(z.string().url()).max(VK_PARSING_MAX_PHOTOS).default([]),
     videoUrls: z.array(z.string().url()).max(VK_PARSING_MAX_VIDEOS).default([]),
     linkUrls: z.array(z.string().url()).max(VK_PARSING_MAX_LINKS).default([]),
@@ -3144,6 +3159,8 @@ export const safetyDeskQueueItemSchema = z.object({
   risk: safetyDeskRiskLevelSchema,
   title: z.string(),
   text: z.string(),
+  textFormat: broadcastTextFormatSchema.default('plain'),
+  previewHtml: z.string().default(''),
   domains: z.array(z.string()).default([]),
   photoUrls: z.array(z.string().url()).default([]),
   videoUrls: z.array(z.string().url()).max(VK_PARSING_MAX_VIDEOS).default([]),

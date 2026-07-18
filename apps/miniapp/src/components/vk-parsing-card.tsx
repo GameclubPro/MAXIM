@@ -22,6 +22,7 @@ type VkParsingCardProps = {
   chatId: string;
   active: boolean;
   entityType?: VkParsingEntityType;
+  channelLinkUrl?: string;
 };
 
 function parseTimeMinutes(value: string | null | undefined): number | null {
@@ -151,7 +152,13 @@ function buildAutopostStatus(
   };
 }
 
-export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: VkParsingCardProps) {
+export function VkParsingCard({
+  api,
+  chatId,
+  active,
+  entityType = 'channel',
+  channelLinkUrl,
+}: VkParsingCardProps) {
   const state = useVkParsingCard({ api, chatId, active, entityType });
   const { feed, feedQuery, settings, posts, sources } = state;
   const publishedCount =
@@ -171,6 +178,7 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
           publishedCount={publishedCount}
           isSaving={state.isSavingSettings}
           isSavingSource={state.isSavingSource}
+          entityType={entityType}
           onUpdateSetting={state.updateSetting}
           onUpdateSources={state.updateSources}
           onApplyPreset={state.applyPresetToAllSources}
@@ -234,10 +242,12 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
         <PostList
           posts={posts}
           settings={settings}
+          channelLinkUrl={channelLinkUrl}
           editingPostId={state.editingPostId}
           publishingPostId={state.publishingPostId}
           retryingPostId={state.retryingPostId}
           draftText={state.draftText}
+          draftTextFormat={state.draftTextFormat}
           selectedPhotoUrls={state.selectedPhotoUrls}
           selectedVideoUrls={state.selectedVideoUrls}
           selectedLinkUrls={state.selectedLinkUrls}
@@ -245,7 +255,7 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
           onCancelEditing={state.cancelEditing}
           onPublishEditingPost={state.publishEditingPost}
           onRetryPost={state.retryPost}
-          onDraftTextChange={state.setDraftText}
+          onDraftTextChange={state.updateDraftText}
           onTogglePhoto={state.togglePhoto}
           onToggleVideo={state.toggleVideo}
           onToggleLink={state.toggleLink}

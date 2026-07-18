@@ -1,3 +1,4 @@
+import { VK_PARSING_MAX_PUBLISH_TEXT_LENGTH } from '@maxim/contracts';
 import { ChatEntityType } from '../prisma/prisma-client';
 import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
 import { VkParsingMediaCacheService } from './vk-parsing-media-cache.service';
@@ -54,6 +55,15 @@ function readExecuteRawValues(prisma: { $executeRaw: jest.Mock }): unknown[] {
   });
 }
 
+function readExecuteRawSql(prisma: { $executeRaw: jest.Mock }): string {
+  return prisma.$executeRaw.mock.calls
+    .map(([query]) => {
+      const strings = (query as { strings?: readonly string[] })?.strings;
+      return Array.isArray(strings) ? strings.join('?') : '';
+    })
+    .join('\n');
+}
+
 describe('VkParsingService', () => {
   const originalFetch = global.fetch;
 
@@ -95,6 +105,9 @@ describe('VkParsingService', () => {
       vkParsingSettings: {
         findUnique: jest.fn().mockResolvedValue(null),
         upsert: jest.fn(),
+      },
+      managedBotChatCatalog: {
+        findFirst: jest.fn().mockResolvedValue(null),
       },
       vkParsingMediaCache: {
         findUnique: jest.fn().mockResolvedValue(null),
@@ -193,6 +206,7 @@ describe('VkParsingService', () => {
       uploadImage: jest.fn(),
       uploadVideo: jest.fn(),
       sendMessageImmediateWithResolvedLink: jest.fn(),
+      getChatSnapshot: jest.fn(),
     };
     const maxBotLinkService = {
       resolveBotId: jest.fn().mockResolvedValue('bot-1'),
@@ -386,6 +400,8 @@ describe('VkParsingService', () => {
       vkPostId: 101,
       vkPublishedAt: new Date('2026-05-25T10:00:00.000Z'),
       text: 'Продам авто',
+      textFormat: 'plain',
+      manualContentEditedAt: null,
       url: 'https://vk.ru/wall-36819802_101',
       photoUrls: [],
       videoUrls: [],
@@ -3263,6 +3279,60 @@ describe('VkParsingService', () => {
     expect(lastUpdate?.data).not.toHaveProperty('publishReason');
   });
 
+  it('keeps queued autopublish metadata when channel link lookup fails transiently', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const source = createSource();
+    const post = createPostRow({
+      source,
+      text: 'Текст со ссылкой на канал',
+      publishQueuedAt: new Date('2026-05-25T09:59:00.000Z'),
+      publishScheduledAt: new Date('2026-05-25T10:00:00.000Z'),
+      publishIdempotencyKey: 'publish-key-1',
+      publishReason: 'autopublish',
+    });
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      id: 'settings-1',
+      chatId: 'channel-1',
+      autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date('2026-05-25T09:00:00.000Z'),
+      stripLinksEnabled: false,
+      skipAdsEnabled: false,
+      appendChannelLinkEnabled: true,
+      channelLinkText: 'Наш канал',
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+    });
+    prisma.managedBotChatCatalog.findFirst.mockResolvedValue(null);
+    maxClient.getChatSnapshot.mockRejectedValue(new Error('request timed out during MAX lookup'));
+
+    await expect(
+      service.processPublishPostJob({
+        postId: 'post-1',
+        chatId: 'channel-1',
+        reason: 'autopublish',
+        idempotencyKey: 'publish-key-1',
+      }),
+    ).rejects.toThrow('Не удалось получить ссылку канала');
+
+    const lastUpdate = prisma.vkParsingPost.updateMany.mock.calls.at(-1)?.[0] as
+      | { data?: Record<string, unknown> }
+      | undefined;
+    expect(lastUpdate?.data).toEqual(
+      expect.objectContaining({
+        status: 'FAILED',
+        publishLockedAt: null,
+        lastError: expect.stringContaining('[publish.unknown]'),
+      }),
+    );
+    expect(lastUpdate?.data).not.toHaveProperty('publishQueuedAt');
+    expect(lastUpdate?.data).not.toHaveProperty('publishScheduledAt');
+    expect(lastUpdate?.data).not.toHaveProperty('publishIdempotencyKey');
+    expect(lastUpdate?.data).not.toHaveProperty('publishReason');
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+  });
+
   it('clears queued publish metadata after the final retryable autopublish attempt', async () => {
     const { service, prisma, maxClient } = createFixture();
     const source = createSource();
@@ -3944,6 +4014,16 @@ describe('VkParsingService', () => {
     await service.processSyncSourceJob('source-1', 'scheduled');
 
     expect(readExecuteRawValues(prisma)).toContain('CHANGED_AFTER_PUBLISH');
+    expect(readExecuteRawSql(prisma)).toContain('"text_format" = CASE');
+    expect(readExecuteRawSql(prisma)).toContain(
+      '"manual_content_edited_at" IS NOT NULL',
+    );
+    expect(readExecuteRawSql(prisma)).toContain(
+      '"vk_parsing_posts"."content_hash" = EXCLUDED."content_hash"',
+    );
+    expect(readExecuteRawSql(prisma)).toContain(
+      '"manual_content_edited_at" = CASE',
+    );
   });
 
   it('only marks fetched-window missing VK posts unavailable after threshold and spot-check', async () => {
@@ -4237,6 +4317,360 @@ describe('VkParsingService', () => {
     expect(result.messageId).toBe('mid-1');
   });
 
+  it('renders manually formatted VK text as safe MAX HTML', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const post = createPostRow({ text: 'Текст из VK' });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+      messageId: 'mid-rich',
+      url: 'https://max.ru/channels/channel-1/message/mid-rich',
+    });
+
+    await service.publishPost('channel-1', 'post-1', { userId: '98315271' } as never, {
+      text: '**Важное** и [подробности](https://example.com/news)',
+      textFormat: 'markdown',
+      photoUrls: [],
+      videoUrls: [],
+      linkUrls: [],
+    });
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'channel-1',
+      '<strong>Важное</strong> и <a href="https://example.com/news">подробности</a>',
+      expect.objectContaining({ textFormat: 'html' }),
+      expect.objectContaining({
+        botId: 'bot-1',
+        trafficClass: 'interactive',
+        sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+      }),
+    );
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          text: '**Важное** и [подробности](https://example.com/news)',
+          textFormat: 'markdown',
+          photoUrls: [],
+          videoUrls: [],
+          linkUrls: [],
+          manualContentEditedAt: expect.any(Date),
+          publishLockedAt: expect.any(Date),
+        }),
+      }),
+    );
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          text: '**Важное** и [подробности](https://example.com/news)',
+          textFormat: 'markdown',
+          status: 'PUBLISHED',
+        }),
+      }),
+    );
+  });
+
+  it('publishes user-added markdown when the original link-only text is stripped', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const sourceUrl = 'https://example.com/original';
+    const post = createPostRow({
+      text: sourceUrl,
+      linkUrls: [sourceUrl],
+    });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      chatId: 'channel-1',
+      stripLinksEnabled: true,
+    });
+    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+      messageId: 'mid-edited-link-only',
+      url: 'https://max.ru/channels/channel-1/message/mid-edited-link-only',
+    });
+
+    await service.publishPost('channel-1', 'post-1', { userId: '98315271' } as never, {
+      text: '**Новый текст**',
+      textFormat: 'markdown',
+      photoUrls: [],
+      videoUrls: [],
+      linkUrls: [],
+    });
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'channel-1',
+      '<strong>Новый текст</strong>',
+      expect.objectContaining({ textFormat: 'html' }),
+      expect.any(Object),
+    );
+    expect(prisma.vkParsingPost.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: 'SKIPPED' }),
+      }),
+    );
+  });
+
+  it('stores a formatted manual draft before MAX send failure so retry keeps it', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const post = createPostRow({
+      text: 'Исходный текст',
+      linkUrls: ['https://example.com/catalog'],
+    });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    maxClient.sendMessageImmediateWithResolvedLink.mockRejectedValue(
+      new Error('MAX API temporary network failure'),
+    );
+
+    await expect(
+      service.publishPost('channel-1', 'post-1', { userId: '98315271' } as never, {
+        text: '**Новый текст**',
+        textFormat: 'markdown',
+        photoUrls: [],
+        videoUrls: [],
+        linkUrls: ['https://example.com/catalog'],
+      }),
+    ).rejects.toThrow('temporary network failure');
+
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          text: '**Новый текст**',
+          textFormat: 'markdown',
+          linkUrls: ['https://example.com/catalog'],
+          manualContentEditedAt: expect.any(Date),
+          publishLockedAt: expect.any(Date),
+        }),
+      }),
+    );
+  });
+
+  it('keeps a formatted manual draft when channel link lookup fails before send', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const post = createPostRow({
+      text: 'Исходный текст',
+      publishQueuedAt: new Date('2026-05-25T10:00:00.000Z'),
+      publishScheduledAt: new Date('2026-05-25T11:00:00.000Z'),
+      publishIdempotencyKey: 'scheduled-key',
+      publishReason: 'manual-schedule',
+    });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      chatId: 'channel-1',
+      appendChannelLinkEnabled: true,
+      channelLinkText: 'Наш канал',
+    });
+    prisma.managedBotChatCatalog.findFirst.mockResolvedValue(null);
+    maxClient.getChatSnapshot.mockRejectedValue(new Error('MAX lookup timeout'));
+
+    await expect(
+      service.publishPost('channel-1', 'post-1', { userId: '98315271' } as never, {
+        text: '**Сохранённый текст**',
+        textFormat: 'markdown',
+        photoUrls: [],
+        videoUrls: [],
+        linkUrls: [],
+      }),
+    ).rejects.toThrow('Не удалось получить ссылку канала');
+
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          text: '**Сохранённый текст**',
+          textFormat: 'markdown',
+          manualContentEditedAt: expect.any(Date),
+          publishLockedAt: expect.any(Date),
+        }),
+      }),
+    );
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: {
+          publishLockedAt: null,
+          publishReason: 'manual-schedule',
+        },
+      }),
+    );
+    const releaseData = prisma.vkParsingPost.updateMany.mock.calls.at(-1)?.[0]?.data;
+    expect(releaseData).not.toHaveProperty('publishQueuedAt');
+    expect(releaseData).not.toHaveProperty('publishScheduledAt');
+    expect(releaseData).not.toHaveProperty('publishIdempotencyKey');
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+  });
+
+  it('appends a custom channel link after VK text and escapes plain HTML', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const post = createPostRow({ text: 'Текст из VK' });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      chatId: 'channel-1',
+      appendChannelLinkEnabled: true,
+      channelLinkText: 'Читать наш канал',
+    });
+    prisma.managedBotChatCatalog.findFirst.mockResolvedValue({
+      link: 'http://www.max.ru/our-channel#latest',
+    });
+    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+      messageId: 'mid-channel-link',
+      url: 'https://max.ru/channels/channel-1/message/mid-channel-link',
+    });
+
+    await service.publishPost('channel-1', 'post-1', { userId: '98315271' } as never, {
+      text: '<b>Не HTML</b> & текст',
+      textFormat: 'plain',
+      photoUrls: [],
+      videoUrls: [],
+      linkUrls: [],
+    });
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'channel-1',
+      '&lt;b&gt;Не HTML&lt;/b&gt; &amp; текст\n\n<a href="https://max.ru/our-channel">Читать наш канал</a>',
+      expect.objectContaining({ textFormat: 'html' }),
+      expect.objectContaining({
+        botId: 'bot-1',
+        trafficClass: 'interactive',
+        sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+      }),
+    );
+  });
+
+  it('enforces the final MAX HTML limit after adding the channel link', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const post = createPostRow({ text: 'Текст из VK' });
+    const signature = '<a href="https://max.ru/our-channel">Наш канал</a>';
+    const exactText = 'x'.repeat(
+      VK_PARSING_MAX_PUBLISH_TEXT_LENGTH - '\n\n'.length - signature.length,
+    );
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      chatId: 'channel-1',
+      appendChannelLinkEnabled: true,
+      channelLinkText: 'Наш канал',
+    });
+    prisma.managedBotChatCatalog.findFirst.mockResolvedValue({
+      link: 'https://max.ru/our-channel',
+    });
+    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+      messageId: 'mid-exact-limit',
+      url: 'https://max.ru/channels/channel-1/message/mid-exact-limit',
+    });
+
+    await service.publishPost('channel-1', 'post-1', { userId: '98315271' } as never, {
+      text: exactText,
+      textFormat: 'plain',
+      photoUrls: [],
+      videoUrls: [],
+      linkUrls: [],
+    });
+
+    const sentText = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0]?.[1];
+    expect(sentText).toHaveLength(VK_PARSING_MAX_PUBLISH_TEXT_LENGTH);
+
+    await expect(
+      service.publishPost('channel-1', 'post-1', { userId: '98315271' } as never, {
+        text: `${exactText}x`,
+        textFormat: 'plain',
+        photoUrls: [],
+        videoUrls: [],
+        linkUrls: [],
+      }),
+    ).rejects.toThrow('Текст вместе со ссылкой слишком длинный');
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+  });
+
+  it('combines formatted VK text with the channel link in safe MAX HTML', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const post = createPostRow({ text: 'Текст из VK' });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      chatId: 'channel-1',
+      appendChannelLinkEnabled: true,
+      channelLinkText: 'Наш канал',
+    });
+    prisma.managedBotChatCatalog.findFirst.mockResolvedValue({
+      link: 'https://max.ru/our-channel',
+    });
+    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+      messageId: 'mid-rich-channel-link',
+      url: 'https://max.ru/channels/channel-1/message/mid-rich-channel-link',
+    });
+
+    await service.publishPost('channel-1', 'post-1', { userId: '98315271' } as never, {
+      text: '**Важное**',
+      textFormat: 'markdown',
+      photoUrls: [],
+      videoUrls: [],
+      linkUrls: [],
+    });
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'channel-1',
+      '<strong>Важное</strong>\n\n<a href="https://max.ru/our-channel">Наш канал</a>',
+      expect.objectContaining({ textFormat: 'html' }),
+      expect.objectContaining({ trafficClass: 'interactive' }),
+    );
+  });
+
+  it('renders selected URLs after markdown without interpreting URL punctuation', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const selectedUrl = 'https://example.com/a_b_c';
+    const post = createPostRow({ linkUrls: [selectedUrl] });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+      messageId: 'mid-rich-link',
+      url: 'https://max.ru/channels/channel-1/message/mid-rich-link',
+    });
+
+    await service.publishPost('channel-1', 'post-1', { userId: '98315271' } as never, {
+      text: '**Смотрите**',
+      textFormat: 'markdown',
+      photoUrls: [],
+      videoUrls: [],
+      linkUrls: [selectedUrl],
+    });
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'channel-1',
+      `<strong>Смотрите</strong>\n<a href="${selectedUrl}">${selectedUrl}</a>`,
+      expect.objectContaining({ textFormat: 'html' }),
+      expect.any(Object),
+    );
+  });
+
+  it('does not append a selected URL already present as Markdown-escaped text', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const selectedUrl = 'https://example.com/a_b';
+    const post = createPostRow({ linkUrls: [selectedUrl] });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+      messageId: 'mid-rich-existing-link',
+      url: 'https://max.ru/channels/channel-1/message/mid-rich-existing-link',
+    });
+
+    await service.publishPost('channel-1', 'post-1', { userId: '98315271' } as never, {
+      text: 'Смотрите https://example.com/a\\_b',
+      textFormat: 'markdown',
+      photoUrls: [],
+      videoUrls: [],
+      linkUrls: [selectedUrl],
+    });
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'channel-1',
+      'Смотрите https://example.com/a_b',
+      expect.objectContaining({ textFormat: 'html' }),
+      expect.any(Object),
+    );
+  });
+
   it('publishes VK posts to chats without channel engagement buttons', async () => {
     const { service, prisma, adminService, maxClient } = createFixture();
     const source = createSource({ chatId: 'chat-1' });
@@ -4440,6 +4874,7 @@ describe('VkParsingService', () => {
     const post = createPostRow({
       source,
       text: 'Черновик до правки',
+      videoUrls: ['https://vkvd.example/video-720.mp4'],
       linkUrls: ['https://example.com/source'],
       status: 'FAILED',
       lastError: 'Предыдущая попытка остановлена.',
@@ -4448,7 +4883,8 @@ describe('VkParsingService', () => {
     prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
 
     await service.updateReviewPostDraft('channel-1', 'post-1', { userId: '98315271' } as never, {
-      text: 'Черновик после правки',
+      text: '**Черновик после правки**',
+      textFormat: 'markdown',
       photoUrls: [],
       linkUrls: ['https://example.com/source'],
     });
@@ -4465,8 +4901,11 @@ describe('VkParsingService', () => {
       }),
       data: expect.objectContaining({
         status: 'NEW',
-        text: 'Черновик после правки',
+        text: '**Черновик после правки**',
+        textFormat: 'markdown',
+        manualContentEditedAt: expect.any(Date),
         photoUrls: [],
+        videoUrls: [],
         linkUrls: ['https://example.com/source'],
         publishQueuedAt: null,
         publishLockedAt: null,

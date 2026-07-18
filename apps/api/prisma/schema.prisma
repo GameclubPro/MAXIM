@@ -2335,6 +2335,8 @@ model VkParsingSettings {
   autoPublishKillSwitchEnabled Boolean   @default(false) @map("auto_publish_kill_switch_enabled")
   stripLinksEnabled            Boolean   @default(false) @map("strip_links_enabled")
   skipAdsEnabled               Boolean   @default(false) @map("skip_ads_enabled")
+  appendChannelLinkEnabled     Boolean   @default(false) @map("append_channel_link_enabled")
+  channelLinkText              String    @default("Подписаться на канал") @map("channel_link_text")
   schedulerTimezone            String    @default("Europe/Moscow") @map("scheduler_timezone")
   quietHoursStart              String?   @map("quiet_hours_start")
   quietHoursEnd                String?   @map("quiet_hours_end")
@@ -2361,6 +2363,8 @@ model VkParsingPost {
   vkPostId                  Int       @map("vk_post_id")
   vkPublishedAt             DateTime? @map("vk_published_at")
   text                      String    @default("")
+  textFormat                String    @default("plain") @map("text_format")
+  manualContentEditedAt     DateTime? @map("manual_content_edited_at")
   url                       String
   photoUrls                 Json      @default("[]") @map("photo_urls")
   videoUrls                 Json      @default("[]") @map("video_urls")

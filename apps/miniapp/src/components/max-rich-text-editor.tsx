@@ -10,7 +10,7 @@ import {
 } from 'react';
 import { MAX_MARKDOWN_TOOL_DEFINITIONS, type MaxMarkdownTool } from './max-markdown-editor';
 import { cn } from '../lib/cn';
-import { renderSupportedMarkdownAsHtml } from '../lib/max-markdown';
+import { renderPlainTextAsEditorHtml, renderSupportedMarkdownAsHtml } from '../lib/max-markdown';
 import { useNativeBackHandler } from '../lib/native-back';
 import './max-rich-text-editor.css';
 
@@ -21,6 +21,7 @@ export type MaxRichTextEditorHandle = {
 
 type MaxRichTextEditorProps = {
   value: string;
+  sourceFormat?: 'plain' | 'markdown';
   onChange: (value: string) => void;
   maxLength: number;
   placeholder: string;
@@ -49,6 +50,7 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
   function MaxRichTextEditor(
     {
       value,
+      sourceFormat = 'markdown',
       onChange,
       maxLength,
       placeholder,
@@ -65,6 +67,7 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
     const savedRangeRef = useRef<Range | null>(null);
     const editingLinkRef = useRef<HTMLAnchorElement | null>(null);
     const lastEmittedMarkdownRef = useRef(value);
+    const lastRenderedSourceFormatRef = useRef(sourceFormat);
     const [linkEditorOpen, setLinkEditorOpen] = useState(false);
     const [linkDraft, setLinkDraft] = useState(LINK_PLACEHOLDER_URL);
     const [linkError, setLinkError] = useState('');
@@ -74,13 +77,15 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
     const isOverLimit = remainingLength < 0;
     const editorHtml = useMemo(
       () =>
-        renderSupportedMarkdownAsHtml(value, {
-          blockMode: 'inline',
-          linkMode: 'anchor',
-          preserveCurlyBracePlaceholders,
-          curlyBracePlaceholderLabels,
-        }),
-      [curlyBracePlaceholderLabels, preserveCurlyBracePlaceholders, value],
+        sourceFormat === 'plain'
+          ? renderPlainTextAsEditorHtml(value)
+          : renderSupportedMarkdownAsHtml(value, {
+              blockMode: 'inline',
+              linkMode: 'anchor',
+              preserveCurlyBracePlaceholders,
+              curlyBracePlaceholderLabels,
+            }),
+      [curlyBracePlaceholderLabels, preserveCurlyBracePlaceholders, sourceFormat, value],
     );
 
     const emitCurrentMarkdown = useCallback(() => {
@@ -93,6 +98,7 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
         preserveCurlyBracePlaceholders,
       });
       lastEmittedMarkdownRef.current = nextMarkdown;
+      lastRenderedSourceFormatRef.current = 'markdown';
       onChange(nextMarkdown);
     }, [onChange, preserveCurlyBracePlaceholders]);
 
@@ -119,14 +125,19 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
         return;
       }
 
-      if (lastEmittedMarkdownRef.current === value && editor.innerHTML) {
+      if (
+        lastEmittedMarkdownRef.current === value &&
+        lastRenderedSourceFormatRef.current === sourceFormat &&
+        editor.innerHTML
+      ) {
         return;
       }
 
       editor.innerHTML = editorHtml;
       lastEmittedMarkdownRef.current = value;
+      lastRenderedSourceFormatRef.current = sourceFormat;
       syncActiveTools();
-    }, [editorHtml, syncActiveTools, value]);
+    }, [editorHtml, sourceFormat, syncActiveTools, value]);
 
     useEffect(() => {
       if (disabled) {

@@ -6,6 +6,7 @@ import {
   safetyDeskDeleteRuntimeResponseSchema,
   safetyDeskRetryDeleteIntentRequestSchema,
   safetyDeskQueueResponseSchema,
+  VK_PARSING_DEFAULT_CHANNEL_LINK_TEXT,
   type SafetyDeskAuditEntry,
   type SafetyDeskDecisionResponse,
   type SafetyDeskDeleteCapabilityReason,
@@ -46,6 +47,13 @@ import {
 } from '../moderation/moderation-delete-intent-rollout.util';
 import { ModerationDeleteIntentService } from '../moderation/moderation-delete-intent.service';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  containsSupportedMarkdownUrl,
+  extractSupportedMarkdownLinks,
+  renderSupportedMarkdownAsHtml,
+  stripSupportedMarkdownToPlainText,
+} from '../common/max-markdown.util';
+import { extractUrlsFromText } from '../common/url-text.util';
 import {
   prepareVkParsingPublishPayload,
   resolveVkParsingPostSkipReason,
@@ -973,7 +981,20 @@ export class SafetyDeskService {
     const videoUrls = this.readStringArray(post.videoUrls);
     const linkUrls = this.readStringArray(post.linkUrls);
     const prepared = this.preparePublishPayload(post, photoUrls, videoUrls, linkUrls);
-    const domains = this.extractDomains([post.url, ...linkUrls]);
+    const preparedLinkUrls = prepared?.linkUrls ?? linkUrls;
+    const reviewText = prepared?.text ?? post.text;
+    const reviewTextFormat =
+      prepared?.textFormat ?? (post.textFormat === 'markdown' ? 'markdown' : 'plain');
+    const visibleText =
+      reviewTextFormat === 'markdown'
+        ? stripSupportedMarkdownToPlainText(reviewText)
+        : reviewText;
+    const inlineLinkUrls = [
+      ...(reviewTextFormat === 'markdown' ? extractSupportedMarkdownLinks(reviewText) : []),
+      ...extractUrlsFromText(visibleText).map((url) => this.normalizeReviewUrl(url)),
+    ];
+    const reviewLinkUrls = [...new Set([...preparedLinkUrls, ...inlineLinkUrls])];
+    const domains = this.extractDomains([post.url, ...reviewLinkUrls]);
     const risk = this.resolveRisk(post, prepared, domains, photoUrls, videoUrls);
     const reasons = this.buildReasons(post, prepared, domains, photoUrls, videoUrls);
     const checks = this.buildChecks(post, prepared, domains, photoUrls, videoUrls);
@@ -994,10 +1015,12 @@ export class SafetyDeskService {
       risk,
       title: this.buildTitle(post),
       text: post.text,
+      textFormat: post.textFormat === 'markdown' ? 'markdown' : 'plain',
+      previewHtml: this.buildReviewPreviewHtml(post, prepared),
       domains,
       photoUrls,
       videoUrls,
-      linkUrls,
+      linkUrls: reviewLinkUrls,
       originalUrl: post.url || null,
       scheduledAt: post.publishScheduledAt ? post.publishScheduledAt.toISOString() : null,
       createdAt: post.createdAt.toISOString(),
@@ -1165,6 +1188,35 @@ export class SafetyDeskService {
     return `Материал ${post.vkOwnerId}_${post.vkPostId}`;
   }
 
+  private buildReviewPreviewHtml(
+    post: ReviewPostRow,
+    prepared: PreparedVkPublishPayload | null,
+  ): string {
+    const text = prepared?.text ?? post.text;
+    const textFormat = prepared?.textFormat ?? (post.textFormat === 'markdown' ? 'markdown' : 'plain');
+    const baseHtml = text.trim()
+      ? textFormat === 'markdown'
+        ? renderSupportedMarkdownAsHtml(text, { linkMode: 'underline' })
+        : `<p>${escapeSafetyDeskHtml(text).replace(/\r?\n/gu, '<br>')}</p>`
+      : '';
+    const selectedLinkHtml =
+      textFormat === 'markdown'
+        ? (prepared?.linkUrls ?? [])
+            .filter((url) => !containsSupportedMarkdownUrl(text, url))
+            .map((url) => `<p><u>${escapeSafetyDeskHtml(url)}</u></p>`)
+            .join('')
+        : '';
+    const linkText = (
+      post.chat.vkParsingSettings?.channelLinkText ?? VK_PARSING_DEFAULT_CHANNEL_LINK_TEXT
+    ).trim();
+    const signatureHtml =
+      post.chat.vkParsingSettings?.appendChannelLinkEnabled && linkText
+        ? `<p><u>${escapeSafetyDeskHtml(linkText)}</u></p>`
+        : '';
+
+    return `${baseHtml}${selectedLinkHtml}${signatureHtml}`;
+  }
+
   private buildEntityTitle(post: ReviewPostRow): string {
     const prefix = post.chat.entityType === ChatEntityType.CHANNEL ? 'Канал' : 'Чат';
     return `${prefix}: ${post.chat.title || post.chatId}`;
@@ -1174,7 +1226,10 @@ export class SafetyDeskService {
     const domains = new Set<string>();
     for (const url of urls) {
       try {
-        const parsed = new URL(url);
+        const parsed = new URL(this.normalizeReviewUrl(url));
+        if (parsed.protocol === 'max:') {
+          continue;
+        }
         const hostname = parsed.hostname.toLowerCase();
         if (hostname && !this.isTrustedDomain(hostname)) {
           domains.add(hostname);
@@ -1184,6 +1239,10 @@ export class SafetyDeskService {
       }
     }
     return [...domains].sort();
+  }
+
+  private normalizeReviewUrl(url: string): string {
+    return /^(?:[a-z][a-z0-9+.-]*:)?\/\//iu.test(url) ? url : `https://${url}`;
   }
 
   private isTrustedDomain(hostname: string): boolean {
@@ -1207,6 +1266,7 @@ export class SafetyDeskService {
       SAFETY_DESK_ACTOR_USER_ID,
       {
         text: post.text,
+        ...(post.textFormat === 'markdown' ? { textFormat: 'markdown' as const } : {}),
         photoUrls,
         videoUrls,
         linkUrls,
@@ -1262,6 +1322,7 @@ export class SafetyDeskService {
     const prepared = prepareVkParsingPublishPayload(
       {
         text: post.text,
+        textFormat: post.textFormat === 'markdown' ? 'markdown' : 'plain',
         photoUrls,
         videoUrls,
         linkUrls,
@@ -1605,4 +1666,8 @@ export class SafetyDeskService {
   private toJsonInput(value: unknown): Prisma.InputJsonValue {
     return JSON.parse(JSON.stringify(value ?? null)) as Prisma.InputJsonValue;
   }
+}
+
+function escapeSafetyDeskHtml(value: string): string {
+  return value.replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;');
 }

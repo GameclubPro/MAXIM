@@ -1,4 +1,8 @@
-import { VK_PARSING_MAX_LINKS, VK_PARSING_MAX_PHOTOS, VK_PARSING_MAX_VIDEOS } from '@maxim/contracts';
+import {
+  VK_PARSING_MAX_LINKS,
+  VK_PARSING_MAX_PHOTOS,
+  VK_PARSING_MAX_VIDEOS,
+} from '@maxim/contracts';
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { Prisma } from '../prisma/prisma-client';
@@ -296,11 +300,42 @@ export class VkParsingPostImportRepository {
       DO UPDATE SET
         "source_id" = EXCLUDED."source_id",
         "vk_published_at" = EXCLUDED."vk_published_at",
-        "text" = EXCLUDED."text",
+        "text" = CASE
+          WHEN "vk_parsing_posts"."manual_content_edited_at" IS NOT NULL
+            AND "vk_parsing_posts"."content_hash" = EXCLUDED."content_hash"
+          THEN "vk_parsing_posts"."text"
+          ELSE EXCLUDED."text"
+        END,
+        "text_format" = CASE
+          WHEN "vk_parsing_posts"."manual_content_edited_at" IS NOT NULL
+            AND "vk_parsing_posts"."content_hash" = EXCLUDED."content_hash"
+          THEN "vk_parsing_posts"."text_format"
+          ELSE 'plain'
+        END,
+        "manual_content_edited_at" = CASE
+          WHEN "vk_parsing_posts"."content_hash" = EXCLUDED."content_hash"
+          THEN "vk_parsing_posts"."manual_content_edited_at"
+          ELSE NULL
+        END,
         "url" = EXCLUDED."url",
-        "photo_urls" = EXCLUDED."photo_urls",
-        "video_urls" = EXCLUDED."video_urls",
-        "link_urls" = EXCLUDED."link_urls",
+        "photo_urls" = CASE
+          WHEN "vk_parsing_posts"."manual_content_edited_at" IS NOT NULL
+            AND "vk_parsing_posts"."content_hash" = EXCLUDED."content_hash"
+          THEN "vk_parsing_posts"."photo_urls"
+          ELSE EXCLUDED."photo_urls"
+        END,
+        "video_urls" = CASE
+          WHEN "vk_parsing_posts"."manual_content_edited_at" IS NOT NULL
+            AND "vk_parsing_posts"."content_hash" = EXCLUDED."content_hash"
+          THEN "vk_parsing_posts"."video_urls"
+          ELSE EXCLUDED."video_urls"
+        END,
+        "link_urls" = CASE
+          WHEN "vk_parsing_posts"."manual_content_edited_at" IS NOT NULL
+            AND "vk_parsing_posts"."content_hash" = EXCLUDED."content_hash"
+          THEN "vk_parsing_posts"."link_urls"
+          ELSE EXCLUDED."link_urls"
+        END,
         "attachments" = EXCLUDED."attachments",
         "attachment_types" = EXCLUDED."attachment_types",
         "unsupported_attachments" = EXCLUDED."unsupported_attachments",

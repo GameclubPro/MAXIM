@@ -1,9 +1,26 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  containsSupportedMarkdownUrl,
+  renderPlainTextAsEditorHtml,
   renderSupportedMarkdownAsHtml,
   stripSupportedMarkdownToPlainText,
 } from '../src/lib/max-markdown';
+
+test('finds URLs in link hrefs and Markdown-escaped visible text', () => {
+  assert.equal(
+    containsSupportedMarkdownUrl('[Сайт](https://site.example/a_b)', 'https://site.example/a_b'),
+    true,
+  );
+  for (const [source, url] of [
+    ['https://site.example/a\\_b', 'https://site.example/a_b'],
+    ['https://site.example/a\\(b\\)', 'https://site.example/a(b)'],
+    ['https://site.example/a\\+b', 'https://site.example/a+b'],
+    ['https://site.example/a\\~b', 'https://site.example/a~b'],
+  ]) {
+    assert.equal(containsSupportedMarkdownUrl(source, url), true);
+  }
+});
 
 test('renders compact bold italic marker runs without leaking markdown punctuation', () => {
   assert.equal(
@@ -27,6 +44,20 @@ test('renders heading blocks and fenced code blocks', () => {
   assert.equal(
     stripSupportedMarkdownToPlainText('# Анонс\n\n```\nconst value = "<MAX>";\n```'),
     'Анонс\n\nconst value = "<MAX>";',
+  );
+});
+
+test('uses the MAX publication heading markup in raw mode', () => {
+  assert.equal(
+    renderSupportedMarkdownAsHtml('# Анонс', { blockMode: 'raw' }),
+    '<strong>Анонс</strong>',
+  );
+});
+
+test('keeps plain VK-looking markdown literal in the rich editor source', () => {
+  assert.equal(
+    renderPlainTextAsEditorHtml('**скидка**\n# заголовок\n<x> & y'),
+    '**скидка**<br># заголовок<br>&lt;x&gt; &amp; y',
   );
 });
 

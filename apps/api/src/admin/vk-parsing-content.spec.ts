@@ -26,6 +26,7 @@ describe('vk-parsing-content', () => {
     const prepared = prepareVkParsingPublishPayload(
       {
         text: 'Смотрите https://example.com/a\nи vk.ru/public',
+        textFormat: 'plain',
         photoUrls: ['https://sun.example/photo.jpg'],
         videoUrls: [],
         linkUrls: ['https://example.com/a'],
@@ -35,11 +36,18 @@ describe('vk-parsing-content', () => {
 
     expect(prepared).toEqual({
       text: 'Смотрите\nи',
+      textFormat: 'plain',
       photoUrls: ['https://sun.example/photo.jpg'],
       videoUrls: [],
       linkUrls: [],
     });
     expect(stripVkParsingLinksFromText('текст www.example.com  хвост')).toBe('текст хвост');
+    expect(stripVkParsingLinksFromText('Читайте [наш канал](https://max.ru/news)')).toBe(
+      'Читайте наш канал',
+    );
+    expect(stripVkParsingLinksFromText('Текст https://site.example/a\\_\\(b\\)\\+\\~c хвост')).toBe(
+      'Текст хвост',
+    );
   });
 
   it('preserves explicit fallback links when link stripping is enabled', () => {
@@ -47,6 +55,7 @@ describe('vk-parsing-content', () => {
     const prepared = prepareVkParsingPublishPayload(
       {
         text: '',
+        textFormat: 'plain',
         photoUrls: [],
         videoUrls: [],
         linkUrls: [preservedUrl, 'https://example.com/regular'],
@@ -57,6 +66,7 @@ describe('vk-parsing-content', () => {
 
     expect(prepared).toEqual({
       text: preservedUrl,
+      textFormat: 'plain',
       photoUrls: [],
       videoUrls: [],
       linkUrls: [preservedUrl],
