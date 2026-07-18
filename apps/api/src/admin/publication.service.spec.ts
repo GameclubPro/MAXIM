@@ -9,7 +9,7 @@ import {
   PublicationScheduleMode,
   PublicationScheduleStatus,
 } from '../prisma/prisma-client';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { PublicationContentService } from './publication-content.service';
 import { PublicationPresenterService } from './publication-presenter.service';
 import { PublicationService } from './publication.service';
@@ -40,6 +40,15 @@ function createService(prismaOverrides: Record<string, unknown> = {}) {
   return { contentService, presenter, service, prisma };
 }
 
+function extractSqlText(query: unknown): string {
+  const strings = (query as { strings?: readonly string[] } | null)?.strings;
+  return (Array.isArray(strings) ? strings.join('?') : String(query)).replace(/\s+/gu, ' ').trim();
+}
+
+function extractSqlValues(query: unknown): readonly unknown[] {
+  return (query as { values?: readonly unknown[] } | null)?.values ?? [];
+}
+
 function createPublicationUpdateTransaction() {
   return {
     $executeRaw: jest.fn().mockResolvedValue(1),
@@ -65,10 +74,49 @@ function createPublicationUpdateTransaction() {
       findMany: jest.fn(),
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
+    managedBroadcastDelivery: {
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
     publicationMutationRecord: {
       create: jest.fn().mockResolvedValue({}),
     },
   };
+}
+
+function createOriginalRetryService(
+  tx: Record<string, unknown>,
+  occurrenceStatus: PublicationOccurrenceStatus = PublicationOccurrenceStatus.FAILED,
+) {
+  const failedDeliveryCount = jest.fn().mockResolvedValue(1);
+  const transaction = jest.fn((callback: (client: typeof tx) => unknown) => callback(tx));
+  const { service } = createService({
+    publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
+    publication: {
+      findFirst: jest.fn().mockResolvedValue({
+        id: 'publication-1',
+        version: 7,
+        lifecycle: PublicationLifecycle.ERROR,
+        canonicalContentRevisionId: 'content-latest',
+      }),
+    },
+    publicationOccurrence: {
+      findFirst: jest.fn().mockResolvedValue({
+        id: 'occurrence-1',
+        publicationId: 'publication-1',
+        scheduleId: 'schedule-1',
+        scheduleRevision: 5,
+        contentRevisionId: 'content-original',
+        contentRevision: { revision: 1 },
+        status: occurrenceStatus,
+        schedule: { id: 'schedule-1', mode: PublicationScheduleMode.ONCE },
+        legacyBroadcasts: [{ id: 'broadcast-1' }],
+      }),
+    },
+    managedBroadcastDelivery: { count: failedDeliveryCount },
+    $transaction: transaction,
+  });
+  jest.spyOn(service, 'get').mockResolvedValue({ id: 'publication-1' } as never);
+  return { service, transaction, failedDeliveryCount };
 }
 
 describe('PublicationService', () => {
@@ -86,6 +134,12 @@ describe('PublicationService', () => {
     };
     (service as any).backgroundRuntimeGovernorService = backgroundRuntimeGovernorService;
     (service as any).managedBroadcastService = managedBroadcastService;
+    const normalizeSpy = jest
+      .spyOn(service as any, 'normalizeStalePublicationOccurrences')
+      .mockResolvedValue(undefined);
+    const reconcileSpy = jest
+      .spyOn(service as any, 'reconcileActiveRecurrenceSchedules')
+      .mockResolvedValue(undefined);
     const dispatchSpy = jest
       .spyOn(service as any, 'dispatchScheduledOccurrences')
       .mockResolvedValue(undefined);
@@ -101,6 +155,8 @@ describe('PublicationService', () => {
 
     await service.processDuePublications('scheduled');
 
+    expect(normalizeSpy).toHaveBeenCalledWith(200);
+    expect(reconcileSpy).toHaveBeenCalledWith(200);
     expect(dispatchSpy).toHaveBeenCalledTimes(1);
     expect(dispatchSpy).toHaveBeenCalledWith(50, [PublicationScheduleMode.NOW]);
     expect(managedBroadcastService.processDueImmediatePublicationBroadcasts).toHaveBeenCalledTimes(
@@ -126,6 +182,113 @@ describe('PublicationService', () => {
     expect(rollupPublicationsSpy.mock.invocationCallOrder[0]).toBeLessThan(
       backgroundRuntimeGovernorService.decide.mock.invocationCallOrder[0],
     );
+  });
+
+  it('cancels only provably stale scheduled occurrences during reconciliation', async () => {
+    const now = new Date('2026-07-10T09:00:00.000Z');
+    jest.useFakeTimers().setSystemTime(now);
+    try {
+      const updateMany = jest.fn().mockResolvedValue({ count: 3 });
+      const queryRaw = jest
+        .fn()
+        .mockResolvedValue([{ id: 'paused-past' }, { id: 'old-revision' }, { id: 'completed' }]);
+      const { service } = createService({
+        $queryRaw: queryRaw,
+        publicationOccurrence: {
+          updateMany,
+        },
+      });
+
+      await (service as any).normalizeStalePublicationOccurrences(500);
+
+      const selectionSql = extractSqlText(queryRaw.mock.calls[0]?.[0]);
+      expect(extractSqlValues(queryRaw.mock.calls[0]?.[0])).toEqual([now, 200]);
+      expect(selectionSql).toContain('po."schedule_revision" <> ps."revision"');
+      expect(selectionSql).toContain(
+        'ps."status" = \'PAUSED\'::"PublicationScheduleStatus" AND po."scheduled_at" < ?',
+      );
+      expect(selectionSql).toContain('AND NOT EXISTS');
+      expect(selectionSql).toContain(
+        '\'SENDING\'::"ManagedBroadcastDeliveryStatus", \'AMBIGUOUS\'::"ManagedBroadcastDeliveryStatus"',
+      );
+      expect(selectionSql).toMatch(
+        /WHERE .*po\."schedule_revision" <> ps\."revision".*AND NOT EXISTS .*ORDER BY po\."scheduled_at" ASC, po\."id" ASC LIMIT \?$/u,
+      );
+
+      expect(updateMany).toHaveBeenCalledWith({
+        where: {
+          id: { in: ['paused-past', 'old-revision', 'completed'] },
+          status: PublicationOccurrenceStatus.SCHEDULED,
+          deliveries: {
+            none: {
+              status: {
+                in: [
+                  ManagedBroadcastDeliveryStatus.SENDING,
+                  ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+                ],
+              },
+            },
+          },
+        },
+        data: { status: PublicationOccurrenceStatus.CANCELED },
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('accelerates recurrence materialization when the current horizon has no future occurrence', async () => {
+    const now = new Date('2026-07-10T09:00:00.000Z');
+    jest.useFakeTimers().setSystemTime(now);
+    try {
+      const scheduledRefreshAt = new Date(now.getTime() + 6 * 60 * 60_000);
+      const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const { service } = createService({
+        publicationSchedule: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              id: 'schedule-1',
+              publicationId: 'publication-1',
+              revision: 3,
+              nextMaterializeAt: scheduledRefreshAt,
+              rule: {
+                mode: 'recurrence',
+                timezone: 'UTC',
+                frequency: 'daily',
+                interval: 1,
+                weekdays: [],
+                times: ['10:00'],
+                startsAt: '2026-07-01T09:00:00.000Z',
+                endsAt: null,
+                maxOccurrences: null,
+                replaceConflicts: false,
+              },
+              occurrences: [],
+            },
+          ]),
+          updateMany,
+        },
+        publicationOccurrence: {
+          count: jest.fn().mockResolvedValue(0),
+          findFirst: jest.fn().mockResolvedValue(null),
+        },
+      });
+
+      await (service as any).reconcileActiveRecurrenceSchedules(200);
+
+      expect(updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'schedule-1',
+          revision: 3,
+          status: PublicationScheduleStatus.ACTIVE,
+          nextMaterializeAt: scheduledRefreshAt,
+          publication: { is: { lifecycle: PublicationLifecycle.ACTIVE } },
+        },
+        data: { nextMaterializeAt: now },
+      });
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('returns occupied calendar slots only for the selected publication targets', async () => {
@@ -274,6 +437,57 @@ describe('PublicationService', () => {
         new Date('2026-07-10T09:00:00.000Z'),
       ),
     ).toThrow('шагом 30 минут');
+  });
+
+  it('rejects a bounded recurrence with no possible future occurrence', () => {
+    const { service } = createService();
+    const now = new Date('2026-07-10T09:00:00.000Z');
+    const schedule = {
+      mode: 'recurrence',
+      timezone: 'UTC',
+      frequency: 'daily',
+      interval: 1,
+      weekdays: [],
+      times: ['12:00'],
+      startsAt: now.toISOString(),
+      endsAt: '2026-07-10T10:00:00.000Z',
+      maxOccurrences: null,
+      replaceConflicts: false,
+    } as const;
+
+    expect(() => (service as any).assertPublishableSchedule(schedule, [], now)).toThrow(
+      BadRequestException,
+    );
+    try {
+      (service as any).assertPublishableSchedule(schedule, [], now);
+    } catch (error: unknown) {
+      expect((error as BadRequestException).getResponse()).toEqual({
+        code: 'PUBLICATION_SCHEDULE_EMPTY',
+        message: 'Расписание не содержит ни одного будущего запуска.',
+      });
+    }
+  });
+
+  it('schedules far-future recurrence materialization when its first slot enters the horizon', () => {
+    const { service } = createService();
+    const now = new Date('2026-07-10T09:00:00.000Z');
+    const firstSlot = new Date('2026-09-10T10:00:00.000Z');
+    const schedule = {
+      mode: 'recurrence',
+      timezone: 'UTC',
+      frequency: 'daily',
+      interval: 1,
+      weekdays: [],
+      times: ['10:00'],
+      startsAt: '2026-09-10T09:00:00.000Z',
+      endsAt: null,
+      maxOccurrences: null,
+      replaceConflicts: false,
+    } as const;
+
+    expect(
+      (service as any).resolveInitialRecurrenceMaterializeAt(schedule, [], false, now),
+    ).toEqual(new Date(firstSlot.getTime() - 14 * 24 * 60 * 60_000));
   });
 
   it('updates an already materialized NOW occurrence without rebuilding its schedule', async () => {
@@ -464,6 +678,7 @@ describe('PublicationService', () => {
       };
       tx.publicationOccurrence.findMany.mockResolvedValue([{ id: 'occurrence-future' }]);
       tx.managedBroadcast.findMany.mockResolvedValue([{ id: 'broadcast-future' }]);
+      tx.managedBroadcast.updateMany.mockResolvedValue({ count: 1 });
       const deleteBroadcasts = jest.fn();
       Object.assign(tx.managedBroadcast, { deleteMany: deleteBroadcasts });
       const { service } = createService({
@@ -524,11 +739,58 @@ describe('PublicationService', () => {
       });
       expect(tx.publicationSchedule.deleteMany).not.toHaveBeenCalled();
       expect(tx.publicationOccurrence.updateMany).toHaveBeenCalledWith({
-        where: { id: { in: ['occurrence-future'] } },
+        where: {
+          id: { in: ['occurrence-future'] },
+          deliveries: {
+            none: {
+              OR: [
+                { attemptCount: { gt: 0 } },
+                { lockedAt: { not: null } },
+                {
+                  status: {
+                    in: [
+                      ManagedBroadcastDeliveryStatus.SENDING,
+                      ManagedBroadcastDeliveryStatus.SENT,
+                      ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+        },
         data: { status: PublicationOccurrenceStatus.CANCELED },
       });
       expect(tx.managedBroadcast.updateMany).toHaveBeenCalledWith({
-        where: { id: { in: ['broadcast-future'] } },
+        where: {
+          id: { in: ['broadcast-future'] },
+          status: {
+            in: [
+              ManagedBroadcastStatus.ACTIVE,
+              ManagedBroadcastStatus.PARTIAL,
+              ManagedBroadcastStatus.FAILED,
+            ],
+          },
+          lockedAt: null,
+          lockToken: null,
+          deliveries: {
+            none: {
+              OR: [
+                { attemptCount: { gt: 0 } },
+                { lockedAt: { not: null } },
+                {
+                  status: {
+                    in: [
+                      ManagedBroadcastDeliveryStatus.SENDING,
+                      ManagedBroadcastDeliveryStatus.SENT,
+                      ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+        },
         data: {
           status: ManagedBroadcastStatus.CANCELED,
           nextSendAt: null,
@@ -537,8 +799,17 @@ describe('PublicationService', () => {
         },
       });
       expect(tx.managedBroadcast.findMany).toHaveBeenCalledWith({
-        where: { publicationOccurrenceId: { in: ['occurrence-future'] } },
-        select: { id: true },
+        where: {
+          publicationOccurrenceId: { in: ['occurrence-future'] },
+          status: {
+            in: [
+              ManagedBroadcastStatus.ACTIVE,
+              ManagedBroadcastStatus.PARTIAL,
+              ManagedBroadcastStatus.FAILED,
+            ],
+          },
+        },
+        select: { id: true, lockedAt: true, lockToken: true },
       });
       expect(tx.managedBroadcast.updateMany.mock.calls[0]?.[0].data).not.toHaveProperty(
         'publicationOccurrenceId',
@@ -548,6 +819,129 @@ describe('PublicationService', () => {
       jest.useRealTimers();
     }
   });
+
+  it('rejects a schedule update while a future publication envelope is preclaimed', async () => {
+    const tx = createPublicationUpdateTransaction();
+    tx.publicationOccurrence.findMany.mockResolvedValue([{ id: 'occurrence-future' }]);
+    tx.managedBroadcast.findMany.mockResolvedValue([
+      {
+        id: 'broadcast-future',
+        lockedAt: new Date('2026-07-10T09:00:00.000Z'),
+        lockToken: 'update-execution-lease',
+      },
+    ]);
+    const { service } = createService({
+      publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
+      publication: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'publication-update-lease',
+          actorUserId: 'user-1',
+          version: 4,
+          lifecycle: PublicationLifecycle.ACTIVE,
+          title: 'Запланированный пост',
+          audienceSelection: 'SELECTED',
+          audienceMode: 'SNAPSHOT',
+          canonicalContentRevisionId: 'content-4',
+          canonicalContentRevision: { id: 'content-4' },
+          targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT, position: 0 }],
+          schedule: {
+            id: 'schedule-active',
+            revision: 3,
+            status: PublicationScheduleStatus.ACTIVE,
+            rule: {
+              mode: 'once',
+              timezone: 'Europe/Moscow',
+              at: '2026-07-12T12:00:00.000+03:00',
+              replaceConflicts: false,
+            },
+          },
+        }),
+      },
+      $transaction: jest.fn((callback: (client: typeof tx) => unknown) => callback(tx)),
+    });
+
+    await expect(
+      service.update(
+        'publication-update-lease',
+        { userId: 'user-1', username: null, displayName: null },
+        {
+          requestId: 'update-lease-001',
+          expectedRevision: 4,
+          schedule: null,
+          intent: 'draft',
+        },
+      ),
+    ).rejects.toMatchObject({
+      response: {
+        code: 'PUBLICATION_CONFLICT_REQUIRES_MANUAL_REVIEW',
+        message: 'Публикация уже начала отправку. Проверьте доставки отдельно.',
+      },
+    });
+
+    expect(tx.managedBroadcast.updateMany).not.toHaveBeenCalled();
+    expect(tx.managedBroadcastDelivery.updateMany).not.toHaveBeenCalled();
+    expect(tx.publicationOccurrence.updateMany).not.toHaveBeenCalled();
+  });
+
+  it.each(['pause', 'cancel'] as const)(
+    'rejects %s while a future publication envelope is preclaimed',
+    async (action) => {
+      const updateBroadcasts = jest.fn();
+      const deleteBroadcasts = jest.fn();
+      const updateSchedule = jest.fn();
+      const tx = {
+        $executeRaw: jest.fn().mockResolvedValue(1),
+        publication: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+        publicationOccurrence: {
+          findMany: jest.fn().mockResolvedValue([{ id: 'occurrence-future' }]),
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        },
+        managedBroadcast: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              id: 'broadcast-future',
+              lockedAt: new Date('2026-07-10T09:00:00.000Z'),
+              lockToken: `${action}-execution-lease`,
+            },
+          ]),
+          updateMany: updateBroadcasts,
+          deleteMany: deleteBroadcasts,
+        },
+        publicationSchedule: { updateMany: updateSchedule },
+        publicationMutationRecord: { create: jest.fn() },
+      };
+      const { service } = createService({
+        publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
+        publication: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: 'publication-action-lease',
+            actorUserId: 'user-1',
+            version: 3,
+            lifecycle: PublicationLifecycle.ACTIVE,
+          }),
+        },
+        $transaction: jest.fn((callback: (client: typeof tx) => unknown) => callback(tx)),
+      });
+
+      await expect(
+        service[action](
+          'publication-action-lease',
+          { userId: 'user-1', username: null, displayName: null },
+          { requestId: `${action}-lease-001`, expectedRevision: 3 },
+        ),
+      ).rejects.toMatchObject({
+        response: {
+          code: 'PUBLICATION_CONFLICT_REQUIRES_MANUAL_REVIEW',
+          message: 'Публикация уже начала отправку. Проверьте доставки отдельно.',
+        },
+      });
+
+      expect(updateBroadcasts).not.toHaveBeenCalled();
+      expect(deleteBroadcasts).not.toHaveBeenCalled();
+      expect(updateSchedule).not.toHaveBeenCalled();
+      expect(tx.publicationMutationRecord.create).not.toHaveBeenCalled();
+    },
+  );
 
   it('creates separate chat and channel execution envelopes linked to one occurrence', async () => {
     const managedBroadcastCreate = jest
@@ -649,12 +1043,16 @@ describe('PublicationService', () => {
   });
 
   it('rolls an ambiguous delivery up without making it retryable', async () => {
-    const update = jest.fn().mockResolvedValue({});
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const observedAt = new Date('2026-07-10T10:01:00.000Z');
     const { presenter, service } = createService({
       publicationOccurrence: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'occurrence-1',
           status: PublicationOccurrenceStatus.IN_PROGRESS,
+          updatedAt: observedAt,
+          scheduleRevision: 4,
+          contentRevisionId: 'content-1',
           scheduledAt: new Date('2026-07-10T10:00:00.000Z'),
           legacyBroadcasts: [
             {
@@ -663,14 +1061,20 @@ describe('PublicationService', () => {
             },
           ],
         }),
-        update,
+        updateMany,
       },
     });
 
     await (service as any).rollupOccurrence('occurrence-1');
 
-    expect(update).toHaveBeenCalledWith({
-      where: { id: 'occurrence-1' },
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'occurrence-1',
+        status: PublicationOccurrenceStatus.IN_PROGRESS,
+        updatedAt: observedAt,
+        scheduleRevision: 4,
+        contentRevisionId: 'content-1',
+      },
       data: { status: PublicationOccurrenceStatus.AMBIGUOUS },
     });
     expect(
@@ -682,6 +1086,43 @@ describe('PublicationService', () => {
       failed: 0,
       ambiguous: 1,
       canceled: 0,
+    });
+  });
+
+  it('does not overwrite a retried occurrence from a stale rollup snapshot', async () => {
+    const updateMany = jest.fn().mockResolvedValue({ count: 0 });
+    const observedAt = new Date('2026-07-10T10:01:00.000Z');
+    const { service } = createService({
+      publicationOccurrence: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'occurrence-1',
+          status: PublicationOccurrenceStatus.IN_PROGRESS,
+          updatedAt: observedAt,
+          scheduleRevision: 4,
+          contentRevisionId: 'content-1',
+          scheduledAt: new Date('2026-07-10T10:00:00.000Z'),
+          legacyBroadcasts: [
+            {
+              status: ManagedBroadcastStatus.FAILED,
+              deliveries: [{ status: ManagedBroadcastDeliveryStatus.FAILED }],
+            },
+          ],
+        }),
+        updateMany,
+      },
+    });
+
+    await (service as any).rollupOccurrence('occurrence-1');
+
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'occurrence-1',
+        status: PublicationOccurrenceStatus.IN_PROGRESS,
+        updatedAt: observedAt,
+        scheduleRevision: 4,
+        contentRevisionId: 'content-1',
+      },
+      data: { status: PublicationOccurrenceStatus.FAILED },
     });
   });
 
@@ -1006,6 +1447,14 @@ describe('PublicationService', () => {
         ambiguous: 0,
         canceled: 0,
       },
+      actionableDeliveryStats: {
+        total: 0,
+        pending: 0,
+        sent: 0,
+        failed: 0,
+        ambiguous: 0,
+        canceled: 0,
+      },
     });
     expect(occurrenceFindFirst).toHaveBeenCalledWith({
       where: {
@@ -1088,6 +1537,7 @@ describe('PublicationService', () => {
         },
       },
       orderBy: [{ scheduledAt: 'desc' }, { id: 'desc' }],
+      include: { contentRevision: { select: { revision: true } } },
     });
   });
 
@@ -1167,6 +1617,16 @@ describe('PublicationService', () => {
         id: 'occurrence-old-revision',
         scheduleRevision: 2,
         status: PublicationOccurrenceStatus.SCHEDULED,
+        deliveries: {
+          none: {
+            status: {
+              in: [
+                ManagedBroadcastDeliveryStatus.SENDING,
+                ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+              ],
+            },
+          },
+        },
       },
       data: { status: PublicationOccurrenceStatus.CANCELED },
     });
@@ -1333,7 +1793,7 @@ describe('PublicationService', () => {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       managedBroadcast: {
-        findMany: jest.fn().mockResolvedValue([]),
+        findMany: jest.fn().mockResolvedValue([{ id: 'broadcast-1' }]),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       publicationMutationRecord: { create: jest.fn().mockResolvedValue({}) },
@@ -1345,6 +1805,7 @@ describe('PublicationService', () => {
           id: 'publication-1',
           version: 7,
           lifecycle: PublicationLifecycle.ERROR,
+          canonicalContentRevisionId: 'content-latest',
         }),
       },
       publicationOccurrence: {
@@ -1353,6 +1814,8 @@ describe('PublicationService', () => {
           publicationId: 'publication-1',
           scheduleId: 'schedule-1',
           scheduleRevision: 5,
+          contentRevisionId: 'content-original',
+          contentRevision: { revision: 1 },
           status: PublicationOccurrenceStatus.FAILED,
           schedule: { id: 'schedule-1', mode: PublicationScheduleMode.RECURRENCE },
           legacyBroadcasts: [{ id: 'broadcast-1' }],
@@ -1391,21 +1854,93 @@ describe('PublicationService', () => {
     );
   });
 
-  it('does not retry when the exact schedule revision is paused or terminal', async () => {
+  it('rebinds only failed targets when retrying the latest content revision', async () => {
+    const persistedDeliveries: Array<{
+      id: string;
+      broadcastId: string;
+      publicationOccurrenceId: string;
+      status: ManagedBroadcastDeliveryStatus;
+      contentRevisionId: string;
+    }> = [
+      {
+        id: 'delivery-failed',
+        broadcastId: 'broadcast-failed',
+        publicationOccurrenceId: 'occurrence-1',
+        status: ManagedBroadcastDeliveryStatus.FAILED,
+        contentRevisionId: 'content-original',
+      },
+      {
+        id: 'delivery-sent',
+        broadcastId: 'broadcast-failed',
+        publicationOccurrenceId: 'occurrence-1',
+        status: ManagedBroadcastDeliveryStatus.SENT,
+        contentRevisionId: 'content-original',
+      },
+      {
+        id: 'delivery-ambiguous',
+        broadcastId: 'broadcast-ambiguous',
+        publicationOccurrenceId: 'occurrence-1',
+        status: ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+        contentRevisionId: 'content-original',
+      },
+    ];
+    const updateDeliveries = jest.fn().mockImplementation(
+      async ({
+        where,
+        data,
+      }: {
+        where: {
+          publicationOccurrenceId: string;
+          broadcastId: { in: string[] };
+          status: ManagedBroadcastDeliveryStatus;
+        };
+        data: Partial<(typeof persistedDeliveries)[number]>;
+      }) => {
+        let count = 0;
+        for (const delivery of persistedDeliveries) {
+          if (
+            delivery.publicationOccurrenceId !== where.publicationOccurrenceId ||
+            !where.broadcastId.in.includes(delivery.broadcastId) ||
+            delivery.status !== where.status
+          ) {
+            continue;
+          }
+          Object.assign(delivery, data);
+          count += 1;
+        }
+        return { count };
+      },
+    );
     const tx = {
       $executeRaw: jest.fn().mockResolvedValue(1),
       publication: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
-      publicationSchedule: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
-      publicationOccurrence: { updateMany: jest.fn() },
-      managedBroadcastDelivery: { updateMany: jest.fn() },
+      publicationSchedule: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      publicationOccurrence: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      managedBroadcastDelivery: { updateMany: updateDeliveries },
+      managedBroadcast: {
+        findMany: jest.fn().mockResolvedValue([{ id: 'broadcast-failed' }]),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      publicationMutationRecord: { create: jest.fn().mockResolvedValue({}) },
     };
+    const deliveryCount = jest.fn().mockResolvedValueOnce(1).mockResolvedValueOnce(0);
     const { service } = createService({
       publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
       publication: {
         findFirst: jest.fn().mockResolvedValue({
           id: 'publication-1',
-          version: 7,
+          version: 8,
           lifecycle: PublicationLifecycle.ERROR,
+          canonicalContentRevisionId: 'content-latest',
+        }),
+      },
+      publicationContentRevision: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'content-latest',
+          revision: 8,
+          text: 'Актуальный текст',
+          textFormat: PublicationContentFormat.MARKDOWN,
+          buttons: [{ text: 'Открыть', url: 'https://example.com' }],
         }),
       },
       publicationOccurrence: {
@@ -1414,6 +1949,300 @@ describe('PublicationService', () => {
           publicationId: 'publication-1',
           scheduleId: 'schedule-1',
           scheduleRevision: 5,
+          contentRevisionId: 'content-original',
+          contentRevision: { revision: 7 },
+          status: PublicationOccurrenceStatus.PARTIAL,
+          schedule: { id: 'schedule-1', mode: PublicationScheduleMode.ONCE },
+          legacyBroadcasts: [
+            { id: 'broadcast-failed' },
+            { id: 'broadcast-sent' },
+            { id: 'broadcast-ambiguous' },
+          ],
+        }),
+      },
+      managedBroadcastDelivery: { count: deliveryCount },
+      $transaction: jest.fn((callback: (client: typeof tx) => unknown) => callback(tx)),
+    });
+    jest.spyOn(service, 'get').mockResolvedValue({ id: 'publication-1' } as never);
+
+    await service.retryOccurrence(
+      'publication-1',
+      'occurrence-1',
+      { userId: 'user-1', username: null, displayName: null },
+      {
+        requestId: 'retry-latest-001',
+        contentMode: 'latest',
+        expectedPublicationVersion: 8,
+        expectedContentRevision: 8,
+      },
+    );
+
+    expect(tx.publicationOccurrence.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ contentRevisionId: 'content-original' }),
+        data: expect.objectContaining({
+          status: PublicationOccurrenceStatus.IN_PROGRESS,
+          contentRevisionId: 'content-latest',
+        }),
+      }),
+    );
+    expect(tx.managedBroadcastDelivery.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          broadcastId: { in: ['broadcast-failed'] },
+          status: ManagedBroadcastDeliveryStatus.FAILED,
+        }),
+        data: expect.objectContaining({
+          status: ManagedBroadcastDeliveryStatus.PENDING,
+          contentRevisionId: 'content-latest',
+        }),
+      }),
+    );
+    expect(tx.managedBroadcast.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: { in: ['broadcast-failed'] } }),
+        data: expect.objectContaining({
+          text: 'Актуальный текст',
+          textFormat: 'markdown',
+          publicationContentRevisionId: 'content-latest',
+        }),
+      }),
+    );
+    expect(persistedDeliveries).toEqual([
+      expect.objectContaining({
+        id: 'delivery-failed',
+        status: ManagedBroadcastDeliveryStatus.PENDING,
+        contentRevisionId: 'content-latest',
+      }),
+      expect.objectContaining({
+        id: 'delivery-sent',
+        status: ManagedBroadcastDeliveryStatus.SENT,
+        contentRevisionId: 'content-original',
+      }),
+      expect.objectContaining({
+        id: 'delivery-ambiguous',
+        status: ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+        contentRevisionId: 'content-original',
+      }),
+    ]);
+    expect(tx.managedBroadcast.updateMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: { in: ['broadcast-failed'] },
+          lockedAt: null,
+          lockToken: null,
+          deliveries: expect.objectContaining({
+            some: expect.objectContaining({ status: ManagedBroadcastDeliveryStatus.FAILED }),
+            none: expect.objectContaining({
+              status: {
+                in: [
+                  ManagedBroadcastDeliveryStatus.SENDING,
+                  ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+                ],
+              },
+            }),
+          }),
+        }),
+        data: {
+          lockedAt: expect.any(Date),
+          lockToken: expect.stringMatching(/^publication-retry:/),
+        },
+      }),
+    );
+    expect(tx.managedBroadcast.findMany).toHaveBeenCalledWith({
+      where: {
+        publicationOccurrenceId: 'occurrence-1',
+        deliveries: {
+          some: {
+            publicationOccurrenceId: 'occurrence-1',
+            status: ManagedBroadcastDeliveryStatus.FAILED,
+          },
+        },
+      },
+      select: { id: true },
+    });
+    expect(tx.managedBroadcast.updateMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: { in: ['broadcast-failed'] },
+          lockToken: expect.stringMatching(/^publication-retry:/),
+        }),
+        data: expect.objectContaining({ lockedAt: null, lockToken: null }),
+      }),
+    );
+  });
+
+  it('rolls back an original retry when any failed envelope already has a worker lease', async () => {
+    const tx = {
+      $executeRaw: jest.fn().mockResolvedValue(1),
+      managedBroadcast: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([{ id: 'broadcast-free' }, { id: 'broadcast-worker-owned' }]),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      publication: { updateMany: jest.fn() },
+      publicationSchedule: { updateMany: jest.fn() },
+      publicationOccurrence: { updateMany: jest.fn() },
+      managedBroadcastDelivery: { updateMany: jest.fn() },
+    };
+    const { service } = createOriginalRetryService(tx);
+
+    await expect(
+      service.retryOccurrence(
+        'publication-1',
+        'occurrence-1',
+        { userId: 'user-1', username: null, displayName: null },
+        { requestId: 'retry-worker-owned' },
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    expect(tx.managedBroadcast.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          lockedAt: null,
+          lockToken: null,
+          deliveries: expect.objectContaining({
+            none: expect.objectContaining({
+              status: {
+                in: [
+                  ManagedBroadcastDeliveryStatus.SENDING,
+                  ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+                ],
+              },
+            }),
+          }),
+        }),
+      }),
+    );
+    expect(tx.publication.updateMany).not.toHaveBeenCalled();
+    expect(tx.managedBroadcastDelivery.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('rolls back when a worker lease appears between envelope selection and CAS claim', async () => {
+    let envelopesSelected = false;
+    const findMany = jest.fn().mockImplementation(async () => {
+      envelopesSelected = true;
+      return [{ id: 'broadcast-1' }];
+    });
+    const claimBroadcast = jest.fn().mockImplementation(async () => {
+      expect(envelopesSelected).toBe(true);
+      return { count: 0 };
+    });
+    const tx = {
+      $executeRaw: jest.fn().mockResolvedValue(1),
+      managedBroadcast: { findMany, updateMany: claimBroadcast },
+      publication: { updateMany: jest.fn() },
+      publicationSchedule: { updateMany: jest.fn() },
+      publicationOccurrence: { updateMany: jest.fn() },
+      managedBroadcastDelivery: { updateMany: jest.fn() },
+    };
+    const { service } = createOriginalRetryService(tx);
+
+    await expect(
+      service.retryOccurrence(
+        'publication-1',
+        'occurrence-1',
+        { userId: 'user-1', username: null, displayName: null },
+        { requestId: 'retry-raced-lease' },
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    expect(findMany.mock.invocationCallOrder[0]).toBeLessThan(
+      claimBroadcast.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+    expect(tx.managedBroadcastDelivery.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('rechecks the retryable occurrence status inside the transaction', async () => {
+    const tx = {
+      $executeRaw: jest.fn().mockResolvedValue(1),
+      managedBroadcast: {
+        findMany: jest.fn().mockResolvedValue([{ id: 'broadcast-1' }]),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      publication: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      publicationSchedule: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      publicationOccurrence: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
+      managedBroadcastDelivery: { updateMany: jest.fn() },
+    };
+    const { service } = createOriginalRetryService(tx);
+
+    await expect(
+      service.retryOccurrence(
+        'publication-1',
+        'occurrence-1',
+        { userId: 'user-1', username: null, displayName: null },
+        { requestId: 'retry-occurrence-race' },
+      ),
+    ).rejects.toThrow('Запуск публикации уже изменён');
+
+    expect(tx.publicationOccurrence.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: {
+            in: [PublicationOccurrenceStatus.FAILED, PublicationOccurrenceStatus.PARTIAL],
+          },
+        }),
+      }),
+    );
+    expect(tx.managedBroadcastDelivery.updateMany).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    PublicationOccurrenceStatus.CANCELED,
+    PublicationOccurrenceStatus.SENT,
+    PublicationOccurrenceStatus.AMBIGUOUS,
+    PublicationOccurrenceStatus.IN_PROGRESS,
+  ])('rejects a %s occurrence before starting a retry transaction', async (status) => {
+    const tx = { $executeRaw: jest.fn() };
+    const { service, transaction, failedDeliveryCount } = createOriginalRetryService(tx, status);
+
+    await expect(
+      service.retryOccurrence(
+        'publication-1',
+        'occurrence-1',
+        { userId: 'user-1', username: null, displayName: null },
+        { requestId: `retry-invalid-${status.toLowerCase()}` },
+      ),
+    ).rejects.toThrow('Этот запуск больше нельзя повторить');
+
+    expect(failedDeliveryCount).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it('does not retry when the exact schedule revision is paused or terminal', async () => {
+    const tx = {
+      $executeRaw: jest.fn().mockResolvedValue(1),
+      publication: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      publicationSchedule: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
+      publicationOccurrence: { updateMany: jest.fn() },
+      managedBroadcastDelivery: { updateMany: jest.fn() },
+      managedBroadcast: {
+        findMany: jest.fn().mockResolvedValue([{ id: 'broadcast-1' }]),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const { service } = createService({
+      publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
+      publication: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'publication-1',
+          version: 7,
+          lifecycle: PublicationLifecycle.ERROR,
+          canonicalContentRevisionId: 'content-latest',
+        }),
+      },
+      publicationOccurrence: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'occurrence-1',
+          publicationId: 'publication-1',
+          scheduleId: 'schedule-1',
+          scheduleRevision: 5,
+          contentRevisionId: 'content-original',
+          contentRevision: { revision: 1 },
           status: PublicationOccurrenceStatus.FAILED,
           schedule: { id: 'schedule-1', mode: PublicationScheduleMode.ONCE },
           legacyBroadcasts: [{ id: 'broadcast-1' }],
@@ -1515,7 +2344,10 @@ describe('PublicationService', () => {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findMany: jest.fn().mockResolvedValue([{ status: ManagedBroadcastDeliveryStatus.SENT }]),
       },
-      managedBroadcast: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      managedBroadcast: {
+        findMany: jest.fn().mockResolvedValue([{ id: 'broadcast-1' }]),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
       managedBroadcastCalendarReservation: {
         deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
@@ -1632,7 +2464,9 @@ describe('PublicationService', () => {
     'rolls lifecycle up for %s (%s)',
     async (grouped, scheduleStatus, expectedLifecycle, expectedScheduleStatus, _label) => {
       const tx = {
+        $executeRaw: jest.fn().mockResolvedValue(1),
         publication: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+        publicationOccurrence: { count: jest.fn().mockResolvedValue(0) },
         publicationSchedule: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
       };
       const groupBy = jest.fn().mockResolvedValue(grouped);
@@ -1672,7 +2506,23 @@ describe('PublicationService', () => {
         expect(tx.publicationSchedule.updateMany).not.toHaveBeenCalled();
       } else {
         expect(tx.publication.updateMany).toHaveBeenCalledWith(
-          expect.objectContaining({ data: { lifecycle: expectedLifecycle } }),
+          expect.objectContaining({
+            where: expect.objectContaining({
+              occurrences: {
+                none: {
+                  scheduleId: 'schedule-1',
+                  scheduleRevision: 6,
+                  status: {
+                    in: [
+                      PublicationOccurrenceStatus.SCHEDULED,
+                      PublicationOccurrenceStatus.IN_PROGRESS,
+                    ],
+                  },
+                },
+              },
+            }),
+            data: { lifecycle: expectedLifecycle },
+          }),
         );
         expect(tx.publicationSchedule.updateMany).toHaveBeenCalledWith(
           expect.objectContaining({ data: { status: expectedScheduleStatus } }),
@@ -1680,6 +2530,110 @@ describe('PublicationService', () => {
       }
     },
   );
+
+  it('marks an empty active recurrence as an error instead of completing it as 0/0', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-10T09:00:00.000Z'));
+    try {
+      const tx = {
+        $executeRaw: jest.fn().mockResolvedValue(1),
+        publication: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+        publicationOccurrence: { count: jest.fn().mockResolvedValue(0) },
+        publicationSchedule: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      };
+      const { service } = createService({
+        publication: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: 'publication-empty',
+            lifecycle: PublicationLifecycle.ACTIVE,
+            schedule: {
+              id: 'schedule-empty',
+              revision: 1,
+              mode: PublicationScheduleMode.RECURRENCE,
+              status: PublicationScheduleStatus.ACTIVE,
+              nextMaterializeAt: null,
+              rule: {
+                mode: 'recurrence',
+                timezone: 'UTC',
+                frequency: 'daily',
+                interval: 1,
+                weekdays: [],
+                times: ['12:00'],
+                startsAt: '2026-07-10T09:00:00.000Z',
+                endsAt: '2026-07-10T10:00:00.000Z',
+                maxOccurrences: null,
+                replaceConflicts: false,
+              },
+            },
+          }),
+        },
+        publicationOccurrence: {
+          groupBy: jest.fn().mockResolvedValue([]),
+          findFirst: jest.fn().mockResolvedValue(null),
+        },
+        $transaction: jest.fn((callback: (client: typeof tx) => unknown) => callback(tx)),
+      });
+
+      await (service as any).rollupPublicationLifecycle('publication-empty');
+
+      expect(tx.publication.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { lifecycle: PublicationLifecycle.ERROR } }),
+      );
+      expect(tx.publicationSchedule.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: {
+            status: PublicationScheduleStatus.ERROR,
+            lastError: 'Расписание не содержит ни одного будущего запуска.',
+          },
+        }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('leaves lifecycle active when a retry starts after the rollup aggregate read', async () => {
+    const tx = {
+      $executeRaw: jest.fn().mockResolvedValue(1),
+      publication: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      publicationOccurrence: { count: jest.fn().mockResolvedValue(1) },
+      publicationSchedule: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+    };
+    const { service } = createService({
+      publication: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'publication-1',
+          lifecycle: PublicationLifecycle.ACTIVE,
+          schedule: {
+            id: 'schedule-1',
+            revision: 6,
+            status: PublicationScheduleStatus.ACTIVE,
+            nextMaterializeAt: null,
+          },
+        }),
+      },
+      publicationOccurrence: {
+        groupBy: jest
+          .fn()
+          .mockResolvedValue([{ status: PublicationOccurrenceStatus.FAILED, _count: { _all: 1 } }]),
+      },
+      $transaction: jest.fn((callback: (client: typeof tx) => unknown) => callback(tx)),
+    });
+
+    await (service as any).rollupPublicationLifecycle('publication-1');
+
+    expect(tx.publicationOccurrence.count).toHaveBeenCalledWith({
+      where: {
+        publicationId: 'publication-1',
+        scheduleId: 'schedule-1',
+        scheduleRevision: 6,
+        status: {
+          in: [PublicationOccurrenceStatus.SCHEDULED, PublicationOccurrenceStatus.IN_PROGRESS],
+        },
+      },
+    });
+    expect(tx.publication.updateMany).not.toHaveBeenCalled();
+    expect(tx.publicationSchedule.updateMany).not.toHaveBeenCalled();
+  });
 
   it('selects lifecycle rollups only when no occurrence is still scheduled or in progress', async () => {
     const findMany = jest.fn().mockResolvedValue([]);
@@ -1968,6 +2922,65 @@ describe('PublicationService', () => {
     expect(tx.publicationOccurrence.updateMany).not.toHaveBeenCalled();
   });
 
+  it('rejects replacement for a preclaimed publication execution envelope', async () => {
+    const lockedAt = new Date('2026-07-12T08:59:59.000Z');
+    const updateOccurrences = jest.fn();
+    const updateBroadcasts = jest.fn();
+    const tx = {
+      managedBroadcastDelivery: { count: jest.fn().mockResolvedValue(0) },
+      managedBroadcast: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'publication-broadcast',
+            lockedAt,
+            lockToken: 'publication-execution-lease',
+          },
+        ]),
+        updateMany: updateBroadcasts,
+      },
+      publicationOccurrence: { updateMany: updateOccurrences },
+    };
+    const { service } = createService();
+
+    await expect(
+      (service as any).cancelConflictingPublicationOccurrences(tx, [
+        {
+          id: 'old-occurrence',
+          publicationId: 'old-publication',
+          scheduleId: 'old-schedule',
+          scheduleRevision: 2,
+          scheduledAt: new Date('2026-07-12T09:00:00.000Z'),
+          schedule: { revision: 2 },
+          publication: {
+            actorUserId: 'user-1',
+            targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT }],
+          },
+        },
+      ]),
+    ).rejects.toMatchObject({
+      response: {
+        code: 'PUBLICATION_CONFLICT_REQUIRES_MANUAL_REVIEW',
+        message: 'Конфликтующая публикация уже начала отправку. Проверьте её отдельно.',
+      },
+    });
+
+    expect(tx.managedBroadcast.findMany).toHaveBeenCalledWith({
+      where: {
+        publicationOccurrenceId: { in: ['old-occurrence'] },
+        status: {
+          in: [
+            ManagedBroadcastStatus.ACTIVE,
+            ManagedBroadcastStatus.PARTIAL,
+            ManagedBroadcastStatus.FAILED,
+          ],
+        },
+      },
+      select: { id: true, lockedAt: true, lockToken: true },
+    });
+    expect(updateOccurrences).not.toHaveBeenCalled();
+    expect(updateBroadcasts).not.toHaveBeenCalled();
+  });
+
   it('does not double-cancel a publication conflict represented by its reservation', async () => {
     const slot = new Date('2026-07-12T09:00:00.000Z');
     const reservationFindMany = jest.fn().mockResolvedValue([
@@ -2067,6 +3080,7 @@ describe('PublicationService', () => {
       entityType: ChatEntityType.CHAT,
       scheduledAt: new Date('2026-07-12T09:00:00.000Z'),
       targetChatIds: ['chat-1'],
+      actorUserId: 'user-1',
     });
 
     expect(tx.publicationOccurrence.updateMany).toHaveBeenCalledWith({
@@ -2094,11 +3108,41 @@ describe('PublicationService', () => {
         entityType: ChatEntityType.CHAT,
         scheduledAt: new Date('2026-07-12T09:00:00.000Z'),
         targetChatIds: ['chat-1'],
+        actorUserId: 'user-1',
       }),
     ).rejects.toMatchObject({
       response: expect.objectContaining({ code: 'PUBLICATION_CONFLICT_REQUIRES_MANUAL_REVIEW' }),
     });
     expect(reservationFindMany).not.toHaveBeenCalled();
+  });
+
+  it("requires manual review before replacing another owner's legacy broadcast", async () => {
+    const reservationFindMany = jest.fn();
+    const updateBroadcasts = jest.fn();
+    const tx = {
+      managedBroadcastDelivery: { count: jest.fn().mockResolvedValue(0) },
+      managedBroadcast: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([{ id: 'broadcast-other-owner', actorUserId: 'user-2' }]),
+        updateMany: updateBroadcasts,
+      },
+      managedBroadcastCalendarReservation: { findMany: reservationFindMany },
+    };
+    const { service } = createService();
+
+    await expect(
+      (service as any).cancelConflictingBroadcasts(tx, ['broadcast-other-owner'], {
+        entityType: ChatEntityType.CHAT,
+        scheduledAt: new Date('2026-07-12T09:00:00.000Z'),
+        targetChatIds: ['chat-1'],
+        actorUserId: 'user-1',
+      }),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'PUBLICATION_CONFLICT_REQUIRES_MANUAL_REVIEW' }),
+    });
+    expect(reservationFindMany).not.toHaveBeenCalled();
+    expect(updateBroadcasts).not.toHaveBeenCalled();
   });
 
   it('returns a controlled conflict when a legacy broadcast is claimed after replacement preflight', async () => {
@@ -2134,6 +3178,7 @@ describe('PublicationService', () => {
         entityType: ChatEntityType.CHAT,
         scheduledAt: slot,
         targetChatIds: ['chat-1'],
+        actorUserId: 'user-1',
       }),
     ).rejects.toMatchObject({
       response: expect.objectContaining({ code: 'PUBLICATION_CONFLICT_REQUIRES_MANUAL_REVIEW' }),
@@ -2141,6 +3186,7 @@ describe('PublicationService', () => {
     expect(tx.managedBroadcast.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
+          actorUserId: 'user-1',
           sentCount: 0,
           lockedAt: null,
           lockToken: null,

@@ -5,7 +5,7 @@ import {
   normalizeApiError,
 } from '../src/components/vk-parsing/format';
 
-test('VK errors preserve concise Russian API validation without exposing the transport wrapper', () => {
+test('VK errors preserve safe validation without exposing server internals', () => {
   assert.equal(
     normalizeApiError(
       new Error('API request failed: 400 {"message":"Укажите ссылку на сообщество."}'),
@@ -14,7 +14,7 @@ test('VK errors preserve concise Russian API validation without exposing the tra
   );
   assert.equal(
     normalizeApiError(new Error('API request failed: 500 {"message":"Prisma timeout"}')),
-    'Нет связи с сервисом. Повторите.',
+    'Ошибка сервера. Повторите позже.',
   );
 });
 

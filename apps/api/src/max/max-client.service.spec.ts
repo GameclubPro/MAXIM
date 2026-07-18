@@ -293,7 +293,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
 
   function createService(
     httpService: { request?: jest.Mock } = {},
-    configOverrides: Partial<Record<string, string>> = {},
+    configOverrides: Partial<Record<string, boolean | string>> = {},
     actionQueue?: { add: jest.Mock; getJob: jest.Mock },
     actionLedgerService?: {
       isIrreversibleAction?: jest.Mock;
@@ -1833,6 +1833,32 @@ describe('MaxClientService inline keyboard guardrails', () => {
       }),
     );
 
+    await service.onModuleDestroy();
+  });
+
+  it('runs the direct-user send fence immediately before the MAX POST', async () => {
+    const order: string[] = [];
+    const httpService = {
+      request: jest.fn().mockImplementationOnce(() => {
+        order.push('post');
+        return of({
+          status: 200,
+          data: {
+            mid: 'mid-private-fenced',
+            recipient: { chat_id: '165176099' },
+          },
+        });
+      }),
+    };
+    const service = createService(httpService);
+
+    await service.sendMessageImmediateToUser('user-42', 'Личное уведомление', {
+      beforeSend: async () => {
+        order.push('fence');
+      },
+    });
+
+    expect(order).toEqual(['fence', 'post']);
     await service.onModuleDestroy();
   });
 
@@ -3643,6 +3669,342 @@ describe('MaxClientService inline keyboard guardrails', () => {
         url: 'https://upload.max.ru/video-1',
       }),
     );
+
+    await service.onModuleDestroy();
+  });
+
+  it('uploads video in bounded Content-Range chunks when the feature flag is enabled', async () => {
+    const chunkBytes = 4 * 1_024 * 1_024;
+    const video = Buffer.alloc(chunkBytes + 3, 7);
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            data: {
+              url: 'https://upload.max.ru/video-range-1?signature=secret',
+              token: 'video-range-token-1',
+            },
+          }),
+        )
+        .mockReturnValueOnce(of({ data: '' }))
+        .mockReturnValueOnce(of({ data: '' })),
+    };
+    const service = createService(httpService, {
+      MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED: true,
+    });
+
+    const result = await service.uploadVideo(video, '../range-video.mp4', 'video/mp4', {
+      timeoutMs: 12_345,
+    });
+
+    expect(result).toEqual({ token: 'video-range-token-1' });
+    expect(httpService.request).toHaveBeenCalledTimes(3);
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://upload.max.ru/video-range-1?signature=secret',
+        data: expect.any(Buffer),
+        headers: expect.objectContaining({
+          'Content-Disposition': 'attachment; filename="range-video.mp4"',
+          'Content-Length': String(chunkBytes),
+          'Content-Range': `bytes 0-${chunkBytes - 1}/${video.length}`,
+          'Content-Type': 'application/x-binary; charset=x-user-defined',
+          'X-File-Name': 'range-video.mp4',
+          'X-Uploading-Mode': 'parallel',
+          Connection: 'keep-alive',
+        }),
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+        timeout: expect.any(Number),
+      }),
+    );
+    expect(httpService.request.mock.calls[1]?.[0].headers).not.toHaveProperty('Authorization');
+    expect((httpService.request.mock.calls[1]?.[0].data as Buffer).length).toBe(chunkBytes);
+    expect(httpService.request.mock.calls[1]?.[0].timeout).toBeGreaterThan(0);
+    expect(httpService.request.mock.calls[1]?.[0].timeout).toBeLessThanOrEqual(12_345);
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        url: 'https://upload.max.ru/video-range-1?signature=secret',
+        data: expect.any(Buffer),
+        headers: expect.objectContaining({
+          'Content-Length': '3',
+          'Content-Range': `bytes ${chunkBytes}-${chunkBytes + 2}/${video.length}`,
+        }),
+      }),
+    );
+    expect((httpService.request.mock.calls[2]?.[0].data as Buffer).length).toBe(3);
+    expect(httpService.request.mock.calls[2]?.[0].timeout).toBeGreaterThan(0);
+    expect(httpService.request.mock.calls[2]?.[0].timeout).toBeLessThanOrEqual(
+      httpService.request.mock.calls[1]?.[0].timeout,
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('uses one decreasing timeout budget across upload sessions and range chunks', async () => {
+    const chunkBytes = 4 * 1_024 * 1_024;
+    const video = Buffer.alloc(chunkBytes + 1, 7);
+    let now = 1_000;
+    const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    const httpService = {
+      request: jest.fn().mockImplementation((request: { url?: string }) => {
+        if (request.url === 'https://platform-api2.max.ru/uploads') {
+          now += 100;
+          return of({
+            data: {
+              url: 'https://upload.max.ru/video-deadline',
+              token: 'video-deadline-token',
+            },
+          });
+        }
+        now += 2_500;
+        return of({ data: '' });
+      }),
+    };
+    const service = createService(httpService, {
+      MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED: true,
+    });
+
+    try {
+      await expect(
+        service.uploadVideo(video, 'deadline.mp4', 'video/mp4', { timeoutMs: 10_000 }),
+      ).resolves.toEqual({ token: 'video-deadline-token' });
+
+      expect(httpService.request.mock.calls.map(([request]) => request.timeout)).toEqual([
+        10_000, 9_900, 7_400,
+      ]);
+    } finally {
+      nowSpy.mockRestore();
+      await service.onModuleDestroy();
+    }
+  });
+
+  it('recomputes the upload-session request timeout after internal rate-limit waiting', async () => {
+    let now = 1_000;
+    const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            data: {
+              url: 'https://upload.max.ru/video-rate-limit-budget',
+              token: 'video-rate-limit-token',
+            },
+          }),
+        )
+        .mockReturnValueOnce(of({ data: '' })),
+    };
+    const service = createService(httpService, {
+      MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED: true,
+    });
+    jest.spyOn(service as any, 'reserveRateLimitSlot').mockImplementation(async () => {
+      now += 4_000;
+    });
+
+    try {
+      await expect(
+        service.uploadVideo(Buffer.from('video'), 'rate-limit.mp4', 'video/mp4', {
+          timeoutMs: 10_000,
+        }),
+      ).resolves.toEqual({ token: 'video-rate-limit-token' });
+
+      expect(httpService.request.mock.calls[0]?.[0].timeout).toBe(6_000);
+      expect(httpService.request.mock.calls[1]?.[0].timeout).toBe(6_000);
+    } finally {
+      nowSpy.mockRestore();
+      await service.onModuleDestroy();
+    }
+  });
+
+  it('does not start a fresh upload session after the overall deadline expires', async () => {
+    let now = 1_000;
+    const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    const httpService = {
+      request: jest
+        .fn()
+        .mockImplementationOnce(() => {
+          now += 100;
+          return of({
+            data: {
+              url: 'https://upload.max.ru/video-expired',
+              token: 'video-expired-token',
+            },
+          });
+        })
+        .mockImplementationOnce(() => {
+          now = 11_001;
+          return throwError(() =>
+            Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }),
+          );
+        }),
+    };
+    const service = createService(httpService, {
+      MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED: true,
+    });
+
+    try {
+      await expect(
+        service.uploadVideo(Buffer.from('video'), 'expired.mp4', 'video/mp4', {
+          timeoutMs: 10_000,
+        }),
+      ).rejects.toMatchObject({ name: 'MaxMediaUploadError' });
+      expect(httpService.request).toHaveBeenCalledTimes(2);
+    } finally {
+      nowSpy.mockRestore();
+      await service.onModuleDestroy();
+    }
+  });
+
+  it('uses an ASCII-safe filename in resumable video headers', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            data: {
+              url: 'https://upload.max.ru/video-unicode',
+              token: 'video-unicode-token',
+            },
+          }),
+        )
+        .mockReturnValueOnce(of({ data: '' })),
+    };
+    const service = createService(httpService, {
+      MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED: true,
+    });
+
+    await service.uploadVideo(Buffer.from('video'), 'видео.mp4', 'video/mp4');
+
+    expect(httpService.request.mock.calls[1]?.[0].headers).toEqual(
+      expect.objectContaining({
+        'Content-Disposition': 'attachment; filename="upload.mp4"',
+        'X-File-Name': 'upload.mp4',
+      }),
+    );
+    await service.onModuleDestroy();
+  });
+
+  it('uses multipart fallback when a resumable video session has no token', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            data: {
+              url: 'https://upload.max.ru/video-multipart-fallback',
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            data: {
+              token: 'video-multipart-token-1',
+            },
+          }),
+        ),
+    };
+    const service = createService(httpService, {
+      MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED: true,
+    });
+
+    const result = await service.uploadVideo(Buffer.from('video-binary'), 'видео.mp4', 'video/mp4');
+
+    expect(result).toEqual({ token: 'video-multipart-token-1' });
+    const uploadRequest = httpService.request.mock.calls[1]?.[0] as {
+      data?: { getBuffer?: () => Buffer };
+      headers?: Record<string, unknown>;
+    };
+    expect(uploadRequest.data?.getBuffer).toEqual(expect.any(Function));
+    expect(uploadRequest.headers?.['content-type']).toMatch(/^multipart\/form-data; boundary=/u);
+    expect(uploadRequest.headers).not.toHaveProperty('Content-Range');
+    expect(uploadRequest.data?.getBuffer?.().toString('utf8')).toContain('filename="видео.mp4"');
+
+    await service.onModuleDestroy();
+  });
+
+  it('starts a fresh resumable video session after an ambiguous chunk failure', async () => {
+    const firstUploadUrl = 'https://upload.max.ru/video-range-first?signature=do-not-log';
+    const secondUploadUrl = 'https://upload.max.ru/video-range-second?signature=do-not-log-either';
+    const ambiguousError = Object.assign(new Error(`socket hang up for ${firstUploadUrl}`), {
+      code: 'ECONNRESET',
+    });
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({ data: { url: firstUploadUrl, token: 'video-range-token-first' } }),
+        )
+        .mockReturnValueOnce(throwError(() => ambiguousError))
+        .mockReturnValueOnce(
+          of({ data: { url: secondUploadUrl, token: 'video-range-token-second' } }),
+        )
+        .mockReturnValueOnce(of({ data: '' })),
+    };
+    const service = createService(httpService, {
+      MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED: true,
+    });
+
+    const result = await service.uploadVideo(
+      Buffer.from('video-binary'),
+      'retry-video.mp4',
+      'video/mp4',
+    );
+
+    expect(result).toEqual({ token: 'video-range-token-second' });
+    expect(httpService.request).toHaveBeenCalledTimes(4);
+    expect(httpService.request.mock.calls[1]?.[0].url).toBe(firstUploadUrl);
+    expect(httpService.request.mock.calls[3]?.[0].url).toBe(secondUploadUrl);
+
+    await service.onModuleDestroy();
+  });
+
+  it('redacts resumable video upload URLs from terminal transport errors', async () => {
+    const firstUploadUrl = 'https://upload.max.ru/video-range-first?signature=first-secret';
+    const secondUploadUrl = 'https://upload.max.ru/video-range-second?signature=second-secret';
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({ data: { url: firstUploadUrl, token: 'video-range-token-first' } }),
+        )
+        .mockReturnValueOnce(
+          throwError(() =>
+            Object.assign(new Error(`timeout while posting ${firstUploadUrl}`), {
+              code: 'ETIMEDOUT',
+            }),
+          ),
+        )
+        .mockReturnValueOnce(
+          of({ data: { url: secondUploadUrl, token: 'video-range-token-second' } }),
+        )
+        .mockReturnValueOnce(
+          throwError(() =>
+            Object.assign(new Error(`timeout while posting ${secondUploadUrl}`), {
+              code: 'ETIMEDOUT',
+            }),
+          ),
+        ),
+    };
+    const service = createService(httpService, {
+      MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED: true,
+    });
+
+    let uploadError: unknown;
+    try {
+      await service.uploadVideo(Buffer.from('video-binary'), 'failed-video.mp4', 'video/mp4');
+    } catch (error: unknown) {
+      uploadError = error;
+    }
+
+    expect(uploadError).toBeInstanceOf(Error);
+    expect((uploadError as Error).name).toBe('MaxMediaUploadError');
+    expect((uploadError as Error).message).toContain('ambiguous transport timeout');
+    expect((uploadError as Error).message).not.toContain(firstUploadUrl);
+    expect((uploadError as Error).message).not.toContain(secondUploadUrl);
 
     await service.onModuleDestroy();
   });

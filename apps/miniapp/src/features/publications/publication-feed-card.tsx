@@ -1,7 +1,10 @@
 import { Copy, EditPencil, MoreHoriz, Pause, Play, RefreshDouble, Xmark } from 'iconoir-react';
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { MaxMarkdownPreview } from '../../components/max-markdown-preview';
 import { cn } from '../../lib/cn';
+import { isTopmostModalDialog, useDialogFocusTrap } from '../../lib/dialog-focus';
+import { useNativeBackHandler } from '../../lib/native-back';
 
 export type PublicationFeedTone = 'active' | 'warning' | 'danger' | 'muted';
 
@@ -21,6 +24,8 @@ type PublicationFeedCardProps = {
   canRetry?: boolean;
   canDuplicate?: boolean;
   canCancel?: boolean;
+  editLabel?: string;
+  cancelLabel?: string;
   onPause?: () => void;
   onEdit?: () => void;
   onResume?: () => void;
@@ -29,6 +34,13 @@ type PublicationFeedCardProps = {
   onCancel?: () => void;
   footer?: ReactNode;
 };
+
+function resolvePublicationActionMenuPortalTarget(): Element | null {
+  if (typeof document === 'undefined') {
+    return null;
+  }
+  return document.querySelector('.design-preview__device-screen') ?? document.body;
+}
 
 export function PublicationFeedCard({
   id,
@@ -46,6 +58,8 @@ export function PublicationFeedCard({
   canRetry = false,
   canDuplicate = false,
   canCancel = false,
+  editLabel = 'Изменить публикацию',
+  cancelLabel = 'Отменить публикацию',
   onPause,
   onEdit,
   onResume,
@@ -54,21 +68,113 @@ export function PublicationFeedCard({
   onCancel,
   footer,
 }: PublicationFeedCardProps) {
-  const menuRef = useRef<HTMLDetailsElement | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuPanelRef = useRef<HTMLElement | null>(null);
+  const firstActionRef = useRef<HTMLButtonElement | null>(null);
+  const menuTitleId = useId();
   const hasMenu = canEdit || canPause || canResume || canRetry || canDuplicate || canCancel;
   const primaryActionLabel = primaryAction ? `${primaryAction.label}: ${title}` : undefined;
   const [audience, schedule, ...additionalMeta] = meta;
   const scheduleLabel = schedule?.replace(/^Следующая · /u, '') ?? null;
+  const menuPortalTarget = menuOpen ? resolvePublicationActionMenuPortalTarget() : null;
 
   useEffect(() => {
     if (busy) {
-      menuRef.current?.removeAttribute('open');
+      setMenuOpen(false);
     }
   }, [busy]);
 
+  useDialogFocusTrap(menuOpen, menuPanelRef, firstActionRef);
+  useNativeBackHandler(
+    () => {
+      setMenuOpen(false);
+      return true;
+    },
+    { enabled: menuOpen, priority: 710 },
+  );
+
+  useEffect(() => {
+    if (!menuOpen) {
+      return undefined;
+    }
+    const previousBodyOverflow = document.body.style.overflow;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const panel = menuPanelRef.current;
+      if (event.key !== 'Escape' || !panel || !isTopmostModalDialog(panel)) {
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      setMenuOpen(false);
+    };
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [menuOpen]);
+
   function runMenuAction(action: () => void) {
-    menuRef.current?.removeAttribute('open');
+    setMenuOpen(false);
     action();
+  }
+
+  const menuActions: Array<{
+    key: string;
+    label: string;
+    icon: ReactNode;
+    danger?: boolean;
+    onClick: () => void;
+  }> = [];
+  if (canEdit && onEdit) {
+    menuActions.push({
+      key: 'edit',
+      label: editLabel,
+      icon: <EditPencil aria-hidden />,
+      onClick: onEdit,
+    });
+  }
+  if (canResume && onResume) {
+    menuActions.push({
+      key: 'resume',
+      label: 'Запустить',
+      icon: <Play aria-hidden />,
+      onClick: onResume,
+    });
+  }
+  if (canPause && onPause) {
+    menuActions.push({
+      key: 'pause',
+      label: 'Пауза',
+      icon: <Pause aria-hidden />,
+      onClick: onPause,
+    });
+  }
+  if (canRetry && onRetry) {
+    menuActions.push({
+      key: 'retry',
+      label: 'Повторить',
+      icon: <RefreshDouble aria-hidden />,
+      onClick: onRetry,
+    });
+  }
+  if (canDuplicate && onDuplicate) {
+    menuActions.push({
+      key: 'duplicate',
+      label: 'Дублировать',
+      icon: <Copy aria-hidden />,
+      onClick: onDuplicate,
+    });
+  }
+  if (canCancel && onCancel) {
+    menuActions.push({
+      key: 'cancel',
+      label: cancelLabel,
+      icon: <Xmark aria-hidden />,
+      danger: true,
+      onClick: onCancel,
+    });
   }
 
   const content = (
@@ -129,69 +235,72 @@ export function PublicationFeedCard({
       {footer ? <div className="publication-feed-card__footer">{footer}</div> : null}
 
       {hasMenu ? (
-        <details ref={menuRef} className={cn('publication-feed-card__menu', busy && 'is-disabled')}>
-          <summary
-            aria-label={`Действия: ${title}`}
-            title="Действия"
-            aria-disabled={busy || undefined}
-            tabIndex={busy ? -1 : undefined}
-            onClick={(event) => {
-              if (busy) {
-                event.preventDefault();
-              }
-            }}
-          >
-            <MoreHoriz aria-hidden focusable="false" />
-          </summary>
-          <div
-            className="publication-feed-card__menu-popover"
-            role="group"
-            aria-label={`Действия: ${title}`}
-          >
-            {canEdit && onEdit ? (
-              <button type="button" onClick={() => runMenuAction(onEdit)} disabled={busy}>
-                <EditPencil aria-hidden />
-                <span>Редактировать</span>
-              </button>
-            ) : null}
-            {canResume && onResume ? (
-              <button type="button" onClick={() => runMenuAction(onResume)} disabled={busy}>
-                <Play aria-hidden />
-                <span>Запустить</span>
-              </button>
-            ) : null}
-            {canPause && onPause ? (
-              <button type="button" onClick={() => runMenuAction(onPause)} disabled={busy}>
-                <Pause aria-hidden />
-                <span>Пауза</span>
-              </button>
-            ) : null}
-            {canRetry && onRetry ? (
-              <button type="button" onClick={() => runMenuAction(onRetry)} disabled={busy}>
-                <RefreshDouble aria-hidden />
-                <span>Повторить</span>
-              </button>
-            ) : null}
-            {canDuplicate && onDuplicate ? (
-              <button type="button" onClick={() => runMenuAction(onDuplicate)} disabled={busy}>
-                <Copy aria-hidden />
-                <span>Дублировать</span>
-              </button>
-            ) : null}
-            {canCancel && onCancel ? (
+        <button
+          type="button"
+          className="publication-feed-card__menu-trigger"
+          aria-label={`Действия: ${title}`}
+          title="Действия"
+          aria-haspopup="dialog"
+          aria-expanded={menuOpen}
+          onClick={() => setMenuOpen(true)}
+          disabled={busy}
+        >
+          <MoreHoriz aria-hidden focusable="false" />
+        </button>
+      ) : null}
+
+      {menuPortalTarget
+        ? createPortal(
+            <div className="publication-action-menu">
               <button
                 type="button"
-                className="is-danger"
-                onClick={() => runMenuAction(onCancel)}
-                disabled={busy}
+                className="publication-action-menu__backdrop"
+                onClick={() => setMenuOpen(false)}
+                aria-label="Закрыть меню действий"
+                tabIndex={-1}
+              />
+              <section
+                ref={menuPanelRef}
+                className="publication-action-menu__panel"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby={menuTitleId}
+                tabIndex={-1}
               >
-                <Xmark aria-hidden />
-                <span>Отменить</span>
-              </button>
-            ) : null}
-          </div>
-        </details>
-      ) : null}
+                <div className="publication-action-menu__grabber" aria-hidden />
+                <header className="publication-action-menu__header">
+                  <span>
+                    <strong id={menuTitleId}>Действия</strong>
+                    <small>{title}</small>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setMenuOpen(false)}
+                    aria-label="Закрыть меню"
+                  >
+                    <Xmark aria-hidden />
+                  </button>
+                </header>
+                <div className="publication-action-menu__actions">
+                  {menuActions.map((action, index) => (
+                    <button
+                      ref={index === 0 ? firstActionRef : undefined}
+                      key={action.key}
+                      type="button"
+                      className={cn(action.danger && 'is-danger')}
+                      onClick={() => runMenuAction(action.onClick)}
+                      disabled={busy}
+                    >
+                      {action.icon}
+                      <span>{action.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            </div>,
+            menuPortalTarget,
+          )
+        : null}
     </article>
   );
 }

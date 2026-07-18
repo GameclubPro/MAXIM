@@ -68,6 +68,18 @@ describe('validateEnv boolean parsing', () => {
     expect(env.MAX_API_BASE_URL).toBe('https://platform-api2.max.ru');
   });
 
+  it('keeps resumable MAX video uploads behind an explicit feature flag', () => {
+    expect(validateEnv(createValidEnv()).MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED).toBe(false);
+    expect(
+      validateEnv(createValidEnv({ MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED: 'true' }))
+        .MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED,
+    ).toBe(true);
+    expect(
+      validateEnv(createValidEnv({ MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED: 'false' }))
+        .MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED,
+    ).toBe(false);
+  });
+
   it('retains local display-name snapshots beyond the moderation history window', () => {
     expect(validateEnv(createValidEnv()).USER_DISPLAY_NAME_RETENTION_DAYS).toBe(180);
     expect(

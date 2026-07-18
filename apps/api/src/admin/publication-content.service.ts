@@ -13,9 +13,11 @@ import {
   PUBLICATION_VIDEO_ASSET_ID_FIELD,
   PUBLICATION_VIDEO_INLINE_BASE64_FIELD,
 } from './publication-video-media';
+import {
+  PUBLICATION_MAX_IMAGE_BYTES,
+  PUBLICATION_MAX_TOTAL_IMAGE_BYTES,
+} from './publication-media-limits';
 
-const PUBLICATION_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
-const PUBLICATION_MAX_TOTAL_IMAGE_BYTES = 24_000_000;
 const PUBLICATION_VIDEO_MIME_TYPE_FALLBACK = 'application/octet-stream';
 
 type PersistedAssetInput = {

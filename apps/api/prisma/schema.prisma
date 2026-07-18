@@ -1948,11 +1948,12 @@ model PublicationContentRevision {
   buttons       Json                     @default("[]")
   createdAt     DateTime                 @default(now()) @map("created_at")
 
-  publication             Publication               @relation("PublicationContentRevisions", fields: [publicationId], references: [id], onDelete: Cascade)
-  canonicalForPublication Publication?              @relation("PublicationCanonicalContentRevision")
+  publication             Publication                @relation("PublicationContentRevisions", fields: [publicationId], references: [id], onDelete: Cascade)
+  canonicalForPublication Publication?               @relation("PublicationCanonicalContentRevision")
   assets                  PublicationContentAsset[]
   occurrences             PublicationOccurrence[]
-  executionBroadcasts     ManagedBroadcast[]        @relation("PublicationContentRevisionExecutionBroadcasts")
+  executionBroadcasts     ManagedBroadcast[]         @relation("PublicationContentRevisionExecutionBroadcasts")
+  deliveries              ManagedBroadcastDelivery[] @relation("PublicationContentRevisionDeliveries")
 
   @@unique([publicationId, revision], map: "publication_content_revisions_publication_revision_key")
   @@index([publicationId, createdAt(sort: Desc)], map: "publication_content_revisions_publication_created_idx")
@@ -2195,17 +2196,20 @@ model ManagedBroadcastDelivery {
   lockedAt                  DateTime?                      @map("locked_at")
   lockToken                 String?                        @map("lock_token")
   publicationOccurrenceId   String?                        @map("publication_occurrence_id")
+  contentRevisionId         String?                        @map("content_revision_id")
   createdAt                 DateTime                       @default(now()) @map("created_at")
   updatedAt                 DateTime                       @updatedAt @map("updated_at")
 
-  broadcast             ManagedBroadcast       @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
-  publicationOccurrence PublicationOccurrence? @relation(fields: [publicationOccurrenceId], references: [id], onDelete: Cascade)
+  broadcast             ManagedBroadcast            @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
+  publicationOccurrence PublicationOccurrence?      @relation(fields: [publicationOccurrenceId], references: [id], onDelete: Cascade)
+  contentRevision       PublicationContentRevision? @relation("PublicationContentRevisionDeliveries", fields: [contentRevisionId], references: [id], onDelete: SetNull)
 
   @@unique([broadcastId, occurrenceIndex, targetChatId], map: "managed_broadcast_deliveries_broadcast_occurrence_target_key")
   @@index([broadcastId, occurrenceIndex, status], map: "managed_broadcast_deliveries_broadcast_occurrence_status_idx")
   @@index([status, lockedAt], map: "managed_broadcast_deliveries_status_locked_at_idx")
   @@index([targetChatId, remoteMessageId], map: "managed_broadcast_deliveries_target_remote_message_idx")
   @@index([publicationOccurrenceId, createdAt(sort: Desc), id(sort: Desc)], map: "managed_broadcast_deliveries_pub_occurrence_created_id_idx")
+  @@index([contentRevisionId], map: "managed_broadcast_deliveries_content_revision_idx")
   @@map("managed_broadcast_deliveries")
 }
 

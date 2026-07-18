@@ -9,21 +9,35 @@ import {
   createEmptyPublicationDraft,
   createPublicationDuplicateDraft,
   filterFuturePublicationSlots,
+  getPublicationActionCapabilities,
+  getPublicationActionableDelivery,
+  getPublicationListPollingInterval,
   getPublicationTargetTitle,
+  hasPublicationDraftChanges,
   inferPublicationVideoMimeType,
   isIsolatedPublicationEditor,
+  isPublicationOccurrenceContentStale,
+  isPublicationRevisionConflictError,
   isPublicationScheduleConflictError,
   isPublicationScheduleConflictMessage,
+  normalizePublicationEntityFilter,
+  normalizePublicationQuery,
+  normalizePublicationStatusFilter,
+  normalizePublicationView,
+  publicationDraftNeedsVideoReselection,
+  rebasePublicationDraft,
   shouldReviewPublicationScheduleConflict,
   shouldPersistPublicationDraft,
 } from '../src/features/publications/publication-model';
 import {
   buildPublicationDraftStorageKey,
   parsePublicationDraftEnvelope,
+  preparePublicationDraftForPersistence,
 } from '../src/features/publications/publication-draft-storage';
 import {
   createPublication,
   getPublicationCalendarAvailability,
+  retryPublicationOccurrence,
   testPublication,
 } from '../src/lib/api/publication-client';
 import type { ApiRequestInit, ApiTransport } from '../src/lib/api/transport';
@@ -139,11 +153,210 @@ test('keeps edit feedback focused on saving the publication', () => {
         canceled: 0,
       },
     },
-    { editorKind: 'edit', timingMode: 'now' },
+    { editorKind: 'edit', editScope: 'retry', timingMode: 'now' },
   );
 
   assert.equal(feedback.tone, 'success');
-  assert.equal(feedback.title, 'Публикация обновлена');
+  assert.equal(feedback.title, 'Версия для повтора сохранена');
+});
+
+test('keeps publication actions aligned with lifecycle and actual future sends', () => {
+  const emptyDelivery = {
+    total: 0,
+    pending: 0,
+    sent: 0,
+    failed: 0,
+    ambiguous: 0,
+    canceled: 0,
+  };
+  const base = {
+    lifecycle: 'ACTIVE' as const,
+    delivery: emptyDelivery,
+    schedule: {
+      mode: 'now' as const,
+      timezone: 'Europe/Moscow',
+      status: 'ACTIVE' as const,
+      revision: 1,
+      nextOccurrenceAt: null,
+      lastError: null,
+    },
+  };
+
+  assert.deepEqual(getPublicationActionCapabilities(base), {
+    canCancel: true,
+    canEdit: false,
+    canPause: false,
+    canResume: false,
+    canRetry: false,
+    editScope: null,
+    hasFutureSends: false,
+  });
+
+  assert.deepEqual(
+    getPublicationActionCapabilities({
+      ...base,
+      lifecycle: 'ERROR',
+      actionableDelivery: { ...emptyDelivery, total: 1, failed: 1 },
+    }),
+    {
+      canCancel: true,
+      canEdit: true,
+      canPause: false,
+      canResume: false,
+      canRetry: true,
+      editScope: 'retry',
+      hasFutureSends: false,
+    },
+  );
+
+  assert.deepEqual(
+    getPublicationActionCapabilities({
+      ...base,
+      schedule: {
+        mode: 'recurrence',
+        timezone: 'Europe/Moscow',
+        frequency: 'daily',
+        interval: 1,
+        weekdays: [],
+        times: ['09:00'],
+        startsAt: null,
+        endsAt: null,
+        maxOccurrences: null,
+        replaceConflicts: false,
+        status: 'ACTIVE',
+        revision: 1,
+        nextOccurrenceAt: '2026-07-19T06:00:00.000Z',
+        lastError: null,
+      },
+    }),
+    {
+      canCancel: true,
+      canEdit: true,
+      canPause: true,
+      canResume: false,
+      canRetry: false,
+      editScope: 'future',
+      hasFutureSends: true,
+    },
+  );
+
+  assert.deepEqual(getPublicationActionCapabilities({ ...base, lifecycle: 'COMPLETED' }), {
+    canCancel: false,
+    canEdit: false,
+    canPause: false,
+    canResume: false,
+    canRetry: false,
+    editScope: null,
+    hasFutureSends: false,
+  });
+});
+
+test('normalizes publication hub route state and maps the legacy plan view to current', () => {
+  assert.equal(normalizePublicationView(null), 'current');
+  assert.equal(normalizePublicationView('current'), 'current');
+  assert.equal(normalizePublicationView('plan'), 'current');
+  assert.equal(normalizePublicationView('schedules'), 'schedules');
+  assert.equal(normalizePublicationQuery('  поиск  '), '  поиск  ');
+  assert.equal(normalizePublicationQuery('x'.repeat(140)).length, 120);
+  assert.equal(normalizePublicationEntityFilter('channel'), 'channel');
+  assert.equal(normalizePublicationEntityFilter('unknown'), 'all');
+  assert.equal(normalizePublicationStatusFilter('failed', 'current'), 'failed');
+  assert.equal(normalizePublicationStatusFilter('completed', 'current'), 'all');
+  assert.equal(normalizePublicationStatusFilter('completed', 'history'), 'completed');
+});
+
+test('uses actionable delivery stats for list decisions without changing lifetime totals', () => {
+  const lifetime = { total: 20, pending: 0, sent: 18, failed: 2, ambiguous: 0, canceled: 0 };
+  const actionable = { total: 2, pending: 0, sent: 2, failed: 0, ambiguous: 0, canceled: 0 };
+
+  assert.equal(
+    getPublicationActionableDelivery({ delivery: lifetime, actionableDelivery: actionable }),
+    actionable,
+  );
+  assert.equal(getPublicationActionableDelivery({ delivery: lifetime }), lifetime);
+});
+
+test('polls publication lists only while delivery or an active schedule can change', () => {
+  const nowMs = Date.parse('2026-07-18T10:00:00.000Z');
+  const emptyDelivery = {
+    total: 0,
+    pending: 0,
+    sent: 0,
+    failed: 0,
+    ambiguous: 0,
+    canceled: 0,
+  };
+  const pendingDelivery = { ...emptyDelivery, total: 1, pending: 1 };
+  const activeSchedule = {
+    lifecycle: 'ACTIVE' as const,
+    delivery: emptyDelivery,
+    schedule: {
+      mode: 'recurrence' as const,
+      nextOccurrenceAt: '2026-07-18T11:00:00.000Z',
+    },
+  };
+
+  assert.equal(getPublicationListPollingInterval('history', [activeSchedule], nowMs), false);
+  assert.equal(
+    getPublicationListPollingInterval(
+      'schedules',
+      [{ ...activeSchedule, lifecycle: 'PAUSED' }],
+      nowMs,
+    ),
+    false,
+  );
+  assert.equal(
+    getPublicationListPollingInterval(
+      'schedules',
+      [{ ...activeSchedule, actionableDelivery: pendingDelivery }],
+      nowMs,
+    ),
+    5_000,
+  );
+  assert.equal(getPublicationListPollingInterval('schedules', [activeSchedule], nowMs), 900_000);
+  assert.equal(
+    getPublicationListPollingInterval(
+      'schedules',
+      [
+        {
+          ...activeSchedule,
+          schedule: {
+            ...activeSchedule.schedule,
+            nextOccurrenceAt: '2026-07-18T10:01:00.000Z',
+          },
+        },
+      ],
+      nowMs,
+    ),
+    10_000,
+  );
+  assert.equal(
+    getPublicationListPollingInterval(
+      'current',
+      [
+        {
+          lifecycle: 'ACTIVE',
+          delivery: emptyDelivery,
+          schedule: { mode: 'now', nextOccurrenceAt: null },
+        },
+      ],
+      nowMs,
+    ),
+    5_000,
+  );
+});
+
+test('detects stale occurrence content from explicit and revision-based projections', () => {
+  assert.equal(
+    isPublicationOccurrenceContentStale({ contentRevision: 2, usesLatestContent: false }, 3),
+    true,
+  );
+  assert.equal(
+    isPublicationOccurrenceContentStale({ contentRevision: 3, usesLatestContent: true }, 3),
+    false,
+  );
+  assert.equal(isPublicationOccurrenceContentStale({ contentRevision: 2 }, 3), true);
+  assert.equal(isPublicationOccurrenceContentStale({}, 3), false);
 });
 
 test('starts a new publication without a recipient or a publishable schedule', () => {
@@ -204,6 +417,54 @@ test('duplicates content and recipients but requires a new schedule choice', () 
   assert.equal(duplicate.recurrence.startsAt, null);
 });
 
+test('detects unsaved edit changes without treating refreshed target metadata as content', () => {
+  const initial = createEmptyPublicationDraft([chatTarget]);
+  initial.text = 'Исходный текст';
+  const refreshedMetadata = {
+    ...initial,
+    targets: [{ ...chatTarget, title: 'Новое название', avatarUrl: 'https://example.com/avatar' }],
+  };
+
+  assert.equal(hasPublicationDraftChanges(initial, refreshedMetadata), false);
+  assert.equal(
+    hasPublicationDraftChanges(initial, { ...refreshedMetadata, text: 'Изменённый текст' }),
+    true,
+  );
+  assert.equal(
+    hasPublicationDraftChanges(initial, {
+      ...refreshedMetadata,
+      targets: [refreshedMetadata.targets[0]!, channelTarget],
+    }),
+    true,
+  );
+});
+
+test('rebases local edit groups onto a newer publication without dropping user changes', () => {
+  const baseline = createEmptyPublicationDraft([chatTarget]);
+  baseline.title = 'Старое название';
+  baseline.text = 'Старый текст';
+  baseline.buttonEnabled = true;
+  baseline.buttons = [{ text: 'Открыть', url: 'https://max.ru/old' }];
+
+  const local = structuredClone(baseline);
+  local.text = 'Мой новый текст';
+  local.buttons = [{ text: 'Подробнее', url: 'https://max.ru/local' }];
+
+  const latest = structuredClone(baseline);
+  latest.title = 'Название с сервера';
+  latest.text = 'Чужое изменение текста';
+  latest.timingMode = 'once';
+  latest.scheduledSlots = ['2027-01-01T09:00:00.000Z'];
+
+  const rebased = rebasePublicationDraft(baseline, local, latest);
+
+  assert.equal(rebased.title, 'Название с сервера');
+  assert.equal(rebased.text, 'Мой новый текст');
+  assert.deepEqual(rebased.buttons, local.buttons);
+  assert.equal(rebased.timingMode, 'once');
+  assert.deepEqual(rebased.scheduledSlots, latest.scheduledSlots);
+});
+
 test('scopes publication drafts by MAX user id', () => {
   assert.equal(buildPublicationDraftStorageKey('1001'), 'maxim:publications-composer:v1:1001');
   assert.equal(buildPublicationDraftStorageKey('1002'), 'maxim:publications-composer:v1:1002');
@@ -258,6 +519,51 @@ test('keeps intentional schedules when migrating a legacy publication draft', ()
   assert.deepEqual(nowDraft?.scheduledSlots, []);
   assert.deepEqual(nowDraft?.recurrence.weekdays, []);
   assert.deepEqual(nowDraft?.recurrence.times, []);
+});
+
+test('omits session video bytes while preserving the rest of an autosaved publication draft', () => {
+  const draft = createEmptyPublicationDraft([chatTarget]);
+  draft.title = 'Видеоанонс';
+  draft.text = 'Текст остаётся';
+  draft.buttons = [{ text: 'Открыть', url: 'https://max.ru/' }];
+  draft.buttonEnabled = true;
+  draft.timingMode = 'once';
+  draft.scheduledSlots = ['2027-01-01T09:00:00.000Z'];
+  draft.mediaType = 'video';
+  draft.mediaBase64 = 'dmlkZW8=';
+  draft.mediaMimeType = 'video/mp4';
+  draft.mediaFileName = 'clip.mp4';
+
+  const persisted = preparePublicationDraftForPersistence(draft);
+
+  assert.equal(persisted.title, draft.title);
+  assert.equal(persisted.text, draft.text);
+  assert.deepEqual(persisted.targets, draft.targets);
+  assert.deepEqual(persisted.buttons, draft.buttons);
+  assert.deepEqual(persisted.scheduledSlots, draft.scheduledSlots);
+  assert.equal(persisted.mediaType, 'video');
+  assert.equal(persisted.mediaBase64, '');
+  assert.equal(persisted.mediaMimeType, 'video/mp4');
+  assert.equal(persisted.mediaFileName, 'clip.mp4');
+  assert.equal(publicationDraftNeedsVideoReselection(persisted), true);
+  const restored = parsePublicationDraftEnvelope({
+    version: 1,
+    savedAt: '2026-07-18T10:00:00.000Z',
+    draft: persisted,
+  });
+  assert.equal(restored?.mediaType, 'video');
+  assert.equal(restored?.mediaFileName, 'clip.mp4');
+  assert.equal(restored ? publicationDraftNeedsVideoReselection(restored) : false, true);
+  assert.equal(draft.mediaBase64, 'dmlkZW8=');
+});
+
+test('recognizes publication revision conflicts without matching unrelated failures', () => {
+  assert.equal(isPublicationRevisionConflictError({ code: 'PUBLICATION_REVISION_CONFLICT' }), true);
+  assert.equal(
+    isPublicationRevisionConflictError({ code: 'PUBLICATION_SCHEDULE_CONFLICT' }),
+    false,
+  );
+  assert.equal(isPublicationRevisionConflictError(new Error('Failed to fetch')), false);
 });
 
 test('recognizes current publication calendar conflict copy', () => {
@@ -465,6 +771,35 @@ test('publication client uses v2 create and test endpoints', async () => {
       ['/publications/test', 'POST'],
     ],
   );
+});
+
+test('publication client sends optimistic revisions for a latest-content retry', async () => {
+  const calls: Array<{ path: string; init?: ApiRequestInit }> = [];
+  const api: ApiTransport = {
+    request: async (path, init) => {
+      calls.push({ path, init });
+      throw new Error('stop');
+    },
+    requestKeepalive: () => undefined,
+  };
+
+  await assert.rejects(
+    retryPublicationOccurrence(api, 'publication-1', 'occurrence-1', {
+      requestId: 'retry_latest_001',
+      contentMode: 'latest',
+      expectedPublicationVersion: 7,
+      expectedContentRevision: 4,
+    }),
+    /stop/u,
+  );
+
+  assert.equal(calls[0]?.path, '/publications/publication-1/occurrences/occurrence-1/retry');
+  assert.deepEqual(JSON.parse(String(calls[0]?.init?.body)), {
+    requestId: 'retry_latest_001',
+    contentMode: 'latest',
+    expectedPublicationVersion: 7,
+    expectedContentRevision: 4,
+  });
 });
 
 test('publication client requests target-aware calendar availability', async () => {

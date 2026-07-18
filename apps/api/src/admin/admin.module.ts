@@ -46,6 +46,7 @@ import { ManagedPollService } from './managed-poll.service';
 import { PublicationController } from './publication.controller';
 import { PublicationContentService } from './publication-content.service';
 import { PublicationLegacyService } from './publication-legacy.service';
+import { PublicationMetricsInterceptor } from './publication-metrics.interceptor';
 import { PublicationPresenterService } from './publication-presenter.service';
 import { PublicationRunnerService } from './publication-runner.service';
 import { PublicationService } from './publication.service';
@@ -127,6 +128,7 @@ import { SupportRequestsService } from './support-requests.service';
     ManagedPollService,
     PublicationContentService,
     PublicationLegacyService,
+    PublicationMetricsInterceptor,
     PublicationPresenterService,
     PublicationService,
     PublicationRunnerService,

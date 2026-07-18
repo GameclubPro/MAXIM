@@ -23,6 +23,18 @@ type DraftEnvelope = {
   draft: PublicationDraft;
 };
 
+export function preparePublicationDraftForPersistence(draft: PublicationDraft): PublicationDraft {
+  if (draft.mediaType !== 'video' || (!draft.mediaBase64 && !draft.mediaPayload)) {
+    return draft;
+  }
+
+  return {
+    ...draft,
+    mediaPayload: null,
+    mediaBase64: '',
+  };
+}
+
 export function buildPublicationDraftStorageKey(userId?: string | null): string {
   const resolvedUserId =
     userId === undefined && typeof window !== 'undefined' ? getInitDataUserId() : userId;
@@ -256,20 +268,20 @@ export async function loadPublicationDraft(): Promise<PublicationDraft | null> {
 
 export async function savePublicationDraft(draft: PublicationDraft): Promise<void> {
   const storageKey = buildPublicationDraftStorageKey();
+  const persistedDraft = preparePublicationDraftForPersistence(draft);
   const envelope: DraftEnvelope = {
     version: STORAGE_VERSION,
     savedAt: new Date().toISOString(),
-    draft,
+    draft: persistedDraft,
   };
   await clearLegacyPublicationDraft();
   await writeIndexedDraft(storageKey, envelope);
   try {
     const localDraft = {
-      ...draft,
+      ...persistedDraft,
       images: [],
       mediaPayload: null,
       mediaBase64: '',
-      mediaType: null,
       retainedAssets: [],
     };
     window.localStorage.setItem(storageKey, JSON.stringify({ ...envelope, draft: localDraft }));

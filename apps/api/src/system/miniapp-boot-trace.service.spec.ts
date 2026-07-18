@@ -96,6 +96,54 @@ describe('parseMiniappBootTracePayload', () => {
     expect(JSON.stringify(trace)).not.toContain(encodedPayload);
   });
 
+  it('redacts exact search keys in routes, URLs, and details', () => {
+    const trace = parseMiniappBootTracePayload({
+      phase: 'route_resolved',
+      route: '/app/publications?q=first&query=second&search=third&searchMode=all',
+      url: 'https://major-maksimov.ru/app/publications?Q=first&QUERY=second&SEARCH=third',
+      details: {
+        q: 'first',
+        query: 'second',
+        search: 'third',
+        searchMode: 'all',
+      },
+    });
+
+    expect(trace).toEqual({
+      phase: 'route_resolved',
+      route: '/app/publications?q=[redacted]&query=[redacted]&search=[redacted]&searchMode=all',
+      url: 'https://major-maksimov.ru/app/publications?Q=[redacted]&QUERY=[redacted]&SEARCH=[redacted]',
+      details: {
+        q: '[redacted]',
+        query: '[redacted]',
+        search: '[redacted]',
+        searchMode: 'all',
+      },
+    });
+  });
+
+  it('drops route and URL context from publication API traces', () => {
+    const trace = parseMiniappBootTracePayload({
+      phase: 'publication_api',
+      route: '/app/publications?q=private-search',
+      url: 'https://major-maksimov.ru/app/publications?q=private-search',
+      details: {
+        operation: 'list',
+        outcome: 'ok',
+        durationMs: 120,
+      },
+    });
+
+    expect(trace).toEqual({
+      phase: 'publication_api',
+      details: {
+        operation: 'list',
+        outcome: 'ok',
+        durationMs: 120,
+      },
+    });
+  });
+
   it('rejects invalid payloads', () => {
     expect(() =>
       parseMiniappBootTracePayload({

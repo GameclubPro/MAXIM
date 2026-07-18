@@ -4,15 +4,19 @@ import type {
   ChatSummary,
   ManagedEntityType,
 } from '@maxim/contracts';
-import type {
-  CreatePublicationRequest,
-  PublicationAsset,
-  PublicationContentInput,
-  PublicationDetails,
-  PublicationLifecycle,
-  PublicationScheduleInput,
-  TestPublicationRequest,
-  UpdatePublicationRequest,
+import {
+  MAX_PUBLICATION_TEXT_LENGTH,
+  type CreatePublicationRequest,
+  type PublicationAsset,
+  type PublicationContentInput,
+  type PublicationDeliveryStats,
+  type PublicationDetails,
+  type PublicationLifecycle,
+  type PublicationOccurrenceSummary,
+  type PublicationScheduleInput,
+  type PublicationSummary,
+  type TestPublicationRequest,
+  type UpdatePublicationRequest,
 } from '@maxim/contracts/publication';
 import { trimBroadcastLinkButtons } from '../../lib/broadcast-link-buttons';
 import {
@@ -21,7 +25,7 @@ import {
   sortAndUniqueBroadcastSlots,
 } from '../../lib/broadcast-schedule';
 
-export type PublicationView = 'plan' | 'schedules' | 'history';
+export type PublicationView = 'current' | 'schedules' | 'history';
 export type PublicationEditorKind = 'create' | 'edit' | 'duplicate';
 export type PublicationTimingMode = 'now' | 'once' | 'schedule';
 export type PublicationScheduleKind = 'slots' | 'recurrence';
@@ -29,12 +33,56 @@ export type PublicationRecurrenceFrequency = 'daily' | 'weekly';
 export type PublicationEntityFilter = 'all' | ManagedEntityType;
 export type PublicationStatusFilter = 'all' | 'active' | 'paused' | 'completed' | 'failed';
 
+type PublicationPollingItem = Pick<
+  PublicationSummary,
+  'lifecycle' | 'delivery' | 'actionableDelivery'
+> & {
+  schedule: {
+    mode: 'now' | 'once' | 'slots' | 'recurrence';
+    nextOccurrenceAt: string | null;
+  } | null;
+};
+
 export type PublicationSaveFeedback = {
   tone: 'success' | 'info' | 'danger';
   title: string;
   description?: string;
   notification: 'success' | 'warning' | 'error';
 };
+
+export type PublicationEditScope = 'future' | 'retry' | 'schedule';
+
+export type PublicationActionCapabilities = {
+  canCancel: boolean;
+  canEdit: boolean;
+  canPause: boolean;
+  canResume: boolean;
+  canRetry: boolean;
+  editScope: PublicationEditScope | null;
+  hasFutureSends: boolean;
+};
+
+export function getPublicationLifecycleLabel(lifecycle: PublicationLifecycle): string {
+  const labels: Record<PublicationLifecycle, string> = {
+    DRAFT: 'Черновик',
+    ACTIVE: 'Активно',
+    PAUSED: 'Пауза',
+    COMPLETED: 'Готово',
+    CANCELED: 'Отменено',
+    ERROR: 'Ошибка',
+  };
+  return labels[lifecycle];
+}
+
+export function getPublicationEditActionLabel(scope: PublicationEditScope | null): string {
+  if (scope === 'future') {
+    return 'Изменить будущие отправки';
+  }
+  if (scope === 'retry') {
+    return 'Изменить версию для повтора';
+  }
+  return 'Изменить расписание';
+}
 
 export type PublicationTarget = {
   id: string;
@@ -85,9 +133,19 @@ export type PublicationRecurrenceDraft = {
   maxOccurrences: number | null;
 };
 
-export const PUBLICATION_TEXT_MAX_LENGTH = 2_000;
+export const PUBLICATION_TEXT_MAX_LENGTH = MAX_PUBLICATION_TEXT_LENGTH;
 export const PUBLICATION_MIN_SCHEDULE_DELAY_MS = 2 * 60_000;
 const PUBLICATION_SCHEDULE_CONFLICT_CODE = 'PUBLICATION_SCHEDULE_CONFLICT';
+const PUBLICATION_REVISION_CONFLICT_CODE = 'PUBLICATION_REVISION_CONFLICT';
+
+const PUBLICATION_STATUS_FILTERS_BY_VIEW: Record<
+  PublicationView,
+  readonly PublicationStatusFilter[]
+> = {
+  current: ['all', 'active', 'paused', 'failed'],
+  schedules: ['all', 'active', 'paused', 'failed'],
+  history: ['all', 'completed'],
+};
 
 const PUBLICATION_VIDEO_MIME_BY_EXTENSION: Record<string, string> = {
   m4v: 'video/mp4',
@@ -110,9 +168,130 @@ export function canResumePublication(lifecycle: PublicationLifecycle): boolean {
   return lifecycle === 'PAUSED';
 }
 
+export function getPublicationActionCapabilities(
+  publication: Pick<
+    PublicationSummary,
+    'actionableDelivery' | 'delivery' | 'lifecycle' | 'schedule'
+  >,
+): PublicationActionCapabilities {
+  const terminal = publication.lifecycle === 'COMPLETED' || publication.lifecycle === 'CANCELED';
+  const retryableLifecycle =
+    publication.lifecycle === 'ACTIVE' || publication.lifecycle === 'ERROR';
+  const actionableDelivery = getPublicationActionableDelivery(publication);
+  const scheduleMode = publication.schedule?.mode;
+  const hasFutureSends = Boolean(publication.schedule?.nextOccurrenceAt);
+  const isMultiSendSchedule = scheduleMode === 'slots' || scheduleMode === 'recurrence';
+
+  let editScope: PublicationEditScope | null = null;
+  if (!terminal) {
+    if (hasFutureSends) {
+      editScope = 'future';
+    } else if (retryableLifecycle && actionableDelivery.failed > 0) {
+      editScope = 'retry';
+    } else if (scheduleMode && scheduleMode !== 'now') {
+      editScope = 'schedule';
+    }
+  }
+
+  return {
+    canCancel: !terminal,
+    canEdit: editScope !== null,
+    canPause: retryableLifecycle && isMultiSendSchedule,
+    canResume: canResumePublication(publication.lifecycle),
+    canRetry: retryableLifecycle && actionableDelivery.failed > 0,
+    editScope,
+    hasFutureSends,
+  };
+}
+
+export function normalizePublicationView(value: string | null): PublicationView {
+  if (value === 'schedules' || value === 'history') {
+    return value;
+  }
+  return 'current';
+}
+
+export function normalizePublicationQuery(value: string | null): string {
+  return value?.slice(0, 120) ?? '';
+}
+
+export function normalizePublicationEntityFilter(value: string | null): PublicationEntityFilter {
+  return value === 'chat' || value === 'channel' ? value : 'all';
+}
+
+export function normalizePublicationStatusFilter(
+  value: string | null,
+  view: PublicationView,
+): PublicationStatusFilter {
+  const candidate = value as PublicationStatusFilter | null;
+  return candidate && PUBLICATION_STATUS_FILTERS_BY_VIEW[view].includes(candidate)
+    ? candidate
+    : 'all';
+}
+
+export function getPublicationActionableDelivery(
+  publication: Pick<PublicationSummary, 'delivery' | 'actionableDelivery'>,
+): PublicationDeliveryStats {
+  return publication.actionableDelivery ?? publication.delivery;
+}
+
+export function getPublicationListPollingInterval(
+  view: PublicationView,
+  items: readonly PublicationPollingItem[],
+  nowMs = Date.now(),
+): number | false {
+  if (view === 'history') {
+    return false;
+  }
+  if (items.some((item) => getPublicationActionableDelivery(item).pending > 0)) {
+    return 5_000;
+  }
+  if (view === 'current') {
+    return items.some((item) => {
+      const delivery = getPublicationActionableDelivery(item);
+      return item.lifecycle === 'ACTIVE' && item.schedule?.mode === 'now' && delivery.total === 0;
+    })
+      ? 5_000
+      : false;
+  }
+
+  const nextActiveOccurrenceMs = items.reduce<number | null>((nearest, item) => {
+    if (item.lifecycle !== 'ACTIVE' || !item.schedule?.nextOccurrenceAt) {
+      return nearest;
+    }
+    const candidate = Date.parse(item.schedule.nextOccurrenceAt);
+    if (!Number.isFinite(candidate)) {
+      return nearest;
+    }
+    return nearest === null || candidate < nearest ? candidate : nearest;
+  }, null);
+  if (nextActiveOccurrenceMs === null) {
+    return false;
+  }
+
+  const untilNextOccurrence = nextActiveOccurrenceMs - nowMs;
+  if (untilNextOccurrence <= 2 * 60_000) {
+    return 10_000;
+  }
+  return Math.min(15 * 60_000, Math.max(60_000, untilNextOccurrence - 60_000));
+}
+
+export function isPublicationOccurrenceContentStale(
+  occurrence: Pick<PublicationOccurrenceSummary, 'contentRevision' | 'usesLatestContent'>,
+  latestContentRevision: number,
+): boolean {
+  if (occurrence.usesLatestContent !== undefined) {
+    return !occurrence.usesLatestContent;
+  }
+  return (
+    occurrence.contentRevision !== undefined && occurrence.contentRevision !== latestContentRevision
+  );
+}
+
 export function buildPublicationSaveFeedback(
   publication: Pick<PublicationDetails, 'delivery'>,
   options: {
+    editScope?: PublicationEditScope | null;
     editorKind: PublicationEditorKind | null;
     timingMode: PublicationTimingMode;
   },
@@ -120,7 +299,12 @@ export function buildPublicationSaveFeedback(
   if (options.editorKind === 'edit') {
     return {
       tone: 'success',
-      title: 'Публикация обновлена',
+      title:
+        options.editScope === 'retry'
+          ? 'Версия для повтора сохранена'
+          : options.editScope === 'schedule'
+            ? 'Расписание обновлено'
+            : 'Будущие отправки обновлены',
       notification: 'success',
     };
   }
@@ -201,6 +385,15 @@ export function isPublicationScheduleConflictError(error: unknown): boolean {
   return error instanceof Error && isPublicationScheduleConflictMessage(error.message);
 }
 
+export function isPublicationRevisionConflictError(error: unknown): boolean {
+  return Boolean(
+    error &&
+    typeof error === 'object' &&
+    'code' in error &&
+    (error as { code?: unknown }).code === PUBLICATION_REVISION_CONFLICT_CODE,
+  );
+}
+
 export function shouldReviewPublicationScheduleConflict(
   error: unknown,
   draft: Pick<PublicationDraft, 'timingMode' | 'scheduleKind'>,
@@ -226,6 +419,17 @@ export function inferPublicationVideoMimeType(fileName: string, mimeType: string
       .toLowerCase()
       .match(/\.([a-z0-9]+)$/u)?.[1] ?? '';
   return PUBLICATION_VIDEO_MIME_BY_EXTENSION[extension] ?? null;
+}
+
+export function publicationDraftNeedsVideoReselection(
+  draft: Pick<PublicationDraft, 'mediaBase64' | 'mediaPayload' | 'mediaType' | 'retainedAssets'>,
+): boolean {
+  return (
+    draft.mediaType === 'video' &&
+    !draft.mediaBase64 &&
+    !draft.mediaPayload &&
+    !draft.retainedAssets.some((asset) => asset.type === 'video')
+  );
 }
 
 export function toPublicationTarget(source: ChatSummary): PublicationTarget {
@@ -296,6 +500,180 @@ export function isPublicationDraftEmpty(draft: PublicationDraft): boolean {
     draft.buttons.some((button) => button.text.trim() || button.url.trim()) ||
     draft.mediaType === 'video'
   );
+}
+
+function arraysEqual<T>(
+  left: readonly T[],
+  right: readonly T[],
+  equals: (leftItem: T, rightItem: T) => boolean,
+): boolean {
+  return (
+    left.length === right.length && left.every((item, index) => equals(item, right[index] as T))
+  );
+}
+
+export function hasPublicationDraftChanges(
+  initialDraft: PublicationDraft,
+  currentDraft: PublicationDraft,
+): boolean {
+  const initialRecurrence = initialDraft.recurrence;
+  const currentRecurrence = currentDraft.recurrence;
+
+  return !(
+    initialDraft.title === currentDraft.title &&
+    initialDraft.text === currentDraft.text &&
+    initialDraft.buttonEnabled === currentDraft.buttonEnabled &&
+    initialDraft.timingMode === currentDraft.timingMode &&
+    initialDraft.scheduleKind === currentDraft.scheduleKind &&
+    initialDraft.onceDate === currentDraft.onceDate &&
+    initialDraft.onceTime === currentDraft.onceTime &&
+    initialDraft.scheduleTimezone === currentDraft.scheduleTimezone &&
+    initialDraft.mediaType === currentDraft.mediaType &&
+    initialDraft.mediaBase64 === currentDraft.mediaBase64 &&
+    initialDraft.mediaMimeType === currentDraft.mediaMimeType &&
+    initialDraft.mediaFileName === currentDraft.mediaFileName &&
+    JSON.stringify(initialDraft.mediaPayload) === JSON.stringify(currentDraft.mediaPayload) &&
+    arraysEqual(
+      initialDraft.images,
+      currentDraft.images,
+      (left, right) =>
+        left.base64 === right.base64 &&
+        left.mimeType === right.mimeType &&
+        left.fileName === right.fileName,
+    ) &&
+    arraysEqual(
+      initialDraft.buttons,
+      currentDraft.buttons,
+      (left, right) => left.text === right.text && left.url === right.url,
+    ) &&
+    arraysEqual(
+      initialDraft.targets,
+      currentDraft.targets,
+      (left, right) => getPublicationTargetKey(left) === getPublicationTargetKey(right),
+    ) &&
+    arraysEqual(
+      initialDraft.scheduledSlots,
+      currentDraft.scheduledSlots,
+      (left, right) => left === right,
+    ) &&
+    initialRecurrence.frequency === currentRecurrence.frequency &&
+    initialRecurrence.interval === currentRecurrence.interval &&
+    initialRecurrence.startsAt === currentRecurrence.startsAt &&
+    initialRecurrence.endsAt === currentRecurrence.endsAt &&
+    initialRecurrence.maxOccurrences === currentRecurrence.maxOccurrences &&
+    arraysEqual(
+      initialRecurrence.weekdays,
+      currentRecurrence.weekdays,
+      (left, right) => left === right,
+    ) &&
+    arraysEqual(
+      initialRecurrence.times,
+      currentRecurrence.times,
+      (left, right) => left === right,
+    ) &&
+    arraysEqual(
+      initialDraft.retainedAssets,
+      currentDraft.retainedAssets,
+      (left, right) =>
+        left.id === right.id &&
+        left.type === right.type &&
+        left.mimeType === right.mimeType &&
+        left.fileName === right.fileName &&
+        left.sizeBytes === right.sizeBytes,
+    )
+  );
+}
+
+export function rebasePublicationDraft(
+  baseline: PublicationDraft,
+  local: PublicationDraft,
+  latest: PublicationDraft,
+): PublicationDraft {
+  const changed = (keys: readonly (keyof PublicationDraft)[]) =>
+    keys.some((key) => {
+      const baselineValue = baseline[key];
+      const localValue = local[key];
+      if (baselineValue === localValue) {
+        return false;
+      }
+      if (
+        baselineValue &&
+        localValue &&
+        typeof baselineValue === 'object' &&
+        typeof localValue === 'object'
+      ) {
+        return JSON.stringify(baselineValue) !== JSON.stringify(localValue);
+      }
+      return true;
+    });
+  const buttonsChanged = changed(['buttonEnabled', 'buttons']);
+  const targetsChanged = changed(['targets']);
+  const scheduleChanged = changed([
+    'timingMode',
+    'scheduleKind',
+    'scheduledSlots',
+    'onceDate',
+    'onceTime',
+    'scheduleTimezone',
+    'recurrence',
+  ]);
+  const mediaChanged = changed([
+    'images',
+    'mediaType',
+    'mediaPayload',
+    'mediaBase64',
+    'mediaMimeType',
+    'mediaFileName',
+    'retainedAssets',
+  ]);
+
+  return {
+    ...latest,
+    title: baseline.title !== local.title ? local.title : latest.title,
+    text: baseline.text !== local.text ? local.text : latest.text,
+    ...(buttonsChanged
+      ? { buttonEnabled: local.buttonEnabled, buttons: local.buttons }
+      : { buttonEnabled: latest.buttonEnabled, buttons: latest.buttons }),
+    targets: targetsChanged ? local.targets : latest.targets,
+    ...(scheduleChanged
+      ? {
+          timingMode: local.timingMode,
+          scheduleKind: local.scheduleKind,
+          scheduledSlots: local.scheduledSlots,
+          onceDate: local.onceDate,
+          onceTime: local.onceTime,
+          scheduleTimezone: local.scheduleTimezone,
+          recurrence: local.recurrence,
+        }
+      : {
+          timingMode: latest.timingMode,
+          scheduleKind: latest.scheduleKind,
+          scheduledSlots: latest.scheduledSlots,
+          onceDate: latest.onceDate,
+          onceTime: latest.onceTime,
+          scheduleTimezone: latest.scheduleTimezone,
+          recurrence: latest.recurrence,
+        }),
+    ...(mediaChanged
+      ? {
+          images: local.images,
+          mediaType: local.mediaType,
+          mediaPayload: local.mediaPayload,
+          mediaBase64: local.mediaBase64,
+          mediaMimeType: local.mediaMimeType,
+          mediaFileName: local.mediaFileName,
+          retainedAssets: local.retainedAssets,
+        }
+      : {
+          images: latest.images,
+          mediaType: latest.mediaType,
+          mediaPayload: latest.mediaPayload,
+          mediaBase64: latest.mediaBase64,
+          mediaMimeType: latest.mediaMimeType,
+          mediaFileName: latest.mediaFileName,
+          retainedAssets: latest.retainedAssets,
+        }),
+  };
 }
 
 export function buildPublicationContent(draft: PublicationDraft): PublicationContentInput {
@@ -377,7 +755,7 @@ export function buildCreatePublicationRequest(
 ): CreatePublicationRequest {
   return {
     requestId,
-    title: draft.title,
+    title: draft.title.trim(),
     content: buildPublicationContent(draft),
     audience: {
       selection: 'SELECTED',
@@ -404,7 +782,7 @@ export function buildUpdatePublicationRequest(
   return {
     expectedRevision,
     requestId,
-    title: draft.title,
+    title: draft.title.trim(),
     content: buildPublicationContent(draft),
     audience: {
       selection: 'SELECTED',

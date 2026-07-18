@@ -65,8 +65,7 @@ export function LegacyPublicationsEntry({
   return (
     <button type="button" className="legacy-publications-entry" onClick={onOpen}>
       <span className="legacy-publications-entry__copy">
-        <strong>Ранее созданные</strong>
-        <small>Старые расписания и отправки</small>
+        <strong>Старые публикации</strong>
       </span>
       <span className="legacy-publications-entry__count">
         {count === null ? '...' : `${count}${countIncomplete ? '+' : ''}`}

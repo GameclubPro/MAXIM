@@ -8,6 +8,8 @@ type NativeBackEntry = {
   handler: NativeBackHandler;
 };
 
+export const NATIVE_BACK_MODAL_CONFIRM_PRIORITY = 740;
+
 let nextEntryId = 1;
 const nativeBackEntries = new Map<number, NativeBackEntry>();
 const nativeBackListeners = new Set<() => void>();

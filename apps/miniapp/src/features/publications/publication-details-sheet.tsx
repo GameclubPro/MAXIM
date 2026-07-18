@@ -1,6 +1,9 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import type {
+  PublicationDelivery,
+  PublicationDetails,
   PublicationDeliveryStatus,
+  PublicationOccurrenceSummary,
   PublicationOccurrenceStatus,
   PublicationSummary,
 } from '@maxim/contracts/publication';
@@ -10,13 +13,19 @@ import { createPortal } from 'react-dom';
 import { MaxMarkdownPreview } from '../../components/max-markdown-preview';
 import { EntityAvatar } from '../../components/ui/entity-avatar';
 import { StatusState } from '../../components/ui/status-state';
-import { describeApiError } from '../../lib/api-error';
+import { describeUserFacingError } from '../../lib/user-facing-error';
 import { getPublication, listPublicationDeliveries } from '../../lib/api/publication-client';
 import type { ApiTransport } from '../../lib/api/transport';
 import { formatRussianCountLabel } from '../../lib/broadcast-audience';
 import { cn } from '../../lib/cn';
-import { useDialogFocusTrap } from '../../lib/dialog-focus';
+import { isTopmostModalDialog, useDialogFocusTrap } from '../../lib/dialog-focus';
 import { useNativeBackHandler } from '../../lib/native-back';
+import { formatPublicationDeliveryError } from './publication-delivery-error';
+import {
+  getPublicationActionCapabilities,
+  getPublicationActionableDelivery,
+  isPublicationOccurrenceContentStale,
+} from './publication-model';
 import {
   isAmbiguousDeliveryPhaseComplete,
   mergePublicationDeliveryPages,
@@ -28,10 +37,11 @@ type PublicationDetailsSheetProps = {
   api: ApiTransport;
   publication: PublicationSummary | null;
   busy?: boolean;
+  covered?: boolean;
   onClose: () => void;
   onCancel: (publication: PublicationSummary) => void;
   onEdit: (publicationId: string) => void;
-  onRetry: (publicationId: string, occurrenceId: string) => void;
+  onRetry: (publication: PublicationDetails, occurrence: PublicationOccurrenceSummary) => void;
   onResolveAmbiguous: (
     publicationId: string,
     occurrenceId: string,
@@ -73,10 +83,43 @@ const DELIVERY_STATUS_LABELS: Record<PublicationDeliveryStatus, string> = {
 
 const PUBLICATION_DELIVERY_PAGE_SIZE = 50;
 
+function formatOccurrenceRevision(
+  occurrence: PublicationOccurrenceSummary,
+  latestContentRevision: number,
+): string | null {
+  if (occurrence.contentRevision === undefined && occurrence.usesLatestContent === undefined) {
+    return null;
+  }
+  if (isPublicationOccurrenceContentStale(occurrence, latestContentRevision)) {
+    return occurrence.contentRevision
+      ? `Версия ${occurrence.contentRevision} · актуальная ${latestContentRevision}`
+      : `Есть актуальная версия ${latestContentRevision}`;
+  }
+  return `Версия ${occurrence.contentRevision ?? latestContentRevision}`;
+}
+
+function getStaleDeliveryContentRevision(
+  delivery: PublicationDelivery,
+  latestContentRevision: number,
+): number | null {
+  const contentRevision = delivery.contentRevision;
+  return contentRevision !== undefined && contentRevision !== latestContentRevision
+    ? contentRevision
+    : null;
+}
+
+function resolvePublicationDetailsPortalTarget(): Element | null {
+  if (typeof document === 'undefined') {
+    return null;
+  }
+  return document.querySelector('.design-preview__device-screen') ?? document.body;
+}
+
 export function PublicationDetailsSheet({
   api,
   publication,
   busy = false,
+  covered = false,
   onClose,
   onCancel,
   onEdit,
@@ -86,31 +129,38 @@ export function PublicationDetailsSheet({
   const open = publication !== null;
   const panelRef = useRef<HTMLElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
-  useDialogFocusTrap(open, panelRef, closeButtonRef);
+  useDialogFocusTrap(open && !covered, panelRef, closeButtonRef);
   const detailsQuery = useQuery({
     queryKey: ['publications', 'details', publication?.id],
     queryFn: () => getPublication(api, publication?.id ?? ''),
     enabled: open,
     refetchInterval: (query) => {
       const details = query.state.data;
+      const delivery = details ? getPublicationActionableDelivery(details) : null;
       return details &&
-        (details.delivery.pending > 0 ||
+        delivery &&
+        (delivery.pending > 0 ||
           (details.lifecycle === 'ACTIVE' &&
             details.schedule?.mode === 'now' &&
-            details.delivery.total === 0))
+            delivery.total === 0))
         ? 5_000
         : false;
     },
   });
+  const actionableDelivery = detailsQuery.data
+    ? getPublicationActionableDelivery(detailsQuery.data)
+    : publication
+      ? getPublicationActionableDelivery(publication)
+      : null;
   const shouldPollDeliveries = Boolean(
     detailsQuery.data &&
-    (detailsQuery.data.delivery.pending > 0 ||
+    actionableDelivery &&
+    (actionableDelivery.pending > 0 ||
       (detailsQuery.data.lifecycle === 'ACTIVE' &&
         detailsQuery.data.schedule?.mode === 'now' &&
-        detailsQuery.data.delivery.total === 0)),
+        actionableDelivery.total === 0)),
   );
-  const ambiguousCount =
-    detailsQuery.data?.delivery.ambiguous ?? publication?.delivery.ambiguous ?? 0;
+  const ambiguousCount = actionableDelivery?.ambiguous ?? 0;
   const hasAmbiguous = ambiguousCount > 0;
   const ambiguousDeliveriesQuery = useInfiniteQuery({
     queryKey: ['publications', 'deliveries', publication?.id, 'ambiguous'],
@@ -209,7 +259,7 @@ export function PublicationDetailsSheet({
       onClose();
       return true;
     },
-    { enabled: open, priority: 720 },
+    { enabled: open && !covered, priority: 720 },
   );
 
   useEffect(() => {
@@ -217,25 +267,41 @@ export function PublicationDetailsSheet({
       return undefined;
     }
     const previousOverflow = document.body.style.overflow;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const panel = panelRef.current;
+      if (event.key !== 'Escape' || !panel || !isTopmostModalDialog(panel)) {
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (!busy) {
+        onClose();
+      }
+    };
     document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', handleKeyDown);
     return () => {
       document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [open]);
+  }, [busy, onClose, open]);
 
-  if (!open || typeof document === 'undefined') {
+  const portalTarget = open ? resolvePublicationDetailsPortalTarget() : null;
+  if (!open || !portalTarget) {
     return null;
   }
 
   const details = detailsQuery.data;
-  const currentLifecycle = details?.lifecycle ?? publication.lifecycle;
-  const canEdit = currentLifecycle !== 'COMPLETED' && currentLifecycle !== 'CANCELED';
-  const canCancel = canEdit;
-  const schedule = details?.schedule ?? publication.schedule;
-  const hasFutureSends = Boolean(schedule && schedule.mode !== 'now');
+  const actionCapabilities = getPublicationActionCapabilities(details ?? publication);
+  const editLabel =
+    actionCapabilities.editScope === 'future'
+      ? 'Изменить будущие отправки'
+      : actionCapabilities.editScope === 'retry'
+        ? 'Изменить версию для повтора'
+        : 'Изменить расписание';
 
   return createPortal(
-    <div className="publication-details-sheet">
+    <div className="publication-details-sheet" aria-hidden={covered || undefined} inert={covered}>
       <button
         type="button"
         className="publication-details-sheet__backdrop"
@@ -247,7 +313,7 @@ export function PublicationDetailsSheet({
         ref={panelRef}
         className="publication-details-sheet__panel"
         role="dialog"
-        aria-modal="true"
+        aria-modal={covered ? undefined : true}
         aria-labelledby="publication-details-title"
         tabIndex={-1}
       >
@@ -282,7 +348,7 @@ export function PublicationDetailsSheet({
             <StatusState
               tone="danger"
               title="Не удалось открыть"
-              description={describeApiError(detailsQuery.error, 'Повторите ещё раз.')}
+              description={describeUserFacingError(detailsQuery.error, 'Повторите ещё раз.')}
             />
           ) : details ? (
             <>
@@ -309,7 +375,7 @@ export function PublicationDetailsSheet({
                         entityType={target.entityType}
                         avatarUrl={target.avatarUrl}
                       />
-                      <span>
+                      <span className="publication-details-targets__copy">
                         <strong>{target.title}</strong>
                         <small>{target.entityType === 'channel' ? 'Канал' : 'Чат'}</small>
                       </span>
@@ -322,34 +388,54 @@ export function PublicationDetailsSheet({
                 <strong>Запуски</strong>
                 <div className="publication-occurrences">
                   {details.occurrences.length > 0 ? (
-                    details.occurrences.map((occurrence) => (
-                      <div
-                        key={occurrence.id}
-                        className={cn(`is-${occurrence.status.toLowerCase()}`)}
-                      >
-                        <span>
-                          <strong>{formatDateTime(occurrence.scheduledAt)}</strong>
-                          <small>
-                            Отправлено {occurrence.delivery.sent}/{occurrence.delivery.total}
-                          </small>
-                        </span>
-                        <span className="publication-occurrences__actions">
-                          <span className="publication-occurrences__status">
-                            {OCCURRENCE_STATUS_LABELS[occurrence.status]}
+                    details.occurrences.map((occurrence) => {
+                      const revisionLabel = formatOccurrenceRevision(
+                        occurrence,
+                        details.content.revision,
+                      );
+                      const staleContent = isPublicationOccurrenceContentStale(
+                        occurrence,
+                        details.content.revision,
+                      );
+                      return (
+                        <div
+                          key={occurrence.id}
+                          className={cn(`is-${occurrence.status.toLowerCase()}`)}
+                        >
+                          <span className="publication-deliveries__copy">
+                            <strong>{formatDateTime(occurrence.scheduledAt)}</strong>
+                            <small>
+                              Отправлено {occurrence.delivery.sent}/{occurrence.delivery.total}
+                            </small>
+                            {revisionLabel ? (
+                              <small
+                                className={cn(
+                                  'publication-occurrences__revision',
+                                  staleContent && 'is-stale',
+                                )}
+                              >
+                                {revisionLabel}
+                              </small>
+                            ) : null}
                           </span>
-                          {occurrence.canRetry ? (
-                            <button
-                              type="button"
-                              onClick={() => onRetry(details.id, occurrence.id)}
-                              disabled={busy}
-                              aria-label="Повторить запуск"
-                            >
-                              <RefreshDouble aria-hidden />
-                            </button>
-                          ) : null}
-                        </span>
-                      </div>
-                    ))
+                          <span className="publication-occurrences__actions">
+                            <span className="publication-occurrences__status">
+                              {OCCURRENCE_STATUS_LABELS[occurrence.status]}
+                            </span>
+                            {occurrence.canRetry ? (
+                              <button
+                                type="button"
+                                onClick={() => onRetry(details, occurrence)}
+                                disabled={busy}
+                                aria-label="Повторить запуск"
+                              >
+                                <RefreshDouble aria-hidden />
+                              </button>
+                            ) : null}
+                          </span>
+                        </div>
+                      );
+                    })
                   ) : (
                     <span className="publication-details-empty">Запусков пока нет</span>
                   )}
@@ -359,72 +445,92 @@ export function PublicationDetailsSheet({
               <section className="publication-details-section">
                 <div className="publication-details-section__head">
                   <strong>Доставка</strong>
-                  {ambiguousDeliveries.length > 0 ? (
-                    <span>Проверить: {Math.max(ambiguousCount, ambiguousDeliveries.length)}</span>
-                  ) : null}
+                  <span
+                    className={cn(
+                      'publication-details-section__total',
+                      ambiguousDeliveries.length > 0 && 'is-danger',
+                    )}
+                  >
+                    Отправлено {details.delivery.sent}/{details.delivery.total}
+                    {ambiguousDeliveries.length > 0
+                      ? ` · проверить ${Math.max(ambiguousCount, ambiguousDeliveries.length)}`
+                      : ''}
+                  </span>
                 </div>
                 {deliveries.length > 0 ? (
                   <div className="publication-deliveries">
-                    {deliveries.map((delivery) => (
-                      <div key={delivery.id}>
-                        <EntityAvatar
-                          title={delivery.target.title}
-                          entityType={delivery.target.entityType}
-                          avatarUrl={delivery.target.avatarUrl}
-                        />
-                        <span>
-                          <strong>{delivery.target.title}</strong>
-                          <small
-                            className={cn(
-                              'publication-deliveries__status',
-                              `is-${delivery.status.toLowerCase()}`,
-                            )}
-                          >
-                            {DELIVERY_STATUS_LABELS[delivery.status]}
-                          </small>
-                          {delivery.lastError ? (
-                            <small className="publication-deliveries__error">
-                              {delivery.lastError}
+                    {deliveries.map((delivery) => {
+                      const staleContentRevision = getStaleDeliveryContentRevision(
+                        delivery,
+                        details.content.revision,
+                      );
+                      const deliveryError = formatPublicationDeliveryError(delivery.lastError);
+                      return (
+                        <div key={delivery.id}>
+                          <EntityAvatar
+                            title={delivery.target.title}
+                            entityType={delivery.target.entityType}
+                            avatarUrl={delivery.target.avatarUrl}
+                          />
+                          <span>
+                            <strong>{delivery.target.title}</strong>
+                            <small
+                              className={cn(
+                                'publication-deliveries__status',
+                                `is-${delivery.status.toLowerCase()}`,
+                              )}
+                            >
+                              {DELIVERY_STATUS_LABELS[delivery.status]}
                             </small>
-                          ) : null}
-                        </span>
-                        {delivery.status === 'AMBIGUOUS' ? (
-                          <span className="publication-delivery-resolution">
-                            <button
-                              type="button"
-                              aria-label={`Подтвердить публикацию в ${delivery.target.title}`}
-                              onClick={() =>
-                                onResolveAmbiguous(
-                                  details.id,
-                                  delivery.occurrenceId,
-                                  delivery.id,
-                                  'mark_sent',
-                                )
-                              }
-                              disabled={busy}
-                            >
-                              Опубликовано
-                            </button>
-                            <button
-                              type="button"
-                              className="is-danger"
-                              aria-label={`Отметить неотправленной для ${delivery.target.title}`}
-                              onClick={() =>
-                                onResolveAmbiguous(
-                                  details.id,
-                                  delivery.occurrenceId,
-                                  delivery.id,
-                                  'mark_failed',
-                                )
-                              }
-                              disabled={busy}
-                            >
-                              Не отправлено
-                            </button>
+                            {staleContentRevision ? (
+                              <small className="publication-deliveries__revision">
+                                Версия {staleContentRevision}
+                              </small>
+                            ) : null}
+                            {deliveryError ? (
+                              <small className="publication-deliveries__error">
+                                {deliveryError}
+                              </small>
+                            ) : null}
                           </span>
-                        ) : null}
-                      </div>
-                    ))}
+                          {delivery.status === 'AMBIGUOUS' ? (
+                            <span className="publication-delivery-resolution">
+                              <button
+                                type="button"
+                                aria-label={`Подтвердить публикацию в ${delivery.target.title}`}
+                                onClick={() =>
+                                  onResolveAmbiguous(
+                                    details.id,
+                                    delivery.occurrenceId,
+                                    delivery.id,
+                                    'mark_sent',
+                                  )
+                                }
+                                disabled={busy}
+                              >
+                                Опубликовано
+                              </button>
+                              <button
+                                type="button"
+                                className="is-danger"
+                                aria-label={`Отметить неотправленной для ${delivery.target.title}`}
+                                onClick={() =>
+                                  onResolveAmbiguous(
+                                    details.id,
+                                    delivery.occurrenceId,
+                                    delivery.id,
+                                    'mark_failed',
+                                  )
+                                }
+                                disabled={busy}
+                              >
+                                Не отправлено
+                              </button>
+                            </span>
+                          ) : null}
+                        </div>
+                      );
+                    })}
                   </div>
                 ) : ambiguousInitialError ? (
                   <span className="publication-details-empty">Не удалось загрузить проверку</span>
@@ -487,7 +593,7 @@ export function PublicationDetailsSheet({
         </div>
 
         <footer className="publication-details-sheet__footer">
-          {canEdit ? (
+          {actionCapabilities.canEdit ? (
             <button
               type="button"
               className="publications-primary"
@@ -495,10 +601,10 @@ export function PublicationDetailsSheet({
               disabled={busy}
             >
               <EditPencil aria-hidden />
-              <span>Редактировать</span>
+              <span>{editLabel}</span>
             </button>
           ) : null}
-          {canCancel ? (
+          {actionCapabilities.canCancel ? (
             <button
               type="button"
               className="publication-details-sheet__cancel"
@@ -506,7 +612,11 @@ export function PublicationDetailsSheet({
               disabled={busy}
             >
               <Xmark aria-hidden />
-              <span>{hasFutureSends ? 'Отменить будущие отправки' : 'Отменить публикацию'}</span>
+              <span>
+                {actionCapabilities.hasFutureSends
+                  ? 'Отменить будущие отправки'
+                  : 'Отменить публикацию'}
+              </span>
             </button>
           ) : null}
           <button type="button" onClick={onClose} disabled={busy}>
@@ -515,6 +625,6 @@ export function PublicationDetailsSheet({
         </footer>
       </section>
     </div>,
-    document.body,
+    portalTarget,
   );
 }

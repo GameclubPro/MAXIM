@@ -62,8 +62,9 @@
   --publication-ui-surface-tint: #eff7ff;
   --publication-ui-ink: #0e1f2d;
   --publication-ui-ink-muted: #3f5366;
-  --publication-ui-ink-subtle: #667c90;
-  --publication-ui-accent: #0b84ff;
+  --publication-ui-ink-subtle: #536b80;
+  --publication-ui-accent: #076fc9;
+  --publication-ui-on-accent: #ffffff;
   --publication-ui-accent-soft: rgba(11, 132, 255, 0.14);
   --publication-ui-border: rgba(218, 229, 240, 0.82);
   --publication-ui-border-strong: rgba(190, 205, 220, 0.86);
@@ -399,6 +400,7 @@ html[data-max-theme='dark'] {
   --publication-ui-ink-muted: #b6c5cf;
   --publication-ui-ink-subtle: #8ca1b0;
   --publication-ui-accent: #61b0ff;
+  --publication-ui-on-accent: #061d2e;
   --publication-ui-accent-soft: rgba(97, 176, 255, 0.18);
   --publication-ui-border: rgba(195, 215, 230, 0.15);
   --publication-ui-border-strong: rgba(195, 215, 230, 0.26);
@@ -498,6 +500,7 @@ html[data-max-theme='dark'] {
     --publication-ui-ink-muted: #b6c5cf;
     --publication-ui-ink-subtle: #8ca1b0;
     --publication-ui-accent: #61b0ff;
+    --publication-ui-on-accent: #061d2e;
     --publication-ui-accent-soft: rgba(97, 176, 255, 0.18);
     --publication-ui-border: rgba(195, 215, 230, 0.15);
     --publication-ui-border-strong: rgba(195, 215, 230, 0.26);

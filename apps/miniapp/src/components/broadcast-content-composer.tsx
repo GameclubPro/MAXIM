@@ -50,6 +50,7 @@ type BroadcastContentComposerProps = {
   buttonsStatusLabel?: string;
   buttonsActive?: boolean;
   buttonsError?: boolean;
+  buttonsPerRow?: number;
   videoLabel?: string | null;
   disabled?: boolean;
   textError?: string;
@@ -79,6 +80,7 @@ export function BroadcastContentComposer({
   buttonsStatusLabel = 'Без кнопки',
   buttonsActive = false,
   buttonsError = false,
+  buttonsPerRow,
   videoLabel = null,
   disabled = false,
   textError = '',
@@ -130,7 +132,11 @@ export function BroadcastContentComposer({
   const normalizedText = text.trim();
   const previewButtons = buttons.filter((button) => button.text.trim());
   const previewSystemButtons = systemButtons.filter((button) => button.text.trim());
-  const previewButtonRows = buildBroadcastPreviewButtonRows(previewButtons, previewSystemButtons);
+  const previewButtonRows = buildBroadcastPreviewButtonRows(
+    previewButtons,
+    previewSystemButtons,
+    buttonsPerRow,
+  );
   const previewButtonCount = previewButtons.length + previewSystemButtons.length;
   const previewButtonLabel = formatBroadcastButtonsPreview([
     ...previewButtons,

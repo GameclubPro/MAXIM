@@ -143,6 +143,8 @@ const MAX_CHAT_POST_LINK_BASE_URL = 'https://max.ru';
 const DEFAULT_SUCCESS_FALSE_STATUS = 200;
 const MAX_UPLOAD_BINARY_TIMEOUT_MS = 30_000;
 const MAX_UPLOAD_FILENAME_MAX_LENGTH = 180;
+const MAX_RESUMABLE_VIDEO_UPLOAD_CHUNK_BYTES = 4 * 1_024 * 1_024;
+const MAX_RESUMABLE_VIDEO_UPLOAD_SESSION_ATTEMPTS = 2;
 const MAX_LIST_BOT_CHATS_UNSUPPORTED_IN_PRODUCTION =
   'MAX API GET /chats is not supported in production; use webhook/subscription managed chat catalog instead. See https://dev.max.ru/docs-api/methods/GET/chats';
 const MAX_MESSAGE_SEND_ATTEMPTED = Symbol('max-message-send-attempted');
@@ -644,6 +646,7 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly circuitWindowSec: number;
   private readonly circuitOpenSec: number;
   private readonly circuitHalfOpenProbeSec: number;
+  private readonly resumableVideoUploadEnabled: boolean;
   private readonly limiterRedis: Redis;
   private readonly pendingTimeouts = new Set<NodeJS.Timeout>();
   private readonly keyedActionTimeouts = new Map<string, NodeJS.Timeout>();
@@ -690,6 +693,10 @@ export class MaxClientService implements OnModuleDestroy {
         .trim()
         .toLowerCase() === 'production';
     this.dispatchEnabled = configService.get<boolean>('MAX_ACTION_DISPATCH_ENABLED', true);
+    this.resumableVideoUploadEnabled = configService.get<boolean>(
+      'MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED',
+      false,
+    );
     this.globalRpsLimit = this.readConfigInt(
       configService.get('MAX_API_GLOBAL_RPS'),
       DEFAULT_MAX_API_GLOBAL_RPS,
@@ -886,7 +893,7 @@ export class MaxClientService implements OnModuleDestroy {
   async sendMessageImmediateToUser(
     userId: string,
     text: string,
-    options?: MaxSendMessageOptions,
+    options?: MaxImmediateSendMessageOptions,
     requestOptions: MaxApiRequestOptions = {},
   ): Promise<MaxPublishedMessage> {
     const attachments = this.buildMessageAttachments(options);
@@ -895,6 +902,7 @@ export class MaxClientService implements OnModuleDestroy {
     const sendResponse = await this.executeMutation(
       `user:${userId}`,
       async () => {
+        await options?.beforeSend?.();
         return this.request<Record<string, unknown>>('post', '/messages', {
           params: {
             user_id: userId,
@@ -1670,35 +1678,176 @@ export class MaxClientService implements OnModuleDestroy {
       explicit: Boolean(requestOptions.botId?.trim()),
     });
     return this.botContext.runWithBot(bot.id, async () => {
-      const uploadMeta = await this.executeMutation(
-        null,
-        () =>
-          this.request<Record<string, unknown>>('post', '/uploads', {
-            params: {
-              type: uploadType,
-            },
-          }),
-        {
-          trafficClass: requestOptions.trafficClass ?? 'critical',
-          actionHealthLane: requestOptions.actionHealthLane,
-          sourceTag: requestOptions.sourceTag,
-          timeoutMs: requestOptions.timeoutMs,
-          botId: bot.id,
-        },
-      );
-      const uploadUrl = typeof uploadMeta.url === 'string' ? uploadMeta.url.trim() : '';
-      const uploadMetaToken = typeof uploadMeta.token === 'string' ? uploadMeta.token.trim() : '';
-      if (!uploadUrl) {
-        throw new Error('MAX upload URL is missing');
+      const safeFileName = this.normalizeUploadFileName(fileName, uploadType);
+      if (uploadType === 'video' && this.resumableVideoUploadEnabled && data.length > 0) {
+        return this.uploadVideoWithContentRange(
+          data,
+          safeFileName,
+          mimeType,
+          requestOptions,
+          bot.id,
+        );
       }
 
-      const safeFileName = this.normalizeUploadFileName(fileName, uploadType);
-      const form = new FormData();
-      form.append('data', data, {
-        filename: safeFileName,
-        contentType: mimeType,
+      const uploadMeta = await this.createUploadSession(uploadType, requestOptions, bot.id);
+      return this.uploadMultipartToSession(
+        uploadType,
+        uploadMeta,
+        data,
+        safeFileName,
+        mimeType,
+        requestOptions,
+      );
+    });
+  }
+
+  private async createUploadSession(
+    uploadType: MaxMediaAttachmentType,
+    requestOptions: MaxApiRequestOptions,
+    botId: string,
+    deadlineAtMs?: number,
+  ): Promise<{ token: string; url: string }> {
+    const timeoutMs =
+      deadlineAtMs === undefined
+        ? this.normalizeTimeoutMs(requestOptions.timeoutMs)
+        : this.resolveRemainingUploadTimeoutMs(deadlineAtMs);
+    const uploadMeta = await this.executeMutation(
+      null,
+      () => {
+        const requestTimeoutMs =
+          deadlineAtMs === undefined
+            ? timeoutMs
+            : this.resolveRemainingUploadTimeoutMs(deadlineAtMs);
+        return this.request<Record<string, unknown>>('post', '/uploads', {
+          params: {
+            type: uploadType,
+          },
+          ...(requestTimeoutMs ? { timeout: requestTimeoutMs } : {}),
+        });
+      },
+      {
+        trafficClass: requestOptions.trafficClass ?? 'critical',
+        actionHealthLane: requestOptions.actionHealthLane,
+        sourceTag: requestOptions.sourceTag,
+        timeoutMs: requestOptions.timeoutMs,
+        botId,
+      },
+    );
+    const url = typeof uploadMeta.url === 'string' ? uploadMeta.url.trim() : '';
+    const token = typeof uploadMeta.token === 'string' ? uploadMeta.token.trim() : '';
+    if (!url) {
+      throw new Error('MAX upload URL is missing');
+    }
+
+    return { token, url };
+  }
+
+  private async uploadVideoWithContentRange(
+    data: Buffer,
+    fileName: string,
+    mimeType: string,
+    requestOptions: MaxApiRequestOptions,
+    botId: string,
+  ): Promise<Record<string, unknown>> {
+    const deadlineAtMs =
+      Date.now() +
+      (this.normalizeTimeoutMs(requestOptions.timeoutMs) ?? MAX_UPLOAD_BINARY_TIMEOUT_MS);
+    let lastError: unknown = null;
+    for (
+      let sessionAttempt = 1;
+      sessionAttempt <= MAX_RESUMABLE_VIDEO_UPLOAD_SESSION_ATTEMPTS;
+      sessionAttempt += 1
+    ) {
+      try {
+        const uploadMeta = await this.createUploadSession(
+          'video',
+          this.withUploadDeadline(requestOptions, deadlineAtMs),
+          botId,
+          deadlineAtMs,
+        );
+        if (!uploadMeta.token) {
+          return await this.uploadMultipartToSession(
+            'video',
+            uploadMeta,
+            data,
+            fileName,
+            mimeType,
+            this.withUploadDeadline(requestOptions, deadlineAtMs),
+          );
+        }
+
+        await this.uploadVideoContentRangeChunks(uploadMeta.url, data, fileName, deadlineAtMs);
+        return { token: uploadMeta.token };
+      } catch (error: unknown) {
+        const sanitizedError = this.sanitizeUploadError(error, 'video');
+        lastError = sanitizedError;
+        // FLAG: This client does not assume remote offsets; ambiguous chunks restart in a fresh session.
+        if (
+          sessionAttempt >= MAX_RESUMABLE_VIDEO_UPLOAD_SESSION_ATTEMPTS ||
+          Date.now() >= deadlineAtMs ||
+          !this.isAmbiguousUploadTransportError(error)
+        ) {
+          throw sanitizedError;
+        }
+      }
+    }
+
+    throw lastError ?? new Error('MAX video upload failed');
+  }
+
+  private async uploadVideoContentRangeChunks(
+    uploadUrl: string,
+    data: Buffer,
+    fileName: string,
+    deadlineAtMs: number,
+  ): Promise<void> {
+    const headerFileName = this.normalizeUploadHeaderFileName(fileName);
+    for (
+      let startByte = 0;
+      startByte < data.length;
+      startByte += MAX_RESUMABLE_VIDEO_UPLOAD_CHUNK_BYTES
+    ) {
+      const endExclusive = Math.min(
+        data.length,
+        startByte + MAX_RESUMABLE_VIDEO_UPLOAD_CHUNK_BYTES,
+      );
+      const endByte = endExclusive - 1;
+      const chunk = data.subarray(startByte, endExclusive);
+      await this.requestAbsolute<unknown>('post', uploadUrl, {
+        data: chunk,
+        headers: {
+          'Content-Disposition': `attachment; filename="${headerFileName}"`,
+          'Content-Length': String(chunk.length),
+          'Content-Range': `bytes ${startByte}-${endByte}/${data.length}`,
+          'Content-Type': 'application/x-binary; charset=x-user-defined',
+          'X-File-Name': headerFileName,
+          'X-Uploading-Mode': 'parallel',
+          Connection: 'keep-alive',
+        },
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+        timeout: this.resolveRemainingUploadTimeoutMs(deadlineAtMs),
+        skipAuthorization: true,
       });
-      const uploadResult = await this.requestAbsolute<Record<string, unknown>>('post', uploadUrl, {
+    }
+  }
+
+  private async uploadMultipartToSession(
+    uploadType: MaxMediaAttachmentType,
+    uploadMeta: { token: string; url: string },
+    data: Buffer,
+    fileName: string,
+    mimeType: string,
+    requestOptions: MaxApiRequestOptions,
+  ): Promise<Record<string, unknown>> {
+    const form = new FormData();
+    form.append('data', data, {
+      filename: fileName,
+      contentType: mimeType,
+    });
+    let uploadResult: Record<string, unknown>;
+    try {
+      uploadResult = await this.requestAbsolute<Record<string, unknown>>('post', uploadMeta.url, {
         data: form,
         headers: form.getHeaders(),
         maxBodyLength: Infinity,
@@ -1706,21 +1855,90 @@ export class MaxClientService implements OnModuleDestroy {
         timeout: requestOptions.timeoutMs ?? MAX_UPLOAD_BINARY_TIMEOUT_MS,
         skipAuthorization: true,
       });
+    } catch (error: unknown) {
+      throw this.sanitizeUploadError(error, uploadType);
+    }
 
-      if (!uploadResult || typeof uploadResult !== 'object') {
-        throw new Error('MAX upload payload is missing');
-      }
-
-      if (Object.keys(uploadResult).length > 0) {
-        return uploadResult;
-      }
-
-      if (uploadMetaToken) {
-        return { token: uploadMetaToken };
-      }
-
+    if (!uploadResult || typeof uploadResult !== 'object') {
       throw new Error('MAX upload payload is missing');
-    });
+    }
+
+    if (Object.keys(uploadResult).length > 0) {
+      return uploadResult;
+    }
+
+    if (uploadMeta.token) {
+      return { token: uploadMeta.token };
+    }
+
+    throw new Error('MAX upload payload is missing');
+  }
+
+  private isAmbiguousUploadTransportError(error: unknown): boolean {
+    const status = this.extractStatusCode(error);
+    return (
+      (status !== null && status >= 500 && status <= 599) || isAmbiguousMaxMutationError(error)
+    );
+  }
+
+  private sanitizeUploadError(error: unknown, uploadType: MaxMediaAttachmentType): Error {
+    const status = this.extractStatusCode(error);
+    const rawCode = (error as { code?: unknown })?.code;
+    const code =
+      typeof rawCode === 'string' && rawCode.trim() ? rawCode.trim().toUpperCase() : null;
+    const ambiguous = this.isAmbiguousUploadTransportError(error);
+    const message = status
+      ? `MAX ${uploadType} upload failed with HTTP ${status}${ambiguous ? ' after an ambiguous transport failure' : ''}`
+      : `MAX ${uploadType} upload failed${
+          ambiguous ? ' after an ambiguous transport timeout or connection failure' : ''
+        }${code ? ` (${code})` : ''}`;
+    const sanitized = new Error(message) as Error & {
+      code?: string;
+      response?: { status: number };
+    };
+    sanitized.name = 'MaxMediaUploadError';
+    if (code) {
+      sanitized.code = code;
+    }
+    if (status !== null) {
+      sanitized.response = { status };
+    }
+    return sanitized;
+  }
+
+  private withUploadDeadline(
+    requestOptions: MaxApiRequestOptions,
+    deadlineAtMs: number,
+  ): MaxApiRequestOptions {
+    return {
+      ...requestOptions,
+      timeoutMs: this.resolveRemainingUploadTimeoutMs(deadlineAtMs),
+    };
+  }
+
+  private resolveRemainingUploadTimeoutMs(deadlineAtMs: number): number {
+    const remainingMs = deadlineAtMs - Date.now();
+    if (remainingMs <= 0) {
+      throw Object.assign(new Error('MAX video upload deadline exceeded'), {
+        code: 'ETIMEDOUT',
+      });
+    }
+    return Math.max(1, Math.trunc(remainingMs));
+  }
+
+  private normalizeUploadHeaderFileName(fileName: string): string {
+    const extensionMatch = fileName.match(/\.[A-Za-z0-9]{1,10}$/u);
+    const extension = extensionMatch?.[0] ?? '';
+    const stem = extension ? fileName.slice(0, -extension.length) : fileName;
+    const asciiStem = stem
+      .replace(/[^\x20-\x7E]+/gu, '_')
+      .replace(/[^A-Za-z0-9._ -]+/gu, '_')
+      .replace(/_+/gu, '_')
+      .replace(/\s+/gu, ' ')
+      .replace(/[. ]+$/u, '')
+      .trim();
+    const safeStem = /[A-Za-z0-9]/u.test(asciiStem) ? asciiStem : 'upload';
+    return `${safeStem.slice(0, MAX_UPLOAD_FILENAME_MAX_LENGTH - extension.length)}${extension}`;
   }
 
   private normalizeUploadFileName(

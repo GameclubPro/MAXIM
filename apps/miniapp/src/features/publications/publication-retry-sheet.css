@@ -1,0 +1,161 @@
+@layer components {
+  .publication-retry-sheet {
+    --text-primary: var(--publication-ui-ink);
+    --text-secondary: var(--publication-ui-ink-muted);
+    --text-muted: var(--publication-ui-ink-subtle);
+    --accent: var(--publication-ui-accent);
+    --accent-soft: var(--publication-ui-accent-soft);
+    --color-ink: var(--publication-ui-ink);
+    --color-ink-muted: var(--publication-ui-ink-muted);
+    --color-ink-subtle: var(--publication-ui-ink-subtle);
+    --color-accent: var(--publication-ui-accent);
+    --color-accent-soft: var(--publication-ui-accent-soft);
+    --color-surface: var(--publication-ui-surface);
+    --color-surface-tint: var(--publication-ui-surface-tint);
+    --color-border: var(--publication-ui-border);
+    --color-border-strong: var(--publication-ui-border-strong);
+    --color-scrim: var(--publication-ui-scrim);
+    --surface-page: var(--publication-ui-page);
+
+    position: fixed;
+    inset: 0;
+    z-index: 90;
+    display: grid;
+    align-items: end;
+    color: var(--publication-ui-ink);
+  }
+
+  .publication-retry-sheet__backdrop {
+    position: absolute;
+    inset: 0;
+    border: 0;
+    background: var(--color-scrim);
+  }
+
+  .publication-retry-sheet__panel {
+    position: relative;
+    width: min(100%, 680px);
+    display: grid;
+    justify-self: center;
+    overflow: hidden;
+    border: 1px solid var(--color-border);
+    border-bottom: 0;
+    border-radius: 8px 8px 0 0;
+    background: var(--surface-page);
+    box-shadow: var(--shadow-lg);
+  }
+
+  .publication-retry-sheet__grabber {
+    width: 36px;
+    height: 4px;
+    margin: 7px auto 2px;
+    border-radius: 999px;
+    background: var(--color-border-strong);
+  }
+
+  .publication-retry-sheet__header {
+    min-height: 50px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 6px 12px;
+  }
+
+  .publication-retry-sheet__header > strong {
+    min-width: 0;
+    font-size: 0.9rem;
+    font-weight: 850;
+  }
+
+  .publication-retry-sheet__header > button {
+    width: 44px;
+    height: 44px;
+    display: grid;
+    flex: 0 0 44px;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--color-ink-muted);
+    place-items: center;
+  }
+
+  .publication-retry-sheet__header svg,
+  .publication-retry-sheet__choices svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .publication-retry-sheet__choices {
+    display: grid;
+    gap: 8px;
+    padding: 0 12px calc(12px + var(--app-safe-bottom, 0px));
+  }
+
+  .publication-retry-sheet__choices > button {
+    min-height: 58px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: var(--color-surface);
+    color: var(--color-ink);
+    font: inherit;
+    text-align: left;
+  }
+
+  .publication-retry-sheet__choices > button.is-latest {
+    border-color: var(--color-accent);
+    background: var(--color-surface-tint);
+    color: var(--color-accent);
+  }
+
+  .publication-retry-sheet__choices > button > span {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+  }
+
+  .publication-retry-sheet__choices strong {
+    font-size: 0.8rem;
+    font-weight: 820;
+  }
+
+  .publication-retry-sheet__choices small {
+    color: var(--color-ink-subtle);
+    font-size: 0.68rem;
+  }
+
+  .publication-retry-sheet__choices > button:focus-visible,
+  .publication-retry-sheet__header > button:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  body.publication-retry-sheet-open .toast-stack {
+    --toast-bottom-offset: 224px;
+  }
+
+  html[data-max-theme='dark'] .publication-retry-sheet {
+    color-scheme: dark;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    html:not([data-max-theme]) .publication-retry-sheet {
+      color-scheme: dark;
+    }
+  }
+
+  @media (max-width: 340px) {
+    .publication-retry-sheet__header {
+      padding-inline: 10px;
+    }
+
+    .publication-retry-sheet__choices {
+      padding-inline: 10px;
+    }
+  }
+}

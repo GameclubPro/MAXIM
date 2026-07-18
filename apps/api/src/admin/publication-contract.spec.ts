@@ -8,7 +8,10 @@ import {
   listPublicationDeliveriesQuerySchema,
   listPublicationsQuerySchema,
   MAX_PUBLICATION_IMAGES_TOTAL_BASE64_LENGTH,
+  MAX_PUBLICATION_TEXT_LENGTH,
   publicationContentInputSchema,
+  publicationDeliverySchema,
+  retryPublicationOccurrenceRequestSchema,
 } from '@maxim/contracts/publication';
 
 describe('publication contracts', () => {
@@ -127,6 +130,41 @@ describe('publication contracts', () => {
     ).toBe(true);
   });
 
+  it('accepts the documented MAX text limit and rejects longer publication text', () => {
+    expect(
+      publicationContentInputSchema.safeParse({
+        text: 'A'.repeat(MAX_PUBLICATION_TEXT_LENGTH),
+        media: [],
+      }).success,
+    ).toBe(true);
+    expect(
+      publicationContentInputSchema.safeParse({
+        text: 'A'.repeat(MAX_PUBLICATION_TEXT_LENGTH + 1),
+        media: [],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('requires optimistic revisions only when retrying the latest content', () => {
+    expect(
+      retryPublicationOccurrenceRequestSchema.safeParse({ requestId: 'retry-original-1' }).success,
+    ).toBe(true);
+    expect(
+      retryPublicationOccurrenceRequestSchema.safeParse({
+        requestId: 'retry-latest-1',
+        contentMode: 'latest',
+      }).success,
+    ).toBe(false);
+    expect(
+      retryPublicationOccurrenceRequestSchema.safeParse({
+        requestId: 'retry-latest-2',
+        contentMode: 'latest',
+        expectedPublicationVersion: 3,
+        expectedContentRevision: 2,
+      }).success,
+    ).toBe(true);
+  });
+
   it('parses server-side list filters and binds them into opaque cursors', () => {
     const query = listPublicationsQuerySchema.parse({
       view: 'schedules',
@@ -161,6 +199,19 @@ describe('publication contracts', () => {
       entityType: 'channel',
       status: 'failed',
     });
+  });
+
+  it('binds the non-overlapping current view into its cursor', () => {
+    const query = listPublicationsQuerySchema.parse({ view: 'current' });
+    const cursor = encodePublicationListCursor({
+      v: 1,
+      updatedAt: '2026-07-10T09:00:00.000Z',
+      id: 'publication-current',
+      view: query.view,
+      query: query.query,
+    });
+
+    expect(decodePublicationListCursor(cursor)?.view).toBe('current');
   });
 
   it('binds legacy pagination cursors to view, kind, entity, and search filters', () => {
@@ -214,5 +265,34 @@ describe('publication contracts', () => {
       cursor: 'delivery-50',
       limit: 50,
     });
+  });
+
+  it('keeps delivery content revisions additive for mixed retry history', () => {
+    expect(
+      publicationDeliverySchema.parse({
+        id: 'delivery-1',
+        occurrenceId: 'occurrence-1',
+        target: { chatId: 'chat-1', entityType: 'chat', title: 'Чат' },
+        status: 'SENT',
+        contentRevision: 3,
+        usesLatestContent: false,
+        attemptCount: 1,
+        remoteMessageId: 'message-1',
+        lastError: null,
+        sentAt: '2026-07-18T09:00:00.000Z',
+      }),
+    ).toEqual(expect.objectContaining({ contentRevision: 3, usesLatestContent: false }));
+    expect(
+      publicationDeliverySchema.safeParse({
+        id: 'delivery-legacy',
+        occurrenceId: 'occurrence-1',
+        target: { chatId: 'chat-1', entityType: 'chat', title: 'Чат' },
+        status: 'SENT',
+        attemptCount: 1,
+        remoteMessageId: null,
+        lastError: null,
+        sentAt: null,
+      }).success,
+    ).toBe(true);
   });
 });

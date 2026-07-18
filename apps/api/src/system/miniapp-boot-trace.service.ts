@@ -30,6 +30,7 @@ const sensitiveKeyFragments = [
   'webappstartparam',
   'webappdata',
 ];
+const sensitiveExactKeys = new Set(['q', 'query', 'search']);
 
 const miniappBootTraceBodySchema = z
   .object({
@@ -80,8 +81,10 @@ export function parseMiniappBootTracePayload(payload: unknown): MiniappBootTrace
   };
 
   assignSanitized(trace, 'sessionId', parsed.data.sessionId, MAX_SESSION_ID_LENGTH);
-  assignSanitized(trace, 'route', parsed.data.route, MAX_ROUTE_LENGTH);
-  assignSanitized(trace, 'url', parsed.data.url, MAX_URL_LENGTH);
+  if (trace.phase !== 'publication_api') {
+    assignSanitized(trace, 'route', parsed.data.route, MAX_ROUTE_LENGTH);
+    assignSanitized(trace, 'url', parsed.data.url, MAX_URL_LENGTH);
+  }
   assignSanitized(trace, 'ua', parsed.data.ua, MAX_UA_LENGTH);
   assignSanitized(trace, 'platform', parsed.data.platform, MAX_PLATFORM_LENGTH);
 
@@ -144,9 +147,7 @@ function sanitizeDetails(value: unknown, depth = 0): unknown {
   }
 
   if (Array.isArray(value)) {
-    return value
-      .slice(0, MAX_DETAILS_ARRAY_ITEMS)
-      .map((item) => sanitizeDetails(item, depth + 1));
+    return value.slice(0, MAX_DETAILS_ARRAY_ITEMS).map((item) => sanitizeDetails(item, depth + 1));
   }
 
   if (typeof value === 'object') {
@@ -183,7 +184,7 @@ function sanitizeText(value: string, maxLength: number): string {
 
 function redactSensitiveFragments(value: string): string {
   const redactedQueryValues = value.replace(
-    /(^|[?&#\s|,;])([^=&#\s|,;]{1,100})=([^&#\s|,;]*)/g,
+    /(^|[?&#\s|,;])([^=?&#\s|,;]{1,100})=([^&#\s|,;]*)/g,
     (match: string, separator: string, key: string) => {
       return isSensitiveKey(decodeURIComponentSafe(key)) ? `${separator}${key}=${REDACTED}` : match;
     },
@@ -203,7 +204,11 @@ function redactSensitiveFragments(value: string): string {
 }
 
 function isSensitiveKey(key: string): boolean {
-  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const exact = key.trim().toLowerCase();
+  if (sensitiveExactKeys.has(exact)) {
+    return true;
+  }
+  const normalized = exact.replace(/[^a-z0-9]/g, '');
   return sensitiveKeyFragments.some((fragment) => normalized.includes(fragment));
 }
 

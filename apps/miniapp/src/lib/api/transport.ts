@@ -261,9 +261,10 @@ export function createApiTransport(
           path,
           status: response.status,
         });
-        throw new Error(
-          buildApiErrorMessage(response.status, payload, response.headers.get('content-type')),
-        );
+        const contentType = response.headers.get('content-type');
+        const message = buildApiErrorMessage(response.status, payload, contentType);
+        const { createApiRequestError } = await import('../api-request-error');
+        throw createApiRequestError(response.status, payload, message);
       }
 
       traceFirstMiniappApiResult({

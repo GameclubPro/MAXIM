@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createApiRequestError } from '../src/lib/api-request-error';
 import {
   buildApiErrorMessage,
+  describeApiError,
   isSessionExpiredApiMessage,
   isTerminalDialogApiMessage,
 } from '../src/lib/api-error';
@@ -31,6 +33,88 @@ test('keeps oversized upload errors concise and localized', () => {
     describeUserFacingError(error, 'Не удалось загрузить файл.'),
     'Файл слишком большой для сервера. Уменьшите размер и повторите.',
   );
+});
+
+test('preserves structured HTTP error metadata without sensitive payload fields', () => {
+  const payload = JSON.stringify({
+    statusCode: 409,
+    code: 'RESOURCE_REVISION_CONFLICT',
+    message: 'Данные уже изменены.',
+    currentRevision: 7,
+    details: [{ field: 'title' }],
+    token: 'must-not-survive',
+    nested: { authorization: 'must-not-survive', retryable: true },
+  });
+  const error = createApiRequestError(
+    409,
+    payload,
+    buildApiErrorMessage(409, payload, 'application/json'),
+  );
+
+  assert.equal(error.name, 'ApiRequestError');
+  assert.equal(error.status, 409);
+  assert.equal(error.code, 'RESOURCE_REVISION_CONFLICT');
+  assert.equal(error.message, 'Данные уже изменены.');
+  assert.deepEqual(error.payload, {
+    statusCode: 409,
+    code: 'RESOURCE_REVISION_CONFLICT',
+    message: 'Данные уже изменены.',
+    currentRevision: 7,
+    details: [{ field: 'title' }],
+    nested: { retryable: true },
+  });
+  assert.equal(Object.isFrozen(error.payload), true);
+  assert.equal(describeApiError(error, 'Не удалось выполнить действие.'), 'Данные уже изменены.');
+});
+
+test('keeps non-JSON HTTP error fallbacks without exposing a structured payload', () => {
+  const htmlPayload = '<html>Bad Gateway</html>';
+  const plainPayload = 'Некорректный запрос.';
+  const htmlError = createApiRequestError(
+    502,
+    htmlPayload,
+    buildApiErrorMessage(502, htmlPayload, 'text/html'),
+  );
+  const plainError = createApiRequestError(
+    400,
+    plainPayload,
+    buildApiErrorMessage(400, plainPayload, 'text/plain'),
+  );
+
+  assert.equal(htmlError.status, 502);
+  assert.equal(htmlError.code, null);
+  assert.equal(htmlError.payload, null);
+  assert.equal(htmlError.message, 'Сервис временно недоступен. Повторите позже.');
+  assert.equal(plainError.status, 400);
+  assert.equal(plainError.code, null);
+  assert.equal(plainError.payload, null);
+  assert.equal(plainError.message, 'Некорректный запрос.');
+});
+
+test('keeps JSON 5xx internals out of the error while preserving safe metadata', () => {
+  const payload = JSON.stringify({
+    statusCode: 500,
+    code: 'PUBLICATION_INTERNAL_FAILURE',
+    message: 'Prisma connection failed for publication secret-id',
+    retryable: true,
+  });
+  const error = createApiRequestError(
+    500,
+    payload,
+    buildApiErrorMessage(500, payload, 'application/json'),
+  );
+
+  assert.equal(error.message, 'Ошибка сервера. Повторите позже.');
+  assert.equal(error.code, 'PUBLICATION_INTERNAL_FAILURE');
+  assert.deepEqual(error.payload, {
+    statusCode: 500,
+    code: 'PUBLICATION_INTERNAL_FAILURE',
+    retryable: true,
+  });
+  assert.equal(error.message.includes('Prisma'), false);
+  assert.equal(error.message.includes('secret-id'), false);
+  assert.equal(JSON.stringify(error).includes('Prisma'), false);
+  assert.equal(JSON.stringify(error).includes('secret-id'), false);
 });
 
 test('detects raw init-data auth failures as session-expired states', () => {

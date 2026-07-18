@@ -118,6 +118,10 @@ export function buildApiErrorMessage(
     return formatStatusFallback(status);
   }
 
+  if (status >= 500) {
+    return formatStatusFallback(status);
+  }
+
   const apiMessage = extractApiMessageFromJsonPayload(trimmedPayload);
   if (apiMessage) {
     return apiMessage;
@@ -131,7 +135,7 @@ export function buildApiErrorMessage(
   const payloadIsHtml =
     normalizedContentType?.includes('text/html') || looksLikeHtmlPayload(trimmedPayload);
 
-  if (payloadIsHtml || status >= 500) {
+  if (payloadIsHtml) {
     return formatStatusFallback(status);
   }
 

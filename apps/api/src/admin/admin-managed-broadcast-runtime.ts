@@ -336,6 +336,11 @@ import {
   PUBLICATION_VIDEO_INLINE_BASE64_FIELD,
 } from './publication-video-media';
 import {
+  PUBLICATION_MAX_IMAGE_BYTES,
+  PUBLICATION_MAX_TOTAL_IMAGE_BYTES,
+} from './publication-media-limits';
+import { safeParseTrustedPublicationTestBroadcastRequest } from './publication-test-broadcast-request';
+import {
   selectLogsDashboardMembershipSummary,
   selectLogsDashboardModerationSummary,
 } from './logs-dashboard-rollups';
@@ -590,8 +595,11 @@ type ManagedBroadcastLease = {
 type ManagedBroadcastProgressCallback = () => Promise<void>;
 
 type ManagedBroadcastMediaResolutionOptions = {
+  trustedPublicationTestPayload?: boolean;
   trustedPublicationVideoMarkers?: boolean;
 };
+
+type ManagedBroadcastTestOptions = ManagedBroadcastMediaResolutionOptions;
 
 type ManagedBroadcastRequestMedia = Pick<
   SendBroadcastRequest,
@@ -609,6 +617,12 @@ type ManagedBroadcastRequestMedia = Pick<
 class ManagedBroadcastIdempotencyReplay extends Error {
   constructor(readonly result: SendBroadcastResult) {
     super('Managed broadcast idempotency replay');
+  }
+}
+
+class ManagedBroadcastTestIdempotencyReplay extends Error {
+  constructor(readonly result: SendBroadcastTestResult) {
+    super('Managed broadcast test idempotency replay');
   }
 }
 
@@ -807,6 +821,7 @@ export class AdminManagedBroadcastRuntime {
     body: unknown,
   ): Promise<SendBroadcastTestResult> {
     return this.sendManagedBroadcastTest(sourceChatId, user, body, 'chat', {
+      trustedPublicationTestPayload: true,
       trustedPublicationVideoMarkers: true,
     });
   }
@@ -817,6 +832,7 @@ export class AdminManagedBroadcastRuntime {
     body: unknown,
   ): Promise<SendBroadcastTestResult> {
     return this.sendManagedBroadcastTest(sourceChatId, user, body, 'channel', {
+      trustedPublicationTestPayload: true,
       trustedPublicationVideoMarkers: true,
     });
   }
@@ -2076,70 +2092,106 @@ export class AdminManagedBroadcastRuntime {
     user: AuthUser,
     body: unknown,
     entityType: ManagedEntityType,
-    mediaResolutionOptions: ManagedBroadcastMediaResolutionOptions = {},
+    options: ManagedBroadcastTestOptions = {},
   ): Promise<SendBroadcastTestResult> {
     const request = await this.prepareManagedBroadcastRequest(sourceChatId, user, body, {
       entityType,
+      trustedPublicationTestPayload: options.trustedPublicationTestPayload,
     });
-    const deliveryBotId =
-      (await this.resolveDeliveryBotAssignment(sourceChatId)) ?? this.resolvePrivateDeliveryBotId();
-    const privateChatId = await this.resolvePrivateDialogChatId(user, deliveryBotId);
-    const maxApiOptions = this.buildManagedBroadcastMaxApiOptions('interactive');
-    const media = await this.resolveManagedBroadcastMedia(
-      request.payload,
-      entityType,
-      sourceChatId,
-      user.userId,
-      deliveryBotId,
-      maxApiOptions,
-      undefined,
-      mediaResolutionOptions,
-    );
-    const message = await this.buildManagedBroadcastMessage(
-      sourceChatId,
-      entityType,
-      request.payload,
-      request.normalizedSourceText,
-      media,
-      deliveryBotId,
-    );
-
+    let idempotencyRecord: { id: string } | null;
     try {
-      const published = await this.sendManagedBroadcastTestPrivateMessage({
+      idempotencyRecord = await this.claimManagedBroadcastTestIdempotencyRecord(
+        sourceChatId,
+        user,
+        request,
+        entityType,
+      );
+    } catch (error: unknown) {
+      if (error instanceof ManagedBroadcastTestIdempotencyReplay) {
+        return error.result;
+      }
+      throw error;
+    }
+
+    const preparedDelivery = await (async () => {
+      try {
+        const deliveryBotId =
+          (await this.resolveDeliveryBotAssignment(sourceChatId)) ??
+          this.resolvePrivateDeliveryBotId();
+        const privateChatId = await this.resolvePrivateDialogChatId(user, deliveryBotId);
+        const maxApiOptions = this.buildManagedBroadcastMaxApiOptions('interactive');
+        const media = await this.resolveManagedBroadcastMedia(
+          request.payload,
+          entityType,
+          sourceChatId,
+          user.userId,
+          deliveryBotId,
+          maxApiOptions,
+          undefined,
+          options,
+        );
+        const message = await this.buildManagedBroadcastMessage(
+          sourceChatId,
+          entityType,
+          request.payload,
+          request.normalizedSourceText,
+          media,
+          deliveryBotId,
+        );
+        return { deliveryBotId, privateChatId, message };
+      } catch (error: unknown) {
+        await this.releaseManagedBroadcastIdempotencyRecord(idempotencyRecord?.id ?? null);
+        throw error;
+      }
+    })();
+
+    let published: Awaited<
+      ReturnType<AdminManagedBroadcastRuntime['sendManagedBroadcastTestPrivateMessage']>
+    >;
+    try {
+      published = await this.sendManagedBroadcastTestPrivateMessage({
         adminUserId: user.userId,
-        privateChatId,
-        message: message.messageText,
-        options: message.messageOptions,
-        botId: deliveryBotId,
-      });
-
-      await this.prisma.auditLog.create({
-        data: {
-          chatId: sourceChatId,
-          actorUserId: user.userId,
-          action: 'SEND_BROADCAST_TEST',
-          payload: {
-            entityType,
-            botId: deliveryBotId ?? null,
-            privateChatId: privateChatId ?? null,
-            messageId: published.messageId,
-          },
-        },
-      });
-
-      return sendBroadcastTestResultSchema.parse({
-        delivered: true,
-        messageId: published.messageId,
-        chatId: published.chatId ?? privateChatId ?? null,
-        url: published.url ?? null,
+        privateChatId: preparedDelivery.privateChatId,
+        message: preparedDelivery.message.messageText,
+        options: preparedDelivery.message.messageOptions,
+        botId: preparedDelivery.deliveryBotId,
       });
     } catch (error: unknown) {
+      if (this.isAmbiguousManagedBroadcastSendError(error)) {
+        throw new ServiceUnavailableException({
+          code: 'BROADCAST_TEST_RESULT_PENDING',
+          message: 'Результат тестовой отправки не подтверждён.',
+        });
+      }
+      await this.releaseManagedBroadcastIdempotencyRecord(idempotencyRecord?.id ?? null);
       const maxApiMessage = this.extractMaxApiErrorMessage(error);
       throw new BadRequestException(
         maxApiMessage ||
           'Не удалось отправить тест. Откройте личный диалог с ботом и попробуйте ещё раз.',
       );
     }
+
+    const result = sendBroadcastTestResultSchema.parse({
+      delivered: true,
+      messageId: published.messageId,
+      chatId: published.chatId ?? preparedDelivery.privateChatId ?? null,
+      url: published.url ?? null,
+    });
+    await this.persistManagedBroadcastTestIdempotencyResult(idempotencyRecord?.id ?? null, result);
+    await this.prisma.auditLog.create({
+      data: {
+        chatId: sourceChatId,
+        actorUserId: user.userId,
+        action: 'SEND_BROADCAST_TEST',
+        payload: {
+          entityType,
+          botId: preparedDelivery.deliveryBotId ?? null,
+          privateChatId: preparedDelivery.privateChatId ?? null,
+          messageId: published.messageId,
+        },
+      },
+    });
+    return result;
   }
 
   private async sendManagedBroadcastTestPrivateMessage(params: {
@@ -2163,12 +2215,19 @@ export class AdminManagedBroadcastRuntime {
       ) + 1;
 
     for (let attempt = 1; attempt <= attempts; ) {
+      let sendStarted = false;
+      const messageOptions = {
+        ...params.options,
+        beforeSend: async () => {
+          sendStarted = true;
+        },
+      };
       try {
         return privateChatId
           ? await this.maxClient.sendMessageImmediateWithId(
               privateChatId,
               params.message,
-              params.options,
+              messageOptions,
               {
                 trafficClass: 'interactive',
                 sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
@@ -2178,7 +2237,7 @@ export class AdminManagedBroadcastRuntime {
           : await this.maxClient.sendMessageImmediateToUser(
               params.adminUserId,
               params.message,
-              params.options,
+              messageOptions,
               {
                 trafficClass: 'interactive',
                 sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
@@ -2186,19 +2245,20 @@ export class AdminManagedBroadcastRuntime {
               },
             );
       } catch (error: unknown) {
-        lastError = error;
-        if (privateChatId && isPrivateDialogChatUnavailableError(error)) {
+        const phasedError = this.markManagedBroadcastSendPhase(error, sendStarted);
+        lastError = phasedError;
+        if (privateChatId && isPrivateDialogChatUnavailableError(phasedError)) {
           privateChatId = null;
           continue;
         }
 
         const retryDelayMs = this.resolveManagedBroadcastSendRetryDelayMs(
-          error,
+          phasedError,
           attempt,
           params.options,
         );
         if (retryDelayMs === null) {
-          throw error;
+          throw phasedError;
         }
 
         await this.sleep(retryDelayMs);
@@ -2319,6 +2379,126 @@ export class AdminManagedBroadcastRuntime {
     throw new ServiceUnavailableException('Автопостинг уже запускается. Повторите позже.');
   }
 
+  private async claimManagedBroadcastTestIdempotencyRecord(
+    sourceChatId: string,
+    user: AuthUser,
+    request: PreparedManagedBroadcastRequest,
+    entityType: ManagedEntityType,
+  ): Promise<{ id: string } | null> {
+    if (!request.idempotencyKey || !request.idempotencyHash) {
+      return null;
+    }
+
+    const prismaEntityType = mapManagedEntityTypeToChatEntityType(entityType);
+    const requestHash = createHash('sha256')
+      .update(`managed-broadcast-test:${request.idempotencyHash}`)
+      .digest('hex');
+    const semanticLockKey = [
+      'managed-broadcast-test',
+      sourceChatId,
+      prismaEntityType,
+      user.userId,
+      requestHash,
+    ].join(':');
+
+    return this.prisma.$transaction(async (tx: any) => {
+      await tx.$executeRaw`
+        SELECT pg_advisory_xact_lock(hashtext(${semanticLockKey}))
+      `;
+
+      const unresolvedSemanticClaim = await tx.managedBroadcastIdempotencyRecord.findFirst({
+        where: {
+          sourceChatId,
+          entityType: prismaEntityType,
+          actorUserId: user.userId,
+          source: 'broadcast_test',
+          requestHash,
+          broadcastId: null,
+          result: { equals: Prisma.DbNull },
+        },
+        select: { id: true },
+      });
+      if (unresolvedSemanticClaim) {
+        throw new ServiceUnavailableException({
+          code: 'BROADCAST_TEST_RESULT_PENDING',
+          message: 'Результат тестовой отправки не подтверждён.',
+        });
+      }
+
+      try {
+        return await tx.managedBroadcastIdempotencyRecord.create({
+          data: {
+            requestId: request.idempotencyKey,
+            requestHash,
+            sourceChatId,
+            entityType: prismaEntityType,
+            actorUserId: user.userId,
+            source: 'broadcast_test',
+          },
+          select: { id: true },
+        });
+      } catch (error: unknown) {
+        if (!isPrismaKnownError(error, 'P2002')) {
+          throw error;
+        }
+      }
+
+      const existing = await tx.managedBroadcastIdempotencyRecord.findUnique({
+        where: {
+          sourceChatId_entityType_actorUserId_requestId: {
+            sourceChatId,
+            entityType: prismaEntityType,
+            actorUserId: user.userId,
+            requestId: request.idempotencyKey,
+          },
+        },
+      });
+      if (!existing) {
+        throw new ServiceUnavailableException('Тестовая отправка уже запускается.');
+      }
+      if (existing.requestHash !== requestHash) {
+        throw new BadRequestException('Ключ повтора уже использован для другой операции.');
+      }
+
+      const cachedResult = this.readManagedBroadcastTestIdempotencyResult(existing.result);
+      if (cachedResult) {
+        throw new ManagedBroadcastTestIdempotencyReplay(cachedResult);
+      }
+
+      // The MAX send may have completed even when its response was lost. Keeping this claim
+      // quarantines an uncertain test instead of automatically sending a duplicate later.
+      throw new ServiceUnavailableException({
+        code: 'BROADCAST_TEST_RESULT_PENDING',
+        message: 'Результат тестовой отправки не подтверждён.',
+      });
+    });
+  }
+
+  private readManagedBroadcastTestIdempotencyResult(
+    value: unknown,
+  ): SendBroadcastTestResult | null {
+    if (value === null || value === undefined || value === Prisma.DbNull) {
+      return null;
+    }
+
+    const parsed = sendBroadcastTestResultSchema.safeParse(value);
+    return parsed.success ? parsed.data : null;
+  }
+
+  private async persistManagedBroadcastTestIdempotencyResult(
+    idempotencyRecordId: string | null,
+    result: SendBroadcastTestResult,
+  ): Promise<void> {
+    if (!idempotencyRecordId) {
+      return;
+    }
+
+    await this.prisma.managedBroadcastIdempotencyRecord.update({
+      where: { id: idempotencyRecordId },
+      data: { result: result as Prisma.InputJsonValue },
+    });
+  }
+
   private readManagedBroadcastIdempotencyResult(value: unknown): SendBroadcastResult | null {
     if (value === null || value === undefined || value === Prisma.DbNull) {
       return null;
@@ -2418,15 +2598,20 @@ export class AdminManagedBroadcastRuntime {
     options: {
       entityType: ManagedEntityType;
       resolveTargets?: (user: AuthUser) => Promise<ChatSummary[]>;
+      trustedPublicationTestPayload?: boolean;
     },
   ): Promise<PreparedManagedBroadcastRequest> {
     await this.assertManagedEntityAdminAccess(sourceChatId, user.userId, options.entityType);
 
-    const parsed = sendBroadcastRequestSchema.safeParse(body);
+    const parsed = options.trustedPublicationTestPayload
+      ? safeParseTrustedPublicationTestBroadcastRequest(body)
+      : sendBroadcastRequestSchema.safeParse(body);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
-    this.validateManagedBroadcastMediaPayload(parsed.data);
+    this.validateManagedBroadcastMediaPayload(parsed.data, {
+      trustedPublicationTestPayload: options.trustedPublicationTestPayload,
+    });
 
     let targetChatIds = [sourceChatId];
     const needsAvailableTargets =
@@ -3888,24 +4073,11 @@ export class AdminManagedBroadcastRuntime {
       occurrence &&
       occurrence.contentRevisionId !== row.publicationContentRevisionId
     ) {
-      await this.prisma.$transaction(async (tx) => {
-        await tx.managedBroadcastDelivery.updateMany({
-          where: {
-            broadcastId: row.id,
-            occurrenceIndex: currentOccurrence,
-            status: PrismaManagedBroadcastDeliveryStatus.SENDING,
-          },
-          data: {
-            status: PrismaManagedBroadcastDeliveryStatus.PENDING,
-            lockedAt: null,
-            lockToken: null,
-            lastError: null,
-          },
-        });
-        await tx.managedBroadcast.updateMany({
-          where: { id: row.id, lockToken: row.lockToken },
-          data: { lockedAt: null, lockToken: null },
-        });
+      // FLAG: A stale worker may release only its own broadcast lease here. It must never reset
+      // delivery locks because a newer worker may already own and be sending that delivery.
+      await this.prisma.managedBroadcast.updateMany({
+        where: { id: row.id, lockToken: row.lockToken },
+        data: { lockedAt: null, lockToken: null },
       });
       return false;
     }
@@ -4115,6 +4287,7 @@ export class AdminManagedBroadcastRuntime {
         botId,
         maxApiOptions,
         onProgress,
+        options,
       );
       return imagePayload ? { imagePayload } : {};
     }
@@ -4130,6 +4303,7 @@ export class AdminManagedBroadcastRuntime {
           botId,
           maxApiOptions,
           onProgress,
+          options,
         );
         if (imagePayload) {
           attachments.push({
@@ -4365,7 +4539,10 @@ export class AdminManagedBroadcastRuntime {
     };
   }
 
-  private validateManagedBroadcastMediaPayload(payload: SendBroadcastRequest): void {
+  private validateManagedBroadcastMediaPayload(
+    payload: SendBroadcastRequest,
+    options: Pick<ManagedBroadcastTestOptions, 'trustedPublicationTestPayload'> = {},
+  ): void {
     const images = this.resolveManagedBroadcastRequestImages(payload);
     if (images.length === 0) {
       return;
@@ -4379,22 +4556,31 @@ export class AdminManagedBroadcastRuntime {
 
     let totalBytes = 0;
     for (const image of images) {
-      totalBytes += this.validateManagedBroadcastImagePayload(image).length;
+      totalBytes += this.validateManagedBroadcastImagePayload(image, options).length;
     }
 
-    if (totalBytes > BROADCAST_IMAGES_TOTAL_MAX_BYTES) {
+    const maxTotalBytes = options.trustedPublicationTestPayload
+      ? PUBLICATION_MAX_TOTAL_IMAGE_BYTES
+      : BROADCAST_IMAGES_TOTAL_MAX_BYTES;
+    if (totalBytes > maxTotalBytes) {
       throw new BadRequestException('Суммарный размер фото слишком большой.');
     }
   }
 
-  private validateManagedBroadcastImagePayload(image: BroadcastImage): Buffer {
+  private validateManagedBroadcastImagePayload(
+    image: BroadcastImage,
+    options: Pick<ManagedBroadcastTestOptions, 'trustedPublicationTestPayload'> = {},
+  ): Buffer {
     const imageMimeType = image.mimeType.trim().toLowerCase();
     if (!imageMimeType.startsWith('image/')) {
       throw new BadRequestException('Поддерживаются только изображения.');
     }
 
     const imageBuffer = this.decodeBroadcastImageBase64(image.base64);
-    if (imageBuffer.length > BROADCAST_IMAGE_MAX_BYTES) {
+    const maxBytes = options.trustedPublicationTestPayload
+      ? PUBLICATION_MAX_IMAGE_BYTES
+      : BROADCAST_IMAGE_MAX_BYTES;
+    if (imageBuffer.length > maxBytes) {
       throw new BadRequestException('Фото слишком большое. Попробуйте другое изображение.');
     }
 
@@ -4409,9 +4595,10 @@ export class AdminManagedBroadcastRuntime {
     botId?: string,
     maxApiOptions?: ManagedBroadcastMaxApiOptions,
     onProgress?: ManagedBroadcastProgressCallback,
+    options: Pick<ManagedBroadcastTestOptions, 'trustedPublicationTestPayload'> = {},
   ): Promise<Record<string, unknown> | undefined> {
     const imageMimeType = image.mimeType.trim().toLowerCase();
-    const imageBuffer = this.validateManagedBroadcastImagePayload(image);
+    const imageBuffer = this.validateManagedBroadcastImagePayload(image, options);
 
     let lastError: unknown = null;
     const attempts =
@@ -5784,7 +5971,10 @@ export class AdminManagedBroadcastRuntime {
   }
 
   private async ensureManagedBroadcastDeliveryRows(
-    row: Pick<PersistedManagedBroadcast, 'id' | 'cycleCount'>,
+    row: Pick<
+      PersistedManagedBroadcast,
+      'id' | 'cycleCount' | 'publicationOccurrenceId' | 'publicationContentRevisionId'
+    >,
     fromOccurrenceIndex: number,
     targetChatIds: string[],
     deliveries: PersistedManagedBroadcastDelivery[],
@@ -5864,9 +6054,19 @@ export class AdminManagedBroadcastRuntime {
       normalizedTargetChatIds,
       fromOccurrenceIndex,
       cycleCount,
-    ).filter(
-      (delivery) => !existingKeys.has(`${delivery.occurrenceIndex}:${delivery.targetChatId}`),
-    );
+    )
+      .filter(
+        (delivery) => !existingKeys.has(`${delivery.occurrenceIndex}:${delivery.targetChatId}`),
+      )
+      .map((delivery) => ({
+        ...delivery,
+        ...(row.publicationOccurrenceId
+          ? {
+              publicationOccurrenceId: row.publicationOccurrenceId,
+              contentRevisionId: row.publicationContentRevisionId,
+            }
+          : {}),
+      }));
 
     if (missingRows.length === 0) {
       return deliveries;

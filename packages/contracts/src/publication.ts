@@ -10,6 +10,15 @@ export const MAX_PUBLICATION_RECURRENCE_OCCURRENCES = 365;
 export const MAX_PUBLICATION_LIST_CURSOR_LENGTH = 1_024;
 export const MAX_PUBLICATION_CALENDAR_WINDOW_DAYS = 62;
 export const MAX_LEGACY_PUBLICATION_LIST_LIMIT = 30;
+export const MAX_PUBLICATION_TEXT_LENGTH = 4_000;
+
+export const publicationErrorCodeSchema = z.enum([
+  'PUBLICATION_CONFLICT_REQUIRES_MANUAL_REVIEW',
+  'PUBLICATION_REVISION_CONFLICT',
+  'PUBLICATION_SCHEDULE_CONFLICT',
+  'PUBLICATION_SCHEDULE_EMPTY',
+]);
+export type PublicationErrorCode = z.infer<typeof publicationErrorCodeSchema>;
 
 export const publicationLifecycleSchema = z.enum([
   'DRAFT',
@@ -126,7 +135,7 @@ export type PublicationAsset = z.infer<typeof publicationAssetSchema>;
 
 export const publicationContentInputSchema = z
   .object({
-    text: z.string().max(2_000).default(''),
+    text: z.string().max(MAX_PUBLICATION_TEXT_LENGTH).default(''),
     textFormat: publicationTextFormatSchema.default('plain'),
     buttons: z.array(publicationButtonSchema).max(MAX_PUBLICATION_BUTTONS).default([]),
     media: z.array(publicationMediaInputSchema).max(MAX_PUBLICATION_IMAGES).default([]),
@@ -424,6 +433,8 @@ export const publicationOccurrenceSummarySchema = z.object({
   status: publicationOccurrenceStatusSchema,
   delivery: publicationDeliveryStatsSchema,
   canRetry: z.boolean(),
+  contentRevision: z.number().int().min(1).optional(),
+  usesLatestContent: z.boolean().optional(),
 });
 export type PublicationOccurrenceSummary = z.infer<typeof publicationOccurrenceSummarySchema>;
 
@@ -442,6 +453,7 @@ export const publicationSummarySchema = z.object({
   hasVideo: z.boolean(),
   schedule: publicationScheduleSchema.nullable(),
   delivery: publicationDeliveryStatsSchema,
+  actionableDelivery: publicationDeliveryStatsSchema.optional(),
   createdAt: publicationDateTimeSchema,
   updatedAt: publicationDateTimeSchema,
 });
@@ -454,7 +466,13 @@ export const publicationDetailsSchema = publicationSummarySchema.extend({
 });
 export type PublicationDetails = z.infer<typeof publicationDetailsSchema>;
 
-export const publicationListViewSchema = z.enum(['plan', 'drafts', 'schedules', 'history']);
+export const publicationListViewSchema = z.enum([
+  'current',
+  'plan',
+  'drafts',
+  'schedules',
+  'history',
+]);
 export const publicationListStatusFilterSchema = z.enum([
   'active',
   'paused',
@@ -651,6 +669,8 @@ export const publicationDeliverySchema = z.object({
   occurrenceId: z.string(),
   target: publicationTargetSchema,
   status: publicationDeliveryStatusSchema,
+  contentRevision: z.number().int().min(1).optional(),
+  usesLatestContent: z.boolean().optional(),
   attemptCount: z.number().int().min(0),
   remoteMessageId: z.string().nullable(),
   lastError: z.string().nullable(),
@@ -684,12 +704,38 @@ export const publicationActionRequestSchema = z.object({
 });
 export type PublicationActionRequest = z.infer<typeof publicationActionRequestSchema>;
 
-export const retryPublicationOccurrenceRequestSchema = z.object({
-  requestId: z
-    .string()
-    .trim()
-    .regex(/^[A-Za-z0-9_-]{8,128}$/u),
-});
+export const publicationRetryContentModeSchema = z.enum(['original', 'latest']);
+export type PublicationRetryContentMode = z.infer<typeof publicationRetryContentModeSchema>;
+
+export const retryPublicationOccurrenceRequestSchema = z
+  .object({
+    requestId: z
+      .string()
+      .trim()
+      .regex(/^[A-Za-z0-9_-]{8,128}$/u),
+    contentMode: publicationRetryContentModeSchema.optional(),
+    expectedPublicationVersion: z.number().int().min(1).optional(),
+    expectedContentRevision: z.number().int().min(1).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.contentMode !== 'latest') {
+      return;
+    }
+    if (value.expectedPublicationVersion === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['expectedPublicationVersion'],
+        message: 'Версия публикации обязательна для повтора актуального содержимого.',
+      });
+    }
+    if (value.expectedContentRevision === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['expectedContentRevision'],
+        message: 'Версия содержимого обязательна для безопасного повтора.',
+      });
+    }
+  });
 export type RetryPublicationOccurrenceRequest = z.infer<
   typeof retryPublicationOccurrenceRequestSchema
 >;

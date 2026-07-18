@@ -30,7 +30,27 @@ import {
   type TestPublicationRequest,
   type UpdatePublicationRequest,
 } from '@maxim/contracts/publication';
+import { tracePublicationApi, type PublicationApiOperation } from '../publication-api-trace';
 import type { ApiTransport } from './transport';
+
+async function runPublicationApiRequest<T>(
+  operation: PublicationApiOperation,
+  request: () => Promise<unknown>,
+  parseResponse: (response: unknown) => T,
+): Promise<T> {
+  const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  try {
+    const response = await request();
+    const result = parseResponse(response);
+    const finishedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    tracePublicationApi(operation, 'ok', finishedAt - startedAt);
+    return result;
+  } catch (error: unknown) {
+    const finishedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    tracePublicationApi(operation, 'error', finishedAt - startedAt);
+    throw error;
+  }
+}
 
 function appendQuery(path: string, values: Record<string, unknown>): string {
   const search = new URLSearchParams();
@@ -49,8 +69,11 @@ export async function listPublications(
   query: Partial<ListPublicationsQuery> = {},
 ): Promise<ListPublicationsResponse> {
   const parsed = listPublicationsQuerySchema.parse(query);
-  const response = await api.request(appendQuery('/publications', parsed));
-  return listPublicationsResponseSchema.parse(response);
+  return runPublicationApiRequest(
+    'list',
+    () => api.request(appendQuery('/publications', parsed)),
+    (response) => listPublicationsResponseSchema.parse(response),
+  );
 }
 
 export async function listLegacyPublications(
@@ -66,30 +89,43 @@ export async function getPublicationCalendarAvailability(
   api: ApiTransport,
   payload: PublicationCalendarAvailabilityRequest,
 ): Promise<PublicationCalendarAvailabilityResponse> {
-  const response = await api.request('/publications/calendar-availability', {
-    method: 'POST',
-    body: JSON.stringify(publicationCalendarAvailabilityRequestSchema.parse(payload)),
-  });
-  return publicationCalendarAvailabilityResponseSchema.parse(response);
+  const body = JSON.stringify(publicationCalendarAvailabilityRequestSchema.parse(payload));
+  return runPublicationApiRequest(
+    'calendar',
+    () =>
+      api.request('/publications/calendar-availability', {
+        method: 'POST',
+        body,
+      }),
+    (response) => publicationCalendarAvailabilityResponseSchema.parse(response),
+  );
 }
 
 export async function getPublication(
   api: ApiTransport,
   publicationId: string,
 ): Promise<PublicationDetails> {
-  const response = await api.request(`/publications/${encodeURIComponent(publicationId)}`);
-  return publicationDetailsSchema.parse(response);
+  return runPublicationApiRequest(
+    'details',
+    () => api.request(`/publications/${encodeURIComponent(publicationId)}`),
+    (response) => publicationDetailsSchema.parse(response),
+  );
 }
 
 export async function createPublication(
   api: ApiTransport,
   payload: CreatePublicationRequest,
 ): Promise<PublicationDetails> {
-  const response = await api.request('/publications', {
-    method: 'POST',
-    body: JSON.stringify(createPublicationRequestSchema.parse(payload)),
-  });
-  return publicationDetailsSchema.parse(response);
+  const body = JSON.stringify(createPublicationRequestSchema.parse(payload));
+  return runPublicationApiRequest(
+    'publish',
+    () =>
+      api.request('/publications', {
+        method: 'POST',
+        body,
+      }),
+    (response) => publicationDetailsSchema.parse(response),
+  );
 }
 
 export async function updatePublication(
@@ -97,11 +133,16 @@ export async function updatePublication(
   publicationId: string,
   payload: UpdatePublicationRequest,
 ): Promise<PublicationDetails> {
-  const response = await api.request(`/publications/${encodeURIComponent(publicationId)}`, {
-    method: 'PUT',
-    body: JSON.stringify(updatePublicationRequestSchema.parse(payload)),
-  });
-  return publicationDetailsSchema.parse(response);
+  const body = JSON.stringify(updatePublicationRequestSchema.parse(payload));
+  return runPublicationApiRequest(
+    'update',
+    () =>
+      api.request(`/publications/${encodeURIComponent(publicationId)}`, {
+        method: 'PUT',
+        body,
+      }),
+    (response) => publicationDetailsSchema.parse(response),
+  );
 }
 
 export async function deletePublication(
@@ -109,11 +150,16 @@ export async function deletePublication(
   publicationId: string,
   payload: PublicationActionRequest,
 ): Promise<PublicationDetails> {
-  const response = await api.request(`/publications/${encodeURIComponent(publicationId)}`, {
-    method: 'DELETE',
-    body: JSON.stringify(publicationActionRequestSchema.parse(payload)),
-  });
-  return publicationDetailsSchema.parse(response);
+  const body = JSON.stringify(publicationActionRequestSchema.parse(payload));
+  return runPublicationApiRequest(
+    'action',
+    () =>
+      api.request(`/publications/${encodeURIComponent(publicationId)}`, {
+        method: 'DELETE',
+        body,
+      }),
+    (response) => publicationDetailsSchema.parse(response),
+  );
 }
 
 export async function cancelPublication(
@@ -121,21 +167,32 @@ export async function cancelPublication(
   publicationId: string,
   payload: PublicationActionRequest,
 ): Promise<PublicationDetails> {
-  const response = await api.request(`/publications/${encodeURIComponent(publicationId)}/cancel`, {
-    method: 'POST',
-    body: JSON.stringify(publicationActionRequestSchema.parse(payload)),
-  });
-  return publicationDetailsSchema.parse(response);
+  const body = JSON.stringify(publicationActionRequestSchema.parse(payload));
+  return runPublicationApiRequest(
+    'action',
+    () =>
+      api.request(`/publications/${encodeURIComponent(publicationId)}/cancel`, {
+        method: 'POST',
+        body,
+      }),
+    (response) => publicationDetailsSchema.parse(response),
+  );
 }
 
 export async function testPublication(
   api: ApiTransport,
   payload: TestPublicationRequest,
 ): Promise<void> {
-  await api.request('/publications/test', {
-    method: 'POST',
-    body: JSON.stringify(testPublicationRequestSchema.parse(payload)),
-  });
+  const body = JSON.stringify(testPublicationRequestSchema.parse(payload));
+  await runPublicationApiRequest(
+    'action',
+    () =>
+      api.request('/publications/test', {
+        method: 'POST',
+        body,
+      }),
+    () => undefined,
+  );
 }
 
 async function runPublicationAction(
@@ -144,14 +201,16 @@ async function runPublicationAction(
   action: 'pause' | 'resume',
   payload: PublicationActionRequest,
 ): Promise<PublicationDetails> {
-  const response = await api.request(
-    `/publications/${encodeURIComponent(publicationId)}/${action}`,
-    {
-      method: 'POST',
-      body: JSON.stringify(publicationActionRequestSchema.parse(payload)),
-    },
+  const body = JSON.stringify(publicationActionRequestSchema.parse(payload));
+  return runPublicationApiRequest(
+    'action',
+    () =>
+      api.request(`/publications/${encodeURIComponent(publicationId)}/${action}`, {
+        method: 'POST',
+        body,
+      }),
+    (response) => publicationDetailsSchema.parse(response),
   );
-  return publicationDetailsSchema.parse(response);
 }
 
 export const pausePublication = (
@@ -172,10 +231,14 @@ export async function listPublicationDeliveries(
   query: Partial<ListPublicationDeliveriesQuery> = {},
 ): Promise<ListPublicationDeliveriesResponse> {
   const parsed = listPublicationDeliveriesQuerySchema.parse(query);
-  const response = await api.request(
-    appendQuery(`/publications/${encodeURIComponent(publicationId)}/deliveries`, parsed),
+  return runPublicationApiRequest(
+    'deliveries',
+    () =>
+      api.request(
+        appendQuery(`/publications/${encodeURIComponent(publicationId)}/deliveries`, parsed),
+      ),
+    (response) => listPublicationDeliveriesResponseSchema.parse(response),
   );
-  return listPublicationDeliveriesResponseSchema.parse(response);
 }
 
 export async function retryPublicationOccurrence(
@@ -184,16 +247,21 @@ export async function retryPublicationOccurrence(
   occurrenceId: string,
   payload: RetryPublicationOccurrenceRequest,
 ): Promise<PublicationDetails> {
-  const response = await api.request(
-    `/publications/${encodeURIComponent(publicationId)}/occurrences/${encodeURIComponent(
-      occurrenceId,
-    )}/retry`,
-    {
-      method: 'POST',
-      body: JSON.stringify(retryPublicationOccurrenceRequestSchema.parse(payload)),
-    },
+  const body = JSON.stringify(retryPublicationOccurrenceRequestSchema.parse(payload));
+  return runPublicationApiRequest(
+    'action',
+    () =>
+      api.request(
+        `/publications/${encodeURIComponent(publicationId)}/occurrences/${encodeURIComponent(
+          occurrenceId,
+        )}/retry`,
+        {
+          method: 'POST',
+          body,
+        },
+      ),
+    (response) => publicationDetailsSchema.parse(response),
   );
-  return publicationDetailsSchema.parse(response);
 }
 
 export async function resolvePublicationAmbiguousDelivery(
@@ -202,14 +270,19 @@ export async function resolvePublicationAmbiguousDelivery(
   occurrenceId: string,
   payload: ResolvePublicationAmbiguousDeliveryRequest,
 ): Promise<PublicationDetails> {
-  const response = await api.request(
-    `/publications/${encodeURIComponent(publicationId)}/occurrences/${encodeURIComponent(
-      occurrenceId,
-    )}/resolve-ambiguous`,
-    {
-      method: 'POST',
-      body: JSON.stringify(resolvePublicationAmbiguousDeliveryRequestSchema.parse(payload)),
-    },
+  const body = JSON.stringify(resolvePublicationAmbiguousDeliveryRequestSchema.parse(payload));
+  return runPublicationApiRequest(
+    'action',
+    () =>
+      api.request(
+        `/publications/${encodeURIComponent(publicationId)}/occurrences/${encodeURIComponent(
+          occurrenceId,
+        )}/resolve-ambiguous`,
+        {
+          method: 'POST',
+          body,
+        },
+      ),
+    (response) => publicationDetailsSchema.parse(response),
   );
-  return publicationDetailsSchema.parse(response);
 }

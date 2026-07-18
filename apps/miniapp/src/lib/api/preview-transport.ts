@@ -3823,6 +3823,8 @@ function buildPreviewPublicationDetails(
     status: 'SCHEDULED' as const,
     delivery: createEmptyPublicationDeliveryStats(),
     canRetry: false,
+    contentRevision: options.version ?? 1,
+    usesLatestContent: true,
   }));
   const deliveries = occurrences.flatMap((occurrence) =>
     targets.map(
@@ -3831,6 +3833,8 @@ function buildPreviewPublicationDetails(
         occurrenceId: occurrence.id,
         target,
         status: 'PENDING',
+        contentRevision: options.version ?? 1,
+        usesLatestContent: true,
         attemptCount: 0,
         remoteMessageId: null,
         lastError: null,
@@ -3867,6 +3871,7 @@ function buildPreviewPublicationDetails(
     hasVideo: assets.some((asset) => asset.type === 'video'),
     schedule,
     delivery,
+    actionableDelivery: delivery,
     createdAt,
     updatedAt,
     content: {
@@ -3934,6 +3939,17 @@ function syncPreviewPublication(state: PreviewState, publicationId: string): Pub
         }
       : null,
     delivery: buildPreviewPublicationDeliveryStats(publicationDeliveries),
+    actionableDelivery:
+      occurrences.find(
+        (occurrence) =>
+          occurrence.status === 'FAILED' ||
+          occurrence.status === 'PARTIAL' ||
+          occurrence.status === 'AMBIGUOUS' ||
+          occurrence.status === 'IN_PROGRESS',
+      )?.delivery ??
+      occurrences.find((occurrence) => occurrence.status === 'SCHEDULED')?.delivery ??
+      occurrences.at(-1)?.delivery ??
+      createEmptyPublicationDeliveryStats(),
     occurrences,
   });
   state.publications = state.publications.map((item) =>
@@ -4026,12 +4042,7 @@ function createPreviewPublications(
           mode: 'SNAPSHOT',
           targets: [{ chatId: 'preview-chat-2', entityType: 'chat' }],
         },
-        schedule: {
-          mode: 'once',
-          timezone: 'Europe/Moscow',
-          at: addHours(now, -2).toISOString(),
-          replaceConflicts: false,
-        },
+        schedule: { mode: 'now', timezone: 'Europe/Moscow' },
         intent: 'publish',
       },
     },
@@ -4080,6 +4091,7 @@ function createPreviewPublications(
   );
   if (ambiguous) {
     ambiguous.status = 'AMBIGUOUS';
+    ambiguous.usesLatestContent = false;
     ambiguous.attemptCount = 1;
     ambiguous.lastError = 'MAX принял запрос, но ответ не получен.';
   }
@@ -4088,6 +4100,13 @@ function createPreviewPublications(
   );
   if (review) {
     review.lifecycle = 'ERROR';
+    review.version = 2;
+    review.content.revision = 2;
+    const reviewOccurrence = review.occurrences[0];
+    if (reviewOccurrence) {
+      reviewOccurrence.contentRevision = 1;
+      reviewOccurrence.usesLatestContent = false;
+    }
   }
   const completed = publications.find((publication) => publication.id === 'publication-completed');
   if (completed) {
@@ -8361,10 +8380,12 @@ function handlePublicationsRequest(
               publication.lifecycle === 'PAUSED' ||
               publication.lifecycle === 'ERROR';
       const scheduleMatches = (publication: PublicationDetails) =>
-        query.view !== 'schedules' ||
-        publication.schedule?.mode === 'once' ||
-        publication.schedule?.mode === 'slots' ||
-        publication.schedule?.mode === 'recurrence';
+        query.view === 'current'
+          ? publication.schedule?.mode === 'now'
+          : query.view !== 'schedules' ||
+            publication.schedule?.mode === 'once' ||
+            publication.schedule?.mode === 'slots' ||
+            publication.schedule?.mode === 'recurrence';
       const entityMatches = (publication: PublicationDetails) => {
         if (!query.entityType || publication.audienceSelection === 'ALL_MANAGED') {
           return true;
@@ -8381,6 +8402,7 @@ function handlePublicationsRequest(
         if (!query.status) {
           return true;
         }
+        const delivery = publication.actionableDelivery ?? publication.delivery;
         if (query.status === 'active') {
           return publication.lifecycle === 'ACTIVE';
         }
@@ -8390,11 +8412,7 @@ function handlePublicationsRequest(
         if (query.status === 'completed') {
           return publication.lifecycle === 'COMPLETED' || publication.lifecycle === 'CANCELED';
         }
-        return (
-          publication.lifecycle === 'ERROR' ||
-          publication.delivery.failed > 0 ||
-          publication.delivery.ambiguous > 0
-        );
+        return publication.lifecycle === 'ERROR' || delivery.failed > 0 || delivery.ambiguous > 0;
       };
       const normalizedQuery = query.query.toLocaleLowerCase('ru-RU');
       const filtered = state.publications
@@ -8600,14 +8618,22 @@ function handlePublicationsRequest(
     segments[4] === 'retry' &&
     method === 'POST'
   ) {
-    retryPublicationOccurrenceRequestSchema.parse(parseJsonBody(init));
+    const payload = retryPublicationOccurrenceRequestSchema.parse(parseJsonBody(init));
     const occurrenceId = decodeURIComponent(segments[3] ?? '');
     const occurrence = publication.occurrences.find((item) => item.id === occurrenceId);
     if (!occurrence) {
       throw new Error(`Preview publication occurrence not found: ${occurrenceId}`);
     }
+    if (payload.contentMode === 'latest') {
+      occurrence.contentRevision = publication.content.revision;
+      occurrence.usesLatestContent = true;
+    }
     for (const delivery of state.publicationDeliveries) {
       if (delivery.occurrenceId === occurrenceId && delivery.status === 'FAILED') {
+        if (payload.contentMode === 'latest') {
+          delivery.contentRevision = publication.content.revision;
+          delivery.usesLatestContent = true;
+        }
         delivery.status = 'SENT';
         delivery.attemptCount += 1;
         delivery.remoteMessageId = `preview-retry-${Date.now()}`;

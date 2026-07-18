@@ -51,8 +51,8 @@
 
 .broadcast-buttons-sheet__icon,
 .broadcast-buttons-sheet__close {
-  width: 34px;
-  height: 34px;
+  width: 44px;
+  height: 44px;
   border-radius: 9px;
   display: inline-flex;
   align-items: center;
@@ -142,7 +142,7 @@
 
 .broadcast-buttons-sheet__empty-action {
   width: 100%;
-  min-height: 42px;
+  min-height: 44px;
   border: 0;
   border-radius: 10px;
   background: linear-gradient(180deg, #0795ad, #087f94);

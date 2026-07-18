@@ -290,6 +290,66 @@ describe('Prisma migrations', () => {
     expect(compact).not.toMatch(/\b(?:DROP|TRUNCATE|DELETE|UPDATE)\b/i);
   });
 
+  it('backfills and safely constrains publication delivery content revisions', () => {
+    const schema = readSchema();
+    const migration = readMigration('20260718100000_add_publication_delivery_content_revision');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+
+    expect(schema).toContain('contentRevisionId         String?');
+    expect(schema).toContain(
+      '@@index([contentRevisionId], map: "managed_broadcast_deliveries_content_revision_idx")',
+    );
+    expect(compact).toContain(
+      'CREATE OR REPLACE FUNCTION "set_publication_delivery_content_revision"() RETURNS TRIGGER LANGUAGE plpgsql',
+    );
+    expect(compact).toContain(
+      'CREATE TRIGGER "managed_broadcast_deliveries_content_revision_fill" BEFORE INSERT OR UPDATE OF "broadcast_id", "publication_occurrence_id" ON "managed_broadcast_deliveries" FOR EACH ROW EXECUTE FUNCTION "set_publication_delivery_content_revision"()',
+    );
+    expect(compact).not.toContain('UPDATE OF "content_revision_id"');
+    const relationBackfill =
+      'UPDATE "managed_broadcast_deliveries" AS delivery SET "publication_occurrence_id" = broadcast."publication_occurrence_id", "content_revision_id" = broadcast."publication_content_revision_id" FROM "managed_broadcasts" AS broadcast WHERE delivery."broadcast_id" = broadcast."id" AND delivery."publication_occurrence_id" IS NULL AND broadcast."publication_occurrence_id" IS NOT NULL AND broadcast."publication_content_revision_id" IS NOT NULL';
+    const revisionBackfill =
+      'UPDATE "managed_broadcast_deliveries" AS delivery SET "content_revision_id" = occurrence."content_revision_id" FROM "publication_occurrences" AS occurrence WHERE delivery."publication_occurrence_id" = occurrence."id" AND delivery."content_revision_id" IS NULL';
+    expect(compact).toContain(
+      'IF NEW."publication_occurrence_id" IS NULL THEN SELECT broadcast."publication_occurrence_id", broadcast."publication_content_revision_id" INTO execution_occurrence_id, execution_content_revision_id FROM "managed_broadcasts" AS broadcast WHERE broadcast."id" = NEW."broadcast_id" AND broadcast."publication_occurrence_id" IS NOT NULL',
+    );
+    expect(compact).toContain(relationBackfill);
+    expect(compact).toContain(revisionBackfill);
+    expect(compact.indexOf('CREATE TRIGGER')).toBeLessThan(compact.indexOf(relationBackfill));
+    expect(compact.indexOf(relationBackfill)).toBeLessThan(compact.indexOf(revisionBackfill));
+    const integrityGuard =
+      'IF EXISTS ( SELECT 1 FROM "managed_broadcast_deliveries" AS delivery INNER JOIN "managed_broadcasts" AS broadcast ON broadcast."id" = delivery."broadcast_id" WHERE broadcast."publication_occurrence_id" IS NOT NULL';
+    expect(compact).toContain(integrityGuard);
+    expect(compact).toContain(
+      'delivery."publication_occurrence_id" IS DISTINCT FROM broadcast."publication_occurrence_id" OR delivery."content_revision_id" IS NULL',
+    );
+    expect(compact).toContain(
+      'delivery."status" IN ( \'PENDING\'::"ManagedBroadcastDeliveryStatus", \'SENDING\'::"ManagedBroadcastDeliveryStatus" ) AND delivery."content_revision_id" IS DISTINCT FROM broadcast."publication_content_revision_id"',
+    );
+    expect(compact).toContain(
+      "RAISE EXCEPTION 'Publication delivery attribution backfill is incomplete'",
+    );
+    expect(compact.indexOf(revisionBackfill)).toBeLessThan(compact.indexOf(integrityGuard));
+    expect(compact).toContain(
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "managed_broadcast_deliveries_content_revision_idx" ON "managed_broadcast_deliveries"("content_revision_id")',
+    );
+    expect(compact).toContain(
+      'ADD CONSTRAINT "managed_broadcast_deliveries_content_revision_id_fkey" FOREIGN KEY ("content_revision_id") REFERENCES "publication_content_revisions"("id") ON DELETE SET NULL ON UPDATE CASCADE NOT VALID',
+    );
+    expect(compact).toContain(
+      'VALIDATE CONSTRAINT "managed_broadcast_deliveries_content_revision_id_fkey"',
+    );
+    expect(compact.indexOf('CREATE INDEX CONCURRENTLY')).toBeLessThan(
+      compact.indexOf('ADD CONSTRAINT "managed_broadcast_deliveries_content_revision_id_fkey"'),
+    );
+    expect(migration).not.toMatch(
+      /^\s*(?:BEGIN(?:\s+(?:WORK|TRANSACTION))?|START\s+TRANSACTION|COMMIT(?:\s+WORK)?)\s*;/imu,
+    );
+    expect(compact).not.toMatch(
+      /\b(?:DROP\s+(?:TABLE|COLUMN|TYPE|INDEX)|TRUNCATE\s+TABLE|DELETE\s+FROM)\b/i,
+    );
+  });
+
   it('adds a conservative persistent chat routing state fence', () => {
     const schema = readSchema();
     const migration = readMigration('20260711123000_chat_routing_state');

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { ApiRequestError } from '../src/lib/api-request-error';
 import { createApiTransport } from '../src/lib/api/transport';
 
 type FetchCall = {
@@ -136,6 +137,43 @@ test('waits briefly for bridge-refreshed init data before surfacing a 401', asyn
   assert.equal(
     new Headers(calls[1].init?.headers).get('Authorization'),
     'InitData auth_date=2&hash=fresh',
+  );
+});
+
+test('loads a structured publication conflict error on the async HTTP error path', async () => {
+  globalThis.fetch = (async () =>
+    createResponse({
+      ok: false,
+      status: 409,
+      text: JSON.stringify({
+        statusCode: 409,
+        code: 'PUBLICATION_REVISION_CONFLICT',
+        message: 'Публикация уже изменена.',
+        currentRevision: 4,
+      }),
+      contentType: 'application/json; charset=utf-8',
+    })) as typeof fetch;
+
+  const api = createApiTransport('auth_date=1&hash=first', {
+    apiBases: ['https://major-maksimov.ru/api/v1'],
+  });
+
+  await assert.rejects(
+    () => api.request('/publications/publication-1', { method: 'PUT', body: '{}' }),
+    (error: unknown) => {
+      assert.equal(error instanceof ApiRequestError, true);
+      const apiError = error as ApiRequestError;
+      assert.equal(apiError.status, 409);
+      assert.equal(apiError.code, 'PUBLICATION_REVISION_CONFLICT');
+      assert.equal(apiError.message, 'Публикация уже изменена.');
+      assert.deepEqual(apiError.payload, {
+        statusCode: 409,
+        code: 'PUBLICATION_REVISION_CONFLICT',
+        message: 'Публикация уже изменена.',
+        currentRevision: 4,
+      });
+      return true;
+    },
   );
 });
 

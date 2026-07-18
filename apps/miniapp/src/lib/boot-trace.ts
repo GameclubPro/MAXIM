@@ -11,7 +11,8 @@ type MiniappBootTracePhase =
   | 'route_resolved'
   | 'first_render'
   | 'api_ok'
-  | 'api_error';
+  | 'api_error'
+  | 'publication_api';
 
 type MiniappBootTraceDetails = Record<string, unknown>;
 
@@ -23,6 +24,7 @@ const MAX_DETAILS_JSON_LENGTH = 1_500;
 const MAX_ROUTE_LENGTH = 320;
 const SENSITIVE_PARAM_PATTERN =
   /(?:token|webapp|init[_-]?data|authorization|hash|secret|sig|start(?:app|[_-]?param))/iu;
+const SENSITIVE_EXACT_PARAM_KEYS = new Set(['q', 'query', 'search']);
 const TRACE_PATH = '/system/miniapp-boot-trace';
 
 const startedAtMs = Date.now();
@@ -85,9 +87,9 @@ function getManualTraceOverride(): boolean {
   }
 }
 
-const manualTraceOverride = getManualTraceOverride();
+export const isMiniappBootTraceManuallyEnabled = getManualTraceOverride();
 
-function getBridgePlatform(): string | null {
+export function getMiniappBridgePlatform(): string | null {
   if (typeof window === 'undefined') {
     return null;
   }
@@ -102,7 +104,7 @@ function isTraceEnabled(): boolean {
   }
 
   const userAgent = navigator.userAgent || '';
-  const platform = getBridgePlatform()?.toLowerCase();
+  const platform = getMiniappBridgePlatform()?.toLowerCase();
   const isIosMax =
     /(?:iPhone|iPad|iPod)/iu.test(userAgent) && (/\bMAX\//u.test(userAgent) || platform === 'ios');
 
@@ -114,7 +116,7 @@ function isTraceEnabled(): boolean {
     return false;
   }
 
-  return manualTraceOverride;
+  return isMiniappBootTraceManuallyEnabled;
 }
 
 function sanitizeRoute(value: string | null | undefined): string | null {
@@ -128,7 +130,7 @@ function sanitizeRoute(value: string | null | undefined): string | null {
     parsed.searchParams.forEach((paramValue, key) => {
       search.append(
         key,
-        SENSITIVE_PARAM_PATTERN.test(key)
+        isSensitiveTraceKey(key)
           ? REDACTED
           : sanitizeMiniappBootTraceText(paramValue, MAX_DETAIL_STRING_LENGTH),
       );
@@ -147,9 +149,9 @@ export function sanitizeMiniappBootTraceText(
   maxLength = MAX_DETAIL_STRING_LENGTH,
 ): string {
   const redactedQueryValues = value.replace(
-    /(^|[?&#\s|,;])([^=&#\s|,;]{1,100})=([^&#\s|,;]*)/g,
+    /(^|[?&#\s|,;])([^=?&#\s|,;]{1,100})=([^&#\s|,;]*)/g,
     (match: string, separator: string, key: string) => {
-      return SENSITIVE_PARAM_PATTERN.test(decodeURIComponentSafe(key))
+      return isSensitiveTraceKey(decodeURIComponentSafe(key))
         ? `${separator}${key}=${REDACTED}`
         : match;
     },
@@ -185,7 +187,7 @@ function sanitizeValue(value: unknown): unknown {
     const redactDialogPayloadToken = isChannelDialogLaunchPayload(value);
     for (const [key, entryValue] of Object.entries(value).slice(0, 16)) {
       sanitized[key] =
-        SENSITIVE_PARAM_PATTERN.test(key) || (redactDialogPayloadToken && isDialogTokenKey(key))
+        isSensitiveTraceKey(key) || (redactDialogPayloadToken && isDialogTokenKey(key))
           ? REDACTED
           : sanitizeValue(entryValue);
     }
@@ -197,6 +199,11 @@ function sanitizeValue(value: unknown): unknown {
 
 function isDialogTokenKey(key: string): boolean {
   return key.trim().toLowerCase() === 't';
+}
+
+function isSensitiveTraceKey(key: string): boolean {
+  const normalized = key.trim().toLowerCase();
+  return SENSITIVE_EXACT_PARAM_KEYS.has(normalized) || SENSITIVE_PARAM_PATTERN.test(normalized);
 }
 
 function isChannelDialogLaunchPayload(value: object): boolean {
@@ -303,20 +310,28 @@ function buildTraceRequest(payload: unknown): {
 export function traceMiniappBoot(
   phase: MiniappBootTracePhase,
   details?: MiniappBootTraceDetails,
-  options: { once?: boolean } = {},
-): void {
-  if (!isTraceEnabled()) {
-    return;
+  options: {
+    includeRoute?: boolean;
+    maxElapsedMs?: number;
+    once?: boolean;
+    runtimeEnabled?: boolean;
+  } = {},
+): boolean {
+  if (!(options.runtimeEnabled ?? isTraceEnabled())) {
+    return false;
   }
 
   if (options.once && reportedOnce.has(phase)) {
-    return;
+    return false;
   }
   if (options.once) {
     reportedOnce.add(phase);
   }
 
   const elapsedMs = Math.max(0, Date.now() - startedAtMs);
+  if (options.maxElapsedMs !== undefined && elapsedMs > options.maxElapsedMs) {
+    return false;
+  }
   const payload: Record<string, unknown> = {
     phase,
     sessionId,
@@ -324,8 +339,9 @@ export function traceMiniappBoot(
     elapsedMs,
     details: sanitizeDetails(details),
   };
-  const route = getCurrentRoute();
-  const platform = getBridgePlatform();
+  const route =
+    phase === 'publication_api' || options.includeRoute === false ? null : getCurrentRoute();
+  const platform = getMiniappBridgePlatform();
   const ua = typeof navigator === 'undefined' ? null : navigator.userAgent.slice(0, 220);
   if (route) {
     payload.route = route;
@@ -339,10 +355,11 @@ export function traceMiniappBoot(
 
   const request = buildTraceRequest(payload);
   if (!request) {
-    return;
+    return false;
   }
 
   void fetch(request.url, request.init).catch(() => undefined);
+  return true;
 }
 
 export function traceMiniappLaunchRoute(targetRoute: string | null, source: string): void {

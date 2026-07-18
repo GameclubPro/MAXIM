@@ -85,11 +85,17 @@ export function clearBroadcastLinkButtonFieldError(
   );
 }
 
-export function chunkBroadcastLinkButtons<T>(buttons: T[]): T[][] {
+export function chunkBroadcastLinkButtons<T>(
+  buttons: T[],
+  buttonsPerRow = MAX_BROADCAST_LINK_BUTTONS_PER_ROW,
+): T[][] {
   const rows: T[][] = [];
+  const normalizedButtonsPerRow = Number.isFinite(buttonsPerRow)
+    ? Math.min(MAX_BROADCAST_LINK_BUTTONS_PER_ROW, Math.max(1, Math.floor(buttonsPerRow)))
+    : MAX_BROADCAST_LINK_BUTTONS_PER_ROW;
 
-  for (let index = 0; index < buttons.length; index += MAX_BROADCAST_LINK_BUTTONS_PER_ROW) {
-    rows.push(buttons.slice(index, index + MAX_BROADCAST_LINK_BUTTONS_PER_ROW));
+  for (let index = 0; index < buttons.length; index += normalizedButtonsPerRow) {
+    rows.push(buttons.slice(index, index + normalizedButtonsPerRow));
   }
 
   return rows;
@@ -98,9 +104,10 @@ export function chunkBroadcastLinkButtons<T>(buttons: T[]): T[][] {
 export function buildBroadcastPreviewButtonRows<TCustom, TSystem>(
   customButtons: TCustom[],
   systemButtons: TSystem[],
+  buttonsPerRow = MAX_BROADCAST_LINK_BUTTONS_PER_ROW,
 ): Array<Array<TCustom | TSystem>> {
   return [
-    ...chunkBroadcastLinkButtons<TCustom | TSystem>(customButtons),
+    ...chunkBroadcastLinkButtons<TCustom | TSystem>(customButtons, buttonsPerRow),
     ...systemButtons.map((button) => [button]),
   ];
 }

@@ -1,11 +1,24 @@
-import { Body, Controller, Delete, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Post,
+  Put,
+  Query,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
 import { InitDataGuard } from '../auth/init-data.guard';
 import { CurrentUser, type AuthUser } from '../common/decorators/current-user.decorator';
 import { PublicationLegacyService } from './publication-legacy.service';
+import { PublicationMetricsInterceptor } from './publication-metrics.interceptor';
 import { PublicationService } from './publication.service';
 
 @Controller('v1/publications')
 @UseGuards(InitDataGuard)
+@UseInterceptors(PublicationMetricsInterceptor)
 export class PublicationController {
   constructor(
     private readonly publicationService: PublicationService,

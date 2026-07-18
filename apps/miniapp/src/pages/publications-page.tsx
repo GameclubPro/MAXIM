@@ -3,7 +3,8 @@ import {
   MAX_PUBLICATION_TARGETS,
   MAX_PUBLICATION_VIDEO_BASE64_LENGTH,
   type ListLegacyPublicationsQuery,
-  type PublicationLifecycle,
+  type PublicationDetails,
+  type PublicationOccurrenceSummary,
   type PublicationSummary,
 } from '@maxim/contracts/publication';
 import {
@@ -40,21 +41,35 @@ import {
   buildPublicationSaveFeedback,
   buildTestPublicationRequest,
   buildUpdatePublicationRequest,
-  canResumePublication,
   createEmptyPublicationDraft,
   createPublicationDuplicateDraft,
   createPublicationDraftFromDetails,
+  getPublicationActionCapabilities,
+  getPublicationActionableDelivery,
+  getPublicationEditActionLabel,
+  getPublicationLifecycleLabel,
+  getPublicationListPollingInterval,
   getPublicationTargetKey,
   getPublicationTargetTitle,
+  hasPublicationDraftChanges,
   hasFuturePublicationSlot,
   inferPublicationVideoMimeType,
   isIsolatedPublicationEditor,
+  isPublicationOccurrenceContentStale,
+  isPublicationRevisionConflictError,
   isPublicationDraftEmpty,
+  normalizePublicationEntityFilter,
+  normalizePublicationQuery,
+  normalizePublicationStatusFilter,
+  normalizePublicationView,
   PUBLICATION_TEXT_MAX_LENGTH,
+  publicationDraftNeedsVideoReselection,
+  rebasePublicationDraft,
   shouldReviewPublicationScheduleConflict,
   shouldPersistPublicationDraft,
   toPublicationTarget,
   type PublicationDraft,
+  type PublicationEditScope,
   type PublicationEntityFilter,
   type PublicationStatusFilter,
   type PublicationTarget,
@@ -69,9 +84,14 @@ import {
   mergeLegacyPublicationPages,
   mergePublicationPages,
 } from '../features/publications/publication-pagination';
+import {
+  PUBLICATION_TEST_RESULT_PENDING_FEEDBACK,
+  isPublicationTestResultPendingError,
+} from '../features/publications/publication-request-identity';
+import { PublicationRetrySheet } from '../features/publications/publication-retry-sheet';
 import { PublicationTargetPicker } from '../features/publications/publication-target-picker';
 import { usePublicationComposer } from '../features/publications/use-publication-composer';
-import { describeApiError } from '../lib/api-error';
+import { usePublicationRequestIds } from '../features/publications/use-publication-request-ids';
 import {
   createPublication,
   cancelPublication,
@@ -94,6 +114,7 @@ import {
   validateBroadcastLinkButtons,
   type BroadcastLinkButtonFieldErrors,
 } from '../lib/broadcast-link-buttons';
+import { readBlobAsBase64 } from '../lib/broadcast-image';
 import {
   formatLocalDateTimeInputValue,
   parseLocalDateTimeInputValue,
@@ -104,6 +125,7 @@ import { formatRussianCountLabel } from '../lib/broadcast-audience';
 import { cn } from '../lib/cn';
 import { maxImpact, maxNotify } from '../lib/max-bridge';
 import { useNativeBackHandler } from '../lib/native-back';
+import { describeUserFacingError } from '../lib/user-facing-error';
 import '../styles/publications-page.css';
 import '../features/publications/publication-workbench.css';
 
@@ -124,6 +146,28 @@ type PublicationAmbiguousTarget = {
   resolution: 'mark_sent' | 'mark_failed';
 };
 
+type PublicationRetryTarget =
+  | {
+      publicationId: string;
+      occurrenceId: string;
+      contentMode: 'original';
+    }
+  | {
+      publicationId: string;
+      occurrenceId: string;
+      contentMode: 'latest';
+      expectedPublicationVersion: number;
+      expectedContentRevision: number;
+    };
+
+type PublicationRetryChoiceTarget = {
+  publicationId: string;
+  occurrenceId: string;
+  publicationVersion: number;
+  originalContentRevision?: number;
+  latestContentRevision: number;
+};
+
 type LegacyPublicationView = ListLegacyPublicationsQuery['view'];
 type LegacyPublicationKindFilter = ListLegacyPublicationsQuery['kind'];
 
@@ -133,7 +177,8 @@ function getPublicationCalendarRange(now = new Date()): { from: string; to: stri
 }
 
 const queryKeys = {
-  sources: ['publications', 'sources'] as const,
+  sourceChats: ['publications', 'sources', 'chats'] as const,
+  sourceChannels: ['publications', 'sources', 'channels'] as const,
   listRoot: ['publications', 'list'] as const,
   list: (
     view: PublicationView,
@@ -156,8 +201,8 @@ const PUBLICATION_LIST_PAGE_SIZE = 30;
 const LEGACY_PUBLICATION_LIST_PAGE_SIZE = 30;
 
 const VIEW_OPTIONS: Array<{ value: PublicationView; label: string }> = [
-  { value: 'plan', label: 'Активные' },
-  { value: 'schedules', label: 'Расписание' },
+  { value: 'current', label: 'Текущие' },
+  { value: 'schedules', label: 'Расписания' },
   { value: 'history', label: 'История' },
 ];
 
@@ -182,7 +227,7 @@ const STATUS_FILTERS_BY_VIEW: Record<
   PublicationView,
   Array<{ value: PublicationStatusFilter; label: string }>
 > = {
-  plan: [
+  current: [
     { value: 'all', label: 'Все статусы' },
     { value: 'active', label: 'Активные' },
     { value: 'paused', label: 'На паузе' },
@@ -209,10 +254,6 @@ const WEEKDAYS = [
   { value: 6, label: 'Сб' },
   { value: 7, label: 'Вс' },
 ] as const;
-
-function normalizeView(value: string | null): PublicationView {
-  return value === 'schedules' || value === 'history' ? value : 'plan';
-}
 
 function normalizeLegacyView(value: string | null): LegacyPublicationView {
   return value === 'history' ? 'history' : 'active';
@@ -364,23 +405,12 @@ function formatPublicationSchedule(publication: PublicationSummary): string {
   return next || `${frequency} · ${schedule.times.join(', ')}`;
 }
 
-function getLifecycleLabel(lifecycle: PublicationLifecycle): string {
-  const labels: Record<PublicationLifecycle, string> = {
-    DRAFT: 'Черновик',
-    ACTIVE: 'Активно',
-    PAUSED: 'Пауза',
-    COMPLETED: 'Готово',
-    CANCELED: 'Отменено',
-    ERROR: 'Ошибка',
-  };
-  return labels[lifecycle];
-}
-
 function getLifecycleTone(publication: PublicationSummary): PublicationFeedTone {
-  if (publication.lifecycle === 'ERROR' || publication.delivery.ambiguous > 0) {
+  const delivery = getPublicationActionableDelivery(publication);
+  if (publication.lifecycle === 'ERROR' || delivery.ambiguous > 0) {
     return 'danger';
   }
-  if (publication.lifecycle === 'PAUSED' || publication.delivery.failed > 0) {
+  if (publication.lifecycle === 'PAUSED' || delivery.failed > 0) {
     return 'warning';
   }
   if (publication.lifecycle === 'COMPLETED' || publication.lifecycle === 'CANCELED') {
@@ -389,40 +419,12 @@ function getLifecycleTone(publication: PublicationSummary): PublicationFeedTone 
   return 'active';
 }
 
-function isSchedulePublication(publication: PublicationSummary): boolean {
-  return publication.schedule?.mode === 'slots' || publication.schedule?.mode === 'recurrence';
-}
-
-function createRequestId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID().replace(/-/gu, '');
-  }
-  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 14)}`;
-}
-
 const MAX_PUBLICATION_VIDEO_FILE_BYTES = 24_000_000;
-
-function readVideoFileBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error('Не удалось прочитать видео.'));
-    reader.onload = () => {
-      const value = typeof reader.result === 'string' ? reader.result : '';
-      const separatorIndex = value.indexOf(',');
-      const base64 = separatorIndex >= 0 ? value.slice(separatorIndex + 1) : '';
-      if (!base64) {
-        reject(new Error('Видео пустое или повреждено.'));
-        return;
-      }
-      resolve(base64);
-    };
-    reader.readAsDataURL(file);
-  });
-}
 
 export function PublicationsPage({ api }: { api: ApiTransport }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
+  const requestIds = usePublicationRequestIds();
   const [searchParams, setSearchParams] = useSearchParams();
   const [editorContext, setEditorContext] = useState<PublicationEditorContext | null>(null);
   const isEditor = editorContext !== null;
@@ -434,12 +436,28 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     persistenceEnabled,
   );
   const savedCreateDraftRef = useRef<PublicationDraft | null>(null);
-  const initialRouteAppliedRef = useRef(false);
-  const [view, setView] = useState<PublicationView>(() => normalizeView(searchParams.get('view')));
-  const [query, setQuery] = useState('');
-  const [debouncedQuery, setDebouncedQuery] = useState('');
-  const [entityFilter, setEntityFilter] = useState<PublicationEntityFilter>('all');
-  const [statusFilter, setStatusFilter] = useState<PublicationStatusFilter>('all');
+  const isolatedDraftBaselineRef = useRef<PublicationDraft | null>(null);
+  const initialComposeRouteAppliedRef = useRef(false);
+  const initialTargetRouteAppliedRef = useRef(false);
+  const editorReturnFocusRef = useRef<HTMLElement | null>(null);
+  const editorReturnPublicationIdRef = useRef<string | null>(null);
+  const editorTitleRef = useRef<HTMLHeadingElement | null>(null);
+  const [view, setView] = useState<PublicationView>(() =>
+    normalizePublicationView(searchParams.get('view')),
+  );
+  const [query, setQuery] = useState(() => normalizePublicationQuery(searchParams.get('query')));
+  const [debouncedQuery, setDebouncedQuery] = useState(() =>
+    normalizePublicationQuery(searchParams.get('query')),
+  );
+  const [entityFilter, setEntityFilter] = useState<PublicationEntityFilter>(() =>
+    normalizePublicationEntityFilter(searchParams.get('entity')),
+  );
+  const [statusFilter, setStatusFilter] = useState<PublicationStatusFilter>(() =>
+    normalizePublicationStatusFilter(
+      searchParams.get('status'),
+      normalizePublicationView(searchParams.get('view')),
+    ),
+  );
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [legacyView, setLegacyView] = useState<LegacyPublicationView>(() =>
     normalizeLegacyView(searchParams.get('legacyView')),
@@ -463,24 +481,41 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
   const [videoPreparing, setVideoPreparing] = useState(false);
   const [pendingReview, setPendingReview] = useState(false);
   const [pendingConflict, setPendingConflict] = useState(false);
+  const [pendingEditorClose, setPendingEditorClose] = useState(false);
+  const [pendingDraftClear, setPendingDraftClear] = useState(false);
+  const [revisionConflictPublicationId, setRevisionConflictPublicationId] = useState<string | null>(
+    null,
+  );
   const [actionTarget, setActionTarget] = useState<PublicationActionTarget | null>(null);
   const [detailsTarget, setDetailsTarget] = useState<PublicationSummary | null>(null);
   const [ambiguousTarget, setAmbiguousTarget] = useState<PublicationAmbiguousTarget | null>(null);
+  const [retryChoiceTarget, setRetryChoiceTarget] = useState<PublicationRetryChoiceTarget | null>(
+    null,
+  );
   const contentSectionRef = useRef<HTMLElement | null>(null);
   const targetsSectionRef = useRef<HTMLElement | null>(null);
   const timingSectionRef = useRef<HTMLElement | null>(null);
 
-  const sourcesQuery = useQuery({
-    queryKey: queryKeys.sources,
-    queryFn: async () => {
-      const [chats, channels] = await Promise.all([
-        getChats(api, { fresh: false }),
-        getChannels(api, { fresh: false }),
-      ]);
-      return [...chats, ...channels].map(toPublicationTarget);
-    },
+  const sourceChatsQuery = useQuery({
+    queryKey: queryKeys.sourceChats,
+    queryFn: () => getChats(api, { fresh: false }),
   });
-  const targets = sourcesQuery.data ?? [];
+  const sourceChannelsQuery = useQuery({
+    queryKey: queryKeys.sourceChannels,
+    queryFn: () => getChannels(api, { fresh: false }),
+  });
+  const targets = useMemo(
+    () =>
+      [...(sourceChatsQuery.data ?? []), ...(sourceChannelsQuery.data ?? [])].map(
+        toPublicationTarget,
+      ),
+    [sourceChannelsQuery.data, sourceChatsQuery.data],
+  );
+  const sourcesLoading = sourceChatsQuery.isLoading || sourceChannelsQuery.isLoading;
+  const sourcesFetching = sourceChatsQuery.isFetching || sourceChannelsQuery.isFetching;
+  const sourcesHaveError = sourceChatsQuery.isError || sourceChannelsQuery.isError;
+  const sourcesUnavailable = sourceChatsQuery.isError && sourceChannelsQuery.isError;
+  const sourcesReady = sourceChatsQuery.isSuccess && sourceChannelsQuery.isSuccess;
   const [calendarRange, setCalendarRange] = useState(() => getPublicationCalendarRange());
   const calendarTargetsKey = useMemo(
     () =>
@@ -523,6 +558,23 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     const timeoutId = window.setTimeout(() => setDebouncedQuery(query.trim()), 250);
     return () => window.clearTimeout(timeoutId);
   }, [query]);
+  useEffect(() => {
+    const routeView = normalizePublicationView(searchParams.get('view'));
+    const routeQuery = normalizePublicationQuery(searchParams.get('query'));
+    const routeEntity = normalizePublicationEntityFilter(searchParams.get('entity'));
+    const routeStatus = normalizePublicationStatusFilter(searchParams.get('status'), routeView);
+
+    setView((current) => (current === routeView ? current : routeView));
+    setQuery((current) => (current === routeQuery ? current : routeQuery));
+    setEntityFilter((current) => (current === routeEntity ? current : routeEntity));
+    setStatusFilter((current) => (current === routeStatus ? current : routeStatus));
+
+    if (searchParams.get('view') === 'plan') {
+      const canonical = new URLSearchParams(searchParams);
+      canonical.delete('view');
+      setSearchParams(canonical, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
   useEffect(() => {
     const timeoutId = window.setTimeout(() => setLegacyDebouncedQuery(legacyQuery.trim()), 250);
     return () => window.clearTimeout(timeoutId);
@@ -600,12 +652,12 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     staleTime: 0,
     refetchOnMount: 'always',
   });
-  const planQuery = useInfiniteQuery({
-    queryKey: queryKeys.list('plan', debouncedQuery, entityFilter, statusFilter),
+  const currentQuery = useInfiniteQuery({
+    queryKey: queryKeys.list('current', debouncedQuery, entityFilter, statusFilter),
     initialPageParam: null as string | null,
     queryFn: ({ pageParam }) =>
       listPublications(api, {
-        view: 'plan',
+        view: 'current',
         query: debouncedQuery,
         entityType: listEntityType,
         status: listStatus,
@@ -613,18 +665,10 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         cursor: pageParam ?? undefined,
       }),
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
-    enabled: !isEditor && !isLegacyView && view === 'plan',
+    enabled: !isEditor && !isLegacyView && view === 'current',
     refetchInterval: (query) => {
       const items = query.state.data?.pages.flatMap((page) => page.items) ?? [];
-      return items.some(
-        (item) =>
-          item.delivery.pending > 0 ||
-          (item.lifecycle === 'ACTIVE' &&
-            item.schedule?.mode === 'now' &&
-            item.delivery.total === 0),
-      )
-        ? 5_000
-        : false;
+      return getPublicationListPollingInterval('current', items);
     },
   });
   const schedulesQuery = useInfiniteQuery({
@@ -641,7 +685,10 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
       }),
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     enabled: !isEditor && !isLegacyView && view === 'schedules',
-    refetchInterval: 10_000,
+    refetchInterval: (query) => {
+      const items = query.state.data?.pages.flatMap((page) => page.items) ?? [];
+      return getPublicationListPollingInterval('schedules', items);
+    },
   });
   const historyQuery = useInfiniteQuery({
     queryKey: queryKeys.list('history', debouncedQuery, entityFilter, statusFilter),
@@ -657,11 +704,10 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
       }),
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     enabled: !isEditor && !isLegacyView && view === 'history',
-    refetchInterval: 10_000,
   });
-  const planItems = useMemo(
-    () => mergePublicationPages(planQuery.data?.pages),
-    [planQuery.data?.pages],
+  const currentItems = useMemo(
+    () => mergePublicationPages(currentQuery.data?.pages),
+    [currentQuery.data?.pages],
   );
   const scheduleItems = useMemo(
     () => mergePublicationPages(schedulesQuery.data?.pages),
@@ -693,6 +739,11 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
 
   const saveMutation = useMutation({
     mutationFn: ({ replaceConflicts }: { replaceConflicts: boolean }) => {
+      const requestId = requestIds.resolveSaveRequestId(
+        draft,
+        editorContext ?? { kind: 'create' },
+        replaceConflicts,
+      );
       if (editorContext?.kind === 'edit') {
         return updatePublication(
           api,
@@ -700,19 +751,22 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
           buildUpdatePublicationRequest(
             draft,
             editorContext.expectedRevision,
-            createRequestId(),
+            requestId,
             replaceConflicts,
           ),
         );
       }
       return createPublication(
         api,
-        buildCreatePublicationRequest(draft, createRequestId(), { replaceConflicts }),
+        buildCreatePublicationRequest(draft, requestId, { replaceConflicts }),
       );
     },
     onSuccess: async (publication) => {
+      requestIds.confirmSaveSuccess();
       await invalidatePublicationQueries();
       const feedback = buildPublicationSaveFeedback(publication, {
+        editScope:
+          editorContext?.kind === 'edit' ? (draft.timingMode === 'now' ? 'retry' : 'future') : null,
         editorKind: editorContext?.kind ?? null,
         timingMode: draft.timingMode,
       });
@@ -730,21 +784,39 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         setPendingConflict(true);
         return;
       }
+      if (editorContext?.kind === 'edit' && isPublicationRevisionConflictError(error)) {
+        setRevisionConflictPublicationId(editorContext.publicationId);
+        void invalidatePublicationQueries();
+        return;
+      }
       pushToast({
         tone: 'danger',
-        title: describeApiError(error, 'Не удалось сохранить публикацию'),
+        title: describeUserFacingError(error, 'Не удалось сохранить публикацию'),
       });
       maxNotify('error');
     },
   });
   const testMutation = useMutation({
-    mutationFn: () => testPublication(api, buildTestPublicationRequest(draft, createRequestId())),
+    mutationFn: () =>
+      testPublication(
+        api,
+        buildTestPublicationRequest(draft, requestIds.resolveTestRequestId(draft)),
+      ),
     onSuccess: () => {
+      requestIds.confirmTestSuccess();
       pushToast({ tone: 'success', title: 'Отправлено вам' });
       maxNotify('success');
     },
     onError: (error) => {
-      pushToast({ tone: 'danger', title: describeApiError(error, 'Не удалось отправить тест') });
+      if (isPublicationTestResultPendingError(error)) {
+        pushToast(PUBLICATION_TEST_RESULT_PENDING_FEEDBACK);
+        maxNotify('warning');
+        return;
+      }
+      pushToast({
+        tone: 'danger',
+        title: describeUserFacingError(error, 'Не удалось отправить тест'),
+      });
       maxNotify('error');
     },
   });
@@ -759,7 +831,10 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     onSuccess: ({ details, mode }) => {
       savedCreateDraftRef.current = draft;
       const sourceDraft = createPublicationDraftFromDetails(details);
-      setDraft(mode === 'duplicate' ? createPublicationDuplicateDraft(sourceDraft) : sourceDraft);
+      const isolatedDraft =
+        mode === 'duplicate' ? createPublicationDuplicateDraft(sourceDraft) : sourceDraft;
+      isolatedDraftBaselineRef.current = isolatedDraft;
+      setDraft(isolatedDraft);
       setEditorContext(
         mode === 'edit'
           ? { kind: 'edit', publicationId: details.id, expectedRevision: details.version }
@@ -771,18 +846,54 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         ),
       );
       setDetailsTarget(null);
+      setPendingEditorClose(false);
       setFieldError('');
       setComposeRoute(true);
+    },
+    onError: (error) => {
+      editorReturnFocusRef.current = null;
+      editorReturnPublicationIdRef.current = null;
+      pushToast({
+        tone: 'danger',
+        title: describeUserFacingError(error, 'Не удалось открыть публикацию'),
+      });
+    },
+  });
+  const refreshEditedPublicationMutation = useMutation({
+    mutationFn: (publicationId: string) => getPublication(api, publicationId),
+    onSuccess: (details) => {
+      const latestDraft = createPublicationDraftFromDetails(details);
+      const baseline = isolatedDraftBaselineRef.current;
+      setDraft((current) =>
+        baseline ? rebasePublicationDraft(baseline, current, latestDraft) : latestDraft,
+      );
+      isolatedDraftBaselineRef.current = latestDraft;
+      setEditorContext({
+        kind: 'edit',
+        publicationId: details.id,
+        expectedRevision: details.version,
+      });
+      setButtonErrors(
+        validateBroadcastLinkButtons(
+          details.content.buttons.map(({ text, url }) => ({ text, url })),
+        ),
+      );
+      setRevisionConflictPublicationId(null);
+      setFieldError('');
+      pushToast({ tone: 'info', title: 'Правки перенесены в актуальную версию' });
     },
     onError: (error) =>
       pushToast({
         tone: 'danger',
-        title: describeApiError(error, 'Не удалось открыть публикацию'),
+        title: describeUserFacingError(error, 'Не удалось обновить публикацию'),
       }),
   });
   const actionMutation = useMutation({
     mutationFn: ({ publication, action }: PublicationActionTarget) => {
-      const payload = { expectedRevision: publication.version, requestId: createRequestId() };
+      const payload = {
+        expectedRevision: publication.version,
+        requestId: requestIds.resolveActionRequestId(publication.id, action, publication.version),
+      };
       if (action === 'cancel') {
         return cancelPublication(api, publication.id, payload);
       }
@@ -791,6 +902,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         : resumePublication(api, publication.id, payload);
     },
     onSuccess: async (_, variables) => {
+      requestIds.confirmActionSuccess();
       setActionTarget(null);
       setDetailsTarget(null);
       await invalidatePublicationQueries();
@@ -804,24 +916,37 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
               : 'Расписание запущено',
       });
     },
-    onError: (error) =>
+    onError: async (error) => {
+      if (isPublicationRevisionConflictError(error)) {
+        setActionTarget(null);
+        await Promise.all([
+          invalidatePublicationQueries(),
+          queryClient.invalidateQueries({ queryKey: ['publications', 'details'] }),
+        ]);
+        pushToast({ tone: 'info', title: 'Публикация обновлена' });
+        return;
+      }
       pushToast({
         tone: 'danger',
-        title: describeApiError(error, 'Не удалось выполнить действие'),
-      }),
+        title: describeUserFacingError(error, 'Не удалось выполнить действие'),
+      });
+    },
   });
   const retryMutation = useMutation({
-    mutationFn: ({
-      publicationId,
-      occurrenceId,
-    }: {
-      publicationId: string;
-      occurrenceId: string;
-    }) =>
-      retryPublicationOccurrence(api, publicationId, occurrenceId, {
-        requestId: createRequestId(),
+    mutationFn: (target: PublicationRetryTarget) =>
+      retryPublicationOccurrence(api, target.publicationId, target.occurrenceId, {
+        requestId: requestIds.resolveRetryRequestId(target),
+        contentMode: target.contentMode,
+        ...(target.contentMode === 'latest'
+          ? {
+              expectedPublicationVersion: target.expectedPublicationVersion,
+              expectedContentRevision: target.expectedContentRevision,
+            }
+          : {}),
       }),
     onSuccess: async () => {
+      requestIds.confirmRetrySuccess();
+      setRetryChoiceTarget(null);
       await Promise.all([
         invalidatePublicationQueries(),
         queryClient.invalidateQueries({ queryKey: ['publications', 'details'] }),
@@ -829,20 +954,32 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
       ]);
       pushToast({ tone: 'success', title: 'Повтор поставлен в очередь' });
     },
-    onError: (error) =>
+    onError: async (error) => {
+      if (isPublicationRevisionConflictError(error)) {
+        setRetryChoiceTarget(null);
+        await Promise.all([
+          invalidatePublicationQueries(),
+          queryClient.invalidateQueries({ queryKey: ['publications', 'details'] }),
+          queryClient.invalidateQueries({ queryKey: ['publications', 'deliveries'] }),
+        ]);
+        pushToast({ tone: 'info', title: 'Публикация обновлена' });
+        return;
+      }
       pushToast({
         tone: 'danger',
-        title: describeApiError(error, 'Не удалось повторить отправку'),
-      }),
+        title: describeUserFacingError(error, 'Не удалось повторить отправку'),
+      });
+    },
   });
   const resolveAmbiguousMutation = useMutation({
     mutationFn: (target: PublicationAmbiguousTarget) =>
       resolvePublicationAmbiguousDelivery(api, target.publicationId, target.occurrenceId, {
-        requestId: createRequestId(),
+        requestId: requestIds.resolveAmbiguousRequestId(target),
         deliveryId: target.deliveryId,
         resolution: target.resolution,
       }),
     onSuccess: async () => {
+      requestIds.confirmAmbiguousSuccess();
       setAmbiguousTarget(null);
       await Promise.all([
         invalidatePublicationQueries(),
@@ -852,16 +989,21 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
       pushToast({ tone: 'success', title: 'Статус доставки сохранён' });
     },
     onError: (error) =>
-      pushToast({ tone: 'danger', title: describeApiError(error, 'Не удалось сохранить статус') }),
+      pushToast({
+        tone: 'danger',
+        title: describeUserFacingError(error, 'Не удалось сохранить статус'),
+      }),
   });
 
   const visibleItems =
-    view === 'history' ? historyItems : view === 'schedules' ? scheduleItems : planItems;
+    view === 'history' ? historyItems : view === 'schedules' ? scheduleItems : currentItems;
   const currentListQuery =
-    view === 'history' ? historyQuery : view === 'schedules' ? schedulesQuery : planQuery;
+    view === 'history' ? historyQuery : view === 'schedules' ? schedulesQuery : currentQuery;
   const visibleButtons = draft.buttonEnabled ? trimBroadcastLinkButtons(draft.buttons) : [];
-  const hasMedia =
-    draft.images.length > 0 || draft.mediaType === 'video' || draft.retainedAssets.length > 0;
+  const videoNeedsReselection = publicationDraftNeedsVideoReselection(draft);
+  const hasSelectedVideo =
+    draft.mediaType === 'video' && Boolean(draft.mediaBase64 || draft.mediaPayload);
+  const hasMedia = draft.images.length > 0 || hasSelectedVideo || draft.retainedAssets.length > 0;
   const hasContent = Boolean(draft.text.trim() || hasMedia);
   const hasButtonErrors =
     draft.buttonEnabled &&
@@ -872,12 +1014,18 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     openPublicationMutation.isPending ||
     actionMutation.isPending ||
     retryMutation.isPending ||
+    refreshEditedPublicationMutation.isPending ||
     videoPreparing;
   const anyBusy = isBusy || resolveAmbiguousMutation.isPending;
   const recurrenceError = getRecurrenceError(draft);
   const validationIssues = useMemo<BroadcastPublishIssueAction[]>(() => {
     const issues: BroadcastPublishIssueAction[] = [];
-    if (!hasContent) {
+    if (videoNeedsReselection) {
+      issues.push({
+        label: 'Видео',
+        onClick: () => focusEditorSection('content', 'Выберите видео снова.'),
+      });
+    } else if (!hasContent) {
       issues.push({
         label: 'Сообщение',
         onClick: () => focusEditorSection('content', 'Добавьте текст, фото или видео.'),
@@ -927,26 +1075,59 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
       });
     }
     return issues;
-  }, [draft, hasButtonErrors, hasContent, recurrenceError]);
+  }, [draft, hasButtonErrors, hasContent, recurrenceError, videoNeedsReselection]);
 
   useEffect(() => {
     document.body.classList.toggle('publications-editor-open', isEditor);
-    return () => document.body.classList.remove('publications-editor-open');
+    const bottomNav = document.querySelector<HTMLElement>('.app-shell > .bottom-nav');
+    const previousBottomNavInert = bottomNav?.inert ?? false;
+    const previousBottomNavAriaHidden = bottomNav?.getAttribute('aria-hidden') ?? null;
+    if (isEditor && bottomNav) {
+      bottomNav.inert = true;
+      bottomNav.setAttribute('aria-hidden', 'true');
+    }
+
+    return () => {
+      document.body.classList.remove('publications-editor-open');
+      if (!bottomNav) {
+        return;
+      }
+      bottomNav.inert = previousBottomNavInert;
+      if (previousBottomNavAriaHidden === null) {
+        bottomNav.removeAttribute('aria-hidden');
+      } else {
+        bottomNav.setAttribute('aria-hidden', previousBottomNavAriaHidden);
+      }
+    };
   }, [isEditor]);
 
   useEffect(() => {
-    if (!hydrated || !sourcesQuery.isSuccess || initialRouteAppliedRef.current) {
+    if (!hydrated || initialComposeRouteAppliedRef.current) {
       return;
     }
-    initialRouteAppliedRef.current = true;
+    initialComposeRouteAppliedRef.current = true;
+    if (searchParams.get('compose') === '1') {
+      setEditorContext({ kind: 'create' });
+    }
+  }, [hydrated, searchParams]);
+
+  useEffect(() => {
+    if (!hydrated || initialTargetRouteAppliedRef.current) {
+      return;
+    }
     const entityType =
       normalizeEntityType(searchParams.get('entityType')) ??
       normalizeEntityType(searchParams.get('sourceType'));
     const entityId = searchParams.get('entityId') ?? searchParams.get('sourceId') ?? '';
+    if (!entityId) {
+      initialTargetRouteAppliedRef.current = true;
+      return;
+    }
     const routeTarget = targets.find(
       (target) => target.id === entityId && (!entityType || target.entityType === entityType),
     );
     if (routeTarget) {
+      initialTargetRouteAppliedRef.current = true;
       setDraft((current) =>
         current.targets.some(
           (target) => getPublicationTargetKey(target) === getPublicationTargetKey(routeTarget),
@@ -959,14 +1140,15 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
                 : [...current.targets, routeTarget],
             },
       );
+      return;
     }
-    if (searchParams.get('compose') === '1') {
-      setEditorContext({ kind: 'create' });
+    if (sourcesReady) {
+      initialTargetRouteAppliedRef.current = true;
     }
-  }, [draft, hydrated, searchParams, setDraft, sourcesQuery.isSuccess, targets]);
+  }, [hydrated, searchParams, setDraft, sourcesReady, targets]);
 
   useEffect(() => {
-    if (!sourcesQuery.isSuccess || targets.length === 0) {
+    if (targets.length === 0) {
       return;
     }
 
@@ -988,11 +1170,34 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
 
       return changed ? { ...current, targets: refreshedTargets } : current;
     });
-  }, [draft.targets, setDraft, sourcesQuery.isSuccess, targets]);
+  }, [draft.targets, setDraft, targets]);
+
+  useEffect(() => {
+    if (!isEditor) {
+      return undefined;
+    }
+    const focusFrame = window.requestAnimationFrame(() => editorTitleRef.current?.focus());
+    return () => window.cancelAnimationFrame(focusFrame);
+  }, [isEditor]);
+
+  useEffect(() => {
+    if (!isEditor) {
+      return undefined;
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || document.querySelector('[role="dialog"][aria-modal="true"]')) {
+        return;
+      }
+      event.preventDefault();
+      requestCloseEditor(true);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [draft, editorContext?.kind, isBusy, isEditor]);
 
   useNativeBackHandler(
     () => {
-      closeEditor(true);
+      requestCloseEditor(true);
       return true;
     },
     { enabled: isEditor, priority: 610 },
@@ -1084,18 +1289,68 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
   }
 
   function changeView(nextView: PublicationView) {
+    const nextStatus = normalizePublicationStatusFilter(statusFilter, nextView);
     setView(nextView);
-    if (!STATUS_FILTERS_BY_VIEW[nextView].some((filter) => filter.value === statusFilter)) {
-      setStatusFilter('all');
-    }
+    setStatusFilter(nextStatus);
+    setPublicationHubRoute({ view: nextView, status: nextStatus });
+    maxImpact('soft');
+  }
+
+  function setPublicationHubRoute(
+    state: {
+      view?: PublicationView;
+      query?: string;
+      entity?: PublicationEntityFilter;
+      status?: PublicationStatusFilter;
+    } = {},
+  ) {
+    const nextView = state.view ?? view;
+    const nextQuery = normalizePublicationQuery(state.query ?? query);
+    const nextEntity = state.entity ?? entityFilter;
+    const nextStatus = normalizePublicationStatusFilter(state.status ?? statusFilter, nextView);
     const next = new URLSearchParams(searchParams);
-    if (nextView === 'plan') {
+    if (nextView === 'current') {
       next.delete('view');
     } else {
       next.set('view', nextView);
     }
+    if (nextQuery.trim()) {
+      next.set('query', nextQuery);
+    } else {
+      next.delete('query');
+    }
+    if (nextEntity === 'all') {
+      next.delete('entity');
+    } else {
+      next.set('entity', nextEntity);
+    }
+    if (nextStatus === 'all') {
+      next.delete('status');
+    } else {
+      next.set('status', nextStatus);
+    }
     setSearchParams(next, { replace: true });
-    maxImpact('soft');
+  }
+
+  function requestPublicationRetry(
+    publication: PublicationDetails,
+    occurrence: PublicationOccurrenceSummary,
+  ) {
+    if (isPublicationOccurrenceContentStale(occurrence, publication.content.revision)) {
+      setRetryChoiceTarget({
+        publicationId: publication.id,
+        occurrenceId: occurrence.id,
+        publicationVersion: publication.version,
+        originalContentRevision: occurrence.contentRevision,
+        latestContentRevision: publication.content.revision,
+      });
+      return;
+    }
+    retryMutation.mutate({
+      publicationId: publication.id,
+      occurrenceId: occurrence.id,
+      contentMode: 'original',
+    });
   }
 
   function focusEditorSection(section: 'content' | 'targets' | 'timing', message: string) {
@@ -1106,17 +1361,76 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         : section === 'targets'
           ? targetsSectionRef.current
           : timingSectionRef.current;
-    window.requestAnimationFrame(() =>
-      target?.scrollIntoView({ behavior: 'smooth', block: 'center' }),
-    );
+    window.requestAnimationFrame(() => {
+      const focusTarget = target?.querySelector<HTMLElement>(
+        '[aria-invalid="true"], textarea:not(:disabled), input:not(:disabled), button:not(:disabled)',
+      );
+      focusTarget?.focus({ preventScroll: true });
+      target?.scrollIntoView({
+        behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+        block: 'center',
+      });
+    });
+  }
+
+  function rememberEditorReturnFocus(publicationId: string | null = null) {
+    editorReturnFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    editorReturnPublicationIdRef.current = publicationId;
+  }
+
+  function restoreEditorReturnFocus() {
+    const previousFocus = editorReturnFocusRef.current;
+    const publicationId = editorReturnPublicationIdRef.current;
+    editorReturnFocusRef.current = null;
+    editorReturnPublicationIdRef.current = null;
+    window.requestAnimationFrame(() => {
+      if (previousFocus?.isConnected) {
+        previousFocus.focus();
+        return;
+      }
+      if (!publicationId) {
+        return;
+      }
+      const card = Array.from(
+        document.querySelectorAll<HTMLElement>('.publication-feed-card[data-publication-id]'),
+      ).find((candidate) => candidate.dataset.publicationId === publicationId);
+      card
+        ?.querySelector<HTMLElement>(
+          '.publication-feed-card__menu-trigger, .publication-feed-card__surface',
+        )
+        ?.focus();
+    });
+  }
+
+  function openPublicationEditor(publication: PublicationSummary, mode: 'edit' | 'duplicate') {
+    rememberEditorReturnFocus(publication.id);
+    openPublicationMutation.mutate({ publication, mode });
   }
 
   function openCreateEditor() {
+    rememberEditorReturnFocus();
     setEditorContext({ kind: 'create' });
     setButtonErrors(validateBroadcastLinkButtons(draft.buttons));
     setFieldError('');
     setComposeRoute(true);
     maxImpact('soft');
+  }
+
+  function requestCloseEditor(preserveDraft: boolean) {
+    if (isBusy) {
+      return;
+    }
+    const baseline = isolatedDraftBaselineRef.current;
+    if (
+      isIsolatedPublicationEditor(editorContext?.kind ?? null) &&
+      baseline &&
+      hasPublicationDraftChanges(baseline, draft)
+    ) {
+      setPendingEditorClose(true);
+      return;
+    }
+    closeEditor(preserveDraft);
   }
 
   function closeEditor(preserveDraft: boolean) {
@@ -1128,11 +1442,16 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     setButtonsOpen(false);
     setPendingReview(false);
     setPendingConflict(false);
+    setPendingEditorClose(false);
+    setPendingDraftClear(false);
+    setRevisionConflictPublicationId(null);
     setFieldError('');
     setComposeRoute(false);
     if (!preserveDraft) {
       savedCreateDraftRef.current = null;
     }
+    isolatedDraftBaselineRef.current = null;
+    restoreEditorReturnFocus();
   }
 
   function restoreCreateDraftAndClose() {
@@ -1140,17 +1459,26 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
       setDraft(savedCreateDraftRef.current);
     }
     savedCreateDraftRef.current = null;
+    isolatedDraftBaselineRef.current = null;
     setEditorContext(null);
     setButtonsOpen(false);
     setPendingReview(false);
     setPendingConflict(false);
+    setPendingEditorClose(false);
+    setPendingDraftClear(false);
+    setRevisionConflictPublicationId(null);
     setFieldError('');
     setComposeRoute(false);
+    restoreEditorReturnFocus();
   }
 
   function validateDraft(options: { ignoreSchedule?: boolean } = {}): boolean {
     const nextButtonErrors = validateBroadcastLinkButtons(draft.buttons);
     setButtonErrors(nextButtonErrors);
+    if (videoNeedsReselection) {
+      setFieldError('Выберите видео снова.');
+      return false;
+    }
     if (!hasContent) {
       setFieldError('Добавьте текст, фото или видео.');
       return false;
@@ -1256,12 +1584,24 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
             <input
               type="search"
               value={query}
-              onChange={(event) => setQuery(event.currentTarget.value)}
+              maxLength={120}
+              onChange={(event) => {
+                const nextQuery = event.currentTarget.value;
+                setQuery(nextQuery);
+                setPublicationHubRoute({ query: nextQuery });
+              }}
               placeholder="Найти"
               aria-label="Поиск публикаций"
             />
             {query ? (
-              <button type="button" onClick={() => setQuery('')} aria-label="Очистить поиск">
+              <button
+                type="button"
+                onClick={() => {
+                  setQuery('');
+                  setPublicationHubRoute({ query: '' });
+                }}
+                aria-label="Очистить поиск"
+              >
                 <Xmark aria-hidden />
               </button>
             ) : null}
@@ -1291,7 +1631,10 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
                   type="button"
                   aria-pressed={entityFilter === filter.value}
                   className={cn(entityFilter === filter.value && 'is-active')}
-                  onClick={() => setEntityFilter(filter.value)}
+                  onClick={() => {
+                    setEntityFilter(filter.value);
+                    setPublicationHubRoute({ entity: filter.value });
+                  }}
                 >
                   {filter.label}
                 </button>
@@ -1299,9 +1642,11 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
             </div>
             <select
               value={statusFilter}
-              onChange={(event) =>
-                setStatusFilter(event.currentTarget.value as PublicationStatusFilter)
-              }
+              onChange={(event) => {
+                const nextStatus = event.currentTarget.value as PublicationStatusFilter;
+                setStatusFilter(nextStatus);
+                setPublicationHubRoute({ status: nextStatus });
+              }}
               aria-label="Статус публикаций"
             >
               {statusFilters.map((filter) => (
@@ -1317,6 +1662,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
                 onClick={() => {
                   setEntityFilter('all');
                   setStatusFilter('all');
+                  setPublicationHubRoute({ entity: 'all', status: 'all' });
                 }}
                 aria-label="Сбросить фильтры"
                 title="Сбросить фильтры"
@@ -1435,11 +1781,12 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
   }
 
   function renderPublicationCard(publication: PublicationSummary) {
+    const delivery = getPublicationActionableDelivery(publication);
+    const actionCapabilities = getPublicationActionCapabilities(publication);
     const pending =
       (actionMutation.isPending && actionMutation.variables?.publication.id === publication.id) ||
       (openPublicationMutation.isPending &&
         openPublicationMutation.variables?.publication.id === publication.id);
-    const canEdit = publication.lifecycle !== 'COMPLETED' && publication.lifecycle !== 'CANCELED';
     return (
       <PublicationFeedCard
         key={publication.id}
@@ -1453,33 +1800,37 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
               ? 'Фото без текста'
               : null
         }
-        eyebrow={getLifecycleLabel(publication.lifecycle)}
+        eyebrow={getPublicationLifecycleLabel(publication.lifecycle)}
         tone={getLifecycleTone(publication)}
         busy={pending}
         meta={[formatPublicationTargets(publication), formatPublicationSchedule(publication)]}
         primaryAction={{ label: 'Открыть детали', onClick: () => setDetailsTarget(publication) }}
-        canEdit={canEdit}
-        canPause={publication.lifecycle === 'ACTIVE' && isSchedulePublication(publication)}
-        canResume={canResumePublication(publication.lifecycle)}
-        canRetry={publication.delivery.failed > 0 || publication.delivery.ambiguous > 0}
+        canEdit={actionCapabilities.canEdit}
+        canPause={actionCapabilities.canPause}
+        canResume={actionCapabilities.canResume}
+        canRetry={actionCapabilities.canRetry}
         canDuplicate
-        canCancel={publication.lifecycle !== 'COMPLETED' && publication.lifecycle !== 'CANCELED'}
-        onEdit={() => openPublicationMutation.mutate({ publication, mode: 'edit' })}
+        canCancel={actionCapabilities.canCancel}
+        editLabel={getPublicationEditActionLabel(actionCapabilities.editScope)}
+        cancelLabel={
+          actionCapabilities.hasFutureSends ? 'Отменить будущие отправки' : 'Отменить публикацию'
+        }
+        onEdit={() => openPublicationEditor(publication, 'edit')}
         onPause={() => setActionTarget({ publication, action: 'pause' })}
         onResume={() => setActionTarget({ publication, action: 'resume' })}
         onRetry={() => setDetailsTarget(publication)}
-        onDuplicate={() => openPublicationMutation.mutate({ publication, mode: 'duplicate' })}
+        onDuplicate={() => openPublicationEditor(publication, 'duplicate')}
         onCancel={() => setActionTarget({ publication, action: 'cancel' })}
         footer={
-          publication.delivery.ambiguous > 0 ? (
+          delivery.ambiguous > 0 ? (
             <span className="publication-delivery-note is-danger">Проверьте отправку</span>
-          ) : publication.delivery.failed > 0 || publication.delivery.canceled > 0 ? (
+          ) : delivery.failed > 0 || delivery.canceled > 0 ? (
             <span className="publication-delivery-note is-danger">
               Есть недоставленные сообщения
             </span>
-          ) : publication.delivery.sent > 0 ? (
+          ) : delivery.sent > 0 ? (
             <span className="publication-delivery-note">
-              Доставлено {publication.delivery.sent} из {publication.delivery.total}
+              Доставлено {delivery.sent} из {delivery.total}
             </span>
           ) : null
         }
@@ -1497,7 +1848,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
           <StatusState
             tone="danger"
             title="Не удалось загрузить"
-            description={describeApiError(currentListQuery.error, 'Повторите ещё раз.')}
+            description={describeUserFacingError(currentListQuery.error, 'Повторите ещё раз.')}
             action={
               <button
                 type="button"
@@ -1511,15 +1862,15 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         ) : visibleItems.length === 0 ? (
           <div className="publications-empty">
             <strong>
-              {query || entityFilter !== 'all' || statusFilter !== 'all'
+              {query.trim() || entityFilter !== 'all' || statusFilter !== 'all'
                 ? 'Ничего не найдено'
                 : view === 'history'
                   ? 'История пока пустая'
                   : view === 'schedules'
                     ? 'Расписаний пока нет'
-                    : 'Активных постов нет'}
+                    : 'Текущих постов нет'}
             </strong>
-            {view !== 'history' && !query ? (
+            {view !== 'history' && !query.trim() ? (
               <button type="button" className="publications-primary" onClick={openCreateEditor}>
                 <Plus aria-hidden />
                 <span>Новая публикация</span>
@@ -1570,9 +1921,9 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
           {VIEW_OPTIONS.map((option) =>
             (() => {
               const count =
-                option.value === 'plan'
-                  ? planQuery.data
-                    ? formatLoadedCount(planItems.length, Boolean(planQuery.hasNextPage))
+                option.value === 'current'
+                  ? currentQuery.data
+                    ? formatLoadedCount(currentItems.length, Boolean(currentQuery.hasNextPage))
                     : null
                   : option.value === 'schedules'
                     ? schedulesQuery.data
@@ -1639,7 +1990,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
             <NavArrowLeft aria-hidden />
           </button>
           <span>
-            <h1>Ранее созданные</h1>
+            <h1>Старые публикации</h1>
             {legacyCurrentTotal !== null ? (
               <small>
                 {formatRussianCountLabel(legacyCurrentTotal, 'запись', 'записи', 'записей')}
@@ -1648,7 +1999,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
           </span>
         </header>
 
-        <div className="legacy-publications-tabs" role="group" aria-label="Ранее созданные посты">
+        <div className="legacy-publications-tabs" role="group" aria-label="Старые публикации">
           {LEGACY_VIEW_OPTIONS.map((option) => {
             const count = option.value === 'active' ? legacyActiveCount : legacyHistoryCount;
             return (
@@ -1678,7 +2029,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
           <StatusState
             tone="danger"
             title="Не удалось загрузить"
-            description={describeApiError(legacyListQuery.error, 'Повторите ещё раз.')}
+            description={describeUserFacingError(legacyListQuery.error, 'Повторите ещё раз.')}
             action={
               <button
                 type="button"
@@ -2096,7 +2447,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
       if (file.size > MAX_PUBLICATION_VIDEO_FILE_BYTES) {
         throw new Error('Видео слишком большое. Максимум 24 МБ.');
       }
-      const mediaBase64 = await readVideoFileBase64(file);
+      const mediaBase64 = await readBlobAsBase64(file);
       if (mediaBase64.length > MAX_PUBLICATION_VIDEO_BASE64_LENGTH) {
         throw new Error('Видео слишком большое. Максимум 24 МБ.');
       }
@@ -2121,9 +2472,30 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     }
   }
 
+  function confirmDraftClear() {
+    setPendingDraftClear(false);
+    setButtonErrors([]);
+    setFieldError('');
+    if (editorContext?.kind === 'duplicate') {
+      setDraft(createEmptyPublicationDraft());
+      return;
+    }
+    void clearDraft();
+  }
+
   function renderEditor() {
     const editing = editorContext?.kind === 'edit';
-    const duplicating = editorContext?.kind === 'duplicate';
+    const editScope: PublicationEditScope | null = editing
+      ? draft.timingMode === 'now'
+        ? 'retry'
+        : 'future'
+      : null;
+    const editorTitle =
+      editScope === 'retry'
+        ? 'Версия для повтора'
+        : editScope === 'future'
+          ? 'Будущие отправки'
+          : 'Новый пост';
     const retainedVideo = draft.retainedAssets.some((asset) => asset.type === 'video');
     const retainedImages = draft.retainedAssets.filter((asset) => asset.type === 'image').length;
     const primaryLabel = editing
@@ -2136,23 +2508,22 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     return (
       <>
         <header className="publications-editor-header">
-          <button type="button" onClick={() => closeEditor(true)} aria-label="Назад" title="Назад">
+          <button
+            type="button"
+            onClick={() => requestCloseEditor(true)}
+            aria-label="Назад"
+            title="Назад"
+          >
             <NavArrowLeft aria-hidden />
           </button>
           <span>
-            <h1>{editing ? 'Редактирование' : 'Новый пост'}</h1>
+            <h1 ref={editorTitleRef} tabIndex={-1}>
+              {editorTitle}
+            </h1>
           </span>
           <button
             type="button"
-            onClick={() => {
-              if (duplicating) {
-                setDraft(createEmptyPublicationDraft());
-                setButtonErrors([]);
-                setFieldError('');
-                return;
-              }
-              void clearDraft();
-            }}
+            onClick={() => setPendingDraftClear(true)}
             aria-label="Очистить черновик"
             title="Очистить"
             disabled={isBusy || editing}
@@ -2166,10 +2537,37 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
             <div className="publication-editor-section__head">
               <strong>Получатели</strong>
             </div>
+            {sourcesHaveError ? (
+              <div
+                className={cn(
+                  'publications-inline-notice',
+                  sourcesUnavailable ? 'is-danger' : 'is-warning',
+                )}
+                role={sourcesUnavailable ? 'alert' : 'status'}
+              >
+                <span>
+                  {sourcesUnavailable
+                    ? 'Чаты и каналы недоступны'
+                    : sourceChatsQuery.isError
+                      ? 'Чаты временно недоступны'
+                      : 'Каналы временно недоступны'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void Promise.all([sourceChatsQuery.refetch(), sourceChannelsQuery.refetch()]);
+                  }}
+                  disabled={sourcesFetching}
+                >
+                  <Refresh aria-hidden />
+                  <span>{sourcesFetching ? 'Обновляю' : 'Повторить'}</span>
+                </button>
+              </div>
+            ) : null}
             <PublicationTargetPicker
               choices={targets}
               value={draft.targets}
-              disabled={isBusy || sourcesQuery.isLoading}
+              disabled={isBusy || (sourcesLoading && targets.length === 0)}
               error={fieldError.includes('получател') ? fieldError : null}
               onLimitReached={() =>
                 pushToast({
@@ -2226,15 +2624,23 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
                 'publication-video-picker',
                 (isBusy || videoPreparing) && 'is-disabled',
                 draft.mediaType === 'video' && 'is-active',
+                videoNeedsReselection && 'needs-reselection',
               )}
               aria-disabled={isBusy || videoPreparing}
             >
               <VideoCamera aria-hidden />
-              <span>{videoPreparing ? 'Готовим видео' : 'Добавить видео'}</span>
+              <span>
+                {videoPreparing
+                  ? 'Готовим видео'
+                  : videoNeedsReselection
+                    ? 'Выбрать видео снова'
+                    : 'Добавить видео'}
+              </span>
               <input
                 type="file"
                 accept="video/*"
                 aria-label="Выбрать видео для публикации"
+                aria-invalid={videoNeedsReselection || undefined}
                 disabled={isBusy || videoPreparing}
                 onChange={(event) => {
                   const input = event.currentTarget;
@@ -2250,6 +2656,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
               maxLength={PUBLICATION_TEXT_MAX_LENGTH}
               images={draft.images}
               buttons={visibleButtons}
+              buttonsPerRow={1}
               buttonsStatusLabel="Кнопки"
               buttonsActive={visibleButtons.length > 0}
               buttonsError={hasButtonErrors}
@@ -2262,7 +2669,11 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
               }
               disabled={isBusy}
               textError={
-                fieldError.includes('текст') || fieldError.includes('фото') ? fieldError : ''
+                fieldError.includes('текст') ||
+                fieldError.includes('фото') ||
+                fieldError.includes('видео')
+                  ? fieldError
+                  : ''
               }
               textPlaceholder="Текст публикации"
               messageAriaLabel="Текст публикации"
@@ -2303,7 +2714,8 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
           {fieldError &&
           !fieldError.includes('получател') &&
           !fieldError.includes('текст') &&
-          !fieldError.includes('фото') ? (
+          !fieldError.includes('фото') &&
+          !fieldError.includes('видео') ? (
             <p className="publication-field-error publication-field-error--page" role="alert">
               {fieldError}
             </p>
@@ -2337,7 +2749,13 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         <div className="publications-publish-bar">
           <BroadcastPublishBar
             title={
-              editing ? 'Изменения' : draft.timingMode === 'schedule' ? 'Расписание' : 'Публикация'
+              editScope === 'retry'
+                ? 'Версия для повтора'
+                : editScope === 'future'
+                  ? 'Будущие отправки'
+                  : draft.timingMode === 'schedule'
+                    ? 'Расписание'
+                    : 'Публикация'
             }
             meta={formatTargetSummary(draft.targets)}
             issues={validationIssues}
@@ -2345,7 +2763,13 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
             testLabel="Отправить себе"
             compactTestLabel="Тест"
             testAriaLabel="Отправить публикацию себе"
-            testDisabled={isBusy || !hasContent || draft.targets.length === 0 || hasButtonErrors}
+            testDisabled={
+              isBusy ||
+              !hasContent ||
+              videoNeedsReselection ||
+              draft.targets.length === 0 ||
+              hasButtonErrors
+            }
             primaryLabel={primaryLabel}
             primaryDisabled={isBusy}
             onTest={handleTest}
@@ -2360,7 +2784,9 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
           hasMedia={hasMedia}
           facts={[
             `Кому · ${formatTargetSummary(draft.targets)}`,
-            `Когда · ${formatDraftTiming(draft)}`,
+            editScope === 'retry'
+              ? 'Отправка · после ручного повтора'
+              : `Когда · ${formatDraftTiming(draft)}`,
             visibleButtons.length > 0 ? `Кнопки · ${visibleButtons.length}` : 'Кнопки · нет',
             hasMedia
               ? draft.retainedAssets.some((asset) => asset.type === 'video')
@@ -2372,7 +2798,9 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
           confirmBusyLabel="Сохраняем..."
           isBusy={saveMutation.isPending}
           extraActionBusy={testMutation.isPending}
-          extraActionDisabled={!hasContent || draft.targets.length === 0 || hasButtonErrors}
+          extraActionDisabled={
+            !hasContent || videoNeedsReselection || draft.targets.length === 0 || hasButtonErrors
+          }
           onExtraAction={handleTest}
           onClose={() => !saveMutation.isPending && setPendingReview(false)}
           onConfirm={() => {
@@ -2386,34 +2814,56 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
 
   const cancelsFutureSends = Boolean(
     actionTarget?.action === 'cancel' &&
-    actionTarget.publication.schedule &&
-    actionTarget.publication.schedule.mode !== 'now',
+    getPublicationActionCapabilities(actionTarget.publication).hasFutureSends,
   );
 
   return (
     <div className={cn('publications-page', isEditor && 'is-editor')}>
-      {isEditor ? (
-        renderEditor()
-      ) : isLegacyView ? (
-        renderLegacyHub()
-      ) : sourcesQuery.isError ? (
-        <StatusState
-          tone="danger"
-          title="Не удалось загрузить чаты и каналы"
-          description={describeApiError(sourcesQuery.error, 'Обновите экран.')}
-          action={
-            <button
-              type="button"
-              className="button button--ghost"
-              onClick={() => void sourcesQuery.refetch()}
-            >
-              Обновить
-            </button>
-          }
-        />
-      ) : (
-        renderHub()
-      )}
+      {isEditor ? renderEditor() : isLegacyView ? renderLegacyHub() : renderHub()}
+
+      <ActionConfirmSheet
+        id="publication-editor-close"
+        open={pendingEditorClose}
+        title="Закрыть без сохранения?"
+        summary="Внесённые изменения будут потеряны."
+        confirmLabel="Закрыть"
+        cancelLabel="Остаться"
+        tone="danger"
+        onClose={() => setPendingEditorClose(false)}
+        onConfirm={() => {
+          setPendingEditorClose(false);
+          restoreCreateDraftAndClose();
+        }}
+      />
+
+      <ActionConfirmSheet
+        id="publication-draft-clear"
+        open={pendingDraftClear}
+        title="Очистить черновик?"
+        confirmLabel="Очистить"
+        cancelLabel="Оставить"
+        tone="danger"
+        onClose={() => setPendingDraftClear(false)}
+        onConfirm={confirmDraftClear}
+      />
+
+      <ActionConfirmSheet
+        id="publication-revision-conflict"
+        open={revisionConflictPublicationId !== null}
+        title="Публикация изменилась"
+        summary="Локальные правки будут перенесены в актуальную версию."
+        confirmLabel="Обновить"
+        cancelLabel="Остаться"
+        tone="accent"
+        isBusy={refreshEditedPublicationMutation.isPending}
+        onClose={() =>
+          !refreshEditedPublicationMutation.isPending && setRevisionConflictPublicationId(null)
+        }
+        onConfirm={() =>
+          revisionConflictPublicationId &&
+          refreshEditedPublicationMutation.mutate(revisionConflictPublicationId)
+        }
+      />
 
       <ActionConfirmSheet
         id="publication-conflict"
@@ -2472,6 +2922,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         api={api}
         publication={detailsTarget}
         busy={anyBusy}
+        covered={retryChoiceTarget !== null || ambiguousTarget !== null}
         onClose={() => setDetailsTarget(null)}
         onCancel={(publication) => {
           setDetailsTarget(null);
@@ -2479,19 +2930,45 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         }}
         onEdit={(publicationId) => {
           const publication =
-            [...planItems, ...scheduleItems, ...historyItems].find(
+            [...currentItems, ...scheduleItems, ...historyItems].find(
               (item) => item.id === publicationId,
             ) ?? (detailsTarget?.id === publicationId ? detailsTarget : null);
           if (publication) {
-            openPublicationMutation.mutate({ publication, mode: 'edit' });
+            openPublicationEditor(publication, 'edit');
           }
         }}
-        onRetry={(publicationId, occurrenceId) =>
-          retryMutation.mutate({ publicationId, occurrenceId })
-        }
+        onRetry={requestPublicationRetry}
         onResolveAmbiguous={(publicationId, occurrenceId, deliveryId, resolution) =>
           setAmbiguousTarget({ publicationId, occurrenceId, deliveryId, resolution })
         }
+      />
+
+      <PublicationRetrySheet
+        open={retryChoiceTarget !== null}
+        originalRevision={retryChoiceTarget?.originalContentRevision}
+        latestRevision={retryChoiceTarget?.latestContentRevision ?? 1}
+        busy={retryMutation.isPending}
+        onClose={() => !retryMutation.isPending && setRetryChoiceTarget(null)}
+        onSelect={(contentMode) => {
+          if (!retryChoiceTarget) {
+            return;
+          }
+          if (contentMode === 'latest') {
+            retryMutation.mutate({
+              publicationId: retryChoiceTarget.publicationId,
+              occurrenceId: retryChoiceTarget.occurrenceId,
+              contentMode,
+              expectedPublicationVersion: retryChoiceTarget.publicationVersion,
+              expectedContentRevision: retryChoiceTarget.latestContentRevision,
+            });
+            return;
+          }
+          retryMutation.mutate({
+            publicationId: retryChoiceTarget.publicationId,
+            occurrenceId: retryChoiceTarget.occurrenceId,
+            contentMode,
+          });
+        }}
       />
 
       <ActionConfirmSheet

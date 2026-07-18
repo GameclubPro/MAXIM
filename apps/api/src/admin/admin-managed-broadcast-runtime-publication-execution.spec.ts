@@ -9,6 +9,56 @@ import {
 import { AdminManagedBroadcastRuntime } from './admin-managed-broadcast-runtime';
 
 describe('AdminManagedBroadcastRuntime publication execution guard', () => {
+  it('restores publication attribution when recovering missing delivery rows', async () => {
+    const recoveredDelivery = {
+      id: 'delivery-recovered',
+      broadcastId: 'broadcast-1',
+      occurrenceIndex: 1,
+      targetChatId: 'chat-1',
+      status: ManagedBroadcastDeliveryStatus.PENDING,
+      publicationOccurrenceId: 'occurrence-1',
+      contentRevisionId: 'content-1',
+    };
+    const createMany = jest.fn().mockResolvedValue({ count: 1 });
+    const findMany = jest.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([recoveredDelivery]);
+    const prisma = {
+      managedBroadcastDelivery: {
+        count: jest.fn().mockResolvedValue(0),
+        createMany,
+        findMany,
+      },
+    };
+    const runtime = new AdminManagedBroadcastRuntime({ prisma } as never);
+
+    await expect(
+      (runtime as any).ensureManagedBroadcastDeliveryRows(
+        {
+          id: 'broadcast-1',
+          cycleCount: 1,
+          publicationOccurrenceId: 'occurrence-1',
+          publicationContentRevisionId: 'content-1',
+        },
+        1,
+        ['chat-1'],
+        [],
+      ),
+    ).resolves.toEqual([recoveredDelivery]);
+
+    expect(createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 1,
+          targetChatId: 'chat-1',
+          status: ManagedBroadcastDeliveryStatus.PENDING,
+          publicationOccurrenceId: 'occurrence-1',
+          contentRevisionId: 'content-1',
+        },
+      ],
+      skipDuplicates: true,
+    });
+  });
+
   it('delivers exact due NOW envelopes on the immediate lane before a governor pause', async () => {
     const managedBroadcast = {
       findMany: jest.fn().mockResolvedValue([{ id: 'broadcast-now' }]),
@@ -232,14 +282,9 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     },
   );
 
-  it('releases a stale worker after content edit without deleting the updated envelope', async () => {
-    const tx = {
-      managedBroadcastDelivery: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
-      managedBroadcast: {
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-        deleteMany: jest.fn(),
-      },
-    };
+  it('releases a stale worker after content edit without resetting a newer SENDING delivery', async () => {
+    const deliveryUpdateMany = jest.fn();
+    const broadcastUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
     const prisma = {
       publicationOccurrence: {
         findUnique: jest.fn().mockResolvedValue({
@@ -250,7 +295,9 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
           schedule: { revision: 2, status: PublicationScheduleStatus.ACTIVE },
         }),
       },
-      $transaction: jest.fn((callback: (client: typeof tx) => unknown) => callback(tx)),
+      managedBroadcastDelivery: { updateMany: deliveryUpdateMany },
+      managedBroadcast: { updateMany: broadcastUpdateMany },
+      $transaction: jest.fn(),
     };
     const runtime = new AdminManagedBroadcastRuntime({ prisma } as never);
 
@@ -267,24 +314,12 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       ),
     ).resolves.toBe(false);
 
-    expect(tx.managedBroadcastDelivery.updateMany).toHaveBeenCalledWith({
-      where: {
-        broadcastId: 'broadcast-1',
-        occurrenceIndex: 1,
-        status: 'SENDING',
-      },
-      data: {
-        status: 'PENDING',
-        lockedAt: null,
-        lockToken: null,
-        lastError: null,
-      },
-    });
-    expect(tx.managedBroadcast.updateMany).toHaveBeenCalledWith({
+    expect(deliveryUpdateMany).not.toHaveBeenCalled();
+    expect(broadcastUpdateMany).toHaveBeenCalledWith({
       where: { id: 'broadcast-1', lockToken: 'lease-1' },
       data: { lockedAt: null, lockToken: null },
     });
-    expect(tx.managedBroadcast.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
   it.each([

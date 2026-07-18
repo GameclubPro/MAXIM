@@ -136,7 +136,7 @@ describe('AdminManagedBroadcastRuntime publication media', () => {
     });
   });
 
-  it('uses a publication video durable payload without reading legacy row media', async () => {
+  it('loads assets from the content revision rebound by latest retry instead of stale row media', async () => {
     const { runtime, findUnique } = createRuntime();
     findUnique.mockResolvedValue({
       assets: [
@@ -154,11 +154,17 @@ describe('AdminManagedBroadcastRuntime publication media', () => {
 
     const media = await (runtime as any).loadManagedBroadcastRequestMedia(
       createBroadcastRow({
-        mediaType: 'video',
-        mediaPayload: { token: 'legacy-video-token' },
+        publicationContentRevisionId: 'content-latest',
+        imageEnabled: true,
+        imageBase64: Buffer.from('old-image').toString('base64'),
+        imageMimeType: 'image/png',
+        imageFileName: 'old.png',
       }),
     );
 
+    expect(findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'content-latest' } }),
+    );
     expect(media).toEqual({
       imageEnabled: false,
       imageBase64: '',

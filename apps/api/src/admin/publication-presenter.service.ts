@@ -4,6 +4,7 @@ import {
   publicationScheduleInputSchema,
   publicationScheduleSchema,
   publicationSummarySchema,
+  type PublicationDelivery,
   type PublicationDeliveryStats,
   type PublicationDetails,
   type PublicationSummary,
@@ -14,7 +15,9 @@ import {
   ManagedBroadcastDeliveryStatus,
   Prisma,
   PublicationContentFormat,
+  PublicationLifecycle,
   PublicationOccurrenceStatus,
+  PublicationScheduleStatus,
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -63,27 +66,31 @@ export class PublicationPresenterService {
         occurrences: {
           orderBy: [{ scheduledAt: 'desc' }, { id: 'desc' }],
           take: PUBLICATION_OCCURRENCE_HISTORY_LIMIT,
+          include: { contentRevision: { select: { revision: true } } },
         },
       },
     });
     if (!row) {
       return null;
     }
-    const [nextOccurrence, unresolvedOccurrences, deliveryStats] = await Promise.all([
-      this.prisma.publicationOccurrence.findFirst({
-        where: { publicationId, status: PublicationOccurrenceStatus.SCHEDULED },
-        orderBy: { scheduledAt: 'asc' },
-        select: { scheduledAt: true },
-      }),
-      this.prisma.publicationOccurrence.findMany({
-        where: {
-          publicationId,
-          status: { in: PUBLICATION_UNRESOLVED_OCCURRENCE_STATUSES },
-        },
-        orderBy: [{ scheduledAt: 'desc' }, { id: 'desc' }],
-      }),
-      this.loadDeliveryStats(publicationId),
-    ]);
+    const [nextOccurrence, unresolvedOccurrences, deliveryStats, actionableDeliveryStats] =
+      await Promise.all([
+        this.prisma.publicationOccurrence.findFirst({
+          where: { publicationId, status: PublicationOccurrenceStatus.SCHEDULED },
+          orderBy: { scheduledAt: 'asc' },
+          select: { scheduledAt: true },
+        }),
+        this.prisma.publicationOccurrence.findMany({
+          where: {
+            publicationId,
+            status: { in: PUBLICATION_UNRESOLVED_OCCURRENCE_STATUSES },
+          },
+          orderBy: [{ scheduledAt: 'desc' }, { id: 'desc' }],
+          include: { contentRevision: { select: { revision: true } } },
+        }),
+        this.loadDeliveryStats(publicationId),
+        this.loadActionableDeliveryStatsByPublicationIds([publicationId]),
+      ]);
     const occurrenceById = new Map<string, (typeof row.occurrences)[number]>();
     for (const occurrence of [...row.occurrences, ...unresolvedOccurrences]) {
       occurrenceById.set(occurrence.id, occurrence);
@@ -110,12 +117,15 @@ export class PublicationPresenterService {
       occurrences,
       nextOccurrenceAt: nextOccurrence?.scheduledAt ?? null,
       deliveryStats,
+      actionableDeliveryStats:
+        actionableDeliveryStats.get(publicationId) ?? this.emptyDeliveryStats(),
     };
   }
 
   async mapPublicationSummary(
     row: any,
     preloadedDeliveryStats?: PublicationDeliveryStats,
+    preloadedActionableDeliveryStats?: PublicationDeliveryStats,
   ): Promise<PublicationSummary> {
     const delivery =
       preloadedDeliveryStats ?? row.deliveryStats ?? (await this.loadDeliveryStats(row.id));
@@ -156,6 +166,8 @@ export class PublicationPresenterService {
           ? this.mapSchedule(row.schedule, nextOccurrenceAt)
           : null,
       delivery,
+      actionableDelivery:
+        preloadedActionableDeliveryStats ?? row.actionableDeliveryStats ?? delivery,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     });
@@ -190,15 +202,47 @@ export class PublicationPresenterService {
       occurrences: row.occurrences.map((occurrence: any) => {
         const delivery =
           occurrence.deliveryStats ?? this.buildDeliveryStats(occurrence.deliveries ?? []);
+        const usesLatestContent =
+          typeof row.canonicalContentRevisionId === 'string' &&
+          occurrence.contentRevisionId === row.canonicalContentRevisionId;
+        const canRetry =
+          delivery.failed > 0 &&
+          (row.lifecycle === PublicationLifecycle.ACTIVE ||
+            row.lifecycle === PublicationLifecycle.ERROR) &&
+          (row.schedule?.status === PublicationScheduleStatus.ACTIVE ||
+            row.schedule?.status === PublicationScheduleStatus.ERROR) &&
+          occurrence.scheduleId === row.schedule?.id &&
+          occurrence.scheduleRevision === row.schedule?.revision &&
+          (occurrence.status === PublicationOccurrenceStatus.FAILED ||
+            occurrence.status === PublicationOccurrenceStatus.PARTIAL);
         return publicationOccurrenceSummarySchema.parse({
           id: occurrence.id,
           scheduledAt: occurrence.scheduledAt.toISOString(),
           status: occurrence.status,
           delivery,
-          canRetry: delivery.failed > 0,
+          canRetry,
+          contentRevision: occurrence.contentRevision?.revision,
+          usesLatestContent,
         });
       }),
     });
+  }
+
+  mapDeliveryContentRevision(row: {
+    contentRevision: { id: string; revision: number } | null;
+    publicationOccurrence: {
+      publication: { canonicalContentRevisionId: string | null };
+    } | null;
+  }): Pick<PublicationDelivery, 'contentRevision' | 'usesLatestContent'> {
+    if (!row.contentRevision) {
+      return {};
+    }
+    return {
+      contentRevision: row.contentRevision.revision,
+      usesLatestContent:
+        row.contentRevision.id ===
+        row.publicationOccurrence?.publication.canonicalContentRevisionId,
+    };
   }
 
   async loadDeliveryStatsByPublicationIds(
@@ -250,6 +294,48 @@ export class PublicationPresenterService {
       this.addDeliveryCount(stats, group.status, group._count._all);
     }
     return stats;
+  }
+
+  async loadActionableDeliveryStatsByPublicationIds(
+    publicationIds: string[],
+  ): Promise<Map<string, PublicationDeliveryStats>> {
+    const uniquePublicationIds = [...new Set(publicationIds)];
+    const statsByPublicationId = new Map<string, PublicationDeliveryStats>(
+      uniquePublicationIds.map((publicationId) => [publicationId, this.emptyDeliveryStats()]),
+    );
+    if (uniquePublicationIds.length === 0) {
+      return statsByPublicationId;
+    }
+
+    const grouped = await this.prisma.$queryRaw<
+      Array<{
+        publicationId: string;
+        status: ManagedBroadcastDeliveryStatus;
+        count: bigint;
+      }>
+    >(Prisma.sql`
+      SELECT
+        occurrence."publication_id" AS "publicationId",
+        delivery."status" AS "status",
+        COUNT(*)::bigint AS "count"
+      FROM "managed_broadcast_deliveries" AS delivery
+      INNER JOIN "publication_occurrences" AS occurrence
+        ON occurrence."id" = delivery."publication_occurrence_id"
+      INNER JOIN "publication_schedules" AS schedule
+        ON schedule."id" = occurrence."schedule_id"
+        AND schedule."publication_id" = occurrence."publication_id"
+        AND schedule."revision" = occurrence."schedule_revision"
+      WHERE occurrence."publication_id" IN (${Prisma.join(uniquePublicationIds)})
+      GROUP BY occurrence."publication_id", delivery."status"
+    `);
+
+    for (const group of grouped) {
+      const stats = statsByPublicationId.get(group.publicationId);
+      if (stats) {
+        this.addDeliveryCount(stats, group.status, Number(group.count));
+      }
+    }
+    return statsByPublicationId;
   }
 
   async loadOccurrenceDeliveryStats(

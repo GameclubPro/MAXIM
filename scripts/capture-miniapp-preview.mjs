@@ -298,6 +298,59 @@ const scenarios = [
     },
   },
   {
+    name: 'publications-actions',
+    path: '/publications',
+    beforeShot: async (page) => {
+      await page.locator('.publications-page').waitFor({ state: 'visible' });
+      await page.locator('.publication-feed-card__menu-trigger').first().click();
+      await page.locator('.publication-action-menu__panel').waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publications-edit-discard',
+    path: '/publications',
+    beforeShot: async (page) => {
+      await page.locator('.publication-feed-card__surface').first().click();
+      await page.locator('.publication-details-sheet__panel').waitFor({ state: 'visible' });
+      await page.getByRole('button', { name: /Отметить неотправленной/u }).click();
+      await page
+        .getByRole('dialog', { name: 'Сообщение не отправлено?' })
+        .getByRole('button', { name: 'Подтвердить' })
+        .click();
+      await page.getByRole('button', { name: 'Повторить запуск' }).waitFor({ state: 'visible' });
+      await page.locator('.publication-details-sheet__header > button').click();
+      await page.getByText('Есть недоставленные сообщения').waitFor({ state: 'visible' });
+      await page.locator('.publication-feed-card__menu-trigger').first().click();
+      await page.getByRole('button', { name: 'Изменить версию для повтора' }).click();
+      await page.locator('.publications-editor').waitFor({ state: 'visible' });
+      await page
+        .locator('.broadcast-publish-bar__primary:not(:disabled)')
+        .waitFor({ state: 'visible' });
+      await page.locator('.publication-target-picker__summary').click();
+      await page.locator('.publication-target-row[aria-pressed="true"]').first().click();
+      await page.getByRole('button', { name: 'Назад' }).click();
+      await page
+        .getByRole('dialog', { name: 'Закрыть без сохранения?' })
+        .waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publications-retry-choice',
+    path: '/publications',
+    beforeShot: async (page) => {
+      await page.locator('.publication-feed-card__surface').first().click();
+      await page.locator('.publication-details-sheet__panel').waitFor({ state: 'visible' });
+      await page.getByRole('button', { name: /Отметить неотправленной/u }).click();
+      await page
+        .getByRole('dialog', { name: 'Сообщение не отправлено?' })
+        .getByRole('button', { name: 'Подтвердить' })
+        .click();
+      await page.getByRole('button', { name: 'Повторить запуск' }).waitFor({ state: 'visible' });
+      await page.getByRole('button', { name: 'Повторить запуск' }).click();
+      await page.getByRole('dialog', { name: 'Версия для повтора' }).waitFor({ state: 'visible' });
+    },
+  },
+  {
     name: 'publications-legacy',
     path: '/publications',
     searchParams: {
@@ -781,9 +834,8 @@ const scenarios = [
           buttonCount: buttons.length,
           selectedCount: buttons.filter((button) => button.getAttribute('aria-pressed') === 'true')
             .length,
-          columnCount: getComputedStyle(element)
-            .gridTemplateColumns.split(/\s+/u)
-            .filter(Boolean).length,
+          columnCount: getComputedStyle(element).gridTemplateColumns.split(/\s+/u).filter(Boolean)
+            .length,
         };
       });
       if (
@@ -1451,6 +1503,7 @@ async function assertStrictLayout(page, scenario) {
   await assertKeyboardState(page, scenario);
   await assertCriticalContrast(page, scenario);
   await assertCriticalAccessibility(page, scenario);
+  await assertPublicationTouchTargets(page, scenario);
   await assertSettingsDrilldownScrollContrast(page, scenario);
 }
 
@@ -1485,6 +1538,18 @@ async function assertSettingsDrilldownScrollContrast(page, scenario) {
       locator: page
         .locator('.managed-giveaway-modal:visible .managed-giveaway-modal__sheet')
         .first(),
+    },
+    {
+      label: 'publication actions',
+      locator: page.locator('.publication-action-menu:visible .publication-action-menu__actions'),
+    },
+    {
+      label: 'publication details',
+      locator: page.locator('.publication-details-sheet:visible .publication-details-sheet__body'),
+    },
+    {
+      label: 'publication retry',
+      locator: page.locator('.publication-retry-sheet:visible .publication-retry-sheet__panel'),
     },
   ];
 
@@ -1529,6 +1594,10 @@ async function assertCriticalContrast(page, scenario) {
 
   const issues = await page.evaluate(() => {
     const scopeSelectors = [
+      '.publications-page',
+      '.publication-details-sheet',
+      '.publication-action-menu',
+      '.publication-retry-sheet',
       '.chats-page',
       '.chats-home',
       '.favorite-picker',
@@ -1767,6 +1836,87 @@ async function assertCriticalAccessibility(page, scenario) {
     const first = issues[0];
     throw new Error(
       `Scenario ${scenario.name} has accessibility issue: ${first.type} (${first.target}).`,
+    );
+  }
+}
+
+async function assertPublicationTouchTargets(page, scenario) {
+  if (!strictAccessibility) {
+    return;
+  }
+
+  const issues = await page.evaluate(() => {
+    if (!document.querySelector('.publications-page')) {
+      return [];
+    }
+
+    const selectors = [
+      '.publications-page .publications-tabs button',
+      '.publications-page .publications-filterbar button',
+      '.publications-page .publications-filterbar select',
+      '.publications-page .publications-load-more',
+      '.publications-page .publication-retained-media button',
+      '.publications-page .publications-inline-notice button',
+      '.publications-page .publications-calendar-error button',
+      '.publications-page .publication-target-chip button',
+      '.publications-page .publication-weekdays button',
+      '.publications-page .publication-recurrence__times > div > button',
+      '.publications-page .publication-content-composer .broadcast-content-composer__tool',
+      '.publications-page .publication-content-composer .broadcast-content-composer__button-label',
+      '.publications-page .publication-content-composer .broadcast-content-composer__modifier',
+      '.publications-page .publication-content-composer .broadcast-message-card__media-remove',
+      '.publications-page .broadcast-publish-bar__issue',
+      '.legacy-publications-tabs button',
+      '.legacy-publications-filterbar button',
+      '.legacy-publications-filterbar select',
+      '.publication-action-menu button',
+      '.publication-details-sheet button',
+      '.publication-retry-sheet button',
+      '.action-confirm-sheet button',
+      '.toast__close',
+      '.broadcast-buttons-sheet__close',
+      '.broadcast-buttons-sheet__empty-action',
+    ];
+    const controls = Array.from(
+      new Set(selectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)))),
+    );
+    const isVisible = (element) => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return (
+        rect.width > 1 &&
+        rect.height > 1 &&
+        style.display !== 'none' &&
+        style.visibility !== 'hidden' &&
+        Number.parseFloat(style.opacity || '1') > 0.05
+      );
+    };
+
+    return controls
+      .flatMap((element) => {
+        if (!(element instanceof HTMLElement) || !isVisible(element)) {
+          return [];
+        }
+        const rect = element.getBoundingClientRect();
+        if (rect.width + 0.5 >= 44 && rect.height + 0.5 >= 44) {
+          return [];
+        }
+        return [
+          {
+            target: element.className?.toString() || element.tagName,
+            width: rect.width,
+            height: rect.height,
+          },
+        ];
+      })
+      .slice(0, 5);
+  });
+
+  if (issues.length > 0) {
+    const first = issues[0];
+    throw new Error(
+      `Scenario ${scenario.name} has a publication touch target below 44px: ` +
+        `${first.target} (${first.width.toFixed(1)}x${first.height.toFixed(1)}).`,
     );
   }
 }

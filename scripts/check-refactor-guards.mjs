@@ -284,6 +284,26 @@ const guardedFiles = [
     targetLines: 3000,
     reason: 'Contracts should continue moving to existing subpath exports.',
   },
+  {
+    path: 'apps/api/src/admin/publication.service.ts',
+    maxLines: 3916,
+    targetLines: 3200,
+    reason:
+      'Publication scheduling, query, and retry logic should keep moving to focused domain services.',
+  },
+  {
+    path: 'apps/miniapp/src/pages/publications-page.tsx',
+    maxLines: 3020,
+    targetLines: 2300,
+    reason: 'PublicationsPage should shrink into a route shell, hooks, and focused workspaces.',
+  },
+  {
+    path: 'apps/miniapp/src/styles/publications-page.css',
+    maxLines: 2541,
+    targetLines: 1900,
+    reason:
+      'Publication route styles should keep moving to component-owned CSS instead of becoming a compatibility bundle.',
+  },
 ];
 
 const allowedLegacyImportFiles = new Set([

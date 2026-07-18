@@ -3,6 +3,7 @@ import test from 'node:test';
 import { DEFAULT_BROADCAST_BUTTON_TEXT } from '@maxim/contracts';
 import {
   buildBroadcastLinkButtonLegacyFields,
+  buildBroadcastPreviewButtonRows,
   createEmptyBroadcastLinkButton,
   formatBroadcastButtonsPreview,
   hasBroadcastLinkButtonErrors,
@@ -93,5 +94,18 @@ test('formats button previews with user-visible names', () => {
       { text: 'Правила', url: 'https://example.com/rules' },
     ]),
     'Канал, Бот +1',
+  );
+});
+
+test('renders publication link buttons as one full-width button per row', () => {
+  const buttons = Array.from({ length: 4 }, (_, index) => ({ text: `Кнопка ${index + 1}` }));
+
+  assert.deepEqual(buildBroadcastPreviewButtonRows(buttons, []), [
+    buttons.slice(0, 3),
+    buttons.slice(3),
+  ]);
+  assert.deepEqual(
+    buildBroadcastPreviewButtonRows(buttons, [], 1),
+    buttons.map((button) => [button]),
   );
 });

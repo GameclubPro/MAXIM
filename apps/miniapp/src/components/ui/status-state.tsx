@@ -24,8 +24,14 @@ export function StatusState({
   action,
   className,
 }: StatusStateProps) {
+  const role = tone === 'danger' ? 'alert' : 'status';
   return (
-    <section className={cn('status-state', `status-state--${tone}`, className)}>
+    <section
+      className={cn('status-state', `status-state--${tone}`, className)}
+      role={role}
+      aria-live={role === 'alert' ? 'assertive' : 'polite'}
+      aria-atomic="true"
+    >
       <div className="status-state__icon" aria-hidden>
         {toneIconMap[tone]}
       </div>

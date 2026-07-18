@@ -390,6 +390,7 @@ test('preview channel stats overview mirrors production lightweight fields', asy
 
 test('preview publications support list, CRUD, actions, and delivery review', async () => {
   const api = createPreviewApiTransport();
+  const current = await listPublications(api, { view: 'current', limit: 100 });
   const plan = await listPublications(api, { view: 'plan', limit: 100 });
   const schedules = await listPublications(api, { view: 'schedules', limit: 100 });
   const history = await listPublications(api, { view: 'history', limit: 100 });
@@ -401,6 +402,11 @@ test('preview publications support list, CRUD, actions, and delivery review', as
   const failed = await listPublications(api, { view: 'plan', status: 'failed', limit: 100 });
   const firstPlanPage = await listPublications(api, { view: 'plan', limit: 1 });
 
+  assert.ok(current.items.length > 0);
+  assert.equal(
+    current.items.every((publication) => publication.schedule?.mode === 'now'),
+    true,
+  );
   assert.equal(
     plan.items.some((publication) => publication.lifecycle === 'ACTIVE'),
     true,
@@ -485,9 +491,20 @@ test('preview publications support list, CRUD, actions, and delivery review', as
 
   const retried = await retryPublicationOccurrence(api, review.id, ambiguous.occurrenceId, {
     requestId: 'retry_request_001',
+    contentMode: 'latest',
+    expectedPublicationVersion: resolved.version,
+    expectedContentRevision: resolved.content.revision,
   });
   assert.equal(retried.delivery.failed, 0);
   assert.equal(retried.delivery.sent > 0, true);
+  assert.equal(retried.occurrences[0]?.usesLatestContent, true);
+  assert.equal(retried.occurrences[0]?.contentRevision, retried.content.revision);
+  const retriedDeliveries = await listPublicationDeliveries(api, review.id, {
+    occurrenceId: ambiguous.occurrenceId,
+    limit: 100,
+  });
+  assert.equal(retriedDeliveries.items[0]?.usesLatestContent, true);
+  assert.equal(retriedDeliveries.items[0]?.contentRevision, retried.content.revision);
 
   await testPublication(api, {
     requestId: 'test_request_001',

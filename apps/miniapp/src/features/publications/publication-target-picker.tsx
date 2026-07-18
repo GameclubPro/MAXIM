@@ -60,7 +60,9 @@ export function PublicationTargetPicker({
     value.length === 0
       ? 'Выберите получателей'
       : value.length === 1
-        ? (value[0] ? getPublicationTargetTitle(value[0]) : '1 получатель')
+        ? value[0]
+          ? getPublicationTargetTitle(value[0])
+          : '1 получатель'
         : `Выбрано: ${value.length}`;
   const summaryTitle = collapsedSelectedSummary;
   const summaryMeta =
@@ -144,6 +146,7 @@ export function PublicationTargetPicker({
         aria-expanded={expanded}
         aria-controls={editorId}
         aria-describedby={error ? errorId : undefined}
+        aria-invalid={error ? 'true' : undefined}
       >
         <span>
           <strong>{summaryTitle}</strong>
@@ -193,6 +196,7 @@ export function PublicationTargetPicker({
             <input
               type="search"
               value={query}
+              maxLength={120}
               placeholder="Найти чат или канал"
               aria-label="Найти получателя"
               onChange={(event) => setQuery(event.currentTarget.value)}
