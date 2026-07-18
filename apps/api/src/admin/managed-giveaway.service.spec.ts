@@ -8,7 +8,7 @@ import {
   ManagedGiveawayWinnerStatus,
 } from '../prisma/prisma-client';
 import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import {
   ManagedGiveawayMembershipLookupUnavailableError,
   ManagedGiveawayService,
@@ -3061,6 +3061,82 @@ describe('ManagedGiveawayService', () => {
       'channel',
     );
     expect(outboxSpy).not.toHaveBeenCalled();
+  });
+
+  it('returns a conflict for a concurrent reroll unique race without masking other errors', async () => {
+    const prisma = createPrismaMock();
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      createMaxClientMock() as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+    const oldWinner = createWinner({ status: ManagedGiveawayWinnerStatus.EXPIRED });
+    const nextEntry = createEntry({
+      id: 'entry-reroll-next',
+      userId: 'winner-reroll-next',
+      eligibilityState: GiveawayEligibilityState.VERIFIED,
+      drawRank: 'rank-reroll-next',
+    });
+    const giveaway = createGiveaway({
+      status: ManagedGiveawayStatus.COMPLETED,
+      drawSeed: 'reroll-seed',
+      prizes: [oldWinner.prize],
+      entries: [oldWinner.entry, nextEntry],
+      winners: [oldWinner],
+    });
+    const publicationSpy = jest
+      .spyOn(service as any, 'editGiveawayPublicationIfNeeded')
+      .mockResolvedValue(undefined);
+    const resultsSpy = jest
+      .spyOn(service as any, 'republishGiveawayResults')
+      .mockResolvedValue(true);
+    const outboxSpy = jest
+      .spyOn(service as any, 'processWinnerNotificationOutbox')
+      .mockResolvedValue(undefined);
+    const auditSpy = jest.spyOn(service as any, 'writeAuditLog').mockResolvedValue(undefined);
+    jest.spyOn(service as any, 'assertAdminEntityAccess').mockResolvedValue(undefined);
+    jest.spyOn(service as any, 'findGiveawayForSource').mockResolvedValue(giveaway);
+    jest.spyOn(service as any, 'pickNextRerollCandidate').mockReturnValue({
+      entry: nextEntry,
+      drawRank: 'rank-reroll-next',
+    });
+
+    prisma.$transaction.mockRejectedValueOnce(
+      Object.assign(new Error('Unique constraint failed'), { code: 'P2002' }),
+    );
+
+    await expect(
+      service.rerollManagedGiveawayWinner(
+        'source-1',
+        'giveaway-1',
+        user as never,
+        { winnerId: oldWinner.id },
+        'channel',
+      ),
+    ).rejects.toEqual(
+      new ConflictException('Состояние победителя изменилось. Обновите экран и повторите реролл.'),
+    );
+    expect(publicationSpy).not.toHaveBeenCalled();
+    expect(resultsSpy).not.toHaveBeenCalled();
+    expect(outboxSpy).not.toHaveBeenCalled();
+    expect(auditSpy).not.toHaveBeenCalled();
+
+    const unrelatedError = Object.assign(new Error('Timed out fetching a new connection'), {
+      code: 'P2024',
+    });
+    prisma.$transaction.mockRejectedValueOnce(unrelatedError);
+
+    await expect(
+      service.rerollManagedGiveawayWinner(
+        'source-1',
+        'giveaway-1',
+        user as never,
+        { winnerId: oldWinner.id },
+        'channel',
+      ),
+    ).rejects.toBe(unrelatedError);
   });
 
   it('accepts giveaway claim payloads signed with the previous bot token', () => {

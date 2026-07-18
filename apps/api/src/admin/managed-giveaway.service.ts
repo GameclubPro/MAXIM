@@ -35,6 +35,7 @@ import {
 } from '../prisma/prisma-client';
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
@@ -93,6 +94,7 @@ import {
   type BackgroundRuntimeGovernorDecision,
 } from '../system/background-runtime-governor.service';
 import { AdminService } from './admin.service';
+import { isPrismaKnownError } from './admin-legacy-utils';
 import { MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS } from './admin.service.support';
 
 type GiveawayActionSource = 'miniapp' | 'private_bot' | 'runner' | 'private_claim';
@@ -784,7 +786,7 @@ export class ManagedGiveawayService {
     const now = new Date();
     const claimDeadlineAt = this.buildGiveawayClaimDeadlineAt(giveaway, now);
     const nextWinnerId = randomUUID();
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const rerollTransaction = this.prisma.$transaction(async (tx) => {
       await tx.managedGiveawayEntry.update({
         where: { id: nextEntry.entry.id },
         data: { drawRank: nextEntry.drawRank, checkedAt: now },
@@ -843,6 +845,14 @@ export class ManagedGiveawayService {
         where: { id: giveaway.id },
         include: MANAGED_GIVEAWAY_INCLUDE,
       });
+    });
+    const updated = await rerollTransaction.catch((error: unknown) => {
+      if (isPrismaKnownError(error, 'P2002')) {
+        throw new ConflictException(
+          'Состояние победителя изменилось. Обновите экран и повторите реролл.',
+        );
+      }
+      throw error;
     });
 
     await this.editGiveawayPublicationIfNeeded(updated, ManagedGiveawayStatus.COMPLETED, source);

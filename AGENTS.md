@@ -195,7 +195,12 @@
   unused build cache is newer than its default age filter, use
   `docker builder prune --all --force`; it removes unused build cache without pruning volumes,
   images, or running containers.
+- The production VPS is shared with sibling applications. Before a heavy Docker build, check for
+  another active `docker build`/`buildx` deploy and avoid overlapping builds; prune only unused
+  build cache/images afterward when the shared root filesystem needs headroom.
 - If `/var/www/Chat_bot/.env` is missing, restore it from any running API role container before `docker compose exec` or `docker compose run`. Current scripts check role-based containers first and keep `infra-api-1` only as a legacy fallback.
+- Treat production `.env` as dotenv, not as a shell script: values may contain unquoted spaces.
+  Read individual keys or use an existing container's environment, and never print secret values.
 - If `git pull --ff-only` is blocked by a dirty VPS worktree:
   - if current tracked contents already match `origin/<branch>`, `git stash push -> git pull --ff-only -> git stash drop` is acceptable
   - if local VPS changes differ from `origin/<branch>`, stop and report the conflict
