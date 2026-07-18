@@ -1281,20 +1281,15 @@
   }
 
   .channel-summary-table-card {
-    overflow-x: auto;
+    overflow: hidden;
     border-color: var(--border-subtle);
     border-radius: 8px;
     background: var(--surface-card);
     box-shadow: var(--shadow-xs);
   }
 
-  .channel-summary-table-card > summary {
-    min-height: 44px;
-    color: var(--text-primary);
-  }
-
   .channel-summary-table {
-    min-width: 520px;
+    min-width: 0;
   }
 
   .channel-summary-table th,

@@ -11,6 +11,14 @@ const channelStatsExecutiveCss = readFileSync(
   new URL('../src/styles/channel-stats-executive.css', import.meta.url),
   'utf8',
 );
+const channelStatsPageSource = readFileSync(
+  new URL('../src/pages/channel-stats-page.tsx', import.meta.url),
+  'utf8',
+);
+const statisticsExperienceCss = readFileSync(
+  new URL('../src/styles/statistics-experience.css', import.meta.url),
+  'utf8',
+);
 
 function relativeLuminance(hex: string): number {
   const channels = hex
@@ -93,19 +101,26 @@ test('compact channel KPI cards remain a two-column grid through 380px', () => {
   assert.doesNotMatch(mobileRules, /grid-template-columns: minmax\(0, 1fr\)/u);
 });
 
-test('daily details keep a visible rotating disclosure and keyboard focus', () => {
+test('daily audience table stays visible with all four data columns', () => {
   assert.match(
-    channelStatsExecutiveCss,
-    /\.channel-summary-table-card > summary::after \{[\s\S]*?border-right: 2px solid currentColor;[\s\S]*?transform: rotate\(45deg\);/u,
+    channelStatsPageSource,
+    /<th>День<\/th>[\s\S]*?<th>Подписчиков<\/th>[\s\S]*?<th>Прирост<\/th>[\s\S]*?<th>Движение<\/th>/u,
   );
   assert.match(
-    channelStatsExecutiveCss,
-    /\.channel-summary-table-card\[open\] > summary::after \{\s*transform: rotate\(225deg\);/u,
+    channelStatsPageSource,
+    /<section className="channel-summary-table-card"[\s\S]*?<table className="channel-summary-table"/u,
   );
+  assert.doesNotMatch(channelStatsPageSource, /<details className="channel-summary-table-card"/u);
+  assert.doesNotMatch(channelStatsExecutiveCss, /channel-summary-table-card:not\(\[open\]\)/u);
   assert.match(
     channelStatsExecutiveCss,
-    /\.channel-summary-table-card > summary:focus-visible \{\s*outline: 2px solid var\(--app-focus-ring\);/u,
+    /\.channel-summary-table__growth\.is-negative,[\s\S]*?\.channel-summary-table__growth\.is-negative \.channel-summary-table__growth-value \{\s*color: var\(--danger\);/u,
   );
+  assert.match(
+    statisticsExperienceCss,
+    /\.channel-summary-table \{\s*min-width: 0;\s*\}/u,
+  );
+  assert.doesNotMatch(statisticsExperienceCss, /\.channel-summary-table \{\s*min-width: 520px;/u);
 });
 
 test('events appbar heading and linked top posts stay readable on narrow screens', () => {

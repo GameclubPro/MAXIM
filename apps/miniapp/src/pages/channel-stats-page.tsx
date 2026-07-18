@@ -1651,9 +1651,8 @@ function ChannelStatsOverview({
         </div>
 
         {summaryDailyRows.length > 0 ? (
-          <details className="channel-summary-table-card" aria-label="Динамика подписчиков">
-            <summary>Данные по дням</summary>
-            <table className="channel-summary-table">
+          <section className="channel-summary-table-card" aria-label="Динамика подписчиков по дням">
+            <table className="channel-summary-table" aria-label="Динамика подписчиков по дням">
               <thead>
                 <tr>
                   <th>День</th>
@@ -1663,17 +1662,20 @@ function ChannelStatsOverview({
                 </tr>
               </thead>
               <tbody>
-                {summaryDailyRows.map((row) => {
+                {summaryDailyRows.map((row, index) => {
                   const joined = row.joined ?? null;
                   const left = row.left ?? null;
                   const hasFlow = joined !== null || left !== null;
                   const joinedFlow = joined ?? 0;
                   const leftFlow = left ?? 0;
+                  const isCurrent = index === 0;
 
                   return (
-                    <tr key={row.date}>
+                    <tr key={row.date} className={isCurrent ? 'is-current' : undefined}>
                       <td className="channel-summary-table__date">
-                        <time dateTime={row.date}>{formatSummaryTableDate(row.date)}</time>
+                        <time dateTime={row.date} aria-current={isCurrent ? 'date' : undefined}>
+                          {formatSummaryTableDate(row.date)}
+                        </time>
                       </td>
                       <td className="channel-summary-table__total">
                         <span className="channel-summary-table__total-value">
@@ -1694,17 +1696,27 @@ function ChannelStatsOverview({
                               className={`channel-summary-table__movement-pill ${
                                 joined === null ? 'is-neutral' : 'is-positive'
                               }`}
+                              aria-label={
+                                joined === null
+                                  ? 'Вступления: нет данных'
+                                  : `Вступили: ${formatDenseCount(joinedFlow)}`
+                              }
                             >
                               <span aria-hidden="true">↗</span>
-                              <em>{formatDenseCount(joinedFlow)}</em>
+                              <em aria-hidden="true">{formatDenseCount(joinedFlow)}</em>
                             </span>
                             <span
                               className={`channel-summary-table__movement-pill ${
                                 left === null ? 'is-neutral' : 'is-negative'
                               }`}
+                              aria-label={
+                                left === null
+                                  ? 'Выходы: нет данных'
+                                  : `Вышли: ${formatDenseCount(leftFlow)}`
+                              }
                             >
                               <span aria-hidden="true">↘</span>
-                              <em>{formatDenseCount(leftFlow)}</em>
+                              <em aria-hidden="true">{formatDenseCount(leftFlow)}</em>
                             </span>
                           </span>
                         ) : (
@@ -1716,7 +1728,7 @@ function ChannelStatsOverview({
                 })}
               </tbody>
             </table>
-          </details>
+          </section>
         ) : null}
       </div>
 
