@@ -38,6 +38,7 @@
 
 ## Deploy And Rollback
 
+- Host-side deploy, release, reclaim, rollback, and monitor tooling requires Node 24 on the backend VPS. Before the first manifest-aware deploy, provision `/var/lib/maxim-deploy` as a writable `0750` directory owned by the deploy user.
 - Local submit: stage the intended paths, then run `./infra/scripts/local-commit-push.sh "<message>" main`. The helper is staged-only by default, runs `agent:verify --staged`, commits, and pushes the exact resulting `HEAD`; `--all` is an explicit broad-staging opt-in.
 - `--all` excludes every `AGENTS.md` unless `--include-agents` is present, and already-staged agent notes are rejected without that flag.
 - Local deploy: `./infra/scripts/vps-connect.sh deploy main [services|--plan|--auto|--full]`.
