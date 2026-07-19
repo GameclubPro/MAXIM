@@ -19,6 +19,7 @@ test('keeps the functional API lane separate from the median commercial benchmar
   const benchmark = jobBody('commercial-benchmark', 'miniapp');
 
   assert.match(api, /npm run check:ci --workspace @maxim\/api/u);
+  assert.match(api, /NODE_OPTIONS:\s*--max-old-space-size=6144/u);
   assert.doesNotMatch(api, /check:api|commercial-benchmark/u);
   assert.match(benchmark, /COMMERCIAL_BENCHMARK_PROFILE: github-hosted/u);
   assert.match(benchmark, /npm run test:api:commercial-benchmark:ci/u);
