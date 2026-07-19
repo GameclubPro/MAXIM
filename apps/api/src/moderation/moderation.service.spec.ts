@@ -4242,6 +4242,7 @@ describe('ModerationService', () => {
       chatRules: {
         findUnique: jest.fn().mockResolvedValue({
           publishedMessageId: 'mid-published-rules-1',
+          publishSendStartedAt: null,
         }),
       },
       violation: {
@@ -4289,11 +4290,38 @@ describe('ModerationService', () => {
       },
       select: {
         publishedMessageId: true,
+        publishSendStartedAt: true,
       },
     });
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.findFirst).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('does not auto-delete an own-bot message while chat rules publish is in flight', async () => {
+    const prisma = {
+      chatRules: {
+        findUnique: jest.fn().mockResolvedValue({
+          publishedMessageId: 'mid-previous-rules-1',
+          publishSendStartedAt: new Date(),
+        }),
+      },
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    await expect(
+      (service as any).resolveOwnBotAutoDeleteSkipReason({
+        chatId: 'chat-1',
+        messageId: 'mid-new-rules-1',
+        text: 'Правила чата',
+        settings: createSettings(),
+      }),
+    ).resolves.toBe('chat_rules_publish_in_flight');
   });
 
   it('does not auto-delete tracked greeting message from own bot', async () => {
