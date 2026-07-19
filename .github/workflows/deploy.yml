@@ -130,5 +130,7 @@ jobs:
           if [[ "$DEPLOY_BRANCH" != "main" ]]; then
             remote_command="MAXIM_ALLOW_NON_MAIN_DEPLOY=1 $remote_command"
           fi
+          # The path and deploy arguments are validated and shell-escaped locally for the remote shell.
+          # shellcheck disable=SC2029
           ssh "${SSH_OPTS[@]}" "$VPS_USER@$VPS_HOST" \
             "cd $(printf '%q' "$VPS_PATH") && $remote_command"
