@@ -1,6 +1,7 @@
 import { getInitData } from './init-data';
 import { isMutationTunnelPreferredHost } from './api/transport-mutation-tunnel-hosts';
 import { buildMutationTunnelPathSync } from './api/transport-mutation-tunnel-path';
+import { createMiniappBootTraceSessionId } from './boot-trace-session-id';
 import { API_BASE } from './public-config';
 
 type MiniappBootTracePhase =
@@ -32,17 +33,9 @@ let sequence = 0;
 let apiResultReported = false;
 const reportedOnce = new Set<MiniappBootTracePhase>();
 
-function createSessionId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
 function getSessionId(): string {
   if (typeof window === 'undefined') {
-    return createSessionId();
+    return createMiniappBootTraceSessionId();
   }
 
   try {
@@ -51,11 +44,11 @@ function getSessionId(): string {
       return existing;
     }
 
-    const next = createSessionId();
+    const next = createMiniappBootTraceSessionId();
     window.sessionStorage.setItem(SESSION_STORAGE_KEY, next);
     return next;
   } catch {
-    return createSessionId();
+    return createMiniappBootTraceSessionId();
   }
 }
 

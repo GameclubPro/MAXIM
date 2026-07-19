@@ -2,6 +2,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Queue } from 'bullmq';
+import { buildMaxActionNoExecutableRouteMessage } from '../max/max-action-dispatch-error';
 import { ChatBotMembershipStatus, ChatEntityType } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
@@ -361,16 +362,17 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         scheduledFor,
         occurrence.sessionKey,
       );
-      const isCurrentOpenCatchUp =
-        options.includeCurrentOpen === true &&
-        occurrence.transition === 'open' &&
-        occurrence.dueAt.getTime() <= nowMs;
+      const isCurrentCatchUp =
+        occurrence.dueAt.getTime() <= nowMs &&
+        ((options.includeCurrentOpen === true && occurrence.transition === 'open') ||
+          (options.includeCurrentClose === true && occurrence.transition === 'close'));
       if (
-        isCurrentOpenCatchUp &&
-        !(await this.canEnqueueCurrentOpenCatchUp({
+        isCurrentCatchUp &&
+        !(await this.canEnqueueCurrentCatchUp({
           chatId,
           jobId,
           sessionKey: occurrence.sessionKey,
+          transition: occurrence.transition,
         }))
       ) {
         continue;
@@ -402,10 +404,11 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     }
   }
 
-  private async canEnqueueCurrentOpenCatchUp(params: {
+  private async canEnqueueCurrentCatchUp(params: {
     chatId: string;
     jobId: string;
     sessionKey: string;
+    transition: NightModeTransitionOccurrence['transition'];
   }): Promise<boolean> {
     if (!this.queue || typeof this.queue.getJob !== 'function') {
       return true;
@@ -422,10 +425,14 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       }
 
       const transitionRuntimeVersion = existing.data.transitionRuntimeVersion;
-      if (
-        transitionRuntimeVersion !== undefined ||
-        !this.isRecoverableCurrentOpenFailure(existing.failedReason)
-      ) {
+      const legacyPreDispatchNoRouteFailure =
+        existing.failedReason ===
+        buildMaxActionNoExecutableRouteMessage('SEND_MESSAGE', params.chatId);
+      const recoverableLegacyOpenFailure =
+        params.transition === 'open' &&
+        transitionRuntimeVersion === undefined &&
+        this.isRecoverableCurrentOpenFailure(existing.failedReason);
+      if (!legacyPreDispatchNoRouteFailure && !recoverableLegacyOpenFailure) {
         this.logger.warn(
           {
             chatId: params.chatId,
@@ -434,7 +441,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
             transitionRuntimeVersion: transitionRuntimeVersion ?? null,
             failedReason: existing.failedReason ?? null,
           },
-          'Skipped night mode opening catch-up after an ambiguous or terminal prior failure',
+          'Skipped night mode catch-up after an ambiguous or terminal prior failure',
         );
         return false;
       }

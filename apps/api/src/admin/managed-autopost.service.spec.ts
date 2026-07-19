@@ -875,6 +875,68 @@ describe('ManagedAutopostService', () => {
     );
   });
 
+  it('does not retry a rule whose selected targets require owner reconfiguration', async () => {
+    const scheduledAt = new Date(Date.now() + 5 * 60_000);
+    const rule = {
+      id: 'rule-target-unavailable',
+      sourceChatId: 'chat-1',
+      entityType: ChatEntityType.CHAT,
+      actorUserId: 'admin-1',
+      status: ManagedAutopostRuleStatus.ACTIVE,
+      revision: 3,
+      payload: payload({ scheduledSlots: [scheduledAt.toISOString()] }),
+    };
+    const unavailableTargetsMessage =
+      'Некоторые выбранные чаты больше недоступны. Откройте список заново.';
+    const { service, prisma, managedBroadcastService } = createService({
+      managedBroadcastService: {
+        sendBroadcast: jest
+          .fn()
+          .mockRejectedValue(new BadRequestException(unavailableTargetsMessage)),
+      },
+    });
+    prisma.managedAutopostRule.updateMany.mockResolvedValue({ count: 1 });
+    prisma.managedAutopostRule.findUnique.mockResolvedValue(rule);
+    prisma.managedAutopostRule.findFirst.mockResolvedValue({
+      ...rule,
+      lockedAt: new Date(),
+      lockToken: 'claimed-lock',
+    });
+    prisma.managedAutopostMaterialization.findFirst.mockResolvedValue(null);
+    prisma.managedAutopostMaterialization.findMany.mockResolvedValue([]);
+    prisma.managedAutopostMaterialization.create.mockResolvedValue({ id: 'ledger-1' });
+    prisma.managedAutopostMaterialization.update.mockResolvedValue({});
+    prisma.managedAutopostMaterialization.updateMany.mockResolvedValue({ count: 0 });
+
+    await (
+      service as unknown as {
+        materializeRule: (
+          ruleId: string,
+          reason: 'scheduled',
+          staleLockBefore: Date,
+        ) => Promise<void>;
+      }
+    ).materializeRule('rule-target-unavailable', 'scheduled', new Date(Date.now() - 60_000));
+
+    expect(managedBroadcastService.sendBroadcast).toHaveBeenCalled();
+    expect(prisma.managedAutopostRule.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: 'rule-target-unavailable',
+          revision: 3,
+          lockToken: expect.any(String),
+        }),
+        data: expect.objectContaining({
+          status: ManagedAutopostRuleStatus.ERROR,
+          nextMaterializeAt: null,
+          lastError: unavailableTargetsMessage,
+          lockedAt: null,
+          lockToken: null,
+        }),
+      }),
+    );
+  });
+
   it('does not disable a rule when future materialized broadcasts cannot be canceled', async () => {
     const existing = {
       id: 'rule-1',

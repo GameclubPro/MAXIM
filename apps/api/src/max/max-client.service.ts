@@ -2210,16 +2210,26 @@ export class MaxClientService implements OnModuleDestroy {
           if (!action.userId) {
             throw new Error('userId is required for UNBAN_MEMBER');
           }
-          await this.executeMutation(
+          try {
+            await this.executeMutation(
+              action.chatId,
+              async () => {
+                await this.request('post', `/chats/${action.chatId}/members`, {
+                  data: {
+                    user_ids: [action.userId],
+                  },
+                });
+              },
+              mutationOptions,
+            );
+          } catch (error: unknown) {
+            if (!this.isAlreadyPresentChatMemberError(error)) {
+              throw error;
+            }
+          }
+          await this.actionLedgerService?.clearTerminalBanStateAfterUnban(
             action.chatId,
-            async () => {
-              await this.request('post', `/chats/${action.chatId}/members`, {
-                data: {
-                  user_ids: [action.userId],
-                },
-              });
-            },
-            mutationOptions,
+            action.userId,
           );
           return;
 
@@ -6657,6 +6667,27 @@ export class MaxClientService implements OnModuleDestroy {
       message.includes('not a chat member') ||
       message.includes('not active chat member') ||
       message.includes('not found')
+    );
+  }
+
+  private isAlreadyPresentChatMemberError(error: unknown): boolean {
+    const status = this.extractStatusCode(error);
+    const isDocumentedMutationRejection =
+      error instanceof MaxApiRequestRejectedError && status === DEFAULT_SUCCESS_FALSE_STATUS;
+    if (!isDocumentedMutationRejection && status !== 400 && status !== 409) {
+      return false;
+    }
+
+    const message = this.extractErrorMessage(error).trim().toLowerCase();
+    return (
+      message.includes('already a member') ||
+      message.includes('already a chat member') ||
+      message.includes('already member') ||
+      message.includes('already participant') ||
+      message.includes('member already exists') ||
+      message.includes('participant already exists') ||
+      message.includes('already in the chat') ||
+      message.includes('уже состоит')
     );
   }
 

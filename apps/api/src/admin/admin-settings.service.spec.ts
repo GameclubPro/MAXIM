@@ -623,6 +623,7 @@ describe('AdminSettingsService chat rules', () => {
         },
       },
     });
+    expect(prisma.$transaction).toHaveBeenCalledWith([expect.any(Promise), expect.any(Promise)]);
     expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-1');
     expect(legacyAdminService.refreshChatSettingsExecutionReadiness).toHaveBeenCalledWith(
       'chat-1',
@@ -635,7 +636,7 @@ describe('AdminSettingsService chat rules', () => {
     const { prisma, service } = createService();
     const mediaBase64 = 'A'.repeat(1_000_000);
 
-    const result = await service.updateSettings('chat-1', user as never, {
+    await service.updateSettings('chat-1', user as never, {
       botSpeechMedia: {
         greetingBotMessageText: {
           base64: mediaBase64,
@@ -652,7 +653,7 @@ describe('AdminSettingsService chat rules', () => {
     };
     expect(auditPayload).toEqual({
       source: 'miniapp',
-      settingKeys: Object.keys(result).sort(),
+      settingKeys: ['botSpeechMedia'],
       botSpeechMedia: [
         {
           key: 'greetingBotMessageText',

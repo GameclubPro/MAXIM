@@ -65,7 +65,7 @@ export class AdminManualMessageCleanupService {
         );
       }
     } catch (error: unknown) {
-      if (this.isExecutionEnabled(chatId)) {
+      if (this.isExecutionEnabled(chatId, 'MANUAL_GROUP_COMMAND_MESSAGE_CLEANUP')) {
         this.logger.error(
           { chatId, messageId, err: this.formatError(error) },
           'Failed to persist or execute durable group admin command message deletion',
@@ -122,7 +122,9 @@ export class AdminManualMessageCleanupService {
         );
       }
     } catch (error: unknown) {
-      if (this.isExecutionEnabled(job.sourceChatId)) {
+      if (
+        this.isExecutionEnabled(job.sourceChatId, 'MANUAL_GROUP_COMMAND_TARGET_MESSAGE_CLEANUP')
+      ) {
         this.logger.error(
           {
             chatId: job.sourceChatId,
@@ -186,7 +188,7 @@ export class AdminManualMessageCleanupService {
           failedMessageIds.push(messageId);
         }
       } catch (error: unknown) {
-        if (this.isExecutionEnabled(chatId)) {
+        if (this.isExecutionEnabled(chatId, 'MANUAL_ACTION_RECENT_MESSAGE_CLEANUP')) {
           this.logger.error(
             { chatId, targetUserId, messageId, err: this.formatError(error) },
             'Failed to persist or execute durable recent-message cleanup',
@@ -245,7 +247,7 @@ export class AdminManualMessageCleanupService {
     },
     persistBeforeAttempt = false,
   ): Promise<ManualDeleteOutcome> {
-    const rollout = this.deleteIntents?.getRolloutForChat(params.chatId) ?? 'off';
+    const rollout = this.deleteIntents?.getRolloutForRule(params.chatId, params.ruleCode) ?? 'off';
     if (this.deleteIntents && rollout !== 'off') {
       try {
         const intentInput = {
@@ -347,8 +349,8 @@ export class AdminManualMessageCleanupService {
     );
   }
 
-  private isExecutionEnabled(chatId: string): boolean {
-    return this.deleteIntents?.getRolloutForChat(chatId) === 'execute';
+  private isExecutionEnabled(chatId: string, ruleCode: string): boolean {
+    return this.deleteIntents?.getRolloutForRule(chatId, ruleCode) === 'execute';
   }
 
   private formatError(error: unknown): string {

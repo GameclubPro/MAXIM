@@ -27,7 +27,6 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { ChatEntityType, Prisma } from '../prisma/prisma-client';
 import {
   isFreshMembershipAccessSnapshot,
@@ -41,11 +40,9 @@ import {
   MAX_SEND_FENCE_STALE_MS,
 } from '../max/max-send-ambiguity.util';
 import {
-  normalizeModerationDeleteIntentMode,
-  parseModerationDeleteIntentCanaryChatIds,
-  resolveModerationDeleteIntentRollout,
-} from '../moderation/moderation-delete-intent-rollout.util';
-import { ModerationDeleteIntentService } from '../moderation/moderation-delete-intent.service';
+  MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES,
+  ModerationDeleteIntentService,
+} from '../moderation/moderation-delete-intent.service';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   containsSupportedMarkdownUrl,
@@ -278,27 +275,12 @@ const SAFETY_DESK_BLOCKED_APPROVE_MESSAGE =
 
 @Injectable()
 export class SafetyDeskService {
-  private readonly deleteIntentMode: ReturnType<typeof normalizeModerationDeleteIntentMode>;
-  private readonly deleteIntentCanaryChatIds: ReadonlySet<string>;
-  private readonly deleteCrossBotCanaryChatIds: ReadonlySet<string>;
-
   constructor(
     private readonly prisma: PrismaService,
     private readonly vkPublishService: VkPublishService,
-    configService: ConfigService,
     private readonly maxBotRegistry: MaxBotRegistryService,
     private readonly moderationDeleteIntents: ModerationDeleteIntentService,
-  ) {
-    this.deleteIntentMode = normalizeModerationDeleteIntentMode(
-      configService.get('MODERATION_DELETE_INTENT_MODE'),
-    );
-    this.deleteIntentCanaryChatIds = parseModerationDeleteIntentCanaryChatIds(
-      configService.get('MODERATION_DELETE_INTENT_CANARY_CHAT_IDS'),
-    );
-    this.deleteCrossBotCanaryChatIds = parseModerationDeleteIntentCanaryChatIds(
-      configService.get('MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS'),
-    );
-  }
+  ) {}
 
   async getQueue(): Promise<SafetyDeskQueueResponse> {
     const [posts, audit, approved, rejected] = await Promise.all([
@@ -501,7 +483,28 @@ export class SafetyDeskService {
       (left, right) =>
         right.updatedAt.getTime() - left.updatedAt.getTime() || right.id.localeCompare(left.id),
     );
-    const items = diagnosticRows.map((row) => this.mapDeleteIntent(row, now));
+    const replacementCleanupReasons =
+      diagnosticRows.length > 0
+        ? await this.prisma.moderationDeleteIntentReason.findMany({
+            where: {
+              intentId: { in: Array.from(new Set(diagnosticRows.map((row) => row.id))) },
+              ruleCode: {
+                in: [...MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES],
+              },
+            },
+            select: { intentId: true, ruleCode: true },
+            distinct: ['intentId', 'ruleCode'],
+          })
+        : [];
+    const replacementRuleCodesByIntent = new Map<string, string[]>();
+    for (const reason of replacementCleanupReasons) {
+      const ruleCodes = replacementRuleCodesByIntent.get(reason.intentId) ?? [];
+      ruleCodes.push(reason.ruleCode);
+      replacementRuleCodesByIntent.set(reason.intentId, ruleCodes);
+    }
+    const items = diagnosticRows.map((row) =>
+      this.mapDeleteIntent(row, now, replacementRuleCodesByIntent.get(row.id) ?? []),
+    );
     const oldestAmbiguousSendAt = [
       channelAmbiguousReplacementSends._min.replacementSendStartedAt,
       chatAmbiguousReplacementSends._min.replacementSendStartedAt,
@@ -592,7 +595,8 @@ export class SafetyDeskService {
 
     return safetyDeskDeleteRuntimeResponseSchema.parse({
       generatedAt: now.toISOString(),
-      rolloutMode: this.deleteIntentMode,
+      rolloutMode: this.moderationDeleteIntents.rolloutMode,
+      replacementCleanupEnabled: this.moderationDeleteIntents.replacementCleanupRolloutEnabled,
       summary: {
         total: DELETE_INTENT_STATUSES.reduce((sum, status) => sum + statusCounts[status], 0),
         open: DELETE_INTENT_OPEN_STATUSES.reduce((sum, status) => sum + statusCounts[status], 0),
@@ -717,16 +721,27 @@ export class SafetyDeskService {
 
     const intent = await this.prisma.moderationDeleteIntent.findUnique({
       where: { id: intentId },
-      select: { id: true, chatId: true, status: true, updatedAt: true, attemptCount: true },
+      select: {
+        id: true,
+        chatId: true,
+        status: true,
+        updatedAt: true,
+        attemptCount: true,
+        reasons: {
+          where: {
+            ruleCode: { in: [...MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES] },
+          },
+          select: { ruleCode: true },
+        },
+      },
     });
     if (!intent) {
       throw new NotFoundException('Удаление не найдено.');
     }
-    const rollout = resolveModerationDeleteIntentRollout({
-      mode: this.deleteIntentMode,
-      canaryChatIds: this.deleteIntentCanaryChatIds,
-      chatId: intent.chatId,
-    });
+    const rollout = this.moderationDeleteIntents.getRolloutForRuleCodes(
+      intent.chatId,
+      intent.reasons.map((reason) => reason.ruleCode),
+    );
     if (rollout !== 'execute') {
       throw new BadRequestException('Повтор запрещён вне активного rollout для этого чата.');
     }
@@ -1390,19 +1405,22 @@ export class SafetyDeskService {
     return redacted.slice(0, SAFETY_DESK_LAST_ERROR_LIMIT);
   }
 
-  private mapDeleteIntent(row: DeleteIntentDiagnosticRow, now: Date): SafetyDeskDeleteIntentItem {
+  private mapDeleteIntent(
+    row: DeleteIntentDiagnosticRow,
+    now: Date,
+    replacementCleanupRuleCodes: readonly string[],
+  ): SafetyDeskDeleteIntentItem {
     const entityType = row.entityType ?? row.chat.entityType;
     const routingPolicy = this.normalizeDeleteRoutingPolicy(row.routingPolicy);
-    const crossBotEnabled =
-      entityType === ChatEntityType.CHAT &&
-      row.messageAuthorKind === 'user' &&
-      (this.deleteCrossBotCanaryChatIds.has('*') ||
-        this.deleteCrossBotCanaryChatIds.has(row.chatId));
-    const effectiveRoutingPolicy = crossBotEnabled
-      ? routingPolicy === 'delete_capable'
-        ? 'delete_capable'
-        : 'origin_first'
-      : 'origin_only';
+    const replacementCleanup = replacementCleanupRuleCodes.length > 0;
+    const effectiveRoutingPolicy = this.moderationDeleteIntents.resolveEffectiveRoutingPolicy({
+      chatId: row.chatId,
+      entityType,
+      messageAuthorKind: row.messageAuthorKind,
+      routingPolicy,
+      replacementCleanup,
+    });
+    const crossBotEnabled = effectiveRoutingPolicy !== 'origin_only';
     const memberships = row.chat.botMemberships.map((membership) =>
       this.mapDeleteMembershipCapability(membership, entityType, now),
     );
@@ -1426,11 +1444,10 @@ export class SafetyDeskService {
       effectiveRoutingPolicy,
       crossBotEnabled,
       routingState: row.chat.routingState,
-      rollout: resolveModerationDeleteIntentRollout({
-        mode: this.deleteIntentMode,
-        canaryChatIds: this.deleteIntentCanaryChatIds,
-        chatId: row.chatId,
-      }),
+      rollout: this.moderationDeleteIntents.getRolloutForRuleCodes(
+        row.chatId,
+        replacementCleanupRuleCodes,
+      ),
       status: row.status,
       ageMs: Math.max(0, now.getTime() - row.createdAt.getTime()),
       attemptCount: row.attemptCount,

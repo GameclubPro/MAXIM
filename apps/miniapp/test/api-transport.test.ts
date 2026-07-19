@@ -8,6 +8,27 @@ type FetchCall = {
   init?: RequestInit;
 };
 
+const CDN_API_ORIGIN = 'https://api-cdn.flex-craft.ru';
+const MAJOR_API_ORIGIN = 'https://major-maksimov.ru';
+const MUTATION_TUNNEL_PATH = '/api/v1/_mutation-tunnel';
+
+function matchesRequestUrl(
+  input: string | URL | Request,
+  expectedOrigin: string,
+  expectedPath?: string,
+): boolean {
+  try {
+    const value = input instanceof Request ? input.url : String(input);
+    const parsed = new URL(value);
+    return (
+      parsed.origin === expectedOrigin &&
+      (expectedPath === undefined || parsed.pathname === expectedPath)
+    );
+  } catch {
+    return false;
+  }
+}
+
 function createResponse(options: {
   ok: boolean;
   status: number;
@@ -27,6 +48,33 @@ function createResponse(options: {
     text: async () => options.text ?? '',
   } as Response;
 }
+
+test('request URL matching rejects lookalike origins and paths', () => {
+  assert.equal(
+    matchesRequestUrl(
+      'https://api-cdn.flex-craft.ru/api/v1/_mutation-tunnel?method=POST',
+      CDN_API_ORIGIN,
+      MUTATION_TUNNEL_PATH,
+    ),
+    true,
+  );
+  assert.equal(
+    matchesRequestUrl(
+      'https://api-cdn.flex-craft.ru.attacker.example/api/v1/_mutation-tunnel?method=POST',
+      CDN_API_ORIGIN,
+      MUTATION_TUNNEL_PATH,
+    ),
+    false,
+  );
+  assert.equal(
+    matchesRequestUrl(
+      'https://api-cdn.flex-craft.ru/api/v1/_mutation-tunnel-lookalike?method=POST',
+      CDN_API_ORIGIN,
+      MUTATION_TUNNEL_PATH,
+    ),
+    false,
+  );
+});
 
 test('refreshes Authorization header from the init data provider between requests', async () => {
   const calls: FetchCall[] = [];
@@ -238,8 +286,7 @@ test('uses the first reachable API base for idempotent requests', async () => {
 
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     calls.push({ input, init });
-    const url = String(input);
-    if (url.startsWith('https://api-cdn.flex-craft.ru')) {
+    if (matchesRequestUrl(input, CDN_API_ORIGIN)) {
       throw new TypeError('Network request failed');
     }
 
@@ -268,8 +315,7 @@ test('tries the next API base when the primary returns a retryable error respons
 
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     calls.push({ input, init });
-    const url = String(input);
-    if (url.startsWith('https://api-cdn.flex-craft.ru')) {
+    if (matchesRequestUrl(input, CDN_API_ORIGIN)) {
       return createResponse({
         ok: false,
         status: 403,
@@ -328,8 +374,7 @@ test('does not let a hedged fallback 401 beat a successful primary idempotent re
 
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     calls.push({ input, init });
-    const url = String(input);
-    if (url.startsWith('https://api-cdn.flex-craft.ru')) {
+    if (matchesRequestUrl(input, CDN_API_ORIGIN)) {
       return createResponse({
         ok: false,
         status: 401,
@@ -374,8 +419,7 @@ test('keeps the primary HTTP failure when all idempotent API bases fail', async 
 
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     calls.push({ input, init });
-    const url = String(input);
-    if (url.startsWith('https://api-cdn.flex-craft.ru')) {
+    if (matchesRequestUrl(input, CDN_API_ORIGIN)) {
       return createResponse({
         ok: false,
         status: 401,
@@ -418,8 +462,7 @@ test('uses the selected API base for follow-up mutation requests', async () => {
 
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     calls.push({ input, init });
-    const url = String(input);
-    if (url.startsWith('https://api-cdn.flex-craft.ru')) {
+    if (matchesRequestUrl(input, CDN_API_ORIGIN)) {
       throw new TypeError('Network request failed');
     }
 
@@ -458,8 +501,7 @@ test('tunnels mutation requests when the front door rejects the original method'
 
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     calls.push({ input, init });
-    const url = String(input);
-    if (url.startsWith('https://api-cdn.flex-craft.ru/api/v1/_mutation-tunnel')) {
+    if (matchesRequestUrl(input, CDN_API_ORIGIN, MUTATION_TUNNEL_PATH)) {
       return createResponse({
         ok: true,
         status: 204,
@@ -468,7 +510,7 @@ test('tunnels mutation requests when the front door rejects the original method'
       });
     }
 
-    if (url.startsWith('https://api-cdn.flex-craft.ru')) {
+    if (matchesRequestUrl(input, CDN_API_ORIGIN)) {
       return createResponse({
         ok: false,
         status: 405,
@@ -521,8 +563,7 @@ test('prefers the mutation tunnel for a single CDN API base', async () => {
 
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     calls.push({ input, init });
-    const url = String(input);
-    if (url.includes('/_mutation-tunnel?')) {
+    if (matchesRequestUrl(input, CDN_API_ORIGIN, MUTATION_TUNNEL_PATH)) {
       return createResponse({
         ok: true,
         status: 204,
@@ -596,8 +637,7 @@ test('falls back to the next API base when mutation tunneling is rejected too', 
 
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     calls.push({ input, init });
-    const url = String(input);
-    if (url.startsWith('https://api-cdn.flex-craft.ru')) {
+    if (matchesRequestUrl(input, CDN_API_ORIGIN)) {
       return createResponse({
         ok: false,
         status: 405,
@@ -639,8 +679,7 @@ test('tries the mutation tunnel when the preferred tunnel host is the last fallb
 
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     calls.push({ input, init });
-    const url = String(input);
-    if (url.startsWith('https://api-cdn.flex-craft.ru/api/v1/_mutation-tunnel')) {
+    if (matchesRequestUrl(input, CDN_API_ORIGIN, MUTATION_TUNNEL_PATH)) {
       return createResponse({
         ok: true,
         status: 204,
@@ -683,8 +722,7 @@ test('tunnels mutation requests when the original CDN mutation fails as a networ
 
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     calls.push({ input, init });
-    const url = String(input);
-    if (url.startsWith('https://api-cdn.flex-craft.ru/api/v1/_mutation-tunnel')) {
+    if (matchesRequestUrl(input, CDN_API_ORIGIN, MUTATION_TUNNEL_PATH)) {
       return createResponse({
         ok: true,
         status: 204,
@@ -693,7 +731,7 @@ test('tunnels mutation requests when the original CDN mutation fails as a networ
       });
     }
 
-    if (url.startsWith('https://api-cdn.flex-craft.ru')) {
+    if (matchesRequestUrl(input, CDN_API_ORIGIN)) {
       throw new TypeError('Failed to fetch');
     }
 
@@ -770,8 +808,7 @@ test('falls back to the keepalive mutation tunnel after a non-preferred host rej
 
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     calls.push({ input, init });
-    const url = String(input);
-    if (url.includes('/_mutation-tunnel?')) {
+    if (matchesRequestUrl(input, MAJOR_API_ORIGIN, MUTATION_TUNNEL_PATH)) {
       return createResponse({
         ok: true,
         status: 204,

@@ -44,7 +44,10 @@ const LIVE_QUEUE_STATES: ReadonlySet<JobState | 'unknown'> = new Set([
 
 const AMBIGUOUS_CAPABLE_ACTION_TYPES: ReadonlySet<string> = new Set(['KICK_MEMBER', 'BAN_MEMBER']);
 const RECOVERABLE_MEMBER_ACTION_TYPES = new Set(['KICK_MEMBER', 'BAN_MEMBER', 'UNBAN_MEMBER']);
-const RECOVERABLE_PRE_DISPATCH_ERROR_CODES = new Set(['max_api_internal_rate_limit']);
+const RECOVERABLE_PRE_DISPATCH_ERROR_CODES: ReadonlySet<string> = new Set([
+  'max_api_circuit_open',
+  'max_api_internal_rate_limit',
+]);
 
 type RecoverableMemberActionType = 'KICK_MEMBER' | 'BAN_MEMBER' | 'UNBAN_MEMBER';
 
@@ -562,7 +565,7 @@ export class MaxActionLedgerWatchdogService implements OnModuleInit, OnModuleDes
     });
   }
 
-  // FLAG: Recovery is restricted to a local limiter failure that proves MAX was not called.
+  // FLAG: Recovery is restricted to local pre-dispatch failures that prove MAX was not called.
   private isRecoverablePreDispatchMemberFailure(
     row: LedgerCandidate,
     observations: readonly ActionJobObservation[],

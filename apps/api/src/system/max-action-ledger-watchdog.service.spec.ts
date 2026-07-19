@@ -214,75 +214,78 @@ describe('MaxActionLedgerWatchdogService', () => {
     );
   });
 
-  it('scans retryable rows and requeues a recent proven limiter orphan in the critical lane', async () => {
-    const row = createCandidate({
-      actionType: 'KICK_MEMBER',
-      status: MaxActionLedgerStatus.FAILED_RETRYABLE,
-      userId: 'user-1',
-      attemptCount: 1,
-      firstAttemptAt: new Date(Date.now() - 11 * 60_000),
-      lastAttemptAt: new Date(Date.now() - 10 * 60_000),
-      lastErrorCode: 'max_api_internal_rate_limit',
-      lastError: 'per-chat MAX limiter is saturated',
-    });
-    const { service, prisma, criticalQueue } = createHarness({ rows: [row] });
-
-    await service.runNow();
-
-    expect(prisma.maxActionLedgerEntry.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          status: {
-            in: [
-              MaxActionLedgerStatus.ENQUEUED,
-              MaxActionLedgerStatus.IN_PROGRESS,
-              MaxActionLedgerStatus.FAILED_RETRYABLE,
-            ],
-          },
-        }),
-      }),
-    );
-    expect(criticalQueue.add).toHaveBeenCalledWith(
-      'execute-max-action',
-      expect.objectContaining({
+  it.each(['max_api_internal_rate_limit', 'max_api_circuit_open'] as const)(
+    'scans retryable rows and requeues a recent proven %s orphan in the critical lane',
+    async (lastErrorCode) => {
+      const row = createCandidate({
         actionType: 'KICK_MEMBER',
-        chatId: 'chat-1',
-        userId: 'user-1',
-        botId: 'bot-1',
-        candidateBotIds: ['bot-1', 'bot-2'],
-        idempotencyKey: 'job-1',
-      }),
-      expect.objectContaining({
-        jobId: 'job-1',
-        attempts: 5,
-        removeOnComplete: true,
-        backoff: { type: 'exponential', delay: 1_000 },
-      }),
-    );
-    expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith({
-      where: {
-        id: 'ledger-1',
         status: MaxActionLedgerStatus.FAILED_RETRYABLE,
-        terminal: false,
-        updatedAt: row.updatedAt,
-      },
-      data: expect.objectContaining({
-        status: MaxActionLedgerStatus.ENQUEUED,
-        terminal: false,
-        enqueuedAt: expect.any(Date),
-        lastErrorCode: null,
-      }),
-    });
-    expect(await service.getSnapshot()).toEqual(
-      expect.objectContaining({
-        staleCount: 1,
-        staleRetryableCount: 1,
-        lastRequeuedCount: 1,
-        lastReconciledCount: 1,
-        lastRetryOrphanTerminalizedCount: 0,
-      }),
-    );
-  });
+        userId: 'user-1',
+        attemptCount: 1,
+        firstAttemptAt: new Date(Date.now() - 11 * 60_000),
+        lastAttemptAt: new Date(Date.now() - 10 * 60_000),
+        lastErrorCode,
+        lastError: 'local MAX pre-dispatch guard rejected the request',
+      });
+      const { service, prisma, criticalQueue } = createHarness({ rows: [row] });
+
+      await service.runNow();
+
+      expect(prisma.maxActionLedgerEntry.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            status: {
+              in: [
+                MaxActionLedgerStatus.ENQUEUED,
+                MaxActionLedgerStatus.IN_PROGRESS,
+                MaxActionLedgerStatus.FAILED_RETRYABLE,
+              ],
+            },
+          }),
+        }),
+      );
+      expect(criticalQueue.add).toHaveBeenCalledWith(
+        'execute-max-action',
+        expect.objectContaining({
+          actionType: 'KICK_MEMBER',
+          chatId: 'chat-1',
+          userId: 'user-1',
+          botId: 'bot-1',
+          candidateBotIds: ['bot-1', 'bot-2'],
+          idempotencyKey: 'job-1',
+        }),
+        expect.objectContaining({
+          jobId: 'job-1',
+          attempts: 5,
+          removeOnComplete: true,
+          backoff: { type: 'exponential', delay: 1_000 },
+        }),
+      );
+      expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'ledger-1',
+          status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+          terminal: false,
+          updatedAt: row.updatedAt,
+        },
+        data: expect.objectContaining({
+          status: MaxActionLedgerStatus.ENQUEUED,
+          terminal: false,
+          enqueuedAt: expect.any(Date),
+          lastErrorCode: null,
+        }),
+      });
+      expect(await service.getSnapshot()).toEqual(
+        expect.objectContaining({
+          staleCount: 1,
+          staleRetryableCount: 1,
+          lastRequeuedCount: 1,
+          lastReconciledCount: 1,
+          lastRetryOrphanTerminalizedCount: 0,
+        }),
+      );
+    },
+  );
 
   it('retries one matching retained failed BullMQ job instead of adding a duplicate', async () => {
     const row = createCandidate({

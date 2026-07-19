@@ -15,13 +15,62 @@ import {
   deleteCapabilityReasonLabel,
   deleteCapabilityStateLabel,
   deleteRolloutLabel,
+  deleteRolloutModeLabel,
   deleteRoutingPolicyLabel,
   deleteStatusTone,
   formatDateTime,
   formatDuration,
   type DeleteFilter,
 } from './safety-desk-model';
-import { InfoCell } from './safety-desk-ui';
+import { InfoCell, Metric } from './safety-desk-ui';
+
+export function DeleteRuntimeMetrics({
+  runtime,
+}: {
+  runtime: SafetyDeskDeleteRuntimeResponse | null;
+}) {
+  return (
+    <>
+      <Metric
+        label="Режим"
+        value={deleteRolloutModeLabel(runtime?.rolloutMode ?? 'off')}
+        tone="neutral"
+      />
+      <Metric
+        label="Cleanup"
+        value={runtime?.replacementCleanupEnabled ? 'Вкл' : 'Выкл'}
+        tone={runtime?.replacementCleanupEnabled ? 'success' : 'neutral'}
+      />
+      <Metric label="Открыто" value={String(runtime?.summary.open ?? 0)} tone="warning" />
+      <Metric label="Просрочено" value={String(runtime?.summary.due.count ?? 0)} tone="danger" />
+      <Metric
+        label="Зависло"
+        value={String(runtime?.summary.staleLeases.count ?? 0)}
+        tone="danger"
+      />
+      <Metric
+        label="Неясные отправки"
+        value={String(runtime?.summary.ambiguousSends.count ?? 0)}
+        tone="danger"
+      />
+      <Metric
+        label="DM победителям"
+        value={String(runtime?.summary.giveawayWinnerNotificationDeadEnds.count ?? 0)}
+        tone="danger"
+      />
+      <Metric label="Ошибки" value={String(runtime?.summary.failed ?? 0)} tone="danger" />
+      <Metric
+        label="Старейшее"
+        value={
+          runtime?.summary.oldestOpen.ageMs == null
+            ? 'Нет'
+            : formatDuration(runtime.summary.oldestOpen.ageMs)
+        }
+        tone="neutral"
+      />
+    </>
+  );
+}
 
 export function DeleteDesk({
   busyAmbiguousSendId,

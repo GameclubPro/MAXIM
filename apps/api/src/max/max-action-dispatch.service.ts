@@ -1,6 +1,7 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { UnrecoverableError } from 'bullmq';
+import { MaxActionNoExecutableRouteError } from './max-action-dispatch-error';
 import { MaxActionLedgerService } from './max-action-ledger.service';
 import { MaxBotLinkService, type MaxBotRouteRequest } from './max-bot-link.service';
 import {
@@ -47,6 +48,12 @@ export type MaxActionDispatchExecutionOptions = {
   }>;
   onDispatchAttempt?: (params: { botId: string | null; job: MaxActionJob }) => void;
 };
+
+export {
+  isMaxActionNoExecutableRouteError,
+  MAX_ACTION_NO_EXECUTABLE_ROUTE_ERROR_CODE,
+  MaxActionNoExecutableRouteError,
+} from './max-action-dispatch-error';
 
 const ROUTED_SEND_ACCESS_MAX_AGE_MS = 30 * 60_000;
 const ROUTED_DESTRUCTIVE_ACCESS_MAX_AGE_MS = 5 * 60_000;
@@ -112,10 +119,30 @@ export class MaxActionDispatchService {
     const candidateBotIds = await this.resolveExecutionCandidateBotIds(job, {
       enforceFreshRoute: routedFailoverEnabled,
     });
-    await this.actionLedgerService?.recordStarted(job);
     if (this.isRoutedJob(job) && !routedFailoverEnabled && candidateBotIds.length > 1) {
       candidateBotIds.splice(1);
     }
+    if (this.isRoutedJob(job)) {
+      const executableCandidateBotIds = candidateBotIds.filter((botId) => {
+        if (this.isExecutableCandidate(botId)) {
+          return true;
+        }
+        this.logger.warn(
+          {
+            actionType: job.actionType,
+            chatId: job.chatId,
+            botId,
+          },
+          'Skipped non-executable routed MAX action candidate before execution claim',
+        );
+        return false;
+      });
+      candidateBotIds.splice(0, candidateBotIds.length, ...executableCandidateBotIds);
+      if (candidateBotIds.length === 0) {
+        throw new MaxActionNoExecutableRouteError(job.actionType, job.chatId);
+      }
+    }
+    await this.actionLedgerService?.recordStarted(job);
     const attemptedBotIds: string[] = [];
     let lastAccessError: UnrecoverableError | null = null;
     let lastPreDispatchError: Error | null = null;

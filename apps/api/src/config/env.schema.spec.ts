@@ -153,11 +153,12 @@ describe('validateEnv boolean parsing', () => {
     ).toThrow(/MAX_ROUTED_MUTATIONS_CANARY_PERCENT/u);
   });
 
-  it('defaults durable moderation delete intents to a non-executing rollout', () => {
+  it('keeps general delete intents off while enabling the narrow replacement cleanup switch', () => {
     const defaults = validateEnv(createValidEnv());
     expect(defaults.MODERATION_DELETE_INTENT_MODE).toBe('off');
     expect(defaults.MODERATION_DELETE_INTENT_CANARY_CHAT_IDS).toBe('');
     expect(defaults.MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS).toBe('');
+    expect(defaults.MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_ENABLED).toBe(true);
     expect(defaults.MODERATION_DELETE_INTENT_RETRY_HORIZON_MS).toBe(86_400_000);
     expect(defaults.MODERATION_DELETE_INTENT_RECOVERY_BATCH_SIZE).toBe(10);
     expect(defaults.MODERATION_DELETE_INTENT_RETENTION_DAYS).toBe(90);
@@ -171,11 +172,13 @@ describe('validateEnv boolean parsing', () => {
         MODERATION_DELETE_INTENT_MODE: 'canary',
         MODERATION_DELETE_INTENT_CANARY_CHAT_IDS: 'chat-1',
         MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS: 'chat-1',
+        MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_ENABLED: 'false',
       }),
     );
     expect(canary.MODERATION_DELETE_INTENT_MODE).toBe('canary');
     expect(canary.MODERATION_DELETE_INTENT_CANARY_CHAT_IDS).toBe('chat-1');
     expect(canary.MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS).toBe('chat-1');
+    expect(canary.MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_ENABLED).toBe(false);
 
     expect(() =>
       validateEnv(

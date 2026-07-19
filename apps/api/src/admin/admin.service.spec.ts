@@ -5366,7 +5366,7 @@ describe('AdminService.applyManualSystemBan', () => {
     );
     const ensureAndAttempt = jest.fn().mockRejectedValue(new Error('intent database unavailable'));
     (service as any).moderationDeleteIntentService = {
-      getRolloutForChat: jest.fn().mockReturnValue('execute'),
+      getRolloutForRule: jest.fn().mockReturnValue('execute'),
       ensureAndAttempt,
     };
     jest
@@ -5971,7 +5971,7 @@ describe('AdminService.applyManualSystemBan', () => {
       deleteMessage: jest.fn().mockResolvedValue(undefined),
     };
     const deleteIntents = {
-      getRolloutForChat: jest.fn().mockReturnValue('execute'),
+      getRolloutForRule: jest.fn().mockReturnValue('execute'),
       ensureAndAttempt: jest.fn().mockResolvedValue({
         kind: 'pending',
         confirmed: false,
@@ -6023,7 +6023,7 @@ describe('AdminService.applyManualSystemBan', () => {
       deleteMessage: jest.fn().mockResolvedValue(undefined),
     };
     const deleteIntents = {
-      getRolloutForChat: jest.fn().mockReturnValue('observed'),
+      getRolloutForRule: jest.fn().mockReturnValue('observed'),
       ensureAndAttempt: jest.fn().mockResolvedValue({
         kind: 'observed',
         confirmed: false,
@@ -6070,7 +6070,7 @@ describe('AdminService.applyManualSystemBan', () => {
       deleteMessage: jest.fn(),
     };
     const deleteIntents = {
-      getRolloutForChat: jest.fn().mockReturnValue('execute'),
+      getRolloutForRule: jest.fn().mockReturnValue('execute'),
       ensureAndAttempt: jest.fn().mockRejectedValue(new Error('database unavailable')),
     };
     const service = new AdminService(
@@ -6096,7 +6096,7 @@ describe('AdminService.applyManualSystemBan', () => {
       deleteMessage: jest.fn(),
     };
     const deleteIntents = {
-      getRolloutForChat: jest.fn().mockReturnValue('execute'),
+      getRolloutForRule: jest.fn().mockReturnValue('execute'),
       ensureAndAttempt: jest.fn().mockResolvedValue({
         kind: 'waiting_capability',
         confirmed: false,

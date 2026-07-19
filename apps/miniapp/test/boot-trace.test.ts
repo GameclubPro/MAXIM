@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { sanitizeMiniappBootTraceText } from '../src/lib/boot-trace';
+import { createMiniappBootTraceSessionId } from '../src/lib/boot-trace-session-id';
 import {
   claimPublicationApiTraceSample,
   shouldEnablePublicationApiTrace,
@@ -9,6 +10,41 @@ import {
 function encodeBase64Url(value: unknown): string {
   return Buffer.from(JSON.stringify(value), 'utf8').toString('base64url');
 }
+
+test('boot trace session IDs prefer randomUUID over other sources', () => {
+  let getRandomValuesCalled = false;
+  const sessionId = createMiniappBootTraceSessionId({
+    randomUUID: () => '123e4567-e89b-12d3-a456-426614174000',
+    getRandomValues: (bytes) => {
+      getRandomValuesCalled = true;
+      return bytes;
+    },
+  });
+
+  assert.equal(sessionId, '123e4567-e89b-12d3-a456-426614174000');
+  assert.equal(getRandomValuesCalled, false);
+});
+
+test('boot trace session IDs use cryptographic bytes when randomUUID is unavailable', () => {
+  const sessionId = createMiniappBootTraceSessionId({
+    getRandomValues: (bytes) => {
+      bytes.set(Array.from({ length: 16 }, (_value, index) => index));
+      return bytes;
+    },
+  });
+
+  assert.equal(sessionId, '000102030405060708090a0b0c0d0e0f');
+});
+
+test('boot trace session IDs remain unique with the monotonic fallback', () => {
+  const now = () => 1_700_000_000_000;
+  const first = createMiniappBootTraceSessionId(null, now);
+  const second = createMiniappBootTraceSessionId(null, now);
+
+  assert.notEqual(first, second);
+  assert.equal(first.startsWith(`${now().toString(36)}-`), true);
+  assert.equal(second.startsWith(`${now().toString(36)}-`), true);
+});
 
 test('boot trace text sanitizer redacts startapp and channel dialog payload previews', () => {
   const dialogToken = 'dialog-token-secret-123456';

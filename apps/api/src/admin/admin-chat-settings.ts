@@ -171,10 +171,6 @@ function areBotSpeechMediaEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(left ?? {}) === JSON.stringify(right ?? {});
 }
 
-function areAuditSettingValuesEqual(left: unknown, right: unknown): boolean {
-  return Object.is(left, right) || JSON.stringify(left) === JSON.stringify(right);
-}
-
 function readBotSpeechMediaRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -194,21 +190,19 @@ function readAuditMediaEntry(value: unknown): { base64: string; mimeType: string
 }
 
 export function buildUpdateSettingsAuditPayload(params: {
-  currentSettings: unknown;
+  requestedSettings: unknown;
   normalizedSettings: ChatSettings;
   source: AdminActionSource;
 }): UpdateSettingsAuditPayload {
-  const current =
-    params.currentSettings &&
-    typeof params.currentSettings === 'object' &&
-    !Array.isArray(params.currentSettings)
-      ? (params.currentSettings as Record<string, unknown>)
-      : null;
-  const settingKeys = (Object.keys(params.normalizedSettings) as Array<keyof ChatSettings>)
-    .filter(
-      (key) =>
-        !current || !areAuditSettingValuesEqual(current[key], params.normalizedSettings[key]),
-    )
+  const requested =
+    params.requestedSettings &&
+    typeof params.requestedSettings === 'object' &&
+    !Array.isArray(params.requestedSettings)
+      ? (params.requestedSettings as Record<string, unknown>)
+      : {};
+  const normalizedKeySet = new Set(Object.keys(params.normalizedSettings));
+  const settingKeys = (Object.keys(requested) as Array<keyof ChatSettings>)
+    .filter((key) => normalizedKeySet.has(key))
     .sort();
   const payload: UpdateSettingsAuditPayload = {
     source: params.source,
@@ -219,10 +213,10 @@ export function buildUpdateSettingsAuditPayload(params: {
     return payload;
   }
 
-  const currentMedia = readBotSpeechMediaRecord(current?.botSpeechMedia);
+  const requestedMedia = readBotSpeechMediaRecord(requested.botSpeechMedia);
   const nextMedia = readBotSpeechMediaRecord(params.normalizedSettings.botSpeechMedia);
-  const mediaKeys = Array.from(new Set([...Object.keys(currentMedia), ...Object.keys(nextMedia)]))
-    .filter((key) => !areAuditSettingValuesEqual(currentMedia[key], nextMedia[key]))
+  const mediaKeys = Object.keys(requestedMedia)
+    .filter((key) => Object.hasOwn(nextMedia, key))
     .sort();
   payload.botSpeechMedia = mediaKeys.map((key) => {
     const media = readAuditMediaEntry(nextMedia[key]);
@@ -663,6 +657,13 @@ export async function saveChatSettings(params: {
 
   const currentSettings = await params.prisma.chatSettings.findUnique({
     where: { chatId: params.chatId },
+    select: {
+      nightModeForceCloseEnabled: true,
+      nightModeForceCloseForever: true,
+      nightModeForceCloseHours: true,
+      nightModeForceCloseDays: true,
+      nightModeForceCloseUntil: true,
+    },
   });
   let normalizedSettings = normalizeChatSettings(
     parsed.data,
@@ -679,7 +680,7 @@ export async function saveChatSettings(params: {
     (await params.assertRequiredSubscriptionSettings(normalizedSettings)) ?? normalizedSettings;
   const botAssignmentData = await params.resolveBotAssignmentData();
 
-  await params.prisma.chat.upsert({
+  const updateSettings = params.prisma.chat.upsert({
     where: { id: params.chatId },
     create: {
       id: params.chatId,
@@ -709,18 +710,19 @@ export async function saveChatSettings(params: {
     },
   });
 
-  await params.prisma.auditLog.create({
+  const writeAudit = params.prisma.auditLog.create({
     data: {
       chatId: params.chatId,
       actorUserId: params.actorUserId,
       action: 'UPDATE_SETTINGS',
       payload: buildUpdateSettingsAuditPayload({
-        currentSettings,
+        requestedSettings: params.body,
         normalizedSettings,
         source: params.source,
       }),
     },
   });
+  await params.prisma.$transaction([updateSettings, writeAudit]);
   await params.chatContextCache.invalidate(params.chatId);
   await params.refreshExecutionReadiness(normalizedSettings);
 

@@ -1,4 +1,5 @@
 import type { PrismaService } from '../prisma/prisma.service';
+import { MaxActionNoExecutableRouteError } from '../max/max-action-dispatch-error';
 import {
   NIGHT_MODE_TRANSITION_PROCESS_CONTINUE,
   NIGHT_MODE_TRANSITION_PROCESS_STOP,
@@ -297,5 +298,23 @@ describe('NightModeTransitionRuntimeService', () => {
 
     expect(hooks.deleteClosedNotice).not.toHaveBeenCalled();
     expect(hooks.sendOpenedNotice).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not persist transition state when notice delivery has no executable route', async () => {
+    const prisma = createPrisma();
+    const redisCounter = createRedisCounterMock();
+    const noRouteError = new MaxActionNoExecutableRouteError('SEND_MESSAGE', 'chat-1');
+    const hooks = createHooks({
+      sendOpenedNotice: jest.fn().mockRejectedValue(noRouteError),
+    });
+    const service = new NightModeTransitionRuntimeService(
+      prisma as unknown as PrismaService,
+      redisCounter as never,
+    );
+
+    await expect(service.processNightModeTransitionJob(OPEN_JOB, hooks)).rejects.toBe(noRouteError);
+
+    expect(redisCounter.setStringWithTtl).not.toHaveBeenCalled();
+    expect(redisCounter.releaseLock).toHaveBeenCalled();
   });
 });

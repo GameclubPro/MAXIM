@@ -11,6 +11,7 @@ import {
 import { MAX_MARKDOWN_TOOL_DEFINITIONS, type MaxMarkdownTool } from './max-markdown-editor';
 import { cn } from '../lib/cn';
 import { renderPlainTextAsEditorHtml, renderSupportedMarkdownAsHtml } from '../lib/max-markdown';
+import { parseEditorLinkHref, serializeEditorLinkMarkdown } from '../lib/max-rich-text-link';
 import { useNativeBackHandler } from '../lib/native-back';
 import './max-rich-text-editor.css';
 
@@ -34,7 +35,6 @@ type MaxRichTextEditorProps = {
 };
 
 const LINK_PLACEHOLDER_URL = 'https://max.ru/';
-const SAFE_LINK_PATTERN = /^(https?:\/\/|max:\/\/)/iu;
 const BLOCK_TAGS = new Set([
   'address',
   'article',
@@ -250,13 +250,13 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
         return;
       }
 
-      const normalizedUrl = normalizeEditorLinkUrl(linkDraft);
-      if (!normalizedUrl) {
+      if (!linkDraft.trim()) {
         setLinkError('Укажите ссылку.');
         return;
       }
 
-      if (!SAFE_LINK_PATTERN.test(normalizedUrl)) {
+      const canonicalHref = parseEditorLinkHref(linkDraft);
+      if (!canonicalHref) {
         setLinkError('Поддерживаются https:// и max://.');
         return;
       }
@@ -265,7 +265,7 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
       const savedRange = savedRangeRef.current;
       const editingLink = editingLinkRef.current;
       if (editor && editingLink && editor.contains(editingLink)) {
-        editingLink.setAttribute('href', normalizedUrl);
+        editingLink.setAttribute('href', canonicalHref);
         editingLinkRef.current = null;
         setLinkEditorOpen(false);
         setLinkError('');
@@ -281,7 +281,7 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
       }
 
       applyDocumentRange(savedRange);
-      wrapRangeWithLink(savedRange, normalizedUrl);
+      wrapRangeWithLink(savedRange, canonicalHref);
       editingLinkRef.current = null;
       setLinkEditorOpen(false);
       setLinkError('');
@@ -752,10 +752,8 @@ function serializeNode(node: Node, options: RichTextSerializationOptions = {}): 
     case 'strike':
     case 'del':
       return content ? `~~${content}~~` : '';
-    case 'a': {
-      const href = normalizeEditorLinkUrl(element.getAttribute('href') || '');
-      return href && SAFE_LINK_PATTERN.test(href) && content ? `[${content}](${href})` : content;
-    }
+    case 'a':
+      return serializeEditorLinkMarkdown(content, element.getAttribute('href') || '');
     default:
       return BLOCK_TAGS.has(tagName) ? appendBlockBreak(content) : content;
   }
@@ -802,21 +800,4 @@ function serializeCodeBlockText(value: string): string {
 
 function isHeadingElement(element: HTMLElement, tagName: string): boolean {
   return /^h[1-6]$/u.test(tagName) || element.dataset.maxBlock === 'heading';
-}
-
-function normalizeEditorLinkUrl(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return '';
-  }
-
-  if (/^[a-z][a-z0-9+.-]*:\/\//iu.test(trimmed)) {
-    return trimmed;
-  }
-
-  if (/^max:\/\//iu.test(trimmed)) {
-    return trimmed;
-  }
-
-  return `https://${trimmed.replace(/^\/+/u, '')}`;
 }

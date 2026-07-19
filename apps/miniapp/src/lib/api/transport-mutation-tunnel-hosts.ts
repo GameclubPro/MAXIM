@@ -9,6 +9,6 @@ export function isMutationTunnelPreferredHost(apiBase: string): boolean {
       ).hostname,
     );
   } catch {
-    return MUTATION_TUNNEL_PREFERRED_HOSTS.some((host) => apiBase.includes(host));
+    return false;
   }
 }

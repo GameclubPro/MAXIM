@@ -359,6 +359,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       completeSendDispatch?: jest.Mock;
       releaseSendDispatch?: jest.Mock;
       recordAmbiguousSendDispatch?: jest.Mock;
+      clearTerminalBanStateAfterUnban?: jest.Mock;
     },
   ) {
     const configService = {
@@ -1272,6 +1273,130 @@ describe('MaxClientService inline keyboard guardrails', () => {
       await service.onModuleDestroy();
     },
   );
+
+  it('clears terminal ban state only after MAX confirms an unban', async () => {
+    const httpService = {
+      request: jest.fn(() => of({ data: {} })),
+    };
+    const actionLedgerService = {
+      clearTerminalBanStateAfterUnban: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = createService(httpService, {}, undefined, actionLedgerService);
+
+    await service.executeActionJob({
+      actionType: 'UNBAN_MEMBER',
+      chatId: 'chat-1',
+      userId: 'user-1',
+      attempt: 1,
+      idempotencyKey: 'unban-member-1',
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(actionLedgerService.clearTerminalBanStateAfterUnban).toHaveBeenCalledWith(
+      'chat-1',
+      'user-1',
+    );
+    expect(httpService.request.mock.invocationCallOrder[0]).toBeLessThan(
+      actionLedgerService.clearTerminalBanStateAfterUnban.mock.invocationCallOrder[0],
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('treats a documented already-present success=false response as confirmed unban state', async () => {
+    const httpService = {
+      request: jest.fn(() =>
+        of({
+          status: 200,
+          data: {
+            success: false,
+            message: 'User is already a chat member',
+          },
+        }),
+      ),
+    };
+    const actionLedgerService = {
+      clearTerminalBanStateAfterUnban: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = createService(httpService, {}, undefined, actionLedgerService);
+
+    await expect(
+      service.executeActionJob({
+        actionType: 'UNBAN_MEMBER',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        attempt: 1,
+        idempotencyKey: 'unban-member-already-present',
+        createdAt: new Date().toISOString(),
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(actionLedgerService.clearTerminalBanStateAfterUnban).toHaveBeenCalledWith(
+      'chat-1',
+      'user-1',
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('keeps terminal ban state when MAX rejects an unban', async () => {
+    const maxError = new Error('unban rejected');
+    const httpService = {
+      request: jest.fn(() => throwError(() => maxError)),
+    };
+    const actionLedgerService = {
+      clearTerminalBanStateAfterUnban: jest.fn(),
+    };
+    const service = createService(httpService, {}, undefined, actionLedgerService);
+
+    await expect(
+      service.executeActionJob({
+        actionType: 'UNBAN_MEMBER',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        attempt: 1,
+        idempotencyKey: 'unban-member-rejected',
+        createdAt: new Date().toISOString(),
+      }),
+    ).rejects.toBe(maxError);
+
+    expect(actionLedgerService.clearTerminalBanStateAfterUnban).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('does not treat an already-member phrase in a 5xx response as confirmed unban state', async () => {
+    const serverError = {
+      response: {
+        status: 500,
+        data: {
+          message: 'User is already a chat member',
+        },
+      },
+    };
+    const httpService = {
+      request: jest.fn(() => throwError(() => serverError)),
+    };
+    const actionLedgerService = {
+      clearTerminalBanStateAfterUnban: jest.fn(),
+    };
+    const service = createService(httpService, {}, undefined, actionLedgerService);
+
+    await expect(
+      service.executeActionJob({
+        actionType: 'UNBAN_MEMBER',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        attempt: 1,
+        idempotencyKey: 'unban-member-server-error',
+        createdAt: new Date().toISOString(),
+      }),
+    ).rejects.toBe(serverError);
+
+    expect(actionLedgerService.clearTerminalBanStateAfterUnban).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
 
   it('records successful immediate irreversible actions in the durable ledger', async () => {
     const httpService = {

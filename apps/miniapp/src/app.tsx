@@ -384,7 +384,9 @@ export function App() {
 
       const discoveredInitData = getInitData();
       if (discoveredInitData) {
-        setInitData((currentInitData) => currentInitData || discoveredInitData);
+        setInitData((currentInitData) =>
+          currentInitData === discoveredInitData ? currentInitData : discoveredInitData,
+        );
       }
 
       setNativeEnvironmentSignature((currentSignature) => {

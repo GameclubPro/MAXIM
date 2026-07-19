@@ -1,3 +1,5 @@
+import { parseEditorLinkHref } from './max-rich-text-link';
+
 type ClipboardHtmlNode =
   | {
       type: 'root';
@@ -16,7 +18,6 @@ type ClipboardHtmlNode =
 
 type ClipboardInlineMark = 'bold' | 'italic' | 'underline' | 'strike';
 
-const SAFE_LINK_PATTERN = /^(https?:\/\/|max:\/\/)/iu;
 const CLIPBOARD_MARK_ORDER: ClipboardInlineMark[] = ['strike', 'underline', 'italic', 'bold'];
 const VOID_HTML_TAGS = new Set([
   'area',
@@ -327,7 +328,7 @@ function serializeClipboardHtmlNode(
   }
 
   if (tagName === 'a') {
-    const href = normalizeClipboardLinkUrl(node.attributes.href ?? '');
+    const href = parseEditorLinkHref(node.attributes.href ?? '');
     content = href ? `[${content}](${href})` : content;
   }
 
@@ -495,11 +496,6 @@ function serializeClipboardCodeText(value: string): string {
 
 function serializeClipboardCodeBlockText(value: string): string {
   return value.replace(/\r\n?/gu, '\n').replace(/```/gu, "'''").trimEnd();
-}
-
-function normalizeClipboardLinkUrl(value: string): string {
-  const trimmed = value.trim();
-  return SAFE_LINK_PATTERN.test(trimmed) ? trimmed : '';
 }
 
 function decodeClipboardHtmlEntities(value: string): string {

@@ -13,6 +13,12 @@ function readRateLimitPattern() {
   return match[1];
 }
 
+function readSuccessfulAccessLogPattern() {
+  const match = /^SUCCESSFUL_ACCESS_LOG_PATTERN='([^']+)'$/mu.exec(monitor);
+  assert.ok(match?.[1], 'monitor successful access-log pattern is missing');
+  return match[1];
+}
+
 function countSignals(lines) {
   const result = spawnSync('grep', ['-Eci', readRateLimitPattern()], {
     input: `${lines.join('\n')}\n`,
@@ -20,6 +26,15 @@ function countSignals(lines) {
   });
   assert.ok(result.status === 0 || result.status === 1, result.stderr);
   return Number.parseInt(result.stdout.trim() || '0', 10);
+}
+
+function filterSuccessfulAccessLogs(lines) {
+  const result = spawnSync('grep', ['-Eav', readSuccessfulAccessLogPattern()], {
+    input: `${lines.join('\n')}\n`,
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.trim().split('\n');
 }
 
 test('does not count epoch timestamps containing 429 as rate-limit signals', () => {
@@ -40,5 +55,24 @@ test('counts explicit internal, structured, and HTTP 429 rate-limit signals', ()
       'upstream returned HTTP status 429',
     ]),
     3,
+  );
+});
+
+test('filters successful static access logs before scanning error-like asset names', () => {
+  assert.equal(
+    [...monitor.matchAll(/grep -Eav '\$\{SUCCESSFUL_ACCESS_LOG_PATTERN\}'/gu)].length,
+    2,
+  );
+  assert.deepEqual(
+    filterSuccessfulAccessLogs([
+      'GET /app/assets/api-request-error-hash.js HTTP/1.1" 200 723',
+      'GET /app/assets/warn-icon.svg HTTP/1.1" 304 0',
+      'GET /app/assets/api-request-error-hash.js HTTP/1.1" 502 157',
+      'nginx: [error] upstream prematurely closed connection',
+    ]),
+    [
+      'GET /app/assets/api-request-error-hash.js HTTP/1.1" 502 157',
+      'nginx: [error] upstream prematurely closed connection',
+    ],
   );
 });

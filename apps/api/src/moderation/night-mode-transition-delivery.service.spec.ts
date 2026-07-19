@@ -1,3 +1,4 @@
+import { MaxActionNoExecutableRouteError } from '../max/max-action-dispatch-error';
 import { NightModeTransitionDeliveryService } from './night-mode-transition-delivery.service';
 import type { NightModeTransitionDeliveryAdapters } from './night-mode-transition-delivery.service';
 import { NightModeTransitionNoticeEventPersistenceError } from './night-mode-transition-notice-persistence-error';
@@ -206,6 +207,42 @@ describe('NightModeTransitionDeliveryService', () => {
     } finally {
       process.env.NODE_ENV = previousNodeEnv;
     }
+  });
+
+  it('does not create a transition event when routed delivery has no executable bot', async () => {
+    const noRouteError = new MaxActionNoExecutableRouteError('SEND_MESSAGE', 'chat-1');
+    const eventService = createEventService();
+    const maxRoutedPublicationService = {
+      publish: jest.fn().mockRejectedValue(noRouteError),
+    };
+    const service = new NightModeTransitionDeliveryService(
+      {
+        sendMessageImmediateWithId: jest.fn(),
+        deleteMessage: jest.fn(),
+      } as never,
+      {
+        resolveMedia: jest.fn().mockReturnValue(null),
+        withMediaOptions: jest.fn(),
+      } as never,
+      eventService as never,
+      undefined,
+      maxRoutedPublicationService as never,
+    );
+
+    await expect(
+      service.sendOpenedNotice(
+        createSettings(),
+        {
+          startMinutes: 23 * 60,
+          endMinutes: 8 * 60,
+          timezone: 'Europe/Moscow',
+          sessionKey: 'session-no-route',
+        },
+        createAdapters(),
+      ),
+    ).rejects.toBe(noRouteError);
+
+    expect(eventService.createTransitionEvent).not.toHaveBeenCalled();
   });
 
   it('sends a closed notice with markdown, background request options, media adapter, and event', async () => {

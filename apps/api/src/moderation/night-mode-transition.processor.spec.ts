@@ -1,4 +1,5 @@
 import type { Job } from 'bullmq';
+import { MaxActionNoExecutableRouteError } from '../max/max-action-dispatch-error';
 import { NightModeTransitionProcessor } from './night-mode-transition.processor';
 import type { NightModeTransitionJob } from './night-mode-transition.queue';
 
@@ -45,5 +46,41 @@ describe('NightModeTransitionProcessor', () => {
     await processor.process(job);
 
     expect(scheduler.enqueueNextTransitionsForChat).toHaveBeenCalledWith('chat-1');
+  });
+
+  it('completes a no-route transition and keeps future transitions scheduled', async () => {
+    const moderationExecutionService = {
+      processNightModeTransitionJob: jest
+        .fn()
+        .mockRejectedValue(new MaxActionNoExecutableRouteError('SEND_MESSAGE', 'chat-1')),
+    };
+    const scheduler = {
+      enqueueNextTransitionsForChat: jest.fn().mockResolvedValue(undefined),
+    };
+    const processor = new NightModeTransitionProcessor(
+      moderationExecutionService as never,
+      scheduler as never,
+    );
+
+    await expect(processor.process(job)).resolves.toBeUndefined();
+
+    expect(scheduler.enqueueNextTransitionsForChat).toHaveBeenCalledWith('chat-1');
+  });
+
+  it('keeps non-route processing failures on the BullMQ failure path', async () => {
+    const processingError = new Error('state persistence failed');
+    const moderationExecutionService = {
+      processNightModeTransitionJob: jest.fn().mockRejectedValue(processingError),
+    };
+    const scheduler = {
+      enqueueNextTransitionsForChat: jest.fn(),
+    };
+    const processor = new NightModeTransitionProcessor(
+      moderationExecutionService as never,
+      scheduler as never,
+    );
+
+    await expect(processor.process(job)).rejects.toBe(processingError);
+    expect(scheduler.enqueueNextTransitionsForChat).not.toHaveBeenCalled();
   });
 });

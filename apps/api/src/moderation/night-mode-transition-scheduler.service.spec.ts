@@ -467,6 +467,61 @@ describe('NightModeTransitionSchedulerService', () => {
     }
   });
 
+  it('revives a versioned current job after the exact legacy pre-dispatch no-route failure', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-31T06:12:00.000Z'));
+    try {
+      const jobId = buildNightModeTransitionJobId(
+        'chat-1',
+        'open',
+        '2026-05-31T05:00:00.000Z',
+        'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+      );
+      const failedJob = {
+        id: jobId,
+        failedReason: 'MAX SEND_MESSAGE has no executable routed bot candidate for chat chat-1',
+        data: { transitionRuntimeVersion: 2 },
+        getState: jest.fn().mockResolvedValue('failed'),
+        remove: jest.fn().mockResolvedValue(undefined),
+      };
+      const prisma = {
+        chatSettings: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              chatId: 'chat-1',
+              nightModeEnabled: true,
+              nightModeStartTimeMinutes: 23 * 60,
+              nightModeEndTimeMinutes: 8 * 60,
+              nightModeTimezone: 'Europe/Moscow',
+            },
+          ]),
+        },
+      };
+      const queue = {
+        getJob: jest.fn().mockResolvedValue(failedJob),
+        add: jest.fn(),
+      };
+      const service = new NightModeTransitionSchedulerService(
+        prisma as never,
+        queue as unknown as Queue<NightModeTransitionJob>,
+      );
+
+      await service.bootstrapEnabledChats();
+
+      expect(failedJob.remove).toHaveBeenCalledTimes(1);
+      expect(queue.add).toHaveBeenCalledWith(
+        NIGHT_MODE_TRANSITION_JOB_NAME,
+        expect.objectContaining({
+          chatId: 'chat-1',
+          transition: 'open',
+          scheduledFor: '2026-05-31T05:00:00.000Z',
+        }),
+        expect.objectContaining({ jobId }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('does not enqueue a stale opening catch-up after its recovery window', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-31T12:00:00.000Z'));
     try {
