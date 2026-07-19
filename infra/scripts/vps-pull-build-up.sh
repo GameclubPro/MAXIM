@@ -298,12 +298,25 @@ require_node_24() {
 check_deploy_disk_capacity() {
   local target_percent="${MAXIM_DEPLOY_DISK_TARGET_PERCENT:-${MAXIM_DEPLOY_DISK_WARN_PERCENT:-80}}"
   local critical_percent="${MAXIM_DEPLOY_DISK_CRITICAL_PERCENT:-${MAXIM_DEPLOY_DISK_MAX_PERCENT:-90}}"
+  local hard_minimum_free_bytes="21474836480"
+  local minimum_free_bytes="${MAXIM_DEPLOY_DISK_MIN_FREE_BYTES:-$hard_minimum_free_bytes}"
   local disk_path="/var/lib/docker"
+  local disk_stats
+  local available_bytes
   local used_percent
 
   validate_nonnegative_int "MAXIM_DEPLOY_DISK_TARGET_PERCENT" "$target_percent"
   validate_nonnegative_int "MAXIM_DEPLOY_DISK_CRITICAL_PERCENT" "$critical_percent"
-  if [[ "$target_percent" -ge "$critical_percent" ]] || [[ "$critical_percent" -gt 100 ]]; then
+  validate_nonnegative_int "MAXIM_DEPLOY_DISK_MIN_FREE_BYTES" "$minimum_free_bytes"
+  target_percent="$(normalize_nonnegative_int "$target_percent")"
+  critical_percent="$(normalize_nonnegative_int "$critical_percent")"
+  minimum_free_bytes="$(normalize_nonnegative_int "$minimum_free_bytes")"
+  if decimal_less_than "$minimum_free_bytes" "$hard_minimum_free_bytes"; then
+    echo "MAXIM_DEPLOY_DISK_MIN_FREE_BYTES must be at least ${hard_minimum_free_bytes}." >&2
+    exit 1
+  fi
+  if ! decimal_less_than "$target_percent" "$critical_percent" || \
+     decimal_less_than 100 "$critical_percent"; then
     echo "Disk thresholds must satisfy target < critical <= 100." >&2
     exit 1
   fi
@@ -311,16 +324,34 @@ check_deploy_disk_capacity() {
   if [[ ! -d "$disk_path" ]]; then
     disk_path="/"
   fi
-  used_percent="$(df -P "$disk_path" | awk 'NR == 2 { gsub(/%/, "", $5); print $5 }')"
-  if [[ ! "$used_percent" =~ ^[0-9]+$ ]]; then
-    echo "Failed to read disk utilization for $disk_path." >&2
+  if ! disk_stats="$(
+    df -P -B1 "$disk_path" | awk 'NR == 2 { gsub(/%/, "", $5); print $4, $5 }'
+  )"; then
+    echo "Failed to read disk utilization for $disk_path in bytes." >&2
+    exit 1
+  fi
+  read -r available_bytes used_percent <<< "$disk_stats"
+  if [[ ! "$available_bytes" =~ ^[0-9]+$ ]] || [[ ! "$used_percent" =~ ^[0-9]+$ ]]; then
+    echo "Failed to read disk utilization for $disk_path in bytes." >&2
+    exit 1
+  fi
+  available_bytes="$(normalize_nonnegative_int "$available_bytes")"
+  used_percent="$(normalize_nonnegative_int "$used_percent")"
+
+  echo "Deploy disk preflight: path=$disk_path used=${used_percent}% available=${available_bytes}B minimum-free=${minimum_free_bytes}B target=${target_percent}% critical=${critical_percent}%"
+  if decimal_less_than "$available_bytes" "$minimum_free_bytes"; then
+    cat >&2 <<EOF
+Refusing to build with ${available_bytes} free bytes; at least ${minimum_free_bytes} bytes are required.
+Run infra/scripts/vps-docker-space-reclaim.sh after reviewing its inventory.
+This absolute free-space minimum is not bypassed by MAXIM_ALLOW_CRITICAL_DISK_DEPLOY.
+EOF
     exit 1
   fi
 
-  echo "Deploy disk preflight: path=$disk_path used=${used_percent}% target=${target_percent}% critical=${critical_percent}%"
-  if [[ "$used_percent" -ge "$target_percent" ]] && ! is_enabled "${MAXIM_ALLOW_CRITICAL_DISK_DEPLOY:-0}"; then
+  if ! decimal_less_than "$used_percent" "$target_percent" && \
+     ! is_enabled "${MAXIM_ALLOW_CRITICAL_DISK_DEPLOY:-0}"; then
     local severity="above the deploy target"
-    if [[ "$used_percent" -ge "$critical_percent" ]]; then
+    if ! decimal_less_than "$used_percent" "$critical_percent"; then
       severity="critical"
     fi
     cat >&2 <<EOF
@@ -331,9 +362,9 @@ EOF
     exit 1
   fi
 
-  if [[ "$used_percent" -ge "$critical_percent" ]]; then
+  if ! decimal_less_than "$used_percent" "$critical_percent"; then
     echo "CRITICAL: deploy host disk utilization is ${used_percent}%." >&2
-  elif [[ "$used_percent" -ge "$target_percent" ]]; then
+  elif ! decimal_less_than "$used_percent" "$target_percent"; then
     echo "WARNING: deploy host disk utilization is ${used_percent}%." >&2
   fi
 }
@@ -846,6 +877,27 @@ validate_nonnegative_int() {
 
   echo "$name must be a non-negative integer." >&2
   exit 1
+}
+
+normalize_nonnegative_int() {
+  local value="$1"
+  local leading_zeroes="${value%%[!0]*}"
+
+  value="${value#"$leading_zeroes"}"
+  printf '%s\n' "${value:-0}"
+}
+
+decimal_less_than() {
+  local left
+  local right
+
+  left="$(normalize_nonnegative_int "$1")"
+  right="$(normalize_nonnegative_int "$2")"
+  if [[ "${#left}" -ne "${#right}" ]]; then
+    [[ "${#left}" -lt "${#right}" ]]
+    return
+  fi
+  [[ "$left" < "$right" ]]
 }
 
 ensure_requested_services_running() {

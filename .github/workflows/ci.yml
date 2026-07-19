@@ -61,7 +61,10 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
-      - run: npm run check:ci --workspace @maxim/api
+      - name: Check API
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: npm run check:ci --workspace @maxim/api
 
   postgres-races:
     name: PostgreSQL Races
