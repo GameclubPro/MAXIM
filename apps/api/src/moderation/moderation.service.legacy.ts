@@ -197,7 +197,16 @@ import {
   type GlobalSpammerObservationSource,
 } from './global-spammer-intelligence.service';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
-import { renderMaxTextMarkupAsHtml, type MaxTextMarkup } from '../common/max-text-markup.util';
+import {
+  ChannelAutoPostScanManager,
+  extractChannelAutoPostMessageLinkType,
+  isChannelAutoPostMessage,
+  resolveChannelAutoPostButtonVisibility,
+  resolveChannelAutoPostEventTimestampMs,
+  resolveChannelAutoPostMessageText,
+  type ChannelAutoPostAttachOutcome,
+  type ChannelAutoPostScanState,
+} from './channel-auto-post-runtime';
 import {
   DEFAULT_WEBHOOK_QUEUE_NAMES,
   JOIN_WEBHOOK_QUEUE_NAMES,
@@ -332,8 +341,6 @@ import {
   type SharedChatExecutionGuard,
   type RemoteChatAdminAccessState,
   type ManagedChannelContext,
-  type ChannelAutoPostMessageText,
-  type ChannelAutoPostScanState,
   type ChannelAutoPostExecutionPlan,
   type LocalGlobalSpammerAdminDecision,
   type PendingGlobalSpammerExemptionLookupBatch,
@@ -421,8 +428,6 @@ type RequiredSubscriptionMembershipResult = {
   terminalChannelIds: string[];
 };
 
-type ChannelAutoPostAttachOutcome = 'attached' | 'skipped' | 'noop' | 'in_progress';
-
 const VIOLATION_MESSAGE_PROCESSING_TTL_SEC = 8 * 24 * 60 * 60;
 const SERVICE_MEMBER_ACTION_TIMESTAMP_GRANULARITY_MS = 1_000;
 const SERVICE_MEMBER_ACTION_DEDUPE_WINDOW_MS = 30_000;
@@ -505,9 +510,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly channelAutoPostScanState = new Map<string, ChannelAutoPostScanState>();
   private channelAutoPostInFlight = false;
   private channelAutoPostBackoffUntilMs = 0;
-  private channelAutoPostThrottleStreak = 0;
   private channelAutoPostPausedLogAtMs = 0;
-  private channelAutoPostCursor = 0;
+  private readonly channelAutoPostScanManager: ChannelAutoPostScanManager;
   private readonly appBaseUrl: string | null;
   private readonly blockedJoinChatIds: Set<string>;
   private readonly explicitBotContactId: string | null;
@@ -636,6 +640,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       configService?.get<number>('CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS'),
       DEFAULT_CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS,
       CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS,
+    );
+    this.channelAutoPostScanManager = new ChannelAutoPostScanManager(
+      {
+        scanIntervalMs: this.channelAutoPostScanIntervalMs,
+        scanMaxChannels: this.channelAutoPostScanMaxChannels,
+        idleBackoffMaxMs: this.channelAutoPostIdleBackoffMaxMs,
+        repairSweepMs: this.channelAutoPostRepairSweepMs,
+        rateLimitBackoffMs: CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS,
+        throttleBackoffMaxMs: this.channelAutoPostThrottleBackoffMaxMs,
+      },
+      this.channelAutoPostScanState,
     );
     this.requiredSubscriptionLookupConcurrency = this.readPositiveConfigInt(
       configService?.get<number>('REQUIRED_SUBSCRIPTION_LOOKUP_CONCURRENCY'),
@@ -13853,7 +13868,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const eventTimestampMs = this.resolveChannelAutoPostEventTimestampMs(update);
+    const eventTimestampMs = resolveChannelAutoPostEventTimestampMs(update);
 
     if (senderId) {
       const mode = await this.resolveSystemModeSnapshot();
@@ -13868,14 +13883,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
       );
       if (!senderAdminCheck.isAdmin) {
-        this.markChannelAutoPostWebhookSeen(chatId, messageId, eventTimestampMs);
+        this.channelAutoPostScanManager.markWebhookSeen(chatId, messageId, eventTimestampMs);
         return;
       }
     }
 
     const raw = this.asRecord(update.raw);
     const rawMessage = raw ? (extractRawMessageNode(raw) ?? raw) : null;
-    const messageText = this.resolveChannelAutoPostMessageText(
+    const messageText = resolveChannelAutoPostMessageText(
       rawMessage,
       typeof text === 'string' ? text : null,
     );
@@ -13885,13 +13900,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       messageId,
       text: messageText.text,
       textFormat: messageText.textFormat,
-      linkType: this.extractChannelMessageLinkType(update),
+      linkType: extractChannelAutoPostMessageLinkType(update),
       managedChannel,
       source: 'webhook',
       senderId,
     });
     if (outcome !== 'in_progress') {
-      this.markChannelAutoPostWebhookSeen(chatId, messageId, eventTimestampMs);
+      this.channelAutoPostScanManager.markWebhookSeen(chatId, messageId, eventTimestampMs);
     }
   }
 
@@ -13941,12 +13956,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           updatedAt: 'desc',
         },
       });
-      const scanBatchRefs = this.selectChannelAutoPostScanBatch(
+      const scanBatchRefs = this.channelAutoPostScanManager.selectBatch(
         channelCandidates,
         executionPlan.batchSize,
       );
       if (scanBatchRefs.length === 0) {
-        this.channelAutoPostThrottleStreak = 0;
+        this.channelAutoPostScanManager.resetThrottle();
         return;
       }
 
@@ -13984,17 +13999,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           );
           if (this.isTransientMaxApiLookupError(error)) {
             encounteredTransientThrottle = true;
-            this.channelAutoPostThrottleStreak += 1;
-            const backoffMs = this.resolveChannelAutoPostThrottleBackoffMs();
+            const backoffMs = this.channelAutoPostScanManager.recordTransientThrottle(
+              managedChannel.channelSettings.chatId,
+            );
             this.channelAutoPostBackoffUntilMs = Date.now() + backoffMs;
-            this.deferChannelAutoPostScan(managedChannel.channelSettings.chatId, backoffMs);
             break;
           }
         }
       }
 
       if (!encounteredTransientThrottle) {
-        this.channelAutoPostThrottleStreak = 0;
+        this.channelAutoPostScanManager.resetThrottle();
       }
     } finally {
       this.channelAutoPostInFlight = false;
@@ -14056,8 +14071,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       options.maxNewMessagesPerScan ?? this.channelAutoPostMaxNewMessagesPerScan,
     );
     const chatId = managedChannel.channelSettings.chatId;
-    const existingScanState = this.channelAutoPostScanState.get(chatId) ?? null;
-    if (existingScanState && Date.now() < existingScanState.nextScanAtMs) {
+    if (!this.channelAutoPostScanManager.isDue(chatId)) {
       return;
     }
 
@@ -14097,71 +14111,29 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
       throw error;
     }
-    const normalizedMessages = messages
-      .map((message) => this.parseChannelListedMessage(message))
-      .filter(
-        (item): item is NonNullable<ReturnType<typeof this.parseChannelListedMessage>> =>
-          item !== null,
-      )
-      .sort(
-        (left, right) =>
-          left.timestampMs - right.timestampMs || left.messageId.localeCompare(right.messageId),
-      );
-    let scanState = existingScanState;
-    let sawNewMessages = false;
-    let autoAttachAttempts = 0;
-
-    for (const normalized of normalizedMessages) {
-      if (!this.isChannelAutoPostScanMessageNew(scanState, normalized)) {
-        continue;
-      }
-      sawNewMessages = true;
-      if (normalized.senderId && !managedChannel.adminUserIds.includes(normalized.senderId)) {
-        scanState = this.advanceChannelAutoPostScanState(scanState, normalized);
-        this.channelAutoPostScanState.set(chatId, scanState);
-        continue;
-      }
-      if (normalized.timestampMs < managedChannel.channelSettings.updatedAt.getTime()) {
-        scanState = this.advanceChannelAutoPostScanState(scanState, normalized);
-        this.channelAutoPostScanState.set(chatId, scanState);
-        continue;
-      }
-      if (normalized.hasInlineKeyboard) {
-        scanState = this.advanceChannelAutoPostScanState(scanState, normalized);
-        this.channelAutoPostScanState.set(chatId, scanState);
-        continue;
-      }
-      if (autoAttachAttempts >= maxNewMessagesPerScan) {
-        break;
-      }
-
-      const outcome = await this.tryAutoAttachChannelMessageButtons({
-        chatId,
-        messageId: normalized.messageId,
-        text: normalized.text,
-        textFormat: normalized.textFormat,
-        linkType: normalized.linkType,
-        managedChannel,
-        source: 'poll',
-        senderId: null,
-      });
-      autoAttachAttempts += 1;
-      if (outcome === 'in_progress') {
-        break;
-      }
-      scanState = this.advanceChannelAutoPostScanState(scanState, normalized);
-      this.channelAutoPostScanState.set(chatId, scanState);
-    }
-
-    this.channelAutoPostScanState.set(
+    await this.channelAutoPostScanManager.processListedMessages({
       chatId,
-      this.scheduleChannelAutoPostScanState(scanState, sawNewMessages),
-    );
+      messages,
+      adminUserIds: managedChannel.adminUserIds,
+      settingsUpdatedAtMs: managedChannel.channelSettings.updatedAt.getTime(),
+      maxNewMessagesPerScan,
+      attach: (normalized) =>
+        this.tryAutoAttachChannelMessageButtons({
+          chatId,
+          messageId: normalized.messageId,
+          text: normalized.text,
+          textFormat: normalized.textFormat,
+          linkType: normalized.linkType,
+          managedChannel,
+          source: 'poll',
+          senderId: null,
+        }),
+    });
   }
 
   private async resolveChannelAutoPostExecutionPlan(): Promise<ChannelAutoPostExecutionPlan | null> {
     const basePlan: ChannelAutoPostExecutionPlan = {
-      batchSize: this.resolveChannelAutoPostScanBatchSize(),
+      batchSize: this.channelAutoPostScanManager.resolveBatchSize(),
       interChannelDelayMs: this.channelAutoPostInterChannelDelayMs,
       maxNewMessagesPerScan: this.channelAutoPostMaxNewMessagesPerScan,
     };
@@ -14290,293 +14262,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return null;
   }
 
-  private parseChannelListedMessage(message: Record<string, unknown>): {
-    messageId: string;
-    text: string | null;
-    textFormat: MaxSendMessageOptions['textFormat'] | null;
-    linkType: string | null;
-    timestampMs: number;
-    hasInlineKeyboard: boolean;
-    senderId: string | null;
-  } | null {
-    const body = this.asRecord(message.body);
-    const link = this.asRecord(message.link);
-    const messageIdCandidate =
-      body?.mid ??
-      body?.seq ??
-      message.message_id ??
-      message.messageId ??
-      message.mid ??
-      message.seq ??
-      message.id;
-    const timestampCandidate = message.timestamp ?? message.created_at ?? message.createdAt;
-    if (
-      (typeof messageIdCandidate !== 'string' && typeof messageIdCandidate !== 'number') ||
-      (typeof timestampCandidate !== 'number' && typeof timestampCandidate !== 'string')
-    ) {
-      return null;
-    }
-
-    const timestampMs =
-      typeof timestampCandidate === 'number' ? timestampCandidate : Number(timestampCandidate);
-    if (!Number.isFinite(timestampMs) || timestampMs <= 0) {
-      return null;
-    }
-
-    const attachments = Array.isArray(body?.attachments) ? body.attachments : [];
-    const hasInlineKeyboard = attachments.some((attachment) => {
-      const row = this.asRecord(attachment);
-      return this.readLowerString(row?.type) === 'inline_keyboard';
-    });
-    const messageText = this.resolveChannelAutoPostMessageText(message, null);
-
-    return {
-      messageId: String(messageIdCandidate),
-      text: messageText.text,
-      textFormat: messageText.textFormat,
-      linkType: this.readLowerString(link?.type),
-      timestampMs,
-      hasInlineKeyboard,
-      senderId: (() => {
-        const senderId = this.asRecord(message.sender)?.user_id ?? message.sender_id;
-        return typeof senderId === 'string' && senderId.trim() ? senderId.trim() : null;
-      })(),
-    };
-  }
-
-  private resolveChannelAutoPostMessageText(
-    message: Record<string, unknown> | null,
-    fallbackText: string | null,
-  ): ChannelAutoPostMessageText {
-    const source = this.resolveChannelAutoPostMessageTextSource(message, fallbackText);
-    if (typeof source.text !== 'string' || source.text.trim().length === 0) {
-      return {
-        text: null,
-        textFormat: null,
-      };
-    }
-
-    if (source.markup.length > 0) {
-      const html = renderMaxTextMarkupAsHtml(source.text, source.markup);
-      if (html && html !== source.text) {
-        return {
-          text: html,
-          textFormat: 'html',
-        };
-      }
-    }
-
-    return {
-      text: source.text,
-      textFormat: source.textFormat,
-    };
-  }
-
-  private resolveChannelAutoPostMessageTextSource(
-    message: Record<string, unknown> | null,
-    fallbackText: string | null,
-  ): {
-    text: string | null;
-    markup: MaxTextMarkup[];
-    textFormat: MaxSendMessageOptions['textFormat'] | null;
-  } {
-    const direct = this.extractChannelAutoPostMessageTextSource(message);
-    if (typeof direct.text === 'string' && direct.text.trim().length > 0) {
-      return direct;
-    }
-
-    const linked = this.extractForwardedChannelAutoPostMessageTextSource(message);
-    if (typeof linked.text === 'string' && linked.text.trim().length > 0) {
-      return linked;
-    }
-
-    return {
-      text:
-        typeof fallbackText === 'string' && fallbackText.trim().length > 0 ? fallbackText : null,
-      markup: [],
-      textFormat: null,
-    };
-  }
-
-  private extractForwardedChannelAutoPostMessageTextSource(
-    message: Record<string, unknown> | null,
-  ): {
-    text: string | null;
-    markup: MaxTextMarkup[];
-    textFormat: MaxSendMessageOptions['textFormat'] | null;
-  } {
-    const link = this.asRecord(message?.link);
-    if (this.readLowerString(link?.type) !== 'forward') {
-      return {
-        text: null,
-        markup: [],
-        textFormat: null,
-      };
-    }
-
-    return this.extractChannelAutoPostMessageTextSource(this.asRecord(link?.message));
-  }
-
-  private extractChannelAutoPostMessageTextSource(message: Record<string, unknown> | null): {
-    text: string | null;
-    markup: MaxTextMarkup[];
-    textFormat: MaxSendMessageOptions['textFormat'] | null;
-  } {
-    const body = this.asRecord(message?.body);
-    const textCandidates = [body?.text, message?.text, message?.caption];
-    const text =
-      textCandidates.find(
-        (candidate): candidate is string =>
-          typeof candidate === 'string' && candidate.trim().length > 0,
-      ) ?? null;
-
-    return {
-      text,
-      markup: this.extractChannelAutoPostMessageMarkup(message),
-      textFormat: this.extractChannelAutoPostMessageTextFormat(message),
-    };
-  }
-
-  private extractChannelAutoPostMessageTextFormat(
-    message: Record<string, unknown> | null,
-  ): MaxSendMessageOptions['textFormat'] | null {
-    const body = this.asRecord(message?.body);
-    const format = this.readLowerString(body?.format ?? message?.format);
-    return format === 'markdown' || format === 'html' ? format : null;
-  }
-
-  private extractChannelAutoPostMessageMarkup(
-    message: Record<string, unknown> | null,
-  ): MaxTextMarkup[] {
-    const body = this.asRecord(message?.body);
-    const candidates = [
-      body?.markup,
-      body?.text_markup,
-      body?.textMarkup,
-      body?.caption_markup,
-      body?.captionMarkup,
-      message?.markup,
-      message?.text_markup,
-      message?.textMarkup,
-      message?.caption_markup,
-      message?.captionMarkup,
-    ];
-
-    for (const candidate of candidates) {
-      if (!Array.isArray(candidate)) {
-        continue;
-      }
-
-      const markup = candidate
-        .map((item) => this.normalizeChannelAutoPostMessageMarkup(item))
-        .filter((item): item is MaxTextMarkup => item !== null);
-      if (markup.length > 0) {
-        return markup;
-      }
-    }
-
-    return [];
-  }
-
-  private normalizeChannelAutoPostMessageMarkup(value: unknown): MaxTextMarkup | null {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return null;
-    }
-
-    const row = value as Record<string, unknown>;
-    const type = this.readLowerString(row.type);
-    const from = this.readInteger(row.from);
-    const length = this.readInteger(row.length);
-
-    if (
-      !type ||
-      from === null ||
-      length === null ||
-      from < 0 ||
-      length <= 0 ||
-      ![
-        'emphasized',
-        'heading',
-        'link',
-        'monospaced',
-        'strikethrough',
-        'strong',
-        'underline',
-        'user_mention',
-      ].includes(type)
-    ) {
-      return null;
-    }
-
-    return {
-      from,
-      length,
-      type: type as MaxTextMarkup['type'],
-      url: this.readString(row.url),
-      userLink: this.readString(row.user_link ?? row.userLink),
-    };
-  }
-
-  private readInteger(value: unknown): number | null {
-    const parsed =
-      typeof value === 'number'
-        ? value
-        : typeof value === 'string' && value.trim().length > 0
-          ? Number(value)
-          : Number.NaN;
-    return Number.isInteger(parsed) ? parsed : null;
-  }
-
-  private resolveChannelAutoPostEventTimestampMs(update: MaxUpdate): number {
-    const raw = this.asRecord(update.raw);
-    const rawMessage = this.asRecord(raw?.message);
-    const candidates: unknown[] = [
-      update.message?.createdAt,
-      rawMessage?.timestamp,
-      rawMessage?.created_at,
-      rawMessage?.createdAt,
-      raw?.timestamp,
-      raw?.created_at,
-      raw?.createdAt,
-    ];
-
-    for (const candidate of candidates) {
-      const timestampMs =
-        typeof candidate === 'number'
-          ? candidate
-          : typeof candidate === 'string' && candidate.trim().length > 0
-            ? Date.parse(candidate)
-            : Number.NaN;
-      if (Number.isFinite(timestampMs) && timestampMs > 0) {
-        return Math.trunc(timestampMs);
-      }
-    }
-
-    return Date.now();
-  }
-
-  private markChannelAutoPostWebhookSeen(
-    chatId: string,
-    messageId: string,
-    timestampMs: number,
-  ): void {
-    const current =
-      this.channelAutoPostScanState.get(chatId) ?? this.createChannelAutoPostScanState();
-    const nextState =
-      Number.isFinite(timestampMs) && timestampMs > 0
-        ? this.advanceChannelAutoPostScanState(current, { messageId, timestampMs })
-        : current;
-
-    this.channelAutoPostScanState.set(chatId, {
-      ...nextState,
-      idleStreak: 0,
-      nextScanAtMs: Math.max(
-        nextState.nextScanAtMs,
-        Date.now() + this.channelAutoPostRepairSweepMs,
-      ),
-    });
-  }
-
   private async tryAutoAttachChannelMessageButtons(params: {
     chatId: string;
     messageId: string;
@@ -14600,7 +14285,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
       ...(autoAttachBotId ? { botId: autoAttachBotId } : {}),
     } as const;
-    const { includeCommentsButton, includeSuggestButton } = this.resolveChannelAutoPostButtons(
+    const { includeCommentsButton, includeSuggestButton } = resolveChannelAutoPostButtonVisibility(
       managedChannel.channelSettings,
     );
     if (!includeCommentsButton && !includeSuggestButton) {
@@ -15109,53 +14794,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private isChannelMessage(update: MaxUpdate): boolean {
-    if (update.message?.entityType === 'channel') {
-      return true;
-    }
-
-    const raw = this.asRecord(update.raw);
-    const message = this.asRecord(raw?.message);
-    const recipient = this.asRecord(message?.recipient);
-    const chat = this.asRecord(message?.chat);
-
-    const candidates = [
-      recipient?.chat_type,
-      recipient?.chatType,
-      chat?.chat_type,
-      chat?.chatType,
-      raw?.chat_type,
-      raw?.chatType,
-    ];
-
-    return candidates.some((candidate) => this.readLowerString(candidate) === 'channel');
-  }
-
-  private extractChannelMessageLinkType(update: MaxUpdate): string | null {
-    const raw = this.asRecord(update.raw);
-    if (!raw) {
-      return null;
-    }
-
-    const message = extractRawMessageNode(raw) ?? raw;
-    const link = this.asRecord(message.link);
-    return this.readLowerString(link?.type);
-  }
-
-  private resolveChannelAutoPostButtons(
-    settings: Pick<
-      PersistedChannelSettings,
-      'autoPostButtonsMode' | 'postSuggestionsEnabled' | 'commentsEnabled'
-    >,
-  ) {
-    const mode = settings.autoPostButtonsMode ?? 'OFF';
-    const includeComments = (mode === 'COMMENTS' || mode === 'BOTH') && settings.commentsEnabled;
-    const includeSuggest =
-      (mode === 'SUGGEST' || mode === 'BOTH') && settings.postSuggestionsEnabled;
-
-    return {
-      includeCommentsButton: includeComments,
-      includeSuggestButton: includeSuggest,
-    };
+    return isChannelAutoPostMessage(update);
   }
 
   private buildChannelAutoPostButtons(
@@ -17655,149 +17294,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
       return true;
     }
-  }
-
-  private selectChannelAutoPostScanBatch<T extends { chatId: string }>(
-    channels: T[],
-    maxChannels = this.channelAutoPostScanMaxChannels,
-  ): T[] {
-    const normalizedMaxChannels = Math.max(
-      1,
-      Math.min(maxChannels, this.channelAutoPostScanMaxChannels),
-    );
-    const dueChannels = channels.filter((channel) => this.isChannelAutoPostScanDue(channel.chatId));
-    if (dueChannels.length === 0) {
-      return [];
-    }
-    if (dueChannels.length <= normalizedMaxChannels) {
-      this.channelAutoPostCursor = 0;
-      return dueChannels;
-    }
-
-    const startIndex = this.channelAutoPostCursor % dueChannels.length;
-    const batch: T[] = [];
-
-    for (let index = 0; index < normalizedMaxChannels; index += 1) {
-      batch.push(dueChannels[(startIndex + index) % dueChannels.length]!);
-    }
-
-    this.channelAutoPostCursor = (startIndex + batch.length) % dueChannels.length;
-    return batch;
-  }
-
-  private isChannelAutoPostScanDue(chatId: string): boolean {
-    const current = this.channelAutoPostScanState.get(chatId) ?? null;
-    return !current || Date.now() >= current.nextScanAtMs;
-  }
-
-  private isChannelAutoPostScanMessageNew(
-    scanState: ChannelAutoPostScanState | null,
-    message: {
-      messageId: string;
-      timestampMs: number;
-    },
-  ): boolean {
-    if (!scanState || scanState.latestTimestampMs <= 0) {
-      return true;
-    }
-    if (message.timestampMs > scanState.latestTimestampMs) {
-      return true;
-    }
-    if (message.timestampMs < scanState.latestTimestampMs) {
-      return false;
-    }
-
-    return !scanState.latestMessageIdsAtTimestamp.includes(message.messageId);
-  }
-
-  private advanceChannelAutoPostScanState(
-    scanState: ChannelAutoPostScanState | null,
-    message: {
-      messageId: string;
-      timestampMs: number;
-    },
-  ): ChannelAutoPostScanState {
-    const current = scanState ?? this.createChannelAutoPostScanState();
-    if (message.timestampMs > current.latestTimestampMs) {
-      return {
-        ...current,
-        latestTimestampMs: message.timestampMs,
-        latestMessageIdsAtTimestamp: [message.messageId],
-      };
-    }
-    if (message.timestampMs < current.latestTimestampMs) {
-      return current;
-    }
-    if (current.latestMessageIdsAtTimestamp.includes(message.messageId)) {
-      return current;
-    }
-
-    return {
-      ...current,
-      latestMessageIdsAtTimestamp: [
-        ...current.latestMessageIdsAtTimestamp,
-        message.messageId,
-      ].slice(-10),
-    };
-  }
-
-  private scheduleChannelAutoPostScanState(
-    scanState: ChannelAutoPostScanState | null,
-    sawNewMessages: boolean,
-  ): ChannelAutoPostScanState {
-    const current = scanState ?? this.createChannelAutoPostScanState();
-    const idleStreak = sawNewMessages ? 0 : current.idleStreak + 1;
-    const nextDelayMs = sawNewMessages
-      ? this.channelAutoPostScanIntervalMs
-      : Math.max(
-          this.channelAutoPostScanIntervalMs,
-          Math.min(
-            this.channelAutoPostIdleBackoffMaxMs,
-            this.channelAutoPostScanIntervalMs * 2 ** Math.min(idleStreak, 8),
-          ),
-        );
-
-    return {
-      ...current,
-      idleStreak,
-      nextScanAtMs: Date.now() + nextDelayMs,
-    };
-  }
-
-  private createChannelAutoPostScanState(): ChannelAutoPostScanState {
-    return {
-      latestTimestampMs: 0,
-      latestMessageIdsAtTimestamp: [],
-      idleStreak: 0,
-      nextScanAtMs: 0,
-    };
-  }
-
-  private resolveChannelAutoPostScanBatchSize(): number {
-    if (this.channelAutoPostThrottleStreak <= 0) {
-      return this.channelAutoPostScanMaxChannels;
-    }
-
-    const divisor = 2 ** Math.min(this.channelAutoPostThrottleStreak, 3);
-    return Math.max(1, Math.ceil(this.channelAutoPostScanMaxChannels / divisor));
-  }
-
-  private resolveChannelAutoPostThrottleBackoffMs(): number {
-    return Math.min(
-      this.channelAutoPostThrottleBackoffMaxMs,
-      CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS *
-        2 ** Math.min(Math.max(0, this.channelAutoPostThrottleStreak - 1), 3),
-    );
-  }
-
-  private deferChannelAutoPostScan(chatId: string, backoffMs: number): void {
-    const current =
-      this.channelAutoPostScanState.get(chatId) ?? this.createChannelAutoPostScanState();
-    this.channelAutoPostScanState.set(chatId, {
-      ...current,
-      idleStreak: Math.min(current.idleStreak + 1, 8),
-      nextScanAtMs: Math.max(current.nextScanAtMs, Date.now() + backoffMs),
-    });
   }
 
   async processNightModeTransitionJob(

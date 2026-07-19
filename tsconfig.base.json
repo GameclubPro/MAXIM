@@ -21,8 +21,11 @@
       "@maxim/contracts/manual-moderation": ["packages/contracts/src/manual-moderation.ts"],
       "@maxim/contracts/poll": ["packages/contracts/src/poll.ts"],
       "@maxim/contracts/publication": ["packages/contracts/src/publication.ts"],
+      "@maxim/contracts/safety-desk": ["packages/contracts/src/safety-desk.ts"],
       "@maxim/contracts/settings": ["packages/contracts/src/settings.ts"],
-      "@maxim/contracts/system": ["packages/contracts/src/system.ts"]
+      "@maxim/contracts/support-requests": ["packages/contracts/src/support-requests.ts"],
+      "@maxim/contracts/system": ["packages/contracts/src/system.ts"],
+      "@maxim/contracts/vk-parsing": ["packages/contracts/src/vk-parsing.ts"]
     }
   }
 }

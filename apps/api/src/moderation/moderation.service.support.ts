@@ -1,6 +1,5 @@
 import type { ChatSettings } from '../prisma/prisma-client';
 import type { BotSpeechPersona } from '@maxim/contracts/bot-speech';
-import type { MaxSendMessageOptions } from '../max/max-client.service';
 import type { ChannelSettings as PersistedChannelSettings } from '../prisma/prisma-client';
 import { getJoinWebhookShardConcurrencies } from '../runtime/moderation-runtime';
 import {
@@ -56,16 +55,6 @@ export type RemoteChatAdminAccessState = 'granted' | 'user_denied';
 export type ManagedChannelContext = {
   channelSettings: PersistedChannelSettings;
   adminUserIds: string[];
-};
-export type ChannelAutoPostMessageText = {
-  text: string | null;
-  textFormat: MaxSendMessageOptions['textFormat'] | null;
-};
-export type ChannelAutoPostScanState = {
-  latestTimestampMs: number;
-  latestMessageIdsAtTimestamp: string[];
-  idleStreak: number;
-  nextScanAtMs: number;
 };
 export type ChannelAutoPostExecutionPlan = {
   batchSize: number;

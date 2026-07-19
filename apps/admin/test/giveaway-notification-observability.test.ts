@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { safetyDeskDeleteRuntimeResponseSchema } from '../../../packages/contracts/src/safety-desk';
+import { safetyDeskDeleteRuntimeResponseSchema } from '@maxim/contracts/safety-desk';
 import {
   giveawayWinnerNotificationEventAt,
   giveawayWinnerNotificationStatusLabel,

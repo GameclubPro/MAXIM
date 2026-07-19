@@ -1,4 +1,92 @@
 import { z } from 'zod';
+import { broadcastTextFormatSchema } from './broadcast-common.js';
+import { VK_PARSING_MAX_VIDEOS } from './vk-parsing-common.js';
+
+export const safetyDeskReviewStatusSchema = z.enum(['REVIEW', 'APPROVED', 'REJECTED', 'BLOCKED']);
+export type SafetyDeskReviewStatus = z.infer<typeof safetyDeskReviewStatusSchema>;
+
+export const safetyDeskRiskLevelSchema = z.enum(['LOW', 'MEDIUM', 'HIGH', 'BLOCKED']);
+export type SafetyDeskRiskLevel = z.infer<typeof safetyDeskRiskLevelSchema>;
+
+export const safetyDeskQueueSourceSchema = z.enum(['VK_REVIEW']);
+export type SafetyDeskQueueSource = z.infer<typeof safetyDeskQueueSourceSchema>;
+
+export const safetyDeskCheckSchema = z.object({
+  label: z.string(),
+  state: z.enum(['PASSED', 'WARNING', 'BLOCKED']),
+});
+export type SafetyDeskCheck = z.infer<typeof safetyDeskCheckSchema>;
+
+export const safetyDeskQueueItemSchema = z.object({
+  id: z.string(),
+  source: safetyDeskQueueSourceSchema,
+  sourceId: z.string(),
+  chatId: z.string(),
+  entityTitle: z.string(),
+  sourceTitle: z.string(),
+  author: z.string(),
+  status: safetyDeskReviewStatusSchema,
+  risk: safetyDeskRiskLevelSchema,
+  title: z.string(),
+  text: z.string(),
+  textFormat: broadcastTextFormatSchema.default('plain'),
+  previewHtml: z.string().default(''),
+  domains: z.array(z.string()).default([]),
+  photoUrls: z.array(z.string().url()).default([]),
+  videoUrls: z.array(z.string().url()).max(VK_PARSING_MAX_VIDEOS).default([]),
+  linkUrls: z.array(z.string().url()).default([]),
+  originalUrl: z.string().url().nullable().default(null),
+  scheduledAt: z.string().datetime().nullable().default(null),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  reasons: z.array(z.string()).default([]),
+  checks: z.array(safetyDeskCheckSchema).default([]),
+});
+export type SafetyDeskQueueItem = z.infer<typeof safetyDeskQueueItemSchema>;
+
+export const safetyDeskAuditEntrySchema = z.object({
+  id: z.string(),
+  itemId: z.string().nullable().default(null),
+  action: z.string(),
+  title: z.string(),
+  createdAt: z.string().datetime(),
+});
+export type SafetyDeskAuditEntry = z.infer<typeof safetyDeskAuditEntrySchema>;
+
+export const safetyDeskSummarySchema = z.object({
+  review: z.number().int().min(0).default(0),
+  approved: z.number().int().min(0).default(0),
+  rejected: z.number().int().min(0).default(0),
+  blocked: z.number().int().min(0).default(0),
+  servicePosts: z.number().int().min(0).default(0),
+});
+export type SafetyDeskSummary = z.infer<typeof safetyDeskSummarySchema>;
+
+export const safetyDeskQueueResponseSchema = z.object({
+  generatedAt: z.string().datetime(),
+  items: z.array(safetyDeskQueueItemSchema).default([]),
+  summary: safetyDeskSummarySchema,
+  audit: z.array(safetyDeskAuditEntrySchema).default([]),
+});
+export type SafetyDeskQueueResponse = z.infer<typeof safetyDeskQueueResponseSchema>;
+
+export const safetyDeskDecisionRequestSchema = z.object({
+  reason: z.string().trim().max(500).optional(),
+});
+export type SafetyDeskDecisionRequest = z.infer<typeof safetyDeskDecisionRequestSchema>;
+
+export const safetyDeskApproveAllRequestSchema = z.object({
+  itemIds: z.array(z.string().trim().min(1)).min(1).max(100),
+  reason: z.string().trim().max(500).optional(),
+});
+export type SafetyDeskApproveAllRequest = z.infer<typeof safetyDeskApproveAllRequestSchema>;
+
+export const safetyDeskDecisionResponseSchema = z.object({
+  item: safetyDeskQueueItemSchema.nullable().default(null),
+  queue: safetyDeskQueueResponseSchema,
+  message: z.string(),
+});
+export type SafetyDeskDecisionResponse = z.infer<typeof safetyDeskDecisionResponseSchema>;
 
 export const safetyDeskDeleteIntentStatusSchema = z.enum([
   'OBSERVED',

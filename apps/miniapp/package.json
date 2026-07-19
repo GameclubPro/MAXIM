@@ -8,6 +8,7 @@
     "build": "npm run build --workspace @maxim/contracts && tsc -p tsconfig.json --noEmit && vite build && node scripts/check-budgets.mjs",
     "budget": "node scripts/check-budgets.mjs",
     "check:css": "node scripts/check-css-architecture.mjs",
+    "visual:smoke": "MINIAPP_SCREENSHOT_PRESET=smoke node ../../scripts/capture-miniapp-preview.mjs",
     "preview": "vite preview",
     "typecheck": "npm run build --workspace @maxim/contracts && tsc -p tsconfig.json --noEmit",
     "test": "tsx --test ./test/*.test.ts"
@@ -26,6 +27,7 @@
     "@types/react": "^19.2.15",
     "@types/react-dom": "^19.0.3",
     "@vitejs/plugin-react": "^6.0.2",
+    "postcss": "^8.5.19",
     "vite": "^8.1.3"
   }
 }

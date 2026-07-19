@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { logsDashboardRangeSchema } from './core.js';
+import { logsDashboardRangeSchema } from './dashboard-common.js';
 
 export const chatParticipantRoleSchema = z.enum(['owner', 'admin', 'member']);
 export type ChatParticipantRole = z.infer<typeof chatParticipantRoleSchema>;

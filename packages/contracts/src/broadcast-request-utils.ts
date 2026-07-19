@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { BroadcastScheduleMode, BroadcastTargetMode } from './core.js';
+import type { BroadcastScheduleMode, BroadcastTargetMode } from './broadcast-common.js';
 
 const BROADCAST_CYCLE_MAX_WINDOW_HOURS = 31 * 24;
 

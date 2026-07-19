@@ -51,23 +51,32 @@ maxim_topology_expand_api_services() {
 }
 
 maxim_topology_build_shared_api_image() {
-  local project_name="$1"
+  local image_ref="$1"
   local source_image
   local service
 
-  if [[ -z "$project_name" ]]; then
-    echo "Docker Compose project name is required to build the shared API image." >&2
+  if [[ -z "$image_ref" ]]; then
+    echo "An immutable shared API image ref is required." >&2
     return 1
   fi
 
-  source_image="${project_name}-api-ingress:latest"
-  echo "Building one shared API image without BuildKit provenance: $source_image"
-  docker buildx build --load --provenance=false -t "$source_image" -f apps/api/Dockerfile .
+  if [[ "$image_ref" != *:* && "$image_ref" != */* ]]; then
+    source_image="${image_ref}-api-ingress:latest"
+    echo "Building compatibility shared API image for Compose project: $source_image"
+    docker buildx build --load --provenance=false -t "$source_image" -f apps/api/Dockerfile .
+    for service in "${MAXIM_PRODUCTION_API_SERVICES[@]}"; do
+      [[ "$service" == "api-ingress" ]] || docker tag "$source_image" "${image_ref}-${service}:latest"
+    done
+    return 0
+  fi
 
-  for service in "${MAXIM_PRODUCTION_API_SERVICES[@]}"; do
-    if [[ "$service" == "api-ingress" ]]; then
-      continue
-    fi
-    docker tag "$source_image" "${project_name}-${service}:latest"
-  done
+  source_image="$image_ref"
+  if docker image inspect "$source_image" >/dev/null 2>&1; then
+    echo "Reusing existing immutable API image: $source_image"
+    return 0
+  fi
+  echo "Building one shared API image without BuildKit provenance: $source_image"
+  docker buildx build --load --provenance=false \
+    --label com.maxim.release-protected=true \
+    -t "$source_image" -f apps/api/Dockerfile .
 }

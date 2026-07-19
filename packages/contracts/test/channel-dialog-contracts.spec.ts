@@ -1,3 +1,5 @@
+import { describe, expect, it } from 'vitest';
+
 import {
   channelDialogMessageSchema as rootChannelDialogMessageSchema,
   createChannelDialogMessageRequestSchema as rootCreateChannelDialogMessageRequestSchema,

@@ -1,18 +1,17 @@
-import { spawn } from 'node:child_process';
-import path from 'node:path';
 import process from 'node:process';
-import { fileURLToPath } from 'node:url';
 import { chromium, devices } from 'playwright';
 import previewDevicePresets from '../apps/miniapp/src/lib/preview-device-presets.json' with { type: 'json' };
+import {
+  ensureMiniappDevServer,
+  isLocalMiniappBaseUrl,
+  stopChildProcess,
+} from './miniapp-local-server.mjs';
 import { assertMaxBridgeShim, installMaxBridgeShimInitScript } from './miniapp-max-bridge-shim.mjs';
 import {
   applyNativeVisualMode,
   installNativeVisualModeInitScript,
 } from './miniapp-native-visual-mode.mjs';
-
-const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const DEFAULT_BASE_URL = 'http://127.0.0.1:3000/app/';
-const DEFAULT_WAIT_MS = 30_000;
+import { LOCAL_MINIAPP_BASE_URL } from './miniapp-visual-config.mjs';
 
 const deviceProfiles = previewDevicePresets;
 
@@ -165,80 +164,6 @@ function buildPreviewUrl(baseUrl, routePath, queryDevice) {
   return url.toString();
 }
 
-function isLocalBaseUrl(baseUrl) {
-  const url = new URL(baseUrl);
-  return url.hostname === '127.0.0.1' || url.hostname === 'localhost';
-}
-
-async function sleep(ms) {
-  await new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-async function waitForUrl(url, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(url, {
-        redirect: 'manual',
-      });
-      if (response.status >= 200 && response.status < 500) {
-        return;
-      }
-    } catch {
-      // Keep polling until the dev server is ready.
-    }
-
-    await sleep(500);
-  }
-
-  throw new Error(`Timed out waiting for ${url}`);
-}
-
-function startMiniAppDevServer(baseUrl) {
-  const url = new URL(baseUrl);
-  const host = url.hostname;
-  const port = url.port || '3000';
-
-  return spawn(
-    'npm',
-    ['run', 'dev', '--workspace', '@maxim/miniapp', '--', '--host', host, '--port', port],
-    {
-      cwd: ROOT_DIR,
-      stdio: 'inherit',
-      env: {
-        ...process.env,
-      },
-    },
-  );
-}
-
-async function stopChildProcess(childProcess) {
-  if (
-    !childProcess ||
-    childProcess.killed ||
-    childProcess.exitCode !== null ||
-    childProcess.signalCode !== null
-  ) {
-    return;
-  }
-
-  await new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      childProcess.kill('SIGKILL');
-    }, 5_000);
-
-    childProcess.once('exit', () => {
-      clearTimeout(timer);
-      resolve();
-    });
-
-    childProcess.kill('SIGTERM');
-  });
-}
-
 async function waitForPreviewApp(page) {
   await page.waitForSelector('.design-preview__device', { timeout: 20_000 });
   await page.waitForSelector('.app-shell', { timeout: 20_000 });
@@ -285,16 +210,12 @@ async function main() {
   const baseUrl = (
     args.baseUrl ??
     process.env.MINIAPP_EMULATOR_BASE_URL ??
-    DEFAULT_BASE_URL
+    LOCAL_MINIAPP_BASE_URL
   ).trim();
   const target = (args.target ?? process.env.MINIAPP_EMULATOR_TARGET ?? 'device')
     .trim()
     .toLowerCase();
-  const colorScheme = (
-    args.colorScheme ??
-    process.env.MINIAPP_EMULATOR_COLOR_SCHEME ??
-    'light'
-  )
+  const colorScheme = (args.colorScheme ?? process.env.MINIAPP_EMULATOR_COLOR_SCHEME ?? 'light')
     .trim()
     .toLowerCase();
   const envMaxBridge = optionalEnvFlag('MINIAPP_EMULATOR_MAX_BRIDGE');
@@ -323,7 +244,7 @@ async function main() {
   }
 
   const previewUrl = buildPreviewUrl(baseUrl, route, profile.queryDevice);
-  const shouldManageDevServer = !reuseServer && isLocalBaseUrl(baseUrl);
+  const shouldManageDevServer = !reuseServer && isLocalMiniappBaseUrl(baseUrl);
 
   let devServerProcess = null;
   let browser = null;
@@ -348,13 +269,7 @@ async function main() {
 
   try {
     if (shouldManageDevServer) {
-      try {
-        await waitForUrl(baseUrl, 1_500);
-        console.log(`Reusing existing mini-app dev server at ${baseUrl}`);
-      } catch {
-        devServerProcess = startMiniAppDevServer(baseUrl);
-        await waitForUrl(baseUrl, DEFAULT_WAIT_MS);
-      }
+      devServerProcess = await ensureMiniappDevServer(baseUrl, { log: console.log });
     }
 
     try {

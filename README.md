@@ -1,80 +1,183 @@
-# MAX Moderation Bot + Mini-App
+# MAX Moderation Bot, Mini App, And Safety Desk
 
-Production-ready monorepo for MAX chat moderation bot and admin mini-app.
+Production monorepo for MAX chat/channel moderation, publishing, the public «Майор Максимов» mini
+app, and the closed owner Safety Desk.
 
-## Stack
+## Workspaces
 
-- API: NestJS + Fastify + Prisma + BullMQ + Redis
-- Mini-app: React + Vite + TypeScript
-- Database: Postgres
-- Infra: Docker Compose + Nginx + Certbot
+- `apps/api`: NestJS + Fastify + Prisma + BullMQ + Postgres/Redis.
+- `apps/miniapp`: React/Vite MAX mini app served under `/app/`.
+- `apps/admin`: React/Vite Safety Desk; not a MAX mini app.
+- `packages/contracts`: shared Zod schemas and TypeScript types.
+- `infra`: Docker Compose, nginx, deploy, rollback, backup, and monitoring scripts.
 
-## Quick start
+Use Node 24 LTS (`.nvmrc`). Dockerfiles install from `package-lock.json` with `npm ci`.
 
-1. Copy `.env.example` to `.env` and set secrets.
-2. Install dependencies: `npm install`.
-3. Start infra (db/redis) for local host access:
-   `docker compose -f infra/docker-compose.yml -f infra/docker-compose.local.yml up -d postgres redis`.
-4. Run API: `npm run dev --workspace @maxim/api`.
-5. Run mini-app: `npm run dev --workspace @maxim/miniapp`.
+## Local Start
 
-The `.env.example` file now includes a multi-bot example:
+1. Copy `.env.example` to ignored `.env` and configure local values.
+2. Install dependencies:
 
-- the default bot stays the primary visible bot,
-- `MAX_ENTRY_BOT_ID` keeps `start` / `startapp` links on one canonical entry bot even when ownership is split across multiple bots,
-- additional bots are listed in `MAX_BOTS_JSON`,
-- use `state: "dormant"` for pre-provisioned additional bots that should appear in admin metadata but must not process webhooks or actions yet.
+   ```bash
+   npm ci
+   ```
 
-## Prod / VPS Access From Any Device
+3. Start Postgres and Redis with local ports:
 
-Each local device should keep its own ignored VPS access config:
+   ```bash
+   docker compose -f infra/docker-compose.yml -f infra/docker-compose.local.yml up -d postgres redis
+   ```
 
-```sh
+4. Start all development servers:
+
+   ```bash
+   npm run dev:all
+   ```
+
+Focused servers are `npm run dev:api`, `npm run dev:miniapp`, and `npm run dev:admin`.
+
+The env example supports multiple bots: `MAX_ENTRY_BOT_ID` selects the canonical start/startapp bot,
+additional bots live in `MAX_BOTS_JSON`, and `state: "dormant"` keeps a provisioned bot visible in
+metadata without webhook/action execution.
+
+## Validation
+
+```bash
+npm run typecheck:contracts
+npm run test:contracts
+npm run check:api
+npm run check:prisma
+npm run check:miniapp
+npm run typecheck:admin
+npm run test:admin
+```
+
+Use `npm run check` for the broad CI-style pass. API validation scripts serialize contracts/Prisma
+codegen; internal `*:unlocked` and `*:source` scripts are not normal parallel entrypoints.
+
+## Submit Changes
+
+`local-commit-push.sh` uses the existing Git index by default: stage the intended paths first, then
+run the helper. It validates staged impact, commits, and pushes the exact resulting `HEAD`.
+
+```bash
+git add --patch
+./infra/scripts/local-commit-push.sh "describe the change" main
+```
+
+Use `--all` only for an intentional broad commit. All root/scoped `AGENTS.md` files remain excluded
+unless `--include-agents` is also passed; staged agent notes are rejected without that flag.
+
+## Mini App Visual Work
+
+```bash
+npm run emulator:miniapp
+npm run emulator:miniapp:android
+npm run emulator:miniapp -- --device android --route '/chat/preview-chat/settings?focus=broadcast'
+npm run screenshots:miniapp
+npm run audit:miniapp:visual
+```
+
+Emulator, screenshots, and visual audit are local-first and inspect the current working tree. Native
+mode installs a safe MAX Bridge shim for BackButton, haptics, share/download, viewport, and storage.
+
+Use an explicit mode for a deployed-origin audit:
+
+```bash
+MINIAPP_SCREENSHOT_MODE=production npm run screenshots:miniapp
+MINIAPP_VISUAL_AUDIT_MODE=production npm run audit:miniapp:visual
+```
+
+The only routine production mini app URL is `https://major-maksimov.ru/app/`. CDN, Object Storage,
+and app2 checks are paused.
+
+## Production Runtime
+
+`infra/docker-compose.yml` runs Postgres, Redis, three static/front-door components, and one shared
+API image split into these services:
+
+- `api-ingress`: public health and webhooks.
+- `api-admin`: `/api/v1/`, mini app, and owner APIs.
+- `api-enqueue`: webhook enqueue/materialization.
+- `api-moderation`, `api-moderation-realtime-b`, `api-moderation-realtime-c`,
+  `api-moderation-realtime-d`: default/realtime shards.
+- `api-moderation-critical`: critical/legacy moderation queues.
+- `api-moderation-join`: membership/join queues.
+- `api-moderation-background`: scheduled/background work.
+- `api-action`: durable MAX action dispatch.
+
+Static services:
+
+- `miniapp-major-static`: canonical Major mini app.
+- `miniapp-static`: legacy play-team support host, not a routine target.
+- `admin-static`: closed Safety Desk behind admin nginx Basic Auth.
+
+`infra/docker-compose.scale.yml` is load-testing/split-stack infrastructure and must not run beside
+the main production stack.
+
+Local role development supports `all`, `ingress`, `admin`, `enqueue`, `moderation`, and `action`, for
+example `npm run dev:admin --workspace @maxim/api`.
+
+## VPS Access And Deploy
+
+Create ignored per-device access configuration:
+
+```bash
 cp infra/env/vps.env.example .env.vps
 $EDITOR .env.vps
 ./infra/scripts/vps-connect.sh doctor
 ```
 
-The wrapper runs repo-standard commands on the VPS without storing secrets in git:
+Routine commands:
 
-```sh
+```bash
 ./infra/scripts/vps-connect.sh shell
 ./infra/scripts/vps-connect.sh health
+./infra/scripts/vps-connect.sh ps
+./infra/scripts/vps-connect.sh monitor-readonly 300 15
 ./infra/scripts/vps-connect.sh deploy main miniapp-major-static
-./infra/scripts/vps-connect.sh deploy main api-ingress api-admin api-enqueue api-moderation api-moderation-critical api-moderation-join api-moderation-realtime-b api-moderation-realtime-c api-moderation-realtime-d api-moderation-background api-action
+./infra/scripts/vps-connect.sh deploy main admin-static
+./infra/scripts/vps-connect.sh deploy main api-ingress
 ```
 
-`npm run vps -- <command>` and `npm run prod -- <command>` call the same wrapper. If direct SSH is unavailable, configure the optional Yandex Cloud fields in `.env.vps` and use `./infra/scripts/vps-connect.sh yc-shell` for manual recovery.
+Any requested API role expands to all shared-image roles. `npm run vps -- <command>` and
+`npm run prod -- <command>` call the same wrapper.
 
-## Mini-app mobile emulator
+The local deploy wrapper requires a successful aggregate `Required` CI check for the exact selected
+commit, then requires the synchronized VPS `HEAD` to match that SHA. Active component images use
+full-SHA refs and successful strict smokes atomically update component inventory under
+`/var/lib/maxim-deploy`. Prisma migrations run only when the shared API component is selected;
+static-only mini app and Safety Desk deploys skip them.
 
-- iPhone preview: `npm run emulator:miniapp`
-- Android preview: `npm run emulator:miniapp:android`
-- Custom screen: `npm run emulator:miniapp -- --device android --route '/chat/preview-chat/settings?focus=broadcast'`
-- Production visual audit: `npm run audit:miniapp:visual`
+Prefer immutable rollback to a retained release manifest. Omit the component to restore API, Major
+mini app, and Safety Desk together, or select one component:
 
-The emulator starts the Vite mini-app locally, opens `/app/?preview=1` with mock data, and applies a Playwright mobile device profile so you can inspect the mini-app in a phone-sized browser immediately.
+```bash
+: "${RELEASE_ID:?Set RELEASE_ID to a retained release manifest id}"
+./infra/scripts/vps-connect.sh rollback-release "$RELEASE_ID" miniapp-major-static
+```
 
-Use `--target native` for MAX-like full-screen inspection. Native emulator and native screenshots install a safe MAX Bridge shim by default: `window.MAX.WebApp`/`window.WebApp` expose preview `initData`, platform, BackButton, haptics, share/download, and native storage while recording calls in `window.__MAXIM_VISUAL_BRIDGE_EVENTS__` instead of closing or leaving the page. Pass `--no-max-bridge` to the emulator, or set `MINIAPP_SCREENSHOT_MAX_BRIDGE=0` only when you intentionally need a bridge-free browser check.
+`rollback-release` reuses the recorded image ref and image ID, runs strict smokes, and records a new
+current manifest. API rollback also checks Prisma/Postgres/Redis compatibility; static-only rollback
+does not require Git or database access. It never switches Git refs, builds images, or runs Prisma
+migrations. Ref-based API rollback remains a fallback when no suitable immutable API release exists:
 
-The visual audit uses the production Major `/app/` origin by default (`https://major-maksimov.ru/app/`), native-like screenshots without the preview frame, Android/iPhone/iPhone SE profiles, light/dark schemes, simulated keyboard state, the MAX Bridge shim, and strict layout assertions for blank screens, viewport overflow, fixed controls, comments safe-area, and charts. CDN/app2/Object Storage checks are paused for routine work. Use `MINIAPP_VISUAL_AUDIT_QUICK=1 npm run audit:miniapp:visual` for a shorter preflight.
+```bash
+ROLLBACK_REF="${ROLLBACK_REF:?Set ROLLBACK_REF to a compatible Git ref}"
+./infra/scripts/vps-connect.sh rollback-runtime "$ROLLBACK_REF"
+```
 
-## Role-based API runtime
-
-- Single process (default): `APP_ROLE=all`.
-- Split roles:
-  - ingress: `npm run dev:ingress --workspace @maxim/api`
-  - enqueue: `npm run dev:enqueue --workspace @maxim/api`
-  - moderation: `npm run dev:moderation --workspace @maxim/api`
-  - action: `npm run dev:action --workspace @maxim/api`
-
-For Docker-based split runtime use `infra/docker-compose.scale.yml`.
-
-## Security note
-
-Never commit real bot tokens or production secrets.
+The ref-based helper rebuilds API only, refuses to start/recreate Postgres or Redis, and records the
+resulting API image in release inventory after strict smokes. It cannot restore either static
+component. See `docs/runbook.md` before production changes.
 
 ## Documentation
 
-- Detailed project description: `docs/project-description.md`
-- Bot card description (Major Maksimov): `docs/bot-card-description-major-maksimov.md`
+- Active production runbook: `docs/runbook.md`
+- Incident response: `docs/incident-playbook.md`
+- Detailed architecture: `docs/project-description.md`
+- Architecture decision: `docs/ADR-001-architecture.md`
+- Historical delivery/cloud context: `docs/operations/archive/` (non-authoritative)
+
+Never commit bot tokens, webhook secrets, production env files, cloud credentials, or Safety Desk
+access credentials.

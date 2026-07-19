@@ -1,6 +1,7 @@
-import { Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
+import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import {
@@ -11,14 +12,18 @@ import {
 import { toggleDialogReactionValue } from './admin-channel-dialog-reaction';
 import { getChannelSuggestionRedirectValue } from './admin-channel-dialog-redirect';
 import { AdminDialogLinkHelper } from './admin-dialog-link-helper';
-import { AdminService } from './admin.service';
+import {
+  CHANNEL_DIALOG_LEGACY_PORT,
+  type ChannelDialogLegacyPort,
+} from './channel-dialog-legacy.port';
 
 @Injectable()
 export class ChannelDialogService {
   private readonly dialogLinkHelper: AdminDialogLinkHelper;
 
   constructor(
-    private readonly legacyAdminService: AdminService,
+    @Inject(CHANNEL_DIALOG_LEGACY_PORT)
+    private readonly legacyAdminService: ChannelDialogLegacyPort,
     configService: ConfigService,
     @Optional() private readonly maxBotLinkService?: MaxBotLinkService,
     @Optional() private readonly maxBotRegistry?: MaxBotRegistryService,
@@ -58,42 +63,42 @@ export class ChannelDialogService {
   }
 
   getChannelDialog(
-    ...args: Parameters<AdminService['getChannelDialog']>
-  ): ReturnType<AdminService['getChannelDialog']> {
+    ...args: Parameters<ChannelDialogLegacyPort['getChannelDialog']>
+  ): ReturnType<ChannelDialogLegacyPort['getChannelDialog']> {
     return this.legacyAdminService.getChannelDialog(...args);
   }
 
   createChannelDialogMessage(
-    ...args: Parameters<AdminService['createChannelDialogMessage']>
-  ): ReturnType<AdminService['createChannelDialogMessage']> {
+    ...args: Parameters<ChannelDialogLegacyPort['createChannelDialogMessage']>
+  ): ReturnType<ChannelDialogLegacyPort['createChannelDialogMessage']> {
     return this.legacyAdminService.createChannelDialogMessage(...args);
   }
 
   updateChannelDialogNotifications(
-    ...args: Parameters<AdminService['updateChannelDialogNotifications']>
-  ): ReturnType<AdminService['updateChannelDialogNotifications']> {
+    ...args: Parameters<ChannelDialogLegacyPort['updateChannelDialogNotifications']>
+  ): ReturnType<ChannelDialogLegacyPort['updateChannelDialogNotifications']> {
     return this.legacyAdminService.updateChannelDialogNotifications(...args);
   }
 
   updateChannelDialogMessage(
-    ...args: Parameters<AdminService['updateChannelDialogMessage']>
-  ): ReturnType<AdminService['updateChannelDialogMessage']> {
+    ...args: Parameters<ChannelDialogLegacyPort['updateChannelDialogMessage']>
+  ): ReturnType<ChannelDialogLegacyPort['updateChannelDialogMessage']> {
     return this.legacyAdminService.updateChannelDialogMessage(...args);
   }
 
   deleteChannelDialogMessage(
-    ...args: Parameters<AdminService['deleteChannelDialogMessage']>
-  ): ReturnType<AdminService['deleteChannelDialogMessage']> {
+    ...args: Parameters<ChannelDialogLegacyPort['deleteChannelDialogMessage']>
+  ): ReturnType<ChannelDialogLegacyPort['deleteChannelDialogMessage']> {
     return this.legacyAdminService.deleteChannelDialogMessage(...args);
   }
 
   toggleChannelDialogReaction(
     chatId: string,
-    user: Parameters<AdminService['toggleChannelDialogReaction']>[1],
+    user: AuthUser,
     dialogTypeRaw: string,
     messageId: string,
     body: unknown,
-  ): ReturnType<AdminService['toggleChannelDialogReaction']> {
+  ): ReturnType<ChannelDialogLegacyPort['toggleEntityDialogReactionForDialog']> {
     return toggleDialogReactionValue({
       chatId,
       user,
@@ -109,42 +114,42 @@ export class ChannelDialogService {
   }
 
   getChatDialog(
-    ...args: Parameters<AdminService['getChatDialog']>
-  ): ReturnType<AdminService['getChatDialog']> {
+    ...args: Parameters<ChannelDialogLegacyPort['getChatDialog']>
+  ): ReturnType<ChannelDialogLegacyPort['getChatDialog']> {
     return this.legacyAdminService.getChatDialog(...args);
   }
 
   createChatDialogMessage(
-    ...args: Parameters<AdminService['createChatDialogMessage']>
-  ): ReturnType<AdminService['createChatDialogMessage']> {
+    ...args: Parameters<ChannelDialogLegacyPort['createChatDialogMessage']>
+  ): ReturnType<ChannelDialogLegacyPort['createChatDialogMessage']> {
     return this.legacyAdminService.createChatDialogMessage(...args);
   }
 
   updateChatDialogNotifications(
-    ...args: Parameters<AdminService['updateChatDialogNotifications']>
-  ): ReturnType<AdminService['updateChatDialogNotifications']> {
+    ...args: Parameters<ChannelDialogLegacyPort['updateChatDialogNotifications']>
+  ): ReturnType<ChannelDialogLegacyPort['updateChatDialogNotifications']> {
     return this.legacyAdminService.updateChatDialogNotifications(...args);
   }
 
   updateChatDialogMessage(
-    ...args: Parameters<AdminService['updateChatDialogMessage']>
-  ): ReturnType<AdminService['updateChatDialogMessage']> {
+    ...args: Parameters<ChannelDialogLegacyPort['updateChatDialogMessage']>
+  ): ReturnType<ChannelDialogLegacyPort['updateChatDialogMessage']> {
     return this.legacyAdminService.updateChatDialogMessage(...args);
   }
 
   deleteChatDialogMessage(
-    ...args: Parameters<AdminService['deleteChatDialogMessage']>
-  ): ReturnType<AdminService['deleteChatDialogMessage']> {
+    ...args: Parameters<ChannelDialogLegacyPort['deleteChatDialogMessage']>
+  ): ReturnType<ChannelDialogLegacyPort['deleteChatDialogMessage']> {
     return this.legacyAdminService.deleteChatDialogMessage(...args);
   }
 
   toggleChatDialogReaction(
     chatId: string,
-    user: Parameters<AdminService['toggleChatDialogReaction']>[1],
+    user: AuthUser,
     dialogTypeRaw: string,
     messageId: string,
     body: unknown,
-  ): ReturnType<AdminService['toggleChatDialogReaction']> {
+  ): ReturnType<ChannelDialogLegacyPort['toggleEntityDialogReactionForDialog']> {
     return toggleDialogReactionValue({
       chatId,
       user,
@@ -160,20 +165,20 @@ export class ChannelDialogService {
   }
 
   processChannelSuggestionDeliveryJob(
-    ...args: Parameters<AdminService['processChannelSuggestionDeliveryJob']>
-  ): ReturnType<AdminService['processChannelSuggestionDeliveryJob']> {
+    ...args: Parameters<ChannelDialogLegacyPort['processChannelSuggestionDeliveryJob']>
+  ): ReturnType<ChannelDialogLegacyPort['processChannelSuggestionDeliveryJob']> {
     return this.legacyAdminService.processChannelSuggestionDeliveryJob(...args);
   }
 
   recoverStaleChannelSuggestionDeliveries(
-    ...args: Parameters<AdminService['recoverStaleChannelSuggestionDeliveries']>
-  ): ReturnType<AdminService['recoverStaleChannelSuggestionDeliveries']> {
+    ...args: Parameters<ChannelDialogLegacyPort['recoverStaleChannelSuggestionDeliveries']>
+  ): ReturnType<ChannelDialogLegacyPort['recoverStaleChannelSuggestionDeliveries']> {
     return this.legacyAdminService.recoverStaleChannelSuggestionDeliveries(...args);
   }
 
   recordChannelSuggestionDeliveryJobFailure(
-    ...args: Parameters<AdminService['recordChannelSuggestionDeliveryJobFailure']>
-  ): ReturnType<AdminService['recordChannelSuggestionDeliveryJobFailure']> {
+    ...args: Parameters<ChannelDialogLegacyPort['recordChannelSuggestionDeliveryJobFailure']>
+  ): ReturnType<ChannelDialogLegacyPort['recordChannelSuggestionDeliveryJobFailure']> {
     return this.legacyAdminService.recordChannelSuggestionDeliveryJobFailure(...args);
   }
 }

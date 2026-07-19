@@ -11,6 +11,8 @@ ORIGINAL_ARGS=("$@")
 source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"
 # shellcheck source=infra/scripts/lib/deploy-lock.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
+# shellcheck source=infra/scripts/lib/change-impact-components.generated.sh
+source "$ROOT_DIR/infra/scripts/lib/change-impact-components.generated.sh"
 
 MAIN_PROJECT_NAME="infra"
 SCALE_PROJECT_NAME="infra-scale"
@@ -19,12 +21,34 @@ ALTERNATE_COMPOSE_FILES=(-p "$SCALE_PROJECT_NAME" -f "infra/docker-compose.scale
 BRANCH="${1:-main}"
 PRE_PULL_HEAD=""
 EXPECTED_DEPLOY_SHA="${MAXIM_EXPECTED_DEPLOY_SHA:-}"
+RELEASE_STATE_DIR="${MAXIM_RELEASE_STATE_DIR:-/var/lib/maxim-deploy}"
+DEPLOY_MODE="manual"
 PUBLIC_HEALTH_URL="${MAXIM_VPS_PUBLIC_URL:-${MAXIM_PUBLIC_HEALTH_URL:-https://major-maksimov.ru}}"
 PUBLIC_HEALTH_URL="${PUBLIC_HEALTH_URL%/}"
 
+SERVICES=()
 if [[ $# -ge 2 ]]; then
-  SERVICES=("${@:2}")
-else
+  for argument in "${@:2}"; do
+    case "$argument" in
+      --plan|--auto|--full)
+        if [[ "$DEPLOY_MODE" != "manual" ]]; then
+          echo "Only one of --plan, --auto, or --full may be used." >&2
+          exit 2
+        fi
+        DEPLOY_MODE="${argument#--}"
+        ;;
+      --*)
+        echo "Unknown deploy option: $argument" >&2
+        exit 2
+        ;;
+      *)
+        SERVICES+=("$argument")
+        ;;
+    esac
+  done
+fi
+
+if [[ "$DEPLOY_MODE" == "full" ]] || [[ "$DEPLOY_MODE" == "manual" && "${#SERVICES[@]}" -eq 0 ]]; then
   SERVICES=(
     "api-ingress"
     "api-admin"
@@ -42,7 +66,14 @@ else
   )
 fi
 
+if [[ "$DEPLOY_MODE" != "manual" && "${#SERVICES[@]}" -gt 0 ]]; then
+  echo "Explicit services cannot be combined with --$DEPLOY_MODE." >&2
+  exit 2
+fi
+
 API_SERVICES=("${MAXIM_PRODUCTION_API_SERVICES[@]}")
+ACTIVE_STATIC_SERVICES=("miniapp-major-static" "admin-static")
+OPTIONAL_STATIC_SERVICES=("miniapp-static")
 
 contains_service() {
   local needle="$1"
@@ -54,6 +85,181 @@ contains_service() {
     fi
   done
   return 1
+}
+
+validate_requested_services() {
+  local service
+  local validated=()
+
+  for service in "${SERVICES[@]}"; do
+    if ! contains_service "$service" "${API_SERVICES[@]}" "${ACTIVE_STATIC_SERVICES[@]}" "${OPTIONAL_STATIC_SERVICES[@]}"; then
+      echo "Unknown or unsafe deploy service: $service" >&2
+      echo "Stateful services are startup dependencies, not routine deploy targets." >&2
+      exit 2
+    fi
+    if ! contains_service "$service" "${validated[@]}"; then
+      validated+=("$service")
+    fi
+  done
+  SERVICES=("${validated[@]}")
+}
+
+release_manifest() {
+  MAXIM_RELEASE_STATE_DIR="$RELEASE_STATE_DIR" node infra/scripts/release-manifest.mjs "$@"
+}
+
+release_field() {
+  release_manifest field current "$1" "$2" 2>/dev/null
+}
+
+inspect_container_component() {
+  local service="$1"
+  local component="$2"
+  local fallback_ref="$3"
+  local container_id
+  local image_ref="$fallback_ref"
+  local image_id="unknown"
+
+  container_id="$(docker compose "${COMPOSE_FILES[@]}" ps -q "$service" 2>/dev/null || true)"
+  if [[ -n "$container_id" ]]; then
+    image_ref="$(docker inspect --format '{{.Config.Image}}' "$container_id" 2>/dev/null || printf '%s' "$fallback_ref")"
+    image_id="$(docker inspect --format '{{.Image}}' "$container_id" 2>/dev/null || printf '%s' unknown)"
+  fi
+  printf '%s|unknown|%s|%s' "$component" "$image_ref" "$image_id"
+}
+
+initialize_release_inventory() {
+  local release_id
+
+  if release_manifest show current >/dev/null 2>&1; then
+    return 0
+  fi
+
+  release_id="inventory-$(date -u +%Y%m%dT%H%M%SZ)"
+  echo "Initializing release inventory with unverified source SHAs: $release_id"
+  release_manifest inventory \
+    --release-id "$release_id" \
+    --target-sha unknown \
+    --component "$(inspect_container_component api-ingress api-shared maxim-api:unknown)" \
+    --component "$(inspect_container_component miniapp-major-static miniapp-major-static maxim-miniapp-major:unknown)" \
+    --component "$(inspect_container_component admin-static admin-static maxim-admin:unknown)" \
+    --smoke inventory-only >/dev/null
+}
+
+load_current_component_images() {
+  export MAXIM_API_IMAGE="$(release_field api-shared imageRef || printf '%s' maxim-api:unknown)"
+  export MAXIM_MINIAPP_MAJOR_IMAGE="$(release_field miniapp-major-static imageRef || printf '%s' maxim-miniapp-major:unknown)"
+  export MAXIM_ADMIN_IMAGE="$(release_field admin-static imageRef || printf '%s' maxim-admin:unknown)"
+  export MAXIM_MINIAPP_LEGACY_IMAGE="${MAXIM_MINIAPP_LEGACY_IMAGE:-maxim-miniapp-legacy:local}"
+}
+
+component_manifest_matches_runtime() {
+  local component="$1"
+  local expected_image_id
+  local service
+  local container_id
+  local actual_image_id
+  local services=()
+
+  expected_image_id="$(release_field "$component" imageId || printf '%s' unknown)"
+  if [[ ! "$expected_image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    return 1
+  fi
+
+  case "$component" in
+    api-shared) services=("${API_SERVICES[@]}") ;;
+    miniapp-major-static) services=("miniapp-major-static") ;;
+    admin-static) services=("admin-static") ;;
+    *) return 1 ;;
+  esac
+
+  for service in "${services[@]}"; do
+    container_id="$(docker compose "${COMPOSE_FILES[@]}" ps -q "$service" 2>/dev/null || true)"
+    [[ -n "$container_id" ]] || return 1
+    actual_image_id="$(docker inspect --format '{{.Image}}' "$container_id" 2>/dev/null || true)"
+    [[ "$actual_image_id" == "$expected_image_id" ]] || return 1
+  done
+}
+
+impact_plan_selects_component() {
+  local component="$1"
+  local source_sha
+  local changes_file
+  local path
+  local path_selected
+  local result=1
+
+  source_sha="$(release_field "$component" sourceSha || printf '%s' unknown)"
+  if [[ "$source_sha" == "unknown" ]] || ! git cat-file -e "${source_sha}^{commit}" 2>/dev/null; then
+    return 0
+  fi
+  if ! component_manifest_matches_runtime "$component"; then
+    echo "Component manifest/runtime drift detected; selecting deploy: $component" >&2
+    return 0
+  fi
+  if [[ "$source_sha" == "$(git rev-parse HEAD)" ]]; then
+    return 1
+  fi
+
+  changes_file="$(mktemp)"
+  if ! git diff --name-only --no-renames -z "$source_sha" HEAD -- >"$changes_file"; then
+    rm -f "$changes_file"
+    echo "Could not classify deploy impact for $component from $source_sha to HEAD." >&2
+    exit 1
+  fi
+
+  while IFS= read -r -d '' path; do
+    maxim_impact_classify_path "$path"
+    case "$component" in
+      api-shared) path_selected="$MAXIM_IMPACT_PATH_API_SHARED" ;;
+      miniapp-major-static) path_selected="$MAXIM_IMPACT_PATH_MINIAPP_MAJOR_STATIC" ;;
+      admin-static) path_selected="$MAXIM_IMPACT_PATH_ADMIN_STATIC" ;;
+      *)
+        rm -f "$changes_file"
+        echo "Unknown deploy component during impact classification: $component" >&2
+        exit 1
+        ;;
+    esac
+    if [[ "$path_selected" -eq 1 ]]; then
+      result=0
+      break
+    fi
+  done <"$changes_file"
+
+  rm -f "$changes_file"
+  return "$result"
+}
+
+derive_auto_services() {
+  SERVICES=()
+  if impact_plan_selects_component api-shared; then
+    SERVICES+=("api-ingress")
+  fi
+  if impact_plan_selects_component miniapp-major-static; then
+    SERVICES+=("miniapp-major-static")
+  fi
+  if impact_plan_selects_component admin-static; then
+    SERVICES+=("admin-static")
+  fi
+}
+
+print_deploy_plan() {
+  local current_sha
+  local component
+  local selected=()
+
+  for component in api-shared miniapp-major-static admin-static; do
+    current_sha="$(release_field "$component" sourceSha || printf '%s' unknown)"
+    if impact_plan_selects_component "$component"; then
+      selected+=("$component")
+    fi
+    echo "$component current=$current_sha target=$(git rev-parse HEAD)"
+  done
+  if [[ "${#selected[@]}" -eq 0 ]]; then
+    echo "No production components require deployment."
+  else
+    echo "Deploy components: ${selected[*]}"
+  fi
 }
 
 has_requested_api_service() {
@@ -166,7 +372,13 @@ verify_expected_deploy_sha() {
   local actual_sha
 
   if [[ -z "$EXPECTED_DEPLOY_SHA" ]]; then
-    return 0
+    if [[ "$DEPLOY_MODE" == "plan" ]]; then
+      echo "Read-only deploy plan has no MAXIM_EXPECTED_DEPLOY_SHA; no rollout will run." >&2
+      return 0
+    fi
+    echo "MAXIM_EXPECTED_DEPLOY_SHA is required for every mutating production deploy." >&2
+    echo "Use the guarded local wrapper/workflow or pass the reviewed full target SHA." >&2
+    exit 2
   fi
 
   if [[ ! "$EXPECTED_DEPLOY_SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
@@ -239,11 +451,15 @@ reexec_if_current_script_changed() {
     return 0
   fi
 
-  if ! diff_in_paths "$SCRIPT_REL_PATH"; then
+  if ! diff_in_paths \
+    "$SCRIPT_REL_PATH" \
+    "infra/scripts/lib/deploy-lock.sh" \
+    "infra/scripts/lib/deploy-topology.sh" \
+    "infra/scripts/lib/change-impact-components.generated.sh"; then
     return 0
   fi
 
-  echo "Deploy script changed during git pull. Re-executing updated $SCRIPT_REL_PATH..."
+  echo "Deploy runtime tooling changed during git pull. Re-executing updated $SCRIPT_REL_PATH..."
   export MAXIM_DEPLOY_SCRIPT_REEXECED=1
   exec "$SCRIPT_PATH" "${ORIGINAL_ARGS[@]}"
 }
@@ -379,7 +595,7 @@ wait_for_url() {
   local i
 
   for ((i = 1; i <= attempts; i += 1)); do
-    if curl -fsS "$url" >/dev/null; then
+    if curl -fsS --connect-timeout 5 --max-time 15 "$url" >/dev/null; then
       return 0
     fi
     sleep 1
@@ -387,6 +603,88 @@ wait_for_url() {
 
   echo "Health check timeout: $url"
   return 1
+}
+
+verify_service_image_id() {
+  local service="$1"
+  local expected_image_id="$2"
+  local container_id
+  local actual_image_id
+
+  container_id="$(docker compose "${COMPOSE_FILES[@]}" ps -q "$service")"
+  if [[ -z "$container_id" ]]; then
+    echo "Cannot verify image for missing service container: $service" >&2
+    return 1
+  fi
+  actual_image_id="$(docker inspect --format '{{.Image}}' "$container_id")"
+  if [[ "$actual_image_id" != "$expected_image_id" ]]; then
+    echo "$service runs $actual_image_id, expected $expected_image_id." >&2
+    return 1
+  fi
+}
+
+record_successful_release() {
+  local migrations_file=""
+  local component
+  local image_ref
+  local image_id
+  local service
+  local args=(
+    commit
+    --release-id "$RELEASE_ID"
+    --target-sha "$TARGET_SHA"
+  )
+
+  for component in "${DEPLOYED_COMPONENTS[@]}"; do
+    case "$component" in
+      api-shared)
+        image_ref="$MAXIM_API_IMAGE"
+        service="api-ingress"
+        ;;
+      miniapp-major-static)
+        image_ref="$MAXIM_MINIAPP_MAJOR_IMAGE"
+        service="miniapp-major-static"
+        ;;
+      admin-static)
+        image_ref="$MAXIM_ADMIN_IMAGE"
+        service="admin-static"
+        ;;
+      *)
+        echo "Cannot record unknown release component: $component" >&2
+        return 1
+        ;;
+    esac
+    image_id="$(docker image inspect --format '{{.Id}}' "$image_ref")"
+    if [[ "$component" == "api-shared" ]]; then
+      for service in "${API_SERVICES[@]}"; do
+        verify_service_image_id "$service" "$image_id"
+      done
+    else
+      verify_service_image_id "$service" "$image_id"
+    fi
+    args+=(--component "${component}|${TARGET_SHA}|${image_ref}|${image_id}")
+  done
+
+  if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
+    migrations_file="$(mktemp)"
+    docker compose "${COMPOSE_FILES[@]}" exec -T postgres psql -U maxim -d maxim -Atc \
+      "SELECT migration_name FROM _prisma_migrations WHERE finished_at IS NOT NULL ORDER BY migration_name;" \
+      >"$migrations_file"
+    args+=(--migrations-file "$migrations_file")
+  fi
+  for smoke in "${SMOKE_RESULTS[@]}"; do
+    args+=(--smoke "$smoke")
+  done
+  if [[ -n "${MAXIM_DEPLOY_EMERGENCY_REASON:-}" ]]; then
+    args+=(--emergency-reason "$MAXIM_DEPLOY_EMERGENCY_REASON")
+  fi
+
+  if ! release_manifest "${args[@]}" >/dev/null; then
+    [[ -z "$migrations_file" ]] || rm -f "$migrations_file"
+    return 1
+  fi
+  [[ -z "$migrations_file" ]] || rm -f "$migrations_file"
+  echo "Release manifest committed: $RELEASE_ID"
 }
 
 wait_for_postgres() {
@@ -403,6 +701,38 @@ wait_for_postgres() {
   echo "Postgres readiness timeout."
   docker compose "${COMPOSE_FILES[@]}" logs --tail=120 postgres || true
   return 1
+}
+
+wait_for_redis() {
+  local attempts="${1:-60}"
+  local i
+
+  for ((i = 1; i <= attempts; i += 1)); do
+    if docker compose "${COMPOSE_FILES[@]}" exec -T redis redis-cli ping 2>/dev/null | grep -qx PONG; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "Redis readiness timeout."
+  docker compose "${COMPOSE_FILES[@]}" logs --tail=120 redis || true
+  return 1
+}
+
+require_stateful_services_ready() {
+  local running_services
+  local service
+
+  running_services="$(docker compose "${COMPOSE_FILES[@]}" ps --status running --services)"
+  for service in postgres redis; do
+    if ! grep -qx "$service" <<<"$running_services"; then
+      echo "$service is not already running; refusing application deploy instead of starting or recreating a stateful service." >&2
+      return 1
+    fi
+  done
+
+  wait_for_postgres 180
+  wait_for_redis 60
 }
 
 wait_for_service_running() {
@@ -559,22 +889,32 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 require_production_branch_confirmation
+validate_requested_services
 acquire_deploy_lock
 sync_branch
 verify_expected_deploy_sha
 reexec_if_current_script_changed
+if [[ "$DEPLOY_MODE" == "plan" ]]; then
+  load_current_component_images
+  print_deploy_plan
+  exit 0
+fi
 ensure_compose_env
+initialize_release_inventory
+load_current_component_images
+if [[ "$DEPLOY_MODE" == "auto" ]]; then
+  derive_auto_services
+  validate_requested_services
+  if [[ "${#SERVICES[@]}" -eq 0 ]]; then
+    echo "No production components require deployment."
+    exit 0
+  fi
+fi
 validate_admin_access_code
 warn_postgres_password_fallback
 check_deploy_disk_capacity
 stop_conflicting_stacks
 warn_legacy_miniapp_static_target
-ensure_service_requested_if_down "miniapp-major-static"
-ensure_service_requested_if_down "admin-static"
-if has_requested_api_service; then
-  ensure_service_requested_if_down "api-enqueue"
-  ensure_service_requested_if_down "api-ingress"
-fi
 
 BUILD_API_IMAGE=0
 for service in "${API_SERVICES[@]}"; do
@@ -584,9 +924,10 @@ for service in "${API_SERVICES[@]}"; do
   fi
 done
 
-if [[ "$BUILD_API_IMAGE" -eq 0 ]] && diff_in_paths apps/api packages/contracts package.json package-lock.json tsconfig.base.json; then
+if [[ "$BUILD_API_IMAGE" -eq 0 ]] && impact_plan_selects_component api-shared; then
   BUILD_API_IMAGE=1
-  echo "API-related changes detected."
+  SERVICES+=("api-ingress")
+  echo "Unreleased API impact detected from the api-shared component manifest."
 fi
 
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
@@ -594,40 +935,69 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
     "Shared API image build or API-related diff detected."
 fi
 
-docker compose "${COMPOSE_FILES[@]}" up -d postgres redis
-wait_for_postgres 180
+if ! contains_service "miniapp-major-static" "${SERVICES[@]}" && impact_plan_selects_component miniapp-major-static; then
+  SERVICES+=("miniapp-major-static")
+  echo "Unreleased Major mini app impact detected from the component manifest."
+fi
+if ! contains_service "admin-static" "${SERVICES[@]}" && impact_plan_selects_component admin-static; then
+  SERVICES+=("admin-static")
+  echo "Unreleased Safety Desk impact detected from the component manifest."
+fi
+validate_requested_services
 
+TARGET_SHA="$(git rev-parse HEAD)"
+RELEASE_ID="release-$(date -u +%Y%m%dT%H%M%SZ)-${TARGET_SHA:0:12}"
+DEPLOYED_COMPONENTS=()
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
-  ensure_compose_env
-  maxim_topology_build_shared_api_image "$MAIN_PROJECT_NAME"
+  export MAXIM_API_IMAGE="maxim-api:${TARGET_SHA}"
+  DEPLOYED_COMPONENTS+=("api-shared")
+fi
+if contains_service "miniapp-major-static" "${SERVICES[@]}"; then
+  export MAXIM_MINIAPP_MAJOR_IMAGE="maxim-miniapp-major:${TARGET_SHA}"
+  DEPLOYED_COMPONENTS+=("miniapp-major-static")
+fi
+if contains_service "admin-static" "${SERVICES[@]}"; then
+  export MAXIM_ADMIN_IMAGE="maxim-admin:${TARGET_SHA}"
+  DEPLOYED_COMPONENTS+=("admin-static")
+fi
+if contains_service "miniapp-static" "${SERVICES[@]}"; then
+  export MAXIM_MINIAPP_LEGACY_IMAGE="maxim-miniapp-legacy:${TARGET_SHA}"
 fi
 
-if ! run_migrations; then
-  echo "First migration attempt failed. Retrying once in 5 seconds..."
-  sleep 5
-  run_migrations
+if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
+  require_stateful_services_ready
+  maxim_topology_build_shared_api_image "$MAXIM_API_IMAGE"
+  if ! run_migrations; then
+    echo "First migration attempt failed. Retrying once in 5 seconds..."
+    sleep 5
+    run_migrations
+  fi
 fi
 
 SERVICES_TO_BUILD=()
-BUILD_ADMIN_STATIC_IMAGE=0
 for service in "${SERVICES[@]}"; do
   if [[ "$BUILD_API_IMAGE" -eq 1 ]] && contains_service "$service" "${API_SERVICES[@]}"; then
-    continue
-  fi
-  if [[ "$service" == "admin-static" ]]; then
-    BUILD_ADMIN_STATIC_IMAGE=1
     continue
   fi
   SERVICES_TO_BUILD+=("$service")
 done
 
-if [[ "${#SERVICES_TO_BUILD[@]}" -gt 0 ]]; then
-  docker compose "${COMPOSE_FILES[@]}" build "${SERVICES_TO_BUILD[@]}"
-fi
-
-if [[ "$BUILD_ADMIN_STATIC_IMAGE" -eq 1 ]]; then
-  docker compose "${COMPOSE_FILES[@]}" build admin-static
-fi
+for service in "${SERVICES_TO_BUILD[@]}"; do
+  case "$service" in
+    miniapp-static) candidate_image_ref="$MAXIM_MINIAPP_LEGACY_IMAGE" ;;
+    miniapp-major-static) candidate_image_ref="$MAXIM_MINIAPP_MAJOR_IMAGE" ;;
+    admin-static) candidate_image_ref="$MAXIM_ADMIN_IMAGE" ;;
+    *)
+      echo "Refusing unexpected non-API build target: $service" >&2
+      exit 2
+      ;;
+  esac
+  if docker image inspect "$candidate_image_ref" >/dev/null 2>&1; then
+    echo "Reusing existing immutable static image: $candidate_image_ref"
+  else
+    docker compose "${COMPOSE_FILES[@]}" build "$service"
+  fi
+done
 
 ensure_compose_env
 remove_stale_service_containers "${SERVICES[@]}"
@@ -648,30 +1018,36 @@ recreate_service_wave "admin static" "admin-static"
 recreate_service_wave "ingress" "api-ingress"
 ensure_requested_services_running
 
-wait_for_url "http://127.0.0.1:3001/api/health/live" 180
-wait_for_url "http://127.0.0.1:3001/api/health/ready" 180
-if contains_service "api-admin" "${SERVICES[@]}"; then
+SMOKE_RESULTS=()
+if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
+  wait_for_url "http://127.0.0.1:3001/api/health/live" 180
+  wait_for_url "http://127.0.0.1:3001/api/health/ready" 180
   wait_for_url "http://127.0.0.1:3002/api/health/live" 180
   wait_for_url "http://127.0.0.1:3002/api/health/ready" 180
+  wait_for_url "$PUBLIC_HEALTH_URL/api/health/live" 180
+  node scripts/smoke-http.mjs json-ok http://127.0.0.1:3001/api/health/live
+  node scripts/smoke-http.mjs json-ok http://127.0.0.1:3001/api/health/ready
+  node scripts/smoke-http.mjs json-ok http://127.0.0.1:3002/api/health/live
+  node scripts/smoke-http.mjs json-ok http://127.0.0.1:3002/api/health/ready
+  node scripts/smoke-http.mjs json-ok "$PUBLIC_HEALTH_URL/api/health/live"
+  SMOKE_RESULTS+=("api-local-live" "api-local-ready" "api-admin-live" "api-admin-ready" "api-public-live")
 fi
-wait_for_url "$PUBLIC_HEALTH_URL/api/health/live" 180
-
-curl -i http://127.0.0.1:3001/api/health/live
-curl -i http://127.0.0.1:3001/api/health/ready
-if contains_service "api-admin" "${SERVICES[@]}"; then
-  curl -i http://127.0.0.1:3002/api/health/live
-  curl -i http://127.0.0.1:3002/api/health/ready
-fi
-curl -i "$PUBLIC_HEALTH_URL/api/health/live"
 
 if contains_service "miniapp-static" "${SERVICES[@]}"; then
-  curl -i https://maxim.play-team.ru/app/
+  node scripts/smoke-http.mjs static https://maxim.play-team.ru/app/
 fi
 if contains_service "miniapp-major-static" "${SERVICES[@]}"; then
-  curl -i https://major-maksimov.ru/app/
+  node scripts/smoke-http.mjs static https://major-maksimov.ru/app/
+  SMOKE_RESULTS+=("miniapp-major-static")
 fi
 if contains_service "admin-static" "${SERVICES[@]}"; then
-  curl -i http://127.0.0.1:3004/
+  node scripts/smoke-http.mjs static http://127.0.0.1:3004/
+  SMOKE_RESULTS+=("admin-static")
 fi
 
+if [[ "${#DEPLOYED_COMPONENTS[@]}" -gt 0 ]]; then
+  record_successful_release
+else
+  echo "No active release component changed; current release manifest was preserved."
+fi
 echo "Done: branch=$BRANCH services=${SERVICES[*]}"

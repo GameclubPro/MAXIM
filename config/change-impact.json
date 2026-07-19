@@ -1,0 +1,312 @@
+{
+  "schemaVersion": 1,
+  "checks": [
+    { "id": "repo-static", "label": "Repository static checks", "script": "check:static" },
+    { "id": "agent-tools", "label": "Agent tooling tests", "script": "test:agent-tools" },
+    { "id": "docs", "label": "Documentation checks", "script": "check:docs" },
+    { "id": "infra", "label": "Infrastructure checks", "script": "check:infra" },
+    { "id": "contracts", "label": "Shared contracts validation", "script": "check:contracts" },
+    { "id": "api", "label": "API validation", "script": "check:api" },
+    { "id": "prisma", "label": "Prisma validation", "script": "check:prisma" },
+    { "id": "miniapp-css", "label": "Mini app CSS architecture check", "script": "check:miniapp-css" },
+    { "id": "miniapp", "label": "Mini app validation", "script": "check:miniapp" },
+    { "id": "miniapp-production-build", "label": "Major production mini app build", "script": "build:miniapp:production" },
+    { "id": "miniapp-visual-local", "label": "Local mini app visual verification", "script": "screenshots:miniapp:smoke" },
+    { "id": "admin", "label": "Safety Desk validation", "script": "check:admin" },
+    { "id": "full", "label": "Full repository validation", "script": "check" }
+  ],
+  "deployComponents": [
+    { "id": "api-shared", "label": "Shared API image and every production API role" },
+    { "id": "miniapp-major-static", "label": "Major production mini app static service" },
+    { "id": "admin-static", "label": "Safety Desk static service" }
+  ],
+  "manualOperations": [
+    { "id": "apply-major-nginx", "label": "Review and apply the Major nginx site" },
+    { "id": "apply-admin-nginx", "label": "Review and apply the Safety Desk nginx site" },
+    { "id": "review-play-team-nginx", "label": "Compare the live play-team nginx site before applying" },
+    { "id": "review-vk-proxy", "label": "Review the dormant VK proxy configuration" },
+    { "id": "review-nginx-change", "label": "Review and select the matching nginx apply runbook" },
+    { "id": "review-deploy-tooling", "label": "Review production deploy tooling before its next use" },
+    { "id": "review-production-compose", "label": "Review production Compose topology and rollout scope" }
+  ],
+  "forbiddenRoutineTargetFragments": ["app2", "cdn", "object-storage", "object_storage", "s3"],
+  "rules": [
+    {
+      "id": "agent-notes-and-docs",
+      "include": ["AGENTS.md", "**/AGENTS.md", "**/*.md", "README.md", "docs/**", ".env.example", "infra/env/**"],
+      "checks": ["repo-static", "docs"],
+      "deployComponents": []
+    },
+    {
+      "id": "agent-impact-tooling",
+      "include": ["config/change-impact.json", "scripts/agent/**"],
+      "checks": ["repo-static", "agent-tools"],
+      "deployComponents": []
+    },
+    {
+      "id": "prisma-migration-policy",
+      "include": ["config/prisma-migration-policy.json"],
+      "checks": ["repo-static", "prisma"],
+      "deployComponents": []
+    },
+    {
+      "id": "repository-tooling",
+      "include": [
+        ".editorconfig",
+        ".gitattributes",
+        ".gitignore",
+        ".prettierrc.json",
+        "eslint.config.mjs",
+        ".github/**",
+        ".husky/**",
+        "scripts/**"
+      ],
+      "exclude": ["scripts/agent/**"],
+      "checks": ["repo-static"],
+      "deployComponents": []
+    },
+    {
+      "id": "root-dependency-lock",
+      "include": ["package-lock.json"],
+      "checks": ["repo-static", "contracts", "api", "prisma", "miniapp-css", "miniapp", "admin", "full"],
+      "deployComponents": ["api-shared", "miniapp-major-static", "admin-static"]
+    },
+    {
+      "id": "root-runtime-build-config",
+      "include": ["package.json", "tsconfig.base.json", ".npmrc", ".dockerignore"],
+      "checks": ["repo-static", "contracts", "api", "prisma", "miniapp-css", "miniapp", "admin", "full"],
+      "deployComponents": ["api-shared", "miniapp-major-static", "admin-static"]
+    },
+    {
+      "id": "root-development-config",
+      "include": [".nvmrc"],
+      "checks": ["repo-static", "full"],
+      "deployComponents": []
+    },
+    {
+      "id": "root-miniapp-assets",
+      "include": ["bot.webp", "frendly.webp", "joker.webp", "police.webp"],
+      "checks": ["repo-static", "miniapp", "miniapp-production-build", "miniapp-visual-local"],
+      "deployComponents": ["miniapp-major-static"]
+    },
+    {
+      "id": "contracts-tests",
+      "include": [
+        "packages/contracts/**/*.spec.ts",
+        "packages/contracts/**/*.test.ts",
+        "packages/contracts/test/**",
+        "packages/contracts/**/__tests__/**"
+      ],
+      "checks": ["repo-static", "contracts"],
+      "deployComponents": []
+    },
+    {
+      "id": "contracts-runtime",
+      "include": ["packages/contracts/**"],
+      "exclude": [
+        "**/AGENTS.md",
+        "**/*.md",
+        "packages/contracts/**/*.spec.ts",
+        "packages/contracts/**/*.test.ts",
+        "packages/contracts/test/**",
+        "packages/contracts/**/__tests__/**"
+      ],
+      "checks": ["repo-static", "contracts", "api", "miniapp-css", "miniapp", "miniapp-production-build", "admin"],
+      "deployComponents": ["api-shared", "miniapp-major-static", "admin-static"]
+    },
+    {
+      "id": "api-tests",
+      "include": [
+        "apps/api/**/*.spec.ts",
+        "apps/api/**/*.test.ts",
+        "apps/api/test/**",
+        "apps/api/**/__tests__/**"
+      ],
+      "checks": ["repo-static", "api"],
+      "deployComponents": []
+    },
+    {
+      "id": "prisma-schema",
+      "include": ["apps/api/prisma/schema.prisma"],
+      "checks": ["repo-static", "api", "prisma"],
+      "deployComponents": ["api-shared"],
+      "migrationImpact": "schema"
+    },
+    {
+      "id": "prisma-migrations",
+      "include": ["apps/api/prisma/migrations/**"],
+      "checks": ["repo-static", "api", "prisma"],
+      "deployComponents": ["api-shared"],
+      "migrationImpact": "migration"
+    },
+    {
+      "id": "prisma-tooling",
+      "include": ["apps/api/prisma.config.ts", "apps/api/prisma/seed.ts"],
+      "checks": ["repo-static", "api", "prisma"],
+      "deployComponents": ["api-shared"],
+      "migrationImpact": "tooling"
+    },
+    {
+      "id": "api-runtime",
+      "include": ["apps/api/**"],
+      "exclude": [
+        "**/AGENTS.md",
+        "**/*.md",
+        "apps/api/**/*.spec.ts",
+        "apps/api/**/*.test.ts",
+        "apps/api/test/**",
+        "apps/api/**/__tests__/**"
+      ],
+      "checks": ["repo-static", "api"],
+      "deployComponents": ["api-shared"]
+    },
+    {
+      "id": "miniapp-tests",
+      "include": [
+        "apps/miniapp/**/*.spec.ts",
+        "apps/miniapp/**/*.spec.tsx",
+        "apps/miniapp/**/*.test.ts",
+        "apps/miniapp/**/*.test.tsx",
+        "apps/miniapp/test/**",
+        "apps/miniapp/**/__tests__/**"
+      ],
+      "checks": ["repo-static", "miniapp-css", "miniapp"],
+      "deployComponents": []
+    },
+    {
+      "id": "miniapp-runtime",
+      "include": ["apps/miniapp/**"],
+      "exclude": [
+        "**/AGENTS.md",
+        "**/*.md",
+        "apps/miniapp/**/*.spec.ts",
+        "apps/miniapp/**/*.spec.tsx",
+        "apps/miniapp/**/*.test.ts",
+        "apps/miniapp/**/*.test.tsx",
+        "apps/miniapp/test/**",
+        "apps/miniapp/**/__tests__/**"
+      ],
+      "checks": ["repo-static", "miniapp-css", "miniapp", "miniapp-production-build", "miniapp-visual-local"],
+      "deployComponents": ["miniapp-major-static"]
+    },
+    {
+      "id": "admin-tests",
+      "include": [
+        "apps/admin/**/*.spec.ts",
+        "apps/admin/**/*.spec.tsx",
+        "apps/admin/**/*.test.ts",
+        "apps/admin/**/*.test.tsx",
+        "apps/admin/test/**",
+        "apps/admin/**/__tests__/**"
+      ],
+      "checks": ["repo-static", "admin"],
+      "deployComponents": []
+    },
+    {
+      "id": "admin-runtime",
+      "include": ["apps/admin/**"],
+      "exclude": [
+        "**/AGENTS.md",
+        "**/*.md",
+        "apps/admin/**/*.spec.ts",
+        "apps/admin/**/*.spec.tsx",
+        "apps/admin/**/*.test.ts",
+        "apps/admin/**/*.test.tsx",
+        "apps/admin/test/**",
+        "apps/admin/**/__tests__/**"
+      ],
+      "checks": ["repo-static", "admin"],
+      "deployComponents": ["admin-static"]
+    },
+    {
+      "id": "api-runtime-certificates",
+      "include": ["infra/certs/**"],
+      "checks": ["repo-static", "infra", "api"],
+      "deployComponents": ["api-shared"]
+    },
+    {
+      "id": "production-compose",
+      "include": ["infra/docker-compose.yml"],
+      "checks": ["repo-static", "infra", "api", "miniapp", "admin", "full"],
+      "deployComponents": ["api-shared", "miniapp-major-static", "admin-static"],
+      "manualOperations": ["review-production-compose"],
+      "warnings": ["Production Compose changes require an explicit topology and stateful-service review."]
+    },
+    {
+      "id": "non-production-compose",
+      "include": ["infra/docker-compose.local.yml", "infra/docker-compose.scale.yml"],
+      "checks": ["repo-static", "infra"],
+      "deployComponents": []
+    },
+    {
+      "id": "major-nginx",
+      "include": ["infra/nginx/major-maksimov.ru.conf", "infra/www/major-maksimov/**"],
+      "checks": ["repo-static", "infra"],
+      "deployComponents": [],
+      "manualOperations": ["apply-major-nginx"]
+    },
+    {
+      "id": "admin-nginx",
+      "include": ["infra/nginx/admin.major-maksimov.ru.conf"],
+      "checks": ["repo-static", "infra"],
+      "deployComponents": [],
+      "manualOperations": ["apply-admin-nginx"]
+    },
+    {
+      "id": "play-team-nginx",
+      "include": ["infra/nginx/maxim.play-team.ru.conf"],
+      "checks": ["repo-static", "infra"],
+      "deployComponents": [],
+      "manualOperations": ["review-play-team-nginx"]
+    },
+    {
+      "id": "vk-proxy",
+      "include": ["infra/vk-proxy/**"],
+      "checks": ["repo-static", "infra"],
+      "deployComponents": [],
+      "manualOperations": ["review-vk-proxy"]
+    },
+    {
+      "id": "other-nginx",
+      "include": ["infra/nginx/**"],
+      "exclude": [
+        "infra/nginx/major-maksimov.ru.conf",
+        "infra/nginx/admin.major-maksimov.ru.conf",
+        "infra/nginx/maxim.play-team.ru.conf"
+      ],
+      "checks": ["repo-static", "infra"],
+      "deployComponents": [],
+      "manualOperations": ["review-nginx-change"]
+    },
+    {
+      "id": "deploy-tooling",
+      "include": ["infra/scripts/**"],
+      "checks": ["repo-static", "infra"],
+      "deployComponents": [],
+      "manualOperations": ["review-deploy-tooling"]
+    },
+    {
+      "id": "other-infrastructure",
+      "include": ["infra/**"],
+      "exclude": [
+        "infra/certs/**",
+        "infra/docker-compose.yml",
+        "infra/docker-compose.local.yml",
+        "infra/docker-compose.scale.yml",
+        "infra/env/**",
+        "infra/nginx/**",
+        "infra/scripts/**",
+        "infra/vk-proxy/**",
+        "infra/www/major-maksimov/**"
+      ],
+      "checks": ["repo-static", "infra"],
+      "deployComponents": []
+    }
+  ],
+  "fallback": {
+    "checks": ["full"],
+    "deployComponents": ["api-shared", "miniapp-major-static", "admin-static"],
+    "manualOperations": [],
+    "warning": "Unclassified paths require full validation and explicit production deploy review."
+  }
+}

@@ -1,29 +1,60 @@
-import { mkdir } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium, devices } from 'playwright';
 import previewDevicePresets from '../apps/miniapp/src/lib/preview-device-presets.json' with { type: 'json' };
+import {
+  ensureMiniappDevServer,
+  isLocalMiniappBaseUrl,
+  stopChildProcess,
+  waitForMiniappUrl,
+} from './miniapp-local-server.mjs';
 import { assertMaxBridgeShim, installMaxBridgeShimInitScript } from './miniapp-max-bridge-shim.mjs';
 import {
   applyNativeVisualMode,
   installNativeVisualModeInitScript,
 } from './miniapp-native-visual-mode.mjs';
+import {
+  resolveMiniappScreenshotBaseUrl,
+  resolveMiniappVisualNow,
+  resolveScenarioRuntime,
+} from './miniapp-visual-config.mjs';
+import {
+  MINIAPP_VISUAL_BOTTOM_SCENARIO_SOURCES,
+  MINIAPP_VISUAL_PRESETS,
+  MINIAPP_VISUAL_SCENARIOS,
+  selectMiniappVisualScenarios,
+} from './miniapp-visual-scenarios.mjs';
 
-const DEFAULT_BASE_URL = 'https://major-maksimov.ru/app/';
-const OUTPUT_ROOT = path.resolve(process.cwd(), 'artifacts/miniapp-screenshots');
+const ROOT_DIR = path.resolve(import.meta.dirname, '..');
+const OUTPUT_ROOT = path.join(ROOT_DIR, 'artifacts/miniapp-screenshots');
 const runLabel = (process.env.MINIAPP_SCREENSHOT_LABEL ?? '').trim();
 const timestamp =
   runLabel.replace(/[^a-z0-9._-]+/giu, '-').replace(/^-+|-+$/gu, '') ||
   new Date().toISOString().replace(/[:.]/g, '-');
 
 const deviceProfiles = previewDevicePresets;
+const visualPresetName = (process.env.MINIAPP_SCREENSHOT_PRESET ?? '').trim().toLowerCase();
+const visualPreset = MINIAPP_VISUAL_PRESETS[visualPresetName];
 
-const screenshotTarget = (process.env.MINIAPP_SCREENSHOT_TARGET ?? 'device').trim().toLowerCase();
+const screenshotTarget = (process.env.MINIAPP_SCREENSHOT_TARGET ?? visualPreset?.target ?? 'device')
+  .trim()
+  .toLowerCase();
 const colorScheme = (process.env.MINIAPP_SCREENSHOT_COLOR_SCHEME ?? 'light').trim().toLowerCase();
-const strictLayout = parseEnvFlag('MINIAPP_SCREENSHOT_STRICT_LAYOUT');
-const strictContrast = parseEnvFlag('MINIAPP_SCREENSHOT_STRICT_CONTRAST');
-const strictAccessibility = parseEnvFlag('MINIAPP_SCREENSHOT_STRICT_ACCESSIBILITY');
+const strictLayout =
+  parseOptionalEnvFlag('MINIAPP_SCREENSHOT_STRICT_LAYOUT') ?? visualPreset?.checks?.layout ?? false;
+const strictContrast =
+  parseOptionalEnvFlag('MINIAPP_SCREENSHOT_STRICT_CONTRAST') ??
+  visualPreset?.checks?.contrast ??
+  false;
+const strictAccessibility =
+  parseOptionalEnvFlag('MINIAPP_SCREENSHOT_STRICT_ACCESSIBILITY') ??
+  visualPreset?.checks?.accessibility ??
+  false;
 const envMaxBridgeShim = parseOptionalEnvFlag('MINIAPP_SCREENSHOT_MAX_BRIDGE');
 const maxBridgeShimEnabled = envMaxBridgeShim ?? screenshotTarget === 'native';
+const reuseServer = parseEnvFlag('MINIAPP_SCREENSHOT_REUSE_SERVER');
+const visualNow = resolveMiniappVisualNow();
 const simulateKeyboard = parseEnvFlag('MINIAPP_SCREENSHOT_SIMULATE_KEYBOARD');
 const keyboardOverlapPx = Number.parseInt(
   process.env.MINIAPP_SCREENSHOT_KEYBOARD_OVERLAP_PX ?? '320',
@@ -200,24 +231,15 @@ async function scrollSettingsDrilldownToBottom(page) {
   }
 }
 
-const scenarios = [
+const scenarioBehaviors = [
   {
     name: 'home',
-    path: '/',
   },
   {
     name: 'home-channels',
-    path: '/',
-    searchParams: {
-      view: 'channel',
-    },
   },
   {
     name: 'home-filter',
-    path: '/',
-    searchParams: {
-      view: 'chat',
-    },
     beforeShot: async (page) => {
       const trigger = page.locator('.favorite-filter__trigger');
       const panel = page.locator('.home-filter__panel');
@@ -243,10 +265,6 @@ const scenarios = [
   },
   {
     name: 'home-filter-active',
-    path: '/',
-    searchParams: {
-      view: 'chat',
-    },
     beforeShot: async (page) => {
       const trigger = page.locator('.favorite-filter__trigger');
       const panel = page.locator('.home-filter__panel');
@@ -268,10 +286,6 @@ const scenarios = [
   },
   {
     name: 'home-favorite-picker',
-    path: '/',
-    searchParams: {
-      view: 'chat',
-    },
     beforeShot: async (page) => {
       await page.locator('.chat-card__category').first().click();
       await page.locator('.favorite-picker__panel').waitFor({ state: 'visible' });
@@ -279,10 +293,6 @@ const scenarios = [
   },
   {
     name: 'home-favorite-categories',
-    path: '/',
-    searchParams: {
-      view: 'chat',
-    },
     beforeShot: async (page) => {
       await page.getByRole('button', { name: 'Фильтр категорий' }).click();
       await page.getByRole('button', { name: 'Настроить названия' }).click();
@@ -291,7 +301,6 @@ const scenarios = [
   },
   {
     name: 'publications',
-    path: '/publications',
     beforeShot: async (page) => {
       await page.locator('.publications-page').waitFor({ state: 'visible' });
       await page.waitForTimeout(600);
@@ -299,7 +308,6 @@ const scenarios = [
   },
   {
     name: 'publications-actions',
-    path: '/publications',
     beforeShot: async (page) => {
       await page.locator('.publications-page').waitFor({ state: 'visible' });
       await page.locator('.publication-feed-card__menu-trigger').first().click();
@@ -308,7 +316,6 @@ const scenarios = [
   },
   {
     name: 'publications-edit-discard',
-    path: '/publications',
     beforeShot: async (page) => {
       await page.locator('.publication-feed-card__surface').first().click();
       await page.locator('.publication-details-sheet__panel').waitFor({ state: 'visible' });
@@ -336,7 +343,6 @@ const scenarios = [
   },
   {
     name: 'publications-retry-choice',
-    path: '/publications',
     beforeShot: async (page) => {
       await page.locator('.publication-feed-card__surface').first().click();
       await page.locator('.publication-details-sheet__panel').waitFor({ state: 'visible' });
@@ -352,10 +358,6 @@ const scenarios = [
   },
   {
     name: 'publications-legacy',
-    path: '/publications',
-    searchParams: {
-      legacy: '1',
-    },
     beforeShot: async (page) => {
       const firstLegacyRow = page.locator('.legacy-publications-row').first();
       await firstLegacyRow.waitFor({ state: 'visible' });
@@ -365,12 +367,6 @@ const scenarios = [
   },
   {
     name: 'publications-compose',
-    path: '/publications',
-    searchParams: {
-      compose: '1',
-      entityType: 'chat',
-      entityId: 'preview-chat',
-    },
     beforeShot: async (page) => {
       await page.locator('.publications-editor').waitFor({ state: 'visible' });
       await page.waitForTimeout(600);
@@ -378,12 +374,10 @@ const scenarios = [
   },
   {
     name: 'events-moderation',
-    path: '/chat/preview-chat/events',
     beforeShot: waitForModerationEventsReady,
   },
   {
     name: 'events-moderation-scrolled',
-    path: '/chat/preview-chat/events',
     beforeShot: async (page) => {
       await waitForModerationEventsReady(page);
       await page.evaluate(() => window.scrollTo({ top: 360, behavior: 'instant' }));
@@ -392,7 +386,6 @@ const scenarios = [
   },
   {
     name: 'events-moderation-expanded',
-    path: '/chat/preview-chat/events',
     beforeShot: async (page) => {
       await waitForModerationEventsReady(page);
       await page.locator('.event-feed-item__trigger').first().click();
@@ -401,28 +394,16 @@ const scenarios = [
   },
   {
     name: 'events-activity',
-    path: '/chat/preview-chat/events',
-    searchParams: {
-      section: 'activity',
-    },
     beforeShot: waitForActivityEventsReady,
   },
   {
     name: 'events-participants',
-    path: '/chat/preview-chat/events',
-    searchParams: {
-      section: 'participants',
-    },
     beforeShot: async (page) => {
       await page.locator('.participants-roster').waitFor({ state: 'visible' });
     },
   },
   {
     name: 'events-participant-sheet',
-    path: '/chat/preview-chat/events',
-    searchParams: {
-      section: 'participants',
-    },
     beforeShot: async (page) => {
       const firstParticipant = page.locator('.participants-roster__item--interactive').first();
       await firstParticipant.waitFor({ state: 'visible' });
@@ -432,10 +413,6 @@ const scenarios = [
   },
   {
     name: 'events-participant-controls',
-    path: '/chat/preview-chat/events',
-    searchParams: {
-      section: 'participants',
-    },
     beforeShot: async (page) => {
       const manageableParticipant = page
         .locator('.participants-roster__item--interactive')
@@ -451,7 +428,6 @@ const scenarios = [
   },
   {
     name: 'events-spam-review',
-    path: '/chat/preview-chat/events',
     beforeShot: async (page) => {
       await page.locator('.spammer-review__entry').click();
       await page.locator('.spammer-review-sheet').waitFor({ state: 'visible' });
@@ -459,7 +435,6 @@ const scenarios = [
   },
   {
     name: 'events-spam-diagnostics',
-    path: '/chat/preview-chat/events',
     beforeShot: async (page) => {
       await page.locator('.spammer-review__entry').click();
       const firstCandidate = page.locator('.spammer-review-sheet__row').first();
@@ -470,42 +445,33 @@ const scenarios = [
   },
   {
     name: 'chat-settings',
-    path: '/chat/preview-chat/settings',
   },
   {
     name: 'chat-settings-access-lost',
-    path: '/chat/preview-chat/settings',
-    searchParams: {
-      access: 'lost',
-    },
     beforeShot: async (page) => {
       await page.locator('.managed-access-alert').waitFor({ state: 'visible' });
     },
   },
   {
     name: 'chat-settings-rules',
-    path: '/chat/preview-chat/settings',
     beforeShot: async (page) => {
       await openSettingsSection(page, 'Правила', '.settings-drilldown__panel--rules');
     },
   },
   {
     name: 'chat-settings-greeting',
-    path: '/chat/preview-chat/settings',
     beforeShot: async (page) => {
       await openSettingsSection(page, 'Приветствие', '.settings-drilldown__panel--greeting');
     },
   },
   {
     name: 'chat-settings-profanity',
-    path: '/chat/preview-chat/settings',
     beforeShot: async (page) => {
       await openSettingsSection(page, 'Мат и оскорбления', '.settings-drilldown__panel--profanity');
     },
   },
   {
     name: 'chat-settings-commercial',
-    path: '/chat/preview-chat/settings',
     beforeShot: async (page) => {
       await openSettingsSection(
         page,
@@ -516,14 +482,12 @@ const scenarios = [
   },
   {
     name: 'chat-settings-duplicates',
-    path: '/chat/preview-chat/settings',
     beforeShot: async (page) => {
       await openSettingsSection(page, 'Повторы', '.settings-drilldown__panel--duplicates');
     },
   },
   {
     name: 'chat-settings-duplicates-duration',
-    path: '/chat/preview-chat/settings',
     beforeShot: async (page) => {
       const panel = page.locator('.settings-drilldown__panel--duplicates');
       await openSettingsSection(page, 'Повторы', '.settings-drilldown__panel--duplicates');
@@ -534,35 +498,30 @@ const scenarios = [
   },
   {
     name: 'chat-settings-limits',
-    path: '/chat/preview-chat/settings',
     beforeShot: async (page) => {
       await openSettingsSection(page, 'Ограничения', '.settings-drilldown__panel--limits');
     },
   },
   {
     name: 'chat-settings-night',
-    path: '/chat/preview-chat/settings',
     beforeShot: async (page) => {
       await openSettingsSection(page, 'Ночной режим', '.settings-drilldown__panel--night');
     },
   },
   {
     name: 'chat-settings-commands',
-    path: '/chat/preview-chat/settings',
     beforeShot: async (page) => {
       await openSettingsSection(page, 'Команды', '.settings-drilldown__panel--commands');
     },
   },
   {
     name: 'chat-settings-extra',
-    path: '/chat/preview-chat/settings',
     beforeShot: async (page) => {
       await openSettingsSection(page, 'Сообщения и боты', '.settings-drilldown__panel--extra');
     },
   },
   {
     name: 'chat-settings-speech-style',
-    path: '/chat/preview-chat/settings',
     beforeShot: async (page) => {
       await page.getByRole('button', { name: 'Стиль речи', exact: true }).click();
       await page.locator('.settings-drilldown__panel--speech').waitFor({ state: 'visible' });
@@ -571,10 +530,6 @@ const scenarios = [
   },
   {
     name: 'chat-settings-stop-words',
-    path: '/chat/preview-chat/settings',
-    searchParams: {
-      focus: 'stopWords',
-    },
     beforeShot: async (page) => {
       await page.locator('.settings-word-banlist__preset-grid').waitFor({ state: 'visible' });
       await page.locator('.settings-word-banlist').scrollIntoViewIfNeeded();
@@ -583,20 +538,12 @@ const scenarios = [
   },
   {
     name: 'chat-settings-links',
-    path: '/chat/preview-chat/settings',
-    searchParams: {
-      focus: 'links',
-    },
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
     },
   },
   {
     name: 'chat-settings-bot-message-editor',
-    path: '/chat/preview-chat/settings',
-    searchParams: {
-      focus: 'links',
-    },
     beforeShot: async (page) => {
       await page.locator('.settings-drilldown__panel--links').waitFor({ state: 'visible' });
       const explanationToggle = page.getByLabel('Включить объяснение для модерации ссылок');
@@ -613,10 +560,6 @@ const scenarios = [
   },
   {
     name: 'chat-settings-links-timer',
-    path: '/chat/preview-chat/settings',
-    searchParams: {
-      focus: 'links',
-    },
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
       await page.locator('.allowlist-item__action--schedule').first().click();
@@ -625,10 +568,6 @@ const scenarios = [
   },
   {
     name: 'chat-settings-links-button-picker',
-    path: '/chat/preview-chat/settings',
-    searchParams: {
-      focus: 'links',
-    },
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
       await page.getByLabel('Включить объяснение для модерации ссылок').check();
@@ -655,10 +594,6 @@ const scenarios = [
   },
   {
     name: 'chat-settings-links-button-sheet',
-    path: '/chat/preview-chat/settings',
-    searchParams: {
-      focus: 'links',
-    },
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
       await page.getByLabel('Включить объяснение для модерации ссылок').check();
@@ -676,30 +611,18 @@ const scenarios = [
   },
   {
     name: 'chat-settings-giveaway',
-    path: '/chat/preview-chat/settings',
-    searchParams: {
-      focus: 'giveaway',
-    },
     beforeShot: async (page) => {
       await page.locator('.managed-giveaway--dashboard').waitFor({ state: 'visible' });
     },
   },
   {
     name: 'chat-settings-giveaway-editor',
-    path: '/chat/preview-chat/settings',
-    searchParams: {
-      focus: 'giveaway',
-    },
     beforeShot: async (page) => {
       await openPreviewGiveawayEditor(page);
     },
   },
   {
     name: 'chat-settings-giveaway-conditions-step',
-    path: '/chat/preview-chat/settings',
-    searchParams: {
-      focus: 'giveaway',
-    },
     beforeShot: async (page) => {
       await openPreviewGiveawayEditor(page);
       await page.getByRole('button', { name: /(?:Далее: условия|К условиям)/u }).click();
@@ -708,10 +631,6 @@ const scenarios = [
   },
   {
     name: 'chat-settings-giveaway-channels-modal',
-    path: '/chat/preview-chat/settings',
-    searchParams: {
-      focus: 'giveaway',
-    },
     beforeShot: async (page) => {
       await openPreviewGiveawayEditor(page);
       await page.getByRole('button', { name: /(?:Далее: условия|К условиям)/u }).click();
@@ -726,10 +645,6 @@ const scenarios = [
   },
   {
     name: 'chat-settings-giveaway-publish-step',
-    path: '/chat/preview-chat/settings',
-    searchParams: {
-      focus: 'giveaway',
-    },
     beforeShot: async (page) => {
       await openPreviewGiveawayEditor(page);
       await page.getByRole('button', { name: /(?:Далее: условия|К условиям)/u }).click();
@@ -740,21 +655,12 @@ const scenarios = [
   },
   {
     name: 'chat-dialog-comments',
-    path: '/chat/preview-chat/dialog/comments',
-    searchParams: {
-      token: 'preview-comments-token-0001',
-    },
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
     },
   },
   {
     name: 'chat-dialog-comments-short-thread',
-    path: '/chat/preview-chat/dialog/comments',
-    searchParams: {
-      token: 'preview-comments-token-0001',
-      thread: 'short',
-    },
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
       await assertCommentsComposerPinned(page);
@@ -762,61 +668,36 @@ const scenarios = [
   },
   {
     name: 'chat-dialog-comments-empty-thread',
-    path: '/chat/preview-chat/dialog/comments',
-    searchParams: {
-      token: 'preview-comments-token-0001',
-      thread: 'empty',
-    },
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
     },
   },
   {
     name: 'channel-dialog-comments',
-    path: '/channel/preview-channel/dialog/comments',
-    searchParams: {
-      token: 'preview-comments-token-0001',
-    },
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
     },
   },
   {
     name: 'channel-dialog-suggest',
-    path: '/channel/preview-channel/dialog/suggest',
-    searchParams: {
-      token: 'preview-suggest-token-0001',
-    },
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
     },
   },
   {
     name: 'chat-settings-comments',
-    path: '/chat/preview-chat/settings',
-    searchParams: {
-      focus: 'comments',
-    },
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
     },
   },
   {
     name: 'chat-settings-required-subscription',
-    path: '/chat/preview-chat/settings',
-    searchParams: {
-      focus: 'requiredSubscription',
-    },
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
     },
   },
   {
     name: 'chat-settings-apply-target',
-    path: '/chat/preview-chat/settings',
-    searchParams: {
-      focus: 'links',
-    },
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
       const explanationToggle = page.getByLabel('Включить объяснение для модерации ссылок');
@@ -851,33 +732,18 @@ const scenarios = [
   },
   {
     name: 'chat-settings-broadcast',
-    path: '/chat/preview-chat/settings',
-    searchParams: {
-      focus: 'broadcast',
-      workspace: 'autoposts',
-    },
     beforeShot: async (page) => {
       await page.locator('.managed-autopost-rule-card').first().waitFor({ state: 'visible' });
     },
   },
   {
     name: 'chat-settings-broadcast-handoff',
-    path: '/chat/preview-chat/settings',
-    searchParams: {
-      focus: 'broadcast',
-      handoff: '1',
-    },
     beforeShot: async (page) => {
       await page.locator('.broadcast-compose-flow').waitFor({ state: 'visible' });
     },
   },
   {
     name: 'chat-settings-broadcast-audience',
-    path: '/chat/preview-chat/settings',
-    searchParams: {
-      focus: 'broadcast',
-      handoff: '1',
-    },
     beforeShot: async (page) => {
       await page.locator('.broadcast-compose-flow').waitFor({ state: 'visible' });
       await page.locator('.broadcast-audience-card__mode-tabs').getByRole('radio').nth(1).click();
@@ -887,44 +753,27 @@ const scenarios = [
   },
   {
     name: 'chat-settings-broadcast-history',
-    path: '/chat/preview-chat/settings',
-    searchParams: {
-      focus: 'broadcast',
-      workspace: 'autoposts',
-    },
     beforeShot: async (page) => {
       await openBroadcastHistoryTab(page);
     },
   },
   {
     name: 'chat-settings-broadcast-editor',
-    path: '/chat/preview-chat/settings',
-    searchParams: {
-      focus: 'broadcast',
-      legacyKind: 'autopost',
-      legacyId: 'autopost-preview-soil',
-    },
     beforeShot: async (page) => {
       await page.locator('.broadcast-compose-flow').waitFor({ state: 'visible' });
     },
   },
   {
     name: 'channel-settings',
-    path: '/channel/preview-channel/settings',
   },
   {
     name: 'channel-settings-access-degraded',
-    path: '/channel/preview-channel/settings',
-    searchParams: {
-      access: 'degraded',
-    },
     beforeShot: async (page) => {
       await page.locator('.managed-access-alert').waitFor({ state: 'visible' });
     },
   },
   {
     name: 'channel-settings-comments',
-    path: '/channel/preview-channel/settings',
     beforeShot: async (page) => {
       await page.getByRole('button', { name: /(?:Комментарии|Обсуждение)/u }).click();
       await page.waitForTimeout(300);
@@ -932,7 +781,6 @@ const scenarios = [
   },
   {
     name: 'channel-settings-post-suggestions',
-    path: '/channel/preview-channel/settings',
     beforeShot: async (page) => {
       await page.getByRole('button', { name: /Предложения/u }).click();
       await page.waitForTimeout(300);
@@ -940,7 +788,6 @@ const scenarios = [
   },
   {
     name: 'channel-settings-post-suggestions-off',
-    path: '/channel/preview-channel/settings',
     beforeShot: async (page) => {
       await page.getByRole('button', { name: /Предложения/u }).click();
       const toggle = page.getByRole('checkbox', { name: 'Принимать предложения', exact: true });
@@ -952,10 +799,6 @@ const scenarios = [
   },
   {
     name: 'channel-settings-vk-parsing',
-    path: '/channel/preview-channel/settings',
-    searchParams: {
-      focus: 'vkParsing',
-    },
     beforeShot: async (page) => {
       await page
         .locator('.settings-drilldown__panel--vk-parsing .vk-parsing-card')
@@ -965,10 +808,6 @@ const scenarios = [
   },
   {
     name: 'channel-settings-vk-parsing-editor',
-    path: '/channel/preview-channel/settings',
-    searchParams: {
-      focus: 'vkParsing',
-    },
     beforeShot: async (page) => {
       const card = page.locator('.settings-drilldown__panel--vk-parsing .vk-parsing-card');
       await card.waitFor({ state: 'visible' });
@@ -991,7 +830,6 @@ const scenarios = [
   },
   {
     name: 'channel-settings-polls',
-    path: '/channel/preview-channel/settings',
     beforeShot: async (page) => {
       await page.getByRole('button', { name: /Опросы/u }).click();
       await page.locator('.managed-poll-workspace').waitFor({ state: 'visible' });
@@ -1000,7 +838,6 @@ const scenarios = [
   },
   {
     name: 'channel-settings-poll-editor',
-    path: '/channel/preview-channel/settings',
     beforeShot: async (page) => {
       await openSettingsSection(page, 'Опросы', '.managed-poll-workspace');
       await page
@@ -1025,17 +862,12 @@ const scenarios = [
   },
   {
     name: 'channel-settings-giveaway',
-    path: '/channel/preview-channel/settings',
     beforeShot: async (page) => {
       await openSettingsSection(page, 'Розыгрыши', '.settings-drilldown__panel--channel-giveaway');
     },
   },
   {
     name: 'chat-settings-vk-parsing',
-    path: '/chat/preview-chat/settings',
-    searchParams: {
-      focus: 'vkParsing',
-    },
     beforeShot: async (page) => {
       await page
         .locator('.settings-drilldown__panel--vk-parsing .vk-parsing-card')
@@ -1045,57 +877,34 @@ const scenarios = [
   },
   {
     name: 'channel-settings-broadcast',
-    path: '/channel/preview-channel/settings',
-    searchParams: {
-      focus: 'broadcast',
-      workspace: 'autoposts',
-    },
     beforeShot: async (page) => {
       await page.locator('.managed-autopost-rule-card').first().waitFor({ state: 'visible' });
     },
   },
   {
     name: 'channel-settings-broadcast-handoff',
-    path: '/channel/preview-channel/settings',
-    searchParams: {
-      focus: 'broadcast',
-      handoff: '1',
-    },
     beforeShot: async (page) => {
       await page.locator('.broadcast-compose-flow').waitFor({ state: 'visible' });
     },
   },
   {
     name: 'channel-settings-broadcast-history',
-    path: '/channel/preview-channel/settings',
-    searchParams: {
-      focus: 'broadcast',
-      workspace: 'autoposts',
-    },
     beforeShot: async (page) => {
       await openBroadcastHistoryTab(page);
     },
   },
   {
     name: 'channel-settings-broadcast-editor',
-    path: '/channel/preview-channel/settings',
-    searchParams: {
-      focus: 'broadcast',
-      legacyKind: 'broadcast',
-      legacyId: 'broadcast-channel-1',
-    },
     beforeShot: async (page) => {
       await page.locator('.broadcast-compose-flow').waitFor({ state: 'visible' });
     },
   },
   {
     name: 'channel-stats',
-    path: '/channel/preview-channel/stats',
     beforeShot: waitForChannelStatsReady,
   },
   {
     name: 'channel-stats-24h',
-    path: '/channel/preview-channel/stats',
     beforeShot: async (page) => {
       await page
         .locator(
@@ -1110,7 +919,6 @@ const scenarios = [
   },
   {
     name: 'channel-stats-top-posts',
-    path: '/channel/preview-channel/stats',
     beforeShot: async (page) => {
       const detailTarget = page
         .locator('.channel-top-posts-panel, .channel-summary-table-card')
@@ -1124,30 +932,22 @@ const scenarios = [
   },
   {
     name: 'channel-events',
-    path: '/channel/preview-channel/stats',
-    searchParams: {
-      section: 'events',
-    },
     beforeShot: waitForChannelEventsReady,
   },
   {
     name: 'legal-agreement',
-    path: '/legal/agreement',
     beforeShot: async (page) => {
       await page.waitForTimeout(350);
     },
   },
   {
     name: 'legal-privacy',
-    path: '/legal/privacy',
     beforeShot: async (page) => {
       await page.waitForTimeout(350);
     },
   },
   {
     name: 'init-missing',
-    path: '/',
-    preview: false,
     beforeShot: async (page) => {
       await page.locator('.init-missing-card').waitFor({ state: 'visible' });
       await page.waitForTimeout(200);
@@ -1155,17 +955,12 @@ const scenarios = [
   },
   {
     name: 'giveaway-default',
-    path: '/giveaways/preview-giveaway',
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
     },
   },
   {
     name: 'giveaway-blocked',
-    path: '/giveaways/preview-giveaway',
-    searchParams: {
-      giveaway_state: 'blocked',
-    },
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
       try {
@@ -1178,11 +973,6 @@ const scenarios = [
   },
   {
     name: 'giveaway-joined',
-    path: '/giveaways/preview-giveaway',
-    searchParams: {
-      giveaway_state: 'blocked',
-      giveaway_enter_result: 'joined',
-    },
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
       try {
@@ -1195,89 +985,46 @@ const scenarios = [
   },
   {
     name: 'giveaway-winner',
-    path: '/giveaways/preview-giveaway',
-    searchParams: {
-      giveaway_state: 'winner',
-    },
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
     },
   },
   {
     name: 'giveaway-completed',
-    path: '/giveaways/preview-giveaway',
-    searchParams: {
-      giveaway_state: 'completed',
-    },
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
     },
   },
 ];
 
-const settingsBottomScenarioSources = [
-  'chat-settings-rules',
-  'chat-settings-profanity',
-  'chat-settings-commercial',
-  'chat-settings-duplicates',
-  'chat-settings-limits',
-  'chat-settings-night',
-  'chat-settings-commands',
-  'chat-settings-speech-style',
-  'chat-settings-stop-words',
-  'chat-settings-links',
-  'chat-settings-links-timer',
-  'chat-settings-bot-message-editor',
-  'chat-settings-required-subscription',
-  'chat-settings-vk-parsing',
-  'chat-settings-giveaway',
-  'chat-settings-giveaway-editor',
-  'chat-settings-giveaway-conditions-step',
-  'chat-settings-giveaway-channels-modal',
-  'chat-settings-giveaway-publish-step',
-  'chat-settings-broadcast-handoff',
-  'chat-settings-broadcast-editor',
-  'channel-settings-comments',
-  'channel-settings-post-suggestions',
-  'channel-settings-post-suggestions-off',
-  'channel-settings-vk-parsing',
-  'channel-settings-polls',
-  'channel-settings-poll-editor',
-  'channel-settings-giveaway',
-  'channel-settings-broadcast-handoff',
-  'channel-settings-broadcast-editor',
-];
-
-scenarios.push(
-  ...settingsBottomScenarioSources.map((sourceName) => {
-    const source = scenarios.find((scenario) => scenario.name === sourceName);
-    if (!source) {
-      throw new Error(`Missing source scenario for bottom screenshot: ${sourceName}`);
-    }
-    return {
-      ...source,
-      name: `${sourceName}-bottom`,
-      beforeShot: async (page) => {
-        if (source.beforeShot) {
-          await source.beforeShot(page);
-        }
-        await scrollSettingsDrilldownToBottom(page);
-      },
-    };
-  }),
+const scenarioBehaviorByName = new Map(
+  scenarioBehaviors.map((behavior) => [behavior.name, behavior]),
 );
 
-const favoriteCategoriesScenario = scenarios.find(
-  (scenario) => scenario.name === 'home-favorite-categories',
-);
-if (!favoriteCategoriesScenario) {
-  throw new Error('Missing source scenario for bottom screenshot: home-favorite-categories');
+for (const sourceName of MINIAPP_VISUAL_BOTTOM_SCENARIO_SOURCES) {
+  const source = scenarioBehaviorByName.get(sourceName);
+  if (!source) {
+    throw new Error(`Missing source scenario behavior for bottom screenshot: ${sourceName}`);
+  }
+  scenarioBehaviorByName.set(`${sourceName}-bottom`, {
+    name: `${sourceName}-bottom`,
+    beforeShot: async (page) => {
+      if (source.beforeShot) {
+        await source.beforeShot(page);
+      }
+      await scrollSettingsDrilldownToBottom(page);
+    },
+  });
 }
-scenarios.push({
-  ...favoriteCategoriesScenario,
+
+const favoriteCategoriesBehavior = scenarioBehaviorByName.get('home-favorite-categories');
+if (!favoriteCategoriesBehavior) {
+  throw new Error('Missing source scenario behavior: home-favorite-categories');
+}
+scenarioBehaviorByName.set('home-favorite-categories-bottom', {
   name: 'home-favorite-categories-bottom',
   beforeShot: async (page) => {
-    await favoriteCategoriesScenario.beforeShot?.(page);
+    await favoriteCategoriesBehavior.beforeShot?.(page);
     await setScrollPosition(
       page.locator('.favorite-picker:visible .favorite-picker__panel').first(),
       'bottom',
@@ -1286,26 +1033,64 @@ scenarios.push({
   },
 });
 
-const requestedScenarioNames = (process.env.MINIAPP_SCREENSHOT_SCENARIOS ?? '')
-  .split(',')
-  .map((value) => value.trim())
-  .filter(Boolean);
-const activeScenarios =
-  requestedScenarioNames.length > 0
-    ? scenarios.filter((scenario) => requestedScenarioNames.includes(scenario.name))
-    : scenarios;
+const metadataNames = new Set(MINIAPP_VISUAL_SCENARIOS.map((scenario) => scenario.name));
+const missingScenarioMetadata = [...scenarioBehaviorByName.keys()].filter(
+  (name) => !metadataNames.has(name),
+);
+if (missingScenarioMetadata.length > 0) {
+  throw new Error(`Missing visual scenario metadata: ${missingScenarioMetadata.join(', ')}`);
+}
 
-const missingScenarioNames =
-  requestedScenarioNames.length > 0
-    ? requestedScenarioNames.filter(
-        (scenarioName) => !scenarios.some((scenario) => scenario.name === scenarioName),
-      )
-    : [];
+const scenarios = MINIAPP_VISUAL_SCENARIOS.map((metadata) => ({
+  ...metadata,
+  ...scenarioBehaviorByName.get(metadata.name),
+}));
+const scenarioByName = new Map(scenarios.map((scenario) => [scenario.name, scenario]));
 
-if (missingScenarioNames.length > 0) {
-  throw new Error(
-    `Unknown screenshot scenarios in MINIAPP_SCREENSHOT_SCENARIOS: ${missingScenarioNames.join(', ')}`,
-  );
+const changedFiles = resolveChangedVisualFiles();
+const scenarioSelection = selectMiniappVisualScenarios({
+  scenarioNames: process.env.MINIAPP_SCREENSHOT_SCENARIOS,
+  changedFiles,
+  preset: visualPresetName,
+});
+const activeScenarios = scenarioSelection.scenarios.map((scenario) =>
+  scenarioByName.get(scenario.name),
+);
+
+if (activeScenarios.length === 0) {
+  const detail =
+    scenarioSelection.reason === 'changed-files'
+      ? ` for changed files: ${scenarioSelection.changedFiles.join(', ')}`
+      : '';
+  throw new Error(`Visual scenario selection is empty${detail}.`);
+}
+
+function resolveChangedVisualFiles() {
+  const explicitFiles = (process.env.MINIAPP_SCREENSHOT_CHANGED_FILES ?? '')
+    .split(/[\n,]/u)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (explicitFiles.length > 0 || !parseEnvFlag('MINIAPP_SCREENSHOT_CHANGED')) {
+    return explicitFiles;
+  }
+
+  try {
+    const tracked = execFileSync(
+      'git',
+      ['diff', '--name-only', '--diff-filter=ACMRD', 'HEAD', '--'],
+      { cwd: ROOT_DIR, encoding: 'utf8' },
+    );
+    const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], {
+      cwd: ROOT_DIR,
+      encoding: 'utf8',
+    });
+    return [...new Set(`${tracked}\n${untracked}`.split('\n').map((value) => value.trim()))].filter(
+      Boolean,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Unable to resolve changed files for visual selection: ${message}`);
+  }
 }
 
 async function assertCommentsComposerPinned(page) {
@@ -1473,14 +1258,57 @@ async function ensureDir(dir) {
 
 async function waitForApp(page, scenario) {
   if (scenario.preview === false) {
-    await page.waitForSelector('.app-shell', { timeout: 20_000 });
+    await page.waitForSelector(scenario.readySelector ?? '.app-shell', { timeout: 20_000 });
     await page.waitForTimeout(500);
     return;
   }
 
   await page.waitForSelector('.design-preview__device', { timeout: 20_000 });
   await page.waitForSelector('.app-shell', { timeout: 20_000 });
+  if (scenario.readySelector) {
+    await page.waitForSelector(scenario.readySelector, { timeout: 20_000 });
+  }
   await page.waitForTimeout(500);
+}
+
+async function runScenarioNavigation(page, scenario, baseUrl, profile, runtime) {
+  const visited = [scenario.path];
+  for (const [index, step] of (scenario.navigation ?? []).entries()) {
+    const url = new URL(
+      buildPreviewUrl(baseUrl, step.path, profile.queryDevice, step.searchParams, {
+        preview: runtime.previewEnabled,
+      }),
+    );
+    await page.evaluate(
+      ({ pathname, search, hash, stateKey }) => {
+        const previousState = window.history.state;
+        const previousIndex =
+          previousState && typeof previousState.idx === 'number' ? previousState.idx : 0;
+        const state = {
+          ...(previousState && typeof previousState === 'object' ? previousState : {}),
+          idx: previousIndex + 1,
+          key: stateKey,
+        };
+        window.history.pushState(state, '', `${pathname}${search}${hash}`);
+        window.dispatchEvent(new PopStateEvent('popstate', { state }));
+      },
+      {
+        pathname: url.pathname,
+        search: url.search,
+        hash: url.hash,
+        stateKey: `visual-${scenario.name}-${index}`,
+      },
+    );
+    await page.waitForFunction(
+      ({ pathname, search }) =>
+        window.location.pathname === pathname && window.location.search === search,
+      { pathname: url.pathname, search: url.search },
+    );
+    await page.waitForSelector(step.readySelector, { state: 'visible', timeout: 20_000 });
+    await page.waitForTimeout(350);
+    visited.push(step.path);
+  }
+  return visited;
 }
 
 async function applyNativeScreenshotMode(page, profile) {
@@ -1488,7 +1316,17 @@ async function applyNativeScreenshotMode(page, profile) {
     return;
   }
 
-  await applyNativeVisualMode(page, profile);
+  const state = await applyNativeVisualMode(page, profile);
+  if (state?.hadPreviewScaffold && !state.previewScaffoldDetached) {
+    throw new Error('Native screenshot mode did not detach the design-preview geometry.');
+  }
+}
+
+async function assertMaxBridgeAbsent(page, scenario) {
+  const hasBridge = await page.evaluate(() => Boolean(window.MAX?.WebApp ?? window.WebApp));
+  if (hasBridge) {
+    throw new Error(`Scenario ${scenario.name} must run without a MAX Bridge.`);
+  }
 }
 
 async function simulateKeyboardViewport(page) {
@@ -1516,21 +1354,25 @@ async function simulateKeyboardViewport(page) {
   await page.waitForTimeout(180);
 }
 
-async function assertStrictLayout(page, scenario) {
-  if (!strictLayout) {
-    return;
+async function assertConfiguredChecks(page, scenario) {
+  if (strictLayout) {
+    await assertAppHasVisibleContent(page, scenario);
+    await assertViewportBounds(page, scenario);
+    await assertNoUnexpectedHorizontalOverflow(page, scenario);
+    await assertPrimaryControlsReachable(page, scenario);
+    await assertChartsPainted(page, scenario);
+    await assertKeyboardState(page, scenario);
   }
 
-  await assertAppHasVisibleContent(page, scenario);
-  await assertViewportBounds(page, scenario);
-  await assertNoUnexpectedHorizontalOverflow(page, scenario);
-  await assertPrimaryControlsReachable(page, scenario);
-  await assertChartsPainted(page, scenario);
-  await assertKeyboardState(page, scenario);
-  await assertCriticalContrast(page, scenario);
-  await assertCriticalAccessibility(page, scenario);
-  await assertPublicationTouchTargets(page, scenario);
-  await assertSettingsDrilldownScrollContrast(page, scenario);
+  if (strictContrast) {
+    await assertCriticalContrast(page, scenario);
+    await assertSettingsDrilldownScrollContrast(page, scenario);
+  }
+
+  if (strictAccessibility) {
+    await assertCriticalAccessibility(page, scenario);
+    await assertPublicationTouchTargets(page, scenario);
+  }
 }
 
 async function assertSettingsDrilldownScrollContrast(page, scenario) {
@@ -2322,98 +2164,196 @@ function resolveScreenshotLocator(page) {
   return page.locator('.design-preview__device');
 }
 
-async function captureDeviceScenarios(browser, profile, baseUrl, outputDir) {
+async function installDeterministicExternalScripts(context) {
+  await context.route(/https:\/\/st\.max\.ru\/js\/max-web-app\.js(?:\?.*)?$/u, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/javascript; charset=utf-8',
+      body: '/* MAX Bridge is supplied by the visual harness when the scenario enables it. */',
+    });
+  });
+  await context.route(/\/system\/miniapp-boot-trace(?:\?.*)?$/u, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json; charset=utf-8',
+      body: '{"accepted":true}',
+    });
+  });
+}
+
+function attachPageDiagnostics(page, scenario) {
+  const failures = [];
+
+  page.on('pageerror', (error) => {
+    failures.push(`pageerror: ${error.message}`);
+  });
+  page.on('console', (message) => {
+    if (message.type() === 'error') {
+      failures.push(`console.error: ${message.text()}`);
+    }
+  });
+  page.on('requestfailed', (request) => {
+    const failure = request.failure()?.errorText ?? 'unknown network error';
+    failures.push(`requestfailed: ${request.method()} ${request.url()} (${failure})`);
+  });
+  page.on('response', (response) => {
+    if (response.status() >= 400) {
+      failures.push(`http ${response.status()}: ${response.request().method()} ${response.url()}`);
+    }
+  });
+
+  return {
+    assertClean() {
+      if (failures.length === 0) {
+        return;
+      }
+
+      throw new Error(
+        `Scenario ${scenario.name} emitted browser/network errors:\n${failures
+          .slice(0, 8)
+          .map((failure) => `- ${failure}`)
+          .join('\n')}`,
+      );
+    },
+  };
+}
+
+function assertNavigationResponse(response, scenario, url) {
+  if (!response) {
+    throw new Error(`Scenario ${scenario.name} did not receive an HTTP response for ${url}.`);
+  }
+  if (response.status() >= 400) {
+    throw new Error(
+      `Scenario ${scenario.name} navigation failed with HTTP ${response.status()}: ${url}`,
+    );
+  }
+}
+
+async function captureDeviceScenarios(browser, profile, baseUrl, outputDir, report) {
   const device = devices[profile.viewportName];
   if (!device) {
     throw new Error(`Unknown Playwright device profile: ${profile.viewportName}`);
   }
 
-  const context = await browser.newContext({
-    ...device,
-    colorScheme: colorScheme === 'dark' ? 'dark' : 'light',
-    locale: 'ru-RU',
-    timezoneId: 'Europe/Moscow',
-  });
-
-  if (screenshotTarget === 'native') {
-    await installNativeVisualModeInitScript(context);
-  }
-  if (maxBridgeShimEnabled) {
-    await installMaxBridgeShimInitScript(context, profile, {
-      colorScheme: colorScheme === 'dark' ? 'dark' : 'light',
-      startParam: process.env.MINIAPP_SCREENSHOT_START_PARAM?.trim() || '',
-      version: process.env.MINIAPP_SCREENSHOT_MAX_VERSION?.trim() || '',
-    });
-  }
-
-  const page = await context.newPage();
   const shotDir = path.join(outputDir, profile.outputDirName);
   await ensureDir(shotDir);
 
   for (const scenario of activeScenarios) {
-    const url = buildPreviewUrl(
-      baseUrl,
-      scenario.path,
-      profile.queryDevice,
-      scenario.searchParams,
-      {
-        preview: scenario.preview,
-      },
-    );
-    if (scenario.preview === false) {
-      await context.clearCookies();
-      await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
-      await page.evaluate(() => {
-        window.sessionStorage.clear();
-        window.localStorage.removeItem('maxim:design-preview-device');
+    const startedAt = Date.now();
+    const reportEntry = {
+      name: scenario.name,
+      device: profile.outputDirName,
+      routeId: scenario.routeId,
+      features: scenario.features,
+      tags: scenario.tags,
+      cold: scenario.cold,
+      navigation: [],
+      status: 'running',
+    };
+    report.scenarios.push(reportEntry);
+    const runtime = resolveScenarioRuntime(scenario, maxBridgeShimEnabled);
+    let context = null;
+
+    try {
+      context = await browser.newContext({
+        ...device,
+        colorScheme: colorScheme === 'dark' ? 'dark' : 'light',
+        locale: 'ru-RU',
+        timezoneId: 'Europe/Moscow',
       });
+      await installDeterministicExternalScripts(context);
+      if (screenshotTarget === 'native') {
+        await installNativeVisualModeInitScript(context);
+      }
+      if (runtime.bridgeEnabled) {
+        await installMaxBridgeShimInitScript(context, profile, {
+          colorScheme: colorScheme === 'dark' ? 'dark' : 'light',
+          startParam: process.env.MINIAPP_SCREENSHOT_START_PARAM?.trim() || '',
+          version: process.env.MINIAPP_SCREENSHOT_MAX_VERSION?.trim() || '',
+        });
+      }
+
+      const page = await context.newPage();
+      await page.clock.setFixedTime(visualNow);
+      const diagnostics = attachPageDiagnostics(page, scenario);
+      const url = buildPreviewUrl(
+        baseUrl,
+        scenario.path,
+        profile.queryDevice,
+        scenario.searchParams,
+        {
+          preview: runtime.previewEnabled,
+        },
+      );
+      const response = await page.goto(url, { waitUntil: 'domcontentloaded' });
+      assertNavigationResponse(response, scenario, url);
+      await waitForApp(page, scenario);
+      if (runtime.bridgeEnabled) {
+        await assertMaxBridgeShim(page);
+      } else if (scenario.maxBridge === false) {
+        await assertMaxBridgeAbsent(page, scenario);
+      }
+      await applyNativeScreenshotMode(page, profile);
+      reportEntry.navigation = await runScenarioNavigation(
+        page,
+        scenario,
+        baseUrl,
+        profile,
+        runtime,
+      );
+      await simulateKeyboardViewport(page);
+
+      if (scenario.beforeShot) {
+        await scenario.beforeShot(page);
+      }
+
+      if (scenario.name.includes('dialog-comments')) {
+        await assertCommentsTopEdgeCovered(page);
+        await assertCommentsContentTopInset(page);
+      }
+
+      await assertConfiguredChecks(page, scenario);
+
+      const screenshotPath = path.join(shotDir, `${scenario.name}.png`);
+      const locator = resolveScreenshotLocator(page);
+
+      if (locator) {
+        await locator.screenshot({
+          path: screenshotPath,
+          animations: 'disabled',
+          timeout: 120_000,
+        });
+      } else {
+        await page.screenshot({
+          path: screenshotPath,
+          animations: 'disabled',
+          timeout: 120_000,
+          fullPage: screenshotTarget === 'page',
+        });
+      }
+
+      diagnostics.assertClean();
+      reportEntry.status = 'passed';
+      reportEntry.screenshot = path.relative(ROOT_DIR, screenshotPath);
+    } catch (error) {
+      reportEntry.status = 'failed';
+      reportEntry.error = error instanceof Error ? error.message : String(error);
+      throw error;
+    } finally {
+      reportEntry.durationMs = Date.now() - startedAt;
+      await context?.close();
     }
-    await page.goto(url, { waitUntil: 'domcontentloaded' });
-    await waitForApp(page, scenario);
-    if (maxBridgeShimEnabled) {
-      await assertMaxBridgeShim(page);
-    }
-    await applyNativeScreenshotMode(page, profile);
-    await simulateKeyboardViewport(page);
-
-    if (scenario.beforeShot) {
-      await scenario.beforeShot(page);
-    }
-
-    if (scenario.name.includes('dialog-comments')) {
-      await assertCommentsTopEdgeCovered(page);
-      await assertCommentsContentTopInset(page);
-    }
-
-    await assertStrictLayout(page, scenario);
-
-    const screenshotPath = path.join(shotDir, `${scenario.name}.png`);
-    const locator = resolveScreenshotLocator(page);
-
-    if (locator) {
-      await locator.screenshot({
-        path: screenshotPath,
-        animations: 'disabled',
-        timeout: 120_000,
-      });
-      continue;
-    }
-
-    await page.screenshot({
-      path: screenshotPath,
-      animations: 'disabled',
-      timeout: 120_000,
-      fullPage: screenshotTarget === 'page',
-    });
   }
-
-  await context.close();
 }
 
 async function main() {
-  const requestedDevice = process.env.MINIAPP_SCREENSHOT_DEVICE?.trim().toLowerCase() ?? 'all';
-  const baseUrl = process.env.MINIAPP_SCREENSHOT_BASE_URL?.trim() || DEFAULT_BASE_URL;
+  const requestedDevice =
+    process.env.MINIAPP_SCREENSHOT_DEVICE?.trim().toLowerCase() ?? visualPreset?.device ?? 'all';
+  const baseUrl = resolveMiniappScreenshotBaseUrl();
   const outputDir = path.join(OUTPUT_ROOT, timestamp);
+  const reportPath = process.env.MINIAPP_SCREENSHOT_REPORT_PATH?.trim()
+    ? path.resolve(process.cwd(), process.env.MINIAPP_SCREENSHOT_REPORT_PATH.trim())
+    : path.join(outputDir, 'report.json');
   const deviceKeys =
     requestedDevice === 'all'
       ? Object.keys(deviceProfiles)
@@ -2424,37 +2364,117 @@ async function main() {
   }
 
   await ensureDir(outputDir);
+  await ensureDir(path.dirname(reportPath));
 
-  let browser;
+  const report = {
+    schemaVersion: 1,
+    status: 'running',
+    baseUrl,
+    source: isLocalMiniappBaseUrl(baseUrl) ? 'local' : 'remote',
+    target: screenshotTarget,
+    colorScheme,
+    fixedNow: visualNow.toISOString(),
+    selection: {
+      reason: scenarioSelection.reason,
+      preset: visualPresetName || null,
+      changedFiles: scenarioSelection.changedFiles,
+      scenarios: activeScenarios.map((scenario) => scenario.name),
+      devices: deviceKeys,
+    },
+    checks: {
+      layout: strictLayout,
+      contrast: strictContrast,
+      accessibility: strictAccessibility,
+    },
+    startedAt: new Date().toISOString(),
+    scenarios: [],
+  };
+
+  let browser = null;
+  let devServerProcess = null;
+  let reportWritePromise = null;
+
+  const cleanup = async () => {
+    if (browser) {
+      await browser.close();
+      browser = null;
+    }
+    await stopChildProcess(devServerProcess);
+    devServerProcess = null;
+  };
+
+  const writeReport = () => {
+    reportWritePromise ??= (async () => {
+      report.finishedAt = new Date().toISOString();
+      report.durationMs =
+        new Date(report.finishedAt).getTime() - new Date(report.startedAt).getTime();
+      await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+    })();
+    return reportWritePromise;
+  };
+
+  const handleSignal = (signal) => {
+    report.status = 'cancelled';
+    report.error = `Received ${signal}`;
+    void cleanup()
+      .finally(writeReport)
+      .finally(() => {
+        process.exit(signal === 'SIGINT' ? 130 : 143);
+      });
+  };
+
+  process.once('SIGINT', handleSignal);
+  process.once('SIGTERM', handleSignal);
 
   try {
-    browser = await chromium.launch({
-      headless: true,
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.includes('error while loading shared libraries')) {
-      throw new Error(
-        [
-          'Playwright Chromium cannot start because system libraries are missing.',
-          'Local fallback: install Playwright browser dependencies for your OS.',
-          'VPS fallback: run the screenshot flow inside the Playwright Docker image.',
-        ].join(' '),
-      );
+    if (isLocalMiniappBaseUrl(baseUrl)) {
+      if (reuseServer) {
+        await waitForMiniappUrl(baseUrl);
+      } else {
+        devServerProcess = await ensureMiniappDevServer(baseUrl, { log: console.log });
+      }
     }
 
-    throw error;
-  }
+    console.log(
+      `Mini app screenshot source: ${baseUrl} (${isLocalMiniappBaseUrl(baseUrl) ? 'local' : 'explicit remote'})`,
+    );
 
-  try {
+    try {
+      browser = await chromium.launch({
+        headless: true,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('error while loading shared libraries')) {
+        throw new Error(
+          [
+            'Playwright Chromium cannot start because system libraries are missing.',
+            'Local fallback: install Playwright browser dependencies for your OS.',
+            'VPS fallback: run the screenshot flow inside the Playwright Docker image.',
+          ].join(' '),
+        );
+      }
+
+      throw error;
+    }
+
     for (const key of deviceKeys) {
-      await captureDeviceScenarios(browser, deviceProfiles[key], baseUrl, outputDir);
+      await captureDeviceScenarios(browser, deviceProfiles[key], baseUrl, outputDir, report);
     }
+    report.status = 'passed';
+  } catch (error) {
+    report.status = 'failed';
+    report.error = error instanceof Error ? error.message : String(error);
+    throw error;
   } finally {
-    await browser.close();
+    process.removeListener('SIGINT', handleSignal);
+    process.removeListener('SIGTERM', handleSignal);
+    await cleanup();
+    await writeReport();
   }
 
   console.log(`Screenshots saved to ${outputDir}`);
+  console.log(`Visual report saved to ${reportPath}`);
 }
 
 main().catch((error) => {

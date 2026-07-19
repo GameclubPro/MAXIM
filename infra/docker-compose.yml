@@ -1,4 +1,5 @@
 x-spammer-read-model-shadow-env: &spammer-read-model-shadow-env
+  NODE_ENV: production
   SPAMMER_PROFILE_CACHE_ENABLED: 'true'
   SPAMMER_READ_MODEL_SHADOW_ENABLED: 'true'
   SPAMMER_READ_MODEL_SHADOW_SAMPLE_RATE: '0.1'
@@ -37,6 +38,7 @@ services:
       - redis_data:/data
 
   api-ingress:
+    image: ${MAXIM_API_IMAGE:-maxim-api:local}
     build:
       context: ..
       dockerfile: apps/api/Dockerfile
@@ -66,6 +68,7 @@ services:
       - '127.0.0.1:3001:3001'
 
   api-admin:
+    image: ${MAXIM_API_IMAGE:-maxim-api:local}
     build:
       context: ..
       dockerfile: apps/api/Dockerfile
@@ -96,6 +99,7 @@ services:
       - '127.0.0.1:3002:3001'
 
   api-enqueue:
+    image: ${MAXIM_API_IMAGE:-maxim-api:local}
     build:
       context: ..
       dockerfile: apps/api/Dockerfile
@@ -126,6 +130,7 @@ services:
       - redis
 
   api-moderation:
+    image: ${MAXIM_API_IMAGE:-maxim-api:local}
     build:
       context: ..
       dockerfile: apps/api/Dockerfile
@@ -168,6 +173,7 @@ services:
       - redis
 
   api-moderation-critical:
+    image: ${MAXIM_API_IMAGE:-maxim-api:local}
     build:
       context: ..
       dockerfile: apps/api/Dockerfile
@@ -209,6 +215,7 @@ services:
       - redis
 
   api-moderation-join:
+    image: ${MAXIM_API_IMAGE:-maxim-api:local}
     build:
       context: ..
       dockerfile: apps/api/Dockerfile
@@ -249,6 +256,7 @@ services:
       - redis
 
   api-moderation-realtime-b:
+    image: ${MAXIM_API_IMAGE:-maxim-api:local}
     build:
       context: ..
       dockerfile: apps/api/Dockerfile
@@ -291,6 +299,7 @@ services:
       - redis
 
   api-moderation-realtime-c:
+    image: ${MAXIM_API_IMAGE:-maxim-api:local}
     build:
       context: ..
       dockerfile: apps/api/Dockerfile
@@ -335,6 +344,7 @@ services:
       - redis
 
   api-moderation-realtime-d:
+    image: ${MAXIM_API_IMAGE:-maxim-api:local}
     build:
       context: ..
       dockerfile: apps/api/Dockerfile
@@ -377,6 +387,7 @@ services:
       - redis
 
   api-moderation-background:
+    image: ${MAXIM_API_IMAGE:-maxim-api:local}
     build:
       context: ..
       dockerfile: apps/api/Dockerfile
@@ -429,6 +440,7 @@ services:
       - redis
 
   api-action:
+    image: ${MAXIM_API_IMAGE:-maxim-api:local}
     build:
       context: ..
       dockerfile: apps/api/Dockerfile
@@ -475,9 +487,12 @@ services:
       - redis
 
   miniapp-static:
+    image: ${MAXIM_MINIAPP_LEGACY_IMAGE:-maxim-miniapp-legacy:local}
     build:
       context: ..
       dockerfile: apps/miniapp/Dockerfile
+      labels:
+        com.maxim.release-protected: 'true'
       args:
         VITE_APP_CANONICAL_URL: https://maxim.play-team.ru/app/
     restart: unless-stopped
@@ -486,9 +501,12 @@ services:
       - '127.0.0.1:3000:3000'
 
   miniapp-major-static:
+    image: ${MAXIM_MINIAPP_MAJOR_IMAGE:-maxim-miniapp-major:local}
     build:
       context: ..
       dockerfile: apps/miniapp/Dockerfile
+      labels:
+        com.maxim.release-protected: 'true'
       args:
         VITE_APP_CANONICAL_URL: https://major-maksimov.ru/app/
         VITE_API_BASE: https://major-maksimov.ru/api/v1
@@ -498,9 +516,12 @@ services:
       - '127.0.0.1:3003:3000'
 
   admin-static:
+    image: ${MAXIM_ADMIN_IMAGE:-maxim-admin:local}
     build:
       context: ..
       dockerfile: apps/admin/Dockerfile
+      labels:
+        com.maxim.release-protected: 'true'
       args:
         ADMIN_BASE_PATH: /
         VITE_PUBLIC_BASE_PATH: /

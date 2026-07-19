@@ -22,10 +22,10 @@ import {
   type ManagedEntityType,
   type MaxUpdate,
   type SendBroadcastResult,
-  type SupportRequestAttachment,
   type UpdateManagedGiveawayRequest,
   DEFAULT_BROADCAST_BUTTON_TEXT,
 } from '@maxim/contracts';
+import type { SupportRequestAttachment } from '@maxim/contracts/support-requests';
 import { AdminDialogLinkService } from '../admin/admin-dialog-link.service';
 import { AdminService } from '../admin/admin.service';
 import { AdminSettingsService } from '../admin/admin-settings.service';
@@ -186,6 +186,16 @@ import {
   paginatePrivateControlItems,
   readPrivateControlString,
 } from './private-control-formatting.util';
+import {
+  formatPrivateControlEnumValue,
+  formatPrivateControlSettingValue,
+  formatPrivateControlTime,
+  parsePrivateControlBroadcastSendAt,
+  parsePrivateControlDateInput,
+  parsePrivateControlInputValue,
+  parsePrivateControlIntegerInput,
+  parsePrivateControlRemovalDateInput,
+} from './private-control-input-values';
 import {
   clearPendingPrivateProfileMentionHandoff,
   clearPrivateHandoffDelivery,
@@ -3724,7 +3734,7 @@ export class PrivateControlService {
       case 'set_field': {
         this.assertSelectedEntityType(session, 'chat');
 
-        const parsedValue = this.parseInputValueByType(
+        const parsedValue = parsePrivateControlInputValue(
           pendingInput.type,
           pendingInput.min,
           pendingInput.max,
@@ -3752,7 +3762,7 @@ export class PrivateControlService {
       case 'set_channel_field': {
         this.assertSelectedEntityType(session, 'channel');
 
-        const parsedValue = this.parseInputValueByType(
+        const parsedValue = parsePrivateControlInputValue(
           pendingInput.type,
           pendingInput.min,
           pendingInput.max,
@@ -3804,7 +3814,7 @@ export class PrivateControlService {
 
       case 'schedule_domain': {
         this.assertChatSelected(session);
-        const removeAfterAt = this.parseRemovalDateInput(rawText);
+        const removeAfterAt = parsePrivateControlRemovalDateInput(rawText);
 
         await this.adminService.scheduleDomainRemoval(
           session.selectedChatId!,
@@ -4010,7 +4020,7 @@ export class PrivateControlService {
       }
 
       case 'broadcast_send_at': {
-        session.broadcastDraft.sendAt = this.parseBroadcastSendAt(
+        session.broadcastDraft.sendAt = parsePrivateControlBroadcastSendAt(
           rawText,
           session.broadcastDraft.scheduleTimezone,
         );
@@ -4025,7 +4035,7 @@ export class PrivateControlService {
       }
 
       case 'broadcast_cycle_every_hours': {
-        const parsedHours = this.parseIntInput(rawText, 1, 14 * 24);
+        const parsedHours = parsePrivateControlIntegerInput(rawText, 1, 14 * 24);
         session.broadcastDraft.cycleEveryHours = parsedHours;
         session.pendingInput = null;
         session.screen = 'broadcast';
@@ -4038,7 +4048,7 @@ export class PrivateControlService {
       }
 
       case 'broadcast_cycle_count': {
-        const parsedCount = this.parseIntInput(rawText, 1, 100);
+        const parsedCount = parsePrivateControlIntegerInput(rawText, 1, 100);
         session.broadcastDraft.cycleCount = parsedCount;
         session.pendingInput = null;
         session.screen = 'broadcast';
@@ -4156,7 +4166,8 @@ export class PrivateControlService {
 
       case 'giveaway_start_at': {
         this.assertSelectedEntityType(session, session.selectedEntityType ?? 'chat');
-        const startsAt = rawText === '-' ? null : this.parseDateInput(rawText).toISOString();
+        const startsAt =
+          rawText === '-' ? null : parsePrivateControlDateInput(rawText).toISOString();
         const draft = await this.getManagedGiveawayDraftForSession(context.actor, session);
         const saved = await this.updateManagedGiveawayDraftForSession(
           session.selectedChatId,
@@ -4184,7 +4195,7 @@ export class PrivateControlService {
 
       case 'giveaway_end_at': {
         this.assertSelectedEntityType(session, session.selectedEntityType ?? 'chat');
-        const endsAt = this.parseDateInput(rawText).toISOString();
+        const endsAt = parsePrivateControlDateInput(rawText).toISOString();
         const draft = await this.getManagedGiveawayDraftForSession(context.actor, session);
         const saved = await this.updateManagedGiveawayDraftForSession(
           session.selectedChatId,
@@ -4208,7 +4219,7 @@ export class PrivateControlService {
 
       case 'giveaway_claim_hours': {
         this.assertSelectedEntityType(session, session.selectedEntityType ?? 'chat');
-        const claimHours = this.parseIntInput(rawText, 1, 336);
+        const claimHours = parsePrivateControlIntegerInput(rawText, 1, 336);
         const draft = await this.getManagedGiveawayDraftForSession(context.actor, session);
         const saved = await this.updateManagedGiveawayDraftForSession(
           session.selectedChatId,
@@ -4313,7 +4324,7 @@ export class PrivateControlService {
 
       case 'manual_mute_duration': {
         this.assertChatSelected(session);
-        const muteDurationHours = this.parseIntInput(rawText, 1, 336);
+        const muteDurationHours = parsePrivateControlIntegerInput(rawText, 1, 336);
         const result = await this.manualModerationService.applyManualModerationAction(
           session.selectedChatId!,
           pendingInput.targetUserId,
@@ -5593,7 +5604,7 @@ export class PrivateControlService {
 
     if (settings.nightModeEnabled) {
       items.push(
-        `Ночью чат работает тише: ограничения действуют с ${this.formatTime(settings.nightModeStartTimeMinutes)} до ${this.formatTime(settings.nightModeEndTimeMinutes)}.`,
+        `Ночью чат работает тише: ограничения действуют с ${formatPrivateControlTime(settings.nightModeStartTimeMinutes)} до ${formatPrivateControlTime(settings.nightModeEndTimeMinutes)}.`,
       );
     }
 
@@ -6754,7 +6765,7 @@ export class PrivateControlService {
         ];
       case 'commercialFilter':
         return [
-          `Фильтр: ${this.describeBooleanCompact(settings.commercialAdsFilterEnabled)} • строгость ${this.formatEnumValue(settings.commercialAdsSensitivity)}`,
+          `Фильтр: ${this.describeBooleanCompact(settings.commercialAdsFilterEnabled)} • строгость ${formatPrivateControlEnumValue(settings.commercialAdsSensitivity)}`,
           `Пороги: WARN ${settings.commercialAdsWarnThreshold} • DELETE ${settings.commercialAdsDeleteThreshold}`,
           `Санкции: WARN ${this.describeBooleanCompact(settings.textFiltersWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.textFiltersMuteEnabled)} (${settings.textFiltersMuteDurationHours}ч) • BAN ${this.describeBooleanCompact(settings.textFiltersBanEnabled)}`,
           `Сообщение: ${this.describeBooleanCompact(settings.textFiltersBotMessageEnabled)} • кнопка ${this.describeBooleanCompact(settings.textFiltersBotButtonEnabled)}`,
@@ -6780,7 +6791,7 @@ export class PrivateControlService {
       case 'night':
         return [
           `Ночной режим: ${this.describeBooleanCompact(settings.nightModeEnabled)}`,
-          `Окно: ${this.formatTime(settings.nightModeStartTimeMinutes)}-${this.formatTime(settings.nightModeEndTimeMinutes)} • ${settings.nightModeTimezone || 'не задан'}`,
+          `Окно: ${formatPrivateControlTime(settings.nightModeStartTimeMinutes)}-${formatPrivateControlTime(settings.nightModeEndTimeMinutes)} • ${settings.nightModeTimezone || 'не задан'}`,
           `Сообщение: ${this.describeBooleanCompact(settings.nightModeBotMessageEnabled)} • кнопка ${this.describeBooleanCompact(settings.nightModeBotButtonEnabled)}`,
           `Ручное закрытие: ${this.describeBooleanCompact(settings.nightModeForceCloseEnabled)}${settings.nightModeForceCloseEnabled ? ` • ${settings.nightModeForceCloseForever ? 'бессрочно' : `${settings.nightModeForceCloseDays}д ${settings.nightModeForceCloseHours}ч`}` : ''}`,
         ];
@@ -6816,14 +6827,14 @@ export class PrivateControlService {
       if (field.type === 'enum') {
         rows.push([
           this.callbackButton(
-            `🎚 ${field.label}: ${compactPrivateText(this.formatSettingValue(currentValue, field.type), 20)}`,
+            `🎚 ${field.label}: ${compactPrivateText(formatPrivateControlSettingValue(currentValue, field.type), 20)}`,
             this.cb('noop'),
           ),
         ]);
         rows.push(
           ...(field.enumValues ?? []).map((enumValue) => [
             this.callbackButton(
-              `${currentValue === enumValue ? '✅' : '◻️'} ${this.formatEnumValue(enumValue)}`,
+              `${currentValue === enumValue ? '✅' : '◻️'} ${formatPrivateControlEnumValue(enumValue)}`,
               this.cb('set_enum', section, String(field.key), enumValue),
             ),
           ]),
@@ -6880,7 +6891,7 @@ export class PrivateControlService {
 
       rows.push([
         this.callbackButton(
-          `✏️ ${field.label}: ${compactPrivateText(this.formatSettingValue(currentValue, field.type), 20)}`,
+          `✏️ ${field.label}: ${compactPrivateText(formatPrivateControlSettingValue(currentValue, field.type), 20)}`,
           this.cb('set_input', section, String(field.key)),
         ),
       ]);
@@ -6927,7 +6938,7 @@ export class PrivateControlService {
 
       rows.push([
         this.callbackButton(
-          `✏️ ${field.label}: ${compactPrivateText(this.formatSettingValue(settings[field.key], field.type), 18)}`,
+          `✏️ ${field.label}: ${compactPrivateText(formatPrivateControlSettingValue(settings[field.key], field.type), 18)}`,
           this.cb('set_channel_input', section, String(field.key)),
         ),
       ]);
@@ -7589,275 +7600,6 @@ export class PrivateControlService {
           description: 'Опишите проблему одним сообщением. Можно приложить фото.',
         };
     }
-  }
-
-  private parseInputValueByType(
-    type: SettingFieldType,
-    min: number | undefined,
-    max: number | undefined,
-    rawText: string,
-  ): ChatSettings[keyof ChatSettings] | ChannelSettings[keyof ChannelSettings] {
-    if (type === 'number') {
-      return this.parseIntInput(rawText, min ?? 0, max ?? 1_000_000);
-    }
-
-    if (type === 'time') {
-      return this.parseTimeToMinutes(rawText);
-    }
-
-    if (type === 'timezone') {
-      return rawText === '-' ? '' : rawText;
-    }
-
-    if (type === 'url' || type === 'text') {
-      return rawText === '-' ? '' : rawText;
-    }
-
-    throw new BadRequestException('Unsupported field type for input');
-  }
-
-  private parseRemovalDateInput(rawText: string): string | null {
-    if (!rawText || rawText === '-') {
-      return null;
-    }
-
-    const parsed = this.parseDateInput(rawText);
-    return parsed.toISOString();
-  }
-
-  private parseBroadcastSendAt(rawText: string, timeZone?: string | null): string | null {
-    if (!rawText || rawText === '-') {
-      return null;
-    }
-
-    const parsed = this.parseDateInput(rawText, timeZone);
-    return parsed.toISOString();
-  }
-
-  private parseDateInput(rawText: string, timeZone?: string | null): Date {
-    const trimmed = rawText.trim();
-
-    const dotDateMatch = /^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2})$/.exec(trimmed);
-    if (dotDateMatch) {
-      const [, dd, mm, yyyy, hh, min] = dotDateMatch;
-      const parsed = timeZone?.trim()
-        ? this.parseDateTimeInTimeZone(
-            {
-              year: Number.parseInt(yyyy, 10),
-              month: Number.parseInt(mm, 10),
-              day: Number.parseInt(dd, 10),
-              hour: Number.parseInt(hh, 10),
-              minute: Number.parseInt(min, 10),
-            },
-            timeZone.trim(),
-          )
-        : new Date(`${yyyy}-${mm}-${dd}T${hh}:${min}:00+03:00`);
-      if (parsed && !Number.isNaN(parsed.getTime())) {
-        return parsed;
-      }
-    }
-
-    const iso = new Date(trimmed);
-    if (Number.isNaN(iso.getTime())) {
-      throw new BadRequestException('Не удалось распознать дату и время.');
-    }
-
-    return iso;
-  }
-
-  private parseDateTimeInTimeZone(
-    value: {
-      year: number;
-      month: number;
-      day: number;
-      hour: number;
-      minute: number;
-    },
-    timeZone: string,
-  ): Date | null {
-    const targetUtc = Date.UTC(
-      value.year,
-      value.month - 1,
-      value.day,
-      value.hour,
-      value.minute,
-      0,
-      0,
-    );
-    let candidate = new Date(targetUtc);
-
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const parts = this.getDateTimePartsInTimeZone(candidate, timeZone);
-      if (!parts) {
-        return null;
-      }
-
-      const partsUtc = Date.UTC(
-        parts.year,
-        parts.month - 1,
-        parts.day,
-        parts.hour,
-        parts.minute,
-        0,
-        0,
-      );
-      const diffMs = targetUtc - partsUtc;
-      if (diffMs === 0) {
-        return candidate;
-      }
-
-      candidate = new Date(candidate.getTime() + diffMs);
-    }
-
-    const resolved = this.getDateTimePartsInTimeZone(candidate, timeZone);
-    if (
-      !resolved ||
-      resolved.year !== value.year ||
-      resolved.month !== value.month ||
-      resolved.day !== value.day ||
-      resolved.hour !== value.hour ||
-      resolved.minute !== value.minute
-    ) {
-      return null;
-    }
-
-    return candidate;
-  }
-
-  private getDateTimePartsInTimeZone(
-    value: Date,
-    timeZone: string,
-  ): {
-    year: number;
-    month: number;
-    day: number;
-    hour: number;
-    minute: number;
-  } | null {
-    try {
-      const parts = new Intl.DateTimeFormat('en-CA', {
-        timeZone,
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        hourCycle: 'h23',
-      }).formatToParts(value);
-      const year = Number(parts.find((item) => item.type === 'year')?.value ?? '');
-      const month = Number(parts.find((item) => item.type === 'month')?.value ?? '');
-      const day = Number(parts.find((item) => item.type === 'day')?.value ?? '');
-      const hour = Number(parts.find((item) => item.type === 'hour')?.value ?? '');
-      const minute = Number(parts.find((item) => item.type === 'minute')?.value ?? '');
-
-      if (
-        !Number.isInteger(year) ||
-        !Number.isInteger(month) ||
-        !Number.isInteger(day) ||
-        !Number.isInteger(hour) ||
-        !Number.isInteger(minute)
-      ) {
-        return null;
-      }
-
-      return {
-        year,
-        month,
-        day,
-        hour,
-        minute,
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  private parseIntInput(rawText: string, min: number, max: number): number {
-    const parsed = Number.parseInt(rawText, 10);
-    if (!Number.isFinite(parsed) || Number.isNaN(parsed)) {
-      throw new BadRequestException('Введите целое число.');
-    }
-
-    if (parsed < min || parsed > max) {
-      throw new BadRequestException(`Число должно быть от ${min} до ${max}.`);
-    }
-
-    return parsed;
-  }
-
-  private parseTimeToMinutes(rawText: string): number {
-    const normalized = rawText.trim();
-    const match = /^(\d{1,2}):(\d{2})$/.exec(normalized);
-    if (!match) {
-      throw new BadRequestException('Введите время в формате HH:MM.');
-    }
-
-    const hours = Number.parseInt(match[1], 10);
-    const minutes = Number.parseInt(match[2], 10);
-    if (
-      !Number.isInteger(hours) ||
-      !Number.isInteger(minutes) ||
-      hours < 0 ||
-      hours > 23 ||
-      minutes < 0 ||
-      minutes > 59
-    ) {
-      throw new BadRequestException('Время вне допустимого диапазона.');
-    }
-
-    return hours * 60 + minutes;
-  }
-
-  private formatTime(minutes: number): string {
-    const normalized = Math.max(0, Math.min(1439, Math.trunc(minutes)));
-    const hours = Math.floor(normalized / 60)
-      .toString()
-      .padStart(2, '0');
-    const mins = (normalized % 60).toString().padStart(2, '0');
-    return `${hours}:${mins}`;
-  }
-
-  private formatSettingValue(value: unknown, type: SettingFieldType): string {
-    if (type === 'boolean') {
-      return value ? 'Включено' : 'Выключено';
-    }
-
-    if (type === 'time' && typeof value === 'number') {
-      return this.formatTime(value);
-    }
-
-    if (type === 'enum' && typeof value === 'string') {
-      return this.formatEnumValue(value);
-    }
-
-    if (value === null || value === undefined) {
-      return '—';
-    }
-
-    if (typeof value === 'string') {
-      return value.trim() ? compactPrivateText(value, 64) : '—';
-    }
-
-    return String(value);
-  }
-
-  private formatEnumValue(value: string): string {
-    if (value === 'ALLOWLIST_ONLY') {
-      return 'Разрешать только домены из списка разрешённых';
-    }
-    if (value === 'BLOCKLIST_ONLY') {
-      return 'Удалять домены из списка запрещённых';
-    }
-    if (value === 'ALERT_ONLY') {
-      return 'Только предупреждать';
-    }
-    if (value === 'BALANCED') {
-      return 'Сбалансированный';
-    }
-    if (value === 'STRICT') {
-      return 'Строгий';
-    }
-    return value;
   }
 
   private parseSection(value: string | undefined): PrivateSectionKey | null {

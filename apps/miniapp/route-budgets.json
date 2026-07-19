@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "toleranceGzipBytes": 320,
+  "manifestRouteEntryPattern": "^src/pages/[^/]+-page\\.tsx$",
+  "budgets": [
+    {
+      "id": "startup",
+      "label": "Startup",
+      "entries": ["index.html", "src/pages/chats-page.tsx"],
+      "limits": {
+        "jsGzipBytes": 117632,
+        "cssGzipBytes": 43008
+      },
+      "allowances": [
+        {
+          "asset": "js",
+          "bytes": 512,
+          "when": { "env": "VITE_ROUTER_MODE", "equals": "hash" }
+        },
+        {
+          "asset": "js",
+          "bytes": 512,
+          "when": { "env": "VITE_API_BASE", "matches": "^https?://" }
+        }
+      ]
+    },
+    {
+      "id": "chat-settings",
+      "label": "Chat settings",
+      "entries": ["src/pages/settings-page.tsx"],
+      "baseline": "startup",
+      "limits": { "jsGzipBytes": 136960, "cssGzipBytes": 77824 }
+    },
+    {
+      "id": "channel-settings",
+      "label": "Channel settings",
+      "entries": ["src/pages/channel-settings-page.tsx"],
+      "baseline": "startup",
+      "limits": { "jsGzipBytes": 106496, "cssGzipBytes": 77824 }
+    },
+    {
+      "id": "comments",
+      "label": "Comments dialog",
+      "entries": ["src/pages/channel-dialog-page.tsx"],
+      "baseline": "startup",
+      "limits": { "jsGzipBytes": 84480, "cssGzipBytes": 22528 }
+    },
+    {
+      "id": "suggest",
+      "label": "Suggestion dialog",
+      "entries": ["src/pages/channel-suggest-dialog-page.tsx"],
+      "baseline": "startup",
+      "limits": { "jsGzipBytes": 24576, "cssGzipBytes": 10240 }
+    },
+    {
+      "id": "stats",
+      "label": "Channel stats",
+      "entries": ["src/pages/channel-stats-page.tsx"],
+      "baseline": "startup",
+      "limits": { "jsGzipBytes": 26624, "cssGzipBytes": 24576 }
+    },
+    {
+      "id": "events",
+      "label": "Chat events",
+      "entries": ["src/pages/events-page.tsx"],
+      "baseline": "startup",
+      "limits": { "jsGzipBytes": 47104, "cssGzipBytes": 35840 }
+    },
+    {
+      "id": "publications",
+      "label": "Publications",
+      "entries": ["src/pages/publications-page.tsx"],
+      "baseline": "startup",
+      "limits": { "jsGzipBytes": 139264, "cssGzipBytes": 28672 }
+    },
+    {
+      "id": "giveaway",
+      "label": "Giveaway",
+      "entries": ["src/pages/giveaway-page.tsx"],
+      "baseline": "startup",
+      "limits": { "jsGzipBytes": 59392, "cssGzipBytes": 9216 }
+    },
+    {
+      "id": "legal",
+      "label": "Legal",
+      "entries": ["src/pages/legal-page.tsx"],
+      "baseline": "startup",
+      "limits": { "jsGzipBytes": 10240, "cssGzipBytes": 3072 }
+    },
+    {
+      "id": "vk-parsing-card",
+      "label": "VK parsing card",
+      "entries": ["src/components/vk-parsing-card.tsx"],
+      "baseline": "startup",
+      "coversRouteEntry": false,
+      "limits": { "jsGzipBytes": 88064 }
+    }
+  ]
+}

@@ -5,13 +5,14 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
 if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 \"commit message\" [branch] [--include-agents]"
+  echo "Usage: $0 \"commit message\" [branch] [--all] [--include-agents]"
   exit 1
 fi
 
 COMMIT_MESSAGE="$1"
 BRANCH="$(git branch --show-current)"
 INCLUDE_AGENTS=0
+STAGE_ALL=0
 
 if [[ $# -ge 2 ]] && [[ "$2" != --* ]]; then
   BRANCH="$2"
@@ -25,9 +26,12 @@ for arg in "$@"; do
     --include-agents)
       INCLUDE_AGENTS=1
       ;;
+    --all)
+      STAGE_ALL=1
+      ;;
     *)
       echo "Unknown argument: $arg"
-      echo "Usage: $0 \"commit message\" [branch] [--include-agents]"
+      echo "Usage: $0 \"commit message\" [branch] [--all] [--include-agents]"
       exit 1
       ;;
   esac
@@ -38,74 +42,35 @@ if [[ -z "$BRANCH" ]]; then
   exit 1
 fi
 
-if [[ "$INCLUDE_AGENTS" -eq 1 ]]; then
-  PENDING_STATUS="$(git status --porcelain)"
-else
-  PENDING_STATUS="$(git status --porcelain -- . ':(exclude)AGENTS.md')"
-fi
-
-if [[ -z "$PENDING_STATUS" ]]; then
-  if [[ -n "$(git status --porcelain -- AGENTS.md)" ]]; then
-    echo "No non-AGENTS changes to commit."
-    echo "AGENTS.md is excluded by default. Re-run with --include-agents to commit it intentionally."
-    exit 1
-  fi
-
-  echo "No changes to commit."
+CURRENT_BRANCH="$(git branch --show-current)"
+if [[ "$CURRENT_BRANCH" != "$BRANCH" ]]; then
+  echo "Current branch is $CURRENT_BRANCH, but target branch is $BRANCH."
+  echo "Switch to the target branch or pass the current branch explicitly."
   exit 1
 fi
 
-ensure_migration_for_schema_change() {
-  local staged
-  staged="$(git diff --cached --name-only)"
-
-  if printf '%s\n' "$staged" | grep -qx 'apps/api/prisma/schema.prisma'; then
-    if node <<'NODE'
-const { execFileSync } = require('node:child_process');
-const { readFileSync } = require('node:fs');
-
-const schemaPath = 'apps/api/prisma/schema.prisma';
-const current = readFileSync(schemaPath, 'utf8');
-let previous = '';
-
-try {
-  previous = execFileSync('git', ['show', `HEAD:${schemaPath}`], { encoding: 'utf8' });
-} catch {
-  process.exit(1);
-}
-
-function stripRuntimeOnlyBlocks(source) {
-  return source
-    .replace(/generator\s+client\s*\{[\s\S]*?\n\}/g, '')
-    .replace(/datasource\s+db\s*\{[\s\S]*?\n\}/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-process.exit(stripRuntimeOnlyBlocks(previous) === stripRuntimeOnlyBlocks(current) ? 0 : 1);
-NODE
-    then
-      return
-    fi
-
-    if ! printf '%s\n' "$staged" | grep -Eq '^apps/api/prisma/migrations/[^/]+/migration\.sql$'; then
-      echo "schema.prisma changed, but no migration.sql is staged."
-      echo "Create migration before push, then rerun this script."
-      echo "Example:"
-      echo "  npm run prisma:migrate:dev --workspace @maxim/api -- --name <migration_name>"
-      exit 1
-    fi
+if [[ "$STAGE_ALL" -eq 1 ]]; then
+  if [[ "$INCLUDE_AGENTS" -eq 1 ]]; then
+    git add -A
+  else
+    git add -A -- . ':(exclude)AGENTS.md' ':(glob,exclude)**/AGENTS.md'
   fi
-}
-
-git status -s
-if [[ "$INCLUDE_AGENTS" -eq 1 ]]; then
-  git add -A
-else
-  git add -A -- . ':(exclude)AGENTS.md'
 fi
-ensure_migration_for_schema_change
+
+STAGED_FILES="$(git diff --cached --name-only)"
+if [[ -z "$STAGED_FILES" ]]; then
+  echo "No staged changes to commit. Stage explicit paths or re-run with --all."
+  exit 1
+fi
+
+if [[ "$INCLUDE_AGENTS" -eq 0 ]] && printf '%s\n' "$STAGED_FILES" | grep -Eq '(^|/)AGENTS\.md$'; then
+  echo "A scoped AGENTS.md is staged. Re-run with --include-agents to commit it intentionally."
+  exit 1
+fi
+
+git status --short
+npm run agent:verify -- --staged
 git commit -m "$COMMIT_MESSAGE"
-git push origin "$BRANCH"
+git push origin "HEAD:refs/heads/$BRANCH"
 
 echo "Done: pushed to origin/$BRANCH"

@@ -1,4 +1,4 @@
-name: Deploy
+name: Deploy (Operator Fallback)
 
 on:
   workflow_dispatch:
@@ -16,9 +16,15 @@ on:
         description: Space-separated service names. Leave empty to deploy the default production set.
         required: false
         default: ''
+      operator_ack:
+        description: I understand that this SSH path is an operator-only fallback
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
+  checks: read
 
 concurrency:
   group: production-deploy
@@ -28,12 +34,24 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    environment: production-operator-fallback
     steps:
       - name: Resolve the requested deploy commit
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ inputs.branch }}
           fetch-depth: 1
+
+      - name: Require explicit fallback confirmation
+        if: ${{ inputs.operator_ack != true }}
+        run: |
+          echo "operator_ack must be enabled for the operator-only fallback workflow."
+          exit 2
+
+      - name: Require green CI for the exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/assert-green.mjs "$(git rev-parse HEAD)"
 
       - name: Setup SSH key
         uses: webfactory/ssh-agent@dc588b651fe13675774614f8e6a936a468676387 # v0.9.0
