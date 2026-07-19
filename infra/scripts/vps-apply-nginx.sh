@@ -110,6 +110,10 @@ enabled_backup=""
 enabled_link_target=""
 enabled_existed=0
 enabled_was_symlink=0
+NGINX_MUTATED=0
+DEPLOYMENT_COMMITTED=0
+ROLLBACK_ATTEMPTED=0
+ROLLBACK_SUCCEEDED=0
 
 sudo mkdir -p "${REMOTE_BACKUP_DIR}"
 if [[ -e "${REMOTE_CONF}" || -L "${REMOTE_CONF}" ]]; then
@@ -133,35 +137,181 @@ for snippet in "${snippets[@]}"; do
 done
 
 restore_backup() {
-  if [[ -n "${available_backup}" && -e "${available_backup}" ]]; then
-    sudo cp -a "${available_backup}" "${REMOTE_CONF}"
+  local restore_failed=0
+
+  ROLLBACK_ATTEMPTED=1
+  echo "Restoring the previous maxim.play-team.ru nginx configuration..." >&2
+  if [[ -n "${available_backup}" && ( -e "${available_backup}" || -L "${available_backup}" ) ]]; then
+    sudo cp -a "${available_backup}" "${REMOTE_CONF}" || restore_failed=1
   else
-    sudo rm -f "${REMOTE_CONF}"
+    sudo rm -f "${REMOTE_CONF}" || restore_failed=1
   fi
 
-  sudo rm -f "${REMOTE_ENABLED_CONF}"
+  sudo rm -f "${REMOTE_ENABLED_CONF}" || restore_failed=1
   if [[ "${enabled_existed}" -eq 1 && "${enabled_was_symlink}" -eq 1 ]]; then
-    sudo ln -s "${enabled_link_target}" "${REMOTE_ENABLED_CONF}"
-  elif [[ "${enabled_existed}" -eq 1 && -n "${enabled_backup}" && -e "${enabled_backup}" ]]; then
-    sudo cp -a "${enabled_backup}" "${REMOTE_ENABLED_CONF}"
+    sudo ln -s "${enabled_link_target}" "${REMOTE_ENABLED_CONF}" || restore_failed=1
+  elif [[ "${enabled_existed}" -eq 1 && -n "${enabled_backup}" && ( -e "${enabled_backup}" || -L "${enabled_backup}" ) ]]; then
+    sudo cp -a "${enabled_backup}" "${REMOTE_ENABLED_CONF}" || restore_failed=1
   fi
 
   for snippet in "${snippets[@]}"; do
     backup="${REMOTE_BACKUP_DIR}/${snippet}.bak-${timestamp}"
-    if [[ -e "${backup}" ]]; then
-      sudo cp -a "${backup}" "${REMOTE_SNIPPET_DIR}/${snippet}"
+    if [[ -e "${backup}" || -L "${backup}" ]]; then
+      sudo cp -a "${backup}" "${REMOTE_SNIPPET_DIR}/${snippet}" || restore_failed=1
     else
-      sudo rm -f "${REMOTE_SNIPPET_DIR}/${snippet}"
+      sudo rm -f "${REMOTE_SNIPPET_DIR}/${snippet}" || restore_failed=1
     fi
   done
 
-  sudo nginx -t >/dev/null 2>&1 && sudo systemctl reload nginx || true
+  if [[ "${restore_failed}" -eq 0 ]] && sudo nginx -t; then
+    if ! sudo systemctl reload nginx; then
+      echo "Previous nginx configuration was restored, but nginx reload failed." >&2
+      restore_failed=1
+    fi
+  else
+    echo "Previous nginx configuration could not be restored cleanly." >&2
+    restore_failed=1
+  fi
+
+  if [[ "${restore_failed}" -eq 0 ]]; then
+    ROLLBACK_SUCCEEDED=1
+  fi
+  return "${restore_failed}"
 }
 
 cleanup_tmp() {
   rm -rf "${REMOTE_TMP}" "${REMOTE_SNIPPET_TMP_DIR}"
 }
 
+LOCAL_SMOKE_MAX_ATTEMPTS=10
+LOCAL_SMOKE_RETRY_DELAY_SECONDS=1
+LOCAL_SMOKE_FAILURE_ROUTE=""
+LOCAL_SMOKE_FAILURE_ASSERTION=""
+
+record_local_smoke_failure() {
+  LOCAL_SMOKE_FAILURE_ROUTE="$1"
+  LOCAL_SMOKE_FAILURE_ASSERTION="$2"
+}
+
+assert_local_smoke_match() {
+  local route="$1"
+  local assertion="$2"
+  local pattern="$3"
+  local headers="$4"
+
+  if ! grep -Eqi -- "${pattern}" <<<"${headers}"; then
+    record_local_smoke_failure "${route}" "${assertion}"
+    return 1
+  fi
+}
+
+assert_local_security_headers() {
+  local route="$1"
+  local headers="$2"
+
+  assert_local_smoke_match "${route}" "header:strict-transport-security" \
+    '^strict-transport-security: max-age=31536000' "${headers}" || return 1
+  assert_local_smoke_match "${route}" "header:x-content-type-options" \
+    '^x-content-type-options: nosniff' "${headers}" || return 1
+  assert_local_smoke_match "${route}" "header:referrer-policy" \
+    '^referrer-policy: strict-origin-when-cross-origin' "${headers}" || return 1
+}
+
+read_local_headers() {
+  local host="$1"
+  local path="$2"
+
+  curl --noproxy '*' -sS --max-time 15 --resolve "${host}:443:127.0.0.1" \
+    -D - -o /dev/null "https://${host}${path}"
+}
+
+verify_local_route() {
+  local host="$1"
+  local path="$2"
+  local expected_status="$3"
+  local expected_ingress="$4"
+  local require_security_headers="$5"
+  local route="${host}${path}"
+  local headers
+
+  if ! headers="$(read_local_headers "${host}" "${path}")"; then
+    record_local_smoke_failure "${route}" "request"
+    return 1
+  fi
+  if [[ -n "${expected_status}" ]]; then
+    assert_local_smoke_match "${route}" "status:${expected_status}" \
+      "^HTTP/[0-9.]+ ${expected_status}([[:space:]]|$)" "${headers}" || return 1
+  fi
+  if [[ -n "${expected_ingress}" ]]; then
+    assert_local_smoke_match "${route}" "header:x-maxim-ingress:${expected_ingress}" \
+      "^x-maxim-ingress: ${expected_ingress}" "${headers}" || return 1
+  fi
+  if [[ "${require_security_headers}" -eq 1 ]]; then
+    assert_local_security_headers "${route}" "${headers}" || return 1
+  fi
+}
+
+verify_local_nginx() {
+  local host
+  local hosts=("maxim.play-team.ru" "hook.maxim.play-team.ru")
+
+  for host in "${hosts[@]}"; do
+    verify_local_route "${host}" "/api/health/live" "200" "webhook" 0 || return 1
+    verify_local_route "${host}" "/api/health/ready" "404" "" 1 || return 1
+    verify_local_route "${host}" "/api/v1/safety-desk/queue" "404" "" 1 || return 1
+    verify_local_route "${host}" "/api/v1/support-requests/queue" "404" "" 1 || return 1
+  done
+
+  verify_local_route "maxim.play-team.ru" "/api/v1/system/metrics/queues" "" "admin" 0 || return 1
+}
+
+verify_local_nginx_with_retry() {
+  local attempt
+
+  for ((attempt = 1; attempt <= LOCAL_SMOKE_MAX_ATTEMPTS; attempt += 1)); do
+    LOCAL_SMOKE_FAILURE_ROUTE=""
+    LOCAL_SMOKE_FAILURE_ASSERTION=""
+    if verify_local_nginx; then
+      return 0
+    fi
+
+    echo "Local legacy nginx smoke attempt ${attempt}/${LOCAL_SMOKE_MAX_ATTEMPTS} failed: route=${LOCAL_SMOKE_FAILURE_ROUTE:-unknown} assertion=${LOCAL_SMOKE_FAILURE_ASSERTION:-unknown}." >&2
+    if [[ "${attempt}" -lt "${LOCAL_SMOKE_MAX_ATTEMPTS}" ]]; then
+      sleep "${LOCAL_SMOKE_RETRY_DELAY_SECONDS}"
+    fi
+  done
+
+  return 1
+}
+
+finalize_remote_deploy() {
+  local exit_status=$?
+
+  trap - EXIT
+  if [[ "${exit_status}" -ne 0 && "${NGINX_MUTATED}" -eq 1 && \
+    "${DEPLOYMENT_COMMITTED}" -eq 0 && "${ROLLBACK_ATTEMPTED}" -eq 0 ]]; then
+    echo "Legacy nginx deployment failed after runtime mutation; rolling back." >&2
+    if ! restore_backup; then
+      echo "Automatic nginx rollback failed; inspect the host before retrying." >&2
+    fi
+  fi
+
+  if [[ "${ROLLBACK_ATTEMPTED}" -eq 1 && "${ROLLBACK_SUCCEEDED}" -eq 0 ]]; then
+    echo "Rollback backups retained under ${REMOTE_BACKUP_DIR} with timestamp ${timestamp}." >&2
+  fi
+  if ! cleanup_tmp; then
+    echo "Failed to remove temporary legacy nginx deployment files." >&2
+    if [[ "${exit_status}" -eq 0 ]]; then
+      exit_status=1
+    fi
+  fi
+
+  exit "${exit_status}"
+}
+
+trap finalize_remote_deploy EXIT
+
+NGINX_MUTATED=1
 sudo install -d -m 755 "${REMOTE_SNIPPET_DIR}"
 for snippet in "${snippets[@]}"; do
   sudo install -m 644 "${REMOTE_SNIPPET_TMP_DIR}/${snippet}" "${REMOTE_SNIPPET_DIR}/${snippet}"
@@ -169,19 +319,16 @@ done
 sudo install -m 644 "${REMOTE_TMP}" "${REMOTE_CONF}"
 sudo rm -f "${REMOTE_ENABLED_CONF}"
 sudo ln -s "${REMOTE_CONF}" "${REMOTE_ENABLED_CONF}"
-if ! sudo nginx -t; then
-  restore_backup
-  cleanup_tmp
+sudo nginx -t
+
+sudo systemctl reload nginx
+
+if ! verify_local_nginx_with_retry; then
+  echo "New legacy nginx configuration failed the local SNI route/header smoke." >&2
   exit 1
 fi
 
-if ! sudo systemctl reload nginx; then
-  restore_backup
-  cleanup_tmp
-  exit 1
-fi
-
-cleanup_tmp
+DEPLOYMENT_COMMITTED=1
 REMOTE
 
 echo "Verifying public route split headers..."

@@ -1304,7 +1304,7 @@ button:disabled {
   font-weight: 700;
 }
 
-@media (max-width: 1360px) {
+@media (max-width: 1600px) {
   .desk-topbar {
     grid-template-columns: minmax(180px, 1fr) auto auto;
   }

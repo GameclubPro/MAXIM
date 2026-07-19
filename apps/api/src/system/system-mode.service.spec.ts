@@ -3,6 +3,7 @@ import { SystemModeService } from './system-mode.service';
 const redisInstances: Array<{
   get: jest.Mock<Promise<string | null>, [string]>;
   set: jest.Mock<Promise<'OK'>, [string, string]>;
+  eval: jest.Mock<Promise<unknown>, [string, number, ...string[]]>;
   quit: jest.Mock<Promise<void>, []>;
 }> = [];
 
@@ -12,6 +13,11 @@ jest.mock('ioredis', () => ({
     const instance = {
       get: jest.fn().mockResolvedValue(null),
       set: jest.fn().mockResolvedValue('OK'),
+      eval: jest
+        .fn()
+        .mockImplementation(async (_script: string, _keyCount: number, ...args: string[]) => {
+          return args.at(-1) ?? null;
+        }),
       quit: jest.fn().mockResolvedValue(undefined),
     };
     redisInstances.push(instance);
@@ -86,6 +92,194 @@ describe('SystemModeService', () => {
     expect(redis.set).toHaveBeenCalledWith(
       'system:mode:snapshot:v1',
       expect.stringContaining('"source":"manual"'),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('does not overwrite the shared snapshot when a non-ingress role starts', async () => {
+    process.env.APP_ROLE = 'admin';
+
+    const actionHealthService = {
+      refreshSnapshots: jest.fn().mockResolvedValue(undefined),
+      getSnapshot: jest.fn().mockReturnValue({
+        windowSec: 60,
+        total: 0,
+        success: 0,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
+      }),
+    };
+    const service = new SystemModeService(
+      createConfigMock() as never,
+      { getSnapshot: jest.fn() } as never,
+      actionHealthService as never,
+    );
+
+    await service.onModuleInit();
+
+    const redis = redisInstances[0];
+    expect(redis.get).not.toHaveBeenCalled();
+    expect(redis.set).not.toHaveBeenCalled();
+    expect(redis.eval).not.toHaveBeenCalled();
+    expect(actionHealthService.refreshSnapshots).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('preserves an admin manual override that races with ingress auto evaluation', async () => {
+    const actionSnapshot = {
+      windowSec: 60,
+      total: 10,
+      success: 10,
+      failure: 0,
+      critical: 0,
+      errorRate: 0,
+      criticalRate: 0,
+    };
+    let sharedRaw = JSON.stringify({
+      mode: 'normal',
+      source: 'auto',
+      reason: 'system healthy',
+      updatedAt: '2026-07-20T00:00:00.000Z',
+      manualMode: null,
+      queueLagSec: 0,
+      action: actionSnapshot,
+    });
+    let releaseQueueSnapshot: ((value: { effectiveLagSec: number }) => void) | undefined;
+    const queueSnapshotPromise = new Promise<{ effectiveLagSec: number }>((resolve) => {
+      releaseQueueSnapshot = resolve;
+    });
+    const connectToSharedSnapshot = (redis: (typeof redisInstances)[number]) => {
+      redis.get.mockImplementation(async () => sharedRaw);
+      redis.set.mockImplementation(async (_key, value) => {
+        sharedRaw = value;
+        return 'OK';
+      });
+      redis.eval.mockImplementation(async (_script, _keyCount, _key, candidateRaw) => {
+        const current = JSON.parse(sharedRaw) as { manualMode?: unknown };
+        if (current.manualMode === 'normal' || current.manualMode === 'degrade') {
+          return sharedRaw;
+        }
+        sharedRaw = candidateRaw;
+        return candidateRaw;
+      });
+    };
+
+    process.env.APP_ROLE = 'ingress';
+    const ingressQueueMetricsService = {
+      getSnapshot: jest.fn().mockReturnValue(queueSnapshotPromise),
+    };
+    const ingress = new SystemModeService(
+      createConfigMock() as never,
+      ingressQueueMetricsService as never,
+      {
+        refreshSnapshots: jest.fn().mockResolvedValue(undefined),
+        getSnapshot: jest.fn().mockReturnValue(actionSnapshot),
+      } as never,
+    );
+    connectToSharedSnapshot(redisInstances[0]);
+
+    process.env.APP_ROLE = 'admin';
+    const admin = new SystemModeService(
+      createConfigMock() as never,
+      { getSnapshot: jest.fn() } as never,
+      {
+        refreshSnapshots: jest.fn().mockResolvedValue(undefined),
+        getSnapshot: jest.fn().mockReturnValue(actionSnapshot),
+      } as never,
+    );
+    connectToSharedSnapshot(redisInstances[1]);
+
+    const autoEvaluation = ingress.evaluateAutoMode();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(ingressQueueMetricsService.getSnapshot).toHaveBeenCalled();
+
+    await admin.setManualMode('degrade');
+    releaseQueueSnapshot?.({ effectiveLagSec: 0 });
+    await autoEvaluation;
+
+    expect(JSON.parse(sharedRaw)).toEqual(
+      expect.objectContaining({
+        mode: 'degrade',
+        source: 'manual',
+        manualMode: 'degrade',
+      }),
+    );
+    expect(ingress.getSnapshot()).toEqual(
+      expect.objectContaining({
+        mode: 'degrade',
+        source: 'manual',
+        manualMode: 'degrade',
+      }),
+    );
+    await expect(ingress.getEffectiveSnapshot()).resolves.toEqual(
+      expect.objectContaining({
+        mode: 'degrade',
+        source: 'manual',
+        manualMode: 'degrade',
+      }),
+    );
+    expect(redisInstances[0].eval).toHaveBeenCalledWith(
+      expect.stringContaining("current.manualMode == 'degrade'"),
+      1,
+      'system:mode:snapshot:v1',
+      expect.any(String),
+    );
+
+    await Promise.all([ingress.onModuleDestroy(), admin.onModuleDestroy()]);
+  });
+
+  it('keeps a cached manual override when Redis cannot be read', async () => {
+    process.env.APP_ROLE = 'ingress';
+
+    const queueMetricsService = {
+      getSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
+    };
+    const actionSnapshot = {
+      windowSec: 60,
+      total: 10,
+      success: 10,
+      failure: 0,
+      critical: 0,
+      errorRate: 0,
+      criticalRate: 0,
+    };
+    const service = new SystemModeService(
+      createConfigMock() as never,
+      queueMetricsService as never,
+      {
+        refreshSnapshots: jest.fn().mockResolvedValue(undefined),
+        getSnapshot: jest.fn().mockReturnValue(actionSnapshot),
+      } as never,
+    );
+    const redis = redisInstances[0];
+    redis.get
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          mode: 'degrade',
+          source: 'manual',
+          reason: 'manual override',
+          updatedAt: '2026-07-20T00:00:00.000Z',
+          manualMode: 'degrade',
+          queueLagSec: 0,
+          action: actionSnapshot,
+        }),
+      )
+      .mockRejectedValueOnce(new Error('Redis unavailable'));
+
+    await service.evaluateAutoMode();
+    await service.evaluateAutoMode();
+
+    expect(queueMetricsService.getSnapshot).not.toHaveBeenCalled();
+    expect(service.getSnapshot()).toEqual(
+      expect.objectContaining({
+        mode: 'degrade',
+        source: 'manual',
+        manualMode: 'degrade',
+      }),
     );
 
     await service.onModuleDestroy();

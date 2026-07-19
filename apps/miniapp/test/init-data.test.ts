@@ -153,6 +153,15 @@ test('reads the user id from initData payload', () => {
   );
 });
 
+test('reads the MAX user_id alias from initData payload', () => {
+  assert.equal(
+    readUserIdFromInitData(
+      'query_id=q1&user=%7B%22user_id%22%3A%2267890%22%2C%22first_name%22%3A%22Max%22%7D&hash=ok',
+    ),
+    '67890',
+  );
+});
+
 test('prefers signed initData user id over initDataUnsafe', () => {
   assignWindow(
     'https://maxim.play-team.ru/app/?init_data=query_id%3Dtest%26user%3D%257B%2522id%2522%253A9876%257D%26hash%3Dnew',

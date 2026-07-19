@@ -19,6 +19,17 @@ function readSuccessfulAccessLogPattern() {
   return match[1];
 }
 
+function readRuntimePressureCommand() {
+  const functionStart = monitor.indexOf('summarize_runtime_pressure() {');
+  assert.notEqual(functionStart, -1, 'runtime pressure function is missing');
+  const commandStartMarker = "remote_command=$(cat <<'REMOTE'\n";
+  const commandStart = monitor.indexOf(commandStartMarker, functionStart);
+  const commandEnd = monitor.indexOf('\nREMOTE\n', commandStart);
+  assert.notEqual(commandStart, -1, 'runtime pressure command is missing');
+  assert.notEqual(commandEnd, -1, 'runtime pressure command terminator is missing');
+  return monitor.slice(commandStart + commandStartMarker.length, commandEnd);
+}
+
 function countSignals(lines) {
   const result = spawnSync('grep', ['-Eci', readRateLimitPattern()], {
     input: `${lines.join('\n')}\n`,
@@ -75,4 +86,14 @@ test('filters successful static access logs before scanning error-like asset nam
       'nginx: [error] upstream prematurely closed connection',
     ],
   );
+});
+
+test('reports the hard deploy free-space floor independently from percentage warnings', () => {
+  const command = readRuntimePressureCommand();
+
+  assert.match(command, /deploy_disk_hard_minimum_free_bytes="21474836480"/u);
+  assert.match(command, /df -P -B1/u);
+  assert.match(command, /DEPLOY_DISK_BLOCKED/u);
+  assert.match(command, /disk_available_bytes < deploy_disk_hard_minimum_free_bytes/u);
+  assert.doesNotMatch(command, /MAXIM_ALLOW_CRITICAL_DISK_DEPLOY/u);
 });

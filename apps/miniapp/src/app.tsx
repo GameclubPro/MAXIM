@@ -1,8 +1,9 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
 import {
   Suspense,
   lazy,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ComponentType,
@@ -23,6 +24,11 @@ import { Spinner } from './components/ui/spinner';
 import { StatusState } from './components/ui/status-state';
 import { ToastProvider } from './components/ui/toast';
 import { createApiTransport } from './lib/api/transport';
+import {
+  createAuthQueryClient,
+  disposeAuthQueryClient,
+  useAuthQueryPrincipalKey,
+} from './lib/auth-query-session';
 import { traceMiniappBoot, traceMiniappLaunchRoute } from './lib/boot-trace';
 import { getPreviewBootstrap } from './lib/design-preview';
 import { migrateHashRouterLegacyPathFromWindow } from './lib/hash-router-legacy-path';
@@ -67,18 +73,6 @@ const NATIVE_ENVIRONMENT_SYNC_POLL_INTERVAL_MS = 150;
 const NATIVE_ENVIRONMENT_SYNC_POLL_DURATION_MS = 8_000;
 
 migrateHashRouterLegacyPathFromWindow();
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 30_000,
-      gcTime: 5 * 60_000,
-      refetchOnWindowFocus: false,
-      refetchOnReconnect: true,
-      retry: 1,
-    },
-  },
-});
 
 function parseRoute(route: string): URL | null {
   try {
@@ -478,6 +472,15 @@ export function App() {
   }
 
   const PreviewScaffold = previewRuntime?.DesignPreviewScaffold ?? null;
+  const authQueryPrincipalKey = useAuthQueryPrincipalKey(initData, preview.enabled);
+  const queryClient = useMemo(createAuthQueryClient, [authQueryPrincipalKey]);
+
+  useEffect(
+    () => () => {
+      void disposeAuthQueryClient(queryClient);
+    },
+    [queryClient],
+  );
 
   if (preview.enabled && !previewRuntime) {
     return (
@@ -539,7 +542,7 @@ export function App() {
   }
 
   return (
-    <QueryClientProvider client={queryClient}>
+    <QueryClientProvider key={authQueryPrincipalKey} client={queryClient}>
       <ToastProvider>
         <AppRouter basename={ROUTER_BASENAME}>
           {preview.enabled && PreviewScaffold ? (

@@ -454,8 +454,14 @@ disk_path="/var/lib/docker"
 if [[ ! -d "$disk_path" ]]; then
   disk_path="/"
 fi
-disk_used_percent="$(df -P "$disk_path" 2>/dev/null | awk 'NR == 2 { gsub(/%/, "", $5); print $5 }')"
-if [[ "$disk_used_percent" =~ ^[0-9]+$ ]]; then
+deploy_disk_hard_minimum_free_bytes="21474836480"
+disk_stats="$(df -P -B1 "$disk_path" 2>/dev/null | awk 'NR == 2 { gsub(/%/, "", $5); print $4, $5 }')"
+read -r disk_available_bytes disk_used_percent <<< "$disk_stats"
+if [[ "$disk_available_bytes" =~ ^[0-9]+$ && "$disk_used_percent" =~ ^[0-9]+$ ]]; then
+  if (( disk_available_bytes < deploy_disk_hard_minimum_free_bytes )); then
+    printf "DEPLOY_DISK_BLOCKED path=%s available=%sB minimum-free=%sB\n" \
+      "$disk_path" "$disk_available_bytes" "$deploy_disk_hard_minimum_free_bytes"
+  fi
   if (( disk_used_percent >= 90 )); then
     printf "DISK_CRITICAL path=%s used=%s%% threshold=90%%\n" "$disk_path" "$disk_used_percent"
   elif (( disk_used_percent >= 80 )); then
@@ -463,6 +469,8 @@ if [[ "$disk_used_percent" =~ ^[0-9]+$ ]]; then
   else
     printf "DISK_OK path=%s used=%s%% warning=80%% critical=90%%\n" "$disk_path" "$disk_used_percent"
   fi
+else
+  printf "DISK_UNKNOWN path=%s reason=invalid-df-output\n" "$disk_path"
 fi
 echo "docker_stats"
 docker stats --no-stream --format '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.BlockIO}}' 2>/dev/null |

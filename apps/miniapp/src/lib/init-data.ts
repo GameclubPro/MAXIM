@@ -143,8 +143,8 @@ export function readUserIdFromInitData(initData: string): string | null {
   }
 
   try {
-    const parsed = JSON.parse(encodedUser) as { id?: unknown };
-    return readUserIdValue(parsed.id);
+    const parsed = JSON.parse(encodedUser) as { id?: unknown; user_id?: unknown };
+    return readUserIdValue(parsed.id ?? parsed.user_id);
   } catch {
     return null;
   }

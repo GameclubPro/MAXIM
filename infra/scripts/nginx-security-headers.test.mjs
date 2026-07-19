@@ -22,6 +22,7 @@ const adminApplyScript = readFileSync(
   new URL('./vps-apply-major-admin-site.sh', import.meta.url),
   'utf8',
 );
+const legacyApplyScript = readFileSync(new URL('./vps-apply-nginx.sh', import.meta.url), 'utf8');
 
 const MAJOR_SECURITY_HEADERS = [
   'Strict-Transport-Security',
@@ -213,7 +214,10 @@ test('Safety Desk retries the complete localhost smoke before rollback', () => {
   );
 
   const retryCall = adminApplyScript.indexOf('if ! verify_local_admin_nginx_with_retry; then');
-  const rollbackAfterRetry = adminApplyScript.indexOf('if ! restore_previous_nginx; then', retryCall);
+  const rollbackAfterRetry = adminApplyScript.indexOf(
+    'if ! restore_previous_nginx; then',
+    retryCall,
+  );
   assert.ok(retryCall >= 0);
   assert.ok(rollbackAfterRetry > retryCall);
 });
@@ -236,4 +240,78 @@ test('Safety Desk rolls back an incomplete certificate bootstrap before discardi
       adminApplyScript.indexOf('DEPLOYMENT_COMMITTED=1'),
     'certificate bootstrap must remain rollback-eligible until the final local smoke passes',
   );
+});
+
+test('legacy apply keeps rollback state through localhost SNI security smokes for both hosts', () => {
+  assert.ok(legacyApplyScript.includes("curl --noproxy '*'"));
+  assert.ok(
+    legacyApplyScript.includes('local hosts=("maxim.play-team.ru" "hook.maxim.play-team.ru")'),
+  );
+  assert.ok(legacyApplyScript.includes('--resolve "${host}:443:127.0.0.1"'));
+  for (const host of ['maxim.play-team.ru', 'hook.maxim.play-team.ru']) {
+    assert.ok(
+      legacyApplyScript.includes(`"${host}"`),
+      `legacy apply must bypass DNS and edge routing for ${host}`,
+    );
+  }
+  for (const path of [
+    '/api/health/live',
+    '/api/health/ready',
+    '/api/v1/safety-desk/queue',
+    '/api/v1/support-requests/queue',
+  ]) {
+    assert.ok(legacyApplyScript.includes(`"${path}"`));
+  }
+  assert.ok(legacyApplyScript.includes('/api/v1/system/metrics/queues'));
+  for (const path of [
+    '/api/health/ready',
+    '/api/v1/safety-desk/queue',
+    '/api/v1/support-requests/queue',
+  ]) {
+    assert.ok(
+      legacyApplyScript.includes(`"${path}" "404" "" 1`),
+      `${path} must require the complete security header set`,
+    );
+  }
+  assert.ok(legacyApplyScript.includes('if ! verify_local_nginx_with_retry; then'));
+  assert.ok(legacyApplyScript.includes('trap finalize_remote_deploy EXIT'));
+
+  const trapIndex = legacyApplyScript.indexOf('trap finalize_remote_deploy EXIT');
+  const mutationIndex = legacyApplyScript.indexOf('NGINX_MUTATED=1', trapIndex);
+  const smokeIndex = legacyApplyScript.indexOf('if ! verify_local_nginx_with_retry; then');
+  const commitIndex = legacyApplyScript.lastIndexOf('DEPLOYMENT_COMMITTED=1');
+  const remoteEndIndex = legacyApplyScript.indexOf('\nREMOTE\n', commitIndex);
+  assert.ok(trapIndex >= 0 && trapIndex < mutationIndex);
+  assert.ok(mutationIndex < smokeIndex);
+  assert.ok(smokeIndex < commitIndex);
+  assert.ok(
+    commitIndex < remoteEndIndex,
+    'local SNI smokes must pass before rollback context ends',
+  );
+});
+
+test('legacy apply retries local smokes and rolls back every incomplete post-mutation path', () => {
+  assert.ok(legacyApplyScript.includes('LOCAL_SMOKE_MAX_ATTEMPTS=10'));
+  assert.ok(legacyApplyScript.includes('LOCAL_SMOKE_RETRY_DELAY_SECONDS=1'));
+  assert.ok(legacyApplyScript.includes('attempt <= LOCAL_SMOKE_MAX_ATTEMPTS'));
+  assert.ok(legacyApplyScript.includes('if verify_local_nginx; then'));
+  assert.ok(legacyApplyScript.includes('sleep "${LOCAL_SMOKE_RETRY_DELAY_SECONDS}"'));
+  assert.ok(legacyApplyScript.includes('ROLLBACK_ATTEMPTED=0'));
+  assert.ok(legacyApplyScript.includes('ROLLBACK_SUCCEEDED=0'));
+  assert.ok(
+    legacyApplyScript.includes(
+      'Legacy nginx deployment failed after runtime mutation; rolling back.',
+    ),
+  );
+  assert.ok(
+    legacyApplyScript.includes(
+      'Automatic nginx rollback failed; inspect the host before retrying.',
+    ),
+  );
+  assert.ok(
+    legacyApplyScript.includes(
+      'Rollback backups retained under ${REMOTE_BACKUP_DIR} with timestamp ${timestamp}.',
+    ),
+  );
+  assert.doesNotMatch(legacyApplyScript, /systemctl reload nginx \|\| true/u);
 });

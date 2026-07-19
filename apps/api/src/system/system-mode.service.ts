@@ -19,6 +19,18 @@ export type SystemModeSnapshot = {
 };
 
 const SYSTEM_MODE_SNAPSHOT_KEY = 'system:mode:snapshot:v1';
+const PERSIST_AUTO_SYSTEM_MODE_SNAPSHOT_SCRIPT = `
+local currentRaw = redis.call('GET', KEYS[1])
+if currentRaw then
+  local decoded, current = pcall(cjson.decode, currentRaw)
+  if decoded and (current.manualMode == 'normal' or current.manualMode == 'degrade') then
+    return currentRaw
+  end
+end
+
+redis.call('SET', KEYS[1], ARGV[1])
+return ARGV[1]
+`;
 const SYSTEM_MODE_SHARED_CACHE_TTL_MS = 2_000;
 const SYSTEM_MODE_EFFECTIVE_CACHE_TTL_MS = 30_000;
 const DEFAULT_SYSTEM_MODE_QUEUE_SNAPSHOT_MAX_AGE_MS = 15_000;
@@ -74,15 +86,21 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  onModuleInit() {
-    void this.persistSnapshot();
-    if (this.enabled) {
-      this.intervalId = setInterval(() => {
-        void this.evaluateAutoMode();
-      }, 5_000);
-      this.intervalId.unref();
-      void this.evaluateAutoMode();
+  async onModuleInit() {
+    if (!this.enabled) {
+      return;
     }
+
+    const sharedSnapshot = await this.readSharedSnapshot();
+    if (sharedSnapshot) {
+      this.hydrateFromSnapshot(sharedSnapshot);
+    }
+
+    await this.evaluateAutoMode();
+    this.intervalId = setInterval(() => {
+      void this.evaluateAutoMode();
+    }, 5_000);
+    this.intervalId.unref();
   }
 
   async onModuleDestroy() {
@@ -95,6 +113,11 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
   }
 
   async setManualMode(mode: SystemMode | null): Promise<SystemModeSnapshot> {
+    const sharedSnapshot = await this.readSharedSnapshot();
+    if (sharedSnapshot) {
+      this.hydrateFromSnapshot(sharedSnapshot);
+    }
+
     this.manualMode = mode;
     if (mode) {
       this.applyMode(mode, 'manual override');
@@ -103,16 +126,24 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
       this.source = 'auto';
       this.reason = 'manual override cleared';
       this.updatedAt = new Date();
+    }
+
+    await this.persistSnapshot(sharedSnapshot?.action);
+    if (!mode && this.enabled) {
       await this.evaluateAutoMode();
     }
 
-    await this.persistSnapshot();
     return this.getSnapshot();
   }
 
   async evaluateAutoMode() {
     if (!this.enabled) {
       return;
+    }
+
+    const sharedSnapshot = await this.readSharedSnapshot();
+    if (sharedSnapshot) {
+      this.hydrateFromSnapshot(sharedSnapshot);
     }
     if (this.manualMode) {
       return;
@@ -147,7 +178,7 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
         }
         this.applyMode('degrade', reasons.join('; '));
         this.source = 'auto';
-        await this.persistSnapshot(action);
+        await this.persistSnapshot(action, true);
         return;
       }
 
@@ -156,7 +187,7 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
           this.healthySinceMs = Date.now();
           this.applyMode('degrade', RECOVERY_WINDOW_REASON);
           this.source = 'auto';
-          await this.persistSnapshot(action);
+          await this.persistSnapshot(action, true);
           return;
         }
 
@@ -171,7 +202,7 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
         this.applyMode('normal', 'system healthy');
       }
 
-      await this.persistSnapshot(action);
+      await this.persistSnapshot(action, true);
     } catch (error: unknown) {
       this.logger.warn(
         { err: error instanceof Error ? error.message : String(error) },
@@ -267,17 +298,37 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  private async persistSnapshot(action?: ActionHealthSnapshot) {
+  private async persistSnapshot(action?: ActionHealthSnapshot, protectManualMode = false) {
     if (!action) {
       await this.actionHealthService.refreshSnapshots(60);
     }
     const snapshot = this.buildSnapshot(action ?? this.getUserFacingActionSnapshot());
-    this.sharedSnapshotCache = snapshot;
-    this.sharedSnapshotCacheAtMs = Date.now();
+    const serializedSnapshot = JSON.stringify(snapshot);
 
     try {
-      await this.redis.set(SYSTEM_MODE_SNAPSHOT_KEY, JSON.stringify(snapshot));
+      let committedRaw: unknown = serializedSnapshot;
+      if (protectManualMode) {
+        committedRaw = await this.redis.eval(
+          PERSIST_AUTO_SYSTEM_MODE_SNAPSHOT_SCRIPT,
+          1,
+          SYSTEM_MODE_SNAPSHOT_KEY,
+          serializedSnapshot,
+        );
+      } else {
+        await this.redis.set(SYSTEM_MODE_SNAPSHOT_KEY, serializedSnapshot);
+      }
+      const committedSnapshot =
+        typeof committedRaw === 'string' ? this.parseSharedSnapshot(committedRaw) : null;
+
+      if (committedSnapshot) {
+        this.hydrateFromSnapshot(committedSnapshot);
+      } else {
+        this.sharedSnapshotCache = snapshot;
+        this.sharedSnapshotCacheAtMs = Date.now();
+      }
     } catch (error: unknown) {
+      this.sharedSnapshotCache = snapshot;
+      this.sharedSnapshotCacheAtMs = Date.now();
       this.logger.warn(
         { err: error instanceof Error ? error.message : String(error) },
         'Failed to persist system mode snapshot',
@@ -317,6 +368,25 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private hydrateFromSnapshot(snapshot: SystemModeSnapshot) {
+    this.mode = snapshot.mode;
+    this.source = snapshot.source;
+    this.reason = snapshot.reason;
+    this.updatedAt = new Date(snapshot.updatedAt);
+    this.manualMode = snapshot.manualMode;
+    this.lastQueueLagSec = snapshot.queueLagSec;
+    this.sharedSnapshotCache = snapshot;
+    this.sharedSnapshotCacheAtMs = Date.now();
+
+    if (snapshot.mode === 'normal') {
+      this.healthySinceMs = Date.now();
+    } else if (isSystemModeRecoveryWindow(snapshot)) {
+      this.healthySinceMs = this.updatedAt.getTime();
+    } else {
+      this.healthySinceMs = null;
+    }
+  }
+
   private parseSharedSnapshot(raw: string): SystemModeSnapshot | null {
     try {
       const parsed = JSON.parse(raw) as Partial<SystemModeSnapshot>;
@@ -339,14 +409,16 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
         return null;
       }
 
+      const updatedAt =
+        typeof parsed.updatedAt === 'string' && Number.isFinite(Date.parse(parsed.updatedAt))
+          ? parsed.updatedAt
+          : this.updatedAt.toISOString();
+
       return {
         mode: parsed.mode,
         source: parsed.source,
         reason: typeof parsed.reason === 'string' ? parsed.reason : 'unknown',
-        updatedAt:
-          typeof parsed.updatedAt === 'string'
-            ? parsed.updatedAt
-            : new Date(this.updatedAt).toISOString(),
+        updatedAt,
         manualMode: parsed.manualMode ?? null,
         queueLagSec:
           typeof parsed.queueLagSec === 'number' && Number.isFinite(parsed.queueLagSec)
