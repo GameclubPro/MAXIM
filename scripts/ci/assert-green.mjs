@@ -30,10 +30,14 @@ export function findLatestRequiredCheck(checkRuns, sha, requiredCheck) {
         Number(run.app?.id) === requiredCheck.appId,
     )
     .sort((left, right) => {
+      const idOrder = Number(right.id ?? 0) - Number(left.id ?? 0);
+      if (idOrder !== 0) {
+        return idOrder;
+      }
       const startedOrder = String(right.started_at ?? '').localeCompare(
         String(left.started_at ?? ''),
       );
-      return startedOrder || Number(right.id ?? 0) - Number(left.id ?? 0);
+      return startedOrder;
     })[0];
 }
 

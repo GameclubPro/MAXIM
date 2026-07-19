@@ -132,3 +132,27 @@ test('a newer failed rerun overrides an older successful check', () => {
     /completed\/failure/u,
   );
 });
+
+test('a newer queued rerun without started_at overrides an older success', () => {
+  const codeql = 'Analyze JavaScript and TypeScript';
+  assert.throws(
+    () =>
+      assertGreenCheckRuns(
+        {
+          check_runs: [
+            checkRun('Required'),
+            checkRun(codeql, { id: 10 }),
+            checkRun(codeql, {
+              id: 11,
+              status: 'queued',
+              conclusion: null,
+              started_at: null,
+              completed_at: null,
+            }),
+          ],
+        },
+        exactSha,
+      ),
+    /queued\/pending/u,
+  );
+});
