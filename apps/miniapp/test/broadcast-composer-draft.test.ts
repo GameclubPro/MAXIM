@@ -74,7 +74,10 @@ test('clears chat broadcast composer local draft and tracks reset acknowledgemen
     const entityId = '-71580425805146';
     const draftKey = `maxim:broadcast-composer:chat:${entityId}`;
     const resetAt = '2026-06-13T14:30:00.000Z';
-    store.set(draftKey, JSON.stringify({ version: 1, draft: createDraft({ text: 'Старый пост' }) }));
+    store.set(
+      draftKey,
+      JSON.stringify({ version: 1, draft: createDraft({ text: 'Старый пост' }) }),
+    );
 
     assert.equal(store.has(draftKey), true);
     assert.equal(hasAppliedBroadcastComposerReset('chat', entityId, resetAt), false);

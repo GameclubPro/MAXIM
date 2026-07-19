@@ -1,3 +1,5 @@
+import { describe, expect, it } from 'vitest';
+
 import {
   channelDialogMessageSchema as rootChannelDialogMessageSchema,
   createChannelDialogMessageRequestSchema as rootCreateChannelDialogMessageRequestSchema,
@@ -9,7 +11,9 @@ import {
 
 describe('channel dialog contract exports', () => {
   it('keeps root and subpath exports aligned', () => {
-    expect(rootCreateChannelDialogMessageRequestSchema).toBe(createChannelDialogMessageRequestSchema);
+    expect(rootCreateChannelDialogMessageRequestSchema).toBe(
+      createChannelDialogMessageRequestSchema,
+    );
     expect(rootChannelDialogMessageSchema).toBe(channelDialogMessageSchema);
   });
 

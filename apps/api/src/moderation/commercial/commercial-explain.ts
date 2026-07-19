@@ -188,10 +188,7 @@ export function buildCommercialFeatureVector(
     ) {
       negativePrivateContext = 1;
     }
-    if (
-      questionContext === 0 &&
-      (signal.startsWith('context:') || signal.startsWith('search:'))
-    ) {
+    if (questionContext === 0 && (signal.startsWith('context:') || signal.startsWith('search:'))) {
       questionContext = 1;
     }
   }
@@ -250,9 +247,7 @@ function estimateCommercialPolicyFpRisk(params: {
   const hasPolicyGuardedDirectEvidence =
     signalEvidence.hasRawActionDirectDealEvidence && !params.hasActionDirectDealEvidence;
   const hasLocalPrivateLikeSignal =
-    detection.matchedSignals.some((signal) =>
-      LOCAL_PRIVATE_LIKE_RETAIL_SIGNALS.has(signal),
-    ) ||
+    detection.matchedSignals.some((signal) => LOCAL_PRIVATE_LIKE_RETAIL_SIGNALS.has(signal)) ||
     detection.negativeSignals.some(
       (signal) =>
         signal.startsWith('private:') ||
@@ -336,10 +331,7 @@ function buildReasonCodes(params: {
   if (params.hasActionDirectDealEvidence) {
     reasonCodes.add('evidence:action-direct');
   }
-  if (
-    params.signalEvidence.hasHighRiskEvidence &&
-    !params.hasActionDirectDealEvidence
-  ) {
+  if (params.signalEvidence.hasHighRiskEvidence && !params.hasActionDirectDealEvidence) {
     reasonCodes.add('evidence:high-risk-only');
   }
   if (params.signalEvidence.hasRawActionDirectDealEvidence && !params.hasActionDirectDealEvidence) {

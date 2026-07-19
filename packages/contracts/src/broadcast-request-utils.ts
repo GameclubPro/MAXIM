@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { BroadcastScheduleMode, BroadcastTargetMode } from './core.js';
+import type { BroadcastScheduleMode, BroadcastTargetMode } from './broadcast-common.js';
 
 const BROADCAST_CYCLE_MAX_WINDOW_HOURS = 31 * 24;
 
@@ -110,8 +110,7 @@ export function addBroadcastScheduleIssues(
   ctx: z.RefinementCtx,
 ): void {
   const normalizedSlots = normalizeBroadcastScheduledSlots(value.scheduledSlots);
-  const scheduleMode =
-    value.scheduleMode ?? (normalizedSlots.length > 0 ? 'calendar' : 'legacy');
+  const scheduleMode = value.scheduleMode ?? (normalizedSlots.length > 0 ? 'calendar' : 'legacy');
   if (scheduleMode === 'calendar') {
     if (normalizedSlots.length === 0) {
       ctx.addIssue({
@@ -174,8 +173,7 @@ export function buildBroadcastScheduleState(value: {
   replaceConflictingSlots: boolean;
 } {
   const scheduledSlots = normalizeBroadcastScheduledSlots(value.scheduledSlots);
-  const scheduleMode =
-    value.scheduleMode ?? (scheduledSlots.length > 0 ? 'calendar' : 'legacy');
+  const scheduleMode = value.scheduleMode ?? (scheduledSlots.length > 0 ? 'calendar' : 'legacy');
   if (scheduleMode === 'calendar') {
     return {
       cycleEveryHours: 1,

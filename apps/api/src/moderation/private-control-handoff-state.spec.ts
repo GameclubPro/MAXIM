@@ -32,19 +32,23 @@ describe('private control handoff state', () => {
 
       expect(session[deliveredChatIdKey]).toBe('private-chat-1');
       expect(session[deliveredAtKey]).toBe(1_000);
-      expect(wasPrivateHandoffRecentlyDelivered(session, kind, 'private-chat-1', 20_000, 20_999))
-        .toBe(true);
-      expect(wasPrivateHandoffRecentlyDelivered(session, kind, 'private-chat-1', 20_000, 21_000))
-        .toBe(false);
-      expect(wasPrivateHandoffRecentlyDelivered(session, kind, 'other-chat', 20_000, 20_999))
-        .toBe(false);
+      expect(
+        wasPrivateHandoffRecentlyDelivered(session, kind, 'private-chat-1', 20_000, 20_999),
+      ).toBe(true);
+      expect(
+        wasPrivateHandoffRecentlyDelivered(session, kind, 'private-chat-1', 20_000, 21_000),
+      ).toBe(false);
+      expect(wasPrivateHandoffRecentlyDelivered(session, kind, 'other-chat', 20_000, 20_999)).toBe(
+        false,
+      );
 
       clearPrivateHandoffDelivery(session, kind);
 
       expect(session[deliveredChatIdKey]).toBeNull();
       expect(session[deliveredAtKey]).toBeNull();
-      expect(wasPrivateHandoffRecentlyDelivered(session, kind, 'private-chat-1', 20_000, 1_001))
-        .toBe(false);
+      expect(
+        wasPrivateHandoffRecentlyDelivered(session, kind, 'private-chat-1', 20_000, 1_001),
+      ).toBe(false);
     },
   );
 
@@ -87,7 +91,9 @@ describe('private control handoff state', () => {
     expect(readPendingPrivateProfileMentionDisplayName(session, 'source-chat', 'user-1')).toBe(
       'User One',
     );
-    expect(readPendingPrivateProfileMentionDisplayName(session, 'source-chat', 'user-2')).toBeNull();
+    expect(
+      readPendingPrivateProfileMentionDisplayName(session, 'source-chat', 'user-2'),
+    ).toBeNull();
     expect(readPendingPrivateProfileMentionDisplayName(session, 'other-chat', 'user-1')).toBeNull();
 
     clearPendingPrivateProfileMentionHandoff(session);

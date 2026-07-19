@@ -165,11 +165,7 @@ export class AdminDialogLinkHelper {
       return null;
     }
 
-    const matchedBotToken = this.resolveChannelSuggestionStartBotToken(
-      signature,
-      chatId,
-      threadId,
-    );
+    const matchedBotToken = this.resolveChannelSuggestionStartBotToken(signature, chatId, threadId);
     if (!matchedBotToken) {
       return null;
     }

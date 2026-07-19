@@ -46,9 +46,12 @@ export class GlobalSpammerArchiveRunnerService implements OnModuleInit, OnModule
     }, this.intervalMs);
     this.timer.unref?.();
 
-    this.startupTimer = setTimeout(() => {
-      void this.run('startup');
-    }, Math.min(60_000, this.intervalMs));
+    this.startupTimer = setTimeout(
+      () => {
+        void this.run('startup');
+      },
+      Math.min(60_000, this.intervalMs),
+    );
     this.startupTimer.unref?.();
   }
 

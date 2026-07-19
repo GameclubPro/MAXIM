@@ -36,16 +36,19 @@ async function bootstrap() {
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   });
 
-  app.getHttpAdapter().getInstance().addHook('onSend', (request, reply, payload, done) => {
-    if (request.url.startsWith('/api/')) {
-      reply
-        .header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
-        .header('Pragma', 'no-cache')
-        .header('Expires', '0');
-    }
+  app
+    .getHttpAdapter()
+    .getInstance()
+    .addHook('onSend', (request, reply, payload, done) => {
+      if (request.url.startsWith('/api/')) {
+        reply
+          .header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+          .header('Pragma', 'no-cache')
+          .header('Expires', '0');
+      }
 
-    done(null, payload);
-  });
+      done(null, payload);
+    });
 
   await app.listen(port, '0.0.0.0');
 }

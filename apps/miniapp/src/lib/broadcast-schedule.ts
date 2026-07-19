@@ -32,9 +32,7 @@ export type BroadcastScheduleHandoffState = {
   hasContent?: boolean;
 };
 
-export function resolveBroadcastScheduleConflict(
-  error: unknown,
-): BroadcastScheduleConflict | null {
+export function resolveBroadcastScheduleConflict(error: unknown): BroadcastScheduleConflict | null {
   const message = describeApiError(error, '');
   if (message.includes('BROADCAST_TARGET_SLOT_CONFLICT')) {
     return 'target';

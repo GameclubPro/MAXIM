@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeApiBase, normalizeApiBases, normalizeApiFallbackBases } from '../src/lib/public-config';
+import {
+  normalizeApiBase,
+  normalizeApiBases,
+  normalizeApiFallbackBases,
+} from '../src/lib/public-config';
 
 test('keeps absolute and scheme-relative API bases intact', () => {
   assert.equal(
@@ -27,7 +31,9 @@ test('normalizes relative API bases with a leading slash', () => {
 
 test('normalizes comma-separated API fallback bases', () => {
   assert.deepEqual(
-    normalizeApiFallbackBases(' https://api-cdn.flex-craft.ru/api/v1, major-maksimov.ru/api/v1, https://api-cdn.flex-craft.ru/api/v1 '),
+    normalizeApiFallbackBases(
+      ' https://api-cdn.flex-craft.ru/api/v1, major-maksimov.ru/api/v1, https://api-cdn.flex-craft.ru/api/v1 ',
+    ),
     ['https://api-cdn.flex-craft.ru/api/v1', '/major-maksimov.ru/api/v1'],
   );
 });

@@ -36,10 +36,7 @@ type SourceDashboardProps = {
   onToggleBulkSource: (sourceId: string) => void;
   onSelectAllBulkSources: () => void;
   onApplyPreset: (preset: BulkUpdateVkParsingSourcesRequest['preset']) => void;
-  onUpdateSource: (
-    sourceId: string,
-    payload: UpdateVkParsingSourceRequest,
-  ) => Promise<boolean>;
+  onUpdateSource: (sourceId: string, payload: UpdateVkParsingSourceRequest) => Promise<boolean>;
   onRefresh: () => void;
   onRefreshSource: (sourceId: string) => void;
   onRemoveSource: (sourceId: string) => void;

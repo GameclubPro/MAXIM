@@ -60,11 +60,7 @@ function timeInputToMinutes(value: string, fallback: number): number {
   return hours * 60 + minutes;
 }
 
-function NightModeTimeFields({
-  startMinutes,
-  endMinutes,
-  onChange,
-}: NightModeTimeFieldsProps) {
+function NightModeTimeFields({ startMinutes, endMinutes, onChange }: NightModeTimeFieldsProps) {
   return (
     <>
       <div className="field night-window-grid__field">

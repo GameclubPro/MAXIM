@@ -1,11 +1,11 @@
 import { z } from 'zod';
-import { broadcastTextFormatSchema } from './broadcast-common.js';
 import {
   MAX_BROADCAST_IMAGES,
   MAX_BROADCAST_IMAGES_TOTAL_BASE64,
   broadcastImageSchema,
+  broadcastTextFormatSchema,
   type BroadcastImage,
-} from './core.js';
+} from './broadcast-common.js';
 
 export const MANAGED_POLL_MIN_OPTIONS = 2;
 export const MANAGED_POLL_MAX_OPTIONS = 6;

@@ -105,16 +105,8 @@ describe('commercial-audit-summary', () => {
           campaignStrength: 'STRONG',
           evidenceTier: 'DIRECT',
           primarySubtype: 'GOODS',
-          matchedSignals: [
-            'campaign:cross-chat-phone',
-            'contact:phone',
-            'transaction:price',
-          ],
-          reasonCodes: [
-            'action:DELETE',
-            'evidence:action-direct',
-            'evidence:direct:price-contact',
-          ],
+          matchedSignals: ['campaign:cross-chat-phone', 'contact:phone', 'transaction:price'],
+          reasonCodes: ['action:DELETE', 'evidence:action-direct', 'evidence:direct:price-contact'],
           featureVector: {
             dealEvidence: 1,
             contactEvidence: 1,
@@ -135,11 +127,7 @@ describe('commercial-audit-summary', () => {
           evidenceTier: 'DIRECT',
           primarySubtype: 'RECRUITMENT',
           matchedSignals: ['recruitment:вахт', 'contact:phone', 'transaction:price'],
-          reasonCodes: [
-            'action:DELETE',
-            'evidence:action-direct',
-            'evidence:direct:price-contact',
-          ],
+          reasonCodes: ['action:DELETE', 'evidence:action-direct', 'evidence:direct:price-contact'],
           featureVector: {
             dealEvidence: 1,
             contactEvidence: 1,
@@ -160,11 +148,7 @@ describe('commercial-audit-summary', () => {
           evidenceTier: 'DIRECT',
           primarySubtype: 'RECRUITMENT',
           matchedSignals: ['recruitment:требуется', 'contact:phone', 'transaction:price'],
-          reasonCodes: [
-            'action:DELETE',
-            'evidence:action-direct',
-            'evidence:direct:price-contact',
-          ],
+          reasonCodes: ['action:DELETE', 'evidence:action-direct', 'evidence:direct:price-contact'],
           featureVector: {
             dealEvidence: 1,
             contactEvidence: 1,

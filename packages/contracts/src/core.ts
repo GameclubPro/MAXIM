@@ -12,7 +12,21 @@ import {
   botSpeechPreviewProfileSchema,
   botSpeechStyleSchema,
 } from './bot-speech.js';
-import { broadcastTextFormatSchema } from './broadcast-common.js';
+import {
+  DEFAULT_BROADCAST_BUTTON_TEXT,
+  MAX_BROADCAST_IMAGES,
+  MAX_BROADCAST_IMAGES_TOTAL_BASE64,
+  MAX_BROADCAST_IMAGE_BASE64_LENGTH,
+  MAX_BROADCAST_LINK_BUTTONS,
+  broadcastImageSchema,
+  broadcastMediaTypeSchema,
+  broadcastScheduleModeSchema,
+  broadcastTargetModeSchema,
+  broadcastTextFormatSchema,
+  type BroadcastImage,
+  type BroadcastMediaType,
+  type BroadcastScheduleMode,
+} from './broadcast-common.js';
 import { booleanQueryFlagSchema, logsDashboardRangeSchema } from './dashboard-common.js';
 import {
   addBroadcastAudienceIssues,
@@ -39,6 +53,7 @@ import {
 } from './settings-utils.js';
 export * from './settings-utils.js';
 export * from './system-core.js';
+export * from './vk-parsing.js';
 
 export const sanctionActionSchema = z.enum([
   'NONE',
@@ -70,13 +85,9 @@ export const applySettingsSectionSchema = z.enum([
 ]);
 export const channelAutoPostButtonsModeSchema = z.enum(['OFF', 'COMMENTS', 'SUGGEST', 'BOTH']);
 export const channelSuggestionEntryModeSchema = z.enum(['BOT', 'MINIAPP']);
-export const broadcastTargetModeSchema = z.enum(['current', 'selected', 'all']);
-export const broadcastMediaTypeSchema = z.enum(['image', 'video']);
 export type ApplySettingsSection = z.infer<typeof applySettingsSectionSchema>;
 export type ChannelAutoPostButtonsMode = z.infer<typeof channelAutoPostButtonsModeSchema>;
 export type ChannelSuggestionEntryMode = z.infer<typeof channelSuggestionEntryModeSchema>;
-export type BroadcastTargetMode = z.infer<typeof broadcastTargetModeSchema>;
-export type BroadcastMediaType = z.infer<typeof broadcastMediaTypeSchema>;
 
 export const REQUIRED_SUBSCRIPTION_MAX_CHANNELS = 10;
 export const REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN = 1;
@@ -102,20 +113,7 @@ const RESERVED_ADMIN_COMMAND_NAMES = new Set(['супер бан', 'супер-�
 export const MAX_MESSAGE_LENGTH_MIN = 50;
 export const MAX_MESSAGE_LENGTH_MAX = 1500;
 export const MAX_MESSAGE_LENGTH_DEFAULT = MAX_MESSAGE_LENGTH_MAX;
-export const DEFAULT_BROADCAST_BUTTON_TEXT = 'Открыть';
-export const MAX_BROADCAST_LINK_BUTTONS = 8;
-export const MAX_BROADCAST_LINK_BUTTONS_PER_ROW = 3;
-export const MAX_BROADCAST_IMAGES = 10;
-export const MAX_BROADCAST_IMAGE_BASE64_LENGTH = 8_000_000;
-export const MAX_BROADCAST_IMAGES_TOTAL_BASE64 = 24_000_000;
 const BROADCAST_CYCLE_MAX_WINDOW_HOURS = 31 * 24;
-export const VK_PARSING_MAX_PHOTOS = 10,
-  VK_PARSING_MAX_VIDEOS = 1,
-  VK_PARSING_MAX_LINKS = 20;
-export const VK_PARSING_MAX_PUBLISH_TEXT_LENGTH = 4_000;
-export const VK_PARSING_MAX_CHANNEL_LINK_TEXT_LENGTH = 120;
-export const VK_PARSING_MAX_CHANNEL_LINK_URL_LENGTH = 256;
-export const VK_PARSING_DEFAULT_CHANNEL_LINK_TEXT = 'Подписаться на канал';
 export const BOT_SPEECH_MEDIA_IMAGE_BASE64_MAX_LENGTH = MAX_BROADCAST_IMAGE_BASE64_LENGTH;
 const duplicateWindowSecSchema = z.number().int().min(3_600).max(604_800);
 const duplicateMaxCountSchema = z.number().int().min(1).max(20);
@@ -266,31 +264,6 @@ export const broadcastLinkButtonSchema = z
     }
   });
 export type BroadcastLinkButton = z.infer<typeof broadcastLinkButtonSchema>;
-export const broadcastImageSchema = z
-  .object({
-    base64: z.string().trim().max(MAX_BROADCAST_IMAGE_BASE64_LENGTH).default(''),
-    mimeType: z.string().trim().max(128).default(''),
-    fileName: z.string().trim().max(128).default(''),
-  })
-  .superRefine((value, ctx) => {
-    if (!value.base64) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['base64'],
-        message: 'Добавьте фото.',
-      });
-    }
-
-    if (!value.mimeType.trim() || !value.mimeType.toLowerCase().startsWith('image/')) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['mimeType'],
-        message: 'Неверный формат фото.',
-      });
-    }
-  });
-export type BroadcastImage = z.infer<typeof broadcastImageSchema>;
-
 function isRecordPayload(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -2000,9 +1973,6 @@ export const scheduleDomainRemovalRequestSchema = z.object({
   removeAfterAt: z.string().datetime().nullable(),
 });
 
-export const broadcastScheduleModeSchema = z.enum(['legacy', 'calendar']);
-export type BroadcastScheduleMode = z.infer<typeof broadcastScheduleModeSchema>;
-
 const MAX_BROADCAST_CALENDAR_SLOTS = 186;
 const BROADCAST_ISO_DATE_TIME_WITH_OFFSET_RE =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u;
@@ -2700,571 +2670,6 @@ export const managedAutopostHubRuleDetailsSchema = managedAutopostHubRuleSummary
   payload: managedAutopostPayloadSchema,
 });
 export type ManagedAutopostHubRuleDetails = z.infer<typeof managedAutopostHubRuleDetailsSchema>;
-
-export const vkParsingSourceStatusSchema = z.enum(['ACTIVE', 'DISABLED']);
-export type VkParsingSourceStatus = z.infer<typeof vkParsingSourceStatusSchema>;
-
-export const vkParsingSourceSyncStatusSchema = z.enum([
-  'IDLE',
-  'QUEUED',
-  'SYNCING',
-  'BACKOFF',
-  'ERROR',
-]);
-export type VkParsingSourceSyncStatus = z.infer<typeof vkParsingSourceSyncStatusSchema>;
-
-export const vkParsingPostStatusSchema = z.enum([
-  'NEW',
-  'PUBLISHED',
-  'FAILED',
-  'CHANGED_AFTER_PUBLISH',
-  'UNAVAILABLE',
-  'SKIPPED',
-]);
-export type VkParsingPostStatus = z.infer<typeof vkParsingPostStatusSchema>;
-
-export const vkParsingPublishModeSchema = z.enum(['IMMEDIATE', 'QUEUE', 'REVIEW']);
-export type VkParsingPublishMode = z.infer<typeof vkParsingPublishModeSchema>;
-
-export const vkParsingSourcePrioritySchema = z.enum(['LOW', 'NORMAL', 'HIGH']);
-export type VkParsingSourcePriority = z.infer<typeof vkParsingSourcePrioritySchema>;
-
-export const vkParsingBulkPresetSchema = z.enum(['NEWS', 'SLOW', 'REVIEW', 'CLEAN']);
-export type VkParsingBulkPreset = z.infer<typeof vkParsingBulkPresetSchema>;
-
-export const vkParsingPostSkipReasonSchema = z.enum([
-  'AD',
-  'EMPTY_AFTER_LINK_FILTER',
-  'NO_SUPPORTED_CONTENT',
-]);
-export type VkParsingPostSkipReason = z.infer<typeof vkParsingPostSkipReasonSchema>;
-
-export const vkParsingPostFilterStatusSchema = z.union([
-  z.literal('ALL'),
-  z.literal('QUEUED'),
-  vkParsingPostStatusSchema,
-]);
-export type VkParsingPostFilterStatus = z.infer<typeof vkParsingPostFilterStatusSchema>;
-
-export const vkParsingTimeOfDaySchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/u);
-
-export const vkParsingUnsupportedAttachmentSchema = z
-  .object({
-    type: z.string().min(1),
-    label: z.string().default(''),
-    title: z.string().nullable().default(null),
-    url: z.string().url().nullable().default(null),
-    count: z.number().int().min(1).default(1),
-    reason: z.string().nullable().default(null),
-  })
-  .passthrough();
-export type VkParsingUnsupportedAttachment = z.infer<typeof vkParsingUnsupportedAttachmentSchema>;
-
-export const vkParsingSettingsSchema = z.object({
-  chatId: z.string(),
-  autoPublishEnabled: z.boolean().default(false),
-  autoPublishEnabledAt: z.string().datetime().nullable().default(null),
-  autoPublishKillSwitchEnabled: z.boolean().default(false),
-  stripLinksEnabled: z.boolean().default(false),
-  skipAdsEnabled: z.boolean().default(false),
-  appendChannelLinkEnabled: z.boolean().default(false),
-  channelLinkText: z
-    .string()
-    .trim()
-    .max(VK_PARSING_MAX_CHANNEL_LINK_TEXT_LENGTH)
-    .default(VK_PARSING_DEFAULT_CHANNEL_LINK_TEXT),
-  schedulerTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
-  quietHoursStart: vkParsingTimeOfDaySchema.nullable().default(null),
-  quietHoursEnd: vkParsingTimeOfDaySchema.nullable().default(null),
-  workHoursStart: vkParsingTimeOfDaySchema.default('09:00'),
-  workHoursEnd: vkParsingTimeOfDaySchema.default('22:00'),
-  distributeEvenlyEnabled: z.boolean().default(true),
-  roundRobinEnabled: z.boolean().default(true),
-  circuitBreakerEnabled: z.boolean().default(true),
-  circuitBreakerWindowMinutes: z.number().int().min(1).max(1440).default(10),
-  circuitBreakerPostLimit: z.number().int().min(1).max(500).default(10),
-  updatedAt: z.string().datetime().nullable().default(null),
-});
-export type VkParsingSettings = z.infer<typeof vkParsingSettingsSchema>;
-
-export const vkParsingSourceSchema = z.object({
-  id: z.string(),
-  chatId: z.string(),
-  ownerId: z.number().int(),
-  wallOwnerId: z.number().int(),
-  screenName: z.string(),
-  title: z.string(),
-  url: z.string().url(),
-  status: vkParsingSourceStatusSchema,
-  importEnabled: z.boolean().default(true),
-  autoPublishEnabled: z.boolean().default(false),
-  autoPublishEnabledAt: z.string().datetime().nullable().default(null),
-  autoPublishPausedAt: z.string().datetime().nullable().default(null),
-  autoPublishPausedReason: z.string().nullable().default(null),
-  publishIntervalMinutes: z.number().int().min(5).max(10080).default(60),
-  dailyLimit: z.number().int().min(1).max(500).default(3),
-  minPublishIntervalMinutes: z.number().int().min(0).max(1440).default(30),
-  publishMode: vkParsingPublishModeSchema.default('QUEUE'),
-  priority: vkParsingSourcePrioritySchema.default('NORMAL'),
-  quietHoursStart: vkParsingTimeOfDaySchema.nullable().default(null),
-  quietHoursEnd: vkParsingTimeOfDaySchema.nullable().default(null),
-  lastAutoPublishedAt: z.string().datetime().nullable().default(null),
-  newPostCount: z.number().int().min(0).default(0),
-  queuedPostCount: z.number().int().min(0).default(0),
-  publishedPostCount: z.number().int().min(0).default(0),
-  skippedPostCount: z.number().int().min(0).default(0),
-  failedPostCount: z.number().int().min(0).default(0),
-  syncStatus: vkParsingSourceSyncStatusSchema.default('IDLE'),
-  nextSyncAt: z.string().datetime().nullable().default(null),
-  nextRetryAt: z.string().datetime().nullable().default(null),
-  lastSyncAt: z.string().datetime().nullable(),
-  lastSuccessAt: z.string().datetime().nullable().default(null),
-  syncStartedAt: z.string().datetime().nullable().default(null),
-  consecutiveFailures: z.number().int().min(0).default(0),
-  terminalFailureCount: z.number().int().min(0).default(0),
-  circuitOpenedAt: z.string().datetime().nullable().default(null),
-  circuitReasonCode: z.string().nullable().default(null),
-  circuitReason: z.string().nullable().default(null),
-  circuitRetryAt: z.string().datetime().nullable().default(null),
-  lastErrorCode: z.string().nullable().default(null),
-  lastImportedCount: z.number().int().min(0).default(0),
-  lastFetchedCount: z.number().int().min(0).default(0),
-  lastFetchedPages: z.number().int().min(0).default(0),
-  lastFetchedOffsets: z.array(z.number().int().min(0)).default([]),
-  lastVkNewestPostId: z.number().int().nullable().default(null),
-  lastVkNewestPublishedAt: z.string().datetime().nullable().default(null),
-  adaptiveIntervalMs: z.number().int().min(0).nullable().default(null),
-  lastSyncDurationMs: z.number().int().min(0).nullable().default(null),
-  lastError: z.string().nullable(),
-  createdAt: z.string().datetime(),
-  updatedAt: z.string().datetime(),
-});
-export type VkParsingSource = z.infer<typeof vkParsingSourceSchema>;
-
-export const vkParsingPostSchema = z.object({
-  id: z.string(),
-  sourceId: z.string(),
-  chatId: z.string(),
-  sourceTitle: z.string(),
-  sourceUrl: z.string().url(),
-  sourcePublishMode: vkParsingPublishModeSchema.default('QUEUE'),
-  vkOwnerId: z.number().int(),
-  vkPostId: z.number().int(),
-  vkPublishedAt: z.string().datetime().nullable(),
-  text: z.string(),
-  textFormat: broadcastTextFormatSchema.default('plain'),
-  url: z.string().url(),
-  photoUrls: z.array(z.string().url()).max(VK_PARSING_MAX_PHOTOS).default([]),
-  videoUrls: z.array(z.string().url()).max(VK_PARSING_MAX_VIDEOS).default([]),
-  linkUrls: z.array(z.string().url()).max(VK_PARSING_MAX_LINKS).default([]),
-  attachmentTypes: z.array(z.string()).default([]),
-  unsupportedAttachments: z.array(vkParsingUnsupportedAttachmentSchema).default([]),
-  hasUnsupportedAttachments: z.boolean().default(false),
-  isAdvertising: z.boolean().default(false),
-  advertisingMarkers: z.array(z.string()).default([]),
-  status: vkParsingPostStatusSchema,
-  contentHash: z.string().default(''),
-  publishedContentHash: z.string().nullable().default(null),
-  publishedMessageId: z.string().nullable(),
-  publishedUrl: z.string().url().nullable(),
-  publishedAtMax: z.string().datetime().nullable(),
-  autoPublishedAt: z.string().datetime().nullable().default(null),
-  autoPublishError: z.string().nullable().default(null),
-  skippedAt: z.string().datetime().nullable().default(null),
-  skipReason: vkParsingPostSkipReasonSchema.nullable().default(null),
-  lastSeenAt: z.string().datetime().nullable().default(null),
-  missingSinceAt: z.string().datetime().nullable().default(null),
-  missingSeenCount: z.number().int().min(0).default(0),
-  lastAvailabilityCheckedAt: z.string().datetime().nullable().default(null),
-  unavailableAt: z.string().datetime().nullable().default(null),
-  publishQueuedAt: z.string().datetime().nullable().default(null),
-  publishScheduledAt: z.string().datetime().nullable().default(null),
-  publishCancelledAt: z.string().datetime().nullable().default(null),
-  publishCancelledByUserId: z.string().nullable().default(null),
-  publishLockedAt: z.string().datetime().nullable().default(null),
-  publishAttemptCount: z.number().int().min(0).default(0),
-  lastError: z.string().nullable(),
-  createdAt: z.string().datetime(),
-  updatedAt: z.string().datetime(),
-});
-export type VkParsingPost = z.infer<typeof vkParsingPostSchema>;
-
-export const vkParsingCapabilitySchema = z.object({
-  enabled: z.boolean().default(false),
-  canUse: z.boolean().default(false),
-  reasonCode: z.enum(['NOT_CONFIGURED', 'ACCESS_DENIED', 'NOT_FOUND']).nullable().default(null),
-  reason: z.string().nullable().default(null),
-});
-export type VkParsingCapability = z.infer<typeof vkParsingCapabilitySchema>;
-
-export const vkParsingFeedPaginationSchema = z.object({
-  limit: z.number().int().min(1).max(100).default(50),
-  offset: z.number().int().min(0).default(0),
-  total: z.number().int().min(0).default(0),
-  hasMore: z.boolean().default(false),
-  nextOffset: z.number().int().min(0).nullable().default(null),
-});
-export type VkParsingFeedPagination = z.infer<typeof vkParsingFeedPaginationSchema>;
-
-export const vkParsingHealthSummarySchema = z.object({
-  chatId: z.string(),
-  generatedAt: z.string().datetime(),
-  vkApiRps: z.number().min(0).default(0),
-  vkApiErrorRate: z.number().min(0).max(1).default(0),
-  sourceCount: z.number().int().min(0).default(0),
-  staleSourceCount: z.number().int().min(0).default(0),
-  importLagSeconds: z.number().int().min(0).nullable().default(null),
-  publishLagSeconds: z.number().int().min(0).nullable().default(null),
-  publishBacklogAgeSeconds: z.number().int().min(0).nullable().default(null),
-  publishBacklog: z.number().int().min(0).default(0),
-  staleSyncLockCount: z.number().int().min(0).default(0),
-  circuitOpenSourceCount: z.number().int().min(0).default(0),
-  importSuccessRate: z.number().min(0).max(1).default(1),
-  p95SyncDurationMs: z.number().int().min(0).nullable().default(null),
-  mediaFailureRatio: z.number().min(0).max(1).default(0),
-  recentErrors: z
-    .array(
-      z.object({
-        code: z.string(),
-        count: z.number().int().min(0),
-      }),
-    )
-    .default([]),
-});
-export type VkParsingHealthSummary = z.infer<typeof vkParsingHealthSummarySchema>;
-
-export const vkParsingFeedSchema = z.object({
-  capabilities: vkParsingCapabilitySchema.default({
-    enabled: false,
-    canUse: false,
-    reasonCode: null,
-    reason: null,
-  }),
-  settings: vkParsingSettingsSchema.default({
-    chatId: '',
-    autoPublishEnabled: false,
-    autoPublishEnabledAt: null,
-    autoPublishKillSwitchEnabled: false,
-    stripLinksEnabled: false,
-    skipAdsEnabled: false,
-    appendChannelLinkEnabled: false,
-    channelLinkText: VK_PARSING_DEFAULT_CHANNEL_LINK_TEXT,
-    schedulerTimezone: 'Europe/Moscow',
-    quietHoursStart: null,
-    quietHoursEnd: null,
-    workHoursStart: '09:00',
-    workHoursEnd: '22:00',
-    distributeEvenlyEnabled: true,
-    roundRobinEnabled: true,
-    circuitBreakerEnabled: true,
-    circuitBreakerWindowMinutes: 10,
-    circuitBreakerPostLimit: 10,
-    updatedAt: null,
-  }),
-  sources: z.array(vkParsingSourceSchema).default([]),
-  posts: z.array(vkParsingPostSchema).default([]),
-  queue: z.array(vkParsingPostSchema).default([]),
-  auditEvents: z
-    .array(
-      z.object({
-        id: z.string(),
-        action: z.string(),
-        actorUserId: z.string(),
-        payload: z.record(z.string(), z.unknown()).default({}),
-        createdAt: z.string().datetime(),
-      }),
-    )
-    .default([]),
-  pagination: vkParsingFeedPaginationSchema.default({
-    limit: 50,
-    offset: 0,
-    total: 0,
-    hasMore: false,
-    nextOffset: null,
-  }),
-  summary: vkParsingHealthSummarySchema.nullable().default(null),
-});
-export type VkParsingFeed = z.infer<typeof vkParsingFeedSchema>;
-
-export const vkParsingFeedQuerySchema = z.object({
-  status: vkParsingPostFilterStatusSchema.default('ALL'),
-  sourceId: z.string().trim().min(1).optional(),
-  limit: z.coerce.number().int().min(1).max(100).default(50),
-  offset: z.coerce.number().int().min(0).default(0),
-});
-export type VkParsingFeedQuery = z.infer<typeof vkParsingFeedQuerySchema>;
-
-export const updateVkParsingSettingsRequestSchema = z
-  .object({
-    autoPublishEnabled: z.boolean().optional(),
-    autoPublishKillSwitchEnabled: z.boolean().optional(),
-    stripLinksEnabled: z.boolean().optional(),
-    skipAdsEnabled: z.boolean().optional(),
-    appendChannelLinkEnabled: z.boolean().optional(),
-    channelLinkText: z.string().trim().max(VK_PARSING_MAX_CHANNEL_LINK_TEXT_LENGTH).optional(),
-    schedulerTimezone: z.string().trim().min(1).max(64).optional(),
-    quietHoursStart: vkParsingTimeOfDaySchema.nullable().optional(),
-    quietHoursEnd: vkParsingTimeOfDaySchema.nullable().optional(),
-    workHoursStart: vkParsingTimeOfDaySchema.optional(),
-    workHoursEnd: vkParsingTimeOfDaySchema.optional(),
-    distributeEvenlyEnabled: z.boolean().optional(),
-    roundRobinEnabled: z.boolean().optional(),
-    circuitBreakerEnabled: z.boolean().optional(),
-    circuitBreakerWindowMinutes: z.number().int().min(1).max(1440).optional(),
-    circuitBreakerPostLimit: z.number().int().min(1).max(500).optional(),
-  })
-  .refine((value) => Object.keys(value).length > 0, {
-    message: 'Передайте хотя бы одну настройку.',
-  });
-export type UpdateVkParsingSettingsRequest = z.infer<typeof updateVkParsingSettingsRequestSchema>;
-
-export const updateVkParsingSourceRequestSchema = z
-  .object({
-    importEnabled: z.boolean().optional(),
-    autoPublishEnabled: z.boolean().optional(),
-    publishIntervalMinutes: z.number().int().min(5).max(10080).optional(),
-    dailyLimit: z.number().int().min(1).max(500).optional(),
-    minPublishIntervalMinutes: z.number().int().min(0).max(1440).optional(),
-    publishMode: vkParsingPublishModeSchema.optional(),
-    priority: vkParsingSourcePrioritySchema.optional(),
-    quietHoursStart: vkParsingTimeOfDaySchema.nullable().optional(),
-    quietHoursEnd: vkParsingTimeOfDaySchema.nullable().optional(),
-  })
-  .refine((value) => Object.keys(value).length > 0, {
-    message: 'Передайте хотя бы одну настройку.',
-  });
-export type UpdateVkParsingSourceRequest = z.infer<typeof updateVkParsingSourceRequestSchema>;
-
-export const bulkUpdateVkParsingSourcesRequestSchema = z.object({
-  sourceIds: z.array(z.string().min(1)).min(1).max(50),
-  preset: vkParsingBulkPresetSchema,
-});
-export type BulkUpdateVkParsingSourcesRequest = z.infer<
-  typeof bulkUpdateVkParsingSourcesRequestSchema
->;
-
-export const addVkParsingSourceRequestSchema = z.object({
-  url: z.string().trim().min(2).max(512),
-});
-export type AddVkParsingSourceRequest = z.infer<typeof addVkParsingSourceRequestSchema>;
-
-export const publishVkParsingPostRequestSchema = z
-  .object({
-    text: z.string().max(VK_PARSING_MAX_PUBLISH_TEXT_LENGTH).default(''),
-    textFormat: broadcastTextFormatSchema.default('plain'),
-    photoUrls: z.array(z.string().url()).max(VK_PARSING_MAX_PHOTOS).default([]),
-    videoUrls: z.array(z.string().url()).max(VK_PARSING_MAX_VIDEOS).default([]),
-    linkUrls: z.array(z.string().url()).max(VK_PARSING_MAX_LINKS).default([]),
-  })
-  .superRefine((value, ctx) => {
-    if (
-      value.text.trim().length === 0 &&
-      value.photoUrls.length === 0 &&
-      value.videoUrls.length === 0 &&
-      value.linkUrls.length === 0
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['text'],
-        message: 'Добавьте текст, фото, видео или ссылку.',
-      });
-    }
-    if (value.photoUrls.length > 0 && value.videoUrls.length > 0) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['videoUrls'],
-        message: 'В одном VK-посте можно опубликовать либо фото, либо видео.',
-      });
-    }
-  });
-export type PublishVkParsingPostRequest = z.infer<typeof publishVkParsingPostRequestSchema>;
-
-export const scheduleVkParsingPostRequestSchema = z.object({
-  scheduledAt: z.string().datetime(),
-});
-export type ScheduleVkParsingPostRequest = z.infer<typeof scheduleVkParsingPostRequestSchema>;
-
-export const vkParsingDryRunResultSchema = z.object({
-  chatId: z.string(),
-  sourceId: z.string().nullable().default(null),
-  generatedAt: z.string().datetime(),
-  globalEnabled: z.boolean().default(false),
-  killSwitchEnabled: z.boolean().default(false),
-  baselineAt: z.string().datetime().nullable().default(null),
-  eligibleNow: z.number().int().min(0).default(0),
-  latestImportedVkPublishedAt: z.string().datetime().nullable().default(null),
-  sourcesWithoutSuccessfulSync: z.number().int().min(0).default(0),
-});
-export type VkParsingDryRunResult = z.infer<typeof vkParsingDryRunResultSchema>;
-
-export const rollbackVkParsingRequestSchema = z.object({
-  since: z.string().datetime(),
-  until: z.string().datetime(),
-  sourceId: z.string().trim().min(1).optional(),
-  deleteMessages: z.boolean().default(false),
-});
-export type RollbackVkParsingRequest = z.infer<typeof rollbackVkParsingRequestSchema>;
-
-export const rollbackVkParsingResultSchema = z.object({
-  matched: z.number().int().min(0).default(0),
-  deleted: z.number().int().min(0).default(0),
-  failed: z.number().int().min(0).default(0),
-  posts: z.array(vkParsingPostSchema).default([]),
-});
-export type RollbackVkParsingResult = z.infer<typeof rollbackVkParsingResultSchema>;
-
-export const vkParsingRefreshResultSchema = vkParsingFeedSchema.extend({
-  imported: z.number().int().min(0).default(0),
-  queued: z.number().int().min(0).default(0),
-});
-export type VkParsingRefreshResult = z.infer<typeof vkParsingRefreshResultSchema>;
-
-export const publishVkParsingPostResultSchema = z.object({
-  post: vkParsingPostSchema,
-  messageId: z.string(),
-  url: z.string().url().nullable(),
-});
-export type PublishVkParsingPostResult = z.infer<typeof publishVkParsingPostResultSchema>;
-
-export const retryVkParsingPostResultSchema = z.object({
-  post: vkParsingPostSchema,
-  queued: z.number().int().min(0).default(0),
-});
-export type RetryVkParsingPostResult = z.infer<typeof retryVkParsingPostResultSchema>;
-
-export const safetyDeskReviewStatusSchema = z.enum(['REVIEW', 'APPROVED', 'REJECTED', 'BLOCKED']);
-export type SafetyDeskReviewStatus = z.infer<typeof safetyDeskReviewStatusSchema>;
-
-export const safetyDeskRiskLevelSchema = z.enum(['LOW', 'MEDIUM', 'HIGH', 'BLOCKED']);
-export type SafetyDeskRiskLevel = z.infer<typeof safetyDeskRiskLevelSchema>;
-
-export const safetyDeskQueueSourceSchema = z.enum(['VK_REVIEW']);
-export type SafetyDeskQueueSource = z.infer<typeof safetyDeskQueueSourceSchema>;
-
-export const safetyDeskCheckSchema = z.object({
-  label: z.string(),
-  state: z.enum(['PASSED', 'WARNING', 'BLOCKED']),
-});
-export type SafetyDeskCheck = z.infer<typeof safetyDeskCheckSchema>;
-
-export const safetyDeskQueueItemSchema = z.object({
-  id: z.string(),
-  source: safetyDeskQueueSourceSchema,
-  sourceId: z.string(),
-  chatId: z.string(),
-  entityTitle: z.string(),
-  sourceTitle: z.string(),
-  author: z.string(),
-  status: safetyDeskReviewStatusSchema,
-  risk: safetyDeskRiskLevelSchema,
-  title: z.string(),
-  text: z.string(),
-  textFormat: broadcastTextFormatSchema.default('plain'),
-  previewHtml: z.string().default(''),
-  domains: z.array(z.string()).default([]),
-  photoUrls: z.array(z.string().url()).default([]),
-  videoUrls: z.array(z.string().url()).max(VK_PARSING_MAX_VIDEOS).default([]),
-  linkUrls: z.array(z.string().url()).default([]),
-  originalUrl: z.string().url().nullable().default(null),
-  scheduledAt: z.string().datetime().nullable().default(null),
-  createdAt: z.string().datetime(),
-  updatedAt: z.string().datetime(),
-  reasons: z.array(z.string()).default([]),
-  checks: z.array(safetyDeskCheckSchema).default([]),
-});
-export type SafetyDeskQueueItem = z.infer<typeof safetyDeskQueueItemSchema>;
-
-export const safetyDeskAuditEntrySchema = z.object({
-  id: z.string(),
-  itemId: z.string().nullable().default(null),
-  action: z.string(),
-  title: z.string(),
-  createdAt: z.string().datetime(),
-});
-export type SafetyDeskAuditEntry = z.infer<typeof safetyDeskAuditEntrySchema>;
-
-export const safetyDeskSummarySchema = z.object({
-  review: z.number().int().min(0).default(0),
-  approved: z.number().int().min(0).default(0),
-  rejected: z.number().int().min(0).default(0),
-  blocked: z.number().int().min(0).default(0),
-  servicePosts: z.number().int().min(0).default(0),
-});
-export type SafetyDeskSummary = z.infer<typeof safetyDeskSummarySchema>;
-
-export const safetyDeskQueueResponseSchema = z.object({
-  generatedAt: z.string().datetime(),
-  items: z.array(safetyDeskQueueItemSchema).default([]),
-  summary: safetyDeskSummarySchema,
-  audit: z.array(safetyDeskAuditEntrySchema).default([]),
-});
-export type SafetyDeskQueueResponse = z.infer<typeof safetyDeskQueueResponseSchema>;
-
-export const safetyDeskDecisionRequestSchema = z.object({
-  reason: z.string().trim().max(500).optional(),
-});
-export type SafetyDeskDecisionRequest = z.infer<typeof safetyDeskDecisionRequestSchema>;
-
-export const safetyDeskApproveAllRequestSchema = z.object({
-  itemIds: z.array(z.string().trim().min(1)).min(1).max(100),
-  reason: z.string().trim().max(500).optional(),
-});
-export type SafetyDeskApproveAllRequest = z.infer<typeof safetyDeskApproveAllRequestSchema>;
-
-export const safetyDeskDecisionResponseSchema = z.object({
-  item: safetyDeskQueueItemSchema.nullable().default(null),
-  queue: safetyDeskQueueResponseSchema,
-  message: z.string(),
-});
-export type SafetyDeskDecisionResponse = z.infer<typeof safetyDeskDecisionResponseSchema>;
-
-export const supportRequestStatusSchema = z.enum(['NEW', 'CLOSED']);
-export type SupportRequestStatus = z.infer<typeof supportRequestStatusSchema>;
-
-export const supportRequestAttachmentSchema = z.object({
-  type: z.enum(['image', 'file', 'video', 'unknown']),
-  fileName: z.string().nullable().default(null),
-  mimeType: z.string().nullable().default(null),
-  url: z.string().url().nullable().default(null),
-  payload: z.record(z.string(), z.unknown()).nullable().default(null),
-});
-export type SupportRequestAttachment = z.infer<typeof supportRequestAttachmentSchema>;
-
-export const supportRequestItemSchema = z.object({
-  id: z.string(),
-  status: supportRequestStatusSchema,
-  botId: z.string().nullable().default(null),
-  privateChatId: z.string(),
-  userId: z.string(),
-  userName: z.string().nullable().default(null),
-  messageId: z.string().nullable().default(null),
-  text: z.string(),
-  attachments: z.array(supportRequestAttachmentSchema).default([]),
-  createdAt: z.string().datetime(),
-  updatedAt: z.string().datetime(),
-  closedAt: z.string().datetime().nullable().default(null),
-});
-export type SupportRequestItem = z.infer<typeof supportRequestItemSchema>;
-
-export const supportRequestSummarySchema = z.object({
-  new: z.number().int().min(0).default(0),
-  closed: z.number().int().min(0).default(0),
-});
-export type SupportRequestSummary = z.infer<typeof supportRequestSummarySchema>;
-
-export const supportRequestQueueResponseSchema = z.object({
-  generatedAt: z.string().datetime(),
-  items: z.array(supportRequestItemSchema).default([]),
-  summary: supportRequestSummarySchema,
-});
-export type SupportRequestQueueResponse = z.infer<typeof supportRequestQueueResponseSchema>;
-
-export const supportRequestDecisionResponseSchema = z.object({
-  item: supportRequestItemSchema.nullable().default(null),
-  queue: supportRequestQueueResponseSchema,
-  message: z.string(),
-});
-export type SupportRequestDecisionResponse = z.infer<typeof supportRequestDecisionResponseSchema>;
 
 export const chatSettingsScreenResponseSchema = z.object({
   settings: chatSettingsSchema,

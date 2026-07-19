@@ -6,7 +6,6 @@ import {
   safetyDeskDeleteRuntimeResponseSchema,
   safetyDeskRetryDeleteIntentRequestSchema,
   safetyDeskQueueResponseSchema,
-  VK_PARSING_DEFAULT_CHANNEL_LINK_TEXT,
   type SafetyDeskAuditEntry,
   type SafetyDeskDecisionResponse,
   type SafetyDeskDeleteCapabilityReason,
@@ -20,7 +19,8 @@ import {
   type SafetyDeskQueueItem,
   type SafetyDeskQueueResponse,
   type SafetyDeskRiskLevel,
-} from '@maxim/contracts';
+} from '@maxim/contracts/safety-desk';
+import { VK_PARSING_DEFAULT_CHANNEL_LINK_TEXT } from '@maxim/contracts';
 import {
   BadRequestException,
   ConflictException,
@@ -986,9 +986,7 @@ export class SafetyDeskService {
     const reviewTextFormat =
       prepared?.textFormat ?? (post.textFormat === 'markdown' ? 'markdown' : 'plain');
     const visibleText =
-      reviewTextFormat === 'markdown'
-        ? stripSupportedMarkdownToPlainText(reviewText)
-        : reviewText;
+      reviewTextFormat === 'markdown' ? stripSupportedMarkdownToPlainText(reviewText) : reviewText;
     const inlineLinkUrls = [
       ...(reviewTextFormat === 'markdown' ? extractSupportedMarkdownLinks(reviewText) : []),
       ...extractUrlsFromText(visibleText).map((url) => this.normalizeReviewUrl(url)),
@@ -1193,7 +1191,8 @@ export class SafetyDeskService {
     prepared: PreparedVkPublishPayload | null,
   ): string {
     const text = prepared?.text ?? post.text;
-    const textFormat = prepared?.textFormat ?? (post.textFormat === 'markdown' ? 'markdown' : 'plain');
+    const textFormat =
+      prepared?.textFormat ?? (post.textFormat === 'markdown' ? 'markdown' : 'plain');
     const baseHtml = text.trim()
       ? textFormat === 'markdown'
         ? renderSupportedMarkdownAsHtml(text, { linkMode: 'underline' })

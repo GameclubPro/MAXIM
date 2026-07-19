@@ -1,0 +1,341 @@
+{
+  "schemaVersion": 1,
+  "files": {
+    "apps/miniapp/src/components/bot-speech-message-editor-sheet.css": {
+      "colors": 46,
+      "important": 2
+    },
+    "apps/miniapp/src/components/broadcast-buttons-sheet.css": {
+      "colors": 22,
+      "important": 0
+    },
+    "apps/miniapp/src/components/broadcast-content-composer.css": {
+      "colors": 25,
+      "important": 0
+    },
+    "apps/miniapp/src/components/broadcast-link-buttons-editor.css": {
+      "colors": 42,
+      "important": 0
+    },
+    "apps/miniapp/src/components/broadcast-schedule-planner.css": {
+      "colors": 230,
+      "important": 0
+    },
+    "apps/miniapp/src/components/broadcast-studio-header.css": {
+      "colors": 29,
+      "important": 0
+    },
+    "apps/miniapp/src/components/channel-dialog-notification-sheet.css": {
+      "colors": 1,
+      "important": 0
+    },
+    "apps/miniapp/src/components/chat-onboarding-command.css": {
+      "colors": 0,
+      "important": 0
+    },
+    "apps/miniapp/src/components/chat-onboarding-section.css": {
+      "colors": 1,
+      "important": 0
+    },
+    "apps/miniapp/src/components/dashboard/chat-participant-sheet-theme.css": {
+      "colors": 5,
+      "important": 0
+    },
+    "apps/miniapp/src/components/dashboard/chat-participant-sheet.css": {
+      "colors": 81,
+      "important": 0
+    },
+    "apps/miniapp/src/components/dashboard/chat-participants-roster-theme.css": {
+      "colors": 11,
+      "important": 0
+    },
+    "apps/miniapp/src/components/dashboard/chat-participants-roster.css": {
+      "colors": 79,
+      "important": 0
+    },
+    "apps/miniapp/src/components/dashboard/dashboard-hero.css": {
+      "colors": 15,
+      "important": 0
+    },
+    "apps/miniapp/src/components/dashboard/membership-activity-feed-theme.css": {
+      "colors": 3,
+      "important": 0
+    },
+    "apps/miniapp/src/components/dashboard/membership-activity-feed.css": {
+      "colors": 50,
+      "important": 0
+    },
+    "apps/miniapp/src/components/dashboard/stats-metric-card.css": {
+      "colors": 16,
+      "important": 0
+    },
+    "apps/miniapp/src/components/handoff.css": {
+      "colors": 49,
+      "important": 0
+    },
+    "apps/miniapp/src/components/managed-broadcast-delivery-meter.css": {
+      "colors": 12,
+      "important": 0
+    },
+    "apps/miniapp/src/components/managed-broadcast-history-card.css": {
+      "colors": 34,
+      "important": 0
+    },
+    "apps/miniapp/src/components/managed-entity-access-diagnostics.css": {
+      "colors": 0,
+      "important": 0
+    },
+    "apps/miniapp/src/components/managed-poll-workspace.css": {
+      "colors": 87,
+      "important": 0
+    },
+    "apps/miniapp/src/components/max-markdown-editor.css": {
+      "colors": 14,
+      "important": 0
+    },
+    "apps/miniapp/src/components/max-markdown-preview.css": {
+      "colors": 1,
+      "important": 0
+    },
+    "apps/miniapp/src/components/max-rich-text-editor.css": {
+      "colors": 15,
+      "important": 0
+    },
+    "apps/miniapp/src/components/message-limits-blocked-word-presets.css": {
+      "colors": 47,
+      "important": 0
+    },
+    "apps/miniapp/src/components/publication-workspace-handoff.css": {
+      "colors": 0,
+      "important": 0
+    },
+    "apps/miniapp/src/components/required-subscription-source-picker.css": {
+      "colors": 45,
+      "important": 1
+    },
+    "apps/miniapp/src/components/ui/action-confirm-sheet.css": {
+      "colors": 24,
+      "important": 0
+    },
+    "apps/miniapp/src/components/ui/date-field.css": {
+      "colors": 0,
+      "important": 0
+    },
+    "apps/miniapp/src/components/ui/segmented-control.css": {
+      "colors": 1,
+      "important": 0
+    },
+    "apps/miniapp/src/components/ui/settings-overview-search.css": {
+      "colors": 2,
+      "important": 0
+    },
+    "apps/miniapp/src/components/ui/settings-section-toggle.css": {
+      "colors": 46,
+      "important": 0
+    },
+    "apps/miniapp/src/components/ui/time-field.css": {
+      "colors": 54,
+      "important": 0
+    },
+    "apps/miniapp/src/components/ui/toast.css": {
+      "colors": 12,
+      "important": 0
+    },
+    "apps/miniapp/src/features/publications/legacy-publications-panel.css": {
+      "colors": 0,
+      "important": 0
+    },
+    "apps/miniapp/src/features/publications/publication-retry-sheet.css": {
+      "colors": 0,
+      "important": 0
+    },
+    "apps/miniapp/src/features/publications/publication-workbench.css": {
+      "colors": 0,
+      "important": 0
+    },
+    "apps/miniapp/src/pages/chats-page-native.css": {
+      "colors": 9,
+      "important": 0
+    },
+    "apps/miniapp/src/pages/chats-page.css": {
+      "colors": 261,
+      "important": 0
+    },
+    "apps/miniapp/src/pages/settings-page.css": {
+      "colors": 0,
+      "important": 0
+    },
+    "apps/miniapp/src/pages/settings/settings-apply-target-sheet.css": {
+      "colors": 22,
+      "important": 0
+    },
+    "apps/miniapp/src/pages/settings/settings-duplicate-stage.css": {
+      "colors": 3,
+      "important": 0
+    },
+    "apps/miniapp/src/pages/settings/settings-word-banlist.css": {
+      "colors": 17,
+      "important": 0
+    },
+    "apps/miniapp/src/styles.css": {
+      "colors": 0,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/base.css": {
+      "colors": 1,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/broadcast-autopost-polish.css": {
+      "colors": 105,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/broadcast-studio-base.css": {
+      "colors": 162,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/broadcast-studio.css": {
+      "colors": 409,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/channel-dialog-comments.css": {
+      "colors": 799,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/channel-dialog-image-viewer.css": {
+      "colors": 19,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/channel-dialog-native-comments.css": {
+      "colors": 199,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/channel-dialog-suggest.css": {
+      "colors": 126,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/channel-stats-executive.css": {
+      "colors": 16,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/channel-stats-route-polish.css": {
+      "colors": 0,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/channel-stats.css": {
+      "colors": 299,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/components.css": {
+      "colors": 204,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/dashboard-events.css": {
+      "colors": 375,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/design-preview.css": {
+      "colors": 18,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/fonts.css": {
+      "colors": 0,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/giveaway-page.css": {
+      "colors": 487,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/layout.css": {
+      "colors": 13,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/legal-page.css": {
+      "colors": 17,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/managed-giveaway.css": {
+      "colors": 255,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/motion.css": {
+      "colors": 0,
+      "important": 3
+    },
+    "apps/miniapp/src/styles/publications-page.css": {
+      "colors": 24,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/settings-admin-commands.css": {
+      "colors": 0,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/settings-drilldown-core.css": {
+      "colors": 155,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/settings-drilldown-polish.css": {
+      "colors": 71,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/settings-duration-editor.css": {
+      "colors": 22,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/settings-experience.css": {
+      "colors": 0,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/settings-home-compact.css": {
+      "colors": 27,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/settings-home-route-polish.css": {
+      "colors": 91,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/settings-interaction-polish.css": {
+      "colors": 6,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/settings-link-allowlist.css": {
+      "colors": 76,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/settings-native-controls.css": {
+      "colors": 44,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/settings-native-polish.css": {
+      "colors": 0,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/settings-policy-controls.css": {
+      "colors": 22,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/settings-route-polish.css": {
+      "colors": 341,
+      "important": 2
+    },
+    "apps/miniapp/src/styles/settings-rules-studio.css": {
+      "colors": 22,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/settings-tile-grid.css": {
+      "colors": 3,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/statistics-experience.css": {
+      "colors": 0,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/tokens.css": {
+      "colors": 0,
+      "important": 0
+    },
+    "apps/miniapp/src/styles/vk-parsing.css": {
+      "colors": 45,
+      "important": 0
+    }
+  }
+}

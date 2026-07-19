@@ -33,10 +33,12 @@ function readLegacyPrimaryAdminCommandName(value: unknown, fallback: string): st
   if (typeof value !== 'string') {
     return fallback;
   }
-  return value
-    .split(',')
-    .map((item) => item.trim().replace(/\s+/g, ' '))
-    .find((item) => item.length > 0) ?? fallback;
+  return (
+    value
+      .split(',')
+      .map((item) => item.trim().replace(/\s+/g, ' '))
+      .find((item) => item.length > 0) ?? fallback
+  );
 }
 
 export type ChatSettingsCurrentState = Pick<
@@ -86,16 +88,9 @@ export function areBroadcastButtonsEqual(
 }
 
 export function isRequiredSubscriptionCurrentlyActive(
-  settings: Pick<
-    ChatSettings,
-    | 'requiredSubscriptionEnabled'
-    | 'requiredSubscriptionChannelIds'
-  >,
+  settings: Pick<ChatSettings, 'requiredSubscriptionEnabled' | 'requiredSubscriptionChannelIds'>,
 ): boolean {
-  return (
-    settings.requiredSubscriptionEnabled &&
-    settings.requiredSubscriptionChannelIds.length > 0
-  );
+  return settings.requiredSubscriptionEnabled && settings.requiredSubscriptionChannelIds.length > 0;
 }
 
 function normalizeRequiredSubscriptionSettings(settings: ChatSettings): ChatSettings {
@@ -314,9 +309,7 @@ export function normalizeChatSettings(
   const normalized = normalizeNightModeSettings(
     normalizeBotSpeechMedia(
       normalizeInvitationAccessSettings(
-        normalizeMessageLimitsBlockedLists(
-          normalizeRequiredSubscriptionSettings(settings),
-        ),
+        normalizeMessageLimitsBlockedLists(normalizeRequiredSubscriptionSettings(settings)),
       ),
     ),
     currentState,

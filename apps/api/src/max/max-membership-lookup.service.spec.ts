@@ -203,9 +203,10 @@ describe('MaxMembershipLookupService', () => {
     });
     const maxClient = {
       hasChatMember: jest.fn(),
-      getChatMembersAccess: jest.fn().mockResolvedValueOnce(new Map()).mockRejectedValueOnce(
-        timeoutError,
-      ),
+      getChatMembersAccess: jest
+        .fn()
+        .mockResolvedValueOnce(new Map())
+        .mockRejectedValueOnce(timeoutError),
     };
     const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
 

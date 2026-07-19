@@ -58,10 +58,7 @@ export async function selectLogsDashboardMembershipSummary(
       COALESCE(SUM(left_users), 0) AS left_users
     FROM membership_edge_rows
   `;
-  const [rollupRows, edgeRows] = await Promise.all([
-    rollupRowsPromise,
-    edgeRowsPromise,
-  ]);
+  const [rollupRows, edgeRows] = await Promise.all([rollupRowsPromise, edgeRowsPromise]);
 
   const rollupSource = rollupRows[0] ?? { joined_users: 0, left_users: 0 };
   const edgeSource = edgeRows[0] ?? { joined_users: 0, left_users: 0 };

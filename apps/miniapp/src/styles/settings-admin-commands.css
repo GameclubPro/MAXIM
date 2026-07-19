@@ -39,8 +39,7 @@
     border: 1px solid var(--border-subtle);
     border-radius: 8px;
     background:
-      linear-gradient(180deg, var(--surface-card), var(--surface-card-muted)),
-      var(--surface-card);
+      linear-gradient(180deg, var(--surface-card), var(--surface-card-muted)), var(--surface-card);
     box-shadow: var(--shadow-sm);
   }
 

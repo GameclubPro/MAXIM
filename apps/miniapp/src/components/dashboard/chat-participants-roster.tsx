@@ -246,8 +246,7 @@ export function ChatParticipantsRoster({
   const showSearch = true;
   const showEmptySearch =
     !error && !isReloading && !isLoadingMore && !hasMore && isSearching && items.length === 0;
-  const showEmptyRoster =
-    !error && !isReloading && !isSearching && !hasMore && items.length === 0;
+  const showEmptyRoster = !error && !isReloading && !isSearching && !hasMore && items.length === 0;
   const roleOptions: Array<{ value: ChatParticipantRoleFilter; label: string }> = [
     { value: 'all', label: 'Все' },
     { value: 'admins', label: 'Админы' },

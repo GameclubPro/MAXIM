@@ -56,12 +56,13 @@ describe('private control handoff start payloads', () => {
 
   it('rejects malformed giveaway handoff payloads', () => {
     expect(parsePrivateGiveawayHandoffStartPayload(null, [botToken])).toBeNull();
-    expect(parsePrivateGiveawayHandoffStartPayload(GIVEAWAY_HANDOFF_START_PAYLOAD, [botToken]))
-      .toBeNull();
+    expect(
+      parsePrivateGiveawayHandoffStartPayload(GIVEAWAY_HANDOFF_START_PAYLOAD, [botToken]),
+    ).toBeNull();
     expect(parsePrivateGiveawayHandoffStartPayload('not-giveaway', [botToken])).toBeNull();
-    expect(parsePrivateGiveawayHandoffStartPayload(`${GIVEAWAY_HANDOFF_START_PREFIX}bad`, [
-      botToken,
-    ])).toBeNull();
+    expect(
+      parsePrivateGiveawayHandoffStartPayload(`${GIVEAWAY_HANDOFF_START_PREFIX}bad`, [botToken]),
+    ).toBeNull();
     expect(
       parsePrivateGiveawayHandoffStartPayload(
         buildLegacyPayload(GIVEAWAY_HANDOFF_START_PREFIX, {
@@ -135,9 +136,9 @@ describe('private control handoff start payloads', () => {
   it('rejects malformed profile mention payloads', () => {
     expect(parsePrivateProfileMentionStartPayload(null, [botToken])).toBeNull();
     expect(parsePrivateProfileMentionStartPayload('not-profile', [botToken])).toBeNull();
-    expect(parsePrivateProfileMentionStartPayload(`${PROFILE_MENTION_START_PREFIX}bad`, [
-      botToken,
-    ])).toBeNull();
+    expect(
+      parsePrivateProfileMentionStartPayload(`${PROFILE_MENTION_START_PREFIX}bad`, [botToken]),
+    ).toBeNull();
     expect(
       parsePrivateProfileMentionStartPayload(
         buildLegacyPayload(PROFILE_MENTION_START_PREFIX, {

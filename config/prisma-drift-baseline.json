@@ -1,0 +1,77 @@
+{
+  "format": 1,
+  "normalizedSha256": "d12bfd089ad289f3d5cb6fa0b5229b385442b736ed1f0eab8c3fab177d2094ee",
+  "classifications": {
+    "prisma-unrepresentable": {
+      "description": "PostgreSQL INCLUDE columns on these covering indexes are not represented by the current Prisma schema syntax.",
+      "remediation": "Keep the exact reviewed operations until Prisma can model the covering indexes without losing INCLUDE columns."
+    },
+    "schema-alignment-debt": {
+      "description": "Raw SQL retained database defaults and TIMESTAMPTZ semantics that Prisma can represent but the current schema does not declare.",
+      "remediation": "Align @default and native-type annotations in a dedicated compatibility change, then remove the resolved operations."
+    },
+    "missing-migration-debt": {
+      "description": "A rollback-preserved legacy column from 20260319120000 is omitted by the runtime schema but has no second-phase drop migration.",
+      "remediation": "Add a new reviewed DROP COLUMN migration after confirming the deployed client remains compatible; never edit the applied migration."
+    }
+  },
+  "operationGroups": [
+    {
+      "classification": "prisma-unrepresentable",
+      "operations": [
+        "-- DropIndex\nDROP INDEX \"global_spammer_candidate_chats_chat_candidate_detected_cover_id\";",
+        "-- DropIndex\nDROP INDEX \"global_spammer_candidates_last_chat_metrics_cover_idx\";",
+        "-- DropIndex\nDROP INDEX \"global_spammer_candidates_last_chat_status_rank_cover_idx\";",
+        "-- DropIndex\nDROP INDEX \"global_spammer_candidates_user_metrics_cover_idx\";",
+        "-- DropIndex\nDROP INDEX \"global_spammer_candidates_user_status_rank_cover_idx\";",
+        "-- DropIndex\nDROP INDEX \"spammer_observations_user_diagnostics_cover_idx\";"
+      ]
+    },
+    {
+      "classification": "schema-alignment-debt",
+      "operations": [
+        "-- AlterTable\nALTER TABLE \"admin_global_spammer_exemptions\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"channel_auto_post_attach_markers\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"channel_posts\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"channel_stats_sync_states\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"chat_bot_memberships\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"chat_participant_moderation_immunities\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"chat_routing_reconcile_requests\" ALTER COLUMN \"requested_at\" SET DATA TYPE TIMESTAMP(3),\nALTER COLUMN \"lease_expires_at\" SET DATA TYPE TIMESTAMP(3);",
+        "-- AlterTable\nALTER TABLE \"chat_rules\" ALTER COLUMN \"updated_at\" DROP DEFAULT;"
+      ]
+    },
+    {
+      "classification": "missing-migration-debt",
+      "operations": [
+        "-- AlterTable\nALTER TABLE \"chat_settings\" DROP COLUMN \"delete_spammers_require_approval\";"
+      ]
+    },
+    {
+      "classification": "schema-alignment-debt",
+      "operations": [
+        "-- AlterTable\nALTER TABLE \"chat_user_display_name_backfill_states\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"chat_user_display_names\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"dialog_notification_subscriptions\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"global_spammer_candidate_chats\" ALTER COLUMN \"last_detected_at\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"global_spammer_candidates\" ALTER COLUMN \"last_detected_at\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"global_spammer_suppressions\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"global_spammers\" ALTER COLUMN \"last_detected_at\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"managed_autopost_materializations\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"managed_autopost_rules\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"managed_broadcasts\" ALTER COLUMN \"buttons\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"managed_entity_access_edges\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"managed_entity_admin_members\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"managed_entity_favorites\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"managed_entity_local_activities\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"managed_giveaway_winner_notifications\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"moderation_delete_intent_reasons\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"moderation_delete_intents\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"spammer_campaign_clusters\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"spammer_graph_signals\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"spammer_observations\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"spammer_user_runtime_profiles\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
+        "-- AlterTable\nALTER TABLE \"support_requests\" ALTER COLUMN \"updated_at\" DROP DEFAULT;"
+      ]
+    }
+  ]
+}

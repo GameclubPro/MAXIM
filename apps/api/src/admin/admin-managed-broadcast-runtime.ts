@@ -331,6 +331,51 @@ import {
   type ManagedBroadcastRetriableAttachmentOptions,
 } from './admin-managed-broadcast-media';
 import {
+  AdminManagedBroadcastMediaRuntime,
+  ManagedBroadcastTransientUploadError,
+  type ManagedBroadcastMediaResolutionOptions,
+  type ManagedBroadcastProgressCallback,
+  type ManagedBroadcastRequestMedia,
+  type ManagedBroadcastTestOptions,
+} from './admin-managed-broadcast-media-runtime';
+import {
+  buildManagedBroadcastLedgerContext,
+  readManagedBroadcastLedgerCommentDialogContext,
+  type ManagedBroadcastCommentDialogReference,
+} from './admin-managed-broadcast-ledger';
+import {
+  buildLegacyManagedBroadcastUpcomingSlots,
+  buildManagedBroadcastCalendarReservationRows,
+  buildManagedBroadcastDeliveryRows,
+  buildManagedBroadcastOccurrenceRows,
+  buildManagedBroadcastTargetPreviewBundle,
+  fallbackManagedBroadcastTargetPreview,
+  getCurrentManagedBroadcastOccurrence,
+  normalizeManagedBroadcastCycleCount,
+  normalizeManagedBroadcastTargetChatIds,
+  parseManagedBroadcastSendAt,
+  parseManagedBroadcastTargetChatIds,
+  planManagedBroadcastSchedule,
+  resolveManagedBroadcastTargetsFromRow as resolveManagedBroadcastTargetsFromRowValue,
+  toLegacyCycleEveryDays,
+} from './admin-managed-broadcast-planner';
+import {
+  buildManagedBroadcastAutoRetryableFailureWhere,
+  buildManagedBroadcastDeliveryActionKey as buildManagedBroadcastDeliveryActionKeyValue,
+  buildManagedBroadcastFailureMessage,
+  buildManagedBroadcastTransientQuarantineMessage,
+  createManagedBroadcastDeliverySnapshot as createManagedBroadcastDeliverySnapshotValue,
+  isManagedBroadcastAutoRetryableDeliveryFailureMessage,
+  isAmbiguousManagedBroadcastSendError,
+  isManagedBroadcastPermanentTargetDeliveryFailure,
+  isManagedBroadcastTransientDeliveryFailureMessage,
+  isManagedBroadcastTransientQuarantineFailureMessage,
+  resolveManagedBroadcastFatalProcessingErrorMessage,
+  resolveManagedBroadcastFatalProcessingFailureMessage,
+  markManagedBroadcastSendPhase,
+  shouldAutoRetryManagedBroadcastDeliveryFailure,
+} from './admin-managed-broadcast-reconciliation';
+import {
   PUBLICATION_MAX_VIDEO_BYTES,
   PUBLICATION_VIDEO_ASSET_ID_FIELD,
   PUBLICATION_VIDEO_INLINE_BASE64_FIELD,
@@ -574,45 +619,11 @@ export type {
   ChannelPublicationEngagementContext,
 } from './admin.service.support';
 
-type ManagedBroadcastCommentDialogReference = {
-  entityType: ManagedEntityType;
-  threadId: string;
-  includeCommentsButton: boolean;
-  includeSuggestButton: boolean;
-  suggestButtonText: string | null;
-  customButtons: BroadcastLinkButton[];
-  autoPostButtonsMode: ChannelSettings['autoPostButtonsMode'] | null;
-  suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'] | null;
-  botId: string | null;
-};
-
 type ManagedBroadcastLease = {
   lockedAt: Date;
   lockToken: string;
   lastHeartbeatAt: Date;
 };
-
-type ManagedBroadcastProgressCallback = () => Promise<void>;
-
-type ManagedBroadcastMediaResolutionOptions = {
-  trustedPublicationTestPayload?: boolean;
-  trustedPublicationVideoMarkers?: boolean;
-};
-
-type ManagedBroadcastTestOptions = ManagedBroadcastMediaResolutionOptions;
-
-type ManagedBroadcastRequestMedia = Pick<
-  SendBroadcastRequest,
-  | 'imageEnabled'
-  | 'imageBase64'
-  | 'imageMimeType'
-  | 'imageFileName'
-  | 'images'
-  | 'mediaType'
-  | 'mediaPayload'
-  | 'mediaMimeType'
-  | 'mediaFileName'
->;
 
 class ManagedBroadcastIdempotencyReplay extends Error {
   constructor(readonly result: SendBroadcastResult) {
@@ -626,13 +637,6 @@ class ManagedBroadcastTestIdempotencyReplay extends Error {
   }
 }
 
-class ManagedBroadcastTransientUploadError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ManagedBroadcastTransientUploadError';
-  }
-}
-
 class ManagedBroadcastPublicationExecutionStopped extends Error {
   constructor() {
     super('Managed broadcast publication execution is no longer active');
@@ -641,7 +645,11 @@ class ManagedBroadcastPublicationExecutionStopped extends Error {
 }
 
 export class AdminManagedBroadcastRuntime {
-  constructor(private readonly context: AdminManagedBroadcastRuntimeContext) {}
+  private readonly mediaRuntime: AdminManagedBroadcastMediaRuntime;
+
+  constructor(private readonly context: AdminManagedBroadcastRuntimeContext) {
+    this.mediaRuntime = new AdminManagedBroadcastMediaRuntime(context);
+  }
 
   private get prisma(): PrismaService {
     return this.context.prisma;
@@ -731,35 +739,6 @@ export class AdminManagedBroadcastRuntime {
 
   private extractMaxApiErrorMessage(error: unknown): string {
     return extractMaxApiErrorMessageValue(error);
-  }
-
-  private markManagedBroadcastSendPhase(error: unknown, sendStarted: boolean): Error {
-    const source = error as { response?: unknown; code?: unknown };
-    const marked =
-      error instanceof Error && Object.isExtensible(error)
-        ? (error as Error & { managedBroadcastSendStarted?: boolean })
-        : (new Error(error instanceof Error ? error.message : String(error), {
-            cause: error,
-          }) as Error & {
-            managedBroadcastSendStarted?: boolean;
-            response?: unknown;
-            code?: unknown;
-          });
-    marked.managedBroadcastSendStarted = sendStarted;
-    if (!('response' in marked) && source?.response !== undefined) {
-      (marked as Error & { response?: unknown }).response = source.response;
-    }
-    if (!('code' in marked) && source?.code !== undefined) {
-      (marked as Error & { code?: unknown }).code = source.code;
-    }
-    return marked;
-  }
-
-  private isAmbiguousManagedBroadcastSendError(error: unknown): boolean {
-    return (
-      (error as { managedBroadcastSendStarted?: unknown })?.managedBroadcastSendStarted === true &&
-      isAmbiguousMaxSendError(error)
-    );
   }
 
   private readObjectPayloadOrNull(value: unknown): Record<string, unknown> | null {
@@ -984,7 +963,7 @@ export class AdminManagedBroadcastRuntime {
                 status: PrismaManagedBroadcastDeliveryStatus.FAILED,
                 attemptCount: { lt: MANAGED_BROADCAST_MAX_AUTO_RETRY_ATTEMPTS },
                 updatedAt: { lte: autoRetryBefore },
-                OR: this.buildManagedBroadcastAutoRetryableFailureWhere(),
+                OR: buildManagedBroadcastAutoRetryableFailureWhere(),
               },
             },
           },
@@ -1264,9 +1243,7 @@ export class AdminManagedBroadcastRuntime {
       from,
       to,
       targetMode,
-      targetChatIds: this.normalizeManagedBroadcastTargetChatIds(
-        readTargetValue(source.targetChatIds),
-      ),
+      targetChatIds: normalizeManagedBroadcastTargetChatIds(readTargetValue(source.targetChatIds)),
     };
   }
 
@@ -1362,7 +1339,7 @@ export class AdminManagedBroadcastRuntime {
     const allTargetChatIds = [
       ...targetChatIds,
       ...broadcastRows.flatMap((row) =>
-        this.parseManagedBroadcastTargetChatIds(row.targetChatIds, row.sourceChatId),
+        parseManagedBroadcastTargetChatIds(row.targetChatIds, row.sourceChatId),
       ),
     ];
     const previewMap = await this.loadManagedBroadcastTargetPreviewMap(
@@ -1383,15 +1360,15 @@ export class AdminManagedBroadcastRuntime {
         const row = occurrence.broadcast;
         const { targetMode, targetChatIds: rowTargetChatIds } =
           this.resolveManagedBroadcastTargetsFromRow(row);
-        const targetPreviewBundle = this.buildManagedBroadcastTargetPreviewBundle(
+        const targetPreviewBundle = buildManagedBroadcastTargetPreviewBundle(
           rowTargetChatIds,
           previewMap,
           fromPrismaEntityType(row.entityType),
         );
-        const overlapChatIds = this.normalizeManagedBroadcastTargetChatIds(
+        const overlapChatIds = normalizeManagedBroadcastTargetChatIds(
           occurrence.overlapChatIds,
         ).filter((chatId) => requestedTargetChatIdSet.has(chatId));
-        const overlapPreviewBundle = this.buildManagedBroadcastTargetPreviewBundle(
+        const overlapPreviewBundle = buildManagedBroadcastTargetPreviewBundle(
           overlapChatIds,
           previewMap,
           fromPrismaEntityType(row.entityType),
@@ -1447,10 +1424,7 @@ export class AdminManagedBroadcastRuntime {
       throw new BadRequestException('Автопостинг не найден.');
     }
 
-    const targetChatIds = this.parseManagedBroadcastTargetChatIds(
-      row.targetChatIds,
-      row.sourceChatId,
-    );
+    const targetChatIds = parseManagedBroadcastTargetChatIds(row.targetChatIds, row.sourceChatId);
     const [snapshot, upcomingSlots, targetPreviewBundle] = await Promise.all([
       this.getManagedBroadcastDeliverySnapshot(row),
       this.getManagedBroadcastUpcomingSlots(row),
@@ -1504,7 +1478,7 @@ export class AdminManagedBroadcastRuntime {
           : undefined,
     });
 
-    const currentOccurrence = this.getCurrentManagedBroadcastOccurrence(existing);
+    const currentOccurrence = getCurrentManagedBroadcastOccurrence(existing);
     const adminLock = await this.claimManagedBroadcastForAdminMutation(
       existing.id,
       currentOccurrence,
@@ -1551,13 +1525,7 @@ export class AdminManagedBroadcastRuntime {
 
     let schedulePlan: ManagedBroadcastSchedulePlan;
     try {
-      schedulePlan = await this.planManagedBroadcastSchedule(
-        sourceChatId,
-        mapManagedEntityTypeToChatEntityType(entityType),
-        request.payload,
-        existing.sentCount,
-        existing.id,
-      );
+      schedulePlan = await planManagedBroadcastSchedule(request.payload, existing.sentCount);
     } catch (error) {
       await this.releaseManagedBroadcastAdminMutationLock(existing.id, adminLock);
       throw error;
@@ -1635,7 +1603,7 @@ export class AdminManagedBroadcastRuntime {
 
           if (schedulePlan.sentCount < schedulePlan.cycleCount) {
             await tx.managedBroadcastDelivery.createMany({
-              data: this.buildManagedBroadcastDeliveryRows(
+              data: buildManagedBroadcastDeliveryRows(
                 existing.id,
                 request.targetChatIds,
                 nextOccurrenceIndex,
@@ -1693,7 +1661,7 @@ export class AdminManagedBroadcastRuntime {
       },
     });
 
-    const updatedTargetChatIds = this.parseManagedBroadcastTargetChatIds(
+    const updatedTargetChatIds = parseManagedBroadcastTargetChatIds(
       updated.targetChatIds,
       updated.sourceChatId,
     );
@@ -1734,7 +1702,7 @@ export class AdminManagedBroadcastRuntime {
       throw new BadRequestException('Автопостинг не найден или уже завершён.');
     }
 
-    const currentOccurrence = this.getCurrentManagedBroadcastOccurrence(existing);
+    const currentOccurrence = getCurrentManagedBroadcastOccurrence(existing);
     const adminLock = await this.claimManagedBroadcastForAdminMutation(
       existing.id,
       currentOccurrence,
@@ -1814,7 +1782,7 @@ export class AdminManagedBroadcastRuntime {
       },
     });
 
-    const canceledTargetChatIds = this.parseManagedBroadcastTargetChatIds(
+    const canceledTargetChatIds = parseManagedBroadcastTargetChatIds(
       canceled.targetChatIds,
       canceled.sourceChatId,
     );
@@ -1851,7 +1819,7 @@ export class AdminManagedBroadcastRuntime {
       throw new BadRequestException('Для повтора нет неуспешного автопостинга.');
     }
 
-    const currentOccurrence = this.getCurrentManagedBroadcastOccurrence(existing);
+    const currentOccurrence = getCurrentManagedBroadcastOccurrence(existing);
     const adminLock = await this.claimManagedBroadcastForAdminMutation(
       existing.id,
       currentOccurrence,
@@ -1916,7 +1884,7 @@ export class AdminManagedBroadcastRuntime {
           },
         });
 
-        const finalizedTargetChatIds = this.parseManagedBroadcastTargetChatIds(
+        const finalizedTargetChatIds = parseManagedBroadcastTargetChatIds(
           finalized.targetChatIds,
           finalized.sourceChatId,
         );
@@ -2009,7 +1977,7 @@ export class AdminManagedBroadcastRuntime {
       },
     });
 
-    const updatedTargetChatIds = this.parseManagedBroadcastTargetChatIds(
+    const updatedTargetChatIds = parseManagedBroadcastTargetChatIds(
       updated.targetChatIds,
       updated.sourceChatId,
     );
@@ -2157,7 +2125,7 @@ export class AdminManagedBroadcastRuntime {
         botId: preparedDelivery.deliveryBotId,
       });
     } catch (error: unknown) {
-      if (this.isAmbiguousManagedBroadcastSendError(error)) {
+      if (isAmbiguousManagedBroadcastSendError(error)) {
         throw new ServiceUnavailableException({
           code: 'BROADCAST_TEST_RESULT_PENDING',
           message: 'Результат тестовой отправки не подтверждён.',
@@ -2207,7 +2175,7 @@ export class AdminManagedBroadcastRuntime {
     let privateChatId = params.privateChatId;
     const attempts =
       Math.max(
-        this.hasRetriableMaxAttachment(params.options)
+        hasRetriableManagedBroadcastAttachment(params.options)
           ? BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length
           : 0,
         BROADCAST_THROTTLE_RETRY_DELAYS_MS.length,
@@ -2245,7 +2213,7 @@ export class AdminManagedBroadcastRuntime {
               },
             );
       } catch (error: unknown) {
-        const phasedError = this.markManagedBroadcastSendPhase(error, sendStarted);
+        const phasedError = markManagedBroadcastSendPhase(error, sendStarted);
         lastError = phasedError;
         if (privateChatId && isPrivateDialogChatUnavailableError(phasedError)) {
           privateChatId = null;
@@ -2261,7 +2229,7 @@ export class AdminManagedBroadcastRuntime {
           throw phasedError;
         }
 
-        await this.sleep(retryDelayMs);
+        await sleep(retryDelayMs);
         attempt += 1;
       }
     }
@@ -2519,10 +2487,7 @@ export class AdminManagedBroadcastRuntime {
       return null;
     }
 
-    const targetChatIds = this.parseManagedBroadcastTargetChatIds(
-      row.targetChatIds,
-      row.sourceChatId,
-    );
+    const targetChatIds = parseManagedBroadcastTargetChatIds(row.targetChatIds, row.sourceChatId);
     const [snapshot, upcomingSlots, targetPreviewBundle] = await Promise.all([
       this.getManagedBroadcastDeliverySnapshot(row),
       this.getManagedBroadcastUpcomingSlots(row),
@@ -2670,9 +2635,8 @@ export class AdminManagedBroadcastRuntime {
         'Legacy direct managed broadcast dispatch is disabled in production',
       );
     }
-    const scheduledAt = this.parseManagedBroadcastSendAt(request.payload.sendAt, {
+    const scheduledAt = parseManagedBroadcastSendAt(request.payload.sendAt, {
       required: false,
-      sourceChatId,
       sentCount: 0,
     });
     const delayMs = scheduledAt ? scheduledAt.getTime() - Date.now() : 0;
@@ -2744,7 +2708,7 @@ export class AdminManagedBroadcastRuntime {
             );
           } else if (
             occurrenceDelayMs === 0 &&
-            this.hasRetriableMaxAttachment(message.messageOptions)
+            hasRetriableManagedBroadcastAttachment(message.messageOptions)
           ) {
             await this.sendBroadcastImageMessageWithRetry(
               chatId,
@@ -2817,7 +2781,7 @@ export class AdminManagedBroadcastRuntime {
       throw new BadRequestException(maxApiMessage || fallbackMessage);
     }
 
-    const legacyCycleEveryDays = this.toLegacyCycleEveryDays(cycleEveryHours);
+    const legacyCycleEveryDays = toLegacyCycleEveryDays(cycleEveryHours);
     await this.prisma.auditLog.create({
       data: {
         chatId: sourceChatId,
@@ -2850,12 +2814,12 @@ export class AdminManagedBroadcastRuntime {
       request.targetChatIds,
       entityType,
     );
-    const sentChatPreviewBundle = this.buildManagedBroadcastTargetPreviewBundle(
+    const sentChatPreviewBundle = buildManagedBroadcastTargetPreviewBundle(
       sentChatIds,
       targetPreviewMap,
       entityType,
     );
-    const failedChatPreviewBundle = this.buildManagedBroadcastTargetPreviewBundle(
+    const failedChatPreviewBundle = buildManagedBroadcastTargetPreviewBundle(
       failedChatIds,
       targetPreviewMap,
       entityType,
@@ -2894,13 +2858,7 @@ export class AdminManagedBroadcastRuntime {
     source: AdminActionSource,
     idempotencyRecordId: string | null = null,
   ): Promise<SendBroadcastResult> {
-    const schedulePlan = await this.planManagedBroadcastSchedule(
-      sourceChatId,
-      mapManagedEntityTypeToChatEntityType(entityType),
-      request.payload,
-      0,
-      null,
-    );
+    const schedulePlan = await planManagedBroadcastSchedule(request.payload, 0);
     const buttonState = this.buildManagedBroadcastButtonState(request.payload.buttons);
     const nextOccurrenceIndex = schedulePlan.sentCount + 1;
     const isCalendarPlanComplete =
@@ -2952,7 +2910,7 @@ export class AdminManagedBroadcastRuntime {
 
       if (schedulePlan.sentCount < schedulePlan.cycleCount) {
         await tx.managedBroadcastDelivery.createMany({
-          data: this.buildManagedBroadcastDeliveryRows(
+          data: buildManagedBroadcastDeliveryRows(
             createdBroadcast.id,
             request.targetChatIds,
             nextOccurrenceIndex,
@@ -3009,7 +2967,7 @@ export class AdminManagedBroadcastRuntime {
       throw new BadRequestException('Автопостинг не найден.');
     }
 
-    const legacyCycleEveryDays = this.toLegacyCycleEveryDays(schedulePlan.cycleEveryHours);
+    const legacyCycleEveryDays = toLegacyCycleEveryDays(schedulePlan.cycleEveryHours);
     await this.prisma.auditLog.create({
       data: {
         chatId: sourceChatId,
@@ -3040,12 +2998,12 @@ export class AdminManagedBroadcastRuntime {
       request.targetChatIds,
       entityType,
     );
-    const sentChatPreviewBundle = this.buildManagedBroadcastTargetPreviewBundle(
+    const sentChatPreviewBundle = buildManagedBroadcastTargetPreviewBundle(
       occurrence.sentChatIds,
       targetPreviewMap,
       entityType,
     );
-    const failedChatPreviewBundle = this.buildManagedBroadcastTargetPreviewBundle(
+    const failedChatPreviewBundle = buildManagedBroadcastTargetPreviewBundle(
       occurrence.failedChatIds,
       targetPreviewMap,
       entityType,
@@ -3105,7 +3063,7 @@ export class AdminManagedBroadcastRuntime {
         });
         return {
           status: row?.status ?? PrismaManagedBroadcastStatus.FAILED,
-          currentOccurrence: row ? this.getCurrentManagedBroadcastOccurrence(row) : 1,
+          currentOccurrence: row ? getCurrentManagedBroadcastOccurrence(row) : 1,
           sentChatIds: [],
           failedChatIds: [],
           pendingChatIds: [],
@@ -3133,7 +3091,7 @@ export class AdminManagedBroadcastRuntime {
       });
       return {
         status: row?.status ?? PrismaManagedBroadcastStatus.FAILED,
-        currentOccurrence: row ? this.getCurrentManagedBroadcastOccurrence(row) : 1,
+        currentOccurrence: row ? getCurrentManagedBroadcastOccurrence(row) : 1,
         sentChatIds: [],
         failedChatIds: [],
         pendingChatIds: [],
@@ -3143,7 +3101,7 @@ export class AdminManagedBroadcastRuntime {
       };
     }
 
-    const currentOccurrence = this.getCurrentManagedBroadcastOccurrence(row);
+    const currentOccurrence = getCurrentManagedBroadcastOccurrence(row);
     const maxApiOptions = this.resolveManagedBroadcastProcessingMaxApiOptions(reason);
     if (!(await this.ensureManagedBroadcastPublicationExecutionActive(row, currentOccurrence))) {
       return {
@@ -3283,15 +3241,12 @@ export class AdminManagedBroadcastRuntime {
         if (delivery.status !== PrismaManagedBroadcastDeliveryStatus.FAILED) {
           return false;
         }
-        return (
-          this.resolveManagedBroadcastFatalProcessingFailureMessage(delivery.lastError) !== null
-        );
+        return resolveManagedBroadcastFatalProcessingFailureMessage(delivery.lastError) !== null;
       });
       if (fatalRecoveredDelivery) {
         const fatalProcessingErrorMessage =
-          this.resolveManagedBroadcastFatalProcessingFailureMessage(
-            fatalRecoveredDelivery.lastError,
-          ) ?? 'Не удалось обработать автопостинг.';
+          resolveManagedBroadcastFatalProcessingFailureMessage(fatalRecoveredDelivery.lastError) ??
+          'Не удалось обработать автопостинг.';
         await this.failManagedBroadcastAfterFatalProcessingError(
           row,
           currentOccurrence,
@@ -3388,7 +3343,7 @@ export class AdminManagedBroadcastRuntime {
             return null;
           }
         } catch (error: unknown) {
-          throw this.markManagedBroadcastSendPhase(error, false);
+          throw markManagedBroadcastSendPhase(error, false);
         }
 
         try {
@@ -3407,7 +3362,7 @@ export class AdminManagedBroadcastRuntime {
             botId: botId ?? null,
           };
         } catch (error: unknown) {
-          throw this.markManagedBroadcastSendPhase(error, true);
+          throw markManagedBroadcastSendPhase(error, true);
         }
       };
       const sendDeliveryRouted = async (
@@ -3493,9 +3448,7 @@ export class AdminManagedBroadcastRuntime {
                 return {
                   text: message.messageText,
                   options: message.messageOptions,
-                  ledgerContext: this.buildManagedBroadcastLedgerContext(
-                    message.commentDialogReference,
-                  ),
+                  ledgerContext: buildManagedBroadcastLedgerContext(message.commentDialogReference),
                 };
               },
               onDispatchAttempt: ({ botId }) => {
@@ -3539,7 +3492,7 @@ export class AdminManagedBroadcastRuntime {
               throw error;
             }
             if (sendStarted && isAmbiguousMaxSendError(error)) {
-              throw this.markManagedBroadcastSendPhase(error, true);
+              throw markManagedBroadcastSendPhase(error, true);
             }
             const retryDelayMs = this.resolveManagedBroadcastSendRetryDelayMs(
               error,
@@ -3547,18 +3500,18 @@ export class AdminManagedBroadcastRuntime {
               preparedOptions,
             );
             if (retryDelayMs === null) {
-              throw this.markManagedBroadcastSendPhase(error, sendStarted);
+              throw markManagedBroadcastSendPhase(error, sendStarted);
             }
             await this.heartbeatManagedBroadcastProcessingLock(
               row.id,
               currentOccurrence,
               activeLease,
             );
-            await this.sleep(retryDelayMs);
+            await sleep(retryDelayMs);
           }
         }
 
-        throw this.markManagedBroadcastSendPhase(
+        throw markManagedBroadcastSendPhase(
           lastError ?? new Error('Managed broadcast routed send did not return a result'),
           false,
         );
@@ -3664,7 +3617,7 @@ export class AdminManagedBroadcastRuntime {
               ? error.message
               : 'Не удалось отправить сообщение.');
           const fatalProcessingErrorMessage =
-            this.resolveManagedBroadcastFatalProcessingErrorMessage(error);
+            resolveManagedBroadcastFatalProcessingErrorMessage(error);
           if (fatalProcessingErrorMessage) {
             await this.failManagedBroadcastAfterFatalProcessingError(
               row,
@@ -3774,7 +3727,7 @@ export class AdminManagedBroadcastRuntime {
                   (replacementError instanceof Error && replacementError.message.trim()
                     ? replacementError.message
                     : 'Не удалось отправить сообщение.');
-                if (this.isAmbiguousManagedBroadcastSendError(replacementError)) {
+                if (isAmbiguousManagedBroadcastSendError(replacementError)) {
                   replacementBotId = undefined;
                   break;
                 }
@@ -3818,10 +3771,7 @@ export class AdminManagedBroadcastRuntime {
             (!this.maxRoutedPublicationService ||
               (error as { managedBroadcastSendStarted?: unknown })?.managedBroadcastSendStarted ===
                 true) &&
-            this.isManagedBroadcastPermanentTargetDeliveryFailure(
-              effectiveError,
-              deliveryFailureMessage,
-            )
+            isManagedBroadcastPermanentTargetDeliveryFailure(effectiveError, deliveryFailureMessage)
           ) {
             await this.cancelManagedBroadcastTargetDeliveries(row.id, currentOccurrence, {
               targetChatId: delivery.targetChatId,
@@ -3886,7 +3836,7 @@ export class AdminManagedBroadcastRuntime {
               },
               'Managed broadcast delivery failed for target chat',
             );
-            const failedDeliveryStatus = this.isAmbiguousManagedBroadcastSendError(effectiveError)
+            const failedDeliveryStatus = isAmbiguousManagedBroadcastSendError(effectiveError)
               ? PrismaManagedBroadcastDeliveryStatus.AMBIGUOUS
               : PrismaManagedBroadcastDeliveryStatus.FAILED;
             await this.prisma.managedBroadcastDelivery.updateMany({
@@ -3984,8 +3934,7 @@ export class AdminManagedBroadcastRuntime {
         { lease: activeLease },
       );
     } catch (error: unknown) {
-      const fatalProcessingErrorMessage =
-        this.resolveManagedBroadcastFatalProcessingErrorMessage(error);
+      const fatalProcessingErrorMessage = resolveManagedBroadcastFatalProcessingErrorMessage(error);
       if (fatalProcessingErrorMessage) {
         await this.failManagedBroadcastAfterFatalProcessingError(
           row,
@@ -4277,753 +4226,57 @@ export class AdminManagedBroadcastRuntime {
     onProgress?: ManagedBroadcastProgressCallback,
     options: ManagedBroadcastMediaResolutionOptions = {},
   ): Promise<ManagedBroadcastResolvedMedia> {
-    const images = this.resolveManagedBroadcastRequestImages(payload);
-    if (images.length === 1) {
-      const imagePayload = await this.uploadManagedBroadcastImage(
-        images[0],
-        entityType,
-        sourceChatId,
-        actorUserId,
-        botId,
-        maxApiOptions,
-        onProgress,
-        options,
-      );
-      return imagePayload ? { imagePayload } : {};
-    }
-
-    if (images.length > 1) {
-      const attachments: MaxAttachmentPayload[] = [];
-      for (const image of images) {
-        const imagePayload = await this.uploadManagedBroadcastImage(
-          image,
-          entityType,
-          sourceChatId,
-          actorUserId,
-          botId,
-          maxApiOptions,
-          onProgress,
-          options,
-        );
-        if (imagePayload) {
-          attachments.push({
-            type: 'image',
-            payload: imagePayload,
-          });
-        }
-      }
-
-      return attachments.length > 0 ? { attachments } : {};
-    }
-
-    if (payload.mediaType === 'video' && payload.mediaPayload) {
-      const publicationAssetId = this.readTrimmedString(
-        payload.mediaPayload[PUBLICATION_VIDEO_ASSET_ID_FIELD],
-      );
-      const publicationInlineBase64 = this.readTrimmedString(
-        payload.mediaPayload[PUBLICATION_VIDEO_INLINE_BASE64_FIELD],
-      );
-      if (publicationAssetId || publicationInlineBase64) {
-        if (!options.trustedPublicationVideoMarkers) {
-          throw new BadRequestException('Внутренняя ссылка на видео недоступна.');
-        }
-        if (publicationAssetId && publicationInlineBase64) {
-          throw new BadRequestException('Видео публикации повреждено.');
-        }
-      }
-      const videoPayload = publicationAssetId
-        ? await this.uploadManagedBroadcastPublicationVideo(
-            publicationAssetId,
-            entityType,
-            sourceChatId,
-            actorUserId,
-            botId,
-            maxApiOptions,
-            onProgress,
-          )
-        : publicationInlineBase64
-          ? await this.uploadManagedBroadcastInlinePublicationVideo(
-              publicationInlineBase64,
-              payload.mediaMimeType,
-              payload.mediaFileName,
-              entityType,
-              sourceChatId,
-              actorUserId,
-              botId,
-              maxApiOptions,
-              onProgress,
-            )
-          : payload.mediaPayload;
-      return {
-        attachments: [
-          {
-            type: 'video',
-            payload: videoPayload,
-          },
-        ],
-      };
-    }
-
-    return {};
-  }
-
-  private resolveManagedBroadcastRequestImages(payload: SendBroadcastRequest): BroadcastImage[] {
-    const explicitImages = Array.isArray(payload.images)
-      ? payload.images.filter((image) => image.base64.trim().length > 0)
-      : [];
-    if (explicitImages.length > 0) {
-      return explicitImages.slice(0, MAX_BROADCAST_IMAGES);
-    }
-
-    const imageBase64 = payload.imageBase64.trim();
-    if (!payload.imageEnabled || !imageBase64) {
-      return [];
-    }
-
-    return [
-      {
-        base64: imageBase64,
-        mimeType: payload.imageMimeType.trim(),
-        fileName: payload.imageFileName.trim(),
-      },
-    ];
-  }
-
-  private readManagedBroadcastMediaPayloadImages(value: unknown): BroadcastImage[] {
-    const payload = this.readObjectPayloadOrNull(value);
-    if (!payload || !Array.isArray(payload.images)) {
-      return [];
-    }
-
-    return payload.images
-      .map((item: any) => this.readManagedBroadcastMediaPayloadImage(item))
-      .filter((image: any): image is BroadcastImage => image !== null)
-      .slice(0, MAX_BROADCAST_IMAGES);
-  }
-
-  private readManagedBroadcastMediaPayloadImage(value: unknown): BroadcastImage | null {
-    const payload = this.readObjectPayloadOrNull(value);
-    if (!payload) {
-      return null;
-    }
-
-    const base64 = this.readTrimmedString(payload.base64);
-    if (!base64) {
-      return null;
-    }
-
-    return {
-      base64,
-      mimeType: this.readTrimmedString(payload.mimeType) ?? '',
-      fileName: this.readTrimmedString(payload.fileName) ?? '',
-    };
+    return this.mediaRuntime.resolveManagedBroadcastMedia(
+      payload,
+      entityType,
+      sourceChatId,
+      actorUserId,
+      botId,
+      maxApiOptions,
+      onProgress,
+      options,
+    );
   }
 
   private readManagedBroadcastImagesFromRow(row: PersistedManagedBroadcast): BroadcastImage[] {
-    if (readManagedBroadcastMediaType(row.mediaType) === 'image') {
-      const payloadImages = this.readManagedBroadcastMediaPayloadImages(row.mediaPayload);
-      if (payloadImages.length > 0) {
-        return payloadImages;
-      }
-    }
-
-    const imageBase64 = row.imageBase64.trim();
-    if (!row.imageEnabled || !imageBase64) {
-      return [];
-    }
-
-    return [
-      {
-        base64: imageBase64,
-        mimeType: row.imageMimeType.trim(),
-        fileName: row.imageFileName.trim(),
-      },
-    ];
+    return this.mediaRuntime.readManagedBroadcastImagesFromRow(row);
   }
 
   private async loadManagedBroadcastRequestMedia(
     row: PersistedManagedBroadcast,
   ): Promise<ManagedBroadcastRequestMedia> {
-    if (!row.publicationContentRevisionId) {
-      return {
-        imageEnabled: row.imageEnabled,
-        imageBase64: row.imageBase64,
-        imageMimeType: row.imageMimeType,
-        imageFileName: row.imageFileName,
-        images: this.readManagedBroadcastImagesFromRow(row),
-        mediaType: readManagedBroadcastMediaType(row.mediaType),
-        mediaPayload: this.readObjectPayloadOrNull(row.mediaPayload),
-        mediaMimeType: row.mediaMimeType,
-        mediaFileName: row.mediaFileName,
-      };
-    }
-
-    const contentRevision = await this.prisma.publicationContentRevision.findUnique({
-      where: { id: row.publicationContentRevisionId },
-      select: {
-        assets: {
-          orderBy: [{ position: 'asc' }],
-          select: {
-            asset: {
-              select: {
-                id: true,
-                bytes: true,
-                durablePayload: true,
-                mimeType: true,
-                fileName: true,
-              },
-            },
-          },
-        },
-      },
-    });
-    if (!contentRevision) {
-      throw new BadRequestException('Медиа публикации больше недоступно.');
-    }
-
-    const videoAssets = contentRevision.assets
-      .map(({ asset }) => ({
-        asset,
-        payload: this.readObjectPayloadOrNull(asset.durablePayload),
-      }))
-      .filter(
-        (item) => item.payload !== null || item.asset.mimeType.toLowerCase().startsWith('video/'),
-      );
-    if (videoAssets.length > 0) {
-      if (videoAssets.length !== 1 || contentRevision.assets.length !== 1) {
-        throw new BadRequestException(
-          'В одной публикации можно добавить либо фотографии, либо одно видео.',
-        );
-      }
-
-      const [{ asset, payload }] = videoAssets;
-      if (!payload && !asset.bytes) {
-        throw new BadRequestException('Видео публикации больше недоступно.');
-      }
-      return {
-        imageEnabled: false,
-        imageBase64: '',
-        imageMimeType: '',
-        imageFileName: '',
-        images: [],
-        mediaType: 'video',
-        mediaPayload: payload ?? { [PUBLICATION_VIDEO_ASSET_ID_FIELD]: asset.id },
-        mediaMimeType: asset.mimeType.trim(),
-        mediaFileName: asset.fileName.trim(),
-      };
-    }
-
-    const images = contentRevision.assets.map(({ asset }) => {
-      if (!asset.bytes) {
-        throw new BadRequestException('Медиа публикации больше недоступно.');
-      }
-
-      return {
-        base64: Buffer.from(asset.bytes).toString('base64'),
-        mimeType: asset.mimeType.trim(),
-        fileName: asset.fileName.trim(),
-      };
-    });
-    const firstImage = images[0];
-
-    return {
-      imageEnabled: Boolean(firstImage),
-      imageBase64: firstImage?.base64 ?? '',
-      imageMimeType: firstImage?.mimeType ?? '',
-      imageFileName: firstImage?.fileName ?? '',
-      images,
-      mediaType: images.length > 1 ? 'image' : null,
-      mediaPayload: images.length > 1 ? { images } : null,
-      mediaMimeType: '',
-      mediaFileName: '',
-    };
+    return this.mediaRuntime.loadManagedBroadcastRequestMedia(row);
   }
 
   private validateManagedBroadcastMediaPayload(
     payload: SendBroadcastRequest,
     options: Pick<ManagedBroadcastTestOptions, 'trustedPublicationTestPayload'> = {},
   ): void {
-    const images = this.resolveManagedBroadcastRequestImages(payload);
-    if (images.length === 0) {
-      return;
-    }
-
-    if (images.length > MAX_BROADCAST_IMAGES) {
-      throw new BadRequestException(
-        `В одном автопостинге можно добавить до ${MAX_BROADCAST_IMAGES} фото.`,
-      );
-    }
-
-    let totalBytes = 0;
-    for (const image of images) {
-      totalBytes += this.validateManagedBroadcastImagePayload(image, options).length;
-    }
-
-    const maxTotalBytes = options.trustedPublicationTestPayload
-      ? PUBLICATION_MAX_TOTAL_IMAGE_BYTES
-      : BROADCAST_IMAGES_TOTAL_MAX_BYTES;
-    if (totalBytes > maxTotalBytes) {
-      throw new BadRequestException('Суммарный размер фото слишком большой.');
-    }
-  }
-
-  private validateManagedBroadcastImagePayload(
-    image: BroadcastImage,
-    options: Pick<ManagedBroadcastTestOptions, 'trustedPublicationTestPayload'> = {},
-  ): Buffer {
-    const imageMimeType = image.mimeType.trim().toLowerCase();
-    if (!imageMimeType.startsWith('image/')) {
-      throw new BadRequestException('Поддерживаются только изображения.');
-    }
-
-    const imageBuffer = this.decodeBroadcastImageBase64(image.base64);
-    const maxBytes = options.trustedPublicationTestPayload
-      ? PUBLICATION_MAX_IMAGE_BYTES
-      : BROADCAST_IMAGE_MAX_BYTES;
-    if (imageBuffer.length > maxBytes) {
-      throw new BadRequestException('Фото слишком большое. Попробуйте другое изображение.');
-    }
-
-    return imageBuffer;
-  }
-
-  private async uploadManagedBroadcastImage(
-    image: BroadcastImage,
-    entityType: ManagedEntityType,
-    sourceChatId: string,
-    actorUserId: string,
-    botId?: string,
-    maxApiOptions?: ManagedBroadcastMaxApiOptions,
-    onProgress?: ManagedBroadcastProgressCallback,
-    options: Pick<ManagedBroadcastTestOptions, 'trustedPublicationTestPayload'> = {},
-  ): Promise<Record<string, unknown> | undefined> {
-    const imageMimeType = image.mimeType.trim().toLowerCase();
-    const imageBuffer = this.validateManagedBroadcastImagePayload(image, options);
-
-    let lastError: unknown = null;
-    const attempts =
-      Math.max(
-        BROADCAST_THROTTLE_RETRY_DELAYS_MS.length,
-        BROADCAST_TIMEOUT_RETRY_DELAYS_MS.length,
-      ) + 1;
-
-    try {
-      for (let attempt = 1; attempt <= attempts; attempt += 1) {
-        try {
-          const uploaded = botId
-            ? await this.maxClient.uploadImage(
-                imageBuffer,
-                this.resolveBroadcastImageFileName(image.fileName, imageMimeType),
-                imageMimeType,
-                {
-                  ...this.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),
-                  botId,
-                },
-              )
-            : await this.maxClient.uploadImage(
-                imageBuffer,
-                this.resolveBroadcastImageFileName(image.fileName, imageMimeType),
-                imageMimeType,
-                this.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),
-              );
-          await onProgress?.();
-          return uploaded;
-        } catch (error: unknown) {
-          lastError = error;
-          const retryDelayMs = this.resolveManagedBroadcastUploadRetryDelayMs(error, attempt);
-          if (retryDelayMs === null) {
-            throw error;
-          }
-          await onProgress?.();
-          await this.sleep(retryDelayMs);
-        }
-      }
-
-      if (lastError) {
-        throw lastError;
-      }
-
-      throw new Error('Managed broadcast image upload did not return a result.');
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          entityType,
-          sourceChatId,
-          actorUserId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Broadcast image upload failed',
-      );
-      const reason =
-        this.extractMaxApiErrorMessage(error) ||
-        (error instanceof Error && error.message.trim() ? error.message.trim() : null);
-      throw new ManagedBroadcastTransientUploadError(
-        reason ? `Не удалось загрузить фото: ${reason}` : 'Не удалось загрузить фото.',
-      );
-    }
-  }
-
-  private async uploadManagedBroadcastPublicationVideo(
-    assetId: string,
-    entityType: ManagedEntityType,
-    sourceChatId: string,
-    actorUserId: string,
-    botId?: string,
-    maxApiOptions?: ManagedBroadcastMaxApiOptions,
-    onProgress?: ManagedBroadcastProgressCallback,
-  ): Promise<Record<string, unknown>> {
-    const asset = await this.prisma.publicationAsset.findFirst({
-      where: {
-        id: assetId,
-        contentLinks: {
-          some: { contentRevision: { publication: { actorUserId } } },
-        },
-      },
-      select: { bytes: true, mimeType: true, fileName: true },
-    });
-    const mimeType = asset?.mimeType.trim().toLowerCase() ?? '';
-    if (!asset?.bytes || !mimeType.startsWith('video/')) {
-      throw new BadRequestException('Видео публикации больше недоступно.');
-    }
-
-    return this.uploadManagedBroadcastPublicationVideoBytes(
-      Buffer.from(asset.bytes),
-      mimeType,
-      asset.fileName,
-      entityType,
-      sourceChatId,
-      actorUserId,
-      botId,
-      maxApiOptions,
-      onProgress,
-      assetId,
-    );
-  }
-
-  private async uploadManagedBroadcastInlinePublicationVideo(
-    base64: string,
-    mimeTypeValue: string,
-    fileName: string,
-    entityType: ManagedEntityType,
-    sourceChatId: string,
-    actorUserId: string,
-    botId?: string,
-    maxApiOptions?: ManagedBroadcastMaxApiOptions,
-    onProgress?: ManagedBroadcastProgressCallback,
-  ): Promise<Record<string, unknown>> {
-    const mimeType = mimeTypeValue.trim().toLowerCase();
-    if (!mimeType.startsWith('video/')) {
-      throw new BadRequestException('Неверный формат видео.');
-    }
-    const video = this.decodeManagedBroadcastPublicationVideoBase64(base64);
-    return this.uploadManagedBroadcastPublicationVideoBytes(
-      video,
-      mimeType,
-      fileName,
-      entityType,
-      sourceChatId,
-      actorUserId,
-      botId,
-      maxApiOptions,
-      onProgress,
-    );
-  }
-
-  private decodeManagedBroadcastPublicationVideoBase64(value: string): Buffer {
-    const normalized = value.trim().replace(/^data:[^;]+;base64,/u, '');
-    if (!/^[A-Za-z0-9+/]*={0,2}$/u.test(normalized) || normalized.length % 4 !== 0) {
-      throw new BadRequestException('Видео повреждено. Добавьте файл заново.');
-    }
-    const video = Buffer.from(normalized, 'base64');
-    if (video.length === 0) {
-      throw new BadRequestException('Видео пустое.');
-    }
-    if (video.length > PUBLICATION_MAX_VIDEO_BYTES) {
-      throw new BadRequestException('Видео слишком большое. Максимум 24 МБ.');
-    }
-    return video;
-  }
-
-  private async uploadManagedBroadcastPublicationVideoBytes(
-    video: Buffer,
-    mimeType: string,
-    fileName: string,
-    entityType: ManagedEntityType,
-    sourceChatId: string,
-    actorUserId: string,
-    botId?: string,
-    maxApiOptions?: ManagedBroadcastMaxApiOptions,
-    onProgress?: ManagedBroadcastProgressCallback,
-    assetId?: string,
-  ): Promise<Record<string, unknown>> {
-    let lastError: unknown = null;
-    const attempts =
-      Math.max(
-        BROADCAST_THROTTLE_RETRY_DELAYS_MS.length,
-        BROADCAST_TIMEOUT_RETRY_DELAYS_MS.length,
-      ) + 1;
-
-    try {
-      for (let attempt = 1; attempt <= attempts; attempt += 1) {
-        try {
-          const uploaded = await this.maxClient.uploadVideo(
-            video,
-            fileName.trim() || 'publication-video.mp4',
-            mimeType,
-            {
-              ...this.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),
-              ...(botId ? { botId } : {}),
-            },
-          );
-          await onProgress?.();
-          return uploaded;
-        } catch (error: unknown) {
-          lastError = error;
-          const retryDelayMs = this.resolveManagedBroadcastUploadRetryDelayMs(error, attempt);
-          if (retryDelayMs === null) {
-            throw error;
-          }
-          await onProgress?.();
-          await this.sleep(retryDelayMs);
-        }
-      }
-
-      throw lastError ?? new Error('Managed broadcast video upload did not return a result.');
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          entityType,
-          sourceChatId,
-          actorUserId,
-          ...(assetId ? { assetId } : {}),
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Broadcast video upload failed',
-      );
-      const reason =
-        this.extractMaxApiErrorMessage(error) ||
-        (error instanceof Error && error.message.trim() ? error.message.trim() : null);
-      throw new ManagedBroadcastTransientUploadError(
-        reason ? `Не удалось загрузить видео: ${reason}` : 'Не удалось загрузить видео.',
-      );
-    }
+    this.mediaRuntime.validateManagedBroadcastMediaPayload(payload, options);
   }
 
   private buildManagedBroadcastMaxApiOptions(
     trafficClass: NonNullable<ManagedBroadcastMaxApiOptions['trafficClass']>,
   ): ManagedBroadcastMaxApiOptions {
-    return {
-      trafficClass,
-      actionHealthLane: trafficClass,
-      sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
-    };
+    return this.mediaRuntime.buildManagedBroadcastMaxApiOptions(trafficClass);
   }
 
   private buildManagedBroadcastMaxApiRequestOptions(
     options?: ManagedBroadcastMaxApiOptions,
   ): ManagedBroadcastMaxApiOptions {
-    return options ?? this.buildManagedBroadcastMaxApiOptions('interactive');
+    return this.mediaRuntime.buildManagedBroadcastMaxApiRequestOptions(options);
   }
 
   private resolveManagedBroadcastSourceMaxApiOptions(
     source: AdminActionSource,
   ): ManagedBroadcastMaxApiOptions {
-    return this.buildManagedBroadcastMaxApiOptions(
-      source === 'autopost_rule' ? 'background' : 'interactive',
-    );
+    return this.mediaRuntime.resolveManagedBroadcastSourceMaxApiOptions(source);
   }
 
   private resolveManagedBroadcastProcessingMaxApiOptions(
     reason: 'startup' | 'scheduled' | 'manual_retry' | 'immediate',
   ): ManagedBroadcastMaxApiOptions {
-    return this.buildManagedBroadcastMaxApiOptions(
-      reason === 'startup' || reason === 'scheduled' ? 'background' : 'interactive',
-    );
-  }
-
-  private async planManagedBroadcastSchedule(
-    sourceChatId: string,
-    entityType: ChatEntityType,
-    payload: SendBroadcastRequest,
-    sentCount: number,
-    excludeBroadcastId: string | null,
-  ): Promise<ManagedBroadcastSchedulePlan> {
-    const scheduleMode = normalizeBroadcastScheduleMode(payload.scheduleMode);
-    const scheduleTimezone = payload.scheduleTimezone.trim() || 'Europe/Moscow';
-    this.assertManagedBroadcastScheduleTimezone(scheduleTimezone);
-
-    if (scheduleMode === 'calendar') {
-      const calendarPlan = await this.parseManagedBroadcastCalendarSlots(payload.scheduledSlots, {
-        sourceChatId,
-        sentCount,
-        entityType,
-        excludeBroadcastId,
-        scheduleTimezone,
-      });
-      const upcomingSlots = calendarPlan.upcomingSlots;
-
-      return {
-        scheduleMode,
-        scheduleTimezone,
-        upcomingSlots,
-        nextSendAt: upcomingSlots[0] ?? null,
-        cycleEnabled: false,
-        cycleEveryHours: 1,
-        cycleCount: calendarPlan.sentCount + upcomingSlots.length,
-        sendAt: upcomingSlots[0]?.toISOString() ?? null,
-        sentCount: calendarPlan.sentCount,
-      };
-    }
-
-    const scheduledAt = this.parseManagedBroadcastSendAt(payload.sendAt, {
-      required: false,
-      sourceChatId,
-      sentCount,
-    });
-    const cycleEveryHours = payload.cycleEnabled ? payload.cycleEveryHours : 1;
-    const cycleCount = payload.cycleEnabled ? payload.cycleCount : 1;
-
-    if (sentCount > 0 && !payload.cycleEnabled) {
-      throw new BadRequestException(
-        'После первого запуска цикла оставьте циклический режим включенным.',
-      );
-    }
-    if (sentCount > 0 && cycleCount <= sentCount) {
-      throw new BadRequestException('Количество отправок должно быть больше уже выполненных.');
-    }
-
-    const initialDelayMs = scheduledAt ? scheduledAt.getTime() - Date.now() : 0;
-    const maxDelayWithCycles = initialDelayMs + (cycleCount - 1) * cycleEveryHours * ONE_HOUR_MS;
-    if (maxDelayWithCycles > BROADCAST_MAX_DELAY_MS) {
-      throw new BadRequestException('Все оставшиеся отправки должны уместиться в 31 день.');
-    }
-
-    const firstOccurrenceAt = scheduledAt ?? new Date();
-    const remainingOccurrences = Math.max(1, cycleCount - sentCount);
-
-    return {
-      scheduleMode,
-      scheduleTimezone,
-      upcomingSlots: this.buildLegacyManagedBroadcastUpcomingSlots(
-        firstOccurrenceAt,
-        remainingOccurrences,
-        cycleEveryHours,
-      ),
-      nextSendAt: firstOccurrenceAt,
-      cycleEnabled: payload.cycleEnabled,
-      cycleEveryHours,
-      cycleCount,
-      sendAt: scheduledAt?.toISOString() ?? null,
-      sentCount,
-    };
-  }
-
-  private async parseManagedBroadcastCalendarSlots(
-    values: string[],
-    options: {
-      sourceChatId: string;
-      sentCount: number;
-      entityType: ChatEntityType;
-      excludeBroadcastId: string | null;
-      scheduleTimezone: string;
-    },
-  ): Promise<ParsedManagedBroadcastCalendarSlots> {
-    const normalized = normalizeBroadcastScheduledSlots(values);
-    if (normalized.length === 0) {
-      throw new BadRequestException('Добавьте хотя бы один слот публикации.');
-    }
-
-    const now = new Date();
-    const todayKey = this.getDateKeyInTimeZone(now, options.scheduleTimezone);
-    const upcomingSlots: Date[] = [];
-    let pastTodayCount = 0;
-
-    for (const value of normalized) {
-      const parsed = new Date(value);
-      if (Number.isNaN(parsed.getTime())) {
-        throw new BadRequestException('Некорректный слот публикации.');
-      }
-      if (!this.isManagedBroadcastCalendarSlotOnStep(parsed, options.scheduleTimezone)) {
-        throw new BadRequestException('Слоты должны быть кратны 30 минутам.');
-      }
-
-      const delayMs = parsed.getTime() - now.getTime();
-      if (delayMs < 0) {
-        if (this.getDateKeyInTimeZone(parsed, options.scheduleTimezone) !== todayKey) {
-          throw new BadRequestException(
-            'Прошедшие слоты можно оставлять только в пределах сегодняшнего дня.',
-          );
-        }
-        pastTodayCount += 1;
-        continue;
-      }
-      if (delayMs < BROADCAST_MIN_DELAY_MS) {
-        throw new BadRequestException('Ближайший слот должен быть минимум через 30 секунд.');
-      }
-      if (delayMs > BROADCAST_MAX_DELAY_MS) {
-        throw new BadRequestException('Планирование календаря доступно максимум на 31 день.');
-      }
-      upcomingSlots.push(parsed);
-    }
-
-    return {
-      upcomingSlots,
-      sentCount: Math.max(options.sentCount, pastTodayCount),
-    };
-  }
-
-  private buildLegacyManagedBroadcastUpcomingSlots(
-    nextSendAt: Date | null,
-    remainingOccurrences: number,
-    cycleEveryHours: number,
-  ): Date[] {
-    if (!nextSendAt || remainingOccurrences <= 0) {
-      return [];
-    }
-
-    const slots: Date[] = [];
-    for (let index = 0; index < remainingOccurrences; index += 1) {
-      slots.push(new Date(nextSendAt.getTime() + index * cycleEveryHours * ONE_HOUR_MS));
-    }
-    return slots;
-  }
-
-  private buildManagedBroadcastOccurrenceRows(
-    broadcastId: string,
-    sourceChatId: string,
-    entityType: ChatEntityType,
-    fromOccurrenceIndex: number,
-    slots: Date[],
-  ): Prisma.ManagedBroadcastOccurrenceCreateManyInput[] {
-    return slots.map((scheduledAt, index) => ({
-      broadcastId,
-      sourceChatId,
-      entityType,
-      occurrenceIndex: fromOccurrenceIndex + index,
-      scheduledAt,
-      status: PrismaManagedBroadcastStatus.ACTIVE,
-    }));
-  }
-
-  private buildManagedBroadcastCalendarReservationRows(
-    broadcastId: string,
-    sourceChatId: string,
-    entityType: ChatEntityType,
-    fromOccurrenceIndex: number,
-    slots: Date[],
-    targetChatIds: string[],
-  ): Prisma.ManagedBroadcastCalendarReservationCreateManyInput[] {
-    const normalizedTargetChatIds = this.normalizeManagedBroadcastTargetChatIds(targetChatIds);
-    return slots.flatMap((scheduledAt, slotIndex) =>
-      normalizedTargetChatIds.map((targetChatId) => ({
-        broadcastId,
-        sourceChatId,
-        entityType,
-        occurrenceIndex: fromOccurrenceIndex + slotIndex,
-        targetChatId,
-        scheduledAt,
-      })),
-    );
+    return this.mediaRuntime.resolveManagedBroadcastProcessingMaxApiOptions(reason);
   }
 
   private async createManagedBroadcastOccurrencesWithOverwrite(
@@ -5047,14 +4300,14 @@ export class AdminManagedBroadcastRuntime {
       SELECT pg_advisory_xact_lock(hashtext('publication-calendar'))
     `);
 
-    const rows = this.buildManagedBroadcastOccurrenceRows(
+    const rows = buildManagedBroadcastOccurrenceRows(
       options.broadcastId,
       options.sourceChatId,
       options.entityType,
       options.fromOccurrenceIndex,
       options.slots,
     );
-    const reservationRows = this.buildManagedBroadcastCalendarReservationRows(
+    const reservationRows = buildManagedBroadcastCalendarReservationRows(
       options.broadcastId,
       options.sourceChatId,
       options.entityType,
@@ -5112,7 +4365,7 @@ export class AdminManagedBroadcastRuntime {
       excludeBroadcastId: string | null;
     },
   ): Promise<void> {
-    const targetChatIds = this.normalizeManagedBroadcastTargetChatIds(options.targetChatIds);
+    const targetChatIds = normalizeManagedBroadcastTargetChatIds(options.targetChatIds);
     if (targetChatIds.length === 0 || options.slots.length === 0) {
       return;
     }
@@ -5293,7 +4546,7 @@ export class AdminManagedBroadcastRuntime {
       return;
     }
 
-    const currentOccurrence = this.getCurrentManagedBroadcastOccurrence(row);
+    const currentOccurrence = getCurrentManagedBroadcastOccurrence(row);
     const scheduledOccurrences = await tx.managedBroadcastOccurrence.findMany({
       where: {
         broadcastId: row.id,
@@ -5333,10 +4586,7 @@ export class AdminManagedBroadcastRuntime {
     );
     const nextSendAt = preservedCurrentOccurrence ? row.nextSendAt : (remainingSlots[0] ?? null);
     const nextCycleCount = row.sentCount + remainingSlots.length;
-    const targetChatIds = this.parseManagedBroadcastTargetChatIds(
-      row.targetChatIds,
-      row.sourceChatId,
-    );
+    const targetChatIds = parseManagedBroadcastTargetChatIds(row.targetChatIds, row.sourceChatId);
     const rebuildFromOccurrence = preservedOccurrences.some(
       (occurrence) => occurrence.occurrenceIndex === currentOccurrence,
     )
@@ -5413,7 +4663,7 @@ export class AdminManagedBroadcastRuntime {
 
     if (rebuildFromOccurrence <= nextCycleCount) {
       await tx.managedBroadcastDelivery.createMany({
-        data: this.buildManagedBroadcastDeliveryRows(
+        data: buildManagedBroadcastDeliveryRows(
           row.id,
           targetChatIds,
           rebuildFromOccurrence,
@@ -5434,7 +4684,7 @@ export class AdminManagedBroadcastRuntime {
         })),
       });
       const reservationRows = rebuiltFutureOccurrences.flatMap((occurrence) =>
-        this.buildManagedBroadcastCalendarReservationRows(
+        buildManagedBroadcastCalendarReservationRows(
           row.id,
           row.sourceChatId,
           row.entityType,
@@ -5525,7 +4775,7 @@ export class AdminManagedBroadcastRuntime {
     const result = new Map<string, Date[]>();
     for (const row of rows) {
       if (normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar') {
-        const currentOccurrence = this.getCurrentManagedBroadcastOccurrence(row);
+        const currentOccurrence = getCurrentManagedBroadcastOccurrence(row);
         const upcoming = (groupedOccurrences.get(row.id) ?? [])
           .filter((occurrence) => occurrence.occurrenceIndex >= currentOccurrence)
           .map((occurrence) => occurrence.scheduledAt);
@@ -5535,7 +4785,7 @@ export class AdminManagedBroadcastRuntime {
 
       result.set(
         row.id,
-        this.buildLegacyManagedBroadcastUpcomingSlots(
+        buildLegacyManagedBroadcastUpcomingSlots(
           row.nextSendAt,
           Math.max(0, row.cycleCount - row.sentCount),
           row.cycleEveryHours,
@@ -5550,183 +4800,19 @@ export class AdminManagedBroadcastRuntime {
     return (await this.getManagedBroadcastUpcomingSlotsMap([row])).get(row.id) ?? [];
   }
 
-  private parseManagedBroadcastSendAt(
-    sendAt: string | null,
-    options: {
-      required: boolean;
-      sourceChatId: string;
-      sentCount: number;
-    },
-  ): Date | null {
-    if (!sendAt) {
-      if (options.required) {
-        throw new BadRequestException('Укажите следующее время отправки.');
-      }
-      return null;
-    }
-
-    const scheduledAt = new Date(sendAt);
-    if (Number.isNaN(scheduledAt.getTime())) {
-      throw new BadRequestException('Некорректное время автопостинга.');
-    }
-    const calculatedDelayMs = scheduledAt.getTime() - Date.now();
-    if (calculatedDelayMs < BROADCAST_MIN_DELAY_MS) {
-      const message =
-        options.sentCount > 0
-          ? 'Следующую отправку можно поставить минимум через 30 секунд.'
-          : 'Укажите время автопостинга минимум через 30 секунд.';
-      throw new BadRequestException(message);
-    }
-    if (calculatedDelayMs > BROADCAST_MAX_DELAY_MS) {
-      throw new BadRequestException('Максимальный таймер автопостинга: 31 день.');
-    }
-    return scheduledAt;
-  }
-
-  private getDateKeyInTimeZone(value: Date, timeZone: string): string {
-    const baseOptions: Intl.DateTimeFormatOptions = {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    };
-    let formatter: Intl.DateTimeFormat;
-
-    try {
-      formatter = new Intl.DateTimeFormat('en-CA', {
-        ...baseOptions,
-        timeZone,
-      });
-    } catch {
-      formatter = new Intl.DateTimeFormat('en-CA', baseOptions);
-    }
-
-    const parts = formatter.formatToParts(value);
-    const year = parts.find((part) => part.type === 'year')?.value ?? '0000';
-    const month = parts.find((part) => part.type === 'month')?.value ?? '00';
-    const day = parts.find((part) => part.type === 'day')?.value ?? '00';
-    return `${year}-${month}-${day}`;
-  }
-
-  private assertManagedBroadcastScheduleTimezone(value: string): void {
-    try {
-      Intl.DateTimeFormat('ru-RU', { timeZone: value }).format(new Date());
-    } catch {
-      throw new BadRequestException('Некорректный часовой пояс.');
-    }
-  }
-
-  private isManagedBroadcastCalendarSlotOnStep(value: Date, timeZone: string): boolean {
-    const parts = Intl.DateTimeFormat('en-US', {
-      timeZone,
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
-    }).formatToParts(value);
-    const readPart = (type: string): number => {
-      const raw = parts.find((part) => part.type === type)?.value ?? '';
-      return Number(raw);
-    };
-    const minute = readPart('minute');
-    const second = readPart('second');
-
-    return (
-      Number.isFinite(minute) &&
-      Number.isFinite(second) &&
-      minute % BROADCAST_CALENDAR_SLOT_MINUTES === 0 &&
-      second === 0 &&
-      value.getMilliseconds() === 0
-    );
-  }
-
-  private toLegacyCycleEveryDays(cycleEveryHours: number): number | undefined {
-    return cycleEveryHours % 24 === 0 ? cycleEveryHours / 24 : undefined;
-  }
-
-  private normalizeManagedBroadcastTargetChatIds(
-    targetChatIds: readonly string[],
-    fallbackChatId?: string,
-  ): string[] {
-    const normalized = Array.from(
-      new Set(
-        targetChatIds.map((item) => item.trim()).filter((item): item is string => item.length > 0),
-      ),
-    );
-    if (normalized.length > 0) {
-      return normalized;
-    }
-
-    return fallbackChatId?.trim() ? [fallbackChatId.trim()] : [];
-  }
-
-  private parseManagedBroadcastTargetChatIds(
-    value: Prisma.JsonValue,
-    fallbackChatId?: string,
-  ): string[] {
-    if (!Array.isArray(value)) {
-      return this.normalizeManagedBroadcastTargetChatIds([], fallbackChatId);
-    }
-
-    return this.normalizeManagedBroadcastTargetChatIds(
-      value.filter((item): item is string => typeof item === 'string'),
-      fallbackChatId,
-    );
-  }
-
-  private resolveManagedBroadcastTargetMode(params: {
-    applyToAllChats: boolean;
-    sourceChatId: string;
-    targetChatIds: readonly string[];
-  }): BroadcastTargetMode {
-    if (params.applyToAllChats) {
-      return 'all';
-    }
-
-    if (params.targetChatIds.length === 1 && params.targetChatIds[0] === params.sourceChatId) {
-      return 'current';
-    }
-
-    return 'selected';
-  }
-
   private resolveManagedBroadcastTargetsFromRow(row: {
     applyToAllChats: boolean;
     sourceChatId: string;
     targetChatIds: Prisma.JsonValue;
   }): { targetMode: BroadcastTargetMode; targetChatIds: string[] } {
-    const targetChatIds = this.parseManagedBroadcastTargetChatIds(
-      row.targetChatIds,
-      row.sourceChatId,
-    );
-    return {
-      targetMode: this.resolveManagedBroadcastTargetMode({
-        applyToAllChats: row.applyToAllChats,
-        sourceChatId: row.sourceChatId,
-        targetChatIds,
-      }),
-      targetChatIds,
-    };
-  }
-
-  private fallbackManagedBroadcastTargetPreview(
-    chatId: string,
-    entityType: ManagedEntityType = 'chat',
-  ): ManagedBroadcastTargetPreview {
-    const normalizedChatId = chatId.trim();
-    return {
-      id: normalizedChatId,
-      title: `${entityType === 'channel' ? 'Канал' : 'Чат'} ${normalizedChatId}`,
-      entityType,
-      link: null,
-      avatarUrl: null,
-    };
+    return resolveManagedBroadcastTargetsFromRowValue(row);
   }
 
   private async loadManagedBroadcastTargetPreviewMap(
     targetChatIds: readonly string[],
     fallbackEntityType: ManagedEntityType = 'chat',
   ): Promise<Map<string, ManagedBroadcastTargetPreview>> {
-    const normalizedIds = this.normalizeManagedBroadcastTargetChatIds(targetChatIds);
+    const normalizedIds = normalizeManagedBroadcastTargetChatIds(targetChatIds);
     if (normalizedIds.length === 0) {
       return new Map();
     }
@@ -5765,7 +4851,7 @@ export class AdminManagedBroadcastRuntime {
         id: row.id,
         title:
           this.readTrimmedString(row.title) ??
-          this.fallbackManagedBroadcastTargetPreview(row.id, entityType).title,
+          fallbackManagedBroadcastTargetPreview(row.id, entityType).title,
         entityType,
         link: null,
         avatarUrl: null,
@@ -5797,7 +4883,7 @@ export class AdminManagedBroadcastRuntime {
         id: row.chatId,
         title:
           this.readTrimmedString(row.title) ??
-          this.fallbackManagedBroadcastTargetPreview(row.chatId, entityType).title,
+          fallbackManagedBroadcastTargetPreview(row.chatId, entityType).title,
         entityType,
         link: this.readTrimmedString(row.link) ?? null,
         avatarUrl: this.readTrimmedString(row.avatarUrl) ?? null,
@@ -5806,34 +4892,11 @@ export class AdminManagedBroadcastRuntime {
 
     for (const chatId of normalizedIds) {
       if (!previews.has(chatId)) {
-        previews.set(
-          chatId,
-          this.fallbackManagedBroadcastTargetPreview(chatId, fallbackEntityType),
-        );
+        previews.set(chatId, fallbackManagedBroadcastTargetPreview(chatId, fallbackEntityType));
       }
     }
 
     return previews;
-  }
-
-  private buildManagedBroadcastTargetPreviewBundle(
-    targetChatIds: readonly string[],
-    previewMap: ReadonlyMap<string, ManagedBroadcastTargetPreview>,
-    fallbackEntityType: ManagedEntityType = 'chat',
-  ): ManagedBroadcastTargetPreviewBundle {
-    const normalizedIds = this.normalizeManagedBroadcastTargetChatIds(targetChatIds);
-    const previews = normalizedIds
-      .slice(0, MANAGED_BROADCAST_TARGET_PREVIEW_LIMIT)
-      .map(
-        (chatId) =>
-          previewMap.get(chatId) ??
-          this.fallbackManagedBroadcastTargetPreview(chatId, fallbackEntityType),
-      );
-
-    return {
-      previews,
-      overflowCount: Math.max(0, normalizedIds.length - previews.length),
-    };
   }
 
   private async getManagedBroadcastTargetPreviewBundle(
@@ -5844,18 +4907,14 @@ export class AdminManagedBroadcastRuntime {
       targetChatIds,
       fallbackEntityType,
     );
-    return this.buildManagedBroadcastTargetPreviewBundle(
-      targetChatIds,
-      previewMap,
-      fallbackEntityType,
-    );
+    return buildManagedBroadcastTargetPreviewBundle(targetChatIds, previewMap, fallbackEntityType);
   }
 
   private async getManagedBroadcastTargetPreviewBundles(
     rows: readonly PersistedManagedBroadcast[],
   ): Promise<Map<string, ManagedBroadcastTargetPreviewBundle>> {
     const allTargetChatIds = rows.flatMap((row) =>
-      this.parseManagedBroadcastTargetChatIds(row.targetChatIds, row.sourceChatId),
+      parseManagedBroadcastTargetChatIds(row.targetChatIds, row.sourceChatId),
     );
     const previewMap = await this.loadManagedBroadcastTargetPreviewMap(allTargetChatIds);
     const result = new Map<string, ManagedBroadcastTargetPreviewBundle>();
@@ -5864,8 +4923,8 @@ export class AdminManagedBroadcastRuntime {
       const fallbackEntityType = fromPrismaEntityType(row.entityType);
       result.set(
         row.id,
-        this.buildManagedBroadcastTargetPreviewBundle(
-          this.parseManagedBroadcastTargetChatIds(row.targetChatIds, row.sourceChatId),
+        buildManagedBroadcastTargetPreviewBundle(
+          parseManagedBroadcastTargetChatIds(row.targetChatIds, row.sourceChatId),
           previewMap,
           fallbackEntityType,
         ),
@@ -5887,23 +4946,8 @@ export class AdminManagedBroadcastRuntime {
     return resolveManagedBroadcastSendRetryDelayMsValue(error, attempt, options);
   }
 
-  private resolveManagedBroadcastUploadRetryDelayMs(
-    error: unknown,
-    attempt: number,
-  ): number | null {
-    return resolveManagedBroadcastUploadRetryDelayMs(error, attempt);
-  }
-
-  private hasRetriableMaxAttachment(options: ManagedBroadcastRetriableAttachmentOptions): boolean {
-    return hasRetriableManagedBroadcastAttachment(options);
-  }
-
   private isAttachmentNotReadyError(error: unknown): boolean {
     return isAttachmentNotReadyErrorValue(error);
-  }
-
-  private sleep(ms: number): Promise<void> {
-    return sleep(ms);
   }
 
   private isManagedBroadcastSlotConflictError(error: unknown): boolean {
@@ -5932,44 +4976,6 @@ export class AdminManagedBroadcastRuntime {
     return buildManagedBroadcastButtonStateValue(rawButtons, legacy);
   }
 
-  private buildBroadcastLinkButtonRows(
-    buttons: readonly BroadcastLinkButton[],
-  ): MaxMessageButton[][] {
-    return buildManagedBroadcastLinkButtonRows(buttons);
-  }
-
-  private getCurrentManagedBroadcastOccurrence(row: PersistedManagedBroadcast): number {
-    return Math.min(Math.max(1, row.sentCount + 1), Math.max(1, row.cycleCount));
-  }
-
-  private normalizeManagedBroadcastCycleCount(row: Pick<PersistedManagedBroadcast, 'cycleCount'>) {
-    return Math.max(1, row.cycleCount);
-  }
-
-  private buildManagedBroadcastDeliveryRows(
-    broadcastId: string,
-    targetChatIds: string[],
-    fromOccurrenceIndex: number,
-    cycleCount: number,
-  ): Prisma.ManagedBroadcastDeliveryCreateManyInput[] {
-    const rows: Prisma.ManagedBroadcastDeliveryCreateManyInput[] = [];
-    for (
-      let occurrenceIndex = fromOccurrenceIndex;
-      occurrenceIndex <= cycleCount;
-      occurrenceIndex += 1
-    ) {
-      for (const targetChatId of targetChatIds) {
-        rows.push({
-          broadcastId,
-          occurrenceIndex,
-          targetChatId,
-          status: PrismaManagedBroadcastDeliveryStatus.PENDING,
-        });
-      }
-    }
-    return rows;
-  }
-
   private async ensureManagedBroadcastDeliveryRows(
     row: Pick<
       PersistedManagedBroadcast,
@@ -5979,12 +4985,12 @@ export class AdminManagedBroadcastRuntime {
     targetChatIds: string[],
     deliveries: PersistedManagedBroadcastDelivery[],
   ): Promise<PersistedManagedBroadcastDelivery[]> {
-    const normalizedTargetChatIds = this.normalizeManagedBroadcastTargetChatIds(targetChatIds);
+    const normalizedTargetChatIds = normalizeManagedBroadcastTargetChatIds(targetChatIds);
     if (normalizedTargetChatIds.length === 0) {
       return deliveries;
     }
 
-    const cycleCount = Math.max(fromOccurrenceIndex, this.normalizeManagedBroadcastCycleCount(row));
+    const cycleCount = Math.max(fromOccurrenceIndex, normalizeManagedBroadcastCycleCount(row));
     const existingCurrentTargetChatIds = new Set(
       deliveries.map((delivery) => delivery.targetChatId),
     );
@@ -6049,7 +5055,7 @@ export class AdminManagedBroadcastRuntime {
     const existingKeys = new Set(
       existingDeliveries.map((delivery) => `${delivery.occurrenceIndex}:${delivery.targetChatId}`),
     );
-    const missingRows = this.buildManagedBroadcastDeliveryRows(
+    const missingRows = buildManagedBroadcastDeliveryRows(
       row.id,
       normalizedTargetChatIds,
       fromOccurrenceIndex,
@@ -6106,7 +5112,7 @@ export class AdminManagedBroadcastRuntime {
       }
 
       const failureMessage = delivery.lastError?.trim() ?? '';
-      if (this.isManagedBroadcastPermanentTargetDeliveryFailure(null, failureMessage)) {
+      if (isManagedBroadcastPermanentTargetDeliveryFailure(null, failureMessage)) {
         await this.cancelManagedBroadcastTargetDeliveries(broadcastId, occurrenceIndex, {
           targetChatId: delivery.targetChatId,
           currentDeliveryId: delivery.id,
@@ -6144,7 +5150,7 @@ export class AdminManagedBroadcastRuntime {
         continue;
       }
 
-      if (!this.shouldAutoRetryManagedBroadcastDeliveryFailure(delivery)) {
+      if (!shouldAutoRetryManagedBroadcastDeliveryFailure(delivery)) {
         continue;
       }
 
@@ -6237,7 +5243,7 @@ export class AdminManagedBroadcastRuntime {
     currentAttemptCount: number,
     failureMessage: string,
   ): Promise<string | null> {
-    if (!this.isManagedBroadcastTransientDeliveryFailureMessage(failureMessage)) {
+    if (!isManagedBroadcastTransientDeliveryFailureMessage(failureMessage)) {
       return null;
     }
 
@@ -6264,7 +5270,7 @@ export class AdminManagedBroadcastRuntime {
       const effectiveFailureMessage = isCurrentOccurrence
         ? failureMessage
         : (delivery.lastError ?? '').trim();
-      if (!this.isManagedBroadcastTransientDeliveryFailureMessage(effectiveFailureMessage)) {
+      if (!isManagedBroadcastTransientDeliveryFailureMessage(effectiveFailureMessage)) {
         continue;
       }
 
@@ -6281,141 +5287,10 @@ export class AdminManagedBroadcastRuntime {
       return null;
     }
 
-    return this.buildManagedBroadcastTransientQuarantineMessage(
+    return buildManagedBroadcastTransientQuarantineMessage(
       transientFailureAttempts,
       transientFailureOccurrences.size,
       failureMessage,
-    );
-  }
-
-  private shouldAutoRetryManagedBroadcastDeliveryFailure(
-    delivery: PersistedManagedBroadcastDelivery,
-  ): boolean {
-    if (delivery.attemptCount >= MANAGED_BROADCAST_MAX_AUTO_RETRY_ATTEMPTS) {
-      return false;
-    }
-
-    const retryAllowedAtMs = delivery.updatedAt.getTime() + MANAGED_BROADCAST_AUTO_RETRY_BACKOFF_MS;
-    if (retryAllowedAtMs > Date.now()) {
-      return false;
-    }
-
-    return this.isManagedBroadcastAutoRetryableDeliveryFailureMessage(delivery.lastError ?? '');
-  }
-
-  private buildManagedBroadcastAutoRetryableFailureWhere(): Prisma.ManagedBroadcastDeliveryWhereInput[] {
-    return [
-      { lastError: null },
-      { lastError: { contains: 'timeout', mode: 'insensitive' } },
-      { lastError: { contains: 'rate limit exceeded', mode: 'insensitive' } },
-      { lastError: { contains: 'circuit breaker', mode: 'insensitive' } },
-      { lastError: { contains: 'attachment.not.ready', mode: 'insensitive' } },
-      { lastError: { contains: 'not ready', mode: 'insensitive' } },
-      { lastError: { contains: 'temporarily unavailable', mode: 'insensitive' } },
-      { lastError: { contains: 'service unavailable', mode: 'insensitive' } },
-      { lastError: { contains: 'socket hang up', mode: 'insensitive' } },
-      { lastError: { contains: 'econnaborted', mode: 'insensitive' } },
-      { lastError: { contains: 'econnreset', mode: 'insensitive' } },
-      { lastError: { contains: 'network error', mode: 'insensitive' } },
-      { lastError: { contains: 'too many requests', mode: 'insensitive' } },
-      { lastError: { contains: 'Не удалось загрузить фото', mode: 'insensitive' } },
-      { lastError: { contains: '429', mode: 'insensitive' } },
-    ];
-  }
-
-  private isManagedBroadcastAutoRetryableDeliveryFailureMessage(value: string): boolean {
-    const normalized = value.trim().toLowerCase();
-    if (!normalized) {
-      return true;
-    }
-
-    return (
-      normalized.includes('timeout') ||
-      normalized.includes('rate limit exceeded') ||
-      normalized.includes('circuit breaker') ||
-      normalized.includes('attachment.not.ready') ||
-      normalized.includes('not ready') ||
-      normalized.includes('temporarily unavailable') ||
-      normalized.includes('service unavailable') ||
-      normalized.includes('socket hang up') ||
-      normalized.includes('econnaborted') ||
-      normalized.includes('econnreset') ||
-      normalized.includes('network error') ||
-      normalized.includes('too many requests') ||
-      normalized.includes('не удалось загрузить фото') ||
-      normalized.includes('429')
-    );
-  }
-
-  private isManagedBroadcastTransientDeliveryFailureMessage(value: string): boolean {
-    const normalized = value.trim().toLowerCase();
-    if (!normalized) {
-      return true;
-    }
-
-    return (
-      normalized.includes('timeout') ||
-      normalized.includes('rate limit exceeded') ||
-      normalized.includes('circuit breaker') ||
-      normalized.includes('attachment.not.ready') ||
-      normalized.includes('not ready') ||
-      normalized.includes('temporarily unavailable') ||
-      normalized.includes('service unavailable') ||
-      normalized.includes('socket hang up') ||
-      normalized.includes('econnaborted') ||
-      normalized.includes('econnreset') ||
-      normalized.includes('network error') ||
-      normalized.includes('не удалось загрузить фото') ||
-      normalized.includes('прошлая попытка была прервана после старта отправки')
-    );
-  }
-
-  private isManagedBroadcastTransientQuarantineFailureMessage(value: string): boolean {
-    return value
-      .trim()
-      .toLowerCase()
-      .startsWith(MANAGED_BROADCAST_TRANSIENT_QUARANTINE_REASON_PREFIX.toLowerCase());
-  }
-
-  private buildManagedBroadcastTransientQuarantineMessage(
-    transientFailureAttempts: number,
-    transientFailureOccurrences: number,
-    lastFailureMessage: string,
-  ): string {
-    const reason =
-      transientFailureOccurrences >= MANAGED_BROADCAST_TARGET_QUARANTINE_FAILURE_OCCURRENCES
-        ? `${MANAGED_BROADCAST_TRANSIENT_QUARANTINE_REASON_PREFIX}: ${transientFailureOccurrences} проблемных слота подряд.`
-        : `${MANAGED_BROADCAST_TRANSIENT_QUARANTINE_REASON_PREFIX}: ${transientFailureAttempts} неудачных попыток.`;
-    const normalizedLastFailureMessage = lastFailureMessage.trim();
-    return normalizedLastFailureMessage
-      ? `${reason} Последняя ошибка: ${normalizedLastFailureMessage}`
-      : reason;
-  }
-
-  private isManagedBroadcastPermanentTargetDeliveryFailure(
-    error: unknown,
-    failureMessage: string,
-  ): boolean {
-    if (error && isPrivateDialogChatUnavailableError(error)) {
-      return true;
-    }
-
-    const normalized = failureMessage.trim().toLowerCase();
-    if (!normalized) {
-      return false;
-    }
-
-    return (
-      normalized.includes('chat closed') ||
-      normalized.includes('chat not found') ||
-      /^chat\s+.+\s+not found$/i.test(failureMessage.trim()) ||
-      normalized.includes('not active chat member') ||
-      normalized.includes('not a chat member') ||
-      normalized.includes('bot is not a chat member') ||
-      normalized.includes('not accessible') ||
-      normalized.includes('forbidden') ||
-      normalized.includes('chat.denied') ||
-      normalized.includes('chat.not.found')
     );
   }
 
@@ -6773,7 +5648,7 @@ export class AdminManagedBroadcastRuntime {
       if (reconciled.count === 0) {
         continue;
       }
-      const recoveredContext = this.readManagedBroadcastLedgerCommentDialogContext(ledger.metadata);
+      const recoveredContext = readManagedBroadcastLedgerCommentDialogContext(ledger.metadata);
       if (recoveredContext.found) {
         await this.recordManagedBroadcastCommentDialogReference({
           chatId: delivery.targetChatId,
@@ -6834,52 +5709,6 @@ export class AdminManagedBroadcastRuntime {
             'Прошлая попытка была прервана после старта отправки. Проверьте чат вручную перед повтором.',
         },
       });
-    }
-  }
-
-  private resolveManagedBroadcastFatalProcessingErrorMessage(error: unknown): string | null {
-    if (error instanceof ManagedBroadcastTransientUploadError) {
-      return null;
-    }
-    if (!(error instanceof BadRequestException)) {
-      return null;
-    }
-
-    const response = error.getResponse();
-    if (typeof response === 'string' && response.trim().length > 0) {
-      return response.trim();
-    }
-
-    const message = (response as { message?: unknown } | null)?.message;
-    if (typeof message === 'string' && message.trim().length > 0) {
-      return message.trim();
-    }
-    if (Array.isArray(message)) {
-      const normalized = message.find(
-        (item): item is string => typeof item === 'string' && item.trim().length > 0,
-      );
-      if (normalized) {
-        return normalized.trim();
-      }
-    }
-
-    return error.message.trim().length > 0 ? error.message.trim() : null;
-  }
-
-  private resolveManagedBroadcastFatalProcessingFailureMessage(
-    failureMessage: string | null | undefined,
-  ): string | null {
-    const normalized = failureMessage?.trim();
-    if (!normalized) {
-      return null;
-    }
-
-    switch (normalized) {
-      case 'Поддерживаются только изображения.':
-      case 'Фото слишком большое. Попробуйте другое изображение.':
-        return normalized;
-      default:
-        return null;
     }
   }
 
@@ -7028,7 +5857,7 @@ export class AdminManagedBroadcastRuntime {
 
     return {
       status: current?.status ?? PrismaManagedBroadcastStatus.FAILED,
-      currentOccurrence: current ? this.getCurrentManagedBroadcastOccurrence(current) : 1,
+      currentOccurrence: current ? getCurrentManagedBroadcastOccurrence(current) : 1,
       sentChatIds,
       failedChatIds,
       pendingChatIds,
@@ -7155,7 +5984,7 @@ export class AdminManagedBroadcastRuntime {
         deliveredChats.length > 0
           ? PrismaManagedBroadcastStatus.PARTIAL
           : PrismaManagedBroadcastStatus.FAILED;
-      const failureMessage = this.buildManagedBroadcastFailureMessage(
+      const failureMessage = buildManagedBroadcastFailureMessage(
         terminalFailureChats.length,
         firstSendError,
       );
@@ -7282,18 +6111,6 @@ export class AdminManagedBroadcastRuntime {
     };
   }
 
-  private buildManagedBroadcastFailureMessage(
-    failedChats: number,
-    firstSendError: unknown,
-  ): string {
-    return (
-      this.extractMaxApiErrorMessage(firstSendError) ||
-      (firstSendError instanceof Error && firstSendError.message.trim()
-        ? firstSendError.message
-        : `Не удалось отправить в ${failedChats} чат(ов).`)
-    );
-  }
-
   private async getManagedBroadcastDeliverySnapshots(
     rows: PersistedManagedBroadcast[],
   ): Promise<Map<string, ManagedBroadcastDeliverySnapshot>> {
@@ -7305,7 +6122,7 @@ export class AdminManagedBroadcastRuntime {
       where: {
         OR: rows.map((row) => ({
           broadcastId: row.id,
-          occurrenceIndex: this.getCurrentManagedBroadcastOccurrence(row),
+          occurrenceIndex: getCurrentManagedBroadcastOccurrence(row),
         })),
       },
       select: {
@@ -7335,7 +6152,7 @@ export class AdminManagedBroadcastRuntime {
     const deliveries = await this.prisma.managedBroadcastDelivery.findMany({
       where: {
         broadcastId: row.id,
-        occurrenceIndex: this.getCurrentManagedBroadcastOccurrence(row),
+        occurrenceIndex: getCurrentManagedBroadcastOccurrence(row),
       },
     });
     return this.createManagedBroadcastDeliverySnapshot(row, deliveries);
@@ -7345,67 +6162,7 @@ export class AdminManagedBroadcastRuntime {
     row: PersistedManagedBroadcast,
     deliveries: PersistedManagedBroadcastDelivery[],
   ): ManagedBroadcastDeliverySnapshot {
-    const failureBreakdown = this.createEmptyManagedBroadcastFailureBreakdown();
-    for (const delivery of deliveries) {
-      if (
-        delivery.status !== PrismaManagedBroadcastDeliveryStatus.FAILED &&
-        delivery.status !== PrismaManagedBroadcastDeliveryStatus.AMBIGUOUS &&
-        delivery.status !== PrismaManagedBroadcastDeliveryStatus.CANCELED
-      ) {
-        continue;
-      }
-
-      const failureMessage = delivery.lastError ?? '';
-      if (this.isManagedBroadcastTransientQuarantineFailureMessage(failureMessage)) {
-        failureBreakdown.quarantined += 1;
-        continue;
-      }
-      if (this.isManagedBroadcastPermanentTargetDeliveryFailure(null, failureMessage)) {
-        failureBreakdown.permanentTarget += 1;
-        continue;
-      }
-      if (this.isManagedBroadcastTransientDeliveryFailureMessage(failureMessage)) {
-        failureBreakdown.transient += 1;
-        continue;
-      }
-      failureBreakdown.unknown += 1;
-    }
-
-    return {
-      currentOccurrence: this.getCurrentManagedBroadcastOccurrence(row),
-      deliveredChats: deliveries.filter(
-        (delivery: any) => delivery.status === PrismaManagedBroadcastDeliveryStatus.SENT,
-      ).length,
-      failedChats: deliveries.filter(
-        (delivery: any) =>
-          delivery.status === PrismaManagedBroadcastDeliveryStatus.FAILED ||
-          delivery.status === PrismaManagedBroadcastDeliveryStatus.AMBIGUOUS,
-      ).length,
-      pendingChats: deliveries.filter(
-        (delivery) =>
-          delivery.status === PrismaManagedBroadcastDeliveryStatus.PENDING ||
-          delivery.status === PrismaManagedBroadcastDeliveryStatus.SENDING,
-      ).length,
-      blockedChats: deliveries.filter(
-        (delivery) => delivery.status === PrismaManagedBroadcastDeliveryStatus.CANCELED,
-      ).length,
-      failureBreakdown,
-      canRetry:
-        (row.status === PrismaManagedBroadcastStatus.PARTIAL ||
-          row.status === PrismaManagedBroadcastStatus.FAILED) &&
-        deliveries.some(
-          (delivery: any) => delivery.status === PrismaManagedBroadcastDeliveryStatus.FAILED,
-        ),
-    };
-  }
-
-  private createEmptyManagedBroadcastFailureBreakdown(): ManagedBroadcastFailureBreakdown {
-    return {
-      transient: 0,
-      permanentTarget: 0,
-      quarantined: 0,
-      unknown: 0,
-    };
+    return createManagedBroadcastDeliverySnapshotValue(row, deliveries);
   }
 
   private async loadManagedAutopostRuleIdsByBroadcastId(
@@ -7454,7 +6211,7 @@ export class AdminManagedBroadcastRuntime {
     const resolvedSnapshot = snapshot ?? this.createManagedBroadcastDeliverySnapshot(row, []);
     const resolvedTargetPreviewBundle =
       targetPreviewBundle ??
-      this.buildManagedBroadcastTargetPreviewBundle(
+      buildManagedBroadcastTargetPreviewBundle(
         targetChatIds,
         new Map(),
         fromPrismaEntityType(row.entityType),
@@ -7466,7 +6223,7 @@ export class AdminManagedBroadcastRuntime {
     });
     const images = this.readManagedBroadcastImagesFromRow(row);
     const hasVideo = readManagedBroadcastMediaType(row.mediaType) === 'video';
-    const cycleCount = this.normalizeManagedBroadcastCycleCount(row);
+    const cycleCount = normalizeManagedBroadcastCycleCount(row);
 
     return {
       id: row.id,
@@ -7524,7 +6281,7 @@ export class AdminManagedBroadcastRuntime {
     const resolvedSnapshot = snapshot ?? this.createManagedBroadcastDeliverySnapshot(row, []);
     const resolvedTargetPreviewBundle =
       targetPreviewBundle ??
-      this.buildManagedBroadcastTargetPreviewBundle(
+      buildManagedBroadcastTargetPreviewBundle(
         targetChatIds,
         new Map(),
         fromPrismaEntityType(row.entityType),
@@ -7537,7 +6294,7 @@ export class AdminManagedBroadcastRuntime {
     const mediaType = readManagedBroadcastMediaType(row.mediaType);
     const images = this.readManagedBroadcastImagesFromRow(row);
     const firstImage = images[0];
-    const cycleCount = this.normalizeManagedBroadcastCycleCount(row);
+    const cycleCount = normalizeManagedBroadcastCycleCount(row);
 
     return {
       id: row.id,
@@ -7601,7 +6358,9 @@ export class AdminManagedBroadcastRuntime {
     let lastError: unknown = null;
     const attempts =
       Math.max(
-        this.hasRetriableMaxAttachment(options) ? BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length : 0,
+        hasRetriableManagedBroadcastAttachment(options)
+          ? BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length
+          : 0,
         BROADCAST_THROTTLE_RETRY_DELAYS_MS.length,
         BROADCAST_TIMEOUT_RETRY_DELAYS_MS.length,
       ) + 1;
@@ -7627,7 +6386,7 @@ export class AdminManagedBroadcastRuntime {
           throw error;
         }
         await onProgress?.();
-        await this.sleep(retryDelayMs);
+        await sleep(retryDelayMs);
       }
     }
 
@@ -7635,28 +6394,6 @@ export class AdminManagedBroadcastRuntime {
       throw lastError;
     }
     throw new Error('Managed broadcast send did not return a result.');
-  }
-
-  private buildManagedBroadcastLedgerContext(
-    reference: ManagedBroadcastCommentDialogReference | null,
-  ): MaxActionLedgerContext {
-    return {
-      managedBroadcast: {
-        commentDialogReference: reference
-          ? {
-              entityType: reference.entityType,
-              threadId: reference.threadId,
-              includeCommentsButton: reference.includeCommentsButton,
-              includeSuggestButton: reference.includeSuggestButton,
-              suggestButtonText: reference.suggestButtonText,
-              customButtons: reference.customButtons,
-              autoPostButtonsMode: reference.autoPostButtonsMode,
-              suggestionEntryMode: reference.suggestionEntryMode,
-              botId: reference.botId,
-            }
-          : null,
-      },
-    };
   }
 
   private async loadManagedBroadcastLedgerCommentDialogContext(jobId: string): Promise<{
@@ -7667,62 +6404,7 @@ export class AdminManagedBroadcastRuntime {
       where: { jobId },
       select: { metadata: true },
     });
-    return this.readManagedBroadcastLedgerCommentDialogContext(ledger?.metadata ?? null);
-  }
-
-  private readManagedBroadcastLedgerCommentDialogContext(value: unknown): {
-    found: boolean;
-    reference: ManagedBroadcastCommentDialogReference | null;
-  } {
-    const metadata = this.readObjectPayloadOrNull(value);
-    const ledgerContext = this.readObjectPayloadOrNull(metadata?.ledgerContext);
-    const managedBroadcast = this.readObjectPayloadOrNull(ledgerContext?.managedBroadcast);
-    if (
-      !managedBroadcast ||
-      !Object.prototype.hasOwnProperty.call(managedBroadcast, 'commentDialogReference')
-    ) {
-      return { found: false, reference: null };
-    }
-    if (managedBroadcast.commentDialogReference === null) {
-      return { found: true, reference: null };
-    }
-
-    const reference = this.readObjectPayloadOrNull(managedBroadcast.commentDialogReference);
-    const entityType = reference?.entityType;
-    const threadId = this.readTrimmedString(reference?.threadId);
-    if (
-      !reference ||
-      (entityType !== 'chat' && entityType !== 'channel') ||
-      !threadId ||
-      typeof reference.includeCommentsButton !== 'boolean' ||
-      typeof reference.includeSuggestButton !== 'boolean'
-    ) {
-      return { found: false, reference: null };
-    }
-
-    return {
-      found: true,
-      reference: {
-        entityType,
-        threadId,
-        includeCommentsButton: reference.includeCommentsButton,
-        includeSuggestButton: reference.includeSuggestButton,
-        suggestButtonText:
-          typeof reference.suggestButtonText === 'string' && reference.suggestButtonText.trim()
-            ? reference.suggestButtonText.trim()
-            : null,
-        customButtons: this.normalizeManagedBroadcastButtons(reference.customButtons),
-        autoPostButtonsMode:
-          typeof reference.autoPostButtonsMode === 'string'
-            ? (reference.autoPostButtonsMode as ManagedBroadcastCommentDialogReference['autoPostButtonsMode'])
-            : null,
-        suggestionEntryMode:
-          typeof reference.suggestionEntryMode === 'string'
-            ? (reference.suggestionEntryMode as ManagedBroadcastCommentDialogReference['suggestionEntryMode'])
-            : null,
-        botId: this.readTrimmedString(reference.botId),
-      },
-    };
+    return readManagedBroadcastLedgerCommentDialogContext(ledger?.metadata ?? null);
   }
 
   private buildManagedBroadcastDeliveryActionKey(
@@ -7730,55 +6412,7 @@ export class AdminManagedBroadcastRuntime {
     occurrenceIndex: number,
     targetChatId: string,
   ): string {
-    const contentRevision = row.publicationContentRevisionId
-      ? `publication-${row.publicationContentRevisionId}`
-      : `legacy-${this.buildManagedBroadcastSemanticContentHash(row).slice(0, 32)}`;
-    return `managed-broadcast:send:${row.id}:occurrence:${occurrenceIndex}:target:${targetChatId}:content:${contentRevision}`;
-  }
-
-  private buildManagedBroadcastSemanticContentHash(row: PersistedManagedBroadcast): string {
-    const hashString = (value: string): string => createHash('sha256').update(value).digest('hex');
-    const semanticContent = {
-      version: 1,
-      entityType: row.entityType,
-      text: row.text,
-      textFormat: row.textFormat,
-      buttons: row.buttons,
-      buttonEnabled: row.buttonEnabled,
-      buttonUrl: row.buttonUrl,
-      buttonText: row.buttonText,
-      imageEnabled: row.imageEnabled,
-      imageBase64Hash: row.imageEnabled ? hashString(row.imageBase64) : null,
-      imageMimeType: row.imageMimeType,
-      imageFileName: row.imageFileName,
-      mediaType: row.mediaType,
-      mediaPayloadHash:
-        row.mediaPayload === null
-          ? null
-          : hashString(this.stableStringifyManagedBroadcastActionKeyValue(row.mediaPayload)),
-      mediaMimeType: row.mediaMimeType,
-      mediaFileName: row.mediaFileName,
-    };
-    return hashString(this.stableStringifyManagedBroadcastActionKeyValue(semanticContent));
-  }
-
-  private stableStringifyManagedBroadcastActionKeyValue(value: unknown): string {
-    if (value === null || typeof value !== 'object') {
-      return JSON.stringify(value) ?? 'null';
-    }
-    if (Array.isArray(value)) {
-      return `[${value
-        .map((item) => this.stableStringifyManagedBroadcastActionKeyValue(item))
-        .join(',')}]`;
-    }
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
-      .sort((left, right) => left.localeCompare(right))
-      .map(
-        (key) =>
-          `${JSON.stringify(key)}:${this.stableStringifyManagedBroadcastActionKeyValue(record[key])}`,
-      )
-      .join(',')}}`;
+    return buildManagedBroadcastDeliveryActionKeyValue(row, occurrenceIndex, targetChatId);
   }
 
   private async sendBroadcastImageMessageWithRetry(
@@ -7822,7 +6456,7 @@ export class AdminManagedBroadcastRuntime {
         }
         const delayMs = BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS[attempt - 1] ?? 1_500;
         await onProgress?.();
-        await this.sleep(delayMs);
+        await sleep(delayMs);
       }
     }
 

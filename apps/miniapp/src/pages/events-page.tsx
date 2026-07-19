@@ -2231,12 +2231,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       resolveStatisticsTitle({
         remoteTitle: currentDashboardIdentity?.chat.title,
         remoteFallbackTitles: chatId
-          ? [
-              `Чат ${chatId}`,
-              `Chat ${chatId}`,
-              `Канал ${chatId}`,
-              `Channel ${chatId}`,
-            ]
+          ? [`Чат ${chatId}`, `Chat ${chatId}`, `Канал ${chatId}`, `Channel ${chatId}`]
           : [],
         routeTitle: routeChatTitle,
         storedTitle: chatId ? readChatTitle(chatId) : null,

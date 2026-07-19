@@ -1,4 +1,4 @@
-import type { SafetyDeskGiveawayWinnerNotificationDeadEndItem } from '@maxim/contracts';
+import type { SafetyDeskGiveawayWinnerNotificationDeadEndItem } from '@maxim/contracts/safety-desk';
 
 export function matchesGiveawayWinnerNotificationQuery(
   item: SafetyDeskGiveawayWinnerNotificationDeadEndItem,

@@ -5,7 +5,7 @@ import {
   type SupportRequestDecisionResponse,
   type SupportRequestItem,
   type SupportRequestQueueResponse,
-} from '@maxim/contracts';
+} from '@maxim/contracts/support-requests';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';

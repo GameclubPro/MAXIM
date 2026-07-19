@@ -1032,7 +1032,6 @@
   .channel-settings-inline-fields--narrow {
     grid-template-columns: minmax(0, 1fr);
   }
-
 }
 
 @media (min-width: 720px) {

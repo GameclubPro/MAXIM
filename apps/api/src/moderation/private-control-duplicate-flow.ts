@@ -96,18 +96,14 @@ export function resolvePrivateDuplicateAllowedCountMax(
     (settings.duplicateWarnEnabled ? 1 : 0) +
     (settings.duplicateMuteEnabled ? 1 : 0);
 
-  return Math.max(
-    DUPLICATE_ALLOWED_COUNT_MIN,
-    DUPLICATE_THRESHOLD_MAX - duplicateThresholdOffset,
-  );
+  return Math.max(DUPLICATE_ALLOWED_COUNT_MIN, DUPLICATE_THRESHOLD_MAX - duplicateThresholdOffset);
 }
 
 export function resolvePrivateDuplicateAllowedCount(
   settings: DuplicateFlowAllowedCountSettings,
 ): number {
   const rawAllowedCount =
-    resolvePrivateDuplicateFirstThreshold(settings) -
-    (settings.duplicateBotMessageEnabled ? 2 : 1);
+    resolvePrivateDuplicateFirstThreshold(settings) - (settings.duplicateBotMessageEnabled ? 2 : 1);
   return Math.max(
     DUPLICATE_ALLOWED_COUNT_MIN,
     Math.min(resolvePrivateDuplicateAllowedCountMax(settings), rawAllowedCount),

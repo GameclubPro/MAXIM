@@ -30,10 +30,7 @@ test('dark theme is bootstrapped before the bridge and React to prevent a white 
   const appIndex = html.indexOf('/src/main.tsx');
 
   assert.match(html, /<meta\s+name="color-scheme"\s+content="light dark"\s*\/>/u);
-  assert.match(
-    html,
-    /@media\s*\(prefers-color-scheme:\s*dark\)[\s\S]*?background:\s*#0d141b/u,
-  );
+  assert.match(html, /@media\s*\(prefers-color-scheme:\s*dark\)[\s\S]*?background:\s*#0d141b/u);
   assert.match(html, /normalizeTheme\(root\.dataset\.maxTheme\)\s*\?\?/u);
   assert.match(
     html,

@@ -318,25 +318,24 @@ describe('RuleEngineService', () => {
     jest.useFakeTimers();
     const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     const redisCounter = {
-      incrementOncePerMemberWithTtlBeforeDeadline: jest.fn().mockImplementation(
-        () => new Promise<never>(() => undefined),
-      ),
+      incrementOncePerMemberWithTtlBeforeDeadline: jest
+        .fn()
+        .mockImplementation(() => new Promise<never>(() => undefined)),
     };
     const service = new RuleEngineService(redisCounter as never);
-    const resultPromise = service
-      .detect({
-        chatId: 'chat-1',
-        userId: 'u-1',
-        messageId: 'message-1',
-        text: DUPLICATE_SPAM_TEXT,
-        settings: buildSettings({
-          antiDuplicateEnabled: true,
-          antiSpamEnabled: false,
-          commercialAdsFilterEnabled: false,
-          duplicateBotMessageEnabled: false,
-        }),
-        domainAllowlist: [],
-      });
+    const resultPromise = service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      messageId: 'message-1',
+      text: DUPLICATE_SPAM_TEXT,
+      settings: buildSettings({
+        antiDuplicateEnabled: true,
+        antiSpamEnabled: false,
+        commercialAdsFilterEnabled: false,
+        duplicateBotMessageEnabled: false,
+      }),
+      domainAllowlist: [],
+    });
     const rejected = expect(resultPromise).rejects.toMatchObject({
       code: 'DUPLICATE_STATE_BUDGET_EXCEEDED',
       retryable: true,

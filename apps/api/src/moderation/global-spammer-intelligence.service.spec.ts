@@ -308,22 +308,23 @@ function createPrismaMock() {
       }
       return { count };
     }),
-    count: jest.fn(async ({ where }: any) =>
-      observations.filter((row) => {
-        if (typeof where.userId === 'string' && row.userId !== where.userId) {
-          return false;
-        }
-        if (typeof where.chatId === 'string' && row.chatId !== where.chatId) {
-          return false;
-        }
-        if (where.expiresAt?.gt && !(row.expiresAt > where.expiresAt.gt)) {
-          return false;
-        }
-        if ('suppressedAt' in where && row.suppressedAt !== where.suppressedAt) {
-          return false;
-        }
-        return true;
-      }).length,
+    count: jest.fn(
+      async ({ where }: any) =>
+        observations.filter((row) => {
+          if (typeof where.userId === 'string' && row.userId !== where.userId) {
+            return false;
+          }
+          if (typeof where.chatId === 'string' && row.chatId !== where.chatId) {
+            return false;
+          }
+          if (where.expiresAt?.gt && !(row.expiresAt > where.expiresAt.gt)) {
+            return false;
+          }
+          if ('suppressedAt' in where && row.suppressedAt !== where.suppressedAt) {
+            return false;
+          }
+          return true;
+        }).length,
     ),
     groupBy: jest.fn().mockResolvedValue([]),
   };
@@ -1535,36 +1536,32 @@ describe('GlobalSpammerIntelligenceService', () => {
 
   it('sanitizes legacy non-finite JSON numbers while pruning raw evidence', async () => {
     const { observations } = createPrismaMock();
-    const service = new GlobalSpammerIntelligenceService(
-      {
-        spammerObservation: {
-          findMany: jest.fn().mockResolvedValue([
-            {
-              id: 'obs-legacy-json',
-              evidence: { text: 'legacy text with odd numbers' },
-              normalizedFeatures: {
-                evidenceHash: 'legacy-hash',
-                domains: ['example.com', Number.NaN, undefined, Number.POSITIVE_INFINITY],
-                urls: [Number.NEGATIVE_INFINITY, 'https://example.com'],
-                phoneHashes: [undefined, 'phone-hash'],
-                mediaSignatures: [Number.NaN, 'media-hash'],
-                fanout: {
-                  uniqueChats: Number.POSITIVE_INFINITY,
-                  duplicateCount: 2,
-                },
+    const service = new GlobalSpammerIntelligenceService({
+      spammerObservation: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'obs-legacy-json',
+            evidence: { text: 'legacy text with odd numbers' },
+            normalizedFeatures: {
+              evidenceHash: 'legacy-hash',
+              domains: ['example.com', Number.NaN, undefined, Number.POSITIVE_INFINITY],
+              urls: [Number.NEGATIVE_INFINITY, 'https://example.com'],
+              phoneHashes: [undefined, 'phone-hash'],
+              mediaSignatures: [Number.NaN, 'media-hash'],
+              fanout: {
+                uniqueChats: Number.POSITIVE_INFINITY,
+                duplicateCount: 2,
               },
             },
-          ]),
-          update: jest.fn(async ({ where, data }: any) => {
-            observations.push({ id: where.id, ...data });
-            return observations[observations.length - 1];
-          }),
-        },
-        $transaction: jest.fn(async (operations: Array<Promise<unknown>>) =>
-          Promise.all(operations),
-        ),
-      } as never,
-    );
+          },
+        ]),
+        update: jest.fn(async ({ where, data }: any) => {
+          observations.push({ id: where.id, ...data });
+          return observations[observations.length - 1];
+        }),
+      },
+      $transaction: jest.fn(async (operations: Array<Promise<unknown>>) => Promise.all(operations)),
+    } as never);
 
     await expect(
       service.pruneExpiredRawEvidence({
@@ -1594,30 +1591,26 @@ describe('GlobalSpammerIntelligenceService', () => {
 
   it('keeps emoji surrogate pairs intact while pruning raw evidence excerpts', async () => {
     const { observations } = createPrismaMock();
-    const service = new GlobalSpammerIntelligenceService(
-      {
-        spammerObservation: {
-          findMany: jest.fn().mockResolvedValue([
-            {
-              id: 'obs-emoji-json',
-              evidence: {
-                excerpt: `x${'😎'.repeat(140)}`,
-              },
-              normalizedFeatures: {
-                evidenceHash: 'emoji-hash',
-              },
+    const service = new GlobalSpammerIntelligenceService({
+      spammerObservation: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'obs-emoji-json',
+            evidence: {
+              excerpt: `x${'😎'.repeat(140)}`,
             },
-          ]),
-          update: jest.fn(async ({ where, data }: any) => {
-            observations.push({ id: where.id, ...data });
-            return observations[observations.length - 1];
-          }),
-        },
-        $transaction: jest.fn(async (operations: Array<Promise<unknown>>) =>
-          Promise.all(operations),
-        ),
-      } as never,
-    );
+            normalizedFeatures: {
+              evidenceHash: 'emoji-hash',
+            },
+          },
+        ]),
+        update: jest.fn(async ({ where, data }: any) => {
+          observations.push({ id: where.id, ...data });
+          return observations[observations.length - 1];
+        }),
+      },
+      $transaction: jest.fn(async (operations: Array<Promise<unknown>>) => Promise.all(operations)),
+    } as never);
 
     await expect(
       service.pruneExpiredRawEvidence({
@@ -1648,34 +1641,32 @@ describe('GlobalSpammerIntelligenceService', () => {
       prunedRows.push({ id: where.id, ...data });
       return prunedRows[prunedRows.length - 1];
     });
-    const service = new GlobalSpammerIntelligenceService(
-      {
-        spammerObservation: {
-          findMany: jest.fn().mockResolvedValue([
-            {
-              id: 'obs-good-json',
-              evidence: { text: 'legacy text' },
-              normalizedFeatures: {
-                evidenceHash: 'good-hash',
-                domains: ['example.com'],
-              },
+    const service = new GlobalSpammerIntelligenceService({
+      spammerObservation: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'obs-good-json',
+            evidence: { text: 'legacy text' },
+            normalizedFeatures: {
+              evidenceHash: 'good-hash',
+              domains: ['example.com'],
             },
-            {
-              id: 'obs-bad-json',
-              evidence: { text: 'legacy text' },
-              normalizedFeatures: {
-                evidenceHash: 'bad-hash',
-              },
+          },
+          {
+            id: 'obs-bad-json',
+            evidence: { text: 'legacy text' },
+            normalizedFeatures: {
+              evidenceHash: 'bad-hash',
             },
-          ]),
-          update,
-        },
-        $transaction: jest.fn(async () => {
-          batchMode = false;
-          throw new Error('invalid input syntax for type json');
-        }),
-      } as never,
-    );
+          },
+        ]),
+        update,
+      },
+      $transaction: jest.fn(async () => {
+        batchMode = false;
+        throw new Error('invalid input syntax for type json');
+      }),
+    } as never);
 
     await expect(
       service.pruneExpiredRawEvidence({

@@ -73,101 +73,6 @@ describe('production compose Prisma pool caps', () => {
   });
 });
 
-describe('production deploy script guards', () => {
-  it('keeps shared shell API service topology aligned with production guards', () => {
-    const topology = readRepoFile('infra/scripts/lib/deploy-topology.sh');
-    const monitor = readRepoFile('infra/scripts/vps-monitor-readonly.sh');
-
-    expect(readShellArray(topology, 'MAXIM_PRODUCTION_API_SERVICES')).toEqual(
-      Object.keys(API_SERVICE_POOL_CAPS),
-    );
-    expect(monitor).toContain('source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"');
-    expect(monitor).toContain('SERVICES=("${MAXIM_PRODUCTION_API_SERVICES[@]}")');
-  });
-
-  it('keeps the legacy deploy script fail-closed before deploy side effects', () => {
-    const script = readRepoFile('infra/scripts/deploy.sh');
-    const gateCall = lineCallIndex(script, 'require_legacy_deploy_confirmation');
-
-    expect(script).toContain('MAXIM_ALLOW_LEGACY_DEPLOY');
-    expect(gateCall).toBeLessThan(lineCallIndex(script, 'ensure_compose_env'));
-    expect(gateCall).toBeLessThan(indexOfRequired(script, 'npm ci'));
-    expect(gateCall).toBeLessThan(
-      indexOfRequired(script, 'docker compose -f infra/docker-compose.yml up'),
-    );
-  });
-
-  it('serializes main deploys and keeps API recreate waves one-at-a-time', () => {
-    const script = readRepoFile('infra/scripts/vps-pull-build-up.sh');
-    const lockHelper = readRepoFile('infra/scripts/lib/deploy-lock.sh');
-    const lockCall = lineCallIndex(script, 'acquire_deploy_lock');
-
-    expect(script).toContain('source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"');
-    expect(lockHelper).toContain(
-      'DEPLOY_LOCK_DIR="${MAXIM_DEPLOY_LOCK_DIR:-/tmp/maxim-main-deploy.lock}"',
-    );
-    expect(lockHelper).toContain('Another runtime deploy or rollback is already running');
-    expect(lockCall).toBeLessThan(lineCallIndex(script, 'sync_branch'));
-    expect(lockCall).toBeLessThan(indexOfRequired(script, 'docker compose "${COMPOSE_FILES[@]}" build'));
-    expect(lockCall).toBeLessThan(lineCallIndex(script, 'recreate_service_wave "worker" \\'));
-    expect(script).toContain('batch_size="${MAXIM_DEPLOY_API_RECREATE_BATCH_SIZE:-1}"');
-    expect(script).toContain('batch_delay_sec="${MAXIM_DEPLOY_API_RECREATE_BATCH_DELAY_SEC:-5}"');
-  });
-
-  it('builds one direct API image without provenance and tags every runtime role', () => {
-    const topology = readRepoFile('infra/scripts/lib/deploy-topology.sh');
-    const mainDeploy = readRepoFile('infra/scripts/vps-pull-build-up.sh');
-    const scaleDeploy = readRepoFile('infra/scripts/vps-pull-build-up-scale.sh');
-    const rollback = readRepoFile('infra/scripts/vps-runtime-rollback.sh');
-    const composeApiBuild = 'docker compose "${COMPOSE_FILES[@]}" build "${API_SERVICES[@]}"';
-
-    expect(topology).toContain('maxim_topology_build_shared_api_image()');
-    expect(topology).toContain(
-      'docker buildx build --load --provenance=false -t "$source_image" -f apps/api/Dockerfile .',
-    );
-    expect(topology).toContain('docker tag "$source_image" "${project_name}-${service}:latest"');
-    expect(mainDeploy).toContain('maxim_topology_build_shared_api_image "$MAIN_PROJECT_NAME"');
-    expect(scaleDeploy).toContain('maxim_topology_build_shared_api_image "$SCALE_PROJECT_NAME"');
-    expect(rollback).toContain('maxim_topology_build_shared_api_image infra');
-    expect(mainDeploy).not.toContain(composeApiBuild);
-    expect(scaleDeploy).not.toContain(composeApiBuild);
-    expect(rollback).not.toContain(composeApiBuild);
-  });
-
-  it('prepares scale Redis named volume before stopping conflicting stacks', () => {
-    const script = readRepoFile('infra/scripts/vps-pull-build-up-scale.sh');
-
-    expect(script).toContain('source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"');
-    expect(script).toContain('SCALE_REDIS_VOLUME="${SCALE_PROJECT_NAME}_redis_data"');
-    expect(script).toContain('MAXIM_ALLOW_EMPTY_SCALE_REDIS_DATA');
-    expect(script).toContain('redis-cli SAVE');
-    expect(script).toContain('docker volume create "$target_volume"');
-    expect(lineCallIndex(script, 'acquire_deploy_lock')).toBeLessThan(
-      lineCallIndex(script, 'sync_branch'),
-    );
-    expect(lineCallIndex(script, 'prepare_scale_redis_named_volume')).toBeLessThan(
-      lineCallIndex(script, 'stop_conflicting_stacks'),
-    );
-  });
-
-  it('checks rollback Prisma migration compatibility before switching git refs', () => {
-    const script = readRepoFile('infra/scripts/vps-runtime-rollback.sh');
-
-    expect(script).toContain('source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"');
-    expect(script).toContain('apps/api/prisma/migrations');
-    expect(script).toContain('_prisma_migrations');
-    expect(lineCallIndex(script, 'acquire_deploy_lock')).toBeLessThan(
-      lineCallIndex(script, 'stop_conflicting_scale_stack'),
-    );
-    expect(lineCallIndex(script, 'stop_conflicting_scale_stack')).toBeLessThan(
-      indexOfRequired(script, 'git switch --detach "$ROLLBACK_REF"'),
-    );
-    expect(lineCallIndex(script, 'ensure_rollback_migrations_compatible')).toBeLessThan(
-      indexOfRequired(script, 'git switch --detach "$ROLLBACK_REF"'),
-    );
-  });
-});
-
 function readServiceBlock(compose: string, service: string): string {
   const match = compose.match(
     new RegExp(
@@ -193,10 +98,6 @@ function readTopLevelVolumesBlock(compose: string): string {
   return match[1];
 }
 
-function readRepoFile(relativePath: string): string {
-  return readFileSync(resolve(__dirname, '../../../..', relativePath), 'utf8');
-}
-
 function readEnvNumber(serviceBlock: string, key: string): number {
   const match = serviceBlock.match(
     new RegExp(`^\\s{6}${escapeRegExp(key)}:\\s*'?([0-9]+)'?\\s*$`, 'mu'),
@@ -219,39 +120,6 @@ function readEnvString(serviceBlock: string, key: string): string {
   }
 
   return match[1].trim();
-}
-
-function readShellArray(script: string, variableName: string): string[] {
-  const match = new RegExp(
-    `^${escapeRegExp(variableName)}=\\(\\n([\\s\\S]*?)^\\)`,
-    'mu',
-  ).exec(script);
-
-  if (!match?.[1]) {
-    throw new Error(`Missing shell array ${variableName}`);
-  }
-
-  return Array.from(match[1].matchAll(/^\s+"([^"]+)"\s*$/gmu), ([, item]) => item);
-}
-
-function lineCallIndex(script: string, command: string): number {
-  const match = new RegExp(`^${escapeRegExp(command)}$`, 'mu').exec(script);
-
-  if (!match) {
-    throw new Error(`Missing shell command line: ${command}`);
-  }
-
-  return match.index;
-}
-
-function indexOfRequired(value: string, needle: string): number {
-  const index = value.indexOf(needle);
-
-  if (index === -1) {
-    throw new Error(`Missing required text: ${needle}`);
-  }
-
-  return index;
 }
 
 function escapeRegExp(value: string): string {

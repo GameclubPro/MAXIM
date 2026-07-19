@@ -32,6 +32,7 @@ import { AdminManagedEntitiesController } from './admin-managed-entities.control
 import { AdminSettingsController } from './admin-settings.controller';
 import { AdminVkParsingController } from './admin-vk-parsing.controller';
 import { ChannelDialogService } from './channel-dialog.service';
+import { CHANNEL_DIALOG_LEGACY_PORT } from './channel-dialog-legacy.port';
 import { ManualModerationService } from './manual-moderation.service';
 import { ManagedBroadcastRunnerService } from './managed-broadcast-runner.service';
 import { ManagedBroadcastService } from './managed-broadcast.service';
@@ -40,6 +41,7 @@ import { ManagedAutopostService } from './managed-autopost.service';
 import { ManagedEntityCandidateSyncService } from './managed-entity-candidate-sync.service';
 import { ManagedEntitiesDiscoveryService } from './managed-entities-discovery.service';
 import { ManagedEntitiesService } from './managed-entities.service';
+import { MANAGED_ENTITIES_LEGACY_PORT } from './managed-entities-legacy.port';
 import { ManagedGiveawayRunnerService } from './managed-giveaway-runner.service';
 import { ManagedGiveawayService } from './managed-giveaway.service';
 import { ManagedPollService } from './managed-poll.service';
@@ -104,6 +106,14 @@ import { SupportRequestsService } from './support-requests.service';
   ],
   providers: [
     AdminService,
+    {
+      provide: MANAGED_ENTITIES_LEGACY_PORT,
+      useExisting: AdminService,
+    },
+    {
+      provide: CHANNEL_DIALOG_LEGACY_PORT,
+      useExisting: AdminService,
+    },
     AdminManualMessageCleanupService,
     AdminDialogLinkService,
     AdminSettingsService,

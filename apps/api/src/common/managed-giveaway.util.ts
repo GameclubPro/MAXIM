@@ -27,9 +27,7 @@ function uniquifyManagedGiveawayPrizeTitles(
   }
 
   const reservedUniqueTitleKeys = new Set(
-    [...titleCounts.entries()]
-      .filter(([, count]) => count === 1)
-      .map(([titleKey]) => titleKey),
+    [...titleCounts.entries()].filter(([, count]) => count === 1).map(([titleKey]) => titleKey),
   );
   const duplicateOrdinals = new Map<string, number>();
   const usedTitleKeys = new Set<string>();
@@ -102,5 +100,5 @@ export function formatManagedGiveawayPrizeList(
   return prizes
     .slice()
     .sort((left, right) => left.position - right.position)
-    .map((prize) => `${prize.position}. ${(prize.displayTitle?.trim() || prize.title.trim())}`);
+    .map((prize) => `${prize.position}. ${prize.displayTitle?.trim() || prize.title.trim()}`);
 }

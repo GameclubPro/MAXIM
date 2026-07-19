@@ -24,10 +24,8 @@ export const queryKeys = {
   logsDashboard: logsDashboardQueryKey,
   globalSpammerReviewQueue: (chatId: string | null | undefined, ...scope: readonly unknown[]) =>
     ['global-spammer-review-queue', chatId, ...scope] as const,
-  globalSpammerReviewMetrics: (
-    chatId: string | null | undefined,
-    ...scope: readonly unknown[]
-  ) => ['global-spammer-review-metrics', chatId, ...scope] as const,
+  globalSpammerReviewMetrics: (chatId: string | null | undefined, ...scope: readonly unknown[]) =>
+    ['global-spammer-review-metrics', chatId, ...scope] as const,
   globalSpammerUserDiagnostics: (
     chatId: string | null | undefined,
     userId: string | null | undefined,

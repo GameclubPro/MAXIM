@@ -367,12 +367,7 @@ export class VkPublishService {
       maxMessage = await this.prepareMaxMessageText(chatId, prepared, settings, 'interactive');
     } catch (error) {
       try {
-        await this.releaseManualPublishLock(
-          post.id,
-          chatId,
-          publishLockAt,
-          post.publishReason,
-        );
+        await this.releaseManualPublishLock(post.id, chatId, publishLockAt, post.publishReason);
       } catch (releaseError) {
         this.logger.warn(
           { postId: post.id, chatId, err: releaseError },
@@ -2631,8 +2626,7 @@ export class VkPublishService {
       ? payload.linkUrls.filter((url) => !containsSupportedMarkdownUrl(payload.text, url))
       : [];
     const renderedLinkHtml = missingLinkUrls.map(
-      (url) =>
-        `<a href="${escapeMaxHtmlAttribute(url)}">${escapeMaxHtmlText(url)}</a>`,
+      (url) => `<a href="${escapeMaxHtmlAttribute(url)}">${escapeMaxHtmlText(url)}</a>`,
     );
     const contentHtml = usesRichText
       ? [renderedText.trim(), ...renderedLinkHtml].filter(Boolean).join('\n')
@@ -2640,9 +2634,7 @@ export class VkPublishService {
     const engagementText = usesRichText
       ? [
           payload.text.trim(),
-          ...missingLinkUrls.map(
-            (url) => `[${escapeMarkdownLinkLabel(url)}](${url})`,
-          ),
+          ...missingLinkUrls.map((url) => `[${escapeMarkdownLinkLabel(url)}](${url})`),
         ]
           .filter(Boolean)
           .join('\n')
@@ -3025,8 +3017,5 @@ function escapeMaxHtmlAttribute(value: string): string {
 }
 
 function escapeMarkdownLinkLabel(value: string): string {
-  return value
-    .replace(/\\/gu, '\\\\')
-    .replace(/\[/gu, '\\[')
-    .replace(/\]/gu, '\\]');
+  return value.replace(/\\/gu, '\\\\').replace(/\[/gu, '\\[').replace(/\]/gu, '\\]');
 }

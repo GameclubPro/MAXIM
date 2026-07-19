@@ -30,9 +30,7 @@ export type PrivateLauncherIntroViewInput = {
   footerButtons: MaxMessageButton[][];
 };
 
-export function renderPrivateMiniappMovedView(
-  input: PrivateMiniappMovedViewInput,
-): PrivateView {
+export function renderPrivateMiniappMovedView(input: PrivateMiniappMovedViewInput): PrivateView {
   const lines = [
     privateMarkdownTitle(input.title),
     '',
@@ -56,9 +54,7 @@ export function renderPrivateMiniappMovedView(
   };
 }
 
-export function renderPrivateLauncherHomeView(
-  input: PrivateLauncherHomeViewInput,
-): PrivateView {
+export function renderPrivateLauncherHomeView(input: PrivateLauncherHomeViewInput): PrivateView {
   const lines = [
     privateMarkdownTitle(input.profile.characterName),
     '',
@@ -77,9 +73,7 @@ export function renderPrivateLauncherHomeView(
   };
 }
 
-export function renderPrivateLauncherIntroView(
-  input: PrivateLauncherIntroViewInput,
-): PrivateView {
+export function renderPrivateLauncherIntroView(input: PrivateLauncherIntroViewInput): PrivateView {
   const lines = buildBotStartIntroLines(input.profile, privateMarkdownTitle, {
     appBaseUrl: input.appBaseUrl,
   });

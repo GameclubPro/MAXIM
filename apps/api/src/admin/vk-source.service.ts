@@ -437,14 +437,10 @@ export class VkSourceService {
       return recovered ? 1 : 0;
     }
 
-    await this.syncQueue.add(
-      VK_SYNC_JOB_NAME,
-      job,
-      {
-        jobId,
-        ...VK_PARSING_SYNC_RETRY_POLICY,
-      },
-    );
+    await this.syncQueue.add(VK_SYNC_JOB_NAME, job, {
+      jobId,
+      ...VK_PARSING_SYNC_RETRY_POLICY,
+    });
 
     return 1;
   }

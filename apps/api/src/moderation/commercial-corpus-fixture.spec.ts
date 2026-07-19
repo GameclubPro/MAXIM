@@ -190,10 +190,7 @@ describe('commercial sanitized corpus fixture', () => {
       if (record.isHardNegative === true && label === 'positive_candidate') {
         errors.push(`line ${lineNumber}: positive candidate cannot be marked hard-negative`);
       }
-      if (
-        safeContextBucket === 'rules_or_moderation_context' &&
-        currentHit
-      ) {
+      if (safeContextBucket === 'rules_or_moderation_context' && currentHit) {
         errors.push(`line ${lineNumber}: rules/moderation safe-context must not hit`);
       }
     }

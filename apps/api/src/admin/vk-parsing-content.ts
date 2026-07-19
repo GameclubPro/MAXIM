@@ -56,8 +56,7 @@ export const VK_POST_SKIP_REASON_NO_SUPPORTED_CONTENT: VkParsingSkipReason = 'NO
 
 const VK_INLINE_LINK_PATTERN =
   /(?:https?:\/\/|www\.|(?:vk\.cc|vk\.com|vk\.ru|t\.me|telegram\.me|wa\.me|max\.ru)\/)(?:\\[\\`*_[\]()~+]|[^\s<>()\]["'`{}])+/giu;
-const VK_MARKDOWN_LINK_PATTERN =
-  /\[([^\]\n]+)\]\((?:https?:\/\/|max:\/\/)[^\s)]+\)/giu;
+const VK_MARKDOWN_LINK_PATTERN = /\[([^\]\n]+)\]\((?:https?:\/\/|max:\/\/)[^\s)]+\)/giu;
 
 export function composeVkParsingPublishText(text: string, linkUrls: string[]): string {
   const base = text.trim();
@@ -79,9 +78,7 @@ export function prepareVkParsingPublishPayload(
     : payload.linkUrls;
   return {
     text:
-      payload.textFormat === 'markdown'
-        ? text.trim()
-        : composeVkParsingPublishText(text, linkUrls),
+      payload.textFormat === 'markdown' ? text.trim() : composeVkParsingPublishText(text, linkUrls),
     textFormat: payload.textFormat,
     photoUrls: payload.photoUrls,
     videoUrls: payload.videoUrls,

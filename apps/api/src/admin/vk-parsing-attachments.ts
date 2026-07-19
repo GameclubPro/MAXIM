@@ -264,12 +264,7 @@ function collectVideoAttachment(
   const candidates = collectVideoCandidateUrls(video);
   const best = candidates[0];
   if (!video || !best) {
-    collectUnsupportedAttachment(
-      'video',
-      attachment,
-      accumulator,
-      'Нет прямого HTTPS-файла видео',
-    );
+    collectUnsupportedAttachment('video', attachment, accumulator, 'Нет прямого HTTPS-файла видео');
     return;
   }
 

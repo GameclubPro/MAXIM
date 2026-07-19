@@ -1,0 +1,139 @@
+# API Agent Notes
+
+## Scope And Architecture
+
+- These instructions apply to `apps/api`. Root workflow and deploy rules still apply.
+- The NestJS/Fastify API uses Prisma/Postgres and BullMQ/Redis. Runtime processes share one image and split work with `APP_ROLE`; `APP_SERVICE_NAME` selects the typed queue/service profile in `src/runtime/runtime-topology.ts`.
+- Keep the runtime topology aligned with both production Compose files and `infra/scripts/lib/deploy-topology.sh`.
+- Ingress accepts public health/webhooks, admin serves `/api/v1/` and local owner APIs, enqueue materializes queue work, moderation roles process their assigned queues, and action dispatches MAX actions.
+- Runtime hot paths must go through `WebhookIngestionService`, `ModerationExecutionService`, `MaxActionDispatchService`, and `ManagedEntitiesDiscoveryService`, not legacy implementations.
+- Admin entry points should use `ManagedEntitiesService`, `AdminSettingsService`, `ManagedBroadcastService`, `ManualModerationService`, `ChannelDialogService`, and `ManagedGiveawayService` instead of growing legacy `AdminService`.
+- Refactor guards track real `*.legacy` files. New code imports public facades; only thin facade modules may import legacy implementations.
+
+## Validation And Prisma
+
+- Focused validation: `npm run check:api`, `npm run check:prisma`, or a targeted `npm test --workspace @maxim/api -- <spec-or-pattern>` while iterating.
+- Public API build/typecheck/test scripts serialize codegen through repo file locks. Do not invoke `*:unlocked`, `*:source`, raw Prisma Generate, and another API validation concurrently.
+- The built entrypoint is `dist/apps/api/src/main.js`; `npm run build --workspace @maxim/api` cleans output and checks that stale modules are absent.
+- Prisma 7 uses `apps/api/prisma.config.ts` from repo root or `prisma.config.ts` from this workspace. In API containers call `./apps/api/node_modules/.bin/prisma` from repo root.
+- Runtime code imports Prisma through `src/prisma/prisma-client.ts`, not `@prisma/client`; generated client output is ignored under `src/generated/prisma/`.
+- Model, enum, or database mapping changes in `prisma/schema.prisma` require a migration; generator/datasource-only changes do not.
+- `config/prisma-migration-policy.json` pins names and content digests through the latest committed migration. A new migration must advance that immutable baseline in the same reviewed change; never edit or delete historical `migration.sql` files.
+- Destructive column removal requires two runtime releases: first ship a client/schema that no longer selects the columns while DB columns remain, then drop them only after every API role runs the compatible client.
+- Statistics participant names use `chat_user_display_names` before temporary local history. `allowRemoteLookup: false` disables MAX calls, not local resolution. Backfill only with bounded `npm run stats:backfill-display-names -- ...` runs.
+
+## MAX Transport
+
+- Verify MAX Bot API, Mini Apps, `init_data`, webhooks, and deep links against current docs, in this order:
+  1. `https://dev.max.ru/docs/`
+  2. `https://dev.max.ru/docs-api/`
+  3. `https://help.max.ru/help/bots`
+  4. `https://github.com/max-messenger`
+- MAX removed bot-wide `GET /chats`; keep `listBotChats` compatibility out of production discovery and never build a new flow on it.
+- Send bot tokens only as `Authorization: <token>`, never query parameters. Keep tokens and webhook secrets only in ignored env/VPS secrets.
+- Production delivery uses webhooks. Long polling is development-only and cannot coexist with a webhook subscription.
+- Keep `platform-api2.max.ru` traffic within the documented 30 rps global limit. Use existing queues, lane/source tags, route priorities, and per-role limits rather than direct hot-path calls.
+- The runtime image carries the Russian Trusted Root/Sub CA bundle under `infra/certs/` via `NODE_EXTRA_CA_CERTS`; preserve it in API Docker changes.
+- MAX permissions are entity-sensitive: group-chat `write` permits message deletion and channel posting, but channel edit/delete requires `edit`/`edit_message` and `delete`/`delete_message` respectively.
+- In hot paths prefer targeted `getCurrentChatMemberAccess` or `getChatMembersAccess`; fetch a full admin roster only when the feature needs it.
+- For `GET /chats/{chatId}/members`, send multiple IDs as one comma-separated `user_ids` value; repeated parameters can collapse to the first user.
+
+## Webhooks And Deletion Safety
+
+- `POST /subscriptions` is transport source of truth: public HTTPS on port 443, trusted full-chain TLS, HTTP 200 within 30 seconds, and `X-Max-Bot-Api-Secret` validation when configured.
+- Keep required subscriptions aligned with `src/max/max-webhook-subscription.constants.ts`: `message_created`, `message_edited`, `message_callback`, `user_added`, `user_removed`, `bot_added`, `bot_removed`, `bot_started`, and `chat_title_changed`.
+- `MAX_REQUIRED_WEBHOOK_UPDATE_TYPES` is the product subset of official updates. Add parser, queue, and product handling before subscribing to additional lifecycle events.
+- After changing a webhook host/domain, read `GET /subscriptions` and recreate the target; do not assume its secret binding changed automatically.
+- Keep `APP_BASE_URL` and `MAX_WEBHOOK_BASE_URL` aligned with the canonical host, currently `https://major-maksimov.ru`.
+- Webhook `dedupKey` is bot-scoped (`botId:updateId`). Dedupe logical side effects later by message/update semantics.
+- Use `Update.timestamp` as event/edit time; `Message.timestamp` is creation time and cannot identify successive edits.
+- Moderation enforcement and retry-critical cleanup use durable `ModerationDeleteIntentService` intents. Direct delete belongs only inside intent execution or explicit shadow/off compatibility.
+- `MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS` is an execution-time kill switch and must affect already stored intents.
+- A delete succeeds only on documented `{ success: true }` or message-specific absence confirmation. An arbitrary HTTP 404 is not proof that a message is gone.
+
+## Message And Link Semantics
+
+- User formatting arrives in `message.body.markup`, not literal Markdown. Preserve/reconstruct markup when importing, editing, or republishing.
+- Treat `markup.from`/`length` as JavaScript string offsets in the original text; do not remap through code-point indexing on emoji-rich text.
+- Resolve `max://user/<id>` labels from the full display name, including split first/last fields.
+- For admin contact, prefer a direct HTTP(S) profile URL. With a saved label render `Связь с админом: [Display Name](max://user/<id>)`; without a label fall back to HTTP(S), because arbitrary-label mentions can render as plain text.
+- Multi-bot links must use the same resolved `botId` for payload signing/dialog tokens and the `https://max.ru/<bot>?start=...` URL.
+- Internal `startapp` links use `MAX_ENTRY_BOT_ID` with default-bot fallback, not whichever bot executes an action. Ordinary `start` links remain bot-specific.
+- `startapp` payloads are limited to 512 characters and `[A-Za-z0-9_-]`; use `MaxBotLinkService`, `max-deep-link.util.ts`, and the shared launch-route patterns.
+- Profile handoff payloads (`pmh-` and `pm2_`) are dedicated flows. Generic button schemas reject them, and profile caches remain route-bot-scoped.
+- Trust validated `initData`/`WebAppData` with the correct bot-token HMAC only; `initDataUnsafe` is convenience data.
+- Sanction explanations, warnings, and published rules append the fixed admin-contact link through dedicated `*AdminContactButtonEnabled`/`Url` fields. Mute/ban notices do not include it.
+- Empty stored editable bot-speech text means inherited catalog copy; any non-empty value is custom even if it matches an old default. Never infer inheritance by string comparison.
+
+## Publishing And Outbound Actions
+
+- Managed broadcast/autopost MAX calls use `MAX_API_SOURCE_TAGS.MANAGED_BROADCAST`. User sends/tests are `interactive`; scheduled/startup delivery is `background` and honors governor pause/slow decisions. Uploads stay on the send lane.
+- Publication `NOW` is user-triggered even when recovered by the action poller: materialize it ahead of background work and dispatch through the immediate lane.
+- Keep DB-only publication rollups outside governor pauses; ambiguous sends require manual review.
+- A message-send timeout is ambiguous. Never auto-retry an attempted send without `remoteMessageId`; uploads/preparation may retry transport timeouts.
+- Retries preserve the recorded content revision. Latest-content retry requires optimistic publication/content revision guards; never rewrite `SENT` or `AMBIGUOUS` attribution.
+- Publication video input remains capped at 24 MB because it crosses base64 JSON, `bytea`, and in-memory buffers. Outbound resumable upload is not a reason to raise ingestion limits.
+- Managed broadcast rows with `publicationOccurrenceId != null` are Publication execution envelopes. Legacy broadcast/autopost read, mutation, calendar overwrite, and retry APIs must hide them.
+- MAX has no native poll endpoint; channel polls use callback-button messages. Replay dedupe is bounded and per-poll pseudonymous. Anonymous polls persist only identity hashes needed for revoting and never expose voters.
+- Managed poll list endpoints select/expose persisted `imageCount` only; raw poll images belong to the details endpoint.
+
+## Managed Entities And Multi-Bot
+
+- Ownership is `Chat.primaryBotId` plus `ChatBotMembership`; `Chat.botId` is transitional compatibility.
+- Centralize primary-bot scoring in `src/max/max-bot-access-policy.util.ts`; routing and ownership repair share this policy.
+- One confirmed eligible active bot is enough. Do not mark a chat failed merely because its primary is weak/denied while another route candidate has rights.
+- Keep UI, diagnostics, and tests list-oriented; never assume exactly one standby bot.
+- Lifecycle policy lives in `src/max/max-bot-state.util.ts`: active bots execute/assist/promote, draining bots serve webhook/read/discovery only, and dormant/disabled bots are not route candidates.
+- `GET /v1/system/bots` is local-only fleet state from registry, caches, metrics, and bounded Prisma aggregates; do not add live MAX access refreshes.
+- Configured runtime bots are moderation-immune. Use `MaxBotRegistryService.isKnownBotUserId` or existing wrappers, not ad hoc IDs.
+- Aggregate managed entities per unique chat/channel; never duplicate cards per bot.
+- Roster/admin sync skips positive-ID private dialogs unless explicitly channel-typed.
+- Terminal access loss routes through `ManagedEntityAccessLossService`. Treat `chat.denied`, `chat.not.found`, and bare send/read/lookup 403/404 as loss, but old-message `message.not.found` delete remains harmless.
+- Keep `BOT_DENIED` bot-scoped. Do not block an entity or mass-mark edges when another runtime bot has fresh confirmed owner/admin access.
+- Home access is based on fresh `GRANTED` `managed_entity_access_edges` plus active bot membership. Transient/bot-scoped 403 must not prune access before checking that edge.
+- Missing-edge repair is allowlist-backed, preserves fresh denied state, and queues roster validation. Legacy allowlist rows missing bot ownership fields remain repair candidates.
+- Fresh `bot_added` candidates appear only after MAX confirms both user and runtime-bot admin rights. Settings links come after the `Старт` handshake, not directly from onboarding.
+- A successful handshake keeps the access edge, `ChatBotMembership`, `chat:admin-access` cache, and user snapshot aligned.
+- Discovery uses `bot_added`, recent bootstrap/activity, allowlist, published snapshots, and targeted checks; never restore `GET /chats`, full bot-chat scans, or launch-context assumptions.
+- When recent hydration resolves better metadata, update the user-scoped published snapshot so home does not retain fallback `Chat <id>` titles.
+- Refresh is asynchronous and entity-type-specific. Diagnose CHAT and CHANNEL independently and trust refresh cursor/state, not only the first response.
+
+## Moderation And Read Models
+
+- `antiSpamEnabled` bans on the sixth plain-text/sticker message within six seconds. Exclude photos, video, files, voice, media batches, and forward-only links; do not expose threshold controls or route this burst through configurable escalation.
+- Required-subscription moderation checks every target with bounded concurrency and confirms stale missing cache through MAX before sanctions. Save only verifiable targets; disable the feature if none remain and fail open on terminal target errors.
+- Night mode/manual close is chat-only. It deletes non-admin chat messages in the event path; transitions/notices are scheduled background work. Do not add channel handling, list polling, per-chat sleeps, or user-message-triggered notices.
+- Stop words include blocked words and domains. Blocked domains match exact hosts/subdomains independently of link moderation; an explicit allowlist suppresses that URL hit.
+- Allowlist `DOMAIN` matches the host and subdomains; `EXACT` remains URL-specific.
+- Moderation and membership feeds use maintained read models (`chat_moderation_feed_items`, `chat_moderation_affected_user_hours`, `chat_membership_activity_feed_items`), not raw-event reconstruction per request.
+- Global spammer fanout is silent. Local BLOCK/ALLOW is admin-scoped and weak global evidence; natural bans are capped, and enforcement bans/kicks must not feed back as evidence.
+- Review lists use `includeProfiles=false` and `includeObservations=false`, then lazy-load diagnostics. Distinguish cluster `observationsCount` from per-user counts.
+- `GlobalSpammerIntelligenceService` owns observations, scoring, graph/reputation, decisions, diagnostics, and expiry. Active rows require future `expiresAt`; sanctions are gated by `evaluatePolicy` and active confirmed decisions.
+- Developer Super Ban uses `global_spammers` with `DEVELOPER_FORCED`, respects per-chat `deleteSpammersEnabled`, avoids synchronous global fanout, and lets later webhooks enforce in opted-in chats. Keep the Redis `global-spammer:developer-forced:*` fast path and warm-marker self-heal aligned with those rows.
+- Commercial detection lives under `src/moderation/commercial/`; scoring/policy changes update fixtures and benchmark while keeping `COMMERCIAL_AD` metadata explainable.
+- Channel stats read rollups for membership/posts/views/reactions and only compact raw-post details. Do not block stats GET on MAX refresh; enqueue stale refresh and let the mini app request `includeActivityPreview=false` for first paint.
+- Managed giveaway prize labels are unique before persistence/publication; normalize repeated names into numbered slots.
+
+## Bounded Operational Commands
+
+- Preview expired global-spammer cleanup before deletion: `npm run spammers:archive-expired --workspace @maxim/api -- --dry-run --json`.
+- Audit commercial decisions locally with `npm run moderation:audit-commercial --workspace @maxim/api -- --since <iso> --until <iso> --limit <n>`.
+- On VPS, run the built commercial audit inside `api-admin` with `node apps/api/dist/apps/api/src/scripts/audit-commercial-filter.js` and explicit bounded `--since`, `--until`, and `--limit` arguments.
+- Sanitized corpus export uses `--export-corpus-jsonl <path>` and, for full corpus-gate validation, `--export-all-corpus`. Validate with `npm run moderation:validate-commercial-corpus --workspace @maxim/api -- --input <path>`; relative inputs resolve from `apps/api`.
+
+## VK Parsing
+
+- VK parsing is available for managed chats and channels through server capability, never a hardcoded client/user/channel allowlist. Endpoints enforce managed-entity admin access.
+- Source sync runs through the BullMQ `vk-parsing-sync` queue with database leases; automation settings live per managed entity in `vk_parsing_settings` and per source.
+- Supported publishable content is text, links, photos, or one direct HTTPS `video.files.mp4_*` video. If a supported video is present, publish it and drop photos; never accept player pages, external/HLS streams, or mixed photo/video payloads.
+- If `wall.get` lacks direct video files, enrich with `video.get` before declaring unsupported. Do not scrape the VK player.
+- `VK_SERVICE_TOKEN` absence is reported as `NOT_CONFIGURED` only after admin access validation; working endpoints fail early with a clear 503.
+- Keep `VkParsingService` thin: access in `VkParsingAccessService`, source/scheduler in `VkSourceService`, sync/leases in `VkSyncService`, delivery in `VkPublishService`, feed mapping in `VkParsingFeedService`, and HTTP/rate retry in `VkApiClientService`.
+- Source identity is `wallOwnerId`; trust `wall.items[].owner_id`, reject posts from another owner, and do not infer identity from the first extended `groups` item.
+- Photo CDN candidates remain tied to VK media identity. Retry another size on expiry/404 and never reuse a failed cache row for a different URL without reusable MAX upload data.
+- Source leases use `syncLockedBy`, `syncAttemptCount`, `syncLockDeadlineAt`, and `syncHeartbeatAt`; recovery prefers the deadline and diagnostics expose stale locks.
+- Circuit state persists `terminalFailureCount`, `circuitOpenedAt`, `circuitReasonCode`, `circuitReason`, and `circuitRetryAt`; scheduled sync skips open circuits, while manual refresh/re-add may clear and retry with the reason still visible.
+- Initial source-added backfill and first successful sync do not autopublish history. Eligibility requires `autoPublishEnabledAt` and a real VK publication timestamp at/after that baseline.
+- Entity and source automation settings both apply: baseline, mode, daily/min-interval limits, quiet hours, priority, and `publishScheduledAt` are rechecked by the worker.
+- Governor `pause` defers VK autopublish; `slow` must not starve a single job. Increment publish attempts only at a real MAX attempt.
+- Diagnose with `npm run vk-parsing:diagnose --workspace @maxim/api -- --json --limit 20`; set `REDIS_URL` for BullMQ counts and use `--window-hours` for the error window.

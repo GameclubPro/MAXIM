@@ -1571,10 +1571,7 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     text: `Всем привет! Нам очень нужны отзывы на Авито. Отлично подойдет в качестве доп.заработка. Если кому-то актуально, пишите в личку.`,
     expectedSubtype: 'RECRUITMENT',
     reviewRecommended: true,
-    expectedSignals: [
-      'recruitment:marketplace-review-work',
-      'contact:пишите в лич',
-    ],
+    expectedSignals: ['recruitment:marketplace-review-work', 'contact:пишите в лич'],
     overrides: {
       commercialAdsSensitivity: 'BALANCED',
       commercialAdsWarnThreshold: 46,

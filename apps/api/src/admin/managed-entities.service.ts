@@ -27,6 +27,7 @@ import {
 import {
   BadRequestException,
   ForbiddenException,
+  Inject,
   Injectable,
   Logger,
   Optional,
@@ -91,7 +92,10 @@ import {
   type ManagedEntitiesListOptions,
   type ManagedEntitiesRefreshJobOutcome,
 } from './admin.service.support';
-import { AdminService } from './admin.service';
+import {
+  MANAGED_ENTITIES_LEGACY_PORT,
+  type ManagedEntitiesLegacyPort,
+} from './managed-entities-legacy.port';
 
 const MANAGED_ENTITY_ACCESS_LOSS_REASONS = new Set<ManagedEntityAccessLossReason>([
   'chat_not_found',
@@ -135,7 +139,8 @@ export class ManagedEntitiesService {
   private readonly systemAccessConfig: SystemAccessConfig;
 
   constructor(
-    private readonly legacyAdminService: AdminService,
+    @Inject(MANAGED_ENTITIES_LEGACY_PORT)
+    private readonly legacyAdminService: ManagedEntitiesLegacyPort,
     private readonly prisma: PrismaService,
     private readonly chatContextCache: ChatContextCacheService,
     private readonly maxClient: MaxClientService,

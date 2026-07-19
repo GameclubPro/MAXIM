@@ -145,7 +145,9 @@ describe('ModerationService shared chat ownership', () => {
         dedupKey: 'bot-1:upd-message_created-1',
         botId: 'bot-1',
         OR: [
-          { status: { in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED, WebhookStatus.PROCESSED] } },
+          {
+            status: { in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED, WebhookStatus.PROCESSED] },
+          },
           { status: WebhookStatus.FAILED, nextEnqueueAt: { not: null } },
         ],
       },
@@ -214,7 +216,9 @@ describe('ModerationService shared chat ownership', () => {
         dedupKey: 'bot-1:upd-message_created-1',
         botId: 'bot-1',
         OR: [
-          { status: { in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED, WebhookStatus.PROCESSED] } },
+          {
+            status: { in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED, WebhookStatus.PROCESSED] },
+          },
           { status: WebhookStatus.FAILED, nextEnqueueAt: { not: null } },
         ],
       },
@@ -343,7 +347,9 @@ describe('ModerationService shared chat ownership', () => {
         dedupKey: 'bot-1:upd-message_created-1',
         botId: 'bot-1',
         OR: [
-          { status: { in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED, WebhookStatus.PROCESSED] } },
+          {
+            status: { in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED, WebhookStatus.PROCESSED] },
+          },
           { status: WebhookStatus.FAILED, nextEnqueueAt: { not: null } },
         ],
       },
@@ -403,9 +409,7 @@ describe('ModerationService shared chat ownership', () => {
       maxBotContextService as never,
     );
 
-    await service.handleUpdate(
-      createGroupMessageUpdate('bot_added', 'id613002203036_4_bot'),
-    );
+    await service.handleUpdate(createGroupMessageUpdate('bot_added', 'id613002203036_4_bot'));
 
     expect(maxClient.leaveCurrentChat).toHaveBeenCalledWith('-100123', {
       botId: 'id613002203036_4_bot',

@@ -189,7 +189,7 @@ export class VkParsingMediaCacheService {
         : null;
     return Boolean(
       (payload && Object.keys(payload).length > 0) ||
-        (typeof row.maxUploadToken === 'string' && row.maxUploadToken.trim()),
+      (typeof row.maxUploadToken === 'string' && row.maxUploadToken.trim()),
     );
   }
 

@@ -19,10 +19,7 @@ export type AdminParticipantsRuntimeContext = {
   readonly prisma: PrismaService;
   readonly maxClient: MaxClientService;
   readonly logger: Logger;
-  readonly chatParticipantsPageCache: Map<
-    string,
-    TimedPromiseCacheEntry<ChatParticipantsPage>
-  >;
+  readonly chatParticipantsPageCache: Map<string, TimedPromiseCacheEntry<ChatParticipantsPage>>;
   assertReadOnlyChatAdmin(
     chatId: string,
     userId: string,
@@ -88,10 +85,7 @@ export function createAdminParticipantsRuntimeContext(
     get logger(): Logger {
       return typedTarget.logger;
     },
-    get chatParticipantsPageCache(): Map<
-      string,
-      TimedPromiseCacheEntry<ChatParticipantsPage>
-    > {
+    get chatParticipantsPageCache(): Map<string, TimedPromiseCacheEntry<ChatParticipantsPage>> {
       return typedTarget.chatParticipantsPageCache;
     },
     assertReadOnlyChatAdmin(

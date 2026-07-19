@@ -1,9 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {
-  formatVkSourceProblem,
-  normalizeApiError,
-} from '../src/components/vk-parsing/format';
+import { formatVkSourceProblem, normalizeApiError } from '../src/components/vk-parsing/format';
 
 test('VK errors preserve safe validation without exposing server internals', () => {
   assert.equal(
@@ -23,10 +20,7 @@ test('VK errors localize common access, throttling, and network failures', () =>
     normalizeApiError(new Error('API request failed: 429 Too Many Requests')),
     'VK временно ограничил запросы. Повторите позже.',
   );
-  assert.equal(
-    normalizeApiError(new Error('Failed to fetch')),
-    'Нет связи с сервисом. Повторите.',
-  );
+  assert.equal(normalizeApiError(new Error('Failed to fetch')), 'Нет связи с сервисом. Повторите.');
   assert.equal(
     normalizeApiError(new Error('API request failed: 403 Forbidden')),
     'Не удалось подтвердить доступ. Откройте приложение заново.',

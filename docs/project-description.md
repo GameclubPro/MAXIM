@@ -1,205 +1,209 @@
-# MAXIM: подробное описание проекта
+# MAXIM: актуальное устройство проекта
 
-## 1) Назначение
+## 1. Назначение
 
-`MAXIM` — это монорепозиторий для модерации чатов в MAX и управления правилами через Mini App.
-Проект состоит из:
+`MAXIM` — production-монорепозиторий ботов и интерфейсов для управления чатами и каналами MAX.
+Система принимает webhooks, сохраняет их до асинхронной обработки, выполняет модерацию и действия в
+MAX, поддерживает публикации и предоставляет два разных интерфейса управления.
 
-- backend API (прием webhook, модерация, действия в MAX API, админ-методы),
-- frontend miniapp (панель управления чатами и правилами),
-- общей контрактной библиотеки типов/схем.
+Основные продукты:
 
-Ключевая продуктовая идея: события из MAX принимаются быстро, складываются в outbox, асинхронно обрабатываются и приводят к модерационным действиям (удаление сообщений, warn/kick/ban, сервисные сообщения бота).
+- публичное MAX mini app «Майор Максимов» для администраторов управляемых чатов и каналов;
+- закрытый Safety Desk для owner-side проверки модерации, обращений и критических действий;
+- ролевой API/worker runtime для webhook ingestion, очередей, модерации и исходящих MAX-действий.
 
-## 2) Структура монорепо
+## 2. Монорепозиторий
 
 - `apps/api` — NestJS + Fastify + Prisma + BullMQ.
-- `apps/miniapp` — React + Vite + TypeScript.
-- `packages/contracts` — общие Zod-схемы и типы для API/miniapp.
-- `infra` — compose-файлы, nginx-конфиг, deploy-скрипты.
-- `docs` — эксплуатационные и архитектурные заметки.
+- `apps/miniapp` — React 19 + Vite, публичное MAX mini app.
+- `apps/admin` — React + Vite, закрытый Safety Desk; это не MAX mini app.
+- `packages/contracts` — общие Zod-схемы и TypeScript-типы.
+- `infra` — Docker Compose, nginx и production-скрипты.
+- `scripts` — локальные проверки, emulator и visual tooling.
+- `docs` — активные runbooks, ADR и архивный контекст.
 
-## 3) Backend (API)
+Корневой `AGENTS.md` содержит общие правила, а в каталогах приложений, contracts и infra находятся
+узкоспециализированные инструкции.
 
-### 3.1 Технологии и рантайм
+## 3. API Runtime
 
-- NestJS на Fastify (`/api` global prefix).
-- Prisma + Postgres.
-- BullMQ + Redis:
-  - очередь `moderation` для обработки webhook-событий,
-  - очередь `moderation-actions` для действий в MAX API.
-- Ролевой режим процесса через `APP_ROLE`:
-  - `all`, `ingress`, `enqueue`, `moderation`, `action`.
+API собирается в один Docker image, но production запускает его несколькими сервисами. Поведение
+задаёт `APP_ROLE`, а точный профиль сервиса/очередей — `APP_SERVICE_NAME` и typed topology в
+`apps/api/src/runtime/runtime-topology.ts`.
 
-### 3.2 Основные модули
+Production-сервисы:
 
-- `WebhookModule`:
-  - `POST /api/webhook/max/:botId/:secretPath`,
-  - проверка route signature + header secret,
-  - rate limit,
-  - парсинг payload в нормализованный формат,
-  - запись в `webhook_events` со статусом `RECEIVED`.
-- `WebhookOutboxService`:
-  - периодически забирает `RECEIVED/FAILED/stale QUEUED`,
-  - ставит задачи в `moderation` queue,
-  - меняет статус на `QUEUED`,
-  - делает retention cleanup старых записей.
-- `ModerationModule` / `ModerationService`:
-  - загружает контекст чата и настройки,
-  - применяет rule engine,
-  - выполняет санкции и пишет `moderation_events`/`violations`.
-- `MaxModule` / `MaxClientService`:
-  - обертка над MAX API (`/messages`, `/chats/.../members`, `/uploads`, `/chats`),
-  - per-chat/global rate limit,
-  - circuit breaker,
-  - dispatch в очередь действий или immediate execution.
-- `AdminModule`:
-  - `v1` endpoints для miniapp: чаты, настройки, события, allowlist, blacklist, автопостинг.
-- `AuthModule`:
-  - `InitData` guard валидации подписи miniapp-авторизации.
-- `SystemModule`:
-  - queue metrics,
-  - режимы `normal/degrade` (auto/manual).
-- `HealthModule`:
-  - `GET /api/health/live`,
-  - local-only `GET /api/health/ready` (db + redis + queue lag threshold).
+| Сервис                      | Роль                                       |
+| --------------------------- | ------------------------------------------ |
+| `api-ingress`               | публичные health/webhook endpoints         |
+| `api-admin`                 | `/api/v1/`, mini app и закрытые owner APIs |
+| `api-enqueue`               | materialization/enqueue webhook work       |
+| `api-moderation`            | default moderation shard group             |
+| `api-moderation-critical`   | critical/legacy moderation queues          |
+| `api-moderation-join`       | membership/join queues                     |
+| `api-moderation-realtime-b` | realtime shard group B                     |
+| `api-moderation-realtime-c` | realtime shard group C                     |
+| `api-moderation-realtime-d` | realtime shard group D                     |
+| `api-moderation-background` | background moderation and scheduled work   |
+| `api-action`                | durable MAX action dispatch                |
 
-### 3.3 Поток webhook -> модерация
+Для локальной отладки доступны роли `all`, `ingress`, `admin`, `enqueue`, `moderation` и `action`.
+Production Compose не использует `all`.
 
-1. MAX шлет webhook в `WebhookController`.
-2. Проверяются:
-   - URL-подпись (`botId`, `secretPath`),
-   - заголовок `x-max-bot-api-secret` / `x-max-secret`.
-3. `WebhookParser` нормализует payload.
-4. `WebhookService` сохраняет событие в `webhook_events`.
-5. `WebhookOutboxService` enqueue-ит событие в очередь `moderation`.
-6. `ModerationProcessor` вызывает `ModerationService.processWebhookEvent`.
-7. В зависимости от правил и контекста:
-   - удаление сообщения,
-   - предупреждение,
-   - kick/ban,
-   - служебные сообщения бота (объяснение/приветствие и т.п.).
+Nginx направляет публичные webhooks/health в `api-ingress`, обычный `/api/v1/` — в `api-admin`.
+Публичный ready endpoint намеренно закрыт; локальные ready endpoints доступны на портах 3001 и 3002.
 
-### 3.4 Важная логика по `bot_started`
+## 4. Поток Webhook И Модерации
 
-Сейчас реализовано:
+Упрощённый поток:
 
-- `bot_started` нормализуется в synthetic message (`messageId = bot_started:<updateId>`),
-- в `ModerationService` есть отдельная ранняя ветка:
-  - для личного чата открывается приватное стартовое меню с кнопкой mini app и ссылкой на пользовательское соглашение,
-  - для группового чата инструкция не отправляется.
+1. MAX отправляет webhook на bot-scoped URL.
+2. Ingress проверяет route/header secrets и валидирует payload.
+3. Событие записывается в Postgres с bot-scoped dedupe key.
+4. Enqueue role материализует BullMQ work.
+5. Событие попадает в critical, join, realtime/default или background moderation queue.
+6. Moderation runtime читает настройки и локальные read models, применяет правила и создаёт
+   долговечные intents/actions.
+7. Action runtime выполняет исходящие MAX-действия с rate limits, source lanes, ledger и защитой от
+   двусмысленного повторного send.
 
-## 4) Miniapp
+Удаление сообщений в enforcement/retry-critical путях проходит через durable delete intents.
+Произвольный HTTP 404 не считается подтверждением удаления.
 
-### 4.1 Авторизация и запуск
+Bot-wide `GET /chats` в MAX больше нет. Production discovery использует локальные access edges,
+allowlist, published snapshots, недавние события, `bot_added` и точечные access checks.
 
-- Miniapp ожидает `init_data` и отправляет его в API как:
-  - `Authorization: InitData <...>`.
-- При отсутствии `init_data` показывается состояние с подсказкой запускать из MAX через `open_app`.
-- Дополнительно есть fallback-чтение `init_data`:
-  - query/hash/bridge (`window.WebApp`, `window.MAX.WebApp`).
+## 5. API Домены
 
-### 4.2 Экраны
+Крупные домены включают:
 
-- `Чаты`:
-  - список доступных чатов, поиск, быстрые переходы.
-- `Настройки`:
-  - модерация ссылок + allowlist доменов,
-  - приветствие,
-  - фильтры (нецензурная лексика, коммерция),
-  - дубли сообщений,
-  - ограничения сообщений (анти-спам, длина, медиа),
-  - ночной режим,
-  - автопостинг (текст/кнопка/фото/таймер/цикл),
-  - дополнительные опции (удаление сообщений бота, remove bots, global blacklist).
-- `Логи`:
-  - последние модерационные события с фильтрами.
+- managed entities, memberships, user access edges и multi-bot routing;
+- chat/channel settings, правила, allowlists и bot speech;
+- moderation, commercial filtering и global spammer intelligence;
+- publications, managed broadcasts/autoposts, polls и giveaways;
+- channel dialogs, comments и suggestions;
+- channel statistics и поддерживаемые feed/read models;
+- VK parsing, sync leases, media cache и autopublish;
+- webhook subscription reconciliation, health, diagnostics и runtime governance;
+- Safety Desk, support requests и moderation delete review.
 
-### 4.3 Кнопка `open_app`
+Исторические большие реализации остаются в `*.legacy`, но новые controllers/processors должны
+использовать публичные facades и focused domain services.
 
-В вашем проекте текст кнопки `open_app` в UX/шаблонах используется как:
+## 6. Публичное Mini App
 
-- `Открыть` (дефолтное имя кнопки в настройках и шаблонах сообщений).
+`apps/miniapp` обслуживается под `/app/`. Production URL:
+`https://major-maksimov.ru/app/`.
 
-Это зафиксировано в:
+Mini app:
 
-- Prisma defaults для `*_bot_button_text`,
-- `packages/contracts` (`botButtonTextSchema` default),
-- miniapp placeholders/состояниях формы.
+- получает MAX Bridge из `https://st.max.ru/js/max-web-app.js`;
+- отправляет подписанный init data в API как `Authorization: InitData <...>`;
+- не доверяет `initDataUnsafe` для аутентификации;
+- показывает управляемые чаты/каналы из серверного read model;
+- содержит settings, publications, events, statistics, dialogs, polls, giveaways и VK parsing;
+- использует server-side cursor filtering для больших publication/feed списков;
+- имеет публичные legal routes, доступные без init data.
 
-## 5) Контракты и валидация
+Обычная публикация создаётся в `/publications`; legacy broadcast/autopost UI открывается только по
+явному handoff/legacy target. Native back, storage, links, sharing, viewport и haptics проходят через
+общие bridge helpers.
 
-- `packages/contracts` содержит Zod-схемы:
-  - `chatSettingsSchema`,
-  - запросы/ответы admin API,
-  - `maxUpdateSchema`.
-- Backend и miniapp используют общий контракт, чтобы снизить рассинхрон.
+Visual tooling по умолчанию запускает локальный mini app и проверяет текущий working tree. Проверка
+production origin включается только явным visual mode.
 
-## 6) Данные (Postgres)
+## 7. Safety Desk
 
-Ключевые таблицы:
+`apps/admin` — отдельный закрытый интерфейс на `https://admin.major-maksimov.ru/`.
 
-- `chats` + `chat_settings`,
-- `chat_admin_allowlist`,
-- `domain_allowlist` (с `remove_after_at`),
-- `global_user_blacklist`,
-- `webhook_events` (state machine для ingestion/outbox),
-- `moderation_events` и `violations`,
-- `audit_logs`.
+- `admin-static` обслуживает UI на локальном порту 3004.
+- Nginx Basic Auth защищает сайт и проксирует same-origin `/api/v1/` в `api-admin`.
+- API guard проверяет admin forwarded host и `X-Remote-User`.
+- Public Major nginx sites явно запрещают Safety Desk/support endpoints.
+- `ADMIN_ACCESS_CODE` проверяется сервером и не попадает в Vite bundle.
 
-## 7) Инфраструктура и деплой
+Safety Desk не использует MAX Bridge или mini app init data.
 
-### 7.1 Compose-режимы
+## 8. Contracts И Данные
 
-- Базовый контур: `infra/docker-compose.yml`
-  - `api`, `miniapp-static`, `postgres`, `redis`.
-- Локальный оверлей: `infra/docker-compose.local.yml`
-  - host-порты для `postgres/redis`.
-- Scale-контур: `infra/docker-compose.scale.yml`
-  - `api-ingress`, `api-enqueue`, `api-moderation`, `api-action`.
+`packages/contracts` содержит общие схемы запросов/ответов, settings, publications, polls,
+giveaways, dialogs, statistics и managed entities. Для прямых импортов существуют package subpath
+exports.
 
-### 7.2 Nginx
+При изменении contracts синхронизируются:
 
-- `:80` -> redirect на HTTPS.
-- На HTTPS:
-  - `/api/` -> `127.0.0.1:3001`,
-  - `/app/` -> `127.0.0.1:3000`.
+- `packages/contracts/package.json` exports;
+- `tsconfig.base.json` paths;
+- `apps/api/jest.config.cjs` mappers;
+- API/mini app/admin реализации и тесты.
 
-### 7.3 Деплой-скрипты
+Contract-only tests находятся в `packages/contracts/test` и запускаются Vitest.
 
-- `infra/scripts/local-commit-push.sh`:
-  - commit/push,
-  - проверка, что при изменении Prisma schema добавлена migration.
-- `infra/scripts/vps-pull-build-up.sh`:
-  - `git pull`,
-  - подъем `postgres/redis`,
-  - ожидание `pg_isready`,
-  - `prisma migrate deploy`,
-  - rebuild/recreate выбранных сервисов,
-  - health-check локально и через домен.
+Postgres хранит исходные события, settings, memberships/access edges, moderation/action ledgers,
+publications, VK parsing state и поддерживаемые feed/statistics read models. Redis хранит BullMQ
+queues, delayed jobs, locks и runtime snapshots в named volume `redis_data`.
 
-## 8) Безопасность и эксплуатационные правила
+Prisma Client генерируется в игнорируемый `apps/api/src/generated/prisma`; runtime импортирует его
+через локальный wrapper. Изменение model/enum/database mapping требует migration. Удаление колонок
+выполняется двумя runtime releases: сначала совместимый client, затем DB drop.
 
-- Не хранить реальные токены в репозитории.
-- Webhook endpoint защищен route secret + header secret.
-- Miniapp auth валидируется по подписи `init_data` через `MAX_BOT_TOKEN`.
-- Для стабильности под нагрузкой:
-  - outbox + queue,
-  - rate limit MAX API,
-  - circuit breaker,
-  - auto degrade mode по lag/error-rate.
+## 9. Локальная Разработка
 
-## 9) Практический итог
+Требуется Node 24 LTS.
 
-Проект уже построен как production-oriented модерационный контур:
+```bash
+docker compose -f infra/docker-compose.yml -f infra/docker-compose.local.yml up -d postgres redis
+npm run dev:all
+```
 
-- быстрый прием webhook,
-- асинхронная обработка,
-- масштабирование по ролям,
-- единые контракты API/UI,
-- админский miniapp для оперативного управления правилами.
+Focused команды:
 
-И отдельно важно для UX в MAX:
+```bash
+npm run dev:api
+npm run dev:miniapp
+npm run dev:admin
+npm run check:api
+npm run check:prisma
+npm run check:miniapp
+npm run typecheck:admin
+npm run test:contracts
+```
 
-- запуск miniapp должен идти через кнопку `open_app`,
-- отображаемое имя этой кнопки у вас: `Открыть`.
+API validation/build scripts сериализуют contracts/Prisma codegen через file locks; внутренние
+`*:unlocked` и `*:source` scripts не предназначены для параллельного ручного запуска.
+
+## 10. Production И Деплой
+
+Main production stack — `infra/docker-compose.yml`. `infra/docker-compose.scale.yml` используется
+для split/load testing и не запускается одновременно с main stack.
+
+`local-commit-push.sh` по умолчанию работает только с уже staged файлами, проверяет staged impact и
+push-ит точный получившийся `HEAD`. Широкий staging включается только через `--all`; agent notes
+требуют отдельного `--include-agents`.
+
+```bash
+./infra/scripts/vps-connect.sh doctor
+./infra/scripts/vps-connect.sh deploy main
+./infra/scripts/vps-connect.sh health
+./infra/scripts/vps-connect.sh monitor-readonly 300 15
+```
+
+Локальный deploy wrapper требует успешный агрегат `Required` для точного выбранного commit SHA, а
+VPS после синхронизации проверяет совпадение своего `HEAD` с этим SHA. Active components используют
+immutable full-SHA image refs. Манифесты в `/var/lib/maxim-deploy` хранят source SHA, image ref и
+image ID для `api-shared`, `miniapp-major-static` и `admin-static`; новый `current.json` записывается
+только после проверки image IDs и строгих smoke checks.
+
+Deploy script собирает shared API image один раз и расширяет запрос любого API role до всех
+shared-image roles. Prisma migrations запускаются только при выбранном API component; static-only
+deploy `miniapp-major-static` или `admin-static` их пропускает.
+
+Routine mini app deploy использует только `miniapp-major-static` и
+`https://major-maksimov.ru/app/`. CDN, Object Storage и app2 приостановлены и не являются fallback.
+
+`rollback-release` восстанавливает любой набор active components из сохранённых immutable images,
+проверяет image IDs, выполняет строгие smokes и записывает новый rollback manifest без Git switch,
+build или запуска migrations. Prisma/Postgres/Redis compatibility требуется только при выборе API;
+static-only rollback не зависит от Git и БД. `rollback-runtime` остаётся ref-based API-only fallback:
+он не запускает stateful services, сохраняет текущую Compose topology и после строгих smokes
+обновляет release inventory. Активная процедура описана в `docs/runbook.md`.

@@ -390,10 +390,7 @@ export class ModerationAccessService {
         if ((this.chatAdminLookupBackoffUntilMs.get(cacheKey) ?? 0) < softBackoffUntilMs) {
           this.chatAdminLookupBackoffUntilMs.set(cacheKey, softBackoffUntilMs);
         }
-        void this.activateSharedChatAdminLookupBackoff(
-          chatId,
-          CHAT_ADMIN_SOFT_TIMEOUT_BACKOFF_MS,
-        );
+        void this.activateSharedChatAdminLookupBackoff(chatId, CHAT_ADMIN_SOFT_TIMEOUT_BACKOFF_MS);
         return null;
       },
     });

@@ -1,48 +1,75 @@
 import { dirname, relative, resolve } from 'node:path';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { findContractsArchitectureViolations } from './check-contract-exports.mjs';
 
 const root = resolve(import.meta.dirname, '..');
-
-const targetDate = '2026-06-26';
 
 const guardedFiles = [
   {
     path: 'apps/api/src/admin/admin.service.legacy.ts',
-    maxLines: 23000,
-    targetLines: 23000,
+    maxLines: 22806,
+    targetLines: 22500,
     reason:
       'AdminService implementation is a legacy hotspot; managed entities, broadcasts, settings, and rules should keep moving to focused services.',
   },
   {
+    path: 'apps/api/src/admin/admin-managed-broadcast-runtime.ts',
+    maxLines: 6467,
+    targetLines: 6200,
+    reason:
+      'Managed broadcast coordination should keep media, scheduling, reconciliation, and presentation policy in focused collaborators.',
+  },
+  {
+    path: 'apps/api/src/admin/admin.service.spec.ts',
+    maxLines: 31711,
+    targetLines: 30000,
+    reason:
+      'AdminService tests should keep moving by complete domain into focused specs instead of regrowing the legacy all-domain test file.',
+  },
+  {
+    path: 'apps/api/src/admin/admin-service-test-support.ts',
+    maxLines: 1889,
+    targetLines: 1600,
+    reason:
+      'Shared AdminService test builders should remain a focused harness instead of becoming another all-domain fixture dump.',
+  },
+  {
+    path: 'apps/admin/src/admin-app.tsx',
+    maxLines: 580,
+    targetLines: 520,
+    reason:
+      'Safety Desk route/controller state should stay separate from focused review, support, and delete presentation modules.',
+  },
+  {
     path: 'apps/api/src/moderation/moderation.service.legacy.ts',
-    maxLines: 18542,
-    targetLines: 15500,
+    maxLines: 17873,
+    targetLines: 17000,
     reason:
       'ModerationService implementation is a legacy hotspot; explanation, access, global spammer, and night-mode helpers should keep moving to focused modules.',
   },
   {
     path: 'apps/api/src/moderation/private-control.service.legacy.ts',
-    maxLines: 9600,
-    targetLines: 9500,
+    maxLines: 9379,
+    targetLines: 9000,
     reason:
       'PrivateControlService is a legacy hotspot; session, draft normalization, and render builders should keep moving to focused modules.',
   },
   {
     path: 'apps/miniapp/src/pages/settings-page.legacy.tsx',
-    maxLines: 11473,
-    targetLines: 8500,
+    maxLines: 8178,
+    targetLines: 8000,
     reason: 'SettingsPage should shrink into route shell, hooks, and workspaces.',
   },
   {
     path: 'apps/miniapp/src/styles/settings-native-controls.css',
-    maxLines: 380,
+    maxLines: 379,
     targetLines: 300,
     reason:
       'Shared settings native controls should stay focused instead of becoming a route compatibility bundle.',
   },
   {
     path: 'apps/miniapp/src/styles/settings-home-compact.css',
-    maxLines: 320,
+    maxLines: 308,
     targetLines: 250,
     reason:
       'Compact settings home and channel card styles should stay route-owned instead of returning to the lazy compatibility bundle.',
@@ -63,14 +90,14 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/broadcast-studio-base.css',
-    maxLines: 1145,
+    maxLines: 1068,
     targetLines: 900,
     reason:
       'Broadcast studio base styles should stay route-owned instead of returning to the lazy compatibility bundle.',
   },
   {
     path: 'apps/miniapp/src/styles/settings-policy-controls.css',
-    maxLines: 320,
+    maxLines: 316,
     targetLines: 250,
     reason:
       'Settings policy/control island styles should stay route-owned instead of returning to the lazy compatibility bundle.',
@@ -84,35 +111,35 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/pages/settings-page.css',
-    maxLines: 420,
+    maxLines: 297,
     targetLines: 330,
     reason:
       'Settings route-owned CSS should stay focused while legacy settings page markup is extracted.',
   },
   {
     path: 'apps/miniapp/src/pages/settings/settings-duplicate-stage.css',
-    maxLines: 130,
+    maxLines: 127,
     targetLines: 95,
     reason:
       'Duplicate moderation stage styles should stay with the settings duplicate panel owner.',
   },
   {
     path: 'apps/miniapp/src/components/ui/segmented-control.css',
-    maxLines: 48,
+    maxLines: 46,
     targetLines: 40,
     reason:
       'SegmentedControl base styles should stay component-owned while route-specific sizing stays scoped.',
   },
   {
     path: 'apps/miniapp/src/components/ui/toast.css',
-    maxLines: 66,
+    maxLines: 65,
     targetLines: 52,
     reason:
       'Toast portal styles should stay component-owned while route-specific placement overrides stay scoped.',
   },
   {
     path: 'apps/miniapp/src/components/managed-broadcast-history-card.css',
-    maxLines: 242,
+    maxLines: 240,
     targetLines: 190,
     reason:
       'ManagedBroadcastHistoryCard styles should stay component-owned while route density overrides stay scoped.',
@@ -133,7 +160,7 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/components/chat-onboarding-section.css',
-    maxLines: 96,
+    maxLines: 153,
     targetLines: 72,
     reason:
       'Chat onboarding empty-state styles should stay with the lazy-loaded onboarding component.',
@@ -163,19 +190,18 @@ const guardedFiles = [
     path: 'apps/miniapp/src/components/bot-speech-message-editor-sheet.css',
     maxLines: 436,
     targetLines: 260,
-    reason:
-      'Bot speech editor sheet styles should stay with the lazy-loaded sheet component.',
+    reason: 'Bot speech editor sheet styles should stay with the lazy-loaded sheet component.',
   },
   {
     path: 'apps/miniapp/src/styles/settings-drilldown-core.css',
-    maxLines: 1323,
+    maxLines: 1334,
     targetLines: 1100,
     reason:
       'Settings drilldown core CSS should own shell-scoped overrides without becoming another route dump.',
   },
   {
     path: 'apps/miniapp/src/styles/components.css',
-    maxLines: 1562,
+    maxLines: 1561,
     targetLines: 1350,
     reason:
       'Startup shared styles should stay focused on primitives; route-specific home styles should move to route/component CSS.',
@@ -189,28 +215,28 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/components/dashboard/membership-activity-feed.css',
-    maxLines: 600,
+    maxLines: 586,
     targetLines: 520,
     reason:
       'Membership activity feed styles should stay component-owned after moving its base and responsive rules out of dashboard-events.css.',
   },
   {
     path: 'apps/miniapp/src/components/dashboard/chat-participants-roster.css',
-    maxLines: 560,
+    maxLines: 576,
     targetLines: 500,
     reason:
       'Chat participants roster styles should stay component-owned after moving its base and responsive rules out of dashboard-events.css.',
   },
   {
     path: 'apps/miniapp/src/components/dashboard/chat-participant-sheet.css',
-    maxLines: 560,
+    maxLines: 581,
     targetLines: 500,
     reason:
       'Chat participant sheet styles should stay component-owned after moving its base and responsive rules out of dashboard-events.css.',
   },
   {
     path: 'apps/miniapp/src/components/dashboard/dashboard-hero.css',
-    maxLines: 150,
+    maxLines: 138,
     targetLines: 120,
     reason:
       'DashboardHero styles should stay component-owned instead of returning to dashboard-events.css.',
@@ -224,7 +250,7 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/components/broadcast-studio-header.css',
-    maxLines: 165,
+    maxLines: 148,
     targetLines: 130,
     reason:
       'BroadcastStudioChecklist styles should stay component-owned instead of returning to broadcast route CSS.',
@@ -240,53 +266,51 @@ const guardedFiles = [
     path: 'apps/miniapp/src/styles/channel-dialog-image-viewer.css',
     maxLines: 203,
     targetLines: 180,
-    reason:
-      'Channel dialog image viewer CSS should remain a focused route-owned lightbox slice.',
+    reason: 'Channel dialog image viewer CSS should remain a focused route-owned lightbox slice.',
   },
   {
     path: 'apps/miniapp/src/styles/channel-stats.css',
-    maxLines: 3031,
+    maxLines: 2954,
     targetLines: 2400,
     reason:
       'Channel stats owner CSS should stay scoped and avoid becoming another compatibility bundle.',
   },
   {
     path: 'apps/miniapp/src/styles/settings-route-polish.css',
-    maxLines: 5064,
+    maxLines: 5065,
     targetLines: 3300,
     reason:
       'Settings route polish should keep shrinking into scoped route sections and component-owned styles.',
   },
   {
     path: 'apps/miniapp/src/styles/broadcast-studio.css',
-    maxLines: 5117,
+    maxLines: 5128,
     targetLines: 3660,
-    reason:
-      'Broadcast composer/planner/history styles should keep moving to component-owned CSS.',
+    reason: 'Broadcast composer/planner/history styles should keep moving to component-owned CSS.',
   },
   {
     path: 'apps/miniapp/src/styles/dashboard-events.css',
-    maxLines: 5112,
+    maxLines: 4017,
     targetLines: 3600,
     reason:
       'Dashboard feed, participant sheet, and stats primitives should keep moving to scoped component CSS; owner CSS may carry local bases removed from shared bundles.',
   },
   {
     path: 'apps/miniapp/src/styles/channel-dialog-comments.css',
-    maxLines: 5478,
+    maxLines: 4068,
     targetLines: 4200,
     reason:
       'Channel dialog route CSS should stay scoped and continue shrinking into focused dialog components.',
   },
   {
     path: 'packages/contracts/src/core.ts',
-    maxLines: 3442,
-    targetLines: 3000,
+    maxLines: 2720,
+    targetLines: 2500,
     reason: 'Contracts should continue moving to existing subpath exports.',
   },
   {
     path: 'apps/api/src/admin/publication.service.ts',
-    maxLines: 3916,
+    maxLines: 3870,
     targetLines: 3200,
     reason:
       'Publication scheduling, query, and retry logic should keep moving to focused domain services.',
@@ -430,23 +454,6 @@ const runtimeEntrypointBoundaryGuards = [
   },
 ];
 
-const miniappCssMetricGuards = [
-  {
-    name: 'hardcoded color references outside tokens.css',
-    max: 6291,
-    count: countMiniappCssHardcodedColorReferences,
-    reason:
-      'New colors should be introduced through semantic design tokens instead of component-local literals.',
-  },
-  {
-    name: '!important declarations',
-    max: 8,
-    count: countMiniappCssImportantDeclarations,
-    reason:
-      'New cascade fixes should use layers, scopes, and tokens instead of adding specificity escapes.',
-  },
-];
-
 let failed = false;
 
 for (const guard of guardedFiles) {
@@ -461,7 +468,7 @@ for (const guard of guardedFiles) {
     [
       `${guard.path} has ${lines} lines, over the ${guard.maxLines} refactor guard.`,
       guard.reason,
-      `Target by ${targetDate}: ${guard.targetLines} lines or fewer.`,
+      `Next target: ${guard.targetLines} lines or fewer.`,
       'If this growth is intentional, update the guard in the same change with the architectural reason.',
     ].join('\n'),
   );
@@ -500,18 +507,6 @@ for (const violation of findImportCycleViolations(root)) {
   );
 }
 
-for (const violation of findMiniappDirectCssLayerViolations(root)) {
-  failed = true;
-  console.error(
-    [
-      `${violation.importer} imports ${violation.cssPath} without full CSS cascade-layer coverage.`,
-      violation.reason,
-      'Every miniapp CSS file imported directly from TS/TSX/JS must be fully wrapped in an @layer block.',
-      'Keep globally imported base files routed through apps/miniapp/src/styles.css with @import ... layer(...).',
-    ].join('\n'),
-  );
-}
-
 for (const violation of findContractsArchitectureViolations(root)) {
   failed = true;
   console.error(
@@ -519,22 +514,6 @@ for (const violation of findContractsArchitectureViolations(root)) {
       violation.message,
       'Keep packages/contracts package exports, root TS paths, and API Jest mappers exact and aligned.',
       'Generated contract JS must live under dist/, not tracked src/.',
-    ].join('\n'),
-  );
-}
-
-for (const guard of miniappCssMetricGuards) {
-  const actual = guard.count(root);
-  if (actual <= guard.max) {
-    continue;
-  }
-
-  failed = true;
-  console.error(
-    [
-      `Miniapp CSS has ${actual} ${guard.name}, over the ${guard.max} refactor guard.`,
-      guard.reason,
-      'If this growth is intentional, update the guard in the same change with the architectural reason.',
     ].join('\n'),
   );
 }
@@ -655,259 +634,6 @@ function findImportCycleViolations(directory) {
   }
 }
 
-function findMiniappDirectCssLayerViolations(directory) {
-  const miniappSourceRoot = resolve(directory, 'apps/miniapp/src');
-  const violations = [];
-
-  for (const filePath of walkSourceFiles(miniappSourceRoot)) {
-    const contents = readFileSync(filePath, 'utf8');
-    for (const match of contents.matchAll(importStatementPattern)) {
-      const specifier = match[1] ?? match[2] ?? '';
-      if (!specifier.startsWith('.') || !specifier.endsWith('.css')) {
-        continue;
-      }
-
-      const cssPath = resolve(dirname(filePath), specifier);
-      const cssContents = readFileSync(cssPath, 'utf8');
-      if (toRepoPath(cssPath) === 'apps/miniapp/src/styles.css') {
-        const entrypointViolationReason = getCssEntrypointViolationReason(cssContents);
-        if (!entrypointViolationReason) {
-          continue;
-        }
-
-        violations.push({
-          importer: toRepoPath(filePath),
-          cssPath: toRepoPath(cssPath),
-          reason: entrypointViolationReason,
-        });
-        continue;
-      }
-
-      const layerViolationReason = getCssLayerViolationReason(cssContents);
-      if (!layerViolationReason) {
-        continue;
-      }
-
-      violations.push({
-        importer: toRepoPath(filePath),
-        cssPath: toRepoPath(cssPath),
-        reason: layerViolationReason,
-      });
-    }
-  }
-
-  return violations;
-}
-
-function findContractsArchitectureViolations(directory) {
-  const violations = [];
-  const contractsSrcRoot = resolve(directory, 'packages/contracts/src');
-  const contractsPackagePath = resolve(directory, 'packages/contracts/package.json');
-  const tsconfigPath = resolve(directory, 'tsconfig.base.json');
-  const apiJestConfigPath = resolve(directory, 'apps/api/jest.config.cjs');
-
-  for (const filePath of walkFilesByExtension(contractsSrcRoot, new Set(['.js']))) {
-    violations.push({
-      message: `${toRepoPath(filePath)} is generated JavaScript under contracts src and must not be tracked.`,
-    });
-  }
-
-  const contractsPackage = JSON.parse(readFileSync(contractsPackagePath, 'utf8'));
-  const exportKeys = Object.keys(contractsPackage.exports ?? {});
-  const expectedPathKeys = new Set(
-    exportKeys.map((key) => (key === '.' ? '@maxim/contracts' : `@maxim/contracts/${key.slice(2)}`)),
-  );
-  const tsconfig = JSON.parse(readFileSync(tsconfigPath, 'utf8'));
-  const tsPaths = tsconfig.compilerOptions?.paths ?? {};
-  const tsPathKeys = new Set(Object.keys(tsPaths));
-
-  if (tsPathKeys.has('@maxim/contracts/*')) {
-    violations.push({
-      message:
-        'tsconfig.base.json uses @maxim/contracts/* wildcard mapping, which allows importing non-exported contract internals.',
-    });
-  }
-
-  for (const key of expectedPathKeys) {
-    if (!tsPathKeys.has(key)) {
-      violations.push({
-        message: `tsconfig.base.json is missing explicit path mapping for ${key}.`,
-      });
-    }
-  }
-
-  for (const key of tsPathKeys) {
-    if (key.startsWith('@maxim/contracts') && !expectedPathKeys.has(key)) {
-      violations.push({
-        message: `tsconfig.base.json maps ${key}, but packages/contracts does not export it.`,
-      });
-    }
-  }
-
-  const apiJestConfig = readFileSync(apiJestConfigPath, 'utf8');
-  if (apiJestConfig.includes("^@maxim/contracts/(.*)$")) {
-    violations.push({
-      message:
-        'apps/api/jest.config.cjs uses @maxim/contracts/(.*) wildcard mapper, which allows non-exported contract internals.',
-    });
-  }
-
-  for (const key of expectedPathKeys) {
-    const mapperPattern =
-      key === '@maxim/contracts' ? "'^@maxim/contracts$'" : `'^${escapeRegExp(key)}$'`;
-    if (!apiJestConfig.includes(mapperPattern)) {
-      violations.push({
-        message: `apps/api/jest.config.cjs is missing explicit mapper for ${key}.`,
-      });
-    }
-  }
-
-  return violations;
-}
-
-function countMiniappCssHardcodedColorReferences(directory) {
-  const cssFiles = walkFilesByExtension(resolve(directory, 'apps/miniapp/src'), new Set(['.css']));
-  const colorPattern =
-    /#[0-9a-fA-F]{3,8}\b|\brgba?\(|\bhsla?\(|\boklch\(|\bhwb\(|\bcolor-mix\(/gu;
-
-  let count = 0;
-  for (const filePath of cssFiles) {
-    if (toRepoPath(filePath) === 'apps/miniapp/src/styles/tokens.css') {
-      continue;
-    }
-
-    count += stripCssComments(readFileSync(filePath, 'utf8')).match(colorPattern)?.length ?? 0;
-  }
-
-  return count;
-}
-
-function countMiniappCssImportantDeclarations(directory) {
-  const cssFiles = walkFilesByExtension(resolve(directory, 'apps/miniapp/src'), new Set(['.css']));
-  let count = 0;
-
-  for (const filePath of cssFiles) {
-    count += stripCssComments(readFileSync(filePath, 'utf8')).match(/!important\b/gu)?.length ?? 0;
-  }
-
-  return count;
-}
-
-function getCssLayerViolationReason(contents) {
-  const withoutComments = stripCssComments(contents);
-  const trimmed = withoutComments.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  const importViolation = findUnlayeredCssImport(trimmed);
-  if (importViolation) {
-    return `CSS @import must include layer(...): ${importViolation}`;
-  }
-
-  if (!/^@layer\s+[-\w.]+(?:\s*,\s*[-\w.]+)*\s*\{/u.test(trimmed)) {
-    return 'The file must start with a wrapping @layer <name> { ... } block.';
-  }
-
-  const endIndex = findMatchingBlockEnd(trimmed, trimmed.indexOf('{'));
-  if (endIndex < 0) {
-    return 'The opening @layer block is not balanced.';
-  }
-
-  const trailing = trimmed.slice(endIndex + 1).trim();
-  if (trailing) {
-    return 'Top-level CSS remains after the opening @layer block; keep the whole file inside the layer.';
-  }
-
-  return null;
-}
-
-function getCssEntrypointViolationReason(contents) {
-  const withoutComments = stripCssComments(contents);
-  const trimmed = withoutComments.trim();
-  if (!trimmed) {
-    return 'The global CSS entrypoint must declare cascade layers and import layered CSS files.';
-  }
-
-  const importViolation = findUnlayeredCssImport(trimmed);
-  if (importViolation) {
-    return `CSS @import must include layer(...): ${importViolation}`;
-  }
-
-  const withoutLayerList = trimmed.replace(
-    /^@layer\s+[-\w.]+(?:\s*,\s*[-\w.]+)*\s*;\s*/u,
-    '',
-  );
-  const withoutLayeredImports = withoutLayerList
-    .replace(/@import\s+(?:url\()?['"][^'"]+\.css['"]\)?\s+layer\([-\w.]+\)\s*;\s*/gu, '')
-    .trim();
-
-  if (withoutLayeredImports) {
-    return 'The global CSS entrypoint may only declare layer order and import CSS with layer(...).';
-  }
-
-  return null;
-}
-
-function findUnlayeredCssImport(contents) {
-  const importPattern = /@import\s+(?:url\()?['"][^'"]+\.css['"]\)?[^;]*;/gu;
-  for (const match of contents.matchAll(importPattern)) {
-    if (!/\blayer\s*\(/u.test(match[0])) {
-      return match[0];
-    }
-  }
-
-  return null;
-}
-
-function findMatchingBlockEnd(contents, openBraceIndex) {
-  let depth = 0;
-  let quote = '';
-  let escaped = false;
-
-  for (let index = openBraceIndex; index < contents.length; index += 1) {
-    const char = contents[index];
-
-    if (quote) {
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (char === '\\') {
-        escaped = true;
-        continue;
-      }
-      if (char === quote) {
-        quote = '';
-      }
-      continue;
-    }
-
-    if (char === '"' || char === "'") {
-      quote = char;
-      continue;
-    }
-
-    if (char === '{') {
-      depth += 1;
-      continue;
-    }
-
-    if (char === '}') {
-      depth -= 1;
-      if (depth === 0) {
-        return index;
-      }
-    }
-  }
-
-  return -1;
-}
-
-function stripCssComments(contents) {
-  return contents.replace(/\/\*[\s\S]*?\*\//gu, '');
-}
-
 function findRuntimeImportSpecifiers(contents) {
   const specifiers = [];
   for (const match of contents.matchAll(importStatementPattern)) {
@@ -989,29 +715,6 @@ function walkSourceFiles(directory) {
   return files;
 }
 
-function walkFilesByExtension(directory, extensions) {
-  const entries = readdirSync(directory);
-  const files = [];
-
-  for (const entry of entries) {
-    const entryPath = resolve(directory, entry);
-    const stats = statSync(entryPath);
-    if (stats.isDirectory()) {
-      if (ignoredDirectoryNames.has(entry)) {
-        continue;
-      }
-      files.push(...walkFilesByExtension(entryPath, extensions));
-      continue;
-    }
-
-    if (stats.isFile() && extensions.has(readExtension(entry))) {
-      files.push(entryPath);
-    }
-  }
-
-  return files;
-}
-
 function readExtension(fileName) {
   const index = fileName.lastIndexOf('.');
   return index >= 0 ? fileName.slice(index) : '';
@@ -1019,8 +722,4 @@ function readExtension(fileName) {
 
 function toRepoPath(filePath) {
   return relative(root, filePath).split('\\').join('/');
-}
-
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }

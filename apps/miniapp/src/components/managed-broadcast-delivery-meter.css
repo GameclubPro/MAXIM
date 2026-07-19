@@ -1,92 +1,92 @@
 @layer components {
-.managed-broadcast-delivery-meter {
-  display: grid;
-  gap: 6px;
-}
+  .managed-broadcast-delivery-meter {
+    display: grid;
+    gap: 6px;
+  }
 
-.managed-broadcast-delivery-meter__rail {
-  position: relative;
-  overflow: hidden;
-  height: 8px;
-  display: flex;
-  border-radius: 999px;
-  background: rgba(128, 145, 163, 0.16);
-}
+  .managed-broadcast-delivery-meter__rail {
+    position: relative;
+    overflow: hidden;
+    height: 8px;
+    display: flex;
+    border-radius: 999px;
+    background: rgba(128, 145, 163, 0.16);
+  }
 
-.managed-broadcast-delivery-meter__segment {
-  height: 100%;
-  flex: 0 0 auto;
-}
+  .managed-broadcast-delivery-meter__segment {
+    height: 100%;
+    flex: 0 0 auto;
+  }
 
-.managed-broadcast-delivery-meter__segment.is-delivered {
-  width: var(--managed-broadcast-delivered);
-  background: linear-gradient(90deg, #19c37d, #0d9fbc);
-}
+  .managed-broadcast-delivery-meter__segment.is-delivered {
+    width: var(--managed-broadcast-delivered);
+    background: linear-gradient(90deg, #19c37d, #0d9fbc);
+  }
 
-.managed-broadcast-delivery-meter__segment.is-failed {
-  width: var(--managed-broadcast-failed);
-  background: linear-gradient(90deg, #ff6b6b, #ff9d3f);
-}
+  .managed-broadcast-delivery-meter__segment.is-failed {
+    width: var(--managed-broadcast-failed);
+    background: linear-gradient(90deg, #ff6b6b, #ff9d3f);
+  }
 
-.managed-broadcast-delivery-meter__segment.is-pending {
-  width: var(--managed-broadcast-pending);
-  background: rgba(132, 151, 169, 0.28);
-}
+  .managed-broadcast-delivery-meter__segment.is-pending {
+    width: var(--managed-broadcast-pending);
+    background: rgba(132, 151, 169, 0.28);
+  }
 
-.managed-broadcast-delivery-meter__meta {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  color: #5c7083;
-  font-size: 0.66rem;
-  font-weight: 850;
-  line-height: 1;
-}
+  .managed-broadcast-delivery-meter__meta {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    color: #5c7083;
+    font-size: 0.66rem;
+    font-weight: 850;
+    line-height: 1;
+  }
 
-.managed-broadcast-delivery-meter__meta strong {
-  color: #173149;
-  font-size: 0.68rem;
-  letter-spacing: 0;
-}
+  .managed-broadcast-delivery-meter__meta strong {
+    color: #173149;
+    font-size: 0.68rem;
+    letter-spacing: 0;
+  }
 
-.managed-broadcast-delivery-meter__meta small {
-  color: #7b8fa1;
-  font-size: 0.64rem;
-}
+  .managed-broadcast-delivery-meter__meta small {
+    color: #7b8fa1;
+    font-size: 0.64rem;
+  }
 
-.managed-broadcast-delivery-meter__breakdown {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
+  .managed-broadcast-delivery-meter__breakdown {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
 
-.managed-broadcast-delivery-meter__breakdown span {
-  min-height: 18px;
-  display: inline-flex;
-  align-items: center;
-  border-radius: 999px;
-  background: rgba(255, 157, 63, 0.12);
-  color: #9a5514;
-  font-size: 0.58rem;
-  font-weight: 850;
-  padding: 0 6px;
-}
+  .managed-broadcast-delivery-meter__breakdown span {
+    min-height: 18px;
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    background: rgba(255, 157, 63, 0.12);
+    color: #9a5514;
+    font-size: 0.58rem;
+    font-weight: 850;
+    padding: 0 6px;
+  }
 
-html[data-max-theme='dark'] .managed-broadcast-delivery-meter__rail {
-  background: var(--color-surface-tint);
-}
+  html[data-max-theme='dark'] .managed-broadcast-delivery-meter__rail {
+    background: var(--color-surface-tint);
+  }
 
-html[data-max-theme='dark'] .managed-broadcast-delivery-meter__meta,
-html[data-max-theme='dark'] .managed-broadcast-delivery-meter__meta small {
-  color: var(--text-secondary);
-}
+  html[data-max-theme='dark'] .managed-broadcast-delivery-meter__meta,
+  html[data-max-theme='dark'] .managed-broadcast-delivery-meter__meta small {
+    color: var(--text-secondary);
+  }
 
-html[data-max-theme='dark'] .managed-broadcast-delivery-meter__meta strong {
-  color: var(--text-primary);
-}
+  html[data-max-theme='dark'] .managed-broadcast-delivery-meter__meta strong {
+    color: var(--text-primary);
+  }
 
-html[data-max-theme='dark'] .managed-broadcast-delivery-meter__breakdown span {
-  background: color-mix(in srgb, var(--color-warning) 14%, var(--color-surface-tint));
-  color: var(--color-warning);
-}
+  html[data-max-theme='dark'] .managed-broadcast-delivery-meter__breakdown span {
+    background: color-mix(in srgb, var(--color-warning) 14%, var(--color-surface-tint));
+    color: var(--color-warning);
+  }
 }

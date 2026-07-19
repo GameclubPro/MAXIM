@@ -301,7 +301,10 @@ export async function clearBroadcastComposerDraft(
     // Storage can be unavailable or quota-limited inside a WebView.
   }
 
-  await Promise.allSettled([writeBroadcastDraftToIndexedDb(key, null), removeNativeStorageItem(key)]);
+  await Promise.allSettled([
+    writeBroadcastDraftToIndexedDb(key, null),
+    removeNativeStorageItem(key),
+  ]);
 }
 
 export function hasAppliedBroadcastComposerReset(

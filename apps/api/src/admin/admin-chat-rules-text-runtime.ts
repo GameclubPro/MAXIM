@@ -546,7 +546,6 @@ export type {
   ChannelPublicationEngagementContext,
 } from './admin.service.support';
 
-
 export class AdminChatRulesTextRuntime {
   constructor(private readonly context: AdminChatRulesTextRuntimeContext) {}
 
@@ -591,10 +590,7 @@ export class AdminChatRulesTextRuntime {
     return this.context.resolveRequiredSubscriptionChannelHeaders(channelIds);
   }
 
-  private resolveUserDisplayNames(
-    chatId: string,
-    userIds: string[],
-  ): Promise<Map<string, string>> {
+  private resolveUserDisplayNames(chatId: string, userIds: string[]): Promise<Map<string, string>> {
     return this.context.resolveUserDisplayNames(chatId, userIds);
   }
 
@@ -823,5 +819,4 @@ export class AdminChatRulesTextRuntime {
   private formatRulesTime(minutes: number): string {
     return formatRulesTimeValue(minutes);
   }
-
 }

@@ -57,11 +57,7 @@ export class AdminDialogLinkService {
     return this.helper.parseChannelSuggestionStartPayload(startPayload);
   }
 
-  buildChannelDialogStartParam(
-    chatId: string,
-    type: ChannelDialogType,
-    threadId: string,
-  ): string {
+  buildChannelDialogStartParam(chatId: string, type: ChannelDialogType, threadId: string): string {
     return this.helper.buildChannelDialogStartParam(chatId, type, threadId);
   }
 

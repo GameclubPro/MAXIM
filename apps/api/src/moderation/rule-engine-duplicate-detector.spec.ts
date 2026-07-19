@@ -107,10 +107,7 @@ describe('RuleEngineDuplicateDetector', () => {
         () => new Promise<never>(() => undefined),
       ),
     };
-    const detector = new RuleEngineDuplicateDetector(
-      redisCounter as never,
-      onBudgetExceeded,
-    );
+    const detector = new RuleEngineDuplicateDetector(redisCounter as never, onBudgetExceeded);
     const detection = detector.detectWithin({
       chatId: 'chat-1',
       userId: 'user-1',
@@ -119,9 +116,7 @@ describe('RuleEngineDuplicateDetector', () => {
       compactText: 'same message',
       settings: buildSettings(),
     });
-    const rejected = expect(detection).rejects.toBeInstanceOf(
-      DuplicateStateBudgetExceededError,
-    );
+    const rejected = expect(detection).rejects.toBeInstanceOf(DuplicateStateBudgetExceededError);
 
     await jest.advanceTimersByTimeAsync(DUPLICATE_STATE_BUDGET_MS);
 
@@ -137,9 +132,7 @@ describe('RuleEngineDuplicateDetector', () => {
   it('replays the original counter value after a response arrives beyond the caller deadline', async () => {
     jest.useFakeTimers();
     jest.spyOn(console, 'warn').mockImplementation(() => undefined);
-    let finishLateResponse:
-      | ((result: { kind: 'inserted'; count: number }) => void)
-      | undefined;
+    let finishLateResponse: ((result: { kind: 'inserted'; count: number }) => void) | undefined;
     const increment = jest
       .fn()
       .mockImplementationOnce(

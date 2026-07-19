@@ -30,32 +30,34 @@ function createLegacyAdminServiceMock(resolvedProfile: typeof profile = profile)
 
 function createGlobalSpammerIntelligenceMock() {
   return {
-    listReviewQueue: jest.fn().mockImplementation(async (params: { includeLocalProfiles?: boolean }) => ({
-      limit: 6,
-      items: [
-        {
-          userId: 'user-1',
-          displayName: params.includeLocalProfiles === false ? null : 'Старое имя',
-          avatarUrl: null,
-          profileUrl: null,
-          profileHandoffUrl: null,
-          status: 'PENDING',
-          confidenceScore: 0.74,
-          sourceBreakdown: {},
-          lastReason: 'COMMERCIAL_AD_DETECTED',
-          lastChatId: 'chat-1',
-          lastEvidence: null,
-          lastUserLabel: 'Старое имя',
-          suppressedUntil: null,
-          reviewedAt: null,
-          reviewedByUserId: null,
-          reviewReason: null,
-          falsePositive: false,
-          chats: [],
-          observations: [],
-        },
-      ],
-    })),
+    listReviewQueue: jest
+      .fn()
+      .mockImplementation(async (params: { includeLocalProfiles?: boolean }) => ({
+        limit: 6,
+        items: [
+          {
+            userId: 'user-1',
+            displayName: params.includeLocalProfiles === false ? null : 'Старое имя',
+            avatarUrl: null,
+            profileUrl: null,
+            profileHandoffUrl: null,
+            status: 'PENDING',
+            confidenceScore: 0.74,
+            sourceBreakdown: {},
+            lastReason: 'COMMERCIAL_AD_DETECTED',
+            lastChatId: 'chat-1',
+            lastEvidence: null,
+            lastUserLabel: 'Старое имя',
+            suppressedUntil: null,
+            reviewedAt: null,
+            reviewedByUserId: null,
+            reviewReason: null,
+            falsePositive: false,
+            chats: [],
+            observations: [],
+          },
+        ],
+      })),
     getReviewMetrics: jest.fn().mockResolvedValue({
       pending: 1,
       approved: 2,

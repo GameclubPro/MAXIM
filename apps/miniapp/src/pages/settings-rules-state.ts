@@ -36,10 +36,7 @@ type RulesTextScreenState = Pick<
 >;
 
 function isRequiredSubscriptionCurrentlyActive(
-  settings: Pick<
-    ChatSettings,
-    'requiredSubscriptionEnabled' | 'requiredSubscriptionChannelIds'
-  >,
+  settings: Pick<ChatSettings, 'requiredSubscriptionEnabled' | 'requiredSubscriptionChannelIds'>,
 ): boolean {
   return settings.requiredSubscriptionEnabled && settings.requiredSubscriptionChannelIds.length > 0;
 }

@@ -300,10 +300,7 @@ function SuggestComposeImageGrid({
     return null;
   }
 
-  const visibleCount = Math.min(
-    attachments.length + cappedPreparingCount,
-    MAX_SUGGEST_IMAGES,
-  );
+  const visibleCount = Math.min(attachments.length + cappedPreparingCount, MAX_SUGGEST_IMAGES);
 
   return (
     <div
@@ -765,10 +762,8 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
     setPreparingImageState({ total: selectableFiles.length, done: 0 });
 
     try {
-      const {
-        prepareSuggestionDialogImageAttachment,
-        resolveSuggestionDialogImageMaxBytes,
-      } = await import('../lib/dialog-attachments');
+      const { prepareSuggestionDialogImageAttachment, resolveSuggestionDialogImageMaxBytes } =
+        await import('../lib/dialog-attachments');
       const prepared: SuggestDraftAttachment[] = [];
       let firstError: string | null = null;
       const suggestionImageMaxBytes = resolveSuggestionDialogImageMaxBytes(
@@ -1105,8 +1100,7 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
 
       {suggestPreparingImageLabel || draftAttachments.length > 0 ? (
         <span className="channel-suggest-composer__asset">
-          {suggestPreparingImageLabel ??
-            `${draftAttachments.length}/${MAX_SUGGEST_IMAGES}`}
+          {suggestPreparingImageLabel ?? `${draftAttachments.length}/${MAX_SUGGEST_IMAGES}`}
         </span>
       ) : null}
     </div>

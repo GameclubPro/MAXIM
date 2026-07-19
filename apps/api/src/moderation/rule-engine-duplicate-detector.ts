@@ -258,10 +258,7 @@ export class RuleEngineDuplicateDetector {
 
   private logBudgetExceeded(event: DuplicateStateBudgetExceededEvent): void {
     const now = Date.now();
-    if (
-      this.duplicateBudgetWarnAtMs !== null &&
-      now - this.duplicateBudgetWarnAtMs < 30_000
-    ) {
+    if (this.duplicateBudgetWarnAtMs !== null && now - this.duplicateBudgetWarnAtMs < 30_000) {
       return;
     }
     this.duplicateBudgetWarnAtMs = now;

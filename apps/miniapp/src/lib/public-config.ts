@@ -19,7 +19,9 @@ export function normalizeApiBase(value: string | undefined): string {
 
   const normalized = /^(?:https?:)?\/\//iu.test(trimmed)
     ? trimmed
-    : (trimmed.startsWith('/') ? trimmed : `/${trimmed}`);
+    : trimmed.startsWith('/')
+      ? trimmed
+      : `/${trimmed}`;
 
   return normalized.replace(/\/+$/u, '') || '/';
 }

@@ -42,10 +42,7 @@ test('channel statistics identity rejects cross-channel placeholder data', () =>
   assert.match(channelStatsPageSource, /remoteTitle: currentStatsIdentity\?\.channel\.title/u);
   assert.match(channelStatsPageSource, /remoteFallbackTitles: \[/u);
   assert.match(channelStatsPageSource, /resolvedTitleResolution\.source === 'fallback'/u);
-  assert.match(
-    channelStatsPageSource,
-    /stats && !statsQuery\.isPlaceholderData \? stats : null/u,
-  );
+  assert.match(channelStatsPageSource, /stats && !statsQuery\.isPlaceholderData \? stats : null/u);
   assert.match(
     channelStatsPageSource,
     /resolvedTitleResolution\.source === 'remote'[\s\S]*?statsQuery\.isFetching[\s\S]*?statsQuery\.isRefetchError[\s\S]*?statsQuery\.dataUpdatedAt <= 0/u,
@@ -54,14 +51,17 @@ test('channel statistics identity rejects cross-channel placeholder data', () =>
 });
 
 test('statistics pages expose truthful unavailable and partial metric states', () => {
-  assert.match(
-    eventsPageSource,
-    /participantsTotalPresentation\.status === 'loading'/u,
-  );
+  assert.match(eventsPageSource, /participantsTotalPresentation\.status === 'loading'/u);
   assert.match(eventsPageSource, /Количество участников недоступно/u);
   assert.match(eventsPageSource, /className="events-dashboard__hero-number"/u);
-  assert.match(channelStatsPageSource, /stats\.meta\.churnAvailable \? stats\.official\.audience\.net : null/u);
-  assert.match(channelStatsPageSource, /stats\.meta\.viewsAvailable \? periodLabel : 'Нет данных'/u);
+  assert.match(
+    channelStatsPageSource,
+    /stats\.meta\.churnAvailable \? stats\.official\.audience\.net : null/u,
+  );
+  assert.match(
+    channelStatsPageSource,
+    /stats\.meta\.viewsAvailable \? periodLabel : 'Нет данных'/u,
+  );
   assert.match(channelStatsPageSource, /!stats \|\| !stats\.meta\.churnAvailable/u);
 });
 

@@ -65,7 +65,7 @@ export function formatDeleteBotMessagesDelayLabel(value: number): string {
 
 const ALLOWLIST_URL_CANDIDATE_PATTERN =
   /(?:https?:\/\/|(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?\.)+(?:xn--[a-z0-9-]{2,59}|[a-z]{2,24}|рф))[^\s<>"'()[\]{}]*/iu;
-const ALLOWLIST_TRAILING_URL_PUNCTUATION_PATTERN = /[)\]},.;!?:]+$/u;
+const ALLOWLIST_TRAILING_URL_PUNCTUATION = new Set([')', ']', '}', ',', '.', ';', '!', '?', ':']);
 const ENCODED_WHITESPACE_PATTERN = /%(?:09|0a|0d|20)/i;
 const ALLOWLIST_HOST_ALIASES = new Map<string, string>([
   ['vk.com', 'vk.com'],
@@ -97,6 +97,14 @@ function tryDecodeUriComponent(value: string): string | null {
   }
 }
 
+function trimAllowlistTrailingUrlPunctuation(value: string): string {
+  let end = value.length;
+  while (end > 0 && ALLOWLIST_TRAILING_URL_PUNCTUATION.has(value[end - 1] ?? '')) {
+    end -= 1;
+  }
+  return end === value.length ? value : value.slice(0, end);
+}
+
 function extractAllowlistUrlCandidate(value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed) {
@@ -117,7 +125,7 @@ function extractAllowlistUrlCandidate(value: string): string | null {
       continue;
     }
 
-    const extracted = match[0].replace(ALLOWLIST_TRAILING_URL_PUNCTUATION_PATTERN, '');
+    const extracted = trimAllowlistTrailingUrlPunctuation(match[0]);
     if (extracted) {
       return extracted;
     }

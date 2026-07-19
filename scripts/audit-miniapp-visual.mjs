@@ -1,6 +1,11 @@
 import { spawn } from 'node:child_process';
+import {
+  ensureMiniappDevServer,
+  isLocalMiniappBaseUrl,
+  stopChildProcess,
+} from './miniapp-local-server.mjs';
+import { resolveMiniappVisualAuditBaseUrls } from './miniapp-visual-config.mjs';
 
-const DEFAULT_BASE_URLS = ['https://major-maksimov.ru/app/'];
 const DEFAULT_SCENARIOS = [
   'home',
   'home-channels',
@@ -64,6 +69,8 @@ function hostLabel(baseUrl) {
   return url.hostname.replace(/[^a-z0-9.-]+/giu, '-');
 }
 
+let activeCaptureProcess = null;
+
 function runCapture(env) {
   return new Promise((resolve, reject) => {
     const child = spawn('node', ['scripts/capture-miniapp-preview.mjs'], {
@@ -74,9 +81,20 @@ function runCapture(env) {
         ...env,
       },
     });
+    activeCaptureProcess = child;
 
-    child.once('error', reject);
+    const clearActiveCapture = () => {
+      if (activeCaptureProcess === child) {
+        activeCaptureProcess = null;
+      }
+    };
+
+    child.once('error', (error) => {
+      clearActiveCapture();
+      reject(error);
+    });
     child.once('exit', (code, signal) => {
+      clearActiveCapture();
       if (code === 0) {
         resolve();
         return;
@@ -89,7 +107,7 @@ function runCapture(env) {
 
 async function main() {
   const quick = envFlag('MINIAPP_VISUAL_AUDIT_QUICK');
-  const baseUrls = splitList(process.env.MINIAPP_VISUAL_AUDIT_BASE_URLS, DEFAULT_BASE_URLS);
+  const baseUrls = resolveMiniappVisualAuditBaseUrls();
   const devices = splitList(process.env.MINIAPP_VISUAL_AUDIT_DEVICES, ['all']);
   const scenarios =
     process.env.MINIAPP_VISUAL_AUDIT_SCENARIOS?.trim() ||
@@ -104,40 +122,76 @@ async function main() {
   );
   const keyboardScenario =
     process.env.MINIAPP_VISUAL_AUDIT_KEYBOARD_SCENARIOS?.trim() || 'home,chat-settings';
+  let activeDevServerProcess = null;
 
-  for (const baseUrl of baseUrls) {
-    for (const device of devices) {
-      for (const scheme of schemes) {
-        console.log(`\n== Visual audit: ${baseUrl} device=${device} scheme=${scheme} native ==`);
-        await runCapture({
-          MINIAPP_SCREENSHOT_BASE_URL: baseUrl,
-          MINIAPP_SCREENSHOT_DEVICE: device,
-          MINIAPP_SCREENSHOT_SCENARIOS: scenarios,
-          MINIAPP_SCREENSHOT_TARGET: 'native',
-          MINIAPP_SCREENSHOT_COLOR_SCHEME: scheme,
-          MINIAPP_SCREENSHOT_STRICT_LAYOUT: '1',
-          MINIAPP_SCREENSHOT_STRICT_CONTRAST: '1',
-          MINIAPP_SCREENSHOT_STRICT_ACCESSIBILITY: '1',
-          MINIAPP_SCREENSHOT_LABEL: `${hostLabel(baseUrl)}-${device}-${scheme}-native`,
-        });
+  const cleanup = async () => {
+    await stopChildProcess(activeCaptureProcess);
+    activeCaptureProcess = null;
+    await stopChildProcess(activeDevServerProcess);
+    activeDevServerProcess = null;
+  };
+  const handleSignal = (signal) => {
+    void cleanup().finally(() => {
+      process.exit(signal === 'SIGINT' ? 130 : 143);
+    });
+  };
+
+  process.once('SIGINT', handleSignal);
+  process.once('SIGTERM', handleSignal);
+
+  try {
+    for (const baseUrl of baseUrls) {
+      const localBaseUrl = isLocalMiniappBaseUrl(baseUrl);
+      activeDevServerProcess = localBaseUrl
+        ? await ensureMiniappDevServer(baseUrl, { log: console.log })
+        : null;
+
+      try {
+        for (const device of devices) {
+          for (const scheme of schemes) {
+            console.log(
+              `\n== Visual audit: ${baseUrl} device=${device} scheme=${scheme} native ==`,
+            );
+            await runCapture({
+              MINIAPP_SCREENSHOT_BASE_URL: baseUrl,
+              MINIAPP_SCREENSHOT_DEVICE: device,
+              MINIAPP_SCREENSHOT_SCENARIOS: scenarios,
+              MINIAPP_SCREENSHOT_TARGET: 'native',
+              MINIAPP_SCREENSHOT_COLOR_SCHEME: scheme,
+              MINIAPP_SCREENSHOT_STRICT_LAYOUT: '1',
+              MINIAPP_SCREENSHOT_STRICT_CONTRAST: '1',
+              MINIAPP_SCREENSHOT_STRICT_ACCESSIBILITY: '1',
+              MINIAPP_SCREENSHOT_REUSE_SERVER: localBaseUrl ? '1' : '0',
+              MINIAPP_SCREENSHOT_LABEL: `${hostLabel(baseUrl)}-${device}-${scheme}-native`,
+            });
+          }
+        }
+
+        for (const device of keyboardDevices) {
+          console.log(`\n== Visual audit: ${baseUrl} device=${device} simulated-keyboard ==`);
+          await runCapture({
+            MINIAPP_SCREENSHOT_BASE_URL: baseUrl,
+            MINIAPP_SCREENSHOT_DEVICE: device,
+            MINIAPP_SCREENSHOT_SCENARIOS: keyboardScenario,
+            MINIAPP_SCREENSHOT_TARGET: 'native',
+            MINIAPP_SCREENSHOT_COLOR_SCHEME: 'light',
+            MINIAPP_SCREENSHOT_STRICT_LAYOUT: '1',
+            MINIAPP_SCREENSHOT_STRICT_CONTRAST: '1',
+            MINIAPP_SCREENSHOT_STRICT_ACCESSIBILITY: '1',
+            MINIAPP_SCREENSHOT_SIMULATE_KEYBOARD: '1',
+            MINIAPP_SCREENSHOT_REUSE_SERVER: localBaseUrl ? '1' : '0',
+            MINIAPP_SCREENSHOT_LABEL: `${hostLabel(baseUrl)}-${device}-keyboard`,
+          });
+        }
+      } finally {
+        await stopChildProcess(activeDevServerProcess);
+        activeDevServerProcess = null;
       }
     }
-
-    for (const device of keyboardDevices) {
-      console.log(`\n== Visual audit: ${baseUrl} device=${device} simulated-keyboard ==`);
-      await runCapture({
-        MINIAPP_SCREENSHOT_BASE_URL: baseUrl,
-        MINIAPP_SCREENSHOT_DEVICE: device,
-        MINIAPP_SCREENSHOT_SCENARIOS: keyboardScenario,
-        MINIAPP_SCREENSHOT_TARGET: 'native',
-        MINIAPP_SCREENSHOT_COLOR_SCHEME: 'light',
-        MINIAPP_SCREENSHOT_STRICT_LAYOUT: '1',
-        MINIAPP_SCREENSHOT_STRICT_CONTRAST: '1',
-        MINIAPP_SCREENSHOT_STRICT_ACCESSIBILITY: '1',
-        MINIAPP_SCREENSHOT_SIMULATE_KEYBOARD: '1',
-        MINIAPP_SCREENSHOT_LABEL: `${hostLabel(baseUrl)}-${device}-keyboard`,
-      });
-    }
+  } finally {
+    process.removeListener('SIGINT', handleSignal);
+    process.removeListener('SIGTERM', handleSignal);
+    await cleanup();
   }
 }
 

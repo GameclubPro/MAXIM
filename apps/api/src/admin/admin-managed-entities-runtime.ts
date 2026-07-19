@@ -178,10 +178,7 @@ export class AdminManagedEntitiesRuntime {
     return this.context.runManagedEntitiesRemoteFullRefresh(user, entityType, options);
   }
 
-  listChats(
-    user: AuthUser,
-    options: ManagedEntitiesListOptions = {},
-  ): Promise<ChatSummary[]> {
+  listChats(user: AuthUser, options: ManagedEntitiesListOptions = {}): Promise<ChatSummary[]> {
     return this.listManagedEntities(user, 'chat', options);
   }
 
@@ -196,10 +193,7 @@ export class AdminManagedEntitiesRuntime {
     });
   }
 
-  listChannels(
-    user: AuthUser,
-    options: ManagedEntitiesListOptions = {},
-  ): Promise<ChatSummary[]> {
+  listChannels(user: AuthUser, options: ManagedEntitiesListOptions = {}): Promise<ChatSummary[]> {
     return this.listManagedEntities(user, 'channel', options);
   }
 
@@ -443,8 +437,9 @@ export class AdminManagedEntitiesRuntime {
       this.readTrimmedString(persisted?.botId) ??
       null;
     const botMetaById = new Map<string, ManagedEntityBotMeta>(
-      ((this.maxBotRegistry?.getAllBots?.() as readonly ManagedEntityBotMeta[] | undefined) ?? [])
-        .map((bot) => [bot.id, bot] as const),
+      (
+        (this.maxBotRegistry?.getAllBots?.() as readonly ManagedEntityBotMeta[] | undefined) ?? []
+      ).map((bot) => [bot.id, bot] as const),
     );
     const existingBotProfilesById = new Map(
       (Array.isArray(entity.assignedBots) ? entity.assignedBots : [])

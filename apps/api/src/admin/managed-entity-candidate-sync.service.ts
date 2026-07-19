@@ -193,7 +193,9 @@ export class ManagedEntityCandidateSyncService {
     return snapshot;
   }
 
-  private normalizeEntityType(value: string | null): Exclude<ManagedEntityTypeFilter, 'all'> | null {
+  private normalizeEntityType(
+    value: string | null,
+  ): Exclude<ManagedEntityTypeFilter, 'all'> | null {
     const normalized = value?.trim().toLowerCase();
     if (normalized === 'channel') {
       return 'channel';
@@ -204,7 +206,9 @@ export class ManagedEntityCandidateSyncService {
     return null;
   }
 
-  private resolveRequestedEntityType(entityType: ManagedEntityTypeFilter): CandidateEntityType | null {
+  private resolveRequestedEntityType(
+    entityType: ManagedEntityTypeFilter,
+  ): CandidateEntityType | null {
     return entityType === 'chat' || entityType === 'channel' ? entityType : null;
   }
 

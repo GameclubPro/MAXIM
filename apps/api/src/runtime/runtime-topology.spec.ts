@@ -124,9 +124,9 @@ describe('runtime-topology', () => {
             typeof environment.MODERATION_ENABLED_QUEUES === 'string'
               ? environment.MODERATION_ENABLED_QUEUES
               : undefined;
-          expect(
-            getEnabledModerationProcessorQueues(rawEnabledQueues),
-          ).toEqual(new Set(profile.moderationQueues));
+          expect(getEnabledModerationProcessorQueues(rawEnabledQueues)).toEqual(
+            new Set(profile.moderationQueues),
+          );
         } else {
           expect(environment.MODERATION_ENABLED_QUEUES).toBeUndefined();
         }

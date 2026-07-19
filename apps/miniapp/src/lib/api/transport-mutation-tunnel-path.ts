@@ -33,10 +33,7 @@ export function buildBaseTunnelParams(path: string, init: RequestInit): URLSearc
   return params;
 }
 
-export function buildMutationTunnelPathSync(
-  path: string,
-  init: RequestInit = {},
-): string | null {
+export function buildMutationTunnelPathSync(path: string, init: RequestInit = {}): string | null {
   const method = (init.method ?? 'GET').toUpperCase();
   if (
     ['GET', 'HEAD'].includes(method) ||

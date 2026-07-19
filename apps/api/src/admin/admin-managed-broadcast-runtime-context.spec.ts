@@ -27,9 +27,7 @@ describe('AdminManagedBroadcastRuntimeContext', () => {
     expect(context.prisma).toBe(target.prisma);
     expect(context.maxClient).toBe(target.maxClient);
     expect(context.logger).toBe(target.logger);
-    expect(context.backgroundRuntimeGovernorService).toBe(
-      target.backgroundRuntimeGovernorService,
-    );
+    expect(context.backgroundRuntimeGovernorService).toBe(target.backgroundRuntimeGovernorService);
     expect(context.managedEntityAccessLossService).toBe(target.managedEntityAccessLossService);
     expect(context.managedBroadcastDegradePauseLogAtMs).toBe(17);
 

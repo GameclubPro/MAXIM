@@ -28,10 +28,13 @@ Commands:
   doctor                      Check local SSH config and remote VPS basics
   shell                       Open an interactive shell in the remote repo
   exec <command...>           Run a command in the remote repo
-  deploy [branch] [services]  Run the main production deploy script on the VPS
+  deploy [branch] [services|--plan|--auto|--full]
+                              Run or plan a manifest-aware production deploy
   deploy-scale [branch] [...] Run the split/load-testing deploy script on the VPS.
                               Requires MAXIM_ALLOW_SCALE_DEPLOY=1.
   rollback-runtime <ref> [...] Rebuild/recreate API roles from a previous git ref
+  rollback-release <release-id> [components...]
+                              Recreate immutable API/miniapp/admin release images
   allow-ssh-current-ip [sg]  Add current public IP/32 to the Yandex Cloud SSH security group
   ensure-ssh [sg]            Allow current public IP, then run doctor
   health                      Check local-on-VPS and public health endpoints
@@ -53,7 +56,7 @@ expand_path() {
 
   case "$value" in
     "~") printf '%s' "$HOME" ;;
-    "~/"*) printf '%s/%s' "$HOME" "${value#~/}" ;;
+    \~/*) printf '%s/%s' "$HOME" "${value#\~/}" ;;
     *) printf '%s' "$value" ;;
   esac
 }
@@ -211,6 +214,8 @@ remote_exec() {
   maybe_allow_ssh_current_ip
   mapfile -d '' -t args < <(ssh_args)
   printf -v remote_command 'cd %q && %s' "$MAXIM_VPS_REPO_DIR" "$command"
+  # The command is composed and shell-escaped locally before the remote shell parses it.
+  # shellcheck disable=SC2029
   ssh "${args[@]}" "$MAXIM_VPS_SSH_TARGET" "bash -lc $(printf '%q' "$remote_command")"
 }
 
@@ -234,6 +239,8 @@ open_shell() {
 
   maybe_allow_ssh_current_ip
   mapfile -d '' -t args < <(ssh_args)
+  # Keep the shell lookup literal until the interactive command runs remotely.
+  # shellcheck disable=SC2016
   printf -v remote_command 'cd %q && exec "${SHELL:-bash}"' "$MAXIM_VPS_REPO_DIR"
   ssh "${args[@]}" -t "$MAXIM_VPS_SSH_TARGET" "bash -lc $(printf '%q' "$remote_command")"
 }
@@ -249,8 +256,24 @@ deploy_main() {
     exit 2
   fi
 
+  case "${MAXIM_DEPLOY_EMERGENCY_BYPASS:-0}" in
+    1|true|TRUE|yes|YES)
+      if [[ -z "${MAXIM_DEPLOY_EMERGENCY_REASON:-}" ]]; then
+        echo "MAXIM_DEPLOY_EMERGENCY_REASON is required with MAXIM_DEPLOY_EMERGENCY_BYPASS=1." >&2
+        exit 2
+      fi
+      echo "WARNING: bypassing the green-CI deploy gate: $MAXIM_DEPLOY_EMERGENCY_REASON" >&2
+      ;;
+    *)
+      node scripts/ci/assert-green.mjs "$expected_sha"
+      ;;
+  esac
+
   remote_command="$(shell_quote_args ./infra/scripts/vps-pull-build-up.sh "$branch" "$@")"
   remote_command="MAXIM_EXPECTED_DEPLOY_SHA=$(printf '%q' "$expected_sha") $remote_command"
+  if [[ -n "${MAXIM_DEPLOY_EMERGENCY_REASON:-}" ]]; then
+    remote_command="MAXIM_DEPLOY_EMERGENCY_REASON=$(printf '%q' "$MAXIM_DEPLOY_EMERGENCY_REASON") $remote_command"
+  fi
   if [[ "$branch" != "main" ]]; then
     case "${MAXIM_ALLOW_NON_MAIN_DEPLOY:-0}" in
       1|true|TRUE|yes|YES)
@@ -285,6 +308,15 @@ rollback_runtime() {
   fi
 
   remote_exec "$(shell_quote_args ./infra/scripts/vps-runtime-rollback.sh "$@")"
+}
+
+rollback_release() {
+  if [[ $# -lt 1 ]]; then
+    echo "Usage: $0 rollback-release <release-id> [api-shared] [miniapp-major-static] [admin-static]"
+    exit 1
+  fi
+
+  remote_exec "$(shell_quote_args ./infra/scripts/vps-release-rollback.sh "$@")"
 }
 
 health() {
@@ -375,6 +407,9 @@ case "$command" in
     ;;
   rollback-runtime)
     rollback_runtime "$@"
+    ;;
+  rollback-release)
+    rollback_release "$@"
     ;;
   allow-ssh-current-ip)
     allow_ssh_current_ip "$@"

@@ -830,20 +830,14 @@
     color: var(--text-primary);
   }
 
-  html[data-max-theme='dark']
-    .participant-sheet
-    .participant-sheet__row-actions
-    .button--accent {
+  html[data-max-theme='dark'] .participant-sheet .participant-sheet__row-actions .button--accent {
     border-color: var(--accent);
     background: var(--accent);
     color: var(--color-surface);
     box-shadow: none;
   }
 
-  html[data-max-theme='dark']
-    .participant-sheet
-    .participant-sheet__row-actions
-    .button--ghost {
+  html[data-max-theme='dark'] .participant-sheet .participant-sheet__row-actions .button--ghost {
     border-color: var(--border-strong);
     background: var(--surface-card);
     color: var(--text-primary);
@@ -936,9 +930,7 @@
     box-shadow: none;
   }
 
-  html[data-max-theme='dark']
-    .channel-insights__section-tabs
-    .segmented-control__item.is-active,
+  html[data-max-theme='dark'] .channel-insights__section-tabs .segmented-control__item.is-active,
   html[data-max-theme='dark']
     .channel-insights__section-tabs
     .segmented-control__item[aria-checked='true'] {

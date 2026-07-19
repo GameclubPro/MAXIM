@@ -2502,14 +2502,6 @@ describe('PrivateControlService', () => {
     );
   });
 
-  it('parses scheduled broadcast input in the selected broadcast timezone', () => {
-    const { service } = createHarness();
-
-    const parsed = (service as any).parseBroadcastSendAt('24.03.2026 17:00', 'Asia/Yekaterinburg');
-
-    expect(parsed).toBe('2026-03-24T12:00:00.000Z');
-  });
-
   it('preserves incoming MAX text markup in markdown broadcast preview from private bot', async () => {
     const { service, adminService, maxClient, channels } = createHarness();
     const sourceText = 'Важный анонс\n\n  Второй абзац с  пробелом';

@@ -63,9 +63,7 @@ type AdminRequiredSubscriptionRuntimeContextTarget = {
   createManagedEntityHeader(
     params: CreateRequiredSubscriptionManagedEntityHeaderParams,
   ): ManagedEntityHeader;
-  mergeManagedBotChatCatalogRows(
-    rows: readonly ManagedBotChatCatalogSnapshotRow[],
-  ): MaxBotChat[];
+  mergeManagedBotChatCatalogRows(rows: readonly ManagedBotChatCatalogSnapshotRow[]): MaxBotChat[];
   resolveBotAssignment(chatId: string): Promise<string | undefined>;
   resolveCandidateBotIdsForChat(
     chatId: string,

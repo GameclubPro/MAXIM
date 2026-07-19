@@ -1,7 +1,4 @@
-import {
-  DEFAULT_BROADCAST_BUTTON_TEXT,
-  MAX_CHANNEL_DIALOG_SUGGEST_IMAGES,
-} from '@maxim/contracts';
+import { DEFAULT_BROADCAST_BUTTON_TEXT, MAX_CHANNEL_DIALOG_SUGGEST_IMAGES } from '@maxim/contracts';
 import { DEFAULT_BROADCAST_DRAFT } from './private-control.constants';
 import {
   clonePrivateBroadcastDraft,
@@ -174,12 +171,15 @@ describe('private control draft normalizer', () => {
   });
 
   it('normalizes suggestion legacy media, media lists, and text markup', () => {
-    const validImages = Array.from({ length: MAX_CHANNEL_DIALOG_SUGGEST_IMAGES + 2 }, (_, index) => ({
-      kind: 'image',
-      mimeType: ` image/${index} `,
-      fileName: ` image-${index}.png `,
-      payload: { token: `image-${index}` },
-    }));
+    const validImages = Array.from(
+      { length: MAX_CHANNEL_DIALOG_SUGGEST_IMAGES + 2 },
+      (_, index) => ({
+        kind: 'image',
+        mimeType: ` image/${index} `,
+        fileName: ` image-${index}.png `,
+        payload: { token: `image-${index}` },
+      }),
+    );
     const draft = normalizePrivateSuggestionDraft({
       chatId: ' channel-1 ',
       token: ' token-1 ',

@@ -1113,9 +1113,7 @@ export class SystemBotsService {
     activeExecutableBotIds: readonly string[],
   ): SystemBotRouteAuditClassification {
     if (route.candidateBotIds.length === 0) {
-      return activeExecutableBotIds.length === 0
-        ? 'no-active-executable-bot'
-        : 'empty-candidates';
+      return activeExecutableBotIds.length === 0 ? 'no-active-executable-bot' : 'empty-candidates';
     }
 
     return route.botId && route.botId === route.primaryBotId
@@ -1145,8 +1143,7 @@ export class SystemBotsService {
     severity: SystemBotRouteAuditSeverity;
     nowMs: number;
   }): SystemBotRouteAuditSample {
-    const { chat, route, action, activeExecutableBotIds, classification, severity, nowMs } =
-      params;
+    const { chat, route, action, activeExecutableBotIds, classification, severity, nowMs } = params;
     const deniedOrLostBotIds: string[] = [];
     const deniedPermissionsBotIds: string[] = [];
     const stalePermissionsBotIds: string[] = [];

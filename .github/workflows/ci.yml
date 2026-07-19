@@ -4,13 +4,69 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '17 2 * * 1'
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  ci:
+  static:
+    name: Static
     runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+      - run: npm run check:static
+      - run: npm run check:docs
+      - name: ShellCheck infrastructure scripts
+        run: find infra/scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck
+      - name: Validate GitHub Actions workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+      - run: npm run check:infra
+
+  contracts:
+    name: Contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run check:contracts
+
+  api:
+    name: API
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run check:ci --workspace @maxim/api
+
+  postgres-races:
+    name: PostgreSQL Races
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:16
@@ -25,55 +81,121 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+    env:
+      DATABASE_URL: postgresql://maxim_ci:maxim_ci@127.0.0.1:5432/race_test?schema=public
+      CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL: postgresql://maxim_ci:maxim_ci@127.0.0.1:5432/race_test?schema=public
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version-file: .nvmrc
           cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=high
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Refactor guards
-        run: npm run check:refactor-guards
-
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Test API
-        run: npm run test:api:ci
-
-      - name: Migrate disposable PostgreSQL race-test database
-        env:
-          DATABASE_URL: postgresql://maxim_ci:maxim_ci@127.0.0.1:5432/race_test?schema=public
+      - run: npm ci
+      - name: Validate Prisma schema and migration policy
+        run: npm run check:prisma
+      - name: Apply migrations
         run: npm run prisma:migrate:deploy --workspace @maxim/api
+      - name: Verify migrated database matches the schema
+        run: npm run prisma:check:drift --workspace @maxim/api
+      - run: npm run test:postgres-races --workspace @maxim/api
 
-      - name: Test PostgreSQL routing races
+  commercial-benchmark:
+    name: Commercial Benchmark
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      COMMERCIAL_BENCHMARK_PROFILE: github-hosted
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run test:api:commercial-benchmark:ci
+
+  miniapp:
+    name: Mini App
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run check:miniapp
+      - run: npm run build:miniapp:production
+      - run: npm run screenshots:miniapp:smoke
+
+  admin:
+    name: Safety Desk
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run check:admin
+
+  docker:
+    name: Docker (${{ matrix.component }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: api
+            dockerfile: apps/api/Dockerfile
+          - component: miniapp
+            dockerfile: apps/miniapp/Dockerfile
+          - component: admin
+            dockerfile: apps/admin/Dockerfile
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Build ${{ matrix.component }} image
+        run: docker buildx build --load --provenance=false -f "${{ matrix.dockerfile }}" -t "maxim-${{ matrix.component }}-ci:${{ github.sha }}" .
+
+  required:
+    name: Required
+    if: always()
+    runs-on: ubuntu-latest
+    needs:
+      - static
+      - contracts
+      - api
+      - postgres-races
+      - commercial-benchmark
+      - miniapp
+      - admin
+      - docker
+    steps:
+      - name: Require every CI lane
         env:
-          DATABASE_URL: postgresql://maxim_ci:maxim_ci@127.0.0.1:5432/race_test?schema=public
-          CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL: postgresql://maxim_ci:maxim_ci@127.0.0.1:5432/race_test?schema=public
-        run: npm run test:postgres-races --workspace @maxim/api
-
-      - name: Benchmark commercial moderation
-        env:
-          COMMERCIAL_BENCHMARK_PROFILE: github-hosted
-        run: npm run test:api:commercial-benchmark:ci
-
-      - name: Test mini app
-        run: npm run test:miniapp
-
-      - name: Test Safety Desk
-        run: npm run test:admin
-
-      - name: Build
-        run: npm run build
-
-      - name: Build Docker images
-        run: npm run build:docker
+          STATIC_RESULT: ${{ needs.static.result }}
+          CONTRACTS_RESULT: ${{ needs.contracts.result }}
+          API_RESULT: ${{ needs.api.result }}
+          POSTGRES_RESULT: ${{ needs.postgres-races.result }}
+          BENCHMARK_RESULT: ${{ needs.commercial-benchmark.result }}
+          MINIAPP_RESULT: ${{ needs.miniapp.result }}
+          ADMIN_RESULT: ${{ needs.admin.result }}
+          DOCKER_RESULT: ${{ needs.docker.result }}
+        run: |
+          for result in \
+            "$STATIC_RESULT" \
+            "$CONTRACTS_RESULT" \
+            "$API_RESULT" \
+            "$POSTGRES_RESULT" \
+            "$BENCHMARK_RESULT" \
+            "$MINIAPP_RESULT" \
+            "$ADMIN_RESULT" \
+            "$DOCKER_RESULT"; do
+            test "$result" = "success"
+          done

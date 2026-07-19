@@ -46,21 +46,23 @@ for completed_dump in "$BACKUP_DIR"/maxim_*.dump; do
 done
 shopt -u nullglob
 
-while IFS= read -r -d '' expired_dump; do
-  if [[ "$expired_dump" == "$LATEST_COMPLETED_DUMP" ]]; then
-    continue
-  fi
-  rm -f -- "$expired_dump" "$expired_dump.sha256"
-done < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'maxim_*.dump' -mtime "+$RETENTION_DAYS" -print0)
-while IFS= read -r -d '' expired_checksum; do
-  if [[ "$expired_checksum" == "$LATEST_COMPLETED_DUMP.sha256" ]]; then
-    continue
-  fi
-  rm -f -- "$expired_checksum"
-done < <(
-  find "$BACKUP_DIR" -maxdepth 1 -type f -name 'maxim_*.dump.sha256' \
-    -mtime "+$RETENTION_DAYS" -print0
-)
+if [[ "$MODE" != "--preflight-only" ]]; then
+  while IFS= read -r -d '' expired_dump; do
+    if [[ "$expired_dump" == "$LATEST_COMPLETED_DUMP" ]]; then
+      continue
+    fi
+    rm -f -- "$expired_dump" "$expired_dump.sha256"
+  done < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'maxim_*.dump' -mtime "+$RETENTION_DAYS" -print0)
+  while IFS= read -r -d '' expired_checksum; do
+    if [[ "$expired_checksum" == "$LATEST_COMPLETED_DUMP.sha256" ]]; then
+      continue
+    fi
+    rm -f -- "$expired_checksum"
+  done < <(
+    find "$BACKUP_DIR" -maxdepth 1 -type f -name 'maxim_*.dump.sha256' \
+      -mtime "+$RETENTION_DAYS" -print0
+  )
+fi
 
 DATABASE_BYTES="$(
   docker compose -f "$COMPOSE_FILE" exec -T postgres \

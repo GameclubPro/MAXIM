@@ -130,11 +130,7 @@ export function summarizeCommercialAuditRecords(
     ) {
       genericGoodsDeletes += 1;
     }
-    if (
-      isDelete &&
-      subtype === 'RECRUITMENT' &&
-      isWeakRecruitmentDelete(deleteProfile)
-    ) {
+    if (isDelete && subtype === 'RECRUITMENT' && isWeakRecruitmentDelete(deleteProfile)) {
       recruitmentDeleteWithoutRisk += 1;
     }
     if (
@@ -219,9 +215,7 @@ async function readJsonl(pathname: string): Promise<AuditSummaryRecord[]> {
 function readCliOptions(argv: readonly string[]): CliOptions {
   const inputPath = readStringOption(argv, '--input');
   if (!inputPath) {
-    throw new Error(
-      'Usage: npm run moderation:commercial-audit-summary -- --input <audit.jsonl>',
-    );
+    throw new Error('Usage: npm run moderation:commercial-audit-summary -- --input <audit.jsonl>');
   }
   return {
     inputPath,

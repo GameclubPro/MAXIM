@@ -4015,15 +4015,11 @@ describe('VkParsingService', () => {
 
     expect(readExecuteRawValues(prisma)).toContain('CHANGED_AFTER_PUBLISH');
     expect(readExecuteRawSql(prisma)).toContain('"text_format" = CASE');
-    expect(readExecuteRawSql(prisma)).toContain(
-      '"manual_content_edited_at" IS NOT NULL',
-    );
+    expect(readExecuteRawSql(prisma)).toContain('"manual_content_edited_at" IS NOT NULL');
     expect(readExecuteRawSql(prisma)).toContain(
       '"vk_parsing_posts"."content_hash" = EXCLUDED."content_hash"',
     );
-    expect(readExecuteRawSql(prisma)).toContain(
-      '"manual_content_edited_at" = CASE',
-    );
+    expect(readExecuteRawSql(prisma)).toContain('"manual_content_edited_at" = CASE');
   });
 
   it('only marks fetched-window missing VK posts unavailable after threshold and spot-check', async () => {

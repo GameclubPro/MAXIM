@@ -30,10 +30,12 @@
 1. Выгрузить 48 часов кандидатов на VPS из `api-admin`:
 
 ```bash
+SINCE="${SINCE:?Set SINCE to the audit window start in ISO-8601}"
+UNTIL="${UNTIL:?Set UNTIL to the audit window end in ISO-8601}"
 docker compose -p infra -f infra/docker-compose.yml exec -T api-admin \
   node apps/api/dist/apps/api/src/scripts/audit-commercial-filter.js \
-  --since <iso-48h-ago> \
-  --until <iso-now> \
+  --since "$SINCE" \
+  --until "$UNTIL" \
   --limit all \
   --sample 0 \
   --export-jsonl /tmp/commercial-audit-48h.jsonl \
@@ -170,13 +172,15 @@ action evidence before adding broad suppressors.
 Локальные команды:
 
 ```bash
+SINCE="${SINCE:?Set SINCE to the audit window start in ISO-8601}"
+UNTIL="${UNTIL:?Set UNTIL to the audit window end in ISO-8601}"
 npm run moderation:audit-commercial --workspace @maxim/api -- \
-  --since <iso> --until <iso> --limit all \
+  --since "$SINCE" --until "$UNTIL" --limit all \
   --export-corpus-jsonl src/moderation/commercial-corpus.next.jsonl \
   --export-all-corpus
 
 npm run moderation:audit-commercial --workspace @maxim/api -- \
-  --since <iso> --until <iso> --limit all --shadow-all-chats \
+  --since "$SINCE" --until "$UNTIL" --limit all --shadow-all-chats \
   --export-corpus-jsonl src/moderation/commercial-corpus.shadow.jsonl \
   --export-all-corpus
 

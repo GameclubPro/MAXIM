@@ -16,8 +16,7 @@
     border: 1px solid rgba(190, 205, 220, 0.86);
     border-radius: 8px;
     background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(246, 250, 253, 0.92)),
-      #ffffff;
+      linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(246, 250, 253, 0.92)), #ffffff;
     box-shadow: 0 10px 22px rgba(38, 72, 104, 0.08);
     color: #20384f;
     font: inherit;
