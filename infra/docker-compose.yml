@@ -45,7 +45,7 @@ services:
     restart: unless-stopped
     logging: *default-logging
     env_file:
-      - ../.env
+      - ${MAXIM_COMPOSE_SERVICE_ENV_FILE:-../.env}
     environment:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-ingress
@@ -75,7 +75,7 @@ services:
     restart: unless-stopped
     logging: *default-logging
     env_file:
-      - ../.env
+      - ${MAXIM_COMPOSE_SERVICE_ENV_FILE:-../.env}
     environment:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-admin
@@ -106,7 +106,7 @@ services:
     restart: unless-stopped
     logging: *default-logging
     env_file:
-      - ../.env
+      - ${MAXIM_COMPOSE_SERVICE_ENV_FILE:-../.env}
     environment:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-enqueue
@@ -137,7 +137,7 @@ services:
     restart: unless-stopped
     logging: *default-logging
     env_file:
-      - ../.env
+      - ${MAXIM_COMPOSE_SERVICE_ENV_FILE:-../.env}
     environment:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-moderation
@@ -180,7 +180,7 @@ services:
     restart: unless-stopped
     logging: *default-logging
     env_file:
-      - ../.env
+      - ${MAXIM_COMPOSE_SERVICE_ENV_FILE:-../.env}
     environment:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-moderation-critical
@@ -222,7 +222,7 @@ services:
     restart: unless-stopped
     logging: *default-logging
     env_file:
-      - ../.env
+      - ${MAXIM_COMPOSE_SERVICE_ENV_FILE:-../.env}
     environment:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-moderation-join
@@ -263,7 +263,7 @@ services:
     restart: unless-stopped
     logging: *default-logging
     env_file:
-      - ../.env
+      - ${MAXIM_COMPOSE_SERVICE_ENV_FILE:-../.env}
     environment:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-moderation-realtime-b
@@ -306,7 +306,7 @@ services:
     restart: unless-stopped
     logging: *default-logging
     env_file:
-      - ../.env
+      - ${MAXIM_COMPOSE_SERVICE_ENV_FILE:-../.env}
     environment:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-moderation-realtime-c
@@ -351,7 +351,7 @@ services:
     restart: unless-stopped
     logging: *default-logging
     env_file:
-      - ../.env
+      - ${MAXIM_COMPOSE_SERVICE_ENV_FILE:-../.env}
     environment:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-moderation-realtime-d
@@ -394,7 +394,7 @@ services:
     restart: unless-stopped
     logging: *default-logging
     env_file:
-      - ../.env
+      - ${MAXIM_COMPOSE_SERVICE_ENV_FILE:-../.env}
     environment:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-moderation-background
@@ -447,7 +447,7 @@ services:
     restart: unless-stopped
     logging: *default-logging
     env_file:
-      - ../.env
+      - ${MAXIM_COMPOSE_SERVICE_ENV_FILE:-../.env}
     environment:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-action

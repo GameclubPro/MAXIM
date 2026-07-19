@@ -67,6 +67,18 @@ test('copies deterministic root build helpers into workspace Docker build stages
   );
 });
 
+test('validates Compose with the public env while keeping the runtime env default', () => {
+  const compose = read('infra/docker-compose.yml');
+  const scaleCompose = read('infra/docker-compose.scale.yml');
+  const infraCheck = read('infra/scripts/check-infra.sh');
+  const runtimeEnvReference = /\$\{MAXIM_COMPOSE_SERVICE_ENV_FILE:-\.\.\/\.env\}/gu;
+
+  assert.equal([...compose.matchAll(runtimeEnvReference)].length, apiServices.length);
+  assert.equal([...scaleCompose.matchAll(runtimeEnvReference)].length, apiServices.length);
+  assert.match(infraCheck, /MAXIM_COMPOSE_SERVICE_ENV_FILE=\.\.\/\.env\.example/u);
+  assert.match(infraCheck, /docker compose --env-file \.env\.example/u);
+});
+
 test('validates deploy targets before synchronization or runtime side effects', () => {
   const deploy = read('infra/scripts/vps-pull-build-up.sh');
   const validation = callIndexes(deploy, 'validate_requested_services')[0];
