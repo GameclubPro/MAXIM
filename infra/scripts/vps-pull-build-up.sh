@@ -48,6 +48,11 @@ if [[ $# -ge 2 ]]; then
   done
 fi
 
+if [[ "$DEPLOY_MODE" != "manual" && "${#SERVICES[@]}" -gt 0 ]]; then
+  echo "Explicit services cannot be combined with --$DEPLOY_MODE." >&2
+  exit 2
+fi
+
 if [[ "$DEPLOY_MODE" == "full" ]] || [[ "$DEPLOY_MODE" == "manual" && "${#SERVICES[@]}" -eq 0 ]]; then
   SERVICES=(
     "api-ingress"
@@ -64,11 +69,6 @@ if [[ "$DEPLOY_MODE" == "full" ]] || [[ "$DEPLOY_MODE" == "manual" && "${#SERVIC
     "miniapp-major-static"
     "admin-static"
   )
-fi
-
-if [[ "$DEPLOY_MODE" != "manual" && "${#SERVICES[@]}" -gt 0 ]]; then
-  echo "Explicit services cannot be combined with --$DEPLOY_MODE." >&2
-  exit 2
 fi
 
 API_SERVICES=("${MAXIM_PRODUCTION_API_SERVICES[@]}")
