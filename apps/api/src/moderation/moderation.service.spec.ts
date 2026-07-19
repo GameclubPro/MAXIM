@@ -4228,6 +4228,77 @@ describe('ModerationService', () => {
     );
   });
 
+  it('does not auto-delete the published chat rules message from own bot', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            deleteBotMessagesEnabled: true,
+            deleteBotMessagesDelayMinutes: 0.5,
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      chatRules: {
+        findUnique: jest.fn().mockResolvedValue({
+          publishedMessageId: 'mid-published-rules-1',
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn(),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      globalSpammer: {
+        upsert: jest.fn(),
+      },
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn().mockReturnValue('id613002203036_bot'),
+      } as never,
+    );
+
+    await service.handleUpdate(
+      createOwnBotUpdateWithoutBotFlags('Правила чата', 'mid-published-rules-1'),
+    );
+
+    expect(prisma.chatRules.findUnique).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-1',
+      },
+      select: {
+        publishedMessageId: true,
+      },
+    });
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.findFirst).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
   it('does not auto-delete tracked greeting message from own bot', async () => {
     const prisma = {
       chat: {
