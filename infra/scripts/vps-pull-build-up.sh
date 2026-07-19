@@ -48,6 +48,11 @@ if [[ $# -ge 2 ]]; then
   done
 fi
 
+if [[ "$DEPLOY_MODE" != "manual" && "${#SERVICES[@]}" -gt 0 ]]; then
+  echo "Explicit services cannot be combined with --$DEPLOY_MODE." >&2
+  exit 2
+fi
+
 if [[ "$DEPLOY_MODE" == "full" ]] || [[ "$DEPLOY_MODE" == "manual" && "${#SERVICES[@]}" -eq 0 ]]; then
   SERVICES=(
     "api-ingress"
@@ -64,11 +69,6 @@ if [[ "$DEPLOY_MODE" == "full" ]] || [[ "$DEPLOY_MODE" == "manual" && "${#SERVIC
     "miniapp-major-static"
     "admin-static"
   )
-fi
-
-if [[ "$DEPLOY_MODE" != "manual" && "${#SERVICES[@]}" -gt 0 ]]; then
-  echo "Explicit services cannot be combined with --$DEPLOY_MODE." >&2
-  exit 2
 fi
 
 API_SERVICES=("${MAXIM_PRODUCTION_API_SERVICES[@]}")
@@ -285,6 +285,14 @@ is_enabled() {
       return 1
       ;;
   esac
+}
+
+require_node_24() {
+  if ! command -v node >/dev/null 2>&1 || \
+    ! node -e 'process.exit(Number(process.versions.node.split(".")[0]) === 24 ? 0 : 1)'; then
+    echo "Node 24 is required for production deploy." >&2
+    exit 1
+  fi
 }
 
 check_deploy_disk_capacity() {
@@ -892,6 +900,7 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
+require_node_24
 require_production_branch_confirmation
 validate_requested_services
 acquire_deploy_lock
