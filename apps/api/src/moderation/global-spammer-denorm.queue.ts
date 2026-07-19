@@ -24,5 +24,5 @@ export function buildGlobalSpammerDenormDeduplicationId(userId: string): string 
 }
 
 export function hashQueueToken(value: string): string {
-  return createHash('sha1').update(value).digest('hex');
+  return createHash('sha256').update(value).digest('hex');
 }

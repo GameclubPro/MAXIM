@@ -70,6 +70,7 @@
 - API ready may recover after live while queues drain; observe the recovery window before declaring regression.
 - If Major `/app/` returns 502, inspect `miniapp-major-static`, not `miniapp-static`.
 - `monitor-readonly` samples health, Compose state/restarts, canonical `/app/`, and filtered role logs without reconciling webhooks or sending bot messages.
+- Read-only monitor keyword scans must discard successful 2xx/3xx access-log lines before matching words such as `error`, `failed`, or `denied` in asset names.
 
 ## Environment And Git Safety
 
@@ -85,6 +86,7 @@
 - Closed Safety Desk/support APIs use same-origin `admin.major-maksimov.ru/api/v1/...`, proxied to `api-admin` with `X-Forwarded-Host` and Basic Auth `X-Remote-User` checks.
 - Public sites must deny `/api/v1/safety-desk` and `/api/v1/support-requests` before generic `/api/v1/` proxy rules.
 - Apply admin nginx changes separately with `./infra/scripts/vps-apply-major-admin-site.sh maxim-vps` after review.
+- Nginx `add_header` inheritance stops when a location defines any local header. Locations with local `add_header` directives must repeat the full security-header set, and site apply scripts must keep their EXIT rollback guard armed until localhost/SNI route and header smokes pass.
 - Before applying `infra/nginx/maxim.play-team.ru.conf`, compare the live backend site: it may contain sibling routes such as `reshenie` and `karavan` that must not be removed.
 - Never keep nginx backups in `/etc/nginx/sites-enabled`; nginx parses every file there. Store backups outside included directories before `nginx -t`.
 - `maxim.play-team.ru` enters through Yandex edge `maxim-site-edge-1` and TCP HAProxy to the backend private address. Deploy/rollback still run on `maxim-vps`, not the edge.

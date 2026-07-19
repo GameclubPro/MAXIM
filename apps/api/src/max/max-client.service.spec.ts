@@ -3,6 +3,7 @@ import {
   MaxApiCircuitOpenError,
   MaxApiRequestRejectedError,
   MaxClientService,
+  normalizeMaxActionIdempotencyKeyPart,
   wasMaxMessageSendAttempted,
 } from './max-client.service';
 import { from, of, throwError } from 'rxjs';
@@ -280,6 +281,58 @@ jest.mock('ioredis', () => {
   };
 });
 
+describe('MAX action idempotency key normalization', () => {
+  function referenceNormalize(value: string): string {
+    const normalized: string[] = [];
+    for (const character of value.trim().toLowerCase()) {
+      const code = character.charCodeAt(0);
+      const allowed =
+        (code >= 97 && code <= 122) || (code >= 48 && code <= 57) || character === '-';
+      if (allowed) {
+        normalized.push(character);
+      } else if (normalized.at(-1) !== '_') {
+        normalized.push('_');
+      }
+    }
+    while (normalized[0] === '_') {
+      normalized.shift();
+    }
+    while (normalized.at(-1) === '_') {
+      normalized.pop();
+    }
+    return normalized.join('').slice(0, 48);
+  }
+
+  it('preserves readable-key semantics across separator and Unicode inputs', () => {
+    const alphabet = ['a', 'Z', '0', '_', '-', ' ', '!', 'e', '\u0130', '\ud83d\ude00', '\n'];
+    const corpus = [
+      '',
+      '___',
+      '  Moderation:Notice:Chat-1:User_1  ',
+      '__a_--_b__',
+      '#-leading',
+      'trailing-#',
+      'RUS:\u041f\u0440\u0438\u0432\u0435\u0442',
+      'emoji:\ud83d\ude00\ud83d\ude80:done',
+      'A'.repeat(80),
+    ];
+    let frontier = [''];
+    for (let length = 0; length < 4; length += 1) {
+      frontier = frontier.flatMap((prefix) => alphabet.map((character) => prefix + character));
+      corpus.push(...frontier);
+    }
+
+    for (const value of corpus) {
+      expect(normalizeMaxActionIdempotencyKeyPart(value)).toBe(referenceNormalize(value));
+    }
+  });
+
+  it('handles a long adversarial separator run in one pass', () => {
+    const value = `${'!_'.repeat(250_000)}Action-1${'_!'.repeat(250_000)}`;
+    expect(normalizeMaxActionIdempotencyKeyPart(value)).toBe('action-1');
+  });
+});
+
 describe('MaxClientService inline keyboard guardrails', () => {
   beforeEach(() => {
     (
@@ -306,6 +359,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       completeSendDispatch?: jest.Mock;
       releaseSendDispatch?: jest.Mock;
       recordAmbiguousSendDispatch?: jest.Mock;
+      clearTerminalBanStateAfterUnban?: jest.Mock;
     },
   ) {
     const configService = {
@@ -1220,6 +1274,130 @@ describe('MaxClientService inline keyboard guardrails', () => {
     },
   );
 
+  it('clears terminal ban state only after MAX confirms an unban', async () => {
+    const httpService = {
+      request: jest.fn(() => of({ data: {} })),
+    };
+    const actionLedgerService = {
+      clearTerminalBanStateAfterUnban: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = createService(httpService, {}, undefined, actionLedgerService);
+
+    await service.executeActionJob({
+      actionType: 'UNBAN_MEMBER',
+      chatId: 'chat-1',
+      userId: 'user-1',
+      attempt: 1,
+      idempotencyKey: 'unban-member-1',
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(actionLedgerService.clearTerminalBanStateAfterUnban).toHaveBeenCalledWith(
+      'chat-1',
+      'user-1',
+    );
+    expect(httpService.request.mock.invocationCallOrder[0]).toBeLessThan(
+      actionLedgerService.clearTerminalBanStateAfterUnban.mock.invocationCallOrder[0],
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('treats a documented already-present success=false response as confirmed unban state', async () => {
+    const httpService = {
+      request: jest.fn(() =>
+        of({
+          status: 200,
+          data: {
+            success: false,
+            message: 'User is already a chat member',
+          },
+        }),
+      ),
+    };
+    const actionLedgerService = {
+      clearTerminalBanStateAfterUnban: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = createService(httpService, {}, undefined, actionLedgerService);
+
+    await expect(
+      service.executeActionJob({
+        actionType: 'UNBAN_MEMBER',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        attempt: 1,
+        idempotencyKey: 'unban-member-already-present',
+        createdAt: new Date().toISOString(),
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(actionLedgerService.clearTerminalBanStateAfterUnban).toHaveBeenCalledWith(
+      'chat-1',
+      'user-1',
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('keeps terminal ban state when MAX rejects an unban', async () => {
+    const maxError = new Error('unban rejected');
+    const httpService = {
+      request: jest.fn(() => throwError(() => maxError)),
+    };
+    const actionLedgerService = {
+      clearTerminalBanStateAfterUnban: jest.fn(),
+    };
+    const service = createService(httpService, {}, undefined, actionLedgerService);
+
+    await expect(
+      service.executeActionJob({
+        actionType: 'UNBAN_MEMBER',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        attempt: 1,
+        idempotencyKey: 'unban-member-rejected',
+        createdAt: new Date().toISOString(),
+      }),
+    ).rejects.toBe(maxError);
+
+    expect(actionLedgerService.clearTerminalBanStateAfterUnban).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('does not treat an already-member phrase in a 5xx response as confirmed unban state', async () => {
+    const serverError = {
+      response: {
+        status: 500,
+        data: {
+          message: 'User is already a chat member',
+        },
+      },
+    };
+    const httpService = {
+      request: jest.fn(() => throwError(() => serverError)),
+    };
+    const actionLedgerService = {
+      clearTerminalBanStateAfterUnban: jest.fn(),
+    };
+    const service = createService(httpService, {}, undefined, actionLedgerService);
+
+    await expect(
+      service.executeActionJob({
+        actionType: 'UNBAN_MEMBER',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        attempt: 1,
+        idempotencyKey: 'unban-member-server-error',
+        createdAt: new Date().toISOString(),
+      }),
+    ).rejects.toBe(serverError);
+
+    expect(actionLedgerService.clearTerminalBanStateAfterUnban).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
   it('records successful immediate irreversible actions in the durable ledger', async () => {
     const httpService = {
       request: jest.fn(() => of({ data: {} })),
@@ -1287,9 +1465,10 @@ describe('MaxClientService inline keyboard guardrails', () => {
         actionType: 'KICK_MEMBER',
         chatId: 'chat-1',
         userId: 'user-1',
-        idempotencyKey: expect.stringMatching(/^max-action__logical__/),
+        idempotencyKey: expect.any(String),
       }),
     );
+    expect(job.idempotencyKey).not.toMatch(/^max-action__logical__/);
     expect(actionLedgerService.recordFailed).toHaveBeenCalledWith(
       job,
       expect.any(UnrecoverableError),
@@ -6629,7 +6808,7 @@ describe('MaxClientService delayed member actions', () => {
     await service.onModuleDestroy();
   });
 
-  it('derives stable logical job ids for duplicate delete and member actions', async () => {
+  it('dedupes delete and ban state while assigning a fresh id to each kick episode', async () => {
     const { jobsById, queue } = createCollapsingQueue();
     const service = createServiceWithQueue(queue);
 
@@ -6646,12 +6825,13 @@ describe('MaxClientService delayed member actions', () => {
     const banJobId = queue.add.mock.calls[4][2].jobId;
 
     expect(duplicateDeleteJobId).toBe(deleteJobId);
-    expect(duplicateKickJobId).toBe(kickJobId);
+    expect(duplicateKickJobId).not.toBe(kickJobId);
     expect(deleteJobId).toMatch(/^max-action__logical__/);
-    expect(kickJobId).toMatch(/^max-action__logical__/);
+    expect(kickJobId).not.toMatch(/^max-action__logical__/);
+    expect(duplicateKickJobId).not.toMatch(/^max-action__logical__/);
     expect(banJobId).toMatch(/^max-action__logical__/);
-    expect(new Set([deleteJobId, kickJobId, banJobId]).size).toBe(3);
-    expect(jobsById.size).toBe(3);
+    expect(new Set([deleteJobId, kickJobId, duplicateKickJobId, banJobId]).size).toBe(4);
+    expect(jobsById.size).toBe(4);
 
     await service.onModuleDestroy();
   });

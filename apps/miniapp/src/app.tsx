@@ -382,8 +382,15 @@ export function App() {
         return;
       }
 
+      const discoveredInitData = getInitData();
+      if (discoveredInitData) {
+        setInitData((currentInitData) =>
+          currentInitData === discoveredInitData ? currentInitData : discoveredInitData,
+        );
+      }
+
       setNativeEnvironmentSignature((currentSignature) => {
-        const nextSignature = readMaxNativeEnvironmentSignature(initData);
+        const nextSignature = readMaxNativeEnvironmentSignature(discoveredInitData || initData);
         return nextSignature === currentSignature ? currentSignature : nextSignature;
       });
     };

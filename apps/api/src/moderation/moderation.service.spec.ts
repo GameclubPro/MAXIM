@@ -3568,6 +3568,8 @@ describe('ModerationService', () => {
     const maxClient = { deleteMessage: jest.fn() };
     const deleteIntents = {
       getRolloutForChat: jest.fn().mockReturnValue('execute'),
+      getRolloutForRule: jest.fn().mockReturnValue('execute'),
+      getRolloutForInput: jest.fn().mockReturnValue('execute'),
       ensureIntent: jest.fn().mockResolvedValue({
         intentId: 'intent-channel-copy-1',
         rollout: 'execute',
@@ -3614,9 +3616,76 @@ describe('ModerationService', () => {
     });
   });
 
+  it('does not fall back to direct deletion when exact replacement cleanup persistence fails', async () => {
+    const persistenceError = new Error('intent persistence unavailable');
+    const maxClient = { deleteMessage: jest.fn() };
+    const deleteIntents = {
+      getRolloutForChat: jest.fn().mockReturnValue('observed'),
+      getRolloutForRule: jest.fn().mockReturnValue('execute'),
+      getRolloutForInput: jest.fn().mockReturnValue('execute'),
+      ensureAndAttempt: jest.fn().mockRejectedValue(persistenceError),
+    };
+    const service = new ModerationService(
+      {} as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+    );
+    (service as any).moderationDeleteIntentService = deleteIntents;
+
+    await expect(
+      (service as any).executeModerationDelete({
+        chatId: 'chat-outside-canary',
+        messageId: 'message-1',
+        reasonKey: 'chat_auto_comment_admin_message_replacement_cleanup',
+        ruleCode: 'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP',
+        originBotId: 'bot-1',
+      }),
+    ).rejects.toBe(persistenceError);
+
+    expect(deleteIntents.getRolloutForInput).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'chat-outside-canary',
+        ruleCode: 'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP',
+      }),
+    );
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when pre-claim replacement cleanup intent persistence fails', async () => {
+    const persistenceError = new Error('intent persistence unavailable');
+    const deleteIntents = {
+      getRolloutForChat: jest.fn().mockReturnValue('observed'),
+      getRolloutForRule: jest.fn().mockReturnValue('execute'),
+      getRolloutForInput: jest.fn().mockReturnValue('execute'),
+      ensureIntent: jest.fn().mockRejectedValue(persistenceError),
+    };
+    const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
+    (service as any).moderationDeleteIntentService = deleteIntents;
+
+    await expect(
+      (service as any).ensureModerationDeleteIntent({
+        chatId: 'channel-outside-canary',
+        messageId: 'message-1',
+        reasonKey: 'channel_auto_post_forward_replacement_cleanup',
+        ruleCode: 'CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP',
+        originBotId: 'bot-1',
+      }),
+    ).rejects.toBe(persistenceError);
+
+    expect(deleteIntents.getRolloutForInput).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'channel-outside-canary',
+        ruleCode: 'CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP',
+      }),
+    );
+  });
+
   it('persists a duplicate delete intent before returning for an existing semantic claim', async () => {
     const deleteIntents = {
       getRolloutForChat: jest.fn().mockReturnValue('execute'),
+      getRolloutForRule: jest.fn().mockReturnValue('execute'),
+      getRolloutForInput: jest.fn().mockReturnValue('execute'),
       ensureIntent: jest.fn().mockResolvedValue({
         intentId: 'intent-duplicate',
         rollout: 'execute',
@@ -3677,6 +3746,8 @@ describe('ModerationService', () => {
     const maxClient = { deleteMessage: jest.fn() };
     const deleteIntents = {
       getRolloutForChat: jest.fn().mockReturnValue('execute'),
+      getRolloutForRule: jest.fn().mockReturnValue('execute'),
+      getRolloutForInput: jest.fn().mockReturnValue('execute'),
       ensureIntent: jest.fn().mockResolvedValue({
         intentId: 'intent-delayed',
         rollout: 'execute',
@@ -3731,6 +3802,12 @@ describe('ModerationService', () => {
         getRolloutForChat: jest.fn((chatId: string) =>
           resolveModerationDeleteIntentRollout({ mode, canaryChatIds, chatId }),
         ),
+        getRolloutForRule: jest.fn((chatId: string) =>
+          resolveModerationDeleteIntentRollout({ mode, canaryChatIds, chatId }),
+        ),
+        getRolloutForInput: jest.fn((input: { chatId: string }) =>
+          resolveModerationDeleteIntentRollout({ mode, canaryChatIds, chatId: input.chatId }),
+        ),
         ensureIntent: jest.fn(),
         ensureAndAttempt: jest.fn(),
       };
@@ -3765,6 +3842,8 @@ describe('ModerationService', () => {
   it('keeps the legacy webhook owner in shadow rollout', async () => {
     const deleteIntents = {
       getRolloutForChat: jest.fn().mockReturnValue('observed'),
+      getRolloutForRule: jest.fn().mockReturnValue('observed'),
+      getRolloutForInput: jest.fn().mockReturnValue('observed'),
     };
     const actionLedger = {
       hasSucceededDelete: jest.fn().mockResolvedValue(true),
@@ -3801,6 +3880,8 @@ describe('ModerationService', () => {
     const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
     (service as any).moderationDeleteIntentService = {
       getRolloutForChat: jest.fn().mockReturnValue('execute'),
+      getRolloutForRule: jest.fn().mockReturnValue('execute'),
+      getRolloutForInput: jest.fn().mockReturnValue('execute'),
     };
     (service as any).maxActionLedgerService = {
       hasSucceededDelete: jest.fn().mockResolvedValue(false),
@@ -24010,6 +24091,8 @@ describe('ModerationService', () => {
     };
     const deleteIntents = {
       getRolloutForChat: jest.fn().mockReturnValue('execute'),
+      getRolloutForRule: jest.fn().mockReturnValue('execute'),
+      getRolloutForInput: jest.fn().mockReturnValue('execute'),
       ensureIntent: jest.fn().mockResolvedValue({
         intentId: 'intent-chat-copy-1',
         rollout: 'execute',
@@ -24096,6 +24179,8 @@ describe('ModerationService', () => {
     };
     const deleteIntents = {
       getRolloutForChat: jest.fn().mockReturnValue('execute'),
+      getRolloutForRule: jest.fn().mockReturnValue('execute'),
+      getRolloutForInput: jest.fn().mockReturnValue('execute'),
       ensureIntent: jest.fn().mockResolvedValue({
         intentId: 'intent-chat-copy-1',
         rollout: 'execute',

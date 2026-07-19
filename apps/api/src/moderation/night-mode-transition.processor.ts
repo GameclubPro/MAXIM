@@ -1,10 +1,12 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import type { Job } from 'bullmq';
+import { isMaxActionNoExecutableRouteError } from '../max/max-action-dispatch-error';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
 import { ModerationExecutionService } from './moderation-execution.service';
 import {
   NIGHT_MODE_TRANSITION_QUEUE,
   type NightModeTransitionJob,
+  type NightModeTransitionProcessResult,
 } from './night-mode-transition.queue';
 import { NightModeTransitionSchedulerService } from './night-mode-transition-scheduler.service';
 
@@ -24,7 +26,16 @@ export class NightModeTransitionProcessor extends WorkerHost {
       return;
     }
 
-    const result = await this.moderationExecutionService.processNightModeTransitionJob(job.data);
+    let result: NightModeTransitionProcessResult;
+    try {
+      result = await this.moderationExecutionService.processNightModeTransitionJob(job.data);
+    } catch (error: unknown) {
+      if (!isMaxActionNoExecutableRouteError(error)) {
+        throw error;
+      }
+      await this.scheduler.enqueueNextTransitionsForChat(job.data.chatId);
+      return;
+    }
     if (result.shouldEnqueueNext) {
       await this.scheduler.enqueueNextTransitionsForChat(job.data.chatId);
     }

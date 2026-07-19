@@ -46,6 +46,8 @@
 ## Routing And Trust
 
 - Authentication relies on API-validated `initData`/`WebAppData`; `initDataUnsafe` is presentation convenience only.
+- A late MAX Bridge `initData` value must replace URL-fallback startup state. Keep Bridge discovery bounded and event-assisted, and use cryptographic/session helpers rather than `Math.random` for boot trace identifiers.
+- Rich-text editor and clipboard links must use the shared `max-rich-text-link` parser. Accept credential-free HTTPS and exact `max://user/<id>` links only; never assign pasted or typed href text directly to editor HTML.
 - Home launch context does not identify a target managed chat/channel. Discovery comes from server allowlist, access edges, published snapshots, and recent signals.
 - Public legal routes `/app/legal/agreement` and `/app/legal/privacy`, including prefixed standalone paths, render without init data and remain before the startup auth gate.
 - Public comment and suggestion routes opened by bot buttons close the mini app on native BackButton instead of navigating home.

@@ -131,6 +131,12 @@ enabled_backup=""
 enabled_link_target=""
 enabled_existed=0
 enabled_was_symlink=0
+site_index_backup=""
+site_index_existed=0
+NGINX_MUTATED=0
+DEPLOYMENT_COMMITTED=0
+ROLLBACK_ATTEMPTED=0
+ROLLBACK_SUCCEEDED=0
 
 sudo mkdir -p "${REMOTE_BACKUP_DIR}"
 if [[ -e "${REMOTE_CONF}" || -L "${REMOTE_CONF}" ]]; then
@@ -152,38 +158,141 @@ for snippet in "${snippets[@]}"; do
       "${REMOTE_BACKUP_DIR}/${snippet}.bak-${timestamp}"
   fi
 done
+if [[ -e "${REMOTE_SITE_DIR}/index.html" || -L "${REMOTE_SITE_DIR}/index.html" ]]; then
+  site_index_existed=1
+  site_index_backup="${REMOTE_BACKUP_DIR}/major-site-index.html.bak-${timestamp}"
+  sudo cp -a "${REMOTE_SITE_DIR}/index.html" "${site_index_backup}"
+fi
 
 restore_backup() {
-  if [[ -n "${available_backup}" && -e "${available_backup}" ]]; then
-    sudo cp -a "${available_backup}" "${REMOTE_CONF}"
+  local restore_failed=0
+
+  ROLLBACK_ATTEMPTED=1
+  echo "Restoring the previous major-maksimov.ru nginx configuration..." >&2
+  if [[ -n "${available_backup}" && ( -e "${available_backup}" || -L "${available_backup}" ) ]]; then
+    sudo cp -a "${available_backup}" "${REMOTE_CONF}" || restore_failed=1
   else
-    sudo rm -f "${REMOTE_CONF}"
+    sudo rm -f "${REMOTE_CONF}" || restore_failed=1
   fi
 
-  sudo rm -f "${REMOTE_ENABLED_CONF}"
+  sudo rm -f "${REMOTE_ENABLED_CONF}" || restore_failed=1
   if [[ "${enabled_existed}" -eq 1 && "${enabled_was_symlink}" -eq 1 ]]; then
-    sudo ln -s "${enabled_link_target}" "${REMOTE_ENABLED_CONF}"
-  elif [[ "${enabled_existed}" -eq 1 && -n "${enabled_backup}" && -e "${enabled_backup}" ]]; then
-    sudo cp -a "${enabled_backup}" "${REMOTE_ENABLED_CONF}"
+    sudo ln -s "${enabled_link_target}" "${REMOTE_ENABLED_CONF}" || restore_failed=1
+  elif [[ "${enabled_existed}" -eq 1 && -n "${enabled_backup}" && ( -e "${enabled_backup}" || -L "${enabled_backup}" ) ]]; then
+    sudo cp -a "${enabled_backup}" "${REMOTE_ENABLED_CONF}" || restore_failed=1
   fi
 
   for snippet in "${snippets[@]}"; do
     backup="${REMOTE_BACKUP_DIR}/${snippet}.bak-${timestamp}"
-    if [[ -e "${backup}" ]]; then
-      sudo cp -a "${backup}" "${REMOTE_SNIPPET_DIR}/${snippet}"
+    if [[ -e "${backup}" || -L "${backup}" ]]; then
+      sudo cp -a "${backup}" "${REMOTE_SNIPPET_DIR}/${snippet}" || restore_failed=1
     else
-      sudo rm -f "${REMOTE_SNIPPET_DIR}/${snippet}"
+      sudo rm -f "${REMOTE_SNIPPET_DIR}/${snippet}" || restore_failed=1
     fi
   done
 
-  sudo nginx -t >/dev/null 2>&1 && sudo systemctl reload nginx || true
+  if [[ "${site_index_existed}" -eq 1 && -n "${site_index_backup}" && ( -e "${site_index_backup}" || -L "${site_index_backup}" ) ]]; then
+    sudo cp -a "${site_index_backup}" "${REMOTE_SITE_DIR}/index.html" || restore_failed=1
+  else
+    sudo rm -f "${REMOTE_SITE_DIR}/index.html" || restore_failed=1
+  fi
+
+  if [[ "${restore_failed}" -eq 0 ]] && sudo nginx -t; then
+    if ! sudo systemctl reload nginx; then
+      echo "Previous nginx configuration was restored, but nginx reload failed." >&2
+      restore_failed=1
+    fi
+  else
+    echo "Previous nginx configuration could not be restored cleanly." >&2
+    restore_failed=1
+  fi
+
+  if [[ "${restore_failed}" -eq 0 ]]; then
+    ROLLBACK_SUCCEEDED=1
+  fi
+  return "${restore_failed}"
 }
 
 cleanup_tmp() {
   rm -rf "${REMOTE_SITE_TMP}" "${REMOTE_CONF_TMP}" "${REMOTE_SNIPPET_TMP_DIR}"
 }
 
+assert_security_headers() {
+  local headers="$1"
+  grep -qi '^strict-transport-security: max-age=31536000' <<<"${headers}" || return 1
+  grep -qi '^x-content-type-options: nosniff' <<<"${headers}" || return 1
+  grep -qi '^referrer-policy: strict-origin-when-cross-origin' <<<"${headers}" || return 1
+}
+
+read_local_headers() {
+  local path="$1"
+  curl --noproxy '*' -sS --max-time 15 --resolve major-maksimov.ru:443:127.0.0.1 \
+    -D - -o /dev/null "https://major-maksimov.ru${path}"
+}
+
+verify_local_nginx() {
+  local headers
+
+  headers="$(read_local_headers /)" || return 1
+  grep -Eqi '^HTTP/[0-9.]+ 200' <<<"${headers}" || return 1
+  assert_security_headers "${headers}" || return 1
+
+  headers="$(read_local_headers /robots.txt)" || return 1
+  grep -Eqi '^HTTP/[0-9.]+ 200' <<<"${headers}" || return 1
+  grep -qi '^cache-control: public, max-age=3600' <<<"${headers}" || return 1
+  assert_security_headers "${headers}" || return 1
+
+  headers="$(read_local_headers /ios-canary/ping.txt)" || return 1
+  grep -Eqi '^HTTP/[0-9.]+ 200' <<<"${headers}" || return 1
+  grep -qi '^cache-control: no-store, no-cache, must-revalidate, max-age=0' <<<"${headers}" || return 1
+  assert_security_headers "${headers}" || return 1
+
+  headers="$(read_local_headers /api/health/live)" || return 1
+  grep -Eqi '^HTTP/[0-9.]+ 200' <<<"${headers}" || return 1
+  grep -qi '^x-maxim-ingress: webhook' <<<"${headers}" || return 1
+  assert_security_headers "${headers}" || return 1
+
+  for path in /api/v1/channels /api/v1/channels/ /api/v1/chats/; do
+    headers="$(read_local_headers "${path}")" || return 1
+    grep -Eqi '^HTTP/[0-9.]+ 401' <<<"${headers}" || return 1
+    grep -qi '^x-maxim-ingress: admin' <<<"${headers}" || return 1
+    assert_security_headers "${headers}" || return 1
+  done
+
+  headers="$(read_local_headers /api/v1/system/metrics/queues)" || return 1
+  grep -qi '^x-maxim-ingress: admin' <<<"${headers}" || return 1
+  assert_security_headers "${headers}" || return 1
+}
+
+finalize_remote_deploy() {
+  local exit_status=$?
+
+  trap - EXIT
+  if [[ "${exit_status}" -ne 0 && "${NGINX_MUTATED}" -eq 1 && \
+    "${DEPLOYMENT_COMMITTED}" -eq 0 && "${ROLLBACK_ATTEMPTED}" -eq 0 ]]; then
+    echo "Major nginx deployment failed after runtime mutation; rolling back." >&2
+    if ! restore_backup; then
+      echo "Automatic nginx rollback failed; inspect the host before retrying." >&2
+    fi
+  fi
+
+  if [[ "${ROLLBACK_ATTEMPTED}" -eq 1 && "${ROLLBACK_SUCCEEDED}" -eq 0 ]]; then
+    echo "Rollback backups retained under ${REMOTE_BACKUP_DIR} with timestamp ${timestamp}." >&2
+  fi
+  if ! cleanup_tmp; then
+    echo "Failed to remove temporary major nginx deployment files." >&2
+    if [[ "${exit_status}" -eq 0 ]]; then
+      exit_status=1
+    fi
+  fi
+
+  exit "${exit_status}"
+}
+
+trap finalize_remote_deploy EXIT
+
 sudo install -d -m 755 "${REMOTE_SITE_DIR}" "${REMOTE_SNIPPET_DIR}"
+NGINX_MUTATED=1
 sudo install -m 644 "${REMOTE_SITE_TMP}/index.html" "${REMOTE_SITE_DIR}/index.html"
 for snippet in "${snippets[@]}"; do
   sudo install -m 644 "${REMOTE_SNIPPET_TMP_DIR}/${snippet}" "${REMOTE_SNIPPET_DIR}/${snippet}"
@@ -193,19 +302,40 @@ sudo rm -f "${REMOTE_ENABLED_CONF}"
 sudo ln -s "${REMOTE_CONF}" "${REMOTE_ENABLED_CONF}"
 
 if ! sudo nginx -t; then
-  restore_backup
+  if ! restore_backup; then
+    echo "Automatic nginx rollback failed; inspect the host before retrying." >&2
+  fi
   cleanup_tmp
   exit 1
 fi
 
 if ! sudo systemctl reload nginx; then
-  restore_backup
+  if ! restore_backup; then
+    echo "Automatic nginx rollback failed; inspect the host before retrying." >&2
+  fi
   cleanup_tmp
   exit 1
 fi
 
+if ! verify_local_nginx; then
+  echo "New nginx configuration failed the local route/header smoke; rolling back." >&2
+  if ! restore_backup; then
+    echo "Automatic nginx rollback failed; inspect the host before retrying." >&2
+  fi
+  cleanup_tmp
+  exit 1
+fi
+
+DEPLOYMENT_COMMITTED=1
 cleanup_tmp
 REMOTE
+
+assert_major_security_headers() {
+  local headers="$1"
+  grep -i '^strict-transport-security: max-age=31536000' <<<"$headers"
+  grep -i '^x-content-type-options: nosniff' <<<"$headers"
+  grep -i '^referrer-policy: strict-origin-when-cross-origin' <<<"$headers"
+}
 
 echo "Verifying major-maksimov.ru root..."
 curl -fsS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/ | grep -Ei '^HTTP/[0-9.]+ 200'
@@ -215,20 +345,29 @@ echo "Verifying major-maksimov.ru app route..."
 curl -fsS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/app/ | grep -Ei '^HTTP/[0-9.]+ 200'
 curl -fsS --max-time 15 https://major-maksimov.ru/app/ | grep -F 'https://major-maksimov.ru/app/' >/dev/null
 curl -fsS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/ios-canary/ping.txt | grep -Ei '^HTTP/[0-9.]+ 200'
+major_robots_headers="$(curl -fsS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/robots.txt)"
+grep -Ei '^HTTP/[0-9.]+ 200' <<<"$major_robots_headers"
+assert_major_security_headers "$major_robots_headers"
 major_live_headers="$(curl -fsS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/health/live)"
 grep -Ei '^HTTP/[0-9.]+ 200' <<<"$major_live_headers"
 grep -i '^x-maxim-ingress: webhook' <<<"$major_live_headers"
+assert_major_security_headers "$major_live_headers"
 curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/health/ready | grep -Ei '^HTTP/[0-9.]+ 404'
-curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/system/metrics/queues | grep -i '^x-maxim-ingress: admin'
+metrics_headers="$(curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/system/metrics/queues)"
+grep -i '^x-maxim-ingress: admin' <<<"$metrics_headers"
+assert_major_security_headers "$metrics_headers"
 channels_headers="$(curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/channels)"
 grep -Ei '^HTTP/[0-9.]+ 401' <<<"$channels_headers"
 grep -i '^x-maxim-ingress: admin' <<<"$channels_headers"
+assert_major_security_headers "$channels_headers"
 channels_trailing_headers="$(curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/channels/)"
 grep -Ei '^HTTP/[0-9.]+ 401' <<<"$channels_trailing_headers"
 grep -i '^x-maxim-ingress: admin' <<<"$channels_trailing_headers"
+assert_major_security_headers "$channels_trailing_headers"
 chats_trailing_headers="$(curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/chats/)"
 grep -Ei '^HTTP/[0-9.]+ 401' <<<"$chats_trailing_headers"
 grep -i '^x-maxim-ingress: admin' <<<"$chats_trailing_headers"
+assert_major_security_headers "$chats_trailing_headers"
 curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/safety-desk/queue | grep -Ei '^HTTP/[0-9.]+ 404'
 curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/support-requests/queue | grep -Ei '^HTTP/[0-9.]+ 404'
 karavan_sse_headers="$(

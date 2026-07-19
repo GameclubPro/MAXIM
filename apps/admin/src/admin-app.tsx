@@ -4,7 +4,7 @@ import {
   type SafetyDeskDeleteRuntimeResponse,
 } from '@maxim/contracts/safety-desk';
 import { useMemo, useState } from 'react';
-import { DeleteDesk } from './delete-desk';
+import { DeleteDesk, DeleteRuntimeMetrics } from './delete-desk';
 import { ReviewDesk } from './review-desk';
 import { safetyDeskApiClient, type SafetyDeskDecisionAction } from './safety-desk-api-client';
 import {
@@ -12,14 +12,12 @@ import {
   buildReviewQueueSnapshot,
   buildSupportQueueSnapshot,
   createMutationGuard,
-  deleteRolloutModeLabel,
   emptyMetrics,
   emptySupportMetrics,
   filterDeleteItems,
   filterReviewItems,
   filterSupportItems,
   findSelectedItem,
-  formatDuration,
   getApprovableReviewItems,
   readErrorMessage,
   type AuditEntry,
@@ -454,53 +452,7 @@ export function AdminApp() {
               <Metric label="Закрытые" value={String(supportMetrics.closed)} tone="success" />
             </>
           ) : (
-            <>
-              <Metric
-                label="Режим"
-                value={deleteRolloutModeLabel(deleteRuntime?.rolloutMode ?? 'off')}
-                tone="neutral"
-              />
-              <Metric
-                label="Открыто"
-                value={String(deleteRuntime?.summary.open ?? 0)}
-                tone="warning"
-              />
-              <Metric
-                label="Просрочено"
-                value={String(deleteRuntime?.summary.due.count ?? 0)}
-                tone="danger"
-              />
-              <Metric
-                label="Зависло"
-                value={String(deleteRuntime?.summary.staleLeases.count ?? 0)}
-                tone="danger"
-              />
-              <Metric
-                label="Неясные отправки"
-                value={String(deleteRuntime?.summary.ambiguousSends.count ?? 0)}
-                tone="danger"
-              />
-              <Metric
-                label="DM победителям"
-                value={String(deleteRuntime?.summary.giveawayWinnerNotificationDeadEnds.count ?? 0)}
-                tone="danger"
-              />
-              <Metric
-                label="Ошибки"
-                value={String(deleteRuntime?.summary.failed ?? 0)}
-                tone="danger"
-              />
-              <Metric
-                label="Старейшее"
-                value={
-                  deleteRuntime?.summary.oldestOpen.ageMs === null ||
-                  deleteRuntime?.summary.oldestOpen.ageMs === undefined
-                    ? 'Нет'
-                    : formatDuration(deleteRuntime.summary.oldestOpen.ageMs)
-                }
-                tone="neutral"
-              />
-            </>
+            <DeleteRuntimeMetrics runtime={deleteRuntime} />
           )}
         </div>
         <div className="topbar__actions">

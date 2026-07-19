@@ -191,6 +191,9 @@ function createFixture() {
       findMany: jest.fn().mockResolvedValue([]),
       findUnique: jest.fn(),
     },
+    moderationDeleteIntentReason: {
+      findMany: jest.fn().mockResolvedValue([]),
+    },
     channelAutoPostAttachMarker: {
       aggregate: jest.fn().mockResolvedValue({
         _count: { _all: 0 },
@@ -229,17 +232,6 @@ function createFixture() {
       post: {},
     }),
   };
-  const configService = {
-    get: jest.fn((key: string) => {
-      if (key === 'MODERATION_DELETE_INTENT_MODE') {
-        return 'canary';
-      }
-      if (key === 'MODERATION_DELETE_INTENT_CANARY_CHAT_IDS') {
-        return 'channel-1';
-      }
-      return undefined;
-    }),
-  };
   const maxBotRegistry = {
     getBotById: jest.fn((botId: string) => ({
       id: botId,
@@ -247,18 +239,42 @@ function createFixture() {
     })),
   };
   const moderationDeleteIntents = {
+    rolloutMode: 'canary',
+    replacementCleanupRolloutEnabled: true,
+    getRolloutForRuleCodes: jest.fn((chatId: string, ruleCodes: readonly string[]) =>
+      chatId === 'channel-1' ||
+      ruleCodes.includes('CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP')
+        ? 'execute'
+        : 'observed',
+    ),
+    resolveEffectiveRoutingPolicy: jest.fn(
+      (intent: {
+        entityType: string | null;
+        messageAuthorKind: string | null;
+        routingPolicy: 'delete_capable' | 'origin_first' | 'origin_only';
+        replacementCleanup?: boolean;
+      }) => {
+        if (
+          intent.entityType !== 'CHAT' ||
+          intent.messageAuthorKind !== 'user' ||
+          !intent.replacementCleanup ||
+          intent.routingPolicy === 'origin_only'
+        ) {
+          return 'origin_only';
+        }
+        return intent.routingPolicy === 'delete_capable' ? 'delete_capable' : 'origin_first';
+      },
+    ),
     retryTerminalIntent: jest.fn(),
   };
   const service = new SafetyDeskService(
     prisma as never,
     vkPublishService as never,
-    configService as never,
     maxBotRegistry as never,
     moderationDeleteIntents as never,
   );
 
   return {
-    configService,
     maxBotRegistry,
     moderationDeleteIntents,
     prisma,
@@ -344,6 +360,7 @@ describe('SafetyDeskService', () => {
 
     expect(runtime).toMatchObject({
       rolloutMode: 'canary',
+      replacementCleanupEnabled: true,
       summary: {
         total: 5,
         open: 3,
@@ -496,6 +513,60 @@ describe('SafetyDeskService', () => {
     );
   });
 
+  it('derives replacement cleanup survivor routing from the delete-intent service', async () => {
+    const { moderationDeleteIntents, prisma, service } = createFixture();
+    prisma.moderationDeleteIntent.aggregate
+      .mockResolvedValueOnce({ _count: { _all: 0 }, _min: { nextAttemptAt: null } })
+      .mockResolvedValueOnce({ _count: { _all: 0 }, _min: { leaseExpiresAt: null } })
+      .mockResolvedValueOnce({ _min: { createdAt: null } });
+    const base = createDeleteIntent();
+    const replacementIntent = createDeleteIntent({
+      id: 'replacement-intent-1',
+      chatId: 'chat-outside-canary',
+      entityType: ChatEntityType.CHAT,
+      routingPolicy: 'origin_first',
+      messageAuthorKind: 'user',
+      chat: {
+        ...base.chat,
+        title: 'Чат вне canary',
+        entityType: ChatEntityType.CHAT,
+      },
+      reasons: [
+        {
+          ...base.reasons[0],
+          reasonKey: 'chat_auto_comment_admin_message_replacement_cleanup',
+          ruleCode: 'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP',
+        },
+      ],
+    });
+    prisma.moderationDeleteIntent.findMany
+      .mockResolvedValueOnce([replacementIntent])
+      .mockResolvedValueOnce([]);
+    prisma.moderationDeleteIntentReason.findMany.mockResolvedValue([
+      {
+        intentId: 'replacement-intent-1',
+        ruleCode: 'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP',
+      },
+    ]);
+
+    const runtime = await service.getDeleteRuntime();
+
+    expect(runtime.items[0]).toMatchObject({
+      id: 'replacement-intent-1',
+      rollout: 'execute',
+      routingPolicy: 'origin_first',
+      effectiveRoutingPolicy: 'origin_first',
+      crossBotEnabled: true,
+    });
+    expect(moderationDeleteIntents.resolveEffectiveRoutingPolicy).toHaveBeenCalledWith({
+      chatId: 'chat-outside-canary',
+      entityType: ChatEntityType.CHAT,
+      messageAuthorKind: 'user',
+      routingPolicy: 'origin_first',
+      replacementCleanup: true,
+    });
+  });
+
   it('confirms only executable delete capability from fresh entity-specific snapshots', async () => {
     const { prisma, service } = createFixture();
     const now = Date.now();
@@ -623,14 +694,15 @@ describe('SafetyDeskService', () => {
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
-  it('retries a terminal delete only inside execute rollout with a CAS status', async () => {
+  it('retries terminal replacement cleanup outside the global canary with a CAS status', async () => {
     const { moderationDeleteIntents, prisma, service } = createFixture();
     prisma.moderationDeleteIntent.findUnique.mockResolvedValue({
       id: 'delete-intent-1',
-      chatId: 'channel-1',
+      chatId: 'outside-chat',
       status: 'EXPIRED',
       updatedAt: new Date('2026-07-16T12:00:00.000Z'),
       attemptCount: 2,
+      reasons: [{ ruleCode: 'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP' }],
     });
     moderationDeleteIntents.retryTerminalIntent.mockResolvedValue({
       reopened: true,
@@ -655,6 +727,31 @@ describe('SafetyDeskService', () => {
       { updatedAt: new Date('2026-07-16T12:00:00.000Z'), attemptCount: 2 },
       { actorUserId: 'owner' },
     );
+    expect(moderationDeleteIntents.getRolloutForRuleCodes).toHaveBeenCalledWith('outside-chat', [
+      'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP',
+    ]);
+  });
+
+  it('rejects a terminal delete outside every effective rollout', async () => {
+    const { moderationDeleteIntents, prisma, service } = createFixture();
+    prisma.moderationDeleteIntent.findUnique.mockResolvedValue({
+      id: 'delete-intent-1',
+      chatId: 'outside-chat',
+      status: 'EXPIRED',
+      updatedAt: new Date('2026-07-16T12:00:00.000Z'),
+      attemptCount: 2,
+      reasons: [],
+    });
+
+    await expect(
+      service.retryDeleteIntent('delete-intent-1', 'owner', {
+        expectedStatus: 'EXPIRED',
+        expectedUpdatedAt: '2026-07-16T12:00:00.000Z',
+        expectedAttemptCount: 2,
+      }),
+    ).rejects.toThrow('Повтор запрещён вне активного rollout');
+
+    expect(moderationDeleteIntents.retryTerminalIntent).not.toHaveBeenCalled();
   });
 
   it('rejects a stale terminal delete retry without dispatching it', async () => {
@@ -665,6 +762,7 @@ describe('SafetyDeskService', () => {
       status: 'PENDING',
       updatedAt: new Date('2026-07-16T12:00:00.000Z'),
       attemptCount: 3,
+      reasons: [],
     });
 
     await expect(

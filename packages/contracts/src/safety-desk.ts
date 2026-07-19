@@ -270,6 +270,7 @@ const safetyDeskDeleteRuntimeWindowSchema = z.object({
 export const safetyDeskDeleteRuntimeResponseSchema = z.object({
   generatedAt: z.string().datetime(),
   rolloutMode: z.enum(['off', 'shadow', 'canary', 'on']),
+  replacementCleanupEnabled: z.boolean().default(false),
   summary: z.object({
     total: z.number().int().nonnegative(),
     open: z.number().int().nonnegative(),

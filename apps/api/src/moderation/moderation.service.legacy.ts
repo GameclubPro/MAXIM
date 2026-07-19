@@ -3944,7 +3944,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (this.moderationDeleteIntentService) {
       try {
         const result = await this.moderationDeleteIntentService.ensureAndAttempt(preparedInput);
-        const rollout = this.moderationDeleteIntentService.getRolloutForChat(input.chatId);
+        const rollout = this.moderationDeleteIntentService.getRolloutForInput(preparedInput);
         const executeExclusively = rollout === 'execute';
         if (result.kind !== 'off' && result.kind !== 'observed') {
           return {
@@ -3963,7 +3963,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           };
         }
       } catch (error: unknown) {
-        if (this.moderationDeleteIntentService.getRolloutForChat(input.chatId) === 'execute') {
+        if (this.moderationDeleteIntentService.getRolloutForInput(preparedInput) === 'execute') {
           throw error;
         }
         this.logger.warn(
@@ -4004,7 +4004,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         this.prepareModerationDeleteIntentInput(input, options),
       );
     } catch (error: unknown) {
-      if (this.moderationDeleteIntentService.getRolloutForChat(input.chatId) === 'execute') {
+      if (this.moderationDeleteIntentService.getRolloutForInput(input) === 'execute') {
         throw error;
       }
       this.logger.warn(

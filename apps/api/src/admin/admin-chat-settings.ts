@@ -55,6 +55,20 @@ export type ResolvedBotAssignmentData = {
   primaryBotId?: string;
 };
 
+export const UPDATE_SETTINGS_AUDIT_PAYLOAD_MAX_SERIALIZED_BYTES = 16 * 1024;
+
+type UpdateSettingsAuditMediaEntry = {
+  key: string;
+  mimeType: string | null;
+  byteCount: number;
+};
+
+export type UpdateSettingsAuditPayload = {
+  source: AdminActionSource;
+  settingKeys: Array<keyof ChatSettings>;
+  botSpeechMedia?: UpdateSettingsAuditMediaEntry[];
+};
+
 function readTrimmedString(value: unknown): string | null {
   if (typeof value !== 'string') {
     return null;
@@ -155,6 +169,65 @@ function normalizeMessageLimitsBlockedLists(settings: ChatSettings): ChatSetting
 
 function areBotSpeechMediaEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(left ?? {}) === JSON.stringify(right ?? {});
+}
+
+function readBotSpeechMediaRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function readAuditMediaEntry(value: unknown): { base64: string; mimeType: string } | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  const media = value as Record<string, unknown>;
+  return {
+    base64: typeof media.base64 === 'string' ? media.base64 : '',
+    mimeType: typeof media.mimeType === 'string' ? media.mimeType : '',
+  };
+}
+
+export function buildUpdateSettingsAuditPayload(params: {
+  requestedSettings: unknown;
+  normalizedSettings: ChatSettings;
+  source: AdminActionSource;
+}): UpdateSettingsAuditPayload {
+  const requested =
+    params.requestedSettings &&
+    typeof params.requestedSettings === 'object' &&
+    !Array.isArray(params.requestedSettings)
+      ? (params.requestedSettings as Record<string, unknown>)
+      : {};
+  const normalizedKeySet = new Set(Object.keys(params.normalizedSettings));
+  const settingKeys = (Object.keys(requested) as Array<keyof ChatSettings>)
+    .filter((key) => normalizedKeySet.has(key))
+    .sort();
+  const payload: UpdateSettingsAuditPayload = {
+    source: params.source,
+    settingKeys,
+  };
+
+  if (!settingKeys.includes('botSpeechMedia')) {
+    return payload;
+  }
+
+  const requestedMedia = readBotSpeechMediaRecord(requested.botSpeechMedia);
+  const nextMedia = readBotSpeechMediaRecord(params.normalizedSettings.botSpeechMedia);
+  const mediaKeys = Object.keys(requestedMedia)
+    .filter((key) => Object.hasOwn(nextMedia, key))
+    .sort();
+  payload.botSpeechMedia = mediaKeys.map((key) => {
+    const media = readAuditMediaEntry(nextMedia[key]);
+    return {
+      key,
+      mimeType: media?.mimeType || null,
+      byteCount: media ? Buffer.byteLength(media.base64, 'base64') : 0,
+    };
+  });
+
+  return payload;
 }
 
 function normalizeBotSpeechMedia(settings: ChatSettings): ChatSettings {
@@ -607,7 +680,7 @@ export async function saveChatSettings(params: {
     (await params.assertRequiredSubscriptionSettings(normalizedSettings)) ?? normalizedSettings;
   const botAssignmentData = await params.resolveBotAssignmentData();
 
-  await params.prisma.chat.upsert({
+  const updateSettings = params.prisma.chat.upsert({
     where: { id: params.chatId },
     create: {
       id: params.chatId,
@@ -637,17 +710,19 @@ export async function saveChatSettings(params: {
     },
   });
 
-  await params.prisma.auditLog.create({
+  const writeAudit = params.prisma.auditLog.create({
     data: {
       chatId: params.chatId,
       actorUserId: params.actorUserId,
       action: 'UPDATE_SETTINGS',
-      payload: {
-        ...normalizedSettings,
+      payload: buildUpdateSettingsAuditPayload({
+        requestedSettings: params.body,
+        normalizedSettings,
         source: params.source,
-      },
+      }),
     },
   });
+  await params.prisma.$transaction([updateSettings, writeAudit]);
   await params.chatContextCache.invalidate(params.chatId);
   await params.refreshExecutionReadiness(normalizedSettings);
 

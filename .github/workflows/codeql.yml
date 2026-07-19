@@ -25,3 +25,7 @@ jobs:
           build-mode: none
       - name: Analyze
         uses: github/codeql-action/analyze@7188fc363630916deb702c7fdcf4e481b751f97a # v4
+      - name: Reject open high-severity alerts
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci/assert-codeql-alerts.mjs

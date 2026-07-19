@@ -14,6 +14,7 @@ LOG_FILE="${MAXIM_MONITOR_LOG:-/tmp/maxim-vps-readonly-monitor-$(date +%Y%m%d%H%
 PUBLIC_URL="${MAXIM_VPS_PUBLIC_URL:-https://major-maksimov.ru}"
 ADMIN_PUBLIC_URL="${MAXIM_ADMIN_PUBLIC_URL:-https://admin.major-maksimov.ru}"
 SIGNAL_WINDOW_MIN="${MAXIM_MONITOR_SIGNAL_WINDOW_MIN:-30}"
+SUCCESSFUL_ACCESS_LOG_PATTERN='" (2[0-9][0-9]|3[0-9][0-9]) [0-9]+'
 PUBLIC_URL="${PUBLIC_URL%/}"
 ADMIN_PUBLIC_URL="${ADMIN_PUBLIC_URL%/}"
 
@@ -70,6 +71,7 @@ services=($service_args)
 for service in "\${services[@]}"; do
   echo "-- \${service} --"
   docker compose --env-file .env -p infra -f infra/docker-compose.yml logs --since "${INTERVAL_SEC}s" --tail "$TAIL_LINES" "\$service" 2>/dev/null |
+    grep -Eav '${SUCCESSFUL_ACCESS_LOG_PATTERN}' |
     grep -Eai '"level":(40|50)|"statusCode":(4[0-9][0-9]|5[0-9][0-9])|(^|[^[:alnum:]_])(error|warn|exception|failed|stalled|rate limit|ECONN|ETIMEDOUT|BullMQ|Redis)([^[:alnum:]_]|$)' |
     sed -E \
       -e "s#(https?://[^\"[:space:]]*)\\?[^\"[:space:]#]*#\\1?[redacted]#g" \
@@ -100,6 +102,7 @@ for service in "\${services[@]}"; do
 
   docker inspect --format '{{.Name}}\trestarts={{.RestartCount}}\tstatus={{.State.Status}}\tstarted={{.State.StartedAt}}{{if .State.Health}}\thealth={{.State.Health.Status}}{{else}}\thealth=none{{end}}' \$ids
   docker compose --env-file .env -p infra -f infra/docker-compose.yml logs --since "${INTERVAL_SEC}s" --tail "$TAIL_LINES" "\$service" 2>/dev/null |
+    grep -Eav '${SUCCESSFUL_ACCESS_LOG_PATTERN}' |
     grep -Eai '(^|[^[:alnum:]_])(error|warn|exception|failed|502|503|504|upstream|permission|denied)([^[:alnum:]_]|$)' |
     sed -E \
       -e "s#(https?://[^\"[:space:]]*)\\?[^\"[:space:]#]*#\\1?[redacted]#g" \

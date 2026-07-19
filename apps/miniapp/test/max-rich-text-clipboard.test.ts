@@ -30,6 +30,21 @@ test('keeps only safe clipboard links', () => {
   );
 });
 
+test('rejects opaque MAX clipboard links and escapes Markdown URL delimiters', () => {
+  assert.equal(
+    clipboardHtmlToSupportedMarkdown(
+      '<a href="max:javascript:alert(1)">opaque</a> <a href="max://bot/action">bot</a> <a href="max://user/user-1">profile</a>',
+    ),
+    'opaque bot [profile](max://user/user-1)',
+  );
+  assert.equal(
+    clipboardHtmlToSupportedMarkdown(
+      '<a href="https://example.com/foo)[bad](https://evil.example">Документация</a>',
+    ),
+    '[Документация](https://example.com/foo%29%5Bbad%5D%28https://evil.example)',
+  );
+});
+
 test('skips active content and decodes html entities', () => {
   assert.equal(
     clipboardHtmlToSupportedMarkdown('<p>A&amp;B<script>alert(1)</script><style>.x{}</style></p>'),

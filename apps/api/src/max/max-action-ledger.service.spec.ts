@@ -26,6 +26,7 @@ function createService(row: unknown = null) {
       findFirst: jest.fn().mockResolvedValue(row),
       findUnique: jest.fn().mockResolvedValue(row),
       createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
       upsert: jest.fn().mockResolvedValue(undefined),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
@@ -70,6 +71,84 @@ describe('MaxActionLedgerService', () => {
     const { service } = createService(null);
 
     await expect(service.hasSucceededDelete('chat-1', 'message-1')).resolves.toBe(false);
+  });
+
+  it('clears only terminal ban state after a confirmed unban', async () => {
+    const { service, prisma } = createService();
+
+    await service.clearTerminalBanStateAfterUnban(' chat-1 ', ' user-1 ');
+
+    expect(prisma.maxActionLedgerEntry.deleteMany).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-1',
+        userId: 'user-1',
+        actionType: 'BAN_MEMBER',
+        terminal: true,
+      },
+    });
+  });
+
+  it('clears only the exact legacy pre-dispatch no-route send failure', async () => {
+    const job = createJob({
+      chatId: 'chat-1',
+      idempotencyKey: 'night-mode:open:chat-1:session:session-1',
+    });
+    const { service, prisma } = createService({
+      status: MaxActionLedgerStatus.FAILED_TERMINAL,
+      ambiguous: false,
+      terminal: true,
+      attemptCount: 1,
+      firstAttemptAt: new Date('2026-07-06T20:00:00.000Z'),
+      lastAttemptAt: new Date('2026-07-06T20:00:00.000Z'),
+      lastStatusCode: null,
+      lastErrorCode: null,
+      lastError: 'MAX SEND_MESSAGE has no executable routed bot candidate for chat chat-1',
+      dispatchToken: null,
+      dispatchStartedAt: null,
+      dispatchBotId: null,
+      remoteMessageId: null,
+    });
+
+    await expect(service.assertCanExecute(job)).resolves.toBeUndefined();
+
+    expect(prisma.maxActionLedgerEntry.deleteMany).toHaveBeenCalledWith({
+      where: {
+        jobId: 'night-mode:open:chat-1:session:session-1',
+        actionType: 'SEND_MESSAGE',
+        chatId: 'chat-1',
+        status: MaxActionLedgerStatus.FAILED_TERMINAL,
+        ambiguous: false,
+        terminal: true,
+        lastStatusCode: null,
+        lastErrorCode: null,
+        lastError: 'MAX SEND_MESSAGE has no executable routed bot candidate for chat chat-1',
+        dispatchToken: null,
+        dispatchStartedAt: null,
+        dispatchBotId: null,
+        remoteMessageId: null,
+      },
+    });
+  });
+
+  it('does not clear a terminal send with dispatch evidence even when its message resembles no-route', async () => {
+    const { service, prisma } = createService({
+      status: MaxActionLedgerStatus.FAILED_TERMINAL,
+      ambiguous: false,
+      terminal: true,
+      attemptCount: 1,
+      firstAttemptAt: new Date('2026-07-06T20:00:00.000Z'),
+      lastAttemptAt: new Date('2026-07-06T20:00:00.000Z'),
+      lastStatusCode: null,
+      lastErrorCode: null,
+      lastError: 'MAX SEND_MESSAGE has no executable routed bot candidate for chat chat-1',
+      dispatchToken: 'retained-dispatch-token',
+      dispatchStartedAt: new Date('2026-07-06T20:00:01.000Z'),
+      dispatchBotId: 'bot-1',
+      remoteMessageId: null,
+    });
+
+    await expect(service.assertCanExecute(createJob())).rejects.toBeInstanceOf(UnrecoverableError);
+    expect(prisma.maxActionLedgerEntry.deleteMany).not.toHaveBeenCalled();
   });
 
   it('blocks enqueue when an irreversible job is already quarantined as ambiguous', async () => {
@@ -148,25 +227,125 @@ describe('MaxActionLedgerService', () => {
     ).rejects.toBeInstanceOf(UnrecoverableError);
   });
 
-  it('allows execution of a nonterminal retryable limiter row', async () => {
+  it.each([
+    ['BAN_MEMBER', 'max_api_internal_rate_limit'],
+    ['KICK_MEMBER', 'max_api_circuit_open'],
+  ] as const)(
+    'allows %s execution after a proven pre-dispatch %s failure',
+    async (actionType, lastErrorCode) => {
+      const { service } = createService({
+        status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+        ambiguous: false,
+        terminal: false,
+        attemptCount: 1,
+        firstAttemptAt: new Date('2026-07-06T20:00:00.000Z'),
+        lastAttemptAt: new Date('2026-07-06T20:00:00.000Z'),
+        lastErrorCode,
+        dispatchToken: null,
+        dispatchStartedAt: null,
+        dispatchBotId: null,
+        remoteMessageId: null,
+      });
+
+      await expect(
+        service.assertCanExecute(
+          createJob({
+            actionType,
+            userId: 'user-1',
+            text: undefined,
+          }),
+        ),
+      ).resolves.toBeUndefined();
+    },
+  );
+
+  it.each(['KICK_MEMBER', 'BAN_MEMBER'] as const)(
+    'blocks a stalled %s ledger row from executing or being enqueued again',
+    async (actionType) => {
+      const row = {
+        status: MaxActionLedgerStatus.IN_PROGRESS,
+        ambiguous: false,
+        terminal: false,
+        attemptCount: 1,
+        firstAttemptAt: new Date('2026-07-06T20:00:00.000Z'),
+        lastAttemptAt: new Date('2026-07-06T20:00:00.000Z'),
+        lastErrorCode: null,
+        dispatchToken: null,
+        dispatchStartedAt: null,
+        dispatchBotId: null,
+        remoteMessageId: null,
+      };
+      const job = createJob({ actionType, userId: 'user-1', text: undefined });
+
+      await expect(createService(row).service.assertCanExecute(job)).rejects.toBeInstanceOf(
+        UnrecoverableError,
+      );
+      await expect(createService(row).service.assertCanEnqueue(job)).rejects.toBeInstanceOf(
+        UnrecoverableError,
+      );
+    },
+  );
+
+  it('blocks a generic post-dispatch retryable member failure', async () => {
     const { service } = createService({
       status: MaxActionLedgerStatus.FAILED_RETRYABLE,
       ambiguous: false,
       terminal: false,
+      attemptCount: 1,
+      firstAttemptAt: new Date('2026-07-06T20:00:00.000Z'),
+      lastAttemptAt: new Date('2026-07-06T20:00:01.000Z'),
+      lastErrorCode: 'server.failure',
       dispatchToken: null,
       dispatchStartedAt: null,
+      dispatchBotId: null,
       remoteMessageId: null,
     });
 
     await expect(
       service.assertCanExecute(
-        createJob({
-          actionType: 'BAN_MEMBER',
-          userId: 'user-1',
-          text: undefined,
-        }),
+        createJob({ actionType: 'KICK_MEMBER', userId: 'user-1', text: undefined }),
+      ),
+    ).rejects.toBeInstanceOf(UnrecoverableError);
+  });
+
+  it('allows one worker to claim a completely unattempted retryable member enqueue row', async () => {
+    const { service } = createService({
+      status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+      ambiguous: false,
+      terminal: false,
+      attemptCount: 0,
+      firstAttemptAt: null,
+      lastAttemptAt: null,
+      lastErrorCode: 'econnreset',
+      dispatchToken: null,
+      dispatchStartedAt: null,
+      dispatchBotId: null,
+      remoteMessageId: null,
+    });
+
+    await expect(
+      service.assertCanExecute(
+        createJob({ actionType: 'BAN_MEMBER', userId: 'user-1', text: undefined }),
       ),
     ).resolves.toBeUndefined();
+  });
+
+  it('preserves ordinary in-progress SEND_MESSAGE retry behavior before its dispatch fence exists', async () => {
+    const { service } = createService({
+      status: MaxActionLedgerStatus.IN_PROGRESS,
+      ambiguous: false,
+      terminal: false,
+      attemptCount: 1,
+      firstAttemptAt: new Date('2026-07-06T20:00:00.000Z'),
+      lastAttemptAt: new Date('2026-07-06T20:00:00.000Z'),
+      lastErrorCode: null,
+      dispatchToken: null,
+      dispatchStartedAt: null,
+      dispatchBotId: null,
+      remoteMessageId: null,
+    });
+
+    await expect(service.assertCanExecute(createJob())).resolves.toBeUndefined();
   });
 
   it('records enqueue metadata without storing message text', async () => {
@@ -379,42 +558,85 @@ describe('MaxActionLedgerService', () => {
     );
   });
 
-  it('does not revive a terminal member action when recording worker start loses the CAS race', async () => {
-    const terminalRow = {
-      status: MaxActionLedgerStatus.FAILED_TERMINAL,
-      ambiguous: false,
-      terminal: true,
-      dispatchToken: null,
-      dispatchStartedAt: null,
-      remoteMessageId: null,
-    };
-    const { service, prisma } = createService(terminalRow);
-    prisma.maxActionLedgerEntry.updateMany.mockResolvedValue({ count: 0 });
-    prisma.maxActionLedgerEntry.createMany.mockResolvedValue({ count: 0 });
+  it.each([
+    ['stalled', MaxActionLedgerStatus.IN_PROGRESS, null],
+    ['terminal', MaxActionLedgerStatus.FAILED_TERMINAL, null],
+    ['post-dispatch retryable', MaxActionLedgerStatus.FAILED_RETRYABLE, 'server.failure'],
+  ] as const)(
+    'does not revive a %s member action when recording worker start loses the CAS race',
+    async (_label, status, lastErrorCode) => {
+      const retainedRow = {
+        status,
+        ambiguous: false,
+        terminal: status === MaxActionLedgerStatus.FAILED_TERMINAL,
+        attemptCount: 1,
+        firstAttemptAt: new Date('2026-07-06T20:00:00.000Z'),
+        lastAttemptAt: new Date('2026-07-06T20:00:00.000Z'),
+        lastErrorCode,
+        dispatchToken: null,
+        dispatchStartedAt: null,
+        dispatchBotId: null,
+        remoteMessageId: null,
+      };
+      const { service, prisma } = createService(retainedRow);
+      prisma.maxActionLedgerEntry.updateMany.mockResolvedValue({ count: 0 });
+      prisma.maxActionLedgerEntry.createMany.mockResolvedValue({ count: 0 });
 
-    await expect(
-      service.recordStarted(
-        createJob({
-          actionType: 'KICK_MEMBER',
-          userId: 'user-1',
-          text: undefined,
+      await expect(
+        service.recordStarted(
+          createJob({
+            actionType: 'KICK_MEMBER',
+            userId: 'user-1',
+            text: undefined,
+          }),
+        ),
+      ).rejects.toBeInstanceOf(UnrecoverableError);
+
+      expect(prisma.maxActionLedgerEntry.upsert).not.toHaveBeenCalled();
+      expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            terminal: false,
+            ambiguous: false,
+            OR: [
+              { status: MaxActionLedgerStatus.ENQUEUED },
+              expect.objectContaining({
+                status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+              }),
+            ],
+          }),
         }),
-      ),
-    ).rejects.toBeInstanceOf(UnrecoverableError);
+      );
+    },
+  );
 
-    expect(prisma.maxActionLedgerEntry.upsert).not.toHaveBeenCalled();
+  it('atomically claims a retry after a proven pre-dispatch member failure', async () => {
+    const { service, prisma } = createService();
+    const job = createJob({
+      actionType: 'BAN_MEMBER',
+      userId: 'user-1',
+      text: undefined,
+    });
+
+    await service.recordStarted(job);
+
     expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          terminal: false,
-          ambiguous: false,
-          status: {
-            in: [
-              MaxActionLedgerStatus.ENQUEUED,
-              MaxActionLedgerStatus.IN_PROGRESS,
-              MaxActionLedgerStatus.FAILED_RETRYABLE,
-            ],
-          },
+          jobId: 'job-1',
+          OR: [
+            { status: MaxActionLedgerStatus.ENQUEUED },
+            expect.objectContaining({
+              status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+              OR: expect.arrayContaining([
+                expect.objectContaining({
+                  lastErrorCode: {
+                    in: ['max_api_circuit_open', 'max_api_internal_rate_limit'],
+                  },
+                }),
+              ]),
+            }),
+          ],
         }),
       }),
     );

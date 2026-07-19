@@ -3,6 +3,7 @@ import { UnrecoverableError } from 'bullmq';
 import { randomUUID } from 'node:crypto';
 import { MaxActionLedgerStatus, Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
+import { buildMaxActionNoExecutableRouteMessage } from './max-action-dispatch-error';
 import type { MaxActionJob, MaxActionType } from './max-client.service';
 
 const IRREVERSIBLE_ACTION_TYPES: ReadonlySet<MaxActionType> = new Set([
@@ -15,6 +16,17 @@ const EXECUTABLE_LEDGER_STATUSES: ReadonlySet<MaxActionLedgerStatus> = new Set([
   MaxActionLedgerStatus.IN_PROGRESS,
   MaxActionLedgerStatus.FAILED_RETRYABLE,
 ]);
+const CRASH_FENCED_MEMBER_ACTION_TYPES: ReadonlySet<MaxActionType> = new Set([
+  'KICK_MEMBER',
+  'BAN_MEMBER',
+]);
+export const MAX_MEMBER_ACTION_PRE_DISPATCH_RETRY_ERROR_CODES = [
+  'max_api_circuit_open',
+  'max_api_internal_rate_limit',
+] as const;
+const MEMBER_ACTION_PRE_DISPATCH_RETRY_ERROR_CODES: ReadonlySet<string> = new Set(
+  MAX_MEMBER_ACTION_PRE_DISPATCH_RETRY_ERROR_CODES,
+);
 
 type MaxActionLedgerMutation = {
   status: MaxActionLedgerStatus;
@@ -32,6 +44,22 @@ type MaxActionLedgerMutation = {
 
 type MaxActionLedgerFailureOptions = {
   exhausted?: boolean;
+};
+
+type MaxActionLedgerExecutionState = {
+  status: MaxActionLedgerStatus;
+  ambiguous: boolean;
+  terminal: boolean;
+  attemptCount: number;
+  firstAttemptAt: Date | null;
+  lastAttemptAt: Date | null;
+  lastStatusCode: number | null;
+  lastErrorCode: string | null;
+  lastError: string | null;
+  dispatchToken: string | null;
+  dispatchStartedAt: Date | null;
+  dispatchBotId: string | null;
+  remoteMessageId: string | null;
 };
 
 export type MaxSendDispatchClaim =
@@ -120,6 +148,23 @@ export class MaxActionLedgerService {
     return Boolean(row);
   }
 
+  async clearTerminalBanStateAfterUnban(chatId: string, userId: string): Promise<void> {
+    const normalizedChatId = this.nullableString(chatId);
+    const normalizedUserId = this.nullableString(userId);
+    if (!normalizedChatId || !normalizedUserId) {
+      return;
+    }
+
+    await this.prisma.maxActionLedgerEntry.deleteMany({
+      where: {
+        chatId: normalizedChatId,
+        userId: normalizedUserId,
+        actionType: 'BAN_MEMBER',
+        terminal: true,
+      },
+    });
+  }
+
   isIrreversibleAction(actionType: MaxActionType): boolean {
     return IRREVERSIBLE_ACTION_TYPES.has(actionType);
   }
@@ -137,12 +182,36 @@ export class MaxActionLedgerService {
         status: true,
         ambiguous: true,
         terminal: true,
+        attemptCount: true,
+        firstAttemptAt: true,
+        lastAttemptAt: true,
+        lastStatusCode: true,
+        lastErrorCode: true,
         lastError: true,
         dispatchToken: true,
         dispatchStartedAt: true,
+        dispatchBotId: true,
         remoteMessageId: true,
       },
     });
+
+    if (row && this.isLegacyPreDispatchNoRouteSendState(job, row)) {
+      if (await this.clearLegacyPreDispatchNoRouteSendState(job)) {
+        return;
+      }
+      throw new UnrecoverableError(
+        `Legacy pre-dispatch MAX SEND_MESSAGE ledger entry ${job.idempotencyKey} changed before recovery`,
+      );
+    }
+
+    if (row && this.isCrashFencedMemberAction(job.actionType)) {
+      if (this.isExecutableCrashFencedMemberState(row)) {
+        return;
+      }
+      throw new UnrecoverableError(
+        `Retained MAX ${job.actionType} ledger entry ${job.idempotencyKey} is no longer executable (${row.status})`,
+      );
+    }
 
     if (row?.remoteMessageId) {
       return;
@@ -178,13 +247,38 @@ export class MaxActionLedgerService {
         status: true,
         ambiguous: true,
         terminal: true,
+        attemptCount: true,
+        firstAttemptAt: true,
+        lastAttemptAt: true,
+        lastStatusCode: true,
+        lastErrorCode: true,
+        lastError: true,
         dispatchToken: true,
         dispatchStartedAt: true,
+        dispatchBotId: true,
         remoteMessageId: true,
       },
     });
     if (!row || (job.actionType === 'SEND_MESSAGE' && row.remoteMessageId)) {
       return;
+    }
+
+    if (this.isLegacyPreDispatchNoRouteSendState(job, row)) {
+      if (await this.clearLegacyPreDispatchNoRouteSendState(job)) {
+        return;
+      }
+      throw new UnrecoverableError(
+        `Legacy pre-dispatch MAX SEND_MESSAGE ledger entry ${job.idempotencyKey} changed before recovery`,
+      );
+    }
+
+    if (this.isCrashFencedMemberAction(job.actionType)) {
+      if (this.isExecutableCrashFencedMemberState(row)) {
+        return;
+      }
+      throw new UnrecoverableError(
+        `MAX ${job.actionType} ledger entry ${job.idempotencyKey} is no longer executable (${row.status})`,
+      );
     }
 
     if (
@@ -644,13 +738,40 @@ export class MaxActionLedgerService {
     const result = await this.prisma.maxActionLedgerEntry.updateMany({
       where: {
         jobId: job.idempotencyKey,
-        status: {
-          in: [
-            MaxActionLedgerStatus.ENQUEUED,
-            MaxActionLedgerStatus.IN_PROGRESS,
-            MaxActionLedgerStatus.FAILED_RETRYABLE,
-          ],
-        },
+        ...(this.isCrashFencedMemberAction(job.actionType)
+          ? {
+              OR: [
+                { status: MaxActionLedgerStatus.ENQUEUED },
+                {
+                  status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+                  OR: [
+                    {
+                      lastErrorCode: {
+                        in: [...MAX_MEMBER_ACTION_PRE_DISPATCH_RETRY_ERROR_CODES],
+                      },
+                    },
+                    {
+                      attemptCount: 0,
+                      firstAttemptAt: null,
+                      lastAttemptAt: null,
+                      dispatchToken: null,
+                      dispatchStartedAt: null,
+                      dispatchBotId: null,
+                      remoteMessageId: null,
+                    },
+                  ],
+                },
+              ],
+            }
+          : {
+              status: {
+                in: [
+                  MaxActionLedgerStatus.ENQUEUED,
+                  MaxActionLedgerStatus.IN_PROGRESS,
+                  MaxActionLedgerStatus.FAILED_RETRYABLE,
+                ],
+              },
+            }),
         ambiguous: false,
         terminal: false,
       },
@@ -661,6 +782,77 @@ export class MaxActionLedgerService {
       },
     });
     return result.count === 1;
+  }
+
+  private isCrashFencedMemberAction(actionType: MaxActionType): boolean {
+    return CRASH_FENCED_MEMBER_ACTION_TYPES.has(actionType);
+  }
+
+  private isLegacyPreDispatchNoRouteSendState(
+    job: MaxActionJob,
+    row: MaxActionLedgerExecutionState,
+  ): boolean {
+    return (
+      job.actionType === 'SEND_MESSAGE' &&
+      row.status === MaxActionLedgerStatus.FAILED_TERMINAL &&
+      row.ambiguous === false &&
+      row.terminal === true &&
+      row.lastStatusCode == null &&
+      row.lastErrorCode == null &&
+      row.lastError === buildMaxActionNoExecutableRouteMessage('SEND_MESSAGE', job.chatId) &&
+      row.dispatchToken == null &&
+      row.dispatchStartedAt == null &&
+      row.dispatchBotId == null &&
+      row.remoteMessageId == null
+    );
+  }
+
+  private async clearLegacyPreDispatchNoRouteSendState(job: MaxActionJob): Promise<boolean> {
+    const result = await this.prisma.maxActionLedgerEntry.deleteMany({
+      where: {
+        jobId: job.idempotencyKey,
+        actionType: 'SEND_MESSAGE',
+        chatId: job.chatId,
+        status: MaxActionLedgerStatus.FAILED_TERMINAL,
+        ambiguous: false,
+        terminal: true,
+        lastStatusCode: null,
+        lastErrorCode: null,
+        lastError: buildMaxActionNoExecutableRouteMessage('SEND_MESSAGE', job.chatId),
+        dispatchToken: null,
+        dispatchStartedAt: null,
+        dispatchBotId: null,
+        remoteMessageId: null,
+      },
+    });
+    return result.count === 1;
+  }
+
+  private isExecutableCrashFencedMemberState(row: MaxActionLedgerExecutionState): boolean {
+    if (row.terminal || row.ambiguous) {
+      return false;
+    }
+    if (row.status === MaxActionLedgerStatus.ENQUEUED) {
+      return true;
+    }
+    if (row.status !== MaxActionLedgerStatus.FAILED_RETRYABLE) {
+      return false;
+    }
+
+    const errorCode = row.lastErrorCode?.trim().toLowerCase() ?? '';
+    if (MEMBER_ACTION_PRE_DISPATCH_RETRY_ERROR_CODES.has(errorCode)) {
+      return true;
+    }
+
+    return (
+      row.attemptCount === 0 &&
+      row.firstAttemptAt == null &&
+      row.lastAttemptAt == null &&
+      row.dispatchToken == null &&
+      row.dispatchStartedAt == null &&
+      row.dispatchBotId == null &&
+      row.remoteMessageId == null
+    );
   }
 
   private async recordProtectedSendTransition(

@@ -49,6 +49,7 @@
 - Use `Update.timestamp` as event/edit time; `Message.timestamp` is creation time and cannot identify successive edits.
 - Moderation enforcement and retry-critical cleanup use durable `ModerationDeleteIntentService` intents. Direct delete belongs only inside intent execution or explicit shadow/off compatibility.
 - `MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS` is an execution-time kill switch and must affect already stored intents.
+- Replacement-message cleanup has a separate execution-time switch, `MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_ENABLED`, limited to the exact rule-code allowlist in `ModerationDeleteIntentService`. Preserve requested routing while the switch is off, promote legacy `origin_only` rows during recovery, and allow survivor routing only for user-authored chat replacements; channel and bot-authored cleanup stays origin-only.
 - A delete succeeds only on documented `{ success: true }` or message-specific absence confirmation. An arbitrary HTTP 404 is not proof that a message is gone.
 
 ## Message And Link Semantics
@@ -71,11 +72,13 @@
 - Publication `NOW` is user-triggered even when recovered by the action poller: materialize it ahead of background work and dispatch through the immediate lane.
 - Keep DB-only publication rollups outside governor pauses; ambiguous sends require manual review.
 - A message-send timeout is ambiguous. Never auto-retry an attempted send without `remoteMessageId`; uploads/preparation may retry transport timeouts.
+- KICK/BAN ledger rows are crash-fenced: never reclaim a stalled `IN_PROGRESS` row and retry only a proven pre-dispatch failure. Resolve an executable route before recording dispatch start; a confirmed UNBAN clears prior terminal BAN idempotency state so a later ban remains possible.
 - Retries preserve the recorded content revision. Latest-content retry requires optimistic publication/content revision guards; never rewrite `SENT` or `AMBIGUOUS` attribution.
 - Publication video input remains capped at 24 MB because it crosses base64 JSON, `bytea`, and in-memory buffers. Outbound resumable upload is not a reason to raise ingestion limits.
 - Managed broadcast rows with `publicationOccurrenceId != null` are Publication execution envelopes. Legacy broadcast/autopost read, mutation, calendar overwrite, and retry APIs must hide them.
 - MAX has no native poll endpoint; channel polls use callback-button messages. Replay dedupe is bounded and per-poll pseudonymous. Anonymous polls persist only identity hashes needed for revoting and never expose voters.
 - Managed poll list endpoints select/expose persisted `imageCount` only; raw poll images belong to the details endpoint.
+- Settings audit payloads contain only requested allowlisted keys and bounded media metadata. Keep the settings mutation and audit insert in one transaction; never copy base64 media, filenames, or full settings snapshots into the audit log.
 
 ## Managed Entities And Multi-Bot
 

@@ -20,11 +20,13 @@ type ServiceInternals = {
   selectDueIntentIds(): Promise<unknown[]>;
   claimOne(intentId: string): Promise<unknown>;
   enqueueWakeup(intent: Record<string, unknown>): Promise<void>;
+  enqueueCurrentWakeup(intentId: string): Promise<void>;
   orderCandidateBotIds(intent: Record<string, unknown>, values: readonly string[]): string[];
   resolveDeleteRouteWithRefresh(
     intent: Record<string, unknown>,
     heartbeat: { renew: () => Promise<boolean>; stop: () => void },
   ): Promise<unknown>;
+  isExecutionEnabledForIntent(intent: Record<string, unknown>): boolean;
 };
 
 const ownedHeartbeat = {
@@ -308,6 +310,82 @@ describe('ModerationDeleteIntentService', () => {
     );
   });
 
+  it('retains exact replacement routing while the kill switch controls its effective use', () => {
+    const input = {
+      chatId: 'chat-1',
+      messageId: 'message-1',
+      reasonKey: 'chat_auto_comment_admin_message_replacement_cleanup',
+      ruleCode: 'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP',
+      entityType: 'CHAT' as const,
+      messageAuthorKind: 'user' as const,
+      originBotId: 'bot-1',
+      routingPolicy: 'origin_first' as const,
+    };
+    const disabled = createService({
+      MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_ENABLED: false,
+    }).service;
+
+    expect((disabled as unknown as ServiceInternals).normalizeInput(input).routingPolicy).toBe(
+      'origin_first',
+    );
+    expect(
+      disabled.resolveEffectiveRoutingPolicy({
+        ...input,
+        replacementCleanup: true,
+      }),
+    ).toBe('origin_only');
+  });
+
+  it('executes only the exact replacement cleanup allowlist outside the global canary', () => {
+    const enabled = createService({
+      MODERATION_DELETE_INTENT_MODE: 'canary',
+      MODERATION_DELETE_INTENT_CANARY_CHAT_IDS: 'other-chat',
+    }).service;
+    const disabled = createService({
+      MODERATION_DELETE_INTENT_MODE: 'canary',
+      MODERATION_DELETE_INTENT_CANARY_CHAT_IDS: 'other-chat',
+      MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_ENABLED: false,
+    }).service;
+
+    expect(
+      enabled.getRolloutForRule('chat-1', 'CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP'),
+    ).toBe('execute');
+    expect(
+      enabled.getRolloutForRule('chat-1', 'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP'),
+    ).toBe('execute');
+    expect(
+      enabled.getRolloutForRule('chat-1', 'CHAT_RULES_REPUBLISH_PREVIOUS_MESSAGE_CLEANUP'),
+    ).toBe('execute');
+    expect(
+      enabled.getRolloutForRule('chat-1', 'CHAT_RULES_REPUBLISH_PREVIOUS_MESSAGE_CLEANUP_EXTRA'),
+    ).toBe('observed');
+    expect(
+      disabled.getRolloutForRule('chat-1', 'CHAT_RULES_REPUBLISH_PREVIOUS_MESSAGE_CLEANUP'),
+    ).toBe('observed');
+  });
+
+  it('rechecks the replacement cleanup switch at execution time', () => {
+    const enabled = createService({
+      MODERATION_DELETE_INTENT_MODE: 'canary',
+      MODERATION_DELETE_INTENT_CANARY_CHAT_IDS: 'other-chat',
+    }).service as unknown as ServiceInternals;
+    const disabled = createService({
+      MODERATION_DELETE_INTENT_MODE: 'canary',
+      MODERATION_DELETE_INTENT_CANARY_CHAT_IDS: 'other-chat',
+      MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_ENABLED: false,
+    }).service as unknown as ServiceInternals;
+
+    expect(
+      enabled.isExecutionEnabledForIntent({ chatId: 'chat-1', replacementCleanup: true }),
+    ).toBe(true);
+    expect(
+      enabled.isExecutionEnabledForIntent({ chatId: 'chat-1', replacementCleanup: false }),
+    ).toBe(false);
+    expect(
+      disabled.isExecutionEnabledForIntent({ chatId: 'chat-1', replacementCleanup: true }),
+    ).toBe(false);
+  });
+
   it('rejects executable origin-only intents without an origin bot', () => {
     const { service } = createService();
 
@@ -486,6 +564,169 @@ describe('ModerationDeleteIntentService', () => {
     expect(maxBotLink.recordBotAccessProbe).toHaveBeenCalledWith(
       expect.objectContaining({ chatId: 'chat-1', botId: 'bot-1' }),
     );
+  });
+
+  it('uses a survivor after exact replacement cleanup gets HTTP 403 outside cross-bot canary', async () => {
+    const replacementIntent = {
+      ...baseIntent,
+      routingPolicy: 'origin_first',
+      replacementCleanup: true,
+    };
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([replacementIntent])
+      .mockResolvedValueOnce([
+        {
+          ...replacementIntent,
+          status: 'SUCCEEDED',
+          lastBotId: 'bot-2',
+          succeededBotId: 'bot-2',
+          leaseToken: null,
+          leaseExpiresAt: null,
+        },
+      ]);
+    const deleteMessage = jest
+      .fn()
+      .mockRejectedValueOnce({
+        response: { status: 403, data: { code: 'access.denied', message: 'Access denied' } },
+      })
+      .mockResolvedValueOnce(undefined);
+    const { service } = createService(
+      { MODERATION_DELETE_INTENT_MODE: 'off' },
+      { $queryRaw: queryRaw, $executeRaw: jest.fn().mockResolvedValue(1) },
+      {
+        deleteMessage,
+        getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+          userId: 'bot-user-1',
+          isAdmin: false,
+          isOwner: false,
+          permissions: [],
+        }),
+      },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    const result = await service.executeLeasedIntent('intent-1', 'lease-1');
+
+    expect(result).toMatchObject({ kind: 'confirmed', confirmed: true, botId: 'bot-2' });
+    expect(deleteMessage).toHaveBeenNthCalledWith(
+      1,
+      'chat-1',
+      'message-1',
+      expect.objectContaining({ botId: 'bot-1' }),
+    );
+    expect(deleteMessage).toHaveBeenNthCalledWith(
+      2,
+      'chat-1',
+      'message-1',
+      expect.objectContaining({ botId: 'bot-2' }),
+    );
+  });
+
+  it('keeps survivor routing behind the replacement cleanup kill switch', async () => {
+    const replacementIntent = {
+      ...baseIntent,
+      routingPolicy: 'origin_first',
+      replacementCleanup: true,
+    };
+    const waitingIntent = {
+      ...replacementIntent,
+      status: 'WAITING_CAPABILITY',
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([replacementIntent])
+      .mockResolvedValueOnce([waitingIntent]);
+    const deleteMessage = jest.fn().mockRejectedValue({
+      response: { status: 403, data: { code: 'access.denied', message: 'Access denied' } },
+    });
+    const { service } = createService(
+      {
+        MODERATION_DELETE_INTENT_MODE: 'on',
+        MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_ENABLED: false,
+      },
+      { $queryRaw: queryRaw, $executeRaw: jest.fn().mockResolvedValue(1) },
+      {
+        deleteMessage,
+        getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+          userId: 'bot-user-1',
+          isAdmin: false,
+          isOwner: false,
+          permissions: [],
+        }),
+      },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    const result = await service.executeLeasedIntent('intent-1', 'lease-1');
+
+    expect(result).toMatchObject({ kind: 'waiting_capability', confirmed: false });
+    expect(deleteMessage).toHaveBeenCalledTimes(1);
+    expect(deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'message-1',
+      expect.objectContaining({ botId: 'bot-1' }),
+    );
+  });
+
+  it('bounds the replacement survivor bypass to user-authored chats and cross-bot policies', () => {
+    const { service } = createService({ MODERATION_DELETE_INTENT_MODE: 'off' });
+    const exactInput = {
+      chatId: 'chat-outside-canary',
+      messageId: 'message-1',
+      reasonKey: 'chat_auto_comment_admin_message_replacement_cleanup',
+      ruleCode: 'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP',
+      entityType: 'CHAT' as const,
+      messageAuthorKind: 'user' as const,
+      originBotId: 'bot-1',
+      routingPolicy: 'origin_first' as const,
+    };
+
+    expect((service as unknown as ServiceInternals).normalizeInput(exactInput).routingPolicy).toBe(
+      'origin_first',
+    );
+    expect(
+      (service as unknown as ServiceInternals).normalizeInput({
+        ...exactInput,
+        routingPolicy: 'delete_capable',
+      }).routingPolicy,
+    ).toBe('delete_capable');
+    expect(
+      service.resolveEffectiveRoutingPolicy({
+        ...exactInput,
+        routingPolicy: 'delete_capable',
+        replacementCleanup: true,
+      }),
+    ).toBe('delete_capable');
+    expect(
+      service.resolveEffectiveRoutingPolicy({
+        ...exactInput,
+        entityType: 'CHANNEL',
+        replacementCleanup: true,
+      }),
+    ).toBe('origin_only');
+    expect(
+      service.resolveEffectiveRoutingPolicy({
+        ...exactInput,
+        messageAuthorKind: 'bot',
+        replacementCleanup: true,
+      }),
+    ).toBe('origin_only');
+    expect(
+      service.resolveEffectiveRoutingPolicy({
+        ...exactInput,
+        routingPolicy: 'origin_only',
+        replacementCleanup: true,
+      }),
+    ).toBe('origin_only');
+    expect(
+      service.resolveEffectiveRoutingPolicy({
+        ...exactInput,
+        replacementCleanup: false,
+      }),
+    ).toBe('origin_only');
   });
 
   it('marks absence only after an exact lookup with fresh delete capability', async () => {
@@ -1389,6 +1630,13 @@ describe('ModerationDeleteIntentService', () => {
     expect(sql).toContain('intent."remote_delete_succeeded_bot_id" IS NOT NULL');
     expect(sql).toContain('intent."delete_dispatch_started_at" IS NOT NULL');
     expect(sql).toContain('intent."delete_dispatch_started_bot_id" IS NOT NULL');
+    expect(query?.values).toEqual(
+      expect.arrayContaining([
+        'CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP',
+        'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP',
+        'CHAT_RULES_REPUBLISH_PREVIOUS_MESSAGE_CLEANUP',
+      ]),
+    );
   });
 
   it('allows a recorded remote success to be claimed after the retry horizon', async () => {
@@ -1403,6 +1651,126 @@ describe('ModerationDeleteIntentService', () => {
     expect(sql).toContain('"remote_delete_succeeded_bot_id" IS NOT NULL');
     expect(sql).toContain('"delete_dispatch_started_at" IS NOT NULL');
     expect(sql).toContain('"delete_dispatch_started_bot_id" IS NOT NULL');
+  });
+
+  it('links a replacement marker in the intent transaction before enqueueing execution', async () => {
+    const persisted = {
+      ...baseIntent,
+      status: 'PENDING',
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    const txExecuteRaw = jest.fn().mockResolvedValue(1);
+    const transaction = jest.fn(
+      async (callback: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => unknown) =>
+        callback({
+          $queryRaw: jest.fn().mockResolvedValue([persisted]),
+          $executeRaw: txExecuteRaw,
+        }),
+    );
+    const { service, queue } = createService(
+      {
+        MODERATION_DELETE_INTENT_MODE: 'canary',
+        MODERATION_DELETE_INTENT_CANARY_CHAT_IDS: 'other-chat',
+      },
+      { $transaction: transaction },
+    );
+
+    await expect(
+      service.ensureIntent({
+        chatId: 'chat-1',
+        messageId: 'message-1',
+        reasonKey: 'chat_auto_comment_admin_message_replacement_cleanup',
+        ruleCode: 'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP',
+        entityType: 'CHAT',
+        messageAuthorKind: 'user',
+        originBotId: 'bot-1',
+        routingPolicy: 'origin_first',
+      }),
+    ).resolves.toMatchObject({ rollout: 'execute', status: 'PENDING' });
+
+    const linkCall = txExecuteRaw.mock.calls.find((call) =>
+      (call[0]?.strings?.join('?') ?? '').includes('UPDATE "chat_auto_comment_attach_markers"'),
+    );
+    expect(linkCall).toBeDefined();
+    expect(linkCall?.[0]?.strings?.join('?') ?? '').toContain('"cleanup_intent_id" =');
+    expect(linkCall?.[0]?.values).toEqual(
+      expect.arrayContaining(['intent-1', 'chat-1', 'message-1']),
+    );
+    expect(txExecuteRaw.mock.invocationCallOrder.at(-1)).toBeLessThan(
+      queue.add.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('upgrades legacy replacement reason and routing before linking and waking', async () => {
+    const persisted = {
+      ...baseIntent,
+      routingPolicy: 'origin_first',
+      status: 'PENDING',
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    const txExecuteRaw = jest.fn().mockResolvedValue(1);
+    const txQueryRaw = jest.fn().mockResolvedValue([persisted]);
+    const transaction = jest.fn(
+      async (callback: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => unknown) =>
+        callback({
+          $queryRaw: txQueryRaw,
+          $executeRaw: txExecuteRaw,
+        }),
+    );
+    const { service, queue } = createService(
+      {
+        MODERATION_DELETE_INTENT_MODE: 'shadow',
+      },
+      { $transaction: transaction },
+    );
+
+    await expect(
+      service.ensureIntent({
+        chatId: 'chat-1',
+        messageId: 'message-1',
+        reasonKey: 'chat_auto_comment_admin_message_replacement_cleanup',
+        ruleCode: 'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP',
+        entityType: 'CHAT',
+        messageAuthorKind: 'user',
+        originBotId: 'bot-1',
+        routingPolicy: 'origin_first',
+      }),
+    ).resolves.toMatchObject({ rollout: 'execute', status: 'PENDING' });
+
+    const reasonCall = txExecuteRaw.mock.calls.find((call) =>
+      (call[0]?.strings?.join('?') ?? '').includes(
+        'INSERT INTO "moderation_delete_intent_reasons"',
+      ),
+    );
+    const linkCall = txExecuteRaw.mock.calls.find((call) =>
+      (call[0]?.strings?.join('?') ?? '').includes('UPDATE "chat_auto_comment_attach_markers"'),
+    );
+    expect(reasonCall).toBeDefined();
+    expect(reasonCall?.[0]?.strings?.join('?') ?? '').toContain(
+      'ON CONFLICT ("intent_id", "reason_key") DO UPDATE SET',
+    );
+    expect(reasonCall?.[0]?.strings?.join('?') ?? '').toContain(
+      '"rule_code" = EXCLUDED."rule_code"',
+    );
+    expect(reasonCall?.[0]?.values).toEqual(
+      expect.arrayContaining([
+        'CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP',
+        'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP',
+        'CHAT_RULES_REPUBLISH_PREVIOUS_MESSAGE_CLEANUP',
+      ]),
+    );
+    const upsertSql = txQueryRaw.mock.calls[0]?.[0]?.strings?.join('?') ?? '';
+    expect(upsertSql).toContain('EXCLUDED."routing_policy" = \'delete_capable\'');
+    expect(upsertSql).toContain('"moderation_delete_intents"."routing_policy" = \'origin_only\'');
+    expect(txQueryRaw.mock.calls[0]?.[0]?.values).toContain(true);
+    expect(txExecuteRaw.mock.calls.indexOf(reasonCall!)).toBeLessThan(
+      txExecuteRaw.mock.calls.indexOf(linkCall!),
+    );
+    expect(txExecuteRaw.mock.invocationCallOrder.at(-1)).toBeLessThan(
+      queue.add.mock.invocationCallOrder[0]!,
+    );
   });
 
   it('promotes OBSERVED only when a new ensure arrives in execute rollout', async () => {
@@ -1504,6 +1872,7 @@ describe('ModerationDeleteIntentService', () => {
         chatId: 'chat-1',
         messageId: 'message-1',
         reasonKey: 'replacement-cleanup-recovery:channel_auto_post:marker-1',
+        ruleCode: 'CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP',
         entityType: 'CHANNEL',
         messageAuthorKind: 'user',
         originBotId: 'bot-1',
@@ -1538,6 +1907,7 @@ describe('ModerationDeleteIntentService', () => {
         chatId: 'chat-1',
         messageId: 'message-1',
         reasonKey: 'replacement-cleanup-recovery:channel_auto_post:marker-1',
+        ruleCode: 'CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP',
         entityType: 'CHANNEL',
         messageAuthorKind: 'user',
         originBotId: 'bot-1',
@@ -1740,7 +2110,7 @@ describe('ModerationDeleteIntentService', () => {
     );
   });
 
-  it('recovers replacement cleanup markers without resending their replacement messages', async () => {
+  it('promotes, links, and wakes observed replacement cleanup outside the global canary', async () => {
     const candidate = {
       sourceId: 'marker-1',
       source: 'chat_auto_comment',
@@ -1750,14 +2120,14 @@ describe('ModerationDeleteIntentService', () => {
       entityType: 'CHAT',
       messageAuthorKind: 'user',
       routingPolicy: 'origin_first',
-      existingIntentId: null,
-      existingIntentStatus: null,
+      existingIntentId: 'intent-observed-1',
+      existingIntentStatus: 'OBSERVED',
       createdAt: new Date(),
     } as const;
     const { service, prisma } = createService(
       {
         MODERATION_DELETE_INTENT_MODE: 'canary',
-        MODERATION_DELETE_INTENT_CANARY_CHAT_IDS: 'chat-1',
+        MODERATION_DELETE_INTENT_CANARY_CHAT_IDS: 'other-chat',
       },
       { $queryRaw: jest.fn().mockResolvedValue([candidate]) },
     );
@@ -1767,6 +2137,8 @@ describe('ModerationDeleteIntentService', () => {
       status: 'PENDING',
     });
     (service as unknown as { persistIntent: typeof persistIntent }).persistIntent = persistIntent;
+    const enqueueCurrentWakeup = jest.fn().mockResolvedValue(undefined);
+    (service as unknown as ServiceInternals).enqueueCurrentWakeup = enqueueCurrentWakeup;
 
     await expect(service.recoverReplacementCleanupSources()).resolves.toBe(1);
 
@@ -1787,7 +2159,41 @@ describe('ModerationDeleteIntentService', () => {
     expect(sql).toContain('PUBLISH_CHAT_RULES');
     expect(sql).toContain('marker."bot_id" IS NOT NULL');
     expect(sql).toContain('previousPublishedBotId');
-    expect(sql).toContain('marker."chat_id" IN');
+    expect(sql).not.toContain('marker."chat_id" IN');
+    expect(sql).toContain('CAST(\'OBSERVED\' AS "ModerationDeleteIntentStatus")');
+    expect(enqueueCurrentWakeup).toHaveBeenCalledWith('intent-recovered-1');
+  });
+
+  it('returns replacement recovery to the base rollout when the kill switch is disabled', async () => {
+    const candidate = {
+      sourceId: 'marker-1',
+      source: 'chat_auto_comment',
+      chatId: 'chat-1',
+      messageId: 'message-1',
+      originBotId: 'bot-1',
+      entityType: 'CHAT',
+      messageAuthorKind: 'user',
+      routingPolicy: 'origin_first',
+      existingIntentId: 'intent-observed-1',
+      existingIntentStatus: 'OBSERVED',
+      createdAt: new Date(),
+    } as const;
+    const queryRaw = jest.fn().mockResolvedValue([candidate]);
+    const { service } = createService(
+      {
+        MODERATION_DELETE_INTENT_MODE: 'canary',
+        MODERATION_DELETE_INTENT_CANARY_CHAT_IDS: 'other-chat',
+        MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_ENABLED: false,
+      },
+      { $queryRaw: queryRaw },
+    );
+    const persistIntent = jest.fn();
+    (service as unknown as { persistIntent: typeof persistIntent }).persistIntent = persistIntent;
+
+    await expect(service.recoverReplacementCleanupSources()).resolves.toBe(0);
+
+    expect(persistIntent).not.toHaveBeenCalled();
+    expect(queryRaw.mock.calls[0]?.[0]?.strings?.join('?') ?? '').toContain('marker."chat_id" IN');
   });
 
   it('adopts persisted chat rules cleanup state after a publish crash', async () => {
@@ -1815,6 +2221,8 @@ describe('ModerationDeleteIntentService', () => {
       status: 'PENDING',
     });
     (service as unknown as { persistIntent: typeof persistIntent }).persistIntent = persistIntent;
+    const enqueueCurrentWakeup = jest.fn().mockResolvedValue(undefined);
+    (service as unknown as ServiceInternals).enqueueCurrentWakeup = enqueueCurrentWakeup;
 
     await expect(service.recoverReplacementCleanupSources()).resolves.toBe(1);
 
@@ -1824,6 +2232,7 @@ describe('ModerationDeleteIntentService', () => {
     expect(executeRaw.mock.calls[0]?.[0]?.values).toEqual(
       expect.arrayContaining(['intent-rules-cleanup-1', 'rules-state-1']),
     );
+    expect(enqueueCurrentWakeup).toHaveBeenCalledWith('intent-rules-cleanup-1');
   });
 
   it('finalizes an in-progress marker when its existing intent already succeeded', async () => {
@@ -1928,7 +2337,7 @@ describe('ModerationDeleteIntentService', () => {
     expect(sql).toContain('CAST(\'ALREADY_ABSENT\' AS "ModerationDeleteIntentStatus")');
   });
 
-  it('adopts an existing pending intent before releasing a recovered marker lock', async () => {
+  it('adds the exact cleanup reason before adopting and waking an existing pending intent', async () => {
     const candidate = {
       sourceId: 'marker-pending-1',
       source: 'chat_auto_comment',
@@ -1947,15 +2356,29 @@ describe('ModerationDeleteIntentService', () => {
       {},
       { $queryRaw: jest.fn().mockResolvedValue([candidate]), $executeRaw: executeRaw },
     );
-    const ensureIntent = jest.spyOn(service, 'ensureIntent');
+    const persistIntent = jest.fn().mockResolvedValue({
+      intentId: 'intent-pending-1',
+      rollout: 'execute',
+      status: 'PENDING',
+    });
+    (service as unknown as { persistIntent: typeof persistIntent }).persistIntent = persistIntent;
+    const enqueueCurrentWakeup = jest.fn().mockResolvedValue(undefined);
+    (service as unknown as ServiceInternals).enqueueCurrentWakeup = enqueueCurrentWakeup;
 
     await expect(service.recoverReplacementCleanupSources()).resolves.toBe(1);
 
-    expect(ensureIntent).not.toHaveBeenCalled();
+    expect(persistIntent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reasonKey: 'replacement-cleanup-recovery:chat_auto_comment:marker-pending-1',
+        ruleCode: 'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP',
+      }),
+      false,
+    );
     const adoptSql = executeRaw.mock.calls[0]?.[0]?.strings?.join('?') ?? '';
     expect(adoptSql).toContain('"status" = CAST(\'SUCCEEDED\' AS "ChatAutoCommentAttachStatus")');
     expect(adoptSql).toContain('"lock_token" = NULL');
     expect(executeRaw.mock.calls[0]?.[0]?.values).toContain('intent-pending-1');
+    expect(enqueueCurrentWakeup).toHaveBeenCalledWith('intent-pending-1');
   });
 
   it('bounds replacement recovery independently and gates expired retries by stable reasons', async () => {

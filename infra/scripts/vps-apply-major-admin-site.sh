@@ -30,14 +30,39 @@ CERT_DIR="/etc/letsencrypt/live/${DOMAIN}"
 BACKUP_DIR="$(mktemp -d /tmp/maxim-admin-nginx.XXXXXX)"
 CONF_BACKED_UP=0
 ENABLED_BACKED_UP=0
+NGINX_MUTATED=0
+DEPLOYMENT_COMMITTED=0
+ROLLBACK_ATTEMPTED=0
+ROLLBACK_SUCCEEDED=0
 
-cleanup_backup() {
-  sudo rm -rf "${BACKUP_DIR}" || true
+finalize_remote_deploy() {
+  local exit_status=$?
+
+  trap - EXIT
+  if [[ "${exit_status}" -ne 0 && "${NGINX_MUTATED}" -eq 1 && \
+    "${DEPLOYMENT_COMMITTED}" -eq 0 && "${ROLLBACK_ATTEMPTED}" -eq 0 ]]; then
+    echo "Admin nginx deployment failed after runtime mutation; rolling back." >&2
+    if ! restore_previous_nginx; then
+      echo "Automatic nginx rollback failed; inspect the host before retrying." >&2
+    fi
+  fi
+
+  if [[ "${ROLLBACK_ATTEMPTED}" -eq 1 && "${ROLLBACK_SUCCEEDED}" -eq 0 ]]; then
+    echo "Rollback backup retained at ${BACKUP_DIR}." >&2
+  elif ! sudo rm -rf "${BACKUP_DIR}"; then
+    echo "Failed to remove temporary nginx backup ${BACKUP_DIR}." >&2
+    if [[ "${exit_status}" -eq 0 ]]; then
+      exit_status=1
+    fi
+  fi
+
+  exit "${exit_status}"
 }
 
 restore_previous_nginx() {
   local restore_failed=0
 
+  ROLLBACK_ATTEMPTED=1
   echo "Restoring the previous ${DOMAIN} nginx configuration..." >&2
   sudo rm -f "${REMOTE_CONF}" || restore_failed=1
   if [[ "${CONF_BACKED_UP}" == "1" ]]; then
@@ -59,6 +84,9 @@ restore_previous_nginx() {
     restore_failed=1
   fi
 
+  if [[ "${restore_failed}" -eq 0 ]]; then
+    ROLLBACK_SUCCEEDED=1
+  fi
   return "${restore_failed}"
 }
 
@@ -80,7 +108,42 @@ validate_and_reload_nginx() {
   fi
 }
 
-trap cleanup_backup EXIT
+assert_admin_security_headers_local() {
+  local headers="$1"
+  grep -qi '^strict-transport-security: max-age=31536000' <<<"${headers}" || return 1
+  grep -qi '^x-content-type-options: nosniff' <<<"${headers}" || return 1
+  grep -qi '^referrer-policy: strict-origin-when-cross-origin' <<<"${headers}" || return 1
+  grep -qi '^x-robots-tag: noindex, nofollow, noarchive' <<<"${headers}" || return 1
+  grep -qi '^content-security-policy:' <<<"${headers}" || return 1
+}
+
+read_local_admin_headers() {
+  local path="$1"
+  curl --noproxy '*' -sS --max-time 15 --resolve "${DOMAIN}:443:127.0.0.1" \
+    -D - -o /dev/null "https://${DOMAIN}${path}"
+}
+
+verify_local_admin_nginx() {
+  local headers
+
+  headers="$(read_local_admin_headers /)" || return 1
+  grep -Eqi '^HTTP/[0-9.]+ 401' <<<"${headers}" || return 1
+  assert_admin_security_headers_local "${headers}" || return 1
+
+  headers="$(read_local_admin_headers /robots.txt)" || return 1
+  grep -Eqi '^HTTP/[0-9.]+ 200' <<<"${headers}" || return 1
+  grep -qi '^cache-control: public, max-age=3600' <<<"${headers}" || return 1
+  assert_admin_security_headers_local "${headers}" || return 1
+
+  for path in /api/v1/safety-desk/queue /api/v1/support-requests/queue; do
+    headers="$(read_local_admin_headers "${path}")" || return 1
+    grep -Eqi '^HTTP/[0-9.]+ 401' <<<"${headers}" || return 1
+    grep -qi '^cache-control: no-store, no-cache, must-revalidate, max-age=0' <<<"${headers}" || return 1
+    assert_admin_security_headers_local "${headers}" || return 1
+  done
+}
+
+trap finalize_remote_deploy EXIT
 
 if sudo test -e "${REMOTE_CONF}" || sudo test -L "${REMOTE_CONF}"; then
   sudo cp -a "${REMOTE_CONF}" "${BACKUP_DIR}/site-conf"
@@ -117,6 +180,12 @@ if [[ ! -f "${REMOTE_AUTH}" ]]; then
 fi
 
 if [[ ! -s "${CERT_DIR}/fullchain.pem" || ! -s "${CERT_DIR}/privkey.pem" ]]; then
+  if ! command -v certbot >/dev/null 2>&1; then
+    echo "certbot not found; install certbot or issue ${DOMAIN} certificate manually" >&2
+    exit 1
+  fi
+
+  NGINX_MUTATED=1
   sudo tee "${REMOTE_CONF}" >/dev/null <<HTTP_ONLY
 server {
   listen 80;
@@ -139,25 +208,60 @@ HTTP_ONLY
   sudo ln -sfn "${REMOTE_CONF}" "${REMOTE_ENABLED}"
   validate_and_reload_nginx
 
-  if ! command -v certbot >/dev/null 2>&1; then
-    echo "certbot not found; install certbot or issue ${DOMAIN} certificate manually" >&2
-    exit 1
-  fi
-
-  sudo certbot certonly \
+  if ! sudo certbot certonly \
     --webroot \
     -w "${REMOTE_WEBROOT}" \
     -d "${DOMAIN}" \
     --non-interactive \
     --agree-tos \
     --register-unsafely-without-email \
-    --keep-until-expiring
+    --keep-until-expiring; then
+    echo "Certificate bootstrap failed for ${DOMAIN}." >&2
+    exit 1
+  fi
 fi
 
+NGINX_MUTATED=1
 sudo install -m 644 "${REMOTE_TMP}" "${REMOTE_CONF}"
 sudo ln -sfn "${REMOTE_CONF}" "${REMOTE_ENABLED}"
-rm -f "${REMOTE_TMP}"
 validate_and_reload_nginx
+if ! verify_local_admin_nginx; then
+  echo "New ${DOMAIN} nginx configuration failed the local route/header smoke." >&2
+  if ! restore_previous_nginx; then
+    echo "Automatic nginx rollback failed; inspect the host before retrying." >&2
+  fi
+  rm -f "${REMOTE_TMP}"
+  exit 1
+fi
+DEPLOYMENT_COMMITTED=1
+rm -f "${REMOTE_TMP}"
 REMOTE
+
+assert_admin_security_headers() {
+  local headers="$1"
+  grep -i '^strict-transport-security: max-age=31536000' <<<"$headers"
+  grep -i '^x-content-type-options: nosniff' <<<"$headers"
+  grep -i '^referrer-policy: strict-origin-when-cross-origin' <<<"$headers"
+  grep -i '^x-robots-tag: noindex, nofollow, noarchive' <<<"$headers"
+  grep -i '^content-security-policy:' <<<"$headers"
+}
+
+admin_root_headers="$(curl -sS --max-time 15 -D - -o /dev/null https://admin.major-maksimov.ru/)"
+grep -Ei '^HTTP/[0-9.]+ 401' <<<"$admin_root_headers"
+assert_admin_security_headers "$admin_root_headers"
+
+admin_robots_headers="$(curl -fsS --max-time 15 -D - -o /dev/null https://admin.major-maksimov.ru/robots.txt)"
+grep -Ei '^HTTP/[0-9.]+ 200' <<<"$admin_robots_headers"
+assert_admin_security_headers "$admin_robots_headers"
+
+admin_safety_headers="$(curl -sS --max-time 15 -D - -o /dev/null https://admin.major-maksimov.ru/api/v1/safety-desk/queue)"
+grep -Ei '^HTTP/[0-9.]+ 401' <<<"$admin_safety_headers"
+grep -i '^cache-control: no-store, no-cache, must-revalidate, max-age=0' <<<"$admin_safety_headers"
+assert_admin_security_headers "$admin_safety_headers"
+
+admin_support_headers="$(curl -sS --max-time 15 -D - -o /dev/null https://admin.major-maksimov.ru/api/v1/support-requests/queue)"
+grep -Ei '^HTTP/[0-9.]+ 401' <<<"$admin_support_headers"
+grep -i '^cache-control: no-store, no-cache, must-revalidate, max-age=0' <<<"$admin_support_headers"
+assert_admin_security_headers "$admin_support_headers"
 
 echo "Done: admin.major-maksimov.ru nginx config applied on ${HOST}"

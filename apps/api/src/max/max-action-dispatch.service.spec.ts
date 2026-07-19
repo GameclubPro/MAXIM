@@ -1,5 +1,9 @@
 import { UnrecoverableError } from 'bullmq';
-import { MaxActionDispatchService } from './max-action-dispatch.service';
+import {
+  isMaxActionNoExecutableRouteError,
+  MaxActionDispatchService,
+  MaxActionNoExecutableRouteError,
+} from './max-action-dispatch.service';
 import { MaxApiCircuitOpenError, type MaxActionJob } from './max-client.service';
 import type { RecordManagedEntityAccessLostFromErrorResult } from './managed-entity-access-loss.service';
 
@@ -1001,6 +1005,14 @@ describe('MaxActionDispatchService', () => {
     const maxClient = {
       executeActionJob: jest.fn(),
     };
+    const actionLedgerService = {
+      getCompletedSendDispatchResult: jest.fn().mockResolvedValue(null),
+      assertCanExecute: jest.fn().mockResolvedValue(undefined),
+      recordStarted: jest.fn(),
+      recordSucceeded: jest.fn(),
+      recordSkipped: jest.fn(),
+      recordFailed: jest.fn(),
+    };
     const maxBotLinkService = {
       resolveBotRoute: jest.fn().mockResolvedValue({
         purpose: 'send_message',
@@ -1016,15 +1028,15 @@ describe('MaxActionDispatchService', () => {
     const service = new MaxActionDispatchService(
       maxClient as never,
       undefined,
-      undefined,
+      actionLedgerService as never,
       maxBotLinkService as never,
       {
         get: jest.fn((key: string) => (key === 'MAX_ROUTED_MUTATIONS_MODE' ? 'shadow' : undefined)),
       } as never,
     );
 
-    await expect(
-      service.execute({
+    const thrown = await service
+      .execute({
         actionType: 'SEND_MESSAGE',
         chatId: 'chat-1',
         botId: 'bot-1',
@@ -1038,9 +1050,64 @@ describe('MaxActionDispatchService', () => {
         attempt: 1,
         idempotencyKey: 'stale-route-no-eligible-send',
         createdAt: '2026-07-11T10:00:00.000Z',
-      }),
-    ).rejects.toThrow('has no executable routed bot candidate');
+      })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
 
+    expect(thrown).toBeInstanceOf(MaxActionNoExecutableRouteError);
+    expect(isMaxActionNoExecutableRouteError(thrown)).toBe(true);
+    expect(maxClient.executeActionJob).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordStarted).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordFailed).not.toHaveBeenCalled();
+  });
+
+  it('returns the typed pre-dispatch outcome when every routed candidate is non-executable', async () => {
+    const maxClient = {
+      executeActionJob: jest.fn(),
+    };
+    const actionLedgerService = {
+      getCompletedSendDispatchResult: jest.fn().mockResolvedValue(null),
+      assertCanExecute: jest.fn().mockResolvedValue(undefined),
+      recordStarted: jest.fn(),
+      recordFailed: jest.fn(),
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: 'chat-1',
+        primaryBotId: 'retired-bot',
+        botId: 'retired-bot',
+        candidateBotIds: ['retired-bot'],
+        reason: 'primary_confirmed',
+        routingVersion: 8,
+      }),
+      getExecutableBotById: jest.fn().mockReturnValue(null),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      undefined,
+      actionLedgerService as never,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.execute({
+        actionType: 'SEND_MESSAGE',
+        chatId: 'chat-1',
+        botId: 'retired-bot',
+        candidateBotIds: ['retired-bot'],
+        routing: { purpose: 'send_message' },
+        text: 'must not send',
+        attempt: 1,
+        idempotencyKey: 'no-executable-send',
+        createdAt: '2026-07-11T10:00:00.000Z',
+      }),
+    ).rejects.toBeInstanceOf(MaxActionNoExecutableRouteError);
+
+    expect(actionLedgerService.recordStarted).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordFailed).not.toHaveBeenCalled();
     expect(maxClient.executeActionJob).not.toHaveBeenCalled();
   });
 

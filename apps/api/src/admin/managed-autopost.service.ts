@@ -56,6 +56,8 @@ const AUTOSCHEDULE_BATCH_SIZE = 20;
 const AUTOSCHEDULE_RETRY_MS = 5 * 60_000;
 const AUTOSCHEDULE_MATERIALIZATION_STALE_MS = 10 * 60_000;
 const AUTOSCHEDULE_BACKGROUND_POLL_MS = 60_000;
+const MANAGED_BROADCAST_TARGETS_UNAVAILABLE_MESSAGE =
+  'Некоторые выбранные чаты больше недоступны. Откройте список заново.';
 const AUTOSCHEDULE_MIN_RULE_SLOT_DELAY_MS =
   AUTOSCHEDULE_BACKGROUND_POLL_MS + 2 * AUTOSCHEDULE_MIN_DELAY_MS;
 
@@ -1797,6 +1799,9 @@ export class ManagedAutopostService {
 
   private isTerminalMaterializationError(error: unknown, message: string): boolean {
     if (error instanceof ForbiddenException) {
+      return true;
+    }
+    if (message.trim() === MANAGED_BROADCAST_TARGETS_UNAVAILABLE_MESSAGE) {
       return true;
     }
 

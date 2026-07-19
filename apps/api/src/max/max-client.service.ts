@@ -438,6 +438,36 @@ export const MAX_API_SOURCE_TAGS = {
 const MAX_ACTION_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
 const MAX_ACTION_IDEMPOTENCY_KEY_PART_MAX_LENGTH = 48;
 const MAX_ACTION_IDEMPOTENCY_KEY_READABLE_MAX_LENGTH = 160;
+
+export function normalizeMaxActionIdempotencyKeyPart(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  let readable = '';
+  let separatorPending = false;
+
+  for (const character of normalized) {
+    const code = character.charCodeAt(0);
+    const allowed = (code >= 97 && code <= 122) || (code >= 48 && code <= 57) || character === '-';
+    if (!allowed) {
+      separatorPending = true;
+      continue;
+    }
+
+    if (separatorPending && readable.length > 0) {
+      readable += '_';
+      if (readable.length >= MAX_ACTION_IDEMPOTENCY_KEY_PART_MAX_LENGTH) {
+        break;
+      }
+    }
+    separatorPending = false;
+    readable += character;
+    if (readable.length >= MAX_ACTION_IDEMPOTENCY_KEY_PART_MAX_LENGTH) {
+      break;
+    }
+  }
+
+  return readable;
+}
+
 const LIVE_MAX_ACTION_JOB_STATES = new Set([
   'active',
   'delayed',
@@ -2180,16 +2210,26 @@ export class MaxClientService implements OnModuleDestroy {
           if (!action.userId) {
             throw new Error('userId is required for UNBAN_MEMBER');
           }
-          await this.executeMutation(
+          try {
+            await this.executeMutation(
+              action.chatId,
+              async () => {
+                await this.request('post', `/chats/${action.chatId}/members`, {
+                  data: {
+                    user_ids: [action.userId],
+                  },
+                });
+              },
+              mutationOptions,
+            );
+          } catch (error: unknown) {
+            if (!this.isAlreadyPresentChatMemberError(error)) {
+              throw error;
+            }
+          }
+          await this.actionLedgerService?.clearTerminalBanStateAfterUnban(
             action.chatId,
-            async () => {
-              await this.request('post', `/chats/${action.chatId}/members`, {
-                data: {
-                  user_ids: [action.userId],
-                },
-              });
-            },
-            mutationOptions,
+            action.userId,
           );
           return;
 
@@ -4476,7 +4516,7 @@ export class MaxClientService implements OnModuleDestroy {
         : null;
     }
 
-    if (payload.actionType === 'KICK_MEMBER' || payload.actionType === 'BAN_MEMBER') {
+    if (payload.actionType === 'BAN_MEMBER') {
       const userId = this.readTrimmedString(payload.userId);
       return userId
         ? this.buildActionIdempotencyKey(
@@ -4494,23 +4534,13 @@ export class MaxClientService implements OnModuleDestroy {
     const canonical = normalizedParts.join('\u001f');
     const digest = createHash('sha256').update(canonical).digest('base64url').slice(0, 24);
     const readable = normalizedParts
-      .map((part) => this.normalizeActionIdempotencyKeyPart(part))
+      .map(normalizeMaxActionIdempotencyKeyPart)
       .filter(Boolean)
       .join('__')
       .slice(0, MAX_ACTION_IDEMPOTENCY_KEY_READABLE_MAX_LENGTH)
       .replace(/_+$/u, '');
 
     return readable ? `max-action__${readable}__${digest}` : `max-action__${digest}`;
-  }
-
-  private normalizeActionIdempotencyKeyPart(value: string): string {
-    return value
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9_-]+/gu, '_')
-      .replace(/_+/gu, '_')
-      .replace(/^_+|_+$/gu, '')
-      .slice(0, MAX_ACTION_IDEMPOTENCY_KEY_PART_MAX_LENGTH);
   }
 
   private async removeQueuedActionJob(jobId: string) {
@@ -6637,6 +6667,27 @@ export class MaxClientService implements OnModuleDestroy {
       message.includes('not a chat member') ||
       message.includes('not active chat member') ||
       message.includes('not found')
+    );
+  }
+
+  private isAlreadyPresentChatMemberError(error: unknown): boolean {
+    const status = this.extractStatusCode(error);
+    const isDocumentedMutationRejection =
+      error instanceof MaxApiRequestRejectedError && status === DEFAULT_SUCCESS_FALSE_STATUS;
+    if (!isDocumentedMutationRejection && status !== 400 && status !== 409) {
+      return false;
+    }
+
+    const message = this.extractErrorMessage(error).trim().toLowerCase();
+    return (
+      message.includes('already a member') ||
+      message.includes('already a chat member') ||
+      message.includes('already member') ||
+      message.includes('already participant') ||
+      message.includes('member already exists') ||
+      message.includes('participant already exists') ||
+      message.includes('already in the chat') ||
+      message.includes('уже состоит')
     );
   }
 

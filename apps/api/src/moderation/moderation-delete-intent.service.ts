@@ -47,6 +47,14 @@ const DEFAULT_DELETE_TIMEOUT_MS = 5_000;
 const DEFAULT_RETENTION_DAYS = 90;
 const DELETE_QUEUE_PRIORITY_INTERACTIVE = 1;
 const DELETE_QUEUE_PRIORITY_BACKGROUND = 10;
+export const MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES = [
+  'CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP',
+  'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP',
+  'CHAT_RULES_REPUBLISH_PREVIOUS_MESSAGE_CLEANUP',
+] as const;
+const REPLACEMENT_CLEANUP_RULE_CODE_SET: ReadonlySet<string> = new Set(
+  MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES,
+);
 
 const TERMINAL_STATUSES = new Set<ModerationDeleteIntentStatus>([
   'OBSERVED',
@@ -84,6 +92,15 @@ type IntentRow = {
   leaseToken: string | null;
   leaseExpiresAt: Date | null;
   leasedFromStatus: ModerationDeleteIntentStatus | null;
+  replacementCleanup?: boolean;
+};
+
+export type ModerationDeleteIntentRoutingContext = {
+  chatId: string;
+  entityType: 'CHAT' | 'CHANNEL' | null;
+  messageAuthorKind: string | null;
+  routingPolicy: string;
+  replacementCleanup?: boolean;
 };
 
 type CandidateFailure = {
@@ -133,6 +150,7 @@ export class ModerationDeleteIntentService {
   private readonly mode: ModerationDeleteIntentMode;
   private readonly canaryChatIds: ReadonlySet<string>;
   private readonly crossBotCanaryChatIds: ReadonlySet<string>;
+  private readonly replacementCleanupEnabled: boolean;
   private readonly retryHorizonMs: number;
   private readonly retryBaseMs: number;
   private readonly retryMaxMs: number;
@@ -160,6 +178,10 @@ export class ModerationDeleteIntentService {
     );
     this.crossBotCanaryChatIds = parseModerationDeleteIntentCanaryChatIds(
       configService.get('MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS'),
+    );
+    this.replacementCleanupEnabled = this.readBoolean(
+      configService.get('MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_ENABLED'),
+      true,
     );
     this.retryHorizonMs = this.readPositiveInt(
       configService.get('MODERATION_DELETE_INTENT_RETRY_HORIZON_MS'),
@@ -207,12 +229,55 @@ export class ModerationDeleteIntentService {
     return this.mode;
   }
 
+  get replacementCleanupRolloutEnabled(): boolean {
+    return this.replacementCleanupEnabled;
+  }
+
   getRolloutForChat(chatId: string): ModerationDeleteIntentRollout {
     return resolveModerationDeleteIntentRollout({
       mode: this.mode,
       canaryChatIds: this.canaryChatIds,
       chatId,
     });
+  }
+
+  getRolloutForRule(chatId: string, ruleCode: string): ModerationDeleteIntentRollout {
+    return this.getRolloutForRuleCodes(chatId, [ruleCode]);
+  }
+
+  getRolloutForInput(
+    input: Pick<EnsureModerationDeleteIntentInput, 'chatId' | 'reasonKey' | 'ruleCode'>,
+  ): ModerationDeleteIntentRollout {
+    return this.getRolloutForRule(input.chatId, input.ruleCode ?? input.reasonKey);
+  }
+
+  getRolloutForRuleCodes(
+    chatId: string,
+    ruleCodes: readonly string[],
+  ): ModerationDeleteIntentRollout {
+    if (
+      this.replacementCleanupEnabled &&
+      ruleCodes.some((ruleCode) => this.isReplacementCleanupRuleCode(ruleCode))
+    ) {
+      return 'execute';
+    }
+    return this.getRolloutForChat(chatId);
+  }
+
+  resolveEffectiveRoutingPolicy(
+    intent: ModerationDeleteIntentRoutingContext,
+  ): 'delete_capable' | 'origin_first' | 'origin_only' {
+    const userAuthoredChat = intent.entityType === 'CHAT' && intent.messageAuthorKind === 'user';
+    const crossBotCanaryEnabled =
+      this.crossBotCanaryChatIds.has('*') || this.crossBotCanaryChatIds.has(intent.chatId);
+    const replacementCleanupCrossBotEnabled =
+      this.replacementCleanupEnabled &&
+      intent.replacementCleanup === true &&
+      intent.routingPolicy !== 'origin_only';
+    if (!userAuthoredChat || (!crossBotCanaryEnabled && !replacementCleanupCrossBotEnabled)) {
+      return 'origin_only';
+    }
+    return intent.routingPolicy === 'delete_capable' ? 'delete_capable' : 'origin_first';
   }
 
   async ensureIntent(
@@ -249,7 +314,7 @@ export class ModerationDeleteIntentService {
     if (!existing) {
       throw new Error(`Moderation delete intent ${intentId} does not exist`);
     }
-    if (!this.isExecutionEnabledForChat(existing.chatId)) {
+    if (!this.isExecutionEnabledForIntent(existing)) {
       return this.toAttemptResult(existing);
     }
 
@@ -269,7 +334,7 @@ export class ModerationDeleteIntentService {
     options?: { actorUserId: string },
   ): Promise<{ reopened: boolean; intent: ModerationDeleteIntentSnapshot }> {
     const existing = await this.loadRequiredIntent(intentId);
-    if (!this.isExecutionEnabledForChat(existing.chatId)) {
+    if (!this.isExecutionEnabledForIntent(existing)) {
       return { reopened: false, intent: this.toSnapshot(existing) };
     }
 
@@ -329,6 +394,7 @@ export class ModerationDeleteIntentService {
     if (!reopened) {
       return { reopened: false, intent: this.toSnapshot(await this.loadRequiredIntent(intentId)) };
     }
+    reopened.replacementCleanup = existing.replacementCleanup;
     await this.enqueueWakeup(reopened, DELETE_QUEUE_PRIORITY_INTERACTIVE);
     return { reopened: true, intent: this.toSnapshot(reopened) };
   }
@@ -349,7 +415,7 @@ export class ModerationDeleteIntentService {
     ) {
       return this.toAttemptResult(intent);
     }
-    if (!this.isExecutionEnabledForChat(intent.chatId)) {
+    if (!this.isExecutionEnabledForIntent(intent)) {
       await this.releasePausedLease(intent.id, leaseToken);
       return this.toAttemptResult(await this.loadRequiredIntent(intent.id));
     }
@@ -591,10 +657,7 @@ export class ModerationDeleteIntentService {
   }
 
   async sweepDueIntents(): Promise<number> {
-    if (this.mode !== 'on' && this.mode !== 'canary') {
-      return 0;
-    }
-    if (this.mode === 'canary' && this.canaryChatIds.size === 0) {
+    if (!this.hasAnyExecutionScope()) {
       return 0;
     }
 
@@ -616,10 +679,7 @@ export class ModerationDeleteIntentService {
   }
 
   async recoverReplacementCleanupSources(): Promise<number> {
-    if (this.mode !== 'on' && this.mode !== 'canary') {
-      return 0;
-    }
-    if (this.mode === 'canary' && this.canaryChatIds.size === 0) {
+    if (!this.hasAnyExecutionScope()) {
       return 0;
     }
     const cutoff = new Date(Date.now() - this.retentionDays * 24 * 60 * 60_000);
@@ -666,6 +726,7 @@ export class ModerationDeleteIntentService {
               marker."status" = CAST('IN_PROGRESS' AS "ChannelAutoPostAttachStatus")
               OR marker."cleanup_intent_id" IS NULL
               OR intent."status" IN (
+                CAST('OBSERVED' AS "ModerationDeleteIntentStatus"),
                 CAST('SUCCEEDED' AS "ModerationDeleteIntentStatus"),
                 CAST('ALREADY_ABSENT' AS "ModerationDeleteIntentStatus")
               )
@@ -713,6 +774,7 @@ export class ModerationDeleteIntentService {
             AND (
               rules."pending_cleanup_intent_id" IS NULL
               OR intent."status" IN (
+                CAST('OBSERVED' AS "ModerationDeleteIntentStatus"),
                 CAST('SUCCEEDED' AS "ModerationDeleteIntentStatus"),
                 CAST('ALREADY_ABSENT' AS "ModerationDeleteIntentStatus")
               )
@@ -767,6 +829,7 @@ export class ModerationDeleteIntentService {
               marker."status" = CAST('IN_PROGRESS' AS "ChatAutoCommentAttachStatus")
               OR marker."cleanup_intent_id" IS NULL
               OR intent."status" IN (
+                CAST('OBSERVED' AS "ModerationDeleteIntentStatus"),
                 CAST('SUCCEEDED' AS "ModerationDeleteIntentStatus"),
                 CAST('ALREADY_ABSENT' AS "ModerationDeleteIntentStatus")
               )
@@ -851,7 +914,8 @@ export class ModerationDeleteIntentService {
 
     let recovered = 0;
     for (const candidate of candidates) {
-      if (this.getRolloutForChat(candidate.chatId) !== 'execute') {
+      const cleanupRuleCode = this.replacementCleanupRuleCode(candidate.source);
+      if (this.getRolloutForRule(candidate.chatId, cleanupRuleCode) !== 'execute') {
         continue;
       }
       try {
@@ -873,38 +937,31 @@ export class ModerationDeleteIntentService {
           continue;
         }
 
-        let intentId =
-          candidate.existingIntentId &&
-          candidate.existingIntentStatus !== 'OBSERVED' &&
-          candidate.existingIntentStatus !== 'EXPIRED'
-            ? candidate.existingIntentId
-            : null;
-        if (!intentId) {
-          const ensured = await this.persistIntent(
-            {
-              chatId: candidate.chatId,
-              messageId: candidate.messageId,
-              reasonKey: this.replacementCleanupReasonKey(candidate),
-              ruleCode: this.replacementCleanupRuleCode(candidate.source),
-              entityType: candidate.entityType,
-              messageAuthorKind: candidate.messageAuthorKind,
-              originBotId: candidate.originBotId,
-              routingPolicy: candidate.routingPolicy,
-              event: {
-                eventType: null,
-                metadata: {
-                  source: candidate.source,
-                  sourceId: candidate.sourceId,
-                  recoveredBy: 'moderation_delete_intent_reconciler',
-                },
+        const ensured = await this.persistIntent(
+          {
+            chatId: candidate.chatId,
+            messageId: candidate.messageId,
+            reasonKey: this.replacementCleanupReasonKey(candidate),
+            ruleCode: cleanupRuleCode,
+            entityType: candidate.entityType,
+            messageAuthorKind: candidate.messageAuthorKind,
+            originBotId: candidate.originBotId,
+            routingPolicy: candidate.routingPolicy,
+            event: {
+              eventType: null,
+              metadata: {
+                source: candidate.source,
+                sourceId: candidate.sourceId,
+                recoveredBy: 'moderation_delete_intent_reconciler',
               },
             },
-            false,
-          );
-          intentId = ensured.intentId;
-        }
+          },
+          false,
+        );
+        const intentId = ensured.intentId;
         if (intentId) {
           await this.markRecoveredReplacementOwned(candidate, intentId);
+          await this.enqueueCurrentWakeup(intentId);
         }
         recovered += 1;
       } catch (error: unknown) {
@@ -1109,7 +1166,7 @@ export class ModerationDeleteIntentService {
     enqueue: boolean,
   ): Promise<EnsureModerationDeleteIntentResult> {
     const normalized = this.normalizeInput(input);
-    const rollout = this.getRolloutForChat(normalized.chatId);
+    const rollout = this.getRolloutForRule(normalized.chatId, normalized.ruleCode);
     if (rollout === 'off') {
       return { intentId: null, rollout, status: null };
     }
@@ -1123,6 +1180,11 @@ export class ModerationDeleteIntentService {
     const intentId = randomUUID();
     const reasonId = randomUUID();
     const metadataJson = this.serializeMetadata(normalized.event.metadata);
+    const shouldAdoptReplacementRouting =
+      this.isReplacementCleanupRuleCode(normalized.ruleCode) &&
+      normalized.entityType === 'CHAT' &&
+      normalized.messageAuthorKind === 'user' &&
+      normalized.routingPolicy !== 'origin_only';
     const shouldPromoteObserved = Prisma.sql`
       "moderation_delete_intents"."status" = CAST(
         'OBSERVED' AS "ModerationDeleteIntentStatus"
@@ -1182,6 +1244,13 @@ export class ModerationDeleteIntentService {
           END,
           "routing_policy" = CASE
             WHEN ${shouldPromoteObserved}
+            THEN EXCLUDED."routing_policy"
+            WHEN ${shouldAdoptReplacementRouting}
+              AND EXCLUDED."routing_policy" = 'delete_capable'
+            THEN EXCLUDED."routing_policy"
+            WHEN ${shouldAdoptReplacementRouting}
+              AND EXCLUDED."routing_policy" = 'origin_first'
+              AND "moderation_delete_intents"."routing_policy" = 'origin_only'
             THEN EXCLUDED."routing_policy"
             ELSE "moderation_delete_intents"."routing_policy"
           END,
@@ -1243,7 +1312,7 @@ export class ModerationDeleteIntentService {
         throw new Error('Failed to persist moderation delete intent');
       }
 
-      const reasonInserted = await tx.$executeRaw(Prisma.sql`
+      const reasonChanged = await tx.$executeRaw(Prisma.sql`
         INSERT INTO "moderation_delete_intent_reasons" (
           "id", "intent_id", "reason_key", "user_id", "event_type", "rule_code",
           "masked_excerpt", "score", "metadata", "created_at", "updated_at"
@@ -1253,14 +1322,21 @@ export class ModerationDeleteIntentService {
           ${normalized.event.maskedExcerpt}, ${normalized.event.score},
           CAST(${metadataJson} AS JSONB), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
         )
-        ON CONFLICT ("intent_id", "reason_key") DO NOTHING
+        ON CONFLICT ("intent_id", "reason_key") DO UPDATE SET
+          "rule_code" = EXCLUDED."rule_code",
+          "updated_at" = CURRENT_TIMESTAMP
+        WHERE "moderation_delete_intent_reasons"."rule_code" <> EXCLUDED."rule_code"
+          AND EXCLUDED."rule_code" IN (${Prisma.join([
+            ...MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES,
+          ])})
       `);
       let effectiveIntent = intent;
       if (
-        reasonInserted === 1 &&
+        reasonChanged === 1 &&
         intent.status === 'EXPIRED' &&
         initialStatus === 'PENDING' &&
-        this.isReplacementCleanupRecoveryReason(normalized.reasonKey)
+        this.isReplacementCleanupRecoveryReason(normalized.reasonKey) &&
+        this.isReplacementCleanupRuleCode(normalized.ruleCode)
       ) {
         const reopenedRows = await tx.$queryRaw<IntentRow[]>(Prisma.sql`
           UPDATE "moderation_delete_intents"
@@ -1290,11 +1366,13 @@ export class ModerationDeleteIntentService {
         `);
         effectiveIntent = reopenedRows[0] ?? intent;
       }
+      await this.linkReplacementCleanupIntent(tx, normalized, effectiveIntent.id);
       if (effectiveIntent.status === 'SUCCEEDED') {
         await this.materializeModerationEventsForIntent(tx, effectiveIntent.id);
       }
       return effectiveIntent;
     });
+    persisted.replacementCleanup = this.isReplacementCleanupRuleCode(normalized.ruleCode);
 
     const effectiveRollout =
       rollout === 'execute' && persisted.status !== 'OBSERVED' ? 'execute' : 'observed';
@@ -1882,7 +1960,7 @@ export class ModerationDeleteIntentService {
     if (
       TERMINAL_STATUSES.has(intent.status) ||
       intent.status === 'IN_PROGRESS' ||
-      !this.isExecutionEnabledForChat(intent.chatId)
+      !this.isExecutionEnabledForIntent(intent)
     ) {
       return;
     }
@@ -2268,26 +2346,96 @@ export class ModerationDeleteIntentService {
     }
   }
 
+  private async linkReplacementCleanupIntent(
+    tx: Prisma.TransactionClient,
+    input: { chatId: string; messageId: string; ruleCode: string },
+    intentId: string,
+  ): Promise<void> {
+    switch (input.ruleCode) {
+      case 'CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP':
+        await tx.$executeRaw(Prisma.sql`
+          UPDATE "channel_auto_post_attach_markers"
+          SET
+            "cleanup_intent_id" = ${intentId},
+            "updated_at" = CURRENT_TIMESTAMP
+          WHERE "chat_id" = ${input.chatId}
+            AND "message_id" = ${input.messageId}
+            AND "delivery_mode" = 'replace_with_bot_message'
+            AND "replacement_message_id" IS NOT NULL
+            AND "original_deleted" = false
+            AND "status" IN (
+              CAST('IN_PROGRESS' AS "ChannelAutoPostAttachStatus"),
+              CAST('SUCCEEDED' AS "ChannelAutoPostAttachStatus")
+            )
+        `);
+        return;
+      case 'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP':
+        await tx.$executeRaw(Prisma.sql`
+          UPDATE "chat_auto_comment_attach_markers"
+          SET
+            "cleanup_intent_id" = ${intentId},
+            "updated_at" = CURRENT_TIMESTAMP
+          WHERE "chat_id" = ${input.chatId}
+            AND "message_id" = ${input.messageId}
+            AND "delivery_mode" = 'replace_with_bot_message'
+            AND "replacement_message_id" IS NOT NULL
+            AND "original_deleted" = false
+            AND "status" IN (
+              CAST('IN_PROGRESS' AS "ChatAutoCommentAttachStatus"),
+              CAST('SUCCEEDED' AS "ChatAutoCommentAttachStatus")
+            )
+        `);
+        return;
+      case 'CHAT_RULES_REPUBLISH_PREVIOUS_MESSAGE_CLEANUP':
+        await tx.$executeRaw(Prisma.sql`
+          UPDATE "chat_rules"
+          SET
+            "pending_cleanup_intent_id" = ${intentId},
+            "updated_at" = CURRENT_TIMESTAMP
+          WHERE "chat_id" = ${input.chatId}
+            AND "pending_cleanup_message_id" = ${input.messageId}
+        `);
+        return;
+      default:
+        return;
+    }
+  }
+
   private buildSweepRolloutFilter(): Prisma.Sql {
-    if (this.mode === 'on' || this.canaryChatIds.has('*')) {
-      return Prisma.sql`TRUE`;
+    const baseFilter = this.buildBaseRolloutFilter(Prisma.sql`intent."chat_id"`);
+    if (!this.replacementCleanupEnabled) {
+      return baseFilter;
     }
-    const ids = [...this.canaryChatIds];
-    if (ids.length === 0) {
-      return Prisma.sql`FALSE`;
-    }
-    return Prisma.sql`intent."chat_id" IN (${Prisma.join(ids)})`;
+    return Prisma.sql`(
+      ${baseFilter}
+      OR EXISTS (
+        SELECT 1
+        FROM "moderation_delete_intent_reasons" execution_reason
+        WHERE execution_reason."intent_id" = intent."id"
+          AND execution_reason."rule_code" IN (${Prisma.join([
+            ...MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES,
+          ])})
+      )
+    )`;
   }
 
   private buildRecoveryRolloutFilter(chatIdColumn: Prisma.Sql): Prisma.Sql {
+    return this.replacementCleanupEnabled
+      ? Prisma.sql`TRUE`
+      : this.buildBaseRolloutFilter(chatIdColumn);
+  }
+
+  private buildBaseRolloutFilter(chatIdColumn: Prisma.Sql): Prisma.Sql {
     if (this.mode === 'on' || this.canaryChatIds.has('*')) {
       return Prisma.sql`TRUE`;
     }
-    const ids = [...this.canaryChatIds];
-    if (ids.length === 0) {
+    if (this.mode !== 'canary') {
       return Prisma.sql`FALSE`;
     }
-    return Prisma.sql`${chatIdColumn} IN (${Prisma.join(ids)})`;
+    const ids = [...this.canaryChatIds];
+    return ids.length > 0
+      ? Prisma.sql`${chatIdColumn} IN (${Prisma.join(ids)})`
+      : Prisma.sql`FALSE`;
   }
 
   private replacementCleanupRuleCode(
@@ -2312,8 +2460,25 @@ export class ModerationDeleteIntentService {
     return reasonKey.startsWith('replacement-cleanup-recovery:');
   }
 
-  private isExecutionEnabledForChat(chatId: string): boolean {
-    return this.getRolloutForChat(chatId) === 'execute';
+  private isReplacementCleanupRuleCode(ruleCode: string): boolean {
+    return REPLACEMENT_CLEANUP_RULE_CODE_SET.has(ruleCode.trim());
+  }
+
+  private isExecutionEnabledForIntent(
+    intent: Pick<IntentRow, 'chatId' | 'replacementCleanup'>,
+  ): boolean {
+    return (
+      this.getRolloutForChat(intent.chatId) === 'execute' ||
+      (this.replacementCleanupEnabled && intent.replacementCleanup === true)
+    );
+  }
+
+  private hasAnyExecutionScope(): boolean {
+    return (
+      this.replacementCleanupEnabled ||
+      this.mode === 'on' ||
+      (this.mode === 'canary' && this.canaryChatIds.size > 0)
+    );
   }
 
   private orderCandidateBotIds(intent: IntentRow, values: readonly string[]): string[] {
@@ -2335,19 +2500,6 @@ export class ModerationDeleteIntentService {
       return Boolean(intent.originBotId && botId === intent.originBotId);
     }
     return true;
-  }
-
-  private resolveEffectiveRoutingPolicy(
-    intent: IntentRow,
-  ): 'delete_capable' | 'origin_first' | 'origin_only' {
-    const crossBotEnabledForCurrentExecution =
-      intent.entityType === 'CHAT' &&
-      intent.messageAuthorKind === 'user' &&
-      (this.crossBotCanaryChatIds.has('*') || this.crossBotCanaryChatIds.has(intent.chatId));
-    if (!crossBotEnabledForCurrentExecution) {
-      return 'origin_only';
-    }
-    return intent.routingPolicy === 'delete_capable' ? 'delete_capable' : 'origin_first';
   }
 
   private filterAndOrderRouteCandidates(
@@ -2664,7 +2816,7 @@ export class ModerationDeleteIntentService {
     const originBotId = this.optionalString(input.originBotId);
     const routingPolicy = this.resolveRoutingPolicy(input, chatId);
     if (
-      this.getRolloutForChat(chatId) === 'execute' &&
+      this.getRolloutForRule(chatId, ruleCode) === 'execute' &&
       routingPolicy === 'origin_only' &&
       !originBotId
     ) {
@@ -2701,7 +2853,18 @@ export class ModerationDeleteIntentService {
   }
 
   private intentSelectSql(alias: string): Prisma.Sql {
-    return this.intentColumnsSql(alias);
+    const intentIdColumn = Prisma.raw(`"${alias}"."id"`);
+    return Prisma.sql`
+      ${this.intentColumnsSql(alias)},
+      EXISTS (
+        SELECT 1
+        FROM "moderation_delete_intent_reasons" execution_reason
+        WHERE execution_reason."intent_id" = ${intentIdColumn}
+          AND execution_reason."rule_code" IN (${Prisma.join([
+            ...MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES,
+          ])})
+      ) AS "replacementCleanup"
+    `;
   }
 
   private intentColumnsSql(alias?: string): Prisma.Sql {
@@ -2779,8 +2942,13 @@ export class ModerationDeleteIntentService {
     chatId: string,
   ): 'delete_capable' | 'origin_first' | 'origin_only' {
     const userAuthoredChat = input.entityType === 'CHAT' && input.messageAuthorKind === 'user';
+    const replacementCleanupRoutingRequested = this.isReplacementCleanupRuleCode(
+      input.ruleCode ?? input.reasonKey,
+    );
     const crossBotEnabled =
-      this.crossBotCanaryChatIds.has('*') || this.crossBotCanaryChatIds.has(chatId);
+      replacementCleanupRoutingRequested ||
+      this.crossBotCanaryChatIds.has('*') ||
+      this.crossBotCanaryChatIds.has(chatId);
     if (!userAuthoredChat || !crossBotEnabled) {
       return 'origin_only';
     }
@@ -2816,6 +2984,22 @@ export class ModerationDeleteIntentService {
   private readPositiveInt(value: unknown, fallback: number): number {
     const numeric = Number(value);
     return Number.isInteger(numeric) && numeric > 0 ? numeric : fallback;
+  }
+
+  private readBoolean(value: unknown, fallback: boolean): boolean {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+        return true;
+      }
+      if (['0', 'false', 'no', 'off'].includes(normalized)) {
+        return false;
+      }
+    }
+    return fallback;
   }
 
   private asRecord(value: unknown): Record<string, unknown> | null {

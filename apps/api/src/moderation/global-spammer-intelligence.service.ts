@@ -3502,7 +3502,7 @@ export class GlobalSpammerIntelligenceService {
     if (this.runtimeProfileShadowSampleRate <= 0) {
       return false;
     }
-    const hashPrefix = createHash('sha1').update(userId).digest('hex').slice(0, 8);
+    const hashPrefix = createHash('sha256').update(userId).digest('hex').slice(0, 8);
     const bucket = Number.parseInt(hashPrefix, 16) / 0xffffffff;
     return bucket < this.runtimeProfileShadowSampleRate;
   }
