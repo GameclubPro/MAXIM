@@ -58,6 +58,7 @@ import {
 import {
   isAmbiguousMaxSendError,
   MAX_SEND_AMBIGUOUS_ERROR_PREFIX,
+  MAX_SEND_FENCE_STALE_MS,
 } from '../max/max-send-ambiguity.util';
 import { MaxBotContextService } from '../max/max-bot-context.service';
 import { MaxActionLedgerService } from '../max/max-action-ledger.service';
@@ -6473,6 +6474,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }): Promise<
     | 'night_mode_notice'
     | 'published_chat_rules'
+    | 'chat_rules_publish_in_flight'
     | 'greeting_message'
     | 'karavan_storefront_relay'
     | 'managed_broadcast'
@@ -6485,10 +6487,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       },
       select: {
         publishedMessageId: true,
+        publishSendStartedAt: true,
       },
     });
     if (publishedRules?.publishedMessageId?.trim() === params.messageId.trim()) {
       return 'published_chat_rules';
+    }
+    if (publishedRules?.publishSendStartedAt) {
+      const publishFenceAgeMs = Date.now() - publishedRules.publishSendStartedAt.getTime();
+      if (publishFenceAgeMs >= 0 && publishFenceAgeMs < MAX_SEND_FENCE_STALE_MS) {
+        return 'chat_rules_publish_in_flight';
+      }
     }
 
     if (
