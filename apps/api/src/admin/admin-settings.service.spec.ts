@@ -1,5 +1,6 @@
 import { channelSettingsSchema, chatSettingsSchema } from '@maxim/contracts';
 import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
+import { UPDATE_SETTINGS_AUDIT_PAYLOAD_MAX_SERIALIZED_BYTES } from './admin-chat-settings';
 import { AdminSettingsService } from './admin-settings.service';
 
 const user = {
@@ -563,6 +564,7 @@ describe('AdminSettingsService chat rules', () => {
           botId: 'bot-1',
           primaryBotId: 'bot-1',
         },
+        currentSettings: createPersistedChatSettings(),
       });
 
     const result = await service.updateSettings('chat-1', user as never, {
@@ -615,10 +617,10 @@ describe('AdminSettingsService chat rules', () => {
         chatId: 'chat-1',
         actorUserId: 'admin-1',
         action: 'UPDATE_SETTINGS',
-        payload: expect.objectContaining({
-          antiSpamEnabled: false,
+        payload: {
           source: 'miniapp',
-        }),
+          settingKeys: ['antiSpamEnabled'],
+        },
       },
     });
     expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-1');
@@ -627,6 +629,45 @@ describe('AdminSettingsService chat rules', () => {
       expect.objectContaining({ antiSpamEnabled: false }),
     );
     expect(nightModeTransitionScheduler.reconcileChats).not.toHaveBeenCalled();
+  });
+
+  it('keeps UPDATE_SETTINGS audit metadata bounded and excludes bot speech media content', async () => {
+    const { prisma, service } = createService();
+    const mediaBase64 = 'A'.repeat(1_000_000);
+
+    const result = await service.updateSettings('chat-1', user as never, {
+      botSpeechMedia: {
+        greetingBotMessageText: {
+          base64: mediaBase64,
+          mimeType: 'image/png',
+          fileName: 'private-image-name.png',
+        },
+      },
+    });
+
+    const auditPayload = prisma.auditLog.create.mock.calls[0]?.[0]?.data?.payload as {
+      source: string;
+      settingKeys: string[];
+      botSpeechMedia: Array<{ key: string; mimeType: string | null; byteCount: number }>;
+    };
+    expect(auditPayload).toEqual({
+      source: 'miniapp',
+      settingKeys: Object.keys(result).sort(),
+      botSpeechMedia: [
+        {
+          key: 'greetingBotMessageText',
+          mimeType: 'image/png',
+          byteCount: 750_000,
+        },
+      ],
+    });
+
+    const serializedPayload = JSON.stringify(auditPayload);
+    expect(serializedPayload).not.toContain(mediaBase64);
+    expect(serializedPayload).not.toContain('private-image-name.png');
+    expect(Buffer.byteLength(serializedPayload)).toBeLessThanOrEqual(
+      UPDATE_SETTINGS_AUDIT_PAYLOAD_MAX_SERIALIZED_BYTES,
+    );
   });
 
   it('normalizes required subscription settings to indefinite auto-enabled state', async () => {

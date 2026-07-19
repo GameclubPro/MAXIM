@@ -55,6 +55,20 @@ export type ResolvedBotAssignmentData = {
   primaryBotId?: string;
 };
 
+export const UPDATE_SETTINGS_AUDIT_PAYLOAD_MAX_SERIALIZED_BYTES = 16 * 1024;
+
+type UpdateSettingsAuditMediaEntry = {
+  key: string;
+  mimeType: string | null;
+  byteCount: number;
+};
+
+export type UpdateSettingsAuditPayload = {
+  source: AdminActionSource;
+  settingKeys: Array<keyof ChatSettings>;
+  botSpeechMedia?: UpdateSettingsAuditMediaEntry[];
+};
+
 function readTrimmedString(value: unknown): string | null {
   if (typeof value !== 'string') {
     return null;
@@ -155,6 +169,71 @@ function normalizeMessageLimitsBlockedLists(settings: ChatSettings): ChatSetting
 
 function areBotSpeechMediaEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(left ?? {}) === JSON.stringify(right ?? {});
+}
+
+function areAuditSettingValuesEqual(left: unknown, right: unknown): boolean {
+  return Object.is(left, right) || JSON.stringify(left) === JSON.stringify(right);
+}
+
+function readBotSpeechMediaRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function readAuditMediaEntry(value: unknown): { base64: string; mimeType: string } | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  const media = value as Record<string, unknown>;
+  return {
+    base64: typeof media.base64 === 'string' ? media.base64 : '',
+    mimeType: typeof media.mimeType === 'string' ? media.mimeType : '',
+  };
+}
+
+export function buildUpdateSettingsAuditPayload(params: {
+  currentSettings: unknown;
+  normalizedSettings: ChatSettings;
+  source: AdminActionSource;
+}): UpdateSettingsAuditPayload {
+  const current =
+    params.currentSettings &&
+    typeof params.currentSettings === 'object' &&
+    !Array.isArray(params.currentSettings)
+      ? (params.currentSettings as Record<string, unknown>)
+      : null;
+  const settingKeys = (Object.keys(params.normalizedSettings) as Array<keyof ChatSettings>)
+    .filter(
+      (key) =>
+        !current || !areAuditSettingValuesEqual(current[key], params.normalizedSettings[key]),
+    )
+    .sort();
+  const payload: UpdateSettingsAuditPayload = {
+    source: params.source,
+    settingKeys,
+  };
+
+  if (!settingKeys.includes('botSpeechMedia')) {
+    return payload;
+  }
+
+  const currentMedia = readBotSpeechMediaRecord(current?.botSpeechMedia);
+  const nextMedia = readBotSpeechMediaRecord(params.normalizedSettings.botSpeechMedia);
+  const mediaKeys = Array.from(new Set([...Object.keys(currentMedia), ...Object.keys(nextMedia)]))
+    .filter((key) => !areAuditSettingValuesEqual(currentMedia[key], nextMedia[key]))
+    .sort();
+  payload.botSpeechMedia = mediaKeys.map((key) => {
+    const media = readAuditMediaEntry(nextMedia[key]);
+    return {
+      key,
+      mimeType: media?.mimeType || null,
+      byteCount: media ? Buffer.byteLength(media.base64, 'base64') : 0,
+    };
+  });
+
+  return payload;
 }
 
 function normalizeBotSpeechMedia(settings: ChatSettings): ChatSettings {
@@ -584,13 +663,6 @@ export async function saveChatSettings(params: {
 
   const currentSettings = await params.prisma.chatSettings.findUnique({
     where: { chatId: params.chatId },
-    select: {
-      nightModeForceCloseEnabled: true,
-      nightModeForceCloseForever: true,
-      nightModeForceCloseHours: true,
-      nightModeForceCloseDays: true,
-      nightModeForceCloseUntil: true,
-    },
   });
   let normalizedSettings = normalizeChatSettings(
     parsed.data,
@@ -642,10 +714,11 @@ export async function saveChatSettings(params: {
       chatId: params.chatId,
       actorUserId: params.actorUserId,
       action: 'UPDATE_SETTINGS',
-      payload: {
-        ...normalizedSettings,
+      payload: buildUpdateSettingsAuditPayload({
+        currentSettings,
+        normalizedSettings,
         source: params.source,
-      },
+      }),
     },
   });
   await params.chatContextCache.invalidate(params.chatId);
