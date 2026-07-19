@@ -6,6 +6,110 @@ import { pathToFileURL } from 'node:url';
 const shellFencePattern = /```(?:bash|sh|shell)\s*\n([\s\S]*?)```/gu;
 const bannedExecutablePattern =
   /(?:app2\.major-maksimov\.ru|s3:\/\/|\byc\s+storage\b|object[ -]?storage|cdn-cache)/iu;
+const composeServiceCommands = new Set(['exec', 'run', 'logs', 'restart']);
+
+function isCommandWhitespace(character) {
+  const code = character?.charCodeAt(0) ?? -1;
+  return (
+    (code >= 0x09 && code <= 0x0d) ||
+    code === 0x20 ||
+    code === 0xa0 ||
+    code === 0x1680 ||
+    (code >= 0x2000 && code <= 0x200a) ||
+    code === 0x2028 ||
+    code === 0x2029 ||
+    code === 0x202f ||
+    code === 0x205f ||
+    code === 0x3000 ||
+    code === 0xfeff
+  );
+}
+
+function tokenizeCommandLine(line) {
+  const tokens = [];
+  let index = 0;
+
+  while (index < line.length) {
+    while (index < line.length && isCommandWhitespace(line[index])) {
+      index += 1;
+    }
+    if (index >= line.length) {
+      break;
+    }
+
+    const start = index;
+    while (index < line.length && !isCommandWhitespace(line[index])) {
+      index += 1;
+    }
+    tokens.push(line.slice(start, index));
+  }
+
+  return tokens;
+}
+
+function isAsciiLetterOrDigit(character) {
+  const code = character?.charCodeAt(0) ?? -1;
+  return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+}
+
+function readComposeServiceName(token) {
+  if (!isAsciiLetterOrDigit(token[0])) {
+    return null;
+  }
+
+  let end = 1;
+  while (end < token.length && (isAsciiLetterOrDigit(token[end]) || token[end] === '-')) {
+    end += 1;
+  }
+  return token.slice(0, end);
+}
+
+function findComposeServiceReferences(contents) {
+  const references = [];
+  const lines = contents.split('\n');
+
+  for (const [lineIndex, line] of lines.entries()) {
+    const tokens = tokenizeCommandLine(line);
+    let index = 0;
+    while (index + 1 < tokens.length) {
+      if (
+        tokens[index]?.toLowerCase() !== 'docker' ||
+        tokens[index + 1]?.toLowerCase() !== 'compose'
+      ) {
+        index += 1;
+        continue;
+      }
+
+      index += 2;
+      while (
+        index < tokens.length &&
+        !composeServiceCommands.has(tokens[index]?.toLowerCase() ?? '')
+      ) {
+        index += 1;
+      }
+      if (index >= tokens.length) {
+        break;
+      }
+
+      index += 1;
+      while (
+        index < tokens.length &&
+        (tokens[index]?.length ?? 0) > 1 &&
+        tokens[index]?.startsWith('-')
+      ) {
+        index += 1;
+      }
+
+      const service = readComposeServiceName(tokens[index] ?? '');
+      if (service) {
+        references.push({ line: lineIndex + 1, service });
+      }
+      index += 1;
+    }
+  }
+
+  return references;
+}
 
 function walkMarkdown(directory) {
   if (!existsSync(directory)) {
@@ -107,12 +211,11 @@ export function findDocumentationViolations(root) {
   for (const filePath of markdownFiles) {
     const repoPath = relative(root, filePath).split('\\').join('/');
     const contents = readFileSync(filePath, 'utf8');
-    for (const match of contents.matchAll(
-      /docker\s+compose[^\n]*(?:exec|run|logs|restart)\s+(?:--?\S+\s+)*([a-z0-9][a-z0-9-]*)/giu,
-    )) {
-      if (!composeServices.has(match[1])) {
-        const line = contents.slice(0, match.index).split('\n').length;
-        violations.push(`${repoPath}:${line} references unknown Compose service ${match[1]}.`);
+    for (const reference of findComposeServiceReferences(contents)) {
+      if (!composeServices.has(reference.service)) {
+        violations.push(
+          `${repoPath}:${reference.line} references unknown Compose service ${reference.service}.`,
+        );
       }
     }
   }

@@ -56,7 +56,7 @@ expand_path() {
 
   case "$value" in
     "~") printf '%s' "$HOME" ;;
-    "~/"*) printf '%s/%s' "$HOME" "${value#~/}" ;;
+    \~/*) printf '%s/%s' "$HOME" "${value#\~/}" ;;
     *) printf '%s' "$value" ;;
   esac
 }
@@ -214,6 +214,8 @@ remote_exec() {
   maybe_allow_ssh_current_ip
   mapfile -d '' -t args < <(ssh_args)
   printf -v remote_command 'cd %q && %s' "$MAXIM_VPS_REPO_DIR" "$command"
+  # The command is composed and shell-escaped locally before the remote shell parses it.
+  # shellcheck disable=SC2029
   ssh "${args[@]}" "$MAXIM_VPS_SSH_TARGET" "bash -lc $(printf '%q' "$remote_command")"
 }
 
@@ -237,6 +239,8 @@ open_shell() {
 
   maybe_allow_ssh_current_ip
   mapfile -d '' -t args < <(ssh_args)
+  # Keep the shell lookup literal until the interactive command runs remotely.
+  # shellcheck disable=SC2016
   printf -v remote_command 'cd %q && exec "${SHELL:-bash}"' "$MAXIM_VPS_REPO_DIR"
   ssh "${args[@]}" -t "$MAXIM_VPS_SSH_TARGET" "bash -lc $(printf '%q' "$remote_command")"
 }

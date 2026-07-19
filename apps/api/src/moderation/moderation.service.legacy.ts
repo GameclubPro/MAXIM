@@ -58,7 +58,6 @@ import {
 import {
   isAmbiguousMaxSendError,
   MAX_SEND_AMBIGUOUS_ERROR_PREFIX,
-  MAX_SEND_FENCE_STALE_MS,
 } from '../max/max-send-ambiguity.util';
 import { MaxBotContextService } from '../max/max-bot-context.service';
 import { MaxActionLedgerService } from '../max/max-action-ledger.service';
@@ -104,6 +103,7 @@ import {
   type SystemModeSnapshot,
 } from '../system/system-mode.service';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
+import * as rulesFence from './chat-rules-own-bot-message-classifier';
 import { ModerationExecutionService } from './moderation-execution.service';
 import { ModerationDeleteIntentService } from './moderation-delete-intent.service';
 import type { EnsureModerationDeleteIntentInput } from './moderation-delete-intent.types';
@@ -6486,34 +6486,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     messageId: string;
     text: string;
     settings: ChatSettings;
-  }): Promise<
-    | 'night_mode_notice'
-    | 'published_chat_rules'
-    | 'chat_rules_publish_in_flight'
-    | 'greeting_message'
-    | 'karavan_storefront_relay'
-    | 'managed_broadcast'
-    | 'chat_auto_comment_replacement'
-    | null
-  > {
-    const publishedRules = await this.prisma.chatRules?.findUnique?.({
-      where: {
-        chatId: params.chatId,
-      },
-      select: {
-        publishedMessageId: true,
-        publishSendStartedAt: true,
-      },
-    });
-    if (publishedRules?.publishedMessageId?.trim() === params.messageId.trim()) {
-      return 'published_chat_rules';
-    }
-    if (publishedRules?.publishSendStartedAt) {
-      const publishFenceAgeMs = Date.now() - publishedRules.publishSendStartedAt.getTime();
-      if (publishFenceAgeMs >= 0 && publishFenceAgeMs < MAX_SEND_FENCE_STALE_MS) {
-        return 'chat_rules_publish_in_flight';
-      }
-    }
+  }) {
+    const rulesSkipReason = await rulesFence.classify(this.prisma.chatRules, params);
+    if (rulesSkipReason) return rulesSkipReason;
 
     if (
       this.isNightModeNoticeMessage({
@@ -16027,6 +16002,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private isTerminalWebhookProcessingError(error: unknown): boolean {
     if (
+      rulesFence.isRetryable(error) ||
       (error as { sharedChatExecutionLockRetryable?: unknown } | null)
         ?.sharedChatExecutionLockRetryable === true
     ) {
@@ -16064,10 +16040,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       retryAfterMs?: unknown;
       sharedChatExecutionLockRetryable?: unknown;
     } | null;
-    if (retryError?.sharedChatExecutionLockRetryable !== true) {
+    if (!rulesFence.isRetryable(error) && retryError?.sharedChatExecutionLockRetryable !== true) {
       return undefined;
     }
-    const retryAfterMs = retryError.retryAfterMs;
+    const retryAfterMs = retryError?.retryAfterMs;
     if (typeof retryAfterMs !== 'number' || !Number.isFinite(retryAfterMs) || retryAfterMs <= 0) {
       return undefined;
     }

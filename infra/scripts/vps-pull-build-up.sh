@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-SCRIPT_REL_PATH="${SCRIPT_PATH#$ROOT_DIR/}"
+SCRIPT_REL_PATH="${SCRIPT_PATH#"$ROOT_DIR"/}"
 ORIGINAL_ARGS=("$@")
 
 # shellcheck source=infra/scripts/lib/deploy-topology.sh
@@ -147,10 +147,11 @@ initialize_release_inventory() {
 }
 
 load_current_component_images() {
-  export MAXIM_API_IMAGE="$(release_field api-shared imageRef || printf '%s' maxim-api:unknown)"
-  export MAXIM_MINIAPP_MAJOR_IMAGE="$(release_field miniapp-major-static imageRef || printf '%s' maxim-miniapp-major:unknown)"
-  export MAXIM_ADMIN_IMAGE="$(release_field admin-static imageRef || printf '%s' maxim-admin:unknown)"
-  export MAXIM_MINIAPP_LEGACY_IMAGE="${MAXIM_MINIAPP_LEGACY_IMAGE:-maxim-miniapp-legacy:local}"
+  MAXIM_API_IMAGE="$(release_field api-shared imageRef || printf '%s' maxim-api:unknown)"
+  MAXIM_MINIAPP_MAJOR_IMAGE="$(release_field miniapp-major-static imageRef || printf '%s' maxim-miniapp-major:unknown)"
+  MAXIM_ADMIN_IMAGE="$(release_field admin-static imageRef || printf '%s' maxim-admin:unknown)"
+  MAXIM_MINIAPP_LEGACY_IMAGE="${MAXIM_MINIAPP_LEGACY_IMAGE:-maxim-miniapp-legacy:local}"
+  export MAXIM_API_IMAGE MAXIM_MINIAPP_MAJOR_IMAGE MAXIM_ADMIN_IMAGE MAXIM_MINIAPP_LEGACY_IMAGE
 }
 
 component_manifest_matches_runtime() {
@@ -189,6 +190,14 @@ impact_plan_selects_component() {
   local path_selected
   local result=1
 
+  case "$component" in
+    api-shared|miniapp-major-static|admin-static) ;;
+    *)
+      echo "Unknown deploy component during impact classification: $component" >&2
+      exit 1
+      ;;
+  esac
+
   source_sha="$(release_field "$component" sourceSha || printf '%s' unknown)"
   if [[ "$source_sha" == "unknown" ]] || ! git cat-file -e "${source_sha}^{commit}" 2>/dev/null; then
     return 0
@@ -214,11 +223,6 @@ impact_plan_selects_component() {
       api-shared) path_selected="$MAXIM_IMPACT_PATH_API_SHARED" ;;
       miniapp-major-static) path_selected="$MAXIM_IMPACT_PATH_MINIAPP_MAJOR_STATIC" ;;
       admin-static) path_selected="$MAXIM_IMPACT_PATH_ADMIN_STATIC" ;;
-      *)
-        rm -f "$changes_file"
-        echo "Unknown deploy component during impact classification: $component" >&2
-        exit 1
-        ;;
     esac
     if [[ "$path_selected" -eq 1 ]]; then
       result=0
@@ -576,7 +580,7 @@ sync_branch() {
       echo "Worktree matches origin/$BRANCH but blocks ff-only pull. Stashing snapshot: $stash_name"
       git stash push -m "$stash_name" >/dev/null
       git pull --ff-only origin "$BRANCH"
-      git stash drop stash@{0} >/dev/null || true
+      git stash drop "stash@{0}" >/dev/null || true
       return 0
     fi
 

@@ -39,3 +39,29 @@ test('rejects missing scripts, placeholders, dormant delivery commands, and unkn
   assert.match(messages, /dormant CDN\/Object Storage/u);
   assert.match(messages, /unknown Compose service api/u);
 });
+
+test('parses adversarial Compose-like command text without backtracking', () => {
+  const root = fixture(`\`\`\`bash\ndocker composerun ${'-! '.repeat(50_000)}!\n\`\`\`\n`);
+
+  assert.deepEqual(findDocumentationViolations(root), []);
+});
+
+test('finds a Compose service after a long sequence of flags', () => {
+  const root = fixture(
+    `\`\`\`bash\ndocker compose logs ${'--follow '.repeat(10_000)}missing-service\n\`\`\`\n`,
+  );
+
+  assert.match(
+    findDocumentationViolations(root).join('\n'),
+    /unknown Compose service missing-service/u,
+  );
+});
+
+test('preserves Compose parsing across ECMAScript whitespace', () => {
+  const root = fixture('```bash\ndocker\u00a0compose\u00a0logs\u00a0missing-service\n```\n');
+
+  assert.match(
+    findDocumentationViolations(root).join('\n'),
+    /unknown Compose service missing-service/u,
+  );
+});

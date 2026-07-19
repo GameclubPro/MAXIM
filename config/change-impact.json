@@ -74,7 +74,7 @@
     },
     {
       "id": "prisma-migration-policy",
-      "include": ["config/prisma-migration-policy.json"],
+      "include": ["config/prisma-migration-policy.json", "config/prisma-drift-baseline.json"],
       "checks": ["repo-static", "prisma"],
       "deployComponents": []
     },

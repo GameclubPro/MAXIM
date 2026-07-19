@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-SCRIPT_REL_PATH="${SCRIPT_PATH#$ROOT_DIR/}"
+SCRIPT_REL_PATH="${SCRIPT_PATH#"$ROOT_DIR"/}"
 ORIGINAL_ARGS=("$@")
 
 # shellcheck source=infra/scripts/lib/deploy-topology.sh
@@ -228,7 +228,7 @@ sync_branch() {
       echo "Worktree matches origin/$BRANCH but blocks ff-only pull. Stashing snapshot: $stash_name"
       git stash push -m "$stash_name" >/dev/null
       git pull --ff-only origin "$BRANCH"
-      git stash drop stash@{0} >/dev/null || true
+      git stash drop "stash@{0}" >/dev/null || true
       return 0
     fi
 

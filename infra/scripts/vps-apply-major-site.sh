@@ -52,6 +52,8 @@ fi
 CURRENT_CONF="$(mktemp)"
 trap 'rm -f "$CURRENT_CONF"' EXIT
 
+# Remote paths are fixed locally and intentionally interpolated before SSH execution.
+# shellcheck disable=SC2029
 if ssh "$HOST" "sudo test -f '${REMOTE_ENABLED_CONF}'"; then
   ssh "$HOST" "sudo cat '${REMOTE_ENABLED_CONF}'" >"$CURRENT_CONF"
   echo "Diff against ${HOST}:${REMOTE_ENABLED_CONF}:"
@@ -64,6 +66,8 @@ else
   echo "Remote config does not exist yet: ${HOST}:${REMOTE_CONF}"
 fi
 
+# Snippet names come from the fixed allowlist above and are interpolated locally.
+# shellcheck disable=SC2029
 for snippet in "${KARAVAN_SSE_SNIPPETS[@]}"; do
   if ssh "$HOST" "sudo test -f '${REMOTE_SNIPPET_DIR}/${snippet}'"; then
     ssh "$HOST" "sudo cat '${REMOTE_SNIPPET_DIR}/${snippet}'" >"$CURRENT_CONF"
@@ -89,8 +93,12 @@ case "${MAXIM_APPLY_MAJOR_SITE_CONFIRM:-0}" in
 esac
 
 scp "$LOCAL_CONF" "${HOST}:${REMOTE_CONF_TMP}"
+# The fixed temporary path is intentionally interpolated into the remote command.
+# shellcheck disable=SC2029
 ssh "$HOST" "rm -rf '${REMOTE_SITE_TMP}' && mkdir -p '${REMOTE_SITE_TMP}'"
 scp "$LOCAL_SITE_DIR/index.html" "${HOST}:${REMOTE_SITE_TMP}/index.html"
+# The fixed temporary path is intentionally interpolated into the remote command.
+# shellcheck disable=SC2029
 ssh "$HOST" "rm -rf '${REMOTE_SNIPPET_TMP_DIR}' && mkdir -p '${REMOTE_SNIPPET_TMP_DIR}'"
 for snippet in "${KARAVAN_SSE_SNIPPETS[@]}"; do
   scp "${LOCAL_SNIPPET_DIR}/${snippet}" "${HOST}:${REMOTE_SNIPPET_TMP_DIR}/${snippet}"
@@ -98,6 +106,8 @@ done
 
 ssh "$HOST" "curl -fsS --max-time 10 http://127.0.0.1:3003/app/ >/dev/null"
 
+# Fixed deployment paths are intentionally interpolated into the remote environment.
+# shellcheck disable=SC2029
 ssh "$HOST" "\
   REMOTE_CONF_TMP='${REMOTE_CONF_TMP}' \
   REMOTE_SITE_TMP='${REMOTE_SITE_TMP}' \

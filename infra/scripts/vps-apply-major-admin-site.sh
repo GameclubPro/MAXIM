@@ -21,6 +21,8 @@ fi
 
 scp "$LOCAL_CONF" "${HOST}:${REMOTE_TMP}"
 
+# These fixed deployment paths are intentionally interpolated into the remote environment.
+# shellcheck disable=SC2029
 ssh "$HOST" "DOMAIN='${DOMAIN}' REMOTE_TMP='${REMOTE_TMP}' REMOTE_CONF='${REMOTE_CONF}' REMOTE_ENABLED='${REMOTE_ENABLED}' REMOTE_AUTH='${REMOTE_AUTH}' REMOTE_AUTH_SECRET='${REMOTE_AUTH_SECRET}' REMOTE_WEBROOT='${REMOTE_WEBROOT}' bash -s" <<'REMOTE'
 set -euo pipefail
 

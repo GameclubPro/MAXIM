@@ -135,12 +135,14 @@ test('recognizes a changed Prisma migration and keeps tooling-only changes migra
   assert.deepEqual(toolingPlan.deploy.components, ['api-shared']);
 });
 
-test('classifies the Prisma migration policy as validation-only tooling', () => {
-  const plan = planFor([{ status: 'M', path: 'config/prisma-migration-policy.json' }]);
+test('classifies Prisma migration and drift baselines as validation-only tooling', () => {
+  for (const path of ['config/prisma-migration-policy.json', 'config/prisma-drift-baseline.json']) {
+    const plan = planFor([{ status: 'M', path }]);
 
-  assert.deepEqual(plan.unknownPaths, []);
-  assert.deepEqual(plan.deploy.components, []);
-  assert.ok(plan.checks.includes('prisma'));
+    assert.deepEqual(plan.unknownPaths, []);
+    assert.deepEqual(plan.deploy.components, []);
+    assert.deepEqual(plan.checks, ['repo-static', 'prisma']);
+  }
 });
 
 test('maps mini app runtime and CSS changes only to the Major static service', () => {

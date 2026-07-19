@@ -42,7 +42,7 @@
     "prisma:generate": "node ../../scripts/with-file-lock.mjs prisma-generate -- npm run prisma:generate:source",
     "prisma:generate:source": "prisma generate --config prisma.config.ts",
     "prisma:check": "npm run prisma:validate && npm run prisma:check:migrations",
-    "prisma:check:drift": "prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code --config prisma.config.ts",
+    "prisma:check:drift": "node ../../scripts/check-prisma-drift.mjs",
     "prisma:check:migrations": "node ../../scripts/check-prisma-migrations.mjs",
     "prisma:validate": "prisma validate --config prisma.config.ts",
     "prisma:migrate:dev": "prisma migrate dev --config prisma.config.ts",

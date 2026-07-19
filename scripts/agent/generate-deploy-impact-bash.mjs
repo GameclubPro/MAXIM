@@ -69,6 +69,8 @@ export function renderDeployImpactBash(rawConfig) {
 
   lines.push(
     '',
+    '# Classification outputs are globals consumed by the script that sources this file.',
+    '# shellcheck disable=SC2034',
     'maxim_impact_classify_path() {',
     '  local path="${1:-}"',
     '  path="${path#./}"',

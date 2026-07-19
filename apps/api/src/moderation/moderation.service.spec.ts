@@ -1,6 +1,7 @@
 import { REQUIRED_SUBSCRIPTION_MAX_CHANNELS, type MaxUpdate } from '@maxim/contracts';
 import { USER_AGREEMENT_SHORT_NOTICE } from '../common/user-agreement-notice';
 import { ChatEntityType, EventType, Operator, SanctionAction } from '../prisma/prisma-client';
+import { ChatRulesPublishFenceRetryError } from './chat-rules-own-bot-message-classifier';
 import { buildActiveMuteStateKey } from './moderation-state.util';
 import {
   DEVELOPER_FORCED_GLOBAL_SPAMMER_WARM_MARKER_TTL_SEC,
@@ -2099,6 +2100,25 @@ describe('ModerationService', () => {
 
     expect(
       (service as any).readWebhookProcessingRetryAfterMs({ retryAfterMs: 180_000 }),
+    ).toBeUndefined();
+  });
+
+  it('accepts only the typed chat-rules publish-fence retry delay', () => {
+    const service = new ModerationService(
+      {} as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+    );
+    const retryError = new ChatRulesPublishFenceRetryError(12_345);
+
+    expect((service as any).isTerminalWebhookProcessingError(retryError)).toBe(false);
+    expect((service as any).readWebhookProcessingRetryAfterMs(retryError)).toBe(12_345);
+    expect(
+      (service as any).readWebhookProcessingRetryAfterMs({
+        chatRulesPublishFenceRetryable: true,
+        retryAfterMs: 12_345,
+      }),
     ).toBeUndefined();
   });
 
@@ -4298,7 +4318,7 @@ describe('ModerationService', () => {
     expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
   });
 
-  it('does not auto-delete an own-bot message while chat rules publish is in flight', async () => {
+  it('defers an unrelated own-bot message while chat rules publish is in flight', async () => {
     const prisma = {
       chatRules: {
         findUnique: jest.fn().mockResolvedValue({
@@ -4307,21 +4327,34 @@ describe('ModerationService', () => {
         }),
       },
     };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+    };
     const service = new ModerationService(
       prisma as never,
       {} as never,
       {} as never,
-      {} as never,
+      maxClient as never,
     );
 
     await expect(
-      (service as any).resolveOwnBotAutoDeleteSkipReason({
+      (service as any).handleOwnBotMessageAutoDelete({
         chatId: 'chat-1',
+        userId: 'id613002203036_bot',
         messageId: 'mid-new-rules-1',
         text: 'Правила чата',
-        settings: createSettings(),
+        settings: createSettings({
+          deleteBotMessagesEnabled: true,
+          deleteBotMessagesDelayMinutes: 0.5,
+        }),
       }),
-    ).resolves.toBe('chat_rules_publish_in_flight');
+    ).rejects.toMatchObject({
+      name: 'ChatRulesPublishFenceRetryError',
+      chatRulesPublishFenceRetryable: true,
+      retryAfterMs: expect.any(Number),
+    });
+
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
   });
 
   it('does not auto-delete tracked greeting message from own bot', async () => {

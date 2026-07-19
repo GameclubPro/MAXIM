@@ -516,6 +516,8 @@ sample_once() {
   run_step runtime-pressure summarize_runtime_pressure
   run_step ps ./infra/scripts/vps-connect.sh ps
   run_step static-services summarize_static_services
+  # Command substitutions and $ids are intentionally evaluated by the remote shell.
+  # shellcheck disable=SC2016
   run_step restart-counts ./infra/scripts/vps-connect.sh exec \
     'ids=$(docker ps -q --filter label=com.docker.compose.project=infra); docker inspect --format "{{.Name}}\t{{.RestartCount}}\t{{.State.Status}}\t{{.State.StartedAt}}" $ids'
   run_step log-signal-counts summarize_log_signal_counts
