@@ -66,7 +66,7 @@
   - API ref-based fallback rollback: `./infra/scripts/vps-connect.sh rollback-runtime <git-ref> [services...]`
 - `local-commit-push.sh` is staged-only by default, validates only the staged impact, commits, and pushes the exact resulting `HEAD`. Use `--all` only when broad staging is intentional.
 - Every `AGENTS.md` is excluded from `--all` unless `--include-agents` is present. The helper also refuses already-staged agent notes without that flag.
-- Local production deploy requires a successful aggregate `Required` CI check for the exact selected commit and verifies that the synchronized VPS `HEAD` is the same SHA. Emergency bypass requires an explicit reason.
+- Local production deploy requires successful `Required` and `Analyze JavaScript and TypeScript` checks from GitHub Actions for the exact selected commit, then verifies that the synchronized VPS `HEAD` is the same SHA. Emergency bypass requires an explicit reason.
 - Active release components use full-SHA image refs and component manifests under `/var/lib/maxim-deploy`. The deploy records a new current manifest only after strict smokes; static-only deploys do not run Prisma migrations.
 - Shared API or contract changes must recreate every production API role because all roles use one image; the exact list lives in `infra/AGENTS.md` and `infra/scripts/lib/deploy-topology.sh`.
 - Routine mini app work deploys and smokes `miniapp-major-static` at `https://major-maksimov.ru/app/`; never add CDN/app2/Object Storage fallback steps.
