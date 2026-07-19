@@ -207,6 +207,13 @@ fi
 cleanup_tmp
 REMOTE
 
+assert_major_security_headers() {
+  local headers="$1"
+  grep -i '^strict-transport-security: max-age=31536000' <<<"$headers"
+  grep -i '^x-content-type-options: nosniff' <<<"$headers"
+  grep -i '^referrer-policy: strict-origin-when-cross-origin' <<<"$headers"
+}
+
 echo "Verifying major-maksimov.ru root..."
 curl -fsS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/ | grep -Ei '^HTTP/[0-9.]+ 200'
 curl -fsS --max-time 15 https://major-maksimov.ru/ | grep -F 'Бот-модератор для чатов MAX' >/dev/null
@@ -215,20 +222,29 @@ echo "Verifying major-maksimov.ru app route..."
 curl -fsS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/app/ | grep -Ei '^HTTP/[0-9.]+ 200'
 curl -fsS --max-time 15 https://major-maksimov.ru/app/ | grep -F 'https://major-maksimov.ru/app/' >/dev/null
 curl -fsS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/ios-canary/ping.txt | grep -Ei '^HTTP/[0-9.]+ 200'
+major_robots_headers="$(curl -fsS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/robots.txt)"
+grep -Ei '^HTTP/[0-9.]+ 200' <<<"$major_robots_headers"
+assert_major_security_headers "$major_robots_headers"
 major_live_headers="$(curl -fsS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/health/live)"
 grep -Ei '^HTTP/[0-9.]+ 200' <<<"$major_live_headers"
 grep -i '^x-maxim-ingress: webhook' <<<"$major_live_headers"
+assert_major_security_headers "$major_live_headers"
 curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/health/ready | grep -Ei '^HTTP/[0-9.]+ 404'
-curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/system/metrics/queues | grep -i '^x-maxim-ingress: admin'
+metrics_headers="$(curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/system/metrics/queues)"
+grep -i '^x-maxim-ingress: admin' <<<"$metrics_headers"
+assert_major_security_headers "$metrics_headers"
 channels_headers="$(curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/channels)"
 grep -Ei '^HTTP/[0-9.]+ 401' <<<"$channels_headers"
 grep -i '^x-maxim-ingress: admin' <<<"$channels_headers"
+assert_major_security_headers "$channels_headers"
 channels_trailing_headers="$(curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/channels/)"
 grep -Ei '^HTTP/[0-9.]+ 401' <<<"$channels_trailing_headers"
 grep -i '^x-maxim-ingress: admin' <<<"$channels_trailing_headers"
+assert_major_security_headers "$channels_trailing_headers"
 chats_trailing_headers="$(curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/chats/)"
 grep -Ei '^HTTP/[0-9.]+ 401' <<<"$chats_trailing_headers"
 grep -i '^x-maxim-ingress: admin' <<<"$chats_trailing_headers"
+assert_major_security_headers "$chats_trailing_headers"
 curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/safety-desk/queue | grep -Ei '^HTTP/[0-9.]+ 404'
 curl -sS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/api/v1/support-requests/queue | grep -Ei '^HTTP/[0-9.]+ 404'
 karavan_sse_headers="$(

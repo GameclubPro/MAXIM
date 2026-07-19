@@ -160,4 +160,31 @@ rm -f "${REMOTE_TMP}"
 validate_and_reload_nginx
 REMOTE
 
+assert_admin_security_headers() {
+  local headers="$1"
+  grep -i '^strict-transport-security: max-age=31536000' <<<"$headers"
+  grep -i '^x-content-type-options: nosniff' <<<"$headers"
+  grep -i '^referrer-policy: strict-origin-when-cross-origin' <<<"$headers"
+  grep -i '^x-robots-tag: noindex, nofollow, noarchive' <<<"$headers"
+  grep -i '^content-security-policy:' <<<"$headers"
+}
+
+admin_root_headers="$(curl -sS --max-time 15 -D - -o /dev/null https://admin.major-maksimov.ru/)"
+grep -Ei '^HTTP/[0-9.]+ 401' <<<"$admin_root_headers"
+assert_admin_security_headers "$admin_root_headers"
+
+admin_robots_headers="$(curl -fsS --max-time 15 -D - -o /dev/null https://admin.major-maksimov.ru/robots.txt)"
+grep -Ei '^HTTP/[0-9.]+ 200' <<<"$admin_robots_headers"
+assert_admin_security_headers "$admin_robots_headers"
+
+admin_safety_headers="$(curl -sS --max-time 15 -D - -o /dev/null https://admin.major-maksimov.ru/api/v1/safety-desk/queue)"
+grep -Ei '^HTTP/[0-9.]+ 401' <<<"$admin_safety_headers"
+grep -i '^cache-control: no-store, no-cache, must-revalidate, max-age=0' <<<"$admin_safety_headers"
+assert_admin_security_headers "$admin_safety_headers"
+
+admin_support_headers="$(curl -sS --max-time 15 -D - -o /dev/null https://admin.major-maksimov.ru/api/v1/support-requests/queue)"
+grep -Ei '^HTTP/[0-9.]+ 401' <<<"$admin_support_headers"
+grep -i '^cache-control: no-store, no-cache, must-revalidate, max-age=0' <<<"$admin_support_headers"
+assert_admin_security_headers "$admin_support_headers"
+
 echo "Done: admin.major-maksimov.ru nginx config applied on ${HOST}"
