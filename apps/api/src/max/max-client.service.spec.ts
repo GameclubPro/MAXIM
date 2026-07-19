@@ -1754,8 +1754,28 @@ describe('MaxClientService inline keyboard guardrails', () => {
         [
           { type: 'link', text: 'Bad scheme', url: 'max://user/user-42' },
           { type: 'link', text: 'Bad url', url: 'not a url' },
+          {
+            type: 'link',
+            text: 'Whitespace and nested url',
+            url: 'https://example.test/path https://nested.example.test',
+          },
+          {
+            type: 'link',
+            text: 'Nested url path',
+            url: 'https://max.ru/chat/example/https://nested.example.test',
+          },
+          {
+            type: 'link',
+            text: 'Encoded nested url path',
+            url: 'https://max.ru/chat/example/https%3A%2F%2Fnested.example.test',
+          },
           { type: 'link', text: 'Too long', url: `https://example.com/${'a'.repeat(2049)}` },
-          { type: 'link', text: 'Good', url: 'https://example.com/path?x=1' },
+          {
+            type: 'link',
+            text: 'Too long before canonicalization',
+            url: `https://example.com/${'a/../'.repeat(500)}open`,
+          },
+          { type: 'link', text: 'Good', url: ' https://example.com/path?x=1 ' },
         ],
       ],
     }) as Array<Array<Record<string, unknown>>> | null;
@@ -5405,6 +5425,41 @@ describe('MaxClientService inline keyboard guardrails', () => {
 
     expect(actionHealthService.recordFailure).not.toHaveBeenCalled();
     expect(actionHealthService.recordSuccess).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('counts a critical internal limiter rejection in action health before dispatch', async () => {
+    const httpService = {
+      request: jest.fn(),
+    };
+    const service = createService(httpService, {
+      MAX_API_RATE_LIMIT_WAIT_MS_CRITICAL: '0',
+    });
+    const actionHealthService = (
+      service as unknown as {
+        actionHealthService: {
+          recordFailureForLane: jest.Mock;
+        };
+      }
+    ).actionHealthService;
+    const limiterRedis = (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis;
+    limiterRedis.eval.mockResolvedValueOnce([1, 0, 0]).mockResolvedValueOnce([0, 2, 1]);
+
+    await expect(
+      service.deleteMessage('chat-1', 'message-1', {
+        immediate: true,
+        trafficClass: 'critical',
+        actionHealthLane: 'critical',
+      }),
+    ).rejects.toMatchObject({ code: 'MAX_API_INTERNAL_RATE_LIMIT' });
+
+    expect(actionHealthService.recordFailureForLane).toHaveBeenCalledWith(
+      'critical',
+      true,
+      '777000_bot',
+    );
+    expect(httpService.request).not.toHaveBeenCalled();
 
     await service.onModuleDestroy();
   });

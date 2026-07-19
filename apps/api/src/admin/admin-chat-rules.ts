@@ -3,6 +3,7 @@ import {
   DEFAULT_BROADCAST_BUTTON_TEXT,
   MAX_BROADCAST_LINK_BUTTONS_PER_ROW,
   MAX_BROADCAST_LINK_BUTTONS,
+  normalizeHttpButtonUrl,
   publishChatRulesResultSchema,
   type BroadcastLinkButton,
   type ChatRules,
@@ -204,6 +205,23 @@ export function buildStoredLinkButtonState(
   };
 }
 
+function normalizeRulesAdminContactButton(rules: {
+  adminContactButtonEnabled?: boolean | null;
+  adminContactButtonUrl?: string | null;
+}): {
+  adminContactButtonEnabled: boolean;
+  adminContactButtonUrl: string;
+} {
+  const trimmedUrl =
+    typeof rules.adminContactButtonUrl === 'string' ? rules.adminContactButtonUrl.trim() : '';
+  const adminContactButtonUrl = trimmedUrl ? (normalizeHttpButtonUrl(trimmedUrl) ?? '') : '';
+  return {
+    adminContactButtonEnabled:
+      rules.adminContactButtonEnabled === true && adminContactButtonUrl.length > 0,
+    adminContactButtonUrl,
+  };
+}
+
 export function normalizeChatRulesDraft(value: UpdateChatRulesRequest): UpdateChatRulesRequest {
   const buttonState = buildStoredLinkButtonState(value.buttons, {
     buttonUrl: value.buttonUrl,
@@ -252,6 +270,7 @@ export function mapChatRules(rules: PersistedChatRules): ChatRules {
     buttonUrl: rules.buttonUrl,
     buttonText: rules.buttonText,
   });
+  const adminContactButtonState = normalizeRulesAdminContactButton(rules);
 
   return chatRulesSchema.parse({
     text: rules.text,
@@ -260,32 +279,19 @@ export function mapChatRules(rules: PersistedChatRules): ChatRules {
     imageFileName: rules.imageFileName,
     autoTextEnabled: rules.autoTextEnabled,
     buttons: buttonState.buttons,
-    buttonEnabled: rules.buttonEnabled,
+    buttonEnabled: rules.buttonEnabled === true && buttonState.buttons.length > 0,
     buttonUrl: buttonState.buttonUrl,
     buttonText: buttonState.buttonText,
-    adminContactButtonEnabled: rules.adminContactButtonEnabled,
-    adminContactButtonUrl: rules.adminContactButtonUrl,
+    adminContactButtonEnabled: adminContactButtonState.adminContactButtonEnabled,
+    adminContactButtonUrl: adminContactButtonState.adminContactButtonUrl,
     publishedMessageId: rules.publishedMessageId,
-    publishedUrl: rules.publishedUrl,
+    publishedUrl: normalizePublishedRulesUrl(rules.publishedUrl),
     publishedAt: rules.publishedAt ? rules.publishedAt.toISOString() : null,
   });
 }
 
 export function normalizePublishedRulesUrl(value: string | null | undefined): string | null {
-  const normalized = typeof value === 'string' ? value.trim() : '';
-  if (!normalized) {
-    return null;
-  }
-
-  try {
-    const parsed = new URL(normalized);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return null;
-    }
-    return parsed.toString();
-  } catch {
-    return null;
-  }
+  return typeof value === 'string' ? normalizeHttpButtonUrl(value) : null;
 }
 
 function normalizeOptionalBotId(value: string | null | undefined): string | undefined {
@@ -523,7 +529,28 @@ export async function readChatRules(params: {
     rules,
     resolveBotId: params.resolveBotId,
   });
-  return mapChatRules(hydratedRules);
+  const adminContactButtonState = normalizeRulesAdminContactButton(hydratedRules);
+  if (
+    adminContactButtonState.adminContactButtonEnabled !== hydratedRules.adminContactButtonEnabled ||
+    adminContactButtonState.adminContactButtonUrl !== hydratedRules.adminContactButtonUrl
+  ) {
+    const repaired = await params.prisma.chatRules.updateMany({
+      where: {
+        chatId: params.chatId,
+        adminContactButtonEnabled: hydratedRules.adminContactButtonEnabled,
+        adminContactButtonUrl: hydratedRules.adminContactButtonUrl,
+      },
+      data: adminContactButtonState,
+    });
+    if (repaired.count > 0) {
+      await params.chatContextCache.invalidate(params.chatId);
+    }
+  }
+
+  return mapChatRules({
+    ...hydratedRules,
+    ...adminContactButtonState,
+  });
 }
 
 function hasRetriableRulesAttachment(options: ChatRulesMessageOptions): boolean {

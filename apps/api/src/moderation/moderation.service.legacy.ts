@@ -391,6 +391,7 @@ import {
   WebhookCanonicalExecutionService,
   type WebhookCanonicalExecutionContext,
 } from './webhook-canonical-execution.service';
+import { buildLocalAdminContactDisplayNameQuery } from './local-admin-contact-display-name.query';
 
 type ManualModerationCommandBridge = Pick<
   ManualModerationService,
@@ -3733,30 +3734,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      const rows = await this.prisma.$queryRaw<Array<{ sender_name: string | null }>>`
-        SELECT sender_name
-        FROM (
-          SELECT
-            sender_name,
-            event_at
-          FROM chat_membership_activity_events
-          WHERE chat_id = ${chatId}
-            AND user_id = ${userId}
-            AND sender_name IS NOT NULL
-
-          UNION ALL
-
-          SELECT
-            NULLIF(BTRIM(normalized_payload->'message'->>'senderName'), '') AS sender_name,
-            created_at AS event_at
-          FROM webhook_events
-          WHERE NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), '') = ${chatId}
-            AND NULLIF(BTRIM(normalized_payload->'message'->>'senderId'), '') = ${userId}
-            AND NULLIF(BTRIM(normalized_payload->'message'->>'senderName'), '') IS NOT NULL
-        ) local_name_events
-        ORDER BY event_at DESC
-        LIMIT 1
-      `;
+      const rows = await this.prisma.$queryRaw<Array<{ sender_name: string | null }>>(
+        buildLocalAdminContactDisplayNameQuery(chatId, userId),
+      );
       const senderName = Array.isArray(rows) ? rows[0]?.sender_name?.trim() : '';
       return senderName || null;
     } catch (error: unknown) {

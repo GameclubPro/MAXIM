@@ -234,7 +234,7 @@ const envSchema = z.object({
   MODERATION_DELETE_INTENT_MODE: z.enum(['off', 'shadow', 'canary', 'on']).default('off'),
   MODERATION_DELETE_INTENT_CANARY_CHAT_IDS: z.string().default(''),
   MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS: z.string().default(''),
-  MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_ENABLED: envBoolean(true),
+  MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_ENABLED: envBoolean(false),
   MODERATION_DELETE_INTENT_RETRY_HORIZON_MS: z.coerce.number().int().positive().default(86_400_000),
   MODERATION_DELETE_INTENT_RETRY_BASE_MS: z.coerce.number().int().positive().default(5_000),
   MODERATION_DELETE_INTENT_RETRY_MAX_MS: z.coerce.number().int().positive().default(300_000),

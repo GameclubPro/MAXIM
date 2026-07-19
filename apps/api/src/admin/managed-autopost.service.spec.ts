@@ -173,6 +173,24 @@ describe('ManagedAutopostService', () => {
     ...overrides,
   });
 
+  it('sanitizes malformed buttons in stored payloads before read or materialization', () => {
+    const { service } = createService();
+    const malformedUrl = 'https://max.ru/chat/example/https://nested.example.test';
+
+    const parsed = (service as any).parsePayload(
+      payload({
+        buttons: [{ text: 'Broken', url: malformedUrl }],
+        buttonEnabled: true,
+        buttonUrl: malformedUrl,
+        buttonText: 'Broken',
+      }),
+    );
+
+    expect(parsed.buttons).toEqual([]);
+    expect(parsed.buttonEnabled).toBe(false);
+    expect(parsed.buttonUrl).toBe('');
+  });
+
   it('lists hub rules with source and target previews', async () => {
     const chatRule = persistedRule({
       id: 'rule-chat',

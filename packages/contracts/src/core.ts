@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_HTTP_BUTTON_URL_LENGTH, normalizeHttpButtonUrl } from './button-url.js';
 export * from './bot-speech.js';
 export * from './broadcast-common.js';
 export * from './channel-stats.js';
@@ -142,7 +143,7 @@ const deleteBotMessagesDelayMinutesSchema = z
     message: 'Допустимо 30 сек или целое число минут от 1 до 60.',
   })
   .default(DELETE_BOT_MESSAGES_DELAY_DEFAULT_MINUTES);
-const botButtonUrlSchema = z.string().trim().max(2_048).default('');
+const botButtonUrlSchema = z.string().trim().max(MAX_HTTP_BUTTON_URL_LENGTH).default('');
 const botButtonTextSchema = z.string().trim().max(32).default(DEFAULT_BROADCAST_BUTTON_TEXT);
 const botMessageTextSchema = z.string().max(1_000).default('');
 const adminCommandNameSchema = z
@@ -555,21 +556,8 @@ export function normalizeMessageLimitsBlockedDomainCandidate(value: string): str
 }
 
 function parseHttpButtonUrl(value: string): URL | null {
-  const normalized = value.trim();
-  if (!normalized) {
-    return null;
-  }
-
-  try {
-    const parsed = new URL(normalized);
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-      return null;
-    }
-
-    return parsed;
-  } catch {
-    return null;
-  }
+  const normalized = normalizeHttpButtonUrl(value);
+  return normalized ? new URL(normalized) : null;
 }
 
 function isValidAdminContactButtonUrl(value: string): boolean {

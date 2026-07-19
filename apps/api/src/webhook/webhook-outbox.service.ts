@@ -38,6 +38,24 @@ const WEBHOOK_FAILED_JOB_RETENTION = {
   age: 7 * 24 * 60 * 60,
   count: 5_000,
 } as const;
+const RETENTION_CLEANUP_INTERVAL_MS = 60 * 60 * 1_000;
+const RETENTION_CLEANUP_BATCH_SIZE = 500;
+const RETENTION_CLEANUP_BATCH_DELAY_MS = 500;
+const WEBHOOK_RETENTION_MAX_BATCHES = 80;
+const DEFAULT_RETENTION_MAX_BATCHES = 10;
+
+type RetentionCleanupPhase = {
+  name: string;
+  maxBatches: number;
+  deleteBatch: () => Promise<number>;
+};
+
+type RetentionCleanupPhaseResult = {
+  rows: number;
+  batches: number;
+  durationMs: number;
+  budgetExhausted: boolean;
+};
 
 type WebhookEnqueueCandidate = {
   id: string;
@@ -72,6 +90,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private readonly webhookFailedRetentionHours: number;
   private readonly moderationRetentionDays: number;
   private readonly userDisplayNameRetentionDays: number;
+  private readonly retentionBatchDelayMs = RETENTION_CLEANUP_BATCH_DELAY_MS;
 
   private poller: NodeJS.Timeout | null = null;
   private cleaner: NodeJS.Timeout | null = null;
@@ -157,16 +176,12 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     }, this.pollIntervalMs);
     this.poller.unref();
 
-    this.cleaner = setInterval(
-      () => {
-        void this.cleanupRetention();
-      },
-      60 * 60 * 1_000,
-    );
+    this.cleaner = setInterval(() => {
+      void this.cleanupRetention();
+    }, RETENTION_CLEANUP_INTERVAL_MS);
     this.cleaner.unref();
 
     void this.tick();
-    void this.cleanupRetention();
   }
 
   onModuleDestroy() {
@@ -955,49 +970,46 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       const userDisplayNameCutoff = new Date(
         Date.now() - this.userDisplayNameRetentionDays * 24 * 60 * 60 * 1_000,
       );
-      const [
-        webhookDeleted,
-        failedWebhookDeleted,
-        moderationDeleted,
-        violationsDeleted,
-        violationMessageClaimsDeleted,
-        userDisplayNamesDeleted,
-      ] = await Promise.all([
-        this.prisma.webhookEvent.deleteMany({
-          where: {
-            createdAt: { lt: webhookCutoff },
-            status: { in: [WebhookStatus.PROCESSED, WebhookStatus.DUPLICATE] },
-          },
-        }),
-        this.prisma.webhookEvent.deleteMany({
-          where: {
-            createdAt: { lt: failedWebhookCutoff },
-            status: WebhookStatus.FAILED,
-            nextEnqueueAt: null,
-          },
-        }),
-        this.prisma.moderationEvent.deleteMany({
-          where: { createdAt: { lt: moderationCutoff } },
-        }),
-        this.prisma.violation.deleteMany({
-          where: { createdAt: { lt: moderationCutoff } },
-        }),
-        this.prisma.moderationViolationMessageClaim.deleteMany({
-          where: { createdAt: { lt: moderationCutoff } },
-        }),
-        this.prisma.chatUserDisplayName.deleteMany({
-          where: { observedAt: { lt: userDisplayNameCutoff } },
-        }),
-      ]);
+      const phases: RetentionCleanupPhase[] = [
+        {
+          name: 'webhookProcessedOrDuplicate',
+          maxBatches: WEBHOOK_RETENTION_MAX_BATCHES,
+          deleteBatch: () => this.deleteCompletedWebhookBatch(webhookCutoff),
+        },
+        {
+          name: 'webhookFailedTerminal',
+          maxBatches: DEFAULT_RETENTION_MAX_BATCHES,
+          deleteBatch: () => this.deleteTerminalFailedWebhookBatch(failedWebhookCutoff),
+        },
+        {
+          name: 'moderationEvents',
+          maxBatches: DEFAULT_RETENTION_MAX_BATCHES,
+          deleteBatch: () => this.deleteModerationEventBatch(moderationCutoff),
+        },
+        {
+          name: 'violations',
+          maxBatches: DEFAULT_RETENTION_MAX_BATCHES,
+          deleteBatch: () => this.deleteViolationBatch(moderationCutoff),
+        },
+        {
+          name: 'violationMessageClaims',
+          maxBatches: DEFAULT_RETENTION_MAX_BATCHES,
+          deleteBatch: () => this.deleteViolationMessageClaimBatch(moderationCutoff),
+        },
+        {
+          name: 'userDisplayNames',
+          maxBatches: DEFAULT_RETENTION_MAX_BATCHES,
+          deleteBatch: () => this.deleteUserDisplayNameBatch(userDisplayNameCutoff),
+        },
+      ];
+      const cleanupSummary: Record<string, RetentionCleanupPhaseResult> = {};
+      for (const phase of phases) {
+        cleanupSummary[phase.name] = await this.runRetentionCleanupPhase(phase);
+      }
 
       this.logger.log(
         {
-          webhookEvents: webhookDeleted.count,
-          failedWebhookEvents: failedWebhookDeleted.count,
-          moderationEvents: moderationDeleted.count,
-          violations: violationsDeleted.count,
-          violationMessageClaims: violationMessageClaimsDeleted.count,
-          userDisplayNames: userDisplayNamesDeleted.count,
+          phases: cleanupSummary,
           webhookRetentionDays: this.webhookRetentionDays,
           webhookFailedRetentionHours: this.webhookFailedRetentionHours,
           moderationRetentionDays: this.moderationRetentionDays,
@@ -1013,5 +1025,169 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     } finally {
       this.cleaning = false;
     }
+  }
+
+  private async runRetentionCleanupPhase(
+    phase: RetentionCleanupPhase,
+  ): Promise<RetentionCleanupPhaseResult> {
+    const startedAtMs = Date.now();
+    let rows = 0;
+    let batches = 0;
+    let lastBatchRows = 0;
+
+    try {
+      while (batches < phase.maxBatches) {
+        lastBatchRows = Math.max(0, await phase.deleteBatch());
+        rows += lastBatchRows;
+        batches += 1;
+        if (lastBatchRows < RETENTION_CLEANUP_BATCH_SIZE) {
+          break;
+        }
+        if (batches < phase.maxBatches) {
+          await this.waitForRetentionBatchDelay();
+        }
+      }
+
+      const result: RetentionCleanupPhaseResult = {
+        rows,
+        batches,
+        durationMs: Date.now() - startedAtMs,
+        budgetExhausted:
+          batches === phase.maxBatches && lastBatchRows === RETENTION_CLEANUP_BATCH_SIZE,
+      };
+      this.logger.log(
+        {
+          phase: phase.name,
+          ...result,
+          maxBatches: phase.maxBatches,
+          batchSize: RETENTION_CLEANUP_BATCH_SIZE,
+        },
+        'Retention cleanup phase finished',
+      );
+      return result;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          phase: phase.name,
+          rows,
+          batches,
+          durationMs: Date.now() - startedAtMs,
+          maxBatches: phase.maxBatches,
+          batchSize: RETENTION_CLEANUP_BATCH_SIZE,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Retention cleanup phase failed',
+      );
+      throw error;
+    }
+  }
+
+  private async waitForRetentionBatchDelay(): Promise<void> {
+    if (this.retentionBatchDelayMs <= 0) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, this.retentionBatchDelayMs);
+    });
+  }
+
+  private async deleteCompletedWebhookBatch(cutoff: Date): Promise<number> {
+    return this.prisma.$executeRaw(Prisma.sql`
+      WITH expired AS (
+        SELECT "id"
+        FROM "webhook_events"
+        WHERE "status" IN ('PROCESSED'::"WebhookStatus", 'DUPLICATE'::"WebhookStatus")
+          AND "created_at" < ${cutoff}
+        ORDER BY "created_at" ASC, "id" ASC
+        LIMIT ${RETENTION_CLEANUP_BATCH_SIZE}
+        FOR UPDATE SKIP LOCKED
+      )
+      DELETE FROM "webhook_events" target
+      USING expired
+      WHERE target."id" = expired."id"
+    `);
+  }
+
+  private async deleteTerminalFailedWebhookBatch(cutoff: Date): Promise<number> {
+    return this.prisma.$executeRaw(Prisma.sql`
+      WITH expired AS (
+        SELECT "id"
+        FROM "webhook_events"
+        WHERE "status" = CAST(${WebhookStatus.FAILED} AS "WebhookStatus")
+          AND "next_enqueue_at" IS NULL
+          AND "created_at" < ${cutoff}
+        ORDER BY "created_at" ASC, "id" ASC
+        LIMIT ${RETENTION_CLEANUP_BATCH_SIZE}
+        FOR UPDATE SKIP LOCKED
+      )
+      DELETE FROM "webhook_events" target
+      USING expired
+      WHERE target."id" = expired."id"
+    `);
+  }
+
+  private async deleteModerationEventBatch(cutoff: Date): Promise<number> {
+    return this.prisma.$executeRaw(Prisma.sql`
+      WITH expired AS (
+        SELECT "id"
+        FROM "moderation_events"
+        WHERE "created_at" < ${cutoff}
+        ORDER BY "created_at" ASC, "id" ASC
+        LIMIT ${RETENTION_CLEANUP_BATCH_SIZE}
+        FOR UPDATE SKIP LOCKED
+      )
+      DELETE FROM "moderation_events" target
+      USING expired
+      WHERE target."id" = expired."id"
+    `);
+  }
+
+  private async deleteViolationBatch(cutoff: Date): Promise<number> {
+    return this.prisma.$executeRaw(Prisma.sql`
+      WITH expired AS (
+        SELECT "id"
+        FROM "violations"
+        WHERE "created_at" < ${cutoff}
+        ORDER BY "created_at" ASC, "id" ASC
+        LIMIT ${RETENTION_CLEANUP_BATCH_SIZE}
+        FOR UPDATE SKIP LOCKED
+      )
+      DELETE FROM "violations" target
+      USING expired
+      WHERE target."id" = expired."id"
+    `);
+  }
+
+  private async deleteViolationMessageClaimBatch(cutoff: Date): Promise<number> {
+    return this.prisma.$executeRaw(Prisma.sql`
+      WITH expired AS (
+        SELECT "id"
+        FROM "moderation_violation_message_claims"
+        WHERE "created_at" < ${cutoff}
+        ORDER BY "created_at" ASC, "id" ASC
+        LIMIT ${RETENTION_CLEANUP_BATCH_SIZE}
+        FOR UPDATE SKIP LOCKED
+      )
+      DELETE FROM "moderation_violation_message_claims" target
+      USING expired
+      WHERE target."id" = expired."id"
+    `);
+  }
+
+  private async deleteUserDisplayNameBatch(cutoff: Date): Promise<number> {
+    return this.prisma.$executeRaw(Prisma.sql`
+      WITH expired AS (
+        SELECT "chat_id", "user_id"
+        FROM "chat_user_display_names"
+        WHERE "observed_at" < ${cutoff}
+        ORDER BY "observed_at" ASC, "chat_id" ASC, "user_id" ASC
+        LIMIT ${RETENTION_CLEANUP_BATCH_SIZE}
+        FOR UPDATE SKIP LOCKED
+      )
+      DELETE FROM "chat_user_display_names" target
+      USING expired
+      WHERE target."chat_id" = expired."chat_id"
+        AND target."user_id" = expired."user_id"
+    `);
   }
 }

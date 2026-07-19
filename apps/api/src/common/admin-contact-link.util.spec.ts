@@ -105,6 +105,15 @@ describe('admin contact markdown links', () => {
     expect(resolveAdminContactMarkdownUrl('max://user/admin-1')).toBeNull();
   });
 
+  it.each([
+    'https://example.test/path https://nested.example.test',
+    'https://max.ru/chat/example/https://nested.example.test',
+    'https://max.ru/chat/example/https%3A%2F%2Fnested.example.test',
+  ])('does not emit a malformed stored admin-contact URL %s', (url) => {
+    expect(resolveAdminContactMarkdownUrl(url)).toBeNull();
+    expect(buildAdminContactMarkdownLink({ enabled: true, url })).toBeNull();
+  });
+
   it('does not fall back to a bot handoff link when the profile payload is invalid', () => {
     expect(resolveAdminContactMarkdownUrl('https://max.ru/777000_bot?start=pmh-bad')).toBeNull();
   });

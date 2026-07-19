@@ -113,6 +113,10 @@ describe('publication contracts', () => {
       'data:text/html,hello',
       'file:///tmp/post',
       'https://max.ru/bot?start=pm2_private',
+      'https://example.test/path https://nested.example.test',
+      'https://max.ru/chat/example/https://nested.example.test',
+      'https://max.ru/chat/example/https%3A%2F%2Fnested.example.test',
+      `https://example.test/${'a/../'.repeat(500)}open`,
     ]) {
       expect(
         publicationContentInputSchema.safeParse({
@@ -126,7 +130,7 @@ describe('publication contracts', () => {
     expect(
       publicationContentInputSchema.safeParse({
         text: 'Пост',
-        buttons: [{ text: 'Открыть', url: 'https://example.com/post', row: 0 }],
+        buttons: [{ text: 'Открыть', url: ' https://example.com/post ', row: 0 }],
         media: [],
       }).success,
     ).toBe(true);

@@ -1,3 +1,4 @@
+import { normalizeHttpButtonUrl } from '@maxim/contracts';
 import { parseCompactProfileMentionStartPayload } from '../max/max-deep-link.util';
 
 export const ADMIN_CONTACT_LINK_TEXT = 'Связь с админом';
@@ -87,17 +88,13 @@ function parseProfileMentionUrl(
   url: string;
   target: ProfileMentionTarget | null;
 } | null {
-  const normalizedUrl = typeof url === 'string' ? url.trim() : '';
+  const normalizedUrl = typeof url === 'string' ? normalizeHttpButtonUrl(url) : null;
   if (!normalizedUrl) {
     return null;
   }
 
   try {
     const parsed = new URL(normalizedUrl);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return null;
-    }
-
     const startPayload = parsed.searchParams.get('start')?.trim() ?? '';
     if (startPayload) {
       const target = parseProfileMentionStartPayload(startPayload, botTokens);

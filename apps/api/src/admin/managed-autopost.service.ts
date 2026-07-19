@@ -41,6 +41,7 @@ import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
 import { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
 import { isSystemModeRecoveryWindow, SystemModeService } from '../system/system-mode.service';
 import { ManagedBroadcastService } from './managed-broadcast.service';
+import { buildManagedBroadcastButtonState } from './admin-managed-broadcast-buttons';
 import { ManagedEntitiesService } from './managed-entities.service';
 import {
   BROADCAST_CALENDAR_SLOT_MINUTES,
@@ -1472,7 +1473,20 @@ export class ManagedAutopostService {
   }
 
   private parsePayload(value: Prisma.JsonValue): ManagedAutopostPayload {
-    return managedAutopostPayloadSchema.parse(value);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return managedAutopostPayloadSchema.parse(value);
+    }
+
+    const source = value as Record<string, unknown>;
+    const buttonState = buildManagedBroadcastButtonState(source.buttons, {
+      buttonEnabled: source.buttonEnabled === true,
+      buttonUrl: typeof source.buttonUrl === 'string' ? source.buttonUrl : '',
+      buttonText: typeof source.buttonText === 'string' ? source.buttonText : '',
+    });
+    return managedAutopostPayloadSchema.parse({
+      ...source,
+      ...buttonState,
+    });
   }
 
   private async attachDeliveryRollups<T extends ManagedAutopostRuleWithCount>(

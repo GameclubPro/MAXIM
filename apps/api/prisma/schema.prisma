@@ -1346,6 +1346,7 @@ model Violation {
 
   @@index([chatId, userId, createdAt])
   @@index([chatId, userId, ruleCode, createdAt])
+  @@index([createdAt], map: "violations_created_at_idx")
   @@map("violations")
 }
 

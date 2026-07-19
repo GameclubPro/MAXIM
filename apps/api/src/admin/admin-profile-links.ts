@@ -1,4 +1,4 @@
-import type { ManagedEntityType } from '@maxim/contracts';
+import { normalizeHttpButtonUrl, type ManagedEntityType } from '@maxim/contracts';
 import type { AdminDialogLinkHelper } from './admin-dialog-link-helper';
 import { readTrimmedString } from './admin-legacy-utils';
 
@@ -78,7 +78,7 @@ export function isLegacyProfileHandoffUrl(url: string | null | undefined): boole
 }
 
 export function normalizeLegacyProfileButtonUrl(url: string | null | undefined): string {
-  const normalizedUrl = typeof url === 'string' ? url.trim() : '';
+  const normalizedUrl = typeof url === 'string' ? (normalizeHttpButtonUrl(url.trim()) ?? '') : '';
   if (extractLegacyMaxUserId(normalizedUrl) || isLegacyProfileHandoffUrl(normalizedUrl)) {
     return '';
   }

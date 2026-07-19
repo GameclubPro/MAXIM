@@ -21,6 +21,8 @@
 - `config/prisma-migration-policy.json` pins names and content digests through the latest committed migration. A new migration must advance that immutable baseline in the same reviewed change; `policyRulesAfter` is the fixed bootstrap cutoff and must never advance. Never edit or delete historical `migration.sql` files.
 - Destructive column removal requires two runtime releases: first ship a client/schema that no longer selects the columns while DB columns remain, then drop them only after every API role runs the compatible client.
 - Statistics participant names use `chat_user_display_names` before temporary local history. `allowRemoteLookup: false` disables MAX calls, not local resolution. Backfill only with bounded `npm run stats:backfill-display-names -- ...` runs.
+- Raw `webhook_events` display-name fallback must keep the shared event-type allowlist and the exact predicate used by `webhook_events_local_display_name_chat_user_created_idx`; broad JSON scans are not an acceptable fallback.
+- Retention cleanup runs sequentially in bounded ordered batches and does not run at process startup. Keep a shared total budget for status groups that previously cleaned together.
 
 ## MAX Transport
 
@@ -50,6 +52,7 @@
 - Moderation enforcement and retry-critical cleanup use durable `ModerationDeleteIntentService` intents. Direct delete belongs only inside intent execution or explicit shadow/off compatibility.
 - `MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS` is an execution-time kill switch and must affect already stored intents.
 - Replacement-message cleanup has a separate execution-time switch, `MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_ENABLED`, limited to the exact rule-code allowlist in `ModerationDeleteIntentService`. Preserve requested routing while the switch is off, promote legacy `origin_only` rows during recovery, and allow survivor routing only for user-authored chat replacements; channel and bot-authored cleanup stays origin-only.
+- Keep replacement-message cleanup disabled by default. Enable it only after a bounded capability/backlog audit confirms that critical-lane capacity can absorb the existing intents.
 - A delete succeeds only on documented `{ success: true }` or message-specific absence confirmation. An arbitrary HTTP 404 is not proof that a message is gone.
 
 ## Message And Link Semantics

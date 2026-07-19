@@ -129,7 +129,7 @@ test('major site keeps rollback state through a direct local nginx header smoke'
     majorApplyScript.includes('--resolve major-maksimov.ru:443:127.0.0.1'),
     'major apply must bypass DNS, edge, and proxy configuration for its transactional smoke',
   );
-  assert.ok(majorApplyScript.includes('if ! verify_local_nginx; then'));
+  assert.ok(majorApplyScript.includes('if ! verify_local_nginx_with_retry; then'));
   assert.ok(majorApplyScript.includes('site_index_backup='));
   assert.ok(majorApplyScript.includes('/api/v1/system/metrics/queues'));
   assert.ok(majorApplyScript.includes('if ! restore_backup; then'));
@@ -137,9 +137,31 @@ test('major site keeps rollback state through a direct local nginx header smoke'
     majorApplyScript.includes('Automatic nginx rollback failed; inspect the host before retrying.'),
   );
   assert.ok(
-    majorApplyScript.indexOf('if ! verify_local_nginx; then') <
+    majorApplyScript.indexOf('if ! verify_local_nginx_with_retry; then') <
       majorApplyScript.indexOf('cleanup_tmp\nREMOTE'),
     'major local smoke must run before the remote rollback context is released',
+  );
+});
+
+test('major site retries the complete localhost smoke before rollback with safe diagnostics', () => {
+  assert.ok(majorApplyScript.includes('LOCAL_SMOKE_MAX_ATTEMPTS=10'));
+  assert.ok(majorApplyScript.includes('LOCAL_SMOKE_RETRY_DELAY_SECONDS=1'));
+  assert.ok(majorApplyScript.includes('attempt <= LOCAL_SMOKE_MAX_ATTEMPTS'));
+  assert.ok(majorApplyScript.includes('if verify_local_nginx; then'));
+  assert.ok(majorApplyScript.includes('sleep "${LOCAL_SMOKE_RETRY_DELAY_SECONDS}"'));
+  assert.ok(
+    majorApplyScript.includes(
+      'failed: path=${LOCAL_SMOKE_FAILURE_PATH:-unknown} assertion=${LOCAL_SMOKE_FAILURE_ASSERTION:-unknown}.',
+    ),
+    'failed localhost smokes must identify only the fixed path and assertion labels',
+  );
+
+  const retryCall = majorApplyScript.indexOf('if ! verify_local_nginx_with_retry; then');
+  const rollbackAfterRetry = majorApplyScript.indexOf('if ! restore_backup; then', retryCall);
+  assert.ok(retryCall >= 0);
+  assert.ok(
+    rollbackAfterRetry > retryCall,
+    'rollback must start only after the bounded localhost smoke retry is exhausted',
   );
 });
 
@@ -160,7 +182,7 @@ test('major site rolls back every incomplete post-mutation deployment path', () 
     'the rollback guard must be armed before the first runtime file is installed',
   );
   assert.ok(
-    majorApplyScript.indexOf('if ! verify_local_nginx; then') <
+    majorApplyScript.indexOf('if ! verify_local_nginx_with_retry; then') <
       majorApplyScript.indexOf('DEPLOYMENT_COMMITTED=1'),
     'the deployment must remain rollback-eligible until the local smoke passes',
   );
@@ -169,13 +191,31 @@ test('major site rolls back every incomplete post-mutation deployment path', () 
 test('Safety Desk keeps rollback state through a direct local nginx header smoke', () => {
   assert.ok(adminApplyScript.includes("curl --noproxy '*'"));
   assert.ok(adminApplyScript.includes('--resolve "${DOMAIN}:443:127.0.0.1"'));
-  assert.ok(adminApplyScript.includes('if ! verify_local_admin_nginx; then'));
+  assert.ok(adminApplyScript.includes('if ! verify_local_admin_nginx_with_retry; then'));
   assert.ok(adminApplyScript.includes('restore_previous_nginx'));
   assert.ok(
-    adminApplyScript.indexOf('if ! verify_local_admin_nginx; then') <
+    adminApplyScript.indexOf('if ! verify_local_admin_nginx_with_retry; then') <
       adminApplyScript.indexOf('rm -f "${REMOTE_TMP}"\nREMOTE'),
     'Safety Desk local smoke must run before the remote rollback context is released',
   );
+});
+
+test('Safety Desk retries the complete localhost smoke before rollback', () => {
+  assert.ok(adminApplyScript.includes('LOCAL_ADMIN_SMOKE_MAX_ATTEMPTS=10'));
+  assert.ok(adminApplyScript.includes('LOCAL_ADMIN_SMOKE_RETRY_DELAY_SECONDS=1'));
+  assert.ok(adminApplyScript.includes('attempt <= LOCAL_ADMIN_SMOKE_MAX_ATTEMPTS'));
+  assert.ok(adminApplyScript.includes('if verify_local_admin_nginx; then'));
+  assert.ok(adminApplyScript.includes('sleep "${LOCAL_ADMIN_SMOKE_RETRY_DELAY_SECONDS}"'));
+  assert.ok(
+    adminApplyScript.includes(
+      'failed: path=${LOCAL_ADMIN_SMOKE_FAILURE_PATH:-unknown} assertion=${LOCAL_ADMIN_SMOKE_FAILURE_ASSERTION:-unknown}.',
+    ),
+  );
+
+  const retryCall = adminApplyScript.indexOf('if ! verify_local_admin_nginx_with_retry; then');
+  const rollbackAfterRetry = adminApplyScript.indexOf('if ! restore_previous_nginx; then', retryCall);
+  assert.ok(retryCall >= 0);
+  assert.ok(rollbackAfterRetry > retryCall);
 });
 
 test('Safety Desk rolls back an incomplete certificate bootstrap before discarding backups', () => {

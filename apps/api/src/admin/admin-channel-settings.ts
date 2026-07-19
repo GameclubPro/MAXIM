@@ -187,8 +187,8 @@ export async function readChannelSettings(params: {
       ...getChannelSettingsNormalizationChanges(parsed.data, normalized),
     };
     if (Object.keys(normalizationChanges).length > 0) {
-      await params.prisma.channelSettings.update({
-        where: { chatId: params.chatId },
+      await params.prisma.channelSettings.updateMany({
+        where: { chatId: params.chatId, updatedAt: chat.channelSettings.updatedAt },
         data: normalizationChanges,
       });
     }
@@ -206,8 +206,8 @@ export async function readChannelSettings(params: {
     'Invalid channel settings found in DB, applying defaults',
   );
 
-  await params.prisma.channelSettings.update({
-    where: { chatId: params.chatId },
+  await params.prisma.channelSettings.updateMany({
+    where: { chatId: params.chatId, updatedAt: chat.channelSettings.updatedAt },
     data: {
       ...DEFAULT_CHANNEL_SETTINGS,
     },

@@ -217,11 +217,38 @@ cleanup_tmp() {
   rm -rf "${REMOTE_SITE_TMP}" "${REMOTE_CONF_TMP}" "${REMOTE_SNIPPET_TMP_DIR}"
 }
 
+LOCAL_SMOKE_MAX_ATTEMPTS=10
+LOCAL_SMOKE_RETRY_DELAY_SECONDS=1
+LOCAL_SMOKE_FAILURE_PATH=""
+LOCAL_SMOKE_FAILURE_ASSERTION=""
+
+record_local_smoke_failure() {
+  LOCAL_SMOKE_FAILURE_PATH="$1"
+  LOCAL_SMOKE_FAILURE_ASSERTION="$2"
+}
+
+assert_local_smoke_match() {
+  local path="$1"
+  local assertion="$2"
+  local pattern="$3"
+  local headers="$4"
+
+  if ! grep -Eqi -- "${pattern}" <<<"${headers}"; then
+    record_local_smoke_failure "${path}" "${assertion}"
+    return 1
+  fi
+}
+
 assert_security_headers() {
-  local headers="$1"
-  grep -qi '^strict-transport-security: max-age=31536000' <<<"${headers}" || return 1
-  grep -qi '^x-content-type-options: nosniff' <<<"${headers}" || return 1
-  grep -qi '^referrer-policy: strict-origin-when-cross-origin' <<<"${headers}" || return 1
+  local path="$1"
+  local headers="$2"
+
+  assert_local_smoke_match "${path}" "header:strict-transport-security" \
+    '^strict-transport-security: max-age=31536000' "${headers}" || return 1
+  assert_local_smoke_match "${path}" "header:x-content-type-options" \
+    '^x-content-type-options: nosniff' "${headers}" || return 1
+  assert_local_smoke_match "${path}" "header:referrer-policy" \
+    '^referrer-policy: strict-origin-when-cross-origin' "${headers}" || return 1
 }
 
 read_local_headers() {
@@ -230,38 +257,61 @@ read_local_headers() {
     -D - -o /dev/null "https://major-maksimov.ru${path}"
 }
 
-verify_local_nginx() {
+verify_local_route() {
+  local path="$1"
+  local expected_status="$2"
+  local expected_ingress="$3"
+  local expected_cache_control="$4"
   local headers
 
-  headers="$(read_local_headers /)" || return 1
-  grep -Eqi '^HTTP/[0-9.]+ 200' <<<"${headers}" || return 1
-  assert_security_headers "${headers}" || return 1
+  if ! headers="$(read_local_headers "${path}")"; then
+    record_local_smoke_failure "${path}" "request"
+    return 1
+  fi
+  if [[ -n "${expected_status}" ]]; then
+    assert_local_smoke_match "${path}" "status:${expected_status}" \
+      "^HTTP/[0-9.]+ ${expected_status}" "${headers}" || return 1
+  fi
+  if [[ -n "${expected_ingress}" ]]; then
+    assert_local_smoke_match "${path}" "header:x-maxim-ingress:${expected_ingress}" \
+      "^x-maxim-ingress: ${expected_ingress}" "${headers}" || return 1
+  fi
+  if [[ -n "${expected_cache_control}" ]]; then
+    assert_local_smoke_match "${path}" "header:cache-control" \
+      "^cache-control: ${expected_cache_control}" "${headers}" || return 1
+  fi
+  assert_security_headers "${path}" "${headers}" || return 1
+}
 
-  headers="$(read_local_headers /robots.txt)" || return 1
-  grep -Eqi '^HTTP/[0-9.]+ 200' <<<"${headers}" || return 1
-  grep -qi '^cache-control: public, max-age=3600' <<<"${headers}" || return 1
-  assert_security_headers "${headers}" || return 1
+verify_local_nginx() {
+  verify_local_route "/" "200" "" "" || return 1
+  verify_local_route "/robots.txt" "200" "" "public, max-age=3600" || return 1
+  verify_local_route "/ios-canary/ping.txt" "200" "" \
+    "no-store, no-cache, must-revalidate, max-age=0" || return 1
+  verify_local_route "/api/health/live" "200" "webhook" "" || return 1
+  verify_local_route "/api/v1/channels" "401" "admin" "" || return 1
+  verify_local_route "/api/v1/channels/" "401" "admin" "" || return 1
+  verify_local_route "/api/v1/chats/" "401" "admin" "" || return 1
+  verify_local_route "/api/v1/system/metrics/queues" "" "admin" "" || return 1
+}
 
-  headers="$(read_local_headers /ios-canary/ping.txt)" || return 1
-  grep -Eqi '^HTTP/[0-9.]+ 200' <<<"${headers}" || return 1
-  grep -qi '^cache-control: no-store, no-cache, must-revalidate, max-age=0' <<<"${headers}" || return 1
-  assert_security_headers "${headers}" || return 1
+verify_local_nginx_with_retry() {
+  local attempt
 
-  headers="$(read_local_headers /api/health/live)" || return 1
-  grep -Eqi '^HTTP/[0-9.]+ 200' <<<"${headers}" || return 1
-  grep -qi '^x-maxim-ingress: webhook' <<<"${headers}" || return 1
-  assert_security_headers "${headers}" || return 1
+  for ((attempt = 1; attempt <= LOCAL_SMOKE_MAX_ATTEMPTS; attempt += 1)); do
+    LOCAL_SMOKE_FAILURE_PATH=""
+    LOCAL_SMOKE_FAILURE_ASSERTION=""
+    if verify_local_nginx; then
+      return 0
+    fi
 
-  for path in /api/v1/channels /api/v1/channels/ /api/v1/chats/; do
-    headers="$(read_local_headers "${path}")" || return 1
-    grep -Eqi '^HTTP/[0-9.]+ 401' <<<"${headers}" || return 1
-    grep -qi '^x-maxim-ingress: admin' <<<"${headers}" || return 1
-    assert_security_headers "${headers}" || return 1
+    echo "Local nginx smoke attempt ${attempt}/${LOCAL_SMOKE_MAX_ATTEMPTS} failed: path=${LOCAL_SMOKE_FAILURE_PATH:-unknown} assertion=${LOCAL_SMOKE_FAILURE_ASSERTION:-unknown}." >&2
+    if [[ "${attempt}" -lt "${LOCAL_SMOKE_MAX_ATTEMPTS}" ]]; then
+      sleep "${LOCAL_SMOKE_RETRY_DELAY_SECONDS}"
+    fi
   done
 
-  headers="$(read_local_headers /api/v1/system/metrics/queues)" || return 1
-  grep -qi '^x-maxim-ingress: admin' <<<"${headers}" || return 1
-  assert_security_headers "${headers}" || return 1
+  return 1
 }
 
 finalize_remote_deploy() {
@@ -317,7 +367,7 @@ if ! sudo systemctl reload nginx; then
   exit 1
 fi
 
-if ! verify_local_nginx; then
+if ! verify_local_nginx_with_retry; then
   echo "New nginx configuration failed the local route/header smoke; rolling back." >&2
   if ! restore_backup; then
     echo "Automatic nginx rollback failed; inspect the host before retrying." >&2

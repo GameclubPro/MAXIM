@@ -20,6 +20,7 @@ import {
   PublicationScheduleStatus,
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
+import { readStoredPublicationButtons } from './publication-buttons';
 
 const PUBLICATION_LIST_PREVIEW_TARGETS = 6;
 const PUBLICATION_OCCURRENCE_HISTORY_LIMIT = 50;
@@ -185,7 +186,7 @@ export class PublicationPresenterService {
         revision: content.revision,
         text: content.text,
         textFormat: content.textFormat === PublicationContentFormat.MARKDOWN ? 'markdown' : 'plain',
-        buttons: this.readButtons(content.buttons),
+        buttons: readStoredPublicationButtons(content.buttons),
         media: content.assets.map((link: any) => ({
           id: link.asset.id,
           type:
@@ -454,27 +455,6 @@ export class PublicationPresenterService {
       case ManagedBroadcastDeliveryStatus.CANCELED:
         stats.canceled += count;
     }
-  }
-
-  private readButtons(value: unknown): Array<{ text: string; url: string; row: number }> {
-    if (!Array.isArray(value)) {
-      return [];
-    }
-    return value
-      .map((item) => {
-        if (!item || typeof item !== 'object') {
-          return null;
-        }
-        const source = item as Record<string, unknown>;
-        return typeof source.text === 'string' && typeof source.url === 'string'
-          ? {
-              text: source.text,
-              url: source.url,
-              row: typeof source.row === 'number' ? source.row : 0,
-            }
-          : null;
-      })
-      .filter((item): item is { text: string; url: string; row: number } => item !== null);
   }
 
   private fromPrismaEntityType(entityType: ChatEntityType): 'chat' | 'channel' {

@@ -10,6 +10,7 @@ import {
   chatSettingsSchema,
   INVITATION_ACCESS_REQUIRED_COUNT_MAX,
   INVITATION_ACCESS_REQUIRED_COUNT_MIN,
+  normalizeHttpButtonUrl,
   normalizeMessageLimitsBlockedDomainCandidate,
   normalizeMessageLimitsBlockedWordCandidate,
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX,
@@ -69,6 +70,41 @@ export type UpdateSettingsAuditPayload = {
   botSpeechMedia?: UpdateSettingsAuditMediaEntry[];
 };
 
+const CHAT_SETTINGS_ADMIN_CONTACT_BUTTON_GROUPS = [
+  {
+    enabled: 'requiredSubscriptionAdminContactButtonEnabled',
+    url: 'requiredSubscriptionAdminContactButtonUrl',
+  },
+  {
+    enabled: 'invitationAccessAdminContactButtonEnabled',
+    url: 'invitationAccessAdminContactButtonUrl',
+  },
+  {
+    enabled: 'messageLimitsAdminContactButtonEnabled',
+    url: 'messageLimitsAdminContactButtonUrl',
+  },
+  {
+    enabled: 'phoneNumbersAdminContactButtonEnabled',
+    url: 'phoneNumbersAdminContactButtonUrl',
+  },
+  {
+    enabled: 'profanityAdminContactButtonEnabled',
+    url: 'profanityAdminContactButtonUrl',
+  },
+  {
+    enabled: 'textFiltersAdminContactButtonEnabled',
+    url: 'textFiltersAdminContactButtonUrl',
+  },
+  {
+    enabled: 'linkAdminContactButtonEnabled',
+    url: 'linkAdminContactButtonUrl',
+  },
+  {
+    enabled: 'duplicateAdminContactButtonEnabled',
+    url: 'duplicateAdminContactButtonUrl',
+  },
+] as const;
+
 function readTrimmedString(value: unknown): string | null {
   if (typeof value !== 'string') {
     return null;
@@ -76,6 +112,11 @@ function readTrimmedString(value: unknown): string | null {
 
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeAdminContactButtonUrl(value: unknown): string {
+  const trimmed = readTrimmedString(value);
+  return trimmed ? (normalizeHttpButtonUrl(trimmed) ?? '') : '';
 }
 
 export function areBroadcastButtonsEqual(
@@ -371,6 +412,20 @@ export function normalizeChatSettingsButtonUrls(settings: ChatSettings): ChatSet
     }
   }
 
+  for (const group of CHAT_SETTINGS_ADMIN_CONTACT_BUTTON_GROUPS) {
+    const currentUrl = normalizedSettings[group.url];
+    const normalizedUrl = normalizeAdminContactButtonUrl(currentUrl);
+    const shouldDisableButton =
+      normalizedSettings[group.enabled] === true && normalizedUrl.length === 0;
+    if (currentUrl !== normalizedUrl || shouldDisableButton) {
+      normalizedSettings = {
+        ...normalizedSettings,
+        [group.url]: normalizedUrl,
+        ...(shouldDisableButton ? { [group.enabled]: false } : {}),
+      };
+    }
+  }
+
   return normalizedSettings;
 }
 
@@ -474,6 +529,20 @@ export function sanitizeStoredChatSettings(settings: unknown): unknown {
     }
   }
 
+  for (const group of CHAT_SETTINGS_ADMIN_CONTACT_BUTTON_GROUPS) {
+    const currentUrl = normalizedSettings[group.url];
+    const normalizedUrl = normalizeAdminContactButtonUrl(currentUrl);
+    const shouldDisableButton =
+      normalizedSettings[group.enabled] === true && normalizedUrl.length === 0;
+    if (currentUrl !== normalizedUrl || shouldDisableButton) {
+      normalizedSettings = {
+        ...normalizedSettings,
+        [group.url]: normalizedUrl,
+        ...(shouldDisableButton ? { [group.enabled]: false } : {}),
+      };
+    }
+  }
+
   return normalizedSettings;
 }
 
@@ -558,6 +627,18 @@ export function getStoredChatSettingsSanitizationChanges(
     }
   }
 
+  for (const group of CHAT_SETTINGS_ADMIN_CONTACT_BUTTON_GROUPS) {
+    const currentUrl = readTrimmedString(currentSettings[group.url]) ?? '';
+    if (currentUrl !== sanitized[group.url]) {
+      changes[group.url] = sanitized[group.url];
+    }
+
+    const currentEnabled = currentSettings[group.enabled] === true;
+    if (currentEnabled !== sanitized[group.enabled]) {
+      changes[group.enabled] = sanitized[group.enabled];
+    }
+  }
+
   return changes;
 }
 
@@ -606,11 +687,13 @@ export async function readChatSettings(params: {
       ...getChatSettingsNormalizationChanges(parsed.data, normalizedSettings),
     };
     if (Object.keys(normalizationChanges).length > 0) {
-      await params.prisma.chatSettings.update({
-        where: { chatId: params.chatId },
+      const repaired = await params.prisma.chatSettings.updateMany({
+        where: { chatId: params.chatId, updatedAt: chat.settings.updatedAt },
         data: normalizationChanges,
       });
-      await params.chatContextCache.invalidate(params.chatId);
+      if (repaired.count > 0) {
+        await params.chatContextCache.invalidate(params.chatId);
+      }
     }
 
     return normalizedSettings;
@@ -628,13 +711,15 @@ export async function readChatSettings(params: {
   );
 
   const fallback = DEFAULT_CHAT_SETTINGS;
-  await params.prisma.chatSettings.update({
-    where: { chatId: params.chatId },
+  const repaired = await params.prisma.chatSettings.updateMany({
+    where: { chatId: params.chatId, updatedAt: chat.settings.updatedAt },
     data: {
       ...fallback,
     },
   });
-  await params.chatContextCache.invalidate(params.chatId);
+  if (repaired.count > 0) {
+    await params.chatContextCache.invalidate(params.chatId);
+  }
 
   return fallback;
 }

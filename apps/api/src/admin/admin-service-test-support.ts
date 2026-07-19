@@ -215,11 +215,8 @@ export function createPrismaMock() {
     where: Record<string, unknown> | undefined,
     state: Record<string, unknown> | null = managedBroadcastState,
   ): boolean => {
-    if (!state) {
-      return false;
-    }
-    if (!where) {
-      return true;
+    if (!state || !where) {
+      return Boolean(state);
     }
 
     if (typeof where.id === 'string' && state.id !== where.id) {
@@ -541,6 +538,7 @@ export function createPrismaMock() {
         engagementPublishedAt: null,
       }),
       update: jest.fn().mockResolvedValue(undefined),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     chatSettings: {
       findUnique: jest.fn().mockResolvedValue(null),
@@ -552,6 +550,7 @@ export function createPrismaMock() {
         commentsChatBroadcastsEnabled: false,
       }),
       update: jest.fn().mockResolvedValue(undefined),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     chatParticipantModerationImmunity: {
       findMany: jest.fn().mockResolvedValue([]),

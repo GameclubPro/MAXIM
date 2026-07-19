@@ -55,7 +55,13 @@ describe('PublicationPresenterService', () => {
         revision: 2,
         text: 'Новая версия',
         textFormat: 'PLAIN',
-        buttons: [],
+        buttons: [
+          {
+            text: 'Broken',
+            url: 'https://max.ru/chat/example/https://nested.example.test',
+          },
+          { text: 'Open', url: 'https://example.test/post' },
+        ],
         assets: [],
       },
       audienceSelection: 'SELECTED',
@@ -98,6 +104,9 @@ describe('PublicationPresenterService', () => {
     });
 
     expect(details.actionableDelivery).toEqual({ ...EMPTY_DELIVERY, total: 1, failed: 1 });
+    expect(details.content.buttons).toEqual([
+      { text: 'Open', url: 'https://example.test/post', row: 0 },
+    ]);
     expect(details.occurrences).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

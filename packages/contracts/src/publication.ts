@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_HTTP_BUTTON_URL_LENGTH, normalizeHttpButtonUrl } from './button-url.js';
 
 export const MAX_PUBLICATION_IMAGES = 10;
 export const MAX_PUBLICATION_IMAGE_BASE64_LENGTH = 12_000_000;
@@ -66,11 +67,13 @@ export type PublicationOccurrenceStatus = z.infer<typeof publicationOccurrenceSt
 export type PublicationDeliveryStatus = z.infer<typeof publicationDeliveryStatusSchema>;
 
 function isValidPublicationButtonUrl(value: string): boolean {
+  const normalized = normalizeHttpButtonUrl(value);
+  if (!normalized) {
+    return false;
+  }
+
   try {
-    const parsed = new URL(value.trim());
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-      return false;
-    }
+    const parsed = new URL(normalized);
     const startPayload = (parsed.searchParams.get('start') ?? '').trim();
     return !startPayload.startsWith('pmh-') && !startPayload.startsWith('pm2_');
   } catch {
@@ -83,7 +86,7 @@ export const publicationButtonSchema = z.object({
   url: z
     .string()
     .trim()
-    .max(2_048)
+    .max(MAX_HTTP_BUTTON_URL_LENGTH)
     .refine((value) => isValidPublicationButtonUrl(value), {
       message: 'Укажите корректную ссылку для кнопки (http/https).',
     }),
