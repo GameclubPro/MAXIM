@@ -6487,12 +6487,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     settings: ChatSettings;
   }): Promise<
     | 'night_mode_notice'
+    | 'published_chat_rules'
     | 'greeting_message'
     | 'karavan_storefront_relay'
     | 'managed_broadcast'
     | 'chat_auto_comment_replacement'
     | null
   > {
+    const publishedRules = await this.prisma.chatRules?.findUnique?.({
+      where: {
+        chatId: params.chatId,
+      },
+      select: {
+        publishedMessageId: true,
+      },
+    });
+    if (publishedRules?.publishedMessageId?.trim() === params.messageId.trim()) {
+      return 'published_chat_rules';
+    }
+
     if (
       this.isNightModeNoticeMessage({
         text: params.text,
