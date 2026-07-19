@@ -9,6 +9,7 @@ COPY packages/contracts/package.json packages/contracts/package.json
 RUN npm ci
 
 COPY tsconfig.base.json ./
+COPY scripts scripts
 COPY packages/contracts packages/contracts
 COPY apps/api apps/api
 

@@ -28,7 +28,10 @@ function callIndex(script, call) {
 }
 
 function callIndexes(script, call) {
-  const expression = new RegExp(`^\\s*${call.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}(?:\\s|$)`, 'gmu');
+  const expression = new RegExp(
+    `^\\s*${call.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}(?:\\s|$)`,
+    'gmu',
+  );
   let match;
   const indexes = [];
   while ((match = expression.exec(script))) {
@@ -52,6 +55,18 @@ test('keeps shared API topology centralized and complete', () => {
   assert.match(topology, /docker buildx build --load --provenance=false/u);
 });
 
+test('copies deterministic root build helpers into workspace Docker build stages', () => {
+  const apiDockerfile = read('apps/api/Dockerfile');
+  const miniappDockerfile = read('apps/miniapp/Dockerfile');
+
+  assert.match(apiDockerfile, /^COPY scripts scripts$/mu);
+  assert.match(miniappDockerfile, /^COPY scripts scripts$/mu);
+  assert.match(
+    miniappDockerfile,
+    /^COPY apps\/api\/jest\.config\.cjs apps\/api\/jest\.config\.cjs$/mu,
+  );
+});
+
 test('validates deploy targets before synchronization or runtime side effects', () => {
   const deploy = read('infra/scripts/vps-pull-build-up.sh');
   const validation = callIndexes(deploy, 'validate_requested_services')[0];
@@ -59,7 +74,10 @@ test('validates deploy targets before synchronization or runtime side effects', 
   assert.ok(validation < callIndex(deploy, 'sync_branch'));
   assert.ok(validation < callIndex(deploy, 'stop_conflicting_stacks'));
   assert.match(deploy, /Unknown or unsafe deploy service/u);
-  assert.match(deploy, /MAXIM_EXPECTED_DEPLOY_SHA is required for every mutating production deploy/u);
+  assert.match(
+    deploy,
+    /MAXIM_EXPECTED_DEPLOY_SHA is required for every mutating production deploy/u,
+  );
   assert.match(deploy, /if \[\[ "\$DEPLOY_MODE" == "plan" \]\]/u);
 });
 
@@ -80,9 +98,13 @@ test('uses component manifests, immutable refs, conditional migrations, and stri
     callIndex(deploy, 'require_stateful_services_ready') <
       callIndex(deploy, 'maxim_topology_build_shared_api_image'),
   );
-  assert.ok(callIndex(deploy, 'require_stateful_services_ready') < callIndex(deploy, 'run_migrations'));
+  assert.ok(
+    callIndex(deploy, 'require_stateful_services_ready') < callIndex(deploy, 'run_migrations'),
+  );
   assert.doesNotMatch(deploy, /curl -i/u);
-  assert.ok(callIndex(deploy, 'record_successful_release') > deploy.lastIndexOf('scripts/smoke-http.mjs'));
+  assert.ok(
+    callIndex(deploy, 'record_successful_release') > deploy.lastIndexOf('scripts/smoke-http.mjs'),
+  );
   assert.match(compose, /image: \$\{MAXIM_API_IMAGE:-maxim-api:local\}/u);
   assert.match(compose, /NODE_ENV: production/u);
   assert.match(compose, /com\.maxim\.release-protected: 'true'/u);
@@ -117,6 +139,7 @@ test('keeps legacy and scale entrypoints fail-closed before destructive work', (
   assert.match(scale, /MAXIM_ALLOW_SCALE_DEPLOY/u);
   assert.match(scale, /prepare_scale_redis_named_volume/u);
   assert.ok(
-    callIndex(scale, 'prepare_scale_redis_named_volume') < callIndex(scale, 'stop_conflicting_stacks'),
+    callIndex(scale, 'prepare_scale_redis_named_volume') <
+      callIndex(scale, 'stop_conflicting_stacks'),
   );
 });

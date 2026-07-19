@@ -27,6 +27,8 @@ COPY packages/contracts/package.json packages/contracts/package.json
 RUN npm ci
 
 COPY tsconfig.base.json ./
+COPY scripts scripts
+COPY apps/api/jest.config.cjs apps/api/jest.config.cjs
 COPY bot.webp frendly.webp joker.webp police.webp ./
 COPY packages/contracts packages/contracts
 COPY apps/miniapp apps/miniapp
