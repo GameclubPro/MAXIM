@@ -12,6 +12,7 @@ describe('global spammer denorm queue', () => {
     expect(left).toBe(right);
     expect(left).not.toBe(other);
     expect(left).toBe(`global-spammer-denorm__${hashQueueToken('User-1')}`);
+    expect(hashQueueToken('User-1')).toMatch(/^[a-f0-9]{64}$/u);
     expect(left).not.toContain(':');
   });
 });

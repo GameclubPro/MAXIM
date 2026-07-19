@@ -37,6 +37,7 @@ export function buildNightModeTransitionJobId(
   scheduledFor: string,
   sessionKey: string,
 ): string {
+  // FLAG: SHA-1 preserves IDs for persisted BullMQ jobs; it is not a security boundary.
   const occurrenceDigest = createHash('sha1')
     .update(`${chatId}:${transition}:${scheduledFor}:${sessionKey}`)
     .digest('hex');
@@ -44,6 +45,7 @@ export function buildNightModeTransitionJobId(
 }
 
 export function buildNightModeTransitionJobIdPrefix(chatId: string): string {
+  // FLAG: Keep this aligned with the legacy occurrence digest until queued jobs are migrated.
   const chatDigest = createHash('sha1').update(chatId).digest('hex');
   return `night-mode-transition__${chatDigest}__`;
 }
