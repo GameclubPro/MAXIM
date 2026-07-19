@@ -5491,6 +5491,9 @@ export class MaxClientService implements OnModuleDestroy {
       );
     } catch (error: unknown) {
       await this.releaseUnusedHalfOpenProbe(bot.id, circuitPermit);
+      if (trafficClass === 'critical' && error instanceof MaxApiInternalRateLimitError) {
+        this.actionHealthService.recordFailureForLane(actionHealthLane, true, bot.id);
+      }
       throw error;
     }
 

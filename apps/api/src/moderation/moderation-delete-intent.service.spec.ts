@@ -26,6 +26,18 @@ type ServiceInternals = {
     intent: Record<string, unknown>,
     heartbeat: { renew: () => Promise<boolean>; stop: () => void },
   ): Promise<unknown>;
+  recordCandidateFailure(
+    intentId: string,
+    leaseToken: string,
+    botId: string,
+    details: {
+      status: string;
+      statusCode: number | null;
+      errorCode: string;
+      message: string;
+      retryDelayMs: number | null;
+    },
+  ): Promise<void>;
   isExecutionEnabledForIntent(intent: Record<string, unknown>): boolean;
 };
 
@@ -173,6 +185,33 @@ describe('ModerationDeleteIntentService', () => {
 
     expect(result.status).toBe('WAITING_CAPABILITY');
     expect(result.errorCode).toBe('access.denied');
+  });
+
+  it('casts dynamic candidate failure JSON values for PostgreSQL polymorphic functions', async () => {
+    const { service, prisma } = createService();
+
+    await (service as unknown as ServiceInternals).recordCandidateFailure(
+      'intent-1',
+      'lease-1',
+      'bot-1',
+      {
+        status: 'WAITING_CAPABILITY',
+        statusCode: null,
+        errorCode: 'missing_chat_delete_permission',
+        message: 'No delete permission',
+        retryDelayMs: 30_000,
+      },
+    );
+
+    const query = prisma.$executeRaw.mock.calls[0]?.[0] as
+      | { strings?: readonly string[]; values?: readonly unknown[] }
+      | undefined;
+    const sql = query?.strings?.join('?') ?? '';
+    expect(sql.match(/CAST\(\? AS text\)/g)).toHaveLength(4);
+    expect(sql).toContain('CAST(? AS integer)');
+    expect(query?.values?.[0]).toBe('bot-1');
+    expect(query?.values?.[3]).toBe('missing_chat_delete_permission');
+    expect(query?.values?.[4]).toBeNull();
   });
 
   it('classifies an outbound timeout as ambiguous', () => {

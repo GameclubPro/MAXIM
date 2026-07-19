@@ -108,13 +108,42 @@ validate_and_reload_nginx() {
   fi
 }
 
+LOCAL_ADMIN_SMOKE_MAX_ATTEMPTS=10
+LOCAL_ADMIN_SMOKE_RETRY_DELAY_SECONDS=1
+LOCAL_ADMIN_SMOKE_FAILURE_PATH=""
+LOCAL_ADMIN_SMOKE_FAILURE_ASSERTION=""
+
+record_local_admin_smoke_failure() {
+  LOCAL_ADMIN_SMOKE_FAILURE_PATH="$1"
+  LOCAL_ADMIN_SMOKE_FAILURE_ASSERTION="$2"
+}
+
+assert_local_admin_smoke_match() {
+  local path="$1"
+  local assertion="$2"
+  local pattern="$3"
+  local headers="$4"
+
+  if ! grep -Eqi -- "${pattern}" <<<"${headers}"; then
+    record_local_admin_smoke_failure "${path}" "${assertion}"
+    return 1
+  fi
+}
+
 assert_admin_security_headers_local() {
-  local headers="$1"
-  grep -qi '^strict-transport-security: max-age=31536000' <<<"${headers}" || return 1
-  grep -qi '^x-content-type-options: nosniff' <<<"${headers}" || return 1
-  grep -qi '^referrer-policy: strict-origin-when-cross-origin' <<<"${headers}" || return 1
-  grep -qi '^x-robots-tag: noindex, nofollow, noarchive' <<<"${headers}" || return 1
-  grep -qi '^content-security-policy:' <<<"${headers}" || return 1
+  local path="$1"
+  local headers="$2"
+
+  assert_local_admin_smoke_match "${path}" "header:strict-transport-security" \
+    '^strict-transport-security: max-age=31536000' "${headers}" || return 1
+  assert_local_admin_smoke_match "${path}" "header:x-content-type-options" \
+    '^x-content-type-options: nosniff' "${headers}" || return 1
+  assert_local_admin_smoke_match "${path}" "header:referrer-policy" \
+    '^referrer-policy: strict-origin-when-cross-origin' "${headers}" || return 1
+  assert_local_admin_smoke_match "${path}" "header:x-robots-tag" \
+    '^x-robots-tag: noindex, nofollow, noarchive' "${headers}" || return 1
+  assert_local_admin_smoke_match "${path}" "header:content-security-policy" \
+    '^content-security-policy:' "${headers}" || return 1
 }
 
 read_local_admin_headers() {
@@ -123,24 +152,51 @@ read_local_admin_headers() {
     -D - -o /dev/null "https://${DOMAIN}${path}"
 }
 
-verify_local_admin_nginx() {
+verify_local_admin_route() {
+  local path="$1"
+  local expected_status="$2"
+  local expected_cache_control="$3"
   local headers
 
-  headers="$(read_local_admin_headers /)" || return 1
-  grep -Eqi '^HTTP/[0-9.]+ 401' <<<"${headers}" || return 1
-  assert_admin_security_headers_local "${headers}" || return 1
+  if ! headers="$(read_local_admin_headers "${path}")"; then
+    record_local_admin_smoke_failure "${path}" "request"
+    return 1
+  fi
+  assert_local_admin_smoke_match "${path}" "status:${expected_status}" \
+    "^HTTP/[0-9.]+ ${expected_status}" "${headers}" || return 1
+  if [[ -n "${expected_cache_control}" ]]; then
+    assert_local_admin_smoke_match "${path}" "header:cache-control" \
+      "^cache-control: ${expected_cache_control}" "${headers}" || return 1
+  fi
+  assert_admin_security_headers_local "${path}" "${headers}" || return 1
+}
 
-  headers="$(read_local_admin_headers /robots.txt)" || return 1
-  grep -Eqi '^HTTP/[0-9.]+ 200' <<<"${headers}" || return 1
-  grep -qi '^cache-control: public, max-age=3600' <<<"${headers}" || return 1
-  assert_admin_security_headers_local "${headers}" || return 1
+verify_local_admin_nginx() {
+  verify_local_admin_route "/" "401" "" || return 1
+  verify_local_admin_route "/robots.txt" "200" "public, max-age=3600" || return 1
+  verify_local_admin_route "/api/v1/safety-desk/queue" "401" \
+    "no-store, no-cache, must-revalidate, max-age=0" || return 1
+  verify_local_admin_route "/api/v1/support-requests/queue" "401" \
+    "no-store, no-cache, must-revalidate, max-age=0" || return 1
+}
 
-  for path in /api/v1/safety-desk/queue /api/v1/support-requests/queue; do
-    headers="$(read_local_admin_headers "${path}")" || return 1
-    grep -Eqi '^HTTP/[0-9.]+ 401' <<<"${headers}" || return 1
-    grep -qi '^cache-control: no-store, no-cache, must-revalidate, max-age=0' <<<"${headers}" || return 1
-    assert_admin_security_headers_local "${headers}" || return 1
+verify_local_admin_nginx_with_retry() {
+  local attempt
+
+  for ((attempt = 1; attempt <= LOCAL_ADMIN_SMOKE_MAX_ATTEMPTS; attempt += 1)); do
+    LOCAL_ADMIN_SMOKE_FAILURE_PATH=""
+    LOCAL_ADMIN_SMOKE_FAILURE_ASSERTION=""
+    if verify_local_admin_nginx; then
+      return 0
+    fi
+
+    echo "Local admin nginx smoke attempt ${attempt}/${LOCAL_ADMIN_SMOKE_MAX_ATTEMPTS} failed: path=${LOCAL_ADMIN_SMOKE_FAILURE_PATH:-unknown} assertion=${LOCAL_ADMIN_SMOKE_FAILURE_ASSERTION:-unknown}." >&2
+    if [[ "${attempt}" -lt "${LOCAL_ADMIN_SMOKE_MAX_ATTEMPTS}" ]]; then
+      sleep "${LOCAL_ADMIN_SMOKE_RETRY_DELAY_SECONDS}"
+    fi
   done
+
+  return 1
 }
 
 trap finalize_remote_deploy EXIT
@@ -225,7 +281,7 @@ NGINX_MUTATED=1
 sudo install -m 644 "${REMOTE_TMP}" "${REMOTE_CONF}"
 sudo ln -sfn "${REMOTE_CONF}" "${REMOTE_ENABLED}"
 validate_and_reload_nginx
-if ! verify_local_admin_nginx; then
+if ! verify_local_admin_nginx_with_retry; then
   echo "New ${DOMAIN} nginx configuration failed the local route/header smoke." >&2
   if ! restore_previous_nginx; then
     echo "Automatic nginx rollback failed; inspect the host before retrying." >&2

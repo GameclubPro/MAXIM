@@ -28,6 +28,7 @@ import {
   Prisma,
 } from '../prisma/prisma-client';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
+import { LOCAL_USER_DISPLAY_NAME_EVENT_TYPES as SHARED_LOCAL_USER_DISPLAY_NAME_EVENT_TYPES } from '../common/local-user-display-name-events';
 import type { MaxTextMarkup } from '../common/max-text-markup.util';
 import type {
   MaxActionDispatchOptions,
@@ -913,16 +914,9 @@ export const MANAGED_ENTITIES_LOCAL_CANDIDATE_LIMIT =
 export const MANAGED_ENTITIES_LOCAL_ACTIVITY_LOOKBACK_MS = 180 * TWENTY_FOUR_HOURS_MS;
 export const MANAGED_ENTITY_ACCESS_EDGE_GRANTED_TTL_MS = 3 * TWENTY_FOUR_HOURS_MS;
 export const MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS = 7 * TWENTY_FOUR_HOURS_MS;
-export const MANAGED_ENTITIES_LOCAL_ACTIVITY_EVENT_TYPES = [
-  'message_created',
-  'message_edited',
-  'message_callback',
-  'bot_started',
-  'bot_added',
-  'user_added',
-  'user_removed',
-] as const;
-export const LOCAL_USER_DISPLAY_NAME_EVENT_TYPES = MANAGED_ENTITIES_LOCAL_ACTIVITY_EVENT_TYPES;
+export const MANAGED_ENTITIES_LOCAL_ACTIVITY_EVENT_TYPES =
+  SHARED_LOCAL_USER_DISPLAY_NAME_EVENT_TYPES;
+export const LOCAL_USER_DISPLAY_NAME_EVENT_TYPES = SHARED_LOCAL_USER_DISPLAY_NAME_EVENT_TYPES;
 export class ManagedEntitiesRefreshThrottledError extends Error {
   constructor(readonly cause: unknown) {
     super('Managed entity refresh throttled');

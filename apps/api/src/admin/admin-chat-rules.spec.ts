@@ -1,6 +1,7 @@
 import {
   isMaxMessageMissingError,
   publishChatRules,
+  readChatRules,
   resetPublishedChatRules,
 } from './admin-chat-rules';
 
@@ -90,6 +91,64 @@ function createPublishFixture() {
 }
 
 describe('admin chat rules MAX errors', () => {
+  it('repairs malformed stored rule URLs without dropping the rules', async () => {
+    const rules = {
+      ...createRules(),
+      buttons: [
+        {
+          text: 'Broken',
+          url: 'https://max.ru/chat/example/https://nested.example.test',
+        },
+      ],
+      buttonEnabled: true,
+      buttonUrl: 'https://max.ru/chat/example/https://nested.example.test',
+      adminContactButtonEnabled: true,
+      adminContactButtonUrl: 'https://max.ru/chat/example/https://nested.example.test',
+      publishedMessageId: null,
+      publishedBotId: null,
+      publishedUrl: 'https://max.ru/chat/example/https://nested.example.test',
+      publishedAt: null,
+    };
+    const prisma = {
+      chatRules: {
+        upsert: jest.fn().mockResolvedValue(rules),
+        findUnique: jest.fn(),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const invalidate = jest.fn().mockResolvedValue(undefined);
+    const resolveMessageLink = jest.fn();
+
+    const result = await readChatRules({
+      prisma: prisma as never,
+      chatContextCache: { invalidate },
+      maxClient: { resolveMessageLink } as never,
+      logger: { warn: jest.fn() },
+      chatId: 'chat-1',
+    });
+
+    expect(result.text).toBe('Правила чата');
+    expect(result.buttons).toEqual([]);
+    expect(result.buttonEnabled).toBe(false);
+    expect(result.buttonUrl).toBe('');
+    expect(result.adminContactButtonEnabled).toBe(false);
+    expect(result.adminContactButtonUrl).toBe('');
+    expect(result.publishedUrl).toBeNull();
+    expect(prisma.chatRules.updateMany).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-1',
+        adminContactButtonEnabled: true,
+        adminContactButtonUrl: rules.adminContactButtonUrl,
+      },
+      data: {
+        adminContactButtonEnabled: false,
+        adminContactButtonUrl: '',
+      },
+    });
+    expect(resolveMessageLink).not.toHaveBeenCalled();
+    expect(invalidate).toHaveBeenCalledWith('chat-1');
+  });
+
   it.each([
     { response: { status: 404, data: { code: 'message.not.found' } } },
     { response: { status: 404, data: { error: { code: 'message_not_found' } } } },

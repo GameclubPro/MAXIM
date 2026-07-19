@@ -516,9 +516,9 @@ describe('AdminService night mode settings normalization', () => {
 
     expect(result.greetingBotButtonEnabled).toBe(false);
     expect(result.greetingBotButtonUrl).toBe('');
-    expect(prisma.chatSettings.update).toHaveBeenCalledWith(
+    expect(prisma.chatSettings.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { chatId: 'chat-1' },
+        where: expect.objectContaining({ chatId: 'chat-1' }),
         data: expect.objectContaining({
           greetingBotButtonEnabled: false,
           greetingBotButtonUrl: '',
@@ -566,9 +566,9 @@ describe('AdminService night mode settings normalization', () => {
 
     expect(result.greetingBotButtonEnabled).toBe(false);
     expect(result.greetingBotButtonUrl).toBe('');
-    expect(prisma.chatSettings.update).toHaveBeenCalledWith(
+    expect(prisma.chatSettings.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { chatId: 'chat-1' },
+        where: expect.objectContaining({ chatId: 'chat-1' }),
         data: expect.objectContaining({
           greetingBotButtonEnabled: false,
           greetingBotButtonUrl: '',
@@ -615,9 +615,9 @@ describe('AdminService night mode settings normalization', () => {
 
     expect(result.greetingBotButtonEnabled).toBe(false);
     expect(result.greetingBotButtonUrl).toBe('');
-    expect(prisma.chatSettings.update).toHaveBeenCalledWith(
+    expect(prisma.chatSettings.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { chatId: 'chat-1' },
+        where: expect.objectContaining({ chatId: 'chat-1' }),
         data: expect.objectContaining({
           greetingBotButtonEnabled: false,
           greetingBotButtonUrl: '',
@@ -669,9 +669,9 @@ describe('AdminService night mode settings normalization', () => {
     expect(result.nightModeCommentsEnabled).toBe(false);
     expect(result.nightModeBotButtonEnabled).toBe(false);
     expect(result.nightModeRulesButtonEnabled).toBe(false);
-    expect(prisma.chatSettings.update).toHaveBeenCalledWith(
+    expect(prisma.chatSettings.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { chatId: 'chat-1' },
+        where: expect.objectContaining({ chatId: 'chat-1' }),
         data: expect.objectContaining({
           nightModeBotMessageEnabled: false,
           nightModeCommentsEnabled: false,
@@ -816,9 +816,9 @@ describe('AdminService night mode settings normalization', () => {
 
     expect(result.nightModeForceCloseEnabled).toBe(false);
     expect(result.nightModeForceCloseUntil).toBe('');
-    expect(prisma.chatSettings.update).toHaveBeenCalledWith(
+    expect(prisma.chatSettings.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { chatId: 'chat-1' },
+        where: expect.objectContaining({ chatId: 'chat-1' }),
         data: expect.objectContaining({
           nightModeForceCloseEnabled: false,
           nightModeForceCloseUntil: '',

@@ -1,9 +1,10 @@
+import { normalizeHttpButtonUrl } from '@maxim/contracts';
+
 const MAX_INLINE_KEYBOARD_BUTTONS = 210;
 const MAX_INLINE_KEYBOARD_ROWS = 30;
 const MAX_INLINE_KEYBOARD_BUTTONS_PER_ROW = 7;
 const MAX_INLINE_KEYBOARD_ACTION_BUTTONS_PER_ROW = 1;
 const MAX_INLINE_KEYBOARD_ROW_TEXT_WEIGHT = 22;
-const MAX_INLINE_KEYBOARD_LINK_URL_LENGTH = 2048;
 const MAX_INLINE_KEYBOARD_FULL_WIDTH_BUTTON_TYPES = new Set([
   'link',
   'open_app',
@@ -142,9 +143,7 @@ function normalizeMaxInlineKeyboardButton(button: unknown): Record<string, unkno
 
   switch (type) {
     case 'link': {
-      const url = normalizeHttpInlineKeyboardUrl(source.url, {
-        maxLength: MAX_INLINE_KEYBOARD_LINK_URL_LENGTH,
-      });
+      const url = normalizeHttpInlineKeyboardUrl(source.url);
       if (!url) {
         return null;
       }
@@ -257,25 +256,8 @@ function readLowerString(value: unknown): string | null {
   return normalized ? normalized.toLowerCase() : null;
 }
 
-function normalizeHttpInlineKeyboardUrl(
-  value: unknown,
-  options: { maxLength?: number } = {},
-): string | null {
-  const normalized = readTrimmedString(value);
-  if (!normalized || (options.maxLength !== undefined && normalized.length > options.maxLength)) {
-    return null;
-  }
-
-  try {
-    const parsed = new URL(normalized);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return null;
-    }
-
-    return parsed.toString();
-  } catch {
-    return null;
-  }
+function normalizeHttpInlineKeyboardUrl(value: unknown): string | null {
+  return typeof value === 'string' ? normalizeHttpButtonUrl(value) : null;
 }
 
 function resolveInlineKeyboardButtonRowLimit(button: Record<string, unknown>): number {

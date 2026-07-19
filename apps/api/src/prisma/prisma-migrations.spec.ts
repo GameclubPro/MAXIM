@@ -1,15 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { LOCAL_USER_DISPLAY_NAME_EVENT_TYPES } from '../common/local-user-display-name-events';
 
-const LOCAL_DISPLAY_NAME_EVENTS = [
-  'message_created',
-  'message_edited',
-  'message_callback',
-  'bot_started',
-  'bot_added',
-  'user_added',
-  'user_removed',
-] as const;
+const LOCAL_DISPLAY_NAME_EVENTS = LOCAL_USER_DISPLAY_NAME_EVENT_TYPES;
 
 function readMigration(name: string): string {
   return readFileSync(resolve(__dirname, '../../prisma/migrations', name, 'migration.sql'), 'utf8');
@@ -98,6 +91,24 @@ describe('Prisma migrations', () => {
     for (const eventType of LOCAL_DISPLAY_NAME_EVENTS) {
       expect(compact).toContain(`'${eventType}'`);
     }
+  });
+
+  it('indexes the global retention cleanup cutoffs', () => {
+    const schema = readSchema();
+    const migration = readMigration('20260719110000_bound_retention_cleanup');
+
+    expect(schema).toContain('@@index([createdAt], map: "violations_created_at_idx")');
+    expect(migration).toContain(
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "violations_created_at_idx"',
+    );
+    expect(migration).toContain('ON "violations"("created_at")');
+    expect(migration).toContain(
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "webhook_events_retention_completed_created_id_idx"',
+    );
+    expect(migration).toContain('ON "webhook_events"("created_at", "id")');
+    expect(migration).toContain(
+      `WHERE "status" IN ('PROCESSED'::"WebhookStatus", 'DUPLICATE'::"WebhookStatus")`,
+    );
   });
 
   it('adds a durable chat-scoped display-name read model', () => {

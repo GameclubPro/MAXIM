@@ -59,6 +59,7 @@ import { isPrismaKnownError } from './admin-legacy-utils';
 import { ManagedBroadcastService } from './managed-broadcast.service';
 import { ManagedEntitiesService } from './managed-entities.service';
 import { PublicationContentService } from './publication-content.service';
+import { readStoredPublicationButtons } from './publication-buttons';
 import {
   buildUnsafePublicationExecutionDeliveryWhere,
   cancelUnstartedPublicationExecutionBroadcasts,
@@ -1406,7 +1407,9 @@ export class PublicationService {
         if (resetDeliveries.count === 0) {
           throw new ConflictException('Не осталось доставок для безопасного повтора.');
         }
-        const latestButtons = latestContent ? this.readButtons(latestContent.buttons) : [];
+        const latestButtons = latestContent
+          ? readStoredPublicationButtons(latestContent.buttons)
+          : [];
         const reactivatedBroadcasts = await tx.managedBroadcast.updateMany({
           where: {
             id: { in: retryableBroadcastIds },
@@ -2168,7 +2171,7 @@ export class PublicationService {
           });
         }
 
-        const buttons = this.readButtons(occurrence.contentRevision.buttons);
+        const buttons = readStoredPublicationButtons(occurrence.contentRevision.buttons);
         const broadcast = await tx.managedBroadcast.create({
           data: {
             sourceChatId: targetChatIds[0],
@@ -3792,27 +3795,6 @@ export class PublicationService {
         .join(',')}}`;
     }
     return JSON.stringify(value);
-  }
-
-  private readButtons(value: unknown): Array<{ text: string; url: string; row: number }> {
-    if (!Array.isArray(value)) {
-      return [];
-    }
-    return value
-      .map((item) => {
-        if (!item || typeof item !== 'object') {
-          return null;
-        }
-        const source = item as Record<string, unknown>;
-        return typeof source.text === 'string' && typeof source.url === 'string'
-          ? {
-              text: source.text,
-              url: source.url,
-              row: typeof source.row === 'number' ? source.row : 0,
-            }
-          : null;
-      })
-      .filter((item): item is { text: string; url: string; row: number } => item !== null);
   }
 
   private toPrismaEntityType(entityType: 'chat' | 'channel'): ChatEntityType {

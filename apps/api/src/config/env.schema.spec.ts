@@ -158,7 +158,7 @@ describe('validateEnv boolean parsing', () => {
     expect(defaults.MODERATION_DELETE_INTENT_MODE).toBe('off');
     expect(defaults.MODERATION_DELETE_INTENT_CANARY_CHAT_IDS).toBe('');
     expect(defaults.MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS).toBe('');
-    expect(defaults.MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_ENABLED).toBe(true);
+    expect(defaults.MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_ENABLED).toBe(false);
     expect(defaults.MODERATION_DELETE_INTENT_RETRY_HORIZON_MS).toBe(86_400_000);
     expect(defaults.MODERATION_DELETE_INTENT_RECOVERY_BATCH_SIZE).toBe(10);
     expect(defaults.MODERATION_DELETE_INTENT_RETENTION_DAYS).toBe(90);

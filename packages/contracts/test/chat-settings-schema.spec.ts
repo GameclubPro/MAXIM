@@ -4,11 +4,38 @@ import {
   applySettingsSectionSchema,
   broadcastHandoffRequestSchema,
   chatSettingsSchema,
+  normalizeHttpButtonUrl,
   sendBroadcastRequestSchema,
   updateChatRulesRequestSchema,
 } from '@maxim/contracts';
 
 describe('chatSettingsSchema duplicate flow validation', () => {
+  it('normalizes strict HTTP button urls without accepting malformed nested paths', () => {
+    expect(normalizeHttpButtonUrl('  https://example.test/open  ')).toBe(
+      'https://example.test/open',
+    );
+    expect(normalizeHttpButtonUrl('HTTPS://EXAMPLE.TEST/a/../open?x=1')).toBe(
+      'https://example.test/open?x=1',
+    );
+    expect(
+      normalizeHttpButtonUrl(
+        'https://example.test/redirect?next=https%3A%2F%2Fnested.example.test',
+      ),
+    ).toBe('https://example.test/redirect?next=https%3A%2F%2Fnested.example.test');
+
+    expect(
+      normalizeHttpButtonUrl('https://example.test/path https://nested.example.test'),
+    ).toBeNull();
+    expect(
+      normalizeHttpButtonUrl('https://max.ru/chat/example/https://nested.example.test'),
+    ).toBeNull();
+    expect(
+      normalizeHttpButtonUrl('https://max.ru/chat/example/https%3A%2F%2Fnested.example.test'),
+    ).toBeNull();
+    expect(normalizeHttpButtonUrl(`https://example.test/${'a/../'.repeat(500)}open`)).toBeNull();
+    expect(normalizeHttpButtonUrl(`https://example.test/${'я'.repeat(400)}`)).toBeNull();
+  });
+
   it('allows phone numbers and photos by default', () => {
     const settings = chatSettingsSchema.parse({});
 

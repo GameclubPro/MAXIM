@@ -2194,12 +2194,12 @@ export class ModerationDeleteIntentService {
       SET
         "candidate_failures" = COALESCE("candidate_failures", '{}'::jsonb) ||
           jsonb_build_object(
-            ${botId},
+            CAST(${botId} AS text),
             jsonb_build_object(
-              'failedAt', ${failedAt.toISOString()},
-              'retryAt', ${retryAt.toISOString()},
-              'errorCode', ${details.errorCode},
-              'statusCode', ${details.statusCode}
+              'failedAt', CAST(${failedAt.toISOString()} AS text),
+              'retryAt', CAST(${retryAt.toISOString()} AS text),
+              'errorCode', CAST(${details.errorCode} AS text),
+              'statusCode', CAST(${details.statusCode} AS integer)
             )
           ),
         "updated_at" = CURRENT_TIMESTAMP

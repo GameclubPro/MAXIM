@@ -31,6 +31,32 @@ type QueueSet = {
 } & DefaultShardQueueMocks &
   JoinShardQueueMocks;
 
+type SqlQuery = {
+  strings?: readonly string[];
+  values?: readonly unknown[];
+};
+
+type RetentionInternals = {
+  cleanupRetention: () => Promise<void>;
+  runRetentionCleanupPhase: (phase: {
+    name: string;
+    maxBatches: number;
+    deleteBatch: () => Promise<number>;
+  }) => Promise<{
+    rows: number;
+    batches: number;
+    durationMs: number;
+    budgetExhausted: boolean;
+  }>;
+  retentionBatchDelayMs: number;
+  enabled: boolean;
+  cleaning: boolean;
+};
+
+function extractSql(query: unknown): string {
+  return ((query as SqlQuery | undefined)?.strings ?? []).join('?').replace(/\s+/g, ' ').trim();
+}
+
 type MockWebhookEventRow = {
   id: string;
   dedupKey: string | null;
@@ -234,6 +260,7 @@ function createService(params?: {
   }));
 
   const prisma = {
+    $executeRaw: jest.fn().mockResolvedValue(0),
     webhookEvent: {
       findMany: jest
         .fn()
@@ -836,7 +863,28 @@ describe('WebhookOutboxService', () => {
     );
   });
 
-  it('uses shorter cleanup retention for exhausted failed webhook rows', async () => {
+  it('defers retention cleanup until the first hourly timer', async () => {
+    jest.useFakeTimers();
+    const { service } = createService();
+    const internals = service as unknown as RetentionInternals;
+    internals.enabled = true;
+    const tick = jest.spyOn(service as any, 'tick').mockResolvedValue(undefined);
+    const cleanup = jest.spyOn(service as any, 'cleanupRetention').mockResolvedValue(undefined);
+
+    service.onModuleInit();
+    expect(tick).toHaveBeenCalledTimes(1);
+    expect(cleanup).not.toHaveBeenCalled();
+
+    jest.advanceTimersByTime(60 * 60 * 1_000 - 1);
+    expect(cleanup).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(1);
+    expect(cleanup).toHaveBeenCalledTimes(1);
+
+    service.onModuleDestroy();
+    jest.useRealTimers();
+  });
+
+  it('uses bounded ordered SQL for every sequential retention phase', async () => {
     const { service, prisma } = createService({
       configOverrides: {
         WEBHOOK_RETENTION_DAYS: 7,
@@ -845,32 +893,162 @@ describe('WebhookOutboxService', () => {
         USER_DISPLAY_NAME_RETENTION_DAYS: 180,
       },
     });
+    const logger = jest.spyOn((service as any).logger, 'log');
 
-    await (service as unknown as { cleanupRetention: () => Promise<void> }).cleanupRetention();
+    await (service as unknown as RetentionInternals).cleanupRetention();
 
-    expect(prisma.webhookEvent.deleteMany).toHaveBeenNthCalledWith(1, {
-      where: {
-        createdAt: { lt: expect.any(Date) },
-        status: { in: [WebhookStatus.PROCESSED, WebhookStatus.DUPLICATE] },
-      },
+    const queries = prisma.$executeRaw.mock.calls.map(([query]) => ({
+      sql: extractSql(query),
+      values: (query as SqlQuery).values ?? [],
+    }));
+    expect(queries).toHaveLength(6);
+    for (const query of queries) {
+      expect(query.sql).toContain('WITH expired AS');
+      expect(query.sql).toContain('ORDER BY');
+      expect(query.sql).toContain('LIMIT ?');
+      expect(query.sql).toContain('FOR UPDATE SKIP LOCKED');
+      expect(query.values).toContain(500);
+    }
+    expect(queries[0]?.sql).toContain(
+      `"status" IN ('PROCESSED'::"WebhookStatus", 'DUPLICATE'::"WebhookStatus")`,
+    );
+    expect(queries[1]?.values).toContain(WebhookStatus.FAILED);
+    expect(queries[1]?.sql).toContain('"next_enqueue_at" IS NULL');
+    expect(queries.map((query) => query.sql)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('DELETE FROM "moderation_events" target'),
+        expect.stringContaining('DELETE FROM "violations" target'),
+        expect.stringContaining('DELETE FROM "moderation_violation_message_claims" target'),
+        expect.stringContaining('DELETE FROM "chat_user_display_names" target'),
+      ]),
+    );
+    expect(logger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        phases: expect.objectContaining({
+          webhookProcessedOrDuplicate: expect.objectContaining({
+            rows: 0,
+            batches: 1,
+            durationMs: expect.any(Number),
+            budgetExhausted: false,
+          }),
+          userDisplayNames: expect.objectContaining({ rows: 0, batches: 1 }),
+        }),
+      }),
+      'Retention cleanup finished',
+    );
+    expect(logger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        phase: 'webhookProcessedOrDuplicate',
+        rows: 0,
+        batches: 1,
+        maxBatches: 80,
+        batchSize: 500,
+      }),
+      'Retention cleanup phase finished',
+    );
+  });
+
+  it('does not start the next retention phase before the current phase finishes', async () => {
+    let resolveFirstBatch!: (rows: number) => void;
+    const firstBatch = new Promise<number>((resolve) => {
+      resolveFirstBatch = resolve;
     });
-    expect(prisma.webhookEvent.deleteMany).toHaveBeenNthCalledWith(2, {
-      where: {
-        createdAt: { lt: expect.any(Date) },
-        status: WebhookStatus.FAILED,
-        nextEnqueueAt: null,
-      },
+    const { service, prisma } = createService();
+    prisma.$executeRaw.mockImplementationOnce(() => firstBatch).mockResolvedValue(0);
+
+    const cleanup = (service as unknown as RetentionInternals).cleanupRetention();
+    await Promise.resolve();
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+
+    resolveFirstBatch(0);
+    await cleanup;
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(6);
+  });
+
+  it('repeats full retention batches and stops after a partial batch', async () => {
+    const { service } = createService();
+    const internals = service as unknown as RetentionInternals;
+    internals.retentionBatchDelayMs = 0;
+    const deleteBatch = jest.fn().mockResolvedValueOnce(500).mockResolvedValueOnce(499);
+
+    await expect(
+      internals.runRetentionCleanupPhase({ name: 'test', maxBatches: 10, deleteBatch }),
+    ).resolves.toEqual({
+      rows: 999,
+      batches: 2,
+      durationMs: expect.any(Number),
+      budgetExhausted: false,
     });
-    expect(prisma.moderationViolationMessageClaim.deleteMany).toHaveBeenCalledWith({
-      where: {
-        createdAt: { lt: expect.any(Date) },
-      },
+    expect(deleteBatch).toHaveBeenCalledTimes(2);
+  });
+
+  it('shares one 80-batch budget across processed and duplicate webhook retention', async () => {
+    const { service, prisma } = createService();
+    const internals = service as unknown as RetentionInternals;
+    internals.retentionBatchDelayMs = 0;
+    prisma.$executeRaw.mockImplementation(async (query: SqlQuery) => {
+      const sql = extractSql(query);
+      return sql.includes('"webhook_events"') &&
+        sql.includes(`'PROCESSED'::"WebhookStatus"`) &&
+        sql.includes(`'DUPLICATE'::"WebhookStatus"`)
+        ? 500
+        : 0;
     });
-    expect(prisma.chatUserDisplayName.deleteMany).toHaveBeenCalledWith({
-      where: {
-        observedAt: { lt: expect.any(Date) },
-      },
+
+    await internals.cleanupRetention();
+
+    const completedWebhookCalls = prisma.$executeRaw.mock.calls.filter(([query]) => {
+      return (
+        extractSql(query).includes('"webhook_events"') &&
+        extractSql(query).includes(`'PROCESSED'::"WebhookStatus"`) &&
+        extractSql(query).includes(`'DUPLICATE'::"WebhookStatus"`)
+      );
     });
+    expect(completedWebhookCalls).toHaveLength(80);
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(85);
+  });
+
+  it('reports the failed retention phase and resets the cleaning guard', async () => {
+    const { service, prisma } = createService();
+    const internals = service as unknown as RetentionInternals;
+    const logger = jest.spyOn((service as any).logger, 'warn');
+    prisma.$executeRaw.mockRejectedValueOnce(new Error('retention database unavailable'));
+
+    await internals.cleanupRetention();
+
+    expect(logger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        phase: 'webhookProcessedOrDuplicate',
+        rows: 0,
+        batches: 0,
+        err: 'retention database unavailable',
+      }),
+      'Retention cleanup phase failed',
+    );
+    expect(internals.cleaning).toBe(false);
+
+    await internals.cleanupRetention();
+
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(7);
+    expect(internals.cleaning).toBe(false);
+  });
+
+  it('skips overlapping retention cleanup runs', async () => {
+    let resolveFirstBatch!: (rows: number) => void;
+    const firstBatch = new Promise<number>((resolve) => {
+      resolveFirstBatch = resolve;
+    });
+    const { service, prisma } = createService();
+    prisma.$executeRaw.mockImplementationOnce(() => firstBatch).mockResolvedValue(0);
+    const internals = service as unknown as RetentionInternals;
+
+    const firstCleanup = internals.cleanupRetention();
+    await Promise.resolve();
+    await internals.cleanupRetention();
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+
+    resolveFirstBatch(0);
+    await firstCleanup;
   });
 
   it('assigns highest BullMQ priority to callback events', async () => {
