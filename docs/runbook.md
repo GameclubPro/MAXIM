@@ -31,8 +31,8 @@ This is the active production entrypoint. Historical delivery/cloud experiments 
    ./infra/scripts/vps-connect.sh deploy main
    ```
 
-   The local wrapper requires a successful aggregate `Required` CI check for the exact local commit
-   and requires the synchronized VPS `HEAD` to match that SHA. The default set builds the shared API
+   The local wrapper requires successful `Required` and `Analyze JavaScript and TypeScript` checks
+   from GitHub Actions for the exact local commit and requires the synchronized VPS `HEAD` to match that SHA. The default set builds the shared API
    image once, applies Prisma migrations, builds both active static components, force-recreates the
    application containers, and runs strict health/smoke checks before recording the release.
 
@@ -77,8 +77,8 @@ It runs staged-impact validation, commits, and pushes the exact resulting `HEAD`
 explicit broad-staging option. All root/scoped `AGENTS.md` files are excluded from `--all` unless
 `--include-agents` is present, and the helper refuses already-staged agent notes without that flag.
 
-The routine local deploy path resolves the requested branch to a full SHA and queries GitHub for a
-successful `Required` check on that exact commit. The same SHA is passed to the VPS, which refuses
+The routine local deploy path resolves the requested branch to a full SHA and queries GitHub for
+successful `Required` and `Analyze JavaScript and TypeScript` checks from GitHub Actions on that exact commit. The same SHA is passed to the VPS, which refuses
 the rollout if its post-sync `HEAD` differs. An emergency bypass is not routine: it requires both
 `MAXIM_DEPLOY_EMERGENCY_BYPASS=1` and a non-empty `MAXIM_DEPLOY_EMERGENCY_REASON`.
 

@@ -18,7 +18,7 @@
 - Prisma 7 uses `apps/api/prisma.config.ts` from repo root or `prisma.config.ts` from this workspace. In API containers call `./apps/api/node_modules/.bin/prisma` from repo root.
 - Runtime code imports Prisma through `src/prisma/prisma-client.ts`, not `@prisma/client`; generated client output is ignored under `src/generated/prisma/`.
 - Model, enum, or database mapping changes in `prisma/schema.prisma` require a migration; generator/datasource-only changes do not.
-- `config/prisma-migration-policy.json` pins names and content digests through the latest committed migration. A new migration must advance that immutable baseline in the same reviewed change; never edit or delete historical `migration.sql` files.
+- `config/prisma-migration-policy.json` pins names and content digests through the latest committed migration. A new migration must advance that immutable baseline in the same reviewed change; `policyRulesAfter` is the fixed bootstrap cutoff and must never advance. Never edit or delete historical `migration.sql` files.
 - Destructive column removal requires two runtime releases: first ship a client/schema that no longer selects the columns while DB columns remain, then drop them only after every API role runs the compatible client.
 - Statistics participant names use `chat_user_display_names` before temporary local history. `allowRemoteLookup: false` disables MAX calls, not local resolution. Backfill only with bounded `npm run stats:backfill-display-names -- ...` runs.
 

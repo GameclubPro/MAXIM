@@ -489,7 +489,7 @@ for service in "\${services[@]}"; do
   printf "%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n" \\
     "\$service" \\
     "\$(count '"level":(40|50)')" \\
-    "\$(count 'rate limit|rate_limit|429')" \\
+    "\$(count 'rate[ _-]?limit|internal limiter|"statusCode":429|HTTP( status)? 429')" \\
     "\$(count 'no active bot has the required MAX permissions|Skipped moderation action')" \\
     "\$(count 'ManagedEntityAccessLossService|chat_not_found|chat.denied|BOT_DENIED|access loss')" \\
     "\$(count 'status code 403|"statusCode":403')" \\

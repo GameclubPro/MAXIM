@@ -143,8 +143,8 @@ Routine commands:
 Any requested API role expands to all shared-image roles. `npm run vps -- <command>` and
 `npm run prod -- <command>` call the same wrapper.
 
-The local deploy wrapper requires a successful aggregate `Required` CI check for the exact selected
-commit, then requires the synchronized VPS `HEAD` to match that SHA. Active component images use
+The local deploy wrapper requires successful `Required` and `Analyze JavaScript and TypeScript`
+checks from GitHub Actions for the exact selected commit, then requires the synchronized VPS `HEAD` to match that SHA. Active component images use
 full-SHA refs and successful strict smokes atomically update component inventory under
 `/var/lib/maxim-deploy`. Prisma migrations run only when the shared API component is selected;
 static-only mini app and Safety Desk deploys skip them.
