@@ -56,13 +56,7 @@ export function collectGitChanges({ cwd = process.cwd(), mode = 'worktree', base
       resolvedBase,
       resolvedHead,
     ]);
-    return buildChangeSet(
-      repoRoot,
-      mode,
-      parseNameStatusZ(output),
-      resolvedBase,
-      resolvedHead,
-    );
+    return buildChangeSet(repoRoot, mode, parseNameStatusZ(output), resolvedBase, resolvedHead);
   }
 
   throw new Error(`Unsupported Git change mode: ${mode}.`);
@@ -129,7 +123,9 @@ function buildChangeSet(repoRoot, mode, changes, base, head) {
   return Object.freeze({
     repoRoot,
     source: Object.freeze({ mode, base, head }),
-    changes: Object.freeze(changes.map((change) => Object.freeze({ ...change, paths: [...change.paths] }))),
+    changes: Object.freeze(
+      changes.map((change) => Object.freeze({ ...change, paths: [...change.paths] })),
+    ),
     changedPaths: Object.freeze(changedPaths),
   });
 }

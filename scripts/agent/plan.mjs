@@ -4,11 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { collectGitChanges } from './git-changes.mjs';
 import { DEFAULT_CONFIG_PATH, loadImpactConfig } from './impact-config.mjs';
 import { assessPrismaSchemaImpact } from './prisma-impact.mjs';
-import {
-  createImpactPlan,
-  renderImpactPlanHuman,
-  renderImpactPlanJson,
-} from './impact-plan.mjs';
+import { createImpactPlan, renderImpactPlanHuman, renderImpactPlanJson } from './impact-plan.mjs';
 
 export async function runImpactPlanCli(argv = process.argv.slice(2), io = defaultIo()) {
   const options = parseImpactPlanArgs(argv);
@@ -30,9 +26,7 @@ export async function runImpactPlanCli(argv = process.argv.slice(2), io = defaul
     prismaSchemaImpact: assessPrismaSchemaImpact(changeSet),
   });
   io.stdout(
-    options.format === 'json'
-      ? renderImpactPlanJson(plan)
-      : renderImpactPlanHuman(plan, config),
+    options.format === 'json' ? renderImpactPlanJson(plan) : renderImpactPlanHuman(plan, config),
   );
   return 0;
 }

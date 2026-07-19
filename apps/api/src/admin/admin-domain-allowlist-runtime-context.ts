@@ -26,11 +26,7 @@ export function createAdminDomainAllowlistRuntimeContext(
     get chatContextCache(): ChatContextCacheService {
       return typedTarget.chatContextCache;
     },
-    assertChatAdmin(
-      chatId: string,
-      userId: string,
-      entityType?: ManagedEntityType,
-    ): Promise<void> {
+    assertChatAdmin(chatId: string, userId: string, entityType?: ManagedEntityType): Promise<void> {
       return typedTarget.assertChatAdmin(chatId, userId, entityType);
     },
   };

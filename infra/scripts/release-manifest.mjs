@@ -76,9 +76,9 @@ export function buildReleaseManifest({
     targetSha,
     emergencyReason: emergencyReason?.trim() || null,
     components: Object.freeze(mergedComponents),
-    migrations: Object.freeze([
-      ...new Set((migrations ?? current?.migrations ?? []).filter(Boolean)),
-    ].sort()),
+    migrations: Object.freeze(
+      [...new Set((migrations ?? current?.migrations ?? []).filter(Boolean))].sort(),
+    ),
     smokes: Object.freeze([...new Set(smokes.filter(Boolean))].sort()),
   });
 }
@@ -229,7 +229,9 @@ function readLines(path) {
 
 function runCli(argv) {
   const { command, options } = parseCli(argv);
-  const stateDir = resolve(options.stateDir || process.env.MAXIM_RELEASE_STATE_DIR || '/var/lib/maxim-deploy');
+  const stateDir = resolve(
+    options.stateDir || process.env.MAXIM_RELEASE_STATE_DIR || '/var/lib/maxim-deploy',
+  );
 
   if (command === 'commit' || command === 'inventory') {
     const current = readCurrentManifest(stateDir);

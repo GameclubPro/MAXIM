@@ -29,7 +29,10 @@ export function stripPrismaRuntimeOnlyBlocks(source) {
   let skippedDepth = 0;
 
   for (const line of String(source).split(/\r?\n/u)) {
-    if (skippedDepth === 0 && /^\s*(?:generator|datasource)\s+[A-Za-z_][A-Za-z0-9_]*\s*\{/u.test(line)) {
+    if (
+      skippedDepth === 0 &&
+      /^\s*(?:generator|datasource)\s+[A-Za-z_][A-Za-z0-9_]*\s*\{/u.test(line)
+    ) {
       skippedDepth = braceDelta(line);
       if (skippedDepth <= 0) {
         skippedDepth = 0;

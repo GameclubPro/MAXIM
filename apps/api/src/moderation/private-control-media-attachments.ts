@@ -394,7 +394,12 @@ export function parsePrivateFileAttachment(
     fileId: readString(payload.file_id ?? payload.fileId) ?? null,
     fileName:
       readString(
-        payload.file_name ?? payload.fileName ?? row.file_name ?? row.fileName ?? row.filename ?? row.name,
+        payload.file_name ??
+          payload.fileName ??
+          row.file_name ??
+          row.fileName ??
+          row.filename ??
+          row.name,
       ) ?? null,
     size: readOptionalInteger(payload.size ?? row.size),
     mimeType: readLowerString(payload.mime_type ?? payload.mimeType ?? row.mime_type),
@@ -518,7 +523,11 @@ function parsePrivateImageFileAttachment(
     return null;
   }
 
-  const resolvedMimeType = resolvePrivateImageMimeType(parsed.mimeType, parsed.fileName, parsed.url);
+  const resolvedMimeType = resolvePrivateImageMimeType(
+    parsed.mimeType,
+    parsed.fileName,
+    parsed.url,
+  );
   if (!resolvedMimeType) {
     return null;
   }

@@ -186,8 +186,7 @@ export function shouldContinueManagedEntitiesRefreshPolling(
   }
 
   return !(
-    options.treatUserVisibleCompleteAsSettled &&
-    isManagedEntitiesUserVisibleComplete(refreshState)
+    options.treatUserVisibleCompleteAsSettled && isManagedEntitiesUserVisibleComplete(refreshState)
   );
 }
 

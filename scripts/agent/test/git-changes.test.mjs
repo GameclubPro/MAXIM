@@ -4,11 +4,7 @@ import { mkdtemp, mkdir, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import {
-  collectGitChanges,
-  parseNameStatusZ,
-  parsePorcelainV1Z,
-} from '../git-changes.mjs';
+import { collectGitChanges, parseNameStatusZ, parsePorcelainV1Z } from '../git-changes.mjs';
 
 test('parses name-status rename records with both paths', () => {
   assert.deepEqual(parseNameStatusZ(Buffer.from('M\0plain.ts\0R100\0old.ts\0new.ts\0')), [
@@ -18,15 +14,18 @@ test('parses name-status rename records with both paths', () => {
 });
 
 test('parses porcelain rename records in destination-then-source order', () => {
-  assert.deepEqual(parsePorcelainV1Z(Buffer.from('R  destination.ts\0source.ts\0?? untracked.ts\0')), [
-    {
-      status: 'R ',
-      oldPath: 'source.ts',
-      newPath: 'destination.ts',
-      paths: ['source.ts', 'destination.ts'],
-    },
-    { status: '??', path: 'untracked.ts', paths: ['untracked.ts'] },
-  ]);
+  assert.deepEqual(
+    parsePorcelainV1Z(Buffer.from('R  destination.ts\0source.ts\0?? untracked.ts\0')),
+    [
+      {
+        status: 'R ',
+        oldPath: 'source.ts',
+        newPath: 'destination.ts',
+        paths: ['source.ts', 'destination.ts'],
+      },
+      { status: '??', path: 'untracked.ts', paths: ['untracked.ts'] },
+    ],
+  );
 });
 
 test('worktree mode includes staged, unstaged, deleted, renamed, and untracked paths', async (t) => {

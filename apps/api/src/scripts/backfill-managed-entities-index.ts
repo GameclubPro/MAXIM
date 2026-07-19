@@ -12,7 +12,9 @@ async function main() {
 
   if (
     allowRemoteListBotChats &&
-    String(process.env.NODE_ENV ?? '').trim().toLowerCase() === 'production'
+    String(process.env.NODE_ENV ?? '')
+      .trim()
+      .toLowerCase() === 'production'
   ) {
     throw new Error(REMOTE_LIST_BOT_CHATS_UNSUPPORTED_IN_PRODUCTION);
   }

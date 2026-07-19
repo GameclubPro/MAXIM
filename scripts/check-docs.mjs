@@ -4,7 +4,8 @@ import { relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const shellFencePattern = /```(?:bash|sh|shell)\s*\n([\s\S]*?)```/gu;
-const bannedExecutablePattern = /(?:app2\.major-maksimov\.ru|s3:\/\/|\byc\s+storage\b|object[ -]?storage|cdn-cache)/iu;
+const bannedExecutablePattern =
+  /(?:app2\.major-maksimov\.ru|s3:\/\/|\byc\s+storage\b|object[ -]?storage|cdn-cache)/iu;
 
 function walkMarkdown(directory) {
   if (!existsSync(directory)) {
@@ -77,7 +78,9 @@ export function findDocumentationViolations(root) {
             if (!workspace) {
               violations.push(`${location} references unknown workspace ${workspaceMatch[1]}.`);
             } else if (typeof workspace.scripts?.[script] !== 'string') {
-              violations.push(`${location} references missing ${workspaceMatch[1]} script ${script}.`);
+              violations.push(
+                `${location} references missing ${workspaceMatch[1]} script ${script}.`,
+              );
             }
           } else if (!scripts.has(script)) {
             violations.push(`${location} references missing root npm script ${script}.`);
@@ -93,11 +96,10 @@ export function findDocumentationViolations(root) {
   }
 
   const composeServices = new Set(
-    execFileSync(
-      'docker',
-      ['compose', '-f', 'infra/docker-compose.yml', 'config', '--services'],
-      { cwd: root, encoding: 'utf8' },
-    )
+    execFileSync('docker', ['compose', '-f', 'infra/docker-compose.yml', 'config', '--services'], {
+      cwd: root,
+      encoding: 'utf8',
+    })
       .trim()
       .split('\n')
       .filter(Boolean),
@@ -105,7 +107,9 @@ export function findDocumentationViolations(root) {
   for (const filePath of markdownFiles) {
     const repoPath = relative(root, filePath).split('\\').join('/');
     const contents = readFileSync(filePath, 'utf8');
-    for (const match of contents.matchAll(/docker\s+compose[^\n]*(?:exec|run|logs|restart)\s+(?:--?\S+\s+)*([a-z0-9][a-z0-9-]*)/giu)) {
+    for (const match of contents.matchAll(
+      /docker\s+compose[^\n]*(?:exec|run|logs|restart)\s+(?:--?\S+\s+)*([a-z0-9][a-z0-9-]*)/giu,
+    )) {
       if (!composeServices.has(match[1])) {
         const line = contents.slice(0, match.index).split('\n').length;
         violations.push(`${repoPath}:${line} references unknown Compose service ${match[1]}.`);

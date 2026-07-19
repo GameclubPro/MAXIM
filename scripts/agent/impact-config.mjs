@@ -27,16 +27,8 @@ export function validateImpactConfig(config, source = '<impact-config>') {
   }
 
   const checks = validateDefinitions(config.checks, 'checks', source);
-  const deployComponents = validateDefinitions(
-    config.deployComponents,
-    'deployComponents',
-    source,
-  );
-  const manualOperations = validateDefinitions(
-    config.manualOperations,
-    'manualOperations',
-    source,
-  );
+  const deployComponents = validateDefinitions(config.deployComponents, 'deployComponents', source);
+  const manualOperations = validateDefinitions(config.manualOperations, 'manualOperations', source);
   const forbiddenFragments = requireStringArray(
     config.forbiddenRoutineTargetFragments,
     'forbiddenRoutineTargetFragments',
@@ -81,10 +73,7 @@ export function validateImpactConfig(config, source = '<impact-config>') {
     );
     const warnings = optionalStringArray(rule.warnings, 'warnings', location);
     const migrationImpact = rule.migrationImpact ?? null;
-    if (
-      migrationImpact !== null &&
-      !['schema', 'migration', 'tooling'].includes(migrationImpact)
-    ) {
+    if (migrationImpact !== null && !['schema', 'migration', 'tooling'].includes(migrationImpact)) {
       throw new Error(`${location}: unsupported migrationImpact ${migrationImpact}.`);
     }
 
@@ -175,7 +164,10 @@ export function normalizeRepoPath(value) {
   if (typeof value !== 'string') {
     throw new TypeError('Repository path must be a string.');
   }
-  return value.replaceAll('\\', '/').replace(/^\.\//u, '').replace(/^\/+|\/+$/gu, '');
+  return value
+    .replaceAll('\\', '/')
+    .replace(/^\.\//u, '')
+    .replace(/^\/+|\/+$/gu, '');
 }
 
 function globToRegExp(pattern) {
@@ -223,7 +215,10 @@ function validateDefinitions(value, field, source) {
     }
     ids.add(id);
     const script = item.script;
-    if (script !== undefined && (typeof script !== 'string' || !/^[a-z0-9][a-z0-9:-]*$/u.test(script))) {
+    if (
+      script !== undefined &&
+      (typeof script !== 'string' || !/^[a-z0-9][a-z0-9:-]*$/u.test(script))
+    ) {
       throw new Error(`${location}: script must be an npm script id.`);
     }
     return Object.freeze({ id, label: item.label.trim(), ...(script ? { script } : {}) });
@@ -249,7 +244,9 @@ function assertRoutineTargetAllowed(target, forbiddenFragments, source) {
   const normalized = target.toLowerCase();
   const forbidden = forbiddenFragments.find((fragment) => normalized.includes(fragment));
   if (forbidden) {
-    throw new Error(`${source}: routine deploy target ${target} contains forbidden fragment ${forbidden}.`);
+    throw new Error(
+      `${source}: routine deploy target ${target} contains forbidden fragment ${forbidden}.`,
+    );
   }
 }
 

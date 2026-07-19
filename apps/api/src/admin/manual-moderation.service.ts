@@ -89,8 +89,7 @@ export class ManualModerationService {
     const queryRecord =
       query && typeof query === 'object' ? (query as Record<string, unknown>) : {};
     const rawStatus = typeof queryRecord.status === 'string' ? queryRecord.status.trim() : '';
-    const status =
-      rawStatus === '' ? 'PENDING' : this.parseGlobalSpammerCandidateStatus(rawStatus);
+    const status = rawStatus === '' ? 'PENDING' : this.parseGlobalSpammerCandidateStatus(rawStatus);
     if (!status) {
       throw new BadRequestException({ status: ['Invalid spammer review status'] });
     }
@@ -457,9 +456,9 @@ export class ManualModerationService {
       };
     }
 
-    const profile = (await this.resolveGlobalSpammerProfiles(chatId, [response.userId], options)).get(
-      response.userId.trim(),
-    );
+    const profile = (
+      await this.resolveGlobalSpammerProfiles(chatId, [response.userId], options)
+    ).get(response.userId.trim());
 
     return {
       ...response,

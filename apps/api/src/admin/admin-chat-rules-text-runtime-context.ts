@@ -66,10 +66,7 @@ export function createAdminChatRulesTextRuntimeContext(
     getSettings(chatId: string, user: AuthUser): Promise<ChatSettings> {
       return typedTarget.getSettings(chatId, user);
     },
-    getDomainAllowlistDetails(
-      chatId: string,
-      user: AuthUser,
-    ): Promise<DomainAllowlistEntry[]> {
+    getDomainAllowlistDetails(chatId: string, user: AuthUser): Promise<DomainAllowlistEntry[]> {
       return typedTarget.getDomainAllowlistDetails(chatId, user);
     },
     isRequiredSubscriptionCurrentlyActive(settings: ChatSettings): boolean {

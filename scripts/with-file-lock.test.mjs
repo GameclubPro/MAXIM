@@ -70,12 +70,7 @@ test('recovers a lock owned by a dead local process', async () => {
     JSON.stringify({ pid: 2_000_000_000, hostname: hostname() }),
   );
 
-  await runLocked(
-    root,
-    'stale',
-    "require('node:fs').writeFileSync(process.argv[1], 'ok')",
-    output,
-  );
+  await runLocked(root, 'stale', "require('node:fs').writeFileSync(process.argv[1], 'ok')", output);
 
   assert.equal(readFileSync(output, 'utf8'), 'ok');
 });

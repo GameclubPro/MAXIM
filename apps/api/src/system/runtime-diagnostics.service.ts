@@ -594,11 +594,7 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
       const countField = this.buildSpammerSurfaceField(sample, `bucket:${bucket}`);
       pipeline.hincrby(bucketKey, countField, 1);
       pipeline.hincrby(bucketKey, this.buildSpammerSurfaceField(sample, 'count'), 1);
-      pipeline.hincrby(
-        bucketKey,
-        this.buildSpammerSurfaceField(sample, 'total'),
-        sample.elapsedMs,
-      );
+      pipeline.hincrby(bucketKey, this.buildSpammerSurfaceField(sample, 'total'), sample.elapsedMs);
       pipeline.hset(
         bucketKey,
         this.buildSpammerSurfaceField(sample, 'lastObservedAtMs'),
@@ -1096,10 +1092,7 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
     RuntimeDiagnosticsDashboardSnapshot['spammerReadModel']
   > {
     const hashes = await this.readHashes(
-      this.buildWindowBucketKeys(
-        SPAMMER_READ_MODEL_BUCKET_PREFIX,
-        this.spammerReadModelWindowSec,
-      ),
+      this.buildWindowBucketKeys(SPAMMER_READ_MODEL_BUCKET_PREFIX, this.spammerReadModelWindowSec),
     );
     const counters = new Map<string, number>();
     let lastSuccessAtMs = 0;
@@ -1593,7 +1586,9 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
     }
     const target = Math.max(1, Math.ceil(totalCount * percentile));
     let cumulative = 0;
-    for (const [bucket, count] of [...buckets.entries()].sort((left, right) => left[0] - right[0])) {
+    for (const [bucket, count] of [...buckets.entries()].sort(
+      (left, right) => left[0] - right[0],
+    )) {
       cumulative += count;
       if (cumulative >= target) {
         return bucket;

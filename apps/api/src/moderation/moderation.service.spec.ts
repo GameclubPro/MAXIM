@@ -3735,10 +3735,7 @@ describe('ModerationService', () => {
         }),
       });
 
-      expect(actionLedger.hasSucceededDelete).toHaveBeenCalledWith(
-        'chat-1',
-        'sent-message-1',
-      );
+      expect(actionLedger.hasSucceededDelete).toHaveBeenCalledWith('chat-1', 'sent-message-1');
       expect(scheduleWebhookDelete).not.toHaveBeenCalled();
       expect(deleteIntents.ensureIntent).not.toHaveBeenCalled();
       expect(deleteIntents.ensureAndAttempt).not.toHaveBeenCalled();

@@ -7,11 +7,7 @@ import {
   matchesImpactPattern,
   validateImpactConfig,
 } from '../impact-config.mjs';
-import {
-  createImpactPlan,
-  renderImpactPlanHuman,
-  renderImpactPlanJson,
-} from '../impact-plan.mjs';
+import { createImpactPlan, renderImpactPlanHuman, renderImpactPlanJson } from '../impact-plan.mjs';
 
 const config = await loadImpactConfig();
 
@@ -31,10 +27,7 @@ test('rejects a forbidden routine component even when a rule references it corre
   invalid.deployComponents.push({ id: 'app2-static', label: 'Paused shell' });
   invalid.fallback.deployComponents.push('app2-static');
 
-  assert.throws(
-    () => validateImpactConfig(invalid, '<test-config>'),
-    /forbidden fragment app2/u,
-  );
+  assert.throws(() => validateImpactConfig(invalid, '<test-config>'), /forbidden fragment app2/u);
 });
 
 test('matches root and recursive glob patterns without crossing path segments for a single star', () => {
@@ -73,11 +66,7 @@ test('keeps workspace tests out of production deploy scope', () => {
 test('maps shared contracts to every active production component', () => {
   const plan = planFor([{ status: 'M', path: 'packages/contracts/src/publication.ts' }]);
 
-  assert.deepEqual(plan.deploy.components, [
-    'api-shared',
-    'miniapp-major-static',
-    'admin-static',
-  ]);
+  assert.deepEqual(plan.deploy.components, ['api-shared', 'miniapp-major-static', 'admin-static']);
   assert.ok(plan.checks.includes('contracts'));
   assert.ok(plan.checks.includes('api'));
   assert.ok(plan.checks.includes('miniapp-production-build'));
@@ -100,10 +89,11 @@ test('reports a Prisma schema change without migration as review-required', () =
 });
 
 test('accepts a config-only Prisma schema change and rejects a deleted migration as evidence', () => {
-  const configOnlyPlan = planFor(
-    [{ status: 'M', path: 'apps/api/prisma/schema.prisma' }],
-    { schemaChanged: true, migrationRequired: false, configOnly: true },
-  );
+  const configOnlyPlan = planFor([{ status: 'M', path: 'apps/api/prisma/schema.prisma' }], {
+    schemaChanged: true,
+    migrationRequired: false,
+    configOnly: true,
+  });
   assert.deepEqual(configOnlyPlan.migration, {
     schemaChanged: true,
     configOnly: true,
@@ -186,11 +176,7 @@ test('maps nginx files to explicit manual operations without container deploy ta
 test('maps the root lockfile fail-closed to all checks and active components', () => {
   const plan = planFor([{ status: 'M', path: 'package-lock.json' }]);
 
-  assert.deepEqual(plan.deploy.components, [
-    'api-shared',
-    'miniapp-major-static',
-    'admin-static',
-  ]);
+  assert.deepEqual(plan.deploy.components, ['api-shared', 'miniapp-major-static', 'admin-static']);
   assert.ok(plan.checks.includes('full'));
   assert.ok(plan.checks.includes('prisma'));
 });
@@ -214,11 +200,7 @@ test('unknown paths fail closed with full validation, all components, and a warn
 
   assert.deepEqual(plan.unknownPaths, ['new-runtime/entrypoint.ts']);
   assert.deepEqual(plan.checks, ['full']);
-  assert.deepEqual(plan.deploy.components, [
-    'api-shared',
-    'miniapp-major-static',
-    'admin-static',
-  ]);
+  assert.deepEqual(plan.deploy.components, ['api-shared', 'miniapp-major-static', 'admin-static']);
   assert.equal(plan.deploy.reviewRequired, true);
   assert.match(plan.warnings[0], /Unclassified paths/u);
 });
@@ -265,7 +247,5 @@ function planFor(changes, prismaSchemaImpact = null) {
 }
 
 function changePaths(change) {
-  return change.oldPath && change.newPath
-    ? [change.oldPath, change.newPath]
-    : [change.path];
+  return change.oldPath && change.newPath ? [change.oldPath, change.newPath] : [change.path];
 }

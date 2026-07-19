@@ -77,8 +77,7 @@ export function AsyncRadioGroup<Value extends string>({
 
     selectionPendingRef.current = true;
     focusAfterPendingValueRef.current = nextValue;
-    shouldRestoreFocusRef.current =
-      groupRef.current?.contains(document.activeElement) === true;
+    shouldRestoreFocusRef.current = groupRef.current?.contains(document.activeElement) === true;
     setIsSelectionPending(true);
     setSelectedValue(nextValue);
     try {

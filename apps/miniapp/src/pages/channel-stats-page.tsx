@@ -1160,9 +1160,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
     ? `${formatChartDetailDate(activePoint.at, stats.period.bucket)}: ${formatAudienceCount(
         activePoint.displayValue,
         activePoint.confidence,
-      )} подписчиков, ${activeBucketLabel.toLocaleLowerCase(
-        'ru-RU',
-      )} ${activeDeltaLabel}${
+      )} подписчиков, ${activeBucketLabel.toLocaleLowerCase('ru-RU')} ${activeDeltaLabel}${
         stats.meta.churnAvailable
           ? `, ${formatCount(activePoint.joined)} пришли, ${formatCount(activePoint.left)} ушли`
           : ''
@@ -1925,8 +1923,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
   const stats = isChannelStatsResponseForRange(statsQuery.data, chatId, range)
     ? statsQuery.data
     : null;
-  const currentStatsIdentity =
-    stats && !statsQuery.isPlaceholderData ? stats : null;
+  const currentStatsIdentity = stats && !statsQuery.isPlaceholderData ? stats : null;
   const resolvedTitleResolution = useMemo(
     () =>
       resolveStatisticsTitle({

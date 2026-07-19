@@ -1,11 +1,5 @@
 import { spawn } from 'node:child_process';
-import {
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { resolve } from 'node:path';
 
@@ -15,9 +9,7 @@ const lockName = process.argv[2];
 const command = separatorIndex >= 0 ? process.argv.slice(separatorIndex + 1) : [];
 
 if (!lockName || !/^[a-z0-9][a-z0-9._-]*$/u.test(lockName) || command.length === 0) {
-  throw new Error(
-    'Usage: node scripts/with-file-lock.mjs <lock-name> -- <command> [arguments...]',
-  );
+  throw new Error('Usage: node scripts/with-file-lock.mjs <lock-name> -- <command> [arguments...]');
 }
 
 const lockRoot = resolve(process.env.MAXIM_LOCK_ROOT || resolve(repoRoot, '.codex', 'locks'));

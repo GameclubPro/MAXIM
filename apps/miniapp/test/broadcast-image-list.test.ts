@@ -22,10 +22,7 @@ test('normalizes composer broadcast images by trimming and skipping duplicates',
       image('', 'empty.jpg'),
       image('photo-2', 'two.jpg'),
     ]),
-    [
-      image('photo-1', 'one.jpg'),
-      image('photo-2', 'two.jpg'),
-    ],
+    [image('photo-1', 'one.jpg'), image('photo-2', 'two.jpg')],
   );
 });
 

@@ -230,13 +230,17 @@ describe('ManagedEntityCandidateSyncService', () => {
 });
 
 function readSqlValues(value: unknown): unknown[] {
-  return value && typeof value === 'object' && Array.isArray((value as { values?: unknown[] }).values)
+  return value &&
+    typeof value === 'object' &&
+    Array.isArray((value as { values?: unknown[] }).values)
     ? (value as { values: unknown[] }).values
     : [];
 }
 
 function readSqlText(value: unknown): string {
-  return value && typeof value === 'object' && Array.isArray((value as { strings?: unknown[] }).strings)
+  return value &&
+    typeof value === 'object' &&
+    Array.isArray((value as { strings?: unknown[] }).strings)
     ? (value as { strings: unknown[] }).strings.map(String).join(' ')
     : String(value);
 }

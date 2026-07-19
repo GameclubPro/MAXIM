@@ -18,10 +18,7 @@ export type AdminLogsDashboardRuntimeContext = {
   readonly prisma: PrismaService;
   readonly logger: Logger;
   readonly chatContextCache: ChatContextCacheService;
-  readonly logsDashboardResponseCache: Map<
-    string,
-    TimedPromiseCacheEntry<LogsDashboardResponse>
-  >;
+  readonly logsDashboardResponseCache: Map<string, TimedPromiseCacheEntry<LogsDashboardResponse>>;
   readonly moderationFeedPageCache: Map<string, TimedPromiseCacheEntry<ModerationFeedPage>>;
   readonly membershipActivityFeedPageCache: Map<
     string,
@@ -80,16 +77,10 @@ export function createAdminLogsDashboardRuntimeContext(
     get chatContextCache(): ChatContextCacheService {
       return typedTarget.chatContextCache;
     },
-    get logsDashboardResponseCache(): Map<
-      string,
-      TimedPromiseCacheEntry<LogsDashboardResponse>
-    > {
+    get logsDashboardResponseCache(): Map<string, TimedPromiseCacheEntry<LogsDashboardResponse>> {
       return typedTarget.logsDashboardResponseCache;
     },
-    get moderationFeedPageCache(): Map<
-      string,
-      TimedPromiseCacheEntry<ModerationFeedPage>
-    > {
+    get moderationFeedPageCache(): Map<string, TimedPromiseCacheEntry<ModerationFeedPage>> {
       return typedTarget.moderationFeedPageCache;
     },
     get membershipActivityFeedPageCache(): Map<

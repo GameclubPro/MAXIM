@@ -317,10 +317,7 @@ function GiveawayPrizeShowcase({
         {prizeDisplay.groups.map((group) => (
           <div
             key={group.id}
-            className={cn(
-              'giveaway-page__prize-showcase-item',
-              group.count > 1 && 'is-repeat',
-            )}
+            className={cn('giveaway-page__prize-showcase-item', group.count > 1 && 'is-repeat')}
           >
             <span className="giveaway-page__prize-showcase-badge">
               {group.count > 1 ? group.count : group.positions[0]}

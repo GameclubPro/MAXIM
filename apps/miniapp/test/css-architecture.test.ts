@@ -18,9 +18,17 @@ function write(root: string, path: string, contents: string): void {
 function fixture(): { root: string; baselinePath: string } {
   const root = mkdtempSync(join(tmpdir(), 'maxim-css-guard-'));
   write(root, 'apps/miniapp/src/app.tsx', "import './a.css';\n");
-  write(root, 'apps/miniapp/src/a.css', '@layer routes { .a { color: var(--local); --local: #fff; } }\n');
+  write(
+    root,
+    'apps/miniapp/src/a.css',
+    '@layer routes { .a { color: var(--local); --local: #fff; } }\n',
+  );
   const baselinePath = join(root, 'apps/miniapp/css-metrics-baseline.json');
-  write(root, 'apps/miniapp/css-metrics-baseline.json', JSON.stringify(buildMiniappCssMetricBaseline(root)));
+  write(
+    root,
+    'apps/miniapp/css-metrics-baseline.json',
+    JSON.stringify(buildMiniappCssMetricBaseline(root)),
+  );
   return { root, baselinePath };
 }
 

@@ -15,7 +15,12 @@ const sha = (digit) => digit.repeat(40);
 const imageId = (digit) => `sha256:${digit.repeat(64)}`;
 
 function component(id, digit) {
-  return { id, sourceSha: sha(digit), imageRef: `maxim-${id}:${sha(digit)}`, imageId: imageId(digit) };
+  return {
+    id,
+    sourceSha: sha(digit),
+    imageRef: `maxim-${id}:${sha(digit)}`,
+    imageId: imageId(digit),
+  };
 }
 
 test('atomically records a release and merges partial component updates', () => {
@@ -67,7 +72,10 @@ test('does not move current when an existing release id has different content', 
     createdAt: '2026-01-02T00:00:00.000Z',
   });
 
-  assert.throws(() => commitReleaseManifest({ stateDir, manifest: conflict }), /different content/u);
+  assert.throws(
+    () => commitReleaseManifest({ stateDir, manifest: conflict }),
+    /different content/u,
+  );
   assert.equal(readFileSync(join(stateDir, 'current.json'), 'utf8'), before);
 });
 

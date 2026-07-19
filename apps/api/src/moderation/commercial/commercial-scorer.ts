@@ -338,7 +338,8 @@ export class CommercialSecondStageScorer {
     if (
       adjustedConfidenceScore < appliedThresholds.warnThreshold &&
       decisionBand === 'LOW' &&
-      confidenceScore >= appliedThresholds.warnThreshold - commercialLogitConfig.rescueWindowBelowWarn &&
+      confidenceScore >=
+        appliedThresholds.warnThreshold - commercialLogitConfig.rescueWindowBelowWarn &&
       evidence.hasStructuredServicePhoneEvidence &&
       state.hasServiceSpecialtyContext &&
       state.hasPhoneContact &&

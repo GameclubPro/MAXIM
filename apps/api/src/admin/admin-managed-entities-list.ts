@@ -53,11 +53,7 @@ function attachUserVisibleRefreshState(
 export async function listManagedEntitiesValue(
   params: ManagedEntitiesListValueParams,
 ): Promise<ChatSummary[]> {
-  const result = await params.listDetailed(
-    params.user,
-    params.entityType,
-    params.options ?? {},
-  );
+  const result = await params.listDetailed(params.user, params.entityType, params.options ?? {});
   return params.attachFavoriteTypes(params.user.userId, result.items);
 }
 
@@ -68,13 +64,10 @@ export async function listManagedEntitiesWithRefreshStateValue(
     ...(params.options ?? {}),
     includeRefreshState: true,
   });
-  const refresh = attachUserVisibleRefreshState(
-    result.refresh ?? params.createIdleRefreshState(),
-    {
-      items: result.items,
-      diff: result.diff,
-    },
-  );
+  const refresh = attachUserVisibleRefreshState(result.refresh ?? params.createIdleRefreshState(), {
+    items: result.items,
+    diff: result.diff,
+  });
   const items = await params.attachFavoriteTypes(params.user.userId, result.items);
   const response: ManagedEntitiesListResponse = {
     items,

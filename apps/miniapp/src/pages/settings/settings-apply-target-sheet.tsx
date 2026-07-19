@@ -152,9 +152,7 @@ export function SettingsApplyTargetSheet({
 
     onTargetChange({
       mode:
-        nextTypes.length === HOME_ENTITY_FAVORITE_TYPES.length
-          ? 'allFavorites'
-          : 'favoriteTypes',
+        nextTypes.length === HOME_ENTITY_FAVORITE_TYPES.length ? 'allFavorites' : 'favoriteTypes',
       favoriteTypes: nextTypes,
       chatIds: [],
     });

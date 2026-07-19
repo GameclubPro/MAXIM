@@ -1,8 +1,4 @@
-import {
-  BadRequestException,
-  ServiceUnavailableException,
-  type Logger,
-} from '@nestjs/common';
+import { BadRequestException, ServiceUnavailableException, type Logger } from '@nestjs/common';
 import type { ChatSettings, ManagedEntityHeader, ManagedEntityType } from '@maxim/contracts';
 import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import type { MaxBotLinkService } from '../max/max-bot-link.service';

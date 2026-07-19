@@ -2,11 +2,7 @@ export function createHomeRefreshCooldownDeadline(
   retryAfterMs: number | null | undefined,
   observedAtMs: number,
 ): number | null {
-  if (
-    typeof retryAfterMs !== 'number' ||
-    !Number.isFinite(retryAfterMs) ||
-    retryAfterMs <= 0
-  ) {
+  if (typeof retryAfterMs !== 'number' || !Number.isFinite(retryAfterMs) || retryAfterMs <= 0) {
     return null;
   }
 

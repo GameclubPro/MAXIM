@@ -27,7 +27,9 @@ export async function smokeJsonOk(url) {
 
 export function findStaticAssets(html, pageUrl) {
   const assets = { js: [], css: [] };
-  for (const match of html.matchAll(/<(?:script|link)\b[^>]*(?:src|href)=["']([^"']+)["'][^>]*>/giu)) {
+  for (const match of html.matchAll(
+    /<(?:script|link)\b[^>]*(?:src|href)=["']([^"']+)["'][^>]*>/giu,
+  )) {
     const assetUrl = new URL(match[1], pageUrl).href;
     const pathname = new URL(assetUrl).pathname;
     if (/\.js$/u.test(pathname)) {

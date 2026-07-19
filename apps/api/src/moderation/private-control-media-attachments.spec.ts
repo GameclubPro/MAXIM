@@ -167,9 +167,9 @@ describe('private control media attachments', () => {
       'image/webp',
     );
     expect(resolvePrivateVideoMimeType(null, 'clip.m4v', null)).toBe('video/x-m4v');
-    expect(buildPrivateDownloadedFileName('private-rules', 'bad/name?.png', null, 'image/png')).toBe(
-      'bad-name-.png',
-    );
+    expect(
+      buildPrivateDownloadedFileName('private-rules', 'bad/name?.png', null, 'image/png'),
+    ).toBe('bad-name-.png');
     expect(buildPrivateDownloadedFileName('private-rules', null, 'file-1', 'image/webp')).toBe(
       'private-rules-file-1.webp',
     );
@@ -191,11 +191,13 @@ describe('private control media attachments', () => {
     const fetchMock = mockFetch(Buffer.from('image'), 'image/png; charset=utf-8');
 
     try {
-      await expect(downloadPrivateImageSourceAttachment(source!, 'private-rules')).resolves.toEqual({
-        base64: Buffer.from('image').toString('base64'),
-        mimeType: 'image/png',
-        fileName: 'private-rules-photo-1.png',
-      });
+      await expect(downloadPrivateImageSourceAttachment(source!, 'private-rules')).resolves.toEqual(
+        {
+          base64: Buffer.from('image').toString('base64'),
+          mimeType: 'image/png',
+          fileName: 'private-rules-photo-1.png',
+        },
+      );
       expect(fetchMock.fetchMock).toHaveBeenCalledWith('https://example.test/photo.jpg', {
         method: 'GET',
         signal: expect.any(AbortSignal),
@@ -485,9 +487,9 @@ describe('private control media attachments', () => {
 
     try {
       expect(unresolvedSource).toBeNull();
-      await expect(buildPrivateSuggestionMediaDraftFromVideo(videoSource, uploader)).rejects.toThrow(
-        BadRequestException,
-      );
+      await expect(
+        buildPrivateSuggestionMediaDraftFromVideo(videoSource, uploader),
+      ).rejects.toThrow(BadRequestException);
     } finally {
       fetchMock.restore();
     }

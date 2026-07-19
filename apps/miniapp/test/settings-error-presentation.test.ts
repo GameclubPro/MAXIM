@@ -28,10 +28,7 @@ test('giveaway finish date only receives finish-date validation errors', () => {
     giveawayCardSource,
     /const finishAtValidationError =[\s\S]*?!basicsValidation\.valid && isFinishAtValidationMessage\(validationHint\)[\s\S]*?\? validationHint : '';/u,
   );
-  assert.match(
-    giveawayCardSource,
-    /error=\{finishAtValidationError \|\| undefined\}/u,
-  );
+  assert.match(giveawayCardSource, /error=\{finishAtValidationError \|\| undefined\}/u);
   assert.match(
     giveawayCardSource,
     /validationHint && !\(editorStep === 'basics' && finishAtValidationError\)/u,

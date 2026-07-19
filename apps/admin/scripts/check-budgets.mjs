@@ -31,7 +31,9 @@ for (const [label, extension, budget] of [
 
 function assertBudget(label, actual, budget, tolerance) {
   if (actual > budget + tolerance) {
-    throw new Error(`${label}: ${format(actual)} exceeds ${format(budget)} + ${format(tolerance)} tolerance.`);
+    throw new Error(
+      `${label}: ${format(actual)} exceeds ${format(budget)} + ${format(tolerance)} tolerance.`,
+    );
   }
 }
 

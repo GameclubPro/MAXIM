@@ -33,26 +33,25 @@ API собирается в один Docker image, но production запуск�
 
 Production-сервисы:
 
-| Сервис | Роль |
-| --- | --- |
-| `api-ingress` | публичные health/webhook endpoints |
-| `api-admin` | `/api/v1/`, mini app и закрытые owner APIs |
-| `api-enqueue` | materialization/enqueue webhook work |
-| `api-moderation` | default moderation shard group |
-| `api-moderation-critical` | critical/legacy moderation queues |
-| `api-moderation-join` | membership/join queues |
-| `api-moderation-realtime-b` | realtime shard group B |
-| `api-moderation-realtime-c` | realtime shard group C |
-| `api-moderation-realtime-d` | realtime shard group D |
-| `api-moderation-background` | background moderation and scheduled work |
-| `api-action` | durable MAX action dispatch |
+| Сервис                      | Роль                                       |
+| --------------------------- | ------------------------------------------ |
+| `api-ingress`               | публичные health/webhook endpoints         |
+| `api-admin`                 | `/api/v1/`, mini app и закрытые owner APIs |
+| `api-enqueue`               | materialization/enqueue webhook work       |
+| `api-moderation`            | default moderation shard group             |
+| `api-moderation-critical`   | critical/legacy moderation queues          |
+| `api-moderation-join`       | membership/join queues                     |
+| `api-moderation-realtime-b` | realtime shard group B                     |
+| `api-moderation-realtime-c` | realtime shard group C                     |
+| `api-moderation-realtime-d` | realtime shard group D                     |
+| `api-moderation-background` | background moderation and scheduled work   |
+| `api-action`                | durable MAX action dispatch                |
 
 Для локальной отладки доступны роли `all`, `ingress`, `admin`, `enqueue`, `moderation` и `action`.
 Production Compose не использует `all`.
 
 Nginx направляет публичные webhooks/health в `api-ingress`, обычный `/api/v1/` — в `api-admin`.
-Публичный ready endpoint намеренно закрыт; локальные ready endpoints доступны на портах 3001 и
-3002.
+Публичный ready endpoint намеренно закрыт; локальные ready endpoints доступны на портах 3001 и 3002.
 
 ## 4. Поток Webhook И Модерации
 

@@ -13,7 +13,9 @@ function stripSqlComments(sql) {
 }
 
 function digestNames(names) {
-  return createHash('sha256').update(`${names.join('\n')}\n`).digest('hex');
+  return createHash('sha256')
+    .update(`${names.join('\n')}\n`)
+    .digest('hex');
 }
 
 function digestMigrationContents(migrationsRoot, names) {
@@ -79,9 +81,7 @@ export function findPrismaMigrationViolations(root) {
         dropColumnPattern.test(sql) &&
         (!approval?.twoPhaseRelease || !approval?.runtimeCompatibilityEvidence?.trim())
       ) {
-        violations.push(
-          `${name} drops a column without two-phase release compatibility evidence.`,
-        );
+        violations.push(`${name} drops a column without two-phase release compatibility evidence.`);
       }
     }
   }

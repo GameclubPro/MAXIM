@@ -17,17 +17,15 @@ function fixture(markdown) {
   const root = mkdtempSync(join(tmpdir(), 'maxim-docs-guard-'));
   write(root, 'package.json', JSON.stringify({ scripts: { check: 'node ok.mjs' } }));
   write(root, 'README.md', markdown);
-  write(
-    root,
-    'infra/docker-compose.yml',
-    'services:\n  api-admin:\n    image: busybox\n',
-  );
+  write(root, 'infra/docker-compose.yml', 'services:\n  api-admin:\n    image: busybox\n');
   execFileSync('docker', ['compose', '-f', 'infra/docker-compose.yml', 'config'], { cwd: root });
   return root;
 }
 
 test('accepts executable checked-in commands', () => {
-  const root = fixture('```bash\nnpm run check\ndocker compose -f infra/docker-compose.yml logs api-admin\n```\n');
+  const root = fixture(
+    '```bash\nnpm run check\ndocker compose -f infra/docker-compose.yml logs api-admin\n```\n',
+  );
   assert.deepEqual(findDocumentationViolations(root), []);
 });
 

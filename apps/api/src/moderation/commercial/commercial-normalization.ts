@@ -77,10 +77,7 @@ export function normalizeCommercialRawText(value: string): string {
   if (COMMERCIAL_OBFUSCATED_URL_HINT_PATTERN.test(normalized)) {
     normalized = normalizeObfuscatedUrls(normalized);
   }
-  if (
-    COMMERCIAL_LATIN_PATTERN.test(normalized) &&
-    COMMERCIAL_CYRILLIC_PATTERN.test(normalized)
-  ) {
+  if (COMMERCIAL_LATIN_PATTERN.test(normalized) && COMMERCIAL_CYRILLIC_PATTERN.test(normalized)) {
     normalized = normalized.replace(COMMERCIAL_MIXED_TOKEN_PATTERN, normalizeMixedCommercialToken);
   }
   return normalized;
@@ -97,10 +94,7 @@ function normalizeObfuscatedUrls(value: string): string {
         : scheme.toLowerCase();
       return `${normalizedScheme}://`;
     })
-    .replace(
-      /([a-z0-9а-яё-])\s+(?:dot|точка)\s+([a-zа-яё]{2,})(?=$|[^\p{L}\p{N}_-])/giu,
-      '$1.$2',
-    );
+    .replace(/([a-z0-9а-яё-])\s+(?:dot|точка)\s+([a-zа-яё]{2,})(?=$|[^\p{L}\p{N}_-])/giu, '$1.$2');
 }
 
 function normalizeMixedCommercialToken(token: string): string {

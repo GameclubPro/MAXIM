@@ -48,11 +48,7 @@ describe('AdminManagedEntitiesRuntimeContext', () => {
       readTrimmedString(value: unknown): string | null {
         return typeof value === 'string' && value.trim() ? `${this.prefix}:${value.trim()}` : null;
       },
-      assertChatAdmin(
-        chatId: string,
-        userId: string,
-        entityType?: string | null,
-      ): Promise<void> {
+      assertChatAdmin(chatId: string, userId: string, entityType?: string | null): Promise<void> {
         this.adminCalls.push(`${this.readTrimmedString(chatId)}:${userId}:${entityType ?? 'all'}`);
         return Promise.resolve();
       },
@@ -61,7 +57,9 @@ describe('AdminManagedEntitiesRuntimeContext', () => {
         return Promise.resolve();
       },
       attachManagedEntityFavoriteTypes(userId: string, items: ReadonlyArray<{ id: string }>) {
-        return Promise.resolve(items.map((item) => ({ ...item, title: `${this.prefix}:${userId}` })));
+        return Promise.resolve(
+          items.map((item) => ({ ...item, title: `${this.prefix}:${userId}` })),
+        );
       },
       attachManagedEntityFavoriteTypesToDiff(_userId: string, diff: { mode: string } | null) {
         return Promise.resolve(diff ? { ...diff, marker: this.prefix } : diff);
@@ -97,10 +95,14 @@ describe('AdminManagedEntitiesRuntimeContext', () => {
         return Promise.resolve(this.readTrimmedString(chatId) ?? undefined);
       },
       runManagedEntitiesBoundedRefreshJob(authUser: typeof user, entityType: string) {
-        return Promise.resolve({ continueAfterMs: `${this.prefix}:${authUser.userId}:${entityType}` });
+        return Promise.resolve({
+          continueAfterMs: `${this.prefix}:${authUser.userId}:${entityType}`,
+        });
       },
       runManagedEntitiesRemoteFullRefresh(authUser: typeof user, entityType: string) {
-        return Promise.resolve({ continueAfterMs: `${this.prefix}:remote:${authUser.userId}:${entityType}` });
+        return Promise.resolve({
+          continueAfterMs: `${this.prefix}:remote:${authUser.userId}:${entityType}`,
+        });
       },
     };
     const context = createAdminManagedEntitiesRuntimeContext(target);
@@ -114,9 +116,9 @@ describe('AdminManagedEntitiesRuntimeContext', () => {
       'read:legacy:chat-1:admin-1',
       'entity:legacy:chat-1:admin-1:chat',
     ]);
-    await expect(context.attachManagedEntityFavoriteTypes('admin-1', [{ id: 'chat-1' }] as never)).resolves.toEqual([
-      { id: 'chat-1', title: 'legacy:admin-1' },
-    ]);
+    await expect(
+      context.attachManagedEntityFavoriteTypes('admin-1', [{ id: 'chat-1' }] as never),
+    ).resolves.toEqual([{ id: 'chat-1', title: 'legacy:admin-1' }]);
     await expect(
       context.attachManagedEntityFavoriteTypesToDiff('admin-1', { mode: 'patch' } as never),
     ).resolves.toEqual({ mode: 'patch', marker: 'legacy' });

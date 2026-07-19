@@ -111,7 +111,9 @@ function runNpmScript(cwd, script) {
         resolveRun();
         return;
       }
-      reject(new Error(`npm run ${script} failed${signal ? ` with ${signal}` : ` with code ${code}`}.`));
+      reject(
+        new Error(`npm run ${script} failed${signal ? ` with ${signal}` : ` with code ${code}`}.`),
+      );
     });
   });
 }

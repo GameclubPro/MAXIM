@@ -505,11 +505,7 @@ describe('commercial pattern regressions', () => {
       label: 'short flowers with unit price and phone from twenty four hour audit miss',
       text: 'Продам цветы по 15 р шт. Кинель юг +7 900 000 10 41',
       subtype: 'GOODS_RETAIL',
-      signals: [
-        'goods-retail:flower-herb-unit-price-retail',
-        'transaction:price',
-        'contact:phone',
-      ],
+      signals: ['goods-retail:flower-herb-unit-price-retail', 'transaction:price', 'contact:phone'],
     },
     {
       label: 'short herb unit price from twenty four hour audit miss',
@@ -1444,20 +1440,23 @@ describe('commercial pattern regressions', () => {
       'Прочистка канализации, устранение засоров, выезд круглосуточно +7 900 000 21 06',
       'service-specialty:sewer-cleaning-service',
     ],
-  ])('keeps structured %s phone ads reviewable under soft balanced thresholds', (_label, text, signal) => {
-    const result = detect(text, {
-      settings: {
-        commercialAdsSensitivity: 'BALANCED',
-        commercialAdsWarnThreshold: 57,
-        commercialAdsDeleteThreshold: 77,
-      },
-    });
+  ])(
+    'keeps structured %s phone ads reviewable under soft balanced thresholds',
+    (_label, text, signal) => {
+      const result = detect(text, {
+        settings: {
+          commercialAdsSensitivity: 'BALANCED',
+          commercialAdsWarnThreshold: 57,
+          commercialAdsDeleteThreshold: 77,
+        },
+      });
 
-    expect(result?.primarySubtype).toBe('SERVICES');
-    expect(result?.matchedSignals).toContain(signal);
-    expect(result?.matchedSignals).toContain('transaction:structured-service-phone-offer');
-    expect(result?.actionBand).toBe('REVIEW_ONLY');
-  });
+      expect(result?.primarySubtype).toBe('SERVICES');
+      expect(result?.matchedSignals).toContain(signal);
+      expect(result?.matchedSignals).toContain('transaction:structured-service-phone-offer');
+      expect(result?.actionBand).toBe('REVIEW_ONLY');
+    },
+  );
 
   it('flags long yard work and moving service ads under soft balanced thresholds', () => {
     const result = detect(
@@ -1571,9 +1570,7 @@ describe('commercial pattern regressions', () => {
   });
 
   it('escalates obfuscated payday-loan leadgen links', () => {
-    const result = detect(
-      'Дeньги дo зapплaты oнлaйн, oдoбpим бeз oткaзa, hxxp://credit dot ru',
-    );
+    const result = detect('Дeньги дo зapплaты oнлaйн, oдoбpим бeз oткaзa, hxxp://credit dot ru');
 
     expect(result?.primarySubtype).toBe('GOODS');
     expect(result?.matchedSignals).toEqual(
@@ -1833,16 +1830,13 @@ describe('commercial pattern regressions', () => {
         },
       },
     );
-    const poultry = detect(
-      'Продам домашних кур бройлеров. Цена 450 рублей за килограмм.',
-      {
-        settings: {
-          commercialAdsSensitivity: 'BALANCED',
-          commercialAdsWarnThreshold: 57,
-          commercialAdsDeleteThreshold: 77,
-        },
+    const poultry = detect('Продам домашних кур бройлеров. Цена 450 рублей за килограмм.', {
+      settings: {
+        commercialAdsSensitivity: 'BALANCED',
+        commercialAdsWarnThreshold: 57,
+        commercialAdsDeleteThreshold: 77,
       },
-    );
+    });
 
     expect(berry?.primarySubtype).toBe('GOODS_RETAIL');
     expect(berry?.actionBand).toBe('REVIEW_ONLY');

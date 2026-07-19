@@ -69,9 +69,7 @@ function createContext(
       typeof value === 'string' && value.trim() ? value.trim() : null,
     ),
     resolveBackgroundReadBotAssignment: jest.fn().mockResolvedValue('bot-1'),
-    runManagedEntitiesBoundedRefreshJob: jest
-      .fn()
-      .mockResolvedValue({ continueAfterMs: 1500 }),
+    runManagedEntitiesBoundedRefreshJob: jest.fn().mockResolvedValue({ continueAfterMs: 1500 }),
     runManagedEntitiesRemoteFullRefresh: jest.fn().mockResolvedValue(null),
     ...overrides,
   };

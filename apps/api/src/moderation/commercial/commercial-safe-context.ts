@@ -28,11 +28,7 @@ const PUBLIC_TRAINING_OR_HELP_PATTERN =
 const BRAND_MENTION_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])(?:отзыв|жалоба|подскажите|посоветуйте|кто\s+знает)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,100})(?:wildberries|wb|вб|ozon|озон|авито|банк|маркетплейс[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu;
 
-const DIRECT_DEAL_SIGNAL_PREFIXES = [
-  'contact:',
-  'deal-channel:',
-  'transaction:',
-] as const;
+const DIRECT_DEAL_SIGNAL_PREFIXES = ['contact:', 'deal-channel:', 'transaction:'] as const;
 
 const COMMERCIAL_SELF_PROMO_SIGNAL_PREFIXES = [
   'business:',

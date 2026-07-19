@@ -32,10 +32,9 @@ test('full check supersedes narrower checks', () => {
     }),
     [{ id: 'full', script: 'check' }],
   );
-  assert.deepEqual(
-    selectVerificationScripts({ config, plan: null, full: true }),
-    [{ id: 'full', script: 'check' }],
-  );
+  assert.deepEqual(selectVerificationScripts({ config, plan: null, full: true }), [
+    { id: 'full', script: 'check' },
+  ]);
 });
 
 test('parses full and dry-run modes without weakening range validation', () => {

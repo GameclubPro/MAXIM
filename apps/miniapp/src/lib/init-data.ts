@@ -24,7 +24,9 @@ function readWrappedParam(source: string, names: readonly string[]): string {
   }
 
   const queryIndex = normalized.indexOf('?');
-  return queryIndex >= 0 ? readParamFromNormalizedSource(normalized.slice(queryIndex + 1), names) : '';
+  return queryIndex >= 0
+    ? readParamFromNormalizedSource(normalized.slice(queryIndex + 1), names)
+    : '';
 }
 
 function normalizeInitData(value: string): string {

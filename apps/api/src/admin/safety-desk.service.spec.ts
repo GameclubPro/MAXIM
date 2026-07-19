@@ -731,8 +731,7 @@ describe('SafetyDeskService', () => {
     const { prisma, service } = createFixture();
     prisma.vkParsingPost.findMany.mockResolvedValue([
       createReviewPost({
-        text:
-          '**Новость** [витрина](https://shop.example/catalog) [Профиль](max://user/42)',
+        text: '**Новость** [витрина](https://shop.example/catalog) [Профиль](max://user/42)',
         textFormat: 'markdown',
         photoUrls: [],
         videoUrls: [],
@@ -755,11 +754,7 @@ describe('SafetyDeskService', () => {
     expect(queue.items[0]).toMatchObject({
       textFormat: 'markdown',
       domains: ['fallback.example', 'shop.example'],
-      linkUrls: [
-        'https://fallback.example/a_b',
-        'https://shop.example/catalog',
-        'max://user/42',
-      ],
+      linkUrls: ['https://fallback.example/a_b', 'https://shop.example/catalog', 'max://user/42'],
       risk: 'MEDIUM',
     });
     expect(queue.items[0]?.previewHtml).toBe(

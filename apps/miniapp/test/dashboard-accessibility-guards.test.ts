@@ -31,14 +31,8 @@ test('participant moderation composers expose stable disclosure relationships', 
 });
 
 test('participant immunity radios use one tab stop and full radio-group keyboard navigation', () => {
-  assert.match(
-    participantSheetSource,
-    /tabIndex=\{immunityMode === 'limited' \? 0 : -1\}/u,
-  );
-  assert.match(
-    participantSheetSource,
-    /tabIndex=\{immunityMode === 'always' \? 0 : -1\}/u,
-  );
+  assert.match(participantSheetSource, /tabIndex=\{immunityMode === 'limited' \? 0 : -1\}/u);
+  assert.match(participantSheetSource, /tabIndex=\{immunityMode === 'always' \? 0 : -1\}/u);
 
   for (const key of ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End']) {
     assert.match(participantSheetSource, new RegExp(`key === '${key}'`, 'u'));

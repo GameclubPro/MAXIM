@@ -22,15 +22,9 @@ test('parses worktree, staged, and base-head modes', () => {
 });
 
 test('rejects ambiguous or incomplete mode arguments', () => {
-  assert.throws(
-    () => parseImpactPlanArgs(['--staged', '--worktree']),
-    /mutually exclusive/u,
-  );
+  assert.throws(() => parseImpactPlanArgs(['--staged', '--worktree']), /mutually exclusive/u);
   assert.throws(() => parseImpactPlanArgs(['--head', 'HEAD']), /requires --base/u);
-  assert.throws(
-    () => parseImpactPlanArgs(['--staged', '--base', 'HEAD~1']),
-    /cannot be combined/u,
-  );
+  assert.throws(() => parseImpactPlanArgs(['--staged', '--base', 'HEAD~1']), /cannot be combined/u);
 });
 
 test('CLI emits machine-readable deterministic JSON for a separate worktree', async (t) => {

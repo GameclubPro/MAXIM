@@ -14,7 +14,9 @@ function write(root, path, contents) {
 }
 
 function digest(names) {
-  return createHash('sha256').update(`${names.join('\n')}\n`).digest('hex');
+  return createHash('sha256')
+    .update(`${names.join('\n')}\n`)
+    .digest('hex');
 }
 
 function digestContents(root, names) {
@@ -22,9 +24,7 @@ function digestContents(root, names) {
   for (const name of names) {
     hash.update(name);
     hash.update('\0');
-    hash.update(
-      readFileSync(join(root, `apps/api/prisma/migrations/${name}/migration.sql`)),
-    );
+    hash.update(readFileSync(join(root, `apps/api/prisma/migrations/${name}/migration.sql`)));
     hash.update('\0');
   }
   return hash.digest('hex');

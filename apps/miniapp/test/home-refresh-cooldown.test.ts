@@ -34,8 +34,5 @@ test('home refresh cooldown catches up after a background-tab deadline expires',
     chatsPageSource,
     /document\.addEventListener\('visibilitychange', updateClockWhenVisible\)/u,
   );
-  assert.match(
-    chatsPageSource,
-    /disabled=\{isFetching \|\| isManualRefreshInProgressByState\}/u,
-  );
+  assert.match(chatsPageSource, /disabled=\{isFetching \|\| isManualRefreshInProgressByState\}/u);
 });

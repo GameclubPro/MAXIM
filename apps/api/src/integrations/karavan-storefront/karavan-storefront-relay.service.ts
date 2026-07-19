@@ -3,10 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { z } from 'zod';
 import { Prisma } from '../../prisma/prisma-client';
 import { PrismaService } from '../../prisma/prisma.service';
-import {
-  MaxClientService,
-  type MaxActionDispatchOptions,
-} from '../../max/max-client.service';
+import { MaxClientService, type MaxActionDispatchOptions } from '../../max/max-client.service';
 import { RedisCounterService } from '../../moderation/redis-counter.service';
 
 type RelayContext = {
@@ -20,23 +17,20 @@ type RelayContext = {
   botId?: string | null;
 };
 
-export type KaravanStorefrontRelayResult =
-  | 'handled'
-  | 'noop'
-  | 'duplicate'
-  | 'disabled'
-  | 'failed';
+export type KaravanStorefrontRelayResult = 'handled' | 'noop' | 'duplicate' | 'disabled' | 'failed';
 
 const lookupResponseSchema = z.object({
   exists: z.boolean(),
-  store: z.object({
-    id: z.string().min(1),
-    slug: z.string().min(1),
-    name: z.string().min(1),
-    sellerAccountId: z.string().min(1),
-    url: z.string().url(),
-    inviteUrl: z.string().url(),
-  }).nullable(),
+  store: z
+    .object({
+      id: z.string().min(1),
+      slug: z.string().min(1),
+      name: z.string().min(1),
+      sellerAccountId: z.string().min(1),
+      url: z.string().url(),
+      inviteUrl: z.string().url(),
+    })
+    .nullable(),
 });
 
 type LookupResponse = z.infer<typeof lookupResponseSchema>;
@@ -293,9 +287,7 @@ export class KaravanStorefrontRelayService {
       return cached.response.exists ? cached.response.store : null;
     }
 
-    const existing = options.fresh
-      ? undefined
-      : this.inFlightLookups.get(normalizedMaxUserId);
+    const existing = options.fresh ? undefined : this.inFlightLookups.get(normalizedMaxUserId);
     if (existing) {
       const response = await existing;
       if (!response) {

@@ -116,10 +116,7 @@ test('daily audience table stays visible with all four data columns', () => {
     channelStatsExecutiveCss,
     /\.channel-summary-table__growth\.is-negative,[\s\S]*?\.channel-summary-table__growth\.is-negative \.channel-summary-table__growth-value \{\s*color: var\(--danger\);/u,
   );
-  assert.match(
-    statisticsExperienceCss,
-    /\.channel-summary-table \{\s*min-width: 0;\s*\}/u,
-  );
+  assert.match(statisticsExperienceCss, /\.channel-summary-table \{\s*min-width: 0;\s*\}/u);
   assert.doesNotMatch(statisticsExperienceCss, /\.channel-summary-table \{\s*min-width: 520px;/u);
 });
 
@@ -128,10 +125,7 @@ test('events appbar heading and linked top posts stay readable on narrow screens
     dashboardEventsCss,
     /\.events-stage__appbar-copy strong,\s*\.events-stage__appbar-title \{\s*margin: 0;/u,
   );
-  assert.match(
-    dashboardEventsCss,
-    /html\[data-max-theme='dark'\] \.events-stage__appbar-title,/u,
-  );
+  assert.match(dashboardEventsCss, /html\[data-max-theme='dark'\] \.events-stage__appbar-title,/u);
   assert.match(
     channelStatsExecutiveCss,
     /\.channel-posts-chart__row-head \{\s*grid-template-columns: auto minmax\(0, 1fr\) auto;\s*min-width: 0;/u,

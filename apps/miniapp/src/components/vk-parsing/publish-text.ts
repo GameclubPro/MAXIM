@@ -1,7 +1,4 @@
-import {
-  VK_PARSING_MAX_CHANNEL_LINK_URL_LENGTH,
-  type VkParsingPost,
-} from '@maxim/contracts';
+import { VK_PARSING_MAX_CHANNEL_LINK_URL_LENGTH, type VkParsingPost } from '@maxim/contracts';
 import {
   containsSupportedMarkdownUrl,
   renderSupportedMarkdownAsHtml,
@@ -29,11 +26,10 @@ export function measureVkParsingPublishTextLength(params: {
     ? strippedText.trim()
     : composeVkParsingPublishText(strippedText, linkUrls);
   const formattedText =
-    usesRichText && text.trim()
-      ? renderSupportedMarkdownAsHtml(text, { blockMode: 'raw' })
-      : text;
-  const missingLinkUrls =
-    usesRichText ? linkUrls.filter((url) => !containsSupportedMarkdownUrl(text, url)) : [];
+    usesRichText && text.trim() ? renderSupportedMarkdownAsHtml(text, { blockMode: 'raw' }) : text;
+  const missingLinkUrls = usesRichText
+    ? linkUrls.filter((url) => !containsSupportedMarkdownUrl(text, url))
+    : [];
   const renderedLinkHtml = missingLinkUrls.map(
     (url) => `<a href="${escapeHtmlAttribute(url)}">${escapeHtmlText(url)}</a>`,
   );
@@ -65,8 +61,7 @@ function composeVkParsingPublishText(text: string, linkUrls: string[]): string {
 
 const VK_INLINE_LINK_PATTERN =
   /(?:https?:\/\/|www\.|(?:vk\.cc|vk\.com|vk\.ru|t\.me|telegram\.me|wa\.me|max\.ru)\/)(?:\\[\\`*_[\]()~+]|[^\s<>()\]["'`{}])+/giu;
-const VK_MARKDOWN_LINK_PATTERN =
-  /\[([^\]\n]+)\]\((?:https?:\/\/|max:\/\/)[^\s)]+\)/giu;
+const VK_MARKDOWN_LINK_PATTERN = /\[([^\]\n]+)\]\((?:https?:\/\/|max:\/\/)[^\s)]+\)/giu;
 
 export function stripVkParsingLinksFromText(text: string): string {
   VK_MARKDOWN_LINK_PATTERN.lastIndex = 0;

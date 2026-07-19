@@ -5,7 +5,9 @@ export function createImpactPlan({ config, changeSet, prismaSchemaImpact = null 
     throw new TypeError('createImpactPlan requires config and changeSet.');
   }
 
-  const changedFiles = [...new Set(changeSet.changedPaths.map(normalizeRepoPath))].sort(compareText);
+  const changedFiles = [...new Set(changeSet.changedPaths.map(normalizeRepoPath))].sort(
+    compareText,
+  );
   const matchedPathsByRule = new Map(config.rules.map((rule) => [rule.id, []]));
   const matchedRuleIdsByPath = new Map();
   const unknownPaths = [];
@@ -204,9 +206,7 @@ function assertNoForbiddenRoutineTargets(config, components) {
       normalized.includes(fragment),
     );
     if (forbidden) {
-      throw new Error(
-        `Impact plan selected forbidden routine target ${component} (${forbidden}).`,
-      );
+      throw new Error(`Impact plan selected forbidden routine target ${component} (${forbidden}).`);
     }
   }
 }
@@ -248,7 +248,9 @@ function compareChanges(left, right) {
   if (pathOrder !== 0) {
     return pathOrder;
   }
-  return compareText(left.newPath ?? '', right.newPath ?? '') || compareText(left.status, right.status);
+  return (
+    compareText(left.newPath ?? '', right.newPath ?? '') || compareText(left.status, right.status)
+  );
 }
 
 function compareText(left, right) {

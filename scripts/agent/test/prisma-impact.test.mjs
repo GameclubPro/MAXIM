@@ -6,10 +6,7 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 
 import { collectGitChanges } from '../git-changes.mjs';
-import {
-  assessPrismaSchemaImpact,
-  stripPrismaRuntimeOnlyBlocks,
-} from '../prisma-impact.mjs';
+import { assessPrismaSchemaImpact, stripPrismaRuntimeOnlyBlocks } from '../prisma-impact.mjs';
 
 const schemaPath = 'apps/api/prisma/schema.prisma';
 

@@ -95,9 +95,10 @@ function resolveViewportMetrics() {
     height,
     top,
     left: Math.round(viewport?.offsetLeft ?? 0),
-    bottom: keyboardOverlap >= KEYBOARD_OPEN_OVERLAP_THRESHOLD_PX
-      ? 0
-      : clampPx(rawBottomInset, 0, VISUAL_VIEWPORT_BOTTOM_INSET_MAX_PX),
+    bottom:
+      keyboardOverlap >= KEYBOARD_OPEN_OVERLAP_THRESHOLD_PX
+        ? 0
+        : clampPx(rawBottomInset, 0, VISUAL_VIEWPORT_BOTTOM_INSET_MAX_PX),
     keyboardOverlap,
   };
 }
@@ -277,9 +278,7 @@ function isDarkHexColor(value: unknown): boolean | null {
 
   const [red, green, blue] = rgb.map((channel) => {
     const normalized = channel / 255;
-    return normalized <= 0.03928
-      ? normalized / 12.92
-      : ((normalized + 0.055) / 1.055) ** 2.4;
+    return normalized <= 0.03928 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
   });
   const luminance = 0.2126 * (red ?? 0) + 0.7152 * (green ?? 0) + 0.0722 * (blue ?? 0);
 
@@ -315,7 +314,10 @@ function resolvePreferredTheme(bridge: ReturnType<typeof resolveBridge>): MaxThe
     return bridgeTheme;
   }
 
-  if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches) {
+  if (
+    typeof window !== 'undefined' &&
+    window.matchMedia?.('(prefers-color-scheme: dark)').matches
+  ) {
     return 'dark';
   }
 

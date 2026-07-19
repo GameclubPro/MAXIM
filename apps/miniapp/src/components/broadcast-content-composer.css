@@ -298,9 +298,7 @@
     color: var(--color-accent);
   }
 
-  html[data-max-theme='dark']
-    .broadcast-content-composer
-    .broadcast-content-composer__editor {
+  html[data-max-theme='dark'] .broadcast-content-composer .broadcast-content-composer__editor {
     border-color: var(--color-border);
     background: var(--color-surface);
     box-shadow: none;
@@ -345,7 +343,9 @@
     color: var(--color-danger);
   }
 
-  html[data-max-theme='dark'] .broadcast-message-card__media-grid .broadcast-message-card__media-frame,
+  html[data-max-theme='dark']
+    .broadcast-message-card__media-grid
+    .broadcast-message-card__media-frame,
   html[data-max-theme='dark'] .broadcast-message-card__media-frame--loading {
     border-color: var(--color-border);
     background: var(--color-surface-muted);

@@ -222,9 +222,7 @@ describe('RuleEngineMessageLimitsDetector', () => {
   });
 
   it('does not count repeated delivery of the same message id toward anti-spam burst', async () => {
-    const detector = new RuleEngineMessageLimitsDetector(
-      new MockRedisCounterService() as never,
-    );
+    const detector = new RuleEngineMessageLimitsDetector(new MockRedisCounterService() as never);
     const settings = buildSettings({ antiSpamEnabled: true });
 
     for (let index = 0; index < 6; index += 1) {
@@ -249,9 +247,7 @@ describe('RuleEngineMessageLimitsDetector', () => {
   });
 
   it('does not count repeated delivery of the same message id toward message count limit', async () => {
-    const detector = new RuleEngineMessageLimitsDetector(
-      new MockRedisCounterService() as never,
-    );
+    const detector = new RuleEngineMessageLimitsDetector(new MockRedisCounterService() as never);
     const settings = buildSettings({
       messageCountLimitEnabled: true,
       messageCountLimitMessages: 1,
@@ -383,9 +379,7 @@ describe('RuleEngineMessageLimitsDetector', () => {
   });
 
   it('does not count repeated delivery of the same message id toward media cooldown', async () => {
-    const detector = new RuleEngineMessageLimitsDetector(
-      new MockRedisCounterService() as never,
-    );
+    const detector = new RuleEngineMessageLimitsDetector(new MockRedisCounterService() as never);
     const settings = buildSettings({
       photoMessageCooldownEnabled: true,
       photoMessageCooldownHours: 1,

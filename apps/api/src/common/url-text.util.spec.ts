@@ -13,9 +13,7 @@ describe('url-text util', () => {
 
   it('trims punctuation that wraps pasted scheme urls', () => {
     expect(
-      extractUrlsFromText(
-        'ссылки: [https://max.ru/channel/news] {https://docs.max.ru/start}:',
-      ),
+      extractUrlsFromText('ссылки: [https://max.ru/channel/news] {https://docs.max.ru/start}:'),
     ).toEqual(['https://max.ru/channel/news', 'https://docs.max.ru/start']);
   });
 
@@ -28,10 +26,9 @@ describe('url-text util', () => {
   });
 
   it('extracts separate urls from markdown-style links', () => {
-    expect(extractUrlsFromText('жми [https://safe.example](https://casino.example/path).')).toEqual([
-      'https://safe.example',
-      'https://casino.example/path',
-    ]);
+    expect(extractUrlsFromText('жми [https://safe.example](https://casino.example/path).')).toEqual(
+      ['https://safe.example', 'https://casino.example/path'],
+    );
   });
 
   it('does not merge adjacent scheme urls across closing punctuation', () => {

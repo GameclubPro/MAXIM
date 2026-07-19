@@ -44,9 +44,7 @@ describe('AdminChatRulesTextRuntimeContext', () => {
     await expect(context.resolveRequiredSubscriptionChannelHeaders(['channel-1'])).resolves.toBe(
       headers,
     );
-    await expect(context.resolveUserDisplayNames('chat-1', ['user-1'])).resolves.toBe(
-      displayNames,
-    );
+    await expect(context.resolveUserDisplayNames('chat-1', ['user-1'])).resolves.toBe(displayNames);
     await expect(context.resolveChatSettingsReadBotAssignmentData('chat-1')).resolves.toBe(
       botAssignment,
     );

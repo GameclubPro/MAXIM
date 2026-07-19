@@ -1409,8 +1409,7 @@ export class GlobalSpammerIntelligenceService {
     );
     const highConfidenceThreshold = HIGH_CONFIDENCE_THRESHOLD + thresholdAdjustment;
     const mediumConfidenceThreshold = MEDIUM_CONFIDENCE_THRESHOLD + thresholdAdjustment;
-    const canPromoteToRegistry =
-      source && this.canPromoteToRegistry(latestInput, aggregate);
+    const canPromoteToRegistry = source && this.canPromoteToRegistry(latestInput, aggregate);
 
     if (aggregate.score >= highConfidenceThreshold && canPromoteToRegistry) {
       await this.syncDenormRegistry({
@@ -1555,10 +1554,7 @@ export class GlobalSpammerIntelligenceService {
   }
 
   private shouldProcessObservationFastDenormJob(source: GlobalSpammerObservationSource): boolean {
-    return (
-      this.observationFastPathEnabled &&
-      this.observationFastPathSources.has(source)
-    );
+    return this.observationFastPathEnabled && this.observationFastPathSources.has(source);
   }
 
   async recordSuppression(input: GlobalSpammerSuppressionInput): Promise<{ ok: true }> {
@@ -1873,37 +1869,34 @@ export class GlobalSpammerIntelligenceService {
       shadowWouldEnforceCount: 0,
     };
 
-    const [
-      candidateMetrics,
-      observationMetrics,
-      registryMetrics,
-      sourceReputation,
-      topCampaigns,
-    ] = await Promise.all([
-      this.timeSpammerStage(timings, 'candidateMetricsMs', () =>
-        this.getReviewCandidateMetrics({ chatId: params.chatId ?? null, since }),
-      ),
-      this.timeSpammerStage(timings, 'observationMetricsMs', () =>
-        this.getReviewObservationMetrics({ chatId: params.chatId ?? null, since }),
-      ),
-      includeHeavy
-        ? this.timeSpammerStage(timings, 'registryMetricsMs', () =>
-            this.getReviewRegistryMetrics({
-              now,
-              since,
-              chatId: params.chatId ?? null,
-            }),
-          )
-        : Promise.resolve(emptyRegistryMetrics),
-      includeHeavy
-        ? this.timeSpammerStage(timings, 'sourceReputationMs', () => this.getSourceReputation(now))
-        : Promise.resolve([] as SourceReputation[]),
-      includeHeavy
-        ? this.timeSpammerStage(timings, 'topCampaignsMs', () =>
-            this.listTopCampaigns({ since, chatId: params.chatId ?? null, limit: 5 }),
-          )
-        : Promise.resolve([]),
-    ]);
+    const [candidateMetrics, observationMetrics, registryMetrics, sourceReputation, topCampaigns] =
+      await Promise.all([
+        this.timeSpammerStage(timings, 'candidateMetricsMs', () =>
+          this.getReviewCandidateMetrics({ chatId: params.chatId ?? null, since }),
+        ),
+        this.timeSpammerStage(timings, 'observationMetricsMs', () =>
+          this.getReviewObservationMetrics({ chatId: params.chatId ?? null, since }),
+        ),
+        includeHeavy
+          ? this.timeSpammerStage(timings, 'registryMetricsMs', () =>
+              this.getReviewRegistryMetrics({
+                now,
+                since,
+                chatId: params.chatId ?? null,
+              }),
+            )
+          : Promise.resolve(emptyRegistryMetrics),
+        includeHeavy
+          ? this.timeSpammerStage(timings, 'sourceReputationMs', () =>
+              this.getSourceReputation(now),
+            )
+          : Promise.resolve([] as SourceReputation[]),
+        includeHeavy
+          ? this.timeSpammerStage(timings, 'topCampaignsMs', () =>
+              this.listTopCampaigns({ since, chatId: params.chatId ?? null, limit: 5 }),
+            )
+          : Promise.resolve([]),
+      ]);
     const pending = candidateMetrics.pending;
     const approved = candidateMetrics.approved;
     const suppressed = candidateMetrics.suppressed;
@@ -2836,7 +2829,9 @@ export class GlobalSpammerIntelligenceService {
       }>;
     }>;
   }): Promise<Map<string, GlobalSpammerLocalProfile>> {
-    const normalizedUserIds = [...new Set(params.userIds.map((item) => item.trim()).filter(Boolean))];
+    const normalizedUserIds = [
+      ...new Set(params.userIds.map((item) => item.trim()).filter(Boolean)),
+    ];
     const profiles = new Map<string, GlobalSpammerLocalProfile>();
     if (normalizedUserIds.length === 0) {
       return profiles;
@@ -6372,9 +6367,7 @@ export class GlobalSpammerIntelligenceService {
     value: string | null | undefined,
   ): GlobalSpammerObservationSource | null {
     const normalized = this.normalizeText(value);
-    return GLOBAL_SPAMMER_OBSERVATION_SOURCES.includes(
-      normalized as GlobalSpammerObservationSource,
-    )
+    return GLOBAL_SPAMMER_OBSERVATION_SOURCES.includes(normalized as GlobalSpammerObservationSource)
       ? (normalized as GlobalSpammerObservationSource)
       : null;
   }
@@ -6406,11 +6399,7 @@ export class GlobalSpammerIntelligenceService {
   }
 
   private toInputJsonValue(value: unknown): Prisma.InputJsonValue | null {
-    if (
-      value === null ||
-      typeof value === 'string' ||
-      typeof value === 'boolean'
-    ) {
+    if (value === null || typeof value === 'string' || typeof value === 'boolean') {
       return value;
     }
     if (typeof value === 'number') {

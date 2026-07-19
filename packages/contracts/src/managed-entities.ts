@@ -273,9 +273,7 @@ export const managedEntityAccessDiagnosticsSchema = z.object({
   activeBotCount: z.number().int().min(0).optional().default(0),
   lostBots: z.array(managedEntityAccessLossDiagnosticItemSchema).optional().default([]),
 });
-export type ManagedEntityAccessDiagnostics = z.infer<
-  typeof managedEntityAccessDiagnosticsSchema
->;
+export type ManagedEntityAccessDiagnostics = z.infer<typeof managedEntityAccessDiagnosticsSchema>;
 
 export const managedEntityViewerAccessSchema = z.object({
   state: z.enum(['granted', 'denied', 'stale', 'checking']),
@@ -301,17 +299,15 @@ export const managedEntityHeaderSchema = z.object({
   sharedMode: managedEntitySharedModeSchema.optional().default('owned'),
   botCount: z.number().int().min(0).optional(),
   hasSharedAutomation: z.boolean().optional(),
-  accessDiagnostics: managedEntityAccessDiagnosticsSchema
-    .optional()
-    .default({
-      state: 'ok',
-      lastDetectedAt: null,
-      lastCheckedAt: null,
-      freshUntil: null,
-      source: 'unknown',
-      activeBotCount: 0,
-      lostBots: [],
-    }),
+  accessDiagnostics: managedEntityAccessDiagnosticsSchema.optional().default({
+    state: 'ok',
+    lastDetectedAt: null,
+    lastCheckedAt: null,
+    freshUntil: null,
+    source: 'unknown',
+    activeBotCount: 0,
+    lostBots: [],
+  }),
   viewerAccess: managedEntityViewerAccessSchema
     .optional()
     .default({ state: 'checking', reason: null, checkedAt: null, canEdit: false }),

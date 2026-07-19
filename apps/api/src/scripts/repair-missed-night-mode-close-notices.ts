@@ -50,8 +50,7 @@ function readCliOptions(argv: readonly string[]): CliOptions {
     limit: readPositiveIntOption(argv, '--limit'),
     concurrency: readPositiveIntOption(argv, '--concurrency') ?? DEFAULT_CONCURRENCY,
     minRemainingMinutes:
-      readNonNegativeIntOption(argv, '--min-remaining-minutes') ??
-      DEFAULT_MIN_REMAINING_MINUTES,
+      readNonNegativeIntOption(argv, '--min-remaining-minutes') ?? DEFAULT_MIN_REMAINING_MINUTES,
     sampleLimit: readPositiveIntOption(argv, '--sample-limit') ?? DEFAULT_SAMPLE_LIMIT,
   };
 }
@@ -382,6 +381,6 @@ void main()
     process.exit(process.exitCode ?? 0);
   })
   .catch((error: unknown) => {
-    console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+    console.error(error instanceof Error ? (error.stack ?? error.message) : String(error));
     process.exit(1);
   });

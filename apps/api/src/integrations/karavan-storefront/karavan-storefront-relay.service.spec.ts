@@ -16,13 +16,15 @@ function createConfigMock(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function createService(options: {
-  config?: Record<string, unknown>;
-  fetchResponse?: unknown;
-  lockToken?: string | null;
-  sendRejects?: boolean;
-  sendError?: unknown;
-} = {}) {
+function createService(
+  options: {
+    config?: Record<string, unknown>;
+    fetchResponse?: unknown;
+    lockToken?: string | null;
+    sendRejects?: boolean;
+    sendError?: unknown;
+  } = {},
+) {
   const maxClient = {
     sendCustomMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
       messageId: 'mid-storefront-button',
@@ -42,24 +44,27 @@ function createService(options: {
     },
   };
   const redisCounter = {
-    acquireLock: jest.fn().mockResolvedValue(
-      options.lockToken === undefined ? 'lock-1' : options.lockToken,
-    ),
+    acquireLock: jest
+      .fn()
+      .mockResolvedValue(options.lockToken === undefined ? 'lock-1' : options.lockToken),
     releaseLock: jest.fn().mockResolvedValue(undefined),
   };
   const fetchMock = jest.fn().mockResolvedValue({
     ok: true,
-    json: jest.fn().mockResolvedValue(options.fetchResponse ?? {
-      exists: true,
-      store: {
-        id: 'store-1',
-        slug: 'severnaya-lavka',
-        name: 'Северная лавка',
-        sellerAccountId: 'seller-1',
-        url: 'https://max.ru/se13381675_1_bot?startapp=s_severnaya-lavka__r_seller-1',
-        inviteUrl: 'https://api2.major-maksimov.ru/karavan/api/v1/public/stores/severnaya-lavka/invite',
+    json: jest.fn().mockResolvedValue(
+      options.fetchResponse ?? {
+        exists: true,
+        store: {
+          id: 'store-1',
+          slug: 'severnaya-lavka',
+          name: 'Северная лавка',
+          sellerAccountId: 'seller-1',
+          url: 'https://max.ru/se13381675_1_bot?startapp=s_severnaya-lavka__r_seller-1',
+          inviteUrl:
+            'https://api2.major-maksimov.ru/karavan/api/v1/public/stores/severnaya-lavka/invite',
+        },
       },
-    }),
+    ),
   });
   const originalFetch = global.fetch;
   global.fetch = fetchMock as never;
@@ -147,15 +152,17 @@ describe('KaravanStorefrontRelayService', () => {
         }),
       );
       expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
-      expect(fixture.prisma.auditLog.create).toHaveBeenCalledWith(expect.objectContaining({
-        data: expect.objectContaining({
-          action: 'KARAVAN_STOREFRONT_RELAY',
-          payload: expect.objectContaining({
-            sourceMessageId: 'mid-source-1',
-            companionMessageId: 'mid-storefront-button',
+      expect(fixture.prisma.auditLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            action: 'KARAVAN_STOREFRONT_RELAY',
+            payload: expect.objectContaining({
+              sourceMessageId: 'mid-source-1',
+              companionMessageId: 'mid-storefront-button',
+            }),
           }),
         }),
-      }));
+      );
     } finally {
       fixture.restore();
     }
@@ -174,7 +181,8 @@ describe('KaravanStorefrontRelayService', () => {
             name: 'Северная лавка',
             sellerAccountId: 'seller-1',
             url: 'https://max.ru/se13381675_1_bot?startapp=s_severnaya-lavka__r_seller-1',
-            inviteUrl: 'https://api2.major-maksimov.ru/karavan/api/v1/public/stores/severnaya-lavka/invite',
+            inviteUrl:
+              'https://api2.major-maksimov.ru/karavan/api/v1/public/stores/severnaya-lavka/invite',
           },
         }),
       })
@@ -188,17 +196,20 @@ describe('KaravanStorefrontRelayService', () => {
             name: 'Цветы MAX',
             sellerAccountId: 'seller-1',
             url: 'https://max.ru/se13381675_1_bot?startapp=s_tsvety-max__r_seller-1',
-            inviteUrl: 'https://api2.major-maksimov.ru/karavan/api/v1/public/stores/tsvety-max/invite',
+            inviteUrl:
+              'https://api2.major-maksimov.ru/karavan/api/v1/public/stores/tsvety-max/invite',
           },
         }),
       });
 
     try {
       await expect(fixture.service.handleMessageCreated(baseContext)).resolves.toBe('handled');
-      await expect(fixture.service.handleMessageCreated({
-        ...baseContext,
-        messageId: 'mid-source-2',
-      })).resolves.toBe('handled');
+      await expect(
+        fixture.service.handleMessageCreated({
+          ...baseContext,
+          messageId: 'mid-source-2',
+        }),
+      ).resolves.toBe('handled');
 
       expect(fixture.fetchMock).toHaveBeenCalledTimes(2);
       expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenLastCalledWith(
@@ -529,22 +540,20 @@ describe('KaravanStorefrontRelayService', () => {
 
   it('retries a failed lookup on a later dollar-prefixed message edit', async () => {
     const fixture = createService();
-    fixture.fetchMock
-      .mockRejectedValueOnce(new Error('lookup timeout'))
-      .mockResolvedValueOnce({
-        ok: true,
-        json: jest.fn().mockResolvedValue({
-          exists: true,
-          store: {
-            id: 'store-2',
-            slug: 'del-yarn',
-            name: 'ДЭЛЬ',
-            sellerAccountId: 'seller-2',
-            url: 'https://max.ru/se13381675_1_bot?startapp=s_del-yarn__r_seller-2',
-            inviteUrl: 'https://api2.major-maksimov.ru/karavan/api/v1/public/stores/del-yarn/invite',
-          },
-        }),
-      });
+    fixture.fetchMock.mockRejectedValueOnce(new Error('lookup timeout')).mockResolvedValueOnce({
+      ok: true,
+      json: jest.fn().mockResolvedValue({
+        exists: true,
+        store: {
+          id: 'store-2',
+          slug: 'del-yarn',
+          name: 'ДЭЛЬ',
+          sellerAccountId: 'seller-2',
+          url: 'https://max.ru/se13381675_1_bot?startapp=s_del-yarn__r_seller-2',
+          inviteUrl: 'https://api2.major-maksimov.ru/karavan/api/v1/public/stores/del-yarn/invite',
+        },
+      }),
+    });
 
     try {
       await expect(fixture.service.handleMessageCreated(baseContext)).resolves.toBe('failed');

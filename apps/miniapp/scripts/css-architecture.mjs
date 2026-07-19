@@ -18,7 +18,10 @@ export function buildMiniappCssMetricBaseline(root) {
       files
         .map((filePath) => {
           const metrics = readCssMetrics(filePath);
-          return [toRepoPath(root, filePath), { colors: metrics.colors.length, important: metrics.important.length }];
+          return [
+            toRepoPath(root, filePath),
+            { colors: metrics.colors.length, important: metrics.important.length },
+          ];
         })
         .sort(([left], [right]) => left.localeCompare(right)),
     ),
@@ -34,9 +37,7 @@ export function findMiniappCssArchitectureViolations(root, baselinePath) {
   }
 
   for (const violation of findDirectCssLayerViolations(root, sourceRoot)) {
-    violations.push(
-      `${violation.importer} imports ${violation.cssPath}: ${violation.reason}`,
-    );
+    violations.push(`${violation.importer} imports ${violation.cssPath}: ${violation.reason}`);
   }
 
   const currentFiles = new Set();

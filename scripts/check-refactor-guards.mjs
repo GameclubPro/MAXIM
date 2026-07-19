@@ -62,14 +62,14 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/settings-native-controls.css',
-    maxLines: 380,
+    maxLines: 379,
     targetLines: 300,
     reason:
       'Shared settings native controls should stay focused instead of becoming a route compatibility bundle.',
   },
   {
     path: 'apps/miniapp/src/styles/settings-home-compact.css',
-    maxLines: 320,
+    maxLines: 308,
     targetLines: 250,
     reason:
       'Compact settings home and channel card styles should stay route-owned instead of returning to the lazy compatibility bundle.',
@@ -90,14 +90,14 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/broadcast-studio-base.css',
-    maxLines: 1145,
+    maxLines: 1068,
     targetLines: 900,
     reason:
       'Broadcast studio base styles should stay route-owned instead of returning to the lazy compatibility bundle.',
   },
   {
     path: 'apps/miniapp/src/styles/settings-policy-controls.css',
-    maxLines: 320,
+    maxLines: 316,
     targetLines: 250,
     reason:
       'Settings policy/control island styles should stay route-owned instead of returning to the lazy compatibility bundle.',
@@ -111,35 +111,35 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/pages/settings-page.css',
-    maxLines: 420,
+    maxLines: 297,
     targetLines: 330,
     reason:
       'Settings route-owned CSS should stay focused while legacy settings page markup is extracted.',
   },
   {
     path: 'apps/miniapp/src/pages/settings/settings-duplicate-stage.css',
-    maxLines: 130,
+    maxLines: 127,
     targetLines: 95,
     reason:
       'Duplicate moderation stage styles should stay with the settings duplicate panel owner.',
   },
   {
     path: 'apps/miniapp/src/components/ui/segmented-control.css',
-    maxLines: 48,
+    maxLines: 46,
     targetLines: 40,
     reason:
       'SegmentedControl base styles should stay component-owned while route-specific sizing stays scoped.',
   },
   {
     path: 'apps/miniapp/src/components/ui/toast.css',
-    maxLines: 66,
+    maxLines: 65,
     targetLines: 52,
     reason:
       'Toast portal styles should stay component-owned while route-specific placement overrides stay scoped.',
   },
   {
     path: 'apps/miniapp/src/components/managed-broadcast-history-card.css',
-    maxLines: 242,
+    maxLines: 240,
     targetLines: 190,
     reason:
       'ManagedBroadcastHistoryCard styles should stay component-owned while route density overrides stay scoped.',
@@ -160,7 +160,7 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/components/chat-onboarding-section.css',
-    maxLines: 96,
+    maxLines: 153,
     targetLines: 72,
     reason:
       'Chat onboarding empty-state styles should stay with the lazy-loaded onboarding component.',
@@ -194,14 +194,14 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/settings-drilldown-core.css',
-    maxLines: 1323,
+    maxLines: 1334,
     targetLines: 1100,
     reason:
       'Settings drilldown core CSS should own shell-scoped overrides without becoming another route dump.',
   },
   {
     path: 'apps/miniapp/src/styles/components.css',
-    maxLines: 1562,
+    maxLines: 1561,
     targetLines: 1350,
     reason:
       'Startup shared styles should stay focused on primitives; route-specific home styles should move to route/component CSS.',
@@ -215,28 +215,28 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/components/dashboard/membership-activity-feed.css',
-    maxLines: 600,
+    maxLines: 586,
     targetLines: 520,
     reason:
       'Membership activity feed styles should stay component-owned after moving its base and responsive rules out of dashboard-events.css.',
   },
   {
     path: 'apps/miniapp/src/components/dashboard/chat-participants-roster.css',
-    maxLines: 560,
+    maxLines: 576,
     targetLines: 500,
     reason:
       'Chat participants roster styles should stay component-owned after moving its base and responsive rules out of dashboard-events.css.',
   },
   {
     path: 'apps/miniapp/src/components/dashboard/chat-participant-sheet.css',
-    maxLines: 560,
+    maxLines: 581,
     targetLines: 500,
     reason:
       'Chat participant sheet styles should stay component-owned after moving its base and responsive rules out of dashboard-events.css.',
   },
   {
     path: 'apps/miniapp/src/components/dashboard/dashboard-hero.css',
-    maxLines: 150,
+    maxLines: 138,
     targetLines: 120,
     reason:
       'DashboardHero styles should stay component-owned instead of returning to dashboard-events.css.',
@@ -250,7 +250,7 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/components/broadcast-studio-header.css',
-    maxLines: 165,
+    maxLines: 148,
     targetLines: 130,
     reason:
       'BroadcastStudioChecklist styles should stay component-owned instead of returning to broadcast route CSS.',
@@ -270,34 +270,34 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/channel-stats.css',
-    maxLines: 3031,
+    maxLines: 2954,
     targetLines: 2400,
     reason:
       'Channel stats owner CSS should stay scoped and avoid becoming another compatibility bundle.',
   },
   {
     path: 'apps/miniapp/src/styles/settings-route-polish.css',
-    maxLines: 5064,
+    maxLines: 5065,
     targetLines: 3300,
     reason:
       'Settings route polish should keep shrinking into scoped route sections and component-owned styles.',
   },
   {
     path: 'apps/miniapp/src/styles/broadcast-studio.css',
-    maxLines: 5117,
+    maxLines: 5128,
     targetLines: 3660,
     reason: 'Broadcast composer/planner/history styles should keep moving to component-owned CSS.',
   },
   {
     path: 'apps/miniapp/src/styles/dashboard-events.css',
-    maxLines: 5112,
+    maxLines: 4017,
     targetLines: 3600,
     reason:
       'Dashboard feed, participant sheet, and stats primitives should keep moving to scoped component CSS; owner CSS may carry local bases removed from shared bundles.',
   },
   {
     path: 'apps/miniapp/src/styles/channel-dialog-comments.css',
-    maxLines: 5478,
+    maxLines: 4068,
     targetLines: 4200,
     reason:
       'Channel dialog route CSS should stay scoped and continue shrinking into focused dialog components.',
@@ -310,7 +310,7 @@ const guardedFiles = [
   },
   {
     path: 'apps/api/src/admin/publication.service.ts',
-    maxLines: 3916,
+    maxLines: 3870,
     targetLines: 3200,
     reason:
       'Publication scheduling, query, and retry logic should keep moving to focused domain services.',

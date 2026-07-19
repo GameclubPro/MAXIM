@@ -1,93 +1,170 @@
 @layer components {
-  .participants-roster__manage { position: relative; }
-  .participants-roster__manage > summary {
-    display: inline-flex; align-items: center; justify-content: center;
-    width: 44px; height: 44px; border: 1px solid var(--border-subtle); border-radius: 8px;
-    background: var(--surface-card-muted); color: var(--text-secondary); cursor: pointer; list-style: none;
+  .participants-roster__manage {
+    position: relative;
   }
-  .participants-roster__manage > summary::-webkit-details-marker { display: none; }
+  .participants-roster__manage > summary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card-muted);
+    color: var(--text-secondary);
+    cursor: pointer;
+    list-style: none;
+  }
+  .participants-roster__manage > summary::-webkit-details-marker {
+    display: none;
+  }
   .participants-roster__manage > summary:focus-visible,
   .participants-roster__role-filters button:focus-visible,
   .participants-roster__item--interactive:focus-visible,
-  .participants-roster__cleanup-button:focus-visible { outline: 2px solid var(--app-focus-ring); outline-offset: 2px; }
+  .participants-roster__cleanup-button:focus-visible {
+    outline: 2px solid var(--app-focus-ring);
+    outline-offset: 2px;
+  }
   .participants-roster__manage-menu {
-    position: absolute; top: calc(100% + 6px); right: 0; z-index: 4;
-    min-width: 224px; padding: 6px; border: 1px solid var(--border-subtle); border-radius: 8px;
-    background: var(--surface-overlay); box-shadow: var(--shadow-md);
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 4;
+    min-width: 224px;
+    padding: 6px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-overlay);
+    box-shadow: var(--shadow-md);
   }
   .participants-roster__cleanup-button {
-    justify-content: flex-start; width: 100%; min-width: 0; min-height: 44px; border-radius: 6px; box-shadow: none;
+    justify-content: flex-start;
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+    border-radius: 6px;
+    box-shadow: none;
   }
-  .participants-roster__scope { display: grid; gap: 7px; }
-  .participants-roster__scope p { margin: 0; color: var(--text-secondary); font-size: 0.75rem; line-height: 1.35; }
-  .participants-roster__role-filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+  .participants-roster__scope {
+    display: grid;
+    gap: 7px;
+  }
+  .participants-roster__scope p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    line-height: 1.35;
+  }
+  .participants-roster__role-filters {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+  }
   .participants-roster__role-filters button {
-    min-width: 0; min-height: 44px; padding: 0 8px; border: 1px solid var(--border-subtle); border-radius: 8px;
-    background: var(--surface-card-muted); color: var(--text-secondary); font: inherit; font-size: 0.76rem; font-weight: 750;
+    min-width: 0;
+    min-height: 44px;
+    padding: 0 8px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card-muted);
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: 0.76rem;
+    font-weight: 750;
   }
   .participants-roster__role-filters button.is-active {
-    border-color: color-mix(in srgb, var(--accent) 48%, var(--border-subtle)); background: var(--accent-soft); color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 48%, var(--border-subtle));
+    background: var(--accent-soft);
+    color: var(--accent);
   }
   .participants-roster,
   .participants-roster__search,
   .participants-roster__item,
   .participants-roster__status {
-    border-color: var(--border-subtle); background: var(--surface-card);
-    color: var(--text-primary); box-shadow: var(--shadow-xs); border-radius: 8px;
+    border-color: var(--border-subtle);
+    background: var(--surface-card);
+    color: var(--text-primary);
+    box-shadow: var(--shadow-xs);
+    border-radius: 8px;
   }
   .participants-roster__search input,
-  .participants-roster__identity strong { color: var(--text-primary); }
+  .participants-roster__identity strong {
+    color: var(--text-primary);
+  }
   .participants-roster__search-icon,
   .participants-roster__search input::placeholder,
   .participants-roster__identity span,
-  .participants-roster__chevron { color: var(--text-secondary); }
+  .participants-roster__chevron {
+    color: var(--text-secondary);
+  }
 
   html[data-max-theme='dark'] .participants-roster,
   html[data-max-theme='dark'] .participants-roster__search,
   html[data-max-theme='dark'] .participants-roster__item,
   html[data-max-theme='dark'] .participants-roster__status,
   html[data-max-theme='dark'] .participants-roster__manage-menu {
-    border-color: var(--border-subtle); background: var(--surface-card);
-    color: var(--text-primary); box-shadow: var(--shadow-xs);
+    border-color: var(--border-subtle);
+    background: var(--surface-card);
+    color: var(--text-primary);
+    box-shadow: var(--shadow-xs);
   }
   html[data-max-theme='dark'] .participants-roster__manage > summary,
   html[data-max-theme='dark'] .participants-roster__role-filters button,
   html[data-max-theme='dark'] .participants-roster__chevron,
   html[data-max-theme='dark'] .participants-roster__avatar-shell,
   html[data-max-theme='dark'] .participants-roster__avatar {
-    border-color: var(--border-subtle); background: var(--surface-card-muted); color: var(--text-secondary); box-shadow: none;
+    border-color: var(--border-subtle);
+    background: var(--surface-card-muted);
+    color: var(--text-secondary);
+    box-shadow: none;
   }
   html[data-max-theme='dark'] .participants-roster__role-filters button.is-active {
-    border-color: color-mix(in srgb, var(--accent) 52%, var(--border-subtle)); background: var(--accent-soft); color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 52%, var(--border-subtle));
+    background: var(--accent-soft);
+    color: var(--accent);
   }
   html[data-max-theme='dark'] .participants-roster__search input,
-  html[data-max-theme='dark'] .participants-roster__identity strong { color: var(--text-primary); }
+  html[data-max-theme='dark'] .participants-roster__identity strong {
+    color: var(--text-primary);
+  }
   html[data-max-theme='dark'] .participants-roster__search-icon,
   html[data-max-theme='dark'] .participants-roster__search input::placeholder,
   html[data-max-theme='dark'] .participants-roster__identity span,
-  html[data-max-theme='dark'] .participants-roster__scope p { color: var(--text-secondary); }
+  html[data-max-theme='dark'] .participants-roster__scope p {
+    color: var(--text-secondary);
+  }
   html[data-max-theme='dark'] .participants-roster__pill--owner,
   html[data-max-theme='dark'] .participants-roster__pill--admin {
-    border-color: color-mix(in srgb, var(--accent) 34%, var(--border-subtle)); background: var(--accent-soft); color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 34%, var(--border-subtle));
+    background: var(--accent-soft);
+    color: var(--accent);
   }
   html[data-max-theme='dark'] .participants-roster__pill--bot {
     border-color: color-mix(in srgb, var(--warning) 34%, var(--border-subtle));
-    background: color-mix(in srgb, var(--warning) 14%, var(--surface-card-muted)); color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 14%, var(--surface-card-muted));
+    color: var(--warning);
   }
   html[data-max-theme='dark'] .participants-roster__immunity,
   html[data-max-theme='dark'] .participants-roster__immunity--always {
     border-color: color-mix(in srgb, var(--success) 34%, var(--border-subtle));
-    background: color-mix(in srgb, var(--success) 14%, var(--surface-card-muted)); color: var(--success); box-shadow: none;
+    background: color-mix(in srgb, var(--success) 14%, var(--surface-card-muted));
+    color: var(--success);
+    box-shadow: none;
   }
   html[data-max-theme='dark'] .participants-roster__violations {
     border-color: color-mix(in srgb, var(--warning) 36%, var(--border-subtle));
-    background: color-mix(in srgb, var(--warning) 14%, var(--surface-card-muted)); color: var(--warning); box-shadow: none;
+    background: color-mix(in srgb, var(--warning) 14%, var(--surface-card-muted));
+    color: var(--warning);
+    box-shadow: none;
   }
   html[data-max-theme='dark'] .participants-roster__cleanup-button {
     border-color: color-mix(in srgb, var(--danger) 38%, var(--border-subtle));
-    background: color-mix(in srgb, var(--danger) 12%, var(--surface-card-muted)); color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 12%, var(--surface-card-muted));
+    color: var(--danger);
   }
   @media (max-width: 430px) {
-    .participants-roster__role-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .participants-roster__role-filters {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
   }
 }

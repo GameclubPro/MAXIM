@@ -88,8 +88,7 @@ export function buildCommercialMarkerContext(
     rawLoweredTextWithoutUrlsNormalized === rawLoweredTextWithoutUrls
       ? normalizedTextWithoutUrls
       : normalizeCommercialText(rawLoweredTextWithoutUrlsNormalized);
-  const hasDistinctConfusableText =
-    normalizedTextWithRawConfusables !== normalizedTextWithoutUrls;
+  const hasDistinctConfusableText = normalizedTextWithRawConfusables !== normalizedTextWithoutUrls;
   const normalizedTokensWithoutUrls = [
     ...(normalizedTextWithoutUrls.match(/[\p{L}\p{N}]+/gu) ?? []),
     ...(hasDistinctConfusableText
@@ -108,12 +107,8 @@ export function buildCommercialMarkerContext(
 }
 
 export function hasCommercialMarker(marker: string, context: CommercialMarkerContext): boolean {
-  const {
-    normalizedMarker,
-    rawLoweredMarker,
-    tokenOnly,
-    specialTokenMatcher,
-  } = getNormalizedCommercialMarker(marker);
+  const { normalizedMarker, rawLoweredMarker, tokenOnly, specialTokenMatcher } =
+    getNormalizedCommercialMarker(marker);
   if (!normalizedMarker) {
     return false;
   }
@@ -125,9 +120,7 @@ export function hasCommercialMarker(marker: string, context: CommercialMarkerCon
   }
 
   if (tokenOnly) {
-    return context.normalizedTokensWithoutUrls.some((token) =>
-      token.startsWith(normalizedMarker),
-    );
+    return context.normalizedTokensWithoutUrls.some((token) => token.startsWith(normalizedMarker));
   }
 
   return (

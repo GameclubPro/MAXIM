@@ -8,10 +8,22 @@
     { "id": "contracts", "label": "Shared contracts validation", "script": "check:contracts" },
     { "id": "api", "label": "API validation", "script": "check:api" },
     { "id": "prisma", "label": "Prisma validation", "script": "check:prisma" },
-    { "id": "miniapp-css", "label": "Mini app CSS architecture check", "script": "check:miniapp-css" },
+    {
+      "id": "miniapp-css",
+      "label": "Mini app CSS architecture check",
+      "script": "check:miniapp-css"
+    },
     { "id": "miniapp", "label": "Mini app validation", "script": "check:miniapp" },
-    { "id": "miniapp-production-build", "label": "Major production mini app build", "script": "build:miniapp:production" },
-    { "id": "miniapp-visual-local", "label": "Local mini app visual verification", "script": "screenshots:miniapp:smoke" },
+    {
+      "id": "miniapp-production-build",
+      "label": "Major production mini app build",
+      "script": "build:miniapp:production"
+    },
+    {
+      "id": "miniapp-visual-local",
+      "label": "Local mini app visual verification",
+      "script": "screenshots:miniapp:smoke"
+    },
     { "id": "admin", "label": "Safety Desk validation", "script": "check:admin" },
     { "id": "full", "label": "Full repository validation", "script": "check" }
   ],
@@ -23,17 +35,34 @@
   "manualOperations": [
     { "id": "apply-major-nginx", "label": "Review and apply the Major nginx site" },
     { "id": "apply-admin-nginx", "label": "Review and apply the Safety Desk nginx site" },
-    { "id": "review-play-team-nginx", "label": "Compare the live play-team nginx site before applying" },
+    {
+      "id": "review-play-team-nginx",
+      "label": "Compare the live play-team nginx site before applying"
+    },
     { "id": "review-vk-proxy", "label": "Review the dormant VK proxy configuration" },
     { "id": "review-nginx-change", "label": "Review and select the matching nginx apply runbook" },
-    { "id": "review-deploy-tooling", "label": "Review production deploy tooling before its next use" },
-    { "id": "review-production-compose", "label": "Review production Compose topology and rollout scope" }
+    {
+      "id": "review-deploy-tooling",
+      "label": "Review production deploy tooling before its next use"
+    },
+    {
+      "id": "review-production-compose",
+      "label": "Review production Compose topology and rollout scope"
+    }
   ],
   "forbiddenRoutineTargetFragments": ["app2", "cdn", "object-storage", "object_storage", "s3"],
   "rules": [
     {
       "id": "agent-notes-and-docs",
-      "include": ["AGENTS.md", "**/AGENTS.md", "**/*.md", "README.md", "docs/**", ".env.example", "infra/env/**"],
+      "include": [
+        "AGENTS.md",
+        "**/AGENTS.md",
+        "**/*.md",
+        "README.md",
+        "docs/**",
+        ".env.example",
+        "infra/env/**"
+      ],
       "checks": ["repo-static", "docs"],
       "deployComponents": []
     },
@@ -68,13 +97,31 @@
     {
       "id": "root-dependency-lock",
       "include": ["package-lock.json"],
-      "checks": ["repo-static", "contracts", "api", "prisma", "miniapp-css", "miniapp", "admin", "full"],
+      "checks": [
+        "repo-static",
+        "contracts",
+        "api",
+        "prisma",
+        "miniapp-css",
+        "miniapp",
+        "admin",
+        "full"
+      ],
       "deployComponents": ["api-shared", "miniapp-major-static", "admin-static"]
     },
     {
       "id": "root-runtime-build-config",
       "include": ["package.json", "tsconfig.base.json", ".npmrc", ".dockerignore"],
-      "checks": ["repo-static", "contracts", "api", "prisma", "miniapp-css", "miniapp", "admin", "full"],
+      "checks": [
+        "repo-static",
+        "contracts",
+        "api",
+        "prisma",
+        "miniapp-css",
+        "miniapp",
+        "admin",
+        "full"
+      ],
       "deployComponents": ["api-shared", "miniapp-major-static", "admin-static"]
     },
     {
@@ -111,7 +158,15 @@
         "packages/contracts/test/**",
         "packages/contracts/**/__tests__/**"
       ],
-      "checks": ["repo-static", "contracts", "api", "miniapp-css", "miniapp", "miniapp-production-build", "admin"],
+      "checks": [
+        "repo-static",
+        "contracts",
+        "api",
+        "miniapp-css",
+        "miniapp",
+        "miniapp-production-build",
+        "admin"
+      ],
       "deployComponents": ["api-shared", "miniapp-major-static", "admin-static"]
     },
     {
@@ -186,7 +241,13 @@
         "apps/miniapp/test/**",
         "apps/miniapp/**/__tests__/**"
       ],
-      "checks": ["repo-static", "miniapp-css", "miniapp", "miniapp-production-build", "miniapp-visual-local"],
+      "checks": [
+        "repo-static",
+        "miniapp-css",
+        "miniapp",
+        "miniapp-production-build",
+        "miniapp-visual-local"
+      ],
       "deployComponents": ["miniapp-major-static"]
     },
     {
@@ -230,7 +291,9 @@
       "checks": ["repo-static", "infra", "api", "miniapp", "admin", "full"],
       "deployComponents": ["api-shared", "miniapp-major-static", "admin-static"],
       "manualOperations": ["review-production-compose"],
-      "warnings": ["Production Compose changes require an explicit topology and stateful-service review."]
+      "warnings": [
+        "Production Compose changes require an explicit topology and stateful-service review."
+      ]
     },
     {
       "id": "non-production-compose",

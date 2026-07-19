@@ -41,10 +41,7 @@ export class MessageLimitsBlockedDomainDetector {
         continue;
       }
 
-      const blockedDomain = this.findBlockedDomainMatch(
-        matchedDomain,
-        blockedDomainIndex.domains,
-      );
+      const blockedDomain = this.findBlockedDomainMatch(matchedDomain, blockedDomainIndex.domains);
       if (blockedDomain) {
         if (options.isLinkAllowlisted?.(link)) {
           continue;

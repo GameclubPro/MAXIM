@@ -107,7 +107,11 @@ export function normalizeBroadcastScheduleRecipeDraft(
   );
 
   return {
-    dayCount: clampRecipeNumber(value.dayCount, BROADCAST_RECIPE_MIN_DAYS, BROADCAST_RECIPE_MAX_DAYS),
+    dayCount: clampRecipeNumber(
+      value.dayCount,
+      BROADCAST_RECIPE_MIN_DAYS,
+      BROADCAST_RECIPE_MAX_DAYS,
+    ),
     postsPerDay,
     weekdayMode: value.weekdayMode === 'workdays' ? 'workdays' : 'any',
     minutes: normalizeBroadcastScheduleRecipeMinutes(value.minutes, postsPerDay),
