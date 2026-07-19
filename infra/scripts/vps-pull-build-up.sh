@@ -287,6 +287,14 @@ is_enabled() {
   esac
 }
 
+require_node_24() {
+  if ! command -v node >/dev/null 2>&1 || \
+    ! node -e 'process.exit(Number(process.versions.node.split(".")[0]) === 24 ? 0 : 1)'; then
+    echo "Node 24 is required for production deploy." >&2
+    exit 1
+  fi
+}
+
 check_deploy_disk_capacity() {
   local target_percent="${MAXIM_DEPLOY_DISK_TARGET_PERCENT:-${MAXIM_DEPLOY_DISK_WARN_PERCENT:-80}}"
   local critical_percent="${MAXIM_DEPLOY_DISK_CRITICAL_PERCENT:-${MAXIM_DEPLOY_DISK_MAX_PERCENT:-90}}"
@@ -892,6 +900,7 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
+require_node_24
 require_production_branch_confirmation
 validate_requested_services
 acquire_deploy_lock

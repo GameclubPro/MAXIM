@@ -82,9 +82,13 @@ test('validates Compose with the public env while keeping the runtime env defaul
 test('validates deploy targets before synchronization or runtime side effects', () => {
   const deploy = read('infra/scripts/vps-pull-build-up.sh');
   const validation = callIndexes(deploy, 'validate_requested_services')[0];
+  const nodePreflight = callIndex(deploy, 'require_node_24');
+  assert.ok(nodePreflight < callIndex(deploy, 'acquire_deploy_lock'));
+  assert.ok(nodePreflight < callIndex(deploy, 'sync_branch'));
   assert.ok(validation < callIndex(deploy, 'acquire_deploy_lock'));
   assert.ok(validation < callIndex(deploy, 'sync_branch'));
   assert.ok(validation < callIndex(deploy, 'stop_conflicting_stacks'));
+  assert.match(deploy, /Node 24 is required for production deploy/u);
   assert.match(deploy, /Unknown or unsafe deploy service/u);
   assert.match(
     deploy,
@@ -130,6 +134,8 @@ test('keeps backup preflight read-only and reclaims only manifest-aware release 
     /if \[\[ "\$MODE" != "--preflight-only" \]\]; then[\s\S]*rm -f -- "\$expired_dump"/u,
   );
   assert.match(reclaim, /release-image-reclaim\.mjs reclaim/u);
+  assert.match(reclaim, /Node 24 is required for release image reclaim/u);
+  assert.ok(reclaim.indexOf('Node 24 is required') < callIndex(reclaim, 'acquire_deploy_lock'));
   assert.match(reclaim, /acquire_deploy_lock/u);
   assert.doesNotMatch(reclaim, /docker image prune/u);
   assert.doesNotMatch(reclaim, /docker volume prune/u);

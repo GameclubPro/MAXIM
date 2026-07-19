@@ -14,8 +14,9 @@ if ! command -v docker >/dev/null 2>&1; then
   echo "docker not found" >&2
   exit 1
 fi
-if ! command -v node >/dev/null 2>&1; then
-  echo "node not found" >&2
+if ! command -v node >/dev/null 2>&1 || \
+  ! node -e 'process.exit(Number(process.versions.node.split(".")[0]) === 24 ? 0 : 1)'; then
+  echo "Node 24 is required for release image reclaim." >&2
   exit 1
 fi
 
