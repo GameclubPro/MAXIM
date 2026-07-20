@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   createAuthQueryClient,
-  disposeAuthQueryClient,
   resolveAuthQueryPrincipalKey,
 } from '../src/lib/auth-query-session';
 
@@ -18,10 +17,10 @@ test('auth query principal survives credential rotation for the same signed user
   const initial = createInitData('user-1', 1, 'old-hash');
   const refreshed = createInitData('user-1', 2, 'new-hash');
 
-  assert.equal(resolveAuthQueryPrincipalKey(initial, false)[0], 'user:user-1');
+  assert.equal(resolveAuthQueryPrincipalKey(initial, false), 'user:user-1');
   assert.equal(
-    resolveAuthQueryPrincipalKey(initial, false)[0],
-    resolveAuthQueryPrincipalKey(refreshed, false)[0],
+    resolveAuthQueryPrincipalKey(initial, false),
+    resolveAuthQueryPrincipalKey(refreshed, false),
   );
 });
 
@@ -30,8 +29,8 @@ test('auth query principal changes when late bridge data belongs to another sign
   const bridge = createInitData('user-2', 2, 'bridge-hash');
 
   assert.notEqual(
-    resolveAuthQueryPrincipalKey(fallback, false)[0],
-    resolveAuthQueryPrincipalKey(bridge, false)[0],
+    resolveAuthQueryPrincipalKey(fallback, false),
+    resolveAuthQueryPrincipalKey(bridge, false),
   );
 });
 
@@ -43,30 +42,21 @@ test('unresolved auth principals rotate opaque keys without exposing credentials
   const initial = resolveAuthQueryPrincipalKey(
     initialCredentials,
     false,
-    null,
-    createSessionId,
-  );
-  const reused = resolveAuthQueryPrincipalKey(
-    initialCredentials,
-    false,
-    initial[1],
     createSessionId,
   );
   const rotated = resolveAuthQueryPrincipalKey(
     nextCredentials,
     false,
-    reused[1],
     createSessionId,
   );
 
-  assert.equal(initial[0], 'unresolved:opaque-1');
-  assert.equal(reused[0], initial[0]);
-  assert.equal(rotated[0], 'unresolved:opaque-2');
-  assert.equal(rotated[0].includes('secret-new-hash'), false);
-  assert.equal(rotated[0].includes(nextCredentials), false);
+  assert.equal(initial, 'unresolved:opaque-1');
+  assert.equal(rotated, 'unresolved:opaque-2');
+  assert.equal(rotated.includes('secret-new-hash'), false);
+  assert.equal(rotated.includes(nextCredentials), false);
 });
 
-test('disposing an auth query client aborts active requests and removes cached data', async () => {
+test('clearing an auth query client aborts active requests and removes cached data', async () => {
   const queryClient = createAuthQueryClient();
   let markStarted: (() => void) | null = null;
   let aborted = false;
@@ -94,7 +84,7 @@ test('disposing an auth query client aborts active requests and removes cached d
     .catch(() => undefined);
 
   await started;
-  await disposeAuthQueryClient(queryClient);
+  queryClient.clear();
   await pendingQuery;
 
   assert.equal(aborted, true);

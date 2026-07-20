@@ -26,7 +26,6 @@ import { ToastProvider } from './components/ui/toast';
 import { createApiTransport } from './lib/api/transport';
 import {
   createAuthQueryClient,
-  disposeAuthQueryClient,
   useAuthQueryPrincipalKey,
 } from './lib/auth-query-session';
 import { traceMiniappBoot, traceMiniappLaunchRoute } from './lib/boot-trace';
@@ -477,7 +476,7 @@ export function App() {
 
   useEffect(
     () => () => {
-      void disposeAuthQueryClient(queryClient);
+      queryClient.clear();
     },
     [queryClient],
   );
