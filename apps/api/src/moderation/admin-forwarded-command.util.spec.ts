@@ -159,6 +159,16 @@ describe('admin forwarded command util', () => {
       action: 'MUTE',
       muteDurationHours: 12,
     });
+    expect(parseAdminForwardedModerationCommand('Мут!')).toEqual({
+      action: 'MUTE',
+      fanoutAllChats: true,
+      muteDurationHours: 6,
+    });
+    expect(parseAdminForwardedModerationCommand('Мут! 24')).toEqual({
+      action: 'MUTE',
+      fanoutAllChats: true,
+      muteDurationHours: 24,
+    });
     expect(parseAdminForwardedModerationCommand('мут 88')).toEqual({
       action: 'MUTE',
       mutePermanent: true,
@@ -228,6 +238,8 @@ describe('admin forwarded command util', () => {
   it('rejects obsolete ban durations and invalid mute/silence durations', () => {
     expect(() => parseAdminForwardedModerationCommand('бан 24')).toThrow(BadRequestException);
     expect(() => parseAdminForwardedModerationCommand('мут 999')).toThrow(BadRequestException);
+    expect(() => parseAdminForwardedModerationCommand('Мут! 0')).toThrow(BadRequestException);
+    expect(() => parseAdminForwardedModerationCommand('Мут! 999')).toThrow(BadRequestException);
     expect(() => parseAdminForwardedModerationCommand('тишина 0')).toThrow(BadRequestException);
     expect(() => parsePrivateForwardedModerationCommand('бан 24')).toThrow(
       'Команда «бан» применяется без срока. Отправьте её без длительности.',

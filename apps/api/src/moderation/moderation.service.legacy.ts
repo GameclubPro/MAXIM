@@ -5925,14 +5925,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       command.action === 'SUPER_BAN'
         ? '`супер бан`'
         : command.action === 'MUTE'
-          ? `\`${getAdminCommandName(
-              command.mutePermanent
-                ? settings.adminPermanentMuteCommandName
-                : settings.adminMuteCommandName,
-              command.mutePermanent
-                ? ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT
-                : ADMIN_MUTE_COMMAND_NAME_DEFAULT,
-            )}\``
+          ? command.fanoutAllChats === true
+            ? '`Мут!`'
+            : `\`${getAdminCommandName(
+                command.mutePermanent
+                  ? settings.adminPermanentMuteCommandName
+                  : settings.adminMuteCommandName,
+                command.mutePermanent
+                  ? ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT
+                  : ADMIN_MUTE_COMMAND_NAME_DEFAULT,
+              )}\``
           : `\`${getAdminCommandName(
               command.fanoutAllChats
                 ? settings.adminBanAllCommandName
@@ -6000,9 +6002,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                 ? { fanoutAllChats: command.fanoutAllChats === true }
                 : {}),
               ...(command.action === 'MUTE'
-                ? command.mutePermanent
-                  ? { mutePermanent: true }
-                  : { muteDurationHours: command.muteDurationHours }
+                ? {
+                    fanoutAllChats: command.fanoutAllChats === true,
+                    ...(command.mutePermanent
+                      ? { mutePermanent: true }
+                      : { muteDurationHours: command.muteDurationHours }),
+                  }
                 : {}),
               deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
               deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,

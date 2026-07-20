@@ -188,6 +188,7 @@ export type AdminForwardedModerationCommand =
     }
   | {
       action: 'MUTE';
+      fanoutAllChats?: boolean;
       muteDurationHours?: number;
       mutePermanent?: true;
     }

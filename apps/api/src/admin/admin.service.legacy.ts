@@ -10744,7 +10744,7 @@ export class AdminService implements OnModuleDestroy {
       preferredBotId: job.commandBotId ?? null,
       targetDisplayNameHint: job.targetSenderName ?? null,
       allowTargetDisplayNameRemoteLookup: false,
-      fanoutAllChats: job.fanoutAllChats === true,
+      fanoutAllChats: job.action === 'BAN' && job.fanoutAllChats === true,
       fanoutLedgerJobId: job.jobId,
     };
     let result: ManualModerationActionResult;
@@ -10856,8 +10856,8 @@ export class AdminService implements OnModuleDestroy {
       deleteBotMessagesEnabled: job.deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes: job.deleteBotMessagesDelayMinutes,
     });
+    await this.manualModerationRuntime.fanoutGroupMuteAfterNotice(job, actor, result);
   }
-
   private buildManualFanoutActor(actor: {
     userId: string;
     username: string | null;

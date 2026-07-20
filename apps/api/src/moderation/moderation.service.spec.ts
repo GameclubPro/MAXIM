@@ -12270,6 +12270,62 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
+  it('queues the bang mute command for every chat administered by the actor', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings(),
+          domains: [],
+          admins: [{ userId: 'admin-1' }],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const adminService = {
+      enqueueManualGroupModerationCommand: jest.fn().mockResolvedValue(true),
+      applyManualSystemBan: jest.fn(),
+      applyManualModerationAction: jest.fn(),
+    };
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine: { detect: jest.fn() },
+      sanctionService: { resolveAction: jest.fn() },
+      maxClient: {
+        deleteMessage: jest.fn(),
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+      },
+      manualBridge: adminService,
+    });
+
+    await service.handleUpdate(createAdminLinkedModerationUpdate('Мут! 24'));
+
+    expect(adminService.enqueueManualGroupModerationCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceChatId: 'chat-1',
+        targetUserId: 'user-2',
+        action: 'MUTE',
+        fanoutAllChats: true,
+        muteDurationHours: 24,
+      }),
+    );
+  });
+
   it('uses per-chat custom mute command name for group commands', async () => {
     const prisma = {
       chat: {

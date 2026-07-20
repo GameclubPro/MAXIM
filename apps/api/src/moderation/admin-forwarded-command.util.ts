@@ -97,6 +97,10 @@ export function parseAdminForwardedModerationCommand(
     normalizedLower,
     muteCommandName,
   );
+  const muteAllChatsCommandMatch = matchBangCommandWithOptionalDuration(
+    normalizedLower,
+    ADMIN_MUTE_COMMAND_NAME_DEFAULT,
+  );
   const silenceCommandMatch = matchAdminCommandNameWithOptionalDuration(
     normalizedLower,
     silenceCommandName,
@@ -181,6 +185,33 @@ export function parseAdminForwardedModerationCommand(
   if (matchesAdminCommandName(normalizedLower, banCommandName)) {
     return {
       action: 'BAN',
+    };
+  }
+
+  if (muteAllChatsCommandMatch?.durationText === null) {
+    return {
+      action: 'MUTE',
+      fanoutAllChats: true,
+      muteDurationHours: DEFAULT_MUTE_DURATION_HOURS,
+    };
+  }
+
+  if (muteAllChatsCommandMatch) {
+    const muteDurationHours = Number.parseInt(muteAllChatsCommandMatch.durationText, 10);
+    if (
+      !Number.isInteger(muteDurationHours) ||
+      muteDurationHours < 1 ||
+      muteDurationHours > MAX_ACTIVE_MUTE_DURATION_HOURS
+    ) {
+      throw new BadRequestException(
+        `Для мута укажите срок от 1 до ${MAX_ACTIVE_MUTE_DURATION_HOURS} ч.`,
+      );
+    }
+
+    return {
+      action: 'MUTE',
+      fanoutAllChats: true,
+      muteDurationHours,
     };
   }
 
@@ -516,6 +547,26 @@ function matchAdminCommandNameWithOptionalDuration(
   }
 
   return null;
+}
+
+function matchBangCommandWithOptionalDuration(
+  normalizedText: string,
+  commandName: string,
+): { durationText: string | null } | null {
+  const bangCommandName = `${commandName.toLowerCase()}!`;
+  if (normalizedText === bangCommandName) {
+    return { durationText: null };
+  }
+
+  if (!normalizedText.startsWith(`${bangCommandName} `)) {
+    return null;
+  }
+
+  const suffix = normalizedText.slice(bangCommandName.length).trim();
+  const durationMatch = suffix.match(
+    /^(\d{1,3})(?:\s*(?:ч|час|часа|часов|h|hr|hrs|hour|hours))?[.]?$/u,
+  );
+  return durationMatch ? { durationText: durationMatch[1] } : null;
 }
 
 function readAdminCommandText(value: unknown): string | null {

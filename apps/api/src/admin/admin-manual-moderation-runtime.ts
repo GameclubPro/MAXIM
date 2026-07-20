@@ -1,4 +1,5 @@
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import type { ManualModerationActionResult } from '@maxim/contracts';
 import { createHash } from 'node:crypto';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import type { AdminManualGroupModerationCommandJob } from './admin-manual-fanout.queue';
@@ -37,6 +38,27 @@ export class AdminManualModerationRuntime {
 
   private readTrimmedString(value: unknown): string | null {
     return this.context.readTrimmedString(value);
+  }
+
+  async fanoutGroupMuteAfterNotice(
+    job: AdminManualGroupModerationCommandJob,
+    actor: AuthUser,
+    result: ManualModerationActionResult,
+  ): Promise<void> {
+    if (job.action !== 'MUTE' || job.fanoutAllChats !== true) {
+      return;
+    }
+
+    await this.context.resolveManualMuteCommandFollowUpSummaries({
+      sourceChatId: job.sourceChatId,
+      targetUserId: job.targetUserId,
+      actor,
+      rootIntentKey: job.jobId,
+      muteDurationHours: result.muteDurationHours,
+      muteExpiresAt: result.muteExpiresAt ? new Date(result.muteExpiresAt) : null,
+      mutePermanent: job.mutePermanent === true,
+      source: 'group_command',
+    });
   }
 
   async enqueueManualGroupModerationCommand(params: {
