@@ -35,10 +35,12 @@ import {
   preparePublicationDraftForPersistence,
 } from '../src/features/publications/publication-draft-storage';
 import {
+  PUBLICATION_MEDIA_MUTATION_TIMEOUT_MS,
   createPublication,
   getPublicationCalendarAvailability,
   retryPublicationOccurrence,
   testPublication,
+  updatePublication,
 } from '../src/lib/api/publication-client';
 import type { ApiRequestInit, ApiTransport } from '../src/lib/api/transport';
 
@@ -743,7 +745,7 @@ test('test publication request contains content and source target without a sche
   assert.deepEqual(request.sourceTarget, { chatId: 'chat-1', entityType: 'chat' });
 });
 
-test('publication client uses v2 create and test endpoints', async () => {
+test('publication media mutations reserve enough time for mobile uploads', async () => {
   const calls: Array<{ path: string; init?: ApiRequestInit }> = [];
   const api: ApiTransport = {
     request: async (path, init) => {
@@ -754,6 +756,10 @@ test('publication client uses v2 create and test endpoints', async () => {
   };
   const draft = createEmptyPublicationDraft([chatTarget, channelTarget]);
   draft.text = 'Проверка маршрута';
+  draft.mediaType = 'video';
+  draft.mediaBase64 = 'dmlkZW8=';
+  draft.mediaMimeType = 'video/mp4';
+  draft.mediaFileName = 'clip.mp4';
 
   await assert.rejects(
     createPublication(api, buildCreatePublicationRequest(draft, 'request_create_001')),
@@ -763,12 +769,28 @@ test('publication client uses v2 create and test endpoints', async () => {
     testPublication(api, buildTestPublicationRequest(draft, 'request_test_002')),
     /stop/u,
   );
+  await assert.rejects(
+    updatePublication(api, 'publication-1', {
+      expectedRevision: 1,
+      requestId: 'request_update_003',
+      content: buildPublicationContent(draft),
+    }),
+    /stop/u,
+  );
+  const textOnlyDraft = createEmptyPublicationDraft([chatTarget]);
+  textOnlyDraft.text = 'Только текст';
+  await assert.rejects(
+    createPublication(api, buildCreatePublicationRequest(textOnlyDraft, 'request_create_004')),
+    /stop/u,
+  );
 
   assert.deepEqual(
-    calls.map((call) => [call.path, call.init?.method]),
+    calls.map((call) => [call.path, call.init?.method, call.init?.timeoutMs]),
     [
-      ['/publications', 'POST'],
-      ['/publications/test', 'POST'],
+      ['/publications', 'POST', PUBLICATION_MEDIA_MUTATION_TIMEOUT_MS],
+      ['/publications/test', 'POST', PUBLICATION_MEDIA_MUTATION_TIMEOUT_MS],
+      ['/publications/publication-1', 'PUT', PUBLICATION_MEDIA_MUTATION_TIMEOUT_MS],
+      ['/publications', 'POST', undefined],
     ],
   );
 });

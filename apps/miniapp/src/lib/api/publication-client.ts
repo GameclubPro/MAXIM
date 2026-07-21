@@ -33,6 +33,17 @@ import {
 import { tracePublicationApi, type PublicationApiOperation } from '../publication-api-trace';
 import type { ApiTransport } from './transport';
 
+export const PUBLICATION_MEDIA_MUTATION_TIMEOUT_MS = 5 * 60_000;
+
+function resolvePublicationMediaMutationTimeout(content: {
+  media: ReadonlyArray<{ type: string; base64?: string }>;
+}): number | undefined {
+  const hasInlineMedia = content.media.some(
+    (item) => item.type === 'image' || (item.type === 'video' && Boolean(item.base64)),
+  );
+  return hasInlineMedia ? PUBLICATION_MEDIA_MUTATION_TIMEOUT_MS : undefined;
+}
+
 async function runPublicationApiRequest<T>(
   operation: PublicationApiOperation,
   request: () => Promise<unknown>,
@@ -116,13 +127,16 @@ export async function createPublication(
   api: ApiTransport,
   payload: CreatePublicationRequest,
 ): Promise<PublicationDetails> {
-  const body = JSON.stringify(createPublicationRequestSchema.parse(payload));
+  const request = createPublicationRequestSchema.parse(payload);
+  const body = JSON.stringify(request);
+  const timeoutMs = resolvePublicationMediaMutationTimeout(request.content);
   return runPublicationApiRequest(
     'publish',
     () =>
       api.request('/publications', {
         method: 'POST',
         body,
+        ...(timeoutMs ? { timeoutMs } : {}),
       }),
     (response) => publicationDetailsSchema.parse(response),
   );
@@ -133,13 +147,18 @@ export async function updatePublication(
   publicationId: string,
   payload: UpdatePublicationRequest,
 ): Promise<PublicationDetails> {
-  const body = JSON.stringify(updatePublicationRequestSchema.parse(payload));
+  const request = updatePublicationRequestSchema.parse(payload);
+  const body = JSON.stringify(request);
+  const timeoutMs = request.content
+    ? resolvePublicationMediaMutationTimeout(request.content)
+    : undefined;
   return runPublicationApiRequest(
     'update',
     () =>
       api.request(`/publications/${encodeURIComponent(publicationId)}`, {
         method: 'PUT',
         body,
+        ...(timeoutMs ? { timeoutMs } : {}),
       }),
     (response) => publicationDetailsSchema.parse(response),
   );
@@ -183,13 +202,16 @@ export async function testPublication(
   api: ApiTransport,
   payload: TestPublicationRequest,
 ): Promise<void> {
-  const body = JSON.stringify(testPublicationRequestSchema.parse(payload));
+  const request = testPublicationRequestSchema.parse(payload);
+  const body = JSON.stringify(request);
+  const timeoutMs = resolvePublicationMediaMutationTimeout(request.content);
   await runPublicationApiRequest(
     'action',
     () =>
       api.request('/publications/test', {
         method: 'POST',
         body,
+        ...(timeoutMs ? { timeoutMs } : {}),
       }),
     () => undefined,
   );
