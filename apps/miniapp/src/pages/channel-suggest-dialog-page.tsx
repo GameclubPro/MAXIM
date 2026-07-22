@@ -28,11 +28,13 @@ import {
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   MAX_MARKDOWN_TOOL_DEFINITIONS,
-  MaxMarkdownEditor,
-  type MaxMarkdownEditorHandle,
   type MaxMarkdownTool,
 } from '../components/max-markdown-editor';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
+import {
+  MaxRichTextEditor,
+  type MaxRichTextEditorHandle,
+} from '../components/max-rich-text-editor';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import { isSessionExpiredApiMessage, isTerminalDialogApiMessage } from '../lib/api-error';
@@ -392,7 +394,7 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
   const suggestComposerRef = useRef<HTMLElement | null>(null);
   const suggestBarRef = useRef<HTMLDivElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
-  const markdownEditorRef = useRef<MaxMarkdownEditorHandle | null>(null);
+  const richTextEditorRef = useRef<MaxRichTextEditorHandle | null>(null);
   const attachmentInputWatchCleanupRef = useRef<(() => void) | null>(null);
   const lastHandledAttachmentSelectionRef = useRef<string | null>(null);
   const recentAttachmentSelectionRef = useRef<{ signature: string; handledAt: number } | null>(
@@ -460,7 +462,10 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
   const introText = dialogQuery.data?.introText?.trim() ?? '';
   const draftLength = draft.trim().length;
   const isPreparingImage = preparingImageState !== null;
-  const canSubmitMessage = !isPreparingImage && (draftLength > 0 || draftAttachments.length > 0);
+  const canSubmitMessage =
+    !isPreparingImage &&
+    draftLength <= SUGGEST_DRAFT_MAX_LENGTH &&
+    (draftLength > 0 || draftAttachments.length > 0);
   const suggestPreparingImageSlots = preparingImageState?.total ?? 0;
   const suggestPreparingImageLabel = preparingImageState
     ? `Готовим ${Math.min(preparingImageState.done + 1, preparingImageState.total)}/${preparingImageState.total}`
@@ -968,13 +973,19 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    markdownEditorRef.current?.applyTool(tool);
+    richTextEditorRef.current?.applyTool(tool);
     maxSelectionChanged();
   };
 
   const onSubmit = () => {
     const text = draft.trim();
-    if (isSubmitPending || !chatId || !token || (!text && draftAttachments.length === 0)) {
+    if (
+      isSubmitPending ||
+      !chatId ||
+      !token ||
+      draftLength > SUGGEST_DRAFT_MAX_LENGTH ||
+      (!text && draftAttachments.length === 0)
+    ) {
       return;
     }
 
@@ -1244,17 +1255,15 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
                     />
 
                     <div className="channel-suggest-composer__field">
-                      <MaxMarkdownEditor
-                        ref={markdownEditorRef}
+                      <MaxRichTextEditor
+                        ref={richTextEditorRef}
                         value={draft}
                         onChange={setDraft}
                         placeholder="Текст идеи или подпись к фото"
                         maxLength={SUGGEST_DRAFT_MAX_LENGTH}
                         disabled={isSubmitPending}
-                        showToolbar={false}
-                        rows={5}
                         ariaLabel="Текст предложки"
-                        className="channel-suggest-composer__markdown-editor"
+                        className="channel-suggest-composer__rich-editor"
                       />
                     </div>
 
