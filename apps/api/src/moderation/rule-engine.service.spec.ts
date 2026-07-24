@@ -314,6 +314,46 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
   });
 
+  it.each([
+    ['transport only', '', {}, []],
+    ['profanity', ' блять', {}, ['PROFANITY']],
+    [
+      'blocked word',
+      ' фиалка',
+      { messageLimitsBlockedWords: ['фиалка'] },
+      ['MESSAGE_BLOCKED_WORD'],
+    ],
+    ['blocked phone', '', { phoneNumbersEnabled: false }, ['PHONE_NUMBER_BLOCKED']],
+  ])(
+    'keeps ambiguous-transport review telemetry alongside %s detection',
+    async (_label, suffix, overrides, additionalRuleCodes) => {
+      const service = createRuleEngine();
+      const result = await service.detect({
+        chatId: 'chat-1',
+        userId: 'u-1',
+        text: `Водитель Абакан-Аскиз-ст. Аскиза 11.40-12.00 +7 900 000 00 00 с места до места завтра${suffix}`,
+        settings: buildSettings({
+          commercialAdsFilterEnabled: true,
+          ...overrides,
+        }),
+        domainAllowlist: [],
+      });
+      const commercial = result.violations.find((item) => item.ruleCode === 'COMMERCIAL_AD');
+
+      expect(commercial?.metadata).toEqual(
+        expect.objectContaining({
+          actionBand: 'REVIEW_ONLY',
+          actionable: false,
+          recordable: false,
+          matchedSignals: expect.arrayContaining(['review-only:transport-door-to-door-operator']),
+        }),
+      );
+      for (const ruleCode of additionalRuleCodes) {
+        expect(result.violations.some((item) => item.ruleCode === ruleCode)).toBe(true);
+      }
+    },
+  );
+
   it('propagates a bounded duplicate-state timeout so the webhook retries', async () => {
     jest.useFakeTimers();
     const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -3027,7 +3067,7 @@ describe('RuleEngineService', () => {
         label: 'catalog delivery product ad',
         text: 'Диваны на прямую от производителя. Самые доступные цены у нас. Пишите скинем каталог. Есть доставка по региону. Оплата при получении.',
         expected: {
-          soft: null,
+          soft: 'HIGH',
           balanced: 'HIGH',
           strict: 'HIGH',
         },

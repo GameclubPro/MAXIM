@@ -2,6 +2,14 @@ import type { ChatSettings } from '../../prisma/prisma-client';
 import type { CommercialCampaignContext } from '../commercial-campaign.util';
 import { createRuleDetectionContext } from '../rule-engine-detection-context';
 import { CommercialAdDetector } from './commercial-ad.detector';
+import {
+  ADS_ADVANCE_AIRPORT_STATION_TRANSFER_PATTERN,
+  ADS_PROFESSIONAL_PASSENGER_PARCEL_TRANSFER_PATTERN,
+  ADS_SCHEDULED_PASSENGER_PARCEL_ROUTE_PATTERN,
+  ADS_SCHEDULED_ROUND_TRIP_DOOR_TO_DOOR_PATTERN,
+  ADS_SCHEDULED_ROUND_TRIP_PARCEL_ROUTE_PATTERN,
+  ADS_TAXIING_CONTACT_SELF_OFFER_PATTERN,
+} from './commercial-patterns';
 
 const BASE_SETTINGS = {
   commercialAdsFilterEnabled: true,
@@ -204,8 +212,13 @@ describe('commercial pattern regressions', () => {
     {
       label: 'clairvoyant paid service from sixteen hour audit miss',
       text: 'Опытная ясновидящая, делаю диагностику ситуации, предсказываю. Связаться Max WhatsApp Telegram.',
-      subtype: 'GOODS',
-      signals: ['risk:paid-esoteric-service', 'contact:whatsapp', 'contact:telegram'],
+      subtype: 'SERVICES',
+      signals: [
+        'risk:paid-esoteric-service',
+        'service-specialty:divination-self-offer',
+        'contact:whatsapp',
+        'contact:telegram',
+      ],
     },
     {
       label: 'photo restoration digital service from sixteen hour audit miss',
@@ -378,11 +391,11 @@ describe('commercial pattern regressions', () => {
       signals: ['channel-placement:subscribe-channel-link', 'deal-channel:link'],
     },
     {
-      label: 'paid sports raffle channel from forty eight hour audit miss',
+      label: 'free sports giveaway channel from forty eight hour audit miss',
       text: 'ВНИМАНИЕ! РОЗЫГРЫШ 50.000 РУБЛЕЙ ЗА ПОДПИСКУ В КАНАЛ. Автор зарабатывает на спорте, ссылка https://max.ru/join/sport',
       subtype: 'CHANNEL_PLACEMENT',
       signals: [
-        'risk:paid-raffle',
+        'business:promotional-giveaway',
         'channel-placement:subscribe-channel-link',
         'deal-channel:link',
       ],
@@ -716,7 +729,6 @@ describe('commercial pattern regressions', () => {
       text: 'Хотите баню под ключ? Полная сборка, доставка отдельно, заказывайте готовое решение.',
       subtype: 'GOODS_RETAIL',
       signals: ['business:заказывайте', 'transaction:keywords', 'goods-retail:inventory'],
-      negativeSignals: ['context:question'],
     },
     {
       label: 'short cabbage seedling clearance stock from twenty four hour audit miss',
@@ -1387,7 +1399,7 @@ describe('commercial pattern regressions', () => {
     expect(result?.actionBand).toBe('REVIEW_ONLY');
   });
 
-  it('keeps short structured service phone ads reviewable under soft balanced thresholds', () => {
+  it('warns on short structured service phone ads under soft balanced thresholds', () => {
     const cargo = detect('ГРУЗОПЕРЕВОЗКИ +7 900 000 10 42', {
       settings: {
         commercialAdsSensitivity: 'BALANCED',
@@ -1408,10 +1420,10 @@ describe('commercial pattern regressions', () => {
 
     expect(cargo?.primarySubtype).toBe('SERVICES');
     expect(cargo?.matchedSignals).toContain('transaction:structured-service-phone-offer');
-    expect(cargo?.actionBand).toBe('REVIEW_ONLY');
+    expect(cargo?.actionBand).toBe('WARN');
     expect(beauty?.primarySubtype).toBe('SERVICES');
     expect(beauty?.matchedSignals).toContain('transaction:structured-service-phone-offer');
-    expect(beauty?.actionBand).toBe('REVIEW_ONLY');
+    expect(beauty?.actionBand).toBe('WARN');
   });
 
   it.each([
@@ -1419,30 +1431,35 @@ describe('commercial pattern regressions', () => {
       'print copy',
       'Печать фото и документов, ксерокопия, распечатка, ламинирование. Адрес: Ленина 10. Тел. +7 900 000 20 01',
       'service-specialty:print-copy-service',
+      'REVIEW_ONLY',
     ],
     [
       'tool rental',
       'Прокат инструмента: перфоратор, болгарка, сварочный аппарат. Залог. Телефон +7 900 000 21 01',
       'service-specialty:tool-rental-service',
+      'REVIEW_ONLY',
     ],
     [
       'locksmith',
       'Вскрытие замков круглосуточно, аварийное открытие дверей. Телефон +7 900 000 21 04',
       'service-specialty:locksmith-service',
+      'REVIEW_ONLY',
     ],
     [
       'well drilling',
       'Бурение скважин на воду, обсадные трубы, гарантия. Телефон +7 900 000 21 05',
       'service-specialty:well-drilling-service',
+      'WARN',
     ],
     [
       'sewer cleaning',
       'Прочистка канализации, устранение засоров, выезд круглосуточно +7 900 000 21 06',
       'service-specialty:sewer-cleaning-service',
+      'REVIEW_ONLY',
     ],
   ])(
-    'keeps structured %s phone ads reviewable under soft balanced thresholds',
-    (_label, text, signal) => {
+    'keeps structured %s phone ads actionable under soft balanced thresholds',
+    (_label, text, signal, expectedAction) => {
       const result = detect(text, {
         settings: {
           commercialAdsSensitivity: 'BALANCED',
@@ -1454,7 +1471,10 @@ describe('commercial pattern regressions', () => {
       expect(result?.primarySubtype).toBe('SERVICES');
       expect(result?.matchedSignals).toContain(signal);
       expect(result?.matchedSignals).toContain('transaction:structured-service-phone-offer');
-      expect(result?.actionBand).toBe('REVIEW_ONLY');
+      expect(result?.actionBand).toBe(expectedAction);
+      if (expectedAction === 'WARN') {
+        expect(result?.suppressionReasons).toContain('conservative-recall-warn-cap');
+      }
     },
   );
 
@@ -1787,25 +1807,30 @@ describe('commercial pattern regressions', () => {
       {
         text: 'Покос травы триммером. Там где мы там чисто. +7 900 000 00 00',
         signal: 'service-specialty:yard-cleanup-service',
+        actionBand: 'REVIEW_ONLY',
       },
       {
         text: 'НАТЯЖНЫЕ ПОТОЛКИ, рулонные шторы, жалюзи. Бесплатный замер, завтра монтаж. +7 900 000 00 00',
         signal: 'service-specialty:stretch-ceiling-service',
+        actionBand: 'REVIEW_ONLY',
       },
       {
         text: 'Ремонт стиральных машин НА ДОМУ. Я лично отвечаю на звонки и сам приезжаю на ремонт. Опыт более 15 лет. +7 900 000 00 00',
         signal: 'service-specialty:appliance-repair',
+        actionBand: 'WARN',
       },
     ];
 
-    for (const { text, signal } of cases) {
+    for (const { text, signal, actionBand } of cases) {
       const result = detect(text, { settings });
 
       expect(result?.primarySubtype).toBe('SERVICES');
-      expect(result?.actionBand).toBe('REVIEW_ONLY');
+      expect(result?.actionBand).toBe(actionBand);
       expect(result?.matchedSignals).toContain(signal);
       expect(result?.matchedSignals).toContain('contact:phone');
-      expect(result?.classifierReasons).toContain('rescued-structured-service-phone');
+      if (actionBand === 'REVIEW_ONLY') {
+        expect(result?.classifierReasons).toContain('rescued-structured-service-phone');
+      }
     }
   });
 
@@ -1981,5 +2006,2416 @@ describe('commercial pattern regressions', () => {
     ]) {
       expect(detect(text, { settings })).toBeNull();
     }
+  });
+
+  it('enforces standalone service evidence even when the same contact forms a campaign', () => {
+    const result = detect(
+      'Предлагаю свои услуги по ремонту кровли гаражей. Работаю по договору, гарантия 5 лет. Звоните [phone]',
+      {
+        commercialCampaignContext: {
+          ...REPEATED_PRIVATE_RESALE_CONTEXT,
+          repeatedPhoneDistinctChatCount: 3,
+        },
+        settings: {
+          commercialAdsSensitivity: 'BALANCED',
+          commercialAdsWarnThreshold: 45,
+          commercialAdsDeleteThreshold: 65,
+        },
+      },
+    );
+
+    expect(result?.primarySubtype).toBe('SERVICES');
+    expect(result?.evidenceStrength).toBe('STRUCTURED');
+    expect(result?.reviewReasons).not.toContain('campaign-dependent');
+    expect(result?.actionBand).toBe('WARN');
+  });
+
+  it('does not turn a repeated wellness diary into an info-product offer', () => {
+    const result = detect(
+      'Завтра быстрый и вкусный завтрак: огурец, зелень, сыр, яйцо, греческий йогурт. После завтрака коллаген. Сегодня снова записи по самочувствию и питанию, курс привычек идет спокойно.',
+      {
+        commercialCampaignContext: {
+          ...REPEATED_PRIVATE_RESALE_CONTEXT,
+          sameTextDistinctChatCount: 4,
+        },
+      },
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it.each([
+    [
+      'short cleaning service',
+      'Химчистка мебели, матрасов, стульев и ковров на выезд. +7 900 000 30 01',
+    ],
+    [
+      'short electrician service',
+      'Электрик +7 900 000 30 02, на сообщения не отвечаю, только звонки',
+    ],
+    ['short taxi service', 'Такси межгород 24/7 +7 900 000 30 03'],
+  ])('warns on an unambiguous %s with a phone', (_label, text) => {
+    const result = detect(text, {
+      settings: {
+        commercialAdsSensitivity: 'BALANCED',
+        commercialAdsWarnThreshold: 45,
+        commercialAdsDeleteThreshold: 65,
+      },
+    });
+
+    expect(result?.primarySubtype).toBe('SERVICES');
+    expect(result?.actionBand).toBe('WARN');
+    expect(result?.classifierReasons).toContain('cleared-structured-service-phone');
+  });
+
+  it('warns on explicit store inventory without treating a bare availability reply as an ad', () => {
+    const store = detect('В магазине Палитра Вкуса в наличии шашлык: свинина, курица.', {
+      settings: {
+        commercialAdsSensitivity: 'BALANCED',
+        commercialAdsWarnThreshold: 45,
+        commercialAdsDeleteThreshold: 65,
+      },
+    });
+
+    expect(store?.primarySubtype).toBe('GOODS_RETAIL');
+    expect(store?.actionBand).toBe('WARN');
+    expect(detect('Есть, весь в наличии')).toBeNull();
+  });
+
+  it.each([
+    [
+      'qualified job seeker',
+      'Добрый день. Ищу любую подработку. С ежедневной оплатой. [phone] Иван',
+    ],
+    [
+      'specialist contact request',
+      'Добрый день! Напишите, пожалуйста, есть ли у кого-нибудь номер специалиста по ремонту холодильного оборудования. Тел. [phone].',
+    ],
+    [
+      'buyer order list',
+      'Примите пожалуйста заявку: филе горбуши 1 упаковка, сыр 1 штука. [phone] Рашида',
+    ],
+    ['buyer availability question', 'На заказ делаете или есть в наличии?'],
+    ['turkic taxi request', '9 остановка до Озерной че такси херек [phone]'],
+    [
+      'fuel availability report',
+      'Татнефть на Ново-Садовой: 92, 95 и ДТ все в наличии, очередь небольшая.',
+    ],
+    [
+      'animal adoption with delivery',
+      'Щенкам срочно нужен дом, помогите малышам, возможна доставка и помощь в стерилизации [phone]',
+    ],
+    [
+      'missing person public help',
+      'СУРГУТ, ОЧЕНЬ НУЖНА ВАША ПОМОЩЬ! ПРОПАЛ МОЙ СЫН! Кто видел, сообщите по телефону [phone].',
+    ],
+    [
+      'disaster fundraiser',
+      'После взрыва газа семья осталась без квартиры. Открыт сбор помощи семье, пожертвования по номеру [phone].',
+    ],
+    ['default max invite', 'Я пользуюсь мессенджером MAX. Присоединяйся! [url]'],
+  ])('suppresses the audited non-commercial context: %s', (_label, text) => {
+    expect(detect(text)).toBeNull();
+  });
+
+  it('keeps a Rostelecom service offer deletable and out of messaging-automation risk', () => {
+    const result = detect(
+      'Меня зовут Ольга, менеджер компании ПАО Ростелеком. Подключаем интернет: оптоволокно прямо в дом. Телевидение, видеонаблюдение для безопасности дома и участка, мобильная связь за 300 руб. Уточнить тарифы и оставить заявку: звоните [phone], WhatsApp. Бонусы при подключении.',
+      {
+        settings: {
+          commercialAdsSensitivity: 'BALANCED',
+          commercialAdsWarnThreshold: 45,
+          commercialAdsDeleteThreshold: 65,
+        },
+      },
+    );
+
+    expect(result?.primarySubtype).toBe('SERVICES');
+    expect(result?.matchedSignals).not.toContain('risk:messaging-automation');
+    expect(result?.matchedSignals).not.toContain('service-specialty:marketing-automation');
+    expect(result?.safeContextBucket).toBe('none');
+    expect(result?.actionBand).toBe('DELETE');
+  });
+
+  it('keeps a private constructor toy sale suppressed while retaining explicit shop inventory', () => {
+    expect(
+      detect(
+        'Продам детский конструктор, один набор, собирали пару раз. Коробка целая, самовывоз, цена 900 руб.',
+      ),
+    ).toBeNull();
+
+    const shop = detect(
+      'В магазине Игрушки в наличии новые конструкторы, цена от 900 руб. Оформите заказ по ссылке [url].',
+    );
+    expect(shop?.primarySubtype).toBe('GOODS_RETAIL');
+    expect(shop?.negativeSignals).not.toContain('search-pattern:request:order-or-application');
+    expect(shop?.actionBand).toBe('DELETE');
+  });
+
+  it('does not mistake salary paid to a card for bank-card lead generation', () => {
+    const vacancy = detect(
+      'Вахта на складе бытовой техники. Оплата 4500 ₽ за смену, авансы каждую неделю, зарплата на вашу карту или карту третьего лица. Оформление как самозанятый. График 6/1. Телефон [phone].',
+    );
+
+    expect(vacancy?.primarySubtype).toBe('RECRUITMENT');
+    expect(vacancy?.matchedSignals).not.toContain('risk:bank-card-leadgen');
+    expect(vacancy?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+
+    const leadgen = detect(
+      'Альфа-Банк дарит 500 ₽ за оформление банковской карты и кэшбэк. Получить карту по ссылке [url].',
+    );
+    expect(leadgen?.matchedSignals).toContain('risk:bank-card-leadgen');
+    expect(leadgen?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    'Вакансия на складе, зарплата на карту. Альфа-Банк платит 500 ₽ при оформлении, https://example.com/card. Телефон +7 900 000 40 09.',
+    'Вакансия на складе, зарплата на карту. Карта Альфа-Банка, оформление онлайн, выплата 500 ₽. https://example.com/card',
+  ])('keeps embedded bank referral risk in a salary-card vacancy', (text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals).toContain('risk:bank-card-leadgen');
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('does not mistake employee cashback in a bank vacancy for card lead generation', () => {
+    const result = detect(
+      'Вакансия в Альфа-Банке. Официальное оформление по ТК, зарплата на вашу карту. Сотрудникам кэшбэк на обеды. Телефон +7 900 000 40 10.',
+    );
+
+    expect(result?.matchedSignals ?? []).not.toContain('risk:bank-card-leadgen');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('separates a free promotional giveaway from a paid-entry raffle', () => {
+    const freeGiveaway = detect(
+      'ВНИМАНИЕ! РОЗЫГРЫШ 50 000 РУБЛЕЙ ЗА ПОДПИСКУ В КАНАЛ. Автор зарабатывает на спорте, ссылка [url].',
+    );
+    expect(freeGiveaway).not.toBeNull();
+    expect(freeGiveaway?.matchedSignals).toContain('business:promotional-giveaway');
+    expect(freeGiveaway?.matchedSignals).not.toContain('risk:paid-raffle');
+    expect(freeGiveaway?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+
+    const paidRaffle = detect(
+      'Набор в группу: стань одним из победителей. Призовые лоты, стоимость номерка 350 рублей. Оплата переводом, выберите номер. Взаимный обмен. [url]',
+    );
+    expect(paidRaffle?.matchedSignals).toContain('risk:paid-raffle');
+    expect(paidRaffle?.safeContextBucket).toBe('none');
+    expect(paidRaffle?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('does not let a self-authored НЕ СПАМ disclaimer suppress paid-review risk', () => {
+    const scam = detect(
+      'НЕ СПАМ. Платим 3500 ₽ за отзыв на Wildberries: ежедневные задания, без опыта и вложений. Пиши плюс в рабочий чат [url].',
+    );
+
+    expect(scam?.matchedSignals).toContain('risk:paid-review-task');
+    expect(scam?.safeContextBucket).toBe('none');
+    expect(scam?.actionBand).toBe('DELETE_AND_ESCALATE');
+
+    expect(
+      detect(
+        'Осторожно, мошенники предлагают платить за отзывы. Не переходите по их ссылкам и сообщите о спаме администратору.',
+      ),
+    ).toBeNull();
+  });
+
+  it('escalates fake education documents without flagging licensed study', () => {
+    const fakeDocuments = detect(
+      'Документы об образовании без обучения и экзаменов, с гарантией внесения в реестр. Нужен диплом или аттестат? Оперативное оформление. Пишите в WhatsApp [phone] или Telegram [url].',
+    );
+
+    expect(fakeDocuments?.matchedSignals).toContain('risk:document-service');
+    expect(fakeDocuments?.actionBand).toBe('DELETE_AND_ESCALATE');
+
+    const licensedStudy = detect(
+      'Учебный центр приглашает пройти очное обучение 256 часов с экзаменом и последующей выдачей диплома о переподготовке. Лицензия указана на сайте [url].',
+    );
+    expect(licensedStudy?.matchedSignals ?? []).not.toContain('risk:document-service');
+    expect(licensedStudy?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('escalates pseudomedical replacement claims but not ordinary diagnostic imaging', () => {
+    const pseudomedical = detect(
+      'Акция: биорезонансное обследование организма заменяет биохимию крови, МРТ, КТ и УЗИ, выявляет причины аллергии и бесплодия. Предварительная запись [phone].',
+    );
+
+    expect(pseudomedical?.matchedSignals).toContain('risk:pseudomedical-diagnostics');
+    expect(pseudomedical?.actionBand).toBe('DELETE_AND_ESCALATE');
+
+    const imaging = detect(
+      'Медицинский центр проводит МРТ и УЗИ по направлению врача. Результаты описывает врач-рентгенолог, запись по телефону [phone].',
+    );
+    expect(imaging?.matchedSignals ?? []).not.toContain('risk:pseudomedical-diagnostics');
+    expect(imaging?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('treats short availability phrases as replies, not standalone inventory ads', () => {
+    expect(detect('Есть, весь в наличии')).toBeNull();
+    expect(detect('Там всё в наличии.')).toBeNull();
+
+    const inventory = detect(
+      'В магазине Палитра Вкуса в наличии шашлык: свинина и курица. Заказы по телефону [phone].',
+    );
+    expect(inventory?.primarySubtype).toBe('GOODS_RETAIL');
+    expect(inventory?.actionBand).toBe('WARN');
+  });
+
+  it('does not treat торговом зале as a private bargaining marker', () => {
+    const vacancy = detect(
+      'Требуется продавец для работы в торговом зале. График 2/2, зарплата 50000 руб. Запись на собеседование [phone].',
+    );
+
+    expect(vacancy?.primarySubtype).toBe('RECRUITMENT');
+    expect(vacancy?.negativeSignals).not.toContain('private:торг');
+    expect(vacancy?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('does not hide a risky landing page behind a generic invite phrase', () => {
+    const result = detect('Присоединяйся! https://win4land.com');
+
+    expect(result?.matchedSignals).toContain('risk:casino-landing-link');
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('keeps animal and fuel public-context rules conditional on commercial evidence', () => {
+    const breeder = detect(
+      'Питомник предлагает породистого щенка. Щенок ищет семью, цена 50000 руб, открыта бронь. Телефон +7 900 000 40 01.',
+    );
+    const fuelRetailer = detect(
+      'АЗС Энергия: АИ-95 в наличии, очередь для клиентов небольшая. Цена 70 руб/литр, скидка по карте. Заказ топлива и доставка [phone].',
+    );
+
+    expect(breeder?.primarySubtype).toBe('GOODS_RETAIL');
+    expect(breeder?.actionBand).not.toBe('REVIEW_ONLY');
+    expect(fuelRetailer).not.toBeNull();
+    expect(fuelRetailer?.actionBand).not.toBe('REVIEW_ONLY');
+
+    expect(
+      detect('Щенок ищет семью и добрые руки. Отдаём бесплатно, возможна доставка.'),
+    ).toBeNull();
+    expect(
+      detect('На АЗС есть АИ-95, очередь небольшая, машин немного, лимит по приложению.'),
+    ).toBeNull();
+  });
+
+  it('detects a professional breeder offer without requiring a quoted price', () => {
+    const result = detect(
+      'Питомник предлагает породистых щенков с документами РКФ. Щенок ищет семью, открыта бронь. Телефон +7 900 000 40 19.',
+    );
+
+    expect(result?.matchedSignals).toContain('goods-retail:animal-breeder-retail');
+    expect(result?.actionBand).toBe('WARN');
+  });
+
+  it.each([
+    'Продам одного породистого щенка, привит, цена 15000 руб. Телефон +7 900 000 40 41.',
+    'Продаю щенка девочку породы русский той терьер, возраст три месяца. Кушает хорошо, ласковая, вопросы по телефону +7 900 000 40 42.',
+    'Продам одного щенка, документы и ветпаспорт есть, привит, цена 15000 руб. Телефон +7 900 000 40 47.',
+  ])('keeps a single private puppy sale out of breeder retail', (text) => {
+    expect(detect(text)).toBeNull();
+  });
+
+  it('keeps a shelter-style kennel post out of breeder retail', () => {
+    const result = detect(
+      'Питомник-приют спас щенков. Щенки привиты и ищут добрые семьи, отдаём бесплатно. Телефон волонтёра +7 900 000 40 32.',
+    );
+
+    expect(result?.matchedSignals ?? []).not.toContain('goods-retail:animal-breeder-retail');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    'АЗС Энергия: АИ-95 и ДТ в наличии, очередей нет. Скидка 10% по карте, работаем круглосуточно. Телефон +7 900 000 40 20.',
+    'Доставка топлива для бизнеса. ДТ в наличии, лимитов нет, звоните +7 900 000 40 21.',
+  ])('detects an explicit fuel retailer despite availability-report wording', (text) => {
+    const result = detect(text);
+
+    expect(result).not.toBeNull();
+    expect(result?.actionBand).not.toBe('REVIEW_ONLY');
+  });
+
+  it.each([
+    [
+      'public fundraiser followed by card lead generation',
+      'После пожара открыт сбор помощи семье. Банковская карта с бонусом 5000 рублей, оформить по ссылке https://example.com/card.',
+      'risk:bank-card-leadgen',
+    ],
+    [
+      'animal adoption followed by a casino landing page',
+      'Щенок ищет семью и добрые руки. Онлайн-казино с бонусом, играйте по ссылке https://win4land.com.',
+      'risk:casino-landing-link',
+    ],
+    [
+      'fuel report followed by a casino landing page',
+      'На АЗС есть АИ-95, очередь небольшая. Онлайн-казино с бонусом, играйте по ссылке https://win4land.com.',
+      'risk:casino-landing-link',
+    ],
+  ])('does not let a benign prefix hide escalation risk: %s', (_label, text, riskSignal) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals).toContain(riskSignal);
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('does not escalate legitimate diploma requirements or document translation', () => {
+    const vacancy = detect(
+      'На работу требуется диплом инженера. Поможем быстро адаптироваться, официальное оформление. Вопросы по телефону [phone].',
+    );
+    const translation = detect(
+      'Бюро переводов: перевод документов об образовании быстро, гарантия качества. Пишите по телефону [phone].',
+    );
+
+    expect(vacancy?.matchedSignals ?? []).not.toContain('risk:document-service');
+    expect(vacancy?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+    expect(translation?.matchedSignals ?? []).not.toContain('risk:document-service');
+    expect(translation?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    'Пройдите дистанционное обучение 256 часов и получите диплом о переподготовке без посещения учебного центра. Лицензия на сайте https://example.edu/course, запись +7 900 000 40 14.',
+    'Получите диплом после онлайн-обучения без посещения очных занятий. Экзамен дистанционно, учебный центр имеет лицензию. Запись +7 900 000 40 15.',
+  ])('does not escalate a licensed distance-education program', (text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals ?? []).not.toContain('risk:document-service');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    'Переплётная мастерская восстановит корочки дипломов и удостоверений, заменит повреждённую обложку. Телефон +7 900 000 40 17.',
+    'Изготавливаем корочки и папки для дипломов, сертификатов и аттестатов без печати документов. Телефон +7 900 000 40 18.',
+  ])('does not escalate physical credential-cover work', (text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals ?? []).not.toContain('risk:document-service');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('respects explicit debunking of pseudomedical replacement claims', () => {
+    const result = detect(
+      'Биорезонанс не заменяет анализы, МРТ или УЗИ. Медицинский центр рекомендует обследование по назначению врача, запись [phone].',
+    );
+
+    expect(result?.matchedSignals ?? []).not.toContain('risk:pseudomedical-diagnostics');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('requires paid-entry wording for raffle escalation', () => {
+    const freeStorePromo = detect(
+      'Бесплатный розыгрыш магазина: номер участника выдаётся за покупку от 1000 руб. Победитель получит приз, доплачивать не нужно. [url]',
+    );
+    const paidRaffle = detect(
+      'Разыгрываем телевизор. Стоимость номерка 300 руб. Победителя определит генератор, оплата переводом. [url]',
+    );
+
+    expect(freeStorePromo?.matchedSignals ?? []).not.toContain('risk:paid-raffle');
+    expect(freeStorePromo?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+    expect(paidRaffle?.matchedSignals).toContain('risk:paid-raffle');
+    expect(paidRaffle?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    [
+      'ticket price',
+      'Розыгрыш айфона. Билет 300 руб. Победителя определим генератором, пишите в личку.',
+    ],
+    [
+      'participation price',
+      'Разыгрываем телевизор. Участие 300 рублей, оплата переводом. Выигрыш случайному участнику.',
+    ],
+    [
+      'number price',
+      'Добро пожаловать в группу розыгрышей призов. Номерки от 30₽, победителя выберет генератор. https://example.com/raffle',
+    ],
+  ])('escalates a paid raffle with a bare %s', (_label, text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals).toContain('risk:paid-raffle');
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    'Бесплатный розыгрыш: получите номер участника за покупку от 1000 руб, доплачивать не нужно.',
+    'Розыгрыш сертификата на 3000 руб среди подписчиков, участие бесплатное.',
+    'Вход на фестиваль по билету за 500 руб. В программе музыка и бесплатный розыгрыш подарков среди всех гостей. Телефон +7 900 000 40 16.',
+  ])('does not escalate a free giveaway with a prize value', (text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals ?? []).not.toContain('risk:paid-raffle');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('keeps professional vehicle exchange actionable without weakening private barter', () => {
+    const buyout = detect(
+      'Автосалон: срочный выкуп и обмен автомобилей. Деньги сразу, бесплатная оценка. Телефон +7 900 000 40 02.',
+    );
+
+    expect(buyout?.primarySubtype).toBe('BUYOUT');
+    expect(buyout?.safeContextBucket).toBe('none');
+    expect(buyout?.actionBand).not.toBe('REVIEW_ONLY');
+    expect(
+      detect('Обменяю свой велосипед на самокат, велосипед б/у, возможен самовывоз.'),
+    ).toBeNull();
+  });
+
+  it('distinguishes a seller quantity narrative from an explicit buyer order', () => {
+    const seller = detect(
+      'Мне привезли 20 кг свежей форели. Продаю по 700 руб/кг, доставка по городу, телефон [phone].',
+    );
+
+    expect(seller).not.toBeNull();
+    expect(seller?.negativeSignals).not.toContain('search-pattern:request:order-or-application');
+    expect(seller?.actionBand).toBe('REVIEW_ONLY');
+    expect(detect('Оформите мне заказ: 2 кг форели, пожалуйста.')).toBeNull();
+  });
+
+  it('distinguishes a Turkic passenger request from a taxi call to action', () => {
+    expect(detect('9 остановка до Озерной, такси херек [phone]')).toBeNull();
+
+    const taxi = detect(
+      'Такси керек? До аэропорта и вокзала, межгород круглосуточно, звоните +7 900 000 40 08.',
+    );
+    expect(taxi?.primarySubtype).toBe('SERVICES');
+    expect(taxi?.actionBand).toBe('WARN');
+  });
+
+  it('does not clear review for a past retail purchase narrative', () => {
+    const narrative = detect(
+      'В магазине были в наличии новые куртки. Я купила одну за 3000 руб, качество нормальное.',
+    );
+
+    expect(narrative?.classifierReasons ?? []).not.toContain('cleared-retail-business-inventory');
+    expect(narrative?.actionBand ?? 'ALLOW').toBe('REVIEW_ONLY');
+  });
+
+  it('retains bank-card risk when a vacancy embeds an explicit card offer', () => {
+    const result = detect(
+      'Вакансия на складе, зарплата на карту Альфа-Банка. Карту закажите по ссылке https://example.com/card, после активации бонус 500 руб. Телефон +7 900 000 40 03.',
+    );
+
+    expect(result?.matchedSignals).toContain('risk:bank-card-leadgen');
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each(['500 ₽', '500 руб'])('retains a bank referral reward written as %s', (reward) => {
+    const result = detect(
+      `Вакансия на складе, зарплата на карту. Альфа-Банк платит ${reward} при оформлении, https://example.com/card. Телефон +7 900 000 40 25.`,
+    );
+
+    expect(result?.matchedSignals).toContain('risk:bank-card-leadgen');
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('does not mistake a disaster donation card for drop recruitment', () => {
+    expect(
+      detect(
+        'После пожара семья осталась без дома. Открыт сбор помощи, карта для приема переводов указана у волонтера. Телефон +7 900 000 40 26.',
+      ),
+    ).toBeNull();
+
+    const disguisedRecruitment = detect(
+      'После пожара открыт сбор помощи. Нужны карты для приема переводов, оплата владельцу ежедневно, пишите в тг cashwork77.',
+    );
+    expect(disguisedRecruitment?.matchedSignals).toContain('risk:payment-card-drop-leadgen');
+    expect(disguisedRecruitment?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('does not mistake an animal treatment fundraiser for drop recruitment', () => {
+    for (const text of [
+      'Щенок ищет дом и добрые руки. Открыт сбор на лечение, карта для приема переводов. По вопросам телефон +7 900 000 40 28.',
+      'Ребёнку нужна срочная операция. Открыт сбор средств на лечение, карта для приема переводов. Телефон мамы +7 900 000 40 29.',
+      'Помогите семье оплатить лечение. Пожертвования: карта для приёма переводов. Телефон +7 900 000 40 30.',
+    ]) {
+      const result = detect(text);
+      expect(result?.matchedSignals ?? []).not.toContain('risk:payment-card-drop-leadgen');
+      expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+    }
+
+    const ordinaryBusinessPayments = detect(
+      'Магазин принимает оплату: карта для приема платежей, по вопросам звоните +7 900 000 40 31.',
+    );
+    expect(ordinaryBusinessPayments?.matchedSignals ?? []).not.toContain(
+      'risk:payment-card-drop-leadgen',
+    );
+  });
+
+  it('does not let free-raffle wording hide a separate paid entry', () => {
+    const mixed = detect(
+      'У магазина есть бесплатный розыгрыш среди покупателей. Отдельно разыгрываем телефон: участие 300 руб, победителя выберет генератор, доплачивать не нужно. [url]',
+    );
+
+    expect(mixed?.matchedSignals).toContain('risk:paid-raffle');
+    expect(mixed?.actionBand).toBe('DELETE_AND_ESCALATE');
+
+    const mixedMoneyLot = detect(
+      'В магазине бесплатный розыгрыш. А в нашей группе денежный лот: билет 500 руб, оплата на карту. https://example.com/raffle',
+    );
+    expect(mixedMoneyLot?.matchedSignals).toContain('risk:paid-raffle');
+    expect(mixedMoneyLot?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    'Продам диплом государственного образца без обучения, внесение в реестр. Пишите по телефону +7 900 000 40 04.',
+    'Диплом без обучения, внесение в официальный реестр. Заказать по телефону +7 900 000 40 05.',
+    'Корочки, аттестаты, удостоверения, сертификаты, дипломы и многое другое. Телефон +7 900 000 40 06.',
+  ])('escalates an explicit fake credential offer', (text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals).toContain('risk:document-service');
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('does not escalate a debunked pseudomedical replacement claim with intervening words', () => {
+    const result = detect(
+      'Биорезонансная диагностика, по мнению врачей, не может заменять анализы, МРТ или УЗИ. Запись к доказательному терапевту по телефону +7 900 000 40 07.',
+    );
+
+    expect(result?.matchedSignals ?? []).not.toContain('risk:pseudomedical-diagnostics');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    'Биорезонанс не выявляет причины аллергии или бесплодия и не показывает состояние органов. Запись к врачу +7 900 000 40 23.',
+    'Биорезонанс не избавляет от сдачи анализов и очереди к врачу. Запись к терапевту +7 900 000 40 24.',
+    'Биорезонанс не помогает выявить причины аллергии или бесплодия. Запись к врачу +7 900 000 40 33.',
+    'Биорезонанс нельзя использовать, чтобы выявлять причины аллергии. Запись к врачу +7 900 000 40 34.',
+  ])('does not escalate a locally negated pseudomedical claim', (text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals ?? []).not.toContain('risk:pseudomedical-diagnostics');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('keeps independent pseudomedical detection claims risky when replacement is negated', () => {
+    const result = detect(
+      'Биорезонанс не заменяет анализы, но выявляет причины аллергии и бесплодия, показывает состояние каждого органа. Предварительная запись +7 900 000 40 22.',
+    );
+
+    expect(result?.matchedSignals).toContain('risk:pseudomedical-diagnostics');
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
+
+    const notOnly = detect(
+      'Биорезонанс не только выявляет причины аллергии, но и показывает состояние органов. Предварительная запись +7 900 000 40 35.',
+    );
+    expect(notOnly?.matchedSignals).toContain('risk:pseudomedical-diagnostics');
+    expect(notOnly?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    'Хороший электрик Иван, делал нам проводку. Телефон +7 900 000 40 11.',
+    'Нам чистила диван мастер Анна, всё понравилось. Химчистка мебели +7 900 000 40 12.',
+    'Такси межгород Сергей, вчера довёз нас хорошо. Телефон +7 900 000 40 13.',
+  ])('does not enforce a third-party service recommendation', (text) => {
+    const result = detect(text);
+
+    expect(result?.actionBand ?? 'ALLOW').toBe('ALLOW');
+  });
+
+  it('does not let a self-authored service ad impersonate a recommendation', () => {
+    const result = detect(
+      'Хороший электрик: работаю сам, выполняю монтаж проводки, выезжаю по городу. Звоните +7 900 000 40 27.',
+    );
+
+    expect(result).not.toBeNull();
+    expect(result?.actionBand).not.toBe('REVIEW_ONLY');
+  });
+
+  it.each([
+    'Химчистка мебели. Мастер Иван сделал нам диван, всё отлично. Теперь принимает новые заказы, цена от 2000 руб. Телефон +7 900 000 40 43.',
+    'Подрядчик Иван сделал нам ремонт, всё отлично. Сейчас выполняет ремонт квартир под ключ, запись открыта, стоимость от 100000 руб. Телефон +7 900 000 40 44.',
+    'Мастер Иван сделал нам ремонт. Теперь принимает новые заказы, цена от 2000 руб.',
+    'Подрядчик Иван сделал нам ремонт. Теперь выполняет ремонт квартир. Телефон +7 900 000 40 46.',
+  ])('does not let a completed-work narrative hide a current service offer', (text) => {
+    const result = detect(text);
+
+    expect(result?.primarySubtype).toBe('SERVICES');
+    expect(['WARN', 'DELETE']).toContain(result?.actionBand);
+    expect(result?.classifierReasons ?? []).not.toContain(
+      'review:third-party-service-recommendation',
+    );
+  });
+
+  it('keeps a priced completed-work recommendation non-commercial without a current offer', () => {
+    expect(
+      detect(
+        'Мастер Иван сделал нам диван за 2000 руб, всё отлично. Рекомендую, звоните ему +7 900 000 40 45.',
+      ),
+    ).toBeNull();
+  });
+
+  it('keeps the coarse commercial precheck aligned with the animal-rescue suppressor', () => {
+    const text =
+      'Питомник-приют спас щенков. Щенки привиты и ищут добрые семьи, отдаём бесплатно. Телефон волонтёра +7 900 000 40 32.';
+
+    expect(detect(text)).toBeNull();
+    expect(detector.hasCommercialSpamMarkers(text)).toBe(false);
+  });
+
+  it('escalates a paid raffle whose mandatory entry fee has no numeric price', () => {
+    const result = detect(
+      'Розыгрыш смартфона. Участие платное, обязательный взнос. Победителя выберет генератор. Подробности [url].',
+    );
+
+    expect(result?.matchedSignals).toContain('risk:paid-raffle');
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('does not attach paid event admission to a separate free raffle', () => {
+    const result = detect(
+      'Вход на фестиваль платный, билет 500 рублей. В программе музыка и бесплатный розыгрыш подарков среди гостей. Телефон +7 900 000 40 36.',
+    );
+
+    expect(result?.matchedSignals ?? []).not.toContain('risk:paid-raffle');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    'Обменник валют: доллар покупка 79, продажа 81. Работаем ежедневно, телефон +7 900 000 40 37.',
+    'Обмен валют: доллар покупка 79, продажа 81. Офис в центре, телефон +7 900 000 40 38.',
+  ])('detects a professional currency exchange without property-sale noise', (text) => {
+    const result = detect(text);
+
+    expect(result?.primarySubtype).toBe('SERVICES');
+    expect(result?.matchedSignals).toContain('service-specialty:currency-exchange-service');
+    expect(result?.matchedSignals).not.toContain('property-commercial:commercial-space');
+    expect(['WARN', 'DELETE']).toContain(result?.actionBand);
+  });
+
+  it('keeps a private first-person currency exchange out of enforcement', () => {
+    const result = detect('Обменяю 100 долларов на рубли по курсу, пишите в личку.');
+
+    expect(result?.negativeSignals ?? []).toContain('private:обмен');
+    expect(['ALLOW', 'REVIEW_ONLY']).toContain(result?.actionBand ?? 'ALLOW');
+  });
+
+  it('requires a real response path for the paid esoteric signal and never escalates it', () => {
+    const narrative = detect('Таролог рассказывает о значении карт и истории обрядов.');
+    const priceOnly = detect('Таролог описала расклад карт в статье, стоимость колоды 1500 руб.');
+    const offer = detect('Таролог, расклад 1500 руб. Запись в WhatsApp +7 900 000 40 39.');
+
+    expect(narrative?.matchedSignals ?? []).not.toContain('risk:paid-esoteric-service');
+    expect(priceOnly?.matchedSignals ?? []).not.toContain('risk:paid-esoteric-service');
+    expect(offer?.matchedSignals).toContain('risk:paid-esoteric-service');
+    expect(offer?.hasEscalationRiskEvidence).toBe(false);
+    expect(offer?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    [
+      'Я таксист, работаю по городу и межгороду, готов отвезти пассажиров.',
+      'service-specialty:taxi-driver-self-offer',
+    ],
+    ['Печатаю детали и макеты на 3D-принтере под заказ.', 'service-specialty:custom-3d-printing'],
+    [
+      'Сдаю в аренду надувной батут для детских праздников.',
+      'service-specialty:inflatable-trampoline-rental',
+    ],
+    [
+      'Пеку имбирные пряники на заказ по вашему дизайну.',
+      'service-specialty:custom-gingerbread-order',
+    ],
+    ['Такси 3303 на линии.', 'service-specialty:taxi-callsign-availability'],
+    ['Такси 742 свободен.', 'service-specialty:taxi-callsign-availability'],
+  ])('detects an unmistakable object-specific first-person offer: %s', (text, signal) => {
+    const result = detect(text);
+
+    expect(result?.primarySubtype).toBe('SERVICES');
+    expect(result?.matchedSignals).toContain(signal);
+    expect(result?.matchedSignals.some((signal) => signal.startsWith('transaction:'))).toBe(true);
+    expect(['WARN', 'DELETE']).toContain(result?.actionBand);
+  });
+
+  it.each<{
+    label: string;
+    settings: Partial<ChatSettings>;
+    commercialCampaignContext: CommercialCampaignContext;
+  }>([
+    {
+      label: 'balanced singleton at 49/69',
+      settings: {
+        commercialAdsSensitivity: 'BALANCED',
+        commercialAdsWarnThreshold: 49,
+        commercialAdsDeleteThreshold: 69,
+      },
+      commercialCampaignContext: {
+        senderDistinctChatCount: 1,
+        sameTextDistinctChatCount: 1,
+        repeatedPhoneDistinctChatCount: 0,
+        repeatedLinkDistinctChatCount: 0,
+        nearTextDistinctChatCount: 1,
+        repeatedDomainDistinctChatCount: 0,
+        repeatedHandleDistinctChatCount: 0,
+        senderDistinctChatCount5m: 1,
+        senderDistinctChatCount30m: 1,
+        senderDistinctChatCount120m: 1,
+      },
+    },
+    {
+      label: 'balanced standard campaign at 45/65',
+      settings: {
+        commercialAdsSensitivity: 'BALANCED',
+        commercialAdsWarnThreshold: 45,
+        commercialAdsDeleteThreshold: 65,
+      },
+      commercialCampaignContext: {
+        senderDistinctChatCount: 2,
+        sameTextDistinctChatCount: 2,
+        repeatedPhoneDistinctChatCount: 0,
+        repeatedLinkDistinctChatCount: 0,
+        nearTextDistinctChatCount: 2,
+        repeatedDomainDistinctChatCount: 0,
+        repeatedHandleDistinctChatCount: 0,
+        senderDistinctChatCount5m: 2,
+        senderDistinctChatCount30m: 2,
+        senderDistinctChatCount120m: 2,
+      },
+    },
+    {
+      label: 'balanced strong campaign at 49/69',
+      settings: {
+        commercialAdsSensitivity: 'BALANCED',
+        commercialAdsWarnThreshold: 49,
+        commercialAdsDeleteThreshold: 69,
+      },
+      commercialCampaignContext: {
+        senderDistinctChatCount: 3,
+        sameTextDistinctChatCount: 3,
+        repeatedPhoneDistinctChatCount: 0,
+        repeatedLinkDistinctChatCount: 0,
+        nearTextDistinctChatCount: 3,
+        repeatedDomainDistinctChatCount: 0,
+        repeatedHandleDistinctChatCount: 0,
+        senderDistinctChatCount5m: 1,
+        senderDistinctChatCount30m: 3,
+        senderDistinctChatCount120m: 3,
+      },
+    },
+    {
+      label: 'strict strong campaign at 40/58',
+      settings: {
+        commercialAdsSensitivity: 'STRICT',
+        commercialAdsWarnThreshold: 40,
+        commercialAdsDeleteThreshold: 58,
+      },
+      commercialCampaignContext: {
+        senderDistinctChatCount: 4,
+        sameTextDistinctChatCount: 4,
+        repeatedPhoneDistinctChatCount: 0,
+        repeatedLinkDistinctChatCount: 0,
+        nearTextDistinctChatCount: 4,
+        repeatedDomainDistinctChatCount: 0,
+        repeatedHandleDistinctChatCount: 0,
+        senderDistinctChatCount5m: 1,
+        senderDistinctChatCount30m: 4,
+        senderDistinctChatCount120m: 4,
+      },
+    },
+  ])('keeps a deal-less ribbon bouquet showcase review-only: $label', (testCase) => {
+    const result = detect(
+      'Предлагаю эксклюзивные букеты из атласных лент, созданные с душой и вниманием к каждой детали. Никогда не завянут. Вы сами выбираете цвет и количество цветов. Качественно, красиво и быстро.',
+      testCase,
+    );
+
+    expect(result?.matchedSignals).toContain('service-specialty:custom-ribbon-bouquet');
+    expect(result?.actionBand).toBe('REVIEW_ONLY');
+    expect(result?.actionable).toBe(false);
+    expect(result?.reviewReasons).toContain('handmade-showcase-without-direct-deal');
+  });
+
+  it('allows direct deal evidence to clear the ribbon bouquet review cap', () => {
+    const result = detect(
+      'Предлагаю эксклюзивные букеты из атласных лент, вы выбираете цвет и количество цветов. Цена 2500 руб., заказать по телефону +7 900 000 40 60.',
+    );
+
+    expect(result?.matchedSignals).toEqual(
+      expect.arrayContaining([
+        'service-specialty:custom-ribbon-bouquet',
+        'transaction:price',
+        'contact:phone',
+      ]),
+    );
+    expect(result?.reviewReasons).not.toContain('handmade-showcase-without-direct-deal');
+    expect(['WARN', 'DELETE']).toContain(result?.actionBand);
+  });
+
+  it.each([
+    'Еду до центра, ищу попутчиков. Такси 3303 на линии приложения.',
+    'Такси 7 на линии.',
+    'Такси 12 свободен.',
+    'Такси 12345 на линии.',
+    'Обсуждаем печать деталей на 3D-принтере в школьном кружке.',
+    'Продам надувной батут, б/у после одного праздника, цена 5000 руб.',
+    'В библиотеке пройдёт бесплатный мастер-класс: печём имбирные пряники.',
+    'В рассказе героиня получила букет из атласных лент.',
+  ])('does not broaden an object-specific offer rule to a neighboring non-offer', (text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals ?? []).not.toEqual(
+      expect.arrayContaining([
+        'service-specialty:taxi-callsign-availability',
+        'service-specialty:custom-3d-printing',
+        'service-specialty:inflatable-trampoline-rental',
+        'service-specialty:custom-gingerbread-order',
+        'service-specialty:custom-ribbon-bouquet',
+      ]),
+    );
+    expect(['ALLOW', 'REVIEW_ONLY']).toContain(result?.actionBand ?? 'ALLOW');
+  });
+
+  it('does not treat the word Новостройка as news morphology', () => {
+    const result = detect(
+      'Подписывайтесь на канал Новостройка: квартиры от застройщика со скидкой, звоните +7 900 000 40 40. [url]',
+    );
+
+    expect(result).not.toBeNull();
+    expect(result?.negativeSignals).not.toContain('context:local-news-subscribe');
+    expect(result?.safeContextBucket).not.toBe('news_or_analytics');
+  });
+
+  it.each([
+    'Оформление медицинской справки без очереди, доставка курьером. Телефон +7 900 000 40 52.',
+    'Получите водительские права после обучения в автошколе и сдачи экзамена. Запись +7 900 000 40 53.',
+  ])('requires an explicit illicit anchor before escalating a document service', (text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals ?? []).not.toContain('risk:document-service');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    'В рекламе клиники утверждают, что биорезонанс заменяет анализы и выявляет причины аллергии. Не верьте: это вводит в заблуждение. Телефон из рекламы +7 900 000 40 54.',
+    'Шарлатаны якобы выявляют биорезонансом причины аллергии и бесплодия. Врачи предупреждают, что метод этого не делает. Телефон из объявления +7 900 000 40 55.',
+  ])('does not escalate an attributed or debunked pseudomedical claim', (text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals ?? []).not.toContain('risk:pseudomedical-diagnostics');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    'В договоре указан телефон подрядчика по ремонту +7 900 000 40 56.',
+    'В акте указан подрядчик ООО Ремонт, телефон +7 900 000 40 57.',
+    'По протоколу выбран подрядчик на ремонт, телефон диспетчера +7 900 000 40 58.',
+    'Управляющая компания сообщила телефон диспетчера подрядчика +7 900 000 40 59.',
+    'Подрядчик завершил ремонт дома, работы приняты по акту. Телефон указан в документе +7 900 000 40 60.',
+  ])('does not enforce a contractor reference or completed-work narrative', (text) => {
+    const result = detect(text);
+
+    expect(result?.actionBand ?? 'ALLOW').toBe('ALLOW');
+  });
+
+  it.each([
+    'Продам стол складной туристический с органайзером (подстольное хранение). Складывается в сумку. Размер в разложенном виде 60*120, цена 3 тр.',
+    'Продам диван раскладной. Б/у в нормальном состоянии. Самовывоз. Цена 5000 р. Незлобная',
+    'Продам классические брюки (в школу, в офис). Красивый серый цвет, в полоску. Размер 40-42, лучше ориентироваться на замеры. Длина изделия 105 см, ширина штанины 26 см. Цена 350 руб',
+    'Продам комбинезон с капюшоном для собак и кошек мелких и средних пород. Размер L, цена 400 руб',
+  ])('keeps an exact replay one-off private sale out of enforcement', (text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals ?? []).not.toContain('property-commercial:commercial-space');
+    expect(result?.matchedSignals ?? []).not.toContain('risk:paid-esoteric-service');
+    expect(['ALLOW', 'REVIEW_ONLY']).toContain(result?.actionBand ?? 'ALLOW');
+  });
+
+  it.each([
+    [
+      'expanded spam disclaimer',
+      'Это не является спамом. Платим 3500 ₽ за отзыв на Wildberries, ежедневные задания. Пишите в Telegram https://example.com/work.',
+      'risk:paid-review-task',
+    ],
+    [
+      'no-complaints casino claim',
+      'Онлайн-казино с быстрыми выплатами, жалоб нет. Бонус 5000, играйте https://win4land.com.',
+      'risk:casino-landing-link',
+    ],
+    [
+      'police non-blocking crypto claim',
+      'Криптоинвестиции: пассивный доход, полиция не блокирует, жалоб нет. Начать по ссылке https://example.com/crypto.',
+      'risk:crypto-investment',
+    ],
+    [
+      'bank offer disguised as a review',
+      'Мой отзыв об Альфа-Банке: банк дарит 500 ₽ за оформление карты. Получить по ссылке https://example.com/card.',
+      'risk:bank-card-leadgen',
+    ],
+    [
+      'bank offer disguised as a question',
+      'Подскажите по банку: дарим бонус за оформление карты https://example.com/card.',
+      'risk:bank-card-leadgen',
+    ],
+  ])('does not let soft safe-context wording hide escalation risk: %s', (_label, text, risk) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals).toContain(risk);
+    expect(result?.safeContextBucket).toBe('none');
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    [
+      'natural 3D-printing offer',
+      'Занимаюсь 3D-печатью: делаю фигурки и полезные вещи для дома. Посмотреть работы и заказать можно в профиле, пишите в ЛС.',
+      'service-specialty:custom-3d-printing',
+    ],
+    [
+      'address-sign price list',
+      'Изготовление адресных табличек. Отправка по всей России, по запросу отправляем прайс.',
+      'service-specialty:address-sign-service',
+    ],
+    [
+      'local mowing offer',
+      'Скашу траву триммером по Сергиевску.',
+      'service-specialty:local-mowing-self-offer',
+    ],
+    [
+      'packaged custom song',
+      'Создам песню на любой праздник: рождение ребёнка, свадьба, годовщина или выпускной. Готовность 1-2 часа, два варианта.',
+      'service-specialty:custom-song-package',
+    ],
+    [
+      'natural inflatable rental',
+      'Аренда больших надувных батутов: привезём на весь день по бюджетной цене, без предоплаты. Бронируйте заранее.',
+      'service-specialty:inflatable-trampoline-rental',
+    ],
+    [
+      'seasonal gingerbread preorder',
+      'Принимаю заказы на штучные пряники и пряничные наборы к 1 сентября. Много макетов для печати.',
+      'service-specialty:custom-gingerbread-order',
+    ],
+  ])('detects a narrowly structured manual-review service: %s', (_label, text, signal) => {
+    const result = detect(text);
+
+    expect(result?.primarySubtype).toBe('SERVICES');
+    expect(result?.matchedSignals).toContain(signal);
+    expect(result?.matchedSignals).toContain('transaction:structured-service-offer');
+    expect(['WARN', 'DELETE']).toContain(result?.actionBand);
+  });
+
+  it.each([
+    [
+      'memorial video',
+      'Создам трогательный ролик в память о герое, дань уважения близкому. Чтобы заказать видео, пишите в личные сообщения или звоните [phone].',
+      'service-specialty:memorial-video-service',
+    ],
+    [
+      'forged flower production',
+      'Кованая роза, цена 700 рублей за штуку. Могу изготовить букеты в любом количестве, по вопросам пишите в ЛС.',
+      'service-specialty:custom-forged-flower',
+    ],
+    [
+      'wedding car decoration rental',
+      'Прокат и продажа свадебных украшений на авто, по всем вопросам обращаться в ЛС.',
+      'service-specialty:wedding-decoration-rental',
+    ],
+    [
+      'organized author tour',
+      'Авторский тур в Дагестан на 3 дня. Стоимость 12500 руб, проезд, проживание и гид включены. Осталось 6 мест, бронируйте по телефону [phone].',
+      'service-specialty:organized-tour-service',
+    ],
+    [
+      'website package',
+      'Создаем сайты на Тильде: одностраничный 19000 руб, многостраничный 22000 руб. Для бизнеса, пишите в WhatsApp [phone].',
+      'service-specialty:website-creation-service',
+    ],
+  ])('enforces a direct object-specific service: %s', (_label, text, signal) => {
+    const result = detect(text);
+
+    expect(result?.primarySubtype).toBe('SERVICES');
+    expect(result?.matchedSignals).toContain(signal);
+    expect(['WARN', 'DELETE']).toContain(result?.actionBand);
+  });
+
+  it('caps the audited website package at WARN without weakening independent evidence', () => {
+    const websiteOffer =
+      'Создаем сайты на Тильде: одностраничный 19000 руб, многостраничный 22000 руб. Для бизнеса, пишите в WhatsApp [phone].';
+    const propertyOffer =
+      'Агентство недвижимости: ЖК Флора, студия 24 м2 за 3.450.000 руб, квартира 32 м2 за 4.250.000 руб. Звоните [phone].';
+    const websiteOnly = detect(websiteOffer);
+    const combined = detect(`${websiteOffer} ${propertyOffer}`);
+    const escalated = detect(
+      `${websiteOffer} Деньги до зарплаты онлайн, одобрим без отказа, hxxp://credit dot ru`,
+    );
+
+    expect(websiteOnly?.matchedSignals).toContain('service-specialty:website-creation-service');
+    expect(websiteOnly?.actionBand).toBe('WARN');
+    expect(websiteOnly?.suppressionReasons).toContain('conservative-recall-warn-cap');
+    expect(combined?.actionBand).toBe('DELETE');
+    expect(combined?.suppressionReasons).not.toContain('conservative-recall-warn-cap');
+    expect(escalated?.actionBand).toBe('DELETE_AND_ESCALATE');
+    expect(escalated?.suppressionReasons).not.toContain('conservative-recall-warn-cap');
+  });
+
+  it('keeps a plural own-production 3D catalog separate from a private single item', () => {
+    const retail = detect(
+      'Продам 3д игрушки собственного производства, кому интересно пишите в ЛС.',
+    );
+
+    expect(retail?.primarySubtype).toBe('GOODS_RETAIL');
+    expect(retail?.matchedSignals).toContain('goods-retail:own-3d-product-retail');
+    expect(['WARN', 'DELETE']).toContain(retail?.actionBand);
+    expect(
+      detect('Продам одну 3д игрушку, ребёнок больше не играет. Самовывоз, цена 500 руб.'),
+    ).toBeNull();
+  });
+
+  it('detects a numbered group-directory promotion without broadening a news footer', () => {
+    const directory = detect(
+      'Подписывайся разом в 164 группы: папка 100 групп https://example.com/a, папка 64 группы https://example.com/b.',
+    );
+
+    expect(directory?.matchedSignals).toContain(
+      'channel-placement:numbered-group-directory-subscribe',
+    );
+    expect(['WARN', 'DELETE']).toContain(directory?.actionBand);
+    expect(
+      detect('Новости района за день. Подписывайтесь на канал администрации: [url].')?.actionBand ??
+        'ALLOW',
+    ).toBe('ALLOW');
+  });
+
+  it.each([
+    'Победитель конкурса рисунков получит приз. Организационный взнос 500 рублей. Регистрация по телефону [phone].',
+    'Победитель городского забега получит кубок. Участие 500 рублей, запись по телефону [phone].',
+    'Победитель викторины получит приз. Билет 300 рублей, регистрация [url].',
+    'Победитель конкурса определяется открытым голосованием жюри. Вход 500 рублей, материалы включены.',
+  ])('does not turn an ordinary paid contest into a chance-based raffle', (text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals ?? []).not.toContain('risk:paid-raffle');
+    expect(result?.matchedSignals ?? []).not.toContain('risk:paid-raffle-transfer');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    'ЛОТ С ПОВТОРОМ 150. ПЕРЕВОД на +7 900 000 41 01, Тбанк. Всем желаем удачи.',
+    'Л𝐎𝐓 𝐂 П𝐎𝐁𝐓𝐎𝐏𝐎𝐌: 3️⃣0️⃣0️⃣₽ номерок. Перевод на +7 900 000 41 02, Тбанк.',
+    'Всем добро пожаловать в группу розыгрышей. Номерки не дорогие от 50₽ и выше. https://example.com/raffle',
+    'Я разыгрываю призы с Ozon. Лоты у нас от 45 до 200 руб, победителей выберем случайно. https://example.com/raffle',
+    'Добро пожаловать в денежную группу. Лоты от 1⃣3⃣5⃣ и выше, копилка и баланс. https://example.com/raffle',
+    'Лоты с повтором, генератор рандомус. При проигрыше стоимость номерка возвращается на баланс. https://example.com/raffle',
+  ])('escalates a manually confirmed paid-lot variant', (text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals.some((signal) => signal.startsWith('risk:paid-raffle'))).toBe(
+      true,
+    );
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('keeps non-offer neighbors outside the new narrow service rules', () => {
+    for (const text of [
+      'В школьном кружке занимаюсь 3D-печатью и показываю учебные работы.',
+      'Администрация обсудила изготовление адресных табличек на заседании.',
+      'Завтра скашу траву триммером по дороге к дому.',
+      'В статье разбирают, как создать песню к свадьбе и годовщине.',
+      'Продам надувной батут, один, б/у после праздника, цена 5000 руб.',
+      'В библиотеке принимают заявки на мастер-класс: пряничные наборы к 1 сентября.',
+    ]) {
+      expect(['ALLOW', 'REVIEW_ONLY']).toContain(detect(text)?.actionBand ?? 'ALLOW');
+    }
+  });
+
+  it.each([
+    [
+      'courier vacancy',
+      'Срочно требуется курьер в Яндекс Еду. Доход от 5000 руб в день, удобные смены. Звони прямо сейчас [phone] или регистрируйся по ссылке [url].',
+      'DELETE',
+    ],
+    [
+      'paid mass placement',
+      'Вашу рекламу ставим в тысячи досок и чатов VK/MAX за 5000 руб в месяц. ВК: [url]',
+      'DELETE',
+    ],
+    [
+      'paid marketplace reviews',
+      'Компания Ozon набирает модераторов отзывов. Оплата 2000-3200 руб ежедневно. Напишите менеджеру ВКонтакте: [url]',
+      'DELETE_AND_ESCALATE',
+    ],
+    [
+      'packaged tour with sanitized price',
+      'Тур в Дагестан на три дня: трансфер, проживание, питание, гид и билеты включены. Цена [phone] ₽. Запись: [phone].',
+      'DELETE',
+    ],
+    [
+      'retail item with sanitized price and contact',
+      'В наличии электроскутер. Аккумулятор 48v, запас хода 30 км. Цена [phone]р. Доставка до адреса в подарок. [phone] Алена',
+      'DELETE',
+    ],
+    [
+      'dentist price list',
+      'Стоматолог: все виды услуг. Пломба 1500 руб, лечение 2500 руб, чистка 3000 руб. Ватсап группа: [url]',
+      'DELETE',
+    ],
+    [
+      'massage campaign',
+      'Приглашаем на лечебный массаж и хиджаму. До конца мая акция для клиентов. Телефон: [phone]. Ватсап: [url]',
+      'DELETE',
+    ],
+  ])('uses a contextual sanitized placeholder for a clear %s', (_label, text, action) => {
+    const result = detect(text);
+
+    expect(result?.actionBand).toBe(action);
+    expect(detector.hasCommercialSpamMarkers(text)).toBe(true);
+  });
+
+  it.each([
+    'На завтра принимаем заказы на мясо домашней свинки. Лопатка 500 руб/кг, рёбра 500 руб/кг, шея 550 руб/кг, корейка 400 руб/кг. Обращайтесь по телефону [phone]. Бесплатная доставка.',
+    'Доставка курочек породы Ломан Браун возрастом 5 месяцев, начинают нестись. Цена 500 руб за голову, запись по телефону [phone].',
+  ])('deletes a professional local-food order catalog', (text) => {
+    const result = detect(text);
+
+    expect(result?.primarySubtype).toBe('GOODS_RETAIL');
+    expect(result?.matchedSignals).toContain('goods-retail:professional-order-catalog');
+    expect(result?.safeContextBucket).toBe('none');
+    expect(result?.actionBand).toBe('DELETE');
+  });
+
+  it.each([
+    [
+      'Доброго времени суток. Рабочая бригада: спил деревьев, вывоз мусора, очистка дворов и сараев, покраска заборов. Все виды работ. Тел [phone].',
+      'SERVICES',
+    ],
+    [
+      'Баня под ключ. Хотите собственную баню без лишних хлопот? Мы предлагаем готовое решение: фундамент, сруб, крыша, полы и полная сборка. Заказывайте.',
+      'GOODS_RETAIL',
+    ],
+    [
+      'Сдаю бюджетное жильё на Ольхоне в Хужире. Домики, столовая на территории, уличный душ и мангал. [phone]',
+      'SERVICES',
+    ],
+  ] as const)(
+    'keeps an unmistakable structured offer actionable after sanitization',
+    (text, expectedSubtype) => {
+      const result = detect(text);
+
+      expect(result?.primarySubtype).toBe(expectedSubtype);
+      expect(['WARN', 'DELETE']).toContain(result?.actionBand);
+    },
+  );
+
+  it('keeps on-site sauna construction as a service without ready-made inventory', () => {
+    const result = detect(
+      'Баню под ключ строим на вашем участке: фундамент, сруб, кровля. Полная сборка на месте, выезд и замер. Звоните [phone].',
+    );
+
+    expect(result?.matchedSignals).toContain('service-specialty:sauna-under-key-service');
+    expect(result?.matchedSignals).not.toContain('goods-retail:inventory');
+    expect(result?.primarySubtype).toBe('SERVICES');
+  });
+
+  it.each([
+    'Продам диван 10000 руб, доставка. Все вопросы по телефону [phone].',
+    'Продам два матраса для плавания, новые в упаковке. Цена 2000 руб каждый, при покупке обоих скидка. [phone]',
+    'Водитель 29.05.26 Аскиз - Абакан и обратно, выезд в 8:30, звоните [phone], есть одно место.',
+    'Едем в Казань завтра, цена 2000 руб, осталось два места, телефон +7 900 000 40 49.',
+    'Продам одного щенка, привит, цена 15000 руб. Возможна доставка по городу. Телефон +7 900 000 40 50.',
+  ])('does not enforce an ambiguous private listing with sanitized contacts', (text) => {
+    expect(['ALLOW', 'REVIEW_ONLY']).toContain(detect(text)?.actionBand ?? 'ALLOW');
+  });
+
+  it('scopes third-party recommendation suppression to service-only messages', () => {
+    const property = detect(
+      'Агентство продаёт коммерческое помещение 120 м2, цена 12 млн руб. Звоните +7 900 000 40 51. Ремонт сделали нам хорошие мастера.',
+    );
+    const availableMaster = detect(
+      'Мастер Иван сделал нам ремонт. Сейчас свободен, есть свободные окна. Телефон [phone].',
+    );
+
+    expect(['PROPERTY_AGENT', 'PROPERTY_COMMERCIAL']).toContain(property?.primarySubtype);
+    expect(['WARN', 'DELETE']).toContain(property?.actionBand);
+    expect(availableMaster?.primarySubtype).toBe('SERVICES');
+    expect(['WARN', 'DELETE']).toContain(availableMaster?.actionBand);
+  });
+
+  it.each([
+    {
+      hash: 'c314d82fd307',
+      text: 'Водитель 22.07.26 ст.АСКИЗ-АСКИЗ-АБАКАН и обратно С МЕСТА ДО МЕСТА выезд со станции 6.30 + 30мин. звоните [phone] есть 1 место',
+      signal: 'service-specialty:scheduled-round-trip-door-to-door',
+      warnThreshold: 45,
+      deleteThreshold: 65,
+    },
+    {
+      hash: 'd0020955ba77',
+      text: 'Поездки( по предварительному заказу) в Самару, Курумоч и др. Города области и дальше. Встреча с аэропорта. Ж/вокзала удобное для вас время на комфортабельном автомобиле. Т [phone]',
+      signal: 'service-specialty:advance-airport-station-transfer',
+      warnThreshold: 45,
+      deleteThreshold: 65,
+    },
+    {
+      hash: 'd1d1b610befd',
+      text: 'САМОЕ БЛИЖАЙШЕЕ ВРЕМЯ Водитель 22.07.26 ст.АСКИЗ-АСКИЗ-АБАКАН и обратно С МЕСТА ДО МЕСТА выезд со станции 6.30 + 30мин. звоните [phone] есть 1 место',
+      signal: 'service-specialty:scheduled-round-trip-door-to-door',
+      warnThreshold: 45,
+      deleteThreshold: 65,
+    },
+    {
+      hash: 'e11d584facd7',
+      text: 'Таксую [phone] .',
+      signal: 'service-specialty:taxiing-contact-self-offer',
+      warnThreshold: 45,
+      deleteThreshold: 65,
+    },
+    {
+      hash: 'e7f7f1ce3703',
+      text: 'Водитель 24 июля. 07:30 АСКИЗ 09:00 АБАКАН КРАСНОЯРСК Возьму пассажиров, посылки. Обратно 24 июля Выезд в 16:00 КРАСНОЯРСК- АБАКАН- АСКИЗ [phone]',
+      signal: 'service-specialty:scheduled-round-trip-parcel-route',
+      warnThreshold: 45,
+      deleteThreshold: 65,
+    },
+    {
+      hash: 'f045f660447c',
+      text: 'Таксую [phone]',
+      signal: 'service-specialty:taxiing-contact-self-offer',
+      warnThreshold: 45,
+      deleteThreshold: 65,
+    },
+    {
+      hash: 'f530242edc17',
+      text: '📌📌📌 Сегодня 23 -ое Июля (ЧТ) нужны пассажиры из КЫЗЫЛА в КРАСНОЯРСКА на 7-ми местной иномарка довезу до АЭРОПОРТА ЖД, 2 кондиционера ❄️ Беру посылки 📦 Есть билет QR-код ☎️ [phone] ☎️ [phone]',
+      signal: 'service-specialty:professional-passenger-parcel-transfer',
+      warnThreshold: 47,
+      deleteThreshold: 67,
+    },
+    {
+      hash: 'f5e4c9346249',
+      text: 'САМОЕ БЛИЖАЙШЕЕ ВРЕМЯ Водитель 22.07.26 ст.АСКИЗ-АСКИЗ-(можно с Новостройки) - АБАКАН и обратно С МЕСТА ДО МЕСТА выезд со станции 14.30 -/+ 30мин. звоните [phone] есть 1 место ЕДЕМ СРАЗУ',
+      signal: 'service-specialty:scheduled-round-trip-door-to-door',
+      warnThreshold: 45,
+      deleteThreshold: 65,
+    },
+  ])('warns for manually adjudicated transport service $hash', (entry) => {
+    const result = detect(entry.text, {
+      settings: {
+        commercialAdsSensitivity: 'BALANCED',
+        commercialAdsWarnThreshold: entry.warnThreshold,
+        commercialAdsDeleteThreshold: entry.deleteThreshold,
+      },
+    });
+
+    expect(result?.primarySubtype).toBe('SERVICES');
+    expect(result?.matchedSignals).toContain(entry.signal);
+    expect(result?.matchedSignals.some((signal) => signal.startsWith('risk:'))).toBe(false);
+    expect(result?.actionBand).toBe('WARN');
+    expect(result?.suppressionReasons).toContain('structured-transport-warn-cap');
+  });
+
+  it('warns for the manually adjudicated strict round-trip parcel service cf3a4bb25036', () => {
+    const result = detect(
+      '22 07. Четверг Еду в С А М А Р У из Ивантеевки В 9 00 -- 10 00 Из Самары до Ивантеевки 14 30 - 15 00 Е С Т Ь----места Передам посылки документы Тел [phone]',
+      {
+        settings: {
+          commercialAdsSensitivity: 'STRICT',
+          commercialAdsWarnThreshold: 38,
+          commercialAdsDeleteThreshold: 55,
+        },
+      },
+    );
+
+    expect(result?.primarySubtype).toBe('SERVICES');
+    expect(result?.matchedSignals).toContain('service-specialty:scheduled-round-trip-parcel-route');
+    expect(result?.matchedSignals.some((signal) => signal.startsWith('risk:'))).toBe(false);
+    expect(result?.actionBand).toBe('WARN');
+    expect(result?.suppressionReasons).toContain('structured-transport-warn-cap');
+  });
+
+  it('caps a high-scoring priced structured transfer at warn', () => {
+    const result = detect(
+      'Поездки по предварительному заказу в Самару и Курумоч. Встреча с аэропорта на комфортабельном автомобиле. Стоимость поездки 5000 руб. Телефон [phone].',
+    );
+
+    expect(result?.matchedSignals).toContain('service-specialty:advance-airport-station-transfer');
+    expect(result?.matchedSignals).toContain('transaction:price');
+    expect(result?.actionBand).toBe('WARN');
+    expect(result?.suppressionReasons).toContain('structured-transport-warn-cap');
+  });
+
+  it('keeps independent escalation risk above the structured transport warn cap', () => {
+    const result = detect(
+      'Таксую. Оформление водительских прав без экзаменов и автошколы. Документы в официальной базе. Заказать [phone]',
+    );
+
+    expect(result?.matchedSignals).toContain('service-specialty:taxiing-contact-self-offer');
+    expect(result?.matchedSignals).toContain('risk:document-service');
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
+    expect(result?.suppressionReasons).not.toContain('structured-transport-warn-cap');
+  });
+
+  it('does not let a transport clause weaken an independently deletable retail ad', () => {
+    const retail =
+      'В магазине Игрушки в наличии новые конструкторы, цена от 900 руб. Оформите заказ по ссылке [url].';
+    const combined = detect(
+      `Поездки по предварительному заказу в Самару. Встреча с аэропорта. Телефон [phone]. ${retail}`,
+    );
+
+    expect(detect(retail)?.actionBand).toBe('DELETE');
+    expect(combined?.matchedSignals).toContain(
+      'service-specialty:advance-airport-station-transfer',
+    );
+    expect(combined?.matchedSignals).toContain('goods-retail:inventory');
+    expect(combined?.actionBand).toBe('DELETE');
+    expect(combined?.suppressionReasons).not.toContain('structured-transport-warn-cap');
+  });
+
+  it.each([
+    {
+      hash: 'ffff58ba84d0',
+      text: 'Завтра утром еду до Тюмени в 8:30, есть 1место и обратно около 11:00±, есть также место. [phone]',
+      signal: 'review-only:transport-single-date-schedule',
+    },
+    {
+      hash: 'd73cfc661569',
+      text: 'Водитель Абакан Аскиз Новостройка В ближайшее время С места до места [phone]',
+      signal: 'review-only:transport-door-to-door-operator',
+    },
+    {
+      hash: 'd9adc7b5de06',
+      text: '23.07 в 14.00 еду Самара-Суходол от Ж/д вокзала, через ЦАВ 4 места Цена 700 Т. [phone]',
+      signal: 'review-only:transport-single-date-schedule',
+    },
+    {
+      hash: 'f1913193d847',
+      text: 'Сегодня 23.07.26г еду -Бакалы-Уфа в 14.00-15.00.ч есть места,, округ Галле [phone] +Аэропорт+ЖД',
+      signal: 'review-only:transport-airport-station-waypoint',
+    },
+    {
+      hash: 'e41d6e503619',
+      text: 'Водитель аскиз-абакан-черногорск В ближайшее время [phone] С места до места',
+      signal: 'review-only:transport-door-to-door-operator',
+    },
+    {
+      hash: 'e9370af3f7e3',
+      text: 'Водитель ст.аскиз-аскиз-абакан-черногорск 7.00 С аскиза 7.30 [phone] С места до места',
+      signal: 'review-only:transport-door-to-door-operator',
+    },
+    {
+      hash: 'd3d583b7e7e8',
+      text: 'Водитель завтра Абакан Таштып в 11-11:30 с места до места звоните пишите [phone]',
+      signal: 'review-only:transport-door-to-door-operator',
+    },
+    {
+      hash: 'f19b5ba3258e',
+      text: 'САМОЕ БЛИЖАЙШЕЕ ВРЕМЯ Водитель АБАКАН-АСКИЗ-ст.АСКИЗ (можно Новостройка) С МЕСТА ДО МЕСТА выезд 17.30 -/+ 30мин звоните [phone] есть 1 место',
+      signal: 'review-only:transport-door-to-door-operator',
+    },
+    {
+      hash: 'd079d4290925',
+      text: 'Сегодня 22.07.26г еду УФа -ЖД-Бакалы в 23.00 - 00.30ч есть места,, округ Галле [phone] Аэропорт',
+      signal: 'review-only:transport-airport-station-waypoint',
+    },
+    {
+      hash: 'fe8dd21be4d5',
+      text: 'Водитель АБАКАН-АСКИЗ-ст.АСКИЗ (можно Новостройка) С МЕСТА ДО МЕСТА выезд 17.30 -/+ 30мин звоните [phone] есть 1 место',
+      signal: 'review-only:transport-door-to-door-operator',
+    },
+    {
+      hash: 'f8ce6215e0a4',
+      text: '23.07 Еду Аромашево Тюмень в 15.30 и обратно Тюмень Аромашево в 19.00 тел [phone]',
+      signal: 'review-only:transport-single-date-schedule',
+    },
+    {
+      hash: 'be7856ff8466',
+      text: 'Водитель Таштып Абакан с места до места в 15:00 [phone] 2 места',
+      signal: 'review-only:transport-door-to-door-operator',
+    },
+    {
+      hash: 'caf79af70ff7',
+      text: 'Водитель Абакан-аскиз-ст. аскиза 11.40-12.00 [phone] С места до места',
+      signal: 'review-only:transport-door-to-door-operator',
+    },
+    {
+      hash: 'e62e277d7636',
+      text: 'Водитель АБАКАН-АСКИЗ-ст.АСКИЗ (можно Новостройка) С МЕСТА ДО МЕСТА выезд 10.30 -/+ 30мин звоните [phone] есть 2 места',
+      signal: 'review-only:transport-door-to-door-operator',
+    },
+    {
+      hash: 'e6af1bd57f46',
+      text: 'Нужны пассажиры из Кызыла в Абакан [phone] выезд 12-13ч на комфортном авто!',
+      signal: 'review-only:transport-promotional-vehicle-wording',
+    },
+    {
+      hash: 'fa230e22e8c3',
+      text: 'Сегодня 22.07.26г еду УФа -ЖД-Бакалы в 23.45 - 00.30ч есть места,, округ Галле [phone] Аэропорт',
+      signal: 'review-only:transport-airport-station-waypoint',
+    },
+    {
+      hash: 'fce73355fc4c',
+      text: 'ВОДИТЕЛЬ бл время НОВОСТРОЙКА АСКИЗ АБАКАН ЧЕРНОГОРСК [phone] ДО МЕСТА',
+      signal: 'review-only:transport-door-to-door-operator',
+    },
+  ])('routes manually adjudicated ambiguous transport $hash to review-only', ({ text, signal }) => {
+    const result = detect(text, {
+      settings: {
+        commercialAdsSensitivity: 'BALANCED',
+        commercialAdsWarnThreshold: 45,
+        commercialAdsDeleteThreshold: 65,
+      },
+    });
+
+    expect(result?.matchedSignals).toEqual([signal]);
+    expect(result?.confidenceScore).toBe(0);
+    expect(result?.actionScore).toBe(0);
+    expect(result?.actionBand).toBe('REVIEW_ONLY');
+    expect(result?.actionable).toBe(false);
+    expect(result?.recordable).toBe(false);
+    expect(result?.suppressionReasons).toContain('ambiguous-transport-review-only');
+  });
+
+  it.each([
+    [
+      'door-to-door operator',
+      'Водитель АБАКАН-АСКИЗ-ст.АСКИЗ (можно Новостройка) С МЕСТА ДО МЕСТА выезд 10.30 -/+ 30мин звоните +7 900 000-12-34 есть 2 места',
+      'review-only:transport-door-to-door-operator',
+    ],
+    [
+      'airport and station waypoint',
+      'Сегодня 22.07.26г еду УФа -ЖД-Бакалы в 23.45 - 00.30ч есть места, округ Галле 8 (900) 000-12-35 Аэропорт',
+      'review-only:transport-airport-station-waypoint',
+    ],
+    [
+      'promotional vehicle wording',
+      'Нужны пассажиры из Кызыла в Абакан +7 (900) 000-12-36 выезд 12-13ч на комфортном авто!',
+      'review-only:transport-promotional-vehicle-wording',
+    ],
+  ])('routes runtime raw-phone ambiguous transport to review-only: %s', (_label, text, signal) => {
+    const result = detect(text, {
+      settings: {
+        commercialAdsSensitivity: 'BALANCED',
+        commercialAdsWarnThreshold: 45,
+        commercialAdsDeleteThreshold: 65,
+      },
+    });
+
+    expect(result?.matchedSignals).toEqual([signal]);
+    expect(result?.actionBand).toBe('REVIEW_ONLY');
+    expect(result?.actionable).toBe(false);
+    expect(result?.recordable).toBe(false);
+  });
+
+  it.each([
+    [
+      'Telegram group rules with ordinary stickers and forbidden links',
+      'Группа для общения. Правила: разрешены музыка, видео и стикеры. Запрещены любые ссылки, спам и реклама. За нарушение правил удаляем. Переходите по ссылке [url].',
+    ],
+    [
+      'official warning about illegal fuel resale',
+      'Администрация города предупредила о недопустимости запасов бензина. Некоторые массово скупают топливо, хранят его на складах и перепродают с рук. За незаконную перепродажу без лицензии предусмотрен штраф по КоАП. Если знаете о таких фактах, сообщите по телефону [phone]. Подробнее [url].',
+    ],
+    [
+      'private apartment sale with ordinary specifications',
+      'Срочная продажа квартиры! Две комнаты, площадь 67 кв.м. Частично остается мебель. Цена 4 400 000. Телефон [phone].',
+    ],
+    [
+      'owner explicitly declining realtor services',
+      'Продам отличную квартиру, цена 8 700 000, собственник (с риэлторами не сотрудничаю). Тел. [phone].',
+    ],
+  ])('allows a confirmed 48-hour audit false positive: %s', (_label, text) => {
+    expect(detect(text)).toBeNull();
+  });
+
+  it('does not hide a direct fuel offer behind a generic fine disclaimer', () => {
+    const result = detect(
+      'АЗС Энергия: АИ-95 в наличии. Цена 70 руб/литр, заказ топлива и доставка [phone]. Администрация предупреждает о штрафах за незаконную перепродажу.',
+    );
+
+    expect(result).not.toBeNull();
+    expect(result?.safeContextBucket).toBe('none');
+    expect(result?.actionBand).not.toBe('REVIEW_ONLY');
+  });
+
+  it.each([
+    [
+      'door-to-door one-off without an ambiguity qualifier',
+      'Водитель аскиз-абакан-черногорск 7.20+- [phone] С места до места',
+      'review-only:transport-door-to-door-operator',
+    ],
+    [
+      'one-way station rideshare',
+      '23.07 Суходол-Самара в 05:45 до ЦАВ есть места 600р. тел. [phone]',
+      'review-only:transport-single-date-schedule',
+    ],
+    [
+      'airport-origin private rideshare',
+      'Сейчас с аэропорта 4 пассажира попутно уедут с Красноярска до Кызыла тел [phone]',
+      'review-only:transport-airport-station-waypoint',
+    ],
+    [
+      'passenger request without promotional vehicle wording',
+      'Сегодня 13-14ч нужны пассажиры из Кызыла в Абакан [phone]',
+      'review-only:transport-promotional-vehicle-wording',
+    ],
+    [
+      'driver recollection',
+      'Водитель рассказал, как вчера ехал Абакан-Аскиз с места до места. Телефон редакции [phone].',
+      'review-only:transport-door-to-door-operator',
+    ],
+    [
+      'passengers for a film scene',
+      'Нужны пассажиры для учебной съёмки: актёр довезёт их до аэропорта на комфортном авто. Телефон студии [phone].',
+      'review-only:transport-promotional-vehicle-wording',
+    ],
+  ])('keeps a neighboring ambiguous-transport negative allowed: %s', (_label, text, signal) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals ?? []).not.toContain(signal);
+    expect(result?.actionBand ?? 'ALLOW').toBe('ALLOW');
+  });
+
+  it('does not assemble a professional transfer from an unrelated film narrative', () => {
+    const result = detect(
+      'Нужны пассажиры для учебной съёмки: актёр довезёт их до аэропорта. В другом эпизоде герой передаст посылку. Реквизит включает билет. Телефон студии [phone].',
+    );
+
+    expect(result?.matchedSignals ?? []).not.toContain(
+      'service-specialty:professional-passenger-parcel-transfer',
+    );
+    expect(['ALLOW', 'REVIEW_ONLY']).toContain(result?.actionBand ?? 'ALLOW');
+  });
+
+  it.each([
+    [
+      'one-off route to a station with a fare',
+      'Сегодня 23.07 в 17:30-18:00 еду из Серноводска через Суходол в Самару до автовокзала есть места 700₽ [phone] ЗВОНИТЕ, смс не читаю',
+    ],
+    [
+      'dated parcel ride without a return leg',
+      '27.07 еду ЗЕЯ-БЛАГОВЕЩЕНСК возьму попутчиков и посылки [phone]',
+    ],
+    [
+      'round trip without parcel or door-to-door service anchors',
+      '23.07 Еду Аромашево Тюмень в 15.30 и обратно Тюмень Аромашево в 19.00 тел [phone]',
+    ],
+    [
+      'door-to-door ride without a return leg',
+      'Водитель Абакан Аскиз Новостройка В ближайшее время С места до места [phone]',
+    ],
+    [
+      'two-stop round trip remains a private rideshare',
+      'Водитель 29.05.26 ст. АСКИЗ-АБАКАН и обратно, с места до места, выезд со станции 8.30 + 30 мин. Звоните +7 900 000 00 29, есть 1 место.',
+    ],
+    [
+      'airport and station waypoints without a transfer offer',
+      'Сегодня 22.07.26г еду УФа -ЖД-Бакалы в 23.45 - 00.30ч есть места, округ Галле [phone] Аэропорт',
+    ],
+    [
+      'food preorder and airport document pickup in separate clauses',
+      'На встрече обсудили предварительный заказ еды. Потом заберу документы из аэропорта. Телефон справочной [phone].',
+    ],
+    [
+      'survey passengers and station parcel pickup in separate clauses',
+      'Нужны пассажиры для опроса. Посылку заберу на вокзале. На билете есть QR-код. Телефон организатора [phone].',
+    ],
+    [
+      'parcel handoff and meeting times without route geometry',
+      'Пассажиры передадут посылки обратно. Встречи назначены на 10:00 и 12:00. Телефон организатора [phone].',
+    ],
+    [
+      'phone groups are not scheduled route times',
+      'Беру пассажиров и посылки, обратно. Телефон +7 900 000 00 00',
+    ],
+    [
+      'a route date is not a departure time',
+      'Водитель 29.05.26 Аскиз-Аскиз-АБАКАН и обратно. С места до места. Телефон +7 900 000 00 00',
+    ],
+  ])('keeps the transport boundary non-actionable: %s', (_label, text) => {
+    const result = detect(text, {
+      settings: {
+        commercialAdsSensitivity: 'BALANCED',
+        commercialAdsWarnThreshold: 45,
+        commercialAdsDeleteThreshold: 65,
+      },
+    });
+    const targetedSignals = new Set([
+      'service-specialty:advance-airport-station-transfer',
+      'service-specialty:professional-passenger-parcel-transfer',
+      'service-specialty:scheduled-round-trip-door-to-door',
+      'service-specialty:scheduled-round-trip-parcel-route',
+      'service-specialty:taxiing-contact-self-offer',
+    ]);
+
+    expect(result?.matchedSignals.some((signal) => targetedSignals.has(signal)) ?? false).toBe(
+      false,
+    );
+    expect(['ALLOW', 'REVIEW_ONLY']).toContain(result?.actionBand ?? 'ALLOW');
+  });
+
+  it.each([
+    [
+      'event bus hire',
+      'ЗАКАЗ АВТОБУСА СИТРОЕН С КОНДИЦИОНЕРОМ, СВАДЬБА ЮБИЛЕЙ И ДР [phone].',
+      'service-specialty:event-bus-hire',
+      'WARN',
+      45,
+      65,
+    ],
+    [
+      'explicit taxi self-offer',
+      'Работаю как таксист по городу и межгороду, готов отвезти пассажиров.',
+      'service-specialty:taxi-driver-self-offer',
+      'WARN',
+      45,
+      65,
+    ],
+    [
+      'scheduled passenger and parcel route',
+      'Есть свободные места Благовещенск-Зея 23 июля 13:00, 17:00, 24 июля 9:00, 13:00. Зея-Благовещенск 23 июля 9:00, 24 июля 13:00, 17:00. Доставка посылок.',
+      'service-specialty:scheduled-passenger-parcel-route',
+      'WARN',
+      50,
+      70,
+    ],
+    [
+      'multi-route fare table',
+      'ДОВЕЗЕМ ДО МОРЯ. АНАПА, ГЕЛЕНДЖИК - 7000 ₽ в две стороны, каждый день. СОЧИ, АДЛЕР - 9000 ₽ в 2 стороны, каждый день. Телефон: [phone].',
+      'service-specialty:multi-route-transport-table',
+      'DELETE',
+      45,
+      65,
+    ],
+  ])(
+    'detects a commercial structured transport offer: %s',
+    (_label, text, signal, action, warnThreshold, deleteThreshold) => {
+      const result = detect(text, {
+        settings: {
+          commercialAdsSensitivity: 'BALANCED',
+          commercialAdsWarnThreshold: warnThreshold,
+          commercialAdsDeleteThreshold: deleteThreshold,
+        },
+      });
+
+      expect(result?.primarySubtype).toBe('SERVICES');
+      expect(result?.matchedSignals).toContain(signal);
+      expect(result?.actionBand).toBe(action);
+    },
+  );
+
+  it('does not treat a hyphenated equipment-driver vacancy as a route fare table', () => {
+    const result = detect(
+      'В строительную компанию требуется водитель экскаватора-погрузчика. Управление экскаватором-погрузчиком. Оплата 470 руб/час, доход 70000 руб. График каждый день с 08:00. Телефон [phone].',
+    );
+
+    expect(result?.primarySubtype).toBe('RECRUITMENT');
+    expect(result?.matchedSignals).not.toContain('service-specialty:multi-route-transport-table');
+  });
+
+  it('restores the explicit risk for driver licenses sold without exams', () => {
+    const result = detect(
+      'Оформление водительских прав без экзаменов и автошколы. Документы вносятся в официальную базу. Заказать: https://example.com/docs.',
+    );
+
+    expect(result?.matchedSignals).toContain('risk:document-service');
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('rejects an oversized scheduled-route near miss before bounded signal scans', () => {
+    const n = 100_000;
+    const nearMiss = `есть свободные места доставка посылок Москва-Тула ${'а'.repeat(n - 100)} 10:00 11:00 12:00 13:00`;
+    const startedAt = performance.now();
+
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      expect(ADS_SCHEDULED_PASSENGER_PARCEL_ROUTE_PATTERN.test(nearMiss)).toBe(false);
+    }
+
+    expect(performance.now() - startedAt).toBeLessThan(250);
+  });
+
+  it('rejects oversized structured transport near misses before bounded signal scans', () => {
+    const oversized = `${'а'.repeat(100_000)} таксую предварительный заказ встреча с аэропорта пассажиры посылки обратно с места до места [phone]`;
+    const patterns = [
+      ADS_TAXIING_CONTACT_SELF_OFFER_PATTERN,
+      ADS_ADVANCE_AIRPORT_STATION_TRANSFER_PATTERN,
+      ADS_PROFESSIONAL_PASSENGER_PARCEL_TRANSFER_PATTERN,
+      ADS_SCHEDULED_ROUND_TRIP_PARCEL_ROUTE_PATTERN,
+      ADS_SCHEDULED_ROUND_TRIP_DOOR_TO_DOOR_PATTERN,
+    ];
+    const startedAt = performance.now();
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      for (const pattern of patterns) {
+        expect(pattern.test(oversized)).toBe(false);
+      }
+    }
+
+    expect(performance.now() - startedAt).toBeLessThan(250);
+  });
+
+  it.each([
+    'В МФЦ можно заказать дубликат аттестата государственного образца. Телефон [phone].',
+    'В городском архиве можно заказать архивный дубликат диплома государственного образца. Телефон [phone].',
+  ])('does not escalate an official credential duplicate request', (text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals ?? []).not.toContain('risk:document-service');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    'Мастер Иван сделал нам ремонт. Ремонт квартир под ключ от 5000 руб, выезд и замер бесплатно. Телефон +7 900 000 60 01.',
+    'Мастер Иван сделал нам ремонт. Берётся за ремонт квартир, цена от 5000 руб. Телефон +7 900 000 60 02.',
+    'Мастер Иван сделал нам ремонт. Оказывает ремонтные услуги, цена от 5000 руб. Телефон +7 900 000 60 03.',
+  ])('keeps a current priced service offer after a completed-work recommendation', (text) => {
+    const result = detect(text);
+
+    expect(result?.primarySubtype).toBe('SERVICES');
+    expect(['WARN', 'DELETE']).toContain(result?.actionBand);
+  });
+
+  it('does not link a separate paid master class to free raffle mechanics', () => {
+    const result = detect(
+      'Разыграем приз среди подписчиков. Мастер-класс: участие 500 рублей. Запись по телефону +7 900 000 60 04.',
+    );
+
+    expect(result?.matchedSignals ?? []).not.toContain('risk:paid-raffle');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('recognizes an editorial debunking of a pseudomedical claim', () => {
+    const result = detect(
+      'В статье опровергают заявления: биорезонанс заменяет анализы, МРТ и УЗИ. Доказательств нет. Телефон редакции +7 900 000 60 05.',
+    );
+
+    expect(result?.matchedSignals ?? []).not.toContain('risk:pseudomedical-diagnostics');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    'Биорезонанс заменяет анализы, МРТ и УЗИ. При этом он не заменяет консультацию врача. Запись [phone].',
+    'Биорезонанс выявляет причины аллергии и бесплодия. Терапевт не выявляет скрытые причины. Запись [phone].',
+  ])('does not let an unrelated negation hide a pseudomedical claim', (text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals).toContain('risk:pseudomedical-diagnostics');
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    'МБОУ школа объявляет запись в 1 класс. Телефон [phone].',
+    'Предварительная запись на приём депутата по телефону [phone].',
+    'Городская поликлиника открыла запись на приём врача. Телефон [phone].',
+    'Администрация приглашает на бесплатную экскурсию. Запись [phone], подробности [url].',
+  ])('does not enforce an official or free public appointment', (text) => {
+    expect(detect(text)?.actionBand ?? 'ALLOW').toBe('ALLOW');
+  });
+
+  it.each(['участку', 'двору', 'саду'])(
+    'does not turn mowing ones own %s into a local service offer',
+    (place) => {
+      const result = detect(`Завтра скашу траву триммером по ${place}.`);
+
+      expect(result?.matchedSignals ?? []).not.toContain(
+        'service-specialty:local-mowing-self-offer',
+      );
+      expect(result?.actionBand ?? 'ALLOW').toBe('ALLOW');
+    },
+  );
+
+  it('does not treat reported competition results as a promotional giveaway', () => {
+    const result = detect(
+      'Победитель турнира получил приз 100000 рублей. Канал Спорт сообщил итоги: [url].',
+    );
+
+    expect(result?.actionBand ?? 'ALLOW').toBe('ALLOW');
+  });
+
+  it('keeps a sanitized third-party contractor reference out of enforcement', () => {
+    const result = detect(
+      'Ремонт обсуждали на собрании, телефон подрядчика [phone] указан в акте.',
+    );
+
+    expect(result?.actionBand ?? 'ALLOW').toBe('ALLOW');
+  });
+
+  it('uses a local paid-entry signal to enforce a campaign-distributed raffle', () => {
+    const result = detect(
+      'Денежная группа!!! Лоты от 135 и выше!!! Собираем бонус и возвращаем деньги на баланс!!! Заходи, испытай удачу [url].',
+      { commercialCampaignContext: REPEATED_PRIVATE_RESALE_CONTEXT },
+    );
+
+    expect(result?.matchedSignals).toContain('risk:paid-raffle');
+    expect(result?.matchedSignals).toContain('transaction:paid-raffle-entry');
+    expect(result?.suppressionReasons).not.toContain('campaign-only');
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('recognizes the audited rare-script paid gambling group locally', () => {
+    const result = detect(
+      '[url] Э ᴛ ᥲ ᴦ ρ у ᥰ ᥰ ᥲ. Л ᧐ ᴛ ы. 5 0 ᥙ ᴦ ρ ᥲ ᥔ, д ᥱ н ь ᴦ ᥙ. З ᥲ х ᧐ д ᥙ.',
+    );
+
+    expect(result?.matchedSignals).toContain('risk:paid-gambling-group');
+    expect(result?.matchedSignals).toContain('transaction:paid-gambling-entry');
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    'Бесплатный розыгрыш магазина: номер выдаём за покупку, доплачивать не нужно. [url]',
+    'Вход на фестиваль 500 рублей. Отдельно проведём бесплатный розыгрыш среди гостей. [url]',
+    'Конкурс рисунков, организационный взнос 500 рублей. Победителя определяет жюри. [phone]',
+    'Аукционный лот выставлен повторно, оплата победившей ставки переводом на карту [phone].',
+    'Э ᴛ ᥲ ᴦ ρ у ᥰ ᥰ ᥲ - ᥰ ρ ᧐ ᥴ ᴛ ᧐ κ ᧘ ᥲ ᥴ ᥴ. Новости клуба [url].',
+  ])('does not turn a non-chance context into paid gambling: %s', (text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals ?? []).not.toContain('risk:paid-gambling-group');
+    expect(result?.matchedSignals ?? []).not.toContain('transaction:paid-raffle-entry');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    [
+      'trade credential solicitation',
+      'Можно сделать корочки маляра? Напишите в личку.',
+      'transaction:illicit-document-deal',
+    ],
+    [
+      'migration registration sale',
+      'Регистрация куямиз. Прямой хозяин, гарантия. [phone]',
+      'transaction:illicit-registration-deal',
+    ],
+    [
+      'formal document catalog',
+      'ИНН оригинал, СНИЛС оригинал, медкнижка, диплом, права и патент. Гарантия. WhatsApp [phone].',
+      'transaction:illicit-document-deal',
+    ],
+  ])('escalates the narrow illicit document case: %s', (_label, text, transactionSignal) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals).toContain(transactionSignal);
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    'Здравствуйте, нужны корочки изолировщика.',
+    'Восстановлю повреждённую обложку удостоверения, без изменения документа. [phone]',
+    'Учебный центр: обучение, экзамен и выдача удостоверения. Лицензия на сайте [url].',
+    'Работодатель бесплатно оформляет регистрацию кандидатов и трудовой договор. [phone]',
+    'Хозяйка зарегистрирует гостей при заселении по договору аренды. [phone]',
+    'Официальный запрос на регистрацию подайте через МФЦ. Телефон справочной [phone].',
+    'Помощь в прохождении санминимума с обучением и экзаменом. Запись [phone].',
+  ])('keeps the legal credential or registration context out of illicit risk: %s', (text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals ?? []).not.toContain('risk:migration-registration-service');
+    expect(result?.matchedSignals ?? []).not.toContain('transaction:illicit-document-deal');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    'Оформление водительских прав без экзаменов и очередей. Все категории: A, B, C, D. Без походов в ГИБДД и автошколу. Документы вносятся в официальную базу, готовность 14 дней. Пишите прямо сейчас: https://max.ru/u/example-driver-docs',
+    'Права без экзамена не выдаются, но диплом без обучения сделаем и внесем в реестр, пишите [phone].',
+  ])('keeps a later illicit credential offer after local context: %s', (text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals).toContain('risk:document-service');
+    expect(result?.matchedSignals).toContain('transaction:illicit-document-deal');
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('escalates paid reviews with bare compensation and a response link', () => {
+    const result = detect('Платим на отзывы на продукцию, 2-3 отзыва 1500. Пишите + [url]');
+
+    expect(result?.matchedSignals).toContain('risk:paid-review-task');
+    expect(result?.matchedSignals).toContain('transaction:paid-review-compensation');
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('escalates a paid-review task when guaranteed payment follows the review request', () => {
+    const result = detect(
+      'Не спам! Ищу 15 человек, написать пару постов и отзывов. Гарантированная оплата 3000₽, за срочность доплата 500₽. За подробностями пиши ВК [url]',
+    );
+
+    expect(result?.matchedSignals).toContain('risk:paid-review-task');
+    expect(result?.matchedSignals).toContain('transaction:paid-review-compensation');
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    'Оставьте честный отзыв о покупке, оплаты за отзыв нет. [url]',
+    'Вакансия менеджера по работе с отзывами: отвечать клиентам, оклад 50000 руб. [phone]',
+    'Оплата труда 50000 руб. Работа с отзывами клиентов, отвечать на комментарии. Для отклика пишите [url].',
+    'Осторожно: мошенники платят за отзывы и присылают ссылки. Не переходите по ним.',
+  ])('does not create paid-review risk without payment, task and response intent: %s', (text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals ?? []).not.toContain('risk:paid-review-task');
+    expect(result?.matchedSignals ?? []).not.toContain('transaction:paid-review-compensation');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('escalates mixed-script bot-income recruitment', () => {
+    const result = detect(
+      'Hужнa paботa? Зaпyсkaй Бoтa! Живыe дeньги. Зaпyсkaй бoтa нa кaнaлe [url]',
+    );
+
+    expect(result?.primarySubtype).toBe('RECRUITMENT');
+    expect(result?.matchedSignals).toContain('risk:bot-income-scam');
+    expect(result?.matchedSignals).toContain('recruitment:bot-income-work');
+    expect(result?.matchedSignals).toContain('transaction:bot-income-leadgen');
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    'Перед сменой запусти служебного бота и отметь начало работы.',
+    'Запусти бота для оплаты коммунальных услуг, квитанция появится в личном кабинете.',
+    'Для проверки системы запусти бота. Доход бюджета вырос после обновления. Новости проекта опубликованы на канале [url].',
+    'Осторожно, мошенники пишут: «Запускай бота, получай живые деньги». Не переходите по ссылке [url].',
+  ])('keeps operational or warning bot text out of income-scam risk: %s', (text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals ?? []).not.toContain('risk:bot-income-scam');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    [
+      'casino offer',
+      'Казино: бонус 100% ... https://bad.example',
+      'Осторожно, мошенники копируют нас. Казино: бонус 100% ... https://bad.example',
+      'risk:betting-gambling',
+    ],
+    [
+      'paid review offer',
+      'Платим 3500₽ за отзыв на Wildberries. Свободный график, ежедневные задания, без опыта и вложений. Выдаем аванс и товар в подарок. Чтобы начать, пишите плюс в чат: https://example.com/wb-review',
+      'Осторожно, мошенники копируют наши объявления. Платим 3500₽ за отзыв на Wildberries. Свободный график, ежедневные задания, без опыта и вложений. Выдаем аванс и товар в подарок. Чтобы начать, пишите плюс в чат: https://example.com/wb-review',
+      'risk:paid-review-task',
+    ],
+    [
+      'bot income offer',
+      'Hужнa paботa? Зaпyсkaй Бoтa! Живыe дeньги. Зaпyсkaй бoтa нa кaнaлe [url]',
+      'Осторожно, мошенники копируют наш канал. Hужнa paботa? Зaпyсkaй Бoтa! Живыe дeньги. Зaпyсkaй бoтa нa кaнaлe [url]',
+      'risk:bot-income-scam',
+    ],
+    [
+      'pseudomedical offer',
+      'Акция: биорезонансное обследование организма заменяет биохимию крови, МРТ, КТ и УЗИ, выявляет причины аллергии и бесплодия. Предварительная запись [phone].',
+      'В статье писали, что это якобы не доказано. Акция: биорезонансное обследование организма заменяет биохимию крови, МРТ, КТ и УЗИ, выявляет причины аллергии и бесплодия. Предварительная запись [phone].',
+      'risk:pseudomedical-diagnostics',
+    ],
+  ])(
+    'does not let an unrelated warning hide an independent %s',
+    (_label, baselineText, prefixedText, riskSignal) => {
+      const baseline = detect(baselineText);
+      const prefixed = detect(prefixedText);
+
+      expect(baseline?.matchedSignals).toContain(riskSignal);
+      expect(prefixed?.matchedSignals).toContain(riskSignal);
+      expect(baseline?.actionBand).toBe('DELETE_AND_ESCALATE');
+      expect(prefixed?.actionBand).toBe('DELETE_AND_ESCALATE');
+      expect(prefixed?.safeContextBucket).toBe('none');
+    },
+  );
+
+  it.each([
+    [
+      'animal-derived medicinal catalog',
+      'Продам бобровую струю, пантогематоген, пантокрин и сухие панты в капсулах. Отправка почтой, заказы [phone].',
+      'risk:unregulated-medicinal-goods',
+    ],
+    [
+      'structured plant tincture',
+      'Продам настойку листьев лопуха, 70%, 0,33 л, 300 руб. Телефон [phone].',
+      'risk:unregulated-medicinal-goods',
+    ],
+    [
+      'natural bear hide',
+      'Продам натуральную настоящую шкуру медведя, качественная выделка. Звонить [phone].',
+      'risk:wildlife-product-sale',
+    ],
+  ])('escalates the regulated goods offer: %s', (_label, text, riskSignal) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals).toContain(riskSignal);
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    'Рецепт настойки лопуха: листья залить водой, цена не указана, продажи нет.',
+    'В аптеке продаётся зарегистрированный препарат пантокрин по назначению врача. [phone]',
+    'Косметическое пихтовое масло без лечебных заявлений. Цена 300 руб, заказ [phone].',
+    'В музее открылась экспозиция: старинная шкура медведя как исторический экспонат. [phone]',
+    'Продам искусственную эко-шкуру, имитация медведя. Доставка, [phone].',
+    'В новостях сообщили о конфискации шкуры медведя у браконьеров.',
+  ])('keeps the safe medicinal or wildlife context out of escalation: %s', (text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals ?? []).not.toContain('risk:unregulated-medicinal-goods');
+    expect(result?.matchedSignals ?? []).not.toContain('risk:wildlife-product-sale');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    [
+      'medicinal article',
+      'Продам кухонный шкаф, цена 5000 руб. В статье рассказываем о бобровой струе, пантогематогене и пантокрине. Читать [url].',
+    ],
+    [
+      'wildlife article',
+      'Продам кухонный шкаф, цена 5000 руб. В статье опубликована фотография шкуры медведя из музейной коллекции. Смотреть [url].',
+    ],
+  ])('does not join a cabinet sale to an unrelated %s', (_label, text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals ?? []).not.toContain('risk:unregulated-medicinal-goods');
+    expect(result?.matchedSignals ?? []).not.toContain('risk:wildlife-product-sale');
+    expect(result?.matchedSignals ?? []).not.toContain(
+      'transaction:unregulated-medicinal-goods-deal',
+    );
+    expect(result?.matchedSignals ?? []).not.toContain('transaction:wildlife-product-deal');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    'Проведём бесплатный розыгрыш среди пассажиров. Билет на автобус стоит 500 рублей, отправление в 18:00. [url]',
+    'Проведём бесплатный розыгрыш среди гостей. Билет на концерт стоит 500 рублей. [url]',
+  ])('does not attach a transport or event ticket to a free raffle: %s', (text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals ?? []).not.toContain('risk:paid-raffle');
+    expect(result?.matchedSignals ?? []).not.toContain('transaction:paid-raffle-entry');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('does not turn an archived, explicitly denied credential into an illicit offer', () => {
+    const result = detect(
+      'В архиве хранятся дипломы выпускников. Водительские права без экзамена не выдаются. Телефон справочной [phone].',
+    );
+
+    expect(result?.matchedSignals ?? []).not.toContain('risk:document-service');
+    expect(result?.matchedSignals ?? []).not.toContain('transaction:illicit-document-deal');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('does not create transaction evidence from a warning that only mentions paid reviews', () => {
+    const result = detect(
+      'Осторожно: мошенники обещают оплату за отзывы и присылают ссылки. Не отвечайте и сообщите администратору [url].',
+    );
+
+    expect(result?.matchedSignals ?? []).not.toContain('risk:paid-review-task');
+    expect(result?.matchedSignals ?? []).not.toContain('transaction:paid-review-compensation');
+    expect(result?.matchedSignals ?? []).not.toContain('transaction:high-risk-offer');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('caps an organized wellness trip at WARN without pseudomedical escalation', () => {
+    const result = detect(
+      'Собираем группу для оздоровления на термально-грязевых источниках. Встречаем, размещаем и сопровождаем. Проживание от 1000 руб, проезд 14000р. Места ограничены, запись [phone].',
+    );
+
+    expect(result?.primarySubtype).toBe('SERVICES');
+    expect(result?.matchedSignals).toContain('service-specialty:organized-wellness-trip');
+    expect(result?.matchedSignals).not.toContain('risk:pseudomedical-diagnostics');
+    expect(result?.actionBand).toBe('WARN');
+  });
+
+  it.each([
+    [
+      'divination expert identity',
+      '🔮 ЭКСПЕРТ ТАР0 • 25 ЛЕТ 🔮 💯 100% гарантия 📲 [phone] 👉 Max • Telegram • WhatsApp',
+      'service-specialty:divination-self-offer',
+    ],
+    [
+      'hereditary fortune teller',
+      '🔮✨ Анна — потомственная гадалка, ✨🔮 💫🔮💫 🙏 Двери открыты для всех — рада помочь! 📱 [phone] WhatsApp • Max',
+      'service-specialty:divination-self-offer',
+    ],
+    [
+      'first person divination',
+      '⚡️ Любовь Григорьевна ⚡️ 👑 Гадаю 🤍 Индивидуально, с душой, конфиденциально 📲 [phone]',
+      'service-specialty:divination-self-offer',
+    ],
+    [
+      'photo divination',
+      '🧿 ГАДАЮ🧿 🃏 По фото: ПРОШЛОЕ • БУДУЩЕЕ • НАСТОЯЩЕЕ 📲 [phone] Max • WhatsApp • Telegram',
+      'service-specialty:divination-self-offer',
+    ],
+    [
+      'room capacity and nightly price',
+      '(4х местный номер) в Сочи цена в сутки за номер 2700р',
+      'service-specialty:seasonal-lodging-offer',
+    ],
+    [
+      'dated family lodging package',
+      '25 июля по 30 июля - 5 ночей за 12т.р. для Вашей семьи (4х местный номер) в Сочи',
+      'service-specialty:seasonal-lodging-offer',
+    ],
+    [
+      'explicit seasonal room rental',
+      'Сдаю комнаты в частном доме в Сочи, п. Лазаревское. Посуточно 500 р. с человека в сутки. Для связи [phone].',
+      'service-specialty:seasonal-lodging-offer',
+    ],
+  ])('recalls the audited conservative %s offer at WARN', (_label, text, signal) => {
+    const result = detect(text, {
+      settings: {
+        commercialAdsSensitivity: 'BALANCED',
+        commercialAdsWarnThreshold: 45,
+        commercialAdsDeleteThreshold: 65,
+      },
+    });
+
+    expect(result?.primarySubtype).toBe('SERVICES');
+    expect(result?.matchedSignals).toContain(signal);
+    expect(result?.actionBand).toBe('WARN');
+    expect(result?.suppressionReasons).toContain('conservative-recall-warn-cap');
+  });
+
+  it.each([
+    'Ищу гадалку. Номер [phone] оказался неверным, поделитесь проверенным контактом.',
+    'На лекции разбираем Таро. Запись участников по телефону [phone].',
+    'Ищу 4-местный номер в Сочи на 5 ночей, бюджет 12 т.р.',
+    'Мы жили в Сочи 5 ночей, номер стоил 2700 р. в сутки, делюсь отзывом.',
+  ])('keeps a divination or lodging near-miss out of conservative recall: %s', (text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals ?? []).not.toContain('service-specialty:divination-self-offer');
+    expect(result?.matchedSignals ?? []).not.toContain('service-specialty:seasonal-lodging-offer');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    'Гадаю индивидуально. Цена 5000 руб, запись [phone], подробности [url].',
+    '(4х местный номер) в Сочи, цена за сутки 2700 руб. Бронирование [phone], [url].',
+  ])('keeps conservative recall at WARN with price and link: %s', (text) => {
+    const result = detect(text, {
+      commercialCampaignContext: REPEATED_PRIVATE_RESALE_CONTEXT,
+    });
+
+    expect(result?.actionBand).toBe('WARN');
+    expect(result?.suppressionReasons).toContain('conservative-recall-warn-cap');
+  });
+
+  it('does not let conservative recall weaken independent property or escalation evidence', () => {
+    const propertyOffer =
+      'Агентство недвижимости: ЖК Флора, студия 24 м2 за 3.450.000 руб, квартира 32 м2 за 4.250.000 руб. Звоните [phone].';
+    const propertyOnly = detect(propertyOffer);
+    const combined = detect(`Гадаю индивидуально, запись [phone]. ${propertyOffer}`);
+    const escalated = detect(
+      'Гадаю индивидуально, запись [phone]. Деньги до зарплаты онлайн, одобрим без отказа, hxxp://credit dot ru',
+    );
+
+    expect(propertyOnly?.actionBand).toBe('DELETE');
+    expect(combined?.actionBand).toBe('DELETE');
+    expect(combined?.suppressionReasons).not.toContain('conservative-recall-warn-cap');
+    expect(escalated?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    [
+      'agent object id',
+      'Дом - аренда. Общая площадь 41.2 м², участок 8 соток. Стоимость 10000. id объекта: 139084214. Ваш агент по недвижимости Вероника. Номер для связи [phone].',
+      'property-agent:agent-object-id-contact',
+      'PROPERTY_AGENT',
+    ],
+    [
+      'commission rental',
+      'Помяловского 1Б Цена:20000 Без залога Комиссия:50% Тел [phone] #снять #аренда #квартира',
+      'property-agent:commission-rental-contact',
+      'PROPERTY_AGENT',
+    ],
+    [
+      'professional specifications',
+      'Мкр Любимово, большая трешка. Этаж 10, отделка предчистовая, без обременений, без долей. 11.500.000 [phone] Илона',
+      'property-agent:professional-property-spec-listing',
+      'PROPERTY_AGENT',
+    ],
+    [
+      'multi property directory',
+      'Продается участок 15 соток, ул. Ореховая 50. Продается комната в общежитии 18 м², Молодежная 5. Все вопросы по тел. [phone].',
+      'property-agent:multi-property-directory-contact',
+      'PROPERTY_AGENT',
+    ],
+    [
+      'welder vacancy',
+      'Сварщик на завод. 5-дневная рабочая неделя. Обеды за счет компании, оклад от 85 тыс. Офиц. труд-во. [phone].',
+      'recruitment:role-first-vacancy',
+      'RECRUITMENT',
+    ],
+    [
+      'cleaner vacancy',
+      'Уборщица на август! Офис, строго с 8.00 до 17.00, зп 53000 руб, график 5/2. По всем вопросам звонить тел [phone].',
+      'recruitment:role-first-vacancy',
+      'RECRUITMENT',
+    ],
+  ])(
+    'recalls audited property or role-first offer at WARN: %s',
+    (_label, text, signal, subtype) => {
+      const result = detect(text, {
+        settings: {
+          commercialAdsSensitivity: 'BALANCED',
+          commercialAdsWarnThreshold: 45,
+          commercialAdsDeleteThreshold: 65,
+        },
+      });
+
+      expect(result?.primarySubtype).toBe(subtype);
+      expect(result?.matchedSignals).toContain(signal);
+      expect(result?.actionBand).toBe('WARN');
+      expect(result?.suppressionReasons).toContain('conservative-recall-warn-cap');
+    },
+  );
+
+  it.each([
+    'ЖК Архитектор. Тип квартиры: Евро 3к. Площадь 65 м². Отделка: ремонт, мебель, техника. Квартира на ключах. Показ 24/7. Комиссия: ваша комиссия сверху. Цена 13 500 000 ₽. Звоните прямо сейчас: +7 900 000 00 06.',
+    '💎 ЖК Самолет 2💎 🏢 Тип квартиры: Евро 2к 📐 Площадь: 37 м² 🎨 Отделка: Ремонт Мебель Тех 🔑 Квартира на ключах ⏰ Показ: 24/7 — в любое удобное время 💼 Комиссия: ваша комиссия сверху 💸 Цена: 6.500.000 ₽ 💸 📞 Звоните прямо сейчас: +7 900 000 00 19',
+  ])('keeps every audited broker anchor visible: %s', (text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals).toEqual(
+      expect.arrayContaining([
+        'property-agent:комиссия-сверху',
+        'property-agent:на-ключах',
+        'property-agent:показ-247',
+      ]),
+    );
+    expect(result?.actionBand).toBe('DELETE');
+  });
+
+  it.each([
+    'Собственник, продаю свою квартиру в мкр Любимово: этаж 10, отделка предчистовая, без обременений, цена 11.500.000, телефон [phone].',
+    'Без посредников продаю свои участок и комнату. Все вопросы по телефону [phone].',
+    'Я уборщица, ищу работу в офисе, желателен график 5/2, телефон [phone].',
+    'Сварщик рассказал, как раньше работал на заводе. График был 5/2, зарплата 85000. Телефон редакции [phone].',
+  ])(
+    'does not create conservative property or vacancy evidence from a private/narrative case: %s',
+    (text) => {
+      const result = detect(text);
+
+      expect(result?.matchedSignals ?? []).not.toContain('recruitment:role-first-vacancy');
+      expect(result?.matchedSignals ?? []).not.toContain(
+        'property-agent:professional-property-spec-listing',
+      );
+      expect(result?.matchedSignals ?? []).not.toContain(
+        'property-agent:multi-property-directory-contact',
+      );
+      expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+    },
+  );
+
+  it('treats a role-first HR contact question as job seeking, not a vacancy', () => {
+    const result = detect(
+      'Сварщик. График 5/2, зарплата 80 тыс. Подскажите телефон отдела кадров [phone].',
+    );
+
+    expect(result?.matchedSignals ?? []).not.toContain('recruitment:role-first-vacancy');
+    expect(result?.actionBand ?? 'ALLOW').toBe('ALLOW');
+  });
+
+  it('does not cap an independently deletable property offer after wellness wording', () => {
+    const propertyOffer =
+      'Агентство недвижимости сдаёт апартаменты посуточно. Цена 6000 руб за сутки, свободные даты и бронирование по ссылке [url], телефон [phone].';
+    const propertyOnly = detect(propertyOffer);
+    const combined = detect(
+      `Собираем группу для оздоровления на термальных источниках. Встречаем, размещаем и сопровождаем. Проживание от 1000 руб, проезд 14000р. Места ограничены, запись [phone]. ${propertyOffer}`,
+    );
+
+    expect(propertyOnly?.actionBand).toBe('DELETE');
+    expect(combined?.actionBand).toBe('DELETE');
+    expect(combined?.reviewReasons).not.toContain('organized-wellness-trip');
+  });
+
+  it.each([
+    [
+      'banquet hall capacity without whitespace',
+      'Банкетный зал принимает заказы. Вместимость от 100-300чᴇᴧ, заранее бронируйте даты по телефону [phone].',
+      'service-specialty:banquet-hall-catalog',
+      'SERVICES',
+    ],
+    [
+      'well drilling self-offer',
+      'Бурим абиссинские скважины на воду под ключ. Для расчета глубины звоните [phone].',
+      'service-specialty:well-drilling-self-offer',
+      'SERVICES',
+    ],
+    [
+      'cosmetic procedure catalog',
+      'Нужны модели на увеличение губ и ботокс, коррекция подбородка и мезотерапия. Запись [url].',
+      'service-specialty:cosmetic-procedure-catalog',
+      'SERVICES',
+    ],
+    [
+      'construction service catalog',
+      'Строительная бригада выполняет наружные и внутренние работы, принимаем заявки по телефону [phone].',
+      'service-specialty:construction-service-catalog',
+      'SERVICES',
+    ],
+    [
+      'named store stock promotion',
+      'В магазине «Семейный» в продажу поступили свежие курочки гриль. Ждем за покупками!',
+      'goods-retail:named-store-stock-promotion',
+      'GOODS_RETAIL',
+    ],
+  ])('recalls the audited catalog or store offer at WARN: %s', (_label, text, signal, subtype) => {
+    const result = detect(text, {
+      settings: {
+        commercialAdsSensitivity: 'BALANCED',
+        commercialAdsWarnThreshold: 45,
+        commercialAdsDeleteThreshold: 65,
+      },
+    });
+
+    expect(result?.primarySubtype).toBe(subtype);
+    expect(result?.matchedSignals).toContain(signal);
+    expect(result?.actionBand).toBe('WARN');
+    expect(result?.suppressionReasons).toContain('conservative-recall-warn-cap');
+  });
+
+  it.each([
+    [
+      'В магазине «Хлеб» сегодня не было курочек гриль, продавец обещал уточнить поставку.',
+      'goods-retail:named-store-stock-promotion',
+    ],
+    [
+      'Кто бурил скважину на воду, сколько метров получилось?',
+      'service-specialty:well-drilling-self-offer',
+    ],
+    [
+      'Ищу банкетный зал на 100-300 чел, поделитесь отзывами и проверенным телефоном.',
+      'service-specialty:banquet-hall-catalog',
+    ],
+    [
+      'На лекции обсуждали увеличение губ, ботокс, коррекцию подбородка и мезотерапию.',
+      'service-specialty:cosmetic-procedure-catalog',
+    ],
+    [
+      'Кто делал наружные и внутренние строительные работы, какую бригаду посоветуете?',
+      'service-specialty:construction-service-catalog',
+    ],
+    [
+      'В прошлом году наша строительная бригада закончила наружные и внутренние работы.',
+      'service-specialty:construction-service-catalog',
+    ],
+  ])('keeps a catalog or store near-miss out of conservative recall: %s', (text, signal) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals ?? []).not.toContain(signal);
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('evaluates long organized-wellness near misses in bounded time', () => {
+    const nearMisses = [750, 1_000].map(
+      (length) =>
+        `Собираем группу ${'для оздоровления на термальных источниках '.repeat(30).slice(0, length)}`,
+    );
+    const startedAt = Date.now();
+
+    for (const text of nearMisses) {
+      const result = detect(text);
+      expect(result?.matchedSignals ?? []).not.toContain(
+        'service-specialty:organized-wellness-trip',
+      );
+    }
+
+    expect(Date.now() - startedAt).toBeLessThan(250);
+  });
+
+  it.each([
+    'Едем с друзьями на термальные источники, делим бензин поровну, записи нет.',
+    'Администрация организует бесплатную социальную поездку на источники для ветеранов.',
+    'В прошлом месяце группа ездила на источники, публикуем отчёт и фотографии.',
+  ])('does not create a current organized wellness offer: %s', (text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals ?? []).not.toContain('service-specialty:organized-wellness-trip');
+    expect(result?.actionBand ?? 'ALLOW').toBe('ALLOW');
   });
 });

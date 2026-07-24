@@ -5,6 +5,7 @@ const SCHEME_URL_PATTERN = /https?:\/\/[^\s<>"'`()[\]{}]+/giu;
 const BARE_URL_PATTERN =
   /(?<![@\p{L}\p{N}\p{Cf}])(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?\.)+(?:xn--[a-z0-9-]{2,59}|[a-z]{2,24}|рф)(?:[/?#][^\s<>"'`()[\]{}]+)?/giu;
 const TRAILING_URL_PUNCTUATION_PATTERN = /[)\]},.;!?:]+$/u;
+const ATTACHED_CYRILLIC_SENTENCE_PATTERN = /\.(?=[А-ЯЁ][а-яё])/u;
 const COMMON_FILE_EXTENSION_TLDS = new Set([
   'avi',
   'csv',
@@ -54,11 +55,18 @@ function createBareUrlRegex(): RegExp {
   return new RegExp(BARE_URL_PATTERN);
 }
 
-function normalizeMatchedUrl(value: string): string {
-  return value
+function normalizeMatchedUrl(value: string, stopAtAttachedSentence = false): string {
+  const normalized = value
     .trim()
     .replace(FORMAT_CONTROL_CHARS_PATTERN, '')
     .replace(TRAILING_URL_PUNCTUATION_PATTERN, '');
+
+  if (!stopAtAttachedSentence) {
+    return normalized;
+  }
+
+  const sentenceBoundary = normalized.search(ATTACHED_CYRILLIC_SENTENCE_PATTERN);
+  return sentenceBoundary === -1 ? normalized : normalized.slice(0, sentenceBoundary);
 }
 
 function prepareTextForUrlMatching(value: string): PreparedUrlText {
@@ -98,18 +106,19 @@ function collectMatches(
   value: string,
   regex: RegExp,
   originalIndexBySourceIndex: number[] | null,
+  stopAtAttachedSentence = false,
 ): UrlMatch[] {
   const matches: UrlMatch[] = [];
 
   for (const match of value.matchAll(regex)) {
     const raw = match[0];
-    const text = normalizeMatchedUrl(raw);
+    const text = normalizeMatchedUrl(raw, stopAtAttachedSentence);
     if (!text) {
       continue;
     }
 
     const sourceStart = match.index ?? 0;
-    const sourceEnd = sourceStart + raw.length;
+    const sourceEnd = sourceStart + text.length;
     const start = originalIndexBySourceIndex?.[sourceStart] ?? sourceStart;
     const end = originalIndexBySourceIndex?.[sourceEnd] ?? sourceEnd;
     matches.push({
@@ -175,16 +184,41 @@ function isLikelyBareFileName(value: string): boolean {
 
 function collectUrlMatches(value: string): UrlMatch[] {
   const prepared = prepareTextForUrlMatching(value);
-  const schemeMatches = collectMatches(
+  const fullSchemeMatches = collectMatches(
     prepared.text,
     createSchemeUrlRegex(),
     prepared.originalIndexBySourceIndex,
   );
-  const bareMatches = collectMatches(
+  const truncatedSchemeMatches = collectMatches(
+    prepared.text,
+    createSchemeUrlRegex(),
+    prepared.originalIndexBySourceIndex,
+    true,
+  );
+  const bareCandidates = collectMatches(
     prepared.text,
     createBareUrlRegex(),
     prepared.originalIndexBySourceIndex,
-  ).filter(
+  );
+  const fullSchemeMatchByStart = new Map(
+    fullSchemeMatches.map((match) => [match.sourceStart, match] as const),
+  );
+  const schemeMatches = truncatedSchemeMatches.map((truncatedMatch) => {
+    const fullMatch = fullSchemeMatchByStart.get(truncatedMatch.sourceStart);
+    if (!fullMatch || fullMatch.sourceEnd === truncatedMatch.sourceEnd) {
+      return truncatedMatch;
+    }
+
+    const boundaryBelongsToUrl = bareCandidates.some(
+      (candidate) =>
+        candidate.sourceStart >= fullMatch.sourceStart &&
+        candidate.sourceStart < fullMatch.sourceEnd &&
+        candidate.sourceEnd > truncatedMatch.sourceEnd &&
+        candidate.sourceEnd <= fullMatch.sourceEnd,
+    );
+    return boundaryBelongsToUrl ? fullMatch : truncatedMatch;
+  });
+  const bareMatches = bareCandidates.filter(
     (candidate) =>
       !schemeMatches.some(
         (existing) => rangesOverlap(candidate, existing) && isContainedWithin(candidate, existing),
@@ -194,9 +228,7 @@ function collectUrlMatches(value: string): UrlMatch[] {
   );
 
   return [...schemeMatches, ...bareMatches]
-    .filter((candidate) =>
-      endsAtUrlDelimiter(prepared.text, candidate.sourceStart + candidate.text.length),
-    )
+    .filter((candidate) => endsAtUrlDelimiter(prepared.text, candidate.sourceEnd))
     .sort((left, right) => left.start - right.start || right.end - left.end);
 }
 
@@ -218,6 +250,29 @@ export function extractUrlsFromText(value: string): string[] {
   }
 
   return extracted;
+}
+
+export function replaceUrlsInText(value: string, replacement: string): string {
+  if (!value) {
+    return '';
+  }
+
+  const matches = collectUrlMatches(value);
+  if (matches.length === 0) {
+    return value;
+  }
+
+  let cursor = 0;
+  let result = '';
+  for (const match of matches) {
+    if (match.end <= cursor) {
+      continue;
+    }
+    result += value.slice(cursor, match.start);
+    result += replacement;
+    cursor = match.end;
+  }
+  return result + value.slice(cursor);
 }
 
 export function stripUrlsFromText(value: string): string {

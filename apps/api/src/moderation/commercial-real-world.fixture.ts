@@ -1496,7 +1496,7 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     label: 'balanced well drilling service from recall review',
     text: `Бурение скважин на воду, обсадные трубы, гарантия. Телефон +7 900 000 21 05`,
     expectedSubtype: 'SERVICES',
-    reviewRecommended: true,
+    reviewRecommended: false,
     expectedSignals: [
       'service-specialty:well-drilling-service',
       'contact:phone',

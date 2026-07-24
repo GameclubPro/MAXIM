@@ -6,7 +6,8 @@ import {
   type ChatSettings,
 } from '../prisma/prisma-client';
 import { config as loadEnv } from 'dotenv';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { link, mkdir, open, unlink } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import {
   InMemoryCommercialCampaignTracker,
@@ -18,11 +19,13 @@ import {
 } from '../moderation/commercial/commercial-safe-context';
 import { COMMERCIAL_HARD_NEGATIVE_REASON_PREFIXES } from '../moderation/commercial/commercial-suppressors';
 import { RuleEngineService, type RuleViolation } from '../moderation/rule-engine.service';
+import { sanitizeCommercialCorpusText } from './commercial-corpus-sanitization.util';
 
 const DEFAULT_LOOKBACK_DAYS = 7;
 const DEFAULT_LIMIT = 1500;
 const DEFAULT_SAMPLE = 6;
 const PROGRESS_EVERY = 250;
+const MAX_CAMPAIGN_WARMUP_HOURS = 7 * 24;
 
 export const AUDIT_MESSAGE_EVENT_TYPES = ['message_created', 'message_edited'] as const;
 
@@ -40,6 +43,8 @@ type CliOptions = {
   includeStableHits: boolean;
   exportAllCorpus: boolean;
   shadowAllChats: boolean;
+  campaignWarmupHours: number;
+  currentOnly: boolean;
 };
 
 type AuditCandidateScope = {
@@ -117,7 +122,7 @@ type AuditCorpusSettings = Pick<
   'commercialAdsSensitivity' | 'commercialAdsWarnThreshold' | 'commercialAdsDeleteThreshold'
 >;
 
-type CommercialSnapshot = {
+export type CommercialSnapshot = {
   hit: boolean;
   score: number | null;
   actionScore: number | null;
@@ -150,7 +155,7 @@ type CommercialSnapshot = {
   featureVector: Record<string, number>;
 };
 
-type AuditRecord = {
+export type AuditRecord = {
   category: AuditCategory;
   policyCategory: AuditPolicyCategory;
   segment: AuditSegment;
@@ -172,6 +177,7 @@ type AuditRecord = {
   sanitizedText: string;
   historical: CommercialSnapshot;
   current: CommercialSnapshot;
+  sanitizedBaseline?: CommercialSnapshot;
   settings: AuditCorpusSettings;
   commercialCampaignContext: CommercialCampaignContext | null;
 };
@@ -212,14 +218,31 @@ export function readCliOptions(argv: readonly string[]): CliOptions {
   const limit = parsedLimit === undefined ? DEFAULT_LIMIT : parsedLimit;
   const sample = readNonNegativeIntOption(args, '--sample') ?? DEFAULT_SAMPLE;
   const chatId = readStringOption(args, '--chat-id');
-  const exportJsonlPath = readStringOption(args, '--export-jsonl');
-  const exportCorpusJsonlPath = readStringOption(args, '--export-corpus-jsonl');
+  const rawExportJsonlPath = readStringOption(args, '--export-jsonl');
+  const rawExportCorpusJsonlPath = readStringOption(args, '--export-corpus-jsonl');
+  const exportJsonlPath = rawExportJsonlPath ? resolve(rawExportJsonlPath) : undefined;
+  const exportCorpusJsonlPath = rawExportCorpusJsonlPath
+    ? resolve(rawExportCorpusJsonlPath)
+    : undefined;
   const includeStableHits = args.includes('--include-stable-hits');
   const exportAllCorpus = args.includes('--export-all-corpus');
   const shadowAllChats = args.includes('--shadow-all-chats');
+  const campaignWarmupHours = readNonNegativeIntOption(args, '--campaign-warmup-hours') ?? 0;
+  const currentOnly = args.includes('--current-only');
 
   if (since.getTime() > until.getTime()) {
     throw new Error('--since must be earlier than or equal to --until');
+  }
+  if (campaignWarmupHours > MAX_CAMPAIGN_WARMUP_HOURS) {
+    throw new Error(
+      `--campaign-warmup-hours must be less than or equal to ${MAX_CAMPAIGN_WARMUP_HOURS}`,
+    );
+  }
+  if (campaignWarmupHours > 0 && limit !== null) {
+    throw new Error('--campaign-warmup-hours requires --limit all');
+  }
+  if (exportJsonlPath && exportCorpusJsonlPath && exportJsonlPath === exportCorpusJsonlPath) {
+    throw new Error('--export-jsonl and --export-corpus-jsonl must resolve to different paths');
   }
 
   return {
@@ -233,7 +256,15 @@ export function readCliOptions(argv: readonly string[]): CliOptions {
     includeStableHits,
     exportAllCorpus,
     shadowAllChats,
+    campaignWarmupHours,
+    currentOnly,
   };
+}
+
+export function resolveAuditLoadSince(
+  options: Pick<CliOptions, 'since' | 'campaignWarmupHours'>,
+): Date {
+  return new Date(options.since.getTime() - options.campaignWarmupHours * 60 * 60 * 1000);
 }
 
 export function resolveAuditCandidateScope(
@@ -347,6 +378,7 @@ async function loadCandidates(
   prisma: PrismaClient,
   options: CliOptions,
 ): Promise<AuditCandidateRow[]> {
+  const loadSince = resolveAuditLoadSince(options);
   const chatFilterSql = options.chatId ? Prisma.sql`and c.id = ${options.chatId}` : Prisma.sql``;
   const limitSql = options.limit === null ? Prisma.sql`` : Prisma.sql`limit ${options.limit}`;
   const scope = resolveAuditCandidateScope(options);
@@ -358,6 +390,35 @@ async function loadCandidates(
     ? Prisma.sql`and s.commercial_ads_filter_enabled = true`
     : Prisma.sql``;
   const messageEventTypesSql = Prisma.join([...AUDIT_MESSAGE_EVENT_TYPES]);
+  const historicalColumnsSql = options.currentOnly
+    ? Prisma.sql`
+        null::text as "historicalEventId",
+        null::double precision as "historicalScore",
+        null::jsonb as "historicalMetadata",
+        false as "hasHistoricalCommercialEvent"
+      `
+    : Prisma.sql`
+        historical.id as "historicalEventId",
+        historical.score as "historicalScore",
+        historical.metadata as "historicalMetadata",
+        (historical.id is not null) as "hasHistoricalCommercialEvent"
+      `;
+  const historicalJoinSql = options.currentOnly
+    ? Prisma.sql``
+    : Prisma.sql`
+        left join lateral (
+          select
+            e.id,
+            e.score,
+            e.metadata
+          from moderation_events e
+          where e.chat_id = base."chatId"
+            and e.message_id = base."messageId"
+            and e.rule_code = 'COMMERCIAL_AD'
+          order by e.created_at asc
+          limit 1
+        ) historical on true
+      `;
 
   return prisma.$queryRaw<AuditCandidateRow[]>(Prisma.sql`
     with base as (
@@ -377,7 +438,7 @@ async function loadCandidates(
       join chats c
         on c.id = w.normalized_payload #>> '{message,chatId}'
       ${settingsJoinSql}
-      where w.created_at >= ${options.since}
+      where w.created_at >= ${loadSince}
         and w.created_at <= ${options.until}
         and w.status = 'PROCESSED'
         and w.normalized_payload ->> 'type' in (${messageEventTypesSql})
@@ -390,23 +451,9 @@ async function loadCandidates(
     )
     select
       base.*,
-      historical.id as "historicalEventId",
-      historical.score as "historicalScore",
-      historical.metadata as "historicalMetadata",
-      (historical.id is not null) as "hasHistoricalCommercialEvent"
+      ${historicalColumnsSql}
     from base
-    left join lateral (
-      select
-        e.id,
-        e.score,
-        e.metadata
-      from moderation_events e
-      where e.chat_id = base."chatId"
-        and e.message_id = base."messageId"
-        and e.rule_code = 'COMMERCIAL_AD'
-      order by e.created_at asc
-      limit 1
-    ) historical on true
+    ${historicalJoinSql}
     order by base."createdAt" desc
   `);
 }
@@ -1031,63 +1078,224 @@ function pushCount<T extends string>(map: Map<T, number>, key: T) {
   map.set(key, (map.get(key) ?? 0) + 1);
 }
 
-async function exportJsonl(pathname: string, records: readonly AuditRecord[]) {
-  await mkdir(dirname(pathname), { recursive: true });
-  const payload = records
-    .map((record) =>
-      JSON.stringify({
-        category: record.category,
-        policyCategory: record.policyCategory,
-        segment: record.segment,
-        label: record.label,
-        labelSource: record.labelSource,
-        expectedAction: record.expectedAction,
-        expectedSubtype: record.expectedSubtype,
-        isHardNegative: record.isHardNegative,
-        createdAt: record.createdAt.toISOString(),
-        webhookEventId: record.webhookEventId,
-        eventType: record.eventType,
-        chatId: record.chatId,
-        chatTitle: record.chatTitle,
-        chatEntityType: record.chatEntityType,
-        safeContextBucket: record.safeContextBucket,
-        messageId: record.messageId,
-        senderId: record.senderId,
-        text: record.sanitizedText,
-        settings: record.settings,
-        commercialCampaignContext: record.commercialCampaignContext,
-        historical: record.historical,
-        current: record.current,
-      }),
+export function deriveAuditEventFingerprint(
+  record: Pick<
+    AuditRecord,
+    'createdAt' | 'webhookEventId' | 'eventType' | 'chatId' | 'messageId' | 'senderId'
+  >,
+): string {
+  return createHash('sha256')
+    .update('commercial-audit-event/v1\0')
+    .update(
+      JSON.stringify([
+        record.createdAt.toISOString(),
+        record.webhookEventId,
+        record.eventType,
+        record.chatId,
+        record.messageId,
+        record.senderId,
+      ]),
     )
-    .join('\n');
-  await writeFile(pathname, `${payload}\n`, 'utf8');
+    .digest('hex');
 }
 
-async function exportCorpusJsonl(pathname: string, records: readonly AuditRecord[]) {
-  await mkdir(dirname(pathname), { recursive: true });
-  const payload = records
-    .map((record) =>
-      JSON.stringify({
-        label: record.label,
-        labelSource: record.labelSource,
-        expectedAction: record.expectedAction,
-        expectedSubtype: record.expectedSubtype,
-        isHardNegative: record.isHardNegative,
-        category: record.category,
-        policyCategory: record.policyCategory,
-        segment: record.segment,
-        safeContextBucket: record.safeContextBucket,
-        eventType: record.eventType,
-        text: record.sanitizedText,
-        settings: record.settings,
-        commercialCampaignContext: record.commercialCampaignContext,
-        historical: record.historical,
-        current: record.current,
-      }),
-    )
-    .join('\n');
-  await writeFile(pathname, `${payload}\n`, 'utf8');
+export function serializeAuditRecord(record: AuditRecord): Record<string, unknown> {
+  return {
+    category: record.category,
+    policyCategory: record.policyCategory,
+    segment: record.segment,
+    label: record.label,
+    labelSource: record.labelSource,
+    expectedAction: record.expectedAction,
+    expectedSubtype: record.expectedSubtype,
+    isHardNegative: record.isHardNegative,
+    createdAt: record.createdAt.toISOString(),
+    webhookEventId: record.webhookEventId,
+    eventType: record.eventType,
+    chatId: record.chatId,
+    chatTitle: record.chatTitle,
+    chatEntityType: record.chatEntityType,
+    safeContextBucket: record.safeContextBucket,
+    messageId: record.messageId,
+    senderId: record.senderId,
+    text: record.sanitizedText,
+    settings: record.settings,
+    commercialCampaignContext: record.commercialCampaignContext,
+    historical: record.historical,
+    current: record.current,
+    ...(record.sanitizedBaseline ? { sanitizedBaseline: record.sanitizedBaseline } : {}),
+  };
+}
+
+export function serializeAuditCorpusRecord(record: AuditRecord): Record<string, unknown> {
+  if (!record.sanitizedBaseline) {
+    throw new Error('Corpus export record is missing its sanitized baseline');
+  }
+
+  return {
+    label: record.label,
+    labelSource: record.labelSource,
+    expectedAction: record.expectedAction,
+    expectedSubtype: record.expectedSubtype,
+    isHardNegative: record.isHardNegative,
+    category: record.category,
+    policyCategory: record.policyCategory,
+    segment: record.segment,
+    safeContextBucket: record.safeContextBucket,
+    createdAt: record.createdAt.toISOString(),
+    eventFingerprint: deriveAuditEventFingerprint(record),
+    eventType: record.eventType,
+    text: record.sanitizedText,
+    settings: record.settings,
+    commercialCampaignContext: record.commercialCampaignContext,
+    historical: record.historical,
+    current: record.current,
+    sanitizedBaseline: record.sanitizedBaseline,
+  };
+}
+
+function buildJsonlPayload(records: readonly Record<string, unknown>[]): string {
+  return `${records.map((record) => JSON.stringify(record)).join('\n')}\n`;
+}
+
+type AuditJsonlOutput = {
+  pathname: string;
+  payload: string;
+};
+
+type StagedAuditJsonlOutput = AuditJsonlOutput & {
+  temporaryPath: string;
+};
+
+function errorCode(error: unknown): string | null {
+  if (!error || typeof error !== 'object' || !('code' in error)) {
+    return null;
+  }
+
+  return typeof error.code === 'string' ? error.code : null;
+}
+
+async function unlinkOutputs(pathnames: readonly string[]): Promise<unknown[]> {
+  const errors: unknown[] = [];
+  for (const pathname of pathnames) {
+    try {
+      await unlink(pathname);
+    } catch (error) {
+      if (errorCode(error) !== 'ENOENT') {
+        errors.push(error);
+      }
+    }
+  }
+  return errors;
+}
+
+async function stageAuditJsonlOutput(output: AuditJsonlOutput): Promise<StagedAuditJsonlOutput> {
+  const temporaryPath = `${output.pathname}.${process.pid}.${randomUUID()}.tmp`;
+
+  try {
+    const handle = await open(temporaryPath, 'wx', 0o600);
+    try {
+      await handle.writeFile(output.payload, 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    const cleanupErrors = await unlinkOutputs([temporaryPath]);
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...cleanupErrors],
+        'Audit JSONL staging failed and temporary cleanup was incomplete',
+      );
+    }
+    throw error;
+  }
+
+  return { ...output, temporaryPath };
+}
+
+export async function publishAuditJsonlOutputs(
+  outputs: readonly AuditJsonlOutput[],
+): Promise<void> {
+  // Caught failures roll back the pair, but process death between hard links can leave one output.
+  const resolvedOutputs = outputs.map((output) => ({
+    ...output,
+    pathname: resolve(output.pathname),
+  }));
+  if (new Set(resolvedOutputs.map((output) => output.pathname)).size !== resolvedOutputs.length) {
+    throw new Error('Audit JSONL output paths must resolve to different files');
+  }
+
+  for (const output of resolvedOutputs) {
+    await mkdir(dirname(output.pathname), { recursive: true });
+  }
+
+  const staged: StagedAuditJsonlOutput[] = [];
+  const publishedPaths: string[] = [];
+  let publicationError: unknown;
+
+  try {
+    for (const output of resolvedOutputs) {
+      staged.push(await stageAuditJsonlOutput(output));
+    }
+
+    for (const output of staged) {
+      try {
+        await link(output.temporaryPath, output.pathname);
+      } catch (error) {
+        if (errorCode(error) === 'EEXIST') {
+          throw new Error(`Refusing to overwrite existing audit export: ${output.pathname}`, {
+            cause: error,
+          });
+        }
+        throw error;
+      }
+      publishedPaths.push(output.pathname);
+    }
+  } catch (error) {
+    const rollbackErrors = await unlinkOutputs([...publishedPaths].reverse());
+    publicationError =
+      rollbackErrors.length > 0
+        ? new AggregateError(
+            [error, ...rollbackErrors],
+            'Audit JSONL publication failed and rollback was incomplete',
+          )
+        : error;
+  }
+
+  const cleanupErrors = await unlinkOutputs(staged.map((output) => output.temporaryPath));
+  if (publicationError !== undefined) {
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        [publicationError, ...cleanupErrors],
+        'Audit JSONL publication failed and temporary cleanup was incomplete',
+      );
+    }
+    throw publicationError;
+  }
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError(cleanupErrors, 'Audit JSONL temporary cleanup failed');
+  }
+}
+
+function buildAuditJsonlOutput(
+  pathname: string,
+  records: readonly AuditRecord[],
+): AuditJsonlOutput {
+  return {
+    pathname,
+    payload: buildJsonlPayload(records.map(serializeAuditRecord)),
+  };
+}
+
+function buildAuditCorpusJsonlOutput(
+  pathname: string,
+  records: readonly AuditRecord[],
+): AuditJsonlOutput {
+  return {
+    pathname,
+    payload: buildJsonlPayload(records.map(serializeAuditCorpusRecord)),
+  };
 }
 
 function pickAuditCorpusSettings(settings: ChatSettings): AuditCorpusSettings {
@@ -1099,21 +1307,56 @@ function pickAuditCorpusSettings(settings: ChatSettings): AuditCorpusSettings {
 }
 
 export function sanitizeAuditText(value: string): string {
-  return value
-    .replace(/https?:\/\/\S+/giu, '[url]')
-    .replace(
-      /\b(?:t\.me|max\.ru|vk\.com|wa\.me|clck\.ru|bit\.ly|goo\.su|tinyurl\.com)\/\S+/giu,
-      '[url]',
-    )
-    .replace(
-      /(?:^|[^\d])(?:\+?7|8)[\s‐‑‒–—―-]*\(?\d{3}\)?[\s‐‑‒–—―-]?\d{3}[\s‐‑‒–—―-]?\d{2}[\s‐‑‒–—―-]?\d{2}(?=$|[^\d])/gu,
-      ' [phone] ',
-    )
-    .replace(/(^|[^\d])(?:\d[\s‐‑‒–—―-]*){9}\d(?=$|[^\d])/gu, '$1[phone]')
-    .replace(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/giu, '[email]')
-    .replace(/@[a-z0-9_]{4,32}/giu, '@[handle]')
-    .replace(/\s+/gu, ' ')
-    .trim();
+  return sanitizeCommercialCorpusText(value);
+}
+
+export function isCommercialEnforcementAction(actionBand: string | null): boolean {
+  return actionBand === 'WARN' || actionBand === 'DELETE' || actionBand === 'DELETE_AND_ESCALATE';
+}
+
+export async function resolveCorpusSanitizedBaseline(params: {
+  corpusExportRequested: boolean;
+  retainedForCorpus: boolean;
+  rawText: string;
+  sanitizedText: string;
+  current: CommercialSnapshot;
+  detectSanitized: () => Promise<CommercialSnapshot>;
+}): Promise<CommercialSnapshot | undefined> {
+  if (!params.corpusExportRequested || !params.retainedForCorpus) {
+    return undefined;
+  }
+  if (params.sanitizedText === params.rawText) {
+    return params.current;
+  }
+  return params.detectSanitized();
+}
+
+export function formatAuditSampleLines(record: AuditRecord): string[] {
+  return [
+    [
+      `- ${record.createdAt.toISOString()}`,
+      `eventFingerprint=${deriveAuditEventFingerprint(record)}`,
+      `eventType=${record.eventType}`,
+      `entityType=${record.chatEntityType ?? 'unknown'}`,
+      `segment=${record.segment}`,
+      `safeContext=${record.safeContextBucket}`,
+      `policy=${record.policyCategory}`,
+      `label=${record.label}`,
+      `expectedAction=${record.expectedAction ?? 'n/a'}`,
+      `expectedSubtype=${record.expectedSubtype ?? 'n/a'}`,
+    ].join(' '),
+    `  text=${makeExcerpt(record.sanitizedText)}`,
+    `  historical score=${record.historical.score ?? 'n/a'} subtype=${record.historical.primarySubtype ?? 'n/a'} review=${record.historical.reviewRecommended ? 'yes' : 'no'} signals=${formatSignals(record.historical.matchedSignals)}`,
+    `  current confidence=${record.current.confidenceScore ?? 'n/a'} band=${record.current.decisionBand ?? 'n/a'} action=${record.current.actionBand ?? 'n/a'} fpRisk=${record.current.fpRisk ?? 'n/a'} subtype=${record.current.primarySubtype ?? 'n/a'} review=${record.current.reviewRecommended ? 'yes' : 'no'} evidence=${record.current.evidenceTier ?? record.current.evidenceStrength ?? 'n/a'} signals=${formatSignals(record.current.matchedSignals)}`,
+    ...(record.current.classifierVersion
+      ? [
+          `  classifier version=${record.current.classifierVersion} commercial=${record.current.commercialProbability ?? 'n/a'} review=${record.current.reviewProbability ?? 'n/a'} reasons=${formatSignals(record.current.classifierReasons)}`,
+        ]
+      : []),
+    ...(record.current.reviewReasons.length > 0
+      ? [`  current_review_reasons=${formatSignals(record.current.reviewReasons)}`]
+      : []),
+  ];
 }
 
 async function main() {
@@ -1125,9 +1368,13 @@ async function main() {
     await prisma.$connect();
     const candidates = await loadCandidates(prisma, options);
     const auditScope = resolveAuditCandidateScope(options);
+    const loadSince = resolveAuditLoadSince(options);
     const orderedCandidates = [...candidates].sort(
       (left, right) => left.createdAt.getTime() - right.createdAt.getTime(),
     );
+    const targetCandidateCount = candidates.filter(
+      (item) => item.createdAt.getTime() >= options.since.getTime(),
+    ).length;
     const chatContexts = await loadChatContexts(
       prisma,
       Array.from(new Set(candidates.map((item) => item.chatId))),
@@ -1147,34 +1394,46 @@ async function main() {
     const currentClassifierVersionCounts = new Map<string, number>();
     const eventTypeCounts = new Map<string, number>();
     let evaluatedCount = 0;
+    let warmupTrackedCount = 0;
     let currentReviewRecommendedCount = 0;
     let deleteFalsePositiveCandidates = 0;
     let grayDeleteCandidates = 0;
     let campaignOnlyDeleteCandidates = 0;
+    let enforcementFalsePositiveCandidates = 0;
+    let grayEnforcementCandidates = 0;
+    let campaignOnlyEnforcementCandidates = 0;
     const auditedRecords: AuditRecord[] = [];
 
     console.log(
       [
         'COMMERCIAL_AD audit started',
         `window=${options.since.toISOString()}..${options.until.toISOString()}`,
+        `loadWindow=${loadSince.toISOString()}..${options.until.toISOString()}`,
         `limit=${options.limit === null ? 'all' : options.limit}`,
         `sample=${options.sample}`,
-        `chatId=${options.chatId ?? 'ALL'}`,
+        `chatFilter=${options.chatId ? 'single-chat' : 'all'}`,
         `scope=${auditScope.logLabel}`,
-        `candidates=${candidates.length}`,
+        `currentOnly=${options.currentOnly ? 'yes' : 'no'}`,
+        `loadedCandidates=${candidates.length}`,
+        `targetCandidates=${targetCandidateCount}`,
       ].join(' '),
     );
 
     for (const [index, row] of orderedCandidates.entries()) {
+      const isTargetWindow = row.createdAt.getTime() >= options.since.getTime();
       const update = row.normalizedPayload as MaxUpdate;
       const chatContext = chatContexts.get(row.chatId);
       const skipReason = resolveSkipReason(row, update, chatContext);
       if (skipReason) {
-        pushCount(skipCounts, skipReason);
+        if (isTargetWindow) {
+          pushCount(skipCounts, skipReason);
+        }
         continue;
       }
       if (!chatContext) {
-        pushCount(skipCounts, 'missing-chat-context');
+        if (isTargetWindow) {
+          pushCount(skipCounts, 'missing-chat-context');
+        }
         continue;
       }
 
@@ -1186,11 +1445,19 @@ async function main() {
         senderId,
         text,
       });
+      if (!isTargetWindow) {
+        warmupTrackedCount += 1;
+        if ((index + 1) % PROGRESS_EVERY === 0) {
+          console.log(`processed=${index + 1}/${orderedCandidates.length}`);
+        }
+        continue;
+      }
+      const detectionSettings = resolveAuditDetectionSettings(chatContext.settings, options);
       const detection = await ruleEngine.detect({
         chatId: row.chatId,
         userId: senderId,
         text,
-        settings: resolveAuditDetectionSettings(chatContext.settings, options),
+        settings: detectionSettings,
         domainAllowlist: chatContext.domainAllowlist,
         effectiveLength: text.length,
         skipDuplicateState: true,
@@ -1215,7 +1482,6 @@ async function main() {
       const safeContextBucket = deriveSafeContextBucket({ text, current, historical });
       const policyCategory = derivePolicyCategory({ category, current });
       const corpusLabel = deriveCorpusLabel({ category, policyCategory, current, historical });
-      const sanitizedText = sanitizeAuditText(text);
 
       pushCount(categoryCounts, category);
       pushCount(policyCategoryCounts, policyCategory);
@@ -1242,29 +1508,6 @@ async function main() {
         pushCount(currentClassifierReasonCounts, reason);
       }
 
-      const auditRecord: AuditRecord = {
-        category,
-        policyCategory,
-        segment,
-        safeContextBucket,
-        ...corpusLabel,
-        createdAt: row.createdAt,
-        webhookEventId: row.webhookEventId,
-        eventType: row.eventType,
-        chatId: row.chatId,
-        chatTitle: row.chatTitle,
-        chatEntityType: row.chatEntityType,
-        messageId: row.messageId,
-        senderId,
-        text,
-        sanitizedText,
-        historical,
-        current,
-        settings: pickAuditCorpusSettings(
-          resolveAuditDetectionSettings(chatContext.settings, options),
-        ),
-        commercialCampaignContext,
-      };
       const shouldRetainRecord =
         options.exportAllCorpus ||
         (options.includeStableHits
@@ -1273,7 +1516,53 @@ async function main() {
             category === 'current_only' ||
             policyCategory !== 'none');
       if (shouldRetainRecord) {
-        auditedRecords.push(auditRecord);
+        const sanitizedText = sanitizeAuditText(text);
+        const sanitizedBaseline = await resolveCorpusSanitizedBaseline({
+          corpusExportRequested: Boolean(options.exportCorpusJsonlPath),
+          retainedForCorpus: shouldRetainRecord,
+          rawText: text,
+          sanitizedText,
+          current,
+          detectSanitized: async () =>
+            snapshotFromViolation(
+              extractCommercialViolation(
+                (
+                  await ruleEngine.detect({
+                    chatId: row.chatId,
+                    userId: senderId,
+                    text: sanitizedText,
+                    settings: detectionSettings,
+                    domainAllowlist: chatContext.domainAllowlist,
+                    effectiveLength: sanitizedText.length,
+                    skipDuplicateState: true,
+                    commercialCampaignContext,
+                  })
+                ).violations,
+              ),
+            ),
+        });
+        auditedRecords.push({
+          category,
+          policyCategory,
+          segment,
+          safeContextBucket,
+          ...corpusLabel,
+          createdAt: row.createdAt,
+          webhookEventId: row.webhookEventId,
+          eventType: row.eventType,
+          chatId: row.chatId,
+          chatTitle: row.chatTitle,
+          chatEntityType: row.chatEntityType,
+          messageId: row.messageId,
+          senderId,
+          text,
+          sanitizedText,
+          historical,
+          current,
+          ...(sanitizedBaseline ? { sanitizedBaseline } : {}),
+          settings: pickAuditCorpusSettings(detectionSettings),
+          commercialCampaignContext,
+        });
       }
 
       if (
@@ -1294,6 +1583,21 @@ async function main() {
       ) {
         campaignOnlyDeleteCandidates += 1;
       }
+      if (
+        corpusLabel.label === 'negative_candidate' &&
+        isCommercialEnforcementAction(current.actionBand)
+      ) {
+        enforcementFalsePositiveCandidates += 1;
+      }
+      if (
+        corpusLabel.label === 'gray_candidate' &&
+        isCommercialEnforcementAction(current.actionBand)
+      ) {
+        grayEnforcementCandidates += 1;
+      }
+      if (policyCategory === 'campaign_only' && isCommercialEnforcementAction(current.actionBand)) {
+        campaignOnlyEnforcementCandidates += 1;
+      }
 
       if ((index + 1) % PROGRESS_EVERY === 0) {
         console.log(`processed=${index + 1}/${orderedCandidates.length}`);
@@ -1307,6 +1611,7 @@ async function main() {
     console.log('');
     console.log('Summary');
     console.log(`evaluated=${evaluatedCount}`);
+    console.log(`warmup_tracked=${warmupTrackedCount}`);
     console.log(`skipped=${[...skipCounts.values()].reduce((sum, value) => sum + value, 0)}`);
     console.log(`skip_breakdown=${formatCounts(skipCounts) || 'none'}`);
     console.log(`category_breakdown=${formatCounts(categoryCounts) || 'none'}`);
@@ -1363,6 +1668,9 @@ async function main() {
     console.log(`delete_false_positive_candidates=${deleteFalsePositiveCandidates}`);
     console.log(`gray_delete_candidates=${grayDeleteCandidates}`);
     console.log(`campaign_only_delete_candidates=${campaignOnlyDeleteCandidates}`);
+    console.log(`enforcement_false_positive_candidates=${enforcementFalsePositiveCandidates}`);
+    console.log(`gray_enforcement_candidates=${grayEnforcementCandidates}`);
+    console.log(`campaign_only_enforcement_candidates=${campaignOnlyEnforcementCandidates}`);
     console.log(
       `current_review_reasons=${
         formatCounts(
@@ -1398,47 +1706,26 @@ async function main() {
       console.log('');
       console.log(category);
       for (const record of rows) {
-        console.log(
-          [
-            `- ${record.createdAt.toISOString()}`,
-            `eventType=${record.eventType}`,
-            `chat=${record.chatTitle ?? record.chatId}`,
-            `chatId=${record.chatId}`,
-            `messageId=${record.messageId}`,
-            `senderId=${record.senderId ?? 'unknown'}`,
-            `segment=${record.segment}`,
-            `safeContext=${record.safeContextBucket}`,
-            `policy=${record.policyCategory}`,
-            `label=${record.label}`,
-            `expectedAction=${record.expectedAction ?? 'n/a'}`,
-            `expectedSubtype=${record.expectedSubtype ?? 'n/a'}`,
-          ].join(' '),
-        );
-        console.log(`  text=${makeExcerpt(record.text)}`);
-        console.log(
-          `  historical score=${record.historical.score ?? 'n/a'} subtype=${record.historical.primarySubtype ?? 'n/a'} review=${record.historical.reviewRecommended ? 'yes' : 'no'} signals=${formatSignals(record.historical.matchedSignals)}`,
-        );
-        console.log(
-          `  current confidence=${record.current.confidenceScore ?? 'n/a'} band=${record.current.decisionBand ?? 'n/a'} action=${record.current.actionBand ?? 'n/a'} fpRisk=${record.current.fpRisk ?? 'n/a'} subtype=${record.current.primarySubtype ?? 'n/a'} review=${record.current.reviewRecommended ? 'yes' : 'no'} evidence=${record.current.evidenceTier ?? record.current.evidenceStrength ?? 'n/a'} signals=${formatSignals(record.current.matchedSignals)}`,
-        );
-        if (record.current.classifierVersion) {
-          console.log(
-            `  classifier version=${record.current.classifierVersion} commercial=${record.current.commercialProbability ?? 'n/a'} review=${record.current.reviewProbability ?? 'n/a'} reasons=${formatSignals(record.current.classifierReasons)}`,
-          );
-        }
-        if (record.current.reviewReasons.length > 0) {
-          console.log(`  current_review_reasons=${formatSignals(record.current.reviewReasons)}`);
+        for (const line of formatAuditSampleLines(record)) {
+          console.log(line);
         }
       }
     }
 
+    const jsonlOutputs: AuditJsonlOutput[] = [];
     if (options.exportJsonlPath) {
-      await exportJsonl(options.exportJsonlPath, exportable);
+      jsonlOutputs.push(buildAuditJsonlOutput(options.exportJsonlPath, exportable));
+    }
+    if (options.exportCorpusJsonlPath) {
+      jsonlOutputs.push(buildAuditCorpusJsonlOutput(options.exportCorpusJsonlPath, exportable));
+    }
+    await publishAuditJsonlOutputs(jsonlOutputs);
+
+    if (options.exportJsonlPath) {
       console.log('');
       console.log(`exported=${exportable.length} path=${options.exportJsonlPath}`);
     }
     if (options.exportCorpusJsonlPath) {
-      await exportCorpusJsonl(options.exportCorpusJsonlPath, exportable);
       console.log('');
       console.log(`exported_corpus=${exportable.length} path=${options.exportCorpusJsonlPath}`);
     }

@@ -1,3 +1,5 @@
+import { resolveCommercialSignalEvidence } from './commercial-evidence';
+
 export type CommercialSafeContextBucket =
   | 'rules_or_moderation_context'
   | 'spam_complaint_or_fraud_warning'
@@ -16,11 +18,13 @@ const RULES_OR_MODERATION_CONTEXT_PATTERNS = [
   /(?:^|[^\p{L}\p{N}_-])(?:бот|фильтр[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;!?'"«»()/%+-]{0,60})(?:удал[яи][\p{L}\p{N}_-]*|бан[\p{L}\p{N}_-]*|мут[\p{L}\p{N}_-]*|блокир[\p{L}\p{N}_-]*|фильтру[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;!?'"«»()/%+-]{0,60})(?:реклам[\p{L}\p{N}_-]*|объявлен[\p{L}\p{N}_-]*|ссылк[\p{L}\p{N}_-]*|спам[\p{L}\p{N}_-]*)?/iu,
 ] as const;
 
-const FRAUD_WARNING_PATTERN =
-  /(?:^|[^\p{L}\p{N}_-])(?:мошенник[\p{L}\p{N}_-]*|спам[\p{L}\p{N}_-]*|спамер[\p{L}\p{N}_-]*|жалоб[\p{L}\p{N}_-]*|полици[\p{L}\p{N}_-]*|мвд|предупрежда(?:ет|ют|ем)|осторожн[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu;
+const FRAUD_WARNING_CONTEXT_PATTERNS = [
+  /(?:^|[^\p{L}\p{N}_-])(?:мошенник[\p{L}\p{N}_-]*|спамер[\p{L}\p{N}_-]*|это\s+спам|полици[\p{L}\p{N}_-]*\s+предупрежда[\p{L}\p{N}_-]*|мвд\s+предупрежда[\p{L}\p{N}_-]*|предупрежда(?:ет|ют|ем)|осторожн[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;!?"'«»()/%+-]{0,220})(?:не\s+(?:переходите|переводите|отправляйте|сообщайте|верьте)|обман[\p{L}\p{N}_-]*|похищ[\p{L}\p{N}_-]*|сообщите\s+(?:в\s+)?(?:полици[\p{L}\p{N}_-]*|мвд|админ[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu,
+  /(?:^|[^\p{L}\p{N}_-])(?:не\s+(?:переходите|переводите|отправляйте|сообщайте|верьте)|обман[\p{L}\p{N}_-]*|похищ[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;!?"'«»()/%+-]{0,180})(?:мошенник[\p{L}\p{N}_-]*|спамер[\p{L}\p{N}_-]*|спам|полици[\p{L}\p{N}_-]*|мвд|предупрежда[\p{L}\p{N}_-]*|осторожн[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
+] as const;
 
 const NEWS_OR_ANALYTICS_PATTERN =
-  /(?:^|[^\p{L}\p{N}_-])(?:новост[\p{L}\p{N}_-]*|отчет|отч[её]т|аналитик[\p{L}\p{N}_-]*|статистик[\p{L}\p{N}_-]*|обзор|рынк[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu;
+  /(?:^|[^\p{L}\p{N}_-])(?:новост(?:ь|и|ью|ей|ям|ями|ях|н[\p{L}\p{N}_-]*)|отчет|отч[её]т|аналитик[\p{L}\p{N}_-]*|статистик[\p{L}\p{N}_-]*|обзор|рынк[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu;
 
 const PUBLIC_TRAINING_OR_HELP_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])(?:администраци[\p{L}\p{N}_-]*|госуслуг[\p{L}\p{N}_-]*|компенсаци[\p{L}\p{N}_-]*|голосовани[\p{L}\p{N}_-]*|обучени[\p{L}\p{N}_-]*\s+бесплатн[\p{L}\p{N}_-]*|центр\s+занятост[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu;
@@ -80,12 +84,59 @@ export function deriveCommercialSafeContextBucket(params: {
   const hasCommercialHit = params.hasCommercialHit === true;
   const hasDirectDealSignal = hasCommercialDirectDealSignal(matchedSignals);
   const hasSelfPromoSignal = hasCommercialSelfPromoSignal(matchedSignals);
+  const signalEvidence = resolveCommercialSignalEvidence(matchedSignals);
+  const hasEscalationRiskEvidence = signalEvidence.hasEscalationRiskEvidence;
+  const hasPriceSignal = matchedSignals.some(
+    (signal) => signal === 'transaction:price' || signal === 'transaction:implied-price',
+  );
+  const hasProfessionalLocalRetailOrder =
+    signalEvidence.hasActionDirectDealEvidence &&
+    matchedSignals.includes('goods-retail:professional-order-catalog');
+  const hasProfessionalServiceOffer =
+    hasDirectDealSignal &&
+    matchedSignals.some(
+      (signal) =>
+        signal === 'transaction:structured-service-offer' ||
+        signal.startsWith('recall-source:service-specialty:') ||
+        signal === 'service-specialty:internet-connection-service',
+    ) &&
+    matchedSignals.some(
+      (signal) =>
+        signal.startsWith('business:') ||
+        signal.startsWith('intent:') ||
+        signal.startsWith('recall-source:service-specialty:'),
+    );
+  const hasProfessionalPrivateSaleOverride =
+    hasProfessionalLocalRetailOrder ||
+    hasProfessionalServiceOffer ||
+    (hasDirectDealSignal &&
+      matchedSignals.some(
+        (signal) =>
+          signal.startsWith('buyout:') ||
+          (signal.startsWith('property-agent:') &&
+            signal !== 'property-agent:structured-rental-review') ||
+          signal.startsWith('property-commercial:') ||
+          signal.startsWith('channel-placement:') ||
+          signal.startsWith('group-promo:'),
+      ));
   const hasLocalPrivateLikeRetailSignal = matchedSignals.some((signal) =>
     LOCAL_PRIVATE_LIKE_RETAIL_SIGNALS.has(signal),
   );
   const hasLinkOrRiskSignal = matchedSignals.some(
     (signal) => signal.startsWith('deal-channel:') || signal.startsWith('risk:'),
   );
+  const hasActionableOfferSignal =
+    hasSelfPromoSignal ||
+    matchedSignals.some(
+      (signal) =>
+        signal.startsWith('contact:') ||
+        signal.startsWith('deal-channel:') ||
+        signal.startsWith('cta:') ||
+        signal === 'transaction:price' ||
+        signal === 'transaction:implied-price' ||
+        signal === 'transaction:keywords',
+    );
+  const hasEscalationOffer = hasEscalationRiskEvidence && hasActionableOfferSignal;
   const hasSignal = (signal: string): boolean => negativeSignals.includes(signal);
   const hasSignalPrefix = (prefix: string): boolean =>
     negativeSignals.some((signal) => signal.startsWith(prefix));
@@ -101,13 +152,20 @@ export function deriveCommercialSafeContextBucket(params: {
     return 'rules_or_moderation_context';
   }
 
-  if (hasSignal('context:public-fraud-warning') || FRAUD_WARNING_PATTERN.test(text)) {
+  if (
+    !hasEscalationOffer &&
+    (hasSignal('context:public-fraud-warning') ||
+      FRAUD_WARNING_CONTEXT_PATTERNS.some((pattern) => pattern.test(text)))
+  ) {
     return 'spam_complaint_or_fraud_warning';
   }
 
   if (
     hasSignal('context:local-news-subscribe') ||
     hasSignal('context:channel-metrics-not-selling') ||
+    hasSignal('context:giveaway-results-report') ||
+    (hasSignal('context:fuel-availability-report') &&
+      !(hasPriceSignal && hasDirectDealSignal && hasSelfPromoSignal)) ||
     (NEWS_OR_ANALYTICS_PATTERN.test(text) && (!hasCommercialHit || !hasDirectDealSignal))
   ) {
     return 'news_or_analytics';
@@ -116,30 +174,44 @@ export function deriveCommercialSafeContextBucket(params: {
   if (
     hasSignal('context:official-civic-instruction') ||
     hasSignal('context:public-voting-contest') ||
-    (PUBLIC_TRAINING_OR_HELP_PATTERN.test(text) &&
+    hasSignal('context:public-service-enrollment') ||
+    (hasSignal('context:public-training-or-event') && !hasEscalationRiskEvidence) ||
+    (hasSignal('context:public-help-request') && !hasEscalationRiskEvidence) ||
+    (!hasEscalationRiskEvidence &&
+      PUBLIC_TRAINING_OR_HELP_PATTERN.test(text) &&
       (!hasCommercialHit || !hasDirectDealSignal || !hasSelfPromoSignal))
   ) {
     return 'public_training_or_help';
   }
 
-  if (hasSignalPrefix('job-seeking:')) {
+  if (hasSignalPrefix('job-seeking:') && !hasEscalationOffer) {
     return 'ordinary_recruitment';
   }
 
-  if (hasSignalPrefix('search:') || hasSignalPrefix('search-pattern:')) {
+  if (!hasEscalationOffer && (hasSignalPrefix('search:') || hasSignalPrefix('search-pattern:'))) {
+    return 'request_or_recommendation';
+  }
+
+  if (hasSignal('context:animal-adoption') && !hasPriceSignal) {
     return 'request_or_recommendation';
   }
 
   if (
-    hasSignalPrefix('private:') ||
-    hasSignalPrefix('private-single:') ||
-    hasSignalPrefix('private-goods:') ||
-    (hasLocalPrivateLikeRetailSignal && !hasLinkOrRiskSignal)
+    !hasEscalationRiskEvidence &&
+    !hasProfessionalPrivateSaleOverride &&
+    (hasSignalPrefix('private:') ||
+      hasSignalPrefix('private-single:') ||
+      hasSignalPrefix('private-goods:') ||
+      (hasLocalPrivateLikeRetailSignal && !hasLinkOrRiskSignal))
   ) {
     return 'private_one_off_sale';
   }
 
-  if (BRAND_MENTION_PATTERN.test(text) && (!hasCommercialHit || !hasSelfPromoSignal)) {
+  if (
+    !hasEscalationOffer &&
+    BRAND_MENTION_PATTERN.test(text) &&
+    (!hasCommercialHit || !hasSelfPromoSignal)
+  ) {
     return 'brand_mention_only';
   }
 

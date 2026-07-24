@@ -1,4 +1,4 @@
-import { extractUrlsFromText, stripUrlsFromText } from './url-text.util';
+import { extractUrlsFromText, replaceUrlsInText, stripUrlsFromText } from './url-text.util';
 
 describe('url-text util', () => {
   it('extracts bare MAX invite links', () => {
@@ -23,6 +23,30 @@ describe('url-text util', () => {
       'test.org',
       'max.ru',
     ]);
+  });
+
+  it('preserves trailing punctuation when replacing or stripping scheme urls', () => {
+    const text = 'https://example.com, дальше';
+
+    expect(extractUrlsFromText(text)).toEqual(['https://example.com']);
+    expect(replaceUrlsInText(text, '[url]')).toBe('[url], дальше');
+    expect(stripUrlsFromText(text)).toBe(', дальше');
+  });
+
+  it('stops scheme urls before an attached Russian sentence', () => {
+    const text = 'https://example.com.Не реклама';
+
+    expect(extractUrlsFromText(text)).toEqual(['https://example.com']);
+    expect(replaceUrlsInText(text, '[url]')).toBe('[url].Не реклама');
+    expect(stripUrlsFromText(text)).toBe('.Не реклама');
+  });
+
+  it('keeps dotted Cyrillic path segments inside scheme urls', () => {
+    const text = 'https://example.ru/Иван.Иванов';
+
+    expect(extractUrlsFromText(text)).toEqual(['https://example.ru/Иван.Иванов']);
+    expect(replaceUrlsInText(text, '[url]')).toBe('[url]');
+    expect(stripUrlsFromText(text)).toBe('');
   });
 
   it('extracts separate urls from markdown-style links', () => {

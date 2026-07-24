@@ -211,3 +211,12 @@ Run `./infra/scripts/vps-docker-space-reclaim.sh` only after reviewing disk and 
 The helper holds the deploy lock, validates every retained manifest, preserves image IDs/refs from
 those manifests and every container, and removes only old unused immutable MAXIM release refs. It
 then prunes old BuildKit cache. It does not run a generic image, container, or volume prune.
+
+The 20 GiB deploy build-capacity floor remains mandatory whenever any selected component image is
+absent. A deploy may skip that gate only when every selected local image ref exactly matches the
+verified target commit (`maxim-api:<sha>`, `maxim-miniapp-major:<sha>`, and/or `maxim-admin:<sha>`).
+The script then runs in reuse-only mode: runtime recreation uses `--no-build`, and a target image
+that disappears after the preflight aborts the rollout instead of falling back to a build. Manual,
+full, mixed API/static, missing-image, wrong-SHA, and unknown targets receive no mode-based bypass;
+each selected exact image must be present. This exception does not remove images or volumes and
+does not alter retained release manifests.

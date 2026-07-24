@@ -10,8 +10,16 @@ const PRICE_EVIDENCE_SIGNALS = new Set([
 ]);
 
 const TRANSACTION_DIRECT_DEAL_SIGNALS = new Set([
+  'transaction:bot-income-leadgen',
   'transaction:buyout-deal',
   'transaction:handmade-channel-offer',
+  'transaction:illicit-document-deal',
+  'transaction:illicit-registration-deal',
+  'transaction:paid-gambling-entry',
+  'transaction:paid-raffle-entry',
+  'transaction:paid-review-compensation',
+  'transaction:unregulated-medicinal-goods-deal',
+  'transaction:wildlife-product-deal',
 ]);
 
 const STRONG_CONTACT_SIGNALS = new Set([
@@ -25,6 +33,7 @@ const STRONG_CONTACT_SIGNALS = new Set([
 const ESCALATION_RISK_SIGNALS = new Set([
   'risk:bank-card-leadgen',
   'risk:betting-gambling',
+  'risk:bot-income-scam',
   'risk:bulk-client-leadgen',
   'risk:casino-landing-link',
   'risk:casino-slot-promo',
@@ -34,15 +43,83 @@ const ESCALATION_RISK_SIGNALS = new Set([
   'risk:government-benefit-phishing',
   'risk:loan-leadgen',
   'risk:messaging-automation',
+  'risk:migration-registration-service',
   'risk:online-lottery-bonus',
   'risk:p2p-crypto-arbitrage',
   'risk:paid-group-mailing',
+  'risk:paid-gambling-group',
   'risk:paid-raffle',
   'risk:paid-raffle-transfer',
   'risk:paid-review-task',
   'risk:payment-card-drop-leadgen',
+  'risk:pseudomedical-diagnostics',
   'risk:referral-bonus-link',
+  'risk:unregulated-medicinal-goods',
+  'risk:wildlife-product-sale',
 ]);
+
+const STRUCTURED_TRANSPORT_SIGNALS = new Set([
+  'service-specialty:advance-airport-station-transfer',
+  'service-specialty:professional-passenger-parcel-transfer',
+  'service-specialty:scheduled-round-trip-door-to-door',
+  'service-specialty:scheduled-round-trip-parcel-route',
+  'service-specialty:taxiing-contact-self-offer',
+]);
+
+const REVIEW_ONLY_TRANSPORT_SIGNALS = new Set([
+  'review-only:transport-airport-station-waypoint',
+  'review-only:transport-door-to-door-operator',
+  'review-only:transport-promotional-vehicle-wording',
+  'review-only:transport-single-date-schedule',
+]);
+
+const WARN_CAPPED_RECALL_PREFIX = 'recall-cap:warn:';
+const REVIEW_CAPPED_RECALL_PREFIX = 'recall-cap:review:';
+const RECALL_SOURCE_PREFIX = 'recall-source:';
+
+const CONSERVATIVE_RECALL_SIGNALS = new Set([
+  'goods-retail:named-store-stock-promotion',
+  'property-agent:agent-object-id-contact',
+  'property-agent:commission-rental-contact',
+  'property-agent:multi-property-directory-contact',
+  'property-agent:professional-property-spec-listing',
+  'recruitment:role-first-vacancy',
+  'service-specialty:banquet-hall-catalog',
+  'service-specialty:construction-service-catalog',
+  'service-specialty:cosmetic-procedure-catalog',
+  'service-specialty:divination-self-offer',
+  'service-specialty:marketplace-construction-service',
+  'service-specialty:seasonal-lodging-offer',
+  'service-specialty:website-creation-service',
+  'service-specialty:well-drilling-self-offer',
+]);
+
+const CONSERVATIVE_RECALL_COMPANION_SIGNALS = new Set([
+  'intent:все-виды-работ',
+  'intent:строительная-бригада',
+  'property-agent:комиссия-процент',
+  'recruitment:зарплат',
+  'recruitment:смена',
+  'recruitment:роль-условия',
+  'service-specialty:бригада',
+  'service-specialty:мастер',
+  'service-specialty:монтаж',
+  'service-specialty:ремонт',
+  'service-specialty:well-drilling-service',
+]);
+
+const INDEPENDENT_COMMERCIAL_OFFER_PREFIXES = [
+  'buyout:',
+  'channel-placement:',
+  'goods-retail:',
+  'group-promo:',
+  'group-trade:',
+  'info:',
+  'property-agent:',
+  'property-commercial:',
+  'recruitment:',
+  'service-specialty:',
+] as const;
 
 const BALANCED_STRUCTURED_SERVICE_PHONE_ANCHOR_SIGNALS = new Set([
   'intent:language-lessons',
@@ -91,6 +168,13 @@ export type CommercialSignalEvidenceProfile = {
   hasLinkEvidence: boolean;
   hasHighRiskEvidence: boolean;
   hasEscalationRiskEvidence: boolean;
+  hasStructuredTransportEvidence: boolean;
+  hasReviewOnlyTransportEvidence: boolean;
+  hasWarnCappedRecallEvidence: boolean;
+  hasReviewCappedRecallEvidence: boolean;
+  hasBoundedRecallEvidence: boolean;
+  hasConservativeRecallEvidence: boolean;
+  hasIndependentCommercialOfferEvidence: boolean;
   hasTransactionalDirectDealEvidence: boolean;
   hasNonCampaignDirectDealEvidence: boolean;
   hasActionDirectDealEvidence: boolean;
@@ -123,6 +207,46 @@ export function resolveCommercialSignalEvidence(
 
   const hasHighRiskEvidence = hasPrefix('risk:');
   const hasEscalationRiskEvidence = hasAny(ESCALATION_RISK_SIGNALS);
+  const hasStructuredTransportEvidence = hasAny(STRUCTURED_TRANSPORT_SIGNALS);
+  const hasReviewOnlyTransportEvidence = hasAny(REVIEW_ONLY_TRANSPORT_SIGNALS);
+  const hasWarnCappedRecallEvidence = hasPrefix(WARN_CAPPED_RECALL_PREFIX);
+  const hasReviewCappedRecallEvidence = hasPrefix(REVIEW_CAPPED_RECALL_PREFIX);
+  const hasBoundedRecallEvidence =
+    hasWarnCappedRecallEvidence || hasReviewCappedRecallEvidence;
+  const boundedRecallLabels = new Set(
+    matchedSignals.flatMap((signal) => {
+      if (signal.startsWith(WARN_CAPPED_RECALL_PREFIX)) {
+        return [signal.slice(WARN_CAPPED_RECALL_PREFIX.length)];
+      }
+      if (signal.startsWith(REVIEW_CAPPED_RECALL_PREFIX)) {
+        return [signal.slice(REVIEW_CAPPED_RECALL_PREFIX.length)];
+      }
+      return [];
+    }),
+  );
+  const boundedRecallCompanionSignals = new Set(
+    matchedSignals
+      .filter((signal) => signal.startsWith(RECALL_SOURCE_PREFIX))
+      .map((signal) => signal.slice(RECALL_SOURCE_PREFIX.length)),
+  );
+  const hasBoundedGoodsRecallSource = [...boundedRecallCompanionSignals].some((signal) =>
+    signal.startsWith('goods-retail:'),
+  );
+  const hasConservativeRecallEvidence = hasAny(CONSERVATIVE_RECALL_SIGNALS);
+  const hasIndependentCommercialOfferEvidence = matchedSignals.some(
+    (signal) =>
+      INDEPENDENT_COMMERCIAL_OFFER_PREFIXES.some((prefix) => signal.startsWith(prefix)) &&
+      !boundedRecallCompanionSignals.has(signal) &&
+      !(hasBoundedGoodsRecallSource && signal === 'goods-retail:multi-sku') &&
+      ![...boundedRecallLabels].some((label) =>
+        INDEPENDENT_COMMERCIAL_OFFER_PREFIXES.some(
+          (prefix) => signal === `${prefix}${label}`,
+        ),
+      ) &&
+      !STRUCTURED_TRANSPORT_SIGNALS.has(signal) &&
+      !CONSERVATIVE_RECALL_SIGNALS.has(signal) &&
+      !(hasConservativeRecallEvidence && CONSERVATIVE_RECALL_COMPANION_SIGNALS.has(signal)),
+  );
   const hasPriceEvidence = hasAny(PRICE_EVIDENCE_SIGNALS);
   const hasStrongContactEvidence = hasAny(STRONG_CONTACT_SIGNALS);
   const hasPhoneEvidence =
@@ -150,6 +274,13 @@ export function resolveCommercialSignalEvidence(
     hasLinkEvidence,
     hasHighRiskEvidence,
     hasEscalationRiskEvidence,
+    hasStructuredTransportEvidence,
+    hasReviewOnlyTransportEvidence,
+    hasWarnCappedRecallEvidence,
+    hasReviewCappedRecallEvidence,
+    hasBoundedRecallEvidence,
+    hasConservativeRecallEvidence,
+    hasIndependentCommercialOfferEvidence,
     hasTransactionalDirectDealEvidence,
     hasNonCampaignDirectDealEvidence,
     hasActionDirectDealEvidence,
@@ -307,7 +438,9 @@ export function resolveCommercialEvidenceProfile(params: {
     hasSignal('goods-retail:volume-price-table') ||
     hasSignal('goods-retail:apparel-retail-order-flow') ||
     hasSignal('goods-retail:plant-nursery-shipping') ||
-    hasSignal('goods-retail:clearance-stock-retail');
+    hasSignal('goods-retail:clearance-stock-retail') ||
+    hasSignal('goods-retail:structured-placeholder-contact') ||
+    hasSignal('goods-retail:professional-order-catalog');
   const shouldConstrainLocalPrivateLikePricePhone =
     hasOnlyPricePhoneActionDirectEvidence &&
     !hasStrongerLocalListingAnchor &&

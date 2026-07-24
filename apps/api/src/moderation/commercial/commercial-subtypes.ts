@@ -201,14 +201,23 @@ export function classifyCommercialDetection(params: {
     .map((entry) => entry.subtype);
 
   const evidence = resolveCommercialEvidenceProfile({ state, appliedThresholds });
+  const hasStandaloneStructuredEvidence =
+    evidence.hasStructuredVacancyContactEvidence ||
+    evidence.hasStructuredBuyoutPhoneEvidence ||
+    evidence.hasStructuredServicePhoneEvidence ||
+    evidence.hasStructuredServiceTransactionalEvidence ||
+    evidence.hasStructuredPropertyContactEvidence ||
+    evidence.hasStructuredRetailTransactionalEvidence;
   const evidenceStrength: CommercialClassification['evidenceStrength'] =
     evidence.hasClassifierDirectDealEvidence
       ? 'DIRECT'
-      : hasCampaignDependentEvidence
-        ? 'CAMPAIGN'
-        : evidence.hasStructuredEvidence
-          ? 'STRUCTURED'
-          : 'BORDERLINE';
+      : hasStandaloneStructuredEvidence
+        ? 'STRUCTURED'
+        : hasCampaignDependentEvidence
+          ? 'CAMPAIGN'
+          : evidence.hasStructuredEvidence
+            ? 'STRUCTURED'
+            : 'BORDERLINE';
   const suppressPropertyAgentReviewNoise =
     primarySubtype === 'PROPERTY_AGENT' &&
     confidenceScore >= appliedThresholds.deleteThreshold &&
@@ -244,6 +253,23 @@ export function classifyCommercialDetection(params: {
     state.matchedSignals.includes('recruitment:paid-social-actions-work')
   ) {
     reviewReasons.push('paid-review-work');
+  }
+  const hasExclusiveOrganizedWellnessOffer =
+    primarySubtype === 'SERVICES' &&
+    state.matchedSignals.includes('service-specialty:organized-wellness-trip') &&
+    !state.hasPropertyAgentContext &&
+    !state.hasCommercialPropertyContext &&
+    !state.hasRecruitmentContext &&
+    !state.hasGoodsRetailContext &&
+    !state.hasBuyoutContext &&
+    !state.hasChannelPlacementContext &&
+    !state.matchedSignals.some(
+      (signal) =>
+        signal.startsWith('service-specialty:') &&
+        signal !== 'service-specialty:organized-wellness-trip',
+    );
+  if (hasExclusiveOrganizedWellnessOffer) {
+    reviewReasons.push('organized-wellness-trip');
   }
   if (primarySubtype === 'GENERIC' || primarySubtype === 'GOODS') {
     reviewReasons.push('generic-subtype');

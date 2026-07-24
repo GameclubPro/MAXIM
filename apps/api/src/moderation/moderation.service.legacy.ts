@@ -148,6 +148,7 @@ import type {
   DuplicateHit,
   RuleViolation,
 } from './rule-engine.contract';
+import { selectTopModerationViolation } from './moderation-violation-selection';
 import { RuleEngineService } from './rule-engine.service';
 import { createAllowlistLinkMatcher, detectBlockedLink } from './rule-engine-link-detector';
 import { MessageLimitsBlockedDomainDetector } from './rule-engine-blocked-domains.detector';
@@ -1770,23 +1771,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      const topViolation =
-        violations.find((item) => item.ruleCode === 'LINK_BLOCKED') ??
-        violations.find((item) => item.ruleCode === 'COMMERCIAL_AD') ??
-        violations.find((item) => item.ruleCode === 'PROFANITY') ??
-        violations.find((item) => item.ruleCode === 'MESSAGE_BLOCKED_WORD') ??
-        violations.find((item) => item.ruleCode === 'MESSAGE_BLOCKED_DOMAIN') ??
-        violations.find((item) => item.ruleCode === 'PHONE_NUMBER_BLOCKED') ??
-        violations.find((item) => item.ruleCode === 'MESSAGE_TOO_LONG') ??
-        violations.find((item) => item.ruleCode === 'MESSAGE_RATE_LIMIT') ??
-        violations.find((item) => item.ruleCode === 'MESSAGE_COUNT_LIMIT') ??
-        violations.find((item) => item.ruleCode === 'PHOTO_BLOCKED') ??
-        violations.find((item) => item.ruleCode === 'VIDEO_BLOCKED') ??
-        violations.find((item) => item.ruleCode === 'FILE_BLOCKED') ??
-        violations.find((item) => item.ruleCode === 'VOICE_BLOCKED') ??
-        violations.find((item) => item.ruleCode === 'PHOTO_RATE_LIMIT') ??
-        violations.find((item) => item.ruleCode === 'STICKER_RATE_LIMIT') ??
-        violations[0];
+      const topViolation = selectTopModerationViolation(violations);
+      if (!topViolation) {
+        return;
+      }
       const commercialActionBand =
         topViolation.ruleCode === 'COMMERCIAL_AD'
           ? this.readString(this.asRecord(topViolation.metadata)?.actionBand)

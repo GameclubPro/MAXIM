@@ -15789,7 +15789,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('keeps review-only commercial detections out of user-facing moderation', async () => {
+  it('keeps ambiguous-transport review telemetry out of user-facing moderation', async () => {
     const maxClient = {
       deleteMessage: jest.fn(),
       sendMessage: jest.fn(),
@@ -15830,16 +15830,18 @@ describe('ModerationService', () => {
         violations: [
           {
             ruleCode: 'COMMERCIAL_AD',
-            score: 0.95,
-            reason: 'Campaign-dependent commercial candidate',
+            score: 0,
+            reason: 'Ambiguous transport candidate',
             metadata: {
-              confidenceScore: 95,
-              decisionBand: 'HIGH',
-              matchedSignals: ['channel-placement:mass-invite-link', 'deal-channel:link'],
-              negativeSignals: ['private:marketplace-link'],
+              confidenceScore: 0,
+              decisionBand: 'LOW',
+              matchedSignals: ['review-only:transport-door-to-door-operator'],
+              negativeSignals: [],
               actionBand: 'REVIEW_ONLY',
+              actionable: false,
+              recordable: false,
               reviewRecommended: true,
-              reviewReasons: ['campaign-dependent'],
+              reviewReasons: ['ambiguous-transport-review-only'],
               appliedThresholds: {
                 warnThreshold: 45,
                 deleteThreshold: 65,
@@ -15871,6 +15873,113 @@ describe('ModerationService', () => {
         metadata: expect.not.objectContaining({
           textFilterViolationCount24h: expect.any(Number),
         }),
+      }),
+    });
+  });
+
+  it.each([
+    [
+      'profanity',
+      {
+        ruleCode: 'PROFANITY',
+        score: 0.95,
+        reason: 'Detected profanity or abusive language pattern',
+      },
+    ],
+    [
+      'blocked word',
+      {
+        ruleCode: 'MESSAGE_BLOCKED_WORD',
+        score: 0.89,
+        reason: 'Blocked word detected: казино',
+        metadata: { blockedWord: 'казино' },
+      },
+    ],
+    [
+      'blocked phone',
+      {
+        ruleCode: 'PHONE_NUMBER_BLOCKED',
+        score: 0.9,
+        reason: 'Phone numbers are disabled in this chat',
+      },
+    ],
+  ])('does not let ambiguous-transport review telemetry mask %s', async (_label, violation) => {
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ commercialAdsFilterEnabled: true }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+        count: jest.fn().mockResolvedValue(1),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [
+          {
+            ruleCode: 'COMMERCIAL_AD',
+            score: 0,
+            reason: 'Ambiguous transport candidate',
+            metadata: {
+              confidenceScore: 0,
+              decisionBand: 'LOW',
+              matchedSignals: ['review-only:transport-door-to-door-operator'],
+              negativeSignals: [],
+              actionBand: 'REVIEW_ONLY',
+              actionable: false,
+              recordable: false,
+              reviewRecommended: true,
+              reviewReasons: ['ambiguous-transport-review-only'],
+            },
+          },
+          violation,
+        ],
+      }),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+    expect(prisma.violation.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        ruleCode: violation.ruleCode,
+      }),
+    });
+    expect(prisma.violation.create).not.toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        ruleCode: 'COMMERCIAL_AD',
+      }),
+    });
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        ruleCode: `${violation.ruleCode}_DELETE`,
+        action: SanctionAction.DELETE_MESSAGE,
       }),
     });
   });

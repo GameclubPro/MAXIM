@@ -194,6 +194,150 @@ describe('commercial evidence profile', () => {
         hasActionDirectDealEvidence: false,
       },
     },
+    {
+      label: 'structured transport specialty',
+      signals: ['service-specialty:scheduled-round-trip-door-to-door'],
+      expected: {
+        hasStructuredTransportEvidence: true,
+        hasIndependentCommercialOfferEvidence: false,
+      },
+    },
+    {
+      label: 'neighboring transport specialty',
+      signals: ['service-specialty:event-bus-hire'],
+      expected: {
+        hasStructuredTransportEvidence: false,
+        hasIndependentCommercialOfferEvidence: true,
+      },
+    },
+    {
+      label: 'review-only transport metadata',
+      signals: ['review-only:transport-door-to-door-operator'],
+      expected: {
+        hasReviewOnlyTransportEvidence: true,
+        hasStructuredTransportEvidence: false,
+        hasIndependentCommercialOfferEvidence: false,
+        hasNonCampaignDirectDealEvidence: false,
+        hasActionDirectDealEvidence: false,
+      },
+    },
+    {
+      label: 'structured transport plus independent retail',
+      signals: [
+        'service-specialty:advance-airport-station-transfer',
+        'intent:advance-airport-station-transfer',
+        'goods-retail:inventory',
+      ],
+      expected: {
+        hasStructuredTransportEvidence: true,
+        hasIndependentCommercialOfferEvidence: true,
+      },
+    },
+    {
+      label: 'conservative recall specialty',
+      signals: ['service-specialty:divination-self-offer'],
+      expected: {
+        hasConservativeRecallEvidence: true,
+        hasIndependentCommercialOfferEvidence: false,
+      },
+    },
+    {
+      label: 'conservative website creation specialty',
+      signals: ['service-specialty:website-creation-service'],
+      expected: {
+        hasConservativeRecallEvidence: true,
+        hasIndependentCommercialOfferEvidence: false,
+      },
+    },
+    {
+      label: 'conservative recall plus independent property offer',
+      signals: [
+        'service-specialty:seasonal-lodging-offer',
+        'property-agent:витрина-объектов-прайс',
+      ],
+      expected: {
+        hasConservativeRecallEvidence: true,
+        hasIndependentCommercialOfferEvidence: true,
+      },
+    },
+    {
+      label: 'conservative drilling recall plus same-family mature signal',
+      signals: [
+        'service-specialty:well-drilling-self-offer',
+        'service-specialty:well-drilling-service',
+      ],
+      expected: {
+        hasConservativeRecallEvidence: true,
+        hasIndependentCommercialOfferEvidence: false,
+      },
+    },
+    {
+      label: 'conservative construction recall plus same-family companions',
+      signals: [
+        'service-specialty:construction-service-catalog',
+        'intent:строительная-бригада',
+        'service-specialty:бригада',
+      ],
+      expected: {
+        hasConservativeRecallEvidence: true,
+        hasIndependentCommercialOfferEvidence: false,
+      },
+    },
+    {
+      label: 'bounded marketplace construction recall plus same-family companions',
+      signals: [
+        'recall-cap:warn:marketplace-construction-service',
+        'recall-source:service-specialty:marketplace-construction-service',
+        'service-specialty:marketplace-construction-service',
+        'service-specialty:ремонт',
+        'service-specialty:мастер',
+        'service-specialty:монтаж',
+      ],
+      expected: {
+        hasWarnCappedRecallEvidence: true,
+        hasConservativeRecallEvidence: true,
+        hasIndependentCommercialOfferEvidence: false,
+      },
+    },
+    {
+      label: 'bounded recall source excludes its exact family companion',
+      signals: [
+        'recall-cap:warn:aerial-lift-service',
+        'recall-source:service-specialty:aerial-lift-service',
+        'service-specialty:aerial-lift-service',
+      ],
+      expected: {
+        hasWarnCappedRecallEvidence: true,
+        hasBoundedRecallEvidence: true,
+        hasIndependentCommercialOfferEvidence: false,
+      },
+    },
+    {
+      label: 'bounded retail source excludes weak multi-sku companion',
+      signals: [
+        'recall-cap:warn:professional-retail-structure',
+        'recall-source:goods-retail:professional-retail-structure',
+        'goods-retail:professional-retail-structure',
+        'goods-retail:multi-sku',
+      ],
+      expected: {
+        hasWarnCappedRecallEvidence: true,
+        hasIndependentCommercialOfferEvidence: false,
+      },
+    },
+    {
+      label: 'bounded recall keeps a distinct commercial family independent',
+      signals: [
+        'recall-cap:warn:aerial-lift-service',
+        'recall-source:service-specialty:aerial-lift-service',
+        'service-specialty:aerial-lift-service',
+        'channel-placement:paid-post-offer',
+      ],
+      expected: {
+        hasWarnCappedRecallEvidence: true,
+        hasIndependentCommercialOfferEvidence: true,
+      },
+    },
   ])('resolves signal evidence for $label', ({ signals, expected }) => {
     expect(resolveCommercialSignalEvidence(signals)).toMatchObject(expected);
   });

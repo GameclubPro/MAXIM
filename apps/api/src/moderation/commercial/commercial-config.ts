@@ -1,6 +1,6 @@
 export const COMMERCIAL_ENGINE_CONFIG = {
-  decisionVersion: 'commercial-deterministic-v1',
-  patternPolicyVersion: 'commercial-patterns-v1',
+  decisionVersion: 'commercial-deterministic-v2',
+  patternPolicyVersion: 'commercial-patterns-v2',
   actionPolicy: {
     highFpRiskThreshold: 70,
     hardDeleteScoreThreshold: 65,
@@ -140,10 +140,18 @@ export const COMMERCIAL_ENGINE_CONFIG = {
       'casino-slot-promo': 22,
       'paid-esoteric-service': 20,
       'app-store-directory-promo': 18,
+      'paid-raffle': 24,
       'paid-raffle-transfer': 22,
       'referral-bonus-link': 18,
       'mutual-promo-chat': 16,
       'document-service': 20,
+      'pseudomedical-diagnostics': 22,
+      'medicine-price-catalog': 56,
+      'mortgage-leadgen': 56,
+      'divination-contact-offer': 56,
+      'handmade-health-claims': 56,
+      'weight-loss-chat-funnel': 56,
+      'pharmacy-channel-promotion': 56,
     },
   },
   campaignEvidence: {

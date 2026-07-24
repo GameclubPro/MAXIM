@@ -295,6 +295,101 @@ require_node_24() {
   fi
 }
 
+is_exact_deploy_target_image_ref() {
+  local image_ref="$1"
+  local image_repository="$2"
+
+  [[ -n "${TARGET_SHA:-}" ]] &&
+    [[ "$TARGET_SHA" == "${EXPECTED_DEPLOY_SHA:-}" ]] &&
+    [[ "$image_ref" == "${image_repository}:${TARGET_SHA}" ]]
+}
+
+selected_target_images_are_preloaded() {
+  local service
+  local image_ref
+  local image_repository
+  local selected_count=0
+  local checked_refs=()
+
+  if [[ -z "${TARGET_SHA:-}" ]] || [[ "$TARGET_SHA" != "${EXPECTED_DEPLOY_SHA:-}" ]]; then
+    echo "Deploy disk preflight cannot be skipped without the verified exact target SHA." >&2
+    return 1
+  fi
+
+  for service in "${SERVICES[@]}"; do
+    if contains_service "$service" "${API_SERVICES[@]}"; then
+      if [[ "${BUILD_API_IMAGE:-0}" -ne 1 ]]; then
+        echo "Deploy disk preflight cannot be skipped for an unresolved API build target." >&2
+        return 1
+      fi
+      image_ref="${MAXIM_API_IMAGE:-}"
+      image_repository="maxim-api"
+    else
+      case "$service" in
+        miniapp-major-static)
+          image_ref="${MAXIM_MINIAPP_MAJOR_IMAGE:-}"
+          image_repository="maxim-miniapp-major"
+          ;;
+        admin-static)
+          image_ref="${MAXIM_ADMIN_IMAGE:-}"
+          image_repository="maxim-admin"
+          ;;
+        miniapp-static)
+          image_ref="${MAXIM_MINIAPP_LEGACY_IMAGE:-}"
+          image_repository="maxim-miniapp-legacy"
+          ;;
+        *)
+          echo "Deploy disk preflight cannot be skipped for unknown target: $service" >&2
+          return 1
+          ;;
+      esac
+    fi
+
+    if contains_service "$image_ref" "${checked_refs[@]}"; then
+      continue
+    fi
+    checked_refs+=("$image_ref")
+    selected_count=$((selected_count + 1))
+
+    if ! is_exact_deploy_target_image_ref "$image_ref" "$image_repository"; then
+      echo "Deploy disk preflight cannot be skipped for a non-target image ref: ${image_ref:-unset}" >&2
+      return 1
+    fi
+    if ! docker image inspect "$image_ref" >/dev/null 2>&1; then
+      echo "Selected immutable target image is not local and requires a build: $image_ref" >&2
+      return 1
+    fi
+  done
+
+  if [[ "$selected_count" -eq 0 ]]; then
+    echo "Deploy disk preflight cannot be skipped without a resolved image target." >&2
+    return 1
+  fi
+}
+
+prepare_deploy_disk_capacity() {
+  REUSE_PRELOADED_TARGET_IMAGES_ONLY=0
+  if selected_target_images_are_preloaded; then
+    REUSE_PRELOADED_TARGET_IMAGES_ONLY=1
+    echo "Skipping deploy build disk preflight: every selected exact immutable target image is already local for $TARGET_SHA."
+    return 0
+  fi
+
+  check_deploy_disk_capacity
+}
+
+require_preloaded_target_image() {
+  local image_ref="$1"
+
+  if docker image inspect "$image_ref" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  echo "Preloaded target image disappeared after the build disk preflight was skipped: $image_ref" >&2
+  echo "Refusing fallback build; restore the exact image or satisfy the disk build preflight." >&2
+  return 1
+}
+
 check_deploy_disk_capacity() {
   local target_percent="${MAXIM_DEPLOY_DISK_TARGET_PERCENT:-${MAXIM_DEPLOY_DISK_WARN_PERCENT:-80}}"
   local critical_percent="${MAXIM_DEPLOY_DISK_CRITICAL_PERCENT:-${MAXIM_DEPLOY_DISK_MAX_PERCENT:-90}}"
@@ -833,7 +928,7 @@ recreate_service_wave() {
   validate_nonnegative_int "$batch_delay_name" "$batch_delay_sec"
 
   if [[ "$batch_size" -eq 0 ]] || [[ "$batch_size" -ge "${#requested_services[@]}" ]]; then
-    docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate "${requested_services[@]}"
+    docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --no-build --force-recreate "${requested_services[@]}"
 
     for service in "${requested_services[@]}"; do
       wait_for_service_running "$service" 180
@@ -856,7 +951,7 @@ recreate_service_wave() {
     done
 
     echo "Recreating $label services batch: ${batch[*]}"
-    docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate "${batch[@]}"
+    docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --no-build --force-recreate "${batch[@]}"
     for service in "${batch[@]}"; do
       wait_for_service_running "$service" 180
     done
@@ -909,7 +1004,7 @@ ensure_requested_services_running() {
     fi
 
     echo "Requested service $service is not running after deploy waves. Recreating it explicitly..."
-    docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate "$service"
+    docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --no-build --force-recreate "$service"
     wait_for_service_running "$service" 180
   done
 }
@@ -977,9 +1072,6 @@ if [[ "$DEPLOY_MODE" == "auto" ]]; then
 fi
 validate_admin_access_code
 warn_postgres_password_fallback
-check_deploy_disk_capacity
-stop_conflicting_stacks
-warn_legacy_miniapp_static_target
 
 BUILD_API_IMAGE=0
 for service in "${API_SERVICES[@]}"; do
@@ -1029,9 +1121,18 @@ if contains_service "miniapp-static" "${SERVICES[@]}"; then
   export MAXIM_MINIAPP_LEGACY_IMAGE="maxim-miniapp-legacy:${TARGET_SHA}"
 fi
 
+prepare_deploy_disk_capacity
+stop_conflicting_stacks
+warn_legacy_miniapp_static_target
+
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   require_stateful_services_ready
-  maxim_topology_build_shared_api_image "$MAXIM_API_IMAGE"
+  if [[ "$REUSE_PRELOADED_TARGET_IMAGES_ONLY" -eq 1 ]]; then
+    require_preloaded_target_image "$MAXIM_API_IMAGE"
+    echo "Reusing existing immutable API image: $MAXIM_API_IMAGE"
+  else
+    maxim_topology_build_shared_api_image "$MAXIM_API_IMAGE"
+  fi
   if ! run_migrations; then
     echo "First migration attempt failed. Retrying once in 5 seconds..."
     sleep 5
@@ -1059,6 +1160,8 @@ for service in "${SERVICES_TO_BUILD[@]}"; do
   esac
   if docker image inspect "$candidate_image_ref" >/dev/null 2>&1; then
     echo "Reusing existing immutable static image: $candidate_image_ref"
+  elif [[ "$REUSE_PRELOADED_TARGET_IMAGES_ONLY" -eq 1 ]]; then
+    require_preloaded_target_image "$candidate_image_ref"
   else
     docker compose "${COMPOSE_FILES[@]}" build "$service"
   fi

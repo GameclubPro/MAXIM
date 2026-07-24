@@ -21,6 +21,17 @@ describe('normalizeCommercialText', () => {
     );
   });
 
+  it('distinguishes lowercase b from uppercase visual B in mixed Cyrillic words', () => {
+    expect(normalizeCommercialRawText('Подраbотка')).toBe('подработка');
+    expect(normalizeCommercialText('Подраbотка')).toBe('подработка');
+  });
+
+  it('normalizes mathematical and full-width compatibility letters', () => {
+    expect(normalizeCommercialRawText('П𝐎𝐁𝐓𝐎𝐏𝐎𝐌')).toBe('повтором');
+    expect(normalizeCommercialText('Л𝐎𝐓 𝐂 П𝐎𝐁𝐓𝐎𝐏𝐎𝐌')).toContain('лот с повтором');
+    expect(normalizeCommercialRawText('ＷＨＡＴＳＡＰＰ')).toBe('whatsapp');
+  });
+
   it('restores obfuscated commercial links before rule matching', () => {
     expect(normalizeCommercialRawText('hxxps://max dot ru/join/sale')).toBe(
       'https://max.ru/join/sale',

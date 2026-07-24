@@ -7,7 +7,7 @@ const decision: CommercialSecondStageDecision = {
   supportingSubtypes: ['GOODS'],
   reviewRecommended: false,
   reviewReasons: [],
-  classifierVersion: '2026-service-private-v3',
+  classifierVersion: '2026-service-private-v4',
   commercialProbability: 0.91,
   reviewProbability: 0.12,
   classifierReasons: ['boosted-structured'],

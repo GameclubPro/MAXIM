@@ -145,7 +145,7 @@ describe('commercial deterministic benchmark', () => {
     expect(violation?.metadata).toEqual(
       expect.objectContaining({
         primarySubtype: 'SERVICES',
-        actionBand: 'REVIEW_ONLY',
+        actionBand: 'WARN',
       }),
     );
     expect(elapsedMs).toBeLessThanOrEqual(150);
@@ -163,6 +163,7 @@ describe('commercial deterministic benchmark', () => {
     const missingExpectedSignals: string[] = [];
     const missingRequiredAnchors: string[] = [];
     const unsafeDeleteActions: string[] = [];
+    const hardEnforcementMisses: string[] = [];
     const bySubtype = new Map<string, number>();
     const byAction = new Map<string, number>();
     const falseNegativeSignals = new Map<string, number>();
@@ -173,6 +174,13 @@ describe('commercial deterministic benchmark', () => {
     const grayPositiveCases = COMMERCIAL_POSITIVE_CASES.filter(
       (item) => item.reviewRecommended === true || item.requireClassifier === true,
     );
+    const hardEnforcementCases = COMMERCIAL_POSITIVE_CASES.filter(
+      (item) =>
+        item.reviewRecommended !== true &&
+        item.requireClassifier !== true &&
+        item.expectedSignals.some((signal) => signal.startsWith('risk:')),
+    );
+    const hardEnforcementLabels = new Set(hardEnforcementCases.map((item) => item.label));
 
     for (const item of COMMERCIAL_POSITIVE_CASES) {
       const violation = await detectCommercialViolation(service, item.text, item.overrides, {
@@ -180,6 +188,9 @@ describe('commercial deterministic benchmark', () => {
       });
       if (!violation) {
         falseNegatives.push(item.label);
+        if (hardEnforcementLabels.has(item.label)) {
+          hardEnforcementMisses.push(`${item.label}: action=ALLOW`);
+        }
         if (item.reviewRecommended === true || item.requireClassifier === true) {
           grayFalseNegatives.push(item.label);
         } else {
@@ -192,6 +203,14 @@ describe('commercial deterministic benchmark', () => {
       const subtype = String(metadata.primarySubtype ?? 'UNKNOWN');
       const typedSubtype = readCommercialSubtype(metadata.primarySubtype);
       const actionBand = String(metadata.actionBand ?? 'UNKNOWN');
+      if (
+        hardEnforcementLabels.has(item.label) &&
+        actionBand !== 'WARN' &&
+        actionBand !== 'DELETE' &&
+        actionBand !== 'DELETE_AND_ESCALATE'
+      ) {
+        hardEnforcementMisses.push(`${item.label}: action=${actionBand}`);
+      }
       bySubtype.set(subtype, (bySubtype.get(subtype) ?? 0) + 1);
       byAction.set(actionBand, (byAction.get(actionBand) ?? 0) + 1);
       if (subtype !== item.expectedSubtype) {
@@ -276,6 +295,8 @@ describe('commercial deterministic benchmark', () => {
     const trueNegatives = COMMERCIAL_NEGATIVE_CASES.length - falsePositives.length;
     const recall = truePositives / COMMERCIAL_POSITIVE_CASES.length;
     const hardRecall = hardTruePositives / hardPositiveCases.length;
+    const hardEnforcementRecall =
+      (hardEnforcementCases.length - hardEnforcementMisses.length) / hardEnforcementCases.length;
     const grayRecall =
       grayPositiveCases.length > 0 ? grayTruePositives / grayPositiveCases.length : 1;
     const falsePositiveRate = falsePositives.length / COMMERCIAL_NEGATIVE_CASES.length;
@@ -288,6 +309,10 @@ describe('commercial deterministic benchmark', () => {
         FN: falseNegatives.length,
         TN: trueNegatives,
       },
+      hardEnforcement: {
+        eligible: hardEnforcementCases.length,
+        misses: hardEnforcementMisses.length,
+      },
       bySubtype: Object.fromEntries([...bySubtype.entries()].sort()),
       byAction: Object.fromEntries([...byAction.entries()].sort()),
       topFalsePositiveSignals: Object.fromEntries(
@@ -296,8 +321,10 @@ describe('commercial deterministic benchmark', () => {
       topFalseNegativeSignals: Object.fromEntries([...falseNegativeSignals.entries()].slice(0, 8)),
     };
 
+    expect(hardEnforcementMisses).toEqual([]);
     expect(report).toMatchSnapshot();
     expect(hardRecall).toBeGreaterThanOrEqual(0.98);
+    expect(hardEnforcementRecall).toBeGreaterThanOrEqual(0.98);
     expect(grayRecall).toBeGreaterThanOrEqual(0.8);
     expect(recall).toBeGreaterThanOrEqual(0.95);
     expect(falsePositiveRate).toBeLessThanOrEqual(0.001);

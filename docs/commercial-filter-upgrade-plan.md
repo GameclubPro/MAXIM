@@ -1,6 +1,6 @@
 # Commercial Filter Upgrade Plan
 
-Дата ревизии: 2026-06-21.
+Дата ревизии: 2026-07-24.
 
 Документ описывает практический план дальнейшего апгрейда commercial ad filter после точечных runtime-исправлений по 48h-аудиту. Цель: поднять precision на safe-context сообщениях, сохранить recall по явной коммерции и сделать каждую блокировку объяснимой для аудита.
 
@@ -60,7 +60,72 @@ settings внутри audit pass и не меняет runtime-настройки
 4. Для каждого false-positive кандидата сохранить минимальный sanitized текст, expected action, expected subtype, current signals и желаемый suppressor/threshold.
 5. Повторить audit после каждого изменения фильтра на новом 48h окне и на frozen corpus.
 
-## Latest 48h Audit Baseline
+## Final July 48h Audit Slice
+
+Frozen window: `2026-07-21T11:20:41Z..2026-07-23T11:20:41Z`.
+
+- sanitized corpus: `49 719` records, SHA-256
+  `eaaaac22bc5ae3deaf81f090fda7bfc8717c217f7ea963666333719f5151de80`;
+- manual overlay: `1 895` records, SHA-256
+  `d7cce5ebe802eb049bddd449e800ef784ce08893f27dd76f1f03b10e1fd5d2b3`;
+- transport action adjudication: `121` hashes / `214` instances, SHA-256
+  `21fab2ddb0dc3ac0276f97c48d716e01a5821cde52edc0c475c497e5313c020d`.
+
+Every corpus record was replayed. Manual review covered the curated UNDER,
+transport, severe-transition, and final action-delta sets; this is not a claim
+that all `49 719` message texts were read manually.
+
+Final v11 provenance:
+
+- detector source SHA-256
+  `d474d418defbaabe7aca9f1890da0f5f52575e7e5688ab6fdba47825110a47b7`;
+- evaluation result SHA-256
+  `fea7b4bf6ddb64521988f5485f4bd9dacb5a198a6e6d693203ca5d7d1296de5c`;
+- full replay diff SHA-256
+  `432efe4735e890b6d5a1cbce386f7686851d45fd345d5fd64baa51ff3adaa4e6`.
+
+Manual overlay result:
+
+- actions: `NONE 1080`, `REVIEW_ONLY 163`, `WARN 577`, `DELETE 1`,
+  `DELETE_AND_ESCALATE 74`;
+- recommendation comparison: `exact 748`, `under 199`, `over 0`,
+  `unspecified 948`;
+- actionable UNDER gate: `153/153` hashes and `374/374` source instances;
+- protected conservative/ambiguous gate: `108/108` hashes and `195/195`
+  source instances;
+- the c31 guard remains `REVIEW_ONLY` for all `6/6` current instances;
+- all transport adjudication rows match their reviewed actions exactly.
+
+The remaining `199` UNDER instances are the protected ambiguous/conservative
+set plus four additional c31 duplicates. There are no unresolved actionable
+misses and no action above a manual recommendation.
+
+Final-slice corrections include:
+
+- safe-context and action-policy separation for rules, warnings, public help,
+  ordinary requests, private goods/property, and real commercial offers;
+- bounded recall for professional retail, property cards, local services,
+  recruitment, transport, tours, groups, and recurring buyout offers;
+- removal of false positives from private vehicles, one-property listings,
+  furnished rentals, personal goods, aid appeals, scam warnings, and editorial
+  text;
+- restoration of multi-lot land inventory, structured construction offers,
+  appliance repair, professional property cards, and custom-forged goods;
+- mandatory conservative caps where the reviewed release policy is `WARN` or
+  `REVIEW_ONLY`, without increasing furniture, fragrance, rental, or vacancy
+  enforcement severity during this release.
+
+The v10-to-v11 lint-only regex cleanup produced byte-identical evaluation and
+replay JSONL outputs. Compared with the reviewed v6 severe set, v11 adds only
+the explicitly accepted Rostelecom corporate offer. The private furnished
+rental is restored to `REVIEW_ONLY`, and the turnkey construction campaign is
+capped at `WARN`.
+
+The final GitHub-hosted benchmark profile passed all three fresh-process runs.
+Median timings were hot p95/p99 `5.298/5.602 ms` and adversarial p95/p99
+`57.318/58.139 ms`, below the `10.500/10.750 ms` and `127/128 ms` gates.
+
+## Previous June 48h Audit Baseline
 
 Окно `2026-06-19T02:23:02Z..2026-06-21T02:23:02Z`, prod
 `api-admin`, `--limit all --sample 0`, enabled-chats scope:

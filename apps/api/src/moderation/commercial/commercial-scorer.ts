@@ -22,6 +22,7 @@ import {
   ADS_REVIEW_CLEARING_HIGH_RISK_SIGNALS,
 } from './commercial-patterns';
 import { countPatternMatches, hasPriceLikeText } from './commercial-match-utils';
+import { isThirdPartyServiceRecommendationWithoutCurrentOffer } from './commercial-features';
 import type {
   CommercialActionBand,
   CommercialClassification,
@@ -77,6 +78,7 @@ function shouldRunCommercialSecondStage(params: {
     confidenceScore <= appliedThresholds.deleteThreshold + runConfig.deleteWindow ||
     decisionBand === 'LOW' ||
     classification.reviewRecommended ||
+    state.matchedSignals.includes('service-specialty:custom-ribbon-bouquet') ||
     classification.primarySubtype === 'GOODS' ||
     classification.primarySubtype === 'GENERIC' ||
     state.hasGoodsRetailContext ||
@@ -400,6 +402,12 @@ export class CommercialSecondStageScorer {
 
     let primarySubtype = classification.primarySubtype;
     const supportingSubtypes = [...classification.supportingSubtypes];
+    const hasExplicitCustomFabricationService = state.matchedSignals.includes(
+      'service-specialty:custom-3d-printing',
+    );
+    const hasReadyMadeSaunaKitRetail =
+      state.matchedSignals.includes('service-specialty:sauna-under-key-service') &&
+      state.matchedSignals.includes('goods-retail:inventory');
     const pushSupportingSubtype = (subtype: CommercialSubtype) => {
       if (subtype === primarySubtype || supportingSubtypes.includes(subtype)) {
         return;
@@ -423,15 +431,17 @@ export class CommercialSecondStageScorer {
       (primarySubtype === 'GOODS' ||
         primarySubtype === 'GENERIC' ||
         (primarySubtype === 'SERVICES' &&
-          state.matchedSignals.some(
-            (signal) =>
-              signal === 'goods-retail:home-food-order' ||
-              signal === 'goods-retail:home-dairy-retail' ||
-              signal === 'goods-retail:home-goods-low-price-order' ||
-              signal === 'goods-retail:order-flow' ||
-              signal === 'goods-retail:wholesale-produce' ||
-              signal === 'goods-retail:poultry-farm-order',
-          )))
+          !hasExplicitCustomFabricationService &&
+          (hasReadyMadeSaunaKitRetail ||
+            state.matchedSignals.some(
+              (signal) =>
+                signal === 'goods-retail:home-food-order' ||
+                signal === 'goods-retail:home-dairy-retail' ||
+                signal === 'goods-retail:home-goods-low-price-order' ||
+                signal === 'goods-retail:order-flow' ||
+                signal === 'goods-retail:wholesale-produce' ||
+                signal === 'goods-retail:poultry-farm-order',
+            ))))
     ) {
       pushSupportingSubtype(primarySubtype);
       primarySubtype = 'GOODS_RETAIL';
@@ -545,8 +555,13 @@ export class CommercialSecondStageScorer {
       );
     }
 
+    const hasDealLessCustomRibbonShowcase =
+      state.matchedSignals.includes('service-specialty:custom-ribbon-bouquet') &&
+      !evidence.hasNonCampaignDirectDealEvidence;
     const hasHardReviewReason =
-      reviewReasons.includes('campaign-dependent') || reviewReasons.includes('paid-review-work');
+      hasDealLessCustomRibbonShowcase ||
+      reviewReasons.includes('campaign-dependent') ||
+      reviewReasons.includes('paid-review-work');
     let reviewRecommended =
       reviewReasons.length > 0 &&
       (adjustedDecisionBand !== 'HIGH' ||
@@ -558,11 +573,65 @@ export class CommercialSecondStageScorer {
     const hasReviewClearingHighRiskEvidence = state.matchedSignals.some((signal) =>
       ADS_REVIEW_CLEARING_HIGH_RISK_SIGNALS.has(signal),
     );
-
-    if (hasReviewClearingHighRiskEvidence && adjustedDecisionBand === 'HIGH') {
+    const hasThirdPartyServiceRecommendation =
+      primarySubtype === 'SERVICES' &&
+      isThirdPartyServiceRecommendationWithoutCurrentOffer(rawLoweredText, state);
+    const hasUnambiguousStructuredServicePhone =
+      primarySubtype === 'SERVICES' &&
+      evidence.hasStructuredServicePhoneEvidence &&
+      state.hasServiceSpecialtyContext &&
+      state.hasPhoneContact &&
+      !state.hasSearchRequestContext &&
+      !state.hasJobSeekingContext &&
+      !state.hasPrivateSaleContext &&
+      !state.hasPrivateGoodsItemContext &&
+      !state.hasStrongNegativeContext &&
+      state.negativeSignals.length === 0 &&
+      !hasThirdPartyServiceRecommendation &&
+      commercialProbability >= reviewLogitConfig.highCommercialProbabilityThreshold;
+    const hasUnambiguousRetailBusinessInventory =
+      primarySubtype === 'GOODS_RETAIL' &&
+      state.hasGoodsRetailContext &&
+      (state.hasBusinessContext ||
+        /(?:^|[^\p{L}\p{N}_-])(?:в\s+магазин[\p{L}\p{N}_-]*|магазин[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,100})в\s+наличи[ие](?=$|[^\p{L}\p{N}_-])/iu.test(
+          rawLoweredText,
+        )) &&
+      state.hasTransactional &&
+      !state.hasSearchRequestContext &&
+      !state.hasPrivateSaleContext &&
+      !state.hasPrivateGoodsItemContext &&
+      !state.hasStrongNegativeContext &&
+      state.negativeSignals.length === 0 &&
+      !isPastRetailPurchaseNarrative(state, rawLoweredText) &&
+      commercialProbability >= reviewLogitConfig.highCommercialProbabilityThreshold;
+    const hasPastRetailPurchaseNarrative = isPastRetailPurchaseNarrative(state, rawLoweredText);
+    if (
+      hasPastRetailPurchaseNarrative ||
+      hasThirdPartyServiceRecommendation ||
+      hasDealLessCustomRibbonShowcase
+    ) {
+      reviewRecommended = true;
+      const reviewReason = hasPastRetailPurchaseNarrative
+        ? 'past-retail-purchase'
+        : hasThirdPartyServiceRecommendation
+          ? 'third-party-service-recommendation'
+          : 'handmade-showcase-without-direct-deal';
+      if (!reviewReasons.includes(reviewReason)) {
+        reviewReasons.push(reviewReason);
+      }
+      classifierReasons.push(`review:${reviewReason}`);
+    } else if (hasReviewClearingHighRiskEvidence && adjustedDecisionBand === 'HIGH') {
       reviewRecommended = false;
       reviewReasons = [];
       classifierReasons.push('cleared-high-risk');
+    } else if (hasUnambiguousStructuredServicePhone || hasUnambiguousRetailBusinessInventory) {
+      reviewRecommended = false;
+      reviewReasons = [];
+      classifierReasons.push(
+        hasUnambiguousStructuredServicePhone
+          ? 'cleared-structured-service-phone'
+          : 'cleared-retail-business-inventory',
+      );
     } else if (
       !hasHardReviewReason &&
       reviewProbability <= reviewLogitConfig.clearReviewProbability &&
@@ -602,6 +671,24 @@ export class CommercialSecondStageScorer {
     this.cache.remember(cacheKey, decision);
     return decision;
   }
+}
+
+function isPastRetailPurchaseNarrative(
+  state: CommercialSignalState,
+  rawLoweredText: string,
+): boolean {
+  if (state.hasContact || state.hasDealChannel || state.hasCallToActionContext) {
+    return false;
+  }
+
+  return (
+    /(?:^|[^\p{L}\p{N}_-])(?:был[аио]?|были)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,48})в\s+наличи[ие](?=$|[^\p{L}\p{N}_-])/iu.test(
+      rawLoweredText,
+    ) ||
+    /(?:^|[^\p{L}\p{N}_-])я\s+(?:купил[аи]?|взял[аи]?|приобр[её]л[аи]?)(?=$|[^\p{L}\p{N}_-])/iu.test(
+      rawLoweredText,
+    )
+  );
 }
 
 const LOCAL_PRIVATE_LIKE_RETAIL_SIGNALS = new Set([

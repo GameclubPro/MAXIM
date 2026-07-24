@@ -80,6 +80,12 @@ export function enrichCommercialDetection<T extends CommercialDetection>(
     hasHighRiskEvidence: evidence.hasHighRiskEvidence,
     hasEscalationRiskEvidence:
       detection.hasEscalationRiskEvidence ?? evidence.hasEscalationRiskEvidence,
+    hasStructuredTransportEvidence: evidence.hasStructuredTransportEvidence,
+    hasReviewOnlyTransportEvidence: evidence.hasReviewOnlyTransportEvidence,
+    hasWarnCappedRecallEvidence: evidence.hasWarnCappedRecallEvidence,
+    hasReviewCappedRecallEvidence: evidence.hasReviewCappedRecallEvidence,
+    hasConservativeRecallEvidence: evidence.hasConservativeRecallEvidence,
+    hasIndependentCommercialOfferEvidence: evidence.hasIndependentCommercialOfferEvidence,
   });
   const reasonCodes = buildReasonCodes({
     detection,

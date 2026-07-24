@@ -67,6 +67,9 @@ describe('commercial-audit-summary', () => {
         { code: 'risky_rules_or_news_context', severity: 'warning', count: 1 },
       ]),
     );
+    expect(summary.alerts).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'campaign_only_enforcement' })]),
+    );
   });
 
   it('counts suppressed deletes without raising unsafe-delete alerts', () => {
@@ -90,6 +93,75 @@ describe('commercial-audit-summary', () => {
 
     expect(summary.deleteSuppressed).toBe(1);
     expect(summary.alerts).toEqual([]);
+  });
+
+  it('treats WARN as message-removal enforcement in safety alerts', () => {
+    const summary = summarizeCommercialAuditRecords([
+      {
+        label: 'negative_candidate',
+        policyCategory: 'campaign_only',
+        segment: 'GOODS',
+        safeContextBucket: 'news_or_analytics',
+        current: {
+          hit: true,
+          actionBand: 'WARN',
+          primarySubtype: 'GOODS',
+          matchedSignals: ['campaign:cross-chat-text'],
+          negativeSignals: ['context:currency-rate-news'],
+          reasonCodes: ['action:WARN'],
+        },
+      },
+    ]);
+
+    expect(summary.deleteFalsePositiveCandidates).toBe(0);
+    expect(summary.enforcementFalsePositiveCandidates).toBe(1);
+    expect(summary.grayEnforcements).toBe(0);
+    expect(summary.campaignOnlyEnforcements).toBe(1);
+    expect(summary.safeContextEnforcements).toEqual({ news_or_analytics: 1 });
+    expect(summary.alerts).toEqual(
+      expect.arrayContaining([
+        { code: 'enforcement_false_positive_candidate', severity: 'critical', count: 1 },
+        { code: 'safe_context_enforcement', severity: 'critical', count: 1 },
+      ]),
+    );
+  });
+
+  it('does not alert when a gray WARN exactly matches expectedAction', () => {
+    const summary = summarizeCommercialAuditRecords([
+      {
+        label: 'gray_candidate',
+        expectedAction: 'WARN',
+        policyCategory: 'gray_zone',
+        segment: 'SERVICES',
+        safeContextBucket: 'none',
+        current: {
+          hit: true,
+          actionBand: 'WARN',
+          primarySubtype: 'SERVICES',
+        },
+      },
+      {
+        label: 'gray_candidate',
+        expectedAction: 'WARN',
+        policyCategory: 'gray_zone',
+        segment: 'SERVICES',
+        safeContextBucket: 'none',
+        current: {
+          hit: true,
+          actionBand: 'DELETE',
+          primarySubtype: 'SERVICES',
+        },
+      },
+    ]);
+
+    expect(summary.grayEnforcements).toBe(1);
+    expect(summary.grayDeletes).toBe(1);
+    expect(summary.alerts).toEqual(
+      expect.arrayContaining([
+        { code: 'gray_candidate_enforcement', severity: 'critical', count: 1 },
+        { code: 'gray_candidate_delete', severity: 'critical', count: 1 },
+      ]),
+    );
   });
 
   it('keeps structured goods and recruitment deletes out of weak-delete warnings', () => {

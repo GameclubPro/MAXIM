@@ -21,6 +21,7 @@ type AuditSnapshot = {
 
 type AuditSummaryRecord = {
   label?: unknown;
+  expectedAction?: unknown;
   policyCategory?: unknown;
   segment?: unknown;
   safeContextBucket?: unknown;
@@ -43,12 +44,18 @@ export type CommercialAuditSummary = {
   segments: Record<string, number>;
   safeContextBuckets: Record<string, number>;
   safeContextDeletes: Record<string, number>;
+  safeContextEnforcements: Record<string, number>;
   campaignOnlyDeletes: number;
+  campaignOnlyEnforcements: number;
   grayDeletes: number;
+  grayEnforcements: number;
   deleteFalsePositiveCandidates: number;
+  enforcementFalsePositiveCandidates: number;
   deleteSuppressed: number;
   genericGoodsDeletes: number;
+  genericGoodsEnforcements: number;
   recruitmentDeleteWithoutRisk: number;
+  recruitmentEnforcementWithoutRisk: number;
   riskyRulesOrNewsContext: number;
   alerts: CommercialAuditAlert[];
 };
@@ -61,6 +68,7 @@ type CliOptions = {
 };
 
 const DELETE_ACTIONS = new Set(['DELETE', 'DELETE_AND_ESCALATE']);
+const ENFORCEMENT_ACTIONS = new Set(['WARN', ...DELETE_ACTIONS]);
 const RULES_OR_NEWS_SAFE_BUCKETS = new Set([
   'rules_or_moderation_context',
   'spam_complaint_or_fraud_warning',
@@ -78,16 +86,23 @@ export function summarizeCommercialAuditRecords(
   const segments = new Map<string, number>();
   const safeContextBuckets = new Map<string, number>();
   const safeContextDeletes = new Map<string, number>();
+  const safeContextEnforcements = new Map<string, number>();
   let campaignOnlyDeletes = 0;
+  let campaignOnlyEnforcements = 0;
   let grayDeletes = 0;
+  let grayEnforcements = 0;
   let deleteFalsePositiveCandidates = 0;
+  let enforcementFalsePositiveCandidates = 0;
   let deleteSuppressed = 0;
   let genericGoodsDeletes = 0;
+  let genericGoodsEnforcements = 0;
   let recruitmentDeleteWithoutRisk = 0;
+  let recruitmentEnforcementWithoutRisk = 0;
   let riskyRulesOrNewsContext = 0;
 
   for (const record of records) {
     const label = readString(record.label) ?? 'unknown';
+    const expectedAction = readString(record.expectedAction);
     const policyCategory = readString(record.policyCategory) ?? 'unknown';
     const segment = readString(record.segment) ?? 'unknown';
     const current = readSnapshot(record.current);
@@ -99,6 +114,9 @@ export function summarizeCommercialAuditRecords(
     const matchedSignals = readStringArray(current.matchedSignals);
     const negativeSignals = readStringArray(current.negativeSignals);
     const isDelete = DELETE_ACTIONS.has(action);
+    const isEnforcement = ENFORCEMENT_ACTIONS.has(action);
+    const grayOverEnforcement =
+      label === 'gray_candidate' && isActionOverExpected(action, expectedAction);
     const deleteProfile = readDeleteProfile(current, reasonCodes, matchedSignals);
 
     pushCount(labels, label);
@@ -114,14 +132,26 @@ export function summarizeCommercialAuditRecords(
     if (isDelete && safeContextBucket !== 'none') {
       pushCount(safeContextDeletes, safeContextBucket);
     }
+    if (isEnforcement && safeContextBucket !== 'none') {
+      pushCount(safeContextEnforcements, safeContextBucket);
+    }
     if (policyCategory === 'campaign_only' && isDelete) {
       campaignOnlyDeletes += 1;
     }
-    if (label === 'gray_candidate' && isDelete) {
+    if (policyCategory === 'campaign_only' && isEnforcement) {
+      campaignOnlyEnforcements += 1;
+    }
+    if (grayOverEnforcement && isDelete) {
       grayDeletes += 1;
+    }
+    if (grayOverEnforcement && isEnforcement) {
+      grayEnforcements += 1;
     }
     if (label === 'negative_candidate' && isDelete) {
       deleteFalsePositiveCandidates += 1;
+    }
+    if (label === 'negative_candidate' && isEnforcement) {
+      enforcementFalsePositiveCandidates += 1;
     }
     if (
       isDelete &&
@@ -130,8 +160,18 @@ export function summarizeCommercialAuditRecords(
     ) {
       genericGoodsDeletes += 1;
     }
+    if (
+      isEnforcement &&
+      (subtype === 'GOODS' || subtype === 'GENERIC') &&
+      isWeakGenericGoodsDelete(deleteProfile)
+    ) {
+      genericGoodsEnforcements += 1;
+    }
     if (isDelete && subtype === 'RECRUITMENT' && isWeakRecruitmentDelete(deleteProfile)) {
       recruitmentDeleteWithoutRisk += 1;
+    }
+    if (isEnforcement && subtype === 'RECRUITMENT' && isWeakRecruitmentDelete(deleteProfile)) {
+      recruitmentEnforcementWithoutRisk += 1;
     }
     if (
       RULES_OR_NEWS_SAFE_BUCKETS.has(safeContextBucket) &&
@@ -151,17 +191,49 @@ export function summarizeCommercialAuditRecords(
     segments: toSortedRecord(segments),
     safeContextBuckets: toSortedRecord(safeContextBuckets),
     safeContextDeletes: toSortedRecord(safeContextDeletes),
+    safeContextEnforcements: toSortedRecord(safeContextEnforcements),
     campaignOnlyDeletes,
+    campaignOnlyEnforcements,
     grayDeletes,
+    grayEnforcements,
     deleteFalsePositiveCandidates,
+    enforcementFalsePositiveCandidates,
     deleteSuppressed,
     genericGoodsDeletes,
+    genericGoodsEnforcements,
     recruitmentDeleteWithoutRisk,
+    recruitmentEnforcementWithoutRisk,
     riskyRulesOrNewsContext,
     alerts: [],
   };
   summary.alerts = buildCommercialAuditAlerts(summary);
   return summary;
+}
+
+function actionRank(action: string | null): number | null {
+  switch (action) {
+    case 'ALLOW':
+    case 'NONE':
+      return 0;
+    case 'REVIEW_ONLY':
+      return 1;
+    case 'WARN':
+      return 2;
+    case 'DELETE':
+      return 3;
+    case 'DELETE_AND_ESCALATE':
+      return 4;
+    default:
+      return null;
+  }
+}
+
+function isActionOverExpected(action: string, expectedAction: string | null): boolean {
+  const actualRank = actionRank(action);
+  const expectedRank = actionRank(expectedAction);
+  return (
+    actualRank !== null && (expectedRank === null ? actualRank >= 2 : actualRank > expectedRank)
+  );
 }
 
 export function buildCommercialAuditAlerts(
@@ -175,15 +247,28 @@ export function buildCommercialAuditAlerts(
   };
 
   add('delete_false_positive_candidate', 'critical', summary.deleteFalsePositiveCandidates);
+  add(
+    'enforcement_false_positive_candidate',
+    'critical',
+    summary.enforcementFalsePositiveCandidates,
+  );
   add('gray_candidate_delete', 'critical', summary.grayDeletes);
+  add('gray_candidate_enforcement', 'critical', summary.grayEnforcements);
   add('campaign_only_delete', 'critical', summary.campaignOnlyDeletes);
   add(
     'safe_context_delete',
     'critical',
     Object.values(summary.safeContextDeletes).reduce((sum, value) => sum + value, 0),
   );
+  add(
+    'safe_context_enforcement',
+    'critical',
+    Object.values(summary.safeContextEnforcements).reduce((sum, value) => sum + value, 0),
+  );
   add('generic_goods_delete', 'warning', summary.genericGoodsDeletes);
+  add('generic_goods_enforcement', 'warning', summary.genericGoodsEnforcements);
   add('recruitment_delete_without_risk', 'warning', summary.recruitmentDeleteWithoutRisk);
+  add('recruitment_enforcement_without_risk', 'warning', summary.recruitmentEnforcementWithoutRisk);
   add('risky_rules_or_news_context', 'warning', summary.riskyRulesOrNewsContext);
 
   return alerts;

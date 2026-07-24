@@ -57,7 +57,7 @@
 - Deploy and both rollback paths serialize through the shared lock. Rebuild only affected application components. Ordinary API deploy requires Postgres and Redis to be already running and ready; it refuses instead of starting or recreating them.
 - Destructive DB column removal requires the API client-compatible release first and the drop migration in a later release.
 - The VPS is shared with sibling applications. Check for another Docker build before heavy work and avoid overlapping builds.
-- Deploy disk preflight requires both acceptable utilization and at least 20 GiB free. `MAXIM_DEPLOY_DISK_MIN_FREE_BYTES` may raise but never lower this hard floor; the percentage emergency override does not bypass it.
+- Deploy disk preflight requires both acceptable utilization and at least 20 GiB free whenever any selected image needs a build. It may skip the build-capacity gate only when every selected ref is the verified target SHA and already exists locally; that rollout is reuse-only and refuses a fallback build if an image disappears. `MAXIM_DEPLOY_DISK_MIN_FREE_BYTES` may raise but never lower the hard floor, and the percentage emergency override does not bypass it.
 - If disk preflight blocks, review inventory and run `./infra/scripts/vps-docker-space-reclaim.sh` first. It preserves every image referenced by retained manifests or any container and removes only old unused immutable MAXIM release refs before pruning build cache; it never prunes volumes, containers, or arbitrary images.
 
 ## Required Smokes

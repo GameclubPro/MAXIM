@@ -192,7 +192,7 @@ export function collectFirstPatternLabels(
     if (hits.length >= limit) {
       break;
     }
-    if (predicate(pattern) && !hits.includes(label)) {
+    if (!hits.includes(label) && predicate(pattern)) {
       hits.push(label);
     }
   }

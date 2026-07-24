@@ -31,6 +31,10 @@ const BASE_INPUT: CommercialActionPolicyInput = {
   hasNonCampaignDirectDealEvidence: false,
   hasHighRiskEvidence: false,
   hasEscalationRiskEvidence: false,
+  hasStructuredTransportEvidence: false,
+  hasReviewOnlyTransportEvidence: false,
+  hasConservativeRecallEvidence: false,
+  hasIndependentCommercialOfferEvidence: false,
 };
 
 const actionOf = (input: Partial<CommercialActionPolicyInput>) =>
@@ -160,6 +164,205 @@ describe('commercial action policy', () => {
         hasEscalationRiskEvidence: false,
       }),
     ).toBe('WARN');
+  });
+
+  it('applies exact warn and review caps to rescue-only evidence', () => {
+    expect(
+      actionOf({
+        evidenceTier: 'DIRECT',
+        hasDirectDealEvidence: true,
+        hasNonCampaignDirectDealEvidence: true,
+        hasWarnCappedRecallEvidence: true,
+      }),
+    ).toBe('WARN');
+    expect(
+      actionOf({
+        evidenceTier: 'DIRECT',
+        hasDirectDealEvidence: true,
+        hasNonCampaignDirectDealEvidence: true,
+        hasReviewCappedRecallEvidence: true,
+      }),
+    ).toBe('REVIEW_ONLY');
+  });
+
+  it('keeps an independent warn-capped rescue actionable beside review-only recall', () => {
+    const decision = resolveCommercialActionPolicy({
+      ...BASE_INPUT,
+      evidenceTier: 'DIRECT',
+      hasDirectDealEvidence: true,
+      hasNonCampaignDirectDealEvidence: true,
+      hasWarnCappedRecallEvidence: true,
+      hasReviewCappedRecallEvidence: true,
+    });
+
+    expect(decision.actionBand).toBe('WARN');
+    expect(decision.suppressionReasons).toContain('bounded-recall-warn-cap');
+    expect(decision.suppressionReasons).not.toContain('bounded-recall-review-cap');
+  });
+
+  it('keeps a rescue cap when neighboring evidence is not independently deletable', () => {
+    expect(
+      actionOf({
+        evidenceTier: 'DIRECT',
+        safeContextBucket: 'private_one_off_sale',
+        hasDirectDealEvidence: true,
+        hasNonCampaignDirectDealEvidence: true,
+        hasIndependentCommercialOfferEvidence: true,
+        hasWarnCappedRecallEvidence: true,
+      }),
+    ).toBe('WARN');
+  });
+
+  it('does not let a rescue cap weaken an independently deletable offer', () => {
+    expect(
+      actionOf({
+        evidenceTier: 'DIRECT',
+        hasDirectDealEvidence: true,
+        hasNonCampaignDirectDealEvidence: true,
+        hasIndependentCommercialOfferEvidence: true,
+        hasWarnCappedRecallEvidence: true,
+      }),
+    ).toBe('DELETE');
+  });
+
+  it('does not let a rescue cap weaken escalation-grade evidence', () => {
+    expect(
+      actionOf({
+        evidenceTier: 'HIGH_RISK',
+        subtype: 'GOODS',
+        hasDirectDealEvidence: true,
+        hasNonCampaignDirectDealEvidence: true,
+        hasHighRiskEvidence: true,
+        hasEscalationRiskEvidence: true,
+        hasReviewCappedRecallEvidence: true,
+      }),
+    ).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('caps structured transport evidence at warn without independent escalation risk', () => {
+    const decision = resolveCommercialActionPolicy({
+      ...BASE_INPUT,
+      evidenceTier: 'DIRECT',
+      hasDirectDealEvidence: true,
+      hasNonCampaignDirectDealEvidence: true,
+      hasStructuredTransportEvidence: true,
+    });
+
+    expect(decision.actionBand).toBe('WARN');
+    expect(decision.deleteSuppressed).toBe(true);
+    expect(decision.suppressionReasons).toContain('structured-transport-warn-cap');
+  });
+
+  it('preserves independent escalation risk on structured transport evidence', () => {
+    const decision = resolveCommercialActionPolicy({
+      ...BASE_INPUT,
+      evidenceTier: 'HIGH_RISK',
+      hasDirectDealEvidence: true,
+      hasNonCampaignDirectDealEvidence: true,
+      hasHighRiskEvidence: true,
+      hasEscalationRiskEvidence: true,
+      hasStructuredTransportEvidence: true,
+    });
+
+    expect(decision.actionBand).toBe('DELETE_AND_ESCALATE');
+    expect(decision.suppressionReasons).not.toContain('structured-transport-warn-cap');
+  });
+
+  it('does not let structured transport weaken an independent commercial offer', () => {
+    const decision = resolveCommercialActionPolicy({
+      ...BASE_INPUT,
+      evidenceTier: 'DIRECT',
+      hasDirectDealEvidence: true,
+      hasNonCampaignDirectDealEvidence: true,
+      hasStructuredTransportEvidence: true,
+      hasIndependentCommercialOfferEvidence: true,
+    });
+
+    expect(decision.actionBand).toBe('DELETE');
+    expect(decision.suppressionReasons).not.toContain('structured-transport-warn-cap');
+  });
+
+  it('routes non-scoring ambiguous transport metadata to review-only', () => {
+    const decision = resolveCommercialActionPolicy({
+      ...BASE_INPUT,
+      confidenceScore: 0,
+      reviewRecommended: true,
+      featureVector: {
+        commercialIntent: 0,
+        dealEvidence: 0,
+        contactEvidence: 0,
+        businessContext: 0,
+        massDistribution: 0,
+        priceStructure: 0,
+        cta: 0,
+        negativePrivateContext: 0,
+        questionContext: 0,
+        highRisk: 0,
+      },
+      hasReviewOnlyTransportEvidence: true,
+    });
+
+    expect(decision.actionBand).toBe('REVIEW_ONLY');
+    expect(decision.actionScore).toBe(0);
+    expect(decision.actionable).toBe(false);
+    expect(decision.recordable).toBe(false);
+    expect(decision.suppressionReasons).toContain('ambiguous-transport-review-only');
+  });
+
+  it('does not let ambiguous transport metadata weaken an existing action', () => {
+    expect(
+      actionOf({
+        evidenceTier: 'DIRECT',
+        hasDirectDealEvidence: true,
+        hasNonCampaignDirectDealEvidence: true,
+        hasReviewOnlyTransportEvidence: true,
+        hasIndependentCommercialOfferEvidence: true,
+      }),
+    ).toBe('DELETE');
+    expect(
+      actionOf({
+        evidenceTier: 'DIRECT',
+        hasDirectDealEvidence: true,
+        hasNonCampaignDirectDealEvidence: true,
+        hasStructuredTransportEvidence: true,
+        hasReviewOnlyTransportEvidence: true,
+      }),
+    ).toBe('WARN');
+  });
+
+  it('caps conservative recall evidence at warn when it is necessary for the decision', () => {
+    const decision = resolveCommercialActionPolicy({
+      ...BASE_INPUT,
+      evidenceTier: 'DIRECT',
+      hasDirectDealEvidence: true,
+      hasNonCampaignDirectDealEvidence: true,
+      hasConservativeRecallEvidence: true,
+    });
+
+    expect(decision.actionBand).toBe('WARN');
+    expect(decision.suppressionReasons).toContain('conservative-recall-warn-cap');
+  });
+
+  it('preserves independent delete and escalation evidence beside conservative recall', () => {
+    expect(
+      actionOf({
+        evidenceTier: 'DIRECT',
+        hasDirectDealEvidence: true,
+        hasNonCampaignDirectDealEvidence: true,
+        hasConservativeRecallEvidence: true,
+        hasIndependentCommercialOfferEvidence: true,
+      }),
+    ).toBe('DELETE');
+    expect(
+      actionOf({
+        evidenceTier: 'HIGH_RISK',
+        hasDirectDealEvidence: true,
+        hasNonCampaignDirectDealEvidence: true,
+        hasHighRiskEvidence: true,
+        hasEscalationRiskEvidence: true,
+        hasConservativeRecallEvidence: true,
+      }),
+    ).toBe('DELETE_AND_ESCALATE');
   });
 
   it('keeps high false-positive risk without escalation evidence out of delete actions', () => {

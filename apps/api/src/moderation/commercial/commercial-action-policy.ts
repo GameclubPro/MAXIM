@@ -30,6 +30,12 @@ export type CommercialActionPolicyInput = {
   hasNonCampaignDirectDealEvidence: boolean;
   hasHighRiskEvidence: boolean;
   hasEscalationRiskEvidence: boolean;
+  hasStructuredTransportEvidence: boolean;
+  hasReviewOnlyTransportEvidence: boolean;
+  hasWarnCappedRecallEvidence?: boolean;
+  hasReviewCappedRecallEvidence?: boolean;
+  hasConservativeRecallEvidence: boolean;
+  hasIndependentCommercialOfferEvidence: boolean;
 };
 
 export function resolveCommercialActionPolicy(
@@ -37,6 +43,16 @@ export function resolveCommercialActionPolicy(
 ): CommercialActionPolicyDecision {
   const suppressionReasons: string[] = [];
   const actionScore = resolveCommercialActionScore(input);
+  const hasIndependentDeleteEligibleOffer =
+    input.hasIndependentCommercialOfferEvidence &&
+    input.hasNonCampaignDirectDealEvidence &&
+    input.hasDirectDealEvidence &&
+    input.confidenceScore >= input.deleteThreshold &&
+    actionScore >= input.deleteThreshold &&
+    input.fpRisk < COMMERCIAL_ENGINE_CONFIG.actionPolicy.highFpRiskThreshold &&
+    input.missingRequiredAnchors.length === 0 &&
+    !shouldSuppressDeleteForSafeContext(input) &&
+    !shouldSuppressDeleteForSubtype(input);
   const reviewPriority = resolveCommercialReviewPriority({
     ...input,
     actionScore,
@@ -46,12 +62,89 @@ export function resolveCommercialActionPolicy(
       ? 'REVIEW_ONLY'
       : 'WARN';
 
+  if (
+    input.hasReviewOnlyTransportEvidence &&
+    input.confidenceScore < input.warnThreshold &&
+    !input.hasStructuredTransportEvidence &&
+    !input.hasConservativeRecallEvidence &&
+    !input.hasIndependentCommercialOfferEvidence &&
+    !input.hasEscalationRiskEvidence
+  ) {
+    suppressionReasons.push('ambiguous-transport-review-only');
+    return buildDecision({
+      actionBand: 'REVIEW_ONLY',
+      confidenceScore: input.confidenceScore,
+      actionScore,
+      reviewPriority,
+      suppressionReasons,
+    });
+  }
+
   if (input.confidenceScore < input.warnThreshold) {
     return buildDecision({
       actionBand: 'ALLOW',
       confidenceScore: input.confidenceScore,
       actionScore,
       reviewPriority: 'NONE',
+      suppressionReasons,
+    });
+  }
+
+  if (
+    input.hasWarnCappedRecallEvidence &&
+    !hasIndependentDeleteEligibleOffer &&
+    !input.hasEscalationRiskEvidence
+  ) {
+    suppressionReasons.push('bounded-recall-warn-cap');
+    return buildDecision({
+      actionBand: 'WARN',
+      confidenceScore: input.confidenceScore,
+      actionScore,
+      reviewPriority,
+      suppressionReasons,
+    });
+  }
+
+  if (
+    input.hasReviewCappedRecallEvidence &&
+    !hasIndependentDeleteEligibleOffer &&
+    !input.hasEscalationRiskEvidence
+  ) {
+    suppressionReasons.push('bounded-recall-review-cap');
+    return buildDecision({
+      actionBand: 'REVIEW_ONLY',
+      confidenceScore: input.confidenceScore,
+      actionScore,
+      reviewPriority: reviewPriority === 'NONE' ? 'MEDIUM' : reviewPriority,
+      suppressionReasons,
+    });
+  }
+
+  if (
+    input.hasConservativeRecallEvidence &&
+    !input.hasIndependentCommercialOfferEvidence &&
+    !input.hasEscalationRiskEvidence
+  ) {
+    suppressionReasons.push('conservative-recall-warn-cap');
+    return buildDecision({
+      actionBand: 'WARN',
+      confidenceScore: input.confidenceScore,
+      actionScore,
+      reviewPriority,
+      suppressionReasons,
+    });
+  }
+
+  if (
+    input.subtype === 'SERVICES' &&
+    input.reviewReasons.includes('organized-wellness-trip') &&
+    !input.hasEscalationRiskEvidence
+  ) {
+    return buildDecision({
+      actionBand: 'WARN',
+      confidenceScore: input.confidenceScore,
+      actionScore,
+      reviewPriority,
       suppressionReasons,
     });
   }
@@ -119,6 +212,21 @@ export function resolveCommercialActionPolicy(
   if (safeContextDeleteSuppressed) {
     return buildDecision({
       actionBand: 'REVIEW_ONLY',
+      confidenceScore: input.confidenceScore,
+      actionScore,
+      reviewPriority,
+      suppressionReasons,
+    });
+  }
+
+  if (
+    input.hasStructuredTransportEvidence &&
+    !input.hasIndependentCommercialOfferEvidence &&
+    !input.hasEscalationRiskEvidence
+  ) {
+    suppressionReasons.push('structured-transport-warn-cap');
+    return buildDecision({
+      actionBand: reviewOrWarn,
       confidenceScore: input.confidenceScore,
       actionScore,
       reviewPriority,

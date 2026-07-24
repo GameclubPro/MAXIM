@@ -71,6 +71,71 @@ check_deploy_disk_capacity
   });
 }
 
+function runSelectedImageCapacityPreflight({
+  availableBytes,
+  expectedSha,
+  targetSha = expectedSha,
+  services = ['api-ingress'],
+  localImages = [],
+  apiImage = `maxim-api:${targetSha}`,
+  miniappImage = `maxim-miniapp-major:${targetSha}`,
+  adminImage = `maxim-admin:${targetSha}`,
+  legacyImage = `maxim-miniapp-legacy:${targetSha}`,
+  buildApi = services.some((service) => service.startsWith('api-')) ? 1 : 0,
+}) {
+  const probe = `set -euo pipefail
+is_enabled() {
+  case "\${1:-0}" in
+    1|true|TRUE|yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+${readShellFunction('contains_service', 'validate_requested_services')}
+${readShellFunction('validate_nonnegative_int', 'ensure_requested_services_running')}
+${readShellFunction('is_exact_deploy_target_image_ref', 'selected_target_images_are_preloaded')}
+${readShellFunction('selected_target_images_are_preloaded', 'prepare_deploy_disk_capacity')}
+${readShellFunction('prepare_deploy_disk_capacity', 'require_preloaded_target_image')}
+${readShellFunction('check_deploy_disk_capacity', 'validate_deploy_branch')}
+mapfile -t SERVICES <<< "$SELECTED_SERVICES"
+API_SERVICES=("api-ingress")
+EXPECTED_DEPLOY_SHA="$EXPECTED_SHA"
+TARGET_SHA="$TARGET_SHA_VALUE"
+BUILD_API_IMAGE="$BUILD_API"
+MAXIM_API_IMAGE="$API_IMAGE"
+MAXIM_MINIAPP_MAJOR_IMAGE="$MINIAPP_IMAGE"
+MAXIM_ADMIN_IMAGE="$ADMIN_IMAGE"
+MAXIM_MINIAPP_LEGACY_IMAGE="$LEGACY_IMAGE"
+docker() {
+  [[ "$1" == "image" && "$2" == "inspect" ]]
+  grep -Fxq -- "$3" <<< "$LOCAL_IMAGES"
+}
+df() {
+  [[ "$1" == "-P" && "$2" == "-B1" ]]
+  printf 'Filesystem 1-blocks Used Available Capacity Mounted on\\n'
+  printf '/dev/fake 107374182400 1 %s 79%% /\\n' "$AVAILABLE_BYTES"
+}
+prepare_deploy_disk_capacity
+printf 'reuse-only=%s\\n' "$REUSE_PRELOADED_TARGET_IMAGES_ONLY"
+`;
+
+  return spawnSync('bash', ['-c', probe], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      ADMIN_IMAGE: adminImage,
+      API_IMAGE: apiImage,
+      AVAILABLE_BYTES: String(availableBytes),
+      BUILD_API: String(buildApi),
+      EXPECTED_SHA: expectedSha,
+      LEGACY_IMAGE: legacyImage,
+      LOCAL_IMAGES: localImages.join('\n'),
+      MINIAPP_IMAGE: miniappImage,
+      SELECTED_SERVICES: services.join('\n'),
+      TARGET_SHA_VALUE: targetSha,
+    },
+  });
+}
+
 test('rejects free space one byte below the 20 GiB default', () => {
   const result = runDiskPreflight(minimumFreeBytes - 1);
 
@@ -170,4 +235,81 @@ test('normalizes percentage thresholds before comparing them', () => {
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /above the deploy target disk utilization \(80%\)/u);
+});
+
+test('skips the build capacity floor only when every selected exact-SHA image is local', () => {
+  const targetSha = 'a'.repeat(40);
+  const localImages = [
+    `maxim-api:${targetSha}`,
+    `maxim-miniapp-major:${targetSha}`,
+    `maxim-admin:${targetSha}`,
+  ];
+  const result = runSelectedImageCapacityPreflight({
+    availableBytes: 7 * 1024 ** 3,
+    expectedSha: targetSha,
+    services: ['api-ingress', 'miniapp-major-static', 'admin-static'],
+    localImages,
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /every selected exact immutable target image is already local/u);
+  assert.match(result.stdout, /reuse-only=1/u);
+  assert.doesNotMatch(result.stdout, /Deploy disk preflight:/u);
+});
+
+test('a missing selected exact-SHA image cannot bypass the hard capacity floor', () => {
+  const targetSha = 'b'.repeat(40);
+  const result = runSelectedImageCapacityPreflight({
+    availableBytes: 7 * 1024 ** 3,
+    expectedSha: targetSha,
+    services: ['api-ingress', 'miniapp-major-static'],
+    localImages: [`maxim-api:${targetSha}`],
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /requires a build: maxim-miniapp-major:/u);
+  assert.match(result.stderr, /at least 21474836480 bytes are required/u);
+});
+
+test('a local image tagged for the wrong SHA cannot bypass the hard capacity floor', () => {
+  const targetSha = 'c'.repeat(40);
+  const wrongSha = 'd'.repeat(40);
+  const wrongImage = `maxim-api:${wrongSha}`;
+  const result = runSelectedImageCapacityPreflight({
+    availableBytes: 7 * 1024 ** 3,
+    expectedSha: targetSha,
+    services: ['api-ingress'],
+    localImages: [wrongImage],
+    apiImage: wrongImage,
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /non-target image ref/u);
+  assert.match(result.stderr, /at least 21474836480 bytes are required/u);
+});
+
+test('unknown deploy targets cannot bypass the hard capacity floor', () => {
+  const targetSha = 'e'.repeat(40);
+  const result = runSelectedImageCapacityPreflight({
+    availableBytes: 7 * 1024 ** 3,
+    expectedSha: targetSha,
+    services: ['manual-unknown-static'],
+    localImages: [`maxim-api:${targetSha}`],
+    buildApi: 0,
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /unknown target: manual-unknown-static/u);
+  assert.match(result.stderr, /at least 21474836480 bytes are required/u);
+});
+
+test('runtime recreation is explicitly forbidden from triggering an implicit image build', () => {
+  const upCommands = deployScript
+    .split('\n')
+    .filter((line) => line.includes('docker compose') && line.includes(' up -d '));
+
+  assert.ok(upCommands.length > 0, 'expected runtime docker compose up commands');
+  for (const command of upCommands) {
+    assert.match(command, / --no-build /u);
+  }
 });
