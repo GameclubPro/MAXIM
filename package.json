@@ -62,6 +62,8 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
+    "@nestjs/platform-fastify": "11.1.24",
+    "@prisma/dev": "0.24.14",
     "@types/node": "^24.12.4",
     "concurrently": "^9.2.1",
     "eslint": "^9.39.4",
@@ -84,8 +86,11 @@
     "@istanbuljs/load-nyc-config": {
       "js-yaml": "3.15.0"
     },
+    "axios": "1.18.1",
     "esbuild": "0.28.1",
+    "fast-uri": "3.1.4",
     "fastify": "5.8.5",
+    "find-my-way": "9.7.0",
     "form-data": "4.0.6",
     "hono": "4.12.28",
     "qs": "6.15.3",

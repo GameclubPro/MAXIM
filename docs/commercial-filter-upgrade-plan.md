@@ -75,10 +75,10 @@ Every corpus record was replayed. Manual review covered the curated UNDER,
 transport, severe-transition, and final action-delta sets; this is not a claim
 that all `49 719` message texts were read manually.
 
-Final v11 provenance:
+Final v12 provenance:
 
 - detector source SHA-256
-  `d474d418defbaabe7aca9f1890da0f5f52575e7e5688ab6fdba47825110a47b7`;
+  `f64de731bf6e6150a13e88f489595ce9b29ba4900528965af28d12d7e86f04be`;
 - evaluation result SHA-256
   `fea7b4bf6ddb64521988f5485f4bd9dacb5a198a6e6d693203ca5d7d1296de5c`;
 - full replay diff SHA-256
@@ -115,11 +115,11 @@ Final-slice corrections include:
   `REVIEW_ONLY`, without increasing furniture, fragrance, rental, or vacancy
   enforcement severity during this release.
 
-The v10-to-v11 lint-only regex cleanup produced byte-identical evaluation and
-replay JSONL outputs. Compared with the reviewed v6 severe set, v11 adds only
-the explicitly accepted Rostelecom corporate offer. The private furnished
-rental is restored to `REVIEW_ONLY`, and the turnkey construction campaign is
-capped at `WARN`.
+The v10-to-v12 regex-lint and SHA-256 cache-key hardening produced
+byte-identical evaluation and replay JSONL outputs. Compared with the reviewed
+v6 severe set, v12 adds only the explicitly accepted Rostelecom corporate
+offer. The private furnished rental is restored to `REVIEW_ONLY`, and the
+turnkey construction campaign is capped at `WARN`.
 
 The final GitHub-hosted benchmark profile passed all three fresh-process runs.
 Median timings were hot p95/p99 `5.298/5.602 ms` and adversarial p95/p99

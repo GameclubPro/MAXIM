@@ -44,7 +44,7 @@ export class CommercialSecondStageDecisionCache {
       classification,
       commercialCampaignContext,
     } = params;
-    const textHash = createHash('sha1').update(normalizedText).digest('hex').slice(0, 16);
+    const textHash = createHash('sha256').update(normalizedText).digest('hex').slice(0, 16);
     return [
       COMMERCIAL_SECOND_STAGE_VERSION,
       textHash,
