@@ -6,6 +6,7 @@ import { MODULE_METADATA } from '@nestjs/common/constants';
 import { AdminModule } from '../admin/admin.module';
 import { KaravanStorefrontRelayModule } from '../integrations/karavan-storefront/karavan-storefront-relay.module';
 import { MaxBotModule } from '../max/max-bot.module';
+import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxBotOwnershipFoundationService } from '../max/max-bot-ownership-foundation.service';
 import { MaxModule } from '../max/max.module';
 import { ModerationModule } from '../moderation/moderation.module';
@@ -33,6 +34,7 @@ describe('KaravanStorefrontRelayRepairModule', () => {
     ]) {
       expect(imports).not.toContain(runtimeModule);
     }
+    expect(providers).toContain(MaxBotLinkService);
     expect(providers).not.toContain(MaxBotOwnershipFoundationService);
   });
 });

@@ -3,7 +3,13 @@ import { ConfigService } from '@nestjs/config';
 import { z } from 'zod';
 import { Prisma } from '../../prisma/prisma-client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { MaxClientService, type MaxActionDispatchOptions } from '../../max/max-client.service';
+import {
+  MAX_API_SOURCE_TAGS,
+  MaxClientService,
+  wasMaxMessageSendAttempted,
+  type MaxActionDispatchOptions,
+  type MaxSendMessageOptions,
+} from '../../max/max-client.service';
 import { RedisCounterService } from '../../moderation/redis-counter.service';
 
 type RelayContext = {
@@ -44,8 +50,11 @@ type CacheEntry = {
 const DEFAULT_LOOKUP_TIMEOUT_MS = 3_000;
 const DEFAULT_CACHE_TTL_SEC = 120;
 const DEFAULT_RELAY_LOCK_TTL_SEC = 3_600;
+const MIN_PROCESSING_LOCK_TTL_MS = 15_000;
 const RELAY_LOCK_PREFIX = 'karavan-storefront-relay:v1';
-const KARAVAN_STOREFRONT_RELAY_SOURCE_TAG = 'karavan_storefront_relay';
+export const KARAVAN_STOREFRONT_RELAY_AUDIT_ACTION = 'KARAVAN_STOREFRONT_RELAY';
+const KARAVAN_STOREFRONT_RELAY_ENQUEUE_FAILED_AUDIT_ACTION =
+  'KARAVAN_STOREFRONT_RELAY_ENQUEUE_FAILED';
 export const KARAVAN_STOREFRONT_BUTTON_MESSAGE_TEXT = 'Витрина продавца';
 
 export function isKaravanStorefrontRelayCompanionText(value: unknown): boolean {
@@ -104,47 +113,64 @@ export class KaravanStorefrontRelayService {
       return 'noop';
     }
 
-    // `$` is an explicit seller action, so the button must reflect the active
-    // storefront at this message rather than a previous cached selection.
-    const store = await this.lookupStorefront(context.senderId, { fresh: true });
-    if (store === undefined) {
-      return 'failed';
-    }
-    if (!store) {
-      return 'noop';
-    }
-
     const lockKey = this.buildRelayLockKey(context.chatId, context.messageId!);
-    const lockToken = await this.redisCounter.acquireLock(lockKey, this.relayLockTtlSec * 1_000);
+    const lockToken = await this.redisCounter.acquireLock(
+      lockKey,
+      this.resolveProcessingLockTtlMs(),
+    );
     if (!lockToken) {
       return 'duplicate';
     }
 
+    let keepClaim = false;
+    let pendingAudit:
+      | {
+          id: string;
+          payload: Prisma.InputJsonObject;
+        }
+      | undefined;
     try {
-      const sent = await this.maxClient.sendCustomMessageImmediateWithResolvedLink(
-        context.chatId,
-        {
-          text: KARAVAN_STOREFRONT_BUTTON_MESSAGE_TEXT,
-          messageLink: {
-            type: 'reply',
-            mid: context.messageId!,
-          },
-          attachments: [this.buildStorefrontButtonAttachment(store.url)],
-        },
-        this.buildDispatchOptions(context.botId),
-      );
+      // `$` is an explicit seller action, so each logical source message starts
+      // from a fresh storefront lookup. Concurrent messages from the same seller
+      // still share one in-flight request.
+      const store = await this.lookupStorefront(context.senderId, { fresh: true });
+      if (store === undefined) {
+        return 'failed';
+      }
+      if (!store) {
+        return 'noop';
+      }
 
-      await this.recordAuditLog({
+      const idempotencyKey = this.buildRelayIdempotencyKey(context.chatId, context.messageId!);
+      pendingAudit = await this.createPendingAuditLog({
         context,
         store,
-        companionMessageId: sent.messageId,
-        publishedUrl: sent.url ?? null,
+        idempotencyKey,
       });
+      await this.maxClient.sendMessage(
+        context.chatId,
+        KARAVAN_STOREFRONT_BUTTON_MESSAGE_TEXT,
+        this.buildStorefrontMessageOptions(context.messageId!, store.url),
+        this.buildDispatchOptions({ context, store, idempotencyKey }),
+      );
+      keepClaim = true;
+
+      await this.renewCompletedClaim(lockKey, lockToken);
+      await this.updateAuditDeliveryStatus(pendingAudit, 'queued');
 
       return 'handled';
     } catch (error) {
-      if (this.isNonRetriableSendError(error)) {
-        await this.redisCounter.releaseLock(lockKey, lockToken);
+      const ambiguous = this.isAmbiguousDispatchAcceptance(error);
+      if (ambiguous) {
+        keepClaim = true;
+        await this.renewCompletedClaim(lockKey, lockToken).catch(() => undefined);
+      }
+      if (pendingAudit) {
+        await this.updateAuditDeliveryStatus(
+          pendingAudit,
+          ambiguous ? 'ambiguous' : 'enqueue_failed',
+          ambiguous ? KARAVAN_STOREFRONT_RELAY_AUDIT_ACTION : undefined,
+        );
       }
       this.logger.warn(
         {
@@ -153,10 +179,97 @@ export class KaravanStorefrontRelayService {
           senderId: context.senderId,
           err: this.formatError(error),
         },
-        'Karavan storefront relay failed open after claiming the source message',
+        'Karavan storefront relay failed open before durable delivery was accepted',
       );
       return 'failed';
+    } finally {
+      if (!keepClaim) {
+        await this.redisCounter.releaseLock(lockKey, lockToken).catch((error: unknown) => {
+          this.logger.warn(
+            {
+              chatId: context.chatId,
+              messageId: context.messageId,
+              err: this.formatError(error),
+            },
+            'Failed to release an incomplete Karavan storefront relay claim',
+          );
+        });
+      }
     }
+  }
+
+  async recognizeCompanionMessage(params: {
+    chatId: string;
+    messageId: string;
+    text: string;
+    raw?: unknown;
+  }): Promise<boolean> {
+    if (!isKaravanStorefrontRelayCompanionText(params.text)) {
+      return false;
+    }
+
+    const existing = await this.prisma.auditLog.findFirst({
+      where: {
+        chatId: params.chatId,
+        action: KARAVAN_STOREFRONT_RELAY_AUDIT_ACTION,
+        payload: {
+          path: ['companionMessageId'],
+          equals: params.messageId,
+        },
+      },
+      select: { id: true },
+    });
+    if (existing) {
+      return true;
+    }
+
+    const sourceMessageId = this.extractReplySourceMessageId(params.raw);
+    if (!sourceMessageId) {
+      return false;
+    }
+
+    const queuedAudit = await this.prisma.auditLog.findFirst({
+      where: {
+        chatId: params.chatId,
+        action: KARAVAN_STOREFRONT_RELAY_AUDIT_ACTION,
+        payload: {
+          path: ['sourceMessageId'],
+          equals: sourceMessageId,
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, payload: true },
+    });
+    if (!queuedAudit) {
+      return false;
+    }
+
+    const payload = this.asRecord(queuedAudit.payload) ?? {};
+    await this.prisma.auditLog
+      .update({
+        where: { id: queuedAudit.id },
+        data: {
+          payload: {
+            ...payload,
+            companionMessageId: params.messageId,
+            deliveryStatus: 'sent',
+            confirmedAt: new Date().toISOString(),
+          } as Prisma.InputJsonValue,
+        },
+      })
+      .catch((error: unknown) => {
+        this.logger.warn(
+          {
+            chatId: params.chatId,
+            sourceMessageId,
+            companionMessageId: params.messageId,
+            err: this.formatError(error),
+          },
+          'Failed to promote queued Karavan storefront relay audit after delivery',
+        );
+      });
+
+    return true;
   }
 
   private isConfigured(): boolean {
@@ -287,7 +400,7 @@ export class KaravanStorefrontRelayService {
       return cached.response.exists ? cached.response.store : null;
     }
 
-    const existing = options.fresh ? undefined : this.inFlightLookups.get(normalizedMaxUserId);
+    const existing = this.inFlightLookups.get(normalizedMaxUserId);
     if (existing) {
       const response = await existing;
       if (!response) {
@@ -308,14 +421,10 @@ export class KaravanStorefrontRelayService {
         return null;
       })
       .finally(() => {
-        if (!options.fresh) {
-          this.inFlightLookups.delete(normalizedMaxUserId);
-        }
+        this.inFlightLookups.delete(normalizedMaxUserId);
       });
 
-    if (!options.fresh) {
-      this.inFlightLookups.set(normalizedMaxUserId, lookup);
-    }
+    this.inFlightLookups.set(normalizedMaxUserId, lookup);
     const response = await lookup;
     if (!response) {
       return undefined;
@@ -327,20 +436,21 @@ export class KaravanStorefrontRelayService {
     return response.exists ? response.store : null;
   }
 
-  private buildStorefrontButtonAttachment(url: string): Record<string, unknown> {
+  private buildStorefrontMessageOptions(messageId: string, url: string): MaxSendMessageOptions {
     return {
-      type: 'inline_keyboard',
-      payload: {
-        buttons: [
-          [
-            {
-              type: 'link',
-              text: 'Открыть витрину',
-              url,
-            },
-          ],
-        ],
+      messageLink: {
+        type: 'reply',
+        mid: messageId,
       },
+      buttons: [
+        [
+          {
+            type: 'link',
+            text: 'Открыть витрину',
+            url,
+          },
+        ],
+      ],
     };
   }
 
@@ -377,54 +487,143 @@ export class KaravanStorefrontRelayService {
     return `${RELAY_LOCK_PREFIX}:${encodeURIComponent(chatId)}:${encodeURIComponent(messageId)}`;
   }
 
-  private buildDispatchOptions(botId?: string | null): MaxActionDispatchOptions {
+  private buildRelayIdempotencyKey(chatId: string, messageId: string): string {
+    return `karavan-storefront-relay:v2:${encodeURIComponent(chatId)}:${encodeURIComponent(messageId)}`;
+  }
+
+  private buildDispatchOptions(params: {
+    context: RelayContext;
+    store: LookupStore;
+    idempotencyKey: string;
+  }): MaxActionDispatchOptions {
     return {
-      immediate: true,
+      idempotencyKey: params.idempotencyKey,
       trafficClass: 'interactive',
       actionHealthLane: 'interactive',
-      sourceTag: KARAVAN_STOREFRONT_RELAY_SOURCE_TAG,
-      ...(botId ? { botId } : {}),
+      sourceTag: MAX_API_SOURCE_TAGS.KARAVAN_STOREFRONT_RELAY,
+      ledgerContext: {
+        karavanStorefrontRelay: {
+          sourceMessageId: params.context.messageId ?? null,
+          senderId: params.context.senderId,
+          requestedBotId: params.context.botId ?? null,
+          storeId: params.store.id,
+          storeSlug: params.store.slug,
+        },
+      },
     };
   }
 
-  private async recordAuditLog(params: {
+  private async createPendingAuditLog(params: {
     context: RelayContext;
     store: LookupStore;
-    companionMessageId: string;
-    publishedUrl: string | null;
-  }): Promise<void> {
-    try {
-      await this.prisma.auditLog.create({
+    idempotencyKey: string;
+  }): Promise<{ id: string; payload: Prisma.InputJsonObject }> {
+    const payload: Prisma.InputJsonObject = {
+      sourceMessageId: params.context.messageId ?? null,
+      companionMessageId: null,
+      publishedUrl: null,
+      deliveryStatus: 'pending',
+      idempotencyKey: params.idempotencyKey,
+      requestedBotId: params.context.botId ?? null,
+      store: {
+        id: params.store.id,
+        slug: params.store.slug,
+        name: params.store.name,
+        sellerAccountId: params.store.sellerAccountId,
+        url: params.store.url,
+        inviteUrl: params.store.inviteUrl,
+      },
+    };
+    const audit = await this.prisma.auditLog.create({
+      data: {
+        chatId: params.context.chatId,
+        actorUserId: params.context.senderId,
+        action: KARAVAN_STOREFRONT_RELAY_AUDIT_ACTION,
+        payload,
+      },
+      select: { id: true },
+    });
+    return { id: audit.id, payload };
+  }
+
+  private async updateAuditDeliveryStatus(
+    audit: { id: string; payload: Prisma.InputJsonObject },
+    deliveryStatus: 'queued' | 'enqueue_failed' | 'ambiguous',
+    action = deliveryStatus === 'enqueue_failed'
+      ? KARAVAN_STOREFRONT_RELAY_ENQUEUE_FAILED_AUDIT_ACTION
+      : KARAVAN_STOREFRONT_RELAY_AUDIT_ACTION,
+  ): Promise<void> {
+    await this.prisma.auditLog
+      .update({
+        where: { id: audit.id },
         data: {
-          chatId: params.context.chatId,
-          actorUserId: params.context.senderId,
-          action: 'KARAVAN_STOREFRONT_RELAY',
+          action,
           payload: {
-            sourceMessageId: params.context.messageId,
-            companionMessageId: params.companionMessageId,
-            publishedUrl: params.publishedUrl,
-            botId: params.context.botId ?? null,
-            store: {
-              id: params.store.id,
-              slug: params.store.slug,
-              name: params.store.name,
-              sellerAccountId: params.store.sellerAccountId,
-              url: params.store.url,
-              inviteUrl: params.store.inviteUrl,
-            },
+            ...audit.payload,
+            deliveryStatus,
+            updatedAt: new Date().toISOString(),
           } as Prisma.InputJsonValue,
         },
+      })
+      .catch((error: unknown) => {
+        this.logger.warn(
+          {
+            auditLogId: audit.id,
+            deliveryStatus,
+            err: this.formatError(error),
+          },
+          'Failed to update Karavan storefront relay delivery audit',
+        );
       });
-    } catch (error) {
+  }
+
+  private resolveProcessingLockTtlMs(): number {
+    return Math.min(
+      this.relayLockTtlSec * 1_000,
+      Math.max(MIN_PROCESSING_LOCK_TTL_MS, this.lookupTimeoutMs + 10_000),
+    );
+  }
+
+  private async renewCompletedClaim(lockKey: string, lockToken: string): Promise<void> {
+    const renewed = await this.redisCounter.renewLock(
+      lockKey,
+      lockToken,
+      this.relayLockTtlSec * 1_000,
+    );
+    if (!renewed) {
       this.logger.warn(
-        {
-          chatId: params.context.chatId,
-          sourceMessageId: params.context.messageId,
-          err: this.formatError(error),
-        },
-        'Failed to persist Karavan storefront relay audit log',
+        { lockKey },
+        'Karavan storefront relay was queued after its processing claim expired',
       );
     }
+  }
+
+  private extractReplySourceMessageId(rawValue: unknown): string | null {
+    const raw = this.asRecord(rawValue);
+    const message = this.extractRawMessage(raw);
+    const link = this.asRecord(message?.link);
+    if (this.readLowerString(link?.type) !== 'reply') {
+      return null;
+    }
+
+    const linkedMessage = this.asRecord(link?.message);
+    const linkedBody = this.asRecord(linkedMessage?.body);
+    return this.readString(
+      link?.mid ??
+        link?.message_id ??
+        link?.messageId ??
+        linkedMessage?.mid ??
+        linkedMessage?.message_id ??
+        linkedMessage?.messageId ??
+        linkedBody?.mid,
+    );
+  }
+
+  private isAmbiguousDispatchAcceptance(error: unknown): boolean {
+    return (
+      wasMaxMessageSendAttempted(error) ||
+      this.formatError(error).toLowerCase().includes('ambiguous bullmq ownership')
+    );
   }
 
   private readBooleanConfig(key: string, fallback: boolean): boolean {
@@ -500,21 +699,6 @@ export class KaravanStorefrontRelayService {
     }
 
     return parsed;
-  }
-
-  private isNonRetriableSendError(error: unknown): boolean {
-    const status = this.extractStatusCode(error);
-    return status !== null && status >= 400 && status < 500 && status !== 408 && status !== 429;
-  }
-
-  private extractStatusCode(error: unknown): number | null {
-    const row = this.asRecord(error);
-    const response = this.asRecord(row?.response);
-    const status = response?.status ?? row?.status ?? row?.statusCode;
-    const parsed =
-      typeof status === 'number' ? status : typeof status === 'string' ? Number(status) : NaN;
-
-    return Number.isInteger(parsed) ? parsed : null;
   }
 
   private formatError(error: unknown): string {

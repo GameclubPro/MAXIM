@@ -396,6 +396,7 @@ export type MaxActionDispatchOptions = {
   botId?: string;
   candidateBotIds?: readonly string[];
   routing?: MaxActionRoutingMetadata;
+  ledgerContext?: MaxActionLedgerContext;
 };
 
 type MaxApiRequestOptions = {
@@ -428,6 +429,7 @@ export const MAX_API_SOURCE_TAGS = {
   COMMENT_NOTIFICATION: 'comment_notification',
   SUGGESTION_DELIVERY: 'suggestion_delivery',
   CALLBACK_ANSWER: 'callback_answer',
+  KARAVAN_STOREFRONT_RELAY: 'karavan_storefront_relay',
   VK_PARSING: 'vk_parsing',
   CHANNEL_STATS_SYNC: 'channel_stats_sync',
   WEBHOOK_SUBSCRIPTION_RECONCILE: 'webhook_subscription_reconcile',
@@ -4174,6 +4176,7 @@ export class MaxClientService implements OnModuleDestroy {
         ? { autoDeleteDelayMs }
         : {}),
       ...(ignoreFailureMetricStatuses ? { ignoreFailureMetricStatuses } : {}),
+      ...(options?.ledgerContext ? { ledgerContext: options.ledgerContext } : {}),
       attempt: 1,
       idempotencyKey: logicalIdempotencyKey ?? randomUUID(),
       createdAt: new Date().toISOString(),

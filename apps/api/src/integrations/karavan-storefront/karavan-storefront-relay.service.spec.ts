@@ -26,21 +26,18 @@ function createService(
   } = {},
 ) {
   const maxClient = {
-    sendCustomMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
-      messageId: 'mid-storefront-button',
-      url: 'https://max.ru/chats/chat-1/message/mid-storefront-button',
-    }),
+    sendMessage: jest.fn().mockResolvedValue(undefined),
     deleteMessage: jest.fn().mockResolvedValue(undefined),
   };
   if (options.sendRejects) {
-    maxClient.sendCustomMessageImmediateWithResolvedLink.mockRejectedValue(
-      options.sendError ?? new Error('send timeout'),
-    );
+    maxClient.sendMessage.mockRejectedValue(options.sendError ?? new Error('send timeout'));
   }
 
   const prisma = {
     auditLog: {
-      create: jest.fn().mockResolvedValue(undefined),
+      create: jest.fn().mockResolvedValue({ id: 'audit-pending-1' }),
+      findFirst: jest.fn().mockResolvedValue(null),
+      update: jest.fn().mockResolvedValue(undefined),
     },
   };
   const redisCounter = {
@@ -48,6 +45,7 @@ function createService(
       .fn()
       .mockResolvedValue(options.lockToken === undefined ? 'lock-1' : options.lockToken),
     releaseLock: jest.fn().mockResolvedValue(undefined),
+    renewLock: jest.fn().mockResolvedValue(true),
   };
   const fetchMock = jest.fn().mockResolvedValue({
     ok: true,
@@ -120,49 +118,72 @@ describe('KaravanStorefrontRelayService', () => {
           },
         }),
       );
-      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      expect(fixture.maxClient.sendMessage).toHaveBeenCalledWith(
         'chat-1',
+        'Витрина продавца',
         {
-          text: 'Витрина продавца',
           messageLink: {
             type: 'reply',
             mid: 'mid-source-1',
           },
-          attachments: [
-            {
-              type: 'inline_keyboard',
-              payload: {
-                buttons: [
-                  [
-                    {
-                      type: 'link',
-                      text: 'Открыть витрину',
-                      url: 'https://max.ru/se13381675_1_bot?startapp=s_severnaya-lavka__r_seller-1',
-                    },
-                  ],
-                ],
+          buttons: [
+            [
+              {
+                type: 'link',
+                text: 'Открыть витрину',
+                url: 'https://max.ru/se13381675_1_bot?startapp=s_severnaya-lavka__r_seller-1',
               },
-            },
+            ],
           ],
         },
         expect.objectContaining({
-          immediate: true,
-          botId: '777000_bot',
+          idempotencyKey: 'karavan-storefront-relay:v2:chat-1:mid-source-1',
           trafficClass: 'interactive',
+          actionHealthLane: 'interactive',
+          sourceTag: 'karavan_storefront_relay',
+          ledgerContext: {
+            karavanStorefrontRelay: expect.objectContaining({
+              sourceMessageId: 'mid-source-1',
+              senderId: '1001',
+              requestedBotId: '777000_bot',
+              storeId: 'store-1',
+            }),
+          },
         }),
       );
       expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(fixture.redisCounter.acquireLock.mock.invocationCallOrder[0]).toBeLessThan(
+        fixture.fetchMock.mock.invocationCallOrder[0]!,
+      );
+      expect(fixture.redisCounter.renewLock).toHaveBeenCalledWith(
+        'karavan-storefront-relay:v1:chat-1:mid-source-1',
+        'lock-1',
+        3_600_000,
+      );
+      expect(fixture.redisCounter.releaseLock).not.toHaveBeenCalled();
       expect(fixture.prisma.auditLog.create).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
             action: 'KARAVAN_STOREFRONT_RELAY',
             payload: expect.objectContaining({
               sourceMessageId: 'mid-source-1',
-              companionMessageId: 'mid-storefront-button',
+              companionMessageId: null,
+              deliveryStatus: 'pending',
             }),
           }),
+          select: { id: true },
         }),
       );
+      expect(fixture.prisma.auditLog.update).toHaveBeenCalledWith({
+        where: { id: 'audit-pending-1' },
+        data: {
+          action: 'KARAVAN_STOREFRONT_RELAY',
+          payload: expect.objectContaining({
+            sourceMessageId: 'mid-source-1',
+            deliveryStatus: 'queued',
+          }),
+        },
+      });
     } finally {
       fixture.restore();
     }
@@ -212,28 +233,21 @@ describe('KaravanStorefrontRelayService', () => {
       ).resolves.toBe('handled');
 
       expect(fixture.fetchMock).toHaveBeenCalledTimes(2);
-      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenLastCalledWith(
+      expect(fixture.maxClient.sendMessage).toHaveBeenLastCalledWith(
         'chat-1',
+        'Витрина продавца',
         expect.objectContaining({
-          attachments: [
-            {
-              type: 'inline_keyboard',
-              payload: {
-                buttons: [
-                  [
-                    {
-                      type: 'link',
-                      text: 'Открыть витрину',
-                      url: 'https://max.ru/se13381675_1_bot?startapp=s_tsvety-max__r_seller-1',
-                    },
-                  ],
-                ],
+          buttons: [
+            [
+              {
+                type: 'link',
+                text: 'Открыть витрину',
+                url: 'https://max.ru/se13381675_1_bot?startapp=s_tsvety-max__r_seller-1',
               },
-            },
+            ],
           ],
         }),
         expect.objectContaining({
-          immediate: true,
           trafficClass: 'interactive',
         }),
       );
@@ -261,7 +275,7 @@ describe('KaravanStorefrontRelayService', () => {
       ).resolves.toBe('noop');
 
       expect(fixture.fetchMock).not.toHaveBeenCalled();
-      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+      expect(fixture.maxClient.sendMessage).not.toHaveBeenCalled();
     } finally {
       fixture.restore();
     }
@@ -286,7 +300,7 @@ describe('KaravanStorefrontRelayService', () => {
       ).resolves.toBe('handled');
 
       expect(fixture.fetchMock).toHaveBeenCalledTimes(1);
-      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+      expect(fixture.maxClient.sendMessage).toHaveBeenCalledTimes(1);
     } finally {
       fixture.restore();
     }
@@ -319,7 +333,7 @@ describe('KaravanStorefrontRelayService', () => {
       ).resolves.toBe('handled');
 
       expect(fixture.fetchMock).toHaveBeenCalledTimes(1);
-      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+      expect(fixture.maxClient.sendMessage).toHaveBeenCalledTimes(1);
     } finally {
       fixture.restore();
     }
@@ -347,7 +361,7 @@ describe('KaravanStorefrontRelayService', () => {
       ).resolves.toBe('handled');
 
       expect(fixture.fetchMock).toHaveBeenCalledTimes(1);
-      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+      expect(fixture.maxClient.sendMessage).toHaveBeenCalledTimes(1);
     } finally {
       fixture.restore();
     }
@@ -383,7 +397,7 @@ describe('KaravanStorefrontRelayService', () => {
       ).resolves.toBe('handled');
 
       expect(fixture.fetchMock).toHaveBeenCalledTimes(1);
-      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+      expect(fixture.maxClient.sendMessage).toHaveBeenCalledTimes(1);
     } finally {
       fixture.restore();
     }
@@ -418,7 +432,7 @@ describe('KaravanStorefrontRelayService', () => {
       ).resolves.toBe('handled');
 
       expect(fixture.fetchMock).toHaveBeenCalledTimes(1);
-      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+      expect(fixture.maxClient.sendMessage).toHaveBeenCalledTimes(1);
     } finally {
       fixture.restore();
     }
@@ -448,7 +462,7 @@ describe('KaravanStorefrontRelayService', () => {
       ).resolves.toBe('noop');
 
       expect(fixture.fetchMock).not.toHaveBeenCalled();
-      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+      expect(fixture.maxClient.sendMessage).not.toHaveBeenCalled();
     } finally {
       fixture.restore();
     }
@@ -481,7 +495,7 @@ describe('KaravanStorefrontRelayService', () => {
       ).resolves.toBe('noop');
 
       expect(fixture.fetchMock).not.toHaveBeenCalled();
-      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+      expect(fixture.maxClient.sendMessage).not.toHaveBeenCalled();
     } finally {
       fixture.restore();
     }
@@ -514,7 +528,7 @@ describe('KaravanStorefrontRelayService', () => {
       ).resolves.toBe('noop');
 
       expect(fixture.fetchMock).not.toHaveBeenCalled();
-      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+      expect(fixture.maxClient.sendMessage).not.toHaveBeenCalled();
     } finally {
       fixture.restore();
     }
@@ -532,7 +546,7 @@ describe('KaravanStorefrontRelayService', () => {
       ).resolves.toBe('handled');
 
       expect(fixture.fetchMock).toHaveBeenCalledTimes(1);
-      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+      expect(fixture.maxClient.sendMessage).toHaveBeenCalledTimes(1);
     } finally {
       fixture.restore();
     }
@@ -565,29 +579,22 @@ describe('KaravanStorefrontRelayService', () => {
       ).resolves.toBe('handled');
 
       expect(fixture.fetchMock).toHaveBeenCalledTimes(2);
-      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
-      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      expect(fixture.maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      expect(fixture.maxClient.sendMessage).toHaveBeenCalledWith(
         'chat-1',
+        'Витрина продавца',
         expect.objectContaining({
-          attachments: [
-            {
-              type: 'inline_keyboard',
-              payload: {
-                buttons: [
-                  [
-                    {
-                      type: 'link',
-                      text: 'Открыть витрину',
-                      url: 'https://max.ru/se13381675_1_bot?startapp=s_del-yarn__r_seller-2',
-                    },
-                  ],
-                ],
+          buttons: [
+            [
+              {
+                type: 'link',
+                text: 'Открыть витрину',
+                url: 'https://max.ru/se13381675_1_bot?startapp=s_del-yarn__r_seller-2',
               },
-            },
+            ],
           ],
         }),
         expect.objectContaining({
-          immediate: true,
           trafficClass: 'interactive',
         }),
       );
@@ -607,7 +614,7 @@ describe('KaravanStorefrontRelayService', () => {
     try {
       await expect(fixture.service.handleMessageCreated(baseContext)).resolves.toBe('noop');
 
-      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+      expect(fixture.maxClient.sendMessage).not.toHaveBeenCalled();
       expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
     } finally {
       fixture.restore();
@@ -620,27 +627,31 @@ describe('KaravanStorefrontRelayService', () => {
     try {
       await expect(fixture.service.handleMessageCreated(baseContext)).resolves.toBe('duplicate');
 
-      expect(fixture.maxClient.sendCustomMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+      expect(fixture.fetchMock).not.toHaveBeenCalled();
+      expect(fixture.maxClient.sendMessage).not.toHaveBeenCalled();
       expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
     } finally {
       fixture.restore();
     }
   });
 
-  it('keeps the idempotency claim when sending fails ambiguously', async () => {
+  it('releases the processing claim when durable queue acceptance fails', async () => {
     const fixture = createService({ sendRejects: true });
 
     try {
       await expect(fixture.service.handleMessageCreated(baseContext)).resolves.toBe('failed');
 
-      expect(fixture.redisCounter.releaseLock).not.toHaveBeenCalled();
+      expect(fixture.redisCounter.releaseLock).toHaveBeenCalledWith(
+        'karavan-storefront-relay:v1:chat-1:mid-source-1',
+        'lock-1',
+      );
       expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
     } finally {
       fixture.restore();
     }
   });
 
-  it('releases the idempotency claim when MAX rejects the payload with a final 4xx', async () => {
+  it('releases the processing claim for any rejected queue request', async () => {
     const error = Object.assign(new Error('bad request'), {
       response: {
         status: 400,
@@ -656,6 +667,98 @@ describe('KaravanStorefrontRelayService', () => {
         'lock-1',
       );
       expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
+    } finally {
+      fixture.restore();
+    }
+  });
+
+  it('keeps the durable claim when BullMQ queue ownership is ambiguous', async () => {
+    const fixture = createService({
+      sendRejects: true,
+      sendError: new Error('Ambiguous BullMQ ownership for MAX SEND_MESSAGE relay-1'),
+    });
+
+    try {
+      await expect(fixture.service.handleMessageCreated(baseContext)).resolves.toBe('failed');
+
+      expect(fixture.redisCounter.renewLock).toHaveBeenCalled();
+      expect(fixture.redisCounter.releaseLock).not.toHaveBeenCalled();
+      expect(fixture.prisma.auditLog.update).toHaveBeenCalledWith({
+        where: { id: 'audit-pending-1' },
+        data: {
+          action: 'KARAVAN_STOREFRONT_RELAY',
+          payload: expect.objectContaining({
+            deliveryStatus: 'ambiguous',
+          }),
+        },
+      });
+    } finally {
+      fixture.restore();
+    }
+  });
+
+  it('coalesces concurrent fresh storefront lookups for the same seller', async () => {
+    const fixture = createService();
+
+    try {
+      await expect(
+        Promise.all([
+          fixture.service.handleMessageCreated(baseContext),
+          fixture.service.handleMessageCreated({
+            ...baseContext,
+            chatId: 'chat-2',
+            messageId: 'mid-source-2',
+          }),
+        ]),
+      ).resolves.toEqual(['handled', 'handled']);
+
+      expect(fixture.fetchMock).toHaveBeenCalledTimes(1);
+      expect(fixture.maxClient.sendMessage).toHaveBeenCalledTimes(2);
+    } finally {
+      fixture.restore();
+    }
+  });
+
+  it('promotes a queued audit when the reply companion webhook arrives', async () => {
+    const fixture = createService();
+    fixture.prisma.auditLog.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({
+      id: 'audit-queued-1',
+      payload: {
+        sourceMessageId: 'mid-source-1',
+        companionMessageId: null,
+        deliveryStatus: 'queued',
+      },
+    });
+
+    try {
+      await expect(
+        fixture.service.recognizeCompanionMessage({
+          chatId: 'chat-1',
+          messageId: 'mid-companion-1',
+          text: 'Витрина продавца',
+          raw: {
+            message: {
+              link: {
+                type: 'reply',
+                message: {
+                  mid: 'mid-source-1',
+                },
+              },
+            },
+          },
+        }),
+      ).resolves.toBe(true);
+
+      expect(fixture.prisma.auditLog.update).toHaveBeenCalledWith({
+        where: { id: 'audit-queued-1' },
+        data: {
+          payload: expect.objectContaining({
+            sourceMessageId: 'mid-source-1',
+            companionMessageId: 'mid-companion-1',
+            deliveryStatus: 'sent',
+          }),
+        },
+      });
     } finally {
       fixture.restore();
     }

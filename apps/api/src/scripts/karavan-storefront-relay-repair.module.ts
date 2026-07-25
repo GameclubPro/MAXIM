@@ -4,6 +4,7 @@ import { ConfigModule } from '@nestjs/config';
 import { validateEnv } from '../config/env.schema';
 import { KaravanStorefrontRelayService } from '../integrations/karavan-storefront/karavan-storefront-relay.service';
 import { MaxBotContextService } from '../max/max-bot-context.service';
+import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { MaxClientService } from '../max/max-client.service';
 import { RedisCounterModule } from '../moderation/redis-counter.module';
@@ -27,6 +28,7 @@ import { ActionHealthService } from '../system/action-health.service';
   providers: [
     MaxBotRegistryService,
     MaxBotContextService,
+    MaxBotLinkService,
     ActionHealthService,
     MaxClientService,
     KaravanStorefrontRelayService,

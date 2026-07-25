@@ -385,6 +385,7 @@ import {
 } from './bot-speech-media.service';
 import { NightModeTransitionEventService } from './night-mode-transition-event.service';
 import {
+  KARAVAN_STOREFRONT_RELAY_AUDIT_ACTION,
   isKaravanStorefrontRelayCompanionText,
   KaravanStorefrontRelayService,
 } from '../integrations/karavan-storefront/karavan-storefront-relay.service';
@@ -435,7 +436,6 @@ const VIOLATION_MESSAGE_PROCESSING_TTL_SEC = 8 * 24 * 60 * 60;
 const SERVICE_MEMBER_ACTION_TIMESTAMP_GRANULARITY_MS = 1_000;
 const SERVICE_MEMBER_ACTION_DEDUPE_WINDOW_MS = 30_000;
 const GREETING_MESSAGE_DEDUPE_WINDOW_MS = 10 * 60_000;
-const KARAVAN_STOREFRONT_RELAY_AUDIT_ACTION = 'KARAVAN_STOREFRONT_RELAY';
 const SHARED_CHAT_OWNER_EVENT_LOOKUP_WINDOW_MS = 15 * 60_000;
 const SHARED_CHAT_OWNER_EVENT_LOOKUP_LIMIT = 100;
 
@@ -1096,6 +1096,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             messageId,
             text,
             settings: chat.settings,
+            raw: update.raw,
           });
           return;
         }
@@ -1145,6 +1146,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           messageId,
           text,
           settings,
+          raw: update.raw,
         });
         return;
       }
@@ -1201,6 +1203,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             messageId,
             text,
             settings,
+            raw: update.raw,
           });
         }
         return;
@@ -6382,8 +6385,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     messageId: string;
     text: string;
     settings: ChatSettings;
+    raw?: unknown;
   }) {
-    const { chatId, userId, messageId, text, settings } = params;
+    const { chatId, userId, messageId, text, settings, raw } = params;
 
     if (!settings.deleteBotMessagesEnabled) {
       return;
@@ -6394,6 +6398,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       messageId,
       text,
       settings,
+      raw,
     });
     if (skipReason) {
       this.logger.debug(
@@ -6459,6 +6464,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     messageId: string;
     text: string;
     settings: ChatSettings;
+    raw?: unknown;
   }) {
     const rulesSkipReason = await rulesFence.classify(this.prisma.chatRules, params);
     if (rulesSkipReason) return rulesSkipReason;
@@ -6490,6 +6496,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (isKaravanStorefrontRelayCompanionText(params.text)) {
+      if (
+        this.karavanStorefrontRelayService &&
+        (await this.karavanStorefrontRelayService.recognizeCompanionMessage({
+          chatId: params.chatId,
+          messageId: params.messageId,
+          text: params.text,
+          raw: params.raw,
+        }))
+      ) {
+        return 'karavan_storefront_relay';
+      }
+
       const storefrontRelayAudit = await this.prisma.auditLog?.findFirst?.({
         where: {
           chatId: params.chatId,

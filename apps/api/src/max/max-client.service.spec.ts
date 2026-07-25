@@ -1116,6 +1116,42 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('persists caller ledger context on queued sends', async () => {
+    const actionQueue = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(null),
+    };
+    const service = createService({}, {}, actionQueue);
+
+    await service.sendMessage('chat-1', 'Витрина продавца', undefined, {
+      idempotencyKey: 'storefront-relay-chat-1-message-1',
+      sourceTag: MAX_API_SOURCE_TAGS.KARAVAN_STOREFRONT_RELAY,
+      ledgerContext: {
+        karavanStorefrontRelay: {
+          sourceMessageId: 'message-1',
+          senderId: 'user-1',
+        },
+      },
+    });
+
+    expect(actionQueue.add).toHaveBeenCalledWith(
+      'execute-max-action',
+      expect.objectContaining({
+        actionType: 'SEND_MESSAGE',
+        sourceTag: MAX_API_SOURCE_TAGS.KARAVAN_STOREFRONT_RELAY,
+        ledgerContext: {
+          karavanStorefrontRelay: {
+            sourceMessageId: 'message-1',
+            senderId: 'user-1',
+          },
+        },
+      }),
+      expect.any(Object),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('inherits immediate send dispatch context when scheduling auto-delete', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(

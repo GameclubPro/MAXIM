@@ -4598,6 +4598,81 @@ describe('ModerationService', () => {
     expect(prisma.managedBroadcastDelivery.findFirst).not.toHaveBeenCalled();
   });
 
+  it('does not auto-delete a queued Karavan companion before its audit is promoted', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            deleteBotMessagesEnabled: true,
+            deleteBotMessagesDelayMinutes: 1,
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: { create: jest.fn() },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      auditLog: { findFirst: jest.fn() },
+      managedBroadcastDelivery: { findFirst: jest.fn() },
+      webhookEvent: { findUnique: jest.fn(), update: jest.fn() },
+      globalSpammer: { upsert: jest.fn() },
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const karavanStorefrontRelayService = {
+      recognizeCompanionMessage: jest.fn().mockResolvedValue(true),
+    };
+    const update = createOwnBotUpdateWithoutBotFlags(
+      'Витрина продавца',
+      'mid-storefront-button-queued-1',
+    );
+    update.raw = {
+      message: {
+        sender: { user_id: 613002203036 },
+        link: {
+          type: 'reply',
+          message: { mid: 'mid-source-queued-1' },
+        },
+      },
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      { get: jest.fn().mockReturnValue('id613002203036_bot') } as never,
+    );
+    (
+      service as unknown as {
+        karavanStorefrontRelayService: typeof karavanStorefrontRelayService;
+      }
+    ).karavanStorefrontRelayService = karavanStorefrontRelayService;
+
+    await service.handleUpdate(update);
+
+    expect(karavanStorefrontRelayService.recognizeCompanionMessage).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      messageId: 'mid-storefront-button-queued-1',
+      text: 'Витрина продавца',
+      raw: update.raw,
+    });
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.auditLog.findFirst).not.toHaveBeenCalled();
+  });
+
   it('does not auto-delete managed broadcast message from own bot', async () => {
     const prisma = {
       chat: {
