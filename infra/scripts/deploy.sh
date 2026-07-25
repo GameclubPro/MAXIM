@@ -112,6 +112,6 @@ docker compose -f infra/docker-compose.yml up -d --build --remove-orphans "${SER
 
 ensure_compose_env
 docker compose -f infra/docker-compose.yml exec -T api-ingress sh -lc \
-  'cd /app/apps/api && ./node_modules/.bin/prisma migrate deploy --config prisma.config.ts'
+  'cd /app && ./node_modules/.bin/prisma migrate deploy --config apps/api/prisma.config.ts'
 
 echo "Deployment complete"

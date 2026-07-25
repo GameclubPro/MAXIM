@@ -25,7 +25,7 @@ import {
   type ChangeEvent as ReactChangeEvent,
   type FormEvent as ReactFormEvent,
 } from 'react';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import {
   MAX_MARKDOWN_TOOL_DEFINITIONS,
   type MaxMarkdownTool,

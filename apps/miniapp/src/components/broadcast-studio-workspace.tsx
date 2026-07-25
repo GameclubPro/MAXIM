@@ -4,7 +4,7 @@ import type {
 } from '../lib/broadcast-history-filters';
 import { resolveRequestedBroadcastWorkspace } from '../features/publications/legacy-autoposts';
 import { useEffect, useRef } from 'react';
-import { useLocation, useParams } from 'react-router-dom';
+import { useLocation, useParams } from 'react-router';
 import { PublicationWorkspaceHandoff } from './publication-workspace-handoff';
 import { SegmentedControl } from './ui/segmented-control';
 import { ResetIcon } from './ui/reset-icon';

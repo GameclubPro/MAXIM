@@ -35,7 +35,7 @@ import {
   useState,
   type MouseEvent,
 } from 'react';
-import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import type { BroadcastSchedulePlannerSelectionState } from '../components/broadcast-schedule-planner';
 import { BroadcastPublishBar } from '../components/broadcast-publish-bar';
 import type { ManagedPollWorkspaceHandle } from '../components/managed-poll-workspace';

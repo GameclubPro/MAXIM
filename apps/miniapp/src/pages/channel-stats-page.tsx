@@ -22,7 +22,7 @@ import '../styles/channel-stats-executive.css';
 import '../styles/statistics-experience.css';
 import type { CSSProperties, PointerEvent } from 'react';
 import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';

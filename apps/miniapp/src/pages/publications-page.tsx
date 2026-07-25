@@ -18,7 +18,7 @@ import {
   Xmark,
 } from 'iconoir-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 import { BroadcastButtonsSheet } from '../components/broadcast-buttons-sheet';
 import { BroadcastContentComposer } from '../components/broadcast-content-composer';
 import {

@@ -119,7 +119,7 @@ test('rejects undocumented and stale debt classifications', () => {
   assert.throws(() => validatePrismaDriftBaseline(stale), /metadata is unused/u);
 });
 
-test('invokes the pinned workspace Prisma diff against explicit DATABASE_URL', () => {
+test('invokes the pinned repository Prisma diff against explicit DATABASE_URL', () => {
   const calls = [];
   const stdout = '-- AlterTable\nALTER TABLE "chat" ADD COLUMN "field" TEXT;\n';
   const output = invokePinnedPrismaDiff({
@@ -133,7 +133,7 @@ test('invokes the pinned workspace Prisma diff against explicit DATABASE_URL', (
 
   assert.equal(output, stdout);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].command, '/repo/apps/api/node_modules/.bin/prisma');
+  assert.equal(calls[0].command, '/repo/node_modules/.bin/prisma');
   assert.deepEqual(calls[0].args, [
     'migrate',
     'diff',

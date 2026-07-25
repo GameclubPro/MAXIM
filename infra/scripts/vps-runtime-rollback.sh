@@ -322,7 +322,7 @@ maxim_topology_build_shared_api_image "$ROLLBACK_API_IMAGE"
 ROLLBACK_API_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$ROLLBACK_API_IMAGE")"
 ROLLBACK_RUNTIME_STARTED=1
 docker compose "${COMPOSE_FILES[@]}" run --rm --no-deps api-ingress \
-  ./apps/api/node_modules/.bin/prisma migrate deploy --config apps/api/prisma.config.ts
+  ./node_modules/.bin/prisma migrate deploy --config apps/api/prisma.config.ts
 docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate "${SERVICES[@]}"
 
 for service in "${SERVICES[@]}"; do

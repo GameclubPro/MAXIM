@@ -1,5 +1,5 @@
 import { NavArrowRight } from 'iconoir-react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import type { ManagedEntityType } from '@maxim/contracts';
 import { cn } from '../lib/cn';
 import { SettingsSectionIcon } from './ui/settings-section-toggle';

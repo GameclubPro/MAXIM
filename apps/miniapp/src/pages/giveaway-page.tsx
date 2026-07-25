@@ -7,7 +7,7 @@ import type {
 import '../styles/giveaway-page.css';
 import type { CSSProperties } from 'react';
 import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router';
 import { useToast } from '../components/ui/toast';
 import {
   claimGiveaway,

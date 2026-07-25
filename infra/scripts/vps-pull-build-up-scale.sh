@@ -477,7 +477,7 @@ remove_stale_service_containers() {
 run_migrations() {
   ensure_compose_env
   docker compose "${COMPOSE_FILES[@]}" run --rm --no-deps api-ingress \
-    ./apps/api/node_modules/.bin/prisma migrate deploy --config apps/api/prisma.config.ts
+    ./node_modules/.bin/prisma migrate deploy --config apps/api/prisma.config.ts
 }
 
 if ! command -v docker >/dev/null 2>&1; then

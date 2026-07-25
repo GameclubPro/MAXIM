@@ -8,7 +8,7 @@
       "label": "Startup",
       "entries": ["index.html", "src/pages/chats-page.tsx"],
       "limits": {
-        "jsGzipBytes": 117760,
+        "jsGzipBytes": 117888,
         "cssGzipBytes": 43008
       },
       "allowances": [

@@ -60,7 +60,7 @@ import {
   useState,
   type MouseEvent,
 } from 'react';
-import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import type { BroadcastSchedulePlannerSelectionState } from '../components/broadcast-schedule-planner';
 import { AdminContactToggle } from '../components/admin-contact-toggle';
 import { BroadcastLinkButtonsEditor } from '../components/broadcast-link-buttons-editor';

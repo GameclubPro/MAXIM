@@ -160,13 +160,13 @@ export function invokePinnedPrismaDiff({ root, env = process.env, spawn = spawnS
 
   const apiRoot = resolve(root, 'apps/api');
   const prismaBinary = resolve(
-    apiRoot,
+    root,
     'node_modules/.bin',
     process.platform === 'win32' ? 'prisma.cmd' : 'prisma',
   );
   if (spawn === spawnSync && !existsSync(prismaBinary)) {
     throw new Error(
-      `Pinned workspace Prisma binary is missing: ${prismaBinary}. Run npm ci first.`,
+      `Pinned repository Prisma binary is missing: ${prismaBinary}. Run npm ci first.`,
     );
   }
 
@@ -188,7 +188,7 @@ export function invokePinnedPrismaDiff({ root, env = process.env, spawn = spawnS
   });
 
   if (result.error) {
-    throw new Error(`Unable to run pinned workspace Prisma: ${result.error.message}`);
+    throw new Error(`Unable to run pinned repository Prisma: ${result.error.message}`);
   }
   if (result.status !== 0) {
     const diagnostics = normalizePrismaDiff(`${result.stderr ?? ''}\n${result.stdout ?? ''}`);

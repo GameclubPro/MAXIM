@@ -47,7 +47,7 @@ import {
   type UIEvent as ReactUIEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
 import {
   MAX_MARKDOWN_TOOL_DEFINITIONS,
   type MaxMarkdownTool,

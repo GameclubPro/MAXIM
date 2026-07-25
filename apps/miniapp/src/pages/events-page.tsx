@@ -28,7 +28,7 @@ import {
   useMemo,
   useState,
 } from 'react';
-import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import { ChatParticipantSheet } from '../components/dashboard/chat-participant-sheet';
 import { ChatParticipantsRoster } from '../components/dashboard/chat-participants-roster';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';

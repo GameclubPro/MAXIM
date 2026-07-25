@@ -1,5 +1,5 @@
 import { useEffect, type ReactNode } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import '../styles/legal-page.css';
 
 type LegalDocumentKind = 'agreement' | 'privacy';

@@ -17,7 +17,7 @@ import {
   Routes,
   useLocation,
   useNavigate,
-} from 'react-router-dom';
+} from 'react-router';
 import { Shell } from './components/shell';
 import { GlassCard } from './components/ui/glass-card';
 import { Spinner } from './components/ui/spinner';
@@ -67,7 +67,6 @@ const HASH_ROUTER_ENABLED =
   typeof __MAXIM_ROUTER_MODE__ === 'string' && __MAXIM_ROUTER_MODE__ === 'hash';
 const AppRouter = HASH_ROUTER_ENABLED ? HashRouter : Router;
 const ROUTER_BASENAME = HASH_ROUTER_ENABLED ? '' : PUBLIC_ROUTER_BASENAME;
-const ROUTER_MODE = HASH_ROUTER_ENABLED ? 'hash' : 'browser';
 const NATIVE_ENVIRONMENT_SYNC_POLL_INTERVAL_MS = 150;
 const NATIVE_ENVIRONMENT_SYNC_POLL_DURATION_MS = 8_000;
 
@@ -84,9 +83,8 @@ function parseRoute(route: string): URL | null {
 function mergeRouteSearch(currentSearch: string, targetSearch: string): string {
   const merged = new URLSearchParams(currentSearch);
   const target = new URLSearchParams(targetSearch);
-  const targetKeys = new Set(Array.from(target.keys()));
 
-  for (const key of targetKeys) {
+  for (const key of new Set(target.keys())) {
     merged.delete(key);
   }
 
@@ -141,10 +139,6 @@ function buildWindowPathForRoute(pathname: string): string {
   }
 
   return pathname === '/' ? `${PUBLIC_ROUTER_BASENAME}/` : `${PUBLIC_ROUTER_BASENAME}${pathname}`;
-}
-
-function isPublicLegalPathname(): boolean {
-  return isPublicLegalPathnameFromWindow(ROUTER_MODE);
 }
 
 type AppMaxWebAppBridge = NonNullable<Window['MAX']>['WebApp'];
@@ -511,7 +505,10 @@ export function App() {
     }
   }
 
-  if (!apiClient && isPublicLegalPathname()) {
+  if (
+    !apiClient &&
+    isPublicLegalPathnameFromWindow(HASH_ROUTER_ENABLED ? 'hash' : 'browser')
+  ) {
     return <PublicLegalRoutes />;
   }
 

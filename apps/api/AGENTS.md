@@ -15,7 +15,7 @@
 - Focused validation: `npm run check:api`, `npm run check:prisma`, or a targeted `npm test --workspace @maxim/api -- <spec-or-pattern>` while iterating.
 - Public API build/typecheck/test scripts serialize codegen through repo file locks. Do not invoke `*:unlocked`, `*:source`, raw Prisma Generate, and another API validation concurrently.
 - The built entrypoint is `dist/apps/api/src/main.js`; `npm run build --workspace @maxim/api` cleans output and checks that stale modules are absent.
-- Prisma 7 uses `apps/api/prisma.config.ts` from repo root or `prisma.config.ts` from this workspace. In API containers call `./apps/api/node_modules/.bin/prisma` from repo root.
+- Prisma 7 uses `apps/api/prisma.config.ts` from repo root or `prisma.config.ts` from this workspace. Dependency security anchors hoist the pinned CLI, so in API containers call `./node_modules/.bin/prisma` from repo root.
 - Runtime code imports Prisma through `src/prisma/prisma-client.ts`, not `@prisma/client`; generated client output is ignored under `src/generated/prisma/`.
 - Model, enum, or database mapping changes in `prisma/schema.prisma` require a migration; generator/datasource-only changes do not.
 - `config/prisma-migration-policy.json` pins names and content digests through the latest committed migration. A new migration must advance that immutable baseline in the same reviewed change; `policyRulesAfter` is the fixed bootstrap cutoff and must never advance. Never edit or delete historical `migration.sql` files.

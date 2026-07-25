@@ -1,6 +1,6 @@
 import type { LegacyPublicationSummary } from '@maxim/contracts/publication';
 import { NavArrowRight } from 'iconoir-react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation } from 'react-router';
 import { formatRussianCountLabel } from '../../lib/broadcast-audience';
 import {
   buildLegacyPublicationNavigationState,

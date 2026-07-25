@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { cn } from '../lib/cn';
 import { GlassCard } from './ui/glass-card';
 import './handoff.css';
