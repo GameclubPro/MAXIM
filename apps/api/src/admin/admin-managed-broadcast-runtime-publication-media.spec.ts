@@ -73,7 +73,7 @@ describe('AdminManagedBroadcastRuntime publication media', () => {
       ],
     });
 
-    const media = await (runtime as any).loadManagedBroadcastRequestMedia(
+    const media = await (runtime as any).mediaRuntime.loadManagedBroadcastRequestMedia(
       createBroadcastRow({
         imageEnabled: true,
         imageBase64: Buffer.from('legacy-image').toString('base64'),
@@ -152,7 +152,7 @@ describe('AdminManagedBroadcastRuntime publication media', () => {
       ],
     });
 
-    const media = await (runtime as any).loadManagedBroadcastRequestMedia(
+    const media = await (runtime as any).mediaRuntime.loadManagedBroadcastRequestMedia(
       createBroadcastRow({
         publicationContentRevisionId: 'content-latest',
         imageEnabled: true,
@@ -194,7 +194,9 @@ describe('AdminManagedBroadcastRuntime publication media', () => {
       ],
     });
 
-    const media = await (runtime as any).loadManagedBroadcastRequestMedia(createBroadcastRow());
+    const media = await (runtime as any).mediaRuntime.loadManagedBroadcastRequestMedia(
+      createBroadcastRow(),
+    );
 
     expect(media).toEqual({
       imageEnabled: false,
@@ -213,7 +215,7 @@ describe('AdminManagedBroadcastRuntime publication media', () => {
     const { runtime, uploadVideo } = createRuntime();
     const bytes = Buffer.from('inline-video');
 
-    const media = await (runtime as any).resolveManagedBroadcastMedia(
+    const media = await (runtime as any).mediaRuntime.resolveManagedBroadcastMedia(
       createVideoRequestPayload({
         [PUBLICATION_VIDEO_INLINE_BASE64_FIELD]: bytes.toString('base64'),
       }),
@@ -241,7 +243,7 @@ describe('AdminManagedBroadcastRuntime publication media', () => {
     const { runtime, assetFindFirst, uploadVideo } = createRuntime();
 
     await expect(
-      (runtime as any).resolveManagedBroadcastMedia(
+      (runtime as any).mediaRuntime.resolveManagedBroadcastMedia(
         createVideoRequestPayload({
           [PUBLICATION_VIDEO_ASSET_ID_FIELD]: 'asset-from-another-user',
         }),
@@ -262,7 +264,7 @@ describe('AdminManagedBroadcastRuntime publication media', () => {
       fileName: 'owned.mp4',
     });
 
-    await (runtime as any).resolveManagedBroadcastMedia(
+    await (runtime as any).mediaRuntime.resolveManagedBroadcastMedia(
       createVideoRequestPayload({
         [PUBLICATION_VIDEO_ASSET_ID_FIELD]: 'asset-owned',
       }),
@@ -300,7 +302,7 @@ describe('AdminManagedBroadcastRuntime publication media', () => {
       fileName: 'legacy.png',
     };
 
-    const media = await (runtime as any).loadManagedBroadcastRequestMedia(
+    const media = await (runtime as any).mediaRuntime.loadManagedBroadcastRequestMedia(
       createBroadcastRow({
         publicationContentRevisionId: null,
         imageEnabled: true,

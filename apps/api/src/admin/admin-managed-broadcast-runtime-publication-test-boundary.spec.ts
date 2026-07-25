@@ -237,7 +237,12 @@ describe('AdminManagedBroadcastRuntime publication test request boundary', () =>
     });
 
     await expect(
-      (runtime as any).resolveManagedBroadcastMedia(prepared.payload, 'chat', 'chat-1', 'user-1'),
+      (runtime as any).mediaRuntime.resolveManagedBroadcastMedia(
+        prepared.payload,
+        'chat',
+        'chat-1',
+        'user-1',
+      ),
     ).rejects.toThrow('Внутренняя ссылка на видео недоступна.');
   });
 

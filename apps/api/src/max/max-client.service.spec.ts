@@ -3872,6 +3872,32 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it.each([
+    ['a plain retval', 'retval'],
+    ['an empty response', null],
+  ])('uses the video upload-session token when binary upload returns %s', async (_label, data) => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            data: {
+              url: 'https://upload.max.ru/video-session-token',
+              token: 'video-session-token',
+            },
+          }),
+        )
+        .mockReturnValueOnce(of({ data })),
+    };
+    const service = createService(httpService);
+
+    await expect(
+      service.uploadVideo(Buffer.from('video-binary'), 'publication.mp4', 'video/mp4'),
+    ).resolves.toEqual({ token: 'video-session-token' });
+
+    await service.onModuleDestroy();
+  });
+
   it('uploads video in bounded Content-Range chunks when the feature flag is enabled', async () => {
     const chunkBytes = 4 * 1_024 * 1_024;
     const video = Buffer.alloc(chunkBytes + 3, 7);

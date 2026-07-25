@@ -2201,6 +2201,7 @@ model ManagedBroadcastDelivery {
   status                    ManagedBroadcastDeliveryStatus @default(PENDING)
   attemptCount              Int                            @default(0) @map("attempt_count")
   remoteMessageId           String?                        @map("remote_message_id")
+  remoteMessageVerifiedAt   DateTime?                      @map("remote_message_verified_at")
   legacySentWithoutRemoteId Boolean                        @default(false) @map("legacy_sent_without_remote_id")
   lastError                 String?                        @map("last_error")
   sentAt                    DateTime?                      @map("sent_at")

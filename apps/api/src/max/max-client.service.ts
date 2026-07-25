@@ -1875,9 +1875,9 @@ export class MaxClientService implements OnModuleDestroy {
       filename: fileName,
       contentType: mimeType,
     });
-    let uploadResult: Record<string, unknown>;
+    let uploadResult: unknown;
     try {
-      uploadResult = await this.requestAbsolute<Record<string, unknown>>('post', uploadMeta.url, {
+      uploadResult = await this.requestAbsolute<unknown>('post', uploadMeta.url, {
         data: form,
         headers: form.getHeaders(),
         maxBodyLength: Infinity,
@@ -1889,12 +1889,19 @@ export class MaxClientService implements OnModuleDestroy {
       throw this.sanitizeUploadError(error, uploadType);
     }
 
+    // MAX returns a plain retval (or no payload) after successful video/audio upload.
+    // Their attachment token belongs to the upload session response, not this response.
+    if ((uploadType === 'video' || uploadType === 'audio') && uploadMeta.token) {
+      return { token: uploadMeta.token };
+    }
+
     if (!uploadResult || typeof uploadResult !== 'object') {
       throw new Error('MAX upload payload is missing');
     }
 
-    if (Object.keys(uploadResult).length > 0) {
-      return uploadResult;
+    const uploadPayload = uploadResult as Record<string, unknown>;
+    if (Object.keys(uploadPayload).length > 0) {
+      return uploadPayload;
     }
 
     if (uploadMeta.token) {

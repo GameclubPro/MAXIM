@@ -71,9 +71,11 @@ function createRuntime() {
   const prepareRequest = jest
     .spyOn(runtime as any, 'prepareManagedBroadcastRequest')
     .mockResolvedValue(preparedRequest);
-  jest.spyOn(runtime as any, 'buildManagedBroadcastMaxApiOptions').mockReturnValue({});
+  jest
+    .spyOn((runtime as any).mediaRuntime, 'buildManagedBroadcastMaxApiOptions')
+    .mockReturnValue({});
   const resolveMedia = jest
-    .spyOn(runtime as any, 'resolveManagedBroadcastMedia')
+    .spyOn((runtime as any).mediaRuntime, 'resolveManagedBroadcastMedia')
     .mockResolvedValue({});
   jest.spyOn(runtime as any, 'buildManagedBroadcastMessage').mockResolvedValue({
     messageText: 'Тест',

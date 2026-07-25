@@ -112,7 +112,6 @@ import {
   updateChannelDialogMessageRequestSchema,
   updateChannelDialogMessageResponseSchema,
   type AllowlistMatchType,
-  type BroadcastImage,
   MAX_BROADCAST_IMAGES,
   INVITATION_ACCESS_REQUIRED_COUNT_MAX,
   INVITATION_ACCESS_REQUIRED_COUNT_MIN,
@@ -333,11 +332,10 @@ import {
 import {
   AdminManagedBroadcastMediaRuntime,
   ManagedBroadcastTransientUploadError,
-  type ManagedBroadcastMediaResolutionOptions,
   type ManagedBroadcastProgressCallback,
-  type ManagedBroadcastRequestMedia,
   type ManagedBroadcastTestOptions,
 } from './admin-managed-broadcast-media-runtime';
+import { AdminManagedBroadcastPublicationVerification } from './admin-managed-broadcast-publication-verification';
 import {
   buildManagedBroadcastLedgerContext,
   readManagedBroadcastLedgerCommentDialogContext,
@@ -646,9 +644,11 @@ class ManagedBroadcastPublicationExecutionStopped extends Error {
 
 export class AdminManagedBroadcastRuntime {
   private readonly mediaRuntime: AdminManagedBroadcastMediaRuntime;
+  private readonly publicationVerification: AdminManagedBroadcastPublicationVerification;
 
   constructor(private readonly context: AdminManagedBroadcastRuntimeContext) {
     this.mediaRuntime = new AdminManagedBroadcastMediaRuntime(context);
+    this.publicationVerification = new AdminManagedBroadcastPublicationVerification(context);
   }
 
   private get prisma(): PrismaService {
@@ -1375,7 +1375,7 @@ export class AdminManagedBroadcastRuntime {
         );
         const normalizedText = row.text.replace(/\s+/gu, ' ').trim();
         const hasVideo = readManagedBroadcastMediaType(row.mediaType) === 'video';
-        const hasImage = this.readManagedBroadcastImagesFromRow(row).length > 0;
+        const hasImage = this.mediaRuntime.readManagedBroadcastImagesFromRow(row).length > 0;
 
         return {
           broadcastId: row.id,
@@ -2087,8 +2087,8 @@ export class AdminManagedBroadcastRuntime {
           (await this.resolveDeliveryBotAssignment(sourceChatId)) ??
           this.resolvePrivateDeliveryBotId();
         const privateChatId = await this.resolvePrivateDialogChatId(user, deliveryBotId);
-        const maxApiOptions = this.buildManagedBroadcastMaxApiOptions('interactive');
-        const media = await this.resolveManagedBroadcastMedia(
+        const maxApiOptions = this.mediaRuntime.buildManagedBroadcastMaxApiOptions('interactive');
+        const media = await this.mediaRuntime.resolveManagedBroadcastMedia(
           request.payload,
           entityType,
           sourceChatId,
@@ -2574,7 +2574,7 @@ export class AdminManagedBroadcastRuntime {
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
-    this.validateManagedBroadcastMediaPayload(parsed.data, {
+    this.mediaRuntime.validateManagedBroadcastMediaPayload(parsed.data, {
       trustedPublicationTestPayload: options.trustedPublicationTestPayload,
     });
 
@@ -2649,7 +2649,7 @@ export class AdminManagedBroadcastRuntime {
       throw new BadRequestException('Все циклы должны укладываться в 31 день от текущего момента.');
     }
 
-    const maxApiOptions = this.resolveManagedBroadcastSourceMaxApiOptions(source);
+    const maxApiOptions = this.mediaRuntime.resolveManagedBroadcastSourceMaxApiOptions(source);
     const resolvedBotIdsByChatId = new Map<string, string | undefined>();
     const mediaByBotId = new Map<string, ManagedBroadcastResolvedMedia>();
     const resolveTargetBotId = async (chatId: string): Promise<string | undefined> => {
@@ -2665,7 +2665,7 @@ export class AdminManagedBroadcastRuntime {
       if (!mediaByBotId.has(cacheKey)) {
         mediaByBotId.set(
           cacheKey,
-          await this.resolveManagedBroadcastMedia(
+          await this.mediaRuntime.resolveManagedBroadcastMedia(
             request.payload,
             entityType,
             sourceChatId,
@@ -3102,7 +3102,7 @@ export class AdminManagedBroadcastRuntime {
     }
 
     const currentOccurrence = getCurrentManagedBroadcastOccurrence(row);
-    const maxApiOptions = this.resolveManagedBroadcastProcessingMaxApiOptions(reason);
+    const maxApiOptions = this.mediaRuntime.resolveManagedBroadcastProcessingMaxApiOptions(reason);
     if (!(await this.ensureManagedBroadcastPublicationExecutionActive(row, currentOccurrence))) {
       return {
         status: PrismaManagedBroadcastStatus.CANCELED,
@@ -3154,7 +3154,7 @@ export class AdminManagedBroadcastRuntime {
         targetChatIds,
         initialDeliveries,
       );
-      const requestMedia = await this.loadManagedBroadcastRequestMedia(row);
+      const requestMedia = await this.mediaRuntime.loadManagedBroadcastRequestMedia(row);
 
       const request: PreparedManagedBroadcastRequest = {
         payload: {
@@ -3237,6 +3237,22 @@ export class AdminManagedBroadcastRuntime {
         );
       }
 
+      const recoveredUnconfirmedChatIds = await this.publicationVerification.verifyAfterSend(
+        row,
+        currentOccurrence,
+        maxApiOptions,
+        () => this.heartbeatManagedBroadcastProcessingLock(row.id, currentOccurrence, activeLease),
+      );
+      if (recoveredUnconfirmedChatIds.size > 0) {
+        initialDeliveries = await this.prisma.managedBroadcastDelivery.findMany({
+          where: {
+            broadcastId: row.id,
+            occurrenceIndex: currentOccurrence,
+          },
+          orderBy: [{ targetChatId: 'asc' }],
+        });
+      }
+
       const fatalRecoveredDelivery = initialDeliveries.find((delivery: any) => {
         if (delivery.status !== PrismaManagedBroadcastDeliveryStatus.FAILED) {
           return false;
@@ -3296,7 +3312,7 @@ export class AdminManagedBroadcastRuntime {
             this.heartbeatManagedBroadcastProcessingLock(row.id, currentOccurrence, activeLease);
           mediaByBotId.set(
             cacheKey,
-            await this.resolveManagedBroadcastMedia(
+            await this.mediaRuntime.resolveManagedBroadcastMedia(
               request.payload,
               row.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat',
               row.sourceChatId,
@@ -3387,7 +3403,8 @@ export class AdminManagedBroadcastRuntime {
           currentOccurrence,
           delivery.targetChatId,
         );
-        const maxSendOptions = this.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions);
+        const maxSendOptions =
+          this.mediaRuntime.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions);
         const attempts =
           Math.max(
             BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length,
@@ -3862,6 +3879,22 @@ export class AdminManagedBroadcastRuntime {
         }
 
         const sentAt = new Date();
+        const persistedMismatch = await this.publicationVerification.persistResponseTargetMismatch({
+          broadcastId: row.id,
+          occurrenceIndex: currentOccurrence,
+          delivery,
+          deliveryLockToken,
+          resolvedBotId,
+          sentMessage,
+          sentAt,
+        });
+        if (persistedMismatch !== null) {
+          if (persistedMismatch && !failedChatIds.includes(delivery.targetChatId)) {
+            failedChatIds.push(delivery.targetChatId);
+          }
+          continue;
+        }
+
         try {
           const persistedSentMessage = await this.prisma.managedBroadcastDelivery.updateMany({
             where: {
@@ -3922,6 +3955,22 @@ export class AdminManagedBroadcastRuntime {
           }
           await markDeliverySentInMemory(delivery, sentMessage, commentDialogReference);
           continue;
+        }
+      }
+
+      const unconfirmedChatIds = await this.publicationVerification.verifyAfterSend(
+        row,
+        currentOccurrence,
+        maxApiOptions,
+        () => this.heartbeatManagedBroadcastProcessingLock(row.id, currentOccurrence, activeLease),
+      );
+      for (const chatId of unconfirmedChatIds) {
+        const sentIndex = sentChatIds.indexOf(chatId);
+        if (sentIndex >= 0) {
+          sentChatIds.splice(sentIndex, 1);
+        }
+        if (!failedChatIds.includes(chatId)) {
+          failedChatIds.push(chatId);
         }
       }
 
@@ -4214,69 +4263,6 @@ export class AdminManagedBroadcastRuntime {
         'Failed to record managed broadcast comments button reference',
       );
     }
-  }
-
-  private async resolveManagedBroadcastMedia(
-    payload: SendBroadcastRequest,
-    entityType: ManagedEntityType,
-    sourceChatId: string,
-    actorUserId: string,
-    botId?: string,
-    maxApiOptions?: ManagedBroadcastMaxApiOptions,
-    onProgress?: ManagedBroadcastProgressCallback,
-    options: ManagedBroadcastMediaResolutionOptions = {},
-  ): Promise<ManagedBroadcastResolvedMedia> {
-    return this.mediaRuntime.resolveManagedBroadcastMedia(
-      payload,
-      entityType,
-      sourceChatId,
-      actorUserId,
-      botId,
-      maxApiOptions,
-      onProgress,
-      options,
-    );
-  }
-
-  private readManagedBroadcastImagesFromRow(row: PersistedManagedBroadcast): BroadcastImage[] {
-    return this.mediaRuntime.readManagedBroadcastImagesFromRow(row);
-  }
-
-  private async loadManagedBroadcastRequestMedia(
-    row: PersistedManagedBroadcast,
-  ): Promise<ManagedBroadcastRequestMedia> {
-    return this.mediaRuntime.loadManagedBroadcastRequestMedia(row);
-  }
-
-  private validateManagedBroadcastMediaPayload(
-    payload: SendBroadcastRequest,
-    options: Pick<ManagedBroadcastTestOptions, 'trustedPublicationTestPayload'> = {},
-  ): void {
-    this.mediaRuntime.validateManagedBroadcastMediaPayload(payload, options);
-  }
-
-  private buildManagedBroadcastMaxApiOptions(
-    trafficClass: NonNullable<ManagedBroadcastMaxApiOptions['trafficClass']>,
-  ): ManagedBroadcastMaxApiOptions {
-    return this.mediaRuntime.buildManagedBroadcastMaxApiOptions(trafficClass);
-  }
-
-  private buildManagedBroadcastMaxApiRequestOptions(
-    options?: ManagedBroadcastMaxApiOptions,
-  ): ManagedBroadcastMaxApiOptions {
-    return this.mediaRuntime.buildManagedBroadcastMaxApiRequestOptions(options);
-  }
-
-  private resolveManagedBroadcastSourceMaxApiOptions(
-    source: AdminActionSource,
-  ): ManagedBroadcastMaxApiOptions {
-    return this.mediaRuntime.resolveManagedBroadcastSourceMaxApiOptions(source);
-  }
-
-  private resolveManagedBroadcastProcessingMaxApiOptions(
-    reason: 'startup' | 'scheduled' | 'manual_retry' | 'immediate',
-  ): ManagedBroadcastMaxApiOptions {
-    return this.mediaRuntime.resolveManagedBroadcastProcessingMaxApiOptions(reason);
   }
 
   private async createManagedBroadcastOccurrencesWithOverwrite(
@@ -6221,7 +6207,7 @@ export class AdminManagedBroadcastRuntime {
       buttonUrl: row.buttonUrl,
       buttonText: row.buttonText,
     });
-    const images = this.readManagedBroadcastImagesFromRow(row);
+    const images = this.mediaRuntime.readManagedBroadcastImagesFromRow(row);
     const hasVideo = readManagedBroadcastMediaType(row.mediaType) === 'video';
     const cycleCount = normalizeManagedBroadcastCycleCount(row);
 
@@ -6292,7 +6278,7 @@ export class AdminManagedBroadcastRuntime {
       buttonText: row.buttonText,
     });
     const mediaType = readManagedBroadcastMediaType(row.mediaType);
-    const images = this.readManagedBroadcastImagesFromRow(row);
+    const images = this.mediaRuntime.readManagedBroadcastImagesFromRow(row);
     const firstImage = images[0];
     const cycleCount = normalizeManagedBroadcastCycleCount(row);
 
@@ -6369,14 +6355,14 @@ export class AdminManagedBroadcastRuntime {
       try {
         const published = botId
           ? await this.maxClient.sendMessageImmediateWithId(chatId, text, options, {
-              ...this.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),
+              ...this.mediaRuntime.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),
               botId,
             })
           : await this.maxClient.sendMessageImmediateWithId(
               chatId,
               text,
               options,
-              this.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),
+              this.mediaRuntime.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),
             );
         return published;
       } catch (error: unknown) {
@@ -6440,12 +6426,12 @@ export class AdminManagedBroadcastRuntime {
           botId
             ? {
                 immediate: true,
-                ...this.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),
+                ...this.mediaRuntime.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),
                 botId,
               }
             : {
                 immediate: true,
-                ...this.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),
+                ...this.mediaRuntime.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),
               },
         );
         return;

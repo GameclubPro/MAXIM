@@ -1398,6 +1398,7 @@ export class PublicationService {
           },
           data: {
             status: ManagedBroadcastDeliveryStatus.PENDING,
+            remoteMessageVerifiedAt: null,
             lockedAt: null,
             lockToken: null,
             lastError: null,
