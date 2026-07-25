@@ -1317,11 +1317,19 @@ export class WebhookParser {
 
     const parent = parentKey.toLowerCase();
     const isDirectShareAttachment = options.allowShareAttachmentUrls === true && type === 'share';
+    if (isDirectShareAttachment) {
+      const payload = this.asRecord(row.payload);
+      if (typeof payload?.url === 'string') {
+        for (const url of this.extractUrlsFromString(payload.url)) {
+          acc.add(url);
+        }
+      }
+      return;
+    }
     const isExplicitLinkEntity =
       type === 'link' ||
       type === 'url' ||
       type === 'hyperlink' ||
-      isDirectShareAttachment ||
       parent === 'link' ||
       parent === 'links' ||
       parent === 'markup' ||

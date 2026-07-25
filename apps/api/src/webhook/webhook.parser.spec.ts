@@ -468,6 +468,35 @@ describe('WebhookParser', () => {
     expect(parsed.message?.text).toContain('https://example.com/direct-share-link');
   });
 
+  it('ignores MAX preview metadata on direct share attachments', () => {
+    const allowlistedUrl = 'https://max.ru/join/allowed-direct-share';
+    const previewUrl = 'https://i.oneme.ru/i?r=service-preview-token';
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      message: {
+        message_id: 'msg-direct-share-preview-1',
+        chat_id: 'chat-direct-share-preview-1',
+        sender_id: 'user-direct-share-preview-1',
+        created_at: '2026-07-25T10:00:00.000Z',
+        body: {
+          text: allowlistedUrl,
+          attachments: [
+            {
+              type: 'share',
+              image_url: previewUrl,
+              payload: {
+                url: allowlistedUrl,
+              },
+            },
+          ],
+        },
+      },
+    });
+
+    expect(parsed.message?.text).toBe(allowlistedUrl);
+    expect(parsed.message?.text).not.toContain(previewUrl);
+  });
+
   it('does not append reply quote text or buttons to the current message', () => {
     const parsed = parser.parse({
       update_type: 'message_created',
