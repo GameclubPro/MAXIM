@@ -393,7 +393,7 @@ require_preloaded_target_image() {
 check_deploy_disk_capacity() {
   local target_percent="${MAXIM_DEPLOY_DISK_TARGET_PERCENT:-${MAXIM_DEPLOY_DISK_WARN_PERCENT:-80}}"
   local critical_percent="${MAXIM_DEPLOY_DISK_CRITICAL_PERCENT:-${MAXIM_DEPLOY_DISK_MAX_PERCENT:-90}}"
-  local hard_minimum_free_bytes="21474836480"
+  local hard_minimum_free_bytes="6442450944"
   local minimum_free_bytes="${MAXIM_DEPLOY_DISK_MIN_FREE_BYTES:-$hard_minimum_free_bytes}"
   local disk_path="/var/lib/docker"
   local disk_stats

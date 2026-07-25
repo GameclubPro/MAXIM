@@ -454,7 +454,7 @@ disk_path="/var/lib/docker"
 if [[ ! -d "$disk_path" ]]; then
   disk_path="/"
 fi
-deploy_disk_hard_minimum_free_bytes="21474836480"
+deploy_disk_hard_minimum_free_bytes="6442450944"
 disk_stats="$(df -P -B1 "$disk_path" 2>/dev/null | awk 'NR == 2 { gsub(/%/, "", $5); print $4, $5 }')"
 read -r disk_available_bytes disk_used_percent <<< "$disk_stats"
 if [[ "$disk_available_bytes" =~ ^[0-9]+$ && "$disk_used_percent" =~ ^[0-9]+$ ]]; then

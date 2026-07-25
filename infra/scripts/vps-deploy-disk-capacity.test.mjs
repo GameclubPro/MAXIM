@@ -6,7 +6,7 @@ import test from 'node:test';
 
 const root = resolve(import.meta.dirname, '../..');
 const deployScript = readFileSync(resolve(root, 'infra/scripts/vps-pull-build-up.sh'), 'utf8');
-const minimumFreeBytes = 20 * 1024 ** 3;
+const minimumFreeBytes = 6 * 1024 ** 3;
 
 function readShellFunction(name, nextName) {
   const start = deployScript.indexOf(`${name}() {\n`);
@@ -136,25 +136,25 @@ printf 'reuse-only=%s\\n' "$REUSE_PRELOADED_TARGET_IMAGES_ONLY"
   });
 }
 
-test('rejects free space one byte below the 20 GiB default', () => {
+test('rejects free space one byte below the 6 GiB default', () => {
   const result = runDiskPreflight(minimumFreeBytes - 1);
 
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /at least 21474836480 bytes are required/u);
+  assert.match(result.stderr, /at least 6442450944 bytes are required/u);
   assert.match(result.stderr, /not bypassed by MAXIM_ALLOW_CRITICAL_DISK_DEPLOY/u);
 });
 
-test('accepts free space exactly at and above the 20 GiB default', () => {
+test('accepts free space exactly at and above the 6 GiB default', () => {
   for (const availableBytes of [minimumFreeBytes, minimumFreeBytes + 1]) {
     const result = runDiskPreflight(availableBytes);
 
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /minimum-free=21474836480B/u);
+    assert.match(result.stdout, /minimum-free=6442450944B/u);
   }
 });
 
 test('rejects malformed absolute free-space configuration', () => {
-  for (const invalidValue of ['-1', '20GiB', '1.5']) {
+  for (const invalidValue of ['-1', '6GiB', '1.5']) {
     const result = runDiskPreflight(minimumFreeBytes, { minimumOverride: invalidValue });
 
     assert.equal(result.status, 1);
@@ -166,25 +166,25 @@ test('rejects malformed absolute free-space configuration', () => {
 });
 
 test('compares configured byte thresholds exactly without shell integer overflow', () => {
-  const leadingZeroResult = runDiskPreflight('00021474836480', {
-    minimumOverride: '00021474836480',
+  const leadingZeroResult = runDiskPreflight('00006442450944', {
+    minimumOverride: '00006442450944',
   });
   const hugeThresholdResult = runDiskPreflight('999999999999999999999999999998', {
     minimumOverride: '999999999999999999999999999999',
   });
 
   assert.equal(leadingZeroResult.status, 0, leadingZeroResult.stderr);
-  assert.match(leadingZeroResult.stdout, /available=21474836480B minimum-free=21474836480B/u);
+  assert.match(leadingZeroResult.stdout, /available=6442450944B minimum-free=6442450944B/u);
   assert.equal(hugeThresholdResult.status, 1);
   assert.match(hugeThresholdResult.stderr, /at least 999999999999999999999999999999 bytes/u);
 });
 
-test('rejects configuration that weakens the hard 20 GiB floor', () => {
+test('rejects configuration that weakens the hard 6 GiB floor', () => {
   for (const invalidValue of [0, minimumFreeBytes - 1]) {
     const result = runDiskPreflight(minimumFreeBytes, { minimumOverride: invalidValue });
 
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /MAXIM_DEPLOY_DISK_MIN_FREE_BYTES must be at least 21474836480\./u);
+    assert.match(result.stderr, /MAXIM_DEPLOY_DISK_MIN_FREE_BYTES must be at least 6442450944\./u);
   }
 });
 
@@ -198,9 +198,9 @@ test('allows configuration to raise the absolute free-space floor', () => {
   });
 
   assert.equal(belowResult.status, 1);
-  assert.match(belowResult.stderr, /at least 21474837504 bytes are required/u);
+  assert.match(belowResult.stderr, /at least 6442451968 bytes are required/u);
   assert.equal(equalResult.status, 0, equalResult.stderr);
-  assert.match(equalResult.stdout, /minimum-free=21474837504B/u);
+  assert.match(equalResult.stdout, /minimum-free=6442451968B/u);
 });
 
 test('keeps the percentage gate when absolute free space is sufficient', () => {
@@ -245,7 +245,7 @@ test('skips the build capacity floor only when every selected exact-SHA image is
     `maxim-admin:${targetSha}`,
   ];
   const result = runSelectedImageCapacityPreflight({
-    availableBytes: 7 * 1024 ** 3,
+    availableBytes: 5 * 1024 ** 3,
     expectedSha: targetSha,
     services: ['api-ingress', 'miniapp-major-static', 'admin-static'],
     localImages,
@@ -260,7 +260,7 @@ test('skips the build capacity floor only when every selected exact-SHA image is
 test('a missing selected exact-SHA image cannot bypass the hard capacity floor', () => {
   const targetSha = 'b'.repeat(40);
   const result = runSelectedImageCapacityPreflight({
-    availableBytes: 7 * 1024 ** 3,
+    availableBytes: 5 * 1024 ** 3,
     expectedSha: targetSha,
     services: ['api-ingress', 'miniapp-major-static'],
     localImages: [`maxim-api:${targetSha}`],
@@ -268,7 +268,7 @@ test('a missing selected exact-SHA image cannot bypass the hard capacity floor',
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /requires a build: maxim-miniapp-major:/u);
-  assert.match(result.stderr, /at least 21474836480 bytes are required/u);
+  assert.match(result.stderr, /at least 6442450944 bytes are required/u);
 });
 
 test('a local image tagged for the wrong SHA cannot bypass the hard capacity floor', () => {
@@ -276,7 +276,7 @@ test('a local image tagged for the wrong SHA cannot bypass the hard capacity flo
   const wrongSha = 'd'.repeat(40);
   const wrongImage = `maxim-api:${wrongSha}`;
   const result = runSelectedImageCapacityPreflight({
-    availableBytes: 7 * 1024 ** 3,
+    availableBytes: 5 * 1024 ** 3,
     expectedSha: targetSha,
     services: ['api-ingress'],
     localImages: [wrongImage],
@@ -285,13 +285,13 @@ test('a local image tagged for the wrong SHA cannot bypass the hard capacity flo
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /non-target image ref/u);
-  assert.match(result.stderr, /at least 21474836480 bytes are required/u);
+  assert.match(result.stderr, /at least 6442450944 bytes are required/u);
 });
 
 test('unknown deploy targets cannot bypass the hard capacity floor', () => {
   const targetSha = 'e'.repeat(40);
   const result = runSelectedImageCapacityPreflight({
-    availableBytes: 7 * 1024 ** 3,
+    availableBytes: 5 * 1024 ** 3,
     expectedSha: targetSha,
     services: ['manual-unknown-static'],
     localImages: [`maxim-api:${targetSha}`],
@@ -300,7 +300,7 @@ test('unknown deploy targets cannot bypass the hard capacity floor', () => {
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /unknown target: manual-unknown-static/u);
-  assert.match(result.stderr, /at least 21474836480 bytes are required/u);
+  assert.match(result.stderr, /at least 6442450944 bytes are required/u);
 });
 
 test('runtime recreation is explicitly forbidden from triggering an implicit image build', () => {

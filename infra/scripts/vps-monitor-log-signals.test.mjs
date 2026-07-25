@@ -91,7 +91,7 @@ test('filters successful static access logs before scanning error-like asset nam
 test('reports the hard deploy free-space floor independently from percentage warnings', () => {
   const command = readRuntimePressureCommand();
 
-  assert.match(command, /deploy_disk_hard_minimum_free_bytes="21474836480"/u);
+  assert.match(command, /deploy_disk_hard_minimum_free_bytes="6442450944"/u);
   assert.match(command, /df -P -B1/u);
   assert.match(command, /DEPLOY_DISK_BLOCKED/u);
   assert.match(command, /disk_available_bytes < deploy_disk_hard_minimum_free_bytes/u);
