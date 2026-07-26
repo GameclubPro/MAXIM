@@ -36,6 +36,7 @@ import {
   PublicationFeedCard,
   type PublicationFeedTone,
 } from '../features/publications/publication-feed-card';
+import { PublicationRecurrenceIntervalField } from '../features/publications/publication-recurrence-interval-field';
 import {
   buildCreatePublicationRequest,
   buildPublicationSaveFeedback,
@@ -2100,26 +2101,17 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
           ))}
         </div>
 
-        <label className="publication-recurrence__interval">
-          <span>Интервал</span>
-          <input
-            type="number"
-            min={1}
-            max={31}
-            value={draft.recurrence.interval}
-            onChange={(event) =>
-              setDraft((current) => ({
-                ...current,
-                recurrence: {
-                  ...current.recurrence,
-                  interval: Math.max(1, Math.min(31, Number(event.currentTarget.value) || 1)),
-                },
-              }))
-            }
-            disabled={isBusy}
-          />
-          <small>{draft.recurrence.frequency === 'daily' ? 'дней' : 'недель'}</small>
-        </label>
+        <PublicationRecurrenceIntervalField
+          frequency={draft.recurrence.frequency}
+          interval={draft.recurrence.interval}
+          disabled={isBusy}
+          onChange={(interval) =>
+            setDraft((current) => ({
+              ...current,
+              recurrence: { ...current.recurrence, interval },
+            }))
+          }
+        />
 
         {draft.recurrence.frequency === 'weekly' ? (
           <div className="publication-weekdays" aria-label="Дни недели">

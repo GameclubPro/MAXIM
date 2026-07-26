@@ -31,7 +31,7 @@ export function shouldAutoRetryManagedBroadcastDeliveryFailure(
 }
 
 export function markManagedBroadcastSendPhase(error: unknown, sendStarted: boolean): Error {
-  const source = error as { response?: unknown; code?: unknown };
+  const source = error as { response?: unknown; code?: unknown; preDispatch?: unknown };
   const marked =
     error instanceof Error && Object.isExtensible(error)
       ? (error as Error & { managedBroadcastSendStarted?: boolean })
@@ -42,7 +42,7 @@ export function markManagedBroadcastSendPhase(error: unknown, sendStarted: boole
           response?: unknown;
           code?: unknown;
         });
-  marked.managedBroadcastSendStarted = sendStarted;
+  marked.managedBroadcastSendStarted = sendStarted && source?.preDispatch !== true;
   if (!('response' in marked) && source?.response !== undefined) {
     (marked as Error & { response?: unknown }).response = source.response;
   }
@@ -262,11 +262,13 @@ export function buildManagedBroadcastDeliveryActionKey(
   row: PersistedManagedBroadcast,
   occurrenceIndex: number,
   targetChatId: string,
+  attemptCount = 1,
 ): string {
   const contentRevision = row.publicationContentRevisionId
     ? `publication-${row.publicationContentRevisionId}`
     : `legacy-${buildManagedBroadcastSemanticContentHash(row).slice(0, 32)}`;
-  return `managed-broadcast:send:${row.id}:occurrence:${occurrenceIndex}:target:${targetChatId}:content:${contentRevision}`;
+  const baseKey = `managed-broadcast:send:${row.id}:occurrence:${occurrenceIndex}:target:${targetChatId}:content:${contentRevision}`;
+  return attemptCount <= 1 ? baseKey : `${baseKey}:attempt:${attemptCount}`;
 }
 
 export function buildManagedBroadcastSemanticContentHash(row: PersistedManagedBroadcast): string {

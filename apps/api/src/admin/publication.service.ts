@@ -66,6 +66,10 @@ import {
   deleteUnstartedPublicationExecutionBroadcasts,
   throwPublicationExecutionRequiresManualReview,
 } from './publication-execution-safety';
+import {
+  reconcileOrphanedPublicationOccurrences as reconcilePublicationOrphans,
+  syncPublicationBroadcastAfterDeliveryResolution,
+} from './publication-execution-recovery';
 import { PublicationPresenterService } from './publication-presenter.service';
 import { assertPublicationTimezone, expandPublicationSchedule } from './publication-recurrence';
 
@@ -76,6 +80,8 @@ const PUBLICATION_RECURRENCE_REFRESH_MS = 12 * 60 * 60_000;
 const PUBLICATION_PAST_GRACE_MS = 5 * 60_000;
 const PUBLICATION_MATERIALIZE_BATCH = 50;
 const PUBLICATION_DISPATCH_BATCH = 50;
+const PUBLICATION_DEADLINE_DISPATCH_BATCH = 25;
+const PUBLICATION_SLOW_BATCH = 10;
 const PUBLICATION_RECONCILE_BATCH = 200;
 
 type ResolvedPublicationTarget = PublicationTargetInput & {
@@ -1218,6 +1224,7 @@ export class PublicationService {
       include: {
         schedule: { select: { id: true, mode: true } },
         contentRevision: { select: { revision: true } },
+        _count: { select: { deliveries: true, legacyBroadcasts: true } },
       },
     });
     if (!occurrence) {
@@ -1235,7 +1242,13 @@ export class PublicationService {
         status: ManagedBroadcastDeliveryStatus.FAILED,
       },
     });
-    if (failedCount === 0) {
+    const retryWithoutExecutionEnvelope =
+      failedCount === 0 &&
+      occurrence.status === PublicationOccurrenceStatus.FAILED &&
+      occurrence.legacyBroadcastId === null &&
+      occurrence._count.deliveries === 0 &&
+      occurrence._count.legacyBroadcasts === 0;
+    if (failedCount === 0 && !retryWithoutExecutionEnvelope) {
       throw new ConflictException(
         'Нет доставок, которые можно безопасно повторить. Неоднозначные отправки сначала нужно проверить.',
       );
@@ -1285,58 +1298,62 @@ export class PublicationService {
 
     try {
       await this.prisma.$transaction(async (tx: any) => {
-        // FLAG: Retry changes only failed targets. SENT and AMBIGUOUS deliveries retain their
-        // recorded content revision and must never be reset by this transaction.
+        // FLAG: Delivery retry changes only failed targets. SENT and AMBIGUOUS deliveries retain
+        // their recorded content revision. A missing-envelope retry is allowed only when both
+        // execution broadcasts and deliveries are still absent under the transaction lock.
         await this.lockPublicationCalendar(tx);
         const retryLockToken = `publication-retry:${randomUUID()}`;
         const retryLockedAt = new Date();
-        const retryableBroadcasts = await tx.managedBroadcast.findMany({
-          where: {
-            publicationOccurrenceId: occurrenceId,
-            deliveries: {
-              some: {
-                publicationOccurrenceId: occurrenceId,
-                status: ManagedBroadcastDeliveryStatus.FAILED,
-              },
-            },
-          },
-          select: { id: true },
-        });
-        const retryableBroadcastIds = retryableBroadcasts.map(
-          (broadcast: { id: string }) => broadcast.id,
-        );
-        if (retryableBroadcastIds.length === 0) {
-          throw new ConflictException('Не осталось доставок для безопасного повтора.');
-        }
-        const claimedBroadcasts = await tx.managedBroadcast.updateMany({
-          where: {
-            id: { in: retryableBroadcastIds },
-            publicationOccurrenceId: occurrenceId,
-            lockedAt: null,
-            lockToken: null,
-            deliveries: {
-              some: {
-                publicationOccurrenceId: occurrenceId,
-                status: ManagedBroadcastDeliveryStatus.FAILED,
-              },
-              none: {
-                publicationOccurrenceId: occurrenceId,
-                status: {
-                  in: [
-                    ManagedBroadcastDeliveryStatus.SENDING,
-                    ManagedBroadcastDeliveryStatus.AMBIGUOUS,
-                  ],
+        let retryableBroadcastIds: string[] = [];
+        if (!retryWithoutExecutionEnvelope) {
+          const retryableBroadcasts = await tx.managedBroadcast.findMany({
+            where: {
+              publicationOccurrenceId: occurrenceId,
+              deliveries: {
+                some: {
+                  publicationOccurrenceId: occurrenceId,
+                  status: ManagedBroadcastDeliveryStatus.FAILED,
                 },
               },
             },
-          },
-          data: { lockedAt: retryLockedAt, lockToken: retryLockToken },
-        });
-        if (claimedBroadcasts.count !== retryableBroadcastIds.length) {
-          throw new ConflictException({
-            code: 'PUBLICATION_CONFLICT_REQUIRES_MANUAL_REVIEW',
-            message: 'Доставка уже обрабатывается или требует проверки.',
+            select: { id: true },
           });
+          retryableBroadcastIds = retryableBroadcasts.map(
+            (broadcast: { id: string }) => broadcast.id,
+          );
+          if (retryableBroadcastIds.length === 0) {
+            throw new ConflictException('Не осталось доставок для безопасного повтора.');
+          }
+          const claimedBroadcasts = await tx.managedBroadcast.updateMany({
+            where: {
+              id: { in: retryableBroadcastIds },
+              publicationOccurrenceId: occurrenceId,
+              lockedAt: null,
+              lockToken: null,
+              deliveries: {
+                some: {
+                  publicationOccurrenceId: occurrenceId,
+                  status: ManagedBroadcastDeliveryStatus.FAILED,
+                },
+                none: {
+                  publicationOccurrenceId: occurrenceId,
+                  status: {
+                    in: [
+                      ManagedBroadcastDeliveryStatus.SENDING,
+                      ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+                    ],
+                  },
+                },
+              },
+            },
+            data: { lockedAt: retryLockedAt, lockToken: retryLockToken },
+          });
+          if (claimedBroadcasts.count !== retryableBroadcastIds.length) {
+            throw new ConflictException({
+              code: 'PUBLICATION_CONFLICT_REQUIRES_MANUAL_REVIEW',
+              message: 'Доставка уже обрабатывается или требует проверки.',
+            });
+          }
         }
         const activatedPublication = await tx.publication.updateMany({
           where: {
@@ -1377,18 +1394,41 @@ export class PublicationService {
             id: occurrenceId,
             publicationId,
             scheduleRevision: occurrence.scheduleRevision,
-            status: {
-              in: [PublicationOccurrenceStatus.FAILED, PublicationOccurrenceStatus.PARTIAL],
-            },
+            ...(retryWithoutExecutionEnvelope
+              ? {
+                  status: PublicationOccurrenceStatus.FAILED,
+                  legacyBroadcastId: null,
+                  legacyBroadcasts: { none: {} },
+                  deliveries: { none: {} },
+                }
+              : {
+                  status: {
+                    in: [PublicationOccurrenceStatus.FAILED, PublicationOccurrenceStatus.PARTIAL],
+                  },
+                }),
             contentRevisionId: occurrence.contentRevisionId,
           },
           data: {
-            status: PublicationOccurrenceStatus.IN_PROGRESS,
+            status: retryWithoutExecutionEnvelope
+              ? PublicationOccurrenceStatus.SCHEDULED
+              : PublicationOccurrenceStatus.IN_PROGRESS,
             ...(contentMode === 'latest' ? { contentRevisionId: retryContentRevisionId } : {}),
           },
         });
         if (claimedOccurrence.count === 0) {
           throw new ConflictException('Запуск публикации уже изменён. Обновите экран.');
+        }
+        if (retryWithoutExecutionEnvelope) {
+          await tx.publicationMutationRecord.create({
+            data: {
+              actorUserId: user.userId,
+              requestId: parsed.data.requestId,
+              requestHash,
+              publicationId,
+              resultingVersion: publication.version,
+            },
+          });
+          return;
         }
         const resetDeliveries = await tx.managedBroadcastDelivery.updateMany({
           where: {
@@ -1398,7 +1438,11 @@ export class PublicationService {
           },
           data: {
             status: ManagedBroadcastDeliveryStatus.PENDING,
+            botId: null,
+            remoteMessageId: null,
             remoteMessageVerifiedAt: null,
+            legacySentWithoutRemoteId: false,
+            sentAt: null,
             lockedAt: null,
             lockToken: null,
             lastError: null,
@@ -1513,6 +1557,7 @@ export class PublicationService {
               ? {
                   status: ManagedBroadcastDeliveryStatus.SENT,
                   sentAt: delivery.sentAt ?? new Date(),
+                  remoteMessageVerifiedAt: delivery.remoteMessageId ? new Date() : null,
                   legacySentWithoutRemoteId: delivery.remoteMessageId === null,
                   lastError: null,
                 }
@@ -1560,6 +1605,7 @@ export class PublicationService {
 
   async processDuePublications(reason: 'startup' | 'scheduled'): Promise<void> {
     await this.normalizeStalePublicationOccurrences(PUBLICATION_RECONCILE_BATCH);
+    await this.reconcileOrphanedPublicationOccurrences(PUBLICATION_RECONCILE_BATCH);
     await this.reconcileActiveRecurrenceSchedules(PUBLICATION_RECONCILE_BATCH);
     await this.dispatchScheduledOccurrences(PUBLICATION_DISPATCH_BATCH, [
       PublicationScheduleMode.NOW,
@@ -1573,14 +1619,25 @@ export class PublicationService {
       return;
     }
 
-    await this.materializeRecurringSchedules(
-      decision === 'slow' ? 10 : PUBLICATION_MATERIALIZE_BATCH,
-    );
-    await this.dispatchScheduledOccurrences(decision === 'slow' ? 10 : PUBLICATION_DISPATCH_BATCH, [
+    const backgroundBatch =
+      decision === 'slow' ? PUBLICATION_SLOW_BATCH : PUBLICATION_DEADLINE_DISPATCH_BATCH;
+    await this.dispatchScheduledOccurrences(backgroundBatch, [
       PublicationScheduleMode.ONCE,
       PublicationScheduleMode.SLOTS,
       PublicationScheduleMode.RECURRENCE,
     ]);
+    await this.managedBroadcastService.processDueDeadlinePublicationBroadcasts(backgroundBatch);
+    await this.materializeRecurringSchedules(
+      decision === 'slow' ? PUBLICATION_SLOW_BATCH : PUBLICATION_MATERIALIZE_BATCH,
+    );
+    await this.dispatchScheduledOccurrences(
+      decision === 'slow' ? PUBLICATION_SLOW_BATCH : PUBLICATION_DISPATCH_BATCH,
+      [
+        PublicationScheduleMode.ONCE,
+        PublicationScheduleMode.SLOTS,
+        PublicationScheduleMode.RECURRENCE,
+      ],
+    );
     await this.rollupActiveOccurrences();
     await this.rollupPublicationLifecycles();
   }
@@ -1649,6 +1706,16 @@ export class PublicationService {
         },
       },
       data: { status: PublicationOccurrenceStatus.CANCELED },
+    });
+  }
+
+  private async reconcileOrphanedPublicationOccurrences(limit: number): Promise<void> {
+    await reconcilePublicationOrphans({
+      prisma: this.prisma,
+      logger: this.logger,
+      limit,
+      maxBatch: PUBLICATION_RECONCILE_BATCH,
+      staleBefore: new Date(Date.now() - PUBLICATION_PAST_GRACE_MS),
     });
   }
 
@@ -1763,71 +1830,7 @@ export class PublicationService {
     broadcastId: string,
     occurrenceIndex: number,
   ): Promise<void> {
-    const deliveries = await tx.managedBroadcastDelivery.findMany({
-      where: { broadcastId, occurrenceIndex },
-      select: { status: true },
-    });
-    if (deliveries.length === 0) {
-      return;
-    }
-    const unresolved = deliveries.some((delivery: { status: ManagedBroadcastDeliveryStatus }) =>
-      new Set<ManagedBroadcastDeliveryStatus>([
-        ManagedBroadcastDeliveryStatus.SENDING,
-        ManagedBroadcastDeliveryStatus.AMBIGUOUS,
-      ]).has(delivery.status),
-    );
-    if (unresolved) {
-      return;
-    }
-    const hasPending = deliveries.some(
-      (delivery: { status: ManagedBroadcastDeliveryStatus }) =>
-        delivery.status === ManagedBroadcastDeliveryStatus.PENDING,
-    );
-    if (hasPending) {
-      await tx.managedBroadcast.updateMany({
-        where: { id: broadcastId, status: { not: ManagedBroadcastStatus.CANCELED } },
-        data: {
-          status: ManagedBroadcastStatus.ACTIVE,
-          nextSendAt: new Date(),
-          lockedAt: null,
-          lockToken: null,
-          lastError: null,
-        },
-      });
-      return;
-    }
-
-    const sent = deliveries.filter(
-      (delivery: { status: ManagedBroadcastDeliveryStatus }) =>
-        delivery.status === ManagedBroadcastDeliveryStatus.SENT,
-    ).length;
-    const failed = deliveries.length - sent;
-    const status =
-      failed === 0
-        ? ManagedBroadcastStatus.COMPLETED
-        : sent > 0
-          ? ManagedBroadcastStatus.PARTIAL
-          : ManagedBroadcastStatus.FAILED;
-    await tx.managedBroadcast.updateMany({
-      where: { id: broadcastId, status: { not: ManagedBroadcastStatus.CANCELED } },
-      data: {
-        status,
-        ...(status === ManagedBroadcastStatus.COMPLETED
-          ? { sentCount: occurrenceIndex, nextSendAt: null, lastError: null }
-          : { lastError: 'Не все получатели получили публикацию.' }),
-        lockedAt: null,
-        lockToken: null,
-      },
-    });
-    if (status === ManagedBroadcastStatus.COMPLETED) {
-      await tx.managedBroadcastCalendarReservation.deleteMany({
-        where: { broadcastId, occurrenceIndex },
-      });
-      await tx.managedBroadcastOccurrence.updateMany({
-        where: { broadcastId, occurrenceIndex },
-        data: { status: ManagedBroadcastStatus.COMPLETED },
-      });
-    }
+    return syncPublicationBroadcastAfterDeliveryResolution(tx, broadcastId, occurrenceIndex);
   }
 
   private async materializeRecurringSchedules(limit: number): Promise<void> {
@@ -2296,14 +2299,17 @@ export class PublicationService {
     const allBroadcastsCompleted = occurrence.legacyBroadcasts.every(
       (broadcast) => broadcast.status === ManagedBroadcastStatus.COMPLETED,
     );
+    const executionStillActive = occurrence.legacyBroadcasts.some(
+      (broadcast) => broadcast.status === ManagedBroadcastStatus.ACTIVE,
+    );
     let status: PublicationOccurrenceStatus;
-    if (ambiguous > 0) {
-      status = PublicationOccurrenceStatus.AMBIGUOUS;
-    } else if (pending > 0) {
+    if (pending > 0 || executionStillActive) {
       status =
         occurrence.scheduledAt > new Date()
           ? PublicationOccurrenceStatus.SCHEDULED
           : PublicationOccurrenceStatus.IN_PROGRESS;
+    } else if (ambiguous > 0) {
+      status = PublicationOccurrenceStatus.AMBIGUOUS;
     } else if (failed + canceled > 0) {
       status = sent > 0 ? PublicationOccurrenceStatus.PARTIAL : PublicationOccurrenceStatus.FAILED;
     } else if (allBroadcastsCompleted && sent === deliveries.length) {

@@ -67,7 +67,10 @@ export class PublicationPresenterService {
         occurrences: {
           orderBy: [{ scheduledAt: 'desc' }, { id: 'desc' }],
           take: PUBLICATION_OCCURRENCE_HISTORY_LIMIT,
-          include: { contentRevision: { select: { revision: true } } },
+          include: {
+            contentRevision: { select: { revision: true } },
+            _count: { select: { legacyBroadcasts: true } },
+          },
         },
       },
     });
@@ -87,7 +90,10 @@ export class PublicationPresenterService {
             status: { in: PUBLICATION_UNRESOLVED_OCCURRENCE_STATUSES },
           },
           orderBy: [{ scheduledAt: 'desc' }, { id: 'desc' }],
-          include: { contentRevision: { select: { revision: true } } },
+          include: {
+            contentRevision: { select: { revision: true } },
+            _count: { select: { legacyBroadcasts: true } },
+          },
         }),
         this.loadDeliveryStats(publicationId),
         this.loadActionableDeliveryStatsByPublicationIds([publicationId]),
@@ -206,8 +212,13 @@ export class PublicationPresenterService {
         const usesLatestContent =
           typeof row.canonicalContentRevisionId === 'string' &&
           occurrence.contentRevisionId === row.canonicalContentRevisionId;
+        const hasRetryableMissingEnvelope =
+          delivery.total === 0 &&
+          occurrence.legacyBroadcastId === null &&
+          occurrence._count?.legacyBroadcasts === 0 &&
+          occurrence.status === PublicationOccurrenceStatus.FAILED;
         const canRetry =
-          delivery.failed > 0 &&
+          (delivery.failed > 0 || hasRetryableMissingEnvelope) &&
           (row.lifecycle === PublicationLifecycle.ACTIVE ||
             row.lifecycle === PublicationLifecycle.ERROR) &&
           (row.schedule?.status === PublicationScheduleStatus.ACTIVE ||

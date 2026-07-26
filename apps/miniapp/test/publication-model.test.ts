@@ -12,6 +12,7 @@ import {
   getPublicationActionCapabilities,
   getPublicationActionableDelivery,
   getPublicationListPollingInterval,
+  getPublicationRecurrenceIntervalNotice,
   getPublicationTargetTitle,
   hasPublicationDraftChanges,
   inferPublicationVideoMimeType,
@@ -64,6 +65,34 @@ test('isolates edit and duplicate drafts from the persisted create draft', () =>
   assert.equal(shouldPersistPublicationDraft('duplicate'), false);
   assert.equal(isIsolatedPublicationEditor('edit'), true);
   assert.equal(isIsolatedPublicationEditor('duplicate'), true);
+});
+
+test('explains that a 31-day recurrence is not a calendar month', () => {
+  assert.deepEqual(getPublicationRecurrenceIntervalNotice('daily', 31), {
+    title: '31 день - не календарный месяц',
+    description:
+      'Публикация будет выходить каждые 31 день от даты начала, поэтому число месяца будет сдвигаться.',
+  });
+});
+
+test('previews other large recurrence intervals without warning for routine intervals', () => {
+  assert.equal(getPublicationRecurrenceIntervalNotice('daily', 27), null);
+  assert.equal(getPublicationRecurrenceIntervalNotice('weekly', 3), null);
+  assert.equal(getPublicationRecurrenceIntervalNotice('daily', 1.5), null);
+
+  assert.deepEqual(getPublicationRecurrenceIntervalNotice('daily', 30), {
+    title: 'Большой интервал: 30 дней',
+    description:
+      'Даты считаются от даты начала с указанным шагом, без привязки к одному числу месяца.',
+  });
+  assert.deepEqual(getPublicationRecurrenceIntervalNotice('weekly', 4), {
+    title: 'Большой интервал: 4 недели',
+    description: 'Даты считаются от даты начала с указанным шагом, а не по календарным месяцам.',
+  });
+  assert.equal(
+    getPublicationRecurrenceIntervalNotice('weekly', 21)?.title,
+    'Большой интервал: 21 неделя',
+  );
 });
 
 test('describes a new NOW publication as starting while delivery is still queued', () => {

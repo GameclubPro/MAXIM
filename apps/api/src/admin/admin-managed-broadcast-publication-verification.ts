@@ -8,11 +8,13 @@ import type { AdminManagedBroadcastRuntimeContext } from './admin-managed-broadc
 import {
   PUBLICATION_POST_SEND_VERIFY_DELAY_MS,
   PUBLICATION_POST_SEND_VERIFY_TIMEOUT_MS,
-  sleep,
   type ManagedBroadcastMaxApiOptions,
 } from './admin.service.support';
 
 type ManagedBroadcastVerificationProgress = () => Promise<void>;
+
+const buildVerificationResultKey = (chatId: string, messageId: string): string =>
+  JSON.stringify([chatId, messageId]);
 
 export class AdminManagedBroadcastPublicationVerification {
   constructor(private readonly context: AdminManagedBroadcastRuntimeContext) {}
@@ -86,12 +88,14 @@ export class AdminManagedBroadcastPublicationVerification {
       return unconfirmedChatIds;
     }
 
+    const verifyReadyBefore = new Date(Date.now() - PUBLICATION_POST_SEND_VERIFY_DELAY_MS);
     const deliveries = (
       await this.context.prisma.managedBroadcastDelivery.findMany({
         where: {
           broadcastId: row.id,
           occurrenceIndex,
           status: ManagedBroadcastDeliveryStatus.SENT,
+          sentAt: { lte: verifyReadyBefore },
           remoteMessageId: { not: null },
           remoteMessageVerifiedAt: null,
         },
@@ -100,6 +104,8 @@ export class AdminManagedBroadcastPublicationVerification {
     ).filter(
       (delivery) =>
         delivery.status === ManagedBroadcastDeliveryStatus.SENT &&
+        delivery.sentAt !== null &&
+        delivery.sentAt <= verifyReadyBefore &&
         delivery.remoteMessageId !== null &&
         delivery.remoteMessageVerifiedAt === null,
     );
@@ -107,41 +113,56 @@ export class AdminManagedBroadcastPublicationVerification {
       return unconfirmedChatIds;
     }
 
-    const verifyAfterMs = Math.max(
-      ...deliveries.map(
-        (delivery) =>
-          (delivery.sentAt?.getTime() ?? Date.now()) + PUBLICATION_POST_SEND_VERIFY_DELAY_MS,
-      ),
-    );
-    const waitMs = Math.max(0, verifyAfterMs - Date.now());
-    if (waitMs > 0) {
-      await onProgress();
-      await sleep(waitMs);
+    const deliveriesByBotId = new Map<string | null, typeof deliveries>();
+    for (const delivery of deliveries) {
+      const botId = delivery.botId ?? null;
+      const grouped = deliveriesByBotId.get(botId) ?? [];
+      grouped.push(delivery);
+      deliveriesByBotId.set(botId, grouped);
     }
 
-    for (const delivery of deliveries) {
-      const remoteMessageId = delivery.remoteMessageId;
-      if (!remoteMessageId) {
-        continue;
-      }
+    for (const [botId, groupedDeliveries] of deliveriesByBotId) {
       await onProgress();
-
-      let nextStatus: ManagedBroadcastDeliveryStatus | null = null;
-      let lastError: string | null = null;
-      let verificationError: unknown = null;
+      let results: Awaited<ReturnType<typeof this.context.maxClient.getExactMessagePresences>>;
       try {
-        const presence = await this.context.maxClient.getExactMessagePresence(
-          delivery.targetChatId,
-          remoteMessageId,
+        results = await this.context.maxClient.getExactMessagePresences(
+          groupedDeliveries.map((delivery) => ({
+            chatId: delivery.targetChatId,
+            messageId: delivery.remoteMessageId!,
+          })),
           {
             ...maxApiOptions,
-            botId: delivery.botId ?? undefined,
+            botId: botId ?? undefined,
             bypassCache: true,
             ignoreFailureMetricStatuses: [404],
             timeoutMs: PUBLICATION_POST_SEND_VERIFY_TIMEOUT_MS,
           },
         );
-        if (presence === 'present') {
+      } catch (error: unknown) {
+        results = groupedDeliveries.map((delivery) => ({
+          chatId: delivery.targetChatId,
+          messageId: delivery.remoteMessageId!,
+          error,
+        }));
+      }
+      const resultsByTarget = new Map(
+        results.map((result) => [
+          buildVerificationResultKey(result.chatId, result.messageId),
+          result,
+        ]),
+      );
+
+      for (const delivery of groupedDeliveries) {
+        const remoteMessageId = delivery.remoteMessageId;
+        if (!remoteMessageId) {
+          continue;
+        }
+        await onProgress();
+
+        const result = resultsByTarget.get(
+          buildVerificationResultKey(delivery.targetChatId, remoteMessageId),
+        );
+        if (result && 'presence' in result && result.presence === 'present') {
           await this.context.prisma.managedBroadcastDelivery.updateMany({
             where: {
               id: delivery.id,
@@ -156,47 +177,59 @@ export class AdminManagedBroadcastPublicationVerification {
           });
           continue;
         }
-        nextStatus = ManagedBroadcastDeliveryStatus.FAILED;
-        lastError =
-          'MAX подтвердил, что сообщение отсутствует после отправки. Повторите публикацию вручную.';
-      } catch (error: unknown) {
-        verificationError = error;
-        nextStatus = ManagedBroadcastDeliveryStatus.AMBIGUOUS;
-        lastError =
-          'MAX не подтвердил наличие сообщения после отправки. Проверьте чат вручную перед повтором.';
-      }
+        if (!(result && 'presence' in result && result.presence === 'absent')) {
+          const verificationError = result && 'error' in result ? result.error : null;
+          this.context.logger.warn(
+            {
+              broadcastId: row.id,
+              occurrenceIndex,
+              deliveryId: delivery.id,
+              targetChatId: delivery.targetChatId,
+              botId: delivery.botId,
+              messageId: remoteMessageId,
+              verificationStatus: 'DEFERRED',
+              err:
+                verificationError instanceof Error
+                  ? verificationError.message
+                  : verificationError
+                    ? String(verificationError)
+                    : undefined,
+            },
+            'Managed publication post-send verification was deferred after an inconclusive lookup',
+          );
+          continue;
+        }
 
-      const updated = await this.context.prisma.managedBroadcastDelivery.updateMany({
-        where: {
-          id: delivery.id,
-          status: ManagedBroadcastDeliveryStatus.SENT,
-          remoteMessageId,
-          remoteMessageVerifiedAt: null,
-        },
-        data: { status: nextStatus, lastError },
-      });
-      if (updated.count === 0) {
-        continue;
+        const updated = await this.context.prisma.managedBroadcastDelivery.updateMany({
+          where: {
+            id: delivery.id,
+            status: ManagedBroadcastDeliveryStatus.SENT,
+            remoteMessageId,
+            remoteMessageVerifiedAt: null,
+          },
+          data: {
+            status: ManagedBroadcastDeliveryStatus.FAILED,
+            lastError:
+              'MAX подтвердил, что сообщение отсутствует после отправки. Повторите публикацию вручную.',
+          },
+        });
+        if (updated.count === 0) {
+          continue;
+        }
+        unconfirmedChatIds.add(delivery.targetChatId);
+        this.context.logger.warn(
+          {
+            broadcastId: row.id,
+            occurrenceIndex,
+            deliveryId: delivery.id,
+            targetChatId: delivery.targetChatId,
+            botId: delivery.botId,
+            messageId: remoteMessageId,
+            verificationStatus: ManagedBroadcastDeliveryStatus.FAILED,
+          },
+          'Managed publication post-send verification did not confirm the message',
+        );
       }
-      unconfirmedChatIds.add(delivery.targetChatId);
-      this.context.logger.warn(
-        {
-          broadcastId: row.id,
-          occurrenceIndex,
-          deliveryId: delivery.id,
-          targetChatId: delivery.targetChatId,
-          botId: delivery.botId,
-          messageId: remoteMessageId,
-          verificationStatus: nextStatus,
-          err:
-            verificationError instanceof Error
-              ? verificationError.message
-              : verificationError
-                ? String(verificationError)
-                : undefined,
-        },
-        'Managed publication post-send verification did not confirm the message',
-      );
     }
 
     return unconfirmedChatIds;

@@ -49,8 +49,10 @@ test('routes exact legacy publication items to their compatibility editor', () =
   );
 });
 
-test('opens only actionable legacy broadcasts in the compatibility editor', () => {
-  assert.equal(canOpenLegacyPublication({ kind: 'autopost', status: 'COMPLETED' }), true);
+test('keeps retired autoposts read-only and opens only actionable legacy broadcasts', () => {
+  assert.equal(canOpenLegacyPublication({ kind: 'autopost', status: 'PAUSED' }), false);
+  assert.equal(canOpenLegacyPublication({ kind: 'autopost', status: 'ERROR' }), false);
+  assert.equal(canOpenLegacyPublication({ kind: 'autopost', status: 'COMPLETED' }), false);
   assert.equal(canOpenLegacyPublication({ kind: 'broadcast', status: 'ACTIVE' }), true);
   assert.equal(canOpenLegacyPublication({ kind: 'broadcast', status: 'PARTIAL' }), true);
   assert.equal(canOpenLegacyPublication({ kind: 'broadcast', status: 'FAILED' }), true);

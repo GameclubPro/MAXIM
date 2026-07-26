@@ -19,7 +19,6 @@ import { ADMIN_SUGGESTION_DELIVERY_QUEUE } from './admin-suggestion-delivery.que
 import { AdminSuggestionDeliveryRecoveryService } from './admin-suggestion-delivery-recovery.service';
 import { AdminSuperBanProcessor } from './admin-super-ban.processor';
 import { ADMIN_SUPER_BAN_QUEUE } from './admin-super-ban.queue';
-import { AdminManagedBroadcastRuntime } from './admin-managed-broadcast-runtime';
 import { AdminAutopostController } from './admin-autopost.controller';
 import { AdminBroadcastController } from './admin-broadcast.controller';
 import { AdminDialogController } from './admin-dialog.controller';
@@ -121,15 +120,13 @@ import { SupportRequestsService } from './support-requests.service';
     ChannelStatsCollectorService,
     ManualModerationService,
     GlobalSpammerIntelligenceService,
-    {
-      provide: AdminManagedBroadcastRuntime,
-      useFactory: (adminService: AdminService) =>
-        adminService.getManagedBroadcastRuntimeForBroadcastService(),
-      inject: [AdminService],
-    },
     ManagedAutopostService,
     ManagedAutopostRunnerService,
-    ManagedBroadcastService,
+    {
+      provide: ManagedBroadcastService,
+      useFactory: (adminService: AdminService) => new ManagedBroadcastService(adminService),
+      inject: [AdminService],
+    },
     ManagedEntityCandidateSyncService,
     ManagedEntitiesService,
     ManagedEntitiesDiscoveryService,
@@ -172,7 +169,11 @@ import { SupportRequestsService } from './support-requests.service';
     ChannelDialogService,
     ManualModerationService,
     ManagedAutopostService,
-    ManagedBroadcastService,
+    {
+      provide: ManagedBroadcastService,
+      useFactory: (adminService: AdminService) => new ManagedBroadcastService(adminService),
+      inject: [AdminService],
+    },
     ManagedEntityCandidateSyncService,
     ManagedEntitiesService,
     ManagedEntitiesDiscoveryService,

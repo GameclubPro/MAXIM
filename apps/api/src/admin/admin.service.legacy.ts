@@ -169,6 +169,7 @@ import {
 import { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
 import {
   ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE,
+  resolveAdminManagedEntitiesRefreshJitterMs,
   type AdminManagedEntitiesRefreshJob,
 } from './admin-managed-entities-refresh.queue';
 import {
@@ -225,6 +226,7 @@ import {
   type ChannelEngagementDialogArtifacts,
 } from './admin-channel-engagement';
 import { AdminManagedBroadcastRuntime } from './admin-managed-broadcast-runtime';
+import { throwLegacyPublicationWritesDisabled } from './legacy-publication-write-freeze';
 import {
   applySettingsSectionToAllChats as applySettingsSectionToAllChatsValue,
   applySettingsToAllChats as applySettingsToAllChatsValue,
@@ -2632,7 +2634,6 @@ export class AdminService implements OnModuleDestroy {
   ): string {
     return `managed-entities-refresh__${entityType}__${userId}`;
   }
-
   private buildManagedEntitiesRefreshJobData(
     userId: string,
     entityType: ManagedEntityTypeFilter,
@@ -2649,9 +2650,9 @@ export class AdminService implements OnModuleDestroy {
         existingData?.bypassRemoteCache === true || options.bypassRemoteCache === true,
       resetRefreshCursor:
         existingData?.resetRefreshCursor === true || options.resetRefreshCursor === true,
+      createdAt: new Date().toISOString(),
     };
   }
-
   private buildManagedEntitiesRefreshJobPriority(
     entityType: ManagedEntityTypeFilter,
     jobData: AdminManagedEntitiesRefreshJob,
@@ -2714,6 +2715,7 @@ export class AdminService implements OnModuleDestroy {
       await this.adminManagedEntitiesRefreshQueue.add('refresh-managed-entities', desiredJobData, {
         jobId,
         priority: desiredPriority,
+        delay: resolveAdminManagedEntitiesRefreshJitterMs(jobId, 'enqueue'),
         attempts: 5,
         removeOnComplete: true,
         removeOnFail: false,
@@ -8296,38 +8298,40 @@ export class AdminService implements OnModuleDestroy {
     );
   }
 
-  sendBroadcast(
-    sourceChatId: string,
-    user: AuthUser,
-    body: unknown,
-    source: AdminActionSource = 'miniapp',
+  async sendBroadcast(
+    ..._args: Parameters<AdminManagedBroadcastRuntime['sendBroadcast']>
   ): Promise<SendBroadcastResult> {
-    return this.managedBroadcastRuntime.sendBroadcast(sourceChatId, user, body, source);
+    throwLegacyPublicationWritesDisabled();
   }
 
-  sendChannelBroadcast(
-    sourceChatId: string,
-    user: AuthUser,
-    body: unknown,
-    source: AdminActionSource = 'miniapp',
+  async sendChannelBroadcast(
+    ..._args: Parameters<AdminManagedBroadcastRuntime['sendChannelBroadcast']>
   ): Promise<SendBroadcastResult> {
-    return this.managedBroadcastRuntime.sendChannelBroadcast(sourceChatId, user, body, source);
+    throwLegacyPublicationWritesDisabled();
   }
 
-  sendBroadcastTest(
-    sourceChatId: string,
-    user: AuthUser,
-    body: unknown,
+  async sendBroadcastTest(
+    ..._args: Parameters<AdminManagedBroadcastRuntime['sendBroadcastTest']>
   ): Promise<SendBroadcastTestResult> {
-    return this.managedBroadcastRuntime.sendBroadcastTest(sourceChatId, user, body);
+    throwLegacyPublicationWritesDisabled();
   }
 
-  sendChannelBroadcastTest(
-    sourceChatId: string,
-    user: AuthUser,
-    body: unknown,
+  async sendChannelBroadcastTest(
+    ..._args: Parameters<AdminManagedBroadcastRuntime['sendChannelBroadcastTest']>
   ): Promise<SendBroadcastTestResult> {
-    return this.managedBroadcastRuntime.sendChannelBroadcastTest(sourceChatId, user, body);
+    throwLegacyPublicationWritesDisabled();
+  }
+
+  sendPublicationBroadcastTest(
+    ...args: Parameters<AdminManagedBroadcastRuntime['sendPublicationBroadcastTest']>
+  ): Promise<SendBroadcastTestResult> {
+    return this.managedBroadcastRuntime.sendPublicationBroadcastTest(...args);
+  }
+
+  sendPublicationChannelBroadcastTest(
+    ...args: Parameters<AdminManagedBroadcastRuntime['sendPublicationChannelBroadcastTest']>
+  ): Promise<SendBroadcastTestResult> {
+    return this.managedBroadcastRuntime.sendPublicationChannelBroadcastTest(...args);
   }
 
   listManagedBroadcasts(
@@ -8382,32 +8386,16 @@ export class AdminService implements OnModuleDestroy {
     return this.managedBroadcastRuntime.getChannelManagedBroadcast(sourceChatId, broadcastId, user);
   }
 
-  updateManagedBroadcast(
-    sourceChatId: string,
-    broadcastId: string,
-    user: AuthUser,
-    body: unknown,
+  async updateManagedBroadcast(
+    ..._args: Parameters<AdminManagedBroadcastRuntime['updateManagedBroadcast']>
   ): Promise<ManagedBroadcastDetails> {
-    return this.managedBroadcastRuntime.updateManagedBroadcast(
-      sourceChatId,
-      broadcastId,
-      user,
-      body,
-    );
+    throwLegacyPublicationWritesDisabled();
   }
 
-  updateChannelManagedBroadcast(
-    sourceChatId: string,
-    broadcastId: string,
-    user: AuthUser,
-    body: unknown,
+  async updateChannelManagedBroadcast(
+    ..._args: Parameters<AdminManagedBroadcastRuntime['updateChannelManagedBroadcast']>
   ): Promise<ManagedBroadcastDetails> {
-    return this.managedBroadcastRuntime.updateChannelManagedBroadcast(
-      sourceChatId,
-      broadcastId,
-      user,
-      body,
-    );
+    throwLegacyPublicationWritesDisabled();
   }
 
   cancelManagedBroadcast(
@@ -8430,32 +8418,28 @@ export class AdminService implements OnModuleDestroy {
     );
   }
 
-  retryManagedBroadcast(
-    sourceChatId: string,
-    broadcastId: string,
-    user: AuthUser,
+  async retryManagedBroadcast(
+    ..._args: Parameters<AdminManagedBroadcastRuntime['retryManagedBroadcast']>
   ): Promise<ManagedBroadcastDetails> {
-    return this.managedBroadcastRuntime.retryManagedBroadcast(sourceChatId, broadcastId, user);
+    throwLegacyPublicationWritesDisabled();
   }
 
-  retryChannelManagedBroadcast(
-    sourceChatId: string,
-    broadcastId: string,
-    user: AuthUser,
+  async retryChannelManagedBroadcast(
+    ..._args: Parameters<AdminManagedBroadcastRuntime['retryChannelManagedBroadcast']>
   ): Promise<ManagedBroadcastDetails> {
-    return this.managedBroadcastRuntime.retryChannelManagedBroadcast(
-      sourceChatId,
-      broadcastId,
-      user,
-    );
+    throwLegacyPublicationWritesDisabled();
   }
 
   processDueManagedBroadcasts(reason: 'startup' | 'scheduled'): Promise<void> {
     return this.managedBroadcastRuntime.processDueManagedBroadcasts(reason);
   }
 
-  getManagedBroadcastRuntimeForBroadcastService(): AdminManagedBroadcastRuntime {
-    return this.managedBroadcastRuntime;
+  processDueImmediatePublicationBroadcasts(): Promise<void> {
+    return this.managedBroadcastRuntime.processDueImmediatePublicationBroadcasts();
+  }
+
+  processDueDeadlinePublicationBroadcasts(limit?: number): Promise<void> {
+    return this.managedBroadcastRuntime.processDueDeadlinePublicationBroadcasts(limit);
   }
 
   private processManagedBroadcastOccurrence(...args: any[]) {

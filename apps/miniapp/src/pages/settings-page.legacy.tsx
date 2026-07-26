@@ -97,7 +97,6 @@ import {
   deleteManagedAutopostRule,
   getBroadcastComposerClientResetState,
   getBroadcastHandoffState,
-  getManagedAutopostRule,
   getManagedAutopostRules,
   getManagedBroadcast,
   getManagedBroadcastCalendar,
@@ -1758,39 +1757,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         description: formatApiError(error),
       });
       maxNotify('error');
-    },
-  });
-
-  const openManagedAutopostRuleMutation = useMutation({
-    mutationFn: (ruleId: string) => getManagedAutopostRule(api, chatId ?? '', ruleId),
-    retry: 2,
-    onSuccess: (rule) => {
-      const payload = rule.payload;
-      setEditingManagedBroadcast(null);
-      setEditingManagedAutopostRule(rule);
-      setMailingText(payload.text);
-      setMailingButtons(payload.buttons);
-      applyMailingImages(resolveBroadcastImagesFromLegacyFields(payload));
-      setMailingVideoCleared(false);
-      setMailingTargetMode(payload.targetMode);
-      setMailingTargetChatIds(normalizeBroadcastAudienceTargetChatIds(payload.targetChatIds));
-      setMailingLastScopedTargetMode(payload.targetMode === 'selected' ? 'selected' : 'current');
-      setMailingTimingMode('scheduled');
-      setMailingScheduledSlots(sortAndUniqueBroadcastSlots(payload.scheduledSlots));
-      setMailingScheduleTimezone(
-        payload.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
-      );
-      setMailingScheduleError('');
-      setMailingCycleError('');
-      resetMailingPlanner();
-      setMailingWorkspaceView('compose');
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось открыть автопост',
-        description: formatApiError(error),
-      });
     },
   });
 
@@ -4553,13 +4519,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     if (legacyEditorTarget.kind === 'autopost') {
-      if (!settingsScreenQuery.data || openManagedAutopostRuleMutation.isPending) {
-        return;
-      }
-
       appliedLegacyEditorTargetRef.current = signature;
       setMailingWorkspaceView('autoposts');
-      openManagedAutopostRuleMutation.mutate(legacyEditorTarget.id);
       return;
     }
 
@@ -4570,13 +4531,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     appliedLegacyEditorTargetRef.current = signature;
     setMailingWorkspaceView('history');
     openManagedBroadcastEditorMutation.mutate(legacyEditorTarget.id);
-  }, [
-    chatId,
-    legacyEditorTarget,
-    openManagedAutopostRuleMutation,
-    openManagedBroadcastEditorMutation,
-    settingsScreenQuery.data,
-  ]);
+  }, [chatId, legacyEditorTarget, openManagedBroadcastEditorMutation, settingsScreenQuery.data]);
   const orderedManagedBroadcasts = useMemo(() => {
     const priority = (item: ManagedBroadcastListItem): number => {
       if (item.status === 'FAILED') {
@@ -4729,7 +4684,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     clearBroadcastHandoffMutation.isPending ||
     updateManagedAutopostRuleMutation.isPending ||
     deleteManagedAutopostRuleMutation.isPending ||
-    openManagedAutopostRuleMutation.isPending ||
     isOpeningManagedBroadcastEditor ||
     isUpdatingManagedBroadcast ||
     cancelManagedBroadcastMutation.isPending ||
@@ -7278,19 +7232,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                         )}
                                         facts={buildManagedAutopostRuleFacts(rule, 'Текущий чат')}
                                         isBusy={isMailingBusy}
-                                        onOpen={() =>
-                                          openManagedAutopostRuleMutation.mutate(rule.id)
-                                        }
                                         onPause={() =>
                                           updateManagedAutopostRuleMutation.mutate({
                                             ruleId: rule.id,
                                             status: 'PAUSED',
-                                          })
-                                        }
-                                        onResume={() =>
-                                          updateManagedAutopostRuleMutation.mutate({
-                                            ruleId: rule.id,
-                                            status: 'ACTIVE',
                                           })
                                         }
                                         onDelete={() => handleDeleteManagedAutopostRule(rule)}

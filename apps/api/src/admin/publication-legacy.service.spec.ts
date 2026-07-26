@@ -292,8 +292,16 @@ describe('PublicationLegacyService', () => {
     expect(secondPage.nextCursor).toBeNull();
   });
 
-  it('surfaces failed and ambiguous deliveries from the current autopost revision', async () => {
-    const { managedAutopostMaterialization, service } = createService();
+  it('surfaces ambiguous deliveries after retirement without advertising a next run', async () => {
+    const { managedAutopostRule, managedAutopostMaterialization, service } = createService();
+    managedAutopostRule.findMany.mockReset();
+    managedAutopostRule.findMany.mockResolvedValue([
+      {
+        ...autopostRow('autopost-a', '2026-07-12T12:00:00.000Z'),
+        status: ManagedAutopostRuleStatus.PAUSED,
+        nextMaterializeAt: null,
+      },
+    ]);
     managedAutopostMaterialization.findMany.mockResolvedValue([
       {
         ruleId: 'autopost-a',
@@ -315,6 +323,7 @@ describe('PublicationLegacyService', () => {
       expect.objectContaining({
         kind: 'autopost',
         status: ManagedAutopostRuleStatus.ERROR,
+        nextRunAt: null,
         lastError: 'Есть неоднозначная доставка после таймаута MAX. Проверьте публикацию вручную.',
       }),
     );

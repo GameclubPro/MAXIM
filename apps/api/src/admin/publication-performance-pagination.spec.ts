@@ -538,9 +538,11 @@ describe('Publication performance and pagination', () => {
 
     expect(publicationFindFirst.mock.calls[0]?.[0].include.occurrences.include).toEqual({
       contentRevision: { select: { revision: true } },
+      _count: { select: { legacyBroadcasts: true } },
     });
     expect(occurrenceFindMany.mock.calls[0]?.[0].include).toEqual({
       contentRevision: { select: { revision: true } },
+      _count: { select: { legacyBroadcasts: true } },
     });
     expect(groupBy).toHaveBeenCalledTimes(2);
     expect(groupBy).toHaveBeenNthCalledWith(2, {

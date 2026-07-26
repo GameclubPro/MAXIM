@@ -1,0 +1,29 @@
+@layer components {
+  .publication-recurrence__interval-notice {
+    min-height: 0;
+    justify-content: flex-start;
+    padding: 10px 11px;
+    line-height: 1.35;
+  }
+
+  .publication-recurrence__interval-notice > span {
+    min-width: 0;
+  }
+
+  .publication-recurrence__interval-notice strong,
+  .publication-recurrence__interval-notice small {
+    display: block;
+    overflow-wrap: anywhere;
+  }
+
+  .publication-recurrence__interval-notice strong {
+    font-size: 0.78rem;
+  }
+
+  .publication-recurrence__interval-notice small {
+    margin-top: 2px;
+    color: inherit;
+    font-size: 0.73rem;
+    font-weight: 600;
+  }
+}

@@ -10,6 +10,7 @@ import {
   ManagedAutopostRuleStatus,
   ManagedBroadcastStatus,
 } from '../prisma/prisma-client';
+import { LEGACY_PUBLICATION_WRITES_DISABLED_CODE } from './legacy-publication-write-freeze';
 
 const futureSlot = () => {
   const slot = new Date(Date.now() + 60 * 60_000);
@@ -308,7 +309,7 @@ describe('ManagedAutopostService', () => {
     ]);
   });
 
-  it('surfaces ambiguous child delivery without overriding a paused rule', async () => {
+  it('keeps ambiguous materialized delivery visible after a legacy rule is retired', async () => {
     const rule = persistedRule({
       status: ManagedAutopostRuleStatus.PAUSED,
       lastError: 'Остановлено из-за потери доступа.',
@@ -330,8 +331,9 @@ describe('ManagedAutopostService', () => {
     await expect(service.listChatAutopostRules('chat-1', user)).resolves.toEqual([
       expect.objectContaining({
         id: 'rule-1',
-        status: ManagedAutopostRuleStatus.PAUSED,
-        lastError: 'Остановлено из-за потери доступа.',
+        status: ManagedAutopostRuleStatus.ERROR,
+        nextSendAt: null,
+        lastError: expect.stringContaining('Проверьте публикацию вручную'),
       }),
     ]);
   });
@@ -363,67 +365,142 @@ describe('ManagedAutopostService', () => {
     );
   });
 
-  it('creates a hub channel rule through the channel source', async () => {
-    const created = persistedRule({
-      sourceChatId: 'channel-1',
-      entityType: ChatEntityType.CHANNEL,
-      title: 'Продукты',
-      _count: { materializations: 0 },
-    });
-    const { service, prisma, managedEntitiesService } = createService();
-    prisma.managedAutopostRule.create.mockResolvedValue(created);
-    prisma.managedAutopostRule.findFirst.mockResolvedValue(created);
+  it('rejects all legacy autopost creation entry points with a Publications redirect', async () => {
+    const { service, prisma } = createService();
+    const body = { payload: payload() };
+    const attempts = [
+      () => service.createAutopostRule(user, body),
+      () => service.createChatAutopostRule('chat-1', user, body),
+      () => service.createChannelAutopostRule('channel-1', user, body),
+    ];
 
-    const result = await service.createAutopostRule(user, {
-      sourceChatId: 'channel-1',
-      entityType: 'channel',
-      title: 'Продукты',
-      payload: payload({ targetChatIds: ['channel-1'] }),
-    });
-
-    expect(managedEntitiesService.assertChannelAdminAccess).toHaveBeenCalledWith('channel-1', user);
-    expect(prisma.managedAutopostRule.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          sourceChatId: 'channel-1',
-          entityType: ChatEntityType.CHANNEL,
-          title: 'Продукты',
+    for (const attempt of attempts) {
+      await expect(attempt()).rejects.toMatchObject({
+        status: 410,
+        response: expect.objectContaining({
+          code: LEGACY_PUBLICATION_WRITES_DISABLED_CODE,
+          message: expect.stringContaining('«Публикации»'),
         }),
-      }),
-    );
-    expect(result.sourcePreview).toEqual(expect.objectContaining({ id: 'channel-1' }));
+      });
+    }
+
+    expect(prisma.managedAutopostRule.create).not.toHaveBeenCalled();
+  });
+
+  it.each(['startup', 'scheduled', 'manual'] as const)(
+    'keeps legacy materialization fail-closed for %s invocations',
+    async (reason) => {
+      const decide = jest.fn().mockResolvedValue({ action: 'run', reason: '' });
+      const { service, prisma, managedBroadcastService } = createService({
+        backgroundRuntimeGovernorService: { decide },
+      });
+
+      await service.processDueAutopostRules(reason);
+
+      expect(decide).not.toHaveBeenCalled();
+      expect(prisma.managedAutopostRule.findMany).not.toHaveBeenCalled();
+      expect(managedBroadcastService.sendBroadcast).not.toHaveBeenCalled();
+      expect(managedBroadcastService.sendChannelBroadcast).not.toHaveBeenCalled();
+    },
+  );
+
+  it('pauses remaining active and failed legacy rules during retirement', async () => {
+    const { service, prisma } = createService();
+    prisma.managedAutopostRule.updateMany.mockResolvedValue({ count: 4 });
+
+    await expect(service.pauseRetiredLegacyRules()).resolves.toBe(4);
+
+    expect(prisma.managedAutopostRule.updateMany).toHaveBeenCalledWith({
+      where: {
+        status: { in: [ManagedAutopostRuleStatus.ACTIVE, ManagedAutopostRuleStatus.ERROR] },
+      },
+      data: {
+        status: ManagedAutopostRuleStatus.PAUSED,
+        nextMaterializeAt: null,
+        lockedAt: null,
+        lockToken: null,
+      },
+    });
   });
 
   it('rejects channel autoposts with non-current targets before saving', async () => {
     const { service, prisma } = createService();
 
     await expect(
-      service.createChannelAutopostRule('channel-1', user, {
-        payload: payload({
-          targetMode: 'selected',
-          targetChatIds: ['channel-1', 'channel-2'],
-        }),
-      }),
+      (service as any).createRuleForEntity(
+        'channel-1',
+        user,
+        {
+          payload: payload({
+            targetMode: 'selected',
+            targetChatIds: ['channel-1', 'channel-2'],
+          }),
+        },
+        'channel',
+      ),
     ).rejects.toBeInstanceOf(BadRequestException);
 
     expect(prisma.managedAutopostRule.create).not.toHaveBeenCalled();
   });
 
-  it('rejects hub channel rules with non-current targets before saving', async () => {
+  it.each([
+    { title: 'Новое название' },
+    { status: ManagedAutopostRuleStatus.ACTIVE },
+    { status: ManagedAutopostRuleStatus.PAUSED, title: 'Новое название' },
+    { payload: payload() },
+  ])('rejects legacy autopost edits and resume requests: %j', async (body) => {
     const { service, prisma } = createService();
+    const attempts = [
+      () => service.updateAutopostRule('rule-1', user, body),
+      () => service.updateChatAutopostRule('chat-1', 'rule-1', user, body),
+      () => service.updateChannelAutopostRule('channel-1', 'rule-1', user, body),
+    ];
+
+    for (const attempt of attempts) {
+      await expect(attempt()).rejects.toMatchObject({
+        status: 410,
+        response: expect.objectContaining({ code: LEGACY_PUBLICATION_WRITES_DISABLED_CODE }),
+      });
+    }
+
+    expect(prisma.managedAutopostRule.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('allows pausing an existing legacy autopost rule', async () => {
+    const existing = persistedRule();
+    const paused = persistedRule({
+      status: ManagedAutopostRuleStatus.PAUSED,
+      nextMaterializeAt: null,
+    });
+    const { service, prisma, managedEntitiesService } = createService();
+    prisma.managedAutopostRule.findFirst
+      .mockResolvedValueOnce(existing)
+      .mockResolvedValueOnce(existing)
+      .mockResolvedValueOnce(paused);
+    prisma.managedAutopostRule.findUnique.mockResolvedValue(paused);
+    prisma.managedAutopostRule.updateMany.mockResolvedValue({ count: 1 });
 
     await expect(
-      service.createAutopostRule(user, {
-        sourceChatId: 'channel-1',
-        entityType: 'channel',
-        payload: payload({
-          targetMode: 'selected',
-          targetChatIds: ['channel-1', 'channel-2'],
+      service.updateAutopostRule('rule-1', user, {
+        status: ManagedAutopostRuleStatus.PAUSED,
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        id: 'rule-1',
+        status: ManagedAutopostRuleStatus.PAUSED,
+      }),
+    );
+
+    expect(managedEntitiesService.assertChatAdminAccess).toHaveBeenCalledWith('chat-1', user);
+    expect(prisma.managedAutopostRule.updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: 'rule-1' }),
+        data: expect.objectContaining({
+          status: ManagedAutopostRuleStatus.PAUSED,
+          nextMaterializeAt: null,
         }),
       }),
-    ).rejects.toBeInstanceOf(BadRequestException);
-
-    expect(prisma.managedAutopostRule.create).not.toHaveBeenCalled();
+    );
   });
 
   it('creates a rule without synchronous materialization', async () => {
@@ -449,7 +526,7 @@ describe('ManagedAutopostService', () => {
     prisma.managedAutopostRule.create.mockResolvedValue(created);
     prisma.managedAutopostRule.findFirst.mockResolvedValue(created);
 
-    await service.createChatAutopostRule('chat-1', user, { payload: payload() });
+    await (service as any).createRuleForEntity('chat-1', user, { payload: payload() }, 'chat');
 
     expect(managedBroadcastService.sendBroadcast).not.toHaveBeenCalled();
   });
@@ -460,9 +537,12 @@ describe('ManagedAutopostService', () => {
     const { service, prisma } = createService();
 
     await expect(
-      service.createChatAutopostRule('chat-1', user, {
-        payload: payload({ scheduledSlots: [invalidSlot.toISOString()] }),
-      }),
+      (service as any).createRuleForEntity(
+        'chat-1',
+        user,
+        { payload: payload({ scheduledSlots: [invalidSlot.toISOString()] }) },
+        'chat',
+      ),
     ).rejects.toThrow('Слоты должны быть кратны 30 минутам.');
 
     expect(prisma.managedAutopostRule.create).not.toHaveBeenCalled();
@@ -482,12 +562,17 @@ describe('ManagedAutopostService', () => {
     prisma.managedAutopostRule.findFirst.mockResolvedValue(created);
 
     await expect(
-      service.createChatAutopostRule('chat-1', user, {
-        payload: payload({
-          scheduleTimezone: 'Asia/Kathmandu',
-          scheduledSlots: [kathmanduSlot.toISOString()],
-        }),
-      }),
+      (service as any).createRuleForEntity(
+        'chat-1',
+        user,
+        {
+          payload: payload({
+            scheduleTimezone: 'Asia/Kathmandu',
+            scheduledSlots: [kathmanduSlot.toISOString()],
+          }),
+        },
+        'chat',
+      ),
     ).resolves.toEqual(expect.objectContaining({ id: 'rule-1' }));
   });
 
@@ -497,9 +582,12 @@ describe('ManagedAutopostService', () => {
     const { service, prisma } = createService();
 
     await expect(
-      service.createChatAutopostRule('chat-1', user, {
-        payload: payload({ scheduledSlots: [futureSlot(), distantSlot.toISOString()] }),
-      }),
+      (service as any).createRuleForEntity(
+        'chat-1',
+        user,
+        { payload: payload({ scheduledSlots: [futureSlot(), distantSlot.toISOString()] }) },
+        'chat',
+      ),
     ).rejects.toThrow('Планирование календаря доступно максимум на 31 день.');
 
     expect(prisma.managedAutopostRule.create).not.toHaveBeenCalled();
@@ -513,9 +601,13 @@ describe('ManagedAutopostService', () => {
     prisma.managedAutopostRule.findFirst.mockResolvedValue(existing);
 
     await expect(
-      service.updateChatAutopostRule('chat-1', 'rule-1', user, {
-        payload: payload({ scheduledSlots: [invalidSlot.toISOString()] }),
-      }),
+      (service as any).updateRuleForEntity(
+        'chat-1',
+        'rule-1',
+        user,
+        { payload: payload({ scheduledSlots: [invalidSlot.toISOString()] }) },
+        'chat',
+      ),
     ).rejects.toThrow('Слоты должны быть кратны 30 минутам.');
 
     expect(prisma.managedAutopostRule.updateMany).not.toHaveBeenCalled();
@@ -764,7 +856,13 @@ describe('ManagedAutopostService', () => {
     prisma.managedAutopostRule.updateMany.mockResolvedValue({ count: 0 });
 
     await expect(
-      service.updateChatAutopostRule('chat-1', 'rule-1', user, { title: 'Новое название' }),
+      (service as any).updateRuleForEntity(
+        'chat-1',
+        'rule-1',
+        user,
+        { title: 'Новое название' },
+        'chat',
+      ),
     ).rejects.toThrow('Автопост обновляется. Повторите позже.');
 
     expect(prisma.managedAutopostRule.updateMany).toHaveBeenCalledWith(

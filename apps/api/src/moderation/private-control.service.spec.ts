@@ -11,6 +11,7 @@ import {
   USER_AGREEMENT_SHORT_NOTICE,
   USER_AGREEMENT_START_NOTICE,
 } from '../common/user-agreement-notice';
+import { LEGACY_PUBLICATION_WRITES_DISABLED_CODE } from '../admin/legacy-publication-write-freeze';
 import { buildCompactProfileMentionStartPayload } from '../max/max-deep-link.util';
 import { createDefaultPrivateControlSession } from './private-control-session-normalizer';
 import { PrivateControlService } from './private-control.service';
@@ -585,7 +586,7 @@ function createHarness(
     adminService?: Record<string, unknown>;
     manualModerationService?: Record<string, unknown>;
     adminSettingsService?: Record<string, unknown>;
-    managedBroadcastService?: Record<string, unknown>;
+    managedBroadcastService?: Record<string, unknown> | null;
     managedGiveaway?: ManagedGiveawayDetails | null;
     rules?: ChatRules;
     maxBotLinkService?: Record<string, unknown>;
@@ -767,6 +768,19 @@ function createHarness(
     publishChannelEngagementMessage: jest.fn().mockResolvedValue(undefined),
     ...overrides.adminService,
   };
+  const managedBroadcastService =
+    overrides.managedBroadcastService === null
+      ? undefined
+      : {
+          sendBroadcast: jest.fn((...args: Parameters<typeof adminService.sendBroadcast>) =>
+            adminService.sendBroadcast(...args),
+          ),
+          sendChannelBroadcast: jest.fn(
+            (...args: Parameters<typeof adminService.sendChannelBroadcast>) =>
+              adminService.sendChannelBroadcast(...args),
+          ),
+          ...(overrides.managedBroadcastService ?? {}),
+        };
   const manualModerationService = {
     adoptChatRulesFromMessage: jest
       .fn()
@@ -1059,7 +1073,7 @@ function createHarness(
       }),
     } as never,
     overrides.maxBotLinkService as never,
-    overrides.managedBroadcastService as never,
+    managedBroadcastService as never,
     adminDialogLinkService as never,
     supportRequestsService as never,
     prisma as never,
@@ -1072,6 +1086,7 @@ function createHarness(
     manualModerationService,
     adminSettingsService,
     adminDialogLinkService,
+    managedBroadcastService,
     managedGiveawayService,
     supportRequestsService,
     prisma,
@@ -2472,6 +2487,52 @@ describe('PrivateControlService', () => {
     );
     expect(adminService.sendBroadcast).not.toHaveBeenCalled();
     expect(getLastSentText(maxClient)).toContain('Автопостинг отправлен без ошибок.');
+  });
+
+  it('fails closed with the legacy 410 and directs admins to Publications without fallback', async () => {
+    const { service, adminService, maxClient, chats } = createHarness({
+      managedBroadcastService: null,
+    });
+    const actor = {
+      userId: 'user-1',
+      username: null,
+      displayName: 'Тестовый пользователь',
+    };
+
+    await expect(
+      (
+        service as unknown as {
+          sendBroadcastDraft(params: {
+            selectedChatId: string;
+            selectedEntityType: 'chat';
+            actor: typeof actor;
+            draft: ReturnType<typeof createDefaultPrivateControlSession>['broadcastDraft'];
+          }): Promise<unknown>;
+        }
+      ).sendBroadcastDraft({
+        selectedChatId: chats[0].id,
+        selectedEntityType: 'chat',
+        actor,
+        draft: createDefaultPrivateControlSession().broadcastDraft,
+      }),
+    ).rejects.toMatchObject({
+      status: 410,
+      response: expect.objectContaining({
+        code: LEGACY_PUBLICATION_WRITES_DISABLED_CODE,
+      }),
+    });
+    expect(adminService.sendBroadcast).not.toHaveBeenCalled();
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
+    await service.handleUpdate(createPrivateTextUpdate('Новая публикация'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
+    await flushBackgroundBroadcast();
+
+    expect(adminService.sendBroadcast).not.toHaveBeenCalled();
+    expect(getLastSentText(maxClient)).toContain('«Публикации»');
+    expect(getLastSentText(maxClient)).not.toContain('Попробуйте ещё раз');
   });
 
   it('formats scheduled broadcast time in the broadcast timezone for private bot messages', async () => {

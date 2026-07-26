@@ -68,10 +68,8 @@ export function resolveLegacyPublicationReturnPath(state: unknown): string | nul
 
 export function canOpenLegacyPublication(item: Pick<LegacyPublicationSummary, 'kind' | 'status'>) {
   return (
-    item.kind === 'autopost' ||
-    item.status === 'ACTIVE' ||
-    item.status === 'PARTIAL' ||
-    item.status === 'FAILED'
+    item.kind === 'broadcast' &&
+    (item.status === 'ACTIVE' || item.status === 'PARTIAL' || item.status === 'FAILED')
   );
 }
 

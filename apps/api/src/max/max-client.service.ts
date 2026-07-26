@@ -72,6 +72,17 @@ export type MaxChannelMessageSnapshot = {
 
 export type MaxExactMessagePresence = 'present' | 'absent';
 
+export type MaxExactMessagePresenceRequest = {
+  chatId: string;
+  messageId: string;
+};
+
+export type MaxExactMessagePresenceResult =
+  | (MaxExactMessagePresenceRequest & { presence: MaxExactMessagePresence })
+  | (MaxExactMessagePresenceRequest & { error: unknown });
+
+type MaxExactMessagePresenceOutcome = { presence: MaxExactMessagePresence } | { error: unknown };
+
 export type MaxChannelMessageReaction = {
   emoji: string;
   count: number;
@@ -214,6 +225,7 @@ export function isMaxApiCircuitOpenError(error: unknown): error is MaxApiCircuit
 
 class MaxApiInternalRateLimitError extends Error {
   readonly code = 'MAX_API_INTERNAL_RATE_LIMIT';
+  readonly preDispatch = true;
 
   constructor(
     message: string,
@@ -489,7 +501,9 @@ const DEFAULT_MAX_API_INTERACTIVE_RATE_LIMIT_WAIT_MS = 1_500;
 const DEFAULT_MAX_API_BACKGROUND_RATE_LIMIT_WAIT_MS = 5_000;
 const DEFAULT_MAX_API_RATE_LIMIT_RETRY_FLOOR_MS = 25;
 const DEFAULT_MAX_API_MANAGED_REFRESH_RPS = 2;
-const DEFAULT_MAX_API_MANAGED_REFRESH_STACK_RPS = 4;
+const DEFAULT_MAX_API_MANAGED_REFRESH_STACK_RPS = 2;
+const MAX_API_MESSAGE_IDS_BATCH_SIZE = 50;
+const MAX_API_DIRECT_MESSAGE_LOOKUP_CONCURRENCY = 4;
 const MAX_API_LIST_BOT_CHATS_PAGE_SAFETY_CAP = 10_000;
 const MAX_API_CHAT_ADMIN_MEMBERS_PAGE_SAFETY_CAP = 10_000;
 const MAX_API_RATE_LIMIT_SLOT_TTL_MS = 2_000;
@@ -663,6 +677,7 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly backgroundGlobalRpsLimit: number;
   private readonly managedRefreshRpsLimit: number;
   private readonly managedRefreshStackRpsLimit: number;
+  private readonly rateLimitServiceScope: string;
   private readonly chatRpsLimit: number;
   private readonly chatMemberAccessAdminCacheTtlSec: number;
   private readonly chatMemberAccessMemberCacheTtlSec: number;
@@ -758,6 +773,9 @@ export class MaxClientService implements OnModuleDestroy {
       configService.get('MAX_API_MANAGED_REFRESH_STACK_RPS'),
       DEFAULT_MAX_API_MANAGED_REFRESH_STACK_RPS,
       0,
+    );
+    this.rateLimitServiceScope = this.normalizeRateLimitServiceScope(
+      configService.get('APP_SERVICE_NAME', process.env.APP_SERVICE_NAME ?? 'api'),
     );
     this.chatRpsLimit = this.readConfigInt(configService.get('MAX_API_CHAT_RPS'), 10);
     this.chatMemberAccessAdminCacheTtlSec = this.readConfigInt(
@@ -1468,62 +1486,202 @@ export class MaxClientService implements OnModuleDestroy {
       throw new Error('chatId and messageId are required for exact MAX message presence');
     }
 
-    try {
-      const data = await this.executeChatRequest(
-        normalizedChatId,
-        () =>
-          this.request<Record<string, unknown>>('get', '/messages', {
-            params: { message_ids: normalizedMessageId },
-          }),
-        options,
-      );
-      const messages = Array.isArray(data.messages) ? data.messages : [];
-      const exactListMatch = messages.some(
-        (message) =>
-          message !== null &&
-          typeof message === 'object' &&
-          !Array.isArray(message) &&
-          this.extractMessageIdFromSendResponse(message) === normalizedMessageId,
-      );
-      if (exactListMatch) {
-        return 'present';
-      }
-    } catch (error: unknown) {
-      if (this.isExactMessageNotFoundError(error)) {
-        return 'absent';
-      }
-      throw error;
+    const [result] = await this.getExactMessagePresences(
+      [{ chatId: normalizedChatId, messageId: normalizedMessageId }],
+      options,
+    );
+    if (result && 'presence' in result) {
+      return result.presence;
+    }
+    throw result?.error ?? new Error('MAX exact message lookup returned no result');
+  }
+
+  async getExactMessagePresences(
+    requests: readonly MaxExactMessagePresenceRequest[],
+    options: MaxApiRequestOptions | MaxApiTrafficClass = {},
+  ): Promise<MaxExactMessagePresenceResult[]> {
+    if (requests.length === 0) {
+      return [];
     }
 
-    try {
-      const data = await this.executeChatRequest(
-        normalizedChatId,
-        () =>
-          this.request<Record<string, unknown>>(
-            'get',
-            `/messages/${encodeURIComponent(normalizedMessageId)}`,
-          ),
-        options,
-      );
-      const nestedMessage =
-        data.message && typeof data.message === 'object' && !Array.isArray(data.message)
-          ? data.message
-          : null;
-      const exactDirectMatch = [data, nestedMessage].some(
-        (message) =>
-          message !== null &&
-          this.extractMessageIdFromSendResponse(message) === normalizedMessageId,
-      );
-      if (exactDirectMatch) {
-        return 'present';
-      }
-      throw new Error('MAX exact message lookup returned a response without the requested id');
-    } catch (error: unknown) {
-      if (this.isExactMessageNotFoundError(error)) {
-        return 'absent';
-      }
-      throw error;
+    const normalizedRequests = requests.map((request) => ({
+      chatId: request.chatId.trim(),
+      messageId: request.messageId.trim(),
+    }));
+    if (normalizedRequests.some((request) => !request.chatId || !request.messageId)) {
+      throw new Error('chatId and messageId are required for exact MAX message presence');
     }
+
+    const requestsByMessageId = new Map<string, MaxExactMessagePresenceRequest[]>();
+    for (const request of normalizedRequests) {
+      const groupedRequests = requestsByMessageId.get(request.messageId) ?? [];
+      groupedRequests.push(request);
+      requestsByMessageId.set(request.messageId, groupedRequests);
+    }
+    const uniqueMessageIds = Array.from(requestsByMessageId.keys());
+    const resultsByRequest = new Map<string, MaxExactMessagePresenceOutcome>();
+
+    // MAX documents 50 as the default message-list response size. Keeping the same bound also
+    // prevents comma-separated message IDs from producing oversized request URLs.
+    for (let index = 0; index < uniqueMessageIds.length; index += MAX_API_MESSAGE_IDS_BATCH_SIZE) {
+      const batchMessageIds = uniqueMessageIds.slice(index, index + MAX_API_MESSAGE_IDS_BATCH_SIZE);
+      const requestedIds = new Set(batchMessageIds);
+      const batch = batchMessageIds.flatMap(
+        (messageId) => requestsByMessageId.get(messageId) ?? [],
+      );
+      const listedChatIdsByMessageId = new Map<string, Set<string>>();
+      const unscopedListedMessageIds = new Set<string>();
+      let listError: unknown = null;
+
+      try {
+        const data = await this.executeGlobalRequest(
+          () =>
+            this.request<Record<string, unknown>>('get', '/messages', {
+              params: { message_ids: batchMessageIds.join(',') },
+            }),
+          options,
+        );
+        const messages = Array.isArray(data.messages) ? data.messages : [];
+        for (const message of messages) {
+          if (message === null || typeof message !== 'object' || Array.isArray(message)) {
+            continue;
+          }
+          const listedId = this.extractMessageIdFromSendResponse(message);
+          if (listedId && requestedIds.has(listedId)) {
+            const responseChatId = this.extractChatIdFromSendResponse(message);
+            if (responseChatId) {
+              const listedChatIds = listedChatIdsByMessageId.get(listedId) ?? new Set<string>();
+              listedChatIds.add(responseChatId);
+              listedChatIdsByMessageId.set(listedId, listedChatIds);
+            } else {
+              unscopedListedMessageIds.add(listedId);
+            }
+          }
+        }
+
+        for (const messageId of batchMessageIds) {
+          const groupedRequests = requestsByMessageId.get(messageId) ?? [];
+          const requestedChatIds = new Set(groupedRequests.map((request) => request.chatId));
+          const listedChatIds = listedChatIdsByMessageId.get(messageId) ?? new Set<string>();
+          for (const request of groupedRequests) {
+            const requestKey = this.buildExactMessagePresenceRequestKey(request);
+            if (listedChatIds.has(request.chatId)) {
+              resultsByRequest.set(requestKey, { presence: 'present' });
+            } else if (listedChatIds.size > 0) {
+              resultsByRequest.set(requestKey, {
+                error: this.createExactMessageTargetMismatchError(
+                  request.chatId,
+                  listedChatIds.values().next().value ?? 'unknown',
+                  request.messageId,
+                ),
+              });
+            } else if (unscopedListedMessageIds.has(messageId)) {
+              resultsByRequest.set(
+                requestKey,
+                requestedChatIds.size === 1
+                  ? { presence: 'present' }
+                  : { error: this.createUnscopedExactMessageTargetError(request.messageId) },
+              );
+            }
+          }
+        }
+      } catch (error: unknown) {
+        if (this.extractStatusCode(error) === 404) {
+          // A list-route 404 is not proof that any specific message is absent.
+          listError = null;
+        } else {
+          listError = error;
+        }
+      }
+
+      if (listError) {
+        for (const request of batch) {
+          resultsByRequest.set(this.buildExactMessagePresenceRequestKey(request), {
+            error: listError,
+          });
+        }
+        continue;
+      }
+
+      const directRequests = batch.filter(
+        (request) => !resultsByRequest.has(this.buildExactMessagePresenceRequestKey(request)),
+      );
+      let directIndex = 0;
+      const workers = Array.from(
+        {
+          length: Math.min(MAX_API_DIRECT_MESSAGE_LOOKUP_CONCURRENCY, directRequests.length),
+        },
+        async () => {
+          while (directIndex < directRequests.length) {
+            const request = directRequests[directIndex];
+            directIndex += 1;
+            if (!request) {
+              continue;
+            }
+
+            try {
+              const data = await this.executeChatRequest(
+                request.chatId,
+                () =>
+                  this.request<Record<string, unknown>>(
+                    'get',
+                    `/messages/${encodeURIComponent(request.messageId)}`,
+                  ),
+                options,
+              );
+              const nestedMessage =
+                data.message && typeof data.message === 'object' && !Array.isArray(data.message)
+                  ? data.message
+                  : null;
+              const exactDirectMatch = [data, nestedMessage].find(
+                (message) =>
+                  message !== null &&
+                  this.extractMessageIdFromSendResponse(message) === request.messageId,
+              );
+              if (!exactDirectMatch) {
+                throw new Error(
+                  'MAX exact message lookup returned a response without the requested id',
+                );
+              }
+              const responseChatId = this.extractChatIdFromSendResponse(exactDirectMatch);
+              if (responseChatId && responseChatId !== request.chatId) {
+                throw this.createExactMessageTargetMismatchError(
+                  request.chatId,
+                  responseChatId,
+                  request.messageId,
+                );
+              }
+              if (
+                !responseChatId &&
+                new Set(
+                  (requestsByMessageId.get(request.messageId) ?? []).map(
+                    (groupedRequest) => groupedRequest.chatId,
+                  ),
+                ).size > 1
+              ) {
+                throw this.createUnscopedExactMessageTargetError(request.messageId);
+              }
+              resultsByRequest.set(this.buildExactMessagePresenceRequestKey(request), {
+                presence: 'present',
+              });
+            } catch (error: unknown) {
+              resultsByRequest.set(
+                this.buildExactMessagePresenceRequestKey(request),
+                this.isExactMessageNotFoundError(error) ? { presence: 'absent' } : { error },
+              );
+            }
+          }
+        },
+      );
+      await Promise.all(workers);
+    }
+
+    return normalizedRequests.map((request) => ({
+      ...request,
+      ...(resultsByRequest.get(this.buildExactMessagePresenceRequestKey(request)) ?? {
+        error: new Error('MAX exact message lookup returned no result'),
+      }),
+    })) as MaxExactMessagePresenceResult[];
   }
 
   async listWebhookSubscriptions(
@@ -5945,6 +6103,26 @@ export class MaxClientService implements OnModuleDestroy {
     return null;
   }
 
+  private buildExactMessagePresenceRequestKey(request: MaxExactMessagePresenceRequest): string {
+    return JSON.stringify([request.chatId, request.messageId]);
+  }
+
+  private createExactMessageTargetMismatchError(
+    expectedChatId: string,
+    responseChatId: string,
+    messageId: string,
+  ): Error {
+    return new Error(
+      `MAX exact message lookup returned ${messageId} for chat ${responseChatId} instead of ${expectedChatId}`,
+    );
+  }
+
+  private createUnscopedExactMessageTargetError(messageId: string): Error {
+    return new Error(
+      `MAX exact message lookup returned ${messageId} without a chat id for multiple targets`,
+    );
+  }
+
   private extractChatIdFromSendResponse(payload: unknown): string | null {
     const queue: Array<{ node: unknown; depth: number }> = [{ node: payload, depth: 0 }];
     const visited = new Set<unknown>();
@@ -6082,7 +6260,7 @@ export class MaxClientService implements OnModuleDestroy {
         reason: `MAX API global rate limit exceeded for bot ${botId}`,
       },
       {
-        key: `maxapi:gcra:v1:bot:${botId}:class:${trafficClass}`,
+        key: `maxapi:gcra:v1:service:${this.rateLimitServiceScope}:bot:${botId}:class:${trafficClass}`,
         limit: this.resolveTrafficClassEffectiveRpsLimit(trafficClass),
         reason: `MAX API ${trafficClass} rate limit exceeded for bot ${botId}`,
       },
@@ -6097,11 +6275,11 @@ export class MaxClientService implements OnModuleDestroy {
         : []),
       {
         key: 'maxapi:gcra:v1:stack:all',
-        limit: this.globalRpsLimit,
+        limit: Math.min(this.globalRpsLimit, DEFAULT_MAX_API_GLOBAL_RPS),
         reason: 'MAX API global rate limit exceeded across all bots',
       },
       {
-        key: `maxapi:gcra:v1:stack:class:${trafficClass}`,
+        key: `maxapi:gcra:v1:service:${this.rateLimitServiceScope}:stack:class:${trafficClass}`,
         limit: this.resolveTrafficClassEffectiveRpsLimit(trafficClass),
         reason: `MAX API ${trafficClass} rate limit exceeded across all bots`,
       },
@@ -6109,14 +6287,14 @@ export class MaxClientService implements OnModuleDestroy {
     if (this.shouldApplyManagedRefreshSourceLimit(trafficClass, sourceTag)) {
       if (this.managedRefreshRpsLimit > 0) {
         dimensions.push({
-          key: `maxapi:gcra:v1:source:${botId}:${MAX_API_SOURCE_TAGS.MANAGED_REFRESH}`,
+          key: `maxapi:gcra:v1:service:${this.rateLimitServiceScope}:source:${botId}:${MAX_API_SOURCE_TAGS.MANAGED_REFRESH}`,
           limit: this.managedRefreshRpsLimit,
           reason: `MAX API managed_refresh source limit exceeded for bot ${botId}`,
         });
       }
       if (this.managedRefreshStackRpsLimit > 0) {
         dimensions.push({
-          key: `maxapi:gcra:v1:source:stack:${MAX_API_SOURCE_TAGS.MANAGED_REFRESH}`,
+          key: `maxapi:gcra:v1:service:${this.rateLimitServiceScope}:source:stack:${MAX_API_SOURCE_TAGS.MANAGED_REFRESH}`,
           limit: this.managedRefreshStackRpsLimit,
           reason: 'MAX API managed_refresh source limit exceeded across all bots',
         });
@@ -6315,6 +6493,16 @@ export class MaxClientService implements OnModuleDestroy {
       default:
         return this.interactiveRateLimitWaitMs;
     }
+  }
+
+  private normalizeRateLimitServiceScope(value: unknown): string {
+    const normalized = String(value ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/gu, '_')
+      .replace(/^_+|_+$/gu, '')
+      .slice(0, 64);
+    return normalized || 'api';
   }
 
   private sleep(ms: number): Promise<void> {
@@ -6715,15 +6903,7 @@ export class MaxClientService implements OnModuleDestroy {
     if (this.extractStatusCode(error) !== 404) {
       return false;
     }
-    const code = this.extractErrorCode(error);
-    const message = this.extractErrorMessage(error);
-    return (
-      code === 'message.not.found' ||
-      code === 'message_not_found' ||
-      code === 'message.not_found' ||
-      message.includes('message not found') ||
-      message.includes('message.not.found')
-    );
+    return this.extractErrorCode(error) === 'message.not.found';
   }
 
   private extractErrorCode(error: unknown): string | null {

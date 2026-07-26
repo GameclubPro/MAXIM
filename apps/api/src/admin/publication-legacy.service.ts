@@ -48,6 +48,7 @@ type LegacyAutopostRow = {
   lastError: string | null;
   createdAt: Date;
   updatedAt: Date;
+  executionEnabled: boolean;
 };
 
 type LegacyAutopostContentProjection = Pick<
@@ -235,10 +236,12 @@ export class PublicationLegacyService {
     return rows.map((row) => {
       const projection = projectionById.get(row.id);
       const deliveryRollup = deliveryRollups.get(row.id);
-      const deliveryFailureVisible =
-        Boolean(deliveryRollup) && row.status !== ManagedAutopostRuleStatus.PAUSED;
+      const deliveryFailureVisible = Boolean(deliveryRollup);
       return {
         ...row,
+        executionEnabled:
+          row.status === ManagedAutopostRuleStatus.ACTIVE ||
+          row.status === ManagedAutopostRuleStatus.ERROR,
         status: deliveryFailureVisible ? ManagedAutopostRuleStatus.ERROR : row.status,
         text: projection?.text ?? '',
         targetMode: projection?.targetMode ?? 'current',
@@ -508,9 +511,10 @@ export class PublicationLegacyService {
       source,
       sources.chatCount,
     );
-    const nextRunAt =
-      this.resolveNextScheduledSlot(this.readStringArray(row.scheduledSlots)) ??
-      row.nextMaterializeAt;
+    const nextRunAt = row.executionEnabled
+      ? (this.resolveNextScheduledSlot(this.readStringArray(row.scheduledSlots)) ??
+        row.nextMaterializeAt)
+      : null;
 
     return [
       {

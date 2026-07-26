@@ -92,6 +92,21 @@ describe('validateEnv boolean parsing', () => {
     expect(env.MAX_API_BASE_URL).toBe('https://platform-api2.max.ru');
   });
 
+  it('caps managed refresh pressure at two requests per second by default', () => {
+    const defaults = validateEnv(createValidEnv());
+    expect(defaults.MAX_API_MANAGED_REFRESH_RPS).toBe(2);
+    expect(defaults.MAX_API_MANAGED_REFRESH_STACK_RPS).toBe(2);
+
+    const configured = validateEnv(
+      createValidEnv({
+        MAX_API_MANAGED_REFRESH_RPS: '1',
+        MAX_API_MANAGED_REFRESH_STACK_RPS: '0',
+      }),
+    );
+    expect(configured.MAX_API_MANAGED_REFRESH_RPS).toBe(1);
+    expect(configured.MAX_API_MANAGED_REFRESH_STACK_RPS).toBe(0);
+  });
+
   it('enables resumable MAX video uploads by default with an explicit rollback flag', () => {
     expect(validateEnv(createValidEnv()).MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED).toBe(true);
     expect(

@@ -1,5 +1,4 @@
 import {
-  createManagedAutopostHubRuleRequestSchema,
   createManagedAutopostRuleRequestSchema,
   listManagedAutopostHubRulesQuerySchema,
   managedAutopostHubRuleDetailsSchema,
@@ -41,6 +40,7 @@ import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
 import { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
 import { isSystemModeRecoveryWindow, SystemModeService } from '../system/system-mode.service';
 import { ManagedBroadcastService } from './managed-broadcast.service';
+import { throwLegacyPublicationWritesDisabled } from './legacy-publication-write-freeze';
 import { buildManagedBroadcastButtonState } from './admin-managed-broadcast-buttons';
 import { ManagedEntitiesService } from './managed-entities.service';
 import {
@@ -53,7 +53,6 @@ import { isPrismaKnownError } from './admin-legacy-utils';
 const AUTOSCHEDULE_HORIZON_DAYS = 14;
 const AUTOSCHEDULE_MIN_DELAY_MS = 30_000;
 const AUTOSCHEDULE_LOCK_STALE_MS = 5 * 60_000;
-const AUTOSCHEDULE_BATCH_SIZE = 20;
 const AUTOSCHEDULE_RETRY_MS = 5 * 60_000;
 const AUTOSCHEDULE_MATERIALIZATION_STALE_MS = 10 * 60_000;
 const AUTOSCHEDULE_BACKGROUND_POLL_MS = 60_000;
@@ -132,21 +131,19 @@ export class ManagedAutopostService {
   }
 
   async createChatAutopostRule(
-    sourceChatId: string,
-    user: AuthUser,
-    body: unknown,
+    _sourceChatId: string,
+    _user: AuthUser,
+    _body: unknown,
   ): Promise<ManagedAutopostRuleDetails> {
-    await this.managedEntitiesService.assertChatAdminAccess(sourceChatId, user);
-    return this.createRuleForEntity(sourceChatId, user, body, 'chat');
+    throwLegacyPublicationWritesDisabled();
   }
 
   async createChannelAutopostRule(
-    sourceChatId: string,
-    user: AuthUser,
-    body: unknown,
+    _sourceChatId: string,
+    _user: AuthUser,
+    _body: unknown,
   ): Promise<ManagedAutopostRuleDetails> {
-    await this.managedEntitiesService.assertChannelAdminAccess(sourceChatId, user);
-    return this.createRuleForEntity(sourceChatId, user, body, 'channel');
+    throwLegacyPublicationWritesDisabled();
   }
 
   async updateChatAutopostRule(
@@ -155,6 +152,7 @@ export class ManagedAutopostService {
     user: AuthUser,
     body: unknown,
   ): Promise<ManagedAutopostRuleDetails> {
+    this.assertLegacyPauseOnly(body);
     await this.managedEntitiesService.assertChatAdminAccess(sourceChatId, user);
     return this.updateRuleForEntity(sourceChatId, ruleId, user, body, 'chat');
   }
@@ -165,6 +163,7 @@ export class ManagedAutopostService {
     user: AuthUser,
     body: unknown,
   ): Promise<ManagedAutopostRuleDetails> {
+    this.assertLegacyPauseOnly(body);
     await this.managedEntitiesService.assertChannelAdminAccess(sourceChatId, user);
     return this.updateRuleForEntity(sourceChatId, ruleId, user, body, 'channel');
   }
@@ -248,21 +247,11 @@ export class ManagedAutopostService {
     return this.mapHubRuleDetails(details, await this.loadHubSourceBundle(user));
   }
 
-  async createAutopostRule(user: AuthUser, body: unknown): Promise<ManagedAutopostHubRuleDetails> {
-    const parsed = createManagedAutopostHubRuleRequestSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.format());
-    }
-    const request = parsed.data;
-    await this.assertHubAdminAccess(request.sourceChatId, request.entityType, user);
-    const sources = await this.loadHubSourceBundle(user);
-    const details = await this.createRuleForEntity(
-      request.sourceChatId,
-      user,
-      { title: request.title, payload: request.payload },
-      request.entityType,
-    );
-    return this.mapHubRuleDetails(details, sources);
+  async createAutopostRule(
+    _user: AuthUser,
+    _body: unknown,
+  ): Promise<ManagedAutopostHubRuleDetails> {
+    throwLegacyPublicationWritesDisabled();
   }
 
   async updateAutopostRule(
@@ -270,6 +259,7 @@ export class ManagedAutopostService {
     user: AuthUser,
     body: unknown,
   ): Promise<ManagedAutopostHubRuleDetails> {
+    this.assertLegacyPauseOnly(body);
     const context = await this.getHubRuleContext(ruleId);
     await this.assertHubAdminAccess(context.sourceChatId, context.entityType, user);
     const sources = await this.loadHubSourceBundle(user);
@@ -296,31 +286,24 @@ export class ManagedAutopostService {
     return this.mapHubRuleDetails(details, sources);
   }
 
-  async processDueAutopostRules(reason: MaterializeReason): Promise<void> {
-    const decision = await this.resolveBackgroundDecision(reason);
-    if (decision === 'pause') {
-      return;
-    }
+  async processDueAutopostRules(_reason: MaterializeReason): Promise<void> {
+    // FLAG: Legacy rule materialization is frozen; existing rows remain readable and stoppable.
+    return;
+  }
 
-    const now = new Date();
-    const staleLockBefore = new Date(now.getTime() - AUTOSCHEDULE_LOCK_STALE_MS);
-    const rows = await this.prisma.managedAutopostRule.findMany({
+  async pauseRetiredLegacyRules(): Promise<number> {
+    const result = await this.prisma.managedAutopostRule.updateMany({
       where: {
         status: { in: [ManagedAutopostRuleStatus.ACTIVE, ManagedAutopostRuleStatus.ERROR] },
-        nextMaterializeAt: { lte: now },
-        OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
       },
-      orderBy: [{ nextMaterializeAt: 'asc' }, { updatedAt: 'asc' }],
-      take:
-        decision === 'slow'
-          ? Math.max(1, Math.floor(AUTOSCHEDULE_BATCH_SIZE / 2))
-          : AUTOSCHEDULE_BATCH_SIZE,
-      select: { id: true },
+      data: {
+        status: ManagedAutopostRuleStatus.PAUSED,
+        nextMaterializeAt: null,
+        lockedAt: null,
+        lockToken: null,
+      },
     });
-
-    for (const row of rows) {
-      await this.materializeRule(row.id, reason, staleLockBefore);
-    }
+    return result.count;
   }
 
   private async listRulesForEntity(
@@ -600,6 +583,21 @@ export class ManagedAutopostService {
         await this.releaseRuleEditLock(existing.id, editLockToken);
       }
       throw error;
+    }
+  }
+
+  private assertLegacyPauseOnly(body: unknown): void {
+    const parsed = updateManagedAutopostRuleRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    if (
+      parsed.data.status !== ManagedAutopostRuleStatus.PAUSED ||
+      parsed.data.title !== undefined ||
+      parsed.data.payload !== undefined
+    ) {
+      throwLegacyPublicationWritesDisabled();
     }
   }
 
@@ -1565,9 +1563,7 @@ export class ManagedAutopostService {
   ): ManagedAutopostRuleSummary {
     const payload = this.parsePayload(row.payload);
     const deliveryFailureVisible =
-      row.deliveryRollup?.hasFailure === true &&
-      row.status !== ManagedAutopostRuleStatus.PAUSED &&
-      row.status !== ManagedAutopostRuleStatus.DISABLED;
+      row.deliveryRollup?.hasFailure === true && row.status !== ManagedAutopostRuleStatus.DISABLED;
     return managedAutopostRuleSummarySchema.parse({
       id: row.id,
       sourceChatId: row.sourceChatId,
@@ -1586,7 +1582,9 @@ export class ManagedAutopostService {
       buttons: payload.buttons,
       scheduleTimezone: payload.scheduleTimezone,
       scheduledSlots: payload.scheduledSlots,
-      nextSendAt: this.resolveNextSendAt(payload)?.toISOString() ?? null,
+      nextSendAt: this.isMaterializableStatus(row.status)
+        ? (this.resolveNextSendAt(payload)?.toISOString() ?? null)
+        : null,
       materializedCount: row._count?.materializations ?? 0,
       revision: row.revision,
       createdAt: row.createdAt.toISOString(),

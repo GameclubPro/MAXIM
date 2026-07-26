@@ -11,48 +11,66 @@ import {
   AdminManagedBroadcastRuntime,
   type AdminActionSource,
 } from './admin-managed-broadcast-runtime';
+import { throwLegacyPublicationWritesDisabled } from './legacy-publication-write-freeze';
 
 type AdminReadBypassOptions = {
   skipAdminCheck?: boolean;
   skipEntityCheck?: boolean;
 };
 
+type ManagedBroadcastRuntimePort = Pick<
+  AdminManagedBroadcastRuntime,
+  | 'sendPublicationBroadcastTest'
+  | 'sendPublicationChannelBroadcastTest'
+  | 'listManagedBroadcasts'
+  | 'listChannelManagedBroadcasts'
+  | 'getManagedBroadcastCalendar'
+  | 'getChannelManagedBroadcastCalendar'
+  | 'getManagedBroadcast'
+  | 'getChannelManagedBroadcast'
+  | 'cancelManagedBroadcast'
+  | 'cancelChannelManagedBroadcast'
+  | 'processDueManagedBroadcasts'
+  | 'processDueImmediatePublicationBroadcasts'
+  | 'processDueDeadlinePublicationBroadcasts'
+>;
+
 @Injectable()
 export class ManagedBroadcastService {
-  constructor(private readonly runtime: AdminManagedBroadcastRuntime) {}
+  constructor(private readonly runtime: ManagedBroadcastRuntimePort) {}
 
-  sendBroadcast(
-    sourceChatId: string,
-    user: AuthUser,
-    body: unknown,
-    source: AdminActionSource = 'miniapp',
+  async sendBroadcast(
+    _sourceChatId: string,
+    _user: AuthUser,
+    _body: unknown,
+    _source: AdminActionSource = 'miniapp',
   ): Promise<SendBroadcastResult> {
-    return this.runtime.sendBroadcast(sourceChatId, user, body, source);
+    throwLegacyPublicationWritesDisabled();
   }
 
-  sendChannelBroadcast(
-    sourceChatId: string,
-    user: AuthUser,
-    body: unknown,
-    source: AdminActionSource = 'miniapp',
+  async sendChannelBroadcast(
+    _sourceChatId: string,
+    _user: AuthUser,
+    _body: unknown,
+    _source: AdminActionSource = 'miniapp',
   ): Promise<SendBroadcastResult> {
-    return this.runtime.sendChannelBroadcast(sourceChatId, user, body, source);
+    throwLegacyPublicationWritesDisabled();
   }
 
-  sendBroadcastTest(
-    sourceChatId: string,
-    user: AuthUser,
-    body: unknown,
+  async sendBroadcastTest(
+    _sourceChatId: string,
+    _user: AuthUser,
+    _body: unknown,
   ): Promise<SendBroadcastTestResult> {
-    return this.runtime.sendBroadcastTest(sourceChatId, user, body);
+    throwLegacyPublicationWritesDisabled();
   }
 
-  sendChannelBroadcastTest(
-    sourceChatId: string,
-    user: AuthUser,
-    body: unknown,
+  async sendChannelBroadcastTest(
+    _sourceChatId: string,
+    _user: AuthUser,
+    _body: unknown,
   ): Promise<SendBroadcastTestResult> {
-    return this.runtime.sendChannelBroadcastTest(sourceChatId, user, body);
+    throwLegacyPublicationWritesDisabled();
   }
 
   sendPublicationBroadcastTest(
@@ -119,22 +137,22 @@ export class ManagedBroadcastService {
     return this.runtime.getChannelManagedBroadcast(sourceChatId, broadcastId, user);
   }
 
-  updateManagedBroadcast(
-    sourceChatId: string,
-    broadcastId: string,
-    user: AuthUser,
-    body: unknown,
+  async updateManagedBroadcast(
+    _sourceChatId: string,
+    _broadcastId: string,
+    _user: AuthUser,
+    _body: unknown,
   ): Promise<ManagedBroadcastDetails> {
-    return this.runtime.updateManagedBroadcast(sourceChatId, broadcastId, user, body);
+    throwLegacyPublicationWritesDisabled();
   }
 
-  updateChannelManagedBroadcast(
-    sourceChatId: string,
-    broadcastId: string,
-    user: AuthUser,
-    body: unknown,
+  async updateChannelManagedBroadcast(
+    _sourceChatId: string,
+    _broadcastId: string,
+    _user: AuthUser,
+    _body: unknown,
   ): Promise<ManagedBroadcastDetails> {
-    return this.runtime.updateChannelManagedBroadcast(sourceChatId, broadcastId, user, body);
+    throwLegacyPublicationWritesDisabled();
   }
 
   cancelManagedBroadcast(
@@ -153,20 +171,20 @@ export class ManagedBroadcastService {
     return this.runtime.cancelChannelManagedBroadcast(sourceChatId, broadcastId, user);
   }
 
-  retryManagedBroadcast(
-    sourceChatId: string,
-    broadcastId: string,
-    user: AuthUser,
+  async retryManagedBroadcast(
+    _sourceChatId: string,
+    _broadcastId: string,
+    _user: AuthUser,
   ): Promise<ManagedBroadcastDetails> {
-    return this.runtime.retryManagedBroadcast(sourceChatId, broadcastId, user);
+    throwLegacyPublicationWritesDisabled();
   }
 
-  retryChannelManagedBroadcast(
-    sourceChatId: string,
-    broadcastId: string,
-    user: AuthUser,
+  async retryChannelManagedBroadcast(
+    _sourceChatId: string,
+    _broadcastId: string,
+    _user: AuthUser,
   ): Promise<ManagedBroadcastDetails> {
-    return this.runtime.retryChannelManagedBroadcast(sourceChatId, broadcastId, user);
+    throwLegacyPublicationWritesDisabled();
   }
 
   processDueManagedBroadcasts(reason: 'startup' | 'scheduled'): Promise<void> {
@@ -175,5 +193,9 @@ export class ManagedBroadcastService {
 
   processDueImmediatePublicationBroadcasts(): Promise<void> {
     return this.runtime.processDueImmediatePublicationBroadcasts();
+  }
+
+  processDueDeadlinePublicationBroadcasts(limit?: number): Promise<void> {
+    return this.runtime.processDueDeadlinePublicationBroadcasts(limit);
   }
 }

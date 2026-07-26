@@ -4701,6 +4701,154 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('keeps a list result inconclusive when the message belongs to another chat', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          data: {
+            messages: [
+              {
+                body: { mid: 'mid-shared' },
+                recipient: { chat_id: 'chat-1' },
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    const results = await service.getExactMessagePresences(
+      [
+        { chatId: 'chat-1', messageId: 'mid-shared' },
+        { chatId: 'chat-2', messageId: 'mid-shared' },
+      ],
+      { botId: '777000_bot' },
+    );
+
+    expect(results[0]).toEqual({
+      chatId: 'chat-1',
+      messageId: 'mid-shared',
+      presence: 'present',
+    });
+    expect(results[1]).toEqual(
+      expect.objectContaining({
+        chatId: 'chat-2',
+        messageId: 'mid-shared',
+        error: expect.any(Error),
+      }),
+    );
+    expect((results[1] as { error: Error }).error.message).toContain(
+      'for chat chat-1 instead of chat-2',
+    );
+    expect(httpService.request).toHaveBeenCalledTimes(1);
+
+    await service.onModuleDestroy();
+  });
+
+  it('matches duplicate message ids to their exact chats regardless of response order', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          data: {
+            messages: [
+              {
+                body: { mid: 'mid-shared' },
+                recipient: { chat_id: 'chat-2' },
+              },
+              {
+                body: { mid: 'mid-shared' },
+                recipient: { chat_id: 'chat-1' },
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await expect(
+      service.getExactMessagePresences(
+        [
+          { chatId: 'chat-1', messageId: 'mid-shared' },
+          { chatId: 'chat-2', messageId: 'mid-shared' },
+        ],
+        { botId: '777000_bot' },
+      ),
+    ).resolves.toEqual([
+      { chatId: 'chat-1', messageId: 'mid-shared', presence: 'present' },
+      { chatId: 'chat-2', messageId: 'mid-shared', presence: 'present' },
+    ]);
+    expect(httpService.request).toHaveBeenCalledTimes(1);
+
+    await service.onModuleDestroy();
+  });
+
+  it('keeps an unscoped duplicate message id inconclusive for multiple target chats', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          data: {
+            messages: [{ body: { mid: 'mid-shared' } }],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    const results = await service.getExactMessagePresences(
+      [
+        { chatId: 'chat-1', messageId: 'mid-shared' },
+        { chatId: 'chat-2', messageId: 'mid-shared' },
+      ],
+      { botId: '777000_bot' },
+    );
+
+    expect(results).toEqual([
+      expect.objectContaining({
+        chatId: 'chat-1',
+        messageId: 'mid-shared',
+        error: expect.any(Error),
+      }),
+      expect.objectContaining({
+        chatId: 'chat-2',
+        messageId: 'mid-shared',
+        error: expect.any(Error),
+      }),
+    ]);
+    expect(httpService.request).toHaveBeenCalledTimes(1);
+
+    await service.onModuleDestroy();
+  });
+
+  it('keeps a direct result inconclusive when the message belongs to another chat', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(of({ data: { messages: [] } }))
+        .mockReturnValueOnce(
+          of({
+            data: {
+              message: {
+                body: { mid: 'mid-wrong-chat' },
+                recipient: { chat_id: 'chat-2' },
+              },
+            },
+          }),
+        ),
+    };
+    const service = createService(httpService);
+
+    await expect(
+      service.getExactMessagePresence('chat-1', 'mid-wrong-chat', {
+        botId: '777000_bot',
+      }),
+    ).rejects.toThrow('for chat chat-2 instead of chat-1');
+    expect(httpService.request).toHaveBeenCalledTimes(2);
+
+    await service.onModuleDestroy();
+  });
+
   it('reports absence only for an exact message-not-found response', async () => {
     const exactNotFound = {
       response: {
@@ -4709,27 +4857,186 @@ describe('MaxClientService inline keyboard guardrails', () => {
       },
     };
     const httpService = {
-      request: jest.fn().mockReturnValueOnce(throwError(() => exactNotFound)),
+      request: jest
+        .fn()
+        .mockReturnValueOnce(of({ data: { messages: [] } }))
+        .mockReturnValueOnce(throwError(() => exactNotFound)),
     };
     const service = createService(httpService);
 
     await expect(
       service.getExactMessagePresence('chat-1', 'mid-absent', { botId: '777000_bot' }),
     ).resolves.toBe('absent');
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api2.max.ru/messages/mid-absent',
+      }),
+    );
 
     await service.onModuleDestroy();
   });
 
-  it('does not treat a bare 404 as exact message absence', async () => {
+  it('falls back to direct lookup when the message list returns a bare 404', async () => {
     const bareNotFound = { response: { status: 404, data: {} } };
     const httpService = {
-      request: jest.fn().mockReturnValueOnce(throwError(() => bareNotFound)),
+      request: jest
+        .fn()
+        .mockReturnValueOnce(throwError(() => bareNotFound))
+        .mockReturnValueOnce(of({ data: { message: { body: { mid: 'mid-unknown' } } } })),
     };
     const service = createService(httpService);
 
     await expect(
       service.getExactMessagePresence('chat-1', 'mid-unknown', { botId: '777000_bot' }),
-    ).rejects.toBe(bareNotFound);
+    ).resolves.toBe('present');
+    expect(httpService.request).toHaveBeenCalledTimes(2);
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api2.max.ru/messages/mid-unknown',
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('does not treat a bare direct-message 404 as exact absence', async () => {
+    const listNotFound = {
+      response: {
+        status: 404,
+        data: { code: 'message.not.found', message: 'Message not found' },
+      },
+    };
+    const directBareNotFound = { response: { status: 404, data: {} } };
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(throwError(() => listNotFound))
+        .mockReturnValueOnce(throwError(() => directBareNotFound)),
+    };
+    const service = createService(httpService);
+
+    await expect(
+      service.getExactMessagePresence('chat-1', 'mid-unknown', { botId: '777000_bot' }),
+    ).rejects.toBe(directBareNotFound);
+
+    await service.onModuleDestroy();
+  });
+
+  it('does not infer exact absence from direct-message error text without the documented code', async () => {
+    const messageOnlyNotFound = {
+      response: { status: 404, data: { message: 'Message not found' } },
+    };
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(of({ data: { messages: [] } }))
+        .mockReturnValueOnce(throwError(() => messageOnlyNotFound)),
+    };
+    const service = createService(httpService);
+
+    await expect(
+      service.getExactMessagePresence('chat-1', 'mid-unknown', { botId: '777000_bot' }),
+    ).rejects.toBe(messageOnlyNotFound);
+
+    await service.onModuleDestroy();
+  });
+
+  it('checks multiple exact messages with one list request and direct fallback for missing ids', async () => {
+    const directNotFound = {
+      response: {
+        status: 404,
+        data: { code: 'message.not.found', message: 'Message not found' },
+      },
+    };
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(of({ data: { messages: [{ body: { mid: 'mid-present' } }] } }))
+        .mockReturnValueOnce(throwError(() => directNotFound)),
+    };
+    const service = createService(httpService);
+
+    await expect(
+      service.getExactMessagePresences(
+        [
+          { chatId: 'chat-1', messageId: 'mid-present' },
+          { chatId: 'chat-2', messageId: 'mid-absent' },
+        ],
+        { botId: '777000_bot' },
+      ),
+    ).resolves.toEqual([
+      { chatId: 'chat-1', messageId: 'mid-present', presence: 'present' },
+      { chatId: 'chat-2', messageId: 'mid-absent', presence: 'absent' },
+    ]);
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api2.max.ru/messages',
+        params: { message_ids: 'mid-present,mid-absent' },
+      }),
+    );
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api2.max.ru/messages/mid-absent',
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('keeps a message-list transport failure ambiguous without direct absence inference', async () => {
+    const transportFailure = { response: { status: 503, data: {} } };
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(throwError(() => transportFailure)),
+    };
+    const service = createService(httpService);
+
+    await expect(
+      service.getExactMessagePresences(
+        [
+          { chatId: 'chat-1', messageId: 'mid-1' },
+          { chatId: 'chat-2', messageId: 'mid-2' },
+        ],
+        { botId: '777000_bot' },
+      ),
+    ).resolves.toEqual([
+      { chatId: 'chat-1', messageId: 'mid-1', error: transportFailure },
+      { chatId: 'chat-2', messageId: 'mid-2', error: transportFailure },
+    ]);
+    expect(httpService.request).toHaveBeenCalledTimes(1);
+
+    await service.onModuleDestroy();
+  });
+
+  it('keeps a per-message unknown result when a batch direct fallback is inconclusive', async () => {
+    const directBareNotFound = { response: { status: 404, data: {} } };
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(of({ data: { messages: [{ body: { mid: 'mid-present' } }] } }))
+        .mockReturnValueOnce(throwError(() => directBareNotFound)),
+    };
+    const service = createService(httpService);
+
+    const results = await service.getExactMessagePresences(
+      [
+        { chatId: 'chat-1', messageId: 'mid-present' },
+        { chatId: 'chat-2', messageId: 'mid-unknown' },
+      ],
+      { botId: '777000_bot' },
+    );
+
+    expect(results).toEqual([
+      { chatId: 'chat-1', messageId: 'mid-present', presence: 'present' },
+      { chatId: 'chat-2', messageId: 'mid-unknown', error: directBareNotFound },
+    ]);
 
     await service.onModuleDestroy();
   });
@@ -5810,6 +6117,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
 
     await expect(internalService.getChatSnapshot('chat-internal')).rejects.toMatchObject({
       code: 'MAX_API_INTERNAL_RATE_LIMIT',
+      preDispatch: true,
       retryAfterMs: 250,
     });
     const nowSec = Math.floor(Date.now() / 1_000);
@@ -6240,6 +6548,51 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await expect(
       limiterRedis.get(`maxapi:rps:source:v1:777000_bot:background:managed_refresh:${nowSec}`),
     ).resolves.toBe('1');
+
+    await service.onModuleDestroy();
+  });
+
+  it('scopes class and source limiter budgets by service while retaining one 30 rps stack guard', async () => {
+    const service = createService(
+      { request: jest.fn() },
+      {
+        APP_SERVICE_NAME: 'API Action / A',
+        MAX_API_GLOBAL_RPS: '45',
+      },
+    );
+    const limiterRedis = (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis;
+
+    await (
+      service as unknown as {
+        tryReserveRateLimitSlot: (
+          botId: string,
+          chatId: string,
+          trafficClass: 'background',
+          sourceTag: string,
+        ) => Promise<{ ok: boolean }>;
+      }
+    ).tryReserveRateLimitSlot(
+      '777000_bot',
+      'chat-1',
+      'background',
+      MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
+    );
+
+    const call = limiterRedis.eval.mock.calls.at(-1) as unknown[];
+    const keyCount = Number(call[1]);
+    const keys = call.slice(2, 2 + keyCount);
+    const limits = call.slice(2 + keyCount, 2 + keyCount * 2);
+    expect(keys).toEqual([
+      'maxapi:gcra:v1:bot:777000_bot:all',
+      'maxapi:gcra:v1:service:api_action_a:bot:777000_bot:class:background',
+      'maxapi:gcra:v1:chat:777000_bot:chat-1',
+      'maxapi:gcra:v1:stack:all',
+      'maxapi:gcra:v1:service:api_action_a:stack:class:background',
+      'maxapi:gcra:v1:service:api_action_a:source:777000_bot:managed_refresh',
+      'maxapi:gcra:v1:service:api_action_a:source:stack:managed_refresh',
+    ]);
+    expect(limits[3]).toBe('30');
+    expect(limits.slice(-2)).toEqual(['2', '2']);
 
     await service.onModuleDestroy();
   });

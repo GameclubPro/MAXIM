@@ -680,10 +680,12 @@ export class AdminManagedBroadcastMediaRuntime {
   }
 
   resolveManagedBroadcastProcessingMaxApiOptions(
-    reason: 'startup' | 'scheduled' | 'manual_retry' | 'immediate',
+    reason: 'startup' | 'scheduled' | 'manual_retry' | 'immediate' | 'deadline',
   ): ManagedBroadcastMaxApiOptions {
     return this.buildManagedBroadcastMaxApiOptions(
-      reason === 'startup' || reason === 'scheduled' ? 'background' : 'interactive',
+      reason === 'startup' || reason === 'scheduled' || reason === 'deadline'
+        ? 'background'
+        : 'interactive',
     );
   }
 }

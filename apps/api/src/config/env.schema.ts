@@ -190,6 +190,8 @@ const envSchema = z.object({
   MAX_API_GLOBAL_RPS_CRITICAL: z.coerce.number().int().positive().optional(),
   MAX_API_GLOBAL_RPS_INTERACTIVE: z.coerce.number().int().positive().optional(),
   MAX_API_GLOBAL_RPS_BACKGROUND: z.coerce.number().int().positive().optional(),
+  MAX_API_MANAGED_REFRESH_RPS: z.coerce.number().int().min(0).default(2),
+  MAX_API_MANAGED_REFRESH_STACK_RPS: z.coerce.number().int().min(0).default(2),
   MAX_API_CHAT_RPS: z.coerce.number().int().positive().default(5),
   MAX_API_RATE_LIMIT_WAIT_MS_CRITICAL: z.coerce.number().int().min(0).default(1_000),
   MAX_API_RATE_LIMIT_WAIT_MS_INTERACTIVE: z.coerce.number().int().min(0).default(1_500),

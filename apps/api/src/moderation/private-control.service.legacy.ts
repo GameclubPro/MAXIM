@@ -232,6 +232,7 @@ import {
   SECTION_ORDER,
   SECTION_SETTING_KEYS,
 } from './private-control-settings-schema';
+import * as publicationWriteFreeze from './private-control-publication-write-freeze';
 import { RedisCounterService } from './redis-counter.service';
 
 @Injectable()
@@ -4675,7 +4676,7 @@ export class PrivateControlService {
       applyToAllChats: targetState.applyToAllChats,
     };
 
-    const broadcaster = this.managedBroadcastService ?? this.adminService;
+    const broadcaster = publicationWriteFreeze.requireService(this.managedBroadcastService);
 
     return params.selectedEntityType === 'channel'
       ? broadcaster.sendChannelBroadcast(
@@ -4724,10 +4725,8 @@ export class PrivateControlService {
         params.privateBotId,
       );
     } catch (error: unknown) {
-      const userMessage =
-        extractPrivateControlBadRequestDetails(error) ??
-        'Автопостинг недоступен. Попробуйте ещё раз через несколько секунд.';
       const badRequestDetails = extractPrivateControlBadRequestDetails(error);
+      const userMessage = publicationWriteFreeze.resolveWriteErrorMessage(error, badRequestDetails);
       const badRequestResponse = error instanceof BadRequestException ? error.getResponse() : null;
       this.logger.warn(
         {

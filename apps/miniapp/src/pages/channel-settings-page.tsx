@@ -66,7 +66,6 @@ import {
   deleteChannelManagedAutopostRule,
   getChannelBroadcastComposerClientResetState,
   getChannelBroadcastHandoffState,
-  getChannelManagedAutopostRule,
   getChannelManagedAutopostRules,
   getChannelManagedBroadcastCalendar,
   getChannelManagedBroadcast,
@@ -1774,36 +1773,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     },
   });
 
-  const openManagedAutopostRuleMutation = useMutation({
-    mutationFn: (ruleId: string) => getChannelManagedAutopostRule(api, chatId ?? '', ruleId),
-    retry: 2,
-    onSuccess: (rule) => {
-      const payload = rule.payload;
-      setEditingManagedBroadcast(null);
-      setEditingManagedAutopostRule(rule);
-      setBroadcastText(payload.text);
-      setBroadcastButtons(payload.buttons);
-      applyBroadcastImages(resolveBroadcastImagesFromLegacyFields(payload));
-      setBroadcastVideoCleared(false);
-      setBroadcastTimingMode('scheduled');
-      setBroadcastScheduledSlots(sortAndUniqueBroadcastSlots(payload.scheduledSlots));
-      setBroadcastScheduleTimezone(
-        payload.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
-      );
-      setBroadcastScheduleError('');
-      setBroadcastCycleError('');
-      resetBroadcastPlanner();
-      setBroadcastWorkspaceView('compose');
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось открыть автопост',
-        description: normalizeApiError(error),
-      });
-    },
-  });
-
   const updateManagedBroadcastMutation = useMutation({
     mutationFn: ({
       broadcastId,
@@ -1986,13 +1955,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     }
 
     if (legacyEditorTarget.kind === 'autopost') {
-      if (!settingsScreenQuery.data || openManagedAutopostRuleMutation.isPending) {
-        return;
-      }
-
       appliedLegacyEditorTargetRef.current = signature;
       setBroadcastWorkspaceView('autoposts');
-      openManagedAutopostRuleMutation.mutate(legacyEditorTarget.id);
       return;
     }
 
@@ -2003,13 +1967,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     appliedLegacyEditorTargetRef.current = signature;
     setBroadcastWorkspaceView('history');
     openManagedBroadcastEditorMutation.mutate(legacyEditorTarget.id);
-  }, [
-    chatId,
-    legacyEditorTarget,
-    openManagedAutopostRuleMutation,
-    openManagedBroadcastEditorMutation,
-    settingsScreenQuery.data,
-  ]);
+  }, [chatId, legacyEditorTarget, openManagedBroadcastEditorMutation, settingsScreenQuery.data]);
 
   useHintPopoverAutoPosition(openHintKey !== null, openHintKey);
 
@@ -2219,7 +2177,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     clearBroadcastHandoffMutation.isPending ||
     updateManagedAutopostRuleMutation.isPending ||
     deleteManagedAutopostRuleMutation.isPending ||
-    openManagedAutopostRuleMutation.isPending ||
     isOpeningManagedBroadcastEditor ||
     isUpdatingManagedBroadcast ||
     cancelManagedBroadcastMutation.isPending ||
@@ -3651,17 +3608,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                                   )}
                                   facts={buildManagedAutopostRuleFacts(rule, 'Текущий канал')}
                                   isBusy={isBroadcastBusy}
-                                  onOpen={() => openManagedAutopostRuleMutation.mutate(rule.id)}
                                   onPause={() =>
                                     updateManagedAutopostRuleMutation.mutate({
                                       ruleId: rule.id,
                                       status: 'PAUSED',
-                                    })
-                                  }
-                                  onResume={() =>
-                                    updateManagedAutopostRuleMutation.mutate({
-                                      ruleId: rule.id,
-                                      status: 'ACTIVE',
                                     })
                                   }
                                   onDelete={() => handleDeleteManagedAutopostRule(rule)}

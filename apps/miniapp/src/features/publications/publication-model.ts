@@ -133,6 +133,11 @@ export type PublicationRecurrenceDraft = {
   maxOccurrences: number | null;
 };
 
+export type PublicationRecurrenceIntervalNotice = {
+  title: string;
+  description: string;
+};
+
 export const PUBLICATION_TEXT_MAX_LENGTH = MAX_PUBLICATION_TEXT_LENGTH;
 export const PUBLICATION_MIN_SCHEDULE_DELAY_MS = 2 * 60_000;
 const PUBLICATION_SCHEDULE_CONFLICT_CODE = 'PUBLICATION_SCHEDULE_CONFLICT';
@@ -166,6 +171,57 @@ export function shouldPersistPublicationDraft(kind: PublicationEditorKind | null
 
 export function canResumePublication(lifecycle: PublicationLifecycle): boolean {
   return lifecycle === 'PAUSED';
+}
+
+function getRussianCountUnit(count: number, one: string, few: string, many: string): string {
+  const modulo100 = count % 100;
+  if (modulo100 >= 11 && modulo100 <= 14) {
+    return many;
+  }
+  const modulo10 = count % 10;
+  if (modulo10 === 1) {
+    return one;
+  }
+  if (modulo10 >= 2 && modulo10 <= 4) {
+    return few;
+  }
+  return many;
+}
+
+export function getPublicationRecurrenceIntervalNotice(
+  frequency: PublicationRecurrenceFrequency,
+  interval: number,
+): PublicationRecurrenceIntervalNotice | null {
+  if (!Number.isInteger(interval) || interval < 1) {
+    return null;
+  }
+
+  if (frequency === 'daily') {
+    if (interval === 31) {
+      return {
+        title: '31 день - не календарный месяц',
+        description:
+          'Публикация будет выходить каждые 31 день от даты начала, поэтому число месяца будет сдвигаться.',
+      };
+    }
+    if (interval >= 28) {
+      return {
+        title: `Большой интервал: ${interval} ${getRussianCountUnit(interval, 'день', 'дня', 'дней')}`,
+        description:
+          'Даты считаются от даты начала с указанным шагом, без привязки к одному числу месяца.',
+      };
+    }
+    return null;
+  }
+
+  if (interval >= 4) {
+    return {
+      title: `Большой интервал: ${interval} ${getRussianCountUnit(interval, 'неделя', 'недели', 'недель')}`,
+      description: 'Даты считаются от даты начала с указанным шагом, а не по календарным месяцам.',
+    };
+  }
+
+  return null;
 }
 
 export function getPublicationActionCapabilities(

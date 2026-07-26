@@ -2,7 +2,6 @@ import type { ManagedAutopostRuleSummary } from '@maxim/contracts';
 import {
   MoreHoriz as IconoirMoreHoriz,
   Pause as IconoirPause,
-  Play as IconoirPlay,
   Xmark as IconoirXmark,
 } from 'iconoir-react';
 import { cn } from '../lib/cn';
@@ -14,9 +13,7 @@ type ManagedAutopostRuleCardProps = {
   nextLabel: string;
   facts: string[];
   isBusy?: boolean;
-  onOpen: () => void;
   onPause: () => void;
-  onResume: () => void;
   onDelete: () => void;
 };
 
@@ -65,9 +62,7 @@ export function ManagedAutopostRuleCard({
   nextLabel,
   facts,
   isBusy = false,
-  onOpen,
   onPause,
-  onResume,
   onDelete,
 }: ManagedAutopostRuleCardProps) {
   const tone = resolveRuleTone(rule.status);
@@ -75,23 +70,10 @@ export function ManagedAutopostRuleCard({
   const title = resolveRuleTitle(rule, nextLabel);
   const hasNextLabel = nextLabel.trim().length > 0;
   const canPause = rule.status === 'ACTIVE';
-  const canResume = rule.status === 'PAUSED' || rule.status === 'ERROR';
 
   return (
-    <div
-      className={cn(
-        'managed-broadcast-card',
-        'managed-autopost-rule-card',
-        `is-${tone}`,
-        'is-editable',
-      )}
-    >
-      <button
-        type="button"
-        className="managed-broadcast-card__surface"
-        onClick={onOpen}
-        disabled={isBusy}
-      >
+    <div className={cn('managed-broadcast-card', 'managed-autopost-rule-card', `is-${tone}`)}>
+      <div className="managed-broadcast-card__surface is-static">
         <div className="managed-broadcast-card__top">
           <span className="managed-broadcast-card__main">
             <span className="managed-broadcast-card__headline">
@@ -128,7 +110,7 @@ export function ManagedAutopostRuleCard({
             {rule.lastError}
           </small>
         ) : null}
-      </button>
+      </div>
 
       <div className="managed-broadcast-card__actions">
         {canPause ? (
@@ -142,20 +124,6 @@ export function ManagedAutopostRuleCard({
           >
             <IconoirPause aria-hidden focusable="false" />
             <span>Пауза</span>
-          </button>
-        ) : null}
-
-        {canResume ? (
-          <button
-            type="button"
-            className="managed-broadcast-card__quick-action"
-            onClick={onResume}
-            disabled={isBusy}
-            aria-label="Возобновить автопост"
-            title="Возобновить"
-          >
-            <IconoirPlay aria-hidden focusable="false" />
-            <span>Возобновить</span>
           </button>
         ) : null}
 

@@ -18,6 +18,7 @@ import { buildActiveMuteStateKey } from '../moderation/moderation-state.util';
 import { buildCompactProfileMentionStartPayload } from '../max/max-deep-link.util';
 import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
 import { AdminService } from './admin.service';
+import { resolveAdminManagedEntitiesRefreshJitterMs } from './admin-managed-entities-refresh.queue';
 import {
   selectLogsDashboardMembershipSummary,
   selectLogsDashboardModerationSummary,
@@ -45,6 +46,10 @@ import {
   readButtonUrl,
   readDialogButtonToken,
 } from './admin-service-test-support';
+
+function broadcastRuntime(service: AdminService): any {
+  return (service as any).managedBroadcastRuntime;
+}
 
 describe('AdminService dialog admin fallback reads', () => {
   it('routes dialog admin id lookups through background action health lane', async () => {
@@ -13420,12 +13425,13 @@ describe('AdminService.listChats', () => {
 
     expect(managedEntitiesRefreshQueue.add).toHaveBeenCalledWith(
       'refresh-managed-entities',
-      {
+      expect.objectContaining({
         userId: 'admin-1',
         entityType: 'chat',
         bypassRemoteCache: true,
         resetRefreshCursor: true,
-      },
+        createdAt: expect.any(String),
+      }),
       expect.objectContaining({
         jobId: 'managed-entities-refresh__chat__admin-1',
       }),
@@ -13533,12 +13539,13 @@ describe('AdminService.listChats', () => {
 
     expect(managedEntitiesRefreshQueue.add).toHaveBeenCalledWith(
       'refresh-managed-entities',
-      {
+      expect.objectContaining({
         userId: 'admin-1',
         entityType: 'chat',
         bypassRemoteCache: false,
         resetRefreshCursor: false,
-      },
+        createdAt: expect.any(String),
+      }),
       expect.objectContaining({
         jobId: 'managed-entities-refresh__chat__admin-1',
       }),
@@ -14061,12 +14068,13 @@ describe('AdminService.listChats', () => {
     expect(existingJob.remove).toHaveBeenCalledTimes(1);
     expect(managedEntitiesRefreshQueue.add).toHaveBeenCalledWith(
       'refresh-managed-entities',
-      {
+      expect.objectContaining({
         userId: 'admin-1',
         entityType: 'chat',
         bypassRemoteCache: false,
         resetRefreshCursor: true,
-      },
+        createdAt: expect.any(String),
+      }),
       expect.objectContaining({
         jobId: 'managed-entities-refresh__chat__admin-1',
         priority: 2,
@@ -14667,12 +14675,13 @@ describe('AdminService.listChats', () => {
 
       expect(managedEntitiesRefreshQueue.add).toHaveBeenCalledWith(
         'refresh-managed-entities',
-        {
+        expect.objectContaining({
           userId: 'admin-1',
           entityType: 'chat',
           bypassRemoteCache: true,
           resetRefreshCursor: false,
-        },
+          createdAt: expect.any(String),
+        }),
         expect.objectContaining({
           jobId: 'managed-entities-refresh__chat__admin-1',
         }),
@@ -14851,12 +14860,13 @@ describe('AdminService.listChats', () => {
 
       expect(managedEntitiesRefreshQueue.add).toHaveBeenCalledWith(
         'refresh-managed-entities',
-        {
+        expect.objectContaining({
           userId: 'admin-1',
           entityType: 'chat',
           bypassRemoteCache: false,
           resetRefreshCursor: true,
-        },
+          createdAt: expect.any(String),
+        }),
         expect.objectContaining({
           jobId: 'managed-entities-refresh__chat__admin-1',
         }),
@@ -15346,14 +15356,19 @@ describe('AdminService.listChats', () => {
     expect(discoverSpy).not.toHaveBeenCalled();
     expect(managedEntitiesRefreshQueue.add).toHaveBeenCalledWith(
       'refresh-managed-entities',
-      {
+      expect.objectContaining({
         userId: 'admin-1',
         entityType: 'chat',
         bypassRemoteCache: false,
         resetRefreshCursor: false,
-      },
+        createdAt: expect.any(String),
+      }),
       expect.objectContaining({
         jobId: 'managed-entities-refresh__chat__admin-1',
+        delay: resolveAdminManagedEntitiesRefreshJitterMs(
+          'managed-entities-refresh__chat__admin-1',
+          'enqueue',
+        ),
         attempts: 5,
         removeOnComplete: true,
         removeOnFail: false,
@@ -21960,7 +21975,7 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
     (service as any).maxRoutedPublicationService = { publish: jest.fn() };
-    const runtime = service.getManagedBroadcastRuntimeForBroadcastService() as any;
+    const runtime = broadcastRuntime(service);
     const broadcast = await prisma.managedBroadcast.findUnique({ where: { id: 'broadcast-1' } });
     const actionKey = runtime.buildManagedBroadcastDeliveryActionKey(broadcast, 1, 'chat-1');
 
@@ -22193,46 +22208,6 @@ describe('AdminService.sendBroadcast', () => {
     );
   });
 
-  it('keeps draining due managed broadcasts until the current backlog is exhausted', async () => {
-    const prisma = createPrismaMock();
-    let activeCalls = 0;
-    prisma.managedBroadcast.findMany.mockImplementation(
-      async ({ where }: { where?: { status?: string | { in?: string[] } } }) => {
-        if (where?.status === 'ACTIVE') {
-          activeCalls += 1;
-          return activeCalls < 3 ? [{ id: 'broadcast-1' }] : [];
-        }
-        return [];
-      },
-    );
-
-    const service = new AdminService(
-      prisma as never,
-      {} as never,
-      { invalidate: jest.fn() } as never,
-      createConfigMock() as never,
-    );
-    const runtime = service.getManagedBroadcastRuntimeForBroadcastService() as any;
-    const processSpy = jest
-      .spyOn(runtime, 'processManagedBroadcastOccurrence')
-      .mockResolvedValue(undefined);
-
-    await service.processDueManagedBroadcasts('scheduled');
-
-    expect(prisma.managedBroadcast.findMany).toHaveBeenCalledTimes(7);
-    expect(processSpy).toHaveBeenCalledTimes(2);
-    expect(processSpy).toHaveBeenNthCalledWith(1, 'broadcast-1', 'scheduled', expect.any(Date), [
-      'ACTIVE',
-      'PARTIAL',
-      'FAILED',
-    ]);
-    expect(processSpy).toHaveBeenNthCalledWith(2, 'broadcast-1', 'scheduled', expect.any(Date), [
-      'ACTIVE',
-      'PARTIAL',
-      'FAILED',
-    ]);
-  });
-
   it('keeps retryable managed broadcasts moving even when active backlog is present', async () => {
     const prisma = createPrismaMock();
     let activeCalls = 0;
@@ -22264,7 +22239,7 @@ describe('AdminService.sendBroadcast', () => {
       { invalidate: jest.fn() } as never,
       createConfigMock() as never,
     );
-    const runtime = service.getManagedBroadcastRuntimeForBroadcastService() as any;
+    const runtime = broadcastRuntime(service);
     const processSpy = jest
       .spyOn(runtime, 'processManagedBroadcastOccurrence')
       .mockResolvedValue(undefined);
@@ -22318,7 +22293,7 @@ describe('AdminService.sendBroadcast', () => {
       { invalidate: jest.fn() } as never,
       createConfigMock() as never,
     );
-    const runtime = service.getManagedBroadcastRuntimeForBroadcastService() as any;
+    const runtime = broadcastRuntime(service);
     const processSpy = jest
       .spyOn(runtime, 'processManagedBroadcastOccurrence')
       .mockResolvedValue(undefined);
@@ -22365,7 +22340,7 @@ describe('AdminService.sendBroadcast', () => {
       { invalidate: jest.fn() } as never,
       createConfigMock() as never,
     );
-    const runtime = service.getManagedBroadcastRuntimeForBroadcastService() as any;
+    const runtime = broadcastRuntime(service);
     const processSpy = jest
       .spyOn(runtime, 'processManagedBroadcastOccurrence')
       .mockResolvedValue(undefined);
@@ -22380,7 +22355,7 @@ describe('AdminService.sendBroadcast', () => {
     ]);
   });
 
-  it('pauses due managed broadcasts when the background governor reports runtime pressure', async () => {
+  it('pauses legacy managed broadcasts before querying due work under runtime pressure', async () => {
     const prisma = createPrismaMock();
     prisma.managedBroadcast.findMany.mockResolvedValue([]);
     const backgroundRuntimeGovernorService = {
@@ -22406,7 +22381,7 @@ describe('AdminService.sendBroadcast', () => {
       undefined,
       backgroundRuntimeGovernorService as never,
     );
-    const runtime = service.getManagedBroadcastRuntimeForBroadcastService() as any;
+    const runtime = broadcastRuntime(service);
     const processSpy = jest
       .spyOn(runtime, 'processManagedBroadcastOccurrence')
       .mockResolvedValue(undefined);
@@ -22418,7 +22393,7 @@ describe('AdminService.sendBroadcast', () => {
       sourceTag: 'managed_broadcast',
       allowMaxApiCapacitySlowPath: true,
     });
-    expect(prisma.managedBroadcast.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.managedBroadcast.findMany).not.toHaveBeenCalled();
     expect(processSpy).not.toHaveBeenCalled();
   });
 
@@ -22463,7 +22438,7 @@ describe('AdminService.sendBroadcast', () => {
       undefined,
       backgroundRuntimeGovernorService as never,
     );
-    const runtime = service.getManagedBroadcastRuntimeForBroadcastService() as any;
+    const runtime = broadcastRuntime(service);
     const processSpy = jest
       .spyOn(runtime, 'processManagedBroadcastOccurrence')
       .mockResolvedValue(undefined);
@@ -22503,7 +22478,7 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await service.sendBroadcast(
+    const result = await broadcastRuntime(service).sendBroadcast(
       'chat-1',
       {
         userId: 'admin-1',
@@ -22576,7 +22551,7 @@ describe('AdminService.sendBroadcast', () => {
       .spyOn(service, 'listChatsForMassBroadcast')
       .mockRejectedValue(new Error('mass target lookup should not run'));
 
-    const result = await service.sendBroadcast(
+    const result = await broadcastRuntime(service).sendBroadcast(
       'chat-1',
       {
         userId: 'admin-1',
@@ -22666,7 +22641,7 @@ describe('AdminService.sendBroadcast', () => {
     );
     jest.spyOn(service as any, 'resolveDeliveryBotAssignment').mockResolvedValue('channel-bot-2');
 
-    const result = await service.sendChannelBroadcast(
+    const result = await broadcastRuntime(service).sendChannelBroadcast(
       'channel-1',
       {
         userId: 'admin-1',
@@ -22793,7 +22768,7 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await service.sendChannelBroadcast(
+    const result = await broadcastRuntime(service).sendChannelBroadcast(
       'channel-1',
       {
         userId: 'admin-1',
@@ -22902,7 +22877,7 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await service.sendChannelBroadcast(
+    const result = await broadcastRuntime(service).sendChannelBroadcast(
       'channel-1',
       {
         userId: 'admin-1',
@@ -22964,7 +22939,7 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await service.sendBroadcast(
+    const result = await broadcastRuntime(service).sendBroadcast(
       'chat-1',
       {
         userId: 'admin-1',
@@ -23116,7 +23091,7 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await service.sendBroadcast(
+    const result = await broadcastRuntime(service).sendBroadcast(
       'chat-1',
       {
         userId: 'admin-1',
@@ -23303,7 +23278,7 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await service.sendBroadcast(
+    const result = await broadcastRuntime(service).sendBroadcast(
       'chat-1',
       {
         userId: 'admin-1',
@@ -23423,7 +23398,7 @@ describe('AdminService.sendBroadcast', () => {
     ]);
 
     await expect(
-      service.sendBroadcast(
+      broadcastRuntime(service).sendBroadcast(
         'chat-1',
         {
           userId: 'admin-1',
@@ -23602,7 +23577,7 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await service.sendBroadcast(
+    const result = await broadcastRuntime(service).sendBroadcast(
       'chat-1',
       {
         userId: 'admin-1',
@@ -23705,7 +23680,7 @@ describe('AdminService.sendBroadcast', () => {
       }),
     ]);
 
-    const result = await service.sendBroadcast(
+    const result = await broadcastRuntime(service).sendBroadcast(
       'chat-1',
       {
         userId: 'admin-1',
@@ -23775,7 +23750,7 @@ describe('AdminService.sendBroadcast', () => {
       }),
     ]);
 
-    const sendPromise = service.sendBroadcast(
+    const sendPromise = broadcastRuntime(service).sendBroadcast(
       'chat-1',
       {
         userId: 'admin-1',
@@ -23849,7 +23824,7 @@ describe('AdminService.sendBroadcast', () => {
         createConfigMock() as never,
       );
 
-      const result = await service.sendBroadcast(
+      const result = await broadcastRuntime(service).sendBroadcast(
         'chat-1',
         {
           userId: 'admin-1',
@@ -23954,7 +23929,7 @@ describe('AdminService.sendBroadcast', () => {
     };
     (service as any).managedEntityAccessLossService = accessLossService;
 
-    const result = await service.sendBroadcast(
+    const result = await broadcastRuntime(service).sendBroadcast(
       'chat-1',
       {
         userId: 'admin-1',
@@ -24121,7 +24096,7 @@ describe('AdminService.sendBroadcast', () => {
       }),
     );
     await expect(
-      service.retryManagedBroadcast('chat-1', 'broadcast-1', {
+      broadcastRuntime(service).retryManagedBroadcast('chat-1', 'broadcast-1', {
         userId: 'admin-1',
         username: null,
         displayName: null,
@@ -24192,6 +24167,20 @@ describe('AdminService.sendBroadcast', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
+    const maxRoutedPublicationService = {
+      publish: jest.fn().mockImplementation(async (request: any) => {
+        const prepared = await request.prepareAttempt({ botId: 'retry-bot', job: {} });
+        request.onDispatchAttempt({ botId: 'retry-bot', job: { ...prepared } });
+        return {
+          messageId: 'mid-chat-1-retry',
+          url: null,
+          botId: 'retry-bot',
+          candidateBotIds: ['retry-bot'],
+          routingVersion: 1,
+        };
+      }),
+    };
+    (service as any).maxRoutedPublicationService = maxRoutedPublicationService;
 
     const result = await (service as any).processManagedBroadcastOccurrence(
       'broadcast-1',
@@ -24200,7 +24189,16 @@ describe('AdminService.sendBroadcast', () => {
       ['ACTIVE', 'PARTIAL', 'FAILED'],
     );
 
-    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(maxRoutedPublicationService.publish).toHaveBeenCalledTimes(1);
+    expect(maxRoutedPublicationService.publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entityId: 'chat-1',
+        logicalIdempotencyKey: expect.stringMatching(
+          /^managed-broadcast:send:broadcast-1:occurrence:1:target:chat-1:content:legacy-[a-f0-9]{32}:attempt:2$/u,
+        ),
+      }),
+    );
+    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
     expect(result).toEqual(
       expect.objectContaining({
         status: 'COMPLETED',
@@ -24302,7 +24300,7 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await service.retryManagedBroadcast('chat-1', 'broadcast-1', {
+    const result = await broadcastRuntime(service).retryManagedBroadcast('chat-1', 'broadcast-1', {
       userId: 'admin-1',
       username: null,
       displayName: null,
@@ -25295,7 +25293,7 @@ describe('AdminService.sendBroadcast', () => {
       }),
     ]);
 
-    const result = await service.updateManagedBroadcast(
+    const result = await broadcastRuntime(service).updateManagedBroadcast(
       'chat-1',
       'broadcast-1',
       {
@@ -25784,7 +25782,7 @@ describe('AdminService.sendBroadcast', () => {
       }),
     ]);
 
-    await service.sendBroadcast(
+    await broadcastRuntime(service).sendBroadcast(
       'chat-1',
       {
         userId: 'admin-1',
@@ -25811,7 +25809,7 @@ describe('AdminService.sendBroadcast', () => {
     );
 
     shouldFailSecondChat = false;
-    const result = await service.retryManagedBroadcast('chat-1', 'broadcast-1', {
+    const result = await broadcastRuntime(service).retryManagedBroadcast('chat-1', 'broadcast-1', {
       userId: 'admin-1',
       username: null,
       displayName: null,
@@ -26247,7 +26245,7 @@ describe('AdminService.sendBroadcast', () => {
       }),
     ]);
 
-    const result = await service.sendBroadcast('chat-1', actor, {
+    const result = await broadcastRuntime(service).sendBroadcast('chat-1', actor, {
       text: 'Напоминание',
       textFormat: 'plain',
       applyToAllChats: true,
@@ -26338,7 +26336,7 @@ describe('AdminService.sendBroadcast', () => {
         return botIdsByChatId[normalizedChatId];
       });
 
-    const result = await service.sendBroadcast(
+    const result = await broadcastRuntime(service).sendBroadcast(
       'chat-1',
       {
         userId: 'admin-1',
@@ -26451,7 +26449,7 @@ describe('AdminService.sendBroadcast', () => {
       maxBotLinkService as never,
     );
 
-    const result = await service.sendBroadcast(
+    const result = await broadcastRuntime(service).sendBroadcast(
       'chat-1',
       {
         userId: 'admin-1',
@@ -26535,7 +26533,7 @@ describe('AdminService.sendBroadcast', () => {
     );
     (service as any).maxRoutedPublicationService = maxRoutedPublicationService;
 
-    const result = await service.sendBroadcast(
+    const result = await broadcastRuntime(service).sendBroadcast(
       'chat-1',
       {
         userId: 'admin-1',
@@ -26607,7 +26605,7 @@ describe('AdminService.sendBroadcast', () => {
         createConfigMock() as never,
       );
 
-      await service.sendBroadcast(
+      await broadcastRuntime(service).sendBroadcast(
         'chat-1',
         {
           userId: 'admin-1',
@@ -26687,7 +26685,7 @@ describe('AdminService.sendBroadcast', () => {
       }),
     ]);
 
-    const result = await service.sendBroadcast(
+    const result = await broadcastRuntime(service).sendBroadcast(
       'chat-1',
       {
         userId: 'admin-1',
@@ -26756,7 +26754,7 @@ describe('AdminService.sendBroadcast', () => {
     ]);
 
     await expect(
-      service.sendBroadcast(
+      broadcastRuntime(service).sendBroadcast(
         'chat-1',
         {
           userId: 'admin-1',
@@ -26853,7 +26851,7 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await service.retryManagedBroadcast('chat-1', 'broadcast-1', {
+    const result = await broadcastRuntime(service).retryManagedBroadcast('chat-1', 'broadcast-1', {
       userId: 'admin-1',
       username: null,
       displayName: null,
@@ -26976,7 +26974,7 @@ describe('AdminService.sendBroadcast', () => {
     ]);
 
     await expect(
-      service.updateManagedBroadcast(
+      broadcastRuntime(service).updateManagedBroadcast(
         'chat-1',
         'broadcast-1',
         {
@@ -27220,7 +27218,7 @@ describe('AdminService.sendBroadcast', () => {
     );
 
     await expect(
-      service.retryManagedBroadcast('chat-1', 'broadcast-1', {
+      broadcastRuntime(service).retryManagedBroadcast('chat-1', 'broadcast-1', {
         userId: 'admin-1',
         username: null,
         displayName: null,
@@ -27264,7 +27262,7 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await service.sendBroadcast(
+    const result = await broadcastRuntime(service).sendBroadcast(
       'chat-1',
       {
         userId: 'admin-1',
@@ -27347,7 +27345,7 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await service.sendBroadcast(
+    const result = await broadcastRuntime(service).sendBroadcast(
       'chat-1',
       {
         userId: 'admin-1',
@@ -29062,7 +29060,7 @@ describe('AdminService.sendChannelBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await service.sendChannelBroadcast(
+    const result = await broadcastRuntime(service).sendChannelBroadcast(
       'channel-1',
       {
         userId: 'admin-1',
@@ -29172,7 +29170,7 @@ describe('AdminService.sendChannelBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await service.sendChannelBroadcast(
+    const result = await broadcastRuntime(service).sendChannelBroadcast(
       'channel-1',
       {
         userId: 'admin-1',
@@ -29283,7 +29281,7 @@ describe('AdminService.sendChannelBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await service.sendChannelBroadcast(
+    const result = await broadcastRuntime(service).sendChannelBroadcast(
       'channel-1',
       {
         userId: 'admin-1',
@@ -29384,7 +29382,7 @@ describe('AdminService.sendChannelBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await service.sendChannelBroadcast(
+    const result = await broadcastRuntime(service).sendChannelBroadcast(
       'channel-1',
       {
         userId: 'admin-1',
@@ -29476,7 +29474,7 @@ describe('AdminService.sendChannelBroadcast', () => {
       createConfigMock() as never,
     );
 
-    await service.sendChannelBroadcast(
+    await broadcastRuntime(service).sendChannelBroadcast(
       'channel-1',
       {
         userId: 'admin-1',
@@ -29562,7 +29560,7 @@ describe('AdminService.sendChannelBroadcast', () => {
       createConfigMock() as never,
     );
 
-    await service.sendChannelBroadcast(
+    await broadcastRuntime(service).sendChannelBroadcast(
       'channel-1',
       {
         userId: 'admin-1',
@@ -29624,7 +29622,7 @@ describe('AdminService.sendChannelBroadcast', () => {
       createConfigMock() as never,
     );
 
-    await service.sendBroadcast(
+    await broadcastRuntime(service).sendBroadcast(
       'chat-1',
       {
         userId: 'admin-1',
@@ -29705,7 +29703,7 @@ describe('AdminService.sendChannelBroadcast', () => {
       createConfigMock() as never,
     );
 
-    await service.sendChannelBroadcast(
+    await broadcastRuntime(service).sendChannelBroadcast(
       'channel-1',
       {
         userId: 'admin-1',
@@ -29818,7 +29816,7 @@ describe('AdminService.sendChannelBroadcast', () => {
     );
     jest.spyOn(service as any, 'resolveDeliveryBotAssignment').mockResolvedValue('channel-bot-2');
 
-    await service.sendChannelBroadcast(
+    await broadcastRuntime(service).sendChannelBroadcast(
       'channel-1',
       {
         userId: 'admin-1',
@@ -29940,7 +29938,7 @@ describe('AdminService.sendChannelBroadcast', () => {
       createConfigMock() as never,
     );
 
-    await service.sendChannelBroadcast(
+    await broadcastRuntime(service).sendChannelBroadcast(
       'channel-1',
       {
         userId: 'admin-1',
@@ -30048,7 +30046,7 @@ describe('AdminService.sendChannelBroadcast', () => {
       createConfigMock() as never,
     );
 
-    await service.sendChannelBroadcast(
+    await broadcastRuntime(service).sendChannelBroadcast(
       'channel-1',
       {
         userId: 'admin-1',
@@ -30109,7 +30107,7 @@ describe('AdminService.sendChannelBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await service.sendBroadcast(
+    const result = await broadcastRuntime(service).sendBroadcast(
       'chat-1',
       {
         userId: 'admin-1',
@@ -30188,7 +30186,7 @@ describe('AdminService.sendChannelBroadcast', () => {
     );
 
     await expect(
-      service.sendBroadcast(
+      broadcastRuntime(service).sendBroadcast(
         'chat-1',
         {
           userId: 'admin-1',
@@ -30236,7 +30234,7 @@ describe('AdminService.sendChannelBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await service.sendBroadcast(
+    const result = await broadcastRuntime(service).sendBroadcast(
       'chat-1',
       {
         userId: 'admin-1',
@@ -30314,7 +30312,7 @@ describe('AdminService.sendChannelBroadcast', () => {
     };
 
     await expect(
-      buildService().sendBroadcast('chat-1', actor, {
+      broadcastRuntime(buildService()).sendBroadcast('chat-1', actor, {
         ...basePayload,
         scheduleTimezone: 'Mars/Olympus',
         scheduledSlots: ['2026-03-18T12:00:00.000Z'],
@@ -30328,7 +30326,7 @@ describe('AdminService.sendChannelBroadcast', () => {
     });
 
     await expect(
-      buildService().sendBroadcast('chat-1', actor, {
+      broadcastRuntime(buildService()).sendBroadcast('chat-1', actor, {
         ...basePayload,
         scheduleTimezone: 'Europe/Moscow',
         scheduledSlots: ['2026-03-18T12:15:00.000Z'],
@@ -30356,7 +30354,7 @@ describe('AdminService.sendChannelBroadcast', () => {
       createConfigMock() as never,
     );
 
-    const result = await service.sendBroadcast(
+    const result = await broadcastRuntime(service).sendBroadcast(
       'chat-1',
       {
         userId: 'admin-1',

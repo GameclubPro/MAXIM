@@ -34,6 +34,17 @@ describe('admin managed broadcast reconciliation', () => {
     expect(isAmbiguousManagedBroadcastSendError(timeout)).toBe(true);
   });
 
+  it('preserves a transport-proven pre-dispatch marker across the send boundary callback', () => {
+    const internalLimiter = Object.assign(new Error('MAX API background rate limit exceeded'), {
+      preDispatch: true,
+    });
+
+    expect(markManagedBroadcastSendPhase(internalLimiter, true)).toMatchObject({
+      managedBroadcastSendStarted: false,
+    });
+    expect(isAmbiguousManagedBroadcastSendError(internalLimiter)).toBe(false);
+  });
+
   it('classifies quarantined, permanent and ambiguous delivery states in snapshots', () => {
     const row = {
       status: ManagedBroadcastStatus.PARTIAL,
@@ -70,6 +81,9 @@ describe('admin managed broadcast reconciliation', () => {
     } as ManagedBroadcast;
     expect(buildManagedBroadcastDeliveryActionKey(base, 2, 'chat-9')).toBe(
       'managed-broadcast:send:broadcast-1:occurrence:2:target:chat-9:content:publication-revision-7',
+    );
+    expect(buildManagedBroadcastDeliveryActionKey(base, 2, 'chat-9', 2)).toBe(
+      'managed-broadcast:send:broadcast-1:occurrence:2:target:chat-9:content:publication-revision-7:attempt:2',
     );
   });
 });
