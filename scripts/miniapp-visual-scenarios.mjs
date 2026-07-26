@@ -311,6 +311,7 @@ const baseScenarios = [
     'chat-settings-duplicates-duration',
     'chat-settings-limits',
     'chat-settings-night',
+    'chat-settings-night-time-picker',
     'chat-settings-commands',
     'chat-settings-extra',
     'chat-settings-speech-style',

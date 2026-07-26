@@ -509,6 +509,24 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'chat-settings-night-time-picker',
+    beforeShot: async (page) => {
+      await openSettingsSection(page, 'Ночной режим', '.settings-drilldown__panel--night');
+      const timeField = page
+        .locator('.settings-drilldown__panel--night .time-field__button')
+        .first();
+      await timeField.scrollIntoViewIfNeeded();
+      await timeField.click();
+      await page.locator('.time-field-sheet__panel').waitFor({ state: 'visible' });
+      const lastMinute = page.locator(
+        '.time-field-sheet__option[data-time-part="minute"][data-time-value="59"]',
+      );
+      await lastMinute.scrollIntoViewIfNeeded();
+      await lastMinute.click();
+      await page.waitForTimeout(250);
+    },
+  },
+  {
     name: 'chat-settings-commands',
     beforeShot: async (page) => {
       await openSettingsSection(page, 'Команды', '.settings-drilldown__panel--commands');
@@ -1360,6 +1378,7 @@ async function assertConfiguredChecks(page, scenario) {
     await assertViewportBounds(page, scenario);
     await assertNoUnexpectedHorizontalOverflow(page, scenario);
     await assertPrimaryControlsReachable(page, scenario);
+    await assertTimeFieldOptionsReachable(page, scenario);
     await assertChartsPainted(page, scenario);
     await assertKeyboardState(page, scenario);
   }
@@ -1372,6 +1391,64 @@ async function assertConfiguredChecks(page, scenario) {
   if (strictAccessibility) {
     await assertCriticalAccessibility(page, scenario);
     await assertPublicationTouchTargets(page, scenario);
+  }
+}
+
+async function assertTimeFieldOptionsReachable(page, scenario) {
+  const issues = await page.evaluate(async () => {
+    const optionLists = Array.from(
+      document.querySelectorAll('.time-field-sheet__options'),
+    ).filter((element) => element instanceof HTMLElement);
+
+    if (optionLists.length === 0) {
+      return [];
+    }
+
+    for (const optionList of optionLists) {
+      optionList.scrollTop = optionList.scrollHeight;
+    }
+
+    await new Promise((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    });
+
+    const actionsRect = document
+      .querySelector('.time-field-sheet__actions')
+      ?.getBoundingClientRect();
+
+    return optionLists.flatMap((optionList) => {
+      const lastOption = optionList.lastElementChild;
+      if (!(lastOption instanceof HTMLElement)) {
+        return [{ reason: 'missing-last-option' }];
+      }
+
+      const listRect = optionList.getBoundingClientRect();
+      const optionRect = lastOption.getBoundingClientRect();
+      const reachesScrollEnd =
+        Math.abs(optionList.scrollTop - (optionList.scrollHeight - optionList.clientHeight)) <= 1;
+      const insideList = optionRect.bottom <= listRect.bottom + 1;
+      const clearOfActions = !actionsRect || optionRect.bottom <= actionsRect.top + 1;
+
+      return reachesScrollEnd && insideList && clearOfActions
+        ? []
+        : [
+            {
+              reason: 'last-option-obscured',
+              scrollTop: optionList.scrollTop,
+              maxScrollTop: optionList.scrollHeight - optionList.clientHeight,
+              optionBottom: optionRect.bottom,
+              listBottom: listRect.bottom,
+              actionsTop: actionsRect?.top ?? null,
+            },
+          ];
+    });
+  });
+
+  if (issues.length > 0) {
+    const first = issues[0];
+    throw new Error(
+      `Scenario ${scenario.name} has an unreachable final time option: ${JSON.stringify(first)}.`,
+    );
   }
 }
 
