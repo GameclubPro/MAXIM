@@ -203,11 +203,14 @@ test('allows configuration to raise the absolute free-space floor', () => {
   assert.match(equalResult.stdout, /minimum-free=6442451968B/u);
 });
 
-test('keeps the percentage gate when absolute free space is sufficient', () => {
-  const result = runDiskPreflight(minimumFreeBytes + 1, { usedPercent: 80 });
+test('keeps ten percent free as the default percentage gate', () => {
+  const belowTarget = runDiskPreflight(minimumFreeBytes + 1, { usedPercent: 89 });
+  const atTarget = runDiskPreflight(minimumFreeBytes + 1, { usedPercent: 90 });
 
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /above the deploy target disk utilization \(80%\)/u);
+  assert.equal(belowTarget.status, 0, belowTarget.stderr);
+  assert.match(belowTarget.stdout, /target=90% critical=95%/u);
+  assert.equal(atTarget.status, 1);
+  assert.match(atTarget.stderr, /above the deploy target disk utilization \(90%\)/u);
 });
 
 test('emergency override bypasses only percentage thresholds', () => {
