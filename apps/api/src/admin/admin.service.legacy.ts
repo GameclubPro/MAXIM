@@ -286,6 +286,7 @@ import {
   isAttachmentNotReadyError as isAttachmentNotReadyErrorValue,
   isManagedBroadcastSlotConflictError as isManagedBroadcastSlotConflictErrorValue,
   resolveBroadcastImageFileName as resolveBroadcastImageFileNameValue,
+  resolveManagedBroadcastAttachmentRetryCount,
   resolveManagedBroadcastSendRetryDelayMs as resolveManagedBroadcastSendRetryDelayMsValue,
   type ManagedBroadcastRetriableAttachmentOptions,
 } from './admin-managed-broadcast-media';
@@ -19163,9 +19164,7 @@ export class AdminService implements OnModuleDestroy {
     let privateChatId = params.privateChatId;
     const attempts =
       Math.max(
-        this.hasRetriableMaxAttachment(params.options)
-          ? BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length
-          : 0,
+        resolveManagedBroadcastAttachmentRetryCount(params.options),
         BROADCAST_THROTTLE_RETRY_DELAYS_MS.length,
       ) + 1;
 

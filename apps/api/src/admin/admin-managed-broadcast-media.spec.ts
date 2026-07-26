@@ -1,10 +1,12 @@
 import { BadRequestException } from '@nestjs/common';
 import {
   decodeBroadcastImageBase64,
+  hasManagedBroadcastVideoAttachment,
   hasRetriableManagedBroadcastAttachment,
   isAttachmentNotReadyError,
   isManagedBroadcastSlotConflictError,
   resolveBroadcastImageFileName,
+  resolveManagedBroadcastAttachmentRetryCount,
   resolveManagedBroadcastSendRetryDelayMs,
 } from './admin-managed-broadcast-media';
 
@@ -30,6 +32,35 @@ describe('admin managed broadcast media helpers', () => {
 
     expect(resolveManagedBroadcastSendRetryDelayMs(error, 1, { imagePayload: {} })).toBe(1500);
     expect(isAttachmentNotReadyError(error)).toBe(true);
+  });
+
+  it('waits longer for video processing while preserving the image retry budget', () => {
+    const error = {
+      response: {
+        status: 400,
+        data: { code: 'attachment.not.ready' },
+      },
+    };
+    const videoOptions = { attachments: [{ type: 'video' as const, payload: {} }] };
+
+    expect(hasManagedBroadcastVideoAttachment(videoOptions)).toBe(true);
+    expect(resolveManagedBroadcastAttachmentRetryCount(videoOptions)).toBe(5);
+    expect(resolveManagedBroadcastSendRetryDelayMs(error, 4, videoOptions)).toBe(12_000);
+    expect(resolveManagedBroadcastSendRetryDelayMs(error, 5, videoOptions)).toBe(24_000);
+    expect(resolveManagedBroadcastSendRetryDelayMs(error, 6, videoOptions)).toBeNull();
+    expect(resolveManagedBroadcastSendRetryDelayMs(error, 4, { imagePayload: {} })).toBeNull();
+  });
+
+  it('does not retry ambiguous attachment sends', () => {
+    const timeout = Object.assign(new Error('timeout of 30000ms exceeded'), {
+      code: 'ECONNABORTED',
+    });
+
+    expect(
+      resolveManagedBroadcastSendRetryDelayMs(timeout, 1, {
+        attachments: [{ type: 'video', payload: { token: 'video-1' } }],
+      }),
+    ).toBeNull();
   });
 
   it('recognizes managed broadcast slot conflicts', () => {

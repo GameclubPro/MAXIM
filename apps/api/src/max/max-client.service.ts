@@ -22,6 +22,7 @@ import type { MaxBotLifecycleState } from './max-bot-config.util';
 import { canExecuteActionsForBotState } from './max-bot-state.util';
 import { normalizeMaxInlineKeyboardButtons } from './max-inline-keyboard-layout';
 import { isAmbiguousMaxMutationError, isAmbiguousMaxSendError } from './max-send-ambiguity.util';
+import { MAX_VIDEO_UPLOAD_MAX_BYTES } from './max-video-upload.constants';
 import {
   markMaxSendDispatchLedgerFinalized,
   MaxActionLedgerService,
@@ -727,7 +728,7 @@ export class MaxClientService implements OnModuleDestroy {
     this.dispatchEnabled = configService.get<boolean>('MAX_ACTION_DISPATCH_ENABLED', true);
     this.resumableVideoUploadEnabled = configService.get<boolean>(
       'MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED',
-      false,
+      true,
     );
     this.globalRpsLimit = this.readConfigInt(
       configService.get('MAX_API_GLOBAL_RPS'),
@@ -1687,6 +1688,12 @@ export class MaxClientService implements OnModuleDestroy {
     mimeType = 'video/mp4',
     requestOptions: MaxApiRequestOptions = {},
   ): Promise<Record<string, unknown>> {
+    if (data.length === 0) {
+      throw new Error('MAX video upload payload is empty');
+    }
+    if (data.length > MAX_VIDEO_UPLOAD_MAX_BYTES) {
+      throw new Error('MAX video upload exceeds the documented 250 MB limit');
+    }
     return this.uploadBinary('video', data, fileName, mimeType, requestOptions);
   }
 

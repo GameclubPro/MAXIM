@@ -21,6 +21,7 @@ export const VK_MEDIA_STATUS_FAILED = 'FAILED';
 export const VK_MEDIA_STATUS_UNKNOWN = 'UNKNOWN';
 export const VK_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 export const VK_IMAGE_FETCH_TIMEOUT_MS = 15_000;
+export const VK_MEDIA_CACHE_UPLOAD_BOT_ID_FIELD = '__maximUploadBotId';
 
 const VK_MEDIA_CACHE_WRITE_MAX_ATTEMPTS = 3;
 
@@ -44,6 +45,7 @@ export class VkParsingMediaCacheService {
   async preflightMediaUrl(
     imageUrl: string,
     mediaIdentity: string | null = null,
+    uploadBotId: string | null = null,
   ): Promise<VkParsingMediaCacheRow> {
     const cached = await this.findMediaCache(imageUrl, mediaIdentity);
     if (cached?.lastCheckedAt) {
@@ -56,7 +58,7 @@ export class VkParsingMediaCacheService {
         ageMs >= 0 &&
         ageMs < cacheTtlMs &&
         cached.status !== VK_MEDIA_STATUS_UNKNOWN &&
-        this.canReusePreflightCacheForUrl(cached, imageUrl)
+        this.canReusePreflightCacheForUrl(cached, imageUrl, uploadBotId)
       ) {
         return cached;
       }
@@ -174,22 +176,29 @@ export class VkParsingMediaCacheService {
     return this.prisma.vkParsingMediaCache.findUnique({ where: { url } });
   }
 
-  private canReusePreflightCacheForUrl(row: VkParsingMediaCacheRow, url: string): boolean {
+  private canReusePreflightCacheForUrl(
+    row: VkParsingMediaCacheRow,
+    url: string,
+    uploadBotId: string | null,
+  ): boolean {
     if (row.url === url) {
       return true;
     }
 
-    return this.hasReusableUpload(row);
+    return this.hasReusableUpload(row, uploadBotId);
   }
 
-  private hasReusableUpload(row: VkParsingMediaCacheRow): boolean {
+  private hasReusableUpload(row: VkParsingMediaCacheRow, uploadBotId: string | null): boolean {
     const payload =
       typeof row.maxUploadPayload === 'object' && row.maxUploadPayload !== null
-        ? row.maxUploadPayload
+        ? (row.maxUploadPayload as Record<string, unknown>)
         : null;
+    const cachedBotId = this.readUploadBotId(payload);
     return Boolean(
-      (payload && Object.keys(payload).length > 0) ||
-      (typeof row.maxUploadToken === 'string' && row.maxUploadToken.trim()),
+      uploadBotId &&
+      cachedBotId === uploadBotId.trim() &&
+      ((payload && Object.keys(payload).length > 1) ||
+        (typeof row.maxUploadToken === 'string' && row.maxUploadToken.trim())),
     );
   }
 
@@ -382,13 +391,25 @@ export class VkParsingMediaCacheService {
     url: string,
     mediaIdentity: string,
   ): number {
-    const hasReusableUpload = this.hasReusableUpload(row);
+    const payload =
+      typeof row.maxUploadPayload === 'object' && row.maxUploadPayload !== null
+        ? (row.maxUploadPayload as Record<string, unknown>)
+        : null;
+    const hasCachedUploadData = Boolean(
+      (payload && Object.keys(payload).length > 0) ||
+      (typeof row.maxUploadToken === 'string' && row.maxUploadToken.trim()),
+    );
     return (
-      (hasReusableUpload ? 8 : 0) +
+      (hasCachedUploadData ? 8 : 0) +
       (row.mediaIdentity === mediaIdentity ? 4 : 0) +
       (row.url === url ? 2 : 0) +
       (row.status === VK_MEDIA_STATUS_READY ? 1 : 0)
     );
+  }
+
+  private readUploadBotId(payload: Record<string, unknown> | null): string {
+    const value = payload?.[VK_MEDIA_CACHE_UPLOAD_BOT_ID_FIELD];
+    return typeof value === 'string' ? value.trim() : '';
   }
 
   private async lockMediaCacheKeys(

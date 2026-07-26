@@ -92,8 +92,8 @@ describe('validateEnv boolean parsing', () => {
     expect(env.MAX_API_BASE_URL).toBe('https://platform-api2.max.ru');
   });
 
-  it('keeps resumable MAX video uploads behind an explicit feature flag', () => {
-    expect(validateEnv(createValidEnv()).MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED).toBe(false);
+  it('enables resumable MAX video uploads by default with an explicit rollback flag', () => {
+    expect(validateEnv(createValidEnv()).MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED).toBe(true);
     expect(
       validateEnv(createValidEnv({ MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED: 'true' }))
         .MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED,

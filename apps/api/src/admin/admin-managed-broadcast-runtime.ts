@@ -325,6 +325,7 @@ import {
   isAttachmentNotReadyError as isAttachmentNotReadyErrorValue,
   isManagedBroadcastSlotConflictError as isManagedBroadcastSlotConflictErrorValue,
   resolveBroadcastImageFileName as resolveBroadcastImageFileNameValue,
+  resolveManagedBroadcastAttachmentRetryCount,
   resolveManagedBroadcastSendRetryDelayMs as resolveManagedBroadcastSendRetryDelayMsValue,
   resolveManagedBroadcastUploadRetryDelayMs,
   type ManagedBroadcastRetriableAttachmentOptions,
@@ -408,6 +409,7 @@ import {
   BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS,
   BROADCAST_THROTTLE_RETRY_DELAYS_MS,
   BROADCAST_TIMEOUT_RETRY_DELAYS_MS,
+  BROADCAST_VIDEO_SEND_RETRY_DELAYS_MS,
   BROADCAST_CALENDAR_SLOT_MINUTES,
   MANAGED_BROADCAST_DUE_BATCH_SIZE,
   MANAGED_BROADCAST_DUE_SLOW_BATCH_SIZE,
@@ -2175,9 +2177,7 @@ export class AdminManagedBroadcastRuntime {
     let privateChatId = params.privateChatId;
     const attempts =
       Math.max(
-        hasRetriableManagedBroadcastAttachment(params.options)
-          ? BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length
-          : 0,
+        resolveManagedBroadcastAttachmentRetryCount(params.options),
         BROADCAST_THROTTLE_RETRY_DELAYS_MS.length,
         BROADCAST_TIMEOUT_RETRY_DELAYS_MS.length,
       ) + 1;
@@ -3407,7 +3407,7 @@ export class AdminManagedBroadcastRuntime {
           this.mediaRuntime.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions);
         const attempts =
           Math.max(
-            BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length,
+            BROADCAST_VIDEO_SEND_RETRY_DELAYS_MS.length,
             BROADCAST_THROTTLE_RETRY_DELAYS_MS.length,
           ) + 1;
         let lastError: unknown = null;
@@ -6344,9 +6344,7 @@ export class AdminManagedBroadcastRuntime {
     let lastError: unknown = null;
     const attempts =
       Math.max(
-        hasRetriableManagedBroadcastAttachment(options)
-          ? BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length
-          : 0,
+        resolveManagedBroadcastAttachmentRetryCount(options),
         BROADCAST_THROTTLE_RETRY_DELAYS_MS.length,
         BROADCAST_TIMEOUT_RETRY_DELAYS_MS.length,
       ) + 1;

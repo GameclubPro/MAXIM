@@ -39,6 +39,7 @@ import {
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
 import { isAmbiguousMaxSendError } from '../max/max-send-ambiguity.util';
+import { MAX_VIDEO_UPLOAD_MAX_BYTES } from '../max/max-video-upload.constants';
 import {
   MaxRoutedPublicationService,
   type MaxRoutedPublicationResult,
@@ -50,6 +51,7 @@ import {
   type BackgroundRuntimeGovernorDecision,
 } from '../system/background-runtime-governor.service';
 import { AdminService } from './admin.service';
+import { BROADCAST_VIDEO_SEND_RETRY_DELAYS_MS } from './admin.service.support';
 import { VkParsingAccessService } from './vk-parsing-access.service';
 import { parseVkWallPostAttachments } from './vk-parsing-attachments';
 import {
@@ -73,6 +75,7 @@ import {
   VK_IMAGE_MAX_BYTES,
   VK_MEDIA_STATUS_FAILED,
   VK_MEDIA_STATUS_READY,
+  VK_MEDIA_CACHE_UPLOAD_BOT_ID_FIELD,
   VkParsingMediaCacheService,
   type VkParsingMediaCacheRow,
 } from './vk-parsing-media-cache.service';
@@ -153,9 +156,10 @@ const MAX_SEND_AMBIGUOUS_RETRY_BLOCK_MESSAGE =
   'MAX мог уже принять эту публикацию. Сначала сверьте сообщение в MAX вручную; повторная отправка заблокирована.';
 const VK_PARSING_SCHEDULE_STEP_MS = 15 * 60_000;
 const VK_PARSING_MAX_SCHEDULE_LOOKAHEAD_STEPS = (8 * 24 * 60) / 15;
-const VK_VIDEO_MAX_BYTES = 250 * 1024 * 1024;
+const VK_VIDEO_MAX_BYTES = MAX_VIDEO_UPLOAD_MAX_BYTES;
 const VK_VIDEO_FETCH_TIMEOUT_MS = 60_000;
 const VK_VIDEO_UPLOAD_TIMEOUT_MS = 120_000;
+const VK_ATTACHMENT_SEND_RETRY_DELAYS_MS = [750, 1_500];
 const VK_SUPPORTED_VIDEO_MIME_TYPES = new Set(['video/mp4', 'video/quicktime', 'video/webm']);
 
 @Injectable()
@@ -918,6 +922,7 @@ export class VkPublishService {
         text: maxMessage.text,
         baseOptions,
         trafficClass: params.trafficClass,
+        videoAttachment: payload.videoUrls.length > 0,
         prepareAttempt: async (botId) => {
           const requestOptions = {
             botId,
@@ -1193,6 +1198,7 @@ export class VkPublishService {
     text: string;
     baseOptions: MaxSendMessageOptions;
     trafficClass: MaxApiTrafficClass;
+    videoAttachment: boolean;
     prepareAttempt: (botId: string) => Promise<MaxSendMessageOptions>;
     onAttempt?: (botId: string) => void;
   }): Promise<MaxRoutedPublicationResult> {
@@ -1202,7 +1208,11 @@ export class VkPublishService {
       );
     }
     let lastError: unknown = null;
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const readinessRetryDelaysMs = params.videoAttachment
+      ? BROADCAST_VIDEO_SEND_RETRY_DELAYS_MS
+      : VK_ATTACHMENT_SEND_RETRY_DELAYS_MS;
+    const attempts = readinessRetryDelaysMs.length + 1;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
       try {
         if (this.maxRoutedPublicationService) {
           return await this.maxRoutedPublicationService.publish({
@@ -1247,10 +1257,10 @@ export class VkPublishService {
         };
       } catch (error) {
         lastError = error;
-        if (!isMaxAttachmentNotReadyError(error) || attempt >= 3) {
+        if (!isMaxAttachmentNotReadyError(error) || attempt >= attempts) {
           throw error;
         }
-        await this.sleep(750 * 2 ** (attempt - 1));
+        await this.sleep(readinessRetryDelaysMs[attempt - 1]!);
       }
     }
 
@@ -2082,8 +2092,13 @@ export class VkPublishService {
 
     for (const candidateUrl of candidateUrls) {
       try {
-        const cache = await this.assertMediaReadyForPublish(candidateUrl, index, mediaIdentity);
-        const cachedPayload = this.readUploadPayload(cache);
+        const cache = await this.assertMediaReadyForPublish(
+          candidateUrl,
+          index,
+          mediaIdentity,
+          requestOptions.botId ?? null,
+        );
+        const cachedPayload = this.readUploadPayload(cache, requestOptions.botId);
         if (cachedPayload) {
           return cachedPayload;
         }
@@ -2102,7 +2117,7 @@ export class VkPublishService {
             mimeType: image.mimeType,
             contentLength: image.buffer.length,
             lastError: null,
-            maxUploadPayload: payload,
+            maxUploadPayload: this.buildCachedUploadPayload(payload, requestOptions.botId),
             maxUploadToken: this.readUploadToken(payload),
             maxUploadedAt: new Date(),
           },
@@ -2137,8 +2152,12 @@ export class VkPublishService {
 
     for (const candidateUrl of candidateUrls) {
       try {
-        const cache = await this.assertVideoReadyForPublish(candidateUrl, mediaIdentity);
-        const cachedPayload = this.readUploadPayload(cache);
+        const cache = await this.assertVideoReadyForPublish(
+          candidateUrl,
+          mediaIdentity,
+          requestOptions.botId ?? null,
+        );
+        const cachedPayload = this.readUploadPayload(cache, requestOptions.botId);
         if (cachedPayload) {
           return cachedPayload;
         }
@@ -2160,7 +2179,7 @@ export class VkPublishService {
             mimeType: video.mimeType,
             contentLength: video.buffer.length,
             lastError: null,
-            maxUploadPayload: payload,
+            maxUploadPayload: this.buildCachedUploadPayload(payload, requestOptions.botId),
             maxUploadToken: this.readUploadToken(payload),
             maxUploadedAt: new Date(),
           },
@@ -2200,9 +2219,10 @@ export class VkPublishService {
     imageUrl: string,
     index: number,
     mediaIdentity: string | null = null,
+    botId: string | null = null,
   ): Promise<VkParsingMediaCacheRow> {
-    const cache = await this.mediaCache.preflightMediaUrl(imageUrl, mediaIdentity);
-    if (this.readUploadPayload(cache)) {
+    const cache = await this.mediaCache.preflightMediaUrl(imageUrl, mediaIdentity, botId);
+    if (this.readUploadPayload(cache, botId)) {
       return cache;
     }
     if (cache.status === VK_MEDIA_STATUS_FAILED) {
@@ -2214,9 +2234,10 @@ export class VkPublishService {
   private async assertVideoReadyForPublish(
     videoUrl: string,
     mediaIdentity: string | null = null,
+    botId: string | null = null,
   ): Promise<VkParsingMediaCacheRow> {
-    const cache = await this.preflightVideoUrl(videoUrl, mediaIdentity);
-    if (this.readUploadPayload(cache)) {
+    const cache = await this.preflightVideoUrl(videoUrl, mediaIdentity, botId);
+    if (this.readUploadPayload(cache, botId)) {
       return cache;
     }
     if (cache.status === VK_MEDIA_STATUS_FAILED) {
@@ -2228,9 +2249,10 @@ export class VkPublishService {
   private async preflightVideoUrl(
     videoUrl: string,
     mediaIdentity: string | null,
+    botId: string | null,
   ): Promise<VkParsingMediaCacheRow> {
     const cached = await this.mediaCache.findMediaCache(videoUrl, mediaIdentity);
-    if (cached?.status === VK_MEDIA_STATUS_READY && this.readUploadPayload(cached)) {
+    if (cached?.status === VK_MEDIA_STATUS_READY && this.readUploadPayload(cached, botId)) {
       return cached;
     }
     if (
@@ -2389,13 +2411,29 @@ export class VkPublishService {
     }
   }
 
-  private readUploadPayload(cache: VkParsingMediaCacheRow): Record<string, unknown> | null {
+  private readUploadPayload(
+    cache: VkParsingMediaCacheRow,
+    expectedBotId: string | null | undefined,
+  ): Record<string, unknown> | null {
     const payload = this.asRecord(cache.maxUploadPayload);
-    if (!payload || Object.keys(payload).length === 0) {
+    const cachedBotId = this.readString(payload?.[VK_MEDIA_CACHE_UPLOAD_BOT_ID_FIELD]);
+    if (!payload || !expectedBotId?.trim() || cachedBotId !== expectedBotId.trim()) {
       return null;
     }
 
-    return payload;
+    const sendPayload = { ...payload };
+    delete sendPayload[VK_MEDIA_CACHE_UPLOAD_BOT_ID_FIELD];
+    return Object.keys(sendPayload).length > 0 ? sendPayload : null;
+  }
+
+  private buildCachedUploadPayload(
+    payload: Record<string, unknown>,
+    botId: string | null | undefined,
+  ): Record<string, unknown> {
+    const normalizedBotId = botId?.trim();
+    return normalizedBotId
+      ? { ...payload, [VK_MEDIA_CACHE_UPLOAD_BOT_ID_FIELD]: normalizedBotId }
+      : payload;
   }
 
   private readUploadToken(payload: Record<string, unknown>): string | null {

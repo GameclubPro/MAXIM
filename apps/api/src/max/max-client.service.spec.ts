@@ -15,6 +15,7 @@ import {
   MAX_ACTION_INTERACTIVE_QUEUE,
 } from './max-action.queue';
 import { MaxActionDispatchService } from './max-action-dispatch.service';
+import { MAX_VIDEO_UPLOAD_MAX_BYTES } from './max-video-upload.constants';
 
 jest.mock('ioredis', () => {
   const store = new Map<string, { value: string; expiresAtMs: number | null }>();
@@ -3860,7 +3861,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
-  it('uploads video via /uploads?type=video and falls back to the issued token', async () => {
+  it('keeps multipart video upload available through the rollback flag', async () => {
     const httpService = {
       request: jest
         .fn()
@@ -3878,7 +3879,9 @@ describe('MaxClientService inline keyboard guardrails', () => {
           }),
         ),
     };
-    const service = createService(httpService);
+    const service = createService(httpService, {
+      MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED: false,
+    });
 
     const result = await service.uploadVideo(
       Buffer.from('video-binary'),
@@ -3925,7 +3928,9 @@ describe('MaxClientService inline keyboard guardrails', () => {
         )
         .mockReturnValueOnce(of({ data })),
     };
-    const service = createService(httpService);
+    const service = createService(httpService, {
+      MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED: false,
+    });
 
     await expect(
       service.uploadVideo(Buffer.from('video-binary'), 'publication.mp4', 'video/mp4'),
@@ -3934,7 +3939,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
-  it('uploads video in bounded Content-Range chunks when the feature flag is enabled', async () => {
+  it('uploads video in bounded Content-Range chunks by default', async () => {
     const chunkBytes = 4 * 1_024 * 1_024;
     const video = Buffer.alloc(chunkBytes + 3, 7);
     const httpService = {
@@ -3951,9 +3956,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
         .mockReturnValueOnce(of({ data: '' }))
         .mockReturnValueOnce(of({ data: '' })),
     };
-    const service = createService(httpService, {
-      MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED: true,
-    });
+    const service = createService(httpService);
 
     const result = await service.uploadVideo(video, '../range-video.mp4', 'video/mp4', {
       timeoutMs: 12_345,
@@ -4001,6 +4004,25 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(httpService.request.mock.calls[2]?.[0].timeout).toBeLessThanOrEqual(
       httpService.request.mock.calls[1]?.[0].timeout,
     );
+
+    await service.onModuleDestroy();
+  });
+
+  it('rejects empty and oversized videos before creating an upload session', async () => {
+    const httpService = { request: jest.fn() };
+    const service = createService(httpService);
+
+    await expect(service.uploadVideo(Buffer.alloc(0), 'empty.mp4', 'video/mp4')).rejects.toThrow(
+      'MAX video upload payload is empty',
+    );
+    await expect(
+      service.uploadVideo(
+        { length: MAX_VIDEO_UPLOAD_MAX_BYTES + 1 } as Buffer,
+        'oversized.mp4',
+        'video/mp4',
+      ),
+    ).rejects.toThrow('MAX video upload exceeds the documented 250 MB limit');
+    expect(httpService.request).not.toHaveBeenCalled();
 
     await service.onModuleDestroy();
   });

@@ -1,0 +1,1 @@
+export const MAX_VIDEO_UPLOAD_MAX_BYTES = 250_000_000;

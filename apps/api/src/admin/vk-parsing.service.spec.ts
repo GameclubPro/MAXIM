@@ -1,7 +1,10 @@
 import { VK_PARSING_MAX_PUBLISH_TEXT_LENGTH } from '@maxim/contracts';
 import { ChatEntityType } from '../prisma/prisma-client';
 import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
-import { VkParsingMediaCacheService } from './vk-parsing-media-cache.service';
+import {
+  VK_MEDIA_CACHE_UPLOAD_BOT_ID_FIELD,
+  VkParsingMediaCacheService,
+} from './vk-parsing-media-cache.service';
 import { VkParsingPostImportRepository } from './vk-parsing-post-import.repository';
 import { VkParsingAccessService } from './vk-parsing-access.service';
 import { VkApiClientService } from './vk-api-client.service';
@@ -1949,6 +1952,92 @@ describe('VkParsingService', () => {
     }
   });
 
+  it('retries video attachment readiness across the extended processing window', async () => {
+    const notReady = createMaxApiError(400, 'Video is still processing', 'attachment.not.ready');
+    const publish = jest
+      .fn()
+      .mockRejectedValueOnce(notReady)
+      .mockRejectedValueOnce(notReady)
+      .mockRejectedValueOnce(notReady)
+      .mockRejectedValueOnce(notReady)
+      .mockRejectedValueOnce(notReady)
+      .mockResolvedValue({
+        messageId: 'mid-video-ready',
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1'],
+        routingVersion: 1,
+      });
+    const { publishService } = createFixture({}, { maxRoutedPublicationService: { publish } });
+    const sleep = jest.spyOn(publishService as any, 'sleep').mockResolvedValue(undefined);
+
+    await expect(
+      (publishService as any).sendMessageWithAttachmentRetry({
+        postId: 'post-1',
+        chatId: 'channel-1',
+        logicalIdempotencyKey: 'vk-parsing:publish:post-1:video-ready',
+        text: 'VK video publication',
+        baseOptions: {},
+        trafficClass: 'background',
+        videoAttachment: true,
+        prepareAttempt: jest.fn(),
+      }),
+    ).resolves.toEqual(expect.objectContaining({ messageId: 'mid-video-ready' }));
+
+    expect(publish).toHaveBeenCalledTimes(6);
+    expect(sleep.mock.calls.map(([delayMs]) => delayMs)).toEqual([
+      1_500, 3_000, 6_000, 12_000, 24_000,
+    ]);
+  });
+
+  it('does not retry an ambiguous VK video send transport failure', async () => {
+    const timeout = Object.assign(new Error('timeout of 30000ms exceeded'), {
+      code: 'ECONNABORTED',
+    });
+    const publish = jest.fn().mockRejectedValue(timeout);
+    const { publishService } = createFixture({}, { maxRoutedPublicationService: { publish } });
+    const sleep = jest.spyOn(publishService as any, 'sleep').mockResolvedValue(undefined);
+
+    await expect(
+      (publishService as any).sendMessageWithAttachmentRetry({
+        postId: 'post-1',
+        chatId: 'channel-1',
+        logicalIdempotencyKey: 'vk-parsing:publish:post-1:ambiguous-video',
+        text: 'VK video publication',
+        baseOptions: {},
+        trafficClass: 'background',
+        videoAttachment: true,
+        prepareAttempt: jest.fn(),
+      }),
+    ).rejects.toBe(timeout);
+
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('reuses cached MAX upload payloads only for the bot that created them', () => {
+    const { publishService, mediaCache } = createFixture();
+    const row = {
+      maxUploadPayload: {
+        token: 'cached-video-token',
+        [VK_MEDIA_CACHE_UPLOAD_BOT_ID_FIELD]: 'bot-1',
+      },
+      maxUploadToken: 'cached-video-token',
+    };
+
+    expect((publishService as any).readUploadPayload(row, 'bot-1')).toEqual({
+      token: 'cached-video-token',
+    });
+    expect((publishService as any).readUploadPayload(row, 'bot-2')).toBeNull();
+    expect((mediaCache as any).hasReusableUpload(row, 'bot-1')).toBe(true);
+    expect((mediaCache as any).hasReusableUpload(row, 'bot-2')).toBe(false);
+    expect(
+      (publishService as any).readUploadPayload(
+        { maxUploadPayload: { token: 'legacy-untagged-token' } },
+        'bot-1',
+      ),
+    ).toBeNull();
+  });
+
   it('records MAX access loss and clears VK publish queue when a target chat is denied', async () => {
     const { service, prisma, maxClient, publishQueue, managedEntityAccessLossService } =
       createFixture();
@@ -2865,7 +2954,10 @@ describe('VkParsingService', () => {
         status: 'FAILED',
         mimeType: null,
         contentLength: null,
-        maxUploadPayload: { token: 'cached-token' },
+        maxUploadPayload: {
+          token: 'cached-token',
+          [VK_MEDIA_CACHE_UPLOAD_BOT_ID_FIELD]: 'bot-1',
+        },
         maxUploadToken: 'cached-token',
         maxUploadedAt: new Date('2026-05-25T10:00:00.000Z'),
         uploadAttemptCount: 1,

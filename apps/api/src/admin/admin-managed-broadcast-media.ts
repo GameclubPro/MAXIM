@@ -5,6 +5,7 @@ import {
   BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS,
   BROADCAST_THROTTLE_RETRY_DELAYS_MS,
   BROADCAST_TIMEOUT_RETRY_DELAYS_MS,
+  BROADCAST_VIDEO_SEND_RETRY_DELAYS_MS,
 } from './admin.service.support';
 
 export type ManagedBroadcastRetriableAttachmentOptions =
@@ -20,7 +21,10 @@ export function resolveManagedBroadcastSendRetryDelayMs(
   options: ManagedBroadcastRetriableAttachmentOptions,
 ): number | null {
   if (hasRetriableManagedBroadcastAttachment(options) && isAttachmentNotReadyError(error)) {
-    return BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS[attempt - 1] ?? null;
+    const delays = hasManagedBroadcastVideoAttachment(options)
+      ? BROADCAST_VIDEO_SEND_RETRY_DELAYS_MS
+      : BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS;
+    return delays[attempt - 1] ?? null;
   }
 
   if (isMaxApiThrottleError(error)) {
@@ -49,6 +53,23 @@ export function hasRetriableManagedBroadcastAttachment(
   options: ManagedBroadcastRetriableAttachmentOptions,
 ): boolean {
   return Boolean(options?.imagePayload) || Boolean(options?.attachments?.length);
+}
+
+export function hasManagedBroadcastVideoAttachment(
+  options: ManagedBroadcastRetriableAttachmentOptions,
+): boolean {
+  return Boolean(options?.attachments?.some((attachment) => attachment.type === 'video'));
+}
+
+export function resolveManagedBroadcastAttachmentRetryCount(
+  options: ManagedBroadcastRetriableAttachmentOptions,
+): number {
+  if (hasManagedBroadcastVideoAttachment(options)) {
+    return BROADCAST_VIDEO_SEND_RETRY_DELAYS_MS.length;
+  }
+  return hasRetriableManagedBroadcastAttachment(options)
+    ? BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length
+    : 0;
 }
 
 export function isAttachmentNotReadyError(error: unknown): boolean {

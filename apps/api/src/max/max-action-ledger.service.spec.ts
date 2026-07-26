@@ -151,6 +151,131 @@ describe('MaxActionLedgerService', () => {
     expect(prisma.maxActionLedgerEntry.deleteMany).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [null, 'Не удалось загрузить видео: MAX upload payload is missing'],
+    [
+      'ledger.watchdog.pre_dispatch_orphan',
+      'Pre-dispatch MAX SEND_MESSAGE ledger entry has no retained dispatch fence; BullMQ states missing. The action was not requeued.',
+    ],
+  ])(
+    'clears an exact historical managed-broadcast pre-dispatch video failure',
+    async (lastErrorCode, lastError) => {
+      const job = createJob({
+        idempotencyKey:
+          'managed-broadcast:send:broadcast-1:occurrence:1:target:chat-1:content:revision-1',
+      });
+      const { service, prisma } = createService({
+        status: MaxActionLedgerStatus.FAILED_TERMINAL,
+        ambiguous: false,
+        terminal: true,
+        attemptCount: 1,
+        firstAttemptAt: new Date('2026-05-01T10:00:00.000Z'),
+        lastAttemptAt: new Date('2026-05-01T10:00:00.000Z'),
+        lastStatusCode: null,
+        lastErrorCode,
+        lastError,
+        dispatchToken: null,
+        dispatchStartedAt: null,
+        dispatchBotId: null,
+        remoteMessageId: null,
+      });
+
+      await expect(service.assertCanEnqueue(job)).resolves.toBeUndefined();
+      expect(prisma.maxActionLedgerEntry.deleteMany).toHaveBeenCalledWith({
+        where: expect.objectContaining({
+          jobId: job.idempotencyKey,
+          actionType: 'SEND_MESSAGE',
+          chatId: 'chat-1',
+          status: MaxActionLedgerStatus.FAILED_TERMINAL,
+          ambiguous: false,
+          terminal: true,
+          lastStatusCode: null,
+          dispatchToken: null,
+          dispatchStartedAt: null,
+          dispatchBotId: null,
+          remoteMessageId: null,
+          OR: expect.any(Array),
+        }),
+      });
+    },
+  );
+
+  it('does not clear the historical upload error for an unrelated send job', async () => {
+    const { service, prisma } = createService({
+      status: MaxActionLedgerStatus.FAILED_TERMINAL,
+      ambiguous: false,
+      terminal: true,
+      attemptCount: 1,
+      firstAttemptAt: new Date('2026-05-01T10:00:00.000Z'),
+      lastAttemptAt: new Date('2026-05-01T10:00:00.000Z'),
+      lastStatusCode: null,
+      lastErrorCode: null,
+      lastError: 'не удалось загрузить видео: max upload payload is missing',
+      dispatchToken: null,
+      dispatchStartedAt: null,
+      dispatchBotId: null,
+      remoteMessageId: null,
+    });
+
+    await expect(service.assertCanExecute(createJob())).rejects.toBeInstanceOf(UnrecoverableError);
+    expect(prisma.maxActionLedgerEntry.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { dispatchToken: 'dispatch-token-1' },
+    { dispatchStartedAt: new Date('2026-05-01T10:00:01.000Z') },
+    { dispatchBotId: 'bot-1' },
+  ])(
+    'does not clear a managed-broadcast upload failure with dispatch evidence',
+    async (evidence) => {
+      const { service, prisma } = createService({
+        status: MaxActionLedgerStatus.FAILED_TERMINAL,
+        ambiguous: false,
+        terminal: true,
+        attemptCount: 1,
+        firstAttemptAt: new Date('2026-05-01T10:00:00.000Z'),
+        lastAttemptAt: new Date('2026-05-01T10:00:00.000Z'),
+        lastStatusCode: null,
+        lastErrorCode: null,
+        lastError: 'не удалось загрузить видео: max upload payload is missing',
+        dispatchToken: null,
+        dispatchStartedAt: null,
+        dispatchBotId: null,
+        remoteMessageId: null,
+        ...evidence,
+      });
+      const job = createJob({
+        idempotencyKey:
+          'managed-broadcast:send:broadcast-1:occurrence:1:target:chat-1:content:revision-1',
+      });
+
+      await expect(service.assertCanExecute(job)).rejects.toBeInstanceOf(UnrecoverableError);
+      expect(prisma.maxActionLedgerEntry.deleteMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps a recovered managed-broadcast remote message id without clearing its ledger row', async () => {
+    const { service, prisma } = createService({
+      status: MaxActionLedgerStatus.FAILED_TERMINAL,
+      ambiguous: false,
+      terminal: true,
+      lastStatusCode: null,
+      lastErrorCode: null,
+      lastError: 'не удалось загрузить видео: max upload payload is missing',
+      dispatchToken: null,
+      dispatchStartedAt: null,
+      dispatchBotId: null,
+      remoteMessageId: 'mid-1',
+    });
+    const job = createJob({
+      idempotencyKey:
+        'managed-broadcast:send:broadcast-1:occurrence:1:target:chat-1:content:revision-1',
+    });
+
+    await expect(service.assertCanExecute(job)).resolves.toBeUndefined();
+    expect(prisma.maxActionLedgerEntry.deleteMany).not.toHaveBeenCalled();
+  });
+
   it('blocks enqueue when an irreversible job is already quarantined as ambiguous', async () => {
     const { service } = createService({
       status: MaxActionLedgerStatus.AMBIGUOUS,

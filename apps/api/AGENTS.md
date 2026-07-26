@@ -130,6 +130,7 @@
 ## VK Parsing
 
 - VK parsing is available for managed chats and channels through server capability, never a hardcoded client/user/channel allowlist. Endpoints enforce managed-entity admin access.
+- Cached MAX upload payloads are bot-scoped. Persist and verify the internal upload-bot marker, strip it before sending to MAX, and re-upload legacy untagged payloads.
 - Source sync runs through the BullMQ `vk-parsing-sync` queue with database leases; automation settings live per managed entity in `vk_parsing_settings` and per source.
 - Supported publishable content is text, links, photos, or one direct HTTPS `video.files.mp4_*` video. If a supported video is present, publish it and drop photos; never accept player pages, external/HLS streams, or mixed photo/video payloads.
 - If `wall.get` lacks direct video files, enrich with `video.get` before declaring unsupported. Do not scrape the VK player.

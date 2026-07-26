@@ -1,5 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import type { MaxUpdate } from '@maxim/contracts';
+import { MAX_VIDEO_UPLOAD_MAX_BYTES } from '../max/max-video-upload.constants';
 import type {
   DownloadedBinaryAsset,
   DownloadedImageAsset,
@@ -12,7 +13,7 @@ import type {
   PrivateSuggestionVideoDraft,
 } from './private-control.types';
 
-const PRIVATE_VIDEO_DOWNLOAD_MAX_BYTES = 250 * 1024 * 1024;
+const PRIVATE_VIDEO_DOWNLOAD_MAX_BYTES = MAX_VIDEO_UPLOAD_MAX_BYTES;
 const PRIVATE_VIDEO_DOWNLOAD_TIMEOUT_MS = 10_000;
 
 export type PrivateControlMediaAttachmentUploader = {
@@ -257,8 +258,7 @@ export async function downloadPrivateVideoSourceAttachment(
       throw new BadRequestException('Файл должен быть видео.');
     }
 
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+    const buffer = await readResponseBufferWithLimit(response, PRIVATE_VIDEO_DOWNLOAD_MAX_BYTES);
     if (buffer.length === 0) {
       throw new BadRequestException('Видео оказалось пустым.');
     }
@@ -626,6 +626,9 @@ function extensionFromMimeType(mimeType: string): string {
   if (mimeType === 'video/webm') {
     return 'webm';
   }
+  if (mimeType === 'video/x-matroska' || mimeType === 'video/matroska') {
+    return 'mkv';
+  }
   if (mimeType === 'video/x-msvideo') {
     return 'avi';
   }
@@ -676,6 +679,9 @@ function inferVideoMimeTypeFromFileName(fileName: string | null): string | null 
   if (normalized.endsWith('.webm')) {
     return 'video/webm';
   }
+  if (normalized.endsWith('.mkv')) {
+    return 'video/x-matroska';
+  }
   if (normalized.endsWith('.avi')) {
     return 'video/x-msvideo';
   }
@@ -684,6 +690,39 @@ function inferVideoMimeTypeFromFileName(fileName: string | null): string | null 
   }
 
   return null;
+}
+
+async function readResponseBufferWithLimit(response: Response, maxBytes: number): Promise<Buffer> {
+  if (!response.body) {
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.length > maxBytes) {
+      throw new BadRequestException('Видео слишком большое. Максимальный размер — 250 МБ.');
+    }
+    return buffer;
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  try {
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) {
+        break;
+      }
+      const chunk = Buffer.from(result.value);
+      totalBytes += chunk.length;
+      if (totalBytes > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new BadRequestException('Видео слишком большое. Максимальный размер — 250 МБ.');
+      }
+      chunks.push(chunk);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  return Buffer.concat(chunks, totalBytes);
 }
 
 function fileNameFromUrl(url: string | null): string | null {

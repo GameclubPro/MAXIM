@@ -27,6 +27,12 @@ export const MAX_MEMBER_ACTION_PRE_DISPATCH_RETRY_ERROR_CODES = [
 const MEMBER_ACTION_PRE_DISPATCH_RETRY_ERROR_CODES: ReadonlySet<string> = new Set(
   MAX_MEMBER_ACTION_PRE_DISPATCH_RETRY_ERROR_CODES,
 );
+const MANAGED_BROADCAST_SEND_JOB_PREFIX = 'managed-broadcast:send:';
+const LEGACY_PRE_DISPATCH_WATCHDOG_ERROR_CODE = 'ledger.watchdog.pre_dispatch_orphan';
+const LEGACY_PRE_DISPATCH_WATCHDOG_ERROR =
+  'Pre-dispatch MAX SEND_MESSAGE ledger entry has no retained dispatch fence; BullMQ states missing. The action was not requeued.';
+const LEGACY_MANAGED_BROADCAST_UPLOAD_ERROR =
+  'не удалось загрузить видео: max upload payload is missing';
 
 type MaxActionLedgerMutation = {
   status: MaxActionLedgerStatus;
@@ -204,6 +210,15 @@ export class MaxActionLedgerService {
       );
     }
 
+    if (row && this.isLegacyManagedBroadcastPreDispatchSendState(job, row)) {
+      if (await this.clearLegacyManagedBroadcastPreDispatchSendState(job)) {
+        return;
+      }
+      throw new UnrecoverableError(
+        `Legacy managed-broadcast pre-dispatch ledger entry ${job.idempotencyKey} changed before recovery`,
+      );
+    }
+
     if (row && this.isCrashFencedMemberAction(job.actionType)) {
       if (this.isExecutableCrashFencedMemberState(row)) {
         return;
@@ -269,6 +284,15 @@ export class MaxActionLedgerService {
       }
       throw new UnrecoverableError(
         `Legacy pre-dispatch MAX SEND_MESSAGE ledger entry ${job.idempotencyKey} changed before recovery`,
+      );
+    }
+
+    if (this.isLegacyManagedBroadcastPreDispatchSendState(job, row)) {
+      if (await this.clearLegacyManagedBroadcastPreDispatchSendState(job)) {
+        return;
+      }
+      throw new UnrecoverableError(
+        `Legacy managed-broadcast pre-dispatch ledger entry ${job.idempotencyKey} changed before recovery`,
       );
     }
 
@@ -823,6 +847,69 @@ export class MaxActionLedgerService {
         dispatchStartedAt: null,
         dispatchBotId: null,
         remoteMessageId: null,
+      },
+    });
+    return result.count === 1;
+  }
+
+  // FLAG: Only historical managed-broadcast failures that prove MAX dispatch never started may clear.
+  private isLegacyManagedBroadcastPreDispatchSendState(
+    job: MaxActionJob,
+    row: MaxActionLedgerExecutionState,
+  ): boolean {
+    if (
+      job.actionType !== 'SEND_MESSAGE' ||
+      !job.idempotencyKey.startsWith(MANAGED_BROADCAST_SEND_JOB_PREFIX) ||
+      row.status !== MaxActionLedgerStatus.FAILED_TERMINAL ||
+      row.ambiguous !== false ||
+      row.terminal !== true ||
+      row.lastStatusCode != null ||
+      row.dispatchToken != null ||
+      row.dispatchStartedAt != null ||
+      row.dispatchBotId != null ||
+      row.remoteMessageId != null
+    ) {
+      return false;
+    }
+
+    const lastError = row.lastError?.trim() ?? '';
+    return (
+      (row.lastErrorCode == null &&
+        lastError.toLowerCase() === LEGACY_MANAGED_BROADCAST_UPLOAD_ERROR) ||
+      (row.lastErrorCode === LEGACY_PRE_DISPATCH_WATCHDOG_ERROR_CODE &&
+        lastError === LEGACY_PRE_DISPATCH_WATCHDOG_ERROR)
+    );
+  }
+
+  private async clearLegacyManagedBroadcastPreDispatchSendState(
+    job: MaxActionJob,
+  ): Promise<boolean> {
+    const result = await this.prisma.maxActionLedgerEntry.deleteMany({
+      where: {
+        jobId: job.idempotencyKey,
+        actionType: 'SEND_MESSAGE',
+        chatId: job.chatId,
+        status: MaxActionLedgerStatus.FAILED_TERMINAL,
+        ambiguous: false,
+        terminal: true,
+        lastStatusCode: null,
+        dispatchToken: null,
+        dispatchStartedAt: null,
+        dispatchBotId: null,
+        remoteMessageId: null,
+        OR: [
+          {
+            lastErrorCode: null,
+            lastError: {
+              equals: LEGACY_MANAGED_BROADCAST_UPLOAD_ERROR,
+              mode: 'insensitive',
+            },
+          },
+          {
+            lastErrorCode: LEGACY_PRE_DISPATCH_WATCHDOG_ERROR_CODE,
+            lastError: LEGACY_PRE_DISPATCH_WATCHDOG_ERROR,
+          },
+        ],
       },
     });
     return result.count === 1;

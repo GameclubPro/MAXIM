@@ -167,6 +167,10 @@ describe('private control media attachments', () => {
       'image/webp',
     );
     expect(resolvePrivateVideoMimeType(null, 'clip.m4v', null)).toBe('video/x-m4v');
+    expect(resolvePrivateVideoMimeType(null, 'clip.mkv', null)).toBe('video/x-matroska');
+    expect(buildPrivateDownloadedFileName('private-video', null, 'video-1', 'video/matroska')).toBe(
+      'private-video-video-1.mkv',
+    );
     expect(
       buildPrivateDownloadedFileName('private-rules', 'bad/name?.png', null, 'image/png'),
     ).toBe('bad-name-.png');
