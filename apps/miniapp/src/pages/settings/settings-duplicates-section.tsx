@@ -172,7 +172,15 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                       type="checkbox"
                       checked={draft.antiDuplicateEnabled}
                       onChange={(event) => {
-                        setFieldValue('antiDuplicateEnabled', event.target.checked);
+                        const enabled = event.target.checked;
+                        setFieldValue('antiDuplicateEnabled', enabled);
+                        if (enabled) {
+                          applyDuplicateFlowConfig({
+                            duplicateBotMessageEnabled: true,
+                            duplicateWarnEnabled: true,
+                            duplicateMuteEnabled: true,
+                          });
+                        }
                       }}
                     />
                     <span className="toggle-switch" aria-hidden>

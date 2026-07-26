@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applySettingsSectionSchema,
   broadcastHandoffRequestSchema,
+  channelSettingsSchema,
   chatSettingsSchema,
   normalizeHttpButtonUrl,
   sendBroadcastRequestSchema,
@@ -36,12 +37,31 @@ describe('chatSettingsSchema duplicate flow validation', () => {
     expect(normalizeHttpButtonUrl(`https://example.test/${'я'.repeat(400)}`)).toBeNull();
   });
 
-  it('allows phone numbers and photos by default', () => {
+  it('keeps new chats passive while allowing unrestricted message types by default', () => {
     const settings = chatSettingsSchema.parse({});
+    const enabledBooleanKeys = Object.entries(settings)
+      .filter(([, value]) => value === true)
+      .map(([key]) => key)
+      .sort();
 
-    expect(settings.phoneNumbersEnabled).toBe(true);
-    expect(settings.photoMessagesEnabled).toBe(true);
+    expect(settings.linkPolicy).toBe('ALERT_ONLY');
+    expect(enabledBooleanKeys).toEqual([
+      'fileMessagesEnabled',
+      'phoneNumbersEnabled',
+      'photoMessagesEnabled',
+      'videoMessagesEnabled',
+      'voiceMessagesEnabled',
+    ]);
     expect(settings.duplicateDetectionPreset).toBe('STRICT');
+  });
+
+  it('keeps every channel automation toggle disabled by default', () => {
+    const settings = channelSettingsSchema.parse({});
+    const enabledBooleanKeys = Object.entries(settings)
+      .filter(([, value]) => value === true)
+      .map(([key]) => key);
+
+    expect(enabledBooleanKeys).toEqual([]);
   });
 
   it('strips retired thematic settings and rejects their apply section', () => {

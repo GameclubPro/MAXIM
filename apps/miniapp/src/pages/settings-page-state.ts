@@ -16,6 +16,122 @@ export type ApplySectionKey =
   | 'commands'
   | 'extra';
 
+export type SanctionPresetGroup =
+  | 'duplicate'
+  | 'invitationAccess'
+  | 'link'
+  | 'messageLimits'
+  | 'profanity'
+  | 'requiredSubscription'
+  | 'textFilters';
+
+type SanctionStageEnabledKey =
+  | 'duplicateBotMessageEnabled'
+  | 'duplicateMuteEnabled'
+  | 'duplicateWarnEnabled'
+  | 'invitationAccessBotMessageEnabled'
+  | 'invitationAccessMuteEnabled'
+  | 'invitationAccessWarnEnabled'
+  | 'linkBotMessageEnabled'
+  | 'linkMuteEnabled'
+  | 'linkWarnEnabled'
+  | 'messageLimitsBotMessageEnabled'
+  | 'messageLimitsMuteEnabled'
+  | 'messageLimitsWarnEnabled'
+  | 'profanityBotMessageEnabled'
+  | 'profanityMuteEnabled'
+  | 'profanityWarnEnabled'
+  | 'requiredSubscriptionBotMessageEnabled'
+  | 'requiredSubscriptionMuteEnabled'
+  | 'requiredSubscriptionWarnEnabled'
+  | 'textFiltersBotMessageEnabled'
+  | 'textFiltersMuteEnabled'
+  | 'textFiltersWarnEnabled';
+
+const DEFAULT_SANCTION_STAGE_KEYS: Record<
+  SanctionPresetGroup,
+  readonly [SanctionStageEnabledKey, SanctionStageEnabledKey, SanctionStageEnabledKey]
+> = {
+  duplicate: [
+    'duplicateBotMessageEnabled',
+    'duplicateWarnEnabled',
+    'duplicateMuteEnabled',
+  ],
+  invitationAccess: [
+    'invitationAccessBotMessageEnabled',
+    'invitationAccessWarnEnabled',
+    'invitationAccessMuteEnabled',
+  ],
+  link: ['linkBotMessageEnabled', 'linkWarnEnabled', 'linkMuteEnabled'],
+  messageLimits: [
+    'messageLimitsBotMessageEnabled',
+    'messageLimitsWarnEnabled',
+    'messageLimitsMuteEnabled',
+  ],
+  profanity: [
+    'profanityBotMessageEnabled',
+    'profanityWarnEnabled',
+    'profanityMuteEnabled',
+  ],
+  requiredSubscription: [
+    'requiredSubscriptionBotMessageEnabled',
+    'requiredSubscriptionWarnEnabled',
+    'requiredSubscriptionMuteEnabled',
+  ],
+  textFilters: [
+    'textFiltersBotMessageEnabled',
+    'textFiltersWarnEnabled',
+    'textFiltersMuteEnabled',
+  ],
+};
+
+export function applyDefaultSanctionStages(
+  settings: ChatSettings,
+  group: SanctionPresetGroup,
+): ChatSettings {
+  const nextSettings = { ...settings };
+  const nextRecord = nextSettings as Record<keyof ChatSettings, unknown>;
+
+  for (const key of DEFAULT_SANCTION_STAGE_KEYS[group]) {
+    nextRecord[key] = true;
+  }
+
+  return nextSettings;
+}
+
+export function enableDefaultSanctionStages(
+  setFieldValue: (key: SanctionStageEnabledKey, value: true) => void,
+  group: SanctionPresetGroup,
+): void {
+  for (const key of DEFAULT_SANCTION_STAGE_KEYS[group]) {
+    setFieldValue(key, true);
+  }
+}
+
+export function applyRequiredSubscriptionChannelAddition(
+  settings: ChatSettings,
+  channelId: string,
+  maxChannels: number,
+): ChatSettings {
+  if (
+    settings.requiredSubscriptionChannelIds.includes(channelId) ||
+    settings.requiredSubscriptionChannelIds.length >= maxChannels
+  ) {
+    return settings;
+  }
+
+  const nextSettings =
+    settings.requiredSubscriptionChannelIds.length === 0
+      ? applyDefaultSanctionStages(settings, 'requiredSubscription')
+      : settings;
+  return {
+    ...nextSettings,
+    requiredSubscriptionEnabled: true,
+    requiredSubscriptionChannelIds: [...settings.requiredSubscriptionChannelIds, channelId],
+    requiredSubscriptionExpiresAt: '',
+  };
+}
+
 export const BOT_SPEECH_SYNC_SETTING_KEYS = ['botSpeechStyle'] as const satisfies ReadonlyArray<
   keyof ChatSettings
 >;

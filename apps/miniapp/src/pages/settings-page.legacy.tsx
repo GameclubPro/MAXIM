@@ -221,6 +221,8 @@ import {
   COMMENTS_SETTING_KEYS,
   SECTION_SETTING_KEYS,
   type ApplySectionKey,
+  applyRequiredSubscriptionChannelAddition,
+  enableDefaultSanctionStages,
   hasSectionBotSpeechMediaChanges,
   mergeBotSpeechStyleSettings,
   mergeCommentsSettings,
@@ -2132,26 +2134,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function addRequiredSubscriptionChannel(channelId: string) {
-    setDraft((current) => {
-      if (!current) {
-        return current;
-      }
-
-      if (current.requiredSubscriptionChannelIds.includes(channelId)) {
-        return current;
-      }
-
-      if (current.requiredSubscriptionChannelIds.length >= REQUIRED_SUBSCRIPTION_MAX_CHANNELS) {
-        return current;
-      }
-
-      return {
-        ...current,
-        requiredSubscriptionEnabled: true,
-        requiredSubscriptionChannelIds: [...current.requiredSubscriptionChannelIds, channelId],
-        requiredSubscriptionExpiresAt: '',
-      };
-    });
+    setDraft((current) =>
+      current
+        ? applyRequiredSubscriptionChannelAddition(
+            current,
+            channelId,
+            REQUIRED_SUBSCRIPTION_MAX_CHANNELS,
+          )
+        : current,
+    );
     clearFieldError('requiredSubscriptionChannelIds');
   }
 
@@ -5444,7 +5435,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               value: option.value,
                               label: option.label,
                             }))}
-                            onChange={(value) => setFieldValue('linkPolicy', value)}
+                            onChange={(value) => {
+                              setFieldValue('linkPolicy', value);
+                              if (draft.linkPolicy === 'ALERT_ONLY' && value !== 'ALERT_ONLY') {
+                                enableDefaultSanctionStages(setFieldValue, 'link');
+                              }
+                            }}
                             className={cn(
                               'settings-mode-segments',
                               linkPolicyError && 'settings-mode-segments--error',
@@ -6621,7 +6617,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 const enabled = event.target.checked;
                                 setFieldValue('russianProfanityFilterEnabled', enabled);
                                 if (enabled) {
-                                  setFieldValue('profanityBotMessageEnabled', true);
+                                  enableDefaultSanctionStages(setFieldValue, 'profanity');
                                 }
                               }}
                             />

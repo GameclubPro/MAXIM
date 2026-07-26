@@ -18,7 +18,9 @@ describe('admin chat rules text format helpers', () => {
       linkPolicy: 'ALLOWLIST_ONLY',
       requiredSubscriptionChannelIds: ['channel-1', 'channel-2'],
       russianProfanityFilterEnabled: true,
+      antiSpamEnabled: true,
       antiDuplicateEnabled: true,
+      duplicateWarnEnabled: true,
       messageCountLimitEnabled: true,
       messageCountLimitMessages: 3,
       messageCountLimitWindowHours: 2,
@@ -27,6 +29,7 @@ describe('admin chat rules text format helpers', () => {
       nightModeEndTimeMinutes: 7 * 60 + 30,
       linkWarnEnabled: true,
       duplicateMuteEnabled: true,
+      duplicateBanEnabled: true,
     });
     const input = {
       settings,

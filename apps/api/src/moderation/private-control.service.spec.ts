@@ -1917,6 +1917,7 @@ describe('PrivateControlService', () => {
         linkPolicy: 'BLOCKLIST_ONLY',
         requiredSubscriptionEnabled: true,
         requiredSubscriptionChannelIds: ['channel-1', 'channel-2'],
+        russianProfanityFilterEnabled: true,
         maxMessageLengthEnabled: true,
         maxMessageLength: 500,
         messageLimitsBlockedWords: ['спам', 'капс'],

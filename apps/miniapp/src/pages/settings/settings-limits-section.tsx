@@ -9,6 +9,7 @@ import {
   type BroadcastLinkButtonFieldErrors,
 } from '../../lib/broadcast-link-buttons';
 import { cn } from '../../lib/cn';
+import { enableDefaultSanctionStages } from '../settings-page-state';
 import {
   EditToggleButton,
   type FieldErrors,
@@ -264,7 +265,7 @@ export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
                         const enabled = event.target.checked;
                         setFieldValue('messageCountLimitEnabled', enabled);
                         if (enabled) {
-                          setFieldValue('messageLimitsBotMessageEnabled', true);
+                          enableDefaultSanctionStages(setFieldValue, 'messageLimits');
                         }
                       }}
                     />
@@ -383,7 +384,7 @@ export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
                         const enabled = event.target.checked;
                         setFieldValue('maxMessageLengthEnabled', enabled);
                         if (enabled) {
-                          setFieldValue('messageLimitsBotMessageEnabled', true);
+                          enableDefaultSanctionStages(setFieldValue, 'messageLimits');
                         }
                       }}
                     />
@@ -451,7 +452,7 @@ export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
                         const enabled = event.target.checked;
                         setFieldValue('photoMessageCooldownEnabled', enabled);
                         if (enabled) {
-                          setFieldValue('messageLimitsBotMessageEnabled', true);
+                          enableDefaultSanctionStages(setFieldValue, 'messageLimits');
                         }
                       }}
                     />
@@ -538,7 +539,7 @@ export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
                         const enabled = event.target.checked;
                         setFieldValue('stickerMessageCooldownEnabled', enabled);
                         if (enabled) {
-                          setFieldValue('messageLimitsBotMessageEnabled', true);
+                          enableDefaultSanctionStages(setFieldValue, 'messageLimits');
                         }
                       }}
                     />
@@ -608,7 +609,7 @@ export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
                         const enabled = event.target.checked;
                         setFieldValue('photoMessagesEnabled', enabled);
                         if (!enabled) {
-                          setFieldValue('messageLimitsBotMessageEnabled', true);
+                          enableDefaultSanctionStages(setFieldValue, 'messageLimits');
                         }
                       }}
                     />
@@ -631,7 +632,7 @@ export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
                         const enabled = event.target.checked;
                         setFieldValue('videoMessagesEnabled', enabled);
                         if (!enabled) {
-                          setFieldValue('messageLimitsBotMessageEnabled', true);
+                          enableDefaultSanctionStages(setFieldValue, 'messageLimits');
                         }
                       }}
                     />
@@ -654,7 +655,7 @@ export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
                         const enabled = event.target.checked;
                         setFieldValue('fileMessagesEnabled', enabled);
                         if (!enabled) {
-                          setFieldValue('messageLimitsBotMessageEnabled', true);
+                          enableDefaultSanctionStages(setFieldValue, 'messageLimits');
                         }
                       }}
                     />
@@ -680,7 +681,7 @@ export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
                         const enabled = event.target.checked;
                         setFieldValue('voiceMessagesEnabled', enabled);
                         if (!enabled) {
-                          setFieldValue('messageLimitsBotMessageEnabled', true);
+                          enableDefaultSanctionStages(setFieldValue, 'messageLimits');
                         }
                       }}
                     />

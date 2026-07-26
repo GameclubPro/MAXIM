@@ -5,8 +5,10 @@ import {
   BOT_SPEECH_SYNC_SETTING_KEYS,
   NIGHT_SECTION_SETTING_KEYS,
   SECTION_SETTING_KEYS,
+  applyDefaultSanctionStages,
   applyNightModeBotMessageEnabledChange,
   applyNightModeEnabledChange,
+  applyRequiredSubscriptionChannelAddition,
   hasSectionBotSpeechMediaChanges,
   mergeBotSpeechStyleSettings,
   mergeNightSectionSettings,
@@ -57,6 +59,92 @@ test('applyNightModeBotMessageEnabledChange clears dependent toggles when bot no
   assert.equal(next.nightModeCommentsEnabled, false);
   assert.equal(next.nightModeBotButtonEnabled, false);
   assert.equal(next.nightModeRulesButtonEnabled, false);
+});
+
+test('applyDefaultSanctionStages enables explanation, warning, and mute without enabling ban', () => {
+  const cases = [
+    {
+      group: 'duplicate' as const,
+      keys: [
+        'duplicateBotMessageEnabled',
+        'duplicateWarnEnabled',
+        'duplicateMuteEnabled',
+      ] as const,
+      banKey: 'duplicateBanEnabled' as const,
+    },
+    {
+      group: 'invitationAccess' as const,
+      keys: [
+        'invitationAccessBotMessageEnabled',
+        'invitationAccessWarnEnabled',
+        'invitationAccessMuteEnabled',
+      ] as const,
+      banKey: 'invitationAccessBanEnabled' as const,
+    },
+    {
+      group: 'link' as const,
+      keys: ['linkBotMessageEnabled', 'linkWarnEnabled', 'linkMuteEnabled'] as const,
+      banKey: 'linkBanEnabled' as const,
+    },
+    {
+      group: 'messageLimits' as const,
+      keys: [
+        'messageLimitsBotMessageEnabled',
+        'messageLimitsWarnEnabled',
+        'messageLimitsMuteEnabled',
+      ] as const,
+      banKey: 'messageLimitsBanEnabled' as const,
+    },
+    {
+      group: 'profanity' as const,
+      keys: [
+        'profanityBotMessageEnabled',
+        'profanityWarnEnabled',
+        'profanityMuteEnabled',
+      ] as const,
+      banKey: 'profanityBanEnabled' as const,
+    },
+    {
+      group: 'requiredSubscription' as const,
+      keys: [
+        'requiredSubscriptionBotMessageEnabled',
+        'requiredSubscriptionWarnEnabled',
+        'requiredSubscriptionMuteEnabled',
+      ] as const,
+      banKey: 'requiredSubscriptionBanEnabled' as const,
+    },
+    {
+      group: 'textFilters' as const,
+      keys: [
+        'textFiltersBotMessageEnabled',
+        'textFiltersWarnEnabled',
+        'textFiltersMuteEnabled',
+      ] as const,
+      banKey: 'textFiltersBanEnabled' as const,
+    },
+  ];
+
+  for (const { banKey, group, keys } of cases) {
+    const next = applyDefaultSanctionStages(createSettings(), group);
+    for (const key of keys) {
+      assert.equal(next[key], true);
+    }
+    assert.equal(next[banKey], false);
+  }
+});
+
+test('applyRequiredSubscriptionChannelAddition applies the sanction preset to the first source', () => {
+  const next = applyRequiredSubscriptionChannelAddition(createSettings(), 'channel-1', 10);
+
+  assert.deepEqual(next.requiredSubscriptionChannelIds, ['channel-1']);
+  assert.equal(next.requiredSubscriptionEnabled, true);
+  assert.equal(next.requiredSubscriptionBotMessageEnabled, true);
+  assert.equal(next.requiredSubscriptionWarnEnabled, true);
+  assert.equal(next.requiredSubscriptionMuteEnabled, true);
+  assert.equal(next.requiredSubscriptionBanEnabled, false);
+
+  assert.equal(applyRequiredSubscriptionChannelAddition(next, 'channel-1', 10), next);
+  assert.equal(applyRequiredSubscriptionChannelAddition(next, 'channel-2', 1), next);
 });
 
 test('mergeBotSpeechStyleSettings changes only the inherited base style', () => {

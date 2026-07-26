@@ -9,6 +9,7 @@ import {
   type BroadcastLinkButtonFieldErrors,
 } from '../../lib/broadcast-link-buttons';
 import { cn } from '../../lib/cn';
+import { enableDefaultSanctionStages } from '../settings-page-state';
 import {
   COMMERCIAL_SENSITIVITY_MAX,
   COMMERCIAL_SENSITIVITY_MIN,
@@ -151,7 +152,7 @@ export function SettingsCommercialFilterSection(props: SettingsCommercialFilterS
                         const enabled = event.target.checked;
                         setFieldValue('commercialAdsFilterEnabled', enabled);
                         if (enabled) {
-                          setFieldValue('textFiltersBotMessageEnabled', true);
+                          enableDefaultSanctionStages(setFieldValue, 'textFilters');
                         }
                       }}
                     />
