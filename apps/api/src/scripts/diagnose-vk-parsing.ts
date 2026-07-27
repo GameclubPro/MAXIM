@@ -19,10 +19,16 @@ type QueueJobSample = {
   failedReason: string | null;
 };
 
+type QueueJobReference = {
+  id: string;
+  state: string;
+};
+
 type QueueDiagnostic = {
   name: string;
   counts: QueueCounts;
   jobs: QueueJobSample[];
+  referencedJobs?: QueueJobReference[];
 };
 
 type VkParsingDiagnostics = {
@@ -105,7 +111,6 @@ export async function loadVkParsingDiagnostics(
     mediaStatus,
     mediaIdentityConflicts,
     recentMediaFailures,
-    queues,
   ] = await Promise.all([
     loadSourceStatus(prisma),
     loadSourceHealth(prisma),
@@ -117,8 +122,12 @@ export async function loadVkParsingDiagnostics(
     loadMediaStatus(prisma),
     loadMediaIdentityConflicts(prisma, options.limit),
     loadRecentMediaFailures(prisma, since, options.limit),
-    loadQueueDiagnostics(options.redisUrl, options.limit),
   ]);
+  const queues = await loadQueueDiagnostics(
+    options.redisUrl,
+    options.limit,
+    buildPublishReferenceJobIds(stuckPublishPosts),
+  );
 
   return {
     generatedAt: generatedAt.toISOString(),
@@ -316,6 +325,7 @@ async function loadStuckPublishPosts(prisma: PrismaClient, limit: number): Promi
       publish_scheduled_at as "publishScheduledAt",
       publish_locked_at as "publishLockedAt",
       publish_attempt_count as "publishAttemptCount",
+      publish_idempotency_key as "publishIdempotencyKey",
       extract(epoch from (now() - coalesce(publish_queued_at, publish_locked_at)))::int
         as "ageSec",
       left(coalesce(last_error, ''), 300) as "lastError"
@@ -416,6 +426,7 @@ async function loadRecentMediaFailures(
 async function loadQueueDiagnostics(
   redisUrl: string | null,
   limit: number,
+  publishReferenceJobIds: string[],
 ): Promise<VkParsingDiagnostics['queues']> {
   if (!redisUrl) {
     return { available: false, error: 'REDIS_URL is not set', sync: null, publish: null };
@@ -425,7 +436,7 @@ async function loadQueueDiagnostics(
   try {
     const [sync, publish] = await Promise.all([
       loadQueueDiagnostic(connection, VK_SYNC_QUEUE, limit),
-      loadQueueDiagnostic(connection, VK_PUBLISH_QUEUE, limit),
+      loadQueueDiagnostic(connection, VK_PUBLISH_QUEUE, limit, publishReferenceJobIds),
     ]);
     return { available: true, error: null, sync, publish };
   } catch (error) {
@@ -442,10 +453,11 @@ async function loadQueueDiagnostic(
   connection: ConnectionOptions,
   name: string,
   limit: number,
+  referenceJobIds: string[] = [],
 ): Promise<QueueDiagnostic> {
   const queue = new Queue(name, { connection });
   try {
-    const [counts, jobs] = await Promise.all([
+    const [counts, jobs, referencedJobs] = await Promise.all([
       queue.getJobCounts(
         'waiting',
         'active',
@@ -457,11 +469,18 @@ async function loadQueueDiagnostic(
         'waiting-children',
       ),
       queue.getJobs(['waiting', 'active', 'delayed', 'failed'], 0, Math.max(0, limit - 1)),
+      Promise.all(
+        referenceJobIds.map(async (id): Promise<QueueJobReference> => {
+          const job = await queue.getJob(id);
+          return { id, state: job ? await job.getState() : 'missing' };
+        }),
+      ),
     ]);
 
     return {
       name,
       counts,
+      referencedJobs,
       jobs: jobs.map((job) => ({
         id: job.id ?? null,
         name: job.name,
@@ -474,6 +493,23 @@ async function loadQueueDiagnostic(
   } finally {
     await queue.close().catch(() => undefined);
   }
+}
+
+function buildPublishReferenceJobIds(rows: unknown[]): string[] {
+  const ids = new Set<string>();
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') {
+      continue;
+    }
+    const record = row as Record<string, unknown>;
+    const postId = typeof record.id === 'string' ? record.id.trim() : '';
+    const idempotencyKey =
+      typeof record.publishIdempotencyKey === 'string' ? record.publishIdempotencyKey.trim() : '';
+    if (postId && idempotencyKey) {
+      ids.add(`vk-parsing-publish__${postId}__${idempotencyKey}`);
+    }
+  }
+  return [...ids];
 }
 
 function timestampToIso(value: number | undefined): string | null {
@@ -500,6 +536,12 @@ export function renderTextDiagnostics(diagnostics: VkParsingDiagnostics): string
   const sourceHealth = diagnostics.sourceHealth as Record<string, unknown>;
   const publishBacklog = diagnostics.publishBacklog as Record<string, unknown>;
   const syncPerformance = diagnostics.syncPerformance as Record<string, unknown>;
+  const referencedPublishStateCounts = (diagnostics.queues.publish?.referencedJobs ?? []).reduce<
+    Record<string, number>
+  >((counts, job) => {
+    counts[job.state] = (counts[job.state] ?? 0) + 1;
+    return counts;
+  }, {});
   const lines = [
     `VK parsing diagnostics @ ${diagnostics.generatedAt}`,
     `Window: ${diagnostics.windowHours}h`,
@@ -526,6 +568,10 @@ export function renderTextDiagnostics(diagnostics: VkParsingDiagnostics): string
       diagnostics.queues.sync?.counts ?? null,
     )}, publish=${JSON.stringify(diagnostics.queues.publish?.counts ?? null)}`,
   ];
+
+  if (Object.keys(referencedPublishStateCounts).length > 0) {
+    lines.push(`Stuck publish job states: ${JSON.stringify(referencedPublishStateCounts)}`);
+  }
 
   if (diagnostics.noisySources.length > 0) {
     lines.push('', 'Noisy sources:', JSON.stringify(diagnostics.noisySources, jsonReplacer, 2));

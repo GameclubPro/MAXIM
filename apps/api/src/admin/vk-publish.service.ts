@@ -165,6 +165,7 @@ const VK_SUPPORTED_VIDEO_MIME_TYPES = new Set(['video/mp4', 'video/quicktime', '
 @Injectable()
 export class VkPublishService {
   private readonly logger = new Logger(VkPublishService.name);
+  private readonly persistedPublishFailures = new WeakSet<object>();
   private readonly queueBatchSize: number;
   private readonly publishLeaseTtlMs: number;
   private readonly mediaConcurrency: number;
@@ -223,24 +224,40 @@ export class VkPublishService {
         continue;
       }
       const reason = this.resolveRecoveredPublishReason(post.publishReason);
-
-      let settings = settingsByChatId.get(post.chatId);
-      if (!settings) {
-        settings = await this.getSettingsForChat(post.chatId);
-        settingsByChatId.set(post.chatId, settings);
+      let recoverablePost = post;
+      if (reason === 'autopublish' && post.publishReason === null) {
+        const normalized = await this.prisma.vkParsingPost.updateMany({
+          where: {
+            id: post.id,
+            publishIdempotencyKey: idempotencyKey,
+            publishReason: null,
+            status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
+          },
+          data: { publishReason: 'autopublish' },
+        });
+        if (normalized.count === 0) {
+          continue;
+        }
+        recoverablePost = { ...post, publishReason: 'autopublish' };
       }
 
-      if (reason === 'autopublish' && !this.canAutoPublishPost(post, settings)) {
-        await this.clearQueuedAutoPublishPost(post.id, idempotencyKey);
+      let settings = settingsByChatId.get(recoverablePost.chatId);
+      if (!settings) {
+        settings = await this.getSettingsForChat(recoverablePost.chatId);
+        settingsByChatId.set(recoverablePost.chatId, settings);
+      }
+
+      if (reason === 'autopublish' && !this.canAutoPublishPost(recoverablePost, settings)) {
+        await this.clearQueuedAutoPublishPost(recoverablePost.id, idempotencyKey);
         continue;
       }
 
       const queued = await this.addPublishJob(
-        post,
+        recoverablePost,
         reason,
         idempotencyKey,
         now,
-        post.publishScheduledAt,
+        recoverablePost.publishScheduledAt,
       );
       if (queued) {
         recovered += 1;
@@ -257,13 +274,29 @@ export class VkPublishService {
     const baseWhere = {
       publishQueuedAt: { not: null },
       publishIdempotencyKey: { not: null },
-      status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
       OR: [{ publishLockedAt: null }, { publishLockedAt: { lt: staleLockBefore } }],
+    };
+    const recoverableReasonWhere = {
+      OR: [
+        {
+          publishReason: { in: ['manual-retry', 'manual-schedule'] },
+          status: { notIn: [VK_POST_STATUS_PUBLISHED, VK_POST_STATUS_UNAVAILABLE] },
+        },
+        {
+          publishReason: 'autopublish',
+          status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
+        },
+        {
+          publishReason: null,
+          status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
+        },
+      ],
     };
     const duePosts = await this.prisma.vkParsingPost.findMany({
       where: {
         ...baseWhere,
         AND: [
+          recoverableReasonWhere,
           {
             OR: [{ publishScheduledAt: null }, { publishScheduledAt: { lte: now } }],
           },
@@ -280,6 +313,7 @@ export class VkPublishService {
     const futurePosts = await this.prisma.vkParsingPost.findMany({
       where: {
         ...baseWhere,
+        AND: [recoverableReasonWhere],
         publishScheduledAt: { gt: now },
       },
       include: { source: true },
@@ -381,13 +415,51 @@ export class VkPublishService {
       throw error;
     }
 
-    return this.publishPreparedPostToMax(post, prepared, maxMessage, {
-      actorUserId,
-      trafficClass: 'interactive',
-      debugAction: 'publish_post',
-      auto: false,
-      storedDraft,
-    });
+    const publishIdempotencyKey = this.buildMaxPublicationIntentKey(post.id, prepared, maxMessage);
+    try {
+      const recoveryArmed = await this.armManualPublishRecovery(
+        post,
+        publishLockAt,
+        publishIdempotencyKey,
+      );
+      if (!recoveryArmed) {
+        await this.releaseManualPublishLock(post.id, chatId, publishLockAt, post.publishReason);
+        throw new ServiceUnavailableException(
+          'Не удалось зафиксировать отправку перед публикацией. Обновите список и повторите попытку.',
+        );
+      }
+    } catch (error) {
+      if (!(error instanceof ServiceUnavailableException)) {
+        try {
+          await this.releaseManualPublishLock(post.id, chatId, publishLockAt, post.publishReason);
+        } catch (releaseError) {
+          this.logger.warn(
+            { postId: post.id, chatId, err: releaseError },
+            'Failed to release VK manual publish lock after recovery persistence error',
+          );
+        }
+      }
+      throw error;
+    }
+
+    return this.publishPreparedPostToMax(
+      {
+        ...post,
+        publishQueuedAt: publishLockAt,
+        publishScheduledAt: publishLockAt,
+        publishIdempotencyKey,
+        publishReason: 'manual-retry',
+      },
+      prepared,
+      maxMessage,
+      {
+        actorUserId,
+        trafficClass: 'interactive',
+        debugAction: 'publish_post',
+        auto: false,
+        storedDraft,
+      },
+    );
   }
 
   async retryPost(chatId: string, postId: string): Promise<RetryVkParsingPostResult> {
@@ -431,8 +503,7 @@ export class VkPublishService {
     if (!Number.isFinite(scheduledAt.getTime())) {
       throw new BadRequestException('Некорректное время публикации.');
     }
-    const reason = post.publishReason === 'autopublish' ? 'autopublish' : 'manual-schedule';
-    const queued = await this.enqueuePostPublish(post, reason, scheduledAt);
+    const queued = await this.enqueuePostPublish(post, 'manual-schedule', scheduledAt);
     await this.writeAuditLog(chatId, actorUserId, 'VK_PARSING_SCHEDULE_POST', {
       postId,
       sourceId: post.sourceId,
@@ -678,6 +749,7 @@ export class VkPublishService {
         id: params.postId,
         chatId: params.chatId,
         publishIdempotencyKey: params.idempotencyKey,
+        publishReason: params.reason,
         status: { notIn: [VK_POST_STATUS_PUBLISHED, VK_POST_STATUS_UNAVAILABLE] },
         OR: [{ publishLockedAt: null }, { publishLockedAt: { lt: staleLockBefore } }],
       },
@@ -695,13 +767,17 @@ export class VkPublishService {
         id: params.postId,
         chatId: params.chatId,
         publishIdempotencyKey: params.idempotencyKey,
+        publishReason: params.reason,
       },
       include: { source: true },
     });
     if (!post || post.status === VK_POST_STATUS_PUBLISHED) {
       return;
     }
-    if (post.source.publishMode === VK_SOURCE_PUBLISH_MODE_REVIEW) {
+    if (
+      params.reason === 'autopublish' &&
+      post.source.publishMode === VK_SOURCE_PUBLISH_MODE_REVIEW
+    ) {
       await this.clearQueuedAutoPublishPost(post.id, params.idempotencyKey);
       return;
     }
@@ -745,17 +821,25 @@ export class VkPublishService {
         );
         return;
       }
-      const attemptRecorded = await this.recordPublishAttempt(post.id, params.idempotencyKey);
+      const attemptRecorded = await this.recordPublishAttempt(
+        post.id,
+        params.reason,
+        params.idempotencyKey,
+      );
       if (!attemptRecorded) {
         return;
       }
-      await this.autoPublishPost(post, settings);
+      await this.publishQueuedPost(post, settings, params.reason, params.idempotencyKey);
     } catch (error) {
-      const classified = classifyVkParsingPublishError(error);
-      await this.markQueuedPostPublishFailed(post, classified, {
-        auto: params.reason === 'autopublish',
-        finalAttempt: this.isFinalPublishAttempt(params),
-      });
+      if (!this.isPublishFailurePersisted(error)) {
+        const classified = classifyVkParsingPublishError(error);
+        await this.markQueuedPostPublishFailed(post, classified, {
+          auto: params.reason === 'autopublish',
+          finalAttempt: this.isFinalPublishAttempt(params),
+          idempotencyKey: params.idempotencyKey,
+          reason: params.reason,
+        });
+      }
       throw error;
     }
   }
@@ -823,6 +907,7 @@ export class VkPublishService {
       where: {
         chatId,
         status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
+        publishReason: 'autopublish',
         OR: [
           { publishQueuedAt: { not: null } },
           { publishLockedAt: { not: null } },
@@ -855,6 +940,7 @@ export class VkPublishService {
         chatId,
         sourceId: { in: uniqueSourceIds },
         status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
+        publishReason: 'autopublish',
         OR: [
           { publishQueuedAt: { not: null } },
           { publishLockedAt: { not: null } },
@@ -883,6 +969,7 @@ export class VkPublishService {
       debugAction: string;
       auto: boolean;
       storedDraft?: VkParsingStoredDraft;
+      queuedIdempotencyKey?: string;
     },
   ): Promise<PublishVkParsingPostResult> {
     const storedPhotoUrls = this.readStringArray(post.photoUrls);
@@ -1112,46 +1199,34 @@ export class VkPublishService {
               error,
             });
       const accessLossRecorded = routedAccessLossRecorded || Boolean(accessLossResult?.recorded);
-      const failed = await this.prisma.vkParsingPost.updateMany({
-        where: {
-          id: post.id,
-          status: { notIn: [VK_POST_STATUS_PUBLISHED, VK_POST_STATUS_UNAVAILABLE] },
-        },
-        data: {
-          status: VK_POST_STATUS_FAILED,
-          publishLockedAt: null,
-          lastError: persistedError,
-          autoPublishError: params.auto ? persistedError : post.autoPublishError,
-          ...(params.auto
-            ? ambiguousAutopublishSend
-              ? {
-                  publishQueuedAt: null,
-                  publishScheduledAt: null,
-                  publishIdempotencyKey: null,
-                  publishReason: null,
-                }
-              : {}
-            : {
-                publishQueuedAt: null,
-                publishScheduledAt: null,
-                publishIdempotencyKey: null,
-                publishReason: null,
-              }),
-          ...(accessLossRecorded
-            ? {
-                publishQueuedAt: null,
-                publishScheduledAt: null,
-                publishIdempotencyKey: null,
-                publishReason: null,
-              }
-            : {}),
-        },
-      });
-      if (failed.count === 0) {
-        this.logger.warn(
-          { postId: post.id, chatId: post.chatId, err: error },
-          'VK parsing post disappeared before publish failure persistence',
-        );
+      const queueOwnsOrdinaryFailure = Boolean(params.queuedIdempotencyKey);
+      if (!queueOwnsOrdinaryFailure || ambiguousMaxSend || accessLossRecorded) {
+        // FLAG: A queued ordinary failure is persisted by the BullMQ boundary, which knows whether
+        // this is the final attempt. Ambiguous dispatch and access loss are terminal immediately.
+        const failed = await this.prisma.vkParsingPost.updateMany({
+          where: {
+            id: post.id,
+            status: { notIn: [VK_POST_STATUS_PUBLISHED, VK_POST_STATUS_UNAVAILABLE] },
+          },
+          data: {
+            status: VK_POST_STATUS_FAILED,
+            publishLockedAt: null,
+            lastError: persistedError,
+            autoPublishError: params.auto ? persistedError : post.autoPublishError,
+            publishQueuedAt: null,
+            publishScheduledAt: null,
+            publishIdempotencyKey: null,
+            publishReason: null,
+          },
+        });
+        if (failed.count === 0) {
+          this.logger.warn(
+            { postId: post.id, chatId: post.chatId, err: error },
+            'VK parsing post disappeared before publish failure persistence',
+          );
+        } else if (error !== null && typeof error === 'object') {
+          this.persistedPublishFailures.add(error);
+        }
       }
       throw error;
     }
@@ -1284,7 +1359,6 @@ export class VkPublishService {
         ...storedDraft,
         manualContentEditedAt: publishLockAt,
         publishLockedAt: publishLockAt,
-        publishReason: 'manual-retry',
       },
     });
     return locked.count > 0 ? publishLockAt : null;
@@ -1309,13 +1383,53 @@ export class VkPublishService {
     });
   }
 
+  private async armManualPublishRecovery(
+    post: Pick<
+      VkParsingPostWithSource,
+      | 'id'
+      | 'chatId'
+      | 'publishCancelledAt'
+      | 'publishIdempotencyKey'
+      | 'publishQueuedAt'
+      | 'publishReason'
+      | 'publishScheduledAt'
+    >,
+    publishLockAt: Date,
+    publishIdempotencyKey: string,
+  ): Promise<boolean> {
+    // FLAG: Persist the logical MAX send before dispatch. A stale lock with this key is replayed
+    // through MaxActionLedger, which recovers the original result instead of duplicating the send.
+    const armed = await this.prisma.vkParsingPost.updateMany({
+      where: {
+        id: post.id,
+        chatId: post.chatId,
+        status: { notIn: [VK_POST_STATUS_PUBLISHED, VK_POST_STATUS_UNAVAILABLE] },
+        publishLockedAt: publishLockAt,
+        publishQueuedAt: post.publishQueuedAt,
+        publishScheduledAt: post.publishScheduledAt,
+        publishIdempotencyKey: post.publishIdempotencyKey,
+        publishReason: post.publishReason,
+        publishCancelledAt: post.publishCancelledAt,
+      },
+      data: {
+        publishQueuedAt: publishLockAt,
+        publishScheduledAt: publishLockAt,
+        publishCancelledAt: null,
+        publishCancelledByUserId: null,
+        publishIdempotencyKey,
+        publishReason: 'manual-retry',
+      },
+    });
+    return armed.count > 0;
+  }
+
   private async enqueuePostPublish(
     post: VkParsingPostWithSource,
     reason: VkParsingPublishReason,
     scheduledAt: Date = new Date(),
   ): Promise<number> {
     this.assertNoAmbiguousMaxSendQuarantine(post);
-    const idempotencyKey = this.buildPublishIdempotencyKey(post, scheduledAt);
+    const idempotencyKey = this.buildPublishIdempotencyKey(post, reason, scheduledAt);
     const now = new Date();
     const queued = await this.prisma.vkParsingPost.updateMany({
       where: {
@@ -1404,6 +1518,14 @@ export class VkPublishService {
       }
 
       const state = await existingJob.getState();
+      if (state === 'unknown') {
+        await existingJob.remove();
+        this.logger.warn(
+          { jobId, postId: job.postId },
+          'Removed orphaned VK parsing publish job before recovery',
+        );
+        return null;
+      }
       if (state === 'failed' || state === 'completed') {
         await existingJob.updateData(job);
         await existingJob.retry(state, {
@@ -1639,9 +1761,13 @@ export class VkPublishService {
     currentIdempotencyKey: string,
     scheduledAt: Date,
   ): Promise<void> {
-    const nextIdempotencyKey = this.buildPublishIdempotencyKey(post, scheduledAt);
-    await this.prisma.vkParsingPost.updateMany({
-      where: { id: post.id, publishIdempotencyKey: currentIdempotencyKey },
+    const nextIdempotencyKey = this.buildPublishIdempotencyKey(post, reason, scheduledAt);
+    const deferred = await this.prisma.vkParsingPost.updateMany({
+      where: {
+        id: post.id,
+        publishIdempotencyKey: currentIdempotencyKey,
+        publishReason: reason,
+      },
       data: {
         publishScheduledAt: scheduledAt,
         publishLockedAt: null,
@@ -1649,12 +1775,19 @@ export class VkPublishService {
         publishReason: reason,
       },
     });
+    if (deferred.count === 0) {
+      return;
+    }
     await this.addPublishJob(post, reason, nextIdempotencyKey, new Date(), scheduledAt);
   }
 
-  private async recordPublishAttempt(postId: string, idempotencyKey: string): Promise<boolean> {
+  private async recordPublishAttempt(
+    postId: string,
+    reason: VkParsingPublishReason,
+    idempotencyKey: string,
+  ): Promise<boolean> {
     const updated = await this.prisma.vkParsingPost.updateMany({
-      where: { id: postId, publishIdempotencyKey: idempotencyKey },
+      where: { id: postId, publishIdempotencyKey: idempotencyKey, publishReason: reason },
       data: { publishAttemptCount: { increment: 1 } },
     });
     return updated.count > 0;
@@ -1818,10 +1951,13 @@ export class VkPublishService {
     );
   }
 
-  private async autoPublishPost(
+  private async publishQueuedPost(
     post: VkParsingPostWithSource,
     settings: VkParsingSettingsLike,
+    reason: VkParsingPublishReason,
+    idempotencyKey: string,
   ): Promise<void> {
+    const auto = reason === 'autopublish';
     const photoUrls = this.readStringArray(post.photoUrls);
     const videoUrls = this.readStringArray(post.videoUrls);
     const linkUrls = this.readStringArray(post.linkUrls);
@@ -1869,10 +2005,14 @@ export class VkPublishService {
     );
 
     await this.publishPreparedPostToMax(post, prepared, maxMessage, {
-      actorUserId: VK_PARSING_SYSTEM_ACTOR_USER_ID,
+      actorUserId:
+        !auto && post.source.publishMode === VK_SOURCE_PUBLISH_MODE_REVIEW
+          ? SAFETY_DESK_ACTOR_USER_ID
+          : VK_PARSING_SYSTEM_ACTOR_USER_ID,
       trafficClass: 'background',
-      debugAction: 'auto_publish_post',
-      auto: true,
+      debugAction: auto ? 'auto_publish_post' : 'queued_manual_publish_post',
+      auto,
+      queuedIdempotencyKey: idempotencyKey,
     });
   }
 
@@ -1899,14 +2039,29 @@ export class VkPublishService {
   private async markQueuedPostPublishFailed(
     post: Pick<VkParsingPostWithSource, 'id' | 'autoPublishError'>,
     error: ReturnType<typeof classifyVkParsingPublishError>,
-    options: { auto: boolean; finalAttempt: boolean },
+    options: {
+      auto: boolean;
+      finalAttempt: boolean;
+      idempotencyKey: string;
+      reason: VkParsingPublishReason;
+    },
   ): Promise<void> {
     const message = formatVkParsingClassifiedErrorMessage(error);
     const shouldClearQueue = !error.retryable || options.finalAttempt;
     const updated = await this.prisma.vkParsingPost.updateMany({
       where: {
         id: post.id,
+        publishIdempotencyKey: options.idempotencyKey,
+        publishReason: options.reason,
         status: { notIn: [VK_POST_STATUS_PUBLISHED, VK_POST_STATUS_UNAVAILABLE] },
+        AND: [
+          {
+            OR: [
+              { lastError: null },
+              { NOT: { lastError: { startsWith: MAX_SEND_AMBIGUOUS_ERROR_PREFIX } } },
+            ],
+          },
+        ],
       },
       data: {
         status: VK_POST_STATUS_FAILED,
@@ -1943,6 +2098,10 @@ export class VkPublishService {
     return attemptsMade + 1 >= maxAttempts;
   }
 
+  private isPublishFailurePersisted(error: unknown): boolean {
+    return error !== null && typeof error === 'object' && this.persistedPublishFailures.has(error);
+  }
+
   private isPostEligibleForAutoPublish(
     post: Pick<VkParsingPostWithSource, 'createdAt' | 'vkPublishedAt'>,
     enabledAt: Date,
@@ -1964,6 +2123,7 @@ export class VkPublishService {
     await this.prisma.vkParsingPost.updateMany({
       where: {
         id: postId,
+        publishReason: 'autopublish',
         ...(idempotencyKey ? { publishIdempotencyKey: idempotencyKey } : {}),
       },
       data: {
@@ -1987,7 +2147,11 @@ export class VkPublishService {
     return 'autopublish';
   }
 
-  private buildPublishIdempotencyKey(post: VkParsingPostWithSource, scheduledAt: Date): string {
+  private buildPublishIdempotencyKey(
+    post: VkParsingPostWithSource,
+    reason: VkParsingPublishReason,
+    scheduledAt: Date,
+  ): string {
     return createHash('sha256')
       .update(
         JSON.stringify({
@@ -1995,7 +2159,9 @@ export class VkPublishService {
           chatId: post.chatId,
           contentHash: post.contentHash,
           status: post.status,
+          reason,
           scheduledAt: scheduledAt.toISOString(),
+          stateUpdatedAt: post.updatedAt.toISOString(),
         }),
       )
       .digest('hex')
@@ -2009,21 +2175,30 @@ export class VkPublishService {
   ): string {
     const intentKey =
       post.publishIdempotencyKey?.trim() ||
-      createHash('sha256')
-        .update(
-          JSON.stringify({
-            text: payload.text,
-            textFormat: payload.textFormat,
-            maxText: maxMessage.text,
-            maxTextFormat: maxMessage.textFormat ?? null,
-            photoUrls: payload.photoUrls,
-            videoUrls: payload.videoUrls,
-            linkUrls: payload.linkUrls,
-          }),
-        )
-        .digest('hex')
-        .slice(0, 32);
+      this.buildMaxPublicationIntentKey(post.id, payload, maxMessage);
     return `vk-parsing:publish:${post.id}:${intentKey}`;
+  }
+
+  private buildMaxPublicationIntentKey(
+    postId: string,
+    payload: PreparedVkPublishPayload,
+    maxMessage: VkParsingMaxMessageText,
+  ): string {
+    return createHash('sha256')
+      .update(
+        JSON.stringify({
+          postId,
+          text: payload.text,
+          textFormat: payload.textFormat,
+          maxText: maxMessage.text,
+          maxTextFormat: maxMessage.textFormat ?? null,
+          photoUrls: payload.photoUrls,
+          videoUrls: payload.videoUrls,
+          linkUrls: payload.linkUrls,
+        }),
+      )
+      .digest('hex')
+      .slice(0, 32);
   }
 
   private async downloadAndUploadImages(

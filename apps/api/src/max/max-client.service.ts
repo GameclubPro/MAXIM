@@ -1667,7 +1667,9 @@ export class MaxClientService implements OnModuleDestroy {
             } catch (error: unknown) {
               resultsByRequest.set(
                 this.buildExactMessagePresenceRequestKey(request),
-                this.isExactMessageNotFoundError(error) ? { presence: 'absent' } : { error },
+                this.isExactMessageNotFoundError(error, request.messageId)
+                  ? { presence: 'absent' }
+                  : { error },
               );
             }
           }
@@ -6899,11 +6901,38 @@ export class MaxClientService implements OnModuleDestroy {
     );
   }
 
-  private isExactMessageNotFoundError(error: unknown): boolean {
+  private isExactMessageNotFoundError(error: unknown, requestedMessageId: string): boolean {
     if (this.extractStatusCode(error) !== 404) {
       return false;
     }
-    return this.extractErrorCode(error) === 'message.not.found';
+
+    const code = this.extractErrorCode(error);
+    if (code === 'message.not.found') {
+      return true;
+    }
+    if (code !== 'not.found') {
+      return false;
+    }
+
+    const responseMessage = (error as { response?: { data?: { message?: unknown } } })?.response
+      ?.data?.message;
+    if (typeof responseMessage !== 'string' || !requestedMessageId) {
+      return false;
+    }
+
+    const isMessageIdCharacter = (value: string | undefined) =>
+      value !== undefined && /[A-Za-z0-9._-]/u.test(value);
+    let matchIndex = responseMessage.indexOf(requestedMessageId);
+    while (matchIndex >= 0) {
+      const precedingCharacter = responseMessage[matchIndex - 1];
+      const followingCharacter = responseMessage[matchIndex + requestedMessageId.length];
+      if (!isMessageIdCharacter(precedingCharacter) && !isMessageIdCharacter(followingCharacter)) {
+        return true;
+      }
+      matchIndex = responseMessage.indexOf(requestedMessageId, matchIndex + 1);
+    }
+
+    return false;
   }
 
   private extractErrorCode(error: unknown): string | null {

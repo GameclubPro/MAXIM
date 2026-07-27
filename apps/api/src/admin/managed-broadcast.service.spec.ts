@@ -172,4 +172,20 @@ describe('ManagedBroadcastService', () => {
 
     expect(runtime.processDueDeadlinePublicationBroadcasts).toHaveBeenCalledWith(7);
   });
+
+  it('forwards one shared verification budget across publication execution lanes', async () => {
+    const { runtime, service } = createService();
+    const verificationBudget = { remaining: 17 };
+
+    await service.processDueImmediatePublicationBroadcasts(verificationBudget);
+    await service.processDueDeadlinePublicationBroadcasts(7, verificationBudget);
+
+    expect(runtime.processDueImmediatePublicationBroadcasts).toHaveBeenCalledWith(
+      verificationBudget,
+    );
+    expect(runtime.processDueDeadlinePublicationBroadcasts).toHaveBeenCalledWith(
+      7,
+      verificationBudget,
+    );
+  });
 });

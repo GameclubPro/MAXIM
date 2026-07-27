@@ -8434,12 +8434,16 @@ export class AdminService implements OnModuleDestroy {
     return this.managedBroadcastRuntime.processDueManagedBroadcasts(reason);
   }
 
-  processDueImmediatePublicationBroadcasts(): Promise<void> {
-    return this.managedBroadcastRuntime.processDueImmediatePublicationBroadcasts();
+  processDueImmediatePublicationBroadcasts(
+    ...args: Parameters<AdminManagedBroadcastRuntime['processDueImmediatePublicationBroadcasts']>
+  ): ReturnType<AdminManagedBroadcastRuntime['processDueImmediatePublicationBroadcasts']> {
+    return this.managedBroadcastRuntime.processDueImmediatePublicationBroadcasts(...args);
   }
 
-  processDueDeadlinePublicationBroadcasts(limit?: number): Promise<void> {
-    return this.managedBroadcastRuntime.processDueDeadlinePublicationBroadcasts(limit);
+  processDueDeadlinePublicationBroadcasts(
+    ...args: Parameters<AdminManagedBroadcastRuntime['processDueDeadlinePublicationBroadcasts']>
+  ): ReturnType<AdminManagedBroadcastRuntime['processDueDeadlinePublicationBroadcasts']> {
+    return this.managedBroadcastRuntime.processDueDeadlinePublicationBroadcasts(...args);
   }
 
   private processManagedBroadcastOccurrence(...args: any[]) {

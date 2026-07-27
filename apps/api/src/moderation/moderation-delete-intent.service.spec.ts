@@ -62,6 +62,21 @@ function createService(
     $transaction: jest.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
       callback({ $executeRaw: jest.fn().mockResolvedValue(1) }),
     ),
+    managedBroadcastDelivery: {
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
+    managedGiveaway: {
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
+    vkParsingPost: {
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
+    chatRules: {
+      findUnique: jest.fn().mockResolvedValue(null),
+    },
+    chatAutoCommentAttachMarker: {
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
     ...prismaOverrides,
   };
   const queue = { add: jest.fn().mockResolvedValue(undefined) };
@@ -375,7 +390,7 @@ describe('ModerationDeleteIntentService', () => {
     ).toBe('origin_only');
   });
 
-  it('executes only the exact replacement cleanup allowlist outside the global canary', () => {
+  it('executes safety-critical cleanup rules outside the global canary', () => {
     const enabled = createService({
       MODERATION_DELETE_INTENT_MODE: 'canary',
       MODERATION_DELETE_INTENT_CANARY_CHAT_IDS: 'other-chat',
@@ -401,6 +416,8 @@ describe('ModerationDeleteIntentService', () => {
     expect(
       disabled.getRolloutForRule('chat-1', 'CHAT_RULES_REPUBLISH_PREVIOUS_MESSAGE_CLEANUP'),
     ).toBe('observed');
+    expect(enabled.getRolloutForRule('chat-1', 'BOT_MESSAGE_AUTO_DELETE')).toBe('execute');
+    expect(enabled.getRolloutForRule('chat-1', 'BOT_MESSAGE_AUTO_DELETE_EXTRA')).toBe('observed');
   });
 
   it('rechecks the replacement cleanup switch at execution time', () => {
@@ -423,6 +440,21 @@ describe('ModerationDeleteIntentService', () => {
     expect(
       disabled.isExecutionEnabledForIntent({ chatId: 'chat-1', replacementCleanup: true }),
     ).toBe(false);
+  });
+
+  it('keeps BOT_MESSAGE_AUTO_DELETE durable outside the global canary', () => {
+    const service = createService({
+      MODERATION_DELETE_INTENT_MODE: 'canary',
+      MODERATION_DELETE_INTENT_CANARY_CHAT_IDS: 'other-chat',
+    }).service as unknown as ServiceInternals;
+
+    expect(
+      service.isExecutionEnabledForIntent({
+        chatId: 'chat-1',
+        replacementCleanup: false,
+        botMessageAutoDeleteOnly: true,
+      }),
+    ).toBe(true);
   });
 
   it('rejects executable origin-only intents without an origin bot', () => {
@@ -546,6 +578,279 @@ describe('ModerationDeleteIntentService', () => {
     });
 
     expect(normalized.event.eventType).toBeNull();
+  });
+
+  it.each([
+    {
+      label: 'managed publication',
+      ownerKind: 'managed_publication',
+      prismaOwner: {
+        managedBroadcastDelivery: {
+          findFirst: jest.fn().mockResolvedValue({ id: 'delivery-1' }),
+        },
+      },
+    },
+    {
+      label: 'giveaway publication',
+      ownerKind: 'managed_giveaway_publication',
+      prismaOwner: {
+        managedGiveaway: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: 'giveaway-1',
+            publicationMessageId: 'message-1',
+            resultsMessageId: null,
+          }),
+        },
+      },
+    },
+    {
+      label: 'giveaway results',
+      ownerKind: 'managed_giveaway_results',
+      prismaOwner: {
+        managedGiveaway: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: 'giveaway-1',
+            publicationMessageId: 'publication-message',
+            resultsMessageId: 'message-1',
+          }),
+        },
+      },
+    },
+    {
+      label: 'VK parsing post',
+      ownerKind: 'vk_parsing_post',
+      prismaOwner: {
+        vkParsingPost: {
+          findFirst: jest.fn().mockResolvedValue({ id: 'vk-post-1' }),
+        },
+      },
+    },
+    {
+      label: 'published chat rules',
+      ownerKind: 'published_chat_rules',
+      prismaOwner: {
+        chatRules: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'chat-rules-1',
+            publishedMessageId: 'message-1',
+          }),
+        },
+      },
+    },
+    {
+      label: 'chat auto-comment replacement',
+      ownerKind: 'chat_auto_comment_replacement',
+      prismaOwner: {
+        chatAutoCommentAttachMarker: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: 'chat-comment-marker-1',
+            replacementMessageId: 'message-1',
+            replyMessageId: null,
+          }),
+        },
+      },
+    },
+    {
+      label: 'chat auto-comment fallback reply',
+      ownerKind: 'chat_auto_comment_reply',
+      prismaOwner: {
+        chatAutoCommentAttachMarker: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: 'chat-comment-marker-2',
+            replacementMessageId: null,
+            replyMessageId: 'message-1',
+          }),
+        },
+      },
+    },
+  ])(
+    'blocks BOT_MESSAGE_AUTO_DELETE at dispatch time for a late $label owner',
+    async ({ ownerKind, prismaOwner }) => {
+      const autoDeleteIntent = {
+        ...baseIntent,
+        messageAuthorKind: 'bot',
+        routingPolicy: 'origin_only',
+        botMessageAutoDeleteOnly: true,
+      };
+      const blockedIntent = {
+        ...autoDeleteIntent,
+        status: 'FAILED_TERMINAL',
+        leaseToken: null,
+        leaseExpiresAt: null,
+        lastErrorCode: 'managed_output_auto_delete_blocked',
+        lastError: 'Managed bot output is protected',
+      };
+      const queryRaw = jest
+        .fn()
+        .mockResolvedValueOnce([autoDeleteIntent])
+        .mockResolvedValueOnce([blockedIntent]);
+      const executeRaw = jest.fn().mockResolvedValue(1);
+      const deleteMessage = jest.fn();
+      const { service, maxBotLink } = createService(
+        {},
+        {
+          $queryRaw: queryRaw,
+          $executeRaw: executeRaw,
+          ...prismaOwner,
+        },
+        { deleteMessage },
+        { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+      );
+
+      const result = await service.executeLeasedIntent('intent-1', 'lease-1');
+
+      expect(result).toMatchObject({
+        kind: 'terminal',
+        confirmed: false,
+        status: 'FAILED_TERMINAL',
+      });
+      expect(deleteMessage).not.toHaveBeenCalled();
+      expect(maxBotLink.resolveDeleteMessageBotRoute).not.toHaveBeenCalled();
+      const loadQuery = queryRaw.mock.calls[0]?.[0] as { strings?: readonly string[] } | undefined;
+      expect(loadQuery?.strings?.join('?')).toContain('AS "botMessageAutoDeleteOnly"');
+      const guardQuery = executeRaw.mock.calls
+        .map(([query]) => query as { strings?: readonly string[] })
+        .find((query) =>
+          (query.strings?.join('?') ?? '').includes('managed_output_auto_delete_blocked'),
+        );
+      expect(guardQuery).toBeDefined();
+      expect(guardQuery?.strings?.join('?')).toContain(
+        `other_reason."rule_code" <> 'BOT_MESSAGE_AUTO_DELETE'`,
+      );
+      expect(
+        executeRaw.mock.calls.some(([query]) =>
+          ((query as { values?: readonly unknown[] }).values ?? []).some(
+            (value) => typeof value === 'string' && value.includes(ownerKind),
+          ),
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it('allows BOT_MESSAGE_AUTO_DELETE when no managed output owns the message', async () => {
+    const autoDeleteIntent = {
+      ...baseIntent,
+      messageAuthorKind: 'bot',
+      routingPolicy: 'origin_only',
+      botMessageAutoDeleteOnly: true,
+    };
+    const completedIntent = {
+      ...autoDeleteIntent,
+      status: 'SUCCEEDED',
+      lastBotId: 'bot-1',
+      succeededBotId: 'bot-1',
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([autoDeleteIntent])
+      .mockResolvedValueOnce([completedIntent]);
+    const deleteMessage = jest.fn().mockResolvedValue(undefined);
+    const { service, prisma } = createService(
+      {},
+      {
+        $queryRaw: queryRaw,
+        $executeRaw: jest.fn().mockResolvedValue(1),
+      },
+      { deleteMessage },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    const result = await service.executeLeasedIntent('intent-1', 'lease-1');
+
+    expect(result).toMatchObject({ kind: 'confirmed', confirmed: true, status: 'SUCCEEDED' });
+    expect(prisma.managedBroadcastDelivery.findFirst).toHaveBeenCalledTimes(2);
+    expect(prisma.managedGiveaway.findFirst).toHaveBeenCalledTimes(2);
+    expect(prisma.vkParsingPost.findFirst).toHaveBeenCalledTimes(2);
+    expect(prisma.chatRules.findUnique).toHaveBeenCalledTimes(2);
+    expect(prisma.chatAutoCommentAttachMarker.findFirst).toHaveBeenCalledTimes(2);
+    expect(deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'message-1',
+      expect.objectContaining({ botId: 'bot-1', immediate: true }),
+    );
+  });
+
+  it('does not dispatch auto-delete when the managed delivery guard cannot be read', async () => {
+    const autoDeleteIntent = {
+      ...baseIntent,
+      messageAuthorKind: 'bot',
+      routingPolicy: 'origin_only',
+      botMessageAutoDeleteOnly: true,
+    };
+    const retryableIntent = {
+      ...autoDeleteIntent,
+      status: 'RETRYABLE',
+      leaseToken: null,
+      leaseExpiresAt: null,
+      lastErrorCode: 'delete_failed',
+      lastError: 'publication delivery lookup failed',
+    };
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([autoDeleteIntent])
+      .mockResolvedValueOnce([retryableIntent]);
+    const findFirst = jest.fn().mockRejectedValue(new Error('publication delivery lookup failed'));
+    const deleteMessage = jest.fn();
+    const { service } = createService(
+      {},
+      {
+        $queryRaw: queryRaw,
+        $executeRaw: jest.fn().mockResolvedValue(1),
+        managedBroadcastDelivery: { findFirst },
+      },
+      { deleteMessage },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    const result = await service.executeLeasedIntent('intent-1', 'lease-1');
+
+    expect(result).toMatchObject({ kind: 'pending', confirmed: false, status: 'RETRYABLE' });
+    expect(findFirst).toHaveBeenCalledTimes(1);
+    expect(deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('allows a managed bot message delete when another executable reason shares the intent', async () => {
+    const mixedReasonIntent = {
+      ...baseIntent,
+      messageAuthorKind: 'bot',
+      routingPolicy: 'origin_only',
+      botMessageAutoDeleteOnly: false,
+    };
+    const completedIntent = {
+      ...mixedReasonIntent,
+      status: 'SUCCEEDED',
+      lastBotId: 'bot-1',
+      succeededBotId: 'bot-1',
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([mixedReasonIntent])
+      .mockResolvedValueOnce([completedIntent]);
+    const deleteMessage = jest.fn().mockResolvedValue(undefined);
+    const { service, prisma } = createService(
+      {},
+      {
+        $queryRaw: queryRaw,
+        $executeRaw: jest.fn().mockResolvedValue(1),
+        managedBroadcastDelivery: {
+          findFirst: jest.fn().mockResolvedValue({ id: 'delivery-1' }),
+        },
+      },
+      { deleteMessage },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'confirmed',
+      confirmed: true,
+      status: 'SUCCEEDED',
+    });
+    expect(prisma.managedBroadcastDelivery.findFirst).not.toHaveBeenCalled();
+    expect(deleteMessage).toHaveBeenCalledTimes(1);
   });
 
   it('refreshes a denied candidate and tries the next freshly capable bot', async () => {
@@ -1474,6 +1779,7 @@ describe('ModerationDeleteIntentService', () => {
       .mockResolvedValueOnce(1)
       .mockResolvedValueOnce(1)
       .mockResolvedValueOnce(1)
+      .mockResolvedValueOnce(1)
       .mockRejectedValueOnce(new Error('marker write failed'))
       .mockResolvedValueOnce(1);
     const deleteMessage = jest.fn().mockResolvedValue(undefined);
@@ -1582,6 +1888,7 @@ describe('ModerationDeleteIntentService', () => {
       .mockResolvedValueOnce([ambiguous]);
     const executeRaw = jest
       .fn()
+      .mockResolvedValueOnce(1)
       .mockResolvedValueOnce(1)
       .mockResolvedValueOnce(1)
       .mockResolvedValueOnce(1)
@@ -1854,6 +2161,46 @@ describe('ModerationDeleteIntentService', () => {
     expect(sql).toContain('EXCLUDED."entity_type"');
   });
 
+  it('does not promote a historical OBSERVED bot-message auto-delete on replay', async () => {
+    const observed = {
+      ...baseIntent,
+      status: 'OBSERVED',
+      messageAuthorKind: 'bot',
+      routingPolicy: 'origin_only',
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    const queryRaw = jest.fn().mockResolvedValue([observed]);
+    const transaction = jest.fn(
+      async (callback: (tx: { $queryRaw: typeof queryRaw; $executeRaw: jest.Mock }) => unknown) =>
+        callback({ $queryRaw: queryRaw, $executeRaw: jest.fn().mockResolvedValue(1) }),
+    );
+    const { service, queue } = createService(
+      {
+        MODERATION_DELETE_INTENT_MODE: 'canary',
+        MODERATION_DELETE_INTENT_CANARY_CHAT_IDS: 'other-chat',
+      },
+      { $transaction: transaction },
+    );
+
+    await expect(
+      service.ensureIntent({
+        chatId: 'chat-1',
+        messageId: 'message-1',
+        reasonKey: 'bot-message-auto-delete:message-1',
+        ruleCode: 'BOT_MESSAGE_AUTO_DELETE',
+        entityType: 'CHAT',
+        messageAuthorKind: 'bot',
+        originBotId: 'bot-1',
+        routingPolicy: 'origin_only',
+      }),
+    ).resolves.toEqual({ intentId: 'intent-1', rollout: 'observed', status: 'OBSERVED' });
+
+    const upsertSql = queryRaw.mock.calls[0]?.[0]?.strings?.join('?') ?? '';
+    expect(upsertSql).toContain('WHEN FALSE');
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
   it('does not reopen an expired intent for a generic repeated ensure', async () => {
     const expired = {
       ...baseIntent,
@@ -1955,6 +2302,54 @@ describe('ModerationDeleteIntentService', () => {
 
     expect(queryRaw).toHaveBeenCalledTimes(1);
     expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('reopens a managed-output auto-delete block when a later lawful cleanup reason arrives', async () => {
+    const blocked = {
+      ...baseIntent,
+      status: 'FAILED_TERMINAL',
+      lastErrorCode: 'managed_output_auto_delete_blocked',
+      lastError: 'Managed bot output is protected',
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    const reopened = {
+      ...blocked,
+      status: 'PENDING',
+      lastErrorCode: null,
+      lastError: null,
+      nextAttemptAt: new Date(Date.now() - 1_000),
+      retryUntilAt: new Date(Date.now() + 60_000),
+    };
+    const queryRaw = jest.fn().mockResolvedValueOnce([blocked]).mockResolvedValueOnce([reopened]);
+    const executeRaw = jest.fn().mockResolvedValue(1);
+    const transaction = jest.fn(
+      async (callback: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => unknown) =>
+        callback({ $queryRaw: queryRaw, $executeRaw: executeRaw }),
+    );
+    const { service, queue } = createService({}, { $transaction: transaction });
+
+    await expect(
+      service.ensureIntent({
+        chatId: 'chat-1',
+        messageId: 'message-1',
+        reasonKey: 'chat-rules-republish:message-1',
+        ruleCode: 'CHAT_RULES_REPUBLISH_PREVIOUS_MESSAGE_CLEANUP',
+        entityType: 'CHAT',
+        messageAuthorKind: 'bot',
+        originBotId: 'bot-1',
+      }),
+    ).resolves.toMatchObject({ status: 'PENDING' });
+
+    expect(queryRaw).toHaveBeenCalledTimes(2);
+    const reopenSql = queryRaw.mock.calls[1]?.[0]?.strings?.join('?') ?? '';
+    expect(reopenSql).toContain("last_error_code\" = 'managed_output_auto_delete_blocked'");
+    expect(reopenSql).toContain('CAST(\'PENDING\' AS "ModerationDeleteIntentStatus")');
+    expect(queue.add).toHaveBeenCalledWith(
+      'execute-moderation-delete-intent',
+      { intentId: 'intent-1' },
+      expect.objectContaining({ priority: 1 }),
+    );
   });
 
   it('manually reopens a terminal intent with its dispatch fence and audit preserved', async () => {

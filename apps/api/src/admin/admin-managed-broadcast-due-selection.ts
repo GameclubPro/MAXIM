@@ -1,4 +1,9 @@
-import { ManagedBroadcastDeliveryStatus, ManagedBroadcastStatus } from '../prisma/prisma-client';
+import {
+  ManagedBroadcastDeliveryStatus,
+  ManagedBroadcastStatus,
+  Prisma,
+  PublicationScheduleMode,
+} from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 import { buildManagedBroadcastAutoRetryableFailureWhere } from './admin-managed-broadcast-reconciliation';
 import {
@@ -12,6 +17,112 @@ import {
 } from './admin.service.support';
 
 type DueManagedBroadcastRow = { id: string };
+
+export async function selectPublicationManagedBroadcastDueBatch(
+  prisma: Pick<PrismaService, 'managedBroadcast'>,
+  scheduleModes: readonly PublicationScheduleMode[],
+  limit: number,
+): Promise<{ dueRows: DueManagedBroadcastRow[]; staleLockBefore: Date }> {
+  const now = new Date();
+  const staleLockBefore = new Date(now.getTime() - MANAGED_BROADCAST_LOCK_STALE_MS);
+  const boundedLimit = Math.max(0, Math.floor(limit));
+  if (boundedLimit === 0) {
+    return { dueRows: [], staleLockBefore };
+  }
+
+  const baseWhere: Prisma.ManagedBroadcastWhereInput = {
+    nextSendAt: { lte: now },
+    OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
+    publicationOccurrence: {
+      is: { schedule: { is: { mode: { in: [...scheduleModes] } } } },
+    },
+  };
+  const orderBy = [{ nextSendAt: 'asc' as const }, { createdAt: 'asc' as const }];
+  const unverifiedDeliveryWhere: Prisma.ManagedBroadcastDeliveryWhereInput = {
+    status: ManagedBroadcastDeliveryStatus.SENT,
+    remoteMessageId: { not: null },
+    remoteMessageVerifiedAt: null,
+  };
+  const [executionDueRows, verificationDueRows, fallbackDueRows] = await Promise.all([
+    prisma.managedBroadcast.findMany({
+      where: {
+        ...baseWhere,
+        status: ManagedBroadcastStatus.ACTIVE,
+        deliveries: {
+          some: {
+            status: {
+              in: [ManagedBroadcastDeliveryStatus.PENDING, ManagedBroadcastDeliveryStatus.SENDING],
+            },
+          },
+        },
+      },
+      orderBy,
+      take: boundedLimit,
+      select: { id: true },
+    }),
+    prisma.managedBroadcast.findMany({
+      where: {
+        ...baseWhere,
+        status: {
+          in: [
+            ManagedBroadcastStatus.ACTIVE,
+            ManagedBroadcastStatus.PARTIAL,
+            ManagedBroadcastStatus.FAILED,
+          ],
+        },
+        deliveries: { some: unverifiedDeliveryWhere },
+      },
+      orderBy,
+      take: boundedLimit,
+      select: { id: true },
+    }),
+    prisma.managedBroadcast.findMany({
+      where: {
+        AND: [
+          baseWhere,
+          {
+            OR: [
+              { status: ManagedBroadcastStatus.ACTIVE },
+              {
+                status: {
+                  in: [ManagedBroadcastStatus.PARTIAL, ManagedBroadcastStatus.FAILED],
+                },
+                deliveries: { some: unverifiedDeliveryWhere },
+              },
+            ],
+          },
+          { deliveries: { some: {} } },
+        ],
+      },
+      orderBy,
+      take: Math.min(100, boundedLimit * 2),
+      select: { id: true },
+    }),
+  ]);
+
+  const executionIds = new Set(executionDueRows.map((row) => row.id));
+  const verificationOnlyRows = verificationDueRows.filter((row) => !executionIds.has(row.id));
+  const verificationReservation = Math.min(
+    verificationOnlyRows.length,
+    MANAGED_BROADCAST_RECOVERY_BATCH_SIZE,
+    executionDueRows.length > 0 ? Math.max(0, boundedLimit - 1) : boundedLimit,
+  );
+  const dueRows: DueManagedBroadcastRow[] = [
+    ...executionDueRows.slice(0, boundedLimit - verificationReservation),
+    ...verificationOnlyRows.slice(0, verificationReservation),
+  ];
+  const selectedIds = new Set(dueRows.map((row) => row.id));
+  for (const row of [...executionDueRows, ...verificationOnlyRows, ...fallbackDueRows]) {
+    if (dueRows.length >= boundedLimit) {
+      break;
+    }
+    if (!selectedIds.has(row.id)) {
+      dueRows.push(row);
+      selectedIds.add(row.id);
+    }
+  }
+  return { dueRows, staleLockBefore };
+}
 
 export async function selectLegacyManagedBroadcastDueBatch(
   prisma: Pick<PrismaService, 'managedBroadcast'>,

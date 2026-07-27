@@ -469,6 +469,14 @@ export class VkSourceService {
       }
 
       const state = await existingJob.getState();
+      if (state === 'unknown') {
+        await existingJob.remove();
+        this.logger.warn(
+          { jobId, sourceId: job.sourceId },
+          'Removed orphaned VK parsing sync job before recovery',
+        );
+        return null;
+      }
       if (state === 'failed' || state === 'completed') {
         await existingJob.updateData(job);
         await existingJob.retry(state, {

@@ -11,6 +11,7 @@ import {
   AdminManagedBroadcastRuntime,
   type AdminActionSource,
 } from './admin-managed-broadcast-runtime';
+import type { ManagedBroadcastPublicationVerificationBudget } from './admin-managed-broadcast-publication-verification';
 import { throwLegacyPublicationWritesDisabled } from './legacy-publication-write-freeze';
 
 type AdminReadBypassOptions = {
@@ -191,11 +192,20 @@ export class ManagedBroadcastService {
     return this.runtime.processDueManagedBroadcasts(reason);
   }
 
-  processDueImmediatePublicationBroadcasts(): Promise<void> {
-    return this.runtime.processDueImmediatePublicationBroadcasts();
+  processDueImmediatePublicationBroadcasts(
+    verificationBudget?: ManagedBroadcastPublicationVerificationBudget,
+  ): Promise<ManagedBroadcastPublicationVerificationBudget> {
+    return verificationBudget
+      ? this.runtime.processDueImmediatePublicationBroadcasts(verificationBudget)
+      : this.runtime.processDueImmediatePublicationBroadcasts();
   }
 
-  processDueDeadlinePublicationBroadcasts(limit?: number): Promise<void> {
-    return this.runtime.processDueDeadlinePublicationBroadcasts(limit);
+  processDueDeadlinePublicationBroadcasts(
+    limit?: number,
+    verificationBudget?: ManagedBroadcastPublicationVerificationBudget,
+  ): Promise<ManagedBroadcastPublicationVerificationBudget> {
+    return verificationBudget
+      ? this.runtime.processDueDeadlinePublicationBroadcasts(limit, verificationBudget)
+      : this.runtime.processDueDeadlinePublicationBroadcasts(limit);
   }
 }

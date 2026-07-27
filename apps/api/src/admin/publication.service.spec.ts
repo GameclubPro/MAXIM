@@ -4,12 +4,14 @@ import {
   ManagedBroadcastStatus,
   Prisma,
   PublicationContentFormat,
+  PublicationDeliveryVerificationSource,
   PublicationLifecycle,
   PublicationOccurrenceStatus,
   PublicationScheduleMode,
   PublicationScheduleStatus,
 } from '../prisma/prisma-client';
 import { BadRequestException, ConflictException } from '@nestjs/common';
+import { buildMaxActionNoExecutableRouteMessage } from '../max/max-action-dispatch-error';
 import { PublicationContentService } from './publication-content.service';
 import { PublicationPresenterService } from './publication-presenter.service';
 import { PublicationService } from './publication.service';
@@ -152,8 +154,9 @@ describe('PublicationService', () => {
         retryAfterMs: 60_000,
       }),
     };
+    const verificationBudget = { remaining: 50 };
     const managedBroadcastService = {
-      processDueImmediatePublicationBroadcasts: jest.fn().mockResolvedValue(undefined),
+      processDueImmediatePublicationBroadcasts: jest.fn().mockResolvedValue(verificationBudget),
       processDueDeadlinePublicationBroadcasts: jest.fn().mockResolvedValue(undefined),
     };
     (service as any).backgroundRuntimeGovernorService = backgroundRuntimeGovernorService;
@@ -190,6 +193,7 @@ describe('PublicationService', () => {
     expect(managedBroadcastService.processDueImmediatePublicationBroadcasts).toHaveBeenCalledTimes(
       1,
     );
+    expect(managedBroadcastService.processDueImmediatePublicationBroadcasts).toHaveBeenCalledWith();
     expect(managedBroadcastService.processDueDeadlinePublicationBroadcasts).not.toHaveBeenCalled();
     expect(backgroundRuntimeGovernorService.decide).toHaveBeenCalledWith({
       component: 'publication-materializer',
@@ -228,8 +232,9 @@ describe('PublicationService', () => {
         retryAfterMs: 15_000,
       }),
     };
+    const verificationBudget = { remaining: 50 };
     const managedBroadcastService = {
-      processDueImmediatePublicationBroadcasts: jest.fn().mockResolvedValue(undefined),
+      processDueImmediatePublicationBroadcasts: jest.fn().mockResolvedValue(verificationBudget),
       processDueDeadlinePublicationBroadcasts: jest.fn().mockResolvedValue(undefined),
     };
     (service as any).backgroundRuntimeGovernorService = backgroundRuntimeGovernorService;
@@ -261,8 +266,10 @@ describe('PublicationService', () => {
       PublicationScheduleMode.SLOTS,
       PublicationScheduleMode.RECURRENCE,
     ]);
+    expect(managedBroadcastService.processDueImmediatePublicationBroadcasts).toHaveBeenCalledWith();
     expect(managedBroadcastService.processDueDeadlinePublicationBroadcasts).toHaveBeenCalledWith(
       10,
+      verificationBudget,
     );
     expect(materializeSpy).toHaveBeenCalledWith(10);
     expect(backgroundRuntimeGovernorService.decide.mock.invocationCallOrder[0]).toBeLessThan(
@@ -1408,6 +1415,147 @@ describe('PublicationService', () => {
     });
   });
 
+  it('pauses future slots after a pre-dispatch no-route failure', async () => {
+    const observedAt = new Date('2026-07-27T15:00:00.000Z');
+    const occurrenceUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const publicationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const scheduleUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const tx = {
+      $executeRaw: jest.fn().mockResolvedValue(1),
+      publicationOccurrence: {
+        count: jest.fn().mockResolvedValue(2),
+        updateMany: occurrenceUpdateMany,
+      },
+      publicationSchedule: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'schedule-1',
+          revision: 4,
+          status: PublicationScheduleStatus.ACTIVE,
+          nextMaterializeAt: null,
+        }),
+        updateMany: scheduleUpdateMany,
+      },
+      publicationTarget: { count: jest.fn().mockResolvedValue(1) },
+      publication: { updateMany: publicationUpdateMany },
+      managedBroadcast: { findMany: jest.fn().mockResolvedValue([]) },
+    };
+    const { service } = createService({
+      publicationOccurrence: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'occurrence-no-route',
+          publicationId: 'publication-1',
+          scheduleId: 'schedule-1',
+          status: PublicationOccurrenceStatus.IN_PROGRESS,
+          updatedAt: observedAt,
+          scheduleRevision: 4,
+          contentRevisionId: 'content-1',
+          scheduledAt: new Date('2026-07-27T14:59:00.000Z'),
+          legacyBroadcasts: [
+            {
+              status: ManagedBroadcastStatus.FAILED,
+              deliveries: [
+                {
+                  status: ManagedBroadcastDeliveryStatus.FAILED,
+                  targetChatId: 'chat-no-route',
+                  lastError: buildMaxActionNoExecutableRouteMessage(
+                    'SEND_MESSAGE',
+                    'chat-no-route',
+                  ),
+                },
+              ],
+            },
+          ],
+        }),
+        updateMany: jest.fn(),
+      },
+      $transaction: jest.fn((callback: (client: typeof tx) => unknown) => callback(tx)),
+    });
+
+    await (service as any).rollupOccurrence('occurrence-no-route');
+
+    expect(occurrenceUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { status: PublicationOccurrenceStatus.FAILED } }),
+    );
+    expect(publicationUpdateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'publication-1',
+        lifecycle: PublicationLifecycle.ACTIVE,
+        targets: { some: { targetChatId: 'chat-no-route' } },
+      },
+      data: { lifecycle: PublicationLifecycle.PAUSED },
+    });
+    expect(scheduleUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          publicationId: 'publication-1',
+          id: 'schedule-1',
+          revision: 4,
+          status: PublicationScheduleStatus.ACTIVE,
+        },
+        data: expect.objectContaining({
+          status: PublicationScheduleStatus.PAUSED,
+          nextMaterializeAt: null,
+          lastError: expect.stringContaining('права администратора'),
+        }),
+      }),
+    );
+  });
+
+  it('does not pause healthy targets after one target loses its route', async () => {
+    const observedAt = new Date('2026-07-27T15:00:00.000Z');
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const transaction = jest.fn();
+    const { service } = createService({
+      publicationOccurrence: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'occurrence-partial-route',
+          publicationId: 'publication-1',
+          status: PublicationOccurrenceStatus.IN_PROGRESS,
+          updatedAt: observedAt,
+          scheduleRevision: 4,
+          contentRevisionId: 'content-1',
+          scheduledAt: new Date('2026-07-27T14:59:00.000Z'),
+          legacyBroadcasts: [
+            {
+              status: ManagedBroadcastStatus.PARTIAL,
+              deliveries: [
+                {
+                  status: ManagedBroadcastDeliveryStatus.FAILED,
+                  targetChatId: 'chat-no-route',
+                  lastError: buildMaxActionNoExecutableRouteMessage(
+                    'SEND_MESSAGE',
+                    'chat-no-route',
+                  ),
+                },
+                {
+                  status: ManagedBroadcastDeliveryStatus.SENT,
+                  targetChatId: 'chat-healthy',
+                  lastError: null,
+                },
+              ],
+            },
+          ],
+        }),
+        updateMany,
+      },
+      $transaction: transaction,
+    });
+
+    await (service as any).rollupOccurrence('occurrence-partial-route');
+
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'occurrence-partial-route',
+        status: PublicationOccurrenceStatus.IN_PROGRESS,
+        updatedAt: observedAt,
+        scheduleRevision: 4,
+        contentRevisionId: 'content-1',
+      },
+      data: { status: PublicationOccurrenceStatus.PARTIAL },
+    });
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
   it('rolls up only non-terminal occurrences so completed rows cannot starve the batch', async () => {
     const findMany = jest.fn().mockResolvedValue([]);
     const { service } = createService({ publicationOccurrence: { findMany } });
@@ -2157,6 +2305,13 @@ describe('PublicationService', () => {
           botId: null,
           remoteMessageId: null,
           remoteMessageVerifiedAt: null,
+          remoteMessageVerificationAttemptCount: 0,
+          remoteMessageVerificationAbsentCount: 0,
+          remoteMessageVerificationPresentCount: 0,
+          remoteMessageVerificationAttemptedAt: null,
+          remoteMessageVerificationNextAt: null,
+          remoteMessageVerificationLastError: null,
+          remoteMessageVerificationSource: null,
           legacySentWithoutRemoteId: false,
           sentAt: null,
         }),
@@ -2823,7 +2978,7 @@ describe('PublicationService', () => {
           occurrenceIndex: 1,
           status: ManagedBroadcastDeliveryStatus.AMBIGUOUS,
           sentAt: null,
-          remoteMessageId: null,
+          remoteMessageId: 'mid-manual-confirmed',
         }),
       },
       $transaction: jest.fn((callback: (client: typeof tx) => unknown) => callback(tx)),
@@ -2843,6 +2998,18 @@ describe('PublicationService', () => {
       { requestId: 'resolve-001', deliveryId: 'delivery-1', resolution: 'mark_sent' },
     );
 
+    expect(tx.managedBroadcastDelivery.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: ManagedBroadcastDeliveryStatus.SENT,
+          remoteMessageVerificationAttemptCount: 0,
+          remoteMessageVerificationPresentCount: 0,
+          remoteMessageVerificationAttemptedAt: null,
+          remoteMessageVerificationSource: PublicationDeliveryVerificationSource.MANUAL_CONFIRMED,
+          remoteMessageVerifiedAt: expect.any(Date),
+        }),
+      }),
+    );
     expect(tx.managedBroadcast.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -2893,6 +3060,7 @@ describe('PublicationService', () => {
 
   it('keeps a resolved broadcast active while another sent target still needs verification', async () => {
     const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const nextVerificationAt = new Date(Date.now() + 60_000);
     const { service } = createService();
 
     await (service as any).syncBroadcastAfterDeliveryResolution(
@@ -2901,13 +3069,17 @@ describe('PublicationService', () => {
           findMany: jest.fn().mockResolvedValue([
             {
               status: ManagedBroadcastDeliveryStatus.SENT,
+              sentAt: new Date(),
               remoteMessageId: null,
               remoteMessageVerifiedAt: null,
+              remoteMessageVerificationNextAt: null,
             },
             {
               status: ManagedBroadcastDeliveryStatus.SENT,
+              sentAt: new Date(),
               remoteMessageId: 'message-unverified',
               remoteMessageVerifiedAt: null,
+              remoteMessageVerificationNextAt: nextVerificationAt,
             },
           ]),
         },
@@ -2921,7 +3093,7 @@ describe('PublicationService', () => {
       where: { id: 'broadcast-1', status: { not: ManagedBroadcastStatus.CANCELED } },
       data: {
         status: ManagedBroadcastStatus.ACTIVE,
-        nextSendAt: expect.any(Date),
+        nextSendAt: nextVerificationAt,
         lockedAt: null,
         lockToken: null,
         lastError: null,

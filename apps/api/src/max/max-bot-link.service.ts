@@ -229,6 +229,8 @@ type ResolvedChatRouteMembership = {
   botAccessExpiresAt: Date | null;
   permissionsSnapshot: unknown;
   capabilities: unknown;
+  sendRouteFailureCount?: number;
+  sendRouteQuarantinedUntil?: Date | null;
 };
 
 type ResolvedChatRouteState = {
@@ -426,11 +428,14 @@ export class MaxBotLinkService {
     });
     const primaryBotId =
       eligible.find((membership) => membership.botId === state.primaryBotId)?.botId ?? null;
-    const candidateBotIds = Array.from(
-      new Set([
-        ...(primaryBotId ? [primaryBotId] : []),
-        ...eligible.map((membership) => membership.botId),
-      ]),
+    const candidateBotIds = this.orderSendMessageCandidatesByRouteHealth(
+      state,
+      Array.from(
+        new Set([
+          ...(primaryBotId ? [primaryBotId] : []),
+          ...eligible.map((membership) => membership.botId),
+        ]),
+      ),
     );
     const selectedBotId = candidateBotIds[0] ?? null;
     return this.buildRoute({
@@ -1972,6 +1977,8 @@ export class MaxBotLinkService {
             botAccessExpiresAt: true,
             permissionsSnapshot: true,
             capabilities: true,
+            sendRouteFailureCount: true,
+            sendRouteQuarantinedUntil: true,
           },
           orderBy: [{ updatedAt: 'desc' }, { createdAt: 'asc' }],
         },
@@ -2144,6 +2151,41 @@ export class MaxBotLinkService {
     return candidateBotIds;
   }
 
+  private orderSendMessageCandidatesByRouteHealth(
+    state: ResolvedChatRouteState,
+    candidateBotIds: string[],
+  ): string[] {
+    const nowMs = Date.now();
+    const membershipsByBotId = new Map(
+      state.activeActionableMemberships.map((membership) => [membership.botId, membership]),
+    );
+    return candidateBotIds
+      .map((botId, index) => {
+        const membership = membershipsByBotId.get(botId);
+        const quarantinedUntilMs = membership?.sendRouteQuarantinedUntil?.getTime() ?? 0;
+        return {
+          botId,
+          index,
+          activeQuarantine: quarantinedUntilMs > nowMs,
+          quarantinedUntilMs,
+          failureCount: membership?.sendRouteFailureCount ?? 0,
+        };
+      })
+      .sort((left, right) => {
+        if (left.activeQuarantine !== right.activeQuarantine) {
+          return left.activeQuarantine ? 1 : -1;
+        }
+        if (left.activeQuarantine && left.failureCount !== right.failureCount) {
+          return left.failureCount - right.failureCount;
+        }
+        if (left.activeQuarantine && left.quarantinedUntilMs !== right.quarantinedUntilMs) {
+          return left.quarantinedUntilMs - right.quarantinedUntilMs;
+        }
+        return left.index - right.index;
+      })
+      .map((candidate) => candidate.botId);
+  }
+
   private resolvePersistedRoutingState(state: ResolvedChatRouteState): ChatRoutingState {
     if (
       state.activeActionableMemberships.some((membership) =>
@@ -2276,7 +2318,7 @@ export class MaxBotLinkService {
       pushFallbackCandidate(state.activeActionableMemberships[0]?.botId ?? null);
     }
 
-    return candidateBotIds;
+    return this.orderSendMessageCandidatesByRouteHealth(state, candidateBotIds);
   }
 
   private buildCapabilityCandidateBotIdsFromState(

@@ -52,6 +52,7 @@ export const MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES = [
   'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP',
   'CHAT_RULES_REPUBLISH_PREVIOUS_MESSAGE_CLEANUP',
 ] as const;
+const BOT_MESSAGE_AUTO_DELETE_RULE_CODE = 'BOT_MESSAGE_AUTO_DELETE';
 const REPLACEMENT_CLEANUP_RULE_CODE_SET: ReadonlySet<string> = new Set(
   MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES,
 );
@@ -93,6 +94,19 @@ type IntentRow = {
   leaseExpiresAt: Date | null;
   leasedFromStatus: ModerationDeleteIntentStatus | null;
   replacementCleanup?: boolean;
+  botMessageAutoDeleteOnly?: boolean;
+};
+
+type ManagedBotMessageOwner = {
+  id: string;
+  kind:
+    | 'managed_publication'
+    | 'managed_giveaway_publication'
+    | 'managed_giveaway_results'
+    | 'vk_parsing_post'
+    | 'published_chat_rules'
+    | 'chat_auto_comment_replacement'
+    | 'chat_auto_comment_reply';
 };
 
 export type ModerationDeleteIntentRoutingContext = {
@@ -255,6 +269,9 @@ export class ModerationDeleteIntentService {
     chatId: string,
     ruleCodes: readonly string[],
   ): ModerationDeleteIntentRollout {
+    if (ruleCodes.some((ruleCode) => ruleCode.trim() === BOT_MESSAGE_AUTO_DELETE_RULE_CODE)) {
+      return 'execute';
+    }
     if (
       this.replacementCleanupEnabled &&
       ruleCodes.some((ruleCode) => this.isReplacementCleanupRuleCode(ruleCode))
@@ -429,6 +446,17 @@ export class ModerationDeleteIntentService {
         );
       }
 
+      if (!this.hasDeleteDispatchMarker(intent)) {
+        await this.assertLeaseForExternalCall(heartbeat);
+        const protectedIntent = await this.finishProtectedManagedBotMessageAutoDelete(
+          intent,
+          leaseToken,
+        );
+        if (protectedIntent) {
+          return this.toAttemptResult(protectedIntent);
+        }
+      }
+
       let route: MaxDeleteMessageBotRoute;
       try {
         route = await this.resolveDeleteRouteWithRefresh(intent, heartbeat);
@@ -516,6 +544,13 @@ export class ModerationDeleteIntentService {
 
         try {
           await this.assertLeaseForExternalCall(heartbeat);
+          const protectedIntent = await this.finishProtectedManagedBotMessageAutoDelete(
+            intent,
+            leaseToken,
+          );
+          if (protectedIntent) {
+            return this.toAttemptResult(protectedIntent);
+          }
           if (!(await this.markDeleteDispatchStarted(intent.id, leaseToken, botId))) {
             return this.toAttemptResult(await this.loadRequiredIntent(intent.id));
           }
@@ -1185,12 +1220,17 @@ export class ModerationDeleteIntentService {
       normalized.entityType === 'CHAT' &&
       normalized.messageAuthorKind === 'user' &&
       normalized.routingPolicy !== 'origin_only';
-    const shouldPromoteObserved = Prisma.sql`
-      "moderation_delete_intents"."status" = CAST(
-        'OBSERVED' AS "ModerationDeleteIntentStatus"
-      )
-      AND EXCLUDED."status" <> CAST('OBSERVED' AS "ModerationDeleteIntentStatus")
-    `;
+    // Historical BOT_MESSAGE_AUTO_DELETE rows were shadow observations. They must never become
+    // executable merely because the rollout policy changed and the same webhook is replayed.
+    const shouldPromoteObserved =
+      normalized.ruleCode === BOT_MESSAGE_AUTO_DELETE_RULE_CODE
+        ? Prisma.sql`FALSE`
+        : Prisma.sql`
+            "moderation_delete_intents"."status" = CAST(
+              'OBSERVED' AS "ModerationDeleteIntentStatus"
+            )
+            AND EXCLUDED."status" <> CAST('OBSERVED' AS "ModerationDeleteIntentStatus")
+          `;
 
     const persisted = await this.prisma.$transaction(async (tx) => {
       const rows = await tx.$queryRaw<IntentRow[]>(Prisma.sql`
@@ -1333,6 +1373,46 @@ export class ModerationDeleteIntentService {
       let effectiveIntent = intent;
       if (
         reasonChanged === 1 &&
+        initialStatus === 'PENDING' &&
+        normalized.ruleCode !== 'BOT_MESSAGE_AUTO_DELETE' &&
+        intent.status === 'FAILED_TERMINAL' &&
+        intent.lastErrorCode === 'managed_output_auto_delete_blocked'
+      ) {
+        const reopenedRows = await tx.$queryRaw<IntentRow[]>(Prisma.sql`
+          UPDATE "moderation_delete_intents"
+          SET
+            "status" = CASE
+              WHEN (
+                "remote_delete_succeeded_at" IS NOT NULL
+                AND "remote_delete_succeeded_bot_id" IS NOT NULL
+              ) OR (
+                "delete_dispatch_started_at" IS NOT NULL
+                AND "delete_dispatch_started_bot_id" IS NOT NULL
+              )
+              THEN CAST('AMBIGUOUS' AS "ModerationDeleteIntentStatus")
+              ELSE CAST('PENDING' AS "ModerationDeleteIntentStatus")
+            END,
+            "execute_at" = LEAST("execute_at", ${normalized.executeAt}),
+            "next_attempt_at" = ${normalized.executeAt},
+            "retry_until_at" = GREATEST("retry_until_at", ${normalized.retryUntilAt}),
+            "last_status_code" = NULL,
+            "last_error_code" = NULL,
+            "last_error" = NULL,
+            "completed_at" = NULL,
+            "lease_token" = NULL,
+            "lease_expires_at" = NULL,
+            "leased_from_status" = NULL,
+            "updated_at" = CURRENT_TIMESTAMP
+          WHERE "id" = ${intent.id}
+            AND "status" = CAST('FAILED_TERMINAL' AS "ModerationDeleteIntentStatus")
+            AND "last_error_code" = 'managed_output_auto_delete_blocked'
+          RETURNING ${this.intentReturningSql()}
+        `);
+        effectiveIntent = reopenedRows[0] ?? intent;
+      }
+      if (
+        reasonChanged === 1 &&
+        effectiveIntent === intent &&
         intent.status === 'EXPIRED' &&
         initialStatus === 'PENDING' &&
         this.isReplacementCleanupRecoveryReason(normalized.reasonKey) &&
@@ -2034,6 +2114,131 @@ export class ModerationDeleteIntentService {
     return rows[0] ?? null;
   }
 
+  private async finishProtectedManagedBotMessageAutoDelete(
+    intent: IntentRow,
+    leaseToken: string,
+  ): Promise<IntentRow | null> {
+    if (intent.botMessageAutoDeleteOnly !== true) {
+      return null;
+    }
+
+    const owner = await this.findManagedBotMessageOwner(intent.chatId, intent.messageId);
+    if (!owner) {
+      return null;
+    }
+
+    const lastError =
+      `BOT_MESSAGE_AUTO_DELETE blocked because ${owner.kind} ${owner.id} owns ` +
+      `message ${intent.messageId}`;
+    const updated = await this.prisma.$executeRaw(Prisma.sql`
+      UPDATE "moderation_delete_intents" guarded_intent
+      SET
+        "status" = CAST('FAILED_TERMINAL' AS "ModerationDeleteIntentStatus"),
+        "last_status_code" = NULL,
+        "last_error_code" = 'managed_output_auto_delete_blocked',
+        "last_error" = ${lastError.slice(0, 2_000)},
+        "delete_dispatch_started_at" = NULL,
+        "delete_dispatch_started_bot_id" = NULL,
+        "completed_at" = CURRENT_TIMESTAMP,
+        "lease_token" = NULL,
+        "lease_expires_at" = NULL,
+        "leased_from_status" = NULL,
+        "updated_at" = CURRENT_TIMESTAMP
+      WHERE guarded_intent."id" = ${intent.id}
+        AND guarded_intent."status" = CAST('IN_PROGRESS' AS "ModerationDeleteIntentStatus")
+        AND guarded_intent."lease_token" = ${leaseToken}
+        AND guarded_intent."remote_delete_succeeded_at" IS NULL
+        AND guarded_intent."remote_delete_succeeded_bot_id" IS NULL
+        AND EXISTS (
+          SELECT 1
+          FROM "moderation_delete_intent_reasons" guarded_reason
+          WHERE guarded_reason."intent_id" = guarded_intent."id"
+            AND guarded_reason."rule_code" = 'BOT_MESSAGE_AUTO_DELETE'
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM "moderation_delete_intent_reasons" other_reason
+          WHERE other_reason."intent_id" = guarded_intent."id"
+            AND other_reason."rule_code" <> 'BOT_MESSAGE_AUTO_DELETE'
+        )
+    `);
+    return updated > 0 ? this.loadRequiredIntent(intent.id) : null;
+  }
+
+  private async findManagedBotMessageOwner(
+    chatId: string,
+    messageId: string,
+  ): Promise<ManagedBotMessageOwner | null> {
+    const delivery = await this.prisma.managedBroadcastDelivery.findFirst({
+      where: {
+        targetChatId: chatId,
+        remoteMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    if (delivery) {
+      return { id: delivery.id, kind: 'managed_publication' };
+    }
+
+    const giveaway = await this.prisma.managedGiveaway.findFirst({
+      where: {
+        sourceChatId: chatId,
+        OR: [{ publicationMessageId: messageId }, { resultsMessageId: messageId }],
+      },
+      select: {
+        id: true,
+        publicationMessageId: true,
+        resultsMessageId: true,
+      },
+    });
+    if (giveaway) {
+      return {
+        id: giveaway.id,
+        kind:
+          giveaway.publicationMessageId === messageId
+            ? 'managed_giveaway_publication'
+            : 'managed_giveaway_results',
+      };
+    }
+
+    const vkPost = await this.prisma.vkParsingPost.findFirst({
+      where: {
+        chatId,
+        publishedMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    if (vkPost) {
+      return { id: vkPost.id, kind: 'vk_parsing_post' };
+    }
+
+    const chatRules = await this.prisma.chatRules.findUnique({
+      where: { chatId },
+      select: { id: true, publishedMessageId: true },
+    });
+    if (chatRules?.publishedMessageId === messageId) {
+      return { id: chatRules.id, kind: 'published_chat_rules' };
+    }
+
+    const chatAutoCommentReplacement = await this.prisma.chatAutoCommentAttachMarker.findFirst({
+      where: {
+        chatId,
+        OR: [{ replacementMessageId: messageId }, { replyMessageId: messageId }],
+      },
+      select: { id: true, replacementMessageId: true, replyMessageId: true },
+    });
+    if (!chatAutoCommentReplacement) {
+      return null;
+    }
+    return {
+      id: chatAutoCommentReplacement.id,
+      kind:
+        chatAutoCommentReplacement.replacementMessageId === messageId
+          ? 'chat_auto_comment_replacement'
+          : 'chat_auto_comment_reply',
+    };
+  }
+
   private async resolveDeleteRouteWithRefresh(
     intent: IntentRow,
     heartbeat: IntentLeaseHeartbeat,
@@ -2403,18 +2608,34 @@ export class ModerationDeleteIntentService {
 
   private buildSweepRolloutFilter(): Prisma.Sql {
     const baseFilter = this.buildBaseRolloutFilter(Prisma.sql`intent."chat_id"`);
-    if (!this.replacementCleanupEnabled) {
-      return baseFilter;
-    }
+    const replacementCleanupFilter = this.replacementCleanupEnabled
+      ? Prisma.sql`
+          OR EXISTS (
+            SELECT 1
+            FROM "moderation_delete_intent_reasons" execution_reason
+            WHERE execution_reason."intent_id" = intent."id"
+              AND execution_reason."rule_code" IN (${Prisma.join([
+                ...MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES,
+              ])})
+          )
+        `
+      : Prisma.empty;
     return Prisma.sql`(
       ${baseFilter}
-      OR EXISTS (
-        SELECT 1
-        FROM "moderation_delete_intent_reasons" execution_reason
-        WHERE execution_reason."intent_id" = intent."id"
-          AND execution_reason."rule_code" IN (${Prisma.join([
-            ...MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES,
-          ])})
+      ${replacementCleanupFilter}
+      OR (
+        EXISTS (
+          SELECT 1
+          FROM "moderation_delete_intent_reasons" auto_delete_reason
+          WHERE auto_delete_reason."intent_id" = intent."id"
+            AND auto_delete_reason."rule_code" = ${BOT_MESSAGE_AUTO_DELETE_RULE_CODE}
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM "moderation_delete_intent_reasons" other_reason
+          WHERE other_reason."intent_id" = intent."id"
+            AND other_reason."rule_code" <> ${BOT_MESSAGE_AUTO_DELETE_RULE_CODE}
+        )
       )
     )`;
   }
@@ -2465,20 +2686,17 @@ export class ModerationDeleteIntentService {
   }
 
   private isExecutionEnabledForIntent(
-    intent: Pick<IntentRow, 'chatId' | 'replacementCleanup'>,
+    intent: Pick<IntentRow, 'chatId' | 'replacementCleanup' | 'botMessageAutoDeleteOnly'>,
   ): boolean {
     return (
       this.getRolloutForChat(intent.chatId) === 'execute' ||
-      (this.replacementCleanupEnabled && intent.replacementCleanup === true)
+      (this.replacementCleanupEnabled && intent.replacementCleanup === true) ||
+      intent.botMessageAutoDeleteOnly === true
     );
   }
 
   private hasAnyExecutionScope(): boolean {
-    return (
-      this.replacementCleanupEnabled ||
-      this.mode === 'on' ||
-      (this.mode === 'canary' && this.canaryChatIds.size > 0)
-    );
+    return true;
   }
 
   private orderCandidateBotIds(intent: IntentRow, values: readonly string[]): string[] {
@@ -2863,7 +3081,21 @@ export class ModerationDeleteIntentService {
           AND execution_reason."rule_code" IN (${Prisma.join([
             ...MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES,
           ])})
-      ) AS "replacementCleanup"
+      ) AS "replacementCleanup",
+      (
+        EXISTS (
+          SELECT 1
+          FROM "moderation_delete_intent_reasons" auto_delete_reason
+          WHERE auto_delete_reason."intent_id" = ${intentIdColumn}
+            AND auto_delete_reason."rule_code" = 'BOT_MESSAGE_AUTO_DELETE'
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM "moderation_delete_intent_reasons" other_reason
+          WHERE other_reason."intent_id" = ${intentIdColumn}
+            AND other_reason."rule_code" <> 'BOT_MESSAGE_AUTO_DELETE'
+        )
+      ) AS "botMessageAutoDeleteOnly"
     `;
   }
 

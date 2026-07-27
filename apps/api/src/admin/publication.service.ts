@@ -47,6 +47,7 @@ import {
   PublicationAudienceMode,
   PublicationAudienceSelection,
   PublicationContentFormat,
+  PublicationDeliveryVerificationSource,
   PublicationLifecycle,
   PublicationOccurrenceStatus,
   PublicationScheduleMode,
@@ -58,12 +59,16 @@ import { isSystemModeRecoveryWindow, SystemModeService } from '../system/system-
 import { isPrismaKnownError } from './admin-legacy-utils';
 import { ManagedBroadcastService } from './managed-broadcast.service';
 import { ManagedEntitiesService } from './managed-entities.service';
+import {
+  deleteUnstartedPublicationExecutionEnvelopes,
+  rollupPublicationOccurrenceWithRouteOutageRecovery,
+} from './publication-access-loss-recovery';
+import { PUBLICATION_DELIVERY_VERIFICATION_RESET_DATA } from './publication-delivery-verification-state';
 import { PublicationContentService } from './publication-content.service';
 import { readStoredPublicationButtons } from './publication-buttons';
 import {
   buildUnsafePublicationExecutionDeliveryWhere,
   cancelUnstartedPublicationExecutionBroadcasts,
-  deleteUnstartedPublicationExecutionBroadcasts,
   throwPublicationExecutionRequiresManualReview,
 } from './publication-execution-safety';
 import {
@@ -1440,11 +1445,12 @@ export class PublicationService {
             status: ManagedBroadcastDeliveryStatus.PENDING,
             botId: null,
             remoteMessageId: null,
-            remoteMessageVerifiedAt: null,
+            ...PUBLICATION_DELIVERY_VERIFICATION_RESET_DATA,
             legacySentWithoutRemoteId: false,
             sentAt: null,
             lockedAt: null,
             lockToken: null,
+            lastErrorCode: null,
             lastError: null,
             contentRevisionId: retryContentRevisionId,
           },
@@ -1547,6 +1553,7 @@ export class PublicationService {
     if (delivery.status !== ManagedBroadcastDeliveryStatus.AMBIGUOUS) {
       throw new ConflictException('Эта доставка больше не требует ручной проверки.');
     }
+    const resolutionAt = new Date();
 
     try {
       await this.prisma.$transaction(async (tx: any) => {
@@ -1556,13 +1563,19 @@ export class PublicationService {
             parsed.data.resolution === 'mark_sent'
               ? {
                   status: ManagedBroadcastDeliveryStatus.SENT,
-                  sentAt: delivery.sentAt ?? new Date(),
-                  remoteMessageVerifiedAt: delivery.remoteMessageId ? new Date() : null,
+                  sentAt: delivery.sentAt ?? resolutionAt,
+                  ...PUBLICATION_DELIVERY_VERIFICATION_RESET_DATA,
+                  remoteMessageVerificationSource: delivery.remoteMessageId
+                    ? PublicationDeliveryVerificationSource.MANUAL_CONFIRMED
+                    : null,
+                  remoteMessageVerifiedAt: delivery.remoteMessageId ? resolutionAt : null,
                   legacySentWithoutRemoteId: delivery.remoteMessageId === null,
+                  lastErrorCode: null,
                   lastError: null,
                 }
               : {
                   status: ManagedBroadcastDeliveryStatus.FAILED,
+                  lastErrorCode: null,
                   lastError: 'Администратор подтвердил, что сообщение не было опубликовано.',
                 },
         });
@@ -1610,7 +1623,8 @@ export class PublicationService {
     await this.dispatchScheduledOccurrences(PUBLICATION_DISPATCH_BATCH, [
       PublicationScheduleMode.NOW,
     ]);
-    await this.managedBroadcastService.processDueImmediatePublicationBroadcasts();
+    const verificationBudget =
+      await this.managedBroadcastService.processDueImmediatePublicationBroadcasts();
     await this.rollupActiveOccurrences();
     await this.rollupPublicationLifecycles();
 
@@ -1626,7 +1640,10 @@ export class PublicationService {
       PublicationScheduleMode.SLOTS,
       PublicationScheduleMode.RECURRENCE,
     ]);
-    await this.managedBroadcastService.processDueDeadlinePublicationBroadcasts(backgroundBatch);
+    await this.managedBroadcastService.processDueDeadlinePublicationBroadcasts(
+      backgroundBatch,
+      verificationBudget,
+    );
     await this.materializeRecurringSchedules(
       decision === 'slow' ? PUBLICATION_SLOW_BATCH : PUBLICATION_MATERIALIZE_BATCH,
     );
@@ -2272,7 +2289,16 @@ export class PublicationService {
       where: { id: occurrenceId },
       include: {
         legacyBroadcasts: {
-          include: { deliveries: { select: { status: true } } },
+          include: {
+            deliveries: {
+              select: {
+                status: true,
+                targetChatId: true,
+                lastErrorCode: true,
+                lastError: true,
+              },
+            },
+          },
         },
       },
     });
@@ -2317,18 +2343,12 @@ export class PublicationService {
     } else {
       status = PublicationOccurrenceStatus.IN_PROGRESS;
     }
-    if (status !== occurrence.status) {
-      await this.prisma.publicationOccurrence.updateMany({
-        where: {
-          id: occurrence.id,
-          status: occurrence.status,
-          updatedAt: occurrence.updatedAt,
-          scheduleRevision: occurrence.scheduleRevision,
-          contentRevisionId: occurrence.contentRevisionId,
-        },
-        data: { status },
-      });
-    }
+    await rollupPublicationOccurrenceWithRouteOutageRecovery(
+      this.prisma,
+      occurrence,
+      status,
+      deliveries,
+    );
   }
 
   private async rollupPublicationLifecycles(): Promise<void> {
@@ -2688,7 +2708,9 @@ export class PublicationService {
             },
             data: { status: PublicationOccurrenceStatus.CANCELED },
           });
-          await this.deleteFutureExecutionEnvelopes(tx, publicationId, now);
+          await deleteUnstartedPublicationExecutionEnvelopes(tx, publicationId, {
+            scheduledAfter: now,
+          });
           await tx.publicationSchedule.updateMany({
             where: { publicationId },
             data: { status: PublicationScheduleStatus.PAUSED, nextMaterializeAt: null },
@@ -3506,29 +3528,6 @@ export class PublicationService {
         'Публикация уже начала отправку. Проверьте доставки отдельно.',
       );
     }
-  }
-
-  private async deleteFutureExecutionEnvelopes(
-    tx: any,
-    publicationId: string,
-    now: Date,
-  ): Promise<void> {
-    const broadcasts = await tx.managedBroadcast.findMany({
-      where: {
-        publicationOccurrence: { is: { publicationId, scheduledAt: { gt: now } } },
-        status: ManagedBroadcastStatus.ACTIVE,
-        sentCount: 0,
-        deliveries: {
-          none: buildUnsafePublicationExecutionDeliveryWhere(),
-        },
-      },
-      select: { id: true, lockedAt: true, lockToken: true },
-    });
-    await deleteUnstartedPublicationExecutionBroadcasts(
-      tx,
-      broadcasts,
-      'Публикация уже начала отправку. Проверьте доставки отдельно.',
-    );
   }
 
   private async restoreAccessLossPausedOccurrences(

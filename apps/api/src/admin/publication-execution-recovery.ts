@@ -5,18 +5,175 @@ import {
   ManagedBroadcastDeliveryStatus,
   ManagedBroadcastStatus,
   Prisma,
+  PublicationLifecycle,
   PublicationOccurrenceStatus,
+  PublicationScheduleStatus,
 } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 import { isMaxApiThrottleError } from './admin-legacy-utils';
 import type { AdminManagedBroadcastRuntimeContext } from './admin-managed-broadcast-runtime-context';
 import { MANAGED_BROADCAST_LOCK_STALE_MS } from './admin.service.support';
+import { buildUnsafePublicationExecutionDeliveryWhere } from './publication-execution-safety';
+import {
+  PUBLICATION_DELIVERY_VERIFICATION_RESET_DATA,
+  resolvePublicationVerificationNextSendAt,
+} from './publication-delivery-verification-state';
 
 export class ManagedBroadcastPublicationExecutionStopped extends Error {
   constructor() {
     super('Managed broadcast publication execution is no longer active');
     this.name = 'ManagedBroadcastPublicationExecutionStopped';
   }
+}
+
+export async function ensureManagedBroadcastPublicationExecutionActive(options: {
+  prisma: PrismaService;
+  row: Pick<
+    ManagedBroadcast,
+    'id' | 'lockToken' | 'publicationOccurrenceId' | 'publicationContentRevisionId'
+  >;
+  occurrenceIndex: number;
+  reconcileStaleDeliveries?: () => Promise<void>;
+}): Promise<boolean> {
+  if (!options.row.publicationOccurrenceId) {
+    return true;
+  }
+
+  const occurrence = await options.prisma.publicationOccurrence.findUnique({
+    where: { id: options.row.publicationOccurrenceId },
+    select: {
+      status: true,
+      scheduleRevision: true,
+      contentRevisionId: true,
+      publication: { select: { lifecycle: true } },
+      schedule: { select: { revision: true, status: true } },
+    },
+  });
+  const executionStateActive = Boolean(
+    occurrence &&
+    occurrence.publication.lifecycle === PublicationLifecycle.ACTIVE &&
+    occurrence.schedule.status === PublicationScheduleStatus.ACTIVE &&
+    occurrence.schedule.revision === occurrence.scheduleRevision &&
+    (occurrence.status === PublicationOccurrenceStatus.SCHEDULED ||
+      occurrence.status === PublicationOccurrenceStatus.IN_PROGRESS),
+  );
+  if (
+    executionStateActive &&
+    occurrence &&
+    occurrence.contentRevisionId !== options.row.publicationContentRevisionId
+  ) {
+    // FLAG: A stale worker may release only its own broadcast lease here. It must never reset
+    // delivery locks because a newer worker may already own and be sending that delivery.
+    await options.prisma.managedBroadcast.updateMany({
+      where: { id: options.row.id, lockToken: options.row.lockToken },
+      data: { lockedAt: null, lockToken: null },
+    });
+    return false;
+  }
+  if (executionStateActive) {
+    return true;
+  }
+
+  if (options.reconcileStaleDeliveries) {
+    // FLAG: Resolve an old in-flight send from the durable ledger before stopping its envelope.
+    // A fresh SENDING row is preserved below so the owning worker can persist the MAX result.
+    await options.reconcileStaleDeliveries();
+  }
+
+  await options.prisma.$transaction(async (tx) => {
+    if (!options.row.lockToken) {
+      return;
+    }
+    const leaseRenewed = await tx.managedBroadcast.updateMany({
+      where: { id: options.row.id, lockToken: options.row.lockToken },
+      data: { lockedAt: new Date() },
+    });
+    if (leaseRenewed.count === 0) {
+      return;
+    }
+
+    // FLAG: Cancel claimable rows before checking SENDING. The competing delivery claim and this
+    // update serialize on the row, so either the claim is preserved or its pre-dispatch CAS fails.
+    await tx.managedBroadcastDelivery.updateMany({
+      where: {
+        broadcastId: options.row.id,
+        occurrenceIndex: options.occurrenceIndex,
+        status: {
+          in: [ManagedBroadcastDeliveryStatus.PENDING, ManagedBroadcastDeliveryStatus.FAILED],
+        },
+      },
+      data: {
+        status: ManagedBroadcastDeliveryStatus.CANCELED,
+        lockedAt: null,
+        lockToken: null,
+        lastError: 'Публикация остановлена до отправки.',
+      },
+    });
+
+    const sending = await tx.managedBroadcastDelivery.count({
+      where: {
+        broadcastId: options.row.id,
+        occurrenceIndex: options.occurrenceIndex,
+        status: ManagedBroadcastDeliveryStatus.SENDING,
+      },
+    });
+    if (sending > 0) {
+      await tx.managedBroadcast.updateMany({
+        where: { id: options.row.id, lockToken: options.row.lockToken },
+        data: { lockedAt: null, lockToken: null },
+      });
+      return;
+    }
+
+    await tx.managedBroadcastCalendarReservation.deleteMany({
+      where: { broadcastId: options.row.id, occurrenceIndex: options.occurrenceIndex },
+    });
+    const deleted = await tx.managedBroadcast.deleteMany({
+      where: {
+        id: options.row.id,
+        lockToken: options.row.lockToken,
+        sentCount: 0,
+        deliveries: { none: buildUnsafePublicationExecutionDeliveryWhere() },
+      },
+    });
+    if (deleted.count > 0) {
+      return;
+    }
+    await tx.managedBroadcast.updateMany({
+      where: { id: options.row.id, lockToken: options.row.lockToken },
+      data: {
+        status: ManagedBroadcastStatus.CANCELED,
+        nextSendAt: null,
+        lockedAt: null,
+        lockToken: null,
+        lastError: 'Публикация остановлена до завершения доставки.',
+      },
+    });
+  });
+  return false;
+}
+
+export async function cancelPublicationDeliveryBeforeStoppedDispatch(
+  prisma: PrismaService,
+  deliveryId: string,
+  deliveryLockToken: string,
+): Promise<void> {
+  // FLAG: This CAS is limited to the delivery claimed by the current worker before MAX dispatch.
+  // A concurrent or already-dispatched SENDING delivery must keep its token and persist its result.
+  await prisma.managedBroadcastDelivery.updateMany({
+    where: {
+      id: deliveryId,
+      status: ManagedBroadcastDeliveryStatus.SENDING,
+      lockToken: deliveryLockToken,
+    },
+    data: {
+      status: ManagedBroadcastDeliveryStatus.CANCELED,
+      lockedAt: null,
+      lockToken: null,
+      lastErrorCode: null,
+      lastError: 'Публикация остановлена до отправки.',
+    },
+  });
 }
 
 export async function deferPublicationDeliveryAfterPreDispatchThrottle(options: {
@@ -52,11 +209,12 @@ export async function deferPublicationDeliveryAfterPreDispatchThrottle(options: 
       attemptCount: { decrement: 1 },
       botId: null,
       remoteMessageId: null,
-      remoteMessageVerifiedAt: null,
+      ...PUBLICATION_DELIVERY_VERIFICATION_RESET_DATA,
       legacySentWithoutRemoteId: false,
       sentAt: null,
       lockedAt: null,
       lockToken: null,
+      lastErrorCode: null,
       lastError: null,
     },
   });
@@ -188,18 +346,27 @@ export async function syncPublicationBroadcastAfterDeliveryResolution(
   broadcastId: string,
   occurrenceIndex: number,
 ): Promise<void> {
-  const deliveries = await tx.managedBroadcastDelivery.findMany({
+  type DeliveryResolutionRow = {
+    status: ManagedBroadcastDeliveryStatus;
+    sentAt: Date | null;
+    remoteMessageId: string | null;
+    remoteMessageVerifiedAt: Date | null;
+    remoteMessageVerificationNextAt: Date | null;
+  };
+  const deliveries: DeliveryResolutionRow[] = await tx.managedBroadcastDelivery.findMany({
     where: { broadcastId, occurrenceIndex },
     select: {
       status: true,
+      sentAt: true,
       remoteMessageId: true,
       remoteMessageVerifiedAt: true,
+      remoteMessageVerificationNextAt: true,
     },
   });
   if (deliveries.length === 0) {
     return;
   }
-  const unresolved = deliveries.some((delivery: { status: ManagedBroadcastDeliveryStatus }) =>
+  const unresolved = deliveries.some((delivery) =>
     new Set<ManagedBroadcastDeliveryStatus>([
       ManagedBroadcastDeliveryStatus.SENDING,
       ManagedBroadcastDeliveryStatus.AMBIGUOUS,
@@ -208,23 +375,22 @@ export async function syncPublicationBroadcastAfterDeliveryResolution(
   if (unresolved) {
     return;
   }
-  const hasPendingOrUnverified = deliveries.some(
-    (delivery: {
-      status: ManagedBroadcastDeliveryStatus;
-      remoteMessageId: string | null;
-      remoteMessageVerifiedAt: Date | null;
-    }) =>
-      delivery.status === ManagedBroadcastDeliveryStatus.PENDING ||
-      (delivery.status === ManagedBroadcastDeliveryStatus.SENT &&
-        delivery.remoteMessageId !== null &&
-        delivery.remoteMessageVerifiedAt === null),
+  const hasPending = deliveries.some(
+    (delivery) => delivery.status === ManagedBroadcastDeliveryStatus.PENDING,
   );
-  if (hasPendingOrUnverified) {
+  const unverified = deliveries.filter(
+    (delivery) =>
+      delivery.status === ManagedBroadcastDeliveryStatus.SENT &&
+      delivery.remoteMessageId !== null &&
+      delivery.remoteMessageVerifiedAt === null,
+  );
+  if (hasPending || unverified.length > 0) {
+    const nextSendAt = resolvePublicationVerificationNextSendAt(unverified, hasPending);
     await tx.managedBroadcast.updateMany({
       where: { id: broadcastId, status: { not: ManagedBroadcastStatus.CANCELED } },
       data: {
         status: ManagedBroadcastStatus.ACTIVE,
-        nextSendAt: new Date(),
+        nextSendAt,
         lockedAt: null,
         lockToken: null,
         lastError: null,
@@ -234,8 +400,7 @@ export async function syncPublicationBroadcastAfterDeliveryResolution(
   }
 
   const sent = deliveries.filter(
-    (delivery: { status: ManagedBroadcastDeliveryStatus }) =>
-      delivery.status === ManagedBroadcastDeliveryStatus.SENT,
+    (delivery) => delivery.status === ManagedBroadcastDeliveryStatus.SENT,
   ).length;
   const failed = deliveries.length - sent;
   const status =

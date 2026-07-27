@@ -301,12 +301,46 @@ describe('Prisma migrations', () => {
     expect(compact).not.toMatch(/\b(?:DROP|TRUNCATE|DELETE|UPDATE)\b/i);
   });
 
+  it('persists bounded publication verification and indexes managed-output ownership', () => {
+    const schema = readSchema();
+    const verification = readMigration('20260727180000_bound_publication_delivery_verification');
+    const ownerIndexes = readMigration('20260727181000_optimize_managed_output_owner_lookup');
+
+    expect(schema).toContain('remoteMessageVerificationAttemptCount');
+    expect(schema).toContain('PublicationDeliveryVerificationSource');
+    expect(schema).toContain('sendRouteQuarantinedUntil');
+    expect(schema).toContain('sendRouteLastSuccessAt');
+    expect(schema).toMatch(/lastErrorCode\s+String\?\s+@map\("last_error_code"\)/u);
+    expect(verification).toContain('"remote_message_verification_attempt_count"');
+    expect(verification).toContain('"remote_message_verification_source"');
+    expect(verification).toContain('"last_error_code" TEXT');
+    expect(verification).toContain('"send_route_quarantined_until"');
+    expect(verification).toContain('"send_route_last_success_at"');
+    expect(verification).not.toContain(
+      '"managed_broadcast_deliveries_remote_verification_stable_check"',
+    );
+    expect(verification).not.toContain('UPDATE "managed_broadcast_deliveries"');
+    expect(verification).not.toMatch(/\b(?:DROP|TRUNCATE|DELETE)\b/i);
+
+    for (const indexName of [
+      'vk_parsing_posts_chat_published_message_idx',
+      'managed_giveaways_chat_publication_message_idx',
+      'managed_giveaways_chat_results_message_idx',
+      'chat_auto_comment_attach_markers_chat_reply_idx',
+    ]) {
+      expect(schema).toContain(indexName);
+      expect(ownerIndexes).toContain(`CREATE INDEX CONCURRENTLY IF NOT EXISTS "${indexName}"`);
+    }
+    expect(ownerIndexes).not.toMatch(/\bBEGIN\b|\bCOMMIT\b/i);
+    expect(ownerIndexes).not.toMatch(/\b(?:DROP|TRUNCATE|DELETE|UPDATE)\b/i);
+  });
+
   it('backfills and safely constrains publication delivery content revisions', () => {
     const schema = readSchema();
     const migration = readMigration('20260718100000_add_publication_delivery_content_revision');
     const compact = migration.replace(/\s+/g, ' ').trim();
 
-    expect(schema).toContain('contentRevisionId         String?');
+    expect(schema).toMatch(/contentRevisionId\s+String\?/u);
     expect(schema).toContain(
       '@@index([contentRevisionId], map: "managed_broadcast_deliveries_content_revision_idx")',
     );

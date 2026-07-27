@@ -6,10 +6,8 @@ import {
   ManagedBroadcastDeliveryStatus,
   ManagedBroadcastStatus,
   ManagedEntityAccessState,
-  PublicationLifecycle,
-  PublicationOccurrenceStatus,
-  PublicationScheduleStatus,
 } from '../prisma/prisma-client';
+import { PUBLICATION_DELIVERY_ACCESS_LOST_ERROR_CODE } from './managed-entity-access-loss.constants';
 import {
   ManagedEntityAccessLossService,
   classifyMaxTerminalChatActionError,
@@ -94,7 +92,7 @@ describe('classifyMaxTerminalChatActionError', () => {
     ).toBe('chat_not_found');
   });
 
-  it('does not resolve bare edit 404 as access loss but resolves edit 403', () => {
+  it('does not treat bare edit permission errors as full managed-entity access loss', () => {
     expect(
       resolveManagedEntityAccessLossReason(
         'edit',
@@ -106,7 +104,7 @@ describe('classifyMaxTerminalChatActionError', () => {
         'edit',
         classifyMaxTerminalChatActionError(createMaxApiError(403, 'Forbidden'))!,
       ),
-    ).toBe('bot_denied');
+    ).toBeNull();
   });
 
   it('does not resolve bare delete 403/404 as managed entity access loss', () => {
@@ -314,25 +312,15 @@ describe('ManagedEntityAccessLossService', () => {
         lockToken: null,
       }),
     });
-    expect(prisma.publicationSchedule.updateMany).toHaveBeenCalledWith({
-      where: {
-        publicationId: { in: ['publication-1'] },
-        status: {
-          in: [PublicationScheduleStatus.ACTIVE, PublicationScheduleStatus.ERROR],
-        },
-      },
-      data: expect.objectContaining({
-        status: PublicationScheduleStatus.PAUSED,
-        nextMaterializeAt: null,
-      }),
-    });
-    expect(prisma.publication.updateMany).toHaveBeenCalledWith({
-      where: { id: { in: ['publication-1'] } },
-      data: { lifecycle: PublicationLifecycle.PAUSED },
-    });
+    expect(prisma.publication.findMany).not.toHaveBeenCalled();
+    expect(prisma.publicationSchedule.updateMany).not.toHaveBeenCalled();
+    expect(prisma.publication.updateMany).not.toHaveBeenCalled();
     expect(prisma.managedBroadcast.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: { in: ['publication-broadcast-1'] } },
+        where: expect.objectContaining({
+          sourceChatId: 'chat-1',
+          publicationOccurrenceId: null,
+        }),
         data: expect.objectContaining({ status: 'CANCELED', nextSendAt: null }),
       }),
     );
@@ -349,47 +337,193 @@ describe('ManagedEntityAccessLossService', () => {
     );
   });
 
-  it('cancels every chat and channel execution envelope linked to an affected publication', async () => {
+  it('keeps publication envelopes and healthy targets active while canceling the lost target', async () => {
+    const broadcasts = [
+      {
+        id: 'publication-envelope',
+        sourceChatId: 'chat-lost',
+        publicationOccurrenceId: 'publication-occurrence-1',
+        status: ManagedBroadcastStatus.ACTIVE,
+      },
+      {
+        id: 'legacy-broadcast',
+        sourceChatId: 'chat-lost',
+        publicationOccurrenceId: null,
+        status: ManagedBroadcastStatus.ACTIVE,
+      },
+    ];
+    const deliveries = [
+      {
+        id: 'publication-lost-pending',
+        broadcastId: 'publication-envelope',
+        targetChatId: 'chat-lost',
+        status: ManagedBroadcastDeliveryStatus.PENDING,
+        lastErrorCode: null as string | null,
+      },
+      {
+        id: 'publication-lost-failed',
+        broadcastId: 'publication-envelope',
+        targetChatId: 'chat-lost',
+        status: ManagedBroadcastDeliveryStatus.FAILED,
+        lastErrorCode: null as string | null,
+      },
+      {
+        id: 'legacy-lost-sending',
+        broadcastId: 'legacy-broadcast',
+        targetChatId: 'chat-lost',
+        status: ManagedBroadcastDeliveryStatus.SENDING,
+        lastErrorCode: null as string | null,
+      },
+      {
+        id: 'publication-lost-sent',
+        broadcastId: 'publication-envelope',
+        targetChatId: 'chat-lost',
+        status: ManagedBroadcastDeliveryStatus.SENT,
+        lastErrorCode: null as string | null,
+      },
+      {
+        id: 'publication-healthy-pending',
+        broadcastId: 'publication-envelope',
+        targetChatId: 'chat-healthy',
+        status: ManagedBroadcastDeliveryStatus.PENDING,
+        lastErrorCode: null as string | null,
+      },
+    ];
+    const reservations = [
+      {
+        id: 'publication-lost-reservation',
+        broadcastId: 'publication-envelope',
+        sourceChatId: 'chat-lost',
+        targetChatId: 'chat-lost',
+      },
+      {
+        id: 'publication-healthy-reservation',
+        broadcastId: 'publication-envelope',
+        sourceChatId: 'chat-lost',
+        targetChatId: 'chat-healthy',
+      },
+      {
+        id: 'legacy-source-reservation',
+        broadcastId: 'legacy-broadcast',
+        sourceChatId: 'chat-lost',
+        targetChatId: 'chat-healthy',
+      },
+    ];
+    const occurrences = [
+      {
+        id: 'publication-envelope-occurrence',
+        broadcastId: 'publication-envelope',
+        sourceChatId: 'chat-lost',
+        status: ManagedBroadcastStatus.ACTIVE,
+      },
+      {
+        id: 'legacy-occurrence',
+        broadcastId: 'legacy-broadcast',
+        sourceChatId: 'chat-lost',
+        status: ManagedBroadcastStatus.ACTIVE,
+      },
+    ];
+    const broadcastById = new Map(broadcasts.map((broadcast) => [broadcast.id, broadcast]));
     const prisma = {
-      publication: {
-        findMany: jest.fn().mockResolvedValue([{ id: 'publication-1' }]),
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-      },
-      publicationSchedule: {
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-      },
       managedBroadcast: {
-        findMany: jest
-          .fn()
-          .mockResolvedValue([{ id: 'broadcast-chat' }, { id: 'broadcast-channel' }]),
-        updateMany: jest.fn().mockResolvedValue({ count: 2 }),
+        updateMany: jest.fn(async ({ data }: { data: { status: ManagedBroadcastStatus } }) => {
+          const affected = broadcasts.filter(
+            (broadcast) =>
+              broadcast.sourceChatId === 'chat-lost' &&
+              broadcast.publicationOccurrenceId === null &&
+              broadcast.status === ManagedBroadcastStatus.ACTIVE,
+          );
+          affected.forEach((broadcast) => Object.assign(broadcast, data));
+          return { count: affected.length };
+        }),
       },
       managedBroadcastDelivery: {
-        updateMany: jest.fn().mockResolvedValue({ count: 2 }),
+        updateMany: jest.fn(
+          async ({
+            data,
+          }: {
+            data: { status: ManagedBroadcastDeliveryStatus; lastErrorCode: string };
+          }) => {
+            const affected = deliveries.filter(
+              (delivery) =>
+                delivery.targetChatId === 'chat-lost' &&
+                new Set<ManagedBroadcastDeliveryStatus>([
+                  ManagedBroadcastDeliveryStatus.PENDING,
+                  ManagedBroadcastDeliveryStatus.FAILED,
+                ]).has(delivery.status),
+            );
+            affected.forEach((delivery) => Object.assign(delivery, data));
+            return { count: affected.length };
+          },
+        ),
       },
       managedBroadcastCalendarReservation: {
-        deleteMany: jest.fn().mockResolvedValue({ count: 2 }),
+        deleteMany: jest.fn(async () => {
+          const retained = reservations.filter((reservation) => {
+            const broadcast = broadcastById.get(reservation.broadcastId);
+            return !(
+              reservation.targetChatId === 'chat-lost' ||
+              (reservation.sourceChatId === 'chat-lost' &&
+                broadcast?.publicationOccurrenceId === null)
+            );
+          });
+          const count = reservations.length - retained.length;
+          reservations.splice(0, reservations.length, ...retained);
+          return { count };
+        }),
       },
-      publicationOccurrence: {
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      managedBroadcastOccurrence: {
+        updateMany: jest.fn(async ({ data }: { data: { status: ManagedBroadcastStatus } }) => {
+          const affected = occurrences.filter(
+            (occurrence) =>
+              occurrence.sourceChatId === 'chat-lost' &&
+              broadcastById.get(occurrence.broadcastId)?.publicationOccurrenceId === null &&
+              occurrence.status === ManagedBroadcastStatus.ACTIVE,
+          );
+          affected.forEach((occurrence) => Object.assign(occurrence, data));
+          return { count: affected.length };
+        }),
       },
     };
     const service = new ManagedEntityAccessLossService(prisma as never, {} as never, {} as never);
+    const cleanup = {
+      nightModeJobsCleared: false,
+      canceledBroadcasts: null,
+      canceledBroadcastDeliveries: null,
+      canceledBroadcastOccurrences: null,
+      clearedVkPublishPosts: null,
+      pausedVkSources: null,
+      removedRosterSyncJobs: null,
+    };
 
-    await (service as any).pauseManagedPublications({
-      chatId: 'chat-1',
-      reason: 'bot_denied',
-      source: 'unit-test',
+    await (service as any).cancelManagedBroadcastRuntime(
+      { chatId: 'chat-lost', reason: 'bot_denied', source: 'unit-test' },
+      cleanup,
+    );
+
+    expect(prisma.managedBroadcast.updateMany).toHaveBeenCalledWith({
+      where: {
+        sourceChatId: 'chat-lost',
+        publicationOccurrenceId: null,
+        status: {
+          in: [
+            ManagedBroadcastStatus.ACTIVE,
+            ManagedBroadcastStatus.PARTIAL,
+            ManagedBroadcastStatus.FAILED,
+          ],
+        },
+      },
+      data: expect.objectContaining({
+        status: ManagedBroadcastStatus.CANCELED,
+        nextSendAt: null,
+      }),
     });
-
-    const allEnvelopeIds = { in: ['broadcast-chat', 'broadcast-channel'] };
     expect(prisma.managedBroadcastDelivery.updateMany).toHaveBeenCalledWith({
       where: {
-        broadcastId: allEnvelopeIds,
+        targetChatId: 'chat-lost',
         status: {
           in: [
             ManagedBroadcastDeliveryStatus.PENDING,
-            ManagedBroadcastDeliveryStatus.SENDING,
             ManagedBroadcastDeliveryStatus.FAILED,
           ],
         },
@@ -398,41 +532,92 @@ describe('ManagedEntityAccessLossService', () => {
         status: ManagedBroadcastDeliveryStatus.CANCELED,
         lockedAt: null,
         lockToken: null,
+        lastErrorCode: PUBLICATION_DELIVERY_ACCESS_LOST_ERROR_CODE,
       }),
     });
-    expect(prisma.managedBroadcast.updateMany).toHaveBeenCalledWith({
-      where: { id: allEnvelopeIds },
-      data: expect.objectContaining({
-        status: ManagedBroadcastStatus.CANCELED,
-        nextSendAt: null,
-      }),
-    });
-    expect(prisma.publicationOccurrence.updateMany).toHaveBeenCalledWith({
+    expect(prisma.managedBroadcastCalendarReservation.deleteMany).toHaveBeenCalledWith({
       where: {
-        publicationId: { in: ['publication-1'] },
-        scheduledAt: { gte: expect.any(Date) },
-        status: {
-          in: [PublicationOccurrenceStatus.SCHEDULED, PublicationOccurrenceStatus.IN_PROGRESS],
-        },
-        deliveries: {
-          none: {
-            OR: [
-              { attemptCount: { gt: 0 } },
-              {
-                status: {
-                  in: [
-                    ManagedBroadcastDeliveryStatus.SENDING,
-                    ManagedBroadcastDeliveryStatus.SENT,
-                    ManagedBroadcastDeliveryStatus.AMBIGUOUS,
-                  ],
-                },
-              },
-            ],
+        OR: [
+          { targetChatId: 'chat-lost' },
+          {
+            sourceChatId: 'chat-lost',
+            broadcast: { is: { publicationOccurrenceId: null } },
           },
+        ],
+      },
+    });
+    expect(prisma.managedBroadcastOccurrence.updateMany).toHaveBeenCalledWith({
+      where: {
+        sourceChatId: 'chat-lost',
+        broadcast: { is: { publicationOccurrenceId: null } },
+        status: {
+          in: [
+            ManagedBroadcastStatus.ACTIVE,
+            ManagedBroadcastStatus.PARTIAL,
+            ManagedBroadcastStatus.FAILED,
+          ],
         },
       },
-      data: { status: PublicationOccurrenceStatus.SCHEDULED },
+      data: { status: ManagedBroadcastStatus.CANCELED },
     });
+    expect(cleanup).toEqual(
+      expect.objectContaining({
+        canceledBroadcasts: 1,
+        canceledBroadcastDeliveries: 2,
+        canceledBroadcastOccurrences: 1,
+      }),
+    );
+    expect(broadcasts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'publication-envelope',
+          status: ManagedBroadcastStatus.ACTIVE,
+        }),
+        expect.objectContaining({
+          id: 'legacy-broadcast',
+          status: ManagedBroadcastStatus.CANCELED,
+        }),
+      ]),
+    );
+    expect(deliveries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'publication-healthy-pending',
+          status: ManagedBroadcastDeliveryStatus.PENDING,
+          lastErrorCode: null,
+        }),
+        expect.objectContaining({
+          id: 'publication-lost-sent',
+          status: ManagedBroadcastDeliveryStatus.SENT,
+          lastErrorCode: null,
+        }),
+        expect.objectContaining({
+          id: 'publication-lost-pending',
+          status: ManagedBroadcastDeliveryStatus.CANCELED,
+          lastErrorCode: PUBLICATION_DELIVERY_ACCESS_LOST_ERROR_CODE,
+        }),
+        expect.objectContaining({
+          id: 'legacy-lost-sending',
+          status: ManagedBroadcastDeliveryStatus.SENDING,
+          lastErrorCode: null,
+        }),
+      ]),
+    );
+    expect(reservations).toEqual([
+      expect.objectContaining({ id: 'publication-healthy-reservation' }),
+    ]);
+    expect(occurrences).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'publication-envelope-occurrence',
+          status: ManagedBroadcastStatus.ACTIVE,
+        }),
+        expect.objectContaining({
+          id: 'legacy-occurrence',
+          status: ManagedBroadcastStatus.CANCELED,
+        }),
+      ]),
+    );
   });
 
   it('keeps runtime work when a promoted replacement bot has confirmed access', async () => {

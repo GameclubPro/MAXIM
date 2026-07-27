@@ -64,7 +64,8 @@
     "spammers:archive-expired": "tsx src/scripts/archive-expired-global-spammers.ts",
     "multi-bot:smoke-routes": "sh -c 'if [ -f dist/apps/api/src/scripts/smoke-multi-bot-routes.js ]; then exec node dist/apps/api/src/scripts/smoke-multi-bot-routes.js \"$@\"; else exec tsx src/scripts/smoke-multi-bot-routes.ts \"$@\"; fi' --",
     "multi-bot:repair-data": "sh -c 'if [ -f dist/apps/api/src/scripts/repair-multibot-data.js ]; then exec node dist/apps/api/src/scripts/repair-multibot-data.js \"$@\"; else exec tsx src/scripts/repair-multibot-data.ts \"$@\"; fi' --",
-    "vk-parsing:diagnose": "sh -c 'if [ -f dist/apps/api/src/scripts/diagnose-vk-parsing.js ]; then exec node dist/apps/api/src/scripts/diagnose-vk-parsing.js \"$@\"; else exec tsx src/scripts/diagnose-vk-parsing.ts \"$@\"; fi' --"
+    "vk-parsing:diagnose": "sh -c 'if [ -f dist/apps/api/src/scripts/diagnose-vk-parsing.js ]; then exec node dist/apps/api/src/scripts/diagnose-vk-parsing.js \"$@\"; else exec tsx src/scripts/diagnose-vk-parsing.ts \"$@\"; fi' --",
+    "publication:audit-delivery-verification": "sh -c 'if [ -f dist/apps/api/src/scripts/audit-publication-delivery-verification.js ]; then exec node dist/apps/api/src/scripts/audit-publication-delivery-verification.js \"$@\"; else exec tsx src/scripts/audit-publication-delivery-verification.ts \"$@\"; fi' --"
   },
   "dependencies": {
     "@maxim/contracts": "0.1.0",

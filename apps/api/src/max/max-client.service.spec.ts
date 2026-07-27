@@ -4878,6 +4878,80 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('reports absence for a direct not-found response that names the exact requested message', async () => {
+    const exactNotFound = {
+      response: {
+        status: 404,
+        data: {
+          code: 'not.found',
+          message: 'Message mid-live-absent was not found',
+        },
+      },
+    };
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(of({ data: { messages: [] } }))
+        .mockReturnValueOnce(throwError(() => exactNotFound)),
+    };
+    const service = createService(httpService);
+
+    await expect(
+      service.getExactMessagePresence('chat-1', 'mid-live-absent', {
+        botId: '777000_bot',
+      }),
+    ).resolves.toBe('absent');
+
+    await service.onModuleDestroy();
+  });
+
+  it('does not infer exact absence from a generic direct not-found response', async () => {
+    const genericNotFound = {
+      response: {
+        status: 404,
+        data: { code: 'not.found', message: 'Requested resource was not found' },
+      },
+    };
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(of({ data: { messages: [] } }))
+        .mockReturnValueOnce(throwError(() => genericNotFound)),
+    };
+    const service = createService(httpService);
+
+    await expect(
+      service.getExactMessagePresence('chat-1', 'mid-unknown', { botId: '777000_bot' }),
+    ).rejects.toBe(genericNotFound);
+
+    await service.onModuleDestroy();
+  });
+
+  it('does not infer exact absence when a direct not-found response names another message', async () => {
+    const anotherMessageNotFound = {
+      response: {
+        status: 404,
+        data: {
+          code: 'not.found',
+          message: 'Message mid-requested-other was not found',
+        },
+      },
+    };
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(of({ data: { messages: [] } }))
+        .mockReturnValueOnce(throwError(() => anotherMessageNotFound)),
+    };
+    const service = createService(httpService);
+
+    await expect(
+      service.getExactMessagePresence('chat-1', 'mid-requested', { botId: '777000_bot' }),
+    ).rejects.toBe(anotherMessageNotFound);
+
+    await service.onModuleDestroy();
+  });
+
   it('falls back to direct lookup when the message list returns a bare 404', async () => {
     const bareNotFound = { response: { status: 404, data: {} } };
     const httpService = {

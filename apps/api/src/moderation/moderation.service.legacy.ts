@@ -6542,7 +6542,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const chatAutoCommentAttachMarker = await this.prisma.chatAutoCommentAttachMarker?.findFirst?.({
       where: {
         chatId: params.chatId,
-        replacementMessageId: params.messageId,
+        OR: [{ replacementMessageId: params.messageId }, { replyMessageId: params.messageId }],
       },
       select: {
         id: true,

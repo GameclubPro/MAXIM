@@ -217,6 +217,12 @@ enum ManagedBroadcastDeliveryStatus {
   CANCELED
 }
 
+enum PublicationDeliveryVerificationSource {
+  AUTOMATED_STABLE
+  MANUAL_CONFIRMED
+  LEGACY_SINGLE_OBSERVATION
+}
+
 enum ChannelSuggestionAdminDeliveryStatus {
   PENDING
   SENDING
@@ -399,26 +405,31 @@ model Chat {
 }
 
 model ChatBotMembership {
-  id                     String                  @id @default(cuid())
-  chatId                 String                  @map("chat_id")
-  botId                  String                  @map("bot_id")
-  role                   ChatBotMembershipRole   @default(STANDBY)
-  status                 ChatBotMembershipStatus @default(ACTIVE)
-  capabilities           Json                    @default("[]")
-  permissionsSnapshot    Json?                   @map("permissions_snapshot")
-  botAccessState         ChatBotAccessState      @default(UNKNOWN) @map("bot_access_state")
-  botAccessCheckedAt     DateTime?               @map("bot_access_checked_at")
-  botAccessExpiresAt     DateTime?               @map("bot_access_expires_at")
-  botAccessSource        String?                 @map("bot_access_source")
-  botAccessLastErrorCode String?                 @map("bot_access_last_error_code")
-  permissionsHash        String?                 @map("permissions_hash")
-  lastSeenAt             DateTime?               @map("last_seen_at")
-  lastWebhookAt          DateTime?               @map("last_webhook_at")
-  lifecycleEventAt       DateTime?               @map("lifecycle_event_at")
-  lifecycleEventType     String?                 @map("lifecycle_event_type")
-  lifecycleSource        String?                 @map("lifecycle_source")
-  createdAt              DateTime                @default(now()) @map("created_at")
-  updatedAt              DateTime                @updatedAt @map("updated_at")
+  id                        String                  @id @default(cuid())
+  chatId                    String                  @map("chat_id")
+  botId                     String                  @map("bot_id")
+  role                      ChatBotMembershipRole   @default(STANDBY)
+  status                    ChatBotMembershipStatus @default(ACTIVE)
+  capabilities              Json                    @default("[]")
+  permissionsSnapshot       Json?                   @map("permissions_snapshot")
+  botAccessState            ChatBotAccessState      @default(UNKNOWN) @map("bot_access_state")
+  botAccessCheckedAt        DateTime?               @map("bot_access_checked_at")
+  botAccessExpiresAt        DateTime?               @map("bot_access_expires_at")
+  botAccessSource           String?                 @map("bot_access_source")
+  botAccessLastErrorCode    String?                 @map("bot_access_last_error_code")
+  permissionsHash           String?                 @map("permissions_hash")
+  sendRouteFailureCount     Int                     @default(0) @map("send_route_failure_count")
+  sendRouteQuarantinedUntil DateTime?               @map("send_route_quarantined_until")
+  sendRouteLastFailureAt    DateTime?               @map("send_route_last_failure_at")
+  sendRouteLastFailureCode  String?                 @map("send_route_last_failure_code")
+  sendRouteLastSuccessAt    DateTime?               @map("send_route_last_success_at")
+  lastSeenAt                DateTime?               @map("last_seen_at")
+  lastWebhookAt             DateTime?               @map("last_webhook_at")
+  lifecycleEventAt          DateTime?               @map("lifecycle_event_at")
+  lifecycleEventType        String?                 @map("lifecycle_event_type")
+  lifecycleSource           String?                 @map("lifecycle_source")
+  createdAt                 DateTime                @default(now()) @map("created_at")
+  updatedAt                 DateTime                @updatedAt @map("updated_at")
 
   chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
 
@@ -1880,6 +1891,7 @@ model ChatAutoCommentAttachMarker {
   @@index([cleanupIntentId], map: "chat_auto_comment_cleanup_intent_idx")
   @@index([chatId, updatedAt(sort: Desc)], map: "chat_auto_comment_attach_markers_chat_updated_idx")
   @@index([chatId, replacementMessageId], map: "chat_auto_comment_attach_markers_chat_replacement_idx")
+  @@index([chatId, replyMessageId], map: "chat_auto_comment_attach_markers_chat_reply_idx")
   @@map("chat_auto_comment_attach_markers")
 }
 
@@ -2193,24 +2205,32 @@ model ManagedBroadcastOccurrence {
 }
 
 model ManagedBroadcastDelivery {
-  id                        String                         @id @default(cuid())
-  broadcastId               String                         @map("broadcast_id")
-  occurrenceIndex           Int                            @map("occurrence_index")
-  targetChatId              String                         @map("target_chat_id")
-  botId                     String?                        @map("bot_id")
-  status                    ManagedBroadcastDeliveryStatus @default(PENDING)
-  attemptCount              Int                            @default(0) @map("attempt_count")
-  remoteMessageId           String?                        @map("remote_message_id")
-  remoteMessageVerifiedAt   DateTime?                      @map("remote_message_verified_at")
-  legacySentWithoutRemoteId Boolean                        @default(false) @map("legacy_sent_without_remote_id")
-  lastError                 String?                        @map("last_error")
-  sentAt                    DateTime?                      @map("sent_at")
-  lockedAt                  DateTime?                      @map("locked_at")
-  lockToken                 String?                        @map("lock_token")
-  publicationOccurrenceId   String?                        @map("publication_occurrence_id")
-  contentRevisionId         String?                        @map("content_revision_id")
-  createdAt                 DateTime                       @default(now()) @map("created_at")
-  updatedAt                 DateTime                       @updatedAt @map("updated_at")
+  id                                    String                                 @id @default(cuid())
+  broadcastId                           String                                 @map("broadcast_id")
+  occurrenceIndex                       Int                                    @map("occurrence_index")
+  targetChatId                          String                                 @map("target_chat_id")
+  botId                                 String?                                @map("bot_id")
+  status                                ManagedBroadcastDeliveryStatus         @default(PENDING)
+  attemptCount                          Int                                    @default(0) @map("attempt_count")
+  remoteMessageId                       String?                                @map("remote_message_id")
+  remoteMessageVerifiedAt               DateTime?                              @map("remote_message_verified_at")
+  remoteMessageVerificationAttemptCount Int                                    @default(0) @map("remote_message_verification_attempt_count")
+  remoteMessageVerificationAbsentCount  Int                                    @default(0) @map("remote_message_verification_absent_count")
+  remoteMessageVerificationPresentCount Int                                    @default(0) @map("remote_message_verification_present_count")
+  remoteMessageVerificationAttemptedAt  DateTime?                              @map("remote_message_verification_attempted_at")
+  remoteMessageVerificationNextAt       DateTime?                              @map("remote_message_verification_next_at")
+  remoteMessageVerificationLastError    String?                                @map("remote_message_verification_last_error")
+  remoteMessageVerificationSource       PublicationDeliveryVerificationSource? @map("remote_message_verification_source")
+  legacySentWithoutRemoteId             Boolean                                @default(false) @map("legacy_sent_without_remote_id")
+  lastErrorCode                         String?                                @map("last_error_code")
+  lastError                             String?                                @map("last_error")
+  sentAt                                DateTime?                              @map("sent_at")
+  lockedAt                              DateTime?                              @map("locked_at")
+  lockToken                             String?                                @map("lock_token")
+  publicationOccurrenceId               String?                                @map("publication_occurrence_id")
+  contentRevisionId                     String?                                @map("content_revision_id")
+  createdAt                             DateTime                               @default(now()) @map("created_at")
+  updatedAt                             DateTime                               @updatedAt @map("updated_at")
 
   broadcast             ManagedBroadcast            @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
   publicationOccurrence PublicationOccurrence?      @relation(fields: [publicationOccurrenceId], references: [id], onDelete: Cascade)
@@ -2418,6 +2438,7 @@ model VkParsingPost {
   @@index([sourceId, publishQueuedAt], map: "vk_parsing_posts_source_queued_idx")
   @@index([chatId, sourceId, autoPublishedAt], map: "vk_parsing_posts_auto_published_idx")
   @@index([publishLockedAt], map: "vk_parsing_posts_publish_locked_idx")
+  @@index([chatId, publishedMessageId], map: "vk_parsing_posts_chat_published_message_idx")
   @@map("vk_parsing_posts")
 }
 
@@ -2482,6 +2503,8 @@ model ManagedGiveaway {
   @@index([status, startsAt], map: "managed_giveaways_status_starts_at_idx")
   @@index([status, endsAt], map: "managed_giveaways_status_ends_at_idx")
   @@index([status, lockedAt], map: "managed_giveaways_status_locked_at_idx")
+  @@index([sourceChatId, publicationMessageId], map: "managed_giveaways_chat_publication_message_idx")
+  @@index([sourceChatId, resultsMessageId], map: "managed_giveaways_chat_results_message_idx")
   @@map("managed_giveaways")
 }
 

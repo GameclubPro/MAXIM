@@ -4745,7 +4745,7 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
   });
 
-  it('does not auto-delete a bot copy that carries chat comments', async () => {
+  it('does not auto-delete a bot output that carries chat comments', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -4813,7 +4813,10 @@ describe('ModerationService', () => {
     expect(prisma.chatAutoCommentAttachMarker.findFirst).toHaveBeenCalledWith({
       where: {
         chatId: 'chat-1',
-        replacementMessageId: 'mid-comment-copy-1',
+        OR: [
+          { replacementMessageId: 'mid-comment-copy-1' },
+          { replyMessageId: 'mid-comment-copy-1' },
+        ],
       },
       select: {
         id: true,

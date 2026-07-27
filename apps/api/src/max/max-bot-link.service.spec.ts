@@ -37,6 +37,8 @@ type MutableMembership = {
   botAccessSource?: string | null;
   botAccessLastErrorCode?: string | null;
   permissionsHash?: string | null;
+  sendRouteFailureCount?: number;
+  sendRouteQuarantinedUntil?: Date | null;
   lifecycleEventAt?: Date | null;
   lifecycleEventType?: string | null;
   lifecycleSource?: string | null;
@@ -129,6 +131,8 @@ function createServiceFixture() {
                 membership.permissionsSnapshot === Prisma.JsonNull
                   ? null
                   : (membership.permissionsSnapshot ?? null),
+              sendRouteFailureCount: membership.sendRouteFailureCount ?? 0,
+              sendRouteQuarantinedUntil: membership.sendRouteQuarantinedUntil ?? null,
             })),
         };
       }),
@@ -688,6 +692,63 @@ describe('MaxBotLinkService', () => {
       expect(moderationRoute.candidateBotIds).toEqual(botIds);
     },
   );
+
+  it('prefers a healthy alternate only for sends while a route quarantine is active', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-27T12:00:00.000Z'));
+    try {
+      const fixture = createServiceFixture();
+      const chatId = 'chat-send-route-quarantine';
+      const primaryBotId = ROUTE_MATRIX_BOT_IDS[0];
+      const alternateBotId = ROUTE_MATRIX_BOT_IDS[1];
+      fixture.chats.set(chatId, {
+        id: chatId,
+        title: 'Send route quarantine',
+        botId: primaryBotId,
+        primaryBotId,
+        entityType: ChatEntityType.CHAT,
+      });
+      fixture.memberships.push(
+        createActiveMembership(chatId, primaryBotId, 0, {
+          sendRouteFailureCount: 1,
+          sendRouteQuarantinedUntil: new Date('2026-07-27T18:00:00.000Z'),
+        }),
+        createActiveMembership(chatId, alternateBotId, 1),
+      );
+
+      await expect(
+        fixture.service.resolveBotRoute({ purpose: 'send_message', chatId }),
+      ).resolves.toEqual(
+        expect.objectContaining({
+          botId: alternateBotId,
+          candidateBotIds: [alternateBotId, primaryBotId],
+        }),
+      );
+      await expect(
+        fixture.service.resolveBotRoute({
+          purpose: 'moderation_action',
+          chatId,
+          action: 'delete_message',
+        }),
+      ).resolves.toEqual(
+        expect.objectContaining({
+          botId: primaryBotId,
+          candidateBotIds: [primaryBotId, alternateBotId],
+        }),
+      );
+
+      jest.setSystemTime(new Date('2026-07-27T18:00:01.000Z'));
+      await expect(
+        fixture.service.resolveBotRoute({ purpose: 'send_message', chatId }),
+      ).resolves.toEqual(
+        expect.objectContaining({
+          botId: primaryBotId,
+          candidateBotIds: [primaryBotId, alternateBotId],
+        }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 
   it('fails closed for every routed purpose when the chat is NO_ELIGIBLE_BOT', async () => {
     const fixture = createServiceFixture();

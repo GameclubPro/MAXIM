@@ -57,4 +57,37 @@ describe('diagnose-vk-parsing script helpers', () => {
     expect(rendered).toContain('Publish backlog: 1 due / 2 queued');
     expect(rendered).toContain('sync={"waiting":0}');
   });
+
+  it('surfaces orphaned BullMQ jobs referenced by stuck database rows', () => {
+    const rendered = renderTextDiagnostics({
+      generatedAt: '2026-07-27T17:40:00.000Z',
+      windowHours: 6,
+      sourceStatus: [],
+      sourceHealth: {},
+      noisySources: [],
+      syncPerformance: {},
+      publishBacklog: { dueQueuedPosts: 2, queuedPosts: 2 },
+      stuckPublishPosts: [],
+      recentPublishFailures: [],
+      mediaStatus: [],
+      mediaIdentityConflicts: [],
+      recentMediaFailures: [],
+      queues: {
+        available: true,
+        error: null,
+        sync: { name: 'vk-parsing-sync', counts: {}, jobs: [] },
+        publish: {
+          name: 'vk-parsing-publish',
+          counts: { waiting: 0, active: 0, delayed: 0 },
+          jobs: [],
+          referencedJobs: [
+            { id: 'job-1', state: 'unknown' },
+            { id: 'job-2', state: 'missing' },
+          ],
+        },
+      },
+    });
+
+    expect(rendered).toContain('Stuck publish job states: {"unknown":1,"missing":1}');
+  });
 });
