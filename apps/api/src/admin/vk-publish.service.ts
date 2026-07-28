@@ -3072,6 +3072,23 @@ export class VkPublishService {
       throw new BadRequestException('Ссылка в конце доступна только для канала.');
     }
 
+    try {
+      const audienceSnapshot = await this.prisma.channelAudienceSnapshot.findFirst({
+        where: {
+          chatId,
+          link: { not: null },
+        },
+        orderBy: { capturedAt: 'desc' },
+        select: { link: true },
+      });
+      const knownLink = normalizeMaxChannelLink(audienceSnapshot?.link);
+      if (knownLink) {
+        return knownLink;
+      }
+    } catch (error) {
+      this.logger.warn({ chatId, err: error }, 'Failed to read cached MAX channel audience link');
+    }
+
     const catalogDelegate = this.prisma.managedBotChatCatalog;
     if (catalogDelegate && typeof catalogDelegate.findFirst === 'function') {
       try {

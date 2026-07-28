@@ -110,6 +110,9 @@ describe('VkParsingService', () => {
         findUnique: jest.fn().mockResolvedValue(null),
         upsert: jest.fn(),
       },
+      channelAudienceSnapshot: {
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
       managedBotChatCatalog: {
         findFirst: jest.fn().mockResolvedValue(null),
       },
@@ -634,6 +637,34 @@ describe('VkParsingService', () => {
       autoPublishKillSwitchEnabled: false,
       updatedAt: '2026-05-25T10:05:00.000Z',
     });
+  });
+
+  it('enables the channel signature from a persisted audience link without a live lookup', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    prisma.channelAudienceSnapshot.findFirst.mockResolvedValue({
+      link: 'https://max.ru/our-channel',
+    });
+
+    await service.updateSettings('channel-1', { userId: '183470701' } as never, {
+      appendChannelLinkEnabled: true,
+      channelLinkText: 'Наш канал',
+    });
+
+    expect(prisma.vkParsingSettings.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { chatId: 'channel-1' },
+        create: expect.objectContaining({
+          appendChannelLinkEnabled: true,
+          channelLinkText: 'Наш канал',
+        }),
+        update: {
+          appendChannelLinkEnabled: true,
+          channelLinkText: 'Наш канал',
+        },
+      }),
+    );
+    expect(prisma.managedBotChatCatalog.findFirst).not.toHaveBeenCalled();
+    expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
   });
 
   it('clears queued VK autopublish state when autoposting is disabled', async () => {
@@ -5594,6 +5625,50 @@ describe('VkParsingService', () => {
         trafficClass: 'interactive',
         sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
       }),
+    );
+  });
+
+  it('uses the persisted channel audience link without a live MAX lookup', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const post = createPostRow({ text: 'Текст из VK' });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      chatId: 'channel-1',
+      appendChannelLinkEnabled: true,
+      channelLinkText: 'Вступить в канал',
+    });
+    prisma.channelAudienceSnapshot.findFirst.mockResolvedValue({
+      link: 'http://www.max.ru/join/channel-invite#latest',
+    });
+    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+      messageId: 'mid-cached-channel-link',
+      url: 'https://max.ru/channel-name/post-id',
+    });
+
+    await service.publishPost('channel-1', 'post-1', { userId: '98315271' } as never, {
+      text: 'Текст из VK',
+      textFormat: 'plain',
+      photoUrls: [],
+      videoUrls: [],
+      linkUrls: [],
+    });
+
+    expect(prisma.channelAudienceSnapshot.findFirst).toHaveBeenCalledWith({
+      where: {
+        chatId: 'channel-1',
+        link: { not: null },
+      },
+      orderBy: { capturedAt: 'desc' },
+      select: { link: true },
+    });
+    expect(prisma.managedBotChatCatalog.findFirst).not.toHaveBeenCalled();
+    expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'channel-1',
+      'Текст из VK\n\n<a href="https://max.ru/join/channel-invite">Вступить в канал</a>',
+      expect.objectContaining({ textFormat: 'html' }),
+      expect.any(Object),
     );
   });
 
