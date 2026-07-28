@@ -27,6 +27,14 @@ function escapeMarkdownPlainText(value: string): string {
   return value.replace(/([\\`*_[\]()~+#])/g, '\\$1');
 }
 
+function escapeMarkdownLinkDestination(value: string): string {
+  return value
+    .replaceAll('(', '%28')
+    .replaceAll(')', '%29')
+    .replaceAll('[', '%5B')
+    .replaceAll(']', '%5D');
+}
+
 function markdownTitle(title: string): string {
   return `**${escapeMarkdown(title)}**`;
 }
@@ -77,7 +85,7 @@ function renderChannelSuggestionAuthorLink(
   }
 
   const safeLabel = escapeMarkdownPlainText(label);
-  return target ? `[${safeLabel}](${target})` : safeLabel;
+  return target ? `[${safeLabel}](${escapeMarkdownLinkDestination(target)})` : safeLabel;
 }
 
 export function buildChannelSuggestionAdminMessagePayload(params: {
@@ -137,7 +145,9 @@ export function buildChannelSuggestionAdminMessagePayload(params: {
       `Отправитель: ${senderLine}`,
       ...(normalizedActorUserId ? [`MAX ID: \`${escapeMarkdown(normalizedActorUserId)}\``] : []),
       ...(params.reviewedBy ? [`Решение принял: ${escapeMarkdown(params.reviewedBy)}`] : []),
-      ...(publishedUrl ? [`Пост: [Открыть пост](${publishedUrl})`] : []),
+      ...(publishedUrl
+        ? [`Пост: [Открыть пост](${escapeMarkdownLinkDestination(publishedUrl)})`]
+        : []),
       '',
       '━━━━━━━━━━━━',
       markdownTitle('Контент публикации'),

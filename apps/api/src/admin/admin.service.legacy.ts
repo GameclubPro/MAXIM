@@ -7226,7 +7226,8 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const payloadActorUserId = this.readTrimmedString(payload.actorUserId);
-    if (payloadActorUserId && payloadActorUserId !== row.actorUserId) {
+    const hasActorMismatch = Boolean(payloadActorUserId && payloadActorUserId !== row.actorUserId);
+    if (hasActorMismatch) {
       this.logger.warn(
         {
           suggestionId: row.id,
@@ -7239,35 +7240,48 @@ export class AdminService implements OnModuleDestroy {
     }
     const canonicalPayload: Record<string, unknown> = {
       ...payload,
+      ...(hasActorMismatch
+        ? {
+            authorDisplayName: null,
+            authorMentionDisplayName: null,
+            authorUsername: null,
+            authorProfileUrl: null,
+            authorAvatarUrl: null,
+          }
+        : {}),
       actorUserId: row.actorUserId,
     };
 
     let published: Awaited<ReturnType<typeof this.publishStoredChannelSuggestion>>;
     try {
-      published =
-        action === 'publish'
-          ? await this.publishStoredChannelSuggestion(row.chatId, row.actorUserId, canonicalPayload)
-          : {
-              messageId: null,
-              url: null,
-              threadId: null,
-              includeCommentsButton: false,
-              includeSuggestButton: false,
-              suggestButtonText: null,
-              autoPostButtonsMode: 'OFF' as ChannelSettings['autoPostButtonsMode'],
-              suggestionEntryMode: 'BOT' as ChannelSettings['postSuggestionsEntryMode'],
-              botId: null,
-              authorAttribution: await this.resolveChannelSuggestionAuthorAttribution(
-                row.chatId,
-                {
-                  userId: row.actorUserId,
-                  username: this.readTrimmedString(canonicalPayload.authorUsername),
-                  displayName: this.readTrimmedString(canonicalPayload.authorDisplayName),
-                  profileUrl: this.readTrimmedString(canonicalPayload.authorProfileUrl),
-                },
-                { trafficClass: 'interactive' },
-              ),
-            };
+      if (action === 'publish') {
+        published = await this.publishStoredChannelSuggestion(
+          row.chatId,
+          row.actorUserId,
+          canonicalPayload,
+        );
+      } else {
+        const resolvedBotId = await this.resolveDeliveryBotAssignment(row.chatId);
+        published = {
+          messageId: null,
+          url: null,
+          threadId: null,
+          includeCommentsButton: false,
+          includeSuggestButton: false,
+          suggestButtonText: null,
+          autoPostButtonsMode: 'OFF' as ChannelSettings['autoPostButtonsMode'],
+          suggestionEntryMode: 'BOT' as ChannelSettings['postSuggestionsEntryMode'],
+          botId: resolvedBotId ?? null,
+          authorAttribution: await this.resolveChannelSuggestionAuthorAttribution(
+            row.chatId,
+            this.readStoredChannelSuggestionActor(row.actorUserId, canonicalPayload),
+            {
+              botId: resolvedBotId,
+              trafficClass: 'interactive',
+            },
+          ),
+        };
+      }
     } catch (error) {
       if (this.isChannelSuggestionAmbiguousSendError(error)) {
         this.logger.warn(
@@ -17552,13 +17566,7 @@ export class AdminService implements OnModuleDestroy {
     const delivery = await this.deliverSuggestionToAdminPrivates(
       row.id,
       row.chatId,
-      {
-        userId: row.actorUserId,
-        username: this.readTrimmedString(payload.authorUsername),
-        displayName: this.readTrimmedString(payload.authorDisplayName),
-        avatarUrl: this.readTrimmedString(payload.authorAvatarUrl),
-        profileUrl: this.readTrimmedString(payload.authorProfileUrl),
-      },
+      this.readStoredChannelSuggestionActor(row.actorUserId, payload),
       {
         text: this.readRawString(payload.text) ?? '',
         textFormat: this.normalizeBroadcastTextFormat(
@@ -17596,6 +17604,22 @@ export class AdminService implements OnModuleDestroy {
         this.resolveUserDisplayNames(targetChatId, userIds),
       logger: this.logger,
     });
+  }
+
+  private readStoredChannelSuggestionActor(
+    actorUserId: string,
+    payload: Record<string, unknown>,
+  ): ChannelSuggestionActor {
+    const payloadActorUserId = this.readTrimmedString(payload.actorUserId);
+    const canUseStoredIdentity = !payloadActorUserId || payloadActorUserId === actorUserId;
+
+    return {
+      userId: actorUserId,
+      username: canUseStoredIdentity ? this.readTrimmedString(payload.authorUsername) : null,
+      displayName: canUseStoredIdentity ? this.readTrimmedString(payload.authorDisplayName) : null,
+      avatarUrl: canUseStoredIdentity ? this.readTrimmedString(payload.authorAvatarUrl) : null,
+      profileUrl: canUseStoredIdentity ? this.readTrimmedString(payload.authorProfileUrl) : null,
+    };
   }
 
   private async enqueueChannelSuggestionDelivery(
@@ -18217,12 +18241,7 @@ export class AdminService implements OnModuleDestroy {
     const text = this.readRawString(payload.text) ?? '';
     const authorAttribution = await this.resolveChannelSuggestionAuthorAttribution(
       chatId,
-      {
-        userId: actorUserId,
-        username: this.readTrimmedString(payload.authorUsername),
-        displayName: this.readTrimmedString(payload.authorDisplayName),
-        profileUrl: this.readTrimmedString(payload.authorProfileUrl),
-      },
+      this.readStoredChannelSuggestionActor(actorUserId, payload),
       {
         botId: resolvedBotId,
         trafficClass: 'interactive',

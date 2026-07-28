@@ -2220,6 +2220,51 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
   });
 
+  it('drops mismatched stored author identity during suggestion delivery recovery', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw.mockResolvedValue([{ recipient_chat_id: '555001' }]);
+    prisma.auditLog.findUnique.mockResolvedValue({
+      id: 'suggestion-mismatched-author-1',
+      chatId: 'channel-1',
+      actorUserId: 'canonical-user',
+      action: 'CHANNEL_DIALOG_SUGGESTION',
+      payload: {
+        type: 'suggest',
+        actorUserId: 'payload-user',
+        authorDisplayName: 'Чужой пользователь',
+        authorUsername: 'payload-user',
+        authorProfileUrl: 'https://max.ru/payload-user',
+        text: 'Проверить автора',
+        reviewStatus: 'pending',
+        delivered: false,
+        deliveries: [],
+      },
+      createdAt: new Date('2026-03-10T12:00:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatMemberProfiles: jest.fn().mockRejectedValue(new Error('MAX unavailable')),
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-canonical-author-1', url: null }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await service.processChannelSuggestionDeliveryJob('suggestion-mismatched-author-1');
+
+    const deliveredText = maxClient.sendMessageImmediateWithId.mock.calls[0]?.[1];
+    expect(deliveredText).toContain('Отправитель: canonical-user');
+    expect(deliveredText).not.toContain('Чужой пользователь');
+    expect(deliveredText).not.toContain('payload-user');
+    expect(deliveredText).not.toContain('https://max.ru/payload-user');
+  });
+
   it('claims durable suggestion admin delivery rows before sending', async () => {
     const prisma = createPrismaMock();
     prisma.$queryRaw.mockResolvedValue([{ recipient_chat_id: '555001' }]);
@@ -4413,25 +4458,67 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       );
     });
 
-    it('refreshes author attribution when a suggestion is rejected', async () => {
-      const { getChatMemberProfiles, maxClient, prisma, service } = createAuthorReviewHarness({
+    it('drops conflicting payload profile fallbacks when the canonical lookup fails', async () => {
+      const actorUserId = '214634787';
+      const { maxClient, prisma, service } = createAuthorReviewHarness({
+        actorUserId,
         payload: {
-          authorDisplayName: 'Старое имя',
-          deliveries: [
-            {
-              adminUserId: 'admin-1',
-              privateChatId: '555001',
-              messageId: 'mid-admin-author-review-cancel-1',
-              botId: 'private-bot-2',
-            },
-          ],
+          actorUserId: 'payload-spoofed-user',
+          authorDisplayName: 'Чужое имя',
+          authorMentionDisplayName: 'Чужое имя',
+          authorUsername: 'payload-spoofed-user',
+          authorProfileUrl: 'https://max.ru/payload-spoofed-user',
+          authorAvatarUrl: 'https://example.com/spoofed.jpg',
         },
-        remoteProfile: {
-          displayName: 'Новое Полное Имя',
-          username: 'current-author',
-          profileUrl: null,
-        },
+        remoteError: new Error('MAX profile lookup unavailable'),
+        localDisplayName: 'Канонический автор',
       });
+
+      await service.reviewChannelSuggestionByAdmin(
+        'suggestion-author-review-1',
+        reviewer,
+        'publish',
+      );
+
+      const publishedText = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0]?.[1];
+      expect(publishedText).toBe('От подписчика Канонический автор\n\nТекст предложки');
+      expect(publishedText).not.toContain('payload-spoofed-user');
+      expect(prisma.auditLog.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: {
+            payload: expect.objectContaining({
+              actorUserId,
+              authorDisplayName: 'Канонический автор',
+              authorMentionDisplayName: null,
+              authorUsername: null,
+              authorProfileUrl: null,
+              authorAvatarUrl: null,
+            }),
+          },
+        }),
+      );
+    });
+
+    it('refreshes author attribution when a suggestion is rejected', async () => {
+      const { actorUserId, getChatMemberProfiles, maxClient, prisma, service } =
+        createAuthorReviewHarness({
+          payload: {
+            authorDisplayName: 'Старое имя',
+            deliveries: [
+              {
+                adminUserId: 'admin-1',
+                privateChatId: '555001',
+                messageId: 'mid-admin-author-review-cancel-1',
+                botId: 'private-bot-2',
+              },
+            ],
+          },
+          remoteProfile: {
+            displayName: 'Новое Полное Имя',
+            username: 'current-author',
+            profileUrl: null,
+          },
+        });
 
       await service.reviewChannelSuggestionByAdmin(
         'suggestion-author-review-1',
@@ -4439,7 +4526,14 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         'cancel',
       );
 
-      expect(getChatMemberProfiles).toHaveBeenCalledTimes(1);
+      expect(getChatMemberProfiles).toHaveBeenCalledWith(
+        'channel-1',
+        [actorUserId],
+        expect.objectContaining({
+          botId: 'channel-bot-author',
+          trafficClass: 'interactive',
+        }),
+      );
       expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
       expect(maxClient.editMessageInlineKeyboard.mock.calls[0]?.[2]).toContain(
         '[Новое Полное Имя](https://max.ru/current-author)',
@@ -4624,6 +4718,30 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       if (!testCase.expectLink) {
         expect(publishedText).not.toContain('](');
       }
+    });
+
+    it('escapes a legacy MAX profile URL before embedding it in Markdown', async () => {
+      const actorUserId = '214634788';
+      const { maxClient, service } = createAuthorReviewHarness({
+        actorUserId,
+        payload: {
+          authorDisplayName: null,
+          authorUsername: null,
+          authorProfileUrl: 'https://max.ru/foo)%20[x](https://evil.example',
+        },
+      });
+
+      await service.reviewChannelSuggestionByAdmin(
+        'suggestion-author-review-1',
+        reviewer,
+        'publish',
+      );
+
+      const publishedText = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0]?.[1];
+      expect(publishedText).toBe(
+        `От подписчика [${actorUserId}](https://max.ru/foo%29%20%5Bx%5D%28https://evil.example)\n\nТекст предложки`,
+      );
+      expect(publishedText).not.toContain('](https://evil.example');
     });
   });
 
