@@ -350,6 +350,7 @@ export type MaxActionRoutingMetadata = {
   reason?: string | null;
   action?: 'delete_message' | 'moderate_member';
   routingVersion?: number | null;
+  sendRouteHalfOpenProbe?: 'publication_exact_verification';
 };
 
 export type MaxActionLedgerContextValue =

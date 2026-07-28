@@ -1,6 +1,10 @@
 import {
   ManagedBroadcastDeliveryStatus,
+  ManagedBroadcastStatus,
   Prisma,
+  PublicationLifecycle,
+  PublicationOccurrenceStatus,
+  PublicationScheduleStatus,
   PublicationDeliveryVerificationSource,
   type ManagedBroadcast,
   type ManagedBroadcastDelivery,
@@ -11,7 +15,13 @@ import {
   recordMaxSendRouteStableSuccess,
 } from '../max/max-send-route-health';
 import type { AdminManagedBroadcastRuntimeContext } from './admin-managed-broadcast-runtime-context';
-import { resolvePublicationVerificationNextSendAt } from './publication-delivery-verification-state';
+import {
+  buildPublicationRouteAdvisoryLockKey,
+  buildPublicationDeliveryAutomatedVerificationWhere,
+  hasPublicationDeliveryAutomatedVerificationState,
+  PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
+  resolvePublicationVerificationNextSendAt,
+} from './publication-delivery-verification-state';
 import {
   PUBLICATION_POST_SEND_VERIFY_DELAY_MS,
   PUBLICATION_POST_SEND_ABSENCE_MAX_ATTEMPTS,
@@ -80,7 +90,12 @@ export class AdminManagedBroadcastPublicationVerification {
       Pick<
         ManagedBroadcastDelivery,
         | 'remoteMessageId'
+        | 'remoteMessageVerificationAbsentCount'
+        | 'remoteMessageVerificationAttemptCount'
+        | 'remoteMessageVerificationAttemptedAt'
         | 'remoteMessageVerificationNextAt'
+        | 'remoteMessageVerificationPresentCount'
+        | 'remoteMessageVerificationSource'
         | 'remoteMessageVerifiedAt'
         | 'sentAt'
         | 'status'
@@ -96,7 +111,8 @@ export class AdminManagedBroadcastPublicationVerification {
       (delivery) =>
         delivery.status === ManagedBroadcastDeliveryStatus.SENT &&
         delivery.remoteMessageId !== null &&
-        delivery.remoteMessageVerifiedAt === null,
+        delivery.remoteMessageVerifiedAt === null &&
+        hasPublicationDeliveryAutomatedVerificationState(delivery),
     );
     return resolvePublicationVerificationNextSendAt(unverifiedDeliveries, hasPendingDelivery);
   }
@@ -232,9 +248,14 @@ export class AdminManagedBroadcastPublicationVerification {
           sentAt: { lte: verifyReadyBefore },
           remoteMessageId: { not: null },
           remoteMessageVerifiedAt: null,
-          OR: [
-            { remoteMessageVerificationNextAt: null },
-            { remoteMessageVerificationNextAt: { lte: now } },
+          AND: [
+            buildPublicationDeliveryAutomatedVerificationWhere(),
+            {
+              OR: [
+                { remoteMessageVerificationNextAt: null },
+                { remoteMessageVerificationNextAt: { lte: now } },
+              ],
+            },
           ],
         },
         orderBy: [{ sentAt: 'asc' }, { id: 'asc' }],
@@ -247,6 +268,7 @@ export class AdminManagedBroadcastPublicationVerification {
         delivery.sentAt <= verifyReadyBefore &&
         delivery.remoteMessageId !== null &&
         delivery.remoteMessageVerifiedAt === null &&
+        hasPublicationDeliveryAutomatedVerificationState(delivery) &&
         (delivery.remoteMessageVerificationNextAt === null ||
           delivery.remoteMessageVerificationNextAt === undefined ||
           delivery.remoteMessageVerificationNextAt <= now),
@@ -348,13 +370,13 @@ export class AdminManagedBroadcastPublicationVerification {
             continue;
           }
 
-          const updated = await this.context.prisma.managedBroadcastDelivery.updateMany({
+          await this.persistVerificationRouteOutcome({
+            outcome: 'stable_success',
+            delivery,
             where: verificationWhere,
             data: verificationData,
+            observedAt: attemptedAt,
           });
-          if (updated.count > 0) {
-            await this.recordRouteHealthSafely('stable_success', delivery, attemptedAt);
-          }
           continue;
         }
         const exactAbsence = Boolean(
@@ -432,15 +454,22 @@ export class AdminManagedBroadcastPublicationVerification {
             ? 'MAX несколько раз подтвердил, что сообщение исчезло после отправки. Проверьте публикацию вручную.'
             : 'Не удалось устойчиво подтвердить публикацию в MAX. Проверьте сообщение вручную.',
         };
-        const updated = await this.context.prisma.managedBroadcastDelivery.updateMany({
-          where: terminalWhere,
-          data: terminalData,
-        });
-        if (updated.count === 0) {
+        const updated = disappearanceConfirmed
+          ? await this.persistVerificationRouteOutcome({
+              outcome: 'disappearance',
+              delivery,
+              where: terminalWhere,
+              data: terminalData,
+              observedAt: attemptedAt,
+            })
+          : (
+              await this.context.prisma.managedBroadcastDelivery.updateMany({
+                where: terminalWhere,
+                data: terminalData,
+              })
+            ).count > 0;
+        if (!updated) {
           continue;
-        }
-        if (disappearanceConfirmed) {
-          await this.recordRouteHealthSafely('disappearance', delivery, attemptedAt);
         }
         unconfirmedChatIds.add(delivery.targetChatId);
         this.context.logger.warn(
@@ -467,37 +496,103 @@ export class AdminManagedBroadcastPublicationVerification {
     return unconfirmedChatIds;
   }
 
-  private async recordRouteHealthSafely(
-    outcome: 'stable_success' | 'disappearance',
-    delivery: Pick<ManagedBroadcastDelivery, 'id' | 'targetChatId' | 'botId' | 'sentAt'>,
-    observedAt: Date,
-  ): Promise<void> {
-    if (!delivery.sentAt || !delivery.botId) {
-      return;
+  private async persistVerificationRouteOutcome(params: {
+    outcome: 'stable_success' | 'disappearance';
+    delivery: Pick<ManagedBroadcastDelivery, 'targetChatId' | 'botId' | 'sentAt'>;
+    where: Prisma.ManagedBroadcastDeliveryWhereInput;
+    data: Prisma.ManagedBroadcastDeliveryUpdateManyMutationInput;
+    observedAt: Date;
+  }): Promise<boolean> {
+    const sentAt = params.delivery.sentAt;
+    const botId = params.delivery.botId;
+    if (!sentAt || !botId) {
+      const updated = await this.context.prisma.managedBroadcastDelivery.updateMany({
+        where: params.where,
+        data: params.data,
+      });
+      return updated.count > 0;
     }
-    try {
-      const observation = {
-        chatId: delivery.targetChatId,
-        botId: delivery.botId,
-        sentAt: delivery.sentAt,
-        observedAt,
-      };
-      if (outcome === 'disappearance') {
-        await recordMaxSendRouteDisappearance(this.context.prisma, observation);
-      } else {
-        await recordMaxSendRouteStableSuccess(this.context.prisma, observation);
-      }
-    } catch (error: unknown) {
-      this.context.logger.warn(
-        {
-          deliveryId: delivery.id,
-          targetChatId: delivery.targetChatId,
-          botId: delivery.botId,
-          routeHealthOutcome: outcome,
-          err: normalizeVerificationError(error),
-        },
-        'Managed publication route-health persistence failed',
+
+    return this.context.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw(
+        Prisma.sql`SELECT pg_advisory_xact_lock(hashtext(${buildPublicationRouteAdvisoryLockKey(params.delivery.targetChatId)}))`,
       );
-    }
+      const updated = await tx.managedBroadcastDelivery.updateMany({
+        where: params.where,
+        data: params.data,
+      });
+      if (updated.count === 0) {
+        return false;
+      }
+      const observation = {
+        chatId: params.delivery.targetChatId,
+        botId,
+        sentAt,
+        observedAt: params.observedAt,
+      };
+      const routeHealthChanged =
+        params.outcome === 'disappearance'
+          ? await recordMaxSendRouteDisappearance(tx, observation)
+          : await recordMaxSendRouteStableSuccess(tx, observation);
+      if (params.outcome === 'stable_success' && routeHealthChanged) {
+        // FLAG: A successful exact canary must wake the same target's deferred Publication
+        // backlog in this transaction. Otherwise the six-hour claim lease remains reflected in
+        // broadcast.nextSendAt even though the route circuit has already closed.
+        await tx.managedBroadcast.updateMany({
+          where: {
+            publicationOccurrenceId: { not: null },
+            status: ManagedBroadcastStatus.ACTIVE,
+            nextSendAt: { gt: params.observedAt },
+            publicationOccurrence: {
+              is: {
+                status: {
+                  in: [
+                    PublicationOccurrenceStatus.SCHEDULED,
+                    PublicationOccurrenceStatus.IN_PROGRESS,
+                  ],
+                },
+                publication: { lifecycle: PublicationLifecycle.ACTIVE },
+                schedule: { status: PublicationScheduleStatus.ACTIVE },
+              },
+            },
+            deliveries: {
+              some: {
+                targetChatId: params.delivery.targetChatId,
+                status: ManagedBroadcastDeliveryStatus.PENDING,
+                lastErrorCode: PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
+              },
+            },
+          },
+          data: { nextSendAt: params.observedAt },
+        });
+        await tx.managedBroadcastDelivery.updateMany({
+          where: {
+            targetChatId: params.delivery.targetChatId,
+            status: ManagedBroadcastDeliveryStatus.PENDING,
+            lastErrorCode: PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
+            broadcast: {
+              is: {
+                publicationOccurrenceId: { not: null },
+                status: ManagedBroadcastStatus.ACTIVE,
+                publicationOccurrence: {
+                  is: {
+                    status: {
+                      in: [
+                        PublicationOccurrenceStatus.SCHEDULED,
+                        PublicationOccurrenceStatus.IN_PROGRESS,
+                      ],
+                    },
+                    publication: { lifecycle: PublicationLifecycle.ACTIVE },
+                    schedule: { status: PublicationScheduleStatus.ACTIVE },
+                  },
+                },
+              },
+            },
+          },
+          data: { lastErrorCode: null, lastError: null },
+        });
+      }
+      return true;
+    });
   }
 }

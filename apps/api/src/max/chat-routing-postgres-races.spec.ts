@@ -225,4 +225,66 @@ describePostgresRace('PostgreSQL multi-bot routing races', () => {
     );
     expect(takeover.rowCount).toBe(1);
   });
+
+  it('grants exactly one half-open publication claim for a disappeared send route', async () => {
+    const suffix = randomUUID();
+    const chatId = `chat-half-open-${suffix}`;
+    const botId = `bot-half-open-${suffix}`;
+    const membershipId = `membership-half-open-${suffix}`;
+    const claimedAt = new Date('2026-07-27T18:00:01.000Z');
+    const claimedUntil = new Date('2026-07-28T00:00:01.000Z');
+    createdChatIds.push(chatId);
+
+    await pool.query(
+      `INSERT INTO "chats" (
+        "id", "title", "entity_type", "catalog_kind", "routing_state", "routing_version", "updated_at"
+      ) VALUES ($1, 'Half-open race', 'CHAT', 'MANAGED', 'READY', 0, CURRENT_TIMESTAMP)`,
+      [chatId],
+    );
+    await pool.query(
+      `INSERT INTO "chat_bot_memberships" (
+        "id", "chat_id", "bot_id", "role", "status", "capabilities", "bot_access_state",
+        "send_route_failure_count", "send_route_quarantined_until",
+        "send_route_last_failure_code", "updated_at"
+      ) VALUES (
+        $1, $2, $3, 'PRIMARY', 'ACTIVE', '[]'::jsonb, 'CONFIRMED_ADMIN',
+        1, $4, 'PUBLICATION_MESSAGE_DISAPPEARED', CURRENT_TIMESTAMP
+      )`,
+      [membershipId, chatId, botId, new Date('2026-07-27T18:00:00.000Z')],
+    );
+
+    const claims = await Promise.all(
+      Array.from({ length: 6 }, () =>
+        pool.query(
+          `UPDATE "chat_bot_memberships"
+          SET "send_route_quarantined_until" = $4
+          WHERE "chat_id" = $1
+            AND "bot_id" = $2
+            AND "status" = 'ACTIVE'
+            AND "send_route_failure_count" = 1
+            AND "send_route_last_failure_code" = 'PUBLICATION_MESSAGE_DISAPPEARED'
+            AND (
+              "send_route_quarantined_until" IS NULL
+              OR "send_route_quarantined_until" <= $3
+            )
+          RETURNING "id"`,
+          [chatId, botId, claimedAt, claimedUntil],
+        ),
+      ),
+    );
+
+    expect(claims.reduce((sum, result) => sum + (result.rowCount ?? 0), 0)).toBe(1);
+    await expect(
+      pool.query<{ send_route_quarantined_until: Date }>(
+        `SELECT "send_route_quarantined_until"
+        FROM "chat_bot_memberships"
+        WHERE "chat_id" = $1 AND "bot_id" = $2`,
+        [chatId, botId],
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        rows: [expect.objectContaining({ send_route_quarantined_until: claimedUntil })],
+      }),
+    );
+  });
 });

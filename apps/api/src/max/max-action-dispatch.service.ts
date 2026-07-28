@@ -1,7 +1,11 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { UnrecoverableError } from 'bullmq';
-import { MaxActionNoExecutableRouteError } from './max-action-dispatch-error';
+import {
+  isMaxActionRouteQuarantinedError,
+  MaxActionNoExecutableRouteError,
+  MaxActionRouteQuarantinedError,
+} from './max-action-dispatch-error';
 import { MaxActionLedgerService } from './max-action-ledger.service';
 import { MaxBotLinkService, type MaxBotRouteRequest } from './max-bot-link.service';
 import {
@@ -51,8 +55,11 @@ export type MaxActionDispatchExecutionOptions = {
 
 export {
   isMaxActionNoExecutableRouteError,
+  isMaxActionRouteQuarantinedError,
   MAX_ACTION_NO_EXECUTABLE_ROUTE_ERROR_CODE,
+  MAX_ACTION_ROUTE_QUARANTINED_ERROR_CODE,
   MaxActionNoExecutableRouteError,
+  MaxActionRouteQuarantinedError,
 } from './max-action-dispatch-error';
 
 const ROUTED_SEND_ACCESS_MAX_AGE_MS = 30 * 60_000;
@@ -116,9 +123,14 @@ export class MaxActionDispatchService {
     const crossBotOperationAllowed =
       job.actionType !== 'DELETE_MESSAGE' || this.crossBotEditDeleteEnabled;
     const routedFailoverEnabled = routedMutationEnforced && crossBotOperationAllowed;
-    const candidateBotIds = await this.resolveExecutionCandidateBotIds(job, {
+    const allowHalfOpenProbe =
+      job.routing?.sendRouteHalfOpenProbe === 'publication_exact_verification';
+    const candidateResolution = await this.resolveExecutionCandidateBotIds(job, {
       enforceFreshRoute: routedFailoverEnabled,
+      allowHalfOpenProbe,
     });
+    const candidateBotIds = candidateResolution.candidateBotIds;
+    const halfOpenCandidateBotIds = new Set(candidateResolution.halfOpenCandidateBotIds);
     if (this.isRoutedJob(job) && !routedFailoverEnabled && candidateBotIds.length > 1) {
       candidateBotIds.splice(1);
     }
@@ -178,6 +190,15 @@ export class MaxActionDispatchService {
       }
 
       let dispatchAttemptStarted = false;
+      let halfOpenClaimedUntil: Date | null = null;
+      const releaseHalfOpenClaim = async () => {
+        if (!candidateBotId || !halfOpenClaimedUntil) {
+          return;
+        }
+        const claimedUntil = halfOpenClaimedUntil;
+        halfOpenClaimedUntil = null;
+        await this.releaseSendRouteHalfOpenSafely(job, candidateBotId, claimedUntil);
+      };
       try {
         if (
           candidateBotId &&
@@ -186,6 +207,7 @@ export class MaxActionDispatchService {
             attemptJob,
             candidateBotIds,
             attemptedBotIds,
+            halfOpenCandidateBotIds.has(candidateBotId),
           ))
         ) {
           continue;
@@ -205,6 +227,17 @@ export class MaxActionDispatchService {
           };
           await this.actionLedgerService?.recordPrepared?.(attemptJob);
         }
+        if (candidateBotId && halfOpenCandidateBotIds.has(candidateBotId)) {
+          halfOpenClaimedUntil = await this.claimSendRouteHalfOpen(job, candidateBotId);
+          if (!halfOpenClaimedUntil) {
+            throw new MaxActionRouteQuarantinedError(
+              job.actionType,
+              job.chatId,
+              candidateResolution.retryAt ?? new Date(Date.now() + 15 * 60_000),
+              [candidateBotId],
+            );
+          }
+        }
         options.onDispatchAttempt?.({
           botId: candidateBotId ?? null,
           job: attemptJob,
@@ -220,7 +253,11 @@ export class MaxActionDispatchService {
         }
         return;
       } catch (error: unknown) {
+        if (!dispatchAttemptStarted) {
+          await releaseHalfOpenClaim();
+        }
         if (isMaxApiCircuitOpenError(error)) {
+          await releaseHalfOpenClaim();
           if (this.isRoutedJob(job) && routedFailoverEnabled) {
             lastPreDispatchError = error;
             this.logger.warn(
@@ -327,11 +364,15 @@ export class MaxActionDispatchService {
 
   private async resolveExecutionCandidateBotIds(
     job: MaxActionJob,
-    options: { enforceFreshRoute: boolean },
-  ): Promise<string[]> {
+    options: { enforceFreshRoute: boolean; allowHalfOpenProbe: boolean },
+  ): Promise<{
+    candidateBotIds: string[];
+    halfOpenCandidateBotIds: string[];
+    retryAt: Date | null;
+  }> {
     const storedCandidates = this.normalizeBotIds([job.botId, ...(job.candidateBotIds ?? [])]);
     if (!job.routing || !this.maxBotLinkService) {
-      return storedCandidates;
+      return { candidateBotIds: storedCandidates, halfOpenCandidateBotIds: [], retryAt: null };
     }
 
     try {
@@ -357,25 +398,63 @@ export class MaxActionDispatchService {
       }
       const refreshedCandidates = this.normalizeBotIds(route.candidateBotIds);
       if (refreshedCandidates.length === 0) {
-        return [];
+        if (
+          route.purpose === 'send_message' &&
+          (route.quarantinedCandidateBotIds?.length ?? 0) > 0 &&
+          route.retryAt
+        ) {
+          throw new MaxActionRouteQuarantinedError(
+            job.actionType,
+            job.chatId,
+            route.retryAt,
+            route.quarantinedCandidateBotIds ?? [],
+          );
+        }
+        return { candidateBotIds: [], halfOpenCandidateBotIds: [], retryAt: null };
+      }
+      const halfOpenCandidateBotId = this.normalizeBotIds(
+        route.purpose === 'send_message' ? (route.halfOpenCandidateBotIds ?? []) : [],
+      ).find((botId) => refreshedCandidates.includes(botId));
+      if (halfOpenCandidateBotId) {
+        if (!options.allowHalfOpenProbe) {
+          throw new MaxActionRouteQuarantinedError(
+            job.actionType,
+            job.chatId,
+            route.purpose === 'send_message' && route.retryAt
+              ? route.retryAt
+              : new Date(Date.now() + 15 * 60_000),
+            [halfOpenCandidateBotId],
+          );
+        }
       }
       if (routingVersionChanged) {
-        return refreshedCandidates;
+        return {
+          candidateBotIds: refreshedCandidates,
+          halfOpenCandidateBotIds: halfOpenCandidateBotId ? [halfOpenCandidateBotId] : [],
+          retryAt: route.purpose === 'send_message' ? (route.retryAt ?? null) : null,
+        };
       }
       const stillEligibleStoredCandidates = storedCandidates.filter((botId) =>
         refreshedCandidates.includes(botId),
       );
-      return options.enforceFreshRoute
-        ? refreshedCandidates
-        : stillEligibleStoredCandidates.length > 0
-          ? [
-              ...stillEligibleStoredCandidates,
-              ...refreshedCandidates.filter(
-                (botId) => !stillEligibleStoredCandidates.includes(botId),
-              ),
-            ]
-          : refreshedCandidates;
+      return {
+        candidateBotIds: options.enforceFreshRoute
+          ? refreshedCandidates
+          : stillEligibleStoredCandidates.length > 0
+            ? [
+                ...stillEligibleStoredCandidates,
+                ...refreshedCandidates.filter(
+                  (botId) => !stillEligibleStoredCandidates.includes(botId),
+                ),
+              ]
+            : refreshedCandidates,
+        halfOpenCandidateBotIds: halfOpenCandidateBotId ? [halfOpenCandidateBotId] : [],
+        retryAt: route.purpose === 'send_message' ? (route.retryAt ?? null) : null,
+      };
     } catch (error: unknown) {
+      if (isMaxActionRouteQuarantinedError(error)) {
+        throw error;
+      }
       this.logger.warn(
         {
           actionType: job.actionType,
@@ -389,7 +468,7 @@ export class MaxActionDispatchService {
       if (options.enforceFreshRoute) {
         throw error;
       }
-      return storedCandidates;
+      return { candidateBotIds: storedCandidates, halfOpenCandidateBotIds: [], retryAt: null };
     }
   }
 
@@ -399,6 +478,8 @@ export class MaxActionDispatchService {
           purpose: 'send_message',
           chatId: job.chatId,
           fallbackToPrimary: true,
+          allowHalfOpenProbe:
+            job.routing?.sendRouteHalfOpenProbe === 'publication_exact_verification',
         }
       : {
           purpose: 'moderation_action',
@@ -408,10 +489,59 @@ export class MaxActionDispatchService {
         };
   }
 
+  private async claimSendRouteHalfOpen(job: MaxActionJob, botId: string): Promise<Date | null> {
+    const claim = (
+      this.maxBotLinkService as
+        | (MaxBotLinkService & {
+            claimSendRouteHalfOpen?: MaxBotLinkService['claimSendRouteHalfOpen'];
+          })
+        | undefined
+    )?.claimSendRouteHalfOpen;
+    if (typeof claim !== 'function' || !this.maxBotLinkService) {
+      return null;
+    }
+    return claim.call(this.maxBotLinkService, { chatId: job.chatId, botId });
+  }
+
+  private async releaseSendRouteHalfOpenSafely(
+    job: MaxActionJob,
+    botId: string,
+    claimedUntil: Date,
+  ): Promise<void> {
+    const release = (
+      this.maxBotLinkService as
+        | (MaxBotLinkService & {
+            releaseSendRouteHalfOpen?: MaxBotLinkService['releaseSendRouteHalfOpen'];
+          })
+        | undefined
+    )?.releaseSendRouteHalfOpen;
+    if (typeof release !== 'function' || !this.maxBotLinkService) {
+      return;
+    }
+    try {
+      await release.call(this.maxBotLinkService, {
+        chatId: job.chatId,
+        botId,
+        claimedUntil,
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          actionType: job.actionType,
+          chatId: job.chatId,
+          botId,
+          error: this.extractErrorMessage(error),
+        },
+        'Failed to release a pre-dispatch MAX send-route half-open claim',
+      );
+    }
+  }
+
   private async refreshStaleRoutedCandidateAccess(
     job: MaxActionJob,
     remainingCandidateBotIds: string[],
     attemptedBotIds: readonly string[],
+    allowHalfOpenProbe = false,
   ): Promise<boolean> {
     const botId = job.botId?.trim() ?? '';
     const maxAgeMs = this.resolveAccessSnapshotMaxAgeMs(job.actionType);
@@ -457,9 +587,11 @@ export class MaxActionDispatchService {
     if (!job.routing) {
       return true;
     }
-    const refreshedCandidates = await this.resolveExecutionCandidateBotIds(job, {
+    const refreshedResolution = await this.resolveExecutionCandidateBotIds(job, {
       enforceFreshRoute: true,
+      allowHalfOpenProbe,
     });
+    const refreshedCandidates = refreshedResolution.candidateBotIds;
     for (const refreshedBotId of refreshedCandidates) {
       if (
         refreshedBotId !== botId &&

@@ -1109,6 +1109,7 @@ export class MaxActionLedgerService {
             reason: job.routing.reason ?? null,
             action: job.routing.action ?? null,
             routingVersion: job.routing.routingVersion ?? null,
+            sendRouteHalfOpenProbe: job.routing.sendRouteHalfOpenProbe ?? null,
           }
         : null,
       ledgerContext: job.ledgerContext ?? null,

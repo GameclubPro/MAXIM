@@ -30,6 +30,7 @@ export type MaxRoutedPublicationRequest = {
   trafficClass: MaxApiTrafficClass;
   actionHealthLane?: MaxActionJob['actionHealthLane'];
   sourceTag: string;
+  sendRouteHalfOpenProbe?: 'publication_exact_verification';
   timeoutMs?: number;
   ignoreFailureMetricStatuses?: readonly number[];
   prepareAttempt?: (context: MaxRoutedPublicationAttemptContext) => Promise<{
@@ -67,7 +68,11 @@ export class MaxRoutedPublicationService {
     }
 
     const routePurpose = request.routePurpose ?? 'send_message';
-    const route = await this.resolveFreshRoute(entityId, routePurpose);
+    const route = await this.resolveFreshRoute(
+      entityId,
+      routePurpose,
+      request.sendRouteHalfOpenProbe,
+    );
     const candidateBotIds = this.normalizeBotIds(route.candidateBotIds);
     const job: MaxActionJob = {
       actionType: 'SEND_MESSAGE',
@@ -79,6 +84,9 @@ export class MaxRoutedPublicationService {
         primaryBotId: route.primaryBotId,
         reason: route.reason,
         routingVersion: route.routingVersion ?? null,
+        ...(request.sendRouteHalfOpenProbe
+          ? { sendRouteHalfOpenProbe: request.sendRouteHalfOpenProbe }
+          : {}),
       },
       trafficClass: request.trafficClass,
       ...(request.actionHealthLane ? { actionHealthLane: request.actionHealthLane } : {}),
@@ -170,6 +178,7 @@ export class MaxRoutedPublicationService {
   private async resolveFreshRoute(
     chatId: string,
     purpose: MaxRoutedPublicationRoutePurpose,
+    sendRouteHalfOpenProbe?: MaxRoutedPublicationRequest['sendRouteHalfOpenProbe'],
   ): Promise<MaxBotRoute> {
     if (purpose === 'channel_poll') {
       return this.maxBotLinkService.resolveBotRouteForChannelPoll({ chatId });
@@ -178,6 +187,7 @@ export class MaxRoutedPublicationService {
       purpose: 'send_message',
       chatId,
       fallbackToPrimary: true,
+      allowHalfOpenProbe: sendRouteHalfOpenProbe === 'publication_exact_verification',
     });
   }
 

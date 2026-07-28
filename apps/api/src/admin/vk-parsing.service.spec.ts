@@ -71,6 +71,7 @@ describe('VkParsingService', () => {
   const originalFetch = global.fetch;
 
   afterEach(() => {
+    jest.useRealTimers();
     global.fetch = originalFetch;
     jest.restoreAllMocks();
   });
@@ -445,6 +446,14 @@ describe('VkParsingService', () => {
       updatedAt: new Date('2026-05-25T10:00:00.000Z'),
       source,
       ...overrides,
+    };
+  }
+
+  function createFreshQueuedPublishTimes() {
+    const now = Date.now();
+    return {
+      publishQueuedAt: new Date(now - 2 * 60_000),
+      publishScheduledAt: new Date(now - 60_000),
     };
   }
 
@@ -1640,53 +1649,25 @@ describe('VkParsingService', () => {
     expect(publishQueue.add).not.toHaveBeenCalled();
   });
 
-  it('recovers legacy stale autopublish rows by re-adding publish jobs', async () => {
+  it('quarantines legacy stale publish rows without an explicit ownership reason', async () => {
     const { service, prisma, publishQueue } = createFixture();
     const source = createSource();
+    const now = Date.now();
     const post = createPostRow({
       source,
-      publishQueuedAt: new Date('2026-05-25T10:01:00.000Z'),
-      publishLockedAt: new Date('2026-05-25T10:01:05.000Z'),
+      publishQueuedAt: new Date(now - 5 * 60_000),
+      publishLockedAt: new Date(now - 4 * 60_000),
       publishIdempotencyKey: 'publish-key-1',
       publishReason: null,
     });
     prisma.vkParsingPost.findMany.mockResolvedValueOnce([post]);
-    prisma.vkParsingPost.updateMany.mockResolvedValueOnce({ count: 1 });
-    prisma.vkParsingSettings.findUnique.mockResolvedValue({
-      id: 'settings-1',
-      chatId: 'channel-1',
-      autoPublishEnabled: true,
-      autoPublishEnabledAt: new Date('2026-05-25T09:00:00.000Z'),
-      stripLinksEnabled: false,
-      skipAdsEnabled: false,
-      createdAt: new Date('2026-05-25T10:00:00.000Z'),
-      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
-    });
 
-    await expect(service.recoverStalePublishJobs()).resolves.toBe(1);
+    await expect(service.recoverStalePublishJobs()).resolves.toBe(0);
 
-    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith({
-      where: {
-        id: 'post-1',
-        publishIdempotencyKey: 'publish-key-1',
-        publishReason: null,
-        status: { in: ['NEW', 'FAILED'] },
-      },
-      data: { publishReason: 'autopublish' },
-    });
-    expect(publishQueue.add).toHaveBeenCalledWith(
-      'publish-vk-post',
-      expect.objectContaining({
-        postId: 'post-1',
-        chatId: 'channel-1',
-        reason: 'autopublish',
-        idempotencyKey: 'publish-key-1',
-      }),
-      expect.objectContaining({
-        jobId: 'vk-parsing-publish__post-1__publish-key-1',
-        attempts: 5,
-      }),
-    );
+    expect(prisma.vkParsingPost.updateMany).not.toHaveBeenCalled();
+    expect(prisma.vkParsingSettings.findUnique).not.toHaveBeenCalled();
+    expect(publishQueue.getJob).not.toHaveBeenCalled();
+    expect(publishQueue.add).not.toHaveBeenCalled();
   });
 
   it('recovers overdue VK publish jobs before scanning future delayed jobs', async () => {
@@ -1706,6 +1687,7 @@ describe('VkParsingService', () => {
         publishReason: 'autopublish',
       });
       prisma.vkParsingPost.findMany.mockResolvedValueOnce([duePost]);
+      prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
       prisma.vkParsingSettings.findUnique.mockResolvedValue({
         id: 'settings-1',
         chatId: 'channel-1',
@@ -1756,18 +1738,525 @@ describe('VkParsingService', () => {
     }
   });
 
+  it('clears historical overdue autopublish intents instead of replaying them', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-27T12:00:00.000Z'));
+    try {
+      const { service, prisma, publishQueue } = createFixture();
+      const source = createSource();
+      const explicitPost = createPostRow({
+        source,
+        id: 'post-explicit',
+        publishQueuedAt: new Date('2026-07-04T10:00:00.000Z'),
+        publishScheduledAt: new Date('2026-07-04T10:05:00.000Z'),
+        publishIdempotencyKey: 'publish-key-explicit',
+        publishReason: 'autopublish',
+      });
+      const legacyPost = createPostRow({
+        source,
+        id: 'post-legacy',
+        publishQueuedAt: new Date('2026-07-05T10:00:00.000Z'),
+        publishScheduledAt: null,
+        publishIdempotencyKey: 'publish-key-legacy',
+        publishReason: null,
+      });
+      prisma.vkParsingPost.findMany.mockResolvedValueOnce([explicitPost, legacyPost]);
+      prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+
+      await expect(service.recoverStalePublishJobs()).resolves.toBe(0);
+
+      expect(prisma.vkParsingSettings.findUnique).not.toHaveBeenCalled();
+      expect(publishQueue.getJob).not.toHaveBeenCalled();
+      expect(publishQueue.add).not.toHaveBeenCalled();
+      expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'post-explicit',
+          publishReason: 'autopublish',
+          publishIdempotencyKey: 'publish-key-explicit',
+          publishLockedAt: null,
+        },
+        data: {
+          publishQueuedAt: null,
+          publishScheduledAt: null,
+          publishLockedAt: null,
+          publishIdempotencyKey: null,
+          publishReason: null,
+        },
+      });
+      expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledTimes(1);
+      expect(prisma.vkParsingPost.updateMany).not.toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ id: 'post-legacy' }) }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('expires old autopublish ownership even when its scheduled time was moved forward', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-27T12:00:00.000Z'));
+    try {
+      const { service, prisma, publishQueue } = createFixture();
+      const post = createPostRow({
+        publishQueuedAt: new Date('2026-07-04T10:00:00.000Z'),
+        publishScheduledAt: new Date('2026-07-28T10:00:00.000Z'),
+        publishIdempotencyKey: 'old-ownership-future-schedule',
+        publishReason: 'autopublish',
+      });
+      prisma.vkParsingPost.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([post]);
+      prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+
+      await expect(service.recoverStalePublishJobs()).resolves.toBe(0);
+
+      expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'post-1',
+          publishReason: 'autopublish',
+          publishIdempotencyKey: 'old-ownership-future-schedule',
+          publishLockedAt: null,
+        },
+        data: {
+          publishQueuedAt: null,
+          publishScheduledAt: null,
+          publishLockedAt: null,
+          publishIdempotencyKey: null,
+          publishReason: null,
+        },
+      });
+      expect(prisma.vkParsingSettings.findUnique).not.toHaveBeenCalled();
+      expect(publishQueue.getJob).not.toHaveBeenCalled();
+      expect(publishQueue.add).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('blocks a historical autopublish job that starts before recovery can clear it', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-27T12:00:00.000Z'));
+    try {
+      const { service, prisma, maxClient, publishQueue } = createFixture();
+      const workerLock = new Date('2026-07-27T12:00:00.000Z');
+      const post = createPostRow({
+        publishQueuedAt: new Date('2026-07-04T10:00:00.000Z'),
+        publishScheduledAt: new Date('2026-07-04T10:05:00.000Z'),
+        publishLockedAt: workerLock,
+        publishIdempotencyKey: 'historical-auto-key',
+        publishReason: 'autopublish',
+      });
+      prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+      prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+
+      await service.processPublishPostJob({
+        postId: 'post-1',
+        chatId: 'channel-1',
+        reason: 'autopublish',
+        idempotencyKey: 'historical-auto-key',
+      });
+
+      expect(prisma.vkParsingPost.updateMany).toHaveBeenLastCalledWith({
+        where: {
+          id: 'post-1',
+          publishReason: 'autopublish',
+          publishIdempotencyKey: 'historical-auto-key',
+          publishLockedAt: workerLock,
+        },
+        data: {
+          publishQueuedAt: null,
+          publishScheduledAt: null,
+          publishLockedAt: null,
+          publishIdempotencyKey: null,
+          publishReason: null,
+        },
+      });
+      expect(prisma.vkParsingSettings.findUnique).not.toHaveBeenCalled();
+      expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+      expect(publishQueue.add).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('spaces fresh autopublish recovery per chat while allowing parallel chats', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-27T12:00:00.000Z'));
+    try {
+      const { service, prisma, publishQueue } = createFixture();
+      const firstSource = createSource();
+      const secondSource = createSource({ id: 'source-2' });
+      const parallelSource = createSource({ id: 'source-3', chatId: 'channel-2' });
+      const posts = [
+        createPostRow({
+          source: firstSource,
+          id: 'post-1',
+          createdAt: new Date('2026-07-27T11:40:00.000Z'),
+          vkPublishedAt: new Date('2026-07-27T11:40:00.000Z'),
+          publishQueuedAt: new Date('2026-07-27T11:45:00.000Z'),
+          publishScheduledAt: new Date('2026-07-27T11:50:00.000Z'),
+          publishIdempotencyKey: 'publish-key-1',
+          publishReason: 'autopublish',
+        }),
+        createPostRow({
+          source: secondSource,
+          id: 'post-2',
+          createdAt: new Date('2026-07-27T11:45:00.000Z'),
+          vkPublishedAt: new Date('2026-07-27T11:45:00.000Z'),
+          publishQueuedAt: new Date('2026-07-27T11:50:00.000Z'),
+          publishScheduledAt: new Date('2026-07-27T11:55:00.000Z'),
+          publishIdempotencyKey: 'publish-key-2',
+          publishReason: 'autopublish',
+        }),
+        createPostRow({
+          source: parallelSource,
+          id: 'post-3',
+          createdAt: new Date('2026-07-27T11:47:00.000Z'),
+          vkPublishedAt: new Date('2026-07-27T11:47:00.000Z'),
+          publishQueuedAt: new Date('2026-07-27T11:52:00.000Z'),
+          publishScheduledAt: new Date('2026-07-27T11:57:00.000Z'),
+          publishIdempotencyKey: 'publish-key-3',
+          publishReason: 'autopublish',
+        }),
+      ];
+      const delayedJob = createQueueJob('delayed');
+      prisma.vkParsingPost.findMany.mockResolvedValueOnce(posts);
+      prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+      prisma.vkParsingSettings.findUnique.mockImplementation(async ({ where }) => ({
+        id: `settings-${where.chatId}`,
+        chatId: where.chatId,
+        autoPublishEnabled: true,
+        autoPublishEnabledAt: new Date('2026-07-27T09:00:00.000Z'),
+        stripLinksEnabled: false,
+        skipAdsEnabled: false,
+        createdAt: new Date('2026-07-27T09:00:00.000Z'),
+        updatedAt: new Date('2026-07-27T09:00:00.000Z'),
+      }));
+      publishQueue.getJob
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(delayedJob)
+        .mockResolvedValueOnce(null);
+
+      await expect(service.recoverStalePublishJobs()).resolves.toBe(3);
+
+      expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ id: 'post-1', publishLockedAt: null }),
+          data: { publishScheduledAt: new Date('2026-07-27T12:00:00.000Z') },
+        }),
+      );
+      expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ id: 'post-2', publishLockedAt: null }),
+          data: { publishScheduledAt: new Date('2026-07-27T12:15:00.000Z') },
+        }),
+      );
+      expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ id: 'post-3', publishLockedAt: null }),
+          data: { publishScheduledAt: new Date('2026-07-27T12:00:00.000Z') },
+        }),
+      );
+      expect(publishQueue.add).toHaveBeenNthCalledWith(
+        1,
+        'publish-vk-post',
+        expect.objectContaining({ postId: 'post-1' }),
+        expect.objectContaining({ delay: 0 }),
+      );
+      expect(publishQueue.add).toHaveBeenNthCalledWith(
+        2,
+        'publish-vk-post',
+        expect.objectContaining({ postId: 'post-2' }),
+        expect.objectContaining({ delay: 15 * 60_000 }),
+      );
+      expect(publishQueue.add).toHaveBeenNthCalledWith(
+        3,
+        'publish-vk-post',
+        expect.objectContaining({ postId: 'post-3' }),
+        expect.objectContaining({ delay: 0 }),
+      );
+      expect(delayedJob.remove).toHaveBeenCalledTimes(1);
+      expect(delayedJob.retry).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('continues per-chat autopublish spacing across bounded recovery batches', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-27T12:00:00.000Z'));
+    try {
+      const { service, prisma, publishQueue } = createFixture({
+        VK_PARSING_QUEUE_BATCH_SIZE: 2,
+      });
+      const source = createSource();
+      const posts = ['post-1', 'post-2', 'post-3'].map((id, index) =>
+        createPostRow({
+          source,
+          id,
+          createdAt: new Date(`2026-07-27T11:${40 + index}:00.000Z`),
+          vkPublishedAt: new Date(`2026-07-27T11:${40 + index}:00.000Z`),
+          publishQueuedAt: new Date(`2026-07-27T11:${45 + index}:00.000Z`),
+          publishScheduledAt: new Date(`2026-07-27T11:${50 + index}:00.000Z`),
+          publishIdempotencyKey: `publish-key-${index + 1}`,
+          publishReason: 'autopublish',
+        }),
+      );
+      prisma.vkParsingPost.findMany
+        .mockResolvedValueOnce(posts.slice(0, 2))
+        .mockResolvedValueOnce(posts.slice(2))
+        .mockResolvedValueOnce([]);
+      prisma.vkParsingPost.aggregate
+        .mockResolvedValueOnce({ _max: { publishScheduledAt: null } })
+        .mockResolvedValueOnce({
+          _max: { publishScheduledAt: new Date('2026-07-27T12:15:00.000Z') },
+        });
+      prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+      prisma.vkParsingSettings.findUnique.mockResolvedValue({
+        id: 'settings-1',
+        chatId: 'channel-1',
+        autoPublishEnabled: true,
+        autoPublishEnabledAt: new Date('2026-07-27T09:00:00.000Z'),
+        stripLinksEnabled: false,
+        skipAdsEnabled: false,
+        createdAt: new Date('2026-07-27T09:00:00.000Z'),
+        updatedAt: new Date('2026-07-27T09:00:00.000Z'),
+      });
+
+      await expect(service.recoverStalePublishJobs()).resolves.toBe(2);
+      await expect(service.recoverStalePublishJobs()).resolves.toBe(1);
+
+      expect(prisma.vkParsingPost.aggregate).toHaveBeenNthCalledWith(2, {
+        where: {
+          chatId: 'channel-1',
+          id: { notIn: ['post-3'] },
+          status: { in: ['NEW', 'FAILED'] },
+          publishReason: 'autopublish',
+          publishQueuedAt: { gte: new Date('2026-07-26T12:00:00.000Z') },
+          publishScheduledAt: { gt: new Date('2026-07-27T12:00:00.000Z') },
+          publishIdempotencyKey: { not: null },
+        },
+        _max: { publishScheduledAt: true },
+      });
+      expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ id: 'post-3', publishLockedAt: null }),
+          data: { publishScheduledAt: new Date('2026-07-27T12:30:00.000Z') },
+        }),
+      );
+      expect(publishQueue.add).toHaveBeenLastCalledWith(
+        'publish-vk-post',
+        expect.objectContaining({ postId: 'post-3' }),
+        expect.objectContaining({ delay: 30 * 60_000 }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('keeps overdue manual schedules outside the autopublish recovery horizon', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-27T12:00:00.000Z'));
+    try {
+      const { service, prisma, publishQueue } = createFixture();
+      const post = createPostRow({
+        source: createSource({ publishMode: 'REVIEW' }),
+        publishQueuedAt: new Date('2026-07-04T10:00:00.000Z'),
+        publishScheduledAt: new Date('2026-07-04T10:05:00.000Z'),
+        publishIdempotencyKey: 'manual-schedule-key',
+        publishReason: 'manual-schedule',
+      });
+      prisma.vkParsingPost.findMany.mockResolvedValueOnce([post]);
+
+      await expect(service.recoverStalePublishJobs()).resolves.toBe(1);
+
+      expect(publishQueue.add).toHaveBeenCalledWith(
+        'publish-vk-post',
+        expect.objectContaining({
+          postId: 'post-1',
+          reason: 'manual-schedule',
+          idempotencyKey: 'manual-schedule-key',
+        }),
+        expect.objectContaining({ delay: 0 }),
+      );
+      expect(prisma.vkParsingPost.updateMany).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not clear manual ownership that replaced a historical autopublish intent', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-27T12:00:00.000Z'));
+    try {
+      const { service, prisma, publishQueue } = createFixture();
+      const staleSnapshot = createPostRow({
+        publishQueuedAt: new Date('2026-07-04T10:00:00.000Z'),
+        publishScheduledAt: new Date('2026-07-04T10:05:00.000Z'),
+        publishLockedAt: new Date('2026-07-04T10:05:10.000Z'),
+        publishIdempotencyKey: 'stale-auto-key',
+        publishReason: 'autopublish',
+      });
+      const currentOwnership = {
+        publishIdempotencyKey: 'new-manual-key',
+        publishReason: 'manual-schedule',
+        publishLockedAt: null,
+      };
+      prisma.vkParsingPost.findMany.mockResolvedValueOnce([staleSnapshot]);
+      prisma.vkParsingPost.updateMany.mockImplementation(async ({ where }) => ({
+        count:
+          where.publishIdempotencyKey === currentOwnership.publishIdempotencyKey &&
+          where.publishReason === currentOwnership.publishReason &&
+          where.publishLockedAt === currentOwnership.publishLockedAt
+            ? 1
+            : 0,
+      }));
+
+      await expect(service.recoverStalePublishJobs()).resolves.toBe(0);
+
+      expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            id: 'post-1',
+            publishReason: 'autopublish',
+            publishIdempotencyKey: 'stale-auto-key',
+            publishLockedAt: new Date('2026-07-04T10:05:10.000Z'),
+          },
+        }),
+      );
+      expect(currentOwnership).toEqual({
+        publishIdempotencyKey: 'new-manual-key',
+        publishReason: 'manual-schedule',
+        publishLockedAt: null,
+      });
+      expect(publishQueue.add).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not overwrite a replacement owner when fresh recovery schedule CAS loses', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-27T12:00:00.000Z'));
+    try {
+      const { service, prisma, publishQueue } = createFixture();
+      const staleSnapshot = createPostRow({
+        createdAt: new Date('2026-07-27T11:40:00.000Z'),
+        vkPublishedAt: new Date('2026-07-27T11:40:00.000Z'),
+        publishQueuedAt: new Date('2026-07-27T11:45:00.000Z'),
+        publishScheduledAt: new Date('2026-07-27T11:50:00.000Z'),
+        publishLockedAt: null,
+        publishIdempotencyKey: 'stale-auto-key',
+        publishReason: 'autopublish',
+      });
+      prisma.vkParsingPost.findMany.mockResolvedValueOnce([staleSnapshot]);
+      prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 0 });
+      prisma.vkParsingSettings.findUnique.mockResolvedValue({
+        id: 'settings-1',
+        chatId: 'channel-1',
+        autoPublishEnabled: true,
+        autoPublishEnabledAt: new Date('2026-07-27T09:00:00.000Z'),
+        stripLinksEnabled: false,
+        skipAdsEnabled: false,
+        createdAt: new Date('2026-07-27T09:00:00.000Z'),
+        updatedAt: new Date('2026-07-27T09:00:00.000Z'),
+      });
+
+      await expect(service.recoverStalePublishJobs()).resolves.toBe(0);
+
+      expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'post-1',
+          publishIdempotencyKey: 'stale-auto-key',
+          publishReason: 'autopublish',
+          publishScheduledAt: new Date('2026-07-27T11:50:00.000Z'),
+          publishLockedAt: null,
+          status: { in: ['NEW', 'FAILED'] },
+        },
+        data: { publishScheduledAt: new Date('2026-07-27T12:00:00.000Z') },
+      });
+      expect(publishQueue.getJob).not.toHaveBeenCalled();
+      expect(publishQueue.add).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not clear or reschedule autopublish after a worker acquires a fresh lock', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-27T12:00:00.000Z'));
+    try {
+      const { service, prisma, publishQueue } = createFixture();
+      const historicalSnapshot = createPostRow({
+        id: 'post-historical',
+        publishQueuedAt: new Date('2026-07-04T10:00:00.000Z'),
+        publishScheduledAt: new Date('2026-07-04T10:05:00.000Z'),
+        publishLockedAt: null,
+        publishIdempotencyKey: 'historical-auto-key',
+        publishReason: 'autopublish',
+      });
+      const freshSnapshot = createPostRow({
+        id: 'post-fresh',
+        createdAt: new Date('2026-07-27T11:40:00.000Z'),
+        vkPublishedAt: new Date('2026-07-27T11:40:00.000Z'),
+        publishQueuedAt: new Date('2026-07-27T11:45:00.000Z'),
+        publishScheduledAt: new Date('2026-07-27T11:50:00.000Z'),
+        publishLockedAt: null,
+        publishIdempotencyKey: 'fresh-auto-key',
+        publishReason: 'autopublish',
+      });
+      const newlyAcquiredLock = new Date('2026-07-27T11:59:30.000Z');
+      prisma.vkParsingPost.findMany.mockResolvedValueOnce([historicalSnapshot, freshSnapshot]);
+      prisma.vkParsingPost.updateMany.mockImplementation(async ({ where }) => ({
+        count:
+          where.publishLockedAt instanceof Date &&
+          where.publishLockedAt.getTime() === newlyAcquiredLock.getTime()
+            ? 1
+            : 0,
+      }));
+      prisma.vkParsingSettings.findUnique.mockResolvedValue({
+        id: 'settings-1',
+        chatId: 'channel-1',
+        autoPublishEnabled: true,
+        autoPublishEnabledAt: new Date('2026-07-27T09:00:00.000Z'),
+        stripLinksEnabled: false,
+        skipAdsEnabled: false,
+        createdAt: new Date('2026-07-27T09:00:00.000Z'),
+        updatedAt: new Date('2026-07-27T09:00:00.000Z'),
+      });
+
+      await expect(service.recoverStalePublishJobs()).resolves.toBe(0);
+
+      expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            id: 'post-historical',
+            publishIdempotencyKey: 'historical-auto-key',
+            publishLockedAt: null,
+          }),
+          data: expect.objectContaining({ publishIdempotencyKey: null }),
+        }),
+      );
+      expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            id: 'post-fresh',
+            publishIdempotencyKey: 'fresh-auto-key',
+            publishLockedAt: null,
+          }),
+          data: { publishScheduledAt: new Date('2026-07-27T12:00:00.000Z') },
+        }),
+      );
+      expect(publishQueue.getJob).not.toHaveBeenCalled();
+      expect(publishQueue.add).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('recovers an existing failed VK publish job instead of re-adding a duplicate jobId', async () => {
     const { service, prisma, publishQueue } = createFixture();
     const source = createSource();
+    const now = Date.now();
     const post = createPostRow({
       source,
-      publishQueuedAt: new Date('2026-05-25T10:01:00.000Z'),
-      publishLockedAt: new Date('2026-05-25T10:01:05.000Z'),
+      publishQueuedAt: new Date(now - 5 * 60_000),
+      publishLockedAt: new Date(now - 4 * 60_000),
       publishIdempotencyKey: 'publish-key-1',
       publishReason: 'autopublish',
     });
     const failedJob = createQueueJob('failed');
     prisma.vkParsingPost.findMany.mockResolvedValueOnce([post]);
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
     prisma.vkParsingSettings.findUnique.mockResolvedValue({
       id: 'settings-1',
       chatId: 'channel-1',
@@ -1802,15 +2291,17 @@ describe('VkParsingService', () => {
   it('replaces an orphaned VK publish job whose BullMQ state is unknown', async () => {
     const { service, prisma, publishQueue } = createFixture();
     const source = createSource();
+    const now = Date.now();
     const post = createPostRow({
       source,
-      publishQueuedAt: new Date('2026-05-25T10:01:00.000Z'),
-      publishScheduledAt: new Date('2026-05-25T10:02:00.000Z'),
+      publishQueuedAt: new Date(now - 5 * 60_000),
+      publishScheduledAt: new Date(now - 4 * 60_000),
       publishIdempotencyKey: 'publish-key-1',
       publishReason: 'autopublish',
     });
     const orphanedJob = createQueueJob('unknown');
     prisma.vkParsingPost.findMany.mockResolvedValueOnce([post]);
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
     prisma.vkParsingSettings.findUnique.mockResolvedValue({
       id: 'settings-1',
       chatId: 'channel-1',
@@ -1954,6 +2445,7 @@ describe('VkParsingService', () => {
   });
 
   it('clears stale autopublish rows that no longer pass the enable baseline', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-25T12:00:00.000Z'));
     const { service, prisma, publishQueue } = createFixture();
     const source = createSource();
     const post = createPostRow({
@@ -1986,6 +2478,7 @@ describe('VkParsingService', () => {
           id: 'post-1',
           publishIdempotencyKey: 'publish-key-1',
           publishReason: 'autopublish',
+          publishLockedAt: new Date('2026-05-25T10:01:05.000Z'),
         },
         data: {
           publishQueuedAt: null,
@@ -2198,8 +2691,7 @@ describe('VkParsingService', () => {
     const source = createSource();
     const post = createPostRow({
       source,
-      publishQueuedAt: new Date('2026-05-25T09:59:00.000Z'),
-      publishScheduledAt: new Date('2026-05-25T10:00:00.000Z'),
+      ...createFreshQueuedPublishTimes(),
       publishIdempotencyKey: 'publish-key-1',
       publishReason: 'autopublish',
     });
@@ -2281,8 +2773,7 @@ describe('VkParsingService', () => {
     const source = createSource();
     const post = createPostRow({
       source,
-      publishQueuedAt: new Date('2026-05-25T09:59:00.000Z'),
-      publishScheduledAt: new Date('2026-05-25T10:00:00.000Z'),
+      ...createFreshQueuedPublishTimes(),
       publishIdempotencyKey: 'publish-key-1',
       publishReason: 'autopublish',
     });
@@ -2580,7 +3071,7 @@ describe('VkParsingService', () => {
     const source = createSource({ publishMode: 'REVIEW' });
     const post = createPostRow({
       source,
-      publishQueuedAt: new Date('2026-05-25T10:00:00.000Z'),
+      ...createFreshQueuedPublishTimes(),
       publishIdempotencyKey: 'publish-key-1',
       publishReason: 'autopublish',
     });
@@ -2622,6 +3113,7 @@ describe('VkParsingService', () => {
           id: 'post-1',
           publishIdempotencyKey: 'publish-key-1',
           publishReason: 'autopublish',
+          publishLockedAt: post.publishLockedAt,
         },
         data: expect.objectContaining({
           publishQueuedAt: null,
@@ -2865,6 +3357,7 @@ describe('VkParsingService', () => {
   });
 
   it('drops queued autopublish jobs for posts before the enable baseline', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-25T12:00:00.000Z'));
     const { service, prisma, maxClient } = createFixture();
     const source = createSource();
     const post = createPostRow({
@@ -2899,6 +3392,7 @@ describe('VkParsingService', () => {
           id: 'post-1',
           publishIdempotencyKey: 'publish-key-1',
           publishReason: 'autopublish',
+          publishLockedAt: post.publishLockedAt,
         },
         data: {
           publishQueuedAt: null,
@@ -3681,8 +4175,7 @@ describe('VkParsingService', () => {
     const post = createPostRow({
       source,
       text: 'Текст со ссылкой на канал',
-      publishQueuedAt: new Date('2026-05-25T09:59:00.000Z'),
-      publishScheduledAt: new Date('2026-05-25T10:00:00.000Z'),
+      ...createFreshQueuedPublishTimes(),
       publishIdempotencyKey: 'publish-key-1',
       publishReason: 'autopublish',
     });
@@ -5587,12 +6080,7 @@ describe('VkParsingService', () => {
       prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
 
       await expect(
-        publishService.schedulePost(
-          'channel-1',
-          'post-1',
-          scheduledAt.toISOString(),
-          '98315271',
-        ),
+        publishService.schedulePost('channel-1', 'post-1', scheduledAt.toISOString(), '98315271'),
       ).resolves.toMatchObject({ queued: 1 });
 
       expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
@@ -5689,7 +6177,7 @@ describe('VkParsingService', () => {
     const post = createPostRow({
       source,
       publishIdempotencyKey: 'review-job',
-      publishQueuedAt: new Date('2026-05-25T10:00:00.000Z'),
+      ...createFreshQueuedPublishTimes(),
       publishReason: 'autopublish',
     });
     prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
@@ -5708,6 +6196,7 @@ describe('VkParsingService', () => {
         id: 'post-1',
         publishIdempotencyKey: 'review-job',
         publishReason: 'autopublish',
+        publishLockedAt: post.publishLockedAt,
       },
       data: {
         publishQueuedAt: null,

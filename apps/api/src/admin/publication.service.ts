@@ -63,7 +63,10 @@ import {
   deleteUnstartedPublicationExecutionEnvelopes,
   rollupPublicationOccurrenceWithRouteOutageRecovery,
 } from './publication-access-loss-recovery';
-import { PUBLICATION_DELIVERY_VERIFICATION_RESET_DATA } from './publication-delivery-verification-state';
+import {
+  PUBLICATION_DELIVERY_VERIFICATION_RESET_DATA,
+  resolvePublicationOccurrenceRollupStatus,
+} from './publication-delivery-verification-state';
 import { PublicationContentService } from './publication-content.service';
 import { readStoredPublicationButtons } from './publication-buttons';
 import {
@@ -2273,7 +2276,7 @@ export class PublicationService {
         status: {
           in: [PublicationOccurrenceStatus.SCHEDULED, PublicationOccurrenceStatus.IN_PROGRESS],
         },
-        legacyBroadcasts: { some: {} },
+        legacyBroadcasts: { some: { deliveries: { some: {} } } },
       },
       orderBy: { updatedAt: 'asc' },
       take: 200,
@@ -2296,6 +2299,14 @@ export class PublicationService {
                 targetChatId: true,
                 lastErrorCode: true,
                 lastError: true,
+                remoteMessageId: true,
+                remoteMessageVerifiedAt: true,
+                remoteMessageVerificationAttemptCount: true,
+                remoteMessageVerificationAbsentCount: true,
+                remoteMessageVerificationPresentCount: true,
+                remoteMessageVerificationAttemptedAt: true,
+                remoteMessageVerificationNextAt: true,
+                remoteMessageVerificationSource: true,
               },
             },
           },
@@ -2309,40 +2320,10 @@ export class PublicationService {
     if (deliveries.length === 0) {
       return;
     }
-    const sent = deliveries.filter(
-      (delivery) => delivery.status === ManagedBroadcastDeliveryStatus.SENT,
-    ).length;
-    const failed = deliveries.filter(
-      (delivery) => delivery.status === ManagedBroadcastDeliveryStatus.FAILED,
-    ).length;
-    const ambiguous = deliveries.filter(
-      (delivery) => delivery.status === ManagedBroadcastDeliveryStatus.AMBIGUOUS,
-    ).length;
-    const canceled = deliveries.filter(
-      (delivery) => delivery.status === ManagedBroadcastDeliveryStatus.CANCELED,
-    ).length;
-    const pending = deliveries.length - sent - failed - ambiguous - canceled;
-    const allBroadcastsCompleted = occurrence.legacyBroadcasts.every(
-      (broadcast) => broadcast.status === ManagedBroadcastStatus.COMPLETED,
+    const status = resolvePublicationOccurrenceRollupStatus(
+      occurrence.legacyBroadcasts,
+      occurrence.scheduledAt,
     );
-    const executionStillActive = occurrence.legacyBroadcasts.some(
-      (broadcast) => broadcast.status === ManagedBroadcastStatus.ACTIVE,
-    );
-    let status: PublicationOccurrenceStatus;
-    if (pending > 0 || executionStillActive) {
-      status =
-        occurrence.scheduledAt > new Date()
-          ? PublicationOccurrenceStatus.SCHEDULED
-          : PublicationOccurrenceStatus.IN_PROGRESS;
-    } else if (ambiguous > 0) {
-      status = PublicationOccurrenceStatus.AMBIGUOUS;
-    } else if (failed + canceled > 0) {
-      status = sent > 0 ? PublicationOccurrenceStatus.PARTIAL : PublicationOccurrenceStatus.FAILED;
-    } else if (allBroadcastsCompleted && sent === deliveries.length) {
-      status = PublicationOccurrenceStatus.SENT;
-    } else {
-      status = PublicationOccurrenceStatus.IN_PROGRESS;
-    }
     await rollupPublicationOccurrenceWithRouteOutageRecovery(
       this.prisma,
       occurrence,

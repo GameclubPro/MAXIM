@@ -36,9 +36,15 @@ import {
   resolveDeleteMessageAccessFailure,
   type MaxDeleteMessageAccessFailureReason,
 } from './max-delete-message-access.util';
+import {
+  MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE,
+  MAX_SEND_ROUTE_QUARANTINE_MS,
+} from './max-send-route-health';
 
 const CHAT_BOT_CACHE_TTL_MS = 10 * 60 * 1_000;
 const OBSERVED_WEBHOOK_TOUCH_TTL_MS = 60 * 1_000;
+const SEND_ROUTE_STICKY_DISAPPEARANCE_THRESHOLD = 2;
+const SEND_ROUTE_OPEN_CIRCUIT_RECHECK_MS = 15 * 60_000;
 const EDIT_MESSAGE_PERMISSION_ALIASES = new Set([
   'edit',
   'edit_message',
@@ -128,6 +134,9 @@ export type MaxBotRoute =
       candidateBotIds: string[];
       reason: MaxBotRouteReason | null;
       routingVersion?: number | null;
+      quarantinedCandidateBotIds?: string[];
+      halfOpenCandidateBotIds?: string[];
+      retryAt?: Date | null;
     }
   | {
       purpose: 'moderation_action';
@@ -164,6 +173,7 @@ export type MaxBotRouteRequest =
       purpose: 'send_message';
       chatId: string;
       fallbackToPrimary?: boolean;
+      allowHalfOpenProbe?: boolean;
     }
   | {
       purpose: 'moderation_action';
@@ -229,8 +239,9 @@ type ResolvedChatRouteMembership = {
   botAccessExpiresAt: Date | null;
   permissionsSnapshot: unknown;
   capabilities: unknown;
-  sendRouteFailureCount?: number;
-  sendRouteQuarantinedUntil?: Date | null;
+  sendRouteFailureCount: number;
+  sendRouteQuarantinedUntil: Date | null;
+  sendRouteLastFailureCode: string | null;
 };
 
 type ResolvedChatRouteState = {
@@ -337,7 +348,11 @@ export class MaxBotLinkService {
       case 'read':
         return this.resolveReadBotRoute(request.chatId);
       case 'send_message':
-        return this.resolveSendMessageBotRoute(request.chatId, request.fallbackToPrimary);
+        return this.resolveSendMessageBotRoute(
+          request.chatId,
+          request.fallbackToPrimary,
+          request.allowHalfOpenProbe,
+        );
       case 'member_access':
         return this.resolveMemberAccessBotRoute(request.chatId);
       case 'moderation_action':
@@ -365,6 +380,61 @@ export class MaxBotLinkService {
     }
 
     return this.resolveBotRoute(request);
+  }
+
+  async claimSendRouteHalfOpen(params: {
+    chatId: string;
+    botId: string;
+    claimedAt?: Date;
+  }): Promise<Date | null> {
+    const chatId = params.chatId.trim();
+    const botId = params.botId.trim();
+    if (!chatId || !botId) {
+      return null;
+    }
+    const claimedAt = params.claimedAt ?? new Date();
+    const quarantinedUntil = new Date(claimedAt.getTime() + MAX_SEND_ROUTE_QUARANTINE_MS);
+    const claimed = await this.prisma.chatBotMembership.updateMany({
+      where: {
+        chatId,
+        botId,
+        status: ChatBotMembershipStatus.ACTIVE,
+        sendRouteFailureCount: 1,
+        sendRouteLastFailureCode: MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE,
+        OR: [
+          { sendRouteQuarantinedUntil: null },
+          { sendRouteQuarantinedUntil: { lte: claimedAt } },
+        ],
+      },
+      data: {
+        sendRouteQuarantinedUntil: quarantinedUntil,
+      },
+    });
+    return claimed.count === 1 ? quarantinedUntil : null;
+  }
+
+  async releaseSendRouteHalfOpen(params: {
+    chatId: string;
+    botId: string;
+    claimedUntil: Date;
+  }): Promise<boolean> {
+    const chatId = params.chatId.trim();
+    const botId = params.botId.trim();
+    if (!chatId || !botId) {
+      return false;
+    }
+    const released = await this.prisma.chatBotMembership.updateMany({
+      where: {
+        chatId,
+        botId,
+        status: ChatBotMembershipStatus.ACTIVE,
+        sendRouteFailureCount: 1,
+        sendRouteLastFailureCode: MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE,
+        sendRouteQuarantinedUntil: params.claimedUntil,
+      },
+      data: { sendRouteQuarantinedUntil: null },
+    });
+    return released.count === 1;
   }
 
   async resolveBotId(
@@ -428,7 +498,7 @@ export class MaxBotLinkService {
     });
     const primaryBotId =
       eligible.find((membership) => membership.botId === state.primaryBotId)?.botId ?? null;
-    const candidateBotIds = this.orderSendMessageCandidatesByRouteHealth(
+    const candidates = this.orderSendMessageCandidatesByRouteHealth(
       state,
       Array.from(
         new Set([
@@ -437,13 +507,13 @@ export class MaxBotLinkService {
         ]),
       ),
     );
-    const selectedBotId = candidateBotIds[0] ?? null;
+    const selectedBotId = candidates.candidateBotIds[0] ?? null;
     return this.buildRoute({
       purpose: 'send_message',
       chatId: normalizedChatId,
       primaryBotId: state.primaryBotId,
       botId: selectedBotId,
-      candidateBotIds,
+      candidateBotIds: candidates.candidateBotIds,
       reason:
         selectedBotId === null
           ? null
@@ -451,6 +521,9 @@ export class MaxBotLinkService {
             ? 'primary_confirmed'
             : 'alternate_confirmed',
       routingVersion: state.routingVersion,
+      quarantinedCandidateBotIds: candidates.quarantinedCandidateBotIds,
+      halfOpenCandidateBotIds: candidates.halfOpenCandidateBotIds,
+      retryAt: candidates.retryAt,
     });
   }
 
@@ -1827,6 +1900,7 @@ export class MaxBotLinkService {
   private async resolveSendMessageBotRoute(
     chatId: string,
     fallbackToPrimary?: boolean,
+    allowHalfOpenProbe?: boolean,
   ): Promise<MaxBotRoute> {
     const normalizedChatId = chatId.trim();
     if (!normalizedChatId) {
@@ -1845,19 +1919,23 @@ export class MaxBotLinkService {
       });
     }
 
-    const candidateBotIds = this.buildSendMessageCandidateBotIdsFromState(
+    const candidates = this.buildSendMessageCandidateBotIdsFromState(
       state,
       fallbackToPrimary !== false,
+      allowHalfOpenProbe === true,
     );
-    const selectedBotId = candidateBotIds[0] ?? null;
+    const selectedBotId = candidates.candidateBotIds[0] ?? null;
     return this.buildRoute({
       purpose: 'send_message',
       chatId: normalizedChatId,
       primaryBotId: state.primaryBotId,
       botId: selectedBotId,
-      candidateBotIds,
+      candidateBotIds: candidates.candidateBotIds,
       reason: selectedBotId ? this.resolveSendMessageRouteReason(state, selectedBotId) : null,
       routingVersion: state.routingVersion,
+      quarantinedCandidateBotIds: candidates.quarantinedCandidateBotIds,
+      halfOpenCandidateBotIds: candidates.halfOpenCandidateBotIds,
+      retryAt: candidates.retryAt,
     });
   }
 
@@ -1979,6 +2057,7 @@ export class MaxBotLinkService {
             capabilities: true,
             sendRouteFailureCount: true,
             sendRouteQuarantinedUntil: true,
+            sendRouteLastFailureCode: true,
           },
           orderBy: [{ updatedAt: 'desc' }, { createdAt: 'asc' }],
         },
@@ -2154,36 +2233,76 @@ export class MaxBotLinkService {
   private orderSendMessageCandidatesByRouteHealth(
     state: ResolvedChatRouteState,
     candidateBotIds: string[],
-  ): string[] {
+    allowHalfOpenProbe = false,
+  ): {
+    candidateBotIds: string[];
+    quarantinedCandidateBotIds: string[];
+    halfOpenCandidateBotIds: string[];
+    retryAt: Date | null;
+  } {
     const nowMs = Date.now();
     const membershipsByBotId = new Map(
       state.activeActionableMemberships.map((membership) => [membership.botId, membership]),
     );
-    return candidateBotIds
-      .map((botId, index) => {
-        const membership = membershipsByBotId.get(botId);
-        const quarantinedUntilMs = membership?.sendRouteQuarantinedUntil?.getTime() ?? 0;
-        return {
-          botId,
-          index,
-          activeQuarantine: quarantinedUntilMs > nowMs,
-          quarantinedUntilMs,
-          failureCount: membership?.sendRouteFailureCount ?? 0,
-        };
-      })
-      .sort((left, right) => {
-        if (left.activeQuarantine !== right.activeQuarantine) {
-          return left.activeQuarantine ? 1 : -1;
+    // FLAG: A disappearance quarantine is an execution fence, not a preference. Falling back to
+    // the only quarantined bot would repeat a send that MAX accepted but did not retain. The
+    // repeated-disappearance circuit stays open after its minimum TTL until a newer stable
+    // observation (or controlled operator recovery) clears the failure code. A first failure gets
+    // one half-open attempt after the TTL; the publication scheduler spaces those attempts.
+    const executableCandidateBotIds: string[] = [];
+    const halfOpenCandidateBotIds: string[] = [];
+    const quarantinedCandidateBotIds: string[] = [];
+    let retryAtMs = Number.POSITIVE_INFINITY;
+    for (const botId of candidateBotIds) {
+      const membership = membershipsByBotId.get(botId);
+      const quarantinedUntilMs = membership?.sendRouteQuarantinedUntil?.getTime() ?? 0;
+      const stickyDisappearance =
+        membership?.sendRouteLastFailureCode === MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE &&
+        membership.sendRouteFailureCount >= SEND_ROUTE_STICKY_DISAPPEARANCE_THRESHOLD;
+      const halfOpenDisappearance =
+        membership?.sendRouteLastFailureCode === MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE &&
+        membership.sendRouteFailureCount === 1 &&
+        quarantinedUntilMs <= nowMs;
+      const activeTimedQuarantine = quarantinedUntilMs > nowMs;
+      if (halfOpenDisappearance) {
+        if (allowHalfOpenProbe) {
+          halfOpenCandidateBotIds.push(botId);
+        } else {
+          quarantinedCandidateBotIds.push(botId);
+          retryAtMs = Math.min(retryAtMs, nowMs + SEND_ROUTE_OPEN_CIRCUIT_RECHECK_MS);
         }
-        if (left.activeQuarantine && left.failureCount !== right.failureCount) {
-          return left.failureCount - right.failureCount;
-        }
-        if (left.activeQuarantine && left.quarantinedUntilMs !== right.quarantinedUntilMs) {
-          return left.quarantinedUntilMs - right.quarantinedUntilMs;
-        }
-        return left.index - right.index;
-      })
-      .map((candidate) => candidate.botId);
+        continue;
+      }
+      if (!stickyDisappearance && !activeTimedQuarantine) {
+        executableCandidateBotIds.push(botId);
+        continue;
+      }
+      quarantinedCandidateBotIds.push(botId);
+      retryAtMs = Math.min(
+        retryAtMs,
+        stickyDisappearance
+          ? Math.max(quarantinedUntilMs, nowMs + MAX_SEND_ROUTE_QUARANTINE_MS)
+          : quarantinedUntilMs,
+      );
+    }
+    if (executableCandidateBotIds.length > 0) {
+      return {
+        candidateBotIds: executableCandidateBotIds,
+        quarantinedCandidateBotIds: [...quarantinedCandidateBotIds, ...halfOpenCandidateBotIds],
+        halfOpenCandidateBotIds: [],
+        retryAt: Number.isFinite(retryAtMs) ? new Date(retryAtMs) : null,
+      };
+    }
+    const halfOpenCandidateBotId = halfOpenCandidateBotIds[0] ?? null;
+    return {
+      candidateBotIds: halfOpenCandidateBotId ? [halfOpenCandidateBotId] : [],
+      quarantinedCandidateBotIds: [
+        ...quarantinedCandidateBotIds,
+        ...halfOpenCandidateBotIds.slice(1),
+      ],
+      halfOpenCandidateBotIds: halfOpenCandidateBotId ? [halfOpenCandidateBotId] : [],
+      retryAt: Number.isFinite(retryAtMs) ? new Date(retryAtMs) : null,
+    };
   }
 
   private resolvePersistedRoutingState(state: ResolvedChatRouteState): ChatRoutingState {
@@ -2223,7 +2342,13 @@ export class MaxBotLinkService {
   private buildSendMessageCandidateBotIdsFromState(
     state: ResolvedChatRouteState,
     fallbackToPrimary = true,
-  ): string[] {
+    allowHalfOpenProbe = false,
+  ): {
+    candidateBotIds: string[];
+    quarantinedCandidateBotIds: string[];
+    halfOpenCandidateBotIds: string[];
+    retryAt: Date | null;
+  } {
     const candidateBotIds: string[] = [];
     const pushCandidate = (botId: string | null | undefined) => {
       const normalizedBotId = this.resolveExecutableBotId(botId);
@@ -2318,7 +2443,7 @@ export class MaxBotLinkService {
       pushFallbackCandidate(state.activeActionableMemberships[0]?.botId ?? null);
     }
 
-    return this.orderSendMessageCandidatesByRouteHealth(state, candidateBotIds);
+    return this.orderSendMessageCandidatesByRouteHealth(state, candidateBotIds, allowHalfOpenProbe);
   }
 
   private buildCapabilityCandidateBotIdsFromState(
@@ -2442,6 +2567,9 @@ export class MaxBotLinkService {
     routingVersion?: number | null;
     action?: ModerationActionPermission;
     capability?: ManagedEntityBotCapability;
+    quarantinedCandidateBotIds?: Array<string | null | undefined>;
+    halfOpenCandidateBotIds?: Array<string | null | undefined>;
+    retryAt?: Date | null;
   }): MaxBotRoute {
     const normalizedChatId =
       typeof params.chatId === 'string' && params.chatId.trim().length > 0
@@ -2489,6 +2617,28 @@ export class MaxBotLinkService {
         ...baseRoute,
         purpose: 'capability',
         capability: params.capability ?? 'access_prewarm',
+      };
+    }
+
+    if (params.purpose === 'send_message') {
+      return {
+        ...baseRoute,
+        purpose: 'send_message',
+        quarantinedCandidateBotIds: Array.from(
+          new Set(
+            (params.quarantinedCandidateBotIds ?? [])
+              .map((botId) => this.resolveExecutableBotId(botId))
+              .filter((botId): botId is string => Boolean(botId)),
+          ),
+        ),
+        halfOpenCandidateBotIds: Array.from(
+          new Set(
+            (params.halfOpenCandidateBotIds ?? [])
+              .map((botId) => this.resolveExecutableBotId(botId))
+              .filter((botId): botId is string => Boolean(botId)),
+          ),
+        ),
+        retryAt: params.retryAt ?? null,
       };
     }
 

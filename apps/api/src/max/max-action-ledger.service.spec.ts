@@ -487,6 +487,7 @@ describe('MaxActionLedgerService', () => {
         primaryBotId: 'bot-1',
         reason: 'primary_confirmed',
         routingVersion: 3,
+        sendRouteHalfOpenProbe: 'publication_exact_verification',
       },
     });
 
@@ -509,6 +510,7 @@ describe('MaxActionLedgerService', () => {
             routing: expect.objectContaining({
               purpose: 'send_message',
               routingVersion: 3,
+              sendRouteHalfOpenProbe: 'publication_exact_verification',
             }),
           }),
         }),

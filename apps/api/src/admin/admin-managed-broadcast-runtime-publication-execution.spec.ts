@@ -12,6 +12,9 @@ import { AdminManagedBroadcastRuntime } from './admin-managed-broadcast-runtime'
 import { cancelManagedBroadcastTargetDeliveries } from './admin-managed-broadcast-target-failure';
 import { PUBLICATION_DELIVERY_ACCESS_LOST_ERROR_CODE } from './publication-access-loss-recovery';
 import { PUBLICATION_POST_SEND_VERIFY_BATCH_SIZE } from './admin.service.support';
+import { PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } from './publication-delivery-verification-state';
+
+const AUTOMATED_VERIFICATION_DUE_AT = new Date('2026-07-25T08:00:15.000Z');
 
 describe('AdminManagedBroadcastRuntime publication execution guard', () => {
   it('persists a structured access-loss code for the current and future target deliveries', async () => {
@@ -109,6 +112,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       remoteMessageVerifiedAt: null,
       remoteMessageVerificationAttemptCount: 0,
       remoteMessageVerificationPresentCount: 0,
+      remoteMessageVerificationNextAt: AUTOMATED_VERIFICATION_DUE_AT,
     };
     const updateMany = jest.fn().mockResolvedValue({ count: 1 });
     const verification = new AdminManagedBroadcastPublicationVerification({
@@ -142,7 +146,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
           remoteMessageVerificationAbsentCount: 0,
           remoteMessageVerificationPresentCount: 0,
           remoteMessageVerificationAttemptedAt: null,
-          remoteMessageVerificationNextAt: null,
+          remoteMessageVerificationNextAt: AUTOMATED_VERIFICATION_DUE_AT,
           remoteMessageVerificationLastError: null,
           remoteMessageVerificationSource: null,
         }),
@@ -157,10 +161,66 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     );
   });
 
+  it('keeps untouched legacy SENT deliveries out of automatic exact lookup', async () => {
+    const findMany = jest.fn().mockResolvedValue([
+      {
+        id: 'delivery-legacy',
+        targetChatId: 'chat-legacy',
+        botId: 'bot-1',
+        status: ManagedBroadcastDeliveryStatus.SENT,
+        sentAt: new Date('2026-07-11T08:00:00.000Z'),
+        remoteMessageId: 'mid-legacy',
+        remoteMessageVerifiedAt: null,
+        remoteMessageVerificationAttemptCount: 0,
+        remoteMessageVerificationAbsentCount: 0,
+        remoteMessageVerificationPresentCount: 0,
+        remoteMessageVerificationAttemptedAt: null,
+        remoteMessageVerificationNextAt: null,
+        remoteMessageVerificationLastError: null,
+        remoteMessageVerificationSource: null,
+      },
+    ]);
+    const getExactMessagePresences = jest.fn();
+    const updateMany = jest.fn();
+    const verification = new AdminManagedBroadcastPublicationVerification({
+      prisma: { managedBroadcastDelivery: { findMany, updateMany } },
+      maxClient: { getExactMessagePresences },
+      logger: { warn: jest.fn() },
+    } as never);
+
+    await expect(
+      verification.verifyAfterSend(
+        { id: 'broadcast-legacy', publicationOccurrenceId: 'occurrence-legacy' } as never,
+        1,
+        { trafficClass: 'background', sourceTag: 'managed_broadcast' },
+        jest.fn().mockResolvedValue(undefined),
+      ),
+    ).resolves.toEqual(new Set());
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          AND: expect.arrayContaining([
+            expect.objectContaining({
+              OR: expect.arrayContaining([
+                { remoteMessageVerificationNextAt: { not: null } },
+                { remoteMessageVerificationAttemptCount: { gt: 0 } },
+              ]),
+            }),
+          ]),
+        }),
+      }),
+    );
+    expect(getExactMessagePresences).not.toHaveBeenCalled();
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
   it('confirms a second present observation after the stability window', async () => {
     const sentAt = new Date('2026-07-25T08:00:00.000Z');
     const updateMany = jest.fn().mockResolvedValue({ count: 1 });
     const routeUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const broadcastUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const executeRaw = jest.fn().mockResolvedValue(1);
     const prisma: any = {
       managedBroadcastDelivery: {
         findMany: jest.fn().mockResolvedValue([
@@ -179,7 +239,10 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
         updateMany,
       },
       chatBotMembership: { updateMany: routeUpdateMany },
+      managedBroadcast: { updateMany: broadcastUpdateMany },
+      $executeRaw: executeRaw,
     };
+    prisma.$transaction = jest.fn(async (callback) => callback(prisma));
     const verification = new AdminManagedBroadcastPublicationVerification({
       prisma,
       maxClient: {
@@ -227,6 +290,17 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
         }),
       }),
     );
+    expect(executeRaw).toHaveBeenCalledTimes(1);
+    expect(broadcastUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          deliveries: {
+            some: expect.objectContaining({ targetChatId: 'chat-1' }),
+          },
+        }),
+        data: { nextSendAt: expect.any(Date) },
+      }),
+    );
   });
 
   it('fails a delivery after repeated stable exact absence and quarantines its route', async () => {
@@ -250,7 +324,9 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
         updateMany: deliveryUpdateMany,
       },
       chatBotMembership: { updateMany: routeUpdateMany },
+      $executeRaw: jest.fn().mockResolvedValue(1),
     };
+    prisma.$transaction = jest.fn(async (callback) => callback(prisma));
     const verification = new AdminManagedBroadcastPublicationVerification({
       prisma,
       maxClient: {
@@ -297,6 +373,69 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
           sendRouteLastFailureAt: delivery.sentAt,
         }),
       }),
+    );
+  });
+
+  it('rolls back a terminal delivery transition when route-health persistence fails', async () => {
+    const delivery = {
+      id: 'delivery-verify',
+      targetChatId: 'chat-1',
+      botId: 'bot-1',
+      status: ManagedBroadcastDeliveryStatus.SENT,
+      sentAt: new Date('2026-07-25T08:00:00.000Z'),
+      remoteMessageId: 'mid-verify',
+      remoteMessageVerifiedAt: null,
+      remoteMessageVerificationAttemptCount: 2,
+      remoteMessageVerificationAbsentCount: 2,
+      remoteMessageVerificationPresentCount: 0,
+    };
+    const deliveryUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const persistenceError = new Error('route-health write failed');
+    const rollback = jest.fn();
+    const tx = {
+      $executeRaw: jest.fn().mockResolvedValue(1),
+      managedBroadcastDelivery: { updateMany: deliveryUpdateMany },
+      chatBotMembership: { updateMany: jest.fn().mockRejectedValue(persistenceError) },
+    };
+    const transaction = jest.fn(async (callback) => {
+      try {
+        return await callback(tx);
+      } catch (error: unknown) {
+        rollback();
+        throw error;
+      }
+    });
+    const logger = { warn: jest.fn() };
+    const verification = new AdminManagedBroadcastPublicationVerification({
+      prisma: {
+        $transaction: transaction,
+        managedBroadcastDelivery: {
+          findMany: jest.fn().mockResolvedValue([delivery]),
+          updateMany: deliveryUpdateMany,
+        },
+      },
+      maxClient: {
+        getExactMessagePresences: jest
+          .fn()
+          .mockResolvedValue([{ chatId: 'chat-1', messageId: 'mid-verify', presence: 'absent' }]),
+      },
+      logger,
+    } as never);
+
+    await expect(
+      verification.verifyAfterSend(
+        { id: 'broadcast-1', publicationOccurrenceId: 'occurrence-1' } as never,
+        1,
+        { trafficClass: 'background', sourceTag: 'managed_broadcast' },
+        jest.fn().mockResolvedValue(undefined),
+      ),
+    ).resolves.toEqual(new Set());
+
+    expect(transaction).toHaveBeenCalledTimes(1);
+    expect(rollback).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: persistenceError.message }),
+      'Managed publication verification was deferred after a persistence failure',
     );
   });
 
@@ -369,6 +508,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       sentAt: new Date('2026-07-25T08:00:00.000Z'),
       remoteMessageId,
       remoteMessageVerifiedAt: null,
+      remoteMessageVerificationNextAt: AUTOMATED_VERIFICATION_DUE_AT,
     }));
     const updateMany = jest.fn().mockResolvedValue({ count: 1 });
     const getExactMessagePresences = jest.fn().mockResolvedValue(
@@ -419,6 +559,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
         sentAt: new Date('2026-07-25T08:00:00.000Z'),
         remoteMessageId: 'mid-shared',
         remoteMessageVerifiedAt: null,
+        remoteMessageVerificationNextAt: AUTOMATED_VERIFICATION_DUE_AT,
       },
       {
         id: 'delivery-2',
@@ -428,6 +569,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
         sentAt: new Date('2026-07-25T08:00:01.000Z'),
         remoteMessageId: 'mid-shared',
         remoteMessageVerifiedAt: null,
+        remoteMessageVerificationNextAt: AUTOMATED_VERIFICATION_DUE_AT,
       },
     ];
     const updateMany = jest.fn().mockResolvedValue({ count: 1 });
@@ -479,6 +621,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
         sentAt: new Date('2026-07-25T08:00:00.000Z'),
         remoteMessageId: 'mid-1',
         remoteMessageVerifiedAt: null,
+        remoteMessageVerificationNextAt: AUTOMATED_VERIFICATION_DUE_AT,
       },
       {
         id: 'delivery-2',
@@ -488,6 +631,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
         sentAt: new Date('2026-07-25T08:00:01.000Z'),
         remoteMessageId: 'mid-2',
         remoteMessageVerifiedAt: null,
+        remoteMessageVerificationNextAt: AUTOMATED_VERIFICATION_DUE_AT,
       },
       {
         id: 'delivery-3',
@@ -497,6 +641,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
         sentAt: new Date('2026-07-25T08:00:02.000Z'),
         remoteMessageId: 'mid-3',
         remoteMessageVerifiedAt: null,
+        remoteMessageVerificationNextAt: AUTOMATED_VERIFICATION_DUE_AT,
       },
     ];
     const getExactMessagePresences = jest
@@ -555,7 +700,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       remoteMessageVerificationAbsentCount: 0,
       remoteMessageVerificationPresentCount: 0,
       remoteMessageVerificationAttemptedAt: null,
-      remoteMessageVerificationNextAt: null,
+      remoteMessageVerificationNextAt: AUTOMATED_VERIFICATION_DUE_AT,
       remoteMessageVerificationLastError: null,
     };
     const getExactMessagePresences = jest.fn();
@@ -606,7 +751,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
         remoteMessageVerificationAbsentCount: 0,
         remoteMessageVerificationPresentCount: 0,
         remoteMessageVerificationAttemptedAt: null,
-        remoteMessageVerificationNextAt: null,
+        remoteMessageVerificationNextAt: AUTOMATED_VERIFICATION_DUE_AT,
         remoteMessageVerificationLastError: null,
       }),
     );
@@ -655,7 +800,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
         remoteMessageVerificationAbsentCount: 0,
         remoteMessageVerificationPresentCount: 0,
         remoteMessageVerificationAttemptedAt: null,
-        remoteMessageVerificationNextAt: null,
+        remoteMessageVerificationNextAt: AUTOMATED_VERIFICATION_DUE_AT,
         remoteMessageVerificationLastError: null,
       }));
     const batches = [makeDeliveries('first', 30), makeDeliveries('second', 30)];
@@ -720,6 +865,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
               remoteMessageVerificationAttemptCount: 0,
               remoteMessageVerificationAbsentCount: 0,
               remoteMessageVerificationPresentCount: 0,
+              remoteMessageVerificationNextAt: AUTOMATED_VERIFICATION_DUE_AT,
             },
           ]),
           updateMany: jest.fn().mockRejectedValue(persistenceError),
@@ -763,6 +909,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
               sentAt: new Date('2026-07-25T08:00:00.000Z'),
               remoteMessageId: 'mid-heartbeat',
               remoteMessageVerifiedAt: null,
+              remoteMessageVerificationNextAt: AUTOMATED_VERIFICATION_DUE_AT,
             },
           ]),
         },
@@ -794,7 +941,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       remoteMessageVerificationAbsentCount: 0,
       remoteMessageVerificationPresentCount: 0,
       remoteMessageVerificationAttemptedAt: null,
-      remoteMessageVerificationNextAt: null,
+      remoteMessageVerificationNextAt: AUTOMATED_VERIFICATION_DUE_AT,
       remoteMessageVerificationLastError: null,
     };
     let verificationReadCount = 0;
@@ -895,6 +1042,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
               sentAt: new Date(),
               remoteMessageId: 'mid-recent',
               remoteMessageVerifiedAt: null,
+              remoteMessageVerificationNextAt: new Date(Date.now() + 15_000),
             },
           ]),
           updateMany,
@@ -1452,6 +1600,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
         logicalIdempotencyKey:
           'managed-broadcast:send:broadcast-deadline:occurrence:1:target:chat-1:content:publication-content-1',
         trafficClass: 'background',
+        sendRouteHalfOpenProbe: 'publication_exact_verification',
       }),
     );
     expect(capacityError).toMatchObject({ managedBroadcastSendStarted: false });
@@ -1557,6 +1706,69 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     }
   });
 
+  it('preserves the earliest route retry when every pending target is quarantined', async () => {
+    const now = new Date('2026-07-12T10:05:00.000Z');
+    const retryAt = new Date('2026-07-12T16:05:00.000Z');
+    jest.useFakeTimers().setSystemTime(now);
+    try {
+      const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const runtime = new AdminManagedBroadcastRuntime({
+        prisma: {
+          managedBroadcastDelivery: {
+            findMany: jest.fn().mockResolvedValue([
+              {
+                status: ManagedBroadcastDeliveryStatus.PENDING,
+                targetChatId: 'chat-1',
+                lastErrorCode: PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
+              },
+              {
+                status: ManagedBroadcastDeliveryStatus.PENDING,
+                targetChatId: 'chat-2',
+                lastErrorCode: PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
+              },
+            ]),
+          },
+          managedBroadcast: { updateMany },
+          managedBroadcastOccurrence: {
+            updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          },
+        },
+      } as never);
+
+      const result = await (runtime as any).finalizeManagedBroadcastOccurrence(
+        {
+          id: 'broadcast-1',
+          scheduleMode: 'calendar',
+          nextSendAt: now,
+          publicationOccurrenceId: 'occurrence-1',
+        },
+        1,
+        [],
+        [],
+        null,
+        { pendingNotBefore: retryAt },
+      );
+
+      expect(updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: ManagedBroadcastStatus.ACTIVE,
+            nextSendAt: retryAt,
+          }),
+        }),
+      );
+      expect(result).toEqual(
+        expect.objectContaining({
+          status: ManagedBroadcastStatus.ACTIVE,
+          pendingChatIds: ['chat-1', 'chat-2'],
+          nextSendAt: retryAt,
+        }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('schedules an unverified publication at its persisted verification retry time', async () => {
     const now = new Date('2026-07-12T10:05:00.000Z');
     const nextVerificationAt = new Date('2026-07-12T10:15:00.000Z');
@@ -1615,6 +1827,68 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  it('does not keep an envelope active for untouched legacy SENT verification state', async () => {
+    const broadcastUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const occurrenceUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const reservationDeleteMany = jest.fn().mockResolvedValue({ count: 1 });
+    const runtime = new AdminManagedBroadcastRuntime({
+      prisma: {
+        managedBroadcastDelivery: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              status: ManagedBroadcastDeliveryStatus.SENT,
+              targetChatId: 'chat-legacy',
+              sentAt: new Date('2026-07-11T10:00:00.000Z'),
+              remoteMessageId: 'mid-legacy',
+              remoteMessageVerifiedAt: null,
+              remoteMessageVerificationAttemptCount: 0,
+              remoteMessageVerificationAbsentCount: 0,
+              remoteMessageVerificationPresentCount: 0,
+              remoteMessageVerificationAttemptedAt: null,
+              remoteMessageVerificationNextAt: null,
+              remoteMessageVerificationSource: null,
+            },
+          ]),
+        },
+        managedBroadcast: { updateMany: broadcastUpdateMany },
+        managedBroadcastOccurrence: { updateMany: occurrenceUpdateMany },
+        managedBroadcastCalendarReservation: { deleteMany: reservationDeleteMany },
+      },
+    } as never);
+
+    const result = await (runtime as any).finalizeManagedBroadcastOccurrence(
+      {
+        id: 'broadcast-legacy',
+        scheduleMode: 'calendar',
+        cycleCount: 1,
+        nextSendAt: new Date('2026-07-11T10:00:00.000Z'),
+        publicationOccurrenceId: 'occurrence-legacy',
+      },
+      1,
+      [],
+      [],
+      null,
+    );
+
+    expect(broadcastUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: ManagedBroadcastStatus.COMPLETED,
+          nextSendAt: null,
+        }),
+      }),
+    );
+    expect(result).toEqual(
+      expect.objectContaining({
+        status: ManagedBroadcastStatus.COMPLETED,
+        sentChatIds: ['chat-legacy'],
+        nextSendAt: null,
+      }),
+    );
+    expect(reservationDeleteMany).toHaveBeenCalledTimes(1);
+    expect(occurrenceUpdateMany).toHaveBeenCalledTimes(1);
   });
 
   it('finalizes an ambiguous NOW recovery envelope without dispatching it again', async () => {
@@ -1801,6 +2075,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
           botId: 'bot-1',
           remoteMessageId: 'mid-after-crash',
           sentAt: completedAt,
+          remoteMessageVerificationNextAt: new Date(completedAt.getTime() + 15_000),
         }),
       }),
     );

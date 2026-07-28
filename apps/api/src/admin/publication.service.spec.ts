@@ -1348,6 +1348,196 @@ describe('PublicationService', () => {
     });
   });
 
+  it('rolls a terminal canceled envelope with only sent deliveries up as sent', async () => {
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const observedAt = new Date('2026-07-10T10:01:00.000Z');
+    const { service } = createService({
+      publicationOccurrence: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'occurrence-canceled-envelope',
+          status: PublicationOccurrenceStatus.IN_PROGRESS,
+          updatedAt: observedAt,
+          scheduleRevision: 4,
+          contentRevisionId: 'content-1',
+          scheduledAt: new Date('2026-07-10T10:00:00.000Z'),
+          legacyBroadcasts: [
+            {
+              status: ManagedBroadcastStatus.CANCELED,
+              deliveries: [
+                {
+                  status: ManagedBroadcastDeliveryStatus.SENT,
+                  targetChatId: 'chat-1',
+                  lastErrorCode: null,
+                  lastError: null,
+                },
+              ],
+            },
+          ],
+        }),
+        updateMany,
+      },
+    });
+
+    await (service as any).rollupOccurrence('occurrence-canceled-envelope');
+
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'occurrence-canceled-envelope',
+        status: PublicationOccurrenceStatus.IN_PROGRESS,
+        updatedAt: observedAt,
+        scheduleRevision: 4,
+        contentRevisionId: 'content-1',
+      },
+      data: { status: PublicationOccurrenceStatus.SENT },
+    });
+  });
+
+  it('rolls a stale active envelope with untouched sent deliveries up as sent', async () => {
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const observedAt = new Date('2026-07-10T10:01:00.000Z');
+    const { service } = createService({
+      publicationOccurrence: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'occurrence-active-pristine',
+          status: PublicationOccurrenceStatus.IN_PROGRESS,
+          updatedAt: observedAt,
+          scheduleRevision: 4,
+          contentRevisionId: 'content-1',
+          scheduledAt: new Date('2026-07-10T10:00:00.000Z'),
+          legacyBroadcasts: [
+            {
+              status: ManagedBroadcastStatus.ACTIVE,
+              deliveries: [
+                {
+                  status: ManagedBroadcastDeliveryStatus.SENT,
+                  targetChatId: 'chat-1',
+                  lastErrorCode: null,
+                  lastError: null,
+                  remoteMessageId: 'legacy-message',
+                  remoteMessageVerifiedAt: null,
+                  remoteMessageVerificationAttemptCount: 0,
+                  remoteMessageVerificationAbsentCount: 0,
+                  remoteMessageVerificationPresentCount: 0,
+                  remoteMessageVerificationAttemptedAt: null,
+                  remoteMessageVerificationNextAt: null,
+                  remoteMessageVerificationSource: null,
+                },
+              ],
+            },
+          ],
+        }),
+        updateMany,
+      },
+    });
+
+    await (service as any).rollupOccurrence('occurrence-active-pristine');
+
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'occurrence-active-pristine',
+        status: PublicationOccurrenceStatus.IN_PROGRESS,
+        updatedAt: observedAt,
+        scheduleRevision: 4,
+        contentRevisionId: 'content-1',
+      },
+      data: { status: PublicationOccurrenceStatus.SENT },
+    });
+  });
+
+  it('keeps armed verification in progress while its envelope can still execute', async () => {
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const { service } = createService({
+      publicationOccurrence: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'occurrence-active-verification',
+          status: PublicationOccurrenceStatus.IN_PROGRESS,
+          updatedAt: new Date('2026-07-10T10:01:00.000Z'),
+          scheduleRevision: 4,
+          contentRevisionId: 'content-1',
+          scheduledAt: new Date('2026-07-10T10:00:00.000Z'),
+          legacyBroadcasts: [
+            {
+              status: ManagedBroadcastStatus.ACTIVE,
+              deliveries: [
+                {
+                  status: ManagedBroadcastDeliveryStatus.SENT,
+                  targetChatId: 'chat-1',
+                  lastErrorCode: null,
+                  lastError: null,
+                  remoteMessageId: 'new-message',
+                  remoteMessageVerifiedAt: null,
+                  remoteMessageVerificationAttemptCount: 0,
+                  remoteMessageVerificationAbsentCount: 0,
+                  remoteMessageVerificationPresentCount: 0,
+                  remoteMessageVerificationAttemptedAt: null,
+                  remoteMessageVerificationNextAt: new Date('2026-07-10T10:01:15.000Z'),
+                  remoteMessageVerificationSource: null,
+                },
+              ],
+            },
+          ],
+        }),
+        updateMany,
+      },
+    });
+
+    await (service as any).rollupOccurrence('occurrence-active-verification');
+
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it('marks stopped envelopes with armed verification as ambiguous for manual review', async () => {
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const observedAt = new Date('2026-07-10T10:01:00.000Z');
+    const { service } = createService({
+      publicationOccurrence: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'occurrence-stopped-verification',
+          status: PublicationOccurrenceStatus.IN_PROGRESS,
+          updatedAt: observedAt,
+          scheduleRevision: 4,
+          contentRevisionId: 'content-1',
+          scheduledAt: new Date('2026-07-10T10:00:00.000Z'),
+          legacyBroadcasts: [
+            {
+              status: ManagedBroadcastStatus.CANCELED,
+              deliveries: [
+                {
+                  status: ManagedBroadcastDeliveryStatus.SENT,
+                  targetChatId: 'chat-1',
+                  lastErrorCode: null,
+                  lastError: null,
+                  remoteMessageId: 'new-message',
+                  remoteMessageVerifiedAt: null,
+                  remoteMessageVerificationAttemptCount: 0,
+                  remoteMessageVerificationAbsentCount: 0,
+                  remoteMessageVerificationPresentCount: 0,
+                  remoteMessageVerificationAttemptedAt: null,
+                  remoteMessageVerificationNextAt: new Date('2026-07-10T10:01:15.000Z'),
+                  remoteMessageVerificationSource: null,
+                },
+              ],
+            },
+          ],
+        }),
+        updateMany,
+      },
+    });
+
+    await (service as any).rollupOccurrence('occurrence-stopped-verification');
+
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'occurrence-stopped-verification',
+        status: PublicationOccurrenceStatus.IN_PROGRESS,
+        updatedAt: observedAt,
+        scheduleRevision: 4,
+        contentRevisionId: 'content-1',
+      },
+      data: { status: PublicationOccurrenceStatus.AMBIGUOUS },
+    });
+  });
+
   it('keeps an occurrence in progress while an active envelope has ambiguous and pending targets', async () => {
     const updateMany = jest.fn().mockResolvedValue({ count: 1 });
     const { service } = createService({
@@ -1568,7 +1758,7 @@ describe('PublicationService', () => {
           status: {
             in: [PublicationOccurrenceStatus.SCHEDULED, PublicationOccurrenceStatus.IN_PROGRESS],
           },
-          legacyBroadcasts: { some: {} },
+          legacyBroadcasts: { some: { deliveries: { some: {} } } },
         },
       }),
     );
@@ -3098,6 +3288,46 @@ describe('PublicationService', () => {
         lockToken: null,
         lastError: null,
       },
+    });
+  });
+
+  it('does not reactivate a resolved broadcast for untouched legacy SENT verification state', async () => {
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const { service } = createService();
+
+    await (service as any).syncBroadcastAfterDeliveryResolution(
+      {
+        managedBroadcastDelivery: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              status: ManagedBroadcastDeliveryStatus.SENT,
+              sentAt: new Date('2026-07-11T10:00:00.000Z'),
+              remoteMessageId: 'message-legacy',
+              remoteMessageVerifiedAt: null,
+              remoteMessageVerificationAttemptCount: 0,
+              remoteMessageVerificationAbsentCount: 0,
+              remoteMessageVerificationPresentCount: 0,
+              remoteMessageVerificationAttemptedAt: null,
+              remoteMessageVerificationNextAt: null,
+              remoteMessageVerificationSource: null,
+            },
+          ]),
+        },
+        managedBroadcast: { updateMany },
+        managedBroadcastCalendarReservation: { deleteMany: jest.fn() },
+        managedBroadcastOccurrence: { updateMany: jest.fn() },
+      },
+      'broadcast-legacy',
+      1,
+    );
+
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { id: 'broadcast-legacy', status: { not: ManagedBroadcastStatus.CANCELED } },
+      data: expect.objectContaining({
+        status: ManagedBroadcastStatus.COMPLETED,
+        sentCount: 1,
+        nextSendAt: null,
+      }),
     });
   });
 

@@ -7,6 +7,10 @@ import {
 import type { PrismaService } from '../prisma/prisma.service';
 import { buildManagedBroadcastAutoRetryableFailureWhere } from './admin-managed-broadcast-reconciliation';
 import {
+  buildPublicationDeliveryAutomatedVerificationWhere,
+  buildPublicationDeliveryUnenrolledVerificationWhere,
+} from './publication-delivery-verification-state';
+import {
   MANAGED_BROADCAST_AUTO_RETRY_BACKOFF_MS,
   MANAGED_BROADCAST_DUE_BATCH_SIZE,
   MANAGED_BROADCAST_DUE_SLOW_BATCH_SIZE,
@@ -42,6 +46,40 @@ export async function selectPublicationManagedBroadcastDueBatch(
     status: ManagedBroadcastDeliveryStatus.SENT,
     remoteMessageId: { not: null },
     remoteMessageVerifiedAt: null,
+    AND: [buildPublicationDeliveryAutomatedVerificationWhere()],
+  };
+  const unenrolledSentDeliveryWhere: Prisma.ManagedBroadcastDeliveryWhereInput = {
+    status: ManagedBroadcastDeliveryStatus.SENT,
+    remoteMessageId: { not: null },
+    remoteMessageVerifiedAt: null,
+    AND: [buildPublicationDeliveryUnenrolledVerificationWhere()],
+  };
+  const fallbackDeliveryWhere: Prisma.ManagedBroadcastDeliveryWhereInput = {
+    OR: [
+      {
+        status: {
+          in: [
+            ManagedBroadcastDeliveryStatus.PENDING,
+            ManagedBroadcastDeliveryStatus.SENDING,
+            ManagedBroadcastDeliveryStatus.FAILED,
+            ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+            ManagedBroadcastDeliveryStatus.CANCELED,
+          ],
+        },
+      },
+      {
+        status: ManagedBroadcastDeliveryStatus.SENT,
+        remoteMessageVerifiedAt: { not: null },
+      },
+      {
+        status: ManagedBroadcastDeliveryStatus.SENT,
+        remoteMessageId: null,
+      },
+      // DB-only recovery lane: the verifier ignores these rows and the runtime closes a stale
+      // ACTIVE envelope from the already persisted delivery states.
+      unenrolledSentDeliveryWhere,
+      unverifiedDeliveryWhere,
+    ],
   };
   const [executionDueRows, verificationDueRows, fallbackDueRows] = await Promise.all([
     prisma.managedBroadcast.findMany({
@@ -82,7 +120,10 @@ export async function selectPublicationManagedBroadcastDueBatch(
           baseWhere,
           {
             OR: [
-              { status: ManagedBroadcastStatus.ACTIVE },
+              {
+                status: ManagedBroadcastStatus.ACTIVE,
+                deliveries: { some: fallbackDeliveryWhere },
+              },
               {
                 status: {
                   in: [ManagedBroadcastStatus.PARTIAL, ManagedBroadcastStatus.FAILED],
@@ -91,7 +132,6 @@ export async function selectPublicationManagedBroadcastDueBatch(
               },
             ],
           },
-          { deliveries: { some: {} } },
         ],
       },
       orderBy,

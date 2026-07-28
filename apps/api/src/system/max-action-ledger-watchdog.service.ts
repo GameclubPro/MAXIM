@@ -928,6 +928,10 @@ export class MaxActionLedgerWatchdogService implements OnModuleInit, OnModuleDes
       typeof routing.routingVersion === 'number' && Number.isFinite(routing.routingVersion)
         ? Math.trunc(routing.routingVersion)
         : undefined;
+    const sendRouteHalfOpenProbe =
+      routing.sendRouteHalfOpenProbe === 'publication_exact_verification'
+        ? routing.sendRouteHalfOpenProbe
+        : undefined;
     return {
       purpose: routing.purpose,
       ...(this.readString(routing.primaryBotId)
@@ -936,6 +940,7 @@ export class MaxActionLedgerWatchdogService implements OnModuleInit, OnModuleDes
       ...(this.readString(routing.reason) ? { reason: this.readString(routing.reason) } : {}),
       ...(action ? { action } : {}),
       ...(routingVersion !== undefined ? { routingVersion } : {}),
+      ...(sendRouteHalfOpenProbe ? { sendRouteHalfOpenProbe } : {}),
     };
   }
 

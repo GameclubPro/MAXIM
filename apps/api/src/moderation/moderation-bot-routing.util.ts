@@ -120,6 +120,12 @@ export async function resolveNightModeTransitionBotId(
   if (typeof sendRoute?.botId === 'string' && sendRoute.botId.trim().length > 0) {
     return sendRoute.botId.trim();
   }
+  if (
+    sendRoute?.purpose === 'send_message' &&
+    (sendRoute.quarantinedCandidateBotIds?.length ?? 0) > 0
+  ) {
+    return null;
+  }
 
   const route = await resolveUnifiedBotRoute(deps, {
     purpose: 'capability',

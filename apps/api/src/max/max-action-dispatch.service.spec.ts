@@ -1,8 +1,10 @@
 import { UnrecoverableError } from 'bullmq';
 import {
   isMaxActionNoExecutableRouteError,
+  isMaxActionRouteQuarantinedError,
   MaxActionDispatchService,
   MaxActionNoExecutableRouteError,
+  MaxActionRouteQuarantinedError,
 } from './max-action-dispatch.service';
 import { MaxApiCircuitOpenError, type MaxActionJob } from './max-client.service';
 import type { RecordManagedEntityAccessLostFromErrorResult } from './managed-entity-access-loss.service';
@@ -1061,6 +1063,234 @@ describe('MaxActionDispatchService', () => {
     expect(maxClient.executeActionJob).not.toHaveBeenCalled();
     expect(actionLedgerService.recordStarted).not.toHaveBeenCalled();
     expect(actionLedgerService.recordFailed).not.toHaveBeenCalled();
+  });
+
+  it('returns a retryable pre-dispatch quarantine instead of permanent no-route', async () => {
+    const retryAt = new Date('2026-07-27T12:15:00.000Z');
+    const maxClient = { executeActionJob: jest.fn() };
+    const actionLedgerService = {
+      getCompletedSendDispatchResult: jest.fn().mockResolvedValue(null),
+      assertCanExecute: jest.fn().mockResolvedValue(undefined),
+      recordStarted: jest.fn(),
+      recordFailed: jest.fn(),
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: 'chat-1',
+        primaryBotId: 'bot-1',
+        botId: null,
+        candidateBotIds: [],
+        quarantinedCandidateBotIds: ['bot-1'],
+        retryAt,
+        reason: null,
+        routingVersion: 8,
+      }),
+      getExecutableBotById: jest.fn((botId: string) => ({ id: botId })),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      undefined,
+      actionLedgerService as never,
+      maxBotLinkService as never,
+    );
+
+    const thrown = await service
+      .execute({
+        actionType: 'SEND_MESSAGE',
+        chatId: 'chat-1',
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1'],
+        routing: { purpose: 'send_message', routingVersion: 7 },
+        text: 'must wait',
+        attempt: 1,
+        idempotencyKey: 'quarantined-route-send',
+        createdAt: '2026-07-27T12:00:00.000Z',
+      })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+    expect(thrown).toBeInstanceOf(MaxActionRouteQuarantinedError);
+    expect(isMaxActionRouteQuarantinedError(thrown)).toBe(true);
+    expect(thrown).toEqual(
+      expect.objectContaining({
+        retryAt,
+        quarantinedCandidateBotIds: ['bot-1'],
+        preDispatch: true,
+      }),
+    );
+    expect(maxClient.executeActionJob).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordStarted).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordFailed).not.toHaveBeenCalled();
+  });
+
+  it('does not expose a half-open send route to a generic routed action', async () => {
+    const maxClient = { executeActionJob: jest.fn() };
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: 'chat-1',
+        primaryBotId: 'bot-1',
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1'],
+        quarantinedCandidateBotIds: [],
+        halfOpenCandidateBotIds: ['bot-1'],
+        retryAt: null,
+        reason: 'primary_confirmed',
+      }),
+      claimSendRouteHalfOpen: jest.fn(),
+      getExecutableBotById: jest.fn((botId: string) => ({ id: botId })),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.execute({
+        actionType: 'SEND_MESSAGE',
+        chatId: 'chat-1',
+        routing: { purpose: 'send_message' },
+        text: 'generic message',
+        attempt: 1,
+        idempotencyKey: 'generic-half-open-send',
+        createdAt: '2026-07-27T12:00:00.000Z',
+      }),
+    ).rejects.toBeInstanceOf(MaxActionRouteQuarantinedError);
+
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledWith({
+      purpose: 'send_message',
+      chatId: 'chat-1',
+      fallbackToPrimary: true,
+      allowHalfOpenProbe: false,
+    });
+    expect(maxBotLinkService.claimSendRouteHalfOpen).not.toHaveBeenCalled();
+    expect(maxClient.executeActionJob).not.toHaveBeenCalled();
+  });
+
+  it('claims a half-open route only after a Publication attempt is prepared', async () => {
+    const claimedUntil = new Date('2026-07-27T18:00:00.000Z');
+    const maxClient = {
+      executeActionJob: jest.fn().mockResolvedValue({ messageId: 'mid-1', url: null }),
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: 'chat-1',
+        primaryBotId: 'bot-1',
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1'],
+        quarantinedCandidateBotIds: [],
+        halfOpenCandidateBotIds: ['bot-1'],
+        retryAt: null,
+        reason: 'primary_confirmed',
+      }),
+      claimSendRouteHalfOpen: jest.fn().mockResolvedValue(claimedUntil),
+      releaseSendRouteHalfOpen: jest.fn(),
+      getExecutableBotById: jest.fn((botId: string) => ({ id: botId })),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+    const prepareAttempt = jest.fn().mockResolvedValue({ text: 'prepared publication' });
+
+    await expect(
+      service.execute(
+        {
+          actionType: 'SEND_MESSAGE',
+          chatId: 'chat-1',
+          routing: {
+            purpose: 'send_message',
+            sendRouteHalfOpenProbe: 'publication_exact_verification',
+          },
+          text: 'publication',
+          attempt: 1,
+          idempotencyKey: 'publication-half-open-send',
+          createdAt: '2026-07-27T12:00:00.000Z',
+        },
+        { prepareAttempt },
+      ),
+    ).resolves.toEqual({ messageId: 'mid-1', url: null, botId: 'bot-1' });
+
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledWith(
+      expect.objectContaining({ allowHalfOpenProbe: true }),
+    );
+    expect(prepareAttempt.mock.invocationCallOrder[0]).toBeLessThan(
+      maxBotLinkService.claimSendRouteHalfOpen.mock.invocationCallOrder[0],
+    );
+    expect(maxBotLinkService.claimSendRouteHalfOpen).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      botId: 'bot-1',
+    });
+    expect(maxClient.executeActionJob).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'prepared publication', botId: 'bot-1' }),
+    );
+    expect(maxBotLinkService.releaseSendRouteHalfOpen).not.toHaveBeenCalled();
+  });
+
+  it('releases a claimed Publication half-open route after a proven pre-dispatch failure', async () => {
+    const claimedUntil = new Date('2026-07-27T18:00:00.000Z');
+    const maxClient = { executeActionJob: jest.fn() };
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: 'chat-1',
+        primaryBotId: 'bot-1',
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1'],
+        quarantinedCandidateBotIds: [],
+        halfOpenCandidateBotIds: ['bot-1'],
+        retryAt: null,
+        reason: 'primary_confirmed',
+      }),
+      claimSendRouteHalfOpen: jest.fn().mockResolvedValue(claimedUntil),
+      releaseSendRouteHalfOpen: jest.fn().mockResolvedValue(true),
+      getExecutableBotById: jest.fn((botId: string) => ({ id: botId })),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+    const preDispatchError = new Error('dispatch callback failed before MAX');
+
+    await expect(
+      service.execute(
+        {
+          actionType: 'SEND_MESSAGE',
+          chatId: 'chat-1',
+          routing: {
+            purpose: 'send_message',
+            sendRouteHalfOpenProbe: 'publication_exact_verification',
+          },
+          text: 'publication',
+          attempt: 1,
+          idempotencyKey: 'publication-half-open-release',
+          createdAt: '2026-07-27T12:00:00.000Z',
+        },
+        {
+          prepareAttempt: jest.fn().mockResolvedValue({}),
+          onDispatchAttempt: () => {
+            throw preDispatchError;
+          },
+        },
+      ),
+    ).rejects.toBe(preDispatchError);
+
+    expect(maxBotLinkService.releaseSendRouteHalfOpen).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      botId: 'bot-1',
+      claimedUntil,
+    });
+    expect(maxClient.executeActionJob).not.toHaveBeenCalled();
   });
 
   it('returns the typed pre-dispatch outcome when every routed candidate is non-executable', async () => {

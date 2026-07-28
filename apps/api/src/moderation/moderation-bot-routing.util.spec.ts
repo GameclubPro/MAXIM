@@ -372,6 +372,36 @@ describe('moderation bot routing util', () => {
     });
   });
 
+  it('does not bypass a quarantined night mode send route through a read capability', async () => {
+    const resolveBotRoute = jest.fn().mockResolvedValue(
+      createRoute({
+        purpose: 'send_message',
+        botId: null,
+        candidateBotIds: [],
+        quarantinedCandidateBotIds: ['bot-1'],
+      }),
+    );
+    const resolveBotIdForCapability = jest.fn().mockResolvedValue('scan-helper-bot');
+    const resolveBotIdForRead = jest.fn().mockResolvedValue('read-bot');
+
+    await expect(
+      resolveNightModeTransitionBotId(
+        {
+          maxBotLinkService: {
+            resolveBotRoute,
+            resolveBotIdForCapability,
+            resolveBotIdForRead,
+          } as never,
+        },
+        'chat-1',
+      ),
+    ).resolves.toBeNull();
+
+    expect(resolveBotRoute).toHaveBeenCalledTimes(1);
+    expect(resolveBotIdForCapability).not.toHaveBeenCalled();
+    expect(resolveBotIdForRead).not.toHaveBeenCalled();
+  });
+
   it('falls back from empty night mode capability helper to read routing', async () => {
     const resolveBotRoute = jest
       .fn()

@@ -391,10 +391,17 @@ import {
   cancelPublicationDeliveryBeforeStoppedDispatch,
   deferManagedBroadcastWithFreshDeliveryLocks,
   deferPublicationDeliveryAfterPreDispatchThrottle,
+  deferPublicationDeliveryAfterRouteQuarantine,
   ensureManagedBroadcastPublicationExecutionActive as ensurePublicationExecutionActive,
   ManagedBroadcastPublicationExecutionStopped,
+  selectManagedBroadcastDeliveryCandidates,
 } from './publication-execution-recovery';
-import { PUBLICATION_DELIVERY_VERIFICATION_RESET_DATA } from './publication-delivery-verification-state';
+import {
+  buildPublicationDeliveryVerificationScheduledData,
+  hasPublicationDeliveryAutomatedVerificationState,
+  PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
+  PUBLICATION_DELIVERY_VERIFICATION_RESET_DATA,
+} from './publication-delivery-verification-state';
 import { PUBLICATION_DELIVERY_ACCESS_LOST_ERROR_CODE } from './publication-access-loss-recovery';
 import {
   selectLegacyManagedBroadcastDueBatch,
@@ -660,6 +667,9 @@ class ManagedBroadcastTestIdempotencyReplay extends Error {
     super('Managed broadcast test idempotency replay');
   }
 }
+
+const resolveEarlierDate = (current: Date | null, candidate: Date): Date =>
+  current && current.getTime() < candidate.getTime() ? current : candidate;
 
 export class AdminManagedBroadcastRuntime {
   private readonly mediaRuntime: AdminManagedBroadcastMediaRuntime;
@@ -3417,6 +3427,9 @@ export class AdminManagedBroadcastRuntime {
               trafficClass: maxSendOptions.trafficClass ?? 'interactive',
               actionHealthLane: maxSendOptions.actionHealthLane,
               sourceTag: maxSendOptions.sourceTag ?? MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
+              ...(row.publicationOccurrenceId
+                ? { sendRouteHalfOpenProbe: 'publication_exact_verification' as const }
+                : {}),
               prepareAttempt: async ({ botId }) => {
                 onBotSelected(botId);
                 await this.heartbeatManagedBroadcastProcessingLock(
@@ -3532,8 +3545,13 @@ export class AdminManagedBroadcastRuntime {
         reason === 'startup' || reason === 'scheduled' || reason === 'deadline'
           ? MANAGED_BROADCAST_AUTOMATIC_DELIVERY_QUANTUM
           : Number.POSITIVE_INFINITY;
+      const deliveryCandidates = selectManagedBroadcastDeliveryCandidates(
+        initialDeliveries,
+        Boolean(row.publicationOccurrenceId),
+      );
       let claimedDeliveryCount = 0;
-      for (const delivery of initialDeliveries) {
+      let pendingNotBefore: Date | null = null;
+      for (const delivery of deliveryCandidates) {
         if (delivery.status !== PrismaManagedBroadcastDeliveryStatus.PENDING) {
           continue;
         }
@@ -3645,6 +3663,19 @@ export class AdminManagedBroadcastRuntime {
               firstSendError,
               nextSendAt: null,
             };
+          }
+          const routeQuarantineDeferredUntil = await deferPublicationDeliveryAfterRouteQuarantine({
+            context: this.context,
+            row,
+            delivery,
+            occurrenceIndex: currentOccurrence,
+            broadcastLockToken: activeLease.lockToken,
+            deliveryLockToken,
+            error,
+          });
+          if (routeQuarantineDeferredUntil) {
+            pendingNotBefore = resolveEarlierDate(pendingNotBefore, routeQuarantineDeferredUntil);
+            continue;
           }
           if (
             await deferPublicationDeliveryAfterPreDispatchThrottle({
@@ -3953,7 +3984,7 @@ export class AdminManagedBroadcastRuntime {
               sentAt,
               botId: resolvedBotId ?? null,
               remoteMessageId: sentMessage.messageId,
-              ...PUBLICATION_DELIVERY_VERIFICATION_RESET_DATA,
+              ...buildPublicationDeliveryVerificationScheduledData(sentAt),
               legacySentWithoutRemoteId: false,
               lockedAt: null,
               lockToken: null,
@@ -3992,7 +4023,7 @@ export class AdminManagedBroadcastRuntime {
                 sentAt,
                 botId: resolvedBotId ?? null,
                 remoteMessageId: sentMessage.messageId,
-                ...PUBLICATION_DELIVERY_VERIFICATION_RESET_DATA,
+                ...buildPublicationDeliveryVerificationScheduledData(sentAt),
                 legacySentWithoutRemoteId: false,
                 lockedAt: null,
                 lockToken: null,
@@ -4031,7 +4062,7 @@ export class AdminManagedBroadcastRuntime {
         sentChatIds,
         failedChatIds,
         firstSendError,
-        { lease: activeLease },
+        { lease: activeLease, pendingNotBefore },
       );
     } catch (error: unknown) {
       const fatalProcessingErrorMessage = resolveManagedBroadcastFatalProcessingErrorMessage(error);
@@ -5388,6 +5419,7 @@ export class AdminManagedBroadcastRuntime {
       data: {
         status: PrismaManagedBroadcastDeliveryStatus.SENT,
         sentAt: reconciledAt,
+        ...buildPublicationDeliveryVerificationScheduledData(reconciledAt),
         legacySentWithoutRemoteId: false,
         lockedAt: null,
         lockToken: null,
@@ -5527,6 +5559,7 @@ export class AdminManagedBroadcastRuntime {
     }
 
     for (const { delivery, ledger } of completedDeliveries) {
+      const sentAt = ledger.completedAt ?? new Date();
       const reconciled = await this.prisma.managedBroadcastDelivery.updateMany({
         where: {
           id: delivery.id,
@@ -5537,7 +5570,8 @@ export class AdminManagedBroadcastRuntime {
           status: PrismaManagedBroadcastDeliveryStatus.SENT,
           botId: ledger.dispatchBotId ?? delivery.botId ?? null,
           remoteMessageId: ledger.remoteMessageId,
-          sentAt: ledger.completedAt ?? new Date(),
+          sentAt,
+          ...buildPublicationDeliveryVerificationScheduledData(sentAt),
           legacySentWithoutRemoteId: false,
           lockedAt: null,
           lockToken: null,
@@ -5773,7 +5807,7 @@ export class AdminManagedBroadcastRuntime {
     sentChatIds: string[],
     failedChatIds: string[],
     firstSendError: unknown,
-    options: { lease?: ManagedBroadcastLease } = {},
+    options: { lease?: ManagedBroadcastLease; pendingNotBefore?: Date | null } = {},
   ): Promise<BroadcastOccurrenceResult> {
     const deliveries = await this.prisma.managedBroadcastDelivery.findMany({
       where: {
@@ -5813,14 +5847,30 @@ export class AdminManagedBroadcastRuntime {
     const unverifiedPublicationChats = row.publicationOccurrenceId
       ? deliveredChats.filter(
           (delivery: any) =>
-            delivery.remoteMessageId !== null && delivery.remoteMessageVerifiedAt === null,
+            delivery.remoteMessageId !== null &&
+            delivery.remoteMessageVerifiedAt === null &&
+            hasPublicationDeliveryAutomatedVerificationState(delivery),
         )
       : [];
+    const hasImmediatelyReadyPendingDelivery = pendingChats.some(
+      (delivery: any) =>
+        delivery.lastErrorCode !== PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
+    );
     const canRetry = failedChats.length > 0;
     const scheduleMode = normalizeBroadcastScheduleMode(row.scheduleMode);
 
     if (pendingChats.length > 0 || unverifiedPublicationChats.length > 0) {
-      const deferredNextSendAt = this.publicationVerification.nextAt(deliveries);
+      const defaultNextSendAt = this.publicationVerification.nextAt(deliveries);
+      const verificationNextSendAt =
+        unverifiedPublicationChats.length > 0
+          ? this.publicationVerification.nextAt(deliveredChats)
+          : null;
+      const deferredNextSendAt =
+        pendingChats.length > 0 && !hasImmediatelyReadyPendingDelivery && options.pendingNotBefore
+          ? verificationNextSendAt && verificationNextSendAt < options.pendingNotBefore
+            ? verificationNextSendAt
+            : options.pendingNotBefore
+          : defaultNextSendAt;
       const updated = await this.updateManagedBroadcastIfNotCanceled(
         row.id,
         {

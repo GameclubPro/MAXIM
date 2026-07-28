@@ -8,6 +8,7 @@ import {
   Prisma,
 } from '../prisma/prisma-client';
 import { MaxBotLinkService } from './max-bot-link.service';
+import { MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE } from './max-send-route-health';
 
 type MutableChat = {
   id: string;
@@ -39,6 +40,7 @@ type MutableMembership = {
   permissionsHash?: string | null;
   sendRouteFailureCount?: number;
   sendRouteQuarantinedUntil?: Date | null;
+  sendRouteLastFailureCode?: string | null;
   lifecycleEventAt?: Date | null;
   lifecycleEventType?: string | null;
   lifecycleSource?: string | null;
@@ -133,6 +135,7 @@ function createServiceFixture() {
                   : (membership.permissionsSnapshot ?? null),
               sendRouteFailureCount: membership.sendRouteFailureCount ?? 0,
               sendRouteQuarantinedUntil: membership.sendRouteQuarantinedUntil ?? null,
+              sendRouteLastFailureCode: membership.sendRouteLastFailureCode ?? null,
             })),
         };
       }),
@@ -373,6 +376,9 @@ function createServiceFixture() {
             chatId: string;
             status?: ChatBotMembershipStatus;
             botId?: string;
+            sendRouteFailureCount?: number;
+            sendRouteLastFailureCode?: string;
+            sendRouteQuarantinedUntil?: Date | null;
             OR?: Array<Record<string, unknown>>;
           };
           data: Partial<MutableMembership>;
@@ -389,6 +395,25 @@ function createServiceFixture() {
               continue;
             }
             if (
+              where.sendRouteFailureCount !== undefined &&
+              (membership.sendRouteFailureCount ?? 0) !== where.sendRouteFailureCount
+            ) {
+              continue;
+            }
+            if (
+              where.sendRouteLastFailureCode !== undefined &&
+              membership.sendRouteLastFailureCode !== where.sendRouteLastFailureCode
+            ) {
+              continue;
+            }
+            if (
+              where.sendRouteQuarantinedUntil !== undefined &&
+              (membership.sendRouteQuarantinedUntil?.getTime() ?? null) !==
+                (where.sendRouteQuarantinedUntil?.getTime() ?? null)
+            ) {
+              continue;
+            }
+            if (
               where.OR &&
               !where.OR.some((condition) => {
                 if (condition.status && membership.status !== condition.status) {
@@ -396,6 +421,21 @@ function createServiceFixture() {
                 }
                 if (condition.lifecycleEventAt === null) {
                   return membership.lifecycleEventAt == null;
+                }
+                if (condition.sendRouteQuarantinedUntil === null) {
+                  return membership.sendRouteQuarantinedUntil == null;
+                }
+                const sendRouteQuarantinedUntil = condition.sendRouteQuarantinedUntil;
+                if (
+                  sendRouteQuarantinedUntil &&
+                  typeof sendRouteQuarantinedUntil === 'object' &&
+                  (sendRouteQuarantinedUntil as { lte?: unknown }).lte instanceof Date
+                ) {
+                  const existingAtMs = membership.sendRouteQuarantinedUntil?.getTime();
+                  return (
+                    existingAtMs != null &&
+                    existingAtMs <= (sendRouteQuarantinedUntil as { lte: Date }).lte.getTime()
+                  );
                 }
                 const lifecycleEventAt = condition.lifecycleEventAt;
                 if (lifecycleEventAt instanceof Date) {
@@ -693,7 +733,7 @@ describe('MaxBotLinkService', () => {
     },
   );
 
-  it('prefers a healthy alternate only for sends while a route quarantine is active', async () => {
+  it('excludes quarantined routes only for sends while the quarantine is active', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-07-27T12:00:00.000Z'));
     try {
       const fixture = createServiceFixture();
@@ -711,6 +751,7 @@ describe('MaxBotLinkService', () => {
         createActiveMembership(chatId, primaryBotId, 0, {
           sendRouteFailureCount: 1,
           sendRouteQuarantinedUntil: new Date('2026-07-27T18:00:00.000Z'),
+          sendRouteLastFailureCode: MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE,
         }),
         createActiveMembership(chatId, alternateBotId, 1),
       );
@@ -720,7 +761,8 @@ describe('MaxBotLinkService', () => {
       ).resolves.toEqual(
         expect.objectContaining({
           botId: alternateBotId,
-          candidateBotIds: [alternateBotId, primaryBotId],
+          candidateBotIds: [alternateBotId],
+          quarantinedCandidateBotIds: [primaryBotId],
         }),
       );
       await expect(
@@ -741,8 +783,173 @@ describe('MaxBotLinkService', () => {
         fixture.service.resolveBotRoute({ purpose: 'send_message', chatId }),
       ).resolves.toEqual(
         expect.objectContaining({
+          botId: alternateBotId,
+          candidateBotIds: [alternateBotId],
+          quarantinedCandidateBotIds: [primaryBotId],
+          halfOpenCandidateBotIds: [],
+        }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('exposes and atomically claims one half-open route after its first quarantine', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-27T18:00:01.000Z'));
+    try {
+      const fixture = createServiceFixture();
+      const chatId = 'chat-half-open-send-route';
+      const primaryBotId = ROUTE_MATRIX_BOT_IDS[0];
+      fixture.chats.set(chatId, {
+        id: chatId,
+        title: 'Half-open send route',
+        botId: primaryBotId,
+        primaryBotId,
+        entityType: ChatEntityType.CHAT,
+      });
+      fixture.memberships.push(
+        createActiveMembership(chatId, primaryBotId, 0, {
+          sendRouteFailureCount: 1,
+          sendRouteQuarantinedUntil: new Date('2026-07-27T18:00:00.000Z'),
+          sendRouteLastFailureCode: MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE,
+        }),
+      );
+
+      await expect(
+        fixture.service.resolveBotRoute({ purpose: 'send_message', chatId }),
+      ).resolves.toEqual(
+        expect.objectContaining({
+          botId: null,
+          candidateBotIds: [],
+          quarantinedCandidateBotIds: [primaryBotId],
+          halfOpenCandidateBotIds: [],
+          retryAt: new Date('2026-07-27T18:15:01.000Z'),
+        }),
+      );
+      await expect(
+        fixture.service.resolveBotRoute({
+          purpose: 'send_message',
+          chatId,
+          allowHalfOpenProbe: true,
+        }),
+      ).resolves.toEqual(
+        expect.objectContaining({
           botId: primaryBotId,
-          candidateBotIds: [primaryBotId, alternateBotId],
+          candidateBotIds: [primaryBotId],
+          quarantinedCandidateBotIds: [],
+          halfOpenCandidateBotIds: [primaryBotId],
+        }),
+      );
+      await expect(
+        fixture.service.claimSendRouteHalfOpen({ chatId, botId: primaryBotId }),
+      ).resolves.toEqual(new Date('2026-07-28T00:00:01.000Z'));
+      expect(fixture.prisma.chatBotMembership.updateMany).toHaveBeenLastCalledWith({
+        where: {
+          chatId,
+          botId: primaryBotId,
+          status: ChatBotMembershipStatus.ACTIVE,
+          sendRouteFailureCount: 1,
+          sendRouteLastFailureCode: MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE,
+          OR: [
+            { sendRouteQuarantinedUntil: null },
+            {
+              sendRouteQuarantinedUntil: {
+                lte: new Date('2026-07-27T18:00:01.000Z'),
+              },
+            },
+          ],
+        },
+        data: {
+          sendRouteQuarantinedUntil: new Date('2026-07-28T00:00:01.000Z'),
+        },
+      });
+
+      await expect(
+        fixture.service.releaseSendRouteHalfOpen({
+          chatId,
+          botId: primaryBotId,
+          claimedUntil: new Date('2026-07-28T00:00:01.000Z'),
+        }),
+      ).resolves.toBe(true);
+
+      const concurrentClaims = await Promise.all([
+        fixture.service.claimSendRouteHalfOpen({ chatId, botId: primaryBotId }),
+        fixture.service.claimSendRouteHalfOpen({ chatId, botId: primaryBotId }),
+      ]);
+      expect(concurrentClaims.filter(Boolean)).toHaveLength(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('returns no send candidate when the only route is quarantined', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-27T12:00:00.000Z'));
+    try {
+      const fixture = createServiceFixture();
+      const chatId = 'chat-only-send-route-quarantined';
+      const primaryBotId = ROUTE_MATRIX_BOT_IDS[0];
+      fixture.chats.set(chatId, {
+        id: chatId,
+        title: 'Only quarantined send route',
+        botId: primaryBotId,
+        primaryBotId,
+        entityType: ChatEntityType.CHAT,
+      });
+      fixture.memberships.push(
+        createActiveMembership(chatId, primaryBotId, 0, {
+          sendRouteFailureCount: 2,
+          sendRouteQuarantinedUntil: new Date('2026-07-27T18:00:00.000Z'),
+          sendRouteLastFailureCode: MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE,
+        }),
+      );
+
+      await expect(
+        fixture.service.resolveBotRoute({ purpose: 'send_message', chatId }),
+      ).resolves.toEqual(
+        expect.objectContaining({
+          botId: null,
+          candidateBotIds: [],
+          quarantinedCandidateBotIds: [primaryBotId],
+          retryAt: new Date('2026-07-27T18:00:00.000Z'),
+        }),
+      );
+
+      jest.setSystemTime(new Date('2026-07-27T18:00:01.000Z'));
+      await expect(
+        fixture.service.resolveBotRoute({ purpose: 'send_message', chatId }),
+      ).resolves.toEqual(
+        expect.objectContaining({
+          botId: null,
+          candidateBotIds: [],
+          quarantinedCandidateBotIds: [primaryBotId],
+          retryAt: new Date('2026-07-28T00:00:01.000Z'),
+        }),
+      );
+
+      const primaryMembership = fixture.memberships.find(
+        (membership) => membership.chatId === chatId && membership.botId === primaryBotId,
+      );
+      primaryMembership!.sendRouteQuarantinedUntil = null;
+      primaryMembership!.sendRouteLastFailureCode = null;
+      await expect(
+        fixture.service.resolveBotRoute({ purpose: 'send_message', chatId }),
+      ).resolves.toEqual(
+        expect.objectContaining({
+          botId: primaryBotId,
+          candidateBotIds: [primaryBotId],
+          quarantinedCandidateBotIds: [],
+        }),
+      );
+      await expect(
+        fixture.service.resolveBotRoute({
+          purpose: 'moderation_action',
+          chatId,
+          action: 'delete_message',
+        }),
+      ).resolves.toEqual(
+        expect.objectContaining({
+          botId: primaryBotId,
+          candidateBotIds: [primaryBotId],
         }),
       );
     } finally {

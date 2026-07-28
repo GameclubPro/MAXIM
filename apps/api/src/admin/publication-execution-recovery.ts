@@ -1,29 +1,66 @@
 import type { Logger } from '@nestjs/common';
 import {
+  ChatBotMembershipStatus,
   type ManagedBroadcast,
   type ManagedBroadcastDelivery,
   ManagedBroadcastDeliveryStatus,
   ManagedBroadcastStatus,
   Prisma,
+  PublicationDeliveryVerificationSource,
   PublicationLifecycle,
   PublicationOccurrenceStatus,
   PublicationScheduleStatus,
 } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
+import { isMaxActionRouteQuarantinedError } from '../max/max-action-dispatch-error';
+import { MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE } from '../max/max-send-route-health';
 import { isMaxApiThrottleError } from './admin-legacy-utils';
 import type { AdminManagedBroadcastRuntimeContext } from './admin-managed-broadcast-runtime-context';
 import { MANAGED_BROADCAST_LOCK_STALE_MS } from './admin.service.support';
 import { buildUnsafePublicationExecutionDeliveryWhere } from './publication-execution-safety';
 import {
+  buildPublicationRouteAdvisoryLockKey,
+  hasPublicationDeliveryAutomatedVerificationState,
+  PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
   PUBLICATION_DELIVERY_VERIFICATION_RESET_DATA,
   resolvePublicationVerificationNextSendAt,
 } from './publication-delivery-verification-state';
+
+export { PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } from './publication-delivery-verification-state';
 
 export class ManagedBroadcastPublicationExecutionStopped extends Error {
   constructor() {
     super('Managed broadcast publication execution is no longer active');
     this.name = 'ManagedBroadcastPublicationExecutionStopped';
   }
+}
+
+const PUBLICATION_ROUTE_RECOVERY_SPACING_MS = 15 * 60_000;
+
+class StalePublicationRouteQuarantineDeferralError extends Error {}
+
+export function selectManagedBroadcastDeliveryCandidates<
+  T extends Pick<
+    ManagedBroadcastDelivery,
+    'lastErrorCode' | 'status' | 'targetChatId' | 'updatedAt'
+  >,
+>(deliveries: readonly T[], isPublicationExecution: boolean): T[] {
+  const pending = deliveries.filter(
+    (delivery) => delivery.status === ManagedBroadcastDeliveryStatus.PENDING,
+  );
+  if (!isPublicationExecution) {
+    return pending;
+  }
+  const ready = pending.filter(
+    (delivery) => delivery.lastErrorCode !== PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
+  );
+  if (ready.length > 0) {
+    return ready;
+  }
+  return [...pending].sort((left, right) => {
+    const updatedAtDifference = left.updatedAt.getTime() - right.updatedAt.getTime();
+    return updatedAtDifference || left.targetChatId.localeCompare(right.targetChatId);
+  });
 }
 
 export async function ensureManagedBroadcastPublicationExecutionActive(options: {
@@ -235,6 +272,146 @@ export async function deferPublicationDeliveryAfterPreDispatchThrottle(options: 
   return true;
 }
 
+export async function deferPublicationDeliveryAfterRouteQuarantine(options: {
+  context: Pick<AdminManagedBroadcastRuntimeContext, 'prisma' | 'logger'>;
+  row: Pick<ManagedBroadcast, 'id' | 'publicationOccurrenceId'>;
+  delivery: Pick<ManagedBroadcastDelivery, 'id' | 'targetChatId'>;
+  occurrenceIndex: number;
+  broadcastLockToken: string;
+  deliveryLockToken: string;
+  error: unknown;
+}): Promise<Date | null> {
+  if (!options.row.publicationOccurrenceId || !isMaxActionRouteQuarantinedError(options.error)) {
+    return null;
+  }
+
+  const quarantineError = options.error;
+  const now = new Date();
+  const requestedRetryAt = new Date(Math.max(now.getTime(), quarantineError.retryAt.getTime()));
+  try {
+    const deferredUntil = await options.context.prisma.$transaction(async (tx) => {
+      // FLAG: Serialize reservations per target so an opened route gets one canary at a time.
+      await tx.$executeRaw(
+        Prisma.sql`SELECT pg_advisory_xact_lock(hashtext(${buildPublicationRouteAdvisoryLockKey(options.delivery.targetChatId)}))`,
+      );
+      const quarantinedCandidateBotIds = Array.from(
+        new Set(
+          quarantineError.quarantinedCandidateBotIds.map((botId) => botId.trim()).filter(Boolean),
+        ),
+      );
+      const routeStillQuarantined =
+        quarantinedCandidateBotIds.length > 0 &&
+        (await tx.chatBotMembership.count({
+          where: {
+            chatId: options.delivery.targetChatId,
+            botId: { in: quarantinedCandidateBotIds },
+            status: ChatBotMembershipStatus.ACTIVE,
+            OR: [
+              { sendRouteQuarantinedUntil: { gt: now } },
+              {
+                sendRouteLastFailureCode: MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE,
+                sendRouteFailureCount: { gte: 2 },
+              },
+            ],
+          },
+        })) > 0;
+      const latestReservation = routeStillQuarantined
+        ? await tx.managedBroadcast.aggregate({
+            where: {
+              id: { not: options.row.id },
+              publicationOccurrenceId: { not: null },
+              status: ManagedBroadcastStatus.ACTIVE,
+              nextSendAt: { gt: now },
+              deliveries: {
+                some: {
+                  targetChatId: options.delivery.targetChatId,
+                  status: ManagedBroadcastDeliveryStatus.PENDING,
+                  lastErrorCode: PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
+                },
+              },
+            },
+            _max: { nextSendAt: true },
+          })
+        : { _max: { nextSendAt: null } };
+      const latestReservedAt = latestReservation._max.nextSendAt;
+      const reservedAt = routeStillQuarantined
+        ? new Date(
+            Math.max(
+              requestedRetryAt.getTime(),
+              latestReservedAt
+                ? latestReservedAt.getTime() + PUBLICATION_ROUTE_RECOVERY_SPACING_MS
+                : 0,
+            ),
+          )
+        : now;
+      const deferredBroadcast = await tx.managedBroadcast.updateMany({
+        where: {
+          id: options.row.id,
+          publicationOccurrenceId: options.row.publicationOccurrenceId,
+          status: ManagedBroadcastStatus.ACTIVE,
+          lockToken: options.broadcastLockToken,
+        },
+        data: { nextSendAt: reservedAt },
+      });
+      if (deferredBroadcast.count !== 1) {
+        return null;
+      }
+      const deferredDelivery = await tx.managedBroadcastDelivery.updateMany({
+        where: {
+          id: options.delivery.id,
+          status: ManagedBroadcastDeliveryStatus.SENDING,
+          lockToken: options.deliveryLockToken,
+          attemptCount: { gt: 0 },
+        },
+        data: {
+          status: ManagedBroadcastDeliveryStatus.PENDING,
+          attemptCount: { decrement: 1 },
+          botId: null,
+          remoteMessageId: null,
+          ...PUBLICATION_DELIVERY_VERIFICATION_RESET_DATA,
+          legacySentWithoutRemoteId: false,
+          sentAt: null,
+          lockedAt: null,
+          lockToken: null,
+          lastErrorCode: routeStillQuarantined
+            ? PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE
+            : null,
+          lastError: routeStillQuarantined
+            ? 'Маршрут отправки временно изолирован после исчезновения сообщения.'
+            : null,
+        },
+      });
+      if (deferredDelivery.count !== 1) {
+        throw new StalePublicationRouteQuarantineDeferralError();
+      }
+      return { reservedAt, routeStillQuarantined };
+    });
+    if (!deferredUntil) {
+      return null;
+    }
+    options.context.logger.warn(
+      {
+        broadcastId: options.row.id,
+        occurrenceIndex: options.occurrenceIndex,
+        deliveryId: options.delivery.id,
+        targetChatId: options.delivery.targetChatId,
+        quarantinedBotIds: quarantineError.quarantinedCandidateBotIds,
+        retryAt: deferredUntil.reservedAt.toISOString(),
+        routeStillQuarantined: deferredUntil.routeStillQuarantined,
+      },
+      deferredUntil.routeStillQuarantined
+        ? 'Deferred publication delivery behind the send-route quarantine circuit'
+        : 'Requeued publication delivery after a stale send-route quarantine outcome',
+    );
+    return deferredUntil.reservedAt;
+  } catch (error: unknown) {
+    if (error instanceof StalePublicationRouteQuarantineDeferralError) {
+      return null;
+    }
+    throw error;
+  }
+}
+
 export async function deferManagedBroadcastWithFreshDeliveryLocks(
   prisma: PrismaService,
   broadcastId: string,
@@ -351,7 +528,13 @@ export async function syncPublicationBroadcastAfterDeliveryResolution(
     sentAt: Date | null;
     remoteMessageId: string | null;
     remoteMessageVerifiedAt: Date | null;
+    remoteMessageVerificationAttemptCount: number;
+    remoteMessageVerificationAbsentCount: number;
+    remoteMessageVerificationPresentCount: number;
+    remoteMessageVerificationAttemptedAt: Date | null;
     remoteMessageVerificationNextAt: Date | null;
+    remoteMessageVerificationSource: PublicationDeliveryVerificationSource | null;
+    lastErrorCode: string | null;
   };
   const deliveries: DeliveryResolutionRow[] = await tx.managedBroadcastDelivery.findMany({
     where: { broadcastId, occurrenceIndex },
@@ -360,7 +543,13 @@ export async function syncPublicationBroadcastAfterDeliveryResolution(
       sentAt: true,
       remoteMessageId: true,
       remoteMessageVerifiedAt: true,
+      remoteMessageVerificationAttemptCount: true,
+      remoteMessageVerificationAbsentCount: true,
+      remoteMessageVerificationPresentCount: true,
+      remoteMessageVerificationAttemptedAt: true,
       remoteMessageVerificationNextAt: true,
+      remoteMessageVerificationSource: true,
+      lastErrorCode: true,
     },
   });
   if (deliveries.length === 0) {
@@ -378,14 +567,32 @@ export async function syncPublicationBroadcastAfterDeliveryResolution(
   const hasPending = deliveries.some(
     (delivery) => delivery.status === ManagedBroadcastDeliveryStatus.PENDING,
   );
+  const hasReadyPending = deliveries.some(
+    (delivery) =>
+      delivery.status === ManagedBroadcastDeliveryStatus.PENDING &&
+      delivery.lastErrorCode !== PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
+  );
   const unverified = deliveries.filter(
     (delivery) =>
       delivery.status === ManagedBroadcastDeliveryStatus.SENT &&
       delivery.remoteMessageId !== null &&
-      delivery.remoteMessageVerifiedAt === null,
+      delivery.remoteMessageVerifiedAt === null &&
+      hasPublicationDeliveryAutomatedVerificationState(delivery),
   );
   if (hasPending || unverified.length > 0) {
-    const nextSendAt = resolvePublicationVerificationNextSendAt(unverified, hasPending);
+    const verificationNextAt =
+      unverified.length > 0 ? resolvePublicationVerificationNextSendAt(unverified, false) : null;
+    let nextSendAt = hasReadyPending ? new Date() : verificationNextAt;
+    if (hasPending && !hasReadyPending) {
+      const current = await tx.managedBroadcast.findUnique({
+        where: { id: broadcastId },
+        select: { nextSendAt: true },
+      });
+      if (current?.nextSendAt && (!nextSendAt || current.nextSendAt < nextSendAt)) {
+        nextSendAt = current.nextSendAt;
+      }
+    }
+    nextSendAt ??= new Date();
     await tx.managedBroadcast.updateMany({
       where: { id: broadcastId, status: { not: ManagedBroadcastStatus.CANCELED } },
       data: {

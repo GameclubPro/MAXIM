@@ -3,6 +3,7 @@ import { MAX_API_SOURCE_TAGS, type MaxClientService } from '../max/max-client.se
 import {
   ManagedBroadcastStatus,
   ManagedBroadcastDeliveryStatus,
+  type Prisma,
   PublicationDeliveryVerificationSource,
 } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
@@ -13,12 +14,19 @@ const MAX_ERROR_LENGTH = 1_000;
 
 export const PUBLICATION_VERIFICATION_AUDIT_USAGE = [
   'Usage:',
-  '  --since <ISO> [--until <ISO>] [--limit 1..200] [--unverified | --apply] [--json]',
-  '  --delivery-id <id> [--delivery-id <id> ...] [--limit 1..200] [--unverified | --apply] [--json]',
+  '  --since <ISO> [--until <ISO>] [--limit 1..200] [--unverified [--completed | --terminal] [--after <ISO>,<id>] | --apply] [--json]',
+  '  --delivery-id <id> [--delivery-id <id> ...] [--unverified | --apply] [--json]',
   '',
   'Dry-run is the default. The audit performs exact MAX reads but never replays a send.',
   '--unverified audits SENT deliveries still awaiting stable verification and cannot be applied.',
+  '--completed restricts --unverified range audits to completed broadcasts.',
+  '--terminal includes completed and canceled broadcasts.',
 ].join('\n');
+
+export type PublicationVerificationAuditCursor = {
+  sentAt: Date;
+  deliveryId: string;
+};
 
 export type PublicationVerificationAuditOptions = {
   apply: boolean;
@@ -28,6 +36,9 @@ export type PublicationVerificationAuditOptions = {
   until: Date | null;
   deliveryIds: string[];
   unverified: boolean;
+  completed: boolean;
+  terminal: boolean;
+  after: PublicationVerificationAuditCursor | null;
 };
 
 type LegacyVerificationCandidate = {
@@ -37,6 +48,7 @@ type LegacyVerificationCandidate = {
   targetChatId: string;
   botId: string | null;
   status: ManagedBroadcastDeliveryStatus;
+  sentAt: Date | null;
   remoteMessageId: string;
   remoteMessageVerifiedAt: Date | null;
   remoteMessageVerificationAttemptCount: number;
@@ -60,6 +72,7 @@ type AuditOutcome = {
   targetChatId: string;
   botId: string | null;
   messageId: string;
+  sentAt: string | null;
   candidateState: 'legacy_verified' | 'unverified';
   presence: AuditPresence['kind'];
   classification: PublicationDeliveryVerificationSource | null;
@@ -75,6 +88,9 @@ export type PublicationVerificationAuditSummary = {
   errors: number;
   noBot: number;
   unverifiedSelected: number;
+  requested: number;
+  unmatchedDeliveryIds: string[];
+  nextAfter: string | null;
   stableClassifications: number;
   legacyClassifications: number;
   casConflicts: number;
@@ -100,6 +116,23 @@ function readDate(value: string, option: string): Date {
   return parsed;
 }
 
+function readCursor(value: string): PublicationVerificationAuditCursor {
+  const separatorIndex = value.indexOf(',');
+  if (separatorIndex <= 0 || separatorIndex === value.length - 1) {
+    throw new Error('--after must use <ISO>,<delivery-id>');
+  }
+  const sentAt = readDate(value.slice(0, separatorIndex), '--after');
+  const deliveryId = value.slice(separatorIndex + 1).trim();
+  if (!deliveryId || deliveryId.includes(',')) {
+    throw new Error('--after must use <ISO>,<delivery-id>');
+  }
+  return { sentAt, deliveryId };
+}
+
+function formatCursor(cursor: PublicationVerificationAuditCursor): string {
+  return `${cursor.sentAt.toISOString()},${cursor.deliveryId}`;
+}
+
 export function readPublicationVerificationAuditOptions(
   argv: readonly string[],
 ): PublicationVerificationAuditOptions {
@@ -109,6 +142,9 @@ export function readPublicationVerificationAuditOptions(
   let since: Date | null = null;
   let until: Date | null = null;
   let unverified = false;
+  let completed = false;
+  let terminal = false;
+  let after: PublicationVerificationAuditCursor | null = null;
   const deliveryIds: string[] = [];
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -123,6 +159,19 @@ export function readPublicationVerificationAuditOptions(
     }
     if (arg === '--unverified') {
       unverified = true;
+      continue;
+    }
+    if (arg === '--completed') {
+      completed = true;
+      continue;
+    }
+    if (arg === '--terminal') {
+      terminal = true;
+      continue;
+    }
+    if (arg === '--after') {
+      after = readCursor(readRequiredValue(argv, index, arg));
+      index += 1;
       continue;
     }
     if (arg === '--limit') {
@@ -158,6 +207,9 @@ export function readPublicationVerificationAuditOptions(
   if (!since && deliveryIds.length === 0) {
     throw new Error('A bounded --since or at least one --delivery-id is required');
   }
+  if (deliveryIds.length > 0 && (since || until)) {
+    throw new Error('--delivery-id cannot be combined with --since or --until');
+  }
   if (until && !since) {
     throw new Error('--until requires --since');
   }
@@ -170,11 +222,46 @@ export function readPublicationVerificationAuditOptions(
   if (deliveryIds.length > MAX_LIMIT) {
     throw new Error(`At most ${MAX_LIMIT} --delivery-id values are allowed`);
   }
+  if (completed && !unverified) {
+    throw new Error('--completed requires --unverified');
+  }
+  if (completed && deliveryIds.length > 0) {
+    throw new Error('--completed is available only in range mode');
+  }
+  if (completed && apply) {
+    throw new Error('--completed is read-only and cannot be combined with --apply');
+  }
+  if (terminal && !unverified) {
+    throw new Error('--terminal requires --unverified');
+  }
+  if (terminal && deliveryIds.length > 0) {
+    throw new Error('--terminal is available only in range mode');
+  }
+  if (terminal && apply) {
+    throw new Error('--terminal is read-only and cannot be combined with --apply');
+  }
+  if (terminal && completed) {
+    throw new Error('--terminal cannot be combined with --completed');
+  }
+  if (after && (!unverified || deliveryIds.length > 0)) {
+    throw new Error('--after requires --unverified range mode');
+  }
   if (unverified && apply) {
     throw new Error('--unverified is read-only and cannot be combined with --apply');
   }
 
-  return { apply, json, limit, since, until, deliveryIds, unverified };
+  return {
+    apply,
+    json,
+    limit,
+    since,
+    until,
+    deliveryIds,
+    unverified,
+    completed,
+    terminal,
+    after,
+  };
 }
 
 const resultKey = (chatId: string, messageId: string): string =>
@@ -188,25 +275,46 @@ const normalizeError = (error: unknown): string => {
 async function loadCandidates(
   prisma: AuditPrisma,
   options: PublicationVerificationAuditOptions,
-): Promise<LegacyVerificationCandidate[]> {
-  return prisma.managedBroadcastDelivery.findMany({
+): Promise<{ candidates: LegacyVerificationCandidate[]; nextAfter: string | null }> {
+  const cursorWhere: Prisma.ManagedBroadcastDeliveryWhereInput | null = options.after
+    ? {
+        OR: [
+          { sentAt: { gt: options.after.sentAt } },
+          { sentAt: options.after.sentAt, id: { gt: options.after.deliveryId } },
+        ],
+      }
+    : null;
+  const rows = (await prisma.managedBroadcastDelivery.findMany({
     where: {
       publicationOccurrenceId: { not: null },
       status: ManagedBroadcastDeliveryStatus.SENT,
       remoteMessageId: { not: null },
       ...(options.unverified
         ? {
-            broadcast: {
-              is: {
-                status: {
-                  in: [
-                    ManagedBroadcastStatus.ACTIVE,
-                    ManagedBroadcastStatus.PARTIAL,
-                    ManagedBroadcastStatus.FAILED,
-                  ],
-                },
-              },
-            },
+            ...(options.deliveryIds.length > 0
+              ? {}
+              : {
+                  broadcast: {
+                    is: {
+                      status: options.completed
+                        ? ManagedBroadcastStatus.COMPLETED
+                        : options.terminal
+                          ? {
+                              in: [
+                                ManagedBroadcastStatus.COMPLETED,
+                                ManagedBroadcastStatus.CANCELED,
+                              ],
+                            }
+                          : {
+                              in: [
+                                ManagedBroadcastStatus.ACTIVE,
+                                ManagedBroadcastStatus.PARTIAL,
+                                ManagedBroadcastStatus.FAILED,
+                              ],
+                            },
+                    },
+                  },
+                }),
             remoteMessageVerifiedAt: null,
             sentAt: {
               not: null,
@@ -223,11 +331,12 @@ async function loadCandidates(
           }),
       remoteMessageVerificationSource: null,
       ...(options.deliveryIds.length > 0 ? { id: { in: options.deliveryIds } } : {}),
+      ...(cursorWhere ? { AND: [cursorWhere] } : {}),
     },
     orderBy: options.unverified
       ? [{ sentAt: 'asc' }, { id: 'asc' }]
       : [{ remoteMessageVerifiedAt: 'asc' }, { id: 'asc' }],
-    take: Math.min(options.limit, options.deliveryIds.length || options.limit),
+    take: options.deliveryIds.length > 0 ? options.deliveryIds.length : options.limit + 1,
     select: {
       id: true,
       broadcastId: true,
@@ -235,6 +344,7 @@ async function loadCandidates(
       targetChatId: true,
       botId: true,
       status: true,
+      sentAt: true,
       remoteMessageId: true,
       remoteMessageVerifiedAt: true,
       remoteMessageVerificationAttemptCount: true,
@@ -244,7 +354,19 @@ async function loadCandidates(
       remoteMessageVerificationNextAt: true,
       remoteMessageVerificationLastError: true,
     },
-  }) as Promise<LegacyVerificationCandidate[]>;
+  })) as LegacyVerificationCandidate[];
+  if (options.deliveryIds.length > 0 || rows.length <= options.limit) {
+    return { candidates: rows, nextAfter: null };
+  }
+  const candidates = rows.slice(0, options.limit);
+  const last = candidates.at(-1);
+  return {
+    candidates,
+    nextAfter:
+      last?.sentAt === null || last?.sentAt === undefined
+        ? null
+        : formatCursor({ sentAt: last.sentAt, deliveryId: last.id }),
+  };
 }
 
 async function readExactPresences(
@@ -369,7 +491,9 @@ export async function runPublicationVerificationAudit(
   maxClient: AuditMaxClient,
   options: PublicationVerificationAuditOptions,
 ): Promise<PublicationVerificationAuditSummary> {
-  const candidates = await loadCandidates(prisma, options);
+  const { candidates, nextAfter } = await loadCandidates(prisma, options);
+  const selectedDeliveryIds = new Set(candidates.map((candidate) => candidate.id));
+  const unmatchedDeliveryIds = options.deliveryIds.filter((id) => !selectedDeliveryIds.has(id));
   const presences = await readExactPresences(maxClient, candidates);
   const outcomes: AuditOutcome[] = [];
 
@@ -395,6 +519,7 @@ export async function runPublicationVerificationAudit(
       targetChatId: candidate.targetChatId,
       botId: candidate.botId,
       messageId: candidate.remoteMessageId,
+      sentAt: candidate.sentAt?.toISOString() ?? null,
       candidateState,
       presence: presence.kind,
       classification,
@@ -410,7 +535,11 @@ export async function runPublicationVerificationAudit(
     absent: outcomes.filter((outcome) => outcome.presence === 'absent').length,
     errors: outcomes.filter((outcome) => outcome.presence === 'error').length,
     noBot: outcomes.filter((outcome) => outcome.presence === 'no_bot').length,
-    unverifiedSelected: outcomes.filter((outcome) => outcome.candidateState === 'unverified').length,
+    unverifiedSelected: outcomes.filter((outcome) => outcome.candidateState === 'unverified')
+      .length,
+    requested: options.deliveryIds.length,
+    unmatchedDeliveryIds,
+    nextAfter,
     stableClassifications: outcomes.filter(
       (outcome) =>
         outcome.classification === PublicationDeliveryVerificationSource.AUTOMATED_STABLE &&
@@ -437,7 +566,13 @@ function printSummary(summary: PublicationVerificationAuditSummary, json: boolea
       `${summary.selected} selected, ${summary.present} present, ${summary.absent} absent, ` +
       `${summary.errors} errors, ${summary.noBot} without bot, ` +
       `${summary.unverifiedSelected} unverified, ` +
-      `${summary.casConflicts} CAS conflicts.\n`,
+      `${summary.requested} explicitly requested, ` +
+      `${summary.unmatchedDeliveryIds.length} unmatched, ` +
+      `${summary.casConflicts} CAS conflicts.\n` +
+      (summary.unmatchedDeliveryIds.length > 0
+        ? `Unmatched delivery IDs: ${summary.unmatchedDeliveryIds.join(', ')}\n`
+        : '') +
+      (summary.nextAfter ? `Next page: --after ${summary.nextAfter}\n` : ''),
   );
 }
 
@@ -459,7 +594,7 @@ async function main(): Promise<void> {
       options,
     );
     printSummary(summary, options.json);
-    if (summary.casConflicts > 0) {
+    if (summary.casConflicts > 0 || summary.unmatchedDeliveryIds.length > 0) {
       process.exitCode = 1;
     }
   } finally {
