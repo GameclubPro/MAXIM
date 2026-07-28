@@ -7309,6 +7309,7 @@ export class AdminService implements OnModuleDestroy {
     const updatedPayload = {
       ...canonicalPayload,
       authorDisplayName: published.authorAttribution.displayName,
+      authorMentionDisplayName: published.authorAttribution.mentionDisplayName,
       authorUsername: published.authorAttribution.username,
       authorProfileUrl: published.authorAttribution.profileUrl,
       reviewStatus,
@@ -18389,6 +18390,7 @@ export class AdminService implements OnModuleDestroy {
     const authorAttribution: ChannelSuggestionAuthorAttribution = {
       userId: actorUserId,
       displayName: this.readTrimmedString(payload.authorDisplayName),
+      mentionDisplayName: this.readTrimmedString(payload.authorMentionDisplayName),
       username: this.readTrimmedString(payload.authorUsername),
       profileUrl:
         this.normalizeMaxProfileUrl(this.readTrimmedString(payload.authorProfileUrl)) ?? null,

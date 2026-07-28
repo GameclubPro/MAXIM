@@ -4092,7 +4092,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'channel-1',
-      'От подписчика [Пользователь](max://user/user-1)\n\nГотовый пост для канала',
+      'От подписчика Пользователь\n\nГотовый пост для канала',
       expect.objectContaining({
         textFormat: 'markdown',
         buttons: [
@@ -4403,6 +4403,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
             payload: expect.objectContaining({
               actorUserId,
               authorDisplayName: 'Анна Каренина',
+              authorMentionDisplayName: 'Анна Каренина',
             }),
           },
         }),
@@ -4449,6 +4450,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
             payload: expect.objectContaining({
               reviewStatus: 'cancelled',
               authorDisplayName: 'Новое Полное Имя',
+              authorMentionDisplayName: 'Новое Полное Имя',
               authorUsername: 'current-author',
               authorProfileUrl: 'https://max.ru/current-author',
             }),
@@ -4520,6 +4522,35 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       );
     });
 
+    it('uses a fresh full MAX name for max:// links in HTML publications', async () => {
+      const actorUserId = '214634786';
+      const { maxClient, service } = createAuthorReviewHarness({
+        actorUserId,
+        payload: {
+          text: '**Важный пост**',
+          textFormat: 'markdown',
+        },
+        remoteProfile: {
+          displayName: 'Анна & <Редактор>',
+          username: null,
+          profileUrl: null,
+        },
+      });
+
+      await service.reviewChannelSuggestionByAdmin(
+        'suggestion-author-review-1',
+        reviewer,
+        'publish',
+      );
+
+      expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+        'channel-1',
+        `От подписчика <a href="max://user/${actorUserId}">Анна &amp; &lt;Редактор&gt;</a>\n\n<strong>Важный пост</strong>`,
+        expect.objectContaining({ textFormat: 'html' }),
+        expect.objectContaining({ botId: 'channel-bot-author' }),
+      );
+    });
+
     it.each([
       {
         source: 'local profile history',
@@ -4551,9 +4582,12 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       );
 
       expect(getChatMemberProfiles).toHaveBeenCalledTimes(1);
-      expect(maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0]?.[1]).toBe(
-        `От подписчика [${testCase.expectedDisplayName}](max://user/${actorUserId})\n\nТекст предложки`,
+      const publishedText = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0]?.[1];
+      expect(publishedText).toBe(
+        `От подписчика ${testCase.expectedDisplayName}\n\nТекст предложки`,
       );
+      expect(publishedText).not.toContain('max://user/');
+      expect(publishedText).not.toContain('](');
     });
 
     it.each([
@@ -4913,7 +4947,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'channel-1',
-      `От подписчика <a href="max://user/user-1">Пользователь</a>\n\n${expectedHtml}`,
+      `От подписчика Пользователь\n\n${expectedHtml}`,
       expect.objectContaining({
         textFormat: 'html',
       }),
@@ -5049,7 +5083,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'channel-1',
-      'От подписчика [Фотограф](max://user/user-9)\n\nФото с подписью',
+      'От подписчика Фотограф\n\nФото с подписью',
       expect.objectContaining({
         textFormat: 'markdown',
         imagePayload: { token: 'uploaded-photo-1' },
@@ -5198,7 +5232,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'channel-1',
-      'От подписчика [Фотограф](max://user/user-9)\n\nФото с места события',
+      'От подписчика Фотограф\n\nФото с места события',
       expect.objectContaining({
         textFormat: 'markdown',
         attachments: [
@@ -5352,7 +5386,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(2);
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenLastCalledWith(
       'channel-1',
-      'От подписчика [Видеограф](max://user/user-9)\n\nВидео с подписью',
+      'От подписчика Видеограф\n\nВидео с подписью',
       expect.objectContaining({
         textFormat: 'markdown',
         attachments: [{ type: 'video', payload: { token: 'video-upload-1' } }],

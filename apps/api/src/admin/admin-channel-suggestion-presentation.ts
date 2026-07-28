@@ -59,12 +59,17 @@ function renderChannelSuggestionAuthorLink(
   format: 'html' | 'markdown',
 ): string {
   const displayName = readTrimmedString(author.displayName);
+  const mentionDisplayName = readTrimmedString(author.mentionDisplayName);
   const username = readTrimmedString(author.username)?.replace(/^@+/u, '').trim() ?? '';
   const userId = readTrimmedString(author.userId);
-  const label = displayName ?? (username ? `@${username}` : (userId ?? 'Пользователь'));
   const profileUrl = normalizeMaxProfileUrl(readTrimmedString(author.profileUrl)) ?? null;
-  const target =
-    profileUrl ?? (displayName && userId ? `max://user/${encodeURIComponent(userId)}` : null);
+  const mentionUrl =
+    mentionDisplayName && userId ? `max://user/${encodeURIComponent(userId)}` : null;
+  const target = profileUrl ?? mentionUrl;
+  const label =
+    (profileUrl ? displayName : mentionDisplayName) ??
+    displayName ??
+    (username ? `@${username}` : (userId ?? 'Пользователь'));
 
   if (format === 'html') {
     const safeLabel = escapeHtml(label);

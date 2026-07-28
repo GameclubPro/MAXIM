@@ -276,6 +276,7 @@ export type ChannelSuggestionActor = Pick<AuthUser, 'userId'> & {
 export type ChannelSuggestionAuthorAttribution = {
   userId: string;
   displayName: string | null;
+  mentionDisplayName: string | null;
   username: string | null;
   profileUrl: string | null;
 };

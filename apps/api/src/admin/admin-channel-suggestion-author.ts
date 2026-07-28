@@ -88,6 +88,7 @@ export async function resolveChannelSuggestionAuthorAttribution(
   return {
     userId,
     displayName: remoteDisplayName ?? localDisplayName ?? storedDisplayName,
+    mentionDisplayName: remoteDisplayName,
     username,
     profileUrl: remoteProfileResolved
       ? (remoteProfileUrl ?? buildUserProfileUrl(remoteUsername))
