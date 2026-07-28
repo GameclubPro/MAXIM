@@ -3613,7 +3613,46 @@ describe('ModerationService', () => {
       gone: false,
       deleted: false,
       eventPersistedByIntent: false,
+      botId: null,
     });
+  });
+
+  it('returns the bot that confirmed a durable moderation delete', async () => {
+    const maxClient = { deleteMessage: jest.fn() };
+    const deleteIntents = {
+      getRolloutForInput: jest.fn().mockReturnValue('execute'),
+      ensureAndAttempt: jest.fn().mockResolvedValue({
+        kind: 'confirmed',
+        confirmed: true,
+        intentId: 'intent-1',
+        status: 'SUCCEEDED',
+        botId: 'bot-delete-capable',
+      }),
+    };
+    const service = new ModerationService(
+      {} as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+    );
+    (service as any).moderationDeleteIntentService = deleteIntents;
+
+    const result = await (service as any).executeModerationDelete({
+      chatId: 'chat-1',
+      messageId: 'message-1',
+      reasonKey: 'REQUIRED_SUBSCRIPTION:message-delete',
+      ruleCode: 'REQUIRED_SUBSCRIPTION_DELETE',
+      subjectUserId: 'user-1',
+    });
+
+    expect(result).toEqual({
+      accepted: true,
+      gone: true,
+      deleted: true,
+      eventPersistedByIntent: true,
+      botId: 'bot-delete-capable',
+    });
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
   });
 
   it('does not fall back to direct deletion when exact replacement cleanup persistence fails', async () => {
@@ -21866,6 +21905,15 @@ describe('ModerationService', () => {
         sourceTag: 'moderation_delete',
         timeoutMs: MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
       });
+      expect(maxClient.sendMessage).toHaveBeenCalledWith(
+        'chat-1',
+        expect.any(String),
+        expect.objectContaining({ textFormat: 'html' }),
+        expect.objectContaining({
+          botId: 'id613002203036_4_bot',
+          sourceTag: 'moderation_notice',
+        }),
+      );
       expect(
         prisma.moderationEvent.create.mock.calls.some(
           ([args]) => args?.data?.ruleCode === 'REQUIRED_SUBSCRIPTION_DELETE',

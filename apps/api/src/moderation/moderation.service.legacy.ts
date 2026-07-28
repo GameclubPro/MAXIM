@@ -444,6 +444,7 @@ type ModerationDeleteExecutionResult = {
   gone: boolean;
   deleted: boolean;
   eventPersistedByIntent: boolean;
+  botId: string | null;
 };
 
 @Injectable()
@@ -3923,6 +3924,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             gone: result.confirmed,
             deleted: result.kind === 'confirmed',
             eventPersistedByIntent: result.kind === 'confirmed',
+            botId: result.kind === 'confirmed' ? result.botId : null,
           };
         }
         if (executeExclusively) {
@@ -3931,6 +3933,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             gone: false,
             deleted: false,
             eventPersistedByIntent: false,
+            botId: null,
           };
         }
       } catch (error: unknown) {
@@ -3950,16 +3953,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const scheduled = Boolean(options?.delayMs && options.delayMs > 0);
-    const accepted = await this.deleteMessageImmediatelyLegacy(
+    const execution = await this.deleteMessageImmediatelyLegacy(
       preparedInput.chatId,
       preparedInput.messageId,
       options,
     );
     return {
-      accepted,
-      gone: accepted && !scheduled,
-      deleted: accepted && !scheduled,
+      accepted: execution.ok,
+      gone: execution.ok && !scheduled,
+      deleted: execution.ok && !scheduled,
       eventPersistedByIntent: false,
+      botId: execution.botId,
     };
   }
 
@@ -4010,8 +4014,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     messageId: string,
     options?: Omit<MaxActionDispatchOptions, 'immediate'>,
-  ): Promise<boolean> {
-    return this.executeModerationActionWithFallback({
+  ): Promise<ModerationActionExecutionResult> {
+    return this.executeModerationActionWithFallbackResult({
       chatId,
       action: 'delete_message',
       messageId,
@@ -9187,6 +9191,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         await prepareRequiredSubscriptionNoticeContext();
         return this.sendBotMessageWithOptionalAutoDelete({
           chatId: params.chatId,
+          botId: deleteResult.botId ?? undefined,
           text: this.renderRequiredSubscriptionNoticeHtml(textValue),
           messageOptions: this.withHtmlMessageOptions(requiredSubscriptionMessageOptions),
           media: this.resolveBotSpeechMedia(params.settings, mediaFieldKey),
