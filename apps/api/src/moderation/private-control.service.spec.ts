@@ -3623,6 +3623,36 @@ describe('PrivateControlService', () => {
     ]);
   });
 
+  it('uses the full callback user name instead of a legacy short name', async () => {
+    const { service, adminService } = createHarness({
+      adminService: {
+        reviewChannelSuggestionByAdmin: jest.fn().mockResolvedValue({
+          status: 'reviewed',
+          reviewStatus: 'published',
+          publishedUrl: null,
+        }),
+      },
+    });
+    const update = createPrivateCallbackUpdate('pc2|suggestion_review_publish|suggestion-42', {
+      userId: 'admin-1',
+      displayName: 'Иван',
+    });
+    const callback = (update.raw as { callback: { user: Record<string, unknown> } }).callback;
+    callback.user.first_name = 'Иван';
+    callback.user.last_name = 'Петров';
+
+    await service.handleUpdate(update);
+
+    expect(adminService.reviewChannelSuggestionByAdmin).toHaveBeenCalledWith(
+      'suggestion-42',
+      expect.objectContaining({
+        userId: 'admin-1',
+        displayName: 'Иван Петров',
+      }),
+      'publish',
+    );
+  });
+
   it('shows a processing state when another admin already claimed a suggestion review', async () => {
     const { service, adminService, maxClient } = createHarness({
       adminService: {

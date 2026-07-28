@@ -79,6 +79,8 @@ describe('InitDataService', () => {
         username: 'mod',
         first_name: 'Анна',
         last_name: 'Каренина',
+        name: 'Анна',
+        nickname: 'Аня',
       }),
     );
     params.set('auth_date', String(Math.floor(Date.now() / 1000)));

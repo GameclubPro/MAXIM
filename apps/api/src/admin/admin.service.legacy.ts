@@ -136,13 +136,7 @@ import { ManagedEntityAccessLossService } from '../max/managed-entity-access-los
 import { MaxRoutedPublicationService } from '../max/max-routed-publication.service';
 import { ManagedEntityCandidateSyncService } from './managed-entity-candidate-sync.service';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
-import { renderSupportedMarkdownAsHtml } from '../common/max-markdown.util';
-import {
-  escapeHtml,
-  escapeHtmlAttribute,
-  escapeHtmlPreservingWhitespace,
-  renderMaxTextMarkupAsHtml,
-} from '../common/max-text-markup.util';
+import { escapeHtml, escapeHtmlAttribute } from '../common/max-text-markup.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
@@ -204,6 +198,14 @@ import { AdminChatRulesTextRuntime } from './admin-chat-rules-text-runtime';
 import { createAdminChatRulesTextRuntimeContext } from './admin-chat-rules-text-runtime-context';
 import { AdminChannelDialogMappingRuntime } from './admin-channel-dialog-mapping-runtime';
 import { createAdminChannelDialogMappingRuntimeContext } from './admin-channel-dialog-mapping-runtime-context';
+import {
+  resolveChannelSuggestionActorDisplayName as resolveChannelSuggestionActorDisplayNameValue,
+  resolveChannelSuggestionAuthorAttribution as resolveChannelSuggestionAuthorAttributionValue,
+} from './admin-channel-suggestion-author';
+import {
+  buildChannelSuggestionAdminMessagePayload as buildChannelSuggestionAdminMessagePayloadValue,
+  buildPublishedChannelSuggestionMessagePayload as buildPublishedChannelSuggestionMessagePayloadValue,
+} from './admin-channel-suggestion-presentation';
 import { AdminChannelStatsRuntime } from './admin-channel-stats-runtime';
 import { createAdminChannelStatsRuntimeContext } from './admin-channel-stats-runtime-context';
 import { AdminDomainAllowlistRuntime } from './admin-domain-allowlist-runtime';
@@ -442,6 +444,7 @@ import {
   type ResolvedUserProfile,
   type ResolveUserProfilesOptions,
   type ChannelSuggestionActor,
+  type ChannelSuggestionAuthorAttribution,
   type ChannelSuggestionImageAsset,
   type ChannelDialogAttachmentAsset,
   type ChannelSuggestionTextMarkup,
@@ -7222,11 +7225,28 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException('Предложка уже обрабатывается.');
     }
 
+    const payloadActorUserId = this.readTrimmedString(payload.actorUserId);
+    if (payloadActorUserId && payloadActorUserId !== row.actorUserId) {
+      this.logger.warn(
+        {
+          suggestionId: row.id,
+          chatId: row.chatId,
+          actorUserId: row.actorUserId,
+          payloadActorUserId,
+        },
+        'Channel suggestion payload actor differs from audit actor; using audit actor',
+      );
+    }
+    const canonicalPayload: Record<string, unknown> = {
+      ...payload,
+      actorUserId: row.actorUserId,
+    };
+
     let published: Awaited<ReturnType<typeof this.publishStoredChannelSuggestion>>;
     try {
       published =
         action === 'publish'
-          ? await this.publishStoredChannelSuggestion(row.chatId, payload)
+          ? await this.publishStoredChannelSuggestion(row.chatId, row.actorUserId, canonicalPayload)
           : {
               messageId: null,
               url: null,
@@ -7237,6 +7257,16 @@ export class AdminService implements OnModuleDestroy {
               autoPostButtonsMode: 'OFF' as ChannelSettings['autoPostButtonsMode'],
               suggestionEntryMode: 'BOT' as ChannelSettings['postSuggestionsEntryMode'],
               botId: null,
+              authorAttribution: await this.resolveChannelSuggestionAuthorAttribution(
+                row.chatId,
+                {
+                  userId: row.actorUserId,
+                  username: this.readTrimmedString(canonicalPayload.authorUsername),
+                  displayName: this.readTrimmedString(canonicalPayload.authorDisplayName),
+                  profileUrl: this.readTrimmedString(canonicalPayload.authorProfileUrl),
+                },
+                { trafficClass: 'interactive' },
+              ),
             };
     } catch (error) {
       if (this.isChannelSuggestionAmbiguousSendError(error)) {
@@ -7277,7 +7307,10 @@ export class AdminService implements OnModuleDestroy {
     const reviewerLabel = user.displayName?.trim() || user.username?.trim() || user.userId;
     const reviewStatus = action === 'publish' ? 'published' : 'cancelled';
     const updatedPayload = {
-      ...payload,
+      ...canonicalPayload,
+      authorDisplayName: published.authorAttribution.displayName,
+      authorUsername: published.authorAttribution.username,
+      authorProfileUrl: published.authorAttribution.profileUrl,
       reviewStatus,
       reviewedAt: new Date().toISOString(),
       reviewedByUserId: user.userId,
@@ -17188,7 +17221,10 @@ export class AdminService implements OnModuleDestroy {
             ? { textMarkup: params.textMarkup as Prisma.InputJsonValue }
             : {}),
           actorUserId: params.user.userId,
-          authorDisplayName: this.resolveChannelSuggestionActorDisplayName(params.user),
+          authorDisplayName: resolveChannelSuggestionActorDisplayNameValue(params.user),
+          authorUsername: this.readTrimmedString(params.user.username),
+          authorProfileUrl:
+            this.normalizeMaxProfileUrl(this.readTrimmedString(params.user.profileUrl)) ?? null,
           authorAvatarUrl: this.readTrimmedString(params.user.avatarUrl) ?? null,
           delivered: false,
           deliveredToUserId: null,
@@ -17517,9 +17553,10 @@ export class AdminService implements OnModuleDestroy {
       row.chatId,
       {
         userId: row.actorUserId,
-        username: null,
+        username: this.readTrimmedString(payload.authorUsername),
         displayName: this.readTrimmedString(payload.authorDisplayName),
         avatarUrl: this.readTrimmedString(payload.authorAvatarUrl),
+        profileUrl: this.readTrimmedString(payload.authorProfileUrl),
       },
       {
         text: this.readRawString(payload.text) ?? '',
@@ -17540,8 +17577,24 @@ export class AdminService implements OnModuleDestroy {
     await this.applyChannelSuggestionDeliveryResult(row, delivery);
   }
 
-  private resolveChannelSuggestionActorDisplayName(user: ChannelSuggestionActor): string | null {
-    return user.displayName?.trim() || user.username?.trim() || null;
+  private async resolveChannelSuggestionAuthorAttribution(
+    chatId: string,
+    user: ChannelSuggestionActor,
+    options: {
+      botId?: string | null;
+      trafficClass: 'interactive' | 'background';
+    },
+  ): Promise<ChannelSuggestionAuthorAttribution> {
+    const loadProfiles = this.maxClient.getChatMemberProfiles?.bind(this.maxClient);
+    return resolveChannelSuggestionAuthorAttributionValue({
+      chatId,
+      user,
+      ...options,
+      ...(typeof loadProfiles === 'function' ? { loadProfiles } : {}),
+      loadLocalDisplayNames: (targetChatId, userIds) =>
+        this.resolveUserDisplayNames(targetChatId, userIds),
+      logger: this.logger,
+    });
   }
 
   private async enqueueChannelSuggestionDelivery(
@@ -17824,18 +17877,20 @@ export class AdminService implements OnModuleDestroy {
       timeoutMs: CHANNEL_SUGGESTION_ADMIN_LOOKUP_TIMEOUT_MS,
       ...(deliveryBotId ? { botId: deliveryBotId } : {}),
     });
-    const actorName = this.resolveChannelSuggestionActorDisplayName(user) ?? `user:${user.userId}`;
+    const authorAttribution = await this.resolveChannelSuggestionAuthorAttribution(chatId, user, {
+      botId: deliveryBotId,
+      trafficClass: 'background',
+    });
     const buttons = this.buildChannelSuggestionAdminReviewButtons(suggestionId);
     const baseMessageOptions = await this.buildChannelSuggestionMessageOptions(
       suggestion,
       buttons,
       privateDeliveryBotId,
     );
-    const messagePayload = this.buildChannelSuggestionAdminMessagePayload({
+    const messagePayload = buildChannelSuggestionAdminMessagePayloadValue({
       status: 'pending',
       channelTitle,
-      actorName,
-      actorUserId: user.userId,
+      authorAttribution,
       text: suggestion.text,
       textFormat: suggestion.textFormat ?? 'plain',
       textMarkup: suggestion.textMarkup ?? [],
@@ -18141,90 +18196,9 @@ export class AdminService implements OnModuleDestroy {
     return [PRIVATE_CONTROL_CALLBACK_PREFIX, action, ...normalizedArgs].join('|');
   }
 
-  private buildChannelSuggestionAdminMessagePayload(params: {
-    status: 'pending' | 'published' | 'cancelled';
-    channelTitle: string;
-    actorName: string;
-    actorUserId: string;
-    text: string;
-    textFormat: BroadcastTextFormat;
-    textMarkup: ChannelSuggestionTextMarkup[];
-    reviewedBy: string | null;
-    publishedUrl: string | null;
-  }): {
-    text: string;
-    textFormat: MaxSendMessageOptions['textFormat'];
-  } {
-    const hasMeaningfulText = params.text.trim().length > 0;
-    const title =
-      params.status === 'published'
-        ? '✅ Предложка опубликована'
-        : params.status === 'cancelled'
-          ? '✖️ Предложка отклонена'
-          : '📰 Новая предложка';
-    const normalizedActorUserId = params.actorUserId.trim();
-    const richTextHtml = hasMeaningfulText
-      ? this.renderChannelSuggestionTextHtml(params.text, params.textMarkup, params.textFormat)
-      : null;
-    const publishedUrl = this.normalizeMaxEntityLink(params.publishedUrl);
-
-    if (richTextHtml) {
-      const senderLine = normalizedActorUserId
-        ? `<a href="max://user/${encodeURIComponent(normalizedActorUserId)}">${escapeHtml(
-            params.actorName,
-          )}</a>`
-        : escapeHtml(params.actorName);
-
-      return {
-        text: [
-          `<strong>${escapeHtml(title)}</strong>`,
-          '',
-          `Канал: ${escapeHtml(params.channelTitle)}`,
-          `Отправитель: ${senderLine}`,
-          ...(normalizedActorUserId
-            ? [`MAX ID: <code>${escapeHtml(normalizedActorUserId)}</code>`]
-            : []),
-          ...(params.reviewedBy ? [`Решение принял: ${escapeHtml(params.reviewedBy)}`] : []),
-          ...(publishedUrl
-            ? [`Пост: <a href="${escapeHtmlAttribute(publishedUrl)}">Открыть пост</a>`]
-            : []),
-          '',
-          '━━━━━━━━━━━━',
-          '<strong>Контент публикации</strong>',
-          richTextHtml,
-        ].join('\n'),
-        textFormat: 'html',
-      };
-    }
-
-    const senderLine = normalizedActorUserId
-      ? `[${this.escapeMarkdown(params.actorName)}](max://user/${encodeURIComponent(normalizedActorUserId)})`
-      : this.escapeMarkdown(params.actorName);
-
-    return {
-      text: [
-        this.markdownTitle(title),
-        '',
-        `Канал: ${this.escapeMarkdown(params.channelTitle)}`,
-        `Отправитель: ${senderLine}`,
-        ...(normalizedActorUserId
-          ? [`MAX ID: \`${this.escapeMarkdown(normalizedActorUserId)}\``]
-          : []),
-        ...(params.reviewedBy ? [`Решение принял: ${this.escapeMarkdown(params.reviewedBy)}`] : []),
-        ...(publishedUrl ? [`Пост: [Открыть пост](${publishedUrl})`] : []),
-        '',
-        '━━━━━━━━━━━━',
-        this.markdownTitle('Контент публикации'),
-        ...(hasMeaningfulText
-          ? [this.renderSuggestionTextForMarkdown(params.text, params.textFormat)]
-          : ['_Медиа без подписи. Смотрите вложение выше._']),
-      ].join('\n'),
-      textFormat: 'markdown',
-    };
-  }
-
   private async publishStoredChannelSuggestion(
     chatId: string,
+    actorUserId: string,
     payload: Record<string, unknown>,
   ): Promise<{
     messageId: string | null;
@@ -18236,9 +18210,23 @@ export class AdminService implements OnModuleDestroy {
     autoPostButtonsMode: ChannelSettings['autoPostButtonsMode'];
     suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'];
     botId: string | null;
+    authorAttribution: ChannelSuggestionAuthorAttribution;
   }> {
     const resolvedBotId = await this.resolveDeliveryBotAssignment(chatId);
     const text = this.readRawString(payload.text) ?? '';
+    const authorAttribution = await this.resolveChannelSuggestionAuthorAttribution(
+      chatId,
+      {
+        userId: actorUserId,
+        username: this.readTrimmedString(payload.authorUsername),
+        displayName: this.readTrimmedString(payload.authorDisplayName),
+        profileUrl: this.readTrimmedString(payload.authorProfileUrl),
+      },
+      {
+        botId: resolvedBotId,
+        trafficClass: 'interactive',
+      },
+    );
     const media = await this.resolveChannelSuggestionAttachments(
       {
         images: this.readChannelSuggestionImageAssets(payload.images),
@@ -18261,8 +18249,8 @@ export class AdminService implements OnModuleDestroy {
       this.readTrimmedString(payload.textFormat) ?? 'plain',
     );
     const textMarkup = this.readChannelSuggestionTextMarkup(payload.textMarkup);
-    const messageTextPayload = this.buildPublishedChannelSuggestionMessagePayload(
-      payload,
+    const messageTextPayload = buildPublishedChannelSuggestionMessagePayloadValue(
+      authorAttribution,
       text,
       textFormat,
       textMarkup,
@@ -18298,51 +18286,7 @@ export class AdminService implements OnModuleDestroy {
       autoPostButtonsMode: buttonContext.autoPostButtonsMode,
       suggestionEntryMode: buttonContext.suggestionEntryMode,
       botId: resolvedBotId ?? null,
-    };
-  }
-
-  private buildPublishedChannelSuggestionMessagePayload(
-    payload: Record<string, unknown>,
-    suggestionText: string,
-    textFormat: BroadcastTextFormat,
-    textMarkup: ChannelSuggestionTextMarkup[],
-  ): {
-    text: string;
-    textFormat: MaxSendMessageOptions['textFormat'];
-  } {
-    const actorUserId = this.readTrimmedString(payload.actorUserId);
-    const actorName = this.readTrimmedString(payload.authorDisplayName) ?? actorUserId ?? '';
-    const hasMeaningfulSuggestionText = suggestionText.trim().length > 0;
-    const richTextHtml = hasMeaningfulSuggestionText
-      ? this.renderChannelSuggestionTextHtml(suggestionText, textMarkup, textFormat)
-      : null;
-
-    if (richTextHtml) {
-      const attribution = actorUserId
-        ? `От подписчика <a href="max://user/${encodeURIComponent(actorUserId)}">${escapeHtml(
-            actorName || 'подписчика',
-          )}</a>`
-        : actorName
-          ? `От подписчика ${escapeHtml(actorName)}`
-          : 'От подписчика';
-
-      return {
-        text: hasMeaningfulSuggestionText ? `${attribution}\n\n${richTextHtml}` : attribution,
-        textFormat: 'html',
-      };
-    }
-
-    const attribution = actorUserId
-      ? `От подписчика [${this.escapeMarkdown(actorName || 'подписчика')}](max://user/${encodeURIComponent(actorUserId)})`
-      : actorName
-        ? `От подписчика ${this.escapeMarkdown(actorName)}`
-        : 'От подписчика';
-
-    return {
-      text: hasMeaningfulSuggestionText
-        ? `${attribution}\n\n${this.renderSuggestionTextForMarkdown(suggestionText, textFormat)}`
-        : attribution,
-      textFormat: 'markdown',
+      authorAttribution,
     };
   }
 
@@ -18442,8 +18386,13 @@ export class AdminService implements OnModuleDestroy {
 
     const channelTitle = await this.resolveChannelTitle(chatId);
     const actorUserId = this.readTrimmedString(payload.actorUserId) ?? '';
-    const actorName =
-      this.readTrimmedString(payload.authorDisplayName) || actorUserId || 'Пользователь';
+    const authorAttribution: ChannelSuggestionAuthorAttribution = {
+      userId: actorUserId,
+      displayName: this.readTrimmedString(payload.authorDisplayName),
+      username: this.readTrimmedString(payload.authorUsername),
+      profileUrl:
+        this.normalizeMaxProfileUrl(this.readTrimmedString(payload.authorProfileUrl)) ?? null,
+    };
     const reviewedBy = this.readTrimmedString(payload.reviewedByDisplayName);
     const reviewStatus =
       this.readLowerString(payload.reviewStatus) === 'published' ? 'published' : 'cancelled';
@@ -18453,11 +18402,10 @@ export class AdminService implements OnModuleDestroy {
         ? this.buildChannelSuggestionAdminReviewedButtons(publishedUrl)
         : [];
     const textMarkup = this.readChannelSuggestionTextMarkup(payload.textMarkup);
-    const messagePayload = this.buildChannelSuggestionAdminMessagePayload({
+    const messagePayload = buildChannelSuggestionAdminMessagePayloadValue({
       status: reviewStatus,
       channelTitle,
-      actorName,
-      actorUserId,
+      authorAttribution,
       text: this.readRawString(payload.text) ?? '',
       textFormat: this.normalizeBroadcastTextFormat(
         this.readTrimmedString(payload.textFormat) ?? 'plain',
@@ -18597,35 +18545,6 @@ export class AdminService implements OnModuleDestroy {
     }
 
     return null;
-  }
-
-  private markdownTitle(title: string): string {
-    return `**${this.escapeMarkdown(title)}**`;
-  }
-
-  private renderChannelSuggestionTextHtml(
-    value: string,
-    textMarkup: ChannelSuggestionTextMarkup[],
-    textFormat: BroadcastTextFormat | null | undefined,
-  ): string | null {
-    if (textMarkup.length > 0) {
-      return renderMaxTextMarkupAsHtml(value, textMarkup) ?? escapeHtmlPreservingWhitespace(value);
-    }
-
-    if (textFormat === 'markdown') {
-      return renderSupportedMarkdownAsHtml(value, {
-        blockMode: 'raw',
-      });
-    }
-
-    return null;
-  }
-
-  private renderSuggestionTextForMarkdown(
-    value: string,
-    textFormat: BroadcastTextFormat | null | undefined,
-  ): string {
-    return textFormat === 'markdown' ? value : this.escapeMarkdownPlainText(value);
   }
 
   private escapeMarkdown(value: string): string {

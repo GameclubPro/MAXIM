@@ -142,6 +142,8 @@ describe('WebhookParser', () => {
           user_id: 'user-name-1',
           first_name: 'Иван',
           last_name: 'Петров',
+          name: 'Иван',
+          nickname: 'Ваня',
         },
         text: 'hello',
         created_at: '2026-02-28T05:00:00.000Z',
@@ -882,6 +884,7 @@ describe('WebhookParser', () => {
         user_id: 888,
         first_name: 'Иван',
         last_name: 'Смирнов',
+        name: 'Иван',
       },
       timestamp: 1772249118580,
     });

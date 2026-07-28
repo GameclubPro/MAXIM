@@ -1456,12 +1456,14 @@ describe('WebhookService', () => {
                 {
                   user_id: 'user-1001',
                   display_name: 'Первый участник',
+                  name: 'Первый',
                 },
                 {
                   user: {
                     user_id: 'user-1002',
                     first_name: 'Второй',
                     last_name: 'Участник',
+                    name: 'Второй',
                   },
                 },
               ],

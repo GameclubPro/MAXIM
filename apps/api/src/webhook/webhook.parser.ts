@@ -5,6 +5,7 @@ import {
   extractUrlsFromText as extractTextUrls,
   stripUrlsFromText as stripTextUrls,
 } from '../common/url-text.util';
+import { resolveMaxUserDisplayName } from '../common/max-user-display-name.util';
 
 @Injectable()
 export class WebhookParser {
@@ -277,35 +278,9 @@ export class WebhookParser {
       return undefined;
     }
 
-    const user = this.asRecord(node.user) ?? this.asRecord(node.member);
-    if (!user) {
-      return undefined;
-    }
-
-    const directCandidates = [
-      user.display_name,
-      user.displayName,
-      user.name,
-      user.full_name,
-      user.fullName,
-      user.nickname,
-    ];
-
-    for (const value of directCandidates) {
-      const text = this.readString(value);
-      if (text) {
-        return text;
-      }
-    }
-
-    const firstName = this.readString(
-      user.first_name ?? user.firstName ?? user.given_name ?? user.givenName,
+    return (
+      resolveMaxUserDisplayName(this.asRecord(node.user), this.asRecord(node.member)) ?? undefined
     );
-    const lastName = this.readString(
-      user.last_name ?? user.lastName ?? user.family_name ?? user.familyName,
-    );
-    const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
-    return fullName.length > 0 ? fullName : undefined;
   }
 
   private extractMembershipInviterId(
@@ -707,65 +682,21 @@ export class WebhookParser {
     const actor = this.asRecord(message.actor);
     const payloadSender = this.asRecord(payload.sender);
 
-    const directCandidates = [
-      message.sender_name,
-      message.senderName,
-      message.display_name,
-      message.displayName,
-      sender?.display_name,
-      sender?.displayName,
-      sender?.name,
-      sender?.full_name,
-      sender?.fullName,
-      sender?.nickname,
-      from?.display_name,
-      from?.displayName,
-      from?.name,
-      from?.full_name,
-      from?.fullName,
-      user?.display_name,
-      user?.displayName,
-      user?.name,
-      user?.full_name,
-      user?.fullName,
-      actor?.display_name,
-      actor?.displayName,
-      actor?.name,
-      actor?.full_name,
-      actor?.fullName,
-      payloadSender?.display_name,
-      payloadSender?.displayName,
-      payloadSender?.name,
-      payloadSender?.full_name,
-      payloadSender?.fullName,
-    ];
-
-    for (const value of directCandidates) {
-      const text = this.readString(value);
-      if (text) {
-        return text;
-      }
-    }
-
-    const nameNodes = [sender, from, user, actor, payloadSender].filter(
-      (item): item is Record<string, unknown> => Boolean(item),
+    return (
+      resolveMaxUserDisplayName(
+        {
+          display_name: message.display_name,
+          displayName: message.displayName,
+          name: message.sender_name,
+          nickname: message.senderName,
+        },
+        sender,
+        from,
+        user,
+        actor,
+        payloadSender,
+      ) ?? undefined
     );
-
-    for (const node of nameNodes) {
-      const firstName = this.readString(
-        node.first_name ?? node.firstName ?? node.given_name ?? node.givenName,
-      );
-      const lastName = this.readString(
-        node.last_name ?? node.lastName ?? node.family_name ?? node.familyName,
-      );
-
-      const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
-      if (fullName.length > 0) {
-        return fullName;
-      }
-    }
-
-    return undefined;
   }
 
   private extractEventTimestamp(

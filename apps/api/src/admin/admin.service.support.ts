@@ -270,6 +270,14 @@ export type ChannelSuggestionActor = Pick<AuthUser, 'userId'> & {
   username?: string | null;
   displayName?: string | null;
   avatarUrl?: string | null;
+  profileUrl?: string | null;
+};
+
+export type ChannelSuggestionAuthorAttribution = {
+  userId: string;
+  displayName: string | null;
+  username: string | null;
+  profileUrl: string | null;
 };
 
 export type ChannelSuggestionImageAsset = {

@@ -36,6 +36,7 @@ import { SupportRequestsService } from '../admin/support-requests.service';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
 import { isPrivateDirectChatId } from '../common/chat-id.util';
 import { buildChatUserDisplayNameUpsert } from '../common/chat-user-display-name-read-model.util';
+import { resolveMaxUserDisplayName } from '../common/max-user-display-name.util';
 import {
   containsSupportedMarkdownSyntax,
   renderSupportedMarkdownAsHtml,
@@ -9098,34 +9099,9 @@ export class PrivateControlService {
     }
 
     const userId = this.normalizeUserId(user.user_id ?? user.userId ?? user.id);
-    const displayName = readPrivateControlString(
-      user.display_name ??
-        user.displayName ??
-        user.name ??
-        user.full_name ??
-        user.fullName ??
-        user.nickname,
-    );
-
-    if (displayName) {
-      return {
-        userId,
-        displayName,
-      };
-    }
-
-    const firstName = readPrivateControlString(
-      user.first_name ?? user.firstName ?? user.given_name ?? user.givenName,
-    );
-    const lastName = readPrivateControlString(
-      user.last_name ?? user.lastName ?? user.family_name ?? user.familyName,
-    );
-
-    const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
-
     return {
       userId,
-      displayName: fullName || null,
+      displayName: resolveMaxUserDisplayName(user),
     };
   }
 

@@ -17,6 +17,7 @@ import {
 } from '../common/chat-user-display-name-read-model.util';
 import { isPrivateDirectChatId } from '../common/chat-id.util';
 import { isManagedEntityHandshakeStartCommand } from '../common/managed-entity-handshake-command.util';
+import { resolveMaxUserDisplayName } from '../common/max-user-display-name.util';
 import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,
@@ -2009,29 +2010,7 @@ export class WebhookService {
 
   private readMembershipMemberDisplayName(row: Record<string, unknown>): string | null {
     const directUser = this.asRecord(row.user) ?? this.asRecord(row.member) ?? row;
-    const directName =
-      this.readTrimmedString(directUser.display_name) ??
-      this.readTrimmedString(directUser.displayName) ??
-      this.readTrimmedString(directUser.name) ??
-      this.readTrimmedString(directUser.full_name) ??
-      this.readTrimmedString(directUser.fullName) ??
-      this.readTrimmedString(directUser.nickname);
-    if (directName) {
-      return directName;
-    }
-
-    const firstName =
-      this.readTrimmedString(directUser.first_name) ??
-      this.readTrimmedString(directUser.firstName) ??
-      this.readTrimmedString(directUser.given_name) ??
-      this.readTrimmedString(directUser.givenName);
-    const lastName =
-      this.readTrimmedString(directUser.last_name) ??
-      this.readTrimmedString(directUser.lastName) ??
-      this.readTrimmedString(directUser.family_name) ??
-      this.readTrimmedString(directUser.familyName);
-    const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
-    return fullName || null;
+    return resolveMaxUserDisplayName(directUser);
   }
 
   private isMembershipCollectionKey(key: string, action: 'added' | 'removed'): boolean {

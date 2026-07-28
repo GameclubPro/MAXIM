@@ -5445,6 +5445,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
                 user_id: 'user-1',
                 first_name: 'Алексей',
                 last_name: 'Иванов',
+                name: 'Алексей',
                 username: 'aleksey',
                 avatar_url: 'https://cdn.max.ru/u/1/avatar-small.jpg',
                 full_avatar_url: 'https://cdn.max.ru/u/1/avatar-full.jpg',
@@ -5454,6 +5455,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
                   user_id: 'user-2',
                   first_name: 'Марина',
                   last_name: 'Соколова',
+                  nickname: 'Марина',
                   username: 'marina',
                   avatar_url: 'https://cdn.max.ru/u/2/avatar-small.jpg',
                 },
@@ -5465,11 +5467,14 @@ describe('MaxClientService inline keyboard guardrails', () => {
     };
     const service = createService(httpService);
 
-    const result = await service.getChatMemberProfiles('chat-1', ['user-1', 'user-2']);
+    const result = await service.getChatMemberProfiles('chat-1', ['user-1', 'user-2'], {
+      timeoutMs: 2_500.9,
+    });
 
     expect(httpService.request).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'get',
+        timeout: 2_500,
         url: 'https://platform-api2.max.ru/chats/chat-1/members?user_ids=user-1%2Cuser-2',
       }),
     );
@@ -5752,7 +5757,9 @@ describe('MaxClientService inline keyboard guardrails', () => {
           status: 200,
           data: {
             user_id: '214634783',
-            first_name: 'Майор Максимова',
+            first_name: 'Майор',
+            last_name: 'Максимова',
+            name: 'Майор',
             username: 'id613002203036_4_bot',
             avatar_url: 'https://i.oneme.ru/i?r=small-avatar',
             full_avatar_url: 'https://i.oneme.ru/i?r=full-avatar',

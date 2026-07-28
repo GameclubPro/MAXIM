@@ -8,6 +8,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { firstValueFrom } from 'rxjs';
 import Redis from 'ioredis';
 import { isPrivateDirectChatId } from '../common/chat-id.util';
+import { resolveMaxUserDisplayName } from '../common/max-user-display-name.util';
 import type { QueueJobEnvelope, QueueRetryPolicyName } from '../common/queue-job-envelope';
 import { ActionHealthService, type ActionHealthLane } from '../system/action-health.service';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
@@ -2870,6 +2871,10 @@ export class MaxClientService implements OnModuleDestroy {
     userIds: readonly string[],
     options: MaxApiRequestOptions = {},
   ): Promise<Map<string, MaxChatMemberProfile>> {
+    const timeoutMs =
+      typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
+        ? Math.max(1, Math.trunc(options.timeoutMs))
+        : undefined;
     const normalizedUserIds = Array.from(
       new Set(
         userIds.map((value) => value.trim()).filter((value): value is string => value.length > 0),
@@ -2891,6 +2896,9 @@ export class MaxClientService implements OnModuleDestroy {
           this.request<Record<string, unknown>>(
             'get',
             `/chats/${chatId}/members?${query.toString()}`,
+            {
+              ...(timeoutMs ? { timeout: timeoutMs } : {}),
+            },
           ),
         options,
       );
@@ -2996,7 +3004,7 @@ export class MaxClientService implements OnModuleDestroy {
     return {
       userId:
         this.readTrimmedString(data.user_id ?? data.userId ?? data.id) ?? bot.contactId ?? bot.id,
-      displayName: this.resolveProfileDisplayName(data),
+      displayName: resolveMaxUserDisplayName(data),
       username: this.readTrimmedString(data.username),
       avatarUrl: this.readTrimmedString(
         data.full_avatar_url ?? data.fullAvatarUrl ?? data.avatar_url ?? data.avatarUrl,
@@ -3497,28 +3505,9 @@ export class MaxClientService implements OnModuleDestroy {
       row.user && typeof row.user === 'object' && !Array.isArray(row.user)
         ? (row.user as Record<string, unknown>)
         : null;
-    const explicitDisplayName = this.readTrimmedString(
-      row.display_name ??
-        row.displayName ??
-        row.full_name ??
-        row.fullName ??
-        nestedUser?.display_name ??
-        nestedUser?.displayName ??
-        nestedUser?.full_name ??
-        nestedUser?.fullName,
-    );
-    const firstName = this.readTrimmedString(
-      row.first_name ?? row.firstName ?? nestedUser?.first_name ?? nestedUser?.firstName,
-    );
-    const lastName = this.readTrimmedString(
-      row.last_name ?? row.lastName ?? nestedUser?.last_name ?? nestedUser?.lastName,
-    );
-    const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
-    const legacyName = this.readTrimmedString(row.name ?? nestedUser?.name);
-
     return {
       userId,
-      displayName: explicitDisplayName ?? (fullName || null) ?? legacyName,
+      displayName: resolveMaxUserDisplayName(row, nestedUser),
       username: this.readTrimmedString(row.username ?? nestedUser?.username),
       avatarUrl: this.readTrimmedString(
         row.full_avatar_url ??
@@ -3541,24 +3530,6 @@ export class MaxClientService implements OnModuleDestroy {
         nestedUser?.link,
       ),
     };
-  }
-
-  private resolveProfileDisplayName(value: Record<string, unknown>): string | null {
-    const explicitDisplayName = this.readTrimmedString(
-      value.display_name ?? value.displayName ?? value.full_name ?? value.fullName ?? value.name,
-    );
-    if (explicitDisplayName) {
-      return explicitDisplayName;
-    }
-
-    const firstName = this.readTrimmedString(
-      value.first_name ?? value.firstName ?? value.given_name ?? value.givenName,
-    );
-    const lastName = this.readTrimmedString(
-      value.last_name ?? value.lastName ?? value.family_name ?? value.familyName,
-    );
-    const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
-    return fullName.length > 0 ? fullName : null;
   }
 
   private parseChatMemberBot(
