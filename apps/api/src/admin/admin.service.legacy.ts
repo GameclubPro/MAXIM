@@ -13663,18 +13663,35 @@ export class AdminService implements OnModuleDestroy {
 
   async resolveChannelPollBotId(chatId: string): Promise<string | undefined> {
     const resolver = this.maxBotLinkService as unknown as {
-      resolveBotIdForChannelPoll?: (params: { chatId: string }) => Promise<string | null>;
+      resolveBotIdForManagedPoll?: (params: { chatId: string }) => Promise<string | null>;
     };
-    if (typeof resolver?.resolveBotIdForChannelPoll !== 'function') {
+    if (typeof resolver?.resolveBotIdForManagedPoll !== 'function') {
       throw new ServiceUnavailableException('Маршрутизация бота для опроса временно недоступна.');
     }
 
-    const botId = await resolver.resolveBotIdForChannelPoll({ chatId });
+    const botId = await resolver.resolveBotIdForManagedPoll({ chatId });
     if (botId) {
       return botId;
     }
     throw new ForbiddenException(
       'Не найден бот MAX, который может опубликовать и обновлять опрос в канале.',
+    );
+  }
+
+  async resolveChatPollBotId(chatId: string): Promise<string | undefined> {
+    const resolver = this.maxBotLinkService as unknown as {
+      resolveBotIdForManagedPoll?: (params: { chatId: string }) => Promise<string | null>;
+    };
+    if (typeof resolver?.resolveBotIdForManagedPoll !== 'function') {
+      throw new ServiceUnavailableException('Маршрутизация бота для опроса временно недоступна.');
+    }
+
+    const botId = await resolver.resolveBotIdForManagedPoll({ chatId });
+    if (botId) {
+      return botId;
+    }
+    throw new ForbiddenException(
+      'Не найден бот MAX, который может опубликовать и обновлять опрос в чате.',
     );
   }
 

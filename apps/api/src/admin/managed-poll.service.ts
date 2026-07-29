@@ -14,6 +14,7 @@ import {
   type ManagedPollQuestionFormat,
   type ManagedPollVotersResponse,
 } from '@maxim/contracts/poll';
+import type { ManagedEntityType, MaxUpdate } from '@maxim/contracts';
 import {
   BadRequestException,
   ConflictException,
@@ -35,6 +36,7 @@ import {
 import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,
+  type MaxApiTrafficClass,
   type MaxAttachmentPayload,
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
@@ -54,7 +56,6 @@ import {
   type ManagedPollOption,
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
-import type { MaxUpdate } from '@maxim/contracts';
 import { extractMaxApiErrorMessage } from './admin-chat-rules';
 import { isPrismaKnownError } from './admin-legacy-utils';
 import {
@@ -80,8 +81,11 @@ const MANAGED_POLL_RENDER_LOCK_WAIT_MS = 4_000;
 const MANAGED_POLL_RENDER_MAX_ATTEMPTS = 2;
 const MANAGED_POLL_RENDER_REPAIR_ATTEMPTS = 3;
 const MANAGED_POLL_RENDER_REPAIR_DELAY_MS = 250;
+const MANAGED_POLL_BACKGROUND_REPAIR_BATCH_SIZE = 10;
+const MANAGED_POLL_BACKGROUND_RETRY_DELAY_MS = 5 * 60_000;
 const MANAGED_POLL_RECENT_EVENT_HASH_LIMIT = 16;
 const MANAGED_POLL_AMBIGUOUS_PUBLICATION_ERROR = 'Публикация требует ручной проверки.';
+const MANAGED_POLL_AUTHORED_CONTENT_FORMAT_VERSION = 2;
 
 const MANAGED_POLL_LIST_SELECT = {
   id: true,
@@ -93,6 +97,7 @@ const MANAGED_POLL_LIST_SELECT = {
   visibility: true,
   renderRevision: true,
   renderedRevision: true,
+  renderFormatVersion: true,
   publicationMessageId: true,
   publicationUrl: true,
   publishedAt: true,
@@ -111,6 +116,7 @@ const MANAGED_POLL_HOT_PATH_SELECT = {
   identitySalt: true,
   publicationBotId: true,
   lockToken: true,
+  chat: { select: { entityType: true } },
 } satisfies Prisma.ManagedPollSelect;
 
 type PollWithOptions = ManagedPoll & { options: ManagedPollOption[] };
@@ -151,12 +157,52 @@ export class ManagedPollService {
     @Optional() private readonly maxRoutedPublicationService?: MaxRoutedPublicationService,
   ) {}
 
+  async processPendingPollRenderRepairs(): Promise<number> {
+    const retryBefore = new Date(Date.now() - MANAGED_POLL_BACKGROUND_RETRY_DELAY_MS);
+    const rows = await this.prisma.$queryRaw<Array<{ id: string; chatId: string }>>`
+      SELECT "id", "chat_id" AS "chatId"
+      FROM "managed_polls"
+      WHERE "publication_message_id" IS NOT NULL
+        AND (
+          "rendered_revision" < "render_revision"
+          OR "render_format_version" < ${MANAGED_POLL_AUTHORED_CONTENT_FORMAT_VERSION}
+          OR "last_render_error" IS NOT NULL
+        )
+        AND ("last_render_error" IS NULL OR "updated_at" <= ${retryBefore})
+      ORDER BY "updated_at" ASC, "id" ASC
+      LIMIT ${MANAGED_POLL_BACKGROUND_REPAIR_BATCH_SIZE}
+    `;
+    let repaired = 0;
+    for (const row of rows) {
+      try {
+        let renderSucceeded = false;
+        const serialized = await this.runPollRenderSerialized(row.id, async () => {
+          renderSucceeded = await this.renderPollPublication(
+            row.chatId,
+            row.id,
+            'background-repair',
+          );
+        });
+        if (serialized && renderSucceeded) {
+          repaired += 1;
+        }
+      } catch (error: unknown) {
+        this.logger.warn(
+          { pollId: row.id, chatId: row.chatId, err: this.formatError(error) },
+          'Failed to repair managed poll publication in background',
+        );
+      }
+    }
+    return repaired;
+  }
+
   async listChannelPolls(
     chatId: string,
     user: AuthUser,
     query: unknown,
+    entityType: ManagedEntityType = 'channel',
   ): Promise<ManagedPollListResponse> {
-    await this.adminService.assertManagedEntityReadAccess(chatId, user.userId, 'channel');
+    await this.adminService.assertManagedEntityReadAccess(chatId, user.userId, entityType);
     const parsed = managedPollListQuerySchema.safeParse(query);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
@@ -179,7 +225,7 @@ export class ManagedPollService {
       if (
         poll.publicationMessageId &&
         !poll.lastRenderError &&
-        poll.renderedRevision < poll.renderRevision &&
+        this.pollNeedsRenderRepair(poll) &&
         response.items[index]?.renderRepairNeeded
       ) {
         this.schedulePollRenderRepair(chatId, poll.id);
@@ -192,8 +238,9 @@ export class ManagedPollService {
     chatId: string,
     pollId: string,
     user: AuthUser,
+    entityType: ManagedEntityType = 'channel',
   ): Promise<ManagedPollDetails> {
-    await this.adminService.assertManagedEntityReadAccess(chatId, user.userId, 'channel');
+    await this.adminService.assertManagedEntityReadAccess(chatId, user.userId, entityType);
     return this.readPollDetails(chatId, pollId);
   }
 
@@ -201,8 +248,9 @@ export class ManagedPollService {
     chatId: string,
     user: AuthUser,
     body: unknown,
+    entityType: ManagedEntityType = 'channel',
   ): Promise<ManagedPollDetails> {
-    await this.adminService.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
+    await this.adminService.assertManagedEntityAdminAccess(chatId, user.userId, entityType);
     const parsed = createManagedPollRequestSchema.safeParse(body);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
@@ -244,7 +292,7 @@ export class ManagedPollService {
           data: {
             chatId,
             actorUserId: user.userId,
-            action: 'CREATE_CHANNEL_POLL',
+            action: `CREATE_${this.pollEntityAuditLabel(entityType)}_POLL`,
             payload: {
               pollId: poll.id,
               questionFormat: poll.questionFormat,
@@ -274,8 +322,9 @@ export class ManagedPollService {
     pollId: string,
     user: AuthUser,
     body: unknown,
+    entityType: ManagedEntityType = 'channel',
   ): Promise<ManagedPollDetails> {
-    await this.adminService.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
+    await this.adminService.assertManagedEntityAdminAccess(chatId, user.userId, entityType);
     const parsed = updateManagedPollRequestSchema.safeParse(body);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
@@ -322,6 +371,7 @@ export class ManagedPollService {
           visibility: parsed.data.visibility,
           imageCount: images.length,
           images: images as Prisma.InputJsonValue,
+          renderRevision: { increment: 1 },
           lastError: null,
           lastRenderError: null,
         },
@@ -330,7 +380,7 @@ export class ManagedPollService {
         data: {
           chatId,
           actorUserId: user.userId,
-          action: 'UPDATE_CHANNEL_POLL',
+          action: `UPDATE_${this.pollEntityAuditLabel(entityType)}_POLL`,
           payload: {
             pollId,
             questionFormat,
@@ -349,8 +399,13 @@ export class ManagedPollService {
     return managedPollDetailsSchema.parse(this.mapPoll(updated, new Map(), true));
   }
 
-  async deleteChannelPoll(chatId: string, pollId: string, user: AuthUser): Promise<{ ok: true }> {
-    await this.adminService.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
+  async deleteChannelPoll(
+    chatId: string,
+    pollId: string,
+    user: AuthUser,
+    entityType: ManagedEntityType = 'channel',
+  ): Promise<{ ok: true }> {
+    await this.adminService.assertManagedEntityAdminAccess(chatId, user.userId, entityType);
     await this.prisma.$transaction(async (tx) => {
       await this.lockPollRow(tx, pollId);
       const poll = await tx.managedPoll.findFirst({ where: { id: pollId, chatId } });
@@ -365,7 +420,7 @@ export class ManagedPollService {
         data: {
           chatId,
           actorUserId: user.userId,
-          action: 'DELETE_CHANNEL_POLL',
+          action: `DELETE_${this.pollEntityAuditLabel(entityType)}_POLL`,
           payload: { pollId },
         },
       });
@@ -378,8 +433,9 @@ export class ManagedPollService {
     chatId: string,
     pollId: string,
     user: AuthUser,
+    entityType: ManagedEntityType = 'channel',
   ): Promise<ManagedPollDetails> {
-    await this.adminService.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
+    await this.adminService.assertManagedEntityAdminAccess(chatId, user.userId, entityType);
     const poll = await this.findPoll(chatId, pollId);
     if (poll.status !== ManagedPollStatus.DRAFT) {
       throw new BadRequestException('Опубликовать можно только черновик.');
@@ -394,7 +450,7 @@ export class ManagedPollService {
 
     const publicationBotId = this.maxRoutedPublicationService
       ? null
-      : await this.adminService.resolveChannelPollBotId(chatId);
+      : await this.resolveFallbackPollBotId(chatId, entityType);
     const lockToken = randomUUID();
     const lockedAt = new Date();
     const lock = await this.prisma.managedPoll.updateMany({
@@ -420,9 +476,6 @@ export class ManagedPollService {
       const text = buildManagedPollMessageText({
         question: publicationPoll.question,
         questionFormat: this.normalizeQuestionFormat(publicationPoll.questionFormat),
-        options: result.options,
-        status: 'ACTIVE',
-        totalVotes: 0,
       });
       const textFormat = this.resolveQuestionTextFormat(publicationPoll.questionFormat);
       const messageOptions: MaxSendMessageOptions = {
@@ -431,7 +484,9 @@ export class ManagedPollService {
         debugContext: { screen: 'managed-poll', action: 'publish' },
       };
       if (!(await claimHeartbeat.renew())) {
-        throw new ConflictException('Публикация опроса была сброшена. Проверьте канал.');
+        throw new ConflictException(
+          `Публикация опроса была сброшена. Проверьте ${this.pollEntityName(entityType)}.`,
+        );
       }
       const published = await this.sendPollPublicationWithRetry(
         chatId,
@@ -441,14 +496,29 @@ export class ManagedPollService {
         messageOptions,
         this.readPollImages(publicationPoll.images),
         publicationBotId,
-        (botId) => {
+        async (botId) => {
+          const boundAttempt = await this.prisma.managedPoll.updateMany({
+            where: {
+              id: poll.id,
+              lockToken,
+              status: ManagedPollStatus.DRAFT,
+            },
+            data: { publicationBotId: botId },
+          });
+          if (boundAttempt.count === 0) {
+            throw new ConflictException(
+              `Публикация опроса была сброшена. Проверьте ${this.pollEntityName(entityType)}.`,
+            );
+          }
           attempted = true;
           attemptedPublicationBotId = botId;
         },
       );
       accepted = true;
       if (!(await claimHeartbeat.stop())) {
-        throw new ConflictException('Публикация опроса была сброшена. Проверьте канал.');
+        throw new ConflictException(
+          `Публикация опроса была сброшена. Проверьте ${this.pollEntityName(entityType)}.`,
+        );
       }
       const publishedAt = new Date();
       await this.prisma.$transaction(async (tx) => {
@@ -466,6 +536,7 @@ export class ManagedPollService {
             publicationUrl: published.url,
             publishedAt,
             renderedRevision: publicationPoll.renderRevision,
+            renderFormatVersion: MANAGED_POLL_AUTHORED_CONTENT_FORMAT_VERSION,
             images: [],
             lockedAt: null,
             lockToken: null,
@@ -474,13 +545,15 @@ export class ManagedPollService {
           },
         });
         if (promoted.count === 0) {
-          throw new ConflictException('Публикация опроса была сброшена. Проверьте канал.');
+          throw new ConflictException(
+            `Публикация опроса была сброшена. Проверьте ${this.pollEntityName(entityType)}.`,
+          );
         }
         await tx.auditLog.create({
           data: {
             chatId,
             actorUserId: user.userId,
-            action: 'PUBLISH_CHANNEL_POLL',
+            action: `PUBLISH_${this.pollEntityAuditLabel(entityType)}_POLL`,
             payload: {
               pollId: poll.id,
               questionFormat: this.normalizeQuestionFormat(publicationPoll.questionFormat),
@@ -524,11 +597,17 @@ export class ManagedPollService {
         }
       }
       if (attempted && !ambiguous) {
-        await this.recordAccessLoss(poll, attemptedPublicationBotId ?? null, 'send', error);
+        await this.recordAccessLoss(
+          poll,
+          attemptedPublicationBotId ?? null,
+          'send',
+          error,
+          entityType,
+        );
       }
       throw new BadRequestException(
         ambiguous
-          ? 'MAX мог принять публикацию. Проверьте канал перед повтором.'
+          ? `MAX мог принять публикацию. Проверьте ${this.pollEntityName(entityType)} перед повтором.`
           : message || 'Не удалось опубликовать опрос.',
       );
     } finally {
@@ -540,8 +619,9 @@ export class ManagedPollService {
     chatId: string,
     pollId: string,
     user: AuthUser,
+    entityType: ManagedEntityType = 'channel',
   ): Promise<ManagedPollDetails> {
-    await this.adminService.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
+    await this.adminService.assertManagedEntityAdminAccess(chatId, user.userId, entityType);
     const serialized = await this.runPollRenderSerialized(pollId, async () => {
       const closeResult = await this.prisma.$transaction(async (tx) => {
         await this.lockPollRow(tx, pollId);
@@ -568,7 +648,7 @@ export class ManagedPollService {
           data: {
             chatId,
             actorUserId: user.userId,
-            action: 'CLOSE_CHANNEL_POLL',
+            action: `CLOSE_${this.pollEntityAuditLabel(entityType)}_POLL`,
             payload: { pollId: poll.id },
           },
         });
@@ -592,8 +672,9 @@ export class ManagedPollService {
     chatId: string,
     pollId: string,
     user: AuthUser,
+    entityType: ManagedEntityType = 'channel',
   ): Promise<ManagedPollDetails> {
-    await this.adminService.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
+    await this.adminService.assertManagedEntityAdminAccess(chatId, user.userId, entityType);
     const poll = await this.findPoll(chatId, pollId);
     if (poll.status === ManagedPollStatus.DRAFT) {
       throw new BadRequestException('Черновик ещё не опубликован.');
@@ -612,8 +693,9 @@ export class ManagedPollService {
     chatId: string,
     pollId: string,
     user: AuthUser,
+    entityType: ManagedEntityType = 'channel',
   ): Promise<ManagedPollDetails> {
-    await this.adminService.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
+    await this.adminService.assertManagedEntityAdminAccess(chatId, user.userId, entityType);
     await this.prisma.$transaction(async (tx) => {
       await this.lockPollRow(tx, pollId);
       const poll = await tx.managedPoll.findFirst({ where: { id: pollId, chatId } });
@@ -641,7 +723,7 @@ export class ManagedPollService {
         data: {
           chatId,
           actorUserId: user.userId,
-          action: 'RESET_CHANNEL_POLL_PUBLICATION',
+          action: `RESET_${this.pollEntityAuditLabel(entityType)}_POLL_PUBLICATION`,
           payload: { pollId: poll.id },
         },
       });
@@ -655,8 +737,9 @@ export class ManagedPollService {
     pollId: string,
     user: AuthUser,
     query: unknown,
+    entityType: ManagedEntityType = 'channel',
   ): Promise<ManagedPollVotersResponse> {
-    await this.adminService.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
+    await this.adminService.assertManagedEntityAdminAccess(chatId, user.userId, entityType);
     const parsed = managedPollVotersQuerySchema.safeParse(query);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
@@ -872,7 +955,9 @@ export class ManagedPollService {
           data: {
             chatId: poll.chatId,
             actorUserId: poll.actorUserId,
-            action: 'RECOVER_CHANNEL_POLL_PUBLICATION',
+            action: `RECOVER_${this.pollEntityAuditLabel(
+              this.managedEntityTypeFromPrisma(poll.chat.entityType),
+            )}_POLL_PUBLICATION`,
             payload: {
               pollId: poll.id,
               publicationMessageId: params.messageId,
@@ -898,15 +983,14 @@ export class ManagedPollService {
         return {
           kind: 'closed',
           pollId: poll.id,
-          needsRender: Boolean(poll.lastRenderError) || poll.renderedRevision < poll.renderRevision,
+          needsRender: this.pollNeedsRenderRepair(poll),
         };
       }
       if (!poll.options.some((option) => option.id === params.optionId)) {
         return { kind: 'stale' };
       }
 
-      const needsRender =
-        Boolean(poll.lastRenderError) || poll.renderedRevision < poll.renderRevision;
+      const needsRender = this.pollNeedsRenderRepair(poll);
       const identityHash = this.buildIdentityHash(poll.identitySalt, params.voter.userId);
       const eventHash = this.buildVoteEventHash(poll.identitySalt, params.eventId);
       const existingVoter = await tx.managedPollVoter.findUnique({
@@ -941,12 +1025,6 @@ export class ManagedPollService {
       }
 
       const changed = existingVoter?.vote?.optionId !== params.optionId;
-      if (changed) {
-        await tx.managedPoll.update({
-          where: { id: poll.id },
-          data: { renderRevision: { increment: 1 } },
-        });
-      }
       const exposeIdentity = poll.visibility === ManagedPollVisibility.OPEN;
       const voter = await tx.managedPollVoter.upsert({
         where: { pollId_identityHash: { pollId: poll.id, identityHash } },
@@ -982,7 +1060,7 @@ export class ManagedPollService {
         kind: 'recorded',
         changed,
         pollId: poll.id,
-        needsRender: changed || needsRender,
+        needsRender,
       };
     });
   }
@@ -1000,9 +1078,6 @@ export class ManagedPollService {
       const text = buildManagedPollMessageText({
         question: poll.question,
         questionFormat: this.normalizeQuestionFormat(poll.questionFormat),
-        options: poll.resultOptions,
-        status: poll.status,
-        totalVotes: poll.totalVotes,
       });
       const textFormat = this.resolveQuestionTextFormat(poll.questionFormat);
       const options =
@@ -1015,15 +1090,20 @@ export class ManagedPollService {
           : textFormat
             ? { textFormat }
             : undefined;
+      const entityType = this.managedEntityTypeFromPrisma(poll.chat.entityType);
       const botId =
-        poll.publicationBotId ?? (await this.adminService.resolveChannelPollBotId(chatId));
+        poll.publicationBotId ?? (await this.resolveFallbackPollBotId(chatId, entityType));
       try {
         await this.maxClient.editMessageInlineKeyboard(
           chatId,
           poll.publicationMessageId,
           text,
           options,
-          this.buildMaxOptions(botId, MANAGED_POLL_EDIT_TIMEOUT_MS),
+          this.buildMaxOptions(
+            botId,
+            MANAGED_POLL_EDIT_TIMEOUT_MS,
+            action === 'background-repair' ? 'background' : 'interactive',
+          ),
         );
         if (await this.markPollRendered(poll.id, poll.renderRevision)) {
           return true;
@@ -1034,18 +1114,18 @@ export class ManagedPollService {
           where: { id: poll.id },
           data: { lastRenderError: message },
         });
-        await this.recordAccessLoss(poll, botId ?? null, 'edit', error);
+        await this.recordAccessLoss(poll, botId ?? null, 'edit', error, entityType);
         this.logger.warn(
           { pollId: poll.id, chatId, action, err: message },
           'Failed to render managed poll publication',
         );
-        if (action !== 'coalesced-repair') {
+        if (this.shouldSchedulePollRenderRepair(action)) {
           this.schedulePollRenderRepair(chatId, poll.id);
         }
         return false;
       }
     }
-    if (action !== 'coalesced-repair') {
+    if (this.shouldSchedulePollRenderRepair(action)) {
       this.schedulePollRenderRepair(chatId, pollId);
     }
     return false;
@@ -1057,9 +1137,6 @@ export class ManagedPollService {
     const text = buildManagedPollMessageText({
       question: poll.question,
       questionFormat: this.normalizeQuestionFormat(poll.questionFormat),
-      options: poll.resultOptions,
-      status: poll.status,
-      totalVotes: poll.totalVotes,
     });
     const textFormat = this.resolveQuestionTextFormat(poll.questionFormat);
     return {
@@ -1103,7 +1180,7 @@ export class ManagedPollService {
     if (
       poll.publicationMessageId &&
       !poll.lastRenderError &&
-      poll.renderedRevision < poll.renderRevision &&
+      this.pollNeedsRenderRepair(poll) &&
       details.renderRepairNeeded
     ) {
       this.schedulePollRenderRepair(chatId, poll.id);
@@ -1175,8 +1252,7 @@ export class ManagedPollService {
       publicationUrl: poll.publicationUrl,
       publicationPending: Boolean(poll.lockedAt) && !publicationNeedsReview,
       publicationNeedsReview,
-      renderRepairNeeded:
-        Boolean(poll.lastRenderError) || poll.renderedRevision < poll.renderRevision,
+      renderRepairNeeded: this.pollNeedsRenderRepair(poll),
       publishedAt: poll.publishedAt?.toISOString() ?? null,
       closedAt: poll.closedAt?.toISOString() ?? null,
       createdAt: poll.createdAt.toISOString(),
@@ -1283,7 +1359,7 @@ export class ManagedPollService {
     options: MaxSendMessageOptions,
     images: readonly ManagedPollImage[],
     botId: string | null | undefined,
-    onAttemptBotId?: (botId: string) => void,
+    onAttemptBotId?: (botId: string) => void | Promise<void>,
   ): Promise<MaxRoutedPublicationResult> {
     if (!this.maxRoutedPublicationService && process.env.NODE_ENV === 'production') {
       throw new ServiceUnavailableException(
@@ -1298,7 +1374,7 @@ export class ManagedPollService {
         if (this.maxRoutedPublicationService) {
           return await this.maxRoutedPublicationService.publish({
             entityId: chatId,
-            logicalIdempotencyKey: `managed-poll:publish:${pollId}:revision:${renderRevision}`,
+            logicalIdempotencyKey: `managed-poll:publish:${pollId}:revision:${renderRevision}:format:${MANAGED_POLL_AUTHORED_CONTENT_FORMAT_VERSION}`,
             routePurpose: 'channel_poll',
             text,
             options,
@@ -1311,8 +1387,8 @@ export class ManagedPollService {
                 ...(await this.resolvePollPublicationMedia(images, routedBotId)),
               },
             }),
-            onDispatchAttempt: ({ botId: routedBotId }) => {
-              onAttemptBotId?.(routedBotId);
+            onDispatchAttempt: async ({ botId: routedBotId }) => {
+              await onAttemptBotId?.(routedBotId);
             },
           });
         }
@@ -1321,7 +1397,7 @@ export class ManagedPollService {
         if (!resolvedBotId) {
           throw new Error('No bot with send/edit access is available for managed poll publish');
         }
-        onAttemptBotId?.(resolvedBotId);
+        await onAttemptBotId?.(resolvedBotId);
         const published = await this.maxClient.sendMessageImmediateWithResolvedLink(
           chatId,
           text,
@@ -1504,14 +1580,23 @@ export class ManagedPollService {
     );
   }
 
-  private buildMaxOptions(botId: string | null | undefined, timeoutMs: number) {
+  private buildMaxOptions(
+    botId: string | null | undefined,
+    timeoutMs: number,
+    trafficClass: MaxApiTrafficClass = 'interactive',
+  ) {
     return {
       ...(botId?.trim() ? { botId: botId.trim() } : {}),
-      trafficClass: 'interactive' as const,
-      actionHealthLane: 'interactive' as const,
+      trafficClass,
+      actionHealthLane:
+        trafficClass === 'background' ? ('background' as const) : ('interactive' as const),
       sourceTag: MAX_API_SOURCE_TAGS.MANAGED_POLL,
       timeoutMs,
     };
+  }
+
+  private shouldSchedulePollRenderRepair(action: string): boolean {
+    return action !== 'coalesced-repair' && action !== 'background-repair';
   }
 
   private async answerCallback(
@@ -1538,9 +1623,31 @@ export class ManagedPollService {
   private async markPollRendered(pollId: string, renderRevision: number): Promise<boolean> {
     const updated = await this.prisma.managedPoll.updateMany({
       where: { id: pollId, renderRevision },
-      data: { renderedRevision: renderRevision, lastRenderError: null },
+      data: {
+        renderedRevision: renderRevision,
+        renderFormatVersion: MANAGED_POLL_AUTHORED_CONTENT_FORMAT_VERSION,
+        lastRenderError: null,
+      },
     });
     return updated.count > 0;
+  }
+
+  private pollNeedsRenderRepair(
+    poll: Pick<
+      ManagedPoll,
+      | 'lastRenderError'
+      | 'publicationMessageId'
+      | 'renderedRevision'
+      | 'renderRevision'
+      | 'renderFormatVersion'
+    >,
+  ): boolean {
+    return (
+      Boolean(poll.publicationMessageId) &&
+      (Boolean(poll.lastRenderError) ||
+        poll.renderedRevision < poll.renderRevision ||
+        poll.renderFormatVersion < MANAGED_POLL_AUTHORED_CONTENT_FORMAT_VERSION)
+    );
   }
 
   private async runPollRenderSerialized(
@@ -1725,6 +1832,27 @@ export class ManagedPollService {
     return normalized || null;
   }
 
+  private pollEntityAuditLabel(entityType: ManagedEntityType): 'CHAT' | 'CHANNEL' {
+    return entityType === 'channel' ? 'CHANNEL' : 'CHAT';
+  }
+
+  private pollEntityName(entityType: ManagedEntityType): 'чат' | 'канал' {
+    return entityType === 'channel' ? 'канал' : 'чат';
+  }
+
+  private managedEntityTypeFromPrisma(entityType: ChatEntityType): ManagedEntityType {
+    return entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat';
+  }
+
+  private async resolveFallbackPollBotId(
+    chatId: string,
+    entityType: ManagedEntityType,
+  ): Promise<string | undefined> {
+    return entityType === 'channel'
+      ? this.adminService.resolveChannelPollBotId(chatId)
+      : this.adminService.resolveChatPollBotId(chatId);
+  }
+
   private formatError(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
   }
@@ -1748,12 +1876,13 @@ export class ManagedPollService {
     botId: string | null,
     operation: 'send' | 'edit',
     error: unknown,
+    entityType: ManagedEntityType,
   ): Promise<void> {
     try {
       await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost({
         chatId: poll.chatId,
         botId,
-        entityType: ChatEntityType.CHANNEL,
+        entityType: entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT,
         source: `managed_poll:${operation}`,
         operation,
         error,

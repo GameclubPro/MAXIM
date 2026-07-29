@@ -1,3 +1,4 @@
+import type { ManagedEntityType } from '@maxim/contracts';
 import {
   createManagedPollRequestSchema,
   managedPollDetailsSchema,
@@ -14,13 +15,15 @@ import type { ApiTransport } from './transport';
 
 export const MANAGED_POLL_MUTATION_TIMEOUT_MS = 10 * 60_000;
 
-function resolveChannelPollsBase(channelId: string): string {
-  return `/channels/${encodeURIComponent(channelId)}/polls`;
+function resolveManagedPollsBase(entityType: ManagedEntityType, entityId: string): string {
+  const collection = entityType === 'channel' ? 'channels' : 'chats';
+  return `/${collection}/${encodeURIComponent(entityId)}/polls`;
 }
 
-export async function getChannelManagedPolls(
+export async function getManagedPolls(
   api: ApiTransport,
-  channelId: string,
+  entityType: ManagedEntityType,
+  entityId: string,
   options: { cursor?: string | null; limit?: number; signal?: AbortSignal } = {},
 ): Promise<ManagedPollListResponse> {
   const params = new URLSearchParams();
@@ -31,19 +34,20 @@ export async function getChannelManagedPolls(
     params.set('limit', String(options.limit));
   }
   const query = params.size > 0 ? `?${params.toString()}` : '';
-  const response = await api.request(`${resolveChannelPollsBase(channelId)}${query}`, {
+  const response = await api.request(`${resolveManagedPollsBase(entityType, entityId)}${query}`, {
     signal: options.signal,
   });
   return managedPollListResponseSchema.parse(response);
 }
 
-export async function createChannelManagedPoll(
+export async function createManagedPoll(
   api: ApiTransport,
-  channelId: string,
+  entityType: ManagedEntityType,
+  entityId: string,
   payload: CreateManagedPollRequest,
 ): Promise<ManagedPollDetails> {
   const requestBody = createManagedPollRequestSchema.parse(payload);
-  const response = await api.request(resolveChannelPollsBase(channelId), {
+  const response = await api.request(resolveManagedPollsBase(entityType, entityId), {
     method: 'POST',
     body: JSON.stringify(requestBody),
     timeoutMs: MANAGED_POLL_MUTATION_TIMEOUT_MS,
@@ -51,28 +55,30 @@ export async function createChannelManagedPoll(
   return managedPollDetailsSchema.parse(response);
 }
 
-export async function getChannelManagedPoll(
+export async function getManagedPoll(
   api: ApiTransport,
-  channelId: string,
+  entityType: ManagedEntityType,
+  entityId: string,
   pollId: string,
   options: { signal?: AbortSignal } = {},
 ): Promise<ManagedPollDetails> {
   const response = await api.request(
-    `${resolveChannelPollsBase(channelId)}/${encodeURIComponent(pollId)}`,
+    `${resolveManagedPollsBase(entityType, entityId)}/${encodeURIComponent(pollId)}`,
     { signal: options.signal },
   );
   return managedPollDetailsSchema.parse(response);
 }
 
-export async function updateChannelManagedPoll(
+export async function updateManagedPoll(
   api: ApiTransport,
-  channelId: string,
+  entityType: ManagedEntityType,
+  entityId: string,
   pollId: string,
   payload: UpdateManagedPollRequest,
 ): Promise<ManagedPollDetails> {
   const requestBody = updateManagedPollRequestSchema.parse(payload);
   const response = await api.request(
-    `${resolveChannelPollsBase(channelId)}/${encodeURIComponent(pollId)}`,
+    `${resolveManagedPollsBase(entityType, entityId)}/${encodeURIComponent(pollId)}`,
     {
       method: 'PUT',
       body: JSON.stringify(requestBody),
@@ -82,67 +88,76 @@ export async function updateChannelManagedPoll(
   return managedPollDetailsSchema.parse(response);
 }
 
-export async function publishChannelManagedPoll(
+export async function publishManagedPoll(
   api: ApiTransport,
-  channelId: string,
+  entityType: ManagedEntityType,
+  entityId: string,
   pollId: string,
 ): Promise<ManagedPollDetails> {
   const response = await api.request(
-    `${resolveChannelPollsBase(channelId)}/${encodeURIComponent(pollId)}/publish`,
+    `${resolveManagedPollsBase(entityType, entityId)}/${encodeURIComponent(pollId)}/publish`,
     { method: 'POST', timeoutMs: MANAGED_POLL_MUTATION_TIMEOUT_MS },
   );
   return managedPollDetailsSchema.parse(response);
 }
 
-export async function closeChannelManagedPoll(
+export async function closeManagedPoll(
   api: ApiTransport,
-  channelId: string,
+  entityType: ManagedEntityType,
+  entityId: string,
   pollId: string,
 ): Promise<ManagedPollDetails> {
   const response = await api.request(
-    `${resolveChannelPollsBase(channelId)}/${encodeURIComponent(pollId)}/close`,
+    `${resolveManagedPollsBase(entityType, entityId)}/${encodeURIComponent(pollId)}/close`,
     { method: 'POST' },
   );
   return managedPollDetailsSchema.parse(response);
 }
 
-export async function refreshChannelManagedPollPublication(
+export async function refreshManagedPollPublication(
   api: ApiTransport,
-  channelId: string,
+  entityType: ManagedEntityType,
+  entityId: string,
   pollId: string,
 ): Promise<ManagedPollDetails> {
   const response = await api.request(
-    `${resolveChannelPollsBase(channelId)}/${encodeURIComponent(pollId)}/refresh`,
+    `${resolveManagedPollsBase(entityType, entityId)}/${encodeURIComponent(pollId)}/refresh`,
     { method: 'POST' },
   );
   return managedPollDetailsSchema.parse(response);
 }
 
-export async function resetChannelManagedPollPublication(
+export async function resetManagedPollPublication(
   api: ApiTransport,
-  channelId: string,
+  entityType: ManagedEntityType,
+  entityId: string,
   pollId: string,
 ): Promise<ManagedPollDetails> {
   const response = await api.request(
-    `${resolveChannelPollsBase(channelId)}/${encodeURIComponent(pollId)}/reset-publication`,
+    `${resolveManagedPollsBase(entityType, entityId)}/${encodeURIComponent(
+      pollId,
+    )}/reset-publication`,
     { method: 'POST' },
   );
   return managedPollDetailsSchema.parse(response);
 }
 
-export async function deleteChannelManagedPoll(
+export async function deleteManagedPoll(
   api: ApiTransport,
-  channelId: string,
+  entityType: ManagedEntityType,
+  entityId: string,
   pollId: string,
 ): Promise<void> {
-  await api.request(`${resolveChannelPollsBase(channelId)}/${encodeURIComponent(pollId)}`, {
-    method: 'DELETE',
-  });
+  await api.request(
+    `${resolveManagedPollsBase(entityType, entityId)}/${encodeURIComponent(pollId)}`,
+    { method: 'DELETE' },
+  );
 }
 
-export async function getChannelManagedPollVoters(
+export async function getManagedPollVoters(
   api: ApiTransport,
-  channelId: string,
+  entityType: ManagedEntityType,
+  entityId: string,
   pollId: string,
   options: { cursor?: string | null; limit?: number; signal?: AbortSignal } = {},
 ): Promise<ManagedPollVotersResponse> {
@@ -155,7 +170,7 @@ export async function getChannelManagedPollVoters(
   }
   const query = params.size > 0 ? `?${params.toString()}` : '';
   const response = await api.request(
-    `${resolveChannelPollsBase(channelId)}/${encodeURIComponent(pollId)}/voters${query}`,
+    `${resolveManagedPollsBase(entityType, entityId)}/${encodeURIComponent(pollId)}/voters${query}`,
     { signal: options.signal },
   );
   return managedPollVotersResponseSchema.parse(response);

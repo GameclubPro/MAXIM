@@ -8,6 +8,7 @@ const CHAT_SETTINGS_FOCUS = new Set([
   'broadcast',
   'comments',
   'giveaway',
+  'polls',
   'requiredSubscription',
   'rules',
   'vkParsing',

@@ -232,6 +232,11 @@ export const LazyManagedGiveawayCard = lazy(() =>
     default: module.ManagedGiveawayCard,
   })),
 );
+export const LazyManagedPollWorkspace = lazy(() =>
+  import('../../components/managed-poll-workspace').then((module) => ({
+    default: module.ManagedPollWorkspace,
+  })),
+);
 export const LazyMaxMarkdownPreview = lazy(() =>
   import('../../components/max-markdown-preview').then((module) => ({
     default: module.MaxMarkdownPreview,
@@ -667,6 +672,7 @@ export type SettingsSectionKey =
   | ApplySectionKey
   | 'rules'
   | 'giveaway'
+  | 'polls'
   | 'comments'
   | 'mailing'
   | 'vkParsing';
@@ -675,6 +681,7 @@ export const INITIAL_EXPANDED_SECTIONS: Record<SettingsSectionKey, boolean> = {
   links: false,
   rules: false,
   giveaway: false,
+  polls: false,
   greeting: false,
   profanityFilter: false,
   commercialFilter: false,

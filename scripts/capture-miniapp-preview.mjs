@@ -628,6 +628,12 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'chat-settings-polls',
+    beforeShot: async (page) => {
+      await page.locator('.managed-poll-workspace').waitFor({ state: 'visible' });
+    },
+  },
+  {
     name: 'chat-settings-giveaway',
     beforeShot: async (page) => {
       await page.locator('.managed-giveaway--dashboard').waitFor({ state: 'visible' });
@@ -1396,9 +1402,9 @@ async function assertConfiguredChecks(page, scenario) {
 
 async function assertTimeFieldOptionsReachable(page, scenario) {
   const issues = await page.evaluate(async () => {
-    const optionLists = Array.from(
-      document.querySelectorAll('.time-field-sheet__options'),
-    ).filter((element) => element instanceof HTMLElement);
+    const optionLists = Array.from(document.querySelectorAll('.time-field-sheet__options')).filter(
+      (element) => element instanceof HTMLElement,
+    );
 
     if (optionLists.length === 0) {
       return [];

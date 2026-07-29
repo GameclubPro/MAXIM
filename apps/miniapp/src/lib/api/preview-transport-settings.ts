@@ -620,7 +620,20 @@ export async function handleChannelRequest(
   url: URL,
   method: string,
   init?: RequestInit,
+  pollEntityType: 'chat' | 'channel' = 'channel',
 ): Promise<unknown> {
+  let managedPolls = pollEntityType === 'chat' ? state.chatPolls : state.channelPolls;
+  const managedPollVoters =
+    pollEntityType === 'chat' ? state.chatPollVoters : state.channelPollVoters;
+  const updateManagedPolls = (polls: typeof managedPolls) => {
+    managedPolls = polls;
+    if (pollEntityType === 'chat') {
+      state.chatPolls = polls;
+    } else {
+      state.channelPolls = polls;
+    }
+  };
+
   if (tail[0] === 'header' && method === 'GET') {
     const assignedBots = buildPreviewAssignedBots(
       {
@@ -775,7 +788,7 @@ export async function handleChannelRequest(
         cursor: url.searchParams.get('cursor') ?? undefined,
         limit: url.searchParams.get('limit') ?? undefined,
       });
-      const polls = [...state.channelPolls].sort(
+      const polls = [...managedPolls].sort(
         (left, right) =>
           new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime() ||
           right.id.localeCompare(left.id),
@@ -793,7 +806,7 @@ export async function handleChannelRequest(
     }
 
     if (method === 'POST') {
-      if (state.channelPolls.some((poll) => poll.status !== 'CLOSED')) {
+      if (managedPolls.some((poll) => poll.status !== 'CLOSED')) {
         throw new Error('Сначала завершите текущий опрос.');
       }
       const payload = createManagedPollRequestSchema.parse(parseJsonBody(init));
@@ -828,13 +841,13 @@ export async function handleChannelRequest(
         lastError: null,
         lastRenderError: null,
       });
-      state.channelPolls = [created, ...state.channelPolls];
+      updateManagedPolls([created, ...managedPolls]);
       return cloneJson(created);
     }
   }
 
   if (tail[0] === 'polls' && tail[1] && tail[2] === 'voters' && method === 'GET') {
-    const poll = state.channelPolls.find((item) => item.id === tail[1]);
+    const poll = managedPolls.find((item) => item.id === tail[1]);
     if (!poll) {
       throw new Error(`Preview poll not found: ${tail[1]}`);
     }
@@ -846,7 +859,7 @@ export async function handleChannelRequest(
       cursor: url.searchParams.get('cursor') ?? undefined,
       limit: url.searchParams.get('limit') ?? undefined,
     });
-    const items = state.channelPollVoters.filter((voter) => voter.pollId === poll.id);
+    const items = managedPollVoters.filter((voter) => voter.pollId === poll.id);
     const cursorIndex = query.cursor ? items.findIndex((voter) => voter.id === query.cursor) : -1;
     const page = items.slice(cursorIndex + 1, cursorIndex + 1 + query.limit);
     const lastItem = page.at(-1);
@@ -858,7 +871,7 @@ export async function handleChannelRequest(
   }
 
   if (tail[0] === 'polls' && tail[1] && tail[2] === 'publish' && method === 'POST') {
-    const poll = state.channelPolls.find((item) => item.id === tail[1]);
+    const poll = managedPolls.find((item) => item.id === tail[1]);
     if (!poll) {
       throw new Error(`Preview poll not found: ${tail[1]}`);
     }
@@ -871,19 +884,20 @@ export async function handleChannelRequest(
       publicationPending: false,
       publicationNeedsReview: false,
       renderRepairNeeded: false,
-      publicationUrl: 'https://max.ru/channels/yuzhnoe-news',
+      publicationUrl:
+        pollEntityType === 'channel'
+          ? 'https://max.ru/channels/yuzhnoe-news'
+          : 'https://max.ru/chats/preview-chat',
       publicationMessageId: `poll-preview-message-${readPreviewClock(state.clock).getTime()}`,
       publishedAt: readPreviewClock(state.clock).toISOString(),
       updatedAt: readPreviewClock(state.clock).toISOString(),
     });
-    state.channelPolls = state.channelPolls.map((item) =>
-      item.id === published.id ? published : item,
-    );
+    updateManagedPolls(managedPolls.map((item) => (item.id === published.id ? published : item)));
     return cloneJson(published);
   }
 
   if (tail[0] === 'polls' && tail[1] && tail[2] === 'close' && method === 'POST') {
-    const poll = state.channelPolls.find((item) => item.id === tail[1]);
+    const poll = managedPolls.find((item) => item.id === tail[1]);
     if (!poll) {
       throw new Error(`Preview poll not found: ${tail[1]}`);
     }
@@ -898,12 +912,12 @@ export async function handleChannelRequest(
       closedAt: readPreviewClock(state.clock).toISOString(),
       updatedAt: readPreviewClock(state.clock).toISOString(),
     });
-    state.channelPolls = state.channelPolls.map((item) => (item.id === closed.id ? closed : item));
+    updateManagedPolls(managedPolls.map((item) => (item.id === closed.id ? closed : item)));
     return cloneJson(closed);
   }
 
   if (tail[0] === 'polls' && tail[1] && tail[2] === 'refresh' && method === 'POST') {
-    const poll = state.channelPolls.find((item) => item.id === tail[1]);
+    const poll = managedPolls.find((item) => item.id === tail[1]);
     if (!poll) {
       throw new Error(`Preview poll not found: ${tail[1]}`);
     }
@@ -916,14 +930,12 @@ export async function handleChannelRequest(
       lastRenderError: null,
       updatedAt: readPreviewClock(state.clock).toISOString(),
     });
-    state.channelPolls = state.channelPolls.map((item) =>
-      item.id === refreshed.id ? refreshed : item,
-    );
+    updateManagedPolls(managedPolls.map((item) => (item.id === refreshed.id ? refreshed : item)));
     return cloneJson(refreshed);
   }
 
   if (tail[0] === 'polls' && tail[1] && tail[2] === 'reset-publication' && method === 'POST') {
-    const poll = state.channelPolls.find((item) => item.id === tail[1]);
+    const poll = managedPolls.find((item) => item.id === tail[1]);
     if (!poll) {
       throw new Error(`Preview poll not found: ${tail[1]}`);
     }
@@ -937,12 +949,12 @@ export async function handleChannelRequest(
       lastError: null,
       updatedAt: readPreviewClock(state.clock).toISOString(),
     });
-    state.channelPolls = state.channelPolls.map((item) => (item.id === reset.id ? reset : item));
+    updateManagedPolls(managedPolls.map((item) => (item.id === reset.id ? reset : item)));
     return cloneJson(reset);
   }
 
   if (tail[0] === 'polls' && tail[1] && tail.length === 2) {
-    const poll = state.channelPolls.find((item) => item.id === tail[1]);
+    const poll = managedPolls.find((item) => item.id === tail[1]);
     if (!poll) {
       throw new Error(`Preview poll not found: ${tail[1]}`);
     }
@@ -979,9 +991,7 @@ export async function handleChannelRequest(
         totalVotes: 0,
         updatedAt: readPreviewClock(state.clock).toISOString(),
       });
-      state.channelPolls = state.channelPolls.map((item) =>
-        item.id === updated.id ? updated : item,
-      );
+      updateManagedPolls(managedPolls.map((item) => (item.id === updated.id ? updated : item)));
       return cloneJson(updated);
     }
 
@@ -989,7 +999,7 @@ export async function handleChannelRequest(
       if (poll.status !== 'DRAFT') {
         throw new Error('Удалить можно только черновик.');
       }
-      state.channelPolls = state.channelPolls.filter((item) => item.id !== poll.id);
+      updateManagedPolls(managedPolls.filter((item) => item.id !== poll.id));
       return null;
     }
   }
@@ -1001,6 +1011,17 @@ export const handleSettingsPreviewRequest: PreviewRequestHandler = (context) => 
   const entity = resolvePreviewEntityRequest(context);
   if (!entity) {
     return PREVIEW_NOT_HANDLED;
+  }
+  if (entity.entityType === 'chat' && entity.tail[0] === 'polls') {
+    return handleChannelRequest(
+      context.state,
+      entity.entityId,
+      entity.tail,
+      context.url,
+      context.method,
+      context.init,
+      'chat',
+    );
   }
   return entity.entityType === 'chat'
     ? handleChatRequest(

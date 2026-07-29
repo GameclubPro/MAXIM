@@ -769,6 +769,7 @@ model ManagedPoll {
   identitySalt         String                @map("identity_salt")
   renderRevision       Int                   @default(0) @map("render_revision")
   renderedRevision     Int                   @default(0) @map("rendered_revision")
+  renderFormatVersion  Int                   @default(1) @map("render_format_version")
   publicationMessageId String?               @map("publication_message_id")
   publicationBotId     String?               @map("publication_bot_id")
   publicationUrl       String?               @map("publication_url")

@@ -2436,6 +2436,46 @@ describe('MaxBotLinkService', () => {
     });
   });
 
+  it('selects a chat poll bot only from confirmed chat administrators', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-poll-route', {
+      id: 'chat-poll-route',
+      title: 'Poll chat',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+      entityType: 'CHAT',
+    });
+    fixture.memberships.push(
+      createActiveMembership('chat-poll-route', 'id613002203036_bot', 0, {
+        role: ChatBotMembershipRole.PRIMARY,
+        permissionsSnapshot: {
+          checkedAt: '2026-07-10T10:00:00.000Z',
+          isAdmin: false,
+          isOwner: false,
+          permissions: ['write'],
+        },
+      }),
+      createActiveMembership('chat-poll-route', 'id613002203036_4_bot', 1, {
+        permissionsSnapshot: {
+          checkedAt: '2026-07-10T10:00:01.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['write'],
+        },
+      }),
+    );
+
+    await expect(
+      fixture.service.resolveBotIdForManagedPoll({ chatId: 'chat-poll-route' }),
+    ).resolves.toBe('id613002203036_4_bot');
+    await expect(
+      fixture.service.resolveBotRouteForManagedPoll({ chatId: 'chat-poll-route' }),
+    ).resolves.toMatchObject({
+      botId: 'id613002203036_4_bot',
+      candidateBotIds: ['id613002203036_4_bot'],
+    });
+  });
+
   it('rejects split or unknown channel poll permissions', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('channel-poll-split', {

@@ -1,8 +1,9 @@
 import { createHmac } from 'node:crypto';
-import { ManagedPollStatus, ManagedPollVisibility } from '../prisma/prisma-client';
+import { ChatEntityType, ManagedPollStatus, ManagedPollVisibility } from '../prisma/prisma-client';
 import { ManagedPollService } from './managed-poll.service';
 
 const POLL_IDENTITY_SALT = '12345678901234567890123456789012';
+const AUTHORED_CONTENT_FORMAT_VERSION = 2;
 const VOTE_EVENT_HASH = createHmac('sha256', POLL_IDENTITY_SALT)
   .update('event:bot-1:update-1')
   .digest('hex');
@@ -22,6 +23,8 @@ function createService(
     lockToken?: string | null;
     renderRevision?: number;
     renderedRevision?: number;
+    renderFormatVersion?: number;
+    entityType?: ChatEntityType;
   } = {},
 ) {
   const poll = {
@@ -34,6 +37,7 @@ function createService(
     identitySalt: POLL_IDENTITY_SALT,
     renderRevision: options.renderRevision ?? 0,
     renderedRevision: options.renderedRevision ?? 0,
+    renderFormatVersion: options.renderFormatVersion ?? AUTHORED_CONTENT_FORMAT_VERSION,
     publicationMessageId:
       options.publicationMessageId === undefined ? 'message-1' : options.publicationMessageId,
     publicationBotId: options.publicationBotId === undefined ? 'bot-1' : options.publicationBotId,
@@ -51,6 +55,7 @@ function createService(
     lastRenderError: options.lastRenderError ?? null,
     createdAt: new Date(),
     updatedAt: new Date(),
+    chat: { entityType: options.entityType ?? ChatEntityType.CHANNEL },
     options: [
       {
         id: 'option-1',
@@ -127,7 +132,7 @@ describe('ManagedPollService vote persistence', () => {
       kind: 'recorded',
       changed: true,
       pollId: 'poll-1',
-      needsRender: true,
+      needsRender: false,
     });
     const create = tx.managedPollVoter.upsert.mock.calls[0]?.[0]?.create;
     expect(create).toEqual(
@@ -247,15 +252,51 @@ describe('ManagedPollService vote persistence', () => {
     });
   });
 
-  it('recovers a claimed publication from a callback before the sender settles', async () => {
+  it('marks a legacy-format publication for repair even when its revision is current', async () => {
+    const { service } = createService({ renderFormatVersion: 1 });
+
+    await expect((service as any).recordVote(voteParams)).resolves.toEqual({
+      kind: 'recorded',
+      changed: true,
+      pollId: 'poll-1',
+      needsRender: true,
+    });
+  });
+
+  it('does not mark an unpublished draft for render repair', () => {
+    const { service } = createService({
+      status: ManagedPollStatus.DRAFT,
+      publicationMessageId: null,
+      renderFormatVersion: 1,
+      renderRevision: 2,
+      renderedRevision: 1,
+      lastRenderError: 'stale draft error',
+    });
+
+    expect(
+      (service as any).pollNeedsRenderRepair({
+        publicationMessageId: null,
+        renderFormatVersion: 1,
+        renderRevision: 2,
+        renderedRevision: 1,
+        lastRenderError: 'stale draft error',
+      }),
+    ).toBe(false);
+  });
+
+  it('recovers a claimed routed publication from a callback before the sender settles', async () => {
     const { service, tx } = createService({
       status: ManagedPollStatus.DRAFT,
       lockedAt: new Date(),
       lastError: null,
       publicationMessageId: null,
+      publicationBotId: 'route-bot',
+      renderFormatVersion: 1,
     });
 
-    await expect((service as any).recordVote(voteParams)).resolves.toEqual({
+    await expect(
+      (service as any).recordVote({ ...voteParams, callbackBotId: 'route-bot' }),
+    ).resolves.toEqual({
       kind: 'recorded',
       changed: true,
       pollId: 'poll-1',
@@ -273,6 +314,9 @@ describe('ManagedPollService vote persistence', () => {
           lastError: null,
         }),
       }),
+    );
+    expect(tx.managedPoll.update.mock.calls[0]?.[0]?.data).not.toHaveProperty(
+      'renderFormatVersion',
     );
     expect(tx.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -294,6 +338,24 @@ describe('ManagedPollService vote persistence', () => {
     expect(tx.managedPollVoter.upsert).not.toHaveBeenCalled();
   });
 
+  it('records callback recovery as a chat poll for chat entities', async () => {
+    const { service, tx } = createService({
+      entityType: ChatEntityType.CHAT,
+      status: ManagedPollStatus.DRAFT,
+      lockedAt: new Date(),
+      publicationMessageId: null,
+      publicationBotId: 'route-bot',
+    });
+
+    await (service as any).recordVote({ ...voteParams, callbackBotId: 'route-bot' });
+
+    expect(tx.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ action: 'RECOVER_CHAT_POLL_PUBLICATION' }),
+      }),
+    );
+  });
+
   it('rejects a callback delivered to a different bot', async () => {
     const { service, tx } = createService();
 
@@ -305,7 +367,7 @@ describe('ManagedPollService vote persistence', () => {
 });
 
 describe('ManagedPollService image callback rendering', () => {
-  it('acknowledges an image poll callback and uses the direct renderer', async () => {
+  it('acknowledges an image poll callback without rewriting stable poll content', async () => {
     const maxClient = { answerCallback: jest.fn().mockResolvedValue(undefined) };
     const service = new ManagedPollService(
       {} as never,
@@ -317,7 +379,7 @@ describe('ManagedPollService image callback rendering', () => {
       kind: 'recorded',
       changed: true,
       pollId: 'poll-1',
-      needsRender: true,
+      needsRender: false,
     });
     jest.spyOn(service as any, 'loadPollAggregate').mockResolvedValue({
       id: 'poll-1',
@@ -349,7 +411,77 @@ describe('ManagedPollService image callback rendering', () => {
       undefined,
       expect.objectContaining({ botId: 'bot-1' }),
     );
-    expect(render).toHaveBeenCalledWith('channel-1', 'poll-1', 'vote-media');
+    expect(render).not.toHaveBeenCalled();
+  });
+
+  it('builds callback edits from only authored question and option labels', () => {
+    const service = new ManagedPollService({} as never, {} as never, {} as never, {} as never);
+
+    const edit = (service as any).buildCallbackMessageEdit({
+      id: 'poll-1',
+      question: 'Текст администратора',
+      questionFormat: 'plain',
+      status: ManagedPollStatus.ACTIVE,
+      resultOptions: [
+        { id: 'option-1', position: 0, text: 'Да', votes: 9, percent: 90 },
+        { id: 'option-2', position: 1, text: 'Нет', votes: 1, percent: 10 },
+      ],
+    });
+
+    expect(edit.text).toBe('Текст администратора');
+    expect(edit.options.buttons.map((row: Array<{ text: string }>) => row[0]?.text)).toEqual([
+      'Да',
+      'Нет',
+    ]);
+    expect(JSON.stringify(edit)).not.toMatch(/Опрос|голос|90|10| · /u);
+  });
+
+  it('closes a poll by removing its keyboard without changing authored text', async () => {
+    const prisma = {
+      managedPoll: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+    };
+    const maxClient = { editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined) };
+    const service = new ManagedPollService(
+      prisma as never,
+      maxClient as never,
+      {} as never,
+      {} as never,
+    );
+    jest.spyOn(service as any, 'loadPollAggregate').mockResolvedValue({
+      id: 'poll-1',
+      chatId: 'channel-1',
+      chat: { entityType: ChatEntityType.CHANNEL },
+      question: 'Текст администратора',
+      questionFormat: 'plain',
+      status: ManagedPollStatus.CLOSED,
+      resultOptions: [
+        { id: 'option-1', position: 0, text: 'Да', votes: 3, percent: 75 },
+        { id: 'option-2', position: 1, text: 'Нет', votes: 1, percent: 25 },
+      ],
+      totalVotes: 4,
+      publicationMessageId: 'message-1',
+      publicationBotId: 'bot-1',
+      renderRevision: 2,
+    });
+
+    await expect(
+      (service as any).renderPollPublication('channel-1', 'poll-1', 'close'),
+    ).resolves.toBe(true);
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'message-1',
+      'Текст администратора',
+      undefined,
+      expect.objectContaining({ botId: 'bot-1' }),
+    );
+    expect(prisma.managedPoll.updateMany).toHaveBeenCalledWith({
+      where: { id: 'poll-1', renderRevision: 2 },
+      data: {
+        renderedRevision: 2,
+        renderFormatVersion: AUTHORED_CONTENT_FORMAT_VERSION,
+        lastRenderError: null,
+      },
+    });
   });
 
   it('keeps raw poll images out of callback rendering reads', async () => {
@@ -401,7 +533,7 @@ describe('ManagedPollService image callback rendering', () => {
 });
 
 describe('ManagedPollService draft editing', () => {
-  it('preserves rich content when an older client omits new update fields', async () => {
+  it('preserves rich content and advances the dispatch revision for every draft update', async () => {
     const now = new Date();
     const images = [
       {
@@ -490,6 +622,7 @@ describe('ManagedPollService draft editing', () => {
           questionFormat: 'markdown',
           imageCount: 1,
           images,
+          renderRevision: { increment: 1 },
         }),
       }),
     );
@@ -720,11 +853,17 @@ describe('ManagedPollService publication', () => {
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'channel-1',
-      expect.stringContaining('Новый вопрос'),
+      'Новый вопрос',
       expect.objectContaining({
-        buttons: expect.arrayContaining([
-          [expect.objectContaining({ payload: 'poll|v2|poll-1|new-1' })],
-        ]),
+        buttons: [
+          [
+            expect.objectContaining({
+              text: 'Новый 1',
+              payload: 'poll|v2|poll-1|new-1',
+            }),
+          ],
+          [expect.objectContaining({ text: 'Новый 2' })],
+        ],
       }),
       expect.objectContaining({ botId: 'bot-1' }),
     );
@@ -738,11 +877,15 @@ describe('ManagedPollService publication', () => {
           lockToken: expect.any(String),
           status: ManagedPollStatus.DRAFT,
         }),
+        data: expect.objectContaining({
+          renderedRevision: 0,
+          renderFormatVersion: AUTHORED_CONTENT_FORMAT_VERSION,
+        }),
       }),
     );
   });
 
-  it('uploads poll images and publishes a Markdown question as HTML', async () => {
+  it('uploads poll images and publishes authored HTML under a format-versioned dispatch key', async () => {
     const draft = {
       id: 'poll-1',
       chatId: 'channel-1',
@@ -806,7 +949,7 @@ describe('ManagedPollService publication', () => {
     const maxRoutedPublicationService = {
       publish: jest.fn().mockImplementation(async (request: any) => {
         const prepared = await request.prepareAttempt({ botId: 'bot-2', job: {} });
-        request.onDispatchAttempt({ botId: 'bot-2', job: { options: prepared.options } });
+        await request.onDispatchAttempt({ botId: 'bot-2', job: { options: prepared.options } });
         expect(prepared.options).toEqual(
           expect.objectContaining({
             textFormat: 'html',
@@ -848,9 +991,15 @@ describe('ManagedPollService publication', () => {
     expect(maxRoutedPublicationService.publish).toHaveBeenCalledWith(
       expect.objectContaining({
         entityId: 'channel-1',
-        logicalIdempotencyKey: 'managed-poll:publish:poll-1:revision:0',
+        logicalIdempotencyKey: 'managed-poll:publish:poll-1:revision:0:format:2',
         routePurpose: 'channel_poll',
-        text: expect.stringContaining('<strong>Новый вопрос</strong>'),
+        text: '<strong>Новый вопрос</strong>',
+        options: expect.objectContaining({
+          buttons: [
+            [expect.objectContaining({ text: 'Первый' })],
+            [expect.objectContaining({ text: 'Второй' })],
+          ],
+        }),
       }),
     );
     expect(adminService.resolveChannelPollBotId).not.toHaveBeenCalled();
@@ -1040,7 +1189,7 @@ describe('ManagedPollService publication', () => {
     }
   });
 
-  it('keeps an ambiguous publication claimed until the channel is checked', async () => {
+  it('binds the routed bot before keeping an ambiguous publication claimed', async () => {
     const draft = {
       id: 'poll-1',
       chatId: 'channel-1',
@@ -1072,14 +1221,16 @@ describe('ManagedPollService publication', () => {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
     };
-    const maxClient = {
-      sendMessageImmediateWithResolvedLink: jest
-        .fn()
-        .mockRejectedValue({ response: { status: 504, data: { message: 'gateway timeout' } } }),
-    };
+    const maxClient = {};
     const adminService = {
       assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined),
-      resolveChannelPollBotId: jest.fn().mockResolvedValue('bot-1'),
+    };
+    const maxRoutedPublicationService = {
+      publish: jest.fn().mockImplementation(async (request: any) => {
+        await request.prepareAttempt({ botId: 'route-bot', job: {} });
+        await request.onDispatchAttempt({ botId: 'route-bot', job: {} });
+        throw { response: { status: 504, data: { message: 'gateway timeout' } } };
+      }),
     };
     const accessLoss = { recordIfManagedEntityAccessLost: jest.fn() };
     const service = new ManagedPollService(
@@ -1088,6 +1239,8 @@ describe('ManagedPollService publication', () => {
       adminService as never,
       {} as never,
       accessLoss as never,
+      undefined,
+      maxRoutedPublicationService as never,
     );
     jest.spyOn(service as any, 'findPoll').mockResolvedValue(draft);
 
@@ -1096,13 +1249,26 @@ describe('ManagedPollService publication', () => {
     ).rejects.toThrow('MAX мог принять публикацию. Проверьте канал перед повтором.');
 
     expect(prisma.managedPoll.updateMany).toHaveBeenNthCalledWith(
-      3,
+      4,
       expect.objectContaining({
         where: expect.objectContaining({ id: 'poll-1', lockToken: expect.any(String) }),
         data: { lastError: 'Публикация требует ручной проверки.' },
       }),
     );
+    expect(prisma.managedPoll.updateMany).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        where: expect.objectContaining({ id: 'poll-1', lockToken: expect.any(String) }),
+        data: { publicationBotId: 'route-bot' },
+      }),
+    );
+    expect(
+      prisma.managedPoll.updateMany.mock.calls.every(
+        ([request]) => !Object.hasOwn(request.data, 'renderFormatVersion'),
+      ),
+    ).toBe(true);
     expect(accessLoss.recordIfManagedEntityAccessLost).not.toHaveBeenCalled();
+    expect(maxClient).not.toHaveProperty('sendMessageImmediateWithResolvedLink');
   });
 
   it('releases the claim when draft reload fails before sending', async () => {
@@ -1319,6 +1485,28 @@ describe('ManagedPollService lifecycle', () => {
 });
 
 describe('ManagedPollService admin reads', () => {
+  it('uses chat-scoped read access for chat polls', async () => {
+    const prisma = {
+      managedPoll: { findMany: jest.fn().mockResolvedValue([]) },
+      managedPollVote: { groupBy: jest.fn() },
+    };
+    const adminService = { assertManagedEntityReadAccess: jest.fn().mockResolvedValue(undefined) };
+    const service = new ManagedPollService(
+      prisma as never,
+      {} as never,
+      adminService as never,
+      {} as never,
+    );
+
+    await service.listChannelPolls('chat-1', { userId: 'admin-1' } as never, {}, 'chat');
+
+    expect(adminService.assertManagedEntityReadAccess).toHaveBeenCalledWith(
+      'chat-1',
+      'admin-1',
+      'chat',
+    );
+  });
+
   it('paginates poll history before aggregating votes', async () => {
     const now = new Date();
     const createPoll = (id: string) => ({
@@ -1487,5 +1675,65 @@ describe('ManagedPollService admin reads', () => {
       service.getChannelPollVoters('channel-1', 'poll-1', { userId: 'admin-1' } as never, {}),
     ).rejects.toThrow('В анонимном опросе список участников скрыт.');
     expect(prisma.managedPollVoter.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('ManagedPollService access-loss attribution', () => {
+  it('attributes failed chat poll actions to a chat entity', async () => {
+    const accessLoss = { recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue(undefined) };
+    const service = new ManagedPollService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      accessLoss as never,
+    );
+    const error = new Error('denied');
+
+    await (service as any).recordAccessLoss(
+      { id: 'poll-1', chatId: 'chat-1' },
+      'bot-1',
+      'edit',
+      error,
+      'chat',
+    );
+
+    expect(accessLoss.recordIfManagedEntityAccessLost).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      botId: 'bot-1',
+      entityType: ChatEntityType.CHAT,
+      source: 'managed_poll:edit',
+      operation: 'edit',
+      error,
+    });
+  });
+});
+
+describe('ManagedPollService background render repair', () => {
+  it('processes a bounded stale-publication batch through the serialized renderer', async () => {
+    const prisma = {
+      $queryRaw: jest.fn().mockResolvedValue([
+        { id: 'poll-1', chatId: 'chat-1' },
+        { id: 'poll-2', chatId: 'channel-1' },
+      ]),
+    };
+    const service = new ManagedPollService(prisma as never, {} as never, {} as never, {} as never);
+    const render = jest.spyOn(service as any, 'renderPollPublication').mockResolvedValue(true);
+    jest
+      .spyOn(service as any, 'runPollRenderSerialized')
+      .mockImplementation(async (...args: unknown[]) => {
+        const operation = args[1] as () => Promise<void>;
+        await operation();
+        return true;
+      });
+
+    await expect(service.processPendingPollRenderRepairs()).resolves.toBe(2);
+    expect(render).toHaveBeenNthCalledWith(1, 'chat-1', 'poll-1', 'background-repair');
+    expect(render).toHaveBeenNthCalledWith(2, 'channel-1', 'poll-2', 'background-repair');
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    const query = prisma.$queryRaw.mock.calls[0]?.[0]?.join(' ');
+    expect(query).toContain('WHERE "publication_message_id" IS NOT NULL');
+    expect(query).toContain('OR "render_format_version" <');
+    expect(query).toContain('OR "last_render_error" IS NOT NULL');
   });
 });

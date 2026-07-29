@@ -182,19 +182,19 @@ const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
     pattern: new RegExp(`^/(chats|channels)/${ENTITY_ID_SEGMENT}/giveaway/handoff$`),
   },
 
-  { method: 'POST', pattern: new RegExp(`^/channels/${ENTITY_ID_SEGMENT}/polls$`) },
+  { method: 'POST', pattern: new RegExp(`^/(chats|channels)/${ENTITY_ID_SEGMENT}/polls$`) },
   {
     method: 'PUT',
-    pattern: new RegExp(`^/channels/${ENTITY_ID_SEGMENT}/polls/${ENTITY_ID_SEGMENT}$`),
+    pattern: new RegExp(`^/(chats|channels)/${ENTITY_ID_SEGMENT}/polls/${ENTITY_ID_SEGMENT}$`),
   },
   {
     method: 'DELETE',
-    pattern: new RegExp(`^/channels/${ENTITY_ID_SEGMENT}/polls/${ENTITY_ID_SEGMENT}$`),
+    pattern: new RegExp(`^/(chats|channels)/${ENTITY_ID_SEGMENT}/polls/${ENTITY_ID_SEGMENT}$`),
   },
   {
     method: 'POST',
     pattern: new RegExp(
-      `^/channels/${ENTITY_ID_SEGMENT}/polls/${ENTITY_ID_SEGMENT}/(publish|close|refresh|reset-publication)$`,
+      `^/(chats|channels)/${ENTITY_ID_SEGMENT}/polls/${ENTITY_ID_SEGMENT}/(publish|close|refresh|reset-publication)$`,
     ),
   },
 

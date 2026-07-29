@@ -26,6 +26,15 @@ describe('managed poll util', () => {
     expect(parseManagedPollCallbackPayload('poll|v1|poll-1|option-a')).toBeNull();
   });
 
+  it('keeps callback labels exactly as the administrator entered them', () => {
+    const buttons = buildManagedPollButtons(
+      'poll-1',
+      buildManagedPollOptionResults(options, new Map([['option-a', 12]])).options,
+    );
+
+    expect(buttons.map((row) => row[0]?.text)).toEqual(['Первый', 'Второй']);
+  });
+
   it('calculates aggregate counts and rounded percentages', () => {
     const result = buildManagedPollOptionResults(
       options,
@@ -53,48 +62,27 @@ describe('managed poll util', () => {
     expect(result.options.reduce((sum, option) => sum + option.percent, 0)).toBe(100);
   });
 
-  it('keeps active posts concise without disclosing poll visibility', () => {
+  it('publishes only the administrator-authored question in every poll state', () => {
     const result = buildManagedPollOptionResults(options, new Map([['option-a', 1]]));
     const active = buildManagedPollMessageText({
       question: 'Что выбираем?',
-      options: result.options,
-      status: 'ACTIVE',
-      totalVotes: result.totalVotes,
     });
     const closed = buildManagedPollMessageText({
       question: 'Что выбираем?',
-      options: result.options,
-      status: 'CLOSED',
-      totalVotes: result.totalVotes,
     });
 
-    expect(active).toBe('Опрос\n\nЧто выбираем?\n\n1 голос');
-    expect(active).not.toContain('1. Первый');
-    expect(closed).toContain('Опрос завершён');
-    expect(closed).toContain('1. Первый — 1 · 100%');
-    expect(closed).toContain('1 голос');
-    expect(`${active}\n${closed}`).not.toMatch(/Анонимный|Открытый/u);
+    expect(result.totalVotes).toBe(1);
+    expect(active).toBe('Что выбираем?');
+    expect(closed).toBe('Что выбираем?');
+    expect(`${active}\n${closed}`).not.toMatch(/Опрос|завершён|голос|Первый|Анонимный|Открытый/u);
   });
 
-  it('renders Markdown only in the question and escapes poll result text for HTML', () => {
+  it('renders only administrator-authored Markdown without adding result text', () => {
     const text = buildManagedPollMessageText({
       question: '**Выберите вариант**',
       questionFormat: 'markdown',
-      options: [
-        {
-          id: 'option-a',
-          position: 0,
-          text: '<b>Не разметка</b> **тоже нет**',
-          votes: 1,
-          percent: 100,
-        },
-      ],
-      status: 'CLOSED',
-      totalVotes: 1,
     });
 
-    expect(text).toContain('<strong>Выберите вариант</strong>');
-    expect(text).toContain('&lt;b&gt;Не разметка&lt;/b&gt; **тоже нет**');
-    expect(text).not.toContain('<b>Не разметка</b>');
+    expect(text).toBe('<strong>Выберите вариант</strong>');
   });
 });

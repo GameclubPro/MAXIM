@@ -212,6 +212,7 @@ import { SettingsDuplicatesSection } from './settings/settings-duplicates-sectio
 import { SettingsExtraSection } from './settings/settings-extra-section';
 import { SettingsLimitsSection } from './settings/settings-limits-section';
 import { SettingsNightSection } from './settings/settings-night-section';
+import { SettingsPollsSection } from './settings/settings-polls-section';
 import { SettingsSectionSaveFooter } from './settings/settings-section-save-footer';
 import { SettingsStopWordsSection } from './settings/settings-stop-words-section';
 import { useBroadcastImageDraft } from './settings/use-broadcast-image-draft';
@@ -566,6 +567,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       focusSection !== 'comments' &&
       focusSection !== 'stopWords' &&
       focusSection !== 'giveaway' &&
+      focusSection !== 'polls' &&
       focusSection !== 'vkParsing' &&
       focusSection !== 'broadcast' &&
       focusSection !== 'requiredSubscription'
@@ -585,11 +587,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               ? { stopWords: true }
               : focusSection === 'giveaway'
                 ? { giveaway: true }
-                : focusSection === 'vkParsing'
-                  ? { vkParsing: true }
-                  : focusSection === 'requiredSubscription'
-                    ? { requiredSubscription: true }
-                    : { mailing: true }),
+                : focusSection === 'polls'
+                  ? { polls: true }
+                  : focusSection === 'vkParsing'
+                    ? { vkParsing: true }
+                    : focusSection === 'requiredSubscription'
+                      ? { requiredSubscription: true }
+                      : { mailing: true }),
     });
   }, [focusSection]);
 
@@ -3901,6 +3905,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     if (
       (section === 'mailing' && focusSection === 'broadcast') ||
       (section === 'giveaway' && focusSection === 'giveaway') ||
+      (section === 'polls' && focusSection === 'polls') ||
       (section === 'vkParsing' && focusSection === 'vkParsing') ||
       (section === 'requiredSubscription' && focusSection === 'requiredSubscription')
     ) {
@@ -6159,6 +6164,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 </div>
               </SettingsDrilldownPanel>
             </GlassCard>
+
+            {chatId ? (
+              <SettingsPollsSection
+                api={api}
+                chatId={chatId}
+                expanded={expandedSections.polls}
+                onOpen={() => toggleSection('polls')}
+                onClose={() => closeSection('polls')}
+              />
+            ) : null}
 
             {chatId ? (
               <GlassCard

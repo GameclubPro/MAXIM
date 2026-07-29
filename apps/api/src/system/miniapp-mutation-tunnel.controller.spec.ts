@@ -262,6 +262,13 @@ describe('MiniappMutationTunnelController', () => {
     ['POST', '/channels/channel-1/polls/poll-1/close'],
     ['POST', '/channels/channel-1/polls/poll-1/refresh'],
     ['POST', '/channels/channel-1/polls/poll-1/reset-publication'],
+    ['POST', '/chats/chat-1/polls'],
+    ['PUT', '/chats/chat-1/polls/poll-1'],
+    ['DELETE', '/chats/chat-1/polls/poll-1'],
+    ['POST', '/chats/chat-1/polls/poll-1/publish'],
+    ['POST', '/chats/chat-1/polls/poll-1/close'],
+    ['POST', '/chats/chat-1/polls/poll-1/refresh'],
+    ['POST', '/chats/chat-1/polls/poll-1/reset-publication'],
   ])('allows managed broadcast %s %s through the mutation tunnel', async (method, path) => {
     const controller = new MiniappMutationTunnelController();
     const reply = createReply();

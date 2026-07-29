@@ -469,10 +469,18 @@ export class MaxBotLinkService {
   }
 
   async resolveBotIdForChannelPoll(params: { chatId: string }): Promise<string | null> {
-    return (await this.resolveBotRouteForChannelPoll(params)).botId;
+    return this.resolveBotIdForManagedPoll(params);
   }
 
   async resolveBotRouteForChannelPoll(params: { chatId: string }): Promise<MaxBotRoute> {
+    return this.resolveBotRouteForManagedPoll(params);
+  }
+
+  async resolveBotIdForManagedPoll(params: { chatId: string }): Promise<string | null> {
+    return (await this.resolveBotRouteForManagedPoll(params)).botId;
+  }
+
+  async resolveBotRouteForManagedPoll(params: { chatId: string }): Promise<MaxBotRoute> {
     const normalizedChatId = params.chatId.trim();
     if (!normalizedChatId) {
       return this.buildRoute({
@@ -492,8 +500,9 @@ export class MaxBotLinkService {
     const eligible = state.activeActionableMemberships.filter((membership) => {
       const snapshot = normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
       return (
-        this.hasConfirmedSendMessageAccess(snapshot, ChatEntityType.CHANNEL) &&
-        this.hasModerationActionPermission(snapshot, 'edit_message', ChatEntityType.CHANNEL)
+        this.hasConfirmedSendMessageAccess(snapshot, state.entityType) &&
+        (state.entityType !== ChatEntityType.CHANNEL ||
+          this.hasModerationActionPermission(snapshot, 'edit_message', ChatEntityType.CHANNEL))
       );
     });
     const primaryBotId =

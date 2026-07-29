@@ -1479,6 +1479,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     closeSection('polls');
   }
 
+  function togglePollsSection() {
+    if (expandedSections.polls) {
+      requestPollsSectionClose();
+      return;
+    }
+    toggleSection('polls');
+  }
+
   const normalizedDraft = useMemo(
     () => (draft ? normalizeChannelSettingsDraft(draft, resolvedChannelLink) : null),
     [draft, resolvedChannelLink],
@@ -3724,7 +3732,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
               tone="mint"
               open={expandedSections.polls}
               controls="channel-settings-polls"
-              onClick={() => toggleSection('polls')}
+              onClick={togglePollsSection}
             />
           </div>
 
@@ -3738,16 +3746,18 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             onClose={requestPollsSectionClose}
           >
             <div
-              id="channel-settings-polls"
+              id="channel-settings-polls-collapse"
               className={cn('settings-section__collapse', expandedSections.polls && 'is-open')}
             >
               {expandedSections.polls ? (
                 <div className="settings-section__collapse-inner">
                   <Suspense fallback={<SkeletonCard lines={4} />}>
                     <LazyManagedPollWorkspace
+                      key={`channel:${chatId}`}
                       ref={pollWorkspaceRef}
                       api={api}
-                      channelId={chatId}
+                      entityType="channel"
+                      entityId={chatId}
                       onClosePanel={() => closeSection('polls')}
                     />
                   </Suspense>

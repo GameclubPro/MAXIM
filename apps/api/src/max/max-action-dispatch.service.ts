@@ -50,7 +50,7 @@ export type MaxActionDispatchExecutionOptions = {
     options?: MaxSendMessageOptions;
     ledgerContext?: MaxActionLedgerContext;
   }>;
-  onDispatchAttempt?: (params: { botId: string | null; job: MaxActionJob }) => void;
+  onDispatchAttempt?: (params: { botId: string | null; job: MaxActionJob }) => void | Promise<void>;
 };
 
 export {
@@ -238,7 +238,7 @@ export class MaxActionDispatchService {
             );
           }
         }
-        options.onDispatchAttempt?.({
+        await options.onDispatchAttempt?.({
           botId: candidateBotId ?? null,
           job: attemptJob,
         });
@@ -378,8 +378,8 @@ export class MaxActionDispatchService {
     try {
       const route =
         job.routing.purpose === 'channel_poll' &&
-        typeof this.maxBotLinkService.resolveBotRouteForChannelPoll === 'function'
-          ? await this.maxBotLinkService.resolveBotRouteForChannelPoll({ chatId: job.chatId })
+        typeof this.maxBotLinkService.resolveBotRouteForManagedPoll === 'function'
+          ? await this.maxBotLinkService.resolveBotRouteForManagedPoll({ chatId: job.chatId })
           : await this.maxBotLinkService.resolveBotRoute(this.buildRouteRequest(job));
       const routingVersionChanged =
         typeof job.routing.routingVersion === 'number' &&

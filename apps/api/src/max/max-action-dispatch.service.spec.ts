@@ -1278,7 +1278,8 @@ describe('MaxActionDispatchService', () => {
         },
         {
           prepareAttempt: jest.fn().mockResolvedValue({}),
-          onDispatchAttempt: () => {
+          onDispatchAttempt: async () => {
+            await Promise.resolve();
             throw preDispatchError;
           },
         },

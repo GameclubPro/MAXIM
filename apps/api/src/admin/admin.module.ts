@@ -44,6 +44,7 @@ import { MANAGED_ENTITIES_LEGACY_PORT } from './managed-entities-legacy.port';
 import { ManagedGiveawayRunnerService } from './managed-giveaway-runner.service';
 import { ManagedGiveawayService } from './managed-giveaway.service';
 import { ManagedPollService } from './managed-poll.service';
+import { ManagedPollRunnerService } from './managed-poll-runner.service';
 import { PublicationController } from './publication.controller';
 import { PublicationContentService } from './publication-content.service';
 import { PublicationLegacyService } from './publication-legacy.service';
@@ -133,6 +134,7 @@ import { SupportRequestsService } from './support-requests.service';
     ManagedBroadcastRunnerService,
     ManagedGiveawayService,
     ManagedPollService,
+    ManagedPollRunnerService,
     PublicationContentService,
     PublicationLegacyService,
     PublicationMetricsInterceptor,

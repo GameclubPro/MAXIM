@@ -149,6 +149,16 @@ test('resolves channel polls settings focus from startapp payload', () => {
   assert.equal(resolveLaunchRoute(''), '/channel/-68085832859751/settings?focus=polls');
 });
 
+test('resolves chat polls settings focus from startapp payload', () => {
+  assignWindow(
+    `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(
+      encodeRouteStartParam('/chat/-68085832859751/settings?focus=polls'),
+    )}`,
+  );
+
+  assert.equal(resolveLaunchRoute(''), '/chat/-68085832859751/settings?focus=polls');
+});
+
 test('resolves legacy autopost workspaces only inside broadcast settings', () => {
   assignWindow(
     `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(

@@ -17,7 +17,7 @@ describe('MaxRoutedPublicationService', () => {
     const maxActionDispatchService = {
       execute: jest.fn().mockImplementation(async (job: MaxActionJob, options: any) => {
         const prepared = await options.prepareAttempt({ botId: 'bot-2', job });
-        options.onDispatchAttempt({ botId: 'bot-2', job: { ...job, ...prepared } });
+        await options.onDispatchAttempt({ botId: 'bot-2', job: { ...job, ...prepared } });
         return {
           messageId: 'mid-1',
           url: 'https://max.ru/channel-1/mid-1',
@@ -76,7 +76,7 @@ describe('MaxRoutedPublicationService', () => {
 
   it('uses the poll-specific eligible candidate route', async () => {
     const maxBotLinkService = {
-      resolveBotRouteForChannelPoll: jest.fn().mockResolvedValue({
+      resolveBotRouteForManagedPoll: jest.fn().mockResolvedValue({
         purpose: 'send_message',
         chatId: 'channel-1',
         primaryBotId: 'bot-1',
@@ -120,7 +120,7 @@ describe('MaxRoutedPublicationService', () => {
       }),
     );
 
-    expect(maxBotLinkService.resolveBotRouteForChannelPoll).toHaveBeenCalledWith({
+    expect(maxBotLinkService.resolveBotRouteForManagedPoll).toHaveBeenCalledWith({
       chatId: 'channel-1',
     });
     expect(maxBotLinkService.resolveBotRoute).not.toHaveBeenCalled();

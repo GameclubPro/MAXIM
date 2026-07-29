@@ -1,11 +1,6 @@
-import {
-  MANAGED_POLL_OPTION_MAX_LENGTH,
-  type ManagedPollQuestionFormat,
-  type ManagedPollStatus,
-} from '@maxim/contracts/poll';
+import { type ManagedPollQuestionFormat } from '@maxim/contracts/poll';
 import type { MaxMessageButton } from '../max/max-client.service';
 import { renderSupportedMarkdownAsHtml } from './max-markdown.util';
-import { escapeHtmlPreservingWhitespace } from './max-text-markup.util';
 
 export const MANAGED_POLL_CALLBACK_PREFIX = 'poll';
 const MANAGED_POLL_CALLBACK_VERSION = 'v2';
@@ -48,40 +43,20 @@ export function buildManagedPollOptionResults(
 export function buildManagedPollMessageText(params: {
   question: string;
   questionFormat?: ManagedPollQuestionFormat;
-  options: readonly ManagedPollOptionResult[];
-  status: ManagedPollStatus;
-  totalVotes: number;
 }): string {
-  const useHtml = params.questionFormat === 'markdown';
-  const renderPlainSegment = (value: string) =>
-    useHtml ? escapeHtmlPreservingWhitespace(value) : value;
-  const title = params.status === 'CLOSED' ? 'Опрос завершён' : 'Опрос';
-  const question = useHtml
+  return params.questionFormat === 'markdown'
     ? renderSupportedMarkdownAsHtml(params.question.trim(), { blockMode: 'raw' })
     : params.question.trim();
-  const lines = [renderPlainSegment(title), '', question];
-
-  if (params.status === 'CLOSED') {
-    lines.push('');
-    for (const [index, option] of params.options.entries()) {
-      lines.push(
-        `${index + 1}. ${renderPlainSegment(option.text)} — ${option.votes} · ${option.percent}%`,
-      );
-    }
-  }
-
-  lines.push('', buildManagedPollMeta(params.totalVotes));
-  return lines.join('\n');
 }
 
 export function buildManagedPollButtons(
   pollId: string,
   options: readonly ManagedPollOptionResult[],
 ): MaxMessageButton[][] {
-  return options.map((option, index) => [
+  return options.map((option) => [
     {
       type: 'callback',
-      text: buildManagedPollButtonLabel(option.text, option.votes, index),
+      text: option.text.trim(),
       payload: buildManagedPollCallbackPayload(pollId, option.id),
     },
   ]);
@@ -116,41 +91,6 @@ export function parseManagedPollCallbackPayload(
   const optionId = parts[3]?.trim() ?? '';
   const idPattern = /^[a-z0-9_-]{1,128}$/u;
   return idPattern.test(pollId) && idPattern.test(optionId) ? { pollId, optionId } : null;
-}
-
-function buildManagedPollMeta(totalVotes: number): string {
-  return formatManagedPollVoteCount(totalVotes);
-}
-
-function formatManagedPollVoteCount(value: number): string {
-  const count = normalizeVoteCount(value);
-  const mod100 = count % 100;
-  const mod10 = count % 10;
-  const suffix =
-    mod100 >= 11 && mod100 <= 14
-      ? 'голосов'
-      : mod10 === 1
-        ? 'голос'
-        : mod10 >= 2 && mod10 <= 4
-          ? 'голоса'
-          : 'голосов';
-  return `${count} ${suffix}`;
-}
-
-function buildManagedPollButtonLabel(text: string, votes: number, index: number): string {
-  const suffix = ` · ${normalizeVoteCount(votes)}`;
-  const fallback = `Вариант ${index + 1}`;
-  const source = text.trim() || fallback;
-  const maxTextLength = Math.max(1, MANAGED_POLL_OPTION_MAX_LENGTH - suffix.length);
-  if (source.length <= maxTextLength) {
-    return `${source}${suffix}`;
-  }
-
-  const trimmed =
-    maxTextLength <= 3
-      ? source.slice(0, maxTextLength)
-      : `${source.slice(0, maxTextLength - 3).trimEnd()}...`;
-  return `${trimmed}${suffix}`;
 }
 
 function normalizeVoteCount(value: unknown): number {

@@ -79,7 +79,7 @@
 - Retries preserve the recorded content revision. Latest-content retry requires optimistic publication/content revision guards; never rewrite `SENT` or `AMBIGUOUS` attribution.
 - Publication video input remains capped at 24 MB because it crosses base64 JSON, `bytea`, and in-memory buffers. Outbound resumable upload is not a reason to raise ingestion limits.
 - Managed broadcast rows with `publicationOccurrenceId != null` are Publication execution envelopes. Legacy broadcast/autopost read, mutation, calendar overwrite, and retry APIs must hide them.
-- MAX has no native poll endpoint; channel polls use callback-button messages. Replay dedupe is bounded and per-poll pseudonymous. Anonymous polls persist only identity hashes needed for revoting and never expose voters.
+- MAX has no native poll endpoint; managed chat and channel polls use callback-button messages. Published message text is exactly the administrator-authored question and button labels are exactly the authored options; keep statuses, vote counts, percentages, numbering, and other generated copy out of the MAX publication. Replay dedupe is bounded and per-poll pseudonymous. Anonymous polls persist only identity hashes needed for revoting and never expose voters.
 - Managed poll list endpoints select/expose persisted `imageCount` only; raw poll images belong to the details endpoint.
 - Settings audit payloads contain only requested allowlisted keys and bounded media metadata. Keep the settings mutation and audit insert in one transaction; never copy base64 media, filenames, or full settings snapshots into the audit log.
 

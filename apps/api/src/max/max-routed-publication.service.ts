@@ -38,7 +38,7 @@ export type MaxRoutedPublicationRequest = {
     options?: MaxSendMessageOptions;
     ledgerContext?: MaxActionLedgerContext;
   }>;
-  onDispatchAttempt?: (context: MaxRoutedPublicationAttemptContext) => void;
+  onDispatchAttempt?: (context: MaxRoutedPublicationAttemptContext) => void | Promise<void>;
 };
 
 export type MaxRoutedPublicationResult = MaxPublishedMessage & {
@@ -116,9 +116,9 @@ export class MaxRoutedPublicationService {
         : {}),
       ...(request.onDispatchAttempt
         ? {
-            onDispatchAttempt: ({ botId, job: attemptJob }) => {
+            onDispatchAttempt: async ({ botId, job: attemptJob }) => {
               if (botId) {
-                request.onDispatchAttempt!({ botId, job: attemptJob });
+                await request.onDispatchAttempt!({ botId, job: attemptJob });
               }
             },
           }
@@ -181,7 +181,7 @@ export class MaxRoutedPublicationService {
     sendRouteHalfOpenProbe?: MaxRoutedPublicationRequest['sendRouteHalfOpenProbe'],
   ): Promise<MaxBotRoute> {
     if (purpose === 'channel_poll') {
-      return this.maxBotLinkService.resolveBotRouteForChannelPoll({ chatId });
+      return this.maxBotLinkService.resolveBotRouteForManagedPoll({ chatId });
     }
     return this.maxBotLinkService.resolveBotRoute({
       purpose: 'send_message',

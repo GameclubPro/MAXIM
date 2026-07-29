@@ -83,6 +83,8 @@ export type PreviewState = {
   chatRules: ChatRules;
   chatDomains: DomainAllowlistEntry[];
   chatBroadcasts: ManagedBroadcastDetails[];
+  chatPolls: ManagedPollDetails[];
+  chatPollVoters: ManagedPollVoter[];
   channelBroadcasts: ManagedBroadcastDetails[];
   autopostRules: ManagedAutopostHubRuleDetails[];
   publications: PublicationDetails[];
@@ -406,6 +408,19 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
     votedAt: addHours(now, -(index + 1)).toISOString(),
     updatedAt: addHours(now, -(index + 1)).toISOString(),
   })) satisfies ManagedPollVoter[];
+  const chatPolls = channelPolls.map((poll) =>
+    managedPollDetailsSchema.parse({
+      ...poll,
+      id: poll.id.replace('poll-channel-', 'poll-chat-'),
+      channelId: PREVIEW_CHAT_ID,
+      publicationUrl: poll.publicationUrl ? 'https://max.ru/chats/preview-chat' : null,
+    }),
+  );
+  const chatPollVoters = channelPollVoters.map((voter) => ({
+    ...voter,
+    id: voter.id.replace('poll-voter-', 'chat-poll-voter-'),
+    pollId: voter.pollId.replace('poll-channel-', 'poll-chat-'),
+  }));
   const channelGiveaways = [
     managedGiveawayDetailsSchema.parse({
       id: 'giveaway-channel-1',
@@ -823,6 +838,8 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
     chatViolations: createChatViolations(now),
     spammerReviewCandidates: createPreviewSpammerReviewCandidates(now),
     chatVkParsing,
+    chatPolls,
+    chatPollVoters,
     channelHeaderParticipantsCount: 9_240,
     channelDialogs,
     channelDialogThreads: {},

@@ -11,7 +11,7 @@ import {
   type ManagedPollVoter,
   type ManagedPollVisibility,
 } from '@maxim/contracts/poll';
-import type { BroadcastImage } from '@maxim/contracts';
+import type { BroadcastImage, ManagedEntityType } from '@maxim/contracts';
 import {
   useInfiniteQuery,
   useMutation,
@@ -43,19 +43,19 @@ import {
 } from 'react';
 import { stripSupportedMarkdownToPlainText } from '../lib/max-markdown';
 import {
-  closeChannelManagedPoll,
-  createChannelManagedPoll,
-  deleteChannelManagedPoll,
-  getChannelManagedPoll,
-  getChannelManagedPollVoters,
-  getChannelManagedPolls,
-  publishChannelManagedPoll,
-  refreshChannelManagedPollPublication,
-  resetChannelManagedPollPublication,
-  updateChannelManagedPoll,
-} from '../lib/api/channel-polls-client';
+  closeManagedPoll,
+  createManagedPoll,
+  deleteManagedPoll,
+  getManagedPoll,
+  getManagedPollVoters,
+  getManagedPolls,
+  publishManagedPoll,
+  refreshManagedPollPublication,
+  resetManagedPollPublication,
+  updateManagedPoll,
+} from '../lib/api/managed-polls-client';
 import type { ApiTransport } from '../lib/api/transport';
-import { channelPollQueryKeys } from '../lib/channel-poll-query-keys';
+import { managedPollQueryKeys } from '../lib/managed-poll-query-keys';
 import { openMaxBotLink } from '../lib/max-bridge';
 import { useNativeBackHandler } from '../lib/native-back';
 import { describeUserFacingError } from '../lib/user-facing-error';
@@ -104,7 +104,8 @@ export type ManagedPollWorkspaceHandle = {
 
 type ManagedPollWorkspaceProps = {
   api: ApiTransport;
-  channelId: string;
+  entityType: ManagedEntityType;
+  entityId: string;
   onClosePanel: () => void;
 };
 
@@ -327,18 +328,20 @@ function resolveVoterName(voter: {
 
 function PollVoterDetails({
   api,
-  channelId,
+  entityType,
+  entityId,
   poll,
 }: {
   api: ApiTransport;
-  channelId: string;
+  entityType: ManagedEntityType;
+  entityId: string;
   poll: ManagedPollSummary;
 }) {
   const votersQuery = useInfiniteQuery({
-    queryKey: channelPollQueryKeys.voters(channelId, poll.id),
+    queryKey: managedPollQueryKeys.voters(entityType, entityId, poll.id),
     initialPageParam: null as string | null,
     queryFn: ({ pageParam, signal }) =>
-      getChannelManagedPollVoters(api, channelId, poll.id, {
+      getManagedPollVoters(api, entityType, entityId, poll.id, {
         cursor: pageParam,
         limit: 50,
         signal,
@@ -435,7 +438,8 @@ function PollVoterDetails({
 
 function PollResultCard({
   api,
-  channelId,
+  entityType,
+  entityId,
   poll,
   votersOpen,
   busy,
@@ -447,7 +451,8 @@ function PollResultCard({
   onToggleVoters,
 }: {
   api: ApiTransport;
-  channelId: string;
+  entityType: ManagedEntityType;
+  entityId: string;
   poll: ManagedPollSummary;
   votersOpen: boolean;
   busy: boolean;
@@ -604,7 +609,7 @@ function PollResultCard({
               disabled={busy}
             >
               <RefreshCircle aria-hidden />
-              Обновить пост
+              Обновить публикацию
             </button>
           ) : null}
           {poll.publicationNeedsReview ? (
@@ -621,7 +626,9 @@ function PollResultCard({
         </div>
       </footer>
 
-      {votersOpen ? <PollVoterDetails api={api} channelId={channelId} poll={poll} /> : null}
+      {votersOpen ? (
+        <PollVoterDetails api={api} entityType={entityType} entityId={entityId} poll={poll} />
+      ) : null}
     </article>
   );
 }
@@ -846,7 +853,7 @@ function PollEditor({
 export const ManagedPollWorkspace = forwardRef<
   ManagedPollWorkspaceHandle,
   ManagedPollWorkspaceProps
->(function ManagedPollWorkspace({ api, channelId, onClosePanel }, ref) {
+>(function ManagedPollWorkspace({ api, entityType, entityId, onClosePanel }, ref) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const [tab, setTab] = useState<PollWorkspaceTab>('current');
@@ -862,15 +869,15 @@ export const ManagedPollWorkspace = forwardRef<
   const questionRef = useRef<HTMLDivElement | null>(null);
   const optionRefs = useRef(new Map<string, HTMLInputElement>());
   const publishSavedPollRef = useRef<ManagedPollDetails | null>(null);
-  const listQueryKey = channelPollQueryKeys.list(channelId);
+  const listQueryKey = managedPollQueryKeys.list(entityType, entityId);
 
   const pollsQuery = useInfiniteQuery({
     queryKey: listQueryKey,
     initialPageParam: null as string | null,
     queryFn: ({ pageParam, signal }) =>
-      getChannelManagedPolls(api, channelId, { cursor: pageParam, limit: 30, signal }),
+      getManagedPolls(api, entityType, entityId, { cursor: pageParam, limit: 30, signal }),
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
-    enabled: Boolean(channelId),
+    enabled: Boolean(entityId),
     refetchInterval: 15_000,
     refetchOnWindowFocus: true,
   });
@@ -904,23 +911,23 @@ export const ManagedPollWorkspace = forwardRef<
         listQueryKey,
         (current) => upsertPoll(current, poll),
       );
-      queryClient.setQueryData(channelPollQueryKeys.details(channelId, poll.id), poll);
+      queryClient.setQueryData(managedPollQueryKeys.details(entityType, entityId, poll.id), poll);
     },
-    [channelId, listQueryKey, queryClient],
+    [entityId, entityType, listQueryKey, queryClient],
   );
 
   const persistDraft = useCallback(
     (value: PollEditorDraft) => {
       const payload = buildPollPayload(value);
       return value.pollId
-        ? updateChannelManagedPoll(api, channelId, value.pollId, payload)
-        : createChannelManagedPoll(api, channelId, payload);
+        ? updateManagedPoll(api, entityType, entityId, value.pollId, payload)
+        : createManagedPoll(api, entityType, entityId, payload);
     },
-    [api, channelId],
+    [api, entityId, entityType],
   );
 
   const openPollMutation = useMutation({
-    mutationFn: (pollId: string) => getChannelManagedPoll(api, channelId, pollId),
+    mutationFn: (pollId: string) => getManagedPoll(api, entityType, entityId, pollId),
     onSuccess: (poll) => {
       applyPoll(poll);
       const nextDraft = toEditorDraft(poll);
@@ -964,7 +971,7 @@ export const ManagedPollWorkspace = forwardRef<
       const saved = await persistDraft(value);
       publishSavedPollRef.current = saved;
       applyPoll(saved);
-      return publishChannelManagedPoll(api, channelId, saved.id);
+      return publishManagedPoll(api, entityType, entityId, saved.id);
     },
     onSuccess: (published) => {
       publishSavedPollRef.current = null;
@@ -996,7 +1003,7 @@ export const ManagedPollWorkspace = forwardRef<
   });
 
   const closeMutation = useMutation({
-    mutationFn: (pollId: string) => closeChannelManagedPoll(api, channelId, pollId),
+    mutationFn: (pollId: string) => closeManagedPoll(api, entityType, entityId, pollId),
     onSuccess: (closed) => {
       applyPoll(closed);
       setConfirmState(null);
@@ -1009,7 +1016,7 @@ export const ManagedPollWorkspace = forwardRef<
           ? {
               tone: 'info',
               title: 'Опрос завершён',
-              description: 'Пост не обновился. Повторите.',
+              description: 'Публикация не обновилась. Повторите.',
             }
           : { tone: 'success', title: 'Опрос завершён' },
       );
@@ -1025,26 +1032,27 @@ export const ManagedPollWorkspace = forwardRef<
   });
 
   const refreshMutation = useMutation({
-    mutationFn: (pollId: string) => refreshChannelManagedPollPublication(api, channelId, pollId),
+    mutationFn: (pollId: string) =>
+      refreshManagedPollPublication(api, entityType, entityId, pollId),
     onSuccess: (refreshed) => {
       applyPoll(refreshed);
       pushToast(
         refreshed.renderRepairNeeded
-          ? { tone: 'info', title: 'Пост пока не обновлён' }
-          : { tone: 'success', title: 'Пост обновлён' },
+          ? { tone: 'info', title: 'Публикация пока не обновлена' }
+          : { tone: 'success', title: 'Публикация обновлена' },
       );
     },
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось обновить пост',
+        title: 'Не удалось обновить публикацию',
         description: describeUserFacingError(error, 'Повторите позже.'),
       });
     },
   });
 
   const resetPublicationMutation = useMutation({
-    mutationFn: (pollId: string) => resetChannelManagedPollPublication(api, channelId, pollId),
+    mutationFn: (pollId: string) => resetManagedPollPublication(api, entityType, entityId, pollId),
     onSuccess: (reset) => {
       applyPoll(reset);
       setConfirmState(null);
@@ -1061,7 +1069,7 @@ export const ManagedPollWorkspace = forwardRef<
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (pollId: string) => deleteChannelManagedPoll(api, channelId, pollId),
+    mutationFn: (pollId: string) => deleteManagedPoll(api, entityType, entityId, pollId),
     onSuccess: (_result, pollId) => {
       queryClient.setQueryData<InfiniteData<ManagedPollListResponse, string | null>>(
         listQueryKey,
@@ -1077,7 +1085,7 @@ export const ManagedPollWorkspace = forwardRef<
             : current,
       );
       queryClient.removeQueries({
-        queryKey: channelPollQueryKeys.details(channelId, pollId),
+        queryKey: managedPollQueryKeys.details(entityType, entityId, pollId),
       });
       if (draft?.pollId === pollId) {
         setDraft(null);
@@ -1302,7 +1310,7 @@ export const ManagedPollWorkspace = forwardRef<
           }
           summary={
             confirmState?.kind === 'publish'
-              ? 'Опрос появится в канале.'
+              ? `Опрос появится ${entityType === 'channel' ? 'в канале' : 'в чате'}.`
               : confirmState?.kind === 'delete'
                 ? 'Черновик будет удалён.'
                 : 'Изменения не сохранятся.'
@@ -1408,7 +1416,8 @@ export const ManagedPollWorkspace = forwardRef<
             <PollResultCard
               key={poll.id}
               api={api}
-              channelId={channelId}
+              entityType={entityType}
+              entityId={entityId}
               poll={poll}
               votersOpen={votersPollId === poll.id}
               busy={isBusy}
